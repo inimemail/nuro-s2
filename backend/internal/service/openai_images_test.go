@@ -1311,6 +1311,35 @@ func TestCollectOpenAIImagesFromResponsesBody_FallsBackToOutputItemDone(t *testi
 	require.JSONEq(t, `{"images":1}`, string(usageRaw))
 }
 
+func TestCollectOpenAIImagesFromResponsesBody_HandlesNestedOutputImageBase64(t *testing.T) {
+	body := []byte(
+		"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000012,\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"content\":[{\"type\":\"output_image\",\"image_url\":\"data:image/webp;base64,V0VCUA==\",\"revised_prompt\":\"draw a nested cat\",\"output_format\":\"webp\"}]}]}}\n\n" +
+			"data: [DONE]\n\n",
+	)
+
+	results, createdAt, usageRaw, firstMeta, foundFinal, err := collectOpenAIImagesFromResponsesBody(body)
+	require.NoError(t, err)
+	require.True(t, foundFinal)
+	require.Equal(t, int64(1710000012), createdAt)
+	require.Len(t, results, 1)
+	require.Equal(t, "V0VCUA==", results[0].Result)
+	require.Equal(t, "draw a nested cat", results[0].RevisedPrompt)
+	require.Equal(t, "webp", firstMeta.OutputFormat)
+	require.JSONEq(t, `{"images":1}`, string(usageRaw))
+}
+
+func TestCollectOpenAIImagesFromResponsesBody_IgnoresPlainImageURLs(t *testing.T) {
+	body := []byte(
+		"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000013,\"output\":[{\"type\":\"image_generation_call\",\"image_url\":\"https://example.com/generated.png\"}]}}\n\n" +
+			"data: [DONE]\n\n",
+	)
+
+	results, _, _, _, foundFinal, err := collectOpenAIImagesFromResponsesBody(body)
+	require.NoError(t, err)
+	require.True(t, foundFinal)
+	require.Empty(t, results)
+}
+
 func TestCollectOpenAIImagesFromResponsesBody_MultilineSSE(t *testing.T) {
 	body := []byte(
 		"data: {\"type\":\"response.completed\",\n" +

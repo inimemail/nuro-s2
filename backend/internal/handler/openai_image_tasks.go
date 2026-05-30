@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,8 @@ const (
 	openAIImageTaskGenerationsEndpoint = "/v1/images/generations"
 	openAIImageTaskEditsEndpoint       = "/v1/images/edits"
 	openAIImageTaskWorkerHeader        = "X-Sub2API-Image-Task-Worker"
+	openAIImageTaskAsyncField          = "runapi"
+	openAIImageTaskInlineWaitField     = "runapi_inline_wait_seconds"
 
 	defaultOpenAIImageTaskRetention  = 24 * time.Hour
 	defaultOpenAIImageTaskTimeout    = 30 * time.Minute
@@ -398,14 +401,32 @@ func (h *OpenAIGatewayHandler) maybeHandleImagesAsTask(
 	apiKey *service.APIKey,
 	subject middleware2.AuthSubject,
 ) bool {
-	if parsed == nil || parsed.Stream {
+	if parsed == nil {
 		return false
 	}
 	if strings.TrimSpace(c.GetHeader(openAIImageTaskWorkerHeader)) != "" {
 		return false
 	}
+	taskOptions, err := extractOpenAIImageTaskOptions(body, c.GetHeader("Content-Type"))
+	if err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return true
+	}
+	if !taskOptions.Async {
+		return false
+	}
 	ownerID := openAIImageTaskOwnerID(apiKey)
-	taskID := autoOpenAIImageTaskID(ownerID, endpoint, body)
+	taskID, err := extractOpenAIImageTaskID(body, c.GetHeader("Content-Type"))
+	if err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return true
+	}
+	if taskID == "" {
+		taskID = strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	}
+	if taskID == "" {
+		taskID = autoOpenAIImageTaskID(ownerID, endpoint, body)
+	}
 	taskBody, err := stripOpenAIImageTaskFields(body, c.GetHeader("Content-Type"))
 	if err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -415,7 +436,14 @@ func (h *OpenAIGatewayHandler) maybeHandleImagesAsTask(
 	if created {
 		h.startImageTaskWorker(c, ownerID, taskID, endpoint, taskBody, apiKey, subject)
 	}
-	task = h.ensureImageTaskStore().wait(c.Request.Context(), ownerID, taskID, defaultOpenAIImageTaskInlineWait)
+	inlineWait := taskOptions.InlineWait
+	if inlineWait < 0 {
+		inlineWait = defaultOpenAIImageTaskInlineWait
+	}
+	if maxWait := h.imageTaskTimeout(); maxWait > 0 && inlineWait > maxWait {
+		inlineWait = maxWait
+	}
+	task = h.ensureImageTaskStore().wait(c.Request.Context(), ownerID, taskID, inlineWait)
 	if h.writeImageTaskFinalResponse(c, task) {
 		return true
 	}
@@ -426,6 +454,92 @@ func (h *OpenAIGatewayHandler) maybeHandleImagesAsTask(
 	c.Header("Retry-After", "2")
 	c.JSON(http.StatusAccepted, publicOpenAIImageTask(task))
 	return true
+}
+
+type openAIImageTaskOptions struct {
+	Async      bool
+	InlineWait time.Duration
+}
+
+func extractOpenAIImageTaskOptions(body []byte, contentType string) (openAIImageTaskOptions, error) {
+	options := openAIImageTaskOptions{InlineWait: -1}
+	mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
+		boundary := strings.TrimSpace(params["boundary"])
+		if boundary == "" {
+			return options, fmt.Errorf("multipart boundary is required")
+		}
+		return extractOpenAIImageTaskOptionsFromMultipart(body, boundary)
+	}
+	if !gjson.ValidBytes(body) {
+		return options, fmt.Errorf("failed to parse request body")
+	}
+	options.Async = gjson.GetBytes(body, openAIImageTaskAsyncField).Exists()
+	if wait := gjson.GetBytes(body, openAIImageTaskInlineWaitField); wait.Exists() {
+		parsedWait, err := parseOpenAIImageTaskWait(wait)
+		if err != nil {
+			return options, err
+		}
+		options.InlineWait = parsedWait
+	}
+	return options, nil
+}
+
+func extractOpenAIImageTaskOptionsFromMultipart(body []byte, boundary string) (openAIImageTaskOptions, error) {
+	options := openAIImageTaskOptions{InlineWait: -1}
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			return options, nil
+		}
+		if err != nil {
+			return options, fmt.Errorf("failed to parse multipart request")
+		}
+		name := strings.TrimSpace(part.FormName())
+		if name != openAIImageTaskAsyncField && name != openAIImageTaskInlineWaitField {
+			_ = part.Close()
+			continue
+		}
+		data, readErr := io.ReadAll(io.LimitReader(part, 4096))
+		_ = part.Close()
+		if readErr != nil {
+			return options, fmt.Errorf("failed to read image task option")
+		}
+		value := strings.TrimSpace(string(data))
+		switch name {
+		case openAIImageTaskAsyncField:
+			options.Async = true
+		case openAIImageTaskInlineWaitField:
+			parsedWait, err := parseOpenAIImageTaskWaitString(value)
+			if err != nil {
+				return options, err
+			}
+			options.InlineWait = parsedWait
+		}
+	}
+}
+
+func parseOpenAIImageTaskWait(value gjson.Result) (time.Duration, error) {
+	if value.Type == gjson.Number {
+		return openAIImageTaskWaitFromSeconds(value.Float()), nil
+	}
+	return parseOpenAIImageTaskWaitString(value.String())
+}
+
+func parseOpenAIImageTaskWaitString(value string) (time.Duration, error) {
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a number of seconds", openAIImageTaskInlineWaitField)
+	}
+	return openAIImageTaskWaitFromSeconds(seconds), nil
+}
+
+func openAIImageTaskWaitFromSeconds(seconds float64) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 func (h *OpenAIGatewayHandler) writeImageTaskFinalResponse(c *gin.Context, task *openAIImageTask) bool {
@@ -606,9 +720,13 @@ func extractOpenAIImageTaskIDFromMultipart(body []byte, boundary string) (string
 }
 
 func stripOpenAIImageTaskFields(body []byte, contentType string) ([]byte, error) {
-	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(contentType))
 	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
-		return append([]byte(nil), body...), nil
+		boundary := strings.TrimSpace(params["boundary"])
+		if boundary == "" {
+			return nil, fmt.Errorf("multipart boundary is required")
+		}
+		return stripOpenAIImageTaskFieldsFromMultipart(body, boundary)
 	}
 	if !gjson.ValidBytes(body) {
 		return nil, fmt.Errorf("failed to parse request body")
@@ -620,11 +738,62 @@ func stripOpenAIImageTaskFields(body []byte, contentType string) ([]byte, error)
 	delete(payload, "client_task_id")
 	delete(payload, "task_id")
 	delete(payload, "id")
+	delete(payload, openAIImageTaskAsyncField)
+	delete(payload, openAIImageTaskInlineWaitField)
+	delete(payload, "stream")
 	stripped, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare image task request")
 	}
 	return stripped, nil
+}
+
+func stripOpenAIImageTaskFieldsFromMultipart(body []byte, boundary string) ([]byte, error) {
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	var out bytes.Buffer
+	writer := multipart.NewWriter(&out)
+	if err := writer.SetBoundary(boundary); err != nil {
+		return nil, fmt.Errorf("failed to prepare multipart image task request")
+	}
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			_ = writer.Close()
+			return nil, fmt.Errorf("failed to parse multipart request")
+		}
+		if isOpenAIImageTaskPrivateField(part.FormName()) {
+			_ = part.Close()
+			continue
+		}
+		dst, err := writer.CreatePart(part.Header)
+		if err != nil {
+			_ = part.Close()
+			_ = writer.Close()
+			return nil, fmt.Errorf("failed to prepare multipart image task request")
+		}
+		if _, err := io.Copy(dst, part); err != nil {
+			_ = part.Close()
+			_ = writer.Close()
+			return nil, fmt.Errorf("failed to prepare multipart image task request")
+		}
+		_ = part.Close()
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("failed to prepare multipart image task request")
+	}
+	return out.Bytes(), nil
+}
+
+func isOpenAIImageTaskPrivateField(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "client_task_id", "task_id", "id", openAIImageTaskAsyncField, openAIImageTaskInlineWaitField, "stream":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseOpenAIImageTaskIDs(value string) []string {

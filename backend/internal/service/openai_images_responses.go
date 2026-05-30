@@ -375,6 +375,115 @@ func shouldPassOpenAIImagesN(model string, n int) bool {
 	return !strings.EqualFold(strings.TrimSpace(model), "dall-e-3")
 }
 
+func openAIResponsesImageResultString(item gjson.Result, paths ...string) string {
+	for _, path := range paths {
+		if value := strings.TrimSpace(item.Get(path).String()); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func openAIResponsesImageResultDataURL(item gjson.Result, paths ...string) (string, string) {
+	raw := openAIResponsesImageResultString(item, paths...)
+	if raw == "" || !strings.HasPrefix(strings.ToLower(raw), "data:") {
+		return "", ""
+	}
+	mimeType := ""
+	if header, _, ok := strings.Cut(raw, ","); ok {
+		mimeType = strings.TrimSpace(strings.TrimPrefix(header, "data:"))
+		if idx := strings.Index(mimeType, ";"); idx >= 0 {
+			mimeType = strings.TrimSpace(mimeType[:idx])
+		}
+	}
+	if _, data, ok := strings.Cut(raw, ","); ok {
+		return strings.TrimSpace(data), mimeType
+	}
+	return "", ""
+}
+
+func openAIResponsesImageResultFromItem(item gjson.Result) (openAIResponsesImageResult, bool) {
+	dataURLMimeType := ""
+	result := openAIResponsesImageResultString(
+		item,
+		"result",
+		"b64_json",
+		"image_b64",
+		"image_base64",
+		"base64",
+		"content.#(type==output_image).b64_json",
+		"content.#(type==output_image).image_b64",
+		"content.#(type==output_image).image_base64",
+		"content.#(type==image).b64_json",
+		"content.#(type==image).image_b64",
+		"content.#(type==image).image_base64",
+		"content.0.b64_json",
+		"content.0.image_b64",
+		"content.0.image_base64",
+		"images.0.b64_json",
+		"images.0.image_b64",
+		"images.0.image_base64",
+	)
+	if strings.HasPrefix(strings.ToLower(result), "data:") {
+		if _, data, ok := strings.Cut(result, ","); ok {
+			result = strings.TrimSpace(data)
+		}
+	}
+	if result == "" {
+		result, dataURLMimeType = openAIResponsesImageResultDataURL(
+			item,
+			"image_url",
+			"url",
+			"result_url",
+			"content.#(type==output_image).image_url",
+			"content.#(type==output_image).url",
+			"content.#(type==image).image_url",
+			"content.#(type==image).url",
+			"content.0.image_url",
+			"content.0.url",
+			"images.0.image_url",
+			"images.0.url",
+		)
+	}
+	if result == "" {
+		return openAIResponsesImageResult{}, false
+	}
+
+	outputFormat := openAIResponsesImageResultString(
+		item,
+		"output_format",
+		"format",
+		"mime_type",
+		"content.#(type==output_image).output_format",
+		"content.#(type==output_image).format",
+		"content.#(type==output_image).mime_type",
+		"content.#(type==image).output_format",
+		"content.#(type==image).format",
+		"content.#(type==image).mime_type",
+		"images.0.output_format",
+		"images.0.format",
+		"images.0.mime_type",
+	)
+	if outputFormat == "" {
+		outputFormat = dataURLMimeType
+	}
+	entry := openAIResponsesImageResult{
+		Result: result,
+		RevisedPrompt: openAIResponsesImageResultString(
+			item,
+			"revised_prompt",
+			"content.#(type==output_image).revised_prompt",
+			"content.#(type==image).revised_prompt",
+			"images.0.revised_prompt",
+		),
+		OutputFormat: outputFormat,
+		Size:         openAIResponsesImageResultString(item, "size", "content.#(type==output_image).size", "images.0.size"),
+		Background:   openAIResponsesImageResultString(item, "background", "content.#(type==output_image).background", "images.0.background"),
+		Quality:      openAIResponsesImageResultString(item, "quality", "content.#(type==output_image).quality", "images.0.quality"),
+	}
+	return entry, true
+}
+
 func extractOpenAIImagesFromResponsesCompleted(payload []byte) ([]openAIResponsesImageResult, int64, []byte, openAIResponsesImageResult, error) {
 	if gjson.GetBytes(payload, "type").String() != "response.completed" {
 		return nil, 0, nil, openAIResponsesImageResult{}, fmt.Errorf("unexpected event type")
@@ -395,17 +504,9 @@ func extractOpenAIImagesFromResponsesCompleted(payload []byte) ([]openAIResponse
 			if item.Get("type").String() != "image_generation_call" {
 				continue
 			}
-			result := strings.TrimSpace(item.Get("result").String())
-			if result == "" {
+			entry, ok := openAIResponsesImageResultFromItem(item)
+			if !ok {
 				continue
-			}
-			entry := openAIResponsesImageResult{
-				Result:        result,
-				RevisedPrompt: strings.TrimSpace(item.Get("revised_prompt").String()),
-				OutputFormat:  strings.TrimSpace(item.Get("output_format").String()),
-				Size:          strings.TrimSpace(item.Get("size").String()),
-				Background:    strings.TrimSpace(item.Get("background").String()),
-				Quality:       strings.TrimSpace(item.Get("quality").String()),
 			}
 			if len(results) == 0 {
 				firstMeta = entry
@@ -431,18 +532,9 @@ func extractOpenAIImageFromResponsesOutputItemDone(payload []byte) (openAIRespon
 		return openAIResponsesImageResult{}, "", false, nil
 	}
 
-	result := strings.TrimSpace(item.Get("result").String())
-	if result == "" {
+	entry, ok := openAIResponsesImageResultFromItem(item)
+	if !ok {
 		return openAIResponsesImageResult{}, "", false, nil
-	}
-
-	entry := openAIResponsesImageResult{
-		Result:        result,
-		RevisedPrompt: strings.TrimSpace(item.Get("revised_prompt").String()),
-		OutputFormat:  strings.TrimSpace(item.Get("output_format").String()),
-		Size:          strings.TrimSpace(item.Get("size").String()),
-		Background:    strings.TrimSpace(item.Get("background").String()),
-		Quality:       strings.TrimSpace(item.Get("quality").String()),
 	}
 	return entry, strings.TrimSpace(item.Get("id").String()), true, nil
 }
@@ -1131,7 +1223,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		account.Type,
 		len(parsed.Uploads),
 	)
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	upstreamCtx := ctx
+	if upstreamCtx == nil {
+		upstreamCtx = context.Background()
+	}
+	upstreamCtx, releaseUpstreamCtx := context.WithCancel(upstreamCtx)
 	defer releaseUpstreamCtx()
 
 	token, _, err := s.GetAccessToken(upstreamCtx, account)
