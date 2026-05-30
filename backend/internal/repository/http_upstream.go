@@ -263,8 +263,12 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	}
 	settings := s.resolvePoolSettings(isolation, accountConcurrency)
 	settings = s.applyProfilePoolSettings(settings, upstreamProfile)
-	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
-	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault)
+	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀，并包含 profile，避免同账号切换模板后复用旧 Transport。
+	profileKey := "none"
+	if profile != nil {
+		profileKey = profile.CacheKey()
+	}
+	cacheKey := "tls:" + profileKey + ":" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault)
 	poolKey := buildPoolKey(settings, upstreamProtocolModeDefault) + ":tls"
 
 	now := time.Now()

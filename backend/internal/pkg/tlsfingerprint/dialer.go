@@ -20,6 +20,7 @@ import (
 // All slice fields use built-in defaults when empty.
 type Profile struct {
 	Name                string // Profile name for identification
+	ClientHelloID       string // Optional uTLS parrot ID, for example HelloChrome_133
 	CipherSuites        []uint16
 	Curves              []uint16
 	PointFormats        []uint16
@@ -30,6 +31,28 @@ type Profile struct {
 	KeyShareGroups      []uint16 // Empty uses [X25519]
 	PSKModes            []uint16 // Empty uses [psk_dhe_ke]
 	Extensions          []uint16 // Extension type IDs in order; empty uses default Node.js 24.x order
+}
+
+func (p *Profile) CacheKey() string {
+	if p == nil {
+		return "none"
+	}
+	if p.ClientHelloID != "" {
+		return "hello:" + p.ClientHelloID
+	}
+	return fmt.Sprintf("custom:%s:%t:%v:%v:%v:%v:%v:%v:%v:%v:%v",
+		p.Name,
+		p.EnableGREASE,
+		p.CipherSuites,
+		p.Curves,
+		p.PointFormats,
+		p.SignatureAlgorithms,
+		p.ALPNProtocols,
+		p.SupportedVersions,
+		p.KeyShareGroups,
+		p.PSKModes,
+		p.Extensions,
+	)
 }
 
 // Dialer creates TLS connections with custom fingerprints.
@@ -275,8 +298,33 @@ func performTLSHandshake(ctx context.Context, conn net.Conn, profile *Profile, a
 		host = addr
 	}
 
+	config := &utls.Config{ServerName: host}
+	if profile != nil && len(profile.ALPNProtocols) > 0 {
+		config.NextProtos = profile.ALPNProtocols
+	} else {
+		config.NextProtos = []string{"http/1.1"}
+	}
+	if profile != nil && profile.ClientHelloID != "" {
+		if helloID, ok := ResolveClientHelloID(profile.ClientHelloID); ok {
+			tlsConn := utls.UClient(conn, config, helloID)
+			if err := tlsConn.HandshakeContext(ctx); err != nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("TLS handshake failed: %w", err)
+			}
+			state := tlsConn.ConnectionState()
+			slog.Debug("tls_fingerprint_handshake_success",
+				"host", host,
+				"profile", profile.Name,
+				"client_hello_id", profile.ClientHelloID,
+				"version", state.Version,
+				"cipher_suite", state.CipherSuite,
+				"alpn", state.NegotiatedProtocol)
+			return tlsConn, nil
+		}
+	}
+
 	spec := buildClientHelloSpecFromProfile(profile)
-	tlsConn := utls.UClient(conn, &utls.Config{ServerName: host}, utls.HelloCustom)
+	tlsConn := utls.UClient(conn, config, utls.HelloCustom)
 
 	if err := tlsConn.ApplyPreset(spec); err != nil {
 		_ = conn.Close()

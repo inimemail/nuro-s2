@@ -190,7 +190,11 @@ func (s *TLSFingerprintProfileService) ResolveTLSProfile(account *Account) *tlsf
 			return p
 		}
 	}
-	// TLS 启用但无绑定 profile → 空 Profile → dialer 使用内置默认值
+	// TLS 启用但无绑定 profile → 按账号 ID 固定分配 20 个内置高质量模板之一。
+	// 不写入账号状态，账号删除后无需清理；同一个账号 ID 长期稳定使用同一套。
+	if count := tlsfingerprint.BuiltinStableProfileCount(); count > 0 {
+		return tlsfingerprint.BuiltinStableProfileForIndex(int(account.ID % int64(count)))
+	}
 	return &tlsfingerprint.Profile{Name: "Built-in Default (Node.js 24.x)"}
 }
 
