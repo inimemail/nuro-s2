@@ -15,6 +15,9 @@ POSTGRES_CONTAINER="nuro-sub2api-postgres"
 REDIS_CONTAINER="nuro-sub2api-redis"
 IMAGE_NAME="nuro-sub2api-local:latest"
 SOURCE_DIR_NAME="source"
+SOURCE_REPO_URL="${SOURCE_REPO_URL:-https://github.com/inimemail/nuro-s2.git}"
+SOURCE_REPO_BRANCH="${SOURCE_REPO_BRANCH:-main}"
+SCRIPT_RAW_URL="${SCRIPT_RAW_URL:-https://raw.githubusercontent.com/inimemail/nuro-s2/${SOURCE_REPO_BRANCH}/deploy-nuro.sh}"
 
 DEFAULT_WEB_PORT="6182"
 CRON_TAG_BEGIN="# NURO_SUB2API_BACKUP_BEGIN"
@@ -82,6 +85,21 @@ get_script_dir() {
     cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd
 }
 
+persist_script() {
+    local workdir="$1"
+    local target="${workdir}/deploy.sh"
+
+    if [[ -f "${BASH_SOURCE[0]}" ]]; then
+        cp "${BASH_SOURCE[0]}" "$target" 2>/dev/null || true
+    fi
+
+    if [[ ! -s "$target" ]] && command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$SCRIPT_RAW_URL" -o "$target" 2>/dev/null || true
+    fi
+
+    chmod +x "$target" 2>/dev/null || true
+}
+
 is_project_root() {
     [[ -f "$1/Dockerfile" && -d "$1/backend" && -d "$1/frontend" ]]
 }
@@ -130,13 +148,23 @@ sync_project_source() {
             --exclude='./temp' \
             -cf - -C "$project_root" . | tar -xf - -C "$dest"
 
-        cp "${BASH_SOURCE[0]}" "${workdir}/deploy.sh" 2>/dev/null || true
-        chmod +x "${workdir}/deploy.sh" 2>/dev/null || true
+        persist_script "$workdir"
         return 0
     fi
 
-    err "未找到当前项目源码。请在 Nuro-Sub2api 项目根目录执行本脚本，或使用 PROJECT_ROOT=/path/to/Nuro-Sub2api 指定源码目录。"
-    return 1
+    require_cmd git
+    if [[ -d "${dest}/.git" ]]; then
+        info "正在从 ${SOURCE_REPO_URL} (${SOURCE_REPO_BRANCH}) 更新源码到 ${dest} ..."
+        git -C "$dest" fetch --depth 1 origin "$SOURCE_REPO_BRANCH" || return 1
+        git -C "$dest" checkout -f FETCH_HEAD || return 1
+    else
+        info "正在从 ${SOURCE_REPO_URL} (${SOURCE_REPO_BRANCH}) 拉取源码到 ${dest} ..."
+        rm -rf "$dest"
+        git clone --depth 1 --branch "$SOURCE_REPO_BRANCH" "$SOURCE_REPO_URL" "$dest" || return 1
+    fi
+
+    persist_script "$workdir"
+    return 0
 }
 
 generate_secret() {
@@ -439,10 +467,10 @@ deploy_service() {
     chmod 755 data postgres_data redis_data backups
 
     create_env_file "$install_path" "$host_port"
-    sync_project_source "$install_path" || die "源码同步失败。请在当前项目根目录运行脚本，或设置 PROJECT_ROOT=/path/to/Nuro-Sub2api。"
+    sync_project_source "$install_path" || die "源码同步失败。请检查服务器是否能访问 ${SOURCE_REPO_URL}，或在项目根目录执行本脚本。"
     create_compose_file "$install_path"
 
-    info "正在使用当前源码构建本地镜像并启动 ${APP_NAME} ..."
+    info "正在使用项目源码构建本地镜像并启动 ${APP_NAME} ..."
     $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build || die "镜像构建失败"
     $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d || die "容器启动失败"
 
@@ -459,10 +487,10 @@ upgrade_service() {
     local dc_cmd
     dc_cmd="$(docker_compose_cmd)"
 
-    sync_project_source "$workdir" || die "源码同步失败。请在当前项目根目录运行脚本，或设置 PROJECT_ROOT=/path/to/Nuro-Sub2api。"
+    sync_project_source "$workdir" || die "源码同步失败。请检查服务器是否能访问 ${SOURCE_REPO_URL}，或在项目根目录执行本脚本。"
     create_compose_file "$workdir"
 
-    info "正在使用当前源码重建 ${APP_NAME} ..."
+    info "正在使用项目源码重建 ${APP_NAME} ..."
     $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build || die "镜像构建失败"
     $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d || die "容器启动失败"
 
@@ -649,7 +677,7 @@ main_menu() {
     echo " 部署目录: ${wd:-未部署}"
     echo "---------------------------------------------------"
     echo "  1) 一键部署"
-    echo "  2) 用当前源码升级/重建"
+    echo "  2) 升级服务"
     echo "  3) 停止服务"
     echo "  4) 重启服务"
     echo "  5) 手动备份"
