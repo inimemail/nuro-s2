@@ -381,7 +381,11 @@ const handleExchangeCode = async () => {
       // Clear error status after successful re-authorization
       await adminAPI.accounts.clearError(props.account.id)
 
-      appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+      if (!tokenInfo.refresh_token) {
+        appStore.showWarning(t('admin.accounts.oauth.openai.accessTokenOnlyWarning'), 8000)
+      } else {
+        appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+      }
       emit('reauthorized')
       handleClose()
     } catch (error: any) {

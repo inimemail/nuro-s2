@@ -377,7 +377,11 @@ const handleExchangeCode = async () => {
         extra
       })
 
-      appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+      if (!tokenInfo.refresh_token) {
+        appStore.showWarning(t('admin.accounts.oauth.openai.accessTokenOnlyWarning'), 8000)
+      } else {
+        appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+      }
       emit('reauthorized', updatedAccount)
       handleClose()
     } catch (error: any) {

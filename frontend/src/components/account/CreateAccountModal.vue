@@ -4861,7 +4861,11 @@ const handleOpenAIExchange = async (authCode: string) => {
         expires_at: form.expires_at,
         auto_pause_on_expired: autoPauseOnExpired.value
       })
-      appStore.showSuccess(t('admin.accounts.accountCreated'))
+      if (!tokenInfo.refresh_token) {
+        appStore.showWarning(t('admin.accounts.oauth.openai.accessTokenOnlyWarning'), 8000)
+      } else {
+        appStore.showSuccess(t('admin.accounts.accountCreated'))
+      }
     }
 
     emit('created')

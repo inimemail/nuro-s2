@@ -3833,6 +3833,8 @@ export default {
           failedToGenerateUrl: '生成 OpenAI 授权链接失败',
           failedToExchangeCode: 'OpenAI 授权码兑换失败',
           failedToValidateRT: '验证 Refresh Token 失败',
+          accessTokenOnlyWarning:
+            '授权成功，但 OpenAI 本次没有返回 refresh_token。该账号只能使用到 access_token 过期，无法自动刷新；建议重新生成授权链接并重新登录授权。',
           errors: {
             OPENAI_OAUTH_PROXY_REQUIRED:
               '未设置代理，当前服务器无法直连 OpenAI，导致 OpenAI OAuth 请求失败。请先选择可访问 OpenAI 的代理后重试；如果授权码已失效，请重新生成授权链接。',

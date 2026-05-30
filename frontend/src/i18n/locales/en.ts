@@ -3701,6 +3701,8 @@ export default {
           failedToGenerateUrl: 'Failed to generate OpenAI auth URL',
           failedToExchangeCode: 'Failed to exchange OpenAI auth code',
           failedToValidateRT: 'Failed to validate refresh token',
+          accessTokenOnlyWarning:
+            'Authorization succeeded, but OpenAI did not return a refresh_token. This account can only be used until the access_token expires and cannot auto-refresh. Generate a new authorization URL and sign in again for a refreshable account.',
           errors: {
             OPENAI_OAUTH_PROXY_REQUIRED:
               'No proxy is configured and this server could not reach OpenAI directly, so the OpenAI OAuth request failed. Select a proxy that can access OpenAI and retry; if the authorization code has expired, regenerate the authorization URL.',
