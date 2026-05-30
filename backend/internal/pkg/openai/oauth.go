@@ -31,9 +31,12 @@ const (
 	DefaultRedirectURI = "http://localhost:1455/auth/callback"
 
 	// Scopes
-	DefaultScopes = "openid profile email offline_access"
+	// Keep the Codex browser OAuth request aligned with the official Codex CLI.
+	DefaultScopes = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 	// RefreshScopes - scope for token refresh (without offline_access, aligned with CRS project)
 	RefreshScopes = "openid profile email"
+	// DefaultOriginator identifies the OAuth request as the official Codex CLI family.
+	DefaultOriginator = "codex_cli_rs"
 
 	// Session TTL
 	SessionTTL = 30 * time.Minute
@@ -209,6 +212,7 @@ func BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, platfor
 	params.Set("id_token_add_organizations", "true")
 	if codexFlow {
 		params.Set("codex_cli_simplified_flow", "true")
+		params.Set("originator", DefaultOriginator)
 	}
 
 	return fmt.Sprintf("%s?%s", AuthorizeURL, params.Encode())

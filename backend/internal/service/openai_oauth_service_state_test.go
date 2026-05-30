@@ -15,6 +15,7 @@ type openaiOAuthClientStateStub struct {
 	exchangeCalled  int32
 	lastClientID    string
 	lastRedirectURI string
+	exchangeResp    *openai.TokenResponse
 	pollDeviceAuth  func(ctx context.Context, deviceAuthID, userCode, proxyURL string) (*openai.DeviceAuthTokenResponse, error)
 }
 
@@ -22,6 +23,9 @@ func (s *openaiOAuthClientStateStub) ExchangeCode(ctx context.Context, code, cod
 	atomic.AddInt32(&s.exchangeCalled, 1)
 	s.lastClientID = clientID
 	s.lastRedirectURI = redirectURI
+	if s.exchangeResp != nil {
+		return s.exchangeResp, nil
+	}
 	return &openai.TokenResponse{
 		AccessToken:  "at",
 		RefreshToken: "rt",
@@ -117,6 +121,35 @@ func TestOpenAIOAuthService_ExchangeCode_StateMatch(t *testing.T) {
 
 	_, ok := svc.sessionStore.Get("sid")
 	require.False(t, ok)
+}
+
+func TestOpenAIOAuthService_ExchangeCode_NoRefreshTokenAllowedAsAccessTokenOnly(t *testing.T) {
+	client := &openaiOAuthClientStateStub{
+		exchangeResp: &openai.TokenResponse{
+			AccessToken: "at",
+			ExpiresIn:   3600,
+		},
+	}
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+
+	svc.sessionStore.Set("sid", &openai.OAuthSession{
+		State:        "expected-state",
+		CodeVerifier: "verifier",
+		RedirectURI:  openai.DefaultRedirectURI,
+		CreatedAt:    time.Now(),
+	})
+
+	info, err := svc.ExchangeCode(context.Background(), &OpenAIExchangeCodeInput{
+		SessionID: "sid",
+		Code:      "auth-code",
+		State:     "expected-state",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	require.Equal(t, "at", info.AccessToken)
+	require.Empty(t, info.RefreshToken)
+	require.Equal(t, int32(1), atomic.LoadInt32(&client.exchangeCalled))
 }
 
 func TestOpenAIOAuthService_DeviceAuth_ExchangesWithDeviceRedirect(t *testing.T) {
