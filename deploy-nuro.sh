@@ -78,11 +78,66 @@ docker_compose_cmd() {
 }
 
 get_workdir() {
-    [[ -f "$ENV_RECORD_FILE" ]] && cat "$ENV_RECORD_FILE" || true
+    if [[ -f "$ENV_RECORD_FILE" ]]; then
+        local dir
+        dir="$(cat "$ENV_RECORD_FILE" 2>/dev/null || true)"
+        if [[ -n "$dir" && -d "$dir" ]]; then
+            echo "$dir"
+            return
+        fi
+    fi
+
+    if [[ -d "$DEFAULT_INSTALL_PATH" && -f "${DEFAULT_INSTALL_PATH}/docker-compose.yml" ]]; then
+        echo "$DEFAULT_INSTALL_PATH"
+        return
+    fi
+
+    echo ""
 }
 
 get_script_dir() {
     cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd
+}
+
+safe_remove_dir() {
+    local path="$1"
+    local resolved
+
+    [[ -n "$path" ]] || { err "删除路径为空，已取消。"; return 1; }
+    resolved="$(readlink -f "$path" 2>/dev/null || realpath "$path" 2>/dev/null || echo "$path")"
+
+    case "$resolved" in
+        ""|"/"|"/bin"|"/boot"|"/dev"|"/etc"|"/home"|"/lib"|"/lib64"|"/opt"|"/proc"|"/root"|"/run"|"/sbin"|"/srv"|"/sys"|"/tmp"|"/usr"|"/var")
+            err "拒绝删除危险路径: ${resolved}"
+            return 1
+        ;;
+    esac
+
+    rm -rf -- "$resolved"
+}
+
+set_env_value() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+    local tmp_file
+
+    touch "$file"
+    tmp_file="$(mktemp)" || return 1
+    awk -v key="$key" -v value="$value" '
+        BEGIN { found = 0 }
+        $0 ~ "^" key "=" {
+            print key "=" value
+            found = 1
+            next
+        }
+        { print }
+        END {
+            if (!found) {
+                print key "=" value
+            }
+        }
+    ' "$file" > "$tmp_file" && mv "$tmp_file" "$file"
 }
 
 persist_script() {
@@ -438,6 +493,8 @@ deploy_service() {
     require_cmd awk
     require_cmd openssl
     require_cmd tar
+    require_cmd git
+    require_cmd curl
 
     local dc_cmd
     dc_cmd="$(docker_compose_cmd)"
@@ -486,6 +543,7 @@ upgrade_service() {
     cd "$workdir" || return
     local dc_cmd
     dc_cmd="$(docker_compose_cmd)"
+    require_cmd git
 
     sync_project_source "$workdir" || die "源码同步失败。请检查服务器是否能访问 ${SOURCE_REPO_URL}，或在项目根目录执行本脚本。"
     create_compose_file "$workdir"
@@ -564,25 +622,44 @@ restore_backup() {
     local path="${backup_path:-$default_backup}"
     [[ ! -f "$path" ]] && { err "未找到有效备份文件。"; return; }
 
+    local safe_backup="/tmp/$(basename "$path")"
+    cp "$path" "$safe_backup" || { err "备份文件复制到临时目录失败。"; return; }
+
     read -r -p "恢复目标路径 [默认: ${DEFAULT_INSTALL_PATH}]: " target_dir
     local target="${target_dir:-$DEFAULT_INSTALL_PATH}"
 
     if [[ -d "$target" ]]; then
         read -r -p "目标路径已存在，是否覆盖？(y/N): " confirm
-        [[ ! "$confirm" =~ ^[Yy]$ ]] && return
+        [[ ! "$confirm" =~ ^[Yy]$ ]] && { rm -f "$safe_backup"; return; }
         cd "$target" 2>/dev/null && $(docker_compose_cmd) -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml down 2>/dev/null || true
         docker rm -f "$APP_CONTAINER" "$POSTGRES_CONTAINER" "$REDIS_CONTAINER" 2>/dev/null || true
-        rm -rf "$target"
+        safe_remove_dir "$target" || { rm -f "$safe_backup"; return; }
     fi
 
     mkdir -p "$target"
-    tar -xzf "$path" -C "$target" || die "备份解压失败"
+    tar -xzf "$safe_backup" -C "$target" || { rm -f "$safe_backup"; die "备份解压失败"; }
     mkdir -p "${target}/backups"
-    cp "$path" "${target}/backups/$(basename "$path")" 2>/dev/null || true
+    cp "$safe_backup" "${target}/backups/$(basename "$safe_backup")" 2>/dev/null || true
+    rm -f "$safe_backup"
     echo "$target" > "$ENV_RECORD_FILE"
 
     cd "$target" || return
     [[ -f docker-compose.yml ]] || create_compose_file "$target"
+
+    local restored_port host_port
+    restored_port="$(read_env_value "${target}/.env" SERVER_PORT)"
+    restored_port="${restored_port:-$DEFAULT_WEB_PORT}"
+    if port_in_use "$restored_port"; then
+        warn "恢复出来的端口 ${restored_port} 似乎已被占用。"
+        read -r -p "请输入新的对外 Web/API 端口 [默认: ${DEFAULT_WEB_PORT}]: " host_port
+        host_port="${host_port:-$DEFAULT_WEB_PORT}"
+        valid_port "$host_port" || die "端口无效: ${host_port}"
+        set_env_value "${target}/.env" SERVER_PORT "$host_port"
+    fi
+
+    mkdir -p data postgres_data redis_data backups
+    chmod 755 data postgres_data redis_data backups
+
     $(docker_compose_cmd) -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build || die "镜像构建失败"
     $(docker_compose_cmd) -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d || die "容器启动失败"
 
@@ -598,8 +675,8 @@ setup_auto_backup() {
     [[ -z "$workdir" ]] && { err "未检测到部署环境。"; return; }
 
     local cron_script="${workdir}/cron_backup.sh"
-    local script_path
-    script_path="$(readlink -f "${BASH_SOURCE[0]}")"
+    local script_path="${workdir}/deploy.sh"
+    persist_script "$workdir"
 
     echo " 1) 按固定分钟间隔备份，例如 15 或 30"
     echo " 2) 按每天固定时间备份，例如 04:30"
@@ -660,7 +737,7 @@ uninstall_service() {
     fi
 
     docker rm -f "$APP_CONTAINER" "$POSTGRES_CONTAINER" "$REDIS_CONTAINER" 2>/dev/null || true
-    rm -rf "$workdir"
+    safe_remove_dir "$workdir" || return
     rm -f "$ENV_RECORD_FILE"
     crontab -l 2>/dev/null | sed "/^${CRON_TAG_BEGIN}$/,/^${CRON_TAG_END}$/d" | crontab - 2>/dev/null || true
 
