@@ -48,31 +48,33 @@ func TestOpenAIImageTaskStore_PublicTaskIncludesDataAndUsage(t *testing.T) {
 }
 
 func TestExtractOpenAIImageTaskID_JSONAndMultipart(t *testing.T) {
-	taskID, err := extractOpenAIImageTaskID([]byte(`{"client_task_id":"abc","prompt":"draw"}`), "application/json")
+	taskID, err := extractOpenAIImageTaskID([]byte(`{"taskid":"abc","prompt":"draw"}`), "application/json")
 	require.NoError(t, err)
 	require.Equal(t, "abc", taskID)
 
-	taskID, err = extractOpenAIImageTaskID([]byte(`{"task_id":"fallback","prompt":"draw"}`), "application/json")
+	taskID, err = extractOpenAIImageTaskID([]byte(`{"prompt":"draw"}`), "application/json")
 	require.NoError(t, err)
-	require.Equal(t, "fallback", taskID)
+	require.Empty(t, taskID)
 }
 
 func TestStripOpenAIImageTaskFields_RemovesTaskOnlyFields(t *testing.T) {
-	body, err := stripOpenAIImageTaskFields([]byte(`{"client_task_id":"abc","task_id":"old","id":"id1","runapi":false,"runapi_inline_wait_seconds":0,"stream":true,"model":"gpt-image-2","prompt":"draw"}`), "application/json")
+	body, err := stripOpenAIImageTaskFields([]byte(`{"taskid":"abc","taskrun":true,"stream":true,"model":"gpt-image-2","prompt":"draw"}`), "application/json")
 	require.NoError(t, err)
 	require.JSONEq(t, `{"model":"gpt-image-2","prompt":"draw"}`, string(body))
 }
 
 func TestOpenAIImageTaskOptions_JSON(t *testing.T) {
-	options, err := extractOpenAIImageTaskOptions([]byte(`{"runapi":false,"runapi_inline_wait_seconds":1.5}`), "application/json")
+	options, err := extractOpenAIImageTaskOptions([]byte(`{"taskrun":true}`), "application/json")
 	require.NoError(t, err)
 	require.True(t, options.Async)
-	require.Equal(t, 1500*time.Millisecond, options.InlineWait)
 
 	options, err = extractOpenAIImageTaskOptions([]byte(`{"prompt":"draw"}`), "application/json")
 	require.NoError(t, err)
 	require.False(t, options.Async)
-	require.Equal(t, time.Duration(-1), options.InlineWait)
+
+	options, err = extractOpenAIImageTaskOptions([]byte(`{"taskrun":false}`), "application/json")
+	require.Error(t, err)
+	require.False(t, options.Async)
 }
 
 func TestStripOpenAIImageTaskFields_RemovesMultipartPrivateFields(t *testing.T) {
@@ -81,9 +83,8 @@ func TestStripOpenAIImageTaskFields_RemovesMultipartPrivateFields(t *testing.T) 
 	require.NoError(t, writer.SetBoundary("sub2api-boundary"))
 	require.NoError(t, writer.WriteField("model", "gpt-image-2"))
 	require.NoError(t, writer.WriteField("prompt", "draw"))
-	require.NoError(t, writer.WriteField("client_task_id", "task-1"))
-	require.NoError(t, writer.WriteField(openAIImageTaskAsyncField, "false"))
-	require.NoError(t, writer.WriteField(openAIImageTaskInlineWaitField, "0"))
+	require.NoError(t, writer.WriteField("taskid", "task-1"))
+	require.NoError(t, writer.WriteField(openAIImageTaskAsyncField, "true"))
 	require.NoError(t, writer.WriteField("stream", "true"))
 	require.NoError(t, writer.Close())
 
@@ -92,19 +93,9 @@ func TestStripOpenAIImageTaskFields_RemovesMultipartPrivateFields(t *testing.T) 
 	require.Contains(t, string(stripped), `name="model"`)
 	require.Contains(t, string(stripped), `gpt-image-2`)
 	require.Contains(t, string(stripped), `name="prompt"`)
-	require.NotContains(t, string(stripped), `name="client_task_id"`)
+	require.NotContains(t, string(stripped), `name="taskid"`)
 	require.NotContains(t, string(stripped), `name="`+openAIImageTaskAsyncField+`"`)
-	require.NotContains(t, string(stripped), `name="`+openAIImageTaskInlineWaitField+`"`)
 	require.NotContains(t, string(stripped), `name="stream"`)
-}
-
-func TestAutoOpenAIImageTaskID_IsStableAndScoped(t *testing.T) {
-	first := autoOpenAIImageTaskID("api_key:1", "/v1/images/generations", []byte(`{"prompt":"draw"}`))
-	second := autoOpenAIImageTaskID("api_key:1", "/v1/images/generations", []byte(`{"prompt":"draw"}`))
-	otherOwner := autoOpenAIImageTaskID("api_key:2", "/v1/images/generations", []byte(`{"prompt":"draw"}`))
-	require.Equal(t, first, second)
-	require.NotEqual(t, first, otherOwner)
-	require.Contains(t, first, "auto_")
 }
 
 func TestMaybeHandleImagesAsTask_SkipsWorkerAndStreamRequests(t *testing.T) {
@@ -156,7 +147,47 @@ func TestMaybeHandleImagesAsTask_RequiresExplicitAsyncFlag(t *testing.T) {
 	require.False(t, handled)
 }
 
-func TestMaybeHandleImagesAsTask_RunAPIHandlesStreamRequest(t *testing.T) {
+func TestMaybeHandleImagesAsTask_TaskRunFalseIsInvalid(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	h := &OpenAIGatewayHandler{}
+
+	handled := h.maybeHandleImagesAsTask(
+		c,
+		openAIImageTaskGenerationsEndpoint,
+		[]byte(`{"taskid":"task-1","taskrun":false,"model":"gpt-image-2","prompt":"draw"}`),
+		&service.OpenAIImagesRequest{Model: "gpt-image-2"},
+		&service.APIKey{ID: 1},
+		middleware2.AuthSubject{UserID: 1},
+	)
+	require.True(t, handled)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "taskrun must be true")
+}
+
+func TestMaybeHandleImagesAsTask_TaskRunRequiresTaskID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	h := &OpenAIGatewayHandler{}
+
+	handled := h.maybeHandleImagesAsTask(
+		c,
+		openAIImageTaskGenerationsEndpoint,
+		[]byte(`{"taskrun":true,"model":"gpt-image-2","prompt":"draw"}`),
+		&service.OpenAIImagesRequest{Model: "gpt-image-2"},
+		&service.APIKey{ID: 1},
+		middleware2.AuthSubject{UserID: 1},
+	)
+	require.True(t, handled)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "taskid is required when taskrun is true")
+}
+
+func TestMaybeHandleImagesAsTask_TaskRunWithTaskIDReturnsTaskStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -167,17 +198,17 @@ func TestMaybeHandleImagesAsTask_RunAPIHandlesStreamRequest(t *testing.T) {
 	task, created := h.imageTaskStore.submit(ownerID, "task-1", openAIImageTaskGenerationsEndpoint, "gpt-image-2")
 	require.True(t, created)
 	require.Equal(t, openAIImageTaskStatusQueued, task.Status)
-	h.imageTaskStore.markSuccess(ownerID, "task-1", http.StatusOK, []byte(`{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`))
 
 	handled := h.maybeHandleImagesAsTask(
 		c,
 		openAIImageTaskGenerationsEndpoint,
-		[]byte(`{"client_task_id":"task-1","runapi":false,"stream":true,"model":"gpt-image-2","prompt":"draw"}`),
+		[]byte(`{"taskid":"task-1","taskrun":true,"model":"gpt-image-2","prompt":"draw"}`),
 		&service.OpenAIImagesRequest{Model: "gpt-image-2", Stream: true},
 		&service.APIKey{ID: 1},
 		middleware2.AuthSubject{UserID: 1},
 	)
 	require.True(t, handled)
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.JSONEq(t, `{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`, rec.Body.String())
+	require.Contains(t, rec.Body.String(), `"id":"task-1"`)
+	require.Contains(t, rec.Body.String(), `"status":"queued"`)
 }
