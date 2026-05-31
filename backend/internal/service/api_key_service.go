@@ -458,6 +458,17 @@ func (s *APIKeyService) GetByID(ctx context.Context, id int64) (*APIKey, error) 
 	return apiKey, nil
 }
 
+func (s *APIKeyService) GetActiveSubscriptionForAPIKey(ctx context.Context, apiKey *APIKey) (*UserSubscription, error) {
+	if s == nil || s.userSubRepo == nil || apiKey == nil || apiKey.User == nil || apiKey.Group == nil || !apiKey.Group.IsSubscriptionType() {
+		return nil, nil
+	}
+	subscription, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, apiKey.User.ID, apiKey.Group.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get active subscription: %w", err)
+	}
+	return subscription, nil
+}
+
 // GetByKey 根据Key字符串获取API Key（用于认证）
 func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, error) {
 	cacheKey := s.authCacheKey(key)

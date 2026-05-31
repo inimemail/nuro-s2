@@ -383,6 +383,27 @@ gateway:
     # Max image requests waiting in this process when overflow_mode=wait, 0=unlimited
     # wait 模式当前进程允许排队等待的图片请求数，0=不限制
     max_waiting_requests: 100
+  # OpenAI image async task queue (taskrun=true + taskid)
+  # OpenAI 图片异步任务队列（taskrun=true + taskid）
+  image_tasks:
+    # Worker count in this process; increase together with account capacity
+    # 当前进程的图片任务 worker 数量；可随账号容量增加
+    worker_count: 8
+    # Poll interval when no task is available (seconds)
+    # 空队列时的轮询间隔（秒）
+    poll_interval_seconds: 1
+    # Running task lock timeout for crash recovery; 0=auto
+    # 运行中任务锁超时，用于崩溃恢复；0=自动
+    lock_timeout_seconds: 0
+    # Finished task retention before cleanup (hours)
+    # 已完成任务保留时间（小时）
+    retention_hours: 24
+    # Max queued/running tasks in database; 0=unlimited
+    # 数据库内未完成任务上限；0=不限制
+    max_unfinished_tasks: 100000
+    # Max finished tasks deleted per cleanup tick
+    # 每次清理最多删除的已完成任务数
+    cleanup_batch_size: 1000
   # SSE max line size in bytes (default: 40MB)
   # SSE 单行最大字节数（默认 40MB）
   max_line_size: 41943040

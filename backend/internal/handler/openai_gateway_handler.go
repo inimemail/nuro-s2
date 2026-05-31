@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -36,7 +37,12 @@ type OpenAIGatewayHandler struct {
 	contentModerationService *service.ContentModerationService
 	concurrencyHelper        *ConcurrencyHelper
 	imageLimiter             *imageConcurrencyLimiter
+	imageTaskRepo            service.OpenAIImageTaskRepository
 	imageTaskStore           *openAIImageTaskStore
+	imageTaskWorkerStop      chan struct{}
+	imageTaskWorkerDone      chan struct{}
+	imageTaskWorkerWG        sync.WaitGroup
+	imageTaskWorkerStopOnce  sync.Once
 	maxAccountSwitches       int
 	cfg                      *config.Config
 }
@@ -82,6 +88,7 @@ func NewOpenAIGatewayHandler(
 	usageRecordWorkerPool *service.UsageRecordWorkerPool,
 	errorPassthroughService *service.ErrorPassthroughService,
 	contentModerationService *service.ContentModerationService,
+	imageTaskRepo service.OpenAIImageTaskRepository,
 	cfg *config.Config,
 ) *OpenAIGatewayHandler {
 	pingInterval := time.Duration(0)
@@ -92,7 +99,7 @@ func NewOpenAIGatewayHandler(
 			maxAccountSwitches = cfg.Gateway.MaxAccountSwitches
 		}
 	}
-	return &OpenAIGatewayHandler{
+	h := &OpenAIGatewayHandler{
 		gatewayService:           gatewayService,
 		billingCacheService:      billingCacheService,
 		apiKeyService:            apiKeyService,
@@ -101,10 +108,15 @@ func NewOpenAIGatewayHandler(
 		contentModerationService: contentModerationService,
 		concurrencyHelper:        NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
 		imageLimiter:             &imageConcurrencyLimiter{},
+		imageTaskRepo:            imageTaskRepo,
 		imageTaskStore:           newOpenAIImageTaskStore(defaultOpenAIImageTaskRetention),
+		imageTaskWorkerStop:      make(chan struct{}),
+		imageTaskWorkerDone:      make(chan struct{}),
 		maxAccountSwitches:       maxAccountSwitches,
 		cfg:                      cfg,
 	}
+	h.startPersistentImageTaskWorkers()
+	return h
 }
 
 // Responses handles OpenAI Responses API endpoint

@@ -24,10 +24,10 @@ import (
 )
 
 const (
-	openAIImageTaskStatusQueued  = "queued"
-	openAIImageTaskStatusRunning = "running"
-	openAIImageTaskStatusSuccess = "success"
-	openAIImageTaskStatusError   = "error"
+	openAIImageTaskStatusQueued  = service.OpenAIImageTaskStatusQueued
+	openAIImageTaskStatusRunning = service.OpenAIImageTaskStatusRunning
+	openAIImageTaskStatusSuccess = service.OpenAIImageTaskStatusSuccess
+	openAIImageTaskStatusError   = service.OpenAIImageTaskStatusError
 
 	openAIImageTaskGenerationsEndpoint = "/v1/images/generations"
 	openAIImageTaskEditsEndpoint       = "/v1/images/edits"
@@ -37,6 +37,11 @@ const (
 	defaultOpenAIImageTaskRetention = 24 * time.Hour
 	defaultOpenAIImageTaskTimeout   = 30 * time.Minute
 	maxOpenAIImageTaskListItems     = 50
+	defaultOpenAIImageTaskWorkers   = 8
+	defaultOpenAIImageTaskPoll      = time.Second
+	defaultOpenAIImageTaskLock      = 35 * time.Minute
+	defaultOpenAIImageTaskMaxQueue  = 100000
+	defaultOpenAIImageTaskCleanSize = 1000
 )
 
 type openAIImageTask struct {
@@ -286,6 +291,36 @@ func publicOpenAIImageTask(task *openAIImageTask) openAIImageTaskPublic {
 	return item
 }
 
+func publicPersistentOpenAIImageTask(task *service.OpenAIImageTask) openAIImageTaskPublic {
+	if task == nil {
+		return openAIImageTaskPublic{}
+	}
+	errObj := (*openAIImageTaskError)(nil)
+	if strings.TrimSpace(task.ErrorMessage) != "" {
+		errObj = &openAIImageTaskError{Message: task.ErrorMessage, StatusCode: task.StatusCode}
+	}
+	item := openAIImageTaskPublic{
+		ID:         task.ID,
+		Status:     task.Status,
+		Endpoint:   task.Endpoint,
+		Model:      task.Model,
+		CreatedAt:  task.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:  task.UpdatedAt.Format(time.RFC3339),
+		StatusCode: task.StatusCode,
+		Error:      errObj,
+	}
+	if len(task.Response) > 0 {
+		item.Response = append(json.RawMessage(nil), task.Response...)
+		if data := gjson.GetBytes(task.Response, "data"); data.Exists() {
+			item.Data = json.RawMessage(data.Raw)
+		}
+		if usage := gjson.GetBytes(task.Response, "usage"); usage.Exists() {
+			item.Usage = json.RawMessage(usage.Raw)
+		}
+	}
+	return item
+}
+
 func (h *OpenAIGatewayHandler) ensureImageTaskStore() *openAIImageTaskStore {
 	if h.imageTaskStore == nil {
 		h.imageTaskStore = newOpenAIImageTaskStore(defaultOpenAIImageTaskRetention)
@@ -311,6 +346,23 @@ func (h *OpenAIGatewayHandler) ListImageTasks(c *gin.Context) {
 		return
 	}
 	ids := parseOpenAIImageTaskIDs(c.Query("ids"))
+	if h.imageTaskRepo != nil {
+		items, missing, err := h.imageTaskRepo.List(c.Request.Context(), openAIImageTaskOwnerID(apiKey), ids, maxOpenAIImageTaskListItems)
+		if err != nil {
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to list image tasks")
+			return
+		}
+		publicItems := make([]openAIImageTaskPublic, 0, len(items))
+		for _, item := range items {
+			publicItems = append(publicItems, publicPersistentOpenAIImageTask(item))
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"object":      "list",
+			"data":        publicItems,
+			"missing_ids": missing,
+		})
+		return
+	}
 	items, missing := h.ensureImageTaskStore().list(openAIImageTaskOwnerID(apiKey), ids)
 	c.JSON(http.StatusOK, gin.H{
 		"object":      "list",
@@ -376,6 +428,19 @@ func (h *OpenAIGatewayHandler) createImageTask(c *gin.Context, endpoint string) 
 		return
 	}
 
+	if h.imageTaskRepo != nil {
+		task, created, err := h.submitPersistentImageTask(c, ownerID, taskID, endpoint, parsed.Model, taskBody, apiKey, subject)
+		if err != nil {
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to submit image task")
+			return
+		}
+		status := http.StatusOK
+		if created {
+			status = http.StatusAccepted
+		}
+		c.JSON(status, publicPersistentOpenAIImageTask(task))
+		return
+	}
 	task, created := h.ensureImageTaskStore().submit(ownerID, taskID, endpoint, parsed.Model)
 	if created {
 		h.startImageTaskWorker(c, ownerID, taskID, endpoint, taskBody, apiKey, subject)
@@ -422,6 +487,20 @@ func (h *OpenAIGatewayHandler) maybeHandleImagesAsTask(
 	taskBody, err := stripOpenAIImageTaskFields(body, c.GetHeader("Content-Type"))
 	if err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return true
+	}
+	if h.imageTaskRepo != nil {
+		task, created, err := h.submitPersistentImageTask(c, ownerID, taskID, endpoint, parsed.Model, taskBody, apiKey, subject)
+		if err != nil {
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to submit image task")
+			return true
+		}
+		c.Header("Retry-After", "2")
+		status := http.StatusOK
+		if created {
+			status = http.StatusAccepted
+		}
+		c.JSON(status, publicPersistentOpenAIImageTask(task))
 		return true
 	}
 	task, created := h.ensureImageTaskStore().submit(ownerID, taskID, endpoint, parsed.Model)
@@ -536,6 +615,197 @@ func (h *OpenAIGatewayHandler) parseImageTaskRequestForValidation(c *gin.Context
 	return h.gatewayService.ParseOpenAIImagesRequest(taskCtx, body)
 }
 
+func (h *OpenAIGatewayHandler) submitPersistentImageTask(
+	c *gin.Context,
+	ownerID string,
+	taskID string,
+	endpoint string,
+	model string,
+	body []byte,
+	apiKey *service.APIKey,
+	subject middleware2.AuthSubject,
+) (*service.OpenAIImageTask, bool, error) {
+	if h == nil || h.imageTaskRepo == nil {
+		return nil, false, fmt.Errorf("image task repository is not configured")
+	}
+	maxQueue := h.imageTaskMaxQueue()
+	if maxQueue > 0 {
+		count, err := h.imageTaskRepo.CountUnfinished(c.Request.Context())
+		if err != nil {
+			return nil, false, err
+		}
+		if count >= int64(maxQueue) {
+			return nil, false, fmt.Errorf("image task queue is full")
+		}
+	}
+	task := &service.OpenAIImageTask{
+		ID:              taskID,
+		OwnerID:         ownerID,
+		APIKeyID:        apiKey.ID,
+		UserID:          subject.UserID,
+		UserConcurrency: subject.Concurrency,
+		Endpoint:        endpoint,
+		Model:           model,
+		RequestBody:     append([]byte(nil), body...),
+		RequestHeaders:  sanitizeImageTaskHeaders(c.Request.Header),
+	}
+	return h.imageTaskRepo.Submit(c.Request.Context(), task)
+}
+
+func sanitizeImageTaskHeaders(headers http.Header) map[string][]string {
+	out := make(map[string][]string)
+	for _, name := range []string{
+		"Content-Type",
+		"Accept",
+		"OpenAI-Beta",
+		"OpenAI-Organization",
+		"OpenAI-Project",
+		"X-Client-Request-ID",
+		"X-Request-ID",
+		"X-Request-Id",
+	} {
+		values := headers.Values(name)
+		if len(values) == 0 {
+			continue
+		}
+		copied := make([]string, 0, len(values))
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				copied = append(copied, value)
+			}
+		}
+		if len(copied) > 0 {
+			out[name] = copied
+		}
+	}
+	return out
+}
+
+func (h *OpenAIGatewayHandler) startPersistentImageTaskWorkers() {
+	if h == nil || h.imageTaskRepo == nil {
+		return
+	}
+	if h.imageTaskWorkerStop == nil {
+		h.imageTaskWorkerStop = make(chan struct{})
+	}
+	if h.imageTaskWorkerDone == nil {
+		h.imageTaskWorkerDone = make(chan struct{})
+	}
+	workerCount := h.imageTaskWorkerCount()
+	h.imageTaskWorkerWG.Add(workerCount + 1)
+	for i := 0; i < workerCount; i++ {
+		workerID := fmt.Sprintf("image-worker-%d-%d", time.Now().UnixNano(), i)
+		go h.persistentImageTaskWorker(workerID)
+	}
+	go h.persistentImageTaskJanitor()
+	go func() {
+		h.imageTaskWorkerWG.Wait()
+		close(h.imageTaskWorkerDone)
+	}()
+}
+
+func (h *OpenAIGatewayHandler) StopImageTaskWorkers() {
+	if h == nil || h.imageTaskRepo == nil {
+		return
+	}
+	h.imageTaskWorkerStopOnce.Do(func() {
+		if h.imageTaskWorkerStop != nil {
+			close(h.imageTaskWorkerStop)
+		}
+	})
+	if h.imageTaskWorkerDone != nil {
+		<-h.imageTaskWorkerDone
+	}
+}
+
+func (h *OpenAIGatewayHandler) persistentImageTaskWorker(workerID string) {
+	defer h.imageTaskWorkerWG.Done()
+	ticker := time.NewTicker(h.imageTaskPollInterval())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.imageTaskWorkerStop:
+			return
+		default:
+		}
+
+		task, err := h.imageTaskRepo.ClaimNext(context.Background(), workerID, h.imageTaskLockTimeout())
+		if err != nil {
+			select {
+			case <-h.imageTaskWorkerStop:
+				return
+			case <-ticker.C:
+				continue
+			}
+		}
+		if task == nil {
+			select {
+			case <-h.imageTaskWorkerStop:
+				return
+			case <-ticker.C:
+				continue
+			}
+		}
+		h.executePersistentImageTask(task)
+	}
+}
+
+func (h *OpenAIGatewayHandler) persistentImageTaskJanitor() {
+	defer h.imageTaskWorkerWG.Done()
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.imageTaskWorkerStop:
+			return
+		case <-ticker.C:
+			if h.imageTaskRepo == nil {
+				continue
+			}
+			_, _ = h.imageTaskRepo.CleanupFinished(
+				context.Background(),
+				time.Now().Add(-h.imageTaskRetention()),
+				h.imageTaskCleanupBatchSize(),
+			)
+		}
+	}
+}
+
+func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIImageTask) {
+	if task == nil || h.imageTaskRepo == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			_ = h.imageTaskRepo.MarkError(context.Background(), task.DBID, http.StatusInternalServerError, fmt.Sprintf("image task panic: %v", r), nil)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(cloneImageTaskContext(context.Background(), nil, task.ID), h.imageTaskTimeout())
+	defer cancel()
+
+	apiKey, err := h.apiKeyService.GetByID(ctx, task.APIKeyID)
+	if err != nil {
+		_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusUnauthorized, err.Error(), nil)
+		return
+	}
+	subject := middleware2.AuthSubject{UserID: task.UserID, Concurrency: task.UserConcurrency}
+	if apiKey.User != nil {
+		subject.UserID = apiKey.User.ID
+		subject.Concurrency = apiKey.User.Concurrency
+	}
+	subscription, err := h.apiKeyService.GetActiveSubscriptionForAPIKey(ctx, apiKey)
+	if err != nil {
+		_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusForbidden, err.Error(), nil)
+		return
+	}
+	statusCode, responseBody := h.runImageTaskRequest(ctx, task.Endpoint, http.Header(task.RequestHeaders), task.RequestBody, apiKey, subject, subscription)
+	if statusCode >= 200 && statusCode < 300 {
+		_ = h.imageTaskRepo.MarkSuccess(ctx, task.DBID, statusCode, responseBody)
+		return
+	}
+	_ = h.imageTaskRepo.MarkError(ctx, task.DBID, statusCode, imageTaskErrorMessage(responseBody), responseBody)
+}
+
 func (h *OpenAIGatewayHandler) startImageTaskWorker(
 	c *gin.Context,
 	ownerID string,
@@ -576,6 +846,52 @@ func (h *OpenAIGatewayHandler) imageTaskTimeout() time.Duration {
 		}
 	}
 	return timeout
+}
+
+func (h *OpenAIGatewayHandler) imageTaskWorkerCount() int {
+	if h != nil && h.cfg != nil && h.cfg.Gateway.ImageTasks.WorkerCount > 0 {
+		return h.cfg.Gateway.ImageTasks.WorkerCount
+	}
+	return defaultOpenAIImageTaskWorkers
+}
+
+func (h *OpenAIGatewayHandler) imageTaskPollInterval() time.Duration {
+	if h != nil && h.cfg != nil && h.cfg.Gateway.ImageTasks.PollIntervalSeconds > 0 {
+		return time.Duration(h.cfg.Gateway.ImageTasks.PollIntervalSeconds) * time.Second
+	}
+	return defaultOpenAIImageTaskPoll
+}
+
+func (h *OpenAIGatewayHandler) imageTaskLockTimeout() time.Duration {
+	if h != nil && h.cfg != nil && h.cfg.Gateway.ImageTasks.LockTimeoutSeconds > 0 {
+		return time.Duration(h.cfg.Gateway.ImageTasks.LockTimeoutSeconds) * time.Second
+	}
+	timeout := h.imageTaskTimeout() + 5*time.Minute
+	if timeout < defaultOpenAIImageTaskLock {
+		return defaultOpenAIImageTaskLock
+	}
+	return timeout
+}
+
+func (h *OpenAIGatewayHandler) imageTaskRetention() time.Duration {
+	if h != nil && h.cfg != nil && h.cfg.Gateway.ImageTasks.RetentionHours > 0 {
+		return time.Duration(h.cfg.Gateway.ImageTasks.RetentionHours) * time.Hour
+	}
+	return defaultOpenAIImageTaskRetention
+}
+
+func (h *OpenAIGatewayHandler) imageTaskMaxQueue() int {
+	if h != nil && h.cfg != nil {
+		return h.cfg.Gateway.ImageTasks.MaxUnfinishedTasks
+	}
+	return defaultOpenAIImageTaskMaxQueue
+}
+
+func (h *OpenAIGatewayHandler) imageTaskCleanupBatchSize() int {
+	if h != nil && h.cfg != nil && h.cfg.Gateway.ImageTasks.CleanupBatchSize > 0 {
+		return h.cfg.Gateway.ImageTasks.CleanupBatchSize
+	}
+	return defaultOpenAIImageTaskCleanSize
 }
 
 func cloneImageTaskContext(parent context.Context, apiKey *service.APIKey, taskID string) context.Context {

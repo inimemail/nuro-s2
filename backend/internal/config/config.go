@@ -679,6 +679,21 @@ type ImageConcurrencyConfig struct {
 	MaxWaitingRequests int `mapstructure:"max_waiting_requests"`
 }
 
+type ImageTaskQueueConfig struct {
+	// WorkerCount: image task workers in this process.
+	WorkerCount int `mapstructure:"worker_count"`
+	// PollIntervalSeconds: worker polling interval when no task is available.
+	PollIntervalSeconds int `mapstructure:"poll_interval_seconds"`
+	// LockTimeoutSeconds: running task lock timeout for crash recovery.
+	LockTimeoutSeconds int `mapstructure:"lock_timeout_seconds"`
+	// RetentionHours: completed task retention before cleanup.
+	RetentionHours int `mapstructure:"retention_hours"`
+	// MaxUnfinishedTasks: max queued/running tasks across the DB, 0 means unlimited.
+	MaxUnfinishedTasks int `mapstructure:"max_unfinished_tasks"`
+	// CleanupBatchSize: max completed tasks removed per cleanup tick.
+	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
+}
+
 const (
 	ImageConcurrencyOverflowModeReject = "reject"
 	ImageConcurrencyOverflowModeWait   = "wait"
@@ -723,6 +738,8 @@ type GatewayConfig struct {
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
 	ImageConcurrency ImageConcurrencyConfig `mapstructure:"image_concurrency"`
+	// ImageTasks: OpenAI image async task queue settings.
+	ImageTasks ImageTaskQueueConfig `mapstructure:"image_tasks"`
 
 	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
 	// MaxIdleConns: 所有主机的最大空闲连接总数
@@ -1851,6 +1868,12 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_concurrency.overflow_mode", ImageConcurrencyOverflowModeReject)
 	viper.SetDefault("gateway.image_concurrency.wait_timeout_seconds", 30)
 	viper.SetDefault("gateway.image_concurrency.max_waiting_requests", 100)
+	viper.SetDefault("gateway.image_tasks.worker_count", 8)
+	viper.SetDefault("gateway.image_tasks.poll_interval_seconds", 1)
+	viper.SetDefault("gateway.image_tasks.lock_timeout_seconds", 0)
+	viper.SetDefault("gateway.image_tasks.retention_hours", 24)
+	viper.SetDefault("gateway.image_tasks.max_unfinished_tasks", 100000)
+	viper.SetDefault("gateway.image_tasks.cleanup_batch_size", 1000)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
@@ -2441,6 +2464,24 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ImageConcurrency.MaxWaitingRequests < 0 {
 		return fmt.Errorf("gateway.image_concurrency.max_waiting_requests must be non-negative")
+	}
+	if c.Gateway.ImageTasks.WorkerCount < 0 {
+		return fmt.Errorf("gateway.image_tasks.worker_count must be non-negative")
+	}
+	if c.Gateway.ImageTasks.PollIntervalSeconds < 0 {
+		return fmt.Errorf("gateway.image_tasks.poll_interval_seconds must be non-negative")
+	}
+	if c.Gateway.ImageTasks.LockTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.image_tasks.lock_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.ImageTasks.RetentionHours < 0 {
+		return fmt.Errorf("gateway.image_tasks.retention_hours must be non-negative")
+	}
+	if c.Gateway.ImageTasks.MaxUnfinishedTasks < 0 {
+		return fmt.Errorf("gateway.image_tasks.max_unfinished_tasks must be non-negative")
+	}
+	if c.Gateway.ImageTasks.CleanupBatchSize < 0 {
+		return fmt.Errorf("gateway.image_tasks.cleanup_batch_size must be non-negative")
 	}
 	if c.Gateway.MaxIdleConns <= 0 {
 		return fmt.Errorf("gateway.max_idle_conns must be positive")
