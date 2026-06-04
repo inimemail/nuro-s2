@@ -262,6 +262,49 @@ func TestForwardAsRawChatCompletions_SilentRefusalTriggersFailover(t *testing.T)
 	require.Empty(t, rec.Body.String())
 }
 
+func TestForwardAsRawChatCompletions_SilentRefusalBufferReleasesAfterPendingLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := largeRawChatCompletionsBody()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	lines := make([]string, 0, 32)
+	for i := 0; i < openAISilentRefusalMaxPendingEvents+2; i++ {
+		lines = append(lines,
+			`data: {"id":"chatcmpl_pending","object":"chat.completion.chunk","model":"gpt-5.5","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+			"",
+		)
+	}
+	lines = append(lines,
+		`data: {"id":"chatcmpl_pending","object":"chat.completion.chunk","model":"gpt-5.5","choices":[{"index":0,"delta":{"content":"ok"}}]}`,
+		"",
+		`data: {"id":"chatcmpl_pending","object":"chat.completion.chunk","model":"gpt-5.5","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}`,
+		"",
+		"data: [DONE]",
+		"",
+	)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_pending"}},
+		Body:       io.NopCloser(strings.NewReader(strings.Join(lines, "\n"))),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, c.Writer.Written())
+	require.Contains(t, rec.Body.String(), `"content":"ok"`)
+	require.Contains(t, rec.Body.String(), "data: [DONE]")
+}
+
 func TestForwardAsRawChatCompletions_SilentRefusalToolCallsExempt(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

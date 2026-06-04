@@ -526,8 +526,11 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					continue
 				}
 				if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
-					pendingSSE = append(pendingSSE, sse)
-					continue
+					refusalDetector.MarkClientOutputPending()
+					if !refusalDetector.ShouldReleaseClientOutput() {
+						pendingSSE = append(pendingSSE, sse)
+						continue
+					}
 				}
 				if !clientOutputStarted {
 					writeStreamHeaders()
@@ -570,8 +573,11 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					continue
 				}
 				if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
-					pendingSSE = append(pendingSSE, sse)
-					continue
+					refusalDetector.MarkClientOutputPending()
+					if !refusalDetector.ShouldReleaseClientOutput() {
+						pendingSSE = append(pendingSSE, sse)
+						continue
+					}
 				}
 				if !clientOutputStarted {
 					writeStreamHeaders()

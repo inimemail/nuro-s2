@@ -280,8 +280,11 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			return
 		}
 		if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
-			pendingLines = append(pendingLines, line)
-			return
+			refusalDetector.MarkClientOutputPending()
+			if !refusalDetector.ShouldReleaseClientOutput() {
+				pendingLines = append(pendingLines, line)
+				return
+			}
 		}
 		if !clientOutputStarted {
 			writeStreamHeaders()

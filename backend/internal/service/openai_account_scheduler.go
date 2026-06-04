@@ -826,16 +826,6 @@ func sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []op
 		if a.account.Priority != b.account.Priority {
 			return a.account.Priority < b.account.Priority
 		}
-		switch {
-		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-			return true
-		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-			return false
-		case a.account.LastUsedAt != nil && b.account.LastUsedAt != nil:
-			if !a.account.LastUsedAt.Equal(*b.account.LastUsedAt) {
-				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-			}
-		}
 		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
 		}
@@ -850,6 +840,16 @@ func sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []op
 		}
 		if a.hasTTFT && a.ttft != b.ttft {
 			return a.ttft < b.ttft
+		}
+		switch {
+		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+			return true
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+			return false
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt != nil:
+			if !a.account.LastUsedAt.Equal(*b.account.LastUsedAt) {
+				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+			}
 		}
 		return a.account.ID < b.account.ID
 	})

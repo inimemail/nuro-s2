@@ -1808,6 +1808,106 @@ func TestBuildOpenAISelectionOrder_SamePriorityUsesLeastRecentlyUsed(t *testing.
 	require.Equal(t, int64(5201), order[2].account.ID)
 }
 
+func TestBuildOpenAISelectionOrder_StrictPriorityBeatsLowerLoad(t *testing.T) {
+	now := time.Now()
+	oldest := now.Add(-30 * time.Minute)
+	newest := now.Add(-5 * time.Minute)
+	scheduler := &defaultOpenAIAccountScheduler{}
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
+		topK: 2,
+		candidates: []openAIAccountCandidateScore{
+			{
+				account:  &Account{ID: 5211, Priority: 0, LastUsedAt: &newest},
+				loadInfo: &AccountLoadInfo{LoadRate: 90, WaitingCount: 9},
+			},
+			{
+				account:  &Account{ID: 5212, Priority: 1, LastUsedAt: &oldest},
+				loadInfo: &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			},
+		},
+	})
+
+	require.Len(t, order, 2)
+	require.Equal(t, int64(5211), order[0].account.ID)
+	require.Equal(t, int64(5212), order[1].account.ID)
+}
+
+func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerLoadBeforeLRU(t *testing.T) {
+	now := time.Now()
+	oldest := now.Add(-30 * time.Minute)
+	newest := now.Add(-5 * time.Minute)
+	scheduler := &defaultOpenAIAccountScheduler{}
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
+		topK: 2,
+		candidates: []openAIAccountCandidateScore{
+			{
+				account:  &Account{ID: 5221, Priority: 0, LastUsedAt: &oldest},
+				loadInfo: &AccountLoadInfo{LoadRate: 90, WaitingCount: 0},
+			},
+			{
+				account:  &Account{ID: 5222, Priority: 0, LastUsedAt: &newest},
+				loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 0},
+			},
+		},
+	})
+
+	require.Len(t, order, 2)
+	require.Equal(t, int64(5222), order[0].account.ID)
+	require.Equal(t, int64(5221), order[1].account.ID)
+}
+
+func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerWaitingBeforeLRU(t *testing.T) {
+	now := time.Now()
+	oldest := now.Add(-30 * time.Minute)
+	newest := now.Add(-5 * time.Minute)
+	scheduler := &defaultOpenAIAccountScheduler{}
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
+		topK: 2,
+		candidates: []openAIAccountCandidateScore{
+			{
+				account:  &Account{ID: 5231, Priority: 0, LastUsedAt: &oldest},
+				loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 4},
+			},
+			{
+				account:  &Account{ID: 5232, Priority: 0, LastUsedAt: &newest},
+				loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 0},
+			},
+		},
+	})
+
+	require.Len(t, order, 2)
+	require.Equal(t, int64(5232), order[0].account.ID)
+	require.Equal(t, int64(5231), order[1].account.ID)
+}
+
+func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerTTFTBeforeLRU(t *testing.T) {
+	now := time.Now()
+	oldest := now.Add(-30 * time.Minute)
+	newest := now.Add(-5 * time.Minute)
+	scheduler := &defaultOpenAIAccountScheduler{}
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
+		topK: 2,
+		candidates: []openAIAccountCandidateScore{
+			{
+				account:  &Account{ID: 5241, Priority: 0, LastUsedAt: &oldest},
+				loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 0},
+				hasTTFT:  true,
+				ttft:     8000,
+			},
+			{
+				account:  &Account{ID: 5242, Priority: 0, LastUsedAt: &newest},
+				loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 0},
+				hasTTFT:  true,
+				ttft:     1200,
+			},
+		},
+	})
+
+	require.Len(t, order, 2)
+	require.Equal(t, int64(5242), order[0].account.ID)
+	require.Equal(t, int64(5241), order[1].account.ID)
+}
+
 func TestBuildOpenAISelectionOrder_AllCoolingPoolAccountsProbeSoonestReset(t *testing.T) {
 	now := time.Now()
 	oldestUsed := now.Add(-30 * time.Minute)

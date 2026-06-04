@@ -1642,6 +1642,12 @@ func (s *OpenAIGatewayService) sortOpenAIPoolCooldownProbeLoadedAccounts(account
 		if aCooling && bCooling && !aUntil.Equal(bUntil) {
 			return aUntil.Before(bUntil)
 		}
+		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+		}
 		switch {
 		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
 			return true
@@ -1651,12 +1657,6 @@ func (s *OpenAIGatewayService) sortOpenAIPoolCooldownProbeLoadedAccounts(account
 			if !a.account.LastUsedAt.Equal(*b.account.LastUsedAt) {
 				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 			}
-		}
-		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-		}
-		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
-			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
 		}
 		return a.account.ID < b.account.ID
 	})
@@ -2111,6 +2111,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			}
 			if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 				return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+			}
+			if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+				return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
 			}
 			switch {
 			case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
@@ -4939,7 +4942,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected {
-				shouldFlush := queueDrained && (clientOutputStarted || startsClientOutput)
+				shouldFlush := clientOutputStarted || startsClientOutput
 				if firstTokenMs == nil && startsClientOutput {
 					// 保证首个 token 事件尽快出站，避免影响 TTFT。
 					shouldFlush = true
@@ -4978,7 +4981,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			} else if _, err := bufferedWriter.WriteString("\n"); err != nil {
 				clientDisconnected = true
 				logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
-			} else if queueDrained && clientOutputStarted {
+			} else if clientOutputStarted && (line == "" || queueDrained) {
 				if err := flushBuffered(); err != nil {
 					clientDisconnected = true
 					logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming flush, continuing to drain upstream for billing")
