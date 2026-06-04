@@ -1,0 +1,287 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+)
+
+const (
+	openAIPoolRecoveryProbeTimeout         = 8 * time.Second
+	openAIPoolRecoveryProbeDefaultBackoff  = 5 * time.Second
+	openAIPoolRecoveryProbeMaxBackoff      = 60 * time.Second
+	openAIPoolRecoveryProbeReadLimit       = 1 << 20
+	openAIPoolRecoveryProbeMaxOutputTokens = 8
+)
+
+type openAIPoolRecoveryProbeResult struct {
+	success        bool
+	retryable      bool
+	statusCode     int
+	endpoint       string
+	responseHeader http.Header
+	err            error
+}
+
+func (s *OpenAIGatewayService) maybeStartOpenAIPoolRecoveryProbe(ctx context.Context, account *Account, requestedModel string) {
+	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
+		return
+	}
+	if !s.isOpenAIPoolAccountSoftCooldownDue(account) {
+		return
+	}
+	if s.httpUpstream == nil {
+		return
+	}
+	if _, loaded := s.openaiPoolRecoveryProbeInFlight.LoadOrStore(account.ID, struct{}{}); loaded {
+		return
+	}
+	accountID := account.ID
+	accountCopy := *account
+	go func() {
+		defer s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
+		probeCtx, cancel := context.WithTimeout(context.Background(), openAIPoolRecoveryProbeTimeout)
+		defer cancel()
+		s.runOpenAIPoolRecoveryProbe(probeCtx, &accountCopy, requestedModel)
+	}()
+}
+
+func (s *OpenAIGatewayService) runOpenAIPoolRecoveryProbe(ctx context.Context, account *Account, requestedModel string) {
+	result := s.probeOpenAIPoolAccountRecovery(ctx, account, requestedModel)
+	if result.success {
+		s.ClearAccountSchedulingBlock(account.ID)
+		s.openaiPoolRecoveryProbeFailureCount.Delete(account.ID)
+		if s.rateLimitService != nil {
+			if _, err := s.rateLimitService.RecoverAccountAfterSuccessfulTest(ctx, account.ID); err != nil {
+				loggerLegacyOpenAIPoolRecovery("recover_state_failed account_id=%d err=%v", account.ID, err)
+			}
+		}
+		loggerLegacyOpenAIPoolRecovery("probe_success account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
+		return
+	}
+
+	backoff := s.nextOpenAIPoolRecoveryProbeBackoff(account.ID, result.retryable)
+	until := time.Now().Add(backoff)
+	s.storeOpenAIPoolSoftCooldownUntil(account.ID, until)
+	if result.err != nil {
+		loggerLegacyOpenAIPoolRecovery("probe_failed account_id=%d endpoint=%s status=%d backoff=%s err=%v", account.ID, result.endpoint, result.statusCode, backoff, result.err)
+	} else {
+		loggerLegacyOpenAIPoolRecovery("probe_failed account_id=%d endpoint=%s status=%d backoff=%s", account.ID, result.endpoint, result.statusCode, backoff)
+	}
+}
+
+func (s *OpenAIGatewayService) probeOpenAIPoolAccountRecovery(ctx context.Context, account *Account, requestedModel string) openAIPoolRecoveryProbeResult {
+	model := resolveOpenAIForwardModel(account, requestedModel, "")
+	if strings.TrimSpace(model) == "" {
+		model = openai.DefaultTestModel
+	}
+	if account.Type == AccountTypeAPIKey {
+		if openai_compat.ShouldUseResponsesAPI(account.Extra) {
+			result := s.probeOpenAIPoolAccountResponses(ctx, account, model)
+			if result.success || (result.statusCode != http.StatusNotFound && result.statusCode != http.StatusMethodNotAllowed) {
+				return result
+			}
+		}
+		return s.probeOpenAIPoolAccountChatCompletions(ctx, account, model)
+	}
+	return s.probeOpenAIPoolAccountResponses(ctx, account, model)
+}
+
+func (s *OpenAIGatewayService) probeOpenAIPoolAccountResponses(ctx context.Context, account *Account, model string) openAIPoolRecoveryProbeResult {
+	token, err := s.openAIRecoveryProbeToken(ctx, account)
+	if err != nil {
+		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: "responses", err: err}
+	}
+	targetURL, err := s.openAIRecoveryProbeResponsesURL(account)
+	if err != nil {
+		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: "responses", err: err}
+	}
+	body := openAIRecoveryResponsesPayload(model, account.IsOAuth())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: "responses", err: err}
+	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	if account.IsOAuth() {
+		req.Host = "chatgpt.com"
+		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
+			req.Header.Set("chatgpt-account-id", chatgptAccountID)
+		}
+	}
+	return s.doOpenAIPoolRecoveryProbe(req, account, "responses")
+}
+
+func (s *OpenAIGatewayService) probeOpenAIPoolAccountChatCompletions(ctx context.Context, account *Account, model string) openAIPoolRecoveryProbeResult {
+	token, err := s.openAIRecoveryProbeToken(ctx, account)
+	if err != nil {
+		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: "chat_completions", err: err}
+	}
+	baseURL := account.GetOpenAIBaseURL()
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = "https://api.openai.com"
+	}
+	validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: "chat_completions", err: err}
+	}
+	body := openAIRecoveryChatCompletionsPayload(model)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildOpenAIChatCompletionsURL(validatedURL), bytes.NewReader(body))
+	if err != nil {
+		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: "chat_completions", err: err}
+	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	return s.doOpenAIPoolRecoveryProbe(req, account, "chat_completions")
+}
+
+func (s *OpenAIGatewayService) doOpenAIPoolRecoveryProbe(req *http.Request, account *Account, endpoint string) openAIPoolRecoveryProbeResult {
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
+	if err != nil {
+		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: endpoint, err: err}
+	}
+	defer resp.Body.Close()
+	_, readErr := io.ReadAll(io.LimitReader(resp.Body, openAIPoolRecoveryProbeReadLimit))
+	if readErr != nil {
+		return openAIPoolRecoveryProbeResult{
+			retryable:      true,
+			statusCode:     resp.StatusCode,
+			endpoint:       endpoint,
+			responseHeader: resp.Header,
+			err:            readErr,
+		}
+	}
+	return openAIPoolRecoveryProbeResult{
+		success:        resp.StatusCode >= 200 && resp.StatusCode < 300,
+		retryable:      openAIPoolRecoveryProbeStatusRetryable(resp.StatusCode),
+		statusCode:     resp.StatusCode,
+		endpoint:       endpoint,
+		responseHeader: resp.Header,
+	}
+}
+
+func (s *OpenAIGatewayService) openAIRecoveryProbeToken(ctx context.Context, account *Account) (string, error) {
+	switch account.Type {
+	case AccountTypeOAuth:
+		if s.openAITokenProvider != nil {
+			return s.openAITokenProvider.GetAccessToken(ctx, account)
+		}
+		token := strings.TrimSpace(account.GetOpenAIAccessToken())
+		if token == "" {
+			return "", fmt.Errorf("access_token not found in credentials")
+		}
+		return token, nil
+	case AccountTypeAPIKey:
+		token := strings.TrimSpace(account.GetOpenAIApiKey())
+		if token == "" {
+			return "", fmt.Errorf("api_key not found in credentials")
+		}
+		return token, nil
+	default:
+		return "", fmt.Errorf("unsupported account type: %s", account.Type)
+	}
+}
+
+func (s *OpenAIGatewayService) openAIRecoveryProbeResponsesURL(account *Account) (string, error) {
+	if account.IsOAuth() {
+		return chatgptCodexURL, nil
+	}
+	baseURL := account.GetOpenAIBaseURL()
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = "https://api.openai.com"
+	}
+	validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return "", err
+	}
+	return buildOpenAIResponsesURL(validatedURL), nil
+}
+
+func openAIRecoveryResponsesPayload(model string, oauth bool) []byte {
+	if strings.TrimSpace(model) == "" {
+		model = openai.DefaultTestModel
+	}
+	body := map[string]any{
+		"model": model,
+		"input": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "hi"},
+				},
+			},
+		},
+		"instructions":      openai.DefaultInstructions,
+		"stream":            false,
+		"max_output_tokens": openAIPoolRecoveryProbeMaxOutputTokens,
+	}
+	if oauth {
+		body["store"] = false
+	}
+	payload, _ := json.Marshal(body)
+	return payload
+}
+
+func openAIRecoveryChatCompletionsPayload(model string) []byte {
+	if strings.TrimSpace(model) == "" {
+		model = openai.DefaultTestModel
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"model":      model,
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+		"stream":     false,
+		"max_tokens": openAIPoolRecoveryProbeMaxOutputTokens,
+	})
+	return payload
+}
+
+func openAIPoolRecoveryProbeStatusRetryable(statusCode int) bool {
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *OpenAIGatewayService) nextOpenAIPoolRecoveryProbeBackoff(accountID int64, retryable bool) time.Duration {
+	if !retryable {
+		return openAIPoolSoftCooldownAuth
+	}
+	failures := 1
+	if current, ok := s.openaiPoolRecoveryProbeFailureCount.Load(accountID); ok {
+		if count, ok := current.(int); ok && count > 0 {
+			failures = count + 1
+		}
+	}
+	s.openaiPoolRecoveryProbeFailureCount.Store(accountID, failures)
+	backoff := openAIPoolRecoveryProbeDefaultBackoff
+	for i := 1; i < failures; i++ {
+		backoff *= 2
+		if backoff >= openAIPoolRecoveryProbeMaxBackoff {
+			return openAIPoolRecoveryProbeMaxBackoff
+		}
+	}
+	return backoff
+}
+
+func loggerLegacyOpenAIPoolRecovery(format string, args ...any) {
+	logger.LegacyPrintf("service.openai_pool_recovery", format, args...)
+}

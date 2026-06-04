@@ -118,6 +118,8 @@ func (s *OpenAIGatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	}
 	s.openaiAccountRuntimeBlockUntil.Delete(accountID)
 	s.openaiPoolSoftCooldownUntil.Delete(accountID)
+	s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
+	s.openaiPoolRecoveryProbeFailureCount.Delete(accountID)
 }
 
 func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) bool {
@@ -174,18 +176,24 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldown(ctx context.Con
 	if cooldown <= 0 {
 		return
 	}
-	until := time.Now().Add(cooldown)
+	s.storeOpenAIPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown))
+}
+
+func (s *OpenAIGatewayService) storeOpenAIPoolSoftCooldownUntil(accountID int64, until time.Time) {
+	if s == nil || accountID <= 0 || until.IsZero() {
+		return
+	}
 	for {
-		current, loaded := s.openaiPoolSoftCooldownUntil.Load(account.ID)
+		current, loaded := s.openaiPoolSoftCooldownUntil.Load(accountID)
 		if !loaded {
-			if _, stored := s.openaiPoolSoftCooldownUntil.LoadOrStore(account.ID, until); !stored {
+			if _, stored := s.openaiPoolSoftCooldownUntil.LoadOrStore(accountID, until); !stored {
 				return
 			}
 			continue
 		}
 		currentUntil, ok := current.(time.Time)
 		if !ok || currentUntil.Before(until) {
-			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(account.ID, current, until) {
+			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(accountID, current, until) {
 				return
 			}
 			continue
@@ -207,11 +215,7 @@ func (s *OpenAIGatewayService) isOpenAIPoolAccountSoftCooling(account *Account) 
 		s.openaiPoolSoftCooldownUntil.Delete(account.ID)
 		return false
 	}
-	if time.Now().Before(until) {
-		return true
-	}
-	s.openaiPoolSoftCooldownUntil.Delete(account.ID)
-	return false
+	return true
 }
 
 func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownUntil(account *Account) (time.Time, bool) {
@@ -227,11 +231,12 @@ func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownUntil(account *Accou
 		s.openaiPoolSoftCooldownUntil.Delete(account.ID)
 		return time.Time{}, false
 	}
-	if time.Now().Before(until) {
-		return until, true
-	}
-	s.openaiPoolSoftCooldownUntil.Delete(account.ID)
-	return time.Time{}, false
+	return until, true
+}
+
+func (s *OpenAIGatewayService) isOpenAIPoolAccountSoftCooldownDue(account *Account) bool {
+	until, ok := s.openAIPoolAccountSoftCooldownUntil(account)
+	return ok && !time.Now().Before(until)
 }
 
 func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(

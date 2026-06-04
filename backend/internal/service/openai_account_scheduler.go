@@ -727,7 +727,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		if len(pool) == 0 {
 			return nil
 		}
-		return s.buildStrictPrioritySelectionOrder(pool)
+		return s.buildStrictPrioritySelectionOrder(pool, req.RequestedModel)
 	}
 
 	if req.RequireCompact {
@@ -753,14 +753,18 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 	return buildSelectionOrder(plan.candidates)
 }
 
-func (s *defaultOpenAIAccountScheduler) buildStrictPrioritySelectionOrder(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+func (s *defaultOpenAIAccountScheduler) buildStrictPrioritySelectionOrder(pool []openAIAccountCandidateScore, requestedModel string) []openAIAccountCandidateScore {
 	if len(pool) == 0 {
 		return nil
 	}
 	active := make([]openAIAccountCandidateScore, 0, len(pool))
 	cooling := make([]openAIAccountCandidateScore, 0, len(pool))
+	probeDue := make([]openAIAccountCandidateScore, 0)
 	for _, candidate := range pool {
 		if s != nil && s.service != nil && s.service.isOpenAIPoolAccountSoftCooling(candidate.account) {
+			if s.service.isOpenAIPoolAccountSoftCooldownDue(candidate.account) {
+				probeDue = append(probeDue, candidate)
+			}
 			cooling = append(cooling, candidate)
 			continue
 		}
@@ -769,6 +773,11 @@ func (s *defaultOpenAIAccountScheduler) buildStrictPrioritySelectionOrder(pool [
 
 	ordered := make([]openAIAccountCandidateScore, 0, len(pool))
 	ordered = append(ordered, sortOpenAIStrictPriorityCandidates(active)...)
+	if len(active) > 0 && len(probeDue) > 0 && s != nil && s.service != nil {
+		for _, candidate := range probeDue {
+			s.service.maybeStartOpenAIPoolRecoveryProbe(context.Background(), candidate.account, requestedModel)
+		}
+	}
 	// Pool-mode soft cooldown is advisory: if every other candidate is exhausted,
 	// keep cooled pool accounts as the final fallback so a single-account group
 	// does not get knocked offline by one upstream blip.

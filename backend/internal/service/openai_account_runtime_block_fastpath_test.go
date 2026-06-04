@@ -149,6 +149,32 @@ func TestOpenAIPoolSoftCooldown_529DisabledSkipsSoftCooldown(t *testing.T) {
 	require.False(t, svc.isOpenAIPoolAccountSoftCooling(account))
 }
 
+func TestOpenAIPoolSoftCooldown_ExpiredWaitsForRecoveryProbe(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          50,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+
+	svc.storeOpenAIPoolSoftCooldownUntil(account.ID, time.Now().Add(-time.Second))
+
+	require.True(t, svc.isOpenAIPoolAccountSoftCooling(account))
+	require.True(t, svc.isOpenAIPoolAccountSoftCooldownDue(account))
+	_, ok := svc.openAIPoolAccountSoftCooldownUntil(account)
+	require.True(t, ok)
+}
+
+func TestOpenAIPoolRecoveryProbeStatusRetryable_OnlyAuthIsLongCooldown(t *testing.T) {
+	require.False(t, openAIPoolRecoveryProbeStatusRetryable(http.StatusUnauthorized))
+	require.False(t, openAIPoolRecoveryProbeStatusRetryable(http.StatusForbidden))
+	require.True(t, openAIPoolRecoveryProbeStatusRetryable(http.StatusBadRequest))
+	require.True(t, openAIPoolRecoveryProbeStatusRetryable(http.StatusNotFound))
+	require.True(t, openAIPoolRecoveryProbeStatusRetryable(http.StatusTooManyRequests))
+	require.True(t, openAIPoolRecoveryProbeStatusRetryable(http.StatusInternalServerError))
+}
+
 func TestShouldStopOpenAIOAuth429Failover_OnlyDuringStorm(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
