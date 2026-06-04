@@ -443,8 +443,10 @@ type BetaPolicySettings struct {
 type OverloadCooldownSettings struct {
 	// Enabled 是否在收到529时暂停账号调度
 	Enabled bool `json:"enabled"`
-	// CooldownMinutes 冷却时长（分钟）
-	CooldownMinutes int `json:"cooldown_minutes"`
+	// CooldownSeconds 冷却时长（秒）
+	CooldownSeconds int `json:"cooldown_seconds"`
+	// CooldownMinutes 兼容旧配置字段；新配置请使用 cooldown_seconds。
+	CooldownMinutes int `json:"cooldown_minutes,omitempty"`
 }
 
 // RateLimit429CooldownSettings 429默认回避配置
@@ -455,11 +457,11 @@ type RateLimit429CooldownSettings struct {
 	CooldownSeconds int `json:"cooldown_seconds"`
 }
 
-// DefaultOverloadCooldownSettings 返回默认的过载冷却配置（启用，10分钟）
+// DefaultOverloadCooldownSettings 返回默认的过载冷却配置（启用，5秒）
 func DefaultOverloadCooldownSettings() *OverloadCooldownSettings {
 	return &OverloadCooldownSettings{
 		Enabled:         true,
-		CooldownMinutes: 10,
+		CooldownSeconds: 5,
 	}
 }
 

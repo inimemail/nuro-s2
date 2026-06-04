@@ -6309,8 +6309,8 @@ export default {
         description: '配置上游返回 529（过载）时的账号调度暂停策略',
         enabled: '启用过载冷却',
         enabledHint: '收到 529 错误时暂停该账号的调度，冷却后自动恢复',
-        cooldownMinutes: '冷却时长（分钟）',
-        cooldownMinutesHint: '账号暂停调度的持续时间（1-120 分钟）',
+        cooldownSeconds: '冷却时长（秒）',
+        cooldownSecondsHint: '账号暂停调度的持续时间（1-7200 秒）',
         saved: '过载冷却设置保存成功',
         saveFailed: '保存过载冷却设置失败'
       },

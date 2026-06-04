@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -103,6 +104,49 @@ func TestOpenAIRuntimeBlock_ClearAccountSchedulingBlock(t *testing.T) {
 
 	svc.ClearAccountSchedulingBlock(account.ID)
 	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
+func TestOpenAIPoolSoftCooldown_529UsesOverloadCooldownSettings(t *testing.T) {
+	settingRepo := newMockSettingRepo()
+	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: true, CooldownSeconds: 2})
+	settingRepo.data[SettingKeyOverloadCooldownSettings] = string(data)
+	settingSvc := NewSettingService(settingRepo, &config.Config{})
+	rateLimitSvc := NewRateLimitService(nil, nil, &config.Config{}, nil, nil)
+	rateLimitSvc.SetSettingService(settingSvc)
+	svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+	account := &Account{
+		ID:          48,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+
+	before := time.Now()
+	svc.MarkOpenAIPoolAccountSoftCooldown(context.Background(), account, 529, nil)
+
+	until, ok := svc.openAIPoolAccountSoftCooldownUntil(account)
+	require.True(t, ok)
+	require.WithinDuration(t, before.Add(2*time.Second), until, 2*time.Second)
+}
+
+func TestOpenAIPoolSoftCooldown_529DisabledSkipsSoftCooldown(t *testing.T) {
+	settingRepo := newMockSettingRepo()
+	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: false, CooldownSeconds: 2})
+	settingRepo.data[SettingKeyOverloadCooldownSettings] = string(data)
+	settingSvc := NewSettingService(settingRepo, &config.Config{})
+	rateLimitSvc := NewRateLimitService(nil, nil, &config.Config{}, nil, nil)
+	rateLimitSvc.SetSettingService(settingSvc)
+	svc := &OpenAIGatewayService{rateLimitService: rateLimitSvc}
+	account := &Account{
+		ID:          49,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+
+	svc.MarkOpenAIPoolAccountSoftCooldown(context.Background(), account, 529, nil)
+
+	require.False(t, svc.isOpenAIPoolAccountSoftCooling(account))
 }
 
 func TestShouldStopOpenAIOAuth429Failover_OnlyDuringStorm(t *testing.T) {

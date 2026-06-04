@@ -327,7 +327,7 @@ type LoginAgreementDocument struct {
 // OverloadCooldownSettings 529过载冷却配置 DTO
 type OverloadCooldownSettings struct {
 	Enabled         bool `json:"enabled"`
-	CooldownMinutes int  `json:"cooldown_minutes"`
+	CooldownSeconds int  `json:"cooldown_seconds"`
 }
 
 // RateLimit429CooldownSettings 429默认回避配置 DTO

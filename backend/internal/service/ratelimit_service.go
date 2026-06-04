@@ -1007,6 +1007,43 @@ func (s *RateLimitService) get429FallbackCooldown(ctx context.Context, account *
 	return time.Duration(seconds) * time.Second, true
 }
 
+func (s *RateLimitService) get529OverloadCooldown(ctx context.Context, account *Account) (time.Duration, bool) {
+	var settings *OverloadCooldownSettings
+	if s != nil && s.settingService != nil {
+		var err error
+		settings, err = s.settingService.GetOverloadCooldownSettings(ctx)
+		if err != nil {
+			accountID := int64(0)
+			if account != nil {
+				accountID = account.ID
+			}
+			slog.Warn("overload_settings_read_failed", "account_id", accountID, "error", err)
+			settings = nil
+		}
+	}
+	if settings == nil {
+		cooldown := 5
+		if s != nil && s.cfg != nil && s.cfg.RateLimit.OverloadCooldownMinutes > 0 {
+			cooldown = s.cfg.RateLimit.OverloadCooldownMinutes * 60
+		}
+		settings = &OverloadCooldownSettings{Enabled: true, CooldownSeconds: cooldown}
+	}
+	if !settings.Enabled {
+		return 0, false
+	}
+	cooldownSeconds := settings.CooldownSeconds
+	if cooldownSeconds <= 0 && settings.CooldownMinutes > 0 {
+		cooldownSeconds = settings.CooldownMinutes
+	}
+	if cooldownSeconds <= 0 {
+		cooldownSeconds = 5
+	}
+	if cooldownSeconds > 7200 {
+		cooldownSeconds = 7200
+	}
+	return time.Duration(cooldownSeconds) * time.Second, true
+}
+
 func clampRateLimit429CooldownSeconds(seconds int) int {
 	if seconds < 1 {
 		return 1
@@ -1298,35 +1335,13 @@ func persistOpenAI429PlanType(ctx context.Context, repo AccountRepository, accou
 // handle529 处理529过载错误
 // 根据配置决定是否暂停账号调度及冷却时长
 func (s *RateLimitService) handle529(ctx context.Context, account *Account) {
-	var settings *OverloadCooldownSettings
-	if s.settingService != nil {
-		var err error
-		settings, err = s.settingService.GetOverloadCooldownSettings(ctx)
-		if err != nil {
-			slog.Warn("overload_settings_read_failed", "account_id", account.ID, "error", err)
-			settings = nil
-		}
-	}
-	// 回退到配置文件
-	if settings == nil {
-		cooldown := s.cfg.RateLimit.OverloadCooldownMinutes
-		if cooldown <= 0 {
-			cooldown = 10
-		}
-		settings = &OverloadCooldownSettings{Enabled: true, CooldownMinutes: cooldown}
-	}
-
-	if !settings.Enabled {
+	cooldown, enabled := s.get529OverloadCooldown(ctx, account)
+	if !enabled {
 		slog.Info("account_529_ignored", "account_id", account.ID, "reason", "overload_cooldown_disabled")
 		return
 	}
 
-	cooldownMinutes := settings.CooldownMinutes
-	if cooldownMinutes <= 0 {
-		cooldownMinutes = 10
-	}
-
-	until := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+	until := time.Now().Add(cooldown)
 	s.notifyAccountSchedulingBlocked(account, until, "529")
 	if err := s.accountRepo.SetOverloaded(ctx, account.ID, until); err != nil {
 		slog.Warn("overload_set_failed", "account_id", account.ID, "error", err)

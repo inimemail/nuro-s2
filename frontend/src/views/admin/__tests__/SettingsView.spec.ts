@@ -517,7 +517,7 @@ describe("admin SettingsView payment visible method controls", () => {
     });
     getOverloadCooldownSettings.mockResolvedValue({
       enabled: true,
-      cooldown_minutes: 10,
+      cooldown_seconds: 5,
     });
     getRateLimit429CooldownSettings.mockResolvedValue({
       enabled: true,
@@ -794,7 +794,7 @@ describe("admin SettingsView wechat connect controls", () => {
     });
     getOverloadCooldownSettings.mockResolvedValue({
       enabled: true,
-      cooldown_minutes: 10,
+      cooldown_seconds: 5,
     });
     getRateLimit429CooldownSettings.mockResolvedValue({
       enabled: true,

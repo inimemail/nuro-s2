@@ -158,6 +158,16 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldown(ctx context.Con
 		}
 	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
 		cooldown = openAIPoolSoftCooldownAuth
+	case statusCode == 529:
+		if s.rateLimitService != nil {
+			configured, enabled := s.rateLimitService.get529OverloadCooldown(ctx, account)
+			if !enabled {
+				return
+			}
+			if configured > 0 {
+				cooldown = configured
+			}
+		}
 	case statusCode >= 500:
 		cooldown = openAIPoolSoftCooldownServerError
 	}

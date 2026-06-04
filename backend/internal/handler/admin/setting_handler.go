@@ -3034,13 +3034,14 @@ func (h *SettingHandler) GetOverloadCooldownSettings(c *gin.Context) {
 
 	response.Success(c, dto.OverloadCooldownSettings{
 		Enabled:         settings.Enabled,
-		CooldownMinutes: settings.CooldownMinutes,
+		CooldownSeconds: settings.CooldownSeconds,
 	})
 }
 
 // UpdateOverloadCooldownSettingsRequest 更新529过载冷却配置请求
 type UpdateOverloadCooldownSettingsRequest struct {
 	Enabled         bool `json:"enabled"`
+	CooldownSeconds int  `json:"cooldown_seconds"`
 	CooldownMinutes int  `json:"cooldown_minutes"`
 }
 
@@ -3055,6 +3056,7 @@ func (h *SettingHandler) UpdateOverloadCooldownSettings(c *gin.Context) {
 
 	settings := &service.OverloadCooldownSettings{
 		Enabled:         req.Enabled,
+		CooldownSeconds: req.CooldownSeconds,
 		CooldownMinutes: req.CooldownMinutes,
 	}
 
@@ -3071,7 +3073,7 @@ func (h *SettingHandler) UpdateOverloadCooldownSettings(c *gin.Context) {
 
 	response.Success(c, dto.OverloadCooldownSettings{
 		Enabled:         updatedSettings.Enabled,
-		CooldownMinutes: updatedSettings.CooldownMinutes,
+		CooldownSeconds: updatedSettings.CooldownSeconds,
 	})
 }
 

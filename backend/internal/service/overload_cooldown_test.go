@@ -58,41 +58,54 @@ func TestGetOverloadCooldownSettings_DefaultsWhenNotSet(t *testing.T) {
 	settings, err := svc.GetOverloadCooldownSettings(context.Background())
 	require.NoError(t, err)
 	require.True(t, settings.Enabled)
-	require.Equal(t, 10, settings.CooldownMinutes)
+	require.Equal(t, 5, settings.CooldownSeconds)
 }
 
 func TestGetOverloadCooldownSettings_ReadsFromDB(t *testing.T) {
 	repo := newMockSettingRepo()
-	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: false, CooldownMinutes: 30})
+	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: false, CooldownSeconds: 30})
 	repo.data[SettingKeyOverloadCooldownSettings] = string(data)
 	svc := NewSettingService(repo, &config.Config{})
 
 	settings, err := svc.GetOverloadCooldownSettings(context.Background())
 	require.NoError(t, err)
 	require.False(t, settings.Enabled)
-	require.Equal(t, 30, settings.CooldownMinutes)
+	require.Equal(t, 30, settings.CooldownSeconds)
+}
+
+func TestGetOverloadCooldownSettings_ReadsLegacyMinutesAsSeconds(t *testing.T) {
+	repo := newMockSettingRepo()
+	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: true, CooldownMinutes: 30})
+	repo.data[SettingKeyOverloadCooldownSettings] = string(data)
+	svc := NewSettingService(repo, &config.Config{})
+
+	settings, err := svc.GetOverloadCooldownSettings(context.Background())
+	require.NoError(t, err)
+	require.True(t, settings.Enabled)
+	require.Equal(t, 30, settings.CooldownSeconds)
+	require.Zero(t, settings.CooldownMinutes)
 }
 
 func TestGetOverloadCooldownSettings_ClampsMinValue(t *testing.T) {
 	repo := newMockSettingRepo()
-	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: true, CooldownMinutes: 0})
+	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: true, CooldownSeconds: 0})
 	repo.data[SettingKeyOverloadCooldownSettings] = string(data)
 	svc := NewSettingService(repo, &config.Config{})
 
 	settings, err := svc.GetOverloadCooldownSettings(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, 1, settings.CooldownMinutes)
+	require.Equal(t, 1, settings.CooldownSeconds)
 }
 
 func TestGetOverloadCooldownSettings_ClampsMaxValue(t *testing.T) {
 	repo := newMockSettingRepo()
-	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: true, CooldownMinutes: 999})
+	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: true, CooldownSeconds: 9999})
 	repo.data[SettingKeyOverloadCooldownSettings] = string(data)
 	svc := NewSettingService(repo, &config.Config{})
 
 	settings, err := svc.GetOverloadCooldownSettings(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, 120, settings.CooldownMinutes)
+	require.Equal(t, 7200, settings.CooldownSeconds)
 }
 
 func TestGetOverloadCooldownSettings_InvalidJSON_ReturnsDefaults(t *testing.T) {
@@ -103,7 +116,7 @@ func TestGetOverloadCooldownSettings_InvalidJSON_ReturnsDefaults(t *testing.T) {
 	settings, err := svc.GetOverloadCooldownSettings(context.Background())
 	require.NoError(t, err)
 	require.True(t, settings.Enabled)
-	require.Equal(t, 10, settings.CooldownMinutes)
+	require.Equal(t, 5, settings.CooldownSeconds)
 }
 
 func TestGetOverloadCooldownSettings_EmptyValue_ReturnsDefaults(t *testing.T) {
@@ -114,7 +127,7 @@ func TestGetOverloadCooldownSettings_EmptyValue_ReturnsDefaults(t *testing.T) {
 	settings, err := svc.GetOverloadCooldownSettings(context.Background())
 	require.NoError(t, err)
 	require.True(t, settings.Enabled)
-	require.Equal(t, 10, settings.CooldownMinutes)
+	require.Equal(t, 5, settings.CooldownSeconds)
 }
 
 // ===========================================================================
@@ -127,7 +140,7 @@ func TestSetOverloadCooldownSettings_Success(t *testing.T) {
 
 	err := svc.SetOverloadCooldownSettings(context.Background(), &OverloadCooldownSettings{
 		Enabled:         false,
-		CooldownMinutes: 25,
+		CooldownSeconds: 25,
 	})
 	require.NoError(t, err)
 
@@ -135,7 +148,7 @@ func TestSetOverloadCooldownSettings_Success(t *testing.T) {
 	settings, err := svc.GetOverloadCooldownSettings(context.Background())
 	require.NoError(t, err)
 	require.False(t, settings.Enabled)
-	require.Equal(t, 25, settings.CooldownMinutes)
+	require.Equal(t, 25, settings.CooldownSeconds)
 }
 
 func TestSetOverloadCooldownSettings_RejectsNil(t *testing.T) {
@@ -147,12 +160,12 @@ func TestSetOverloadCooldownSettings_RejectsNil(t *testing.T) {
 func TestSetOverloadCooldownSettings_EnabledRejectsOutOfRange(t *testing.T) {
 	svc := NewSettingService(newMockSettingRepo(), &config.Config{})
 
-	for _, minutes := range []int{0, -1, 121, 999} {
+	for _, seconds := range []int{0, -1, 7201, 9999} {
 		err := svc.SetOverloadCooldownSettings(context.Background(), &OverloadCooldownSettings{
-			Enabled: true, CooldownMinutes: minutes,
+			Enabled: true, CooldownSeconds: seconds,
 		})
-		require.Error(t, err, "should reject enabled=true + cooldown_minutes=%d", minutes)
-		require.Contains(t, err.Error(), "cooldown_minutes must be between 1-120")
+		require.Error(t, err, "should reject enabled=true + cooldown_seconds=%d", seconds)
+		require.Contains(t, err.Error(), "cooldown_seconds must be between 1-7200")
 	}
 }
 
@@ -160,9 +173,9 @@ func TestSetOverloadCooldownSettings_DisabledNormalizesOutOfRange(t *testing.T) 
 	repo := newMockSettingRepo()
 	svc := NewSettingService(repo, &config.Config{})
 
-	// enabled=false + cooldown_minutes=0 应该保存成功，值被归一化为10
+	// enabled=false + cooldown_seconds=0 应该保存成功，值被归一化为5
 	err := svc.SetOverloadCooldownSettings(context.Background(), &OverloadCooldownSettings{
-		Enabled: false, CooldownMinutes: 0,
+		Enabled: false, CooldownSeconds: 0,
 	})
 	require.NoError(t, err, "disabled with invalid minutes should NOT be rejected")
 
@@ -170,17 +183,17 @@ func TestSetOverloadCooldownSettings_DisabledNormalizesOutOfRange(t *testing.T) 
 	settings, err := svc.GetOverloadCooldownSettings(context.Background())
 	require.NoError(t, err)
 	require.False(t, settings.Enabled)
-	require.Equal(t, 10, settings.CooldownMinutes, "should be normalized to default")
+	require.Equal(t, 5, settings.CooldownSeconds, "should be normalized to default")
 }
 
 func TestSetOverloadCooldownSettings_AcceptsBoundaries(t *testing.T) {
 	svc := NewSettingService(newMockSettingRepo(), &config.Config{})
 
-	for _, minutes := range []int{1, 60, 120} {
+	for _, seconds := range []int{1, 60, 7200} {
 		err := svc.SetOverloadCooldownSettings(context.Background(), &OverloadCooldownSettings{
-			Enabled: true, CooldownMinutes: minutes,
+			Enabled: true, CooldownSeconds: seconds,
 		})
-		require.NoError(t, err, "should accept cooldown_minutes=%d", minutes)
+		require.NoError(t, err, "should accept cooldown_seconds=%d", seconds)
 	}
 }
 
@@ -191,7 +204,7 @@ func TestSetOverloadCooldownSettings_AcceptsBoundaries(t *testing.T) {
 func TestHandle529_EnabledFromDB_PausesAccount(t *testing.T) {
 	accountRepo := &overloadAccountRepoStub{}
 	settingRepo := newMockSettingRepo()
-	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: true, CooldownMinutes: 15})
+	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: true, CooldownSeconds: 15})
 	settingRepo.data[SettingKeyOverloadCooldownSettings] = string(data)
 
 	settingSvc := NewSettingService(settingRepo, &config.Config{})
@@ -204,13 +217,13 @@ func TestHandle529_EnabledFromDB_PausesAccount(t *testing.T) {
 
 	require.Equal(t, 1, accountRepo.overloadCalls)
 	require.Equal(t, int64(42), accountRepo.lastOverloadID)
-	require.WithinDuration(t, before.Add(15*time.Minute), accountRepo.lastOverloadEnd, 2*time.Second)
+	require.WithinDuration(t, before.Add(15*time.Second), accountRepo.lastOverloadEnd, 2*time.Second)
 }
 
 func TestHandle529_DisabledFromDB_SkipsAccount(t *testing.T) {
 	accountRepo := &overloadAccountRepoStub{}
 	settingRepo := newMockSettingRepo()
-	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: false, CooldownMinutes: 15})
+	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: false, CooldownSeconds: 15})
 	settingRepo.data[SettingKeyOverloadCooldownSettings] = string(data)
 
 	settingSvc := NewSettingService(settingRepo, &config.Config{})
@@ -238,7 +251,7 @@ func TestHandle529_NilSettingService_FallsBackToConfig(t *testing.T) {
 	require.WithinDuration(t, before.Add(20*time.Minute), accountRepo.lastOverloadEnd, 2*time.Second)
 }
 
-func TestHandle529_NilSettingService_ZeroConfig_DefaultsTen(t *testing.T) {
+func TestHandle529_NilSettingService_ZeroConfig_DefaultsFiveSeconds(t *testing.T) {
 	accountRepo := &overloadAccountRepoStub{}
 	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
 
@@ -247,7 +260,7 @@ func TestHandle529_NilSettingService_ZeroConfig_DefaultsTen(t *testing.T) {
 	svc.handle529(context.Background(), account)
 
 	require.Equal(t, 1, accountRepo.overloadCalls)
-	require.WithinDuration(t, before.Add(10*time.Minute), accountRepo.lastOverloadEnd, 2*time.Second)
+	require.WithinDuration(t, before.Add(5*time.Second), accountRepo.lastOverloadEnd, 2*time.Second)
 }
 
 func TestHandle529_DBReadError_FallsBackToConfig(t *testing.T) {
@@ -276,11 +289,11 @@ func TestHandle529_DBReadError_FallsBackToConfig(t *testing.T) {
 func TestDefaultOverloadCooldownSettings(t *testing.T) {
 	d := DefaultOverloadCooldownSettings()
 	require.True(t, d.Enabled)
-	require.Equal(t, 10, d.CooldownMinutes)
+	require.Equal(t, 5, d.CooldownSeconds)
 }
 
 func TestOverloadCooldownSettings_JSONRoundTrip(t *testing.T) {
-	original := OverloadCooldownSettings{Enabled: false, CooldownMinutes: 42}
+	original := OverloadCooldownSettings{Enabled: false, CooldownSeconds: 42}
 	data, err := json.Marshal(original)
 	require.NoError(t, err)
 
@@ -292,7 +305,7 @@ func TestOverloadCooldownSettings_JSONRoundTrip(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(data, &raw))
 	_, hasEnabled := raw["enabled"]
-	_, hasCooldown := raw["cooldown_minutes"]
+	_, hasCooldown := raw["cooldown_seconds"]
 	require.True(t, hasEnabled, "JSON must use 'enabled'")
-	require.True(t, hasCooldown, "JSON must use 'cooldown_minutes'")
+	require.True(t, hasCooldown, "JSON must use 'cooldown_seconds'")
 }

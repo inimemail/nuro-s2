@@ -247,18 +247,18 @@
                     <label
                       class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
                     >
-                      {{ t("admin.settings.overloadCooldown.cooldownMinutes") }}
+                      {{ t("admin.settings.overloadCooldown.cooldownSeconds") }}
                     </label>
                     <input
-                      v-model.number="overloadCooldownForm.cooldown_minutes"
+                      v-model.number="overloadCooldownForm.cooldown_seconds"
                       type="number"
                       min="1"
-                      max="120"
+                      max="7200"
                       class="input w-32"
                     />
                     <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                       {{
-                        t("admin.settings.overloadCooldown.cooldownMinutesHint")
+                        t("admin.settings.overloadCooldown.cooldownSecondsHint")
                       }}
                     </p>
                   </div>
@@ -6789,7 +6789,7 @@ const overloadCooldownLoading = ref(true);
 const overloadCooldownSaving = ref(false);
 const overloadCooldownForm = reactive({
   enabled: true,
-  cooldown_minutes: 10,
+  cooldown_seconds: 5,
 });
 
 // Rate Limit Cooldown (429) 状态
@@ -8529,7 +8529,7 @@ async function saveOverloadCooldownSettings() {
   try {
     const updated = await adminAPI.settings.updateOverloadCooldownSettings({
       enabled: overloadCooldownForm.enabled,
-      cooldown_minutes: overloadCooldownForm.cooldown_minutes,
+      cooldown_seconds: overloadCooldownForm.cooldown_seconds,
     });
     Object.assign(overloadCooldownForm, updated);
     appStore.showSuccess(t("admin.settings.overloadCooldown.saved"));

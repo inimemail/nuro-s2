@@ -4006,12 +4006,16 @@ func (s *SettingService) GetOverloadCooldownSettings(ctx context.Context) (*Over
 	}
 
 	// 修正配置值范围
-	if settings.CooldownMinutes < 1 {
-		settings.CooldownMinutes = 1
+	if settings.CooldownSeconds <= 0 && settings.CooldownMinutes > 0 {
+		settings.CooldownSeconds = settings.CooldownMinutes
 	}
-	if settings.CooldownMinutes > 120 {
-		settings.CooldownMinutes = 120
+	if settings.CooldownSeconds < 1 {
+		settings.CooldownSeconds = 1
 	}
+	if settings.CooldownSeconds > 7200 {
+		settings.CooldownSeconds = 7200
+	}
+	settings.CooldownMinutes = 0
 
 	return &settings, nil
 }
@@ -4022,13 +4026,17 @@ func (s *SettingService) SetOverloadCooldownSettings(ctx context.Context, settin
 		return fmt.Errorf("settings cannot be nil")
 	}
 
-	// 禁用时修正为合法值即可，不拒绝请求
-	if settings.CooldownMinutes < 1 || settings.CooldownMinutes > 120 {
-		if settings.Enabled {
-			return fmt.Errorf("cooldown_minutes must be between 1-120")
-		}
-		settings.CooldownMinutes = 10 // 禁用状态下归一化为默认值
+	if settings.CooldownSeconds <= 0 && settings.CooldownMinutes > 0 {
+		settings.CooldownSeconds = settings.CooldownMinutes
 	}
+	// 禁用时修正为合法值即可，不拒绝请求
+	if settings.CooldownSeconds < 1 || settings.CooldownSeconds > 7200 {
+		if settings.Enabled {
+			return fmt.Errorf("cooldown_seconds must be between 1-7200")
+		}
+		settings.CooldownSeconds = 5 // 禁用状态下归一化为默认值
+	}
+	settings.CooldownMinutes = 0
 
 	data, err := json.Marshal(settings)
 	if err != nil {

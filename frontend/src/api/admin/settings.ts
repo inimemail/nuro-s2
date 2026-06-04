@@ -1072,7 +1072,7 @@ export async function deleteAdminApiKey(): Promise<{ message: string }> {
  */
 export interface OverloadCooldownSettings {
   enabled: boolean;
-  cooldown_minutes: number;
+  cooldown_seconds: number;
 }
 
 export async function getOverloadCooldownSettings(): Promise<OverloadCooldownSettings> {
