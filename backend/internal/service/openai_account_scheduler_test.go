@@ -1697,7 +1697,7 @@ func TestBuildOpenAIWeightedSelectionOrder_DeterministicBySessionSeed(t *testing
 	}
 }
 
-func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesAcrossSessions(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountWithScheduler_StrictPriorityUsesPrimaryWhileAvailable(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(15)
 	accounts := []Account{
@@ -1717,7 +1717,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesA
 			Status:      StatusActive,
 			Schedulable: true,
 			Concurrency: 3,
-			Priority:    0,
+			Priority:    5,
 		},
 		{
 			ID:          5103,
@@ -1726,7 +1726,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesA
 			Status:      StatusActive,
 			Schedulable: true,
 			Concurrency: 3,
-			Priority:    0,
+			Priority:    5,
 		},
 	}
 	cfg := &config.Config{}
@@ -1752,9 +1752,8 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesA
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
 
-	selected := make(map[int64]int, len(accounts))
-	for i := 0; i < 60; i++ {
-		sessionHash := fmt.Sprintf("session_hash_lb_%d", i)
+	for i := 0; i < 10; i++ {
+		sessionHash := fmt.Sprintf("session_hash_priority_%d", i)
 		selection, decision, err := svc.SelectAccountWithScheduler(
 			ctx,
 			&groupID,
@@ -1769,14 +1768,114 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesA
 		require.NotNil(t, selection)
 		require.NotNil(t, selection.Account)
 		require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
-		selected[selection.Account.ID]++
+		require.Equal(t, int64(5101), selection.Account.ID)
 		if selection.ReleaseFunc != nil {
 			selection.ReleaseFunc()
 		}
 	}
 
-	// 多 session 应该能打散到多个账号，避免“恒定单账号命中”。
-	require.GreaterOrEqual(t, len(selected), 2)
+}
+
+func TestBuildOpenAISelectionOrder_SamePriorityUsesLeastRecentlyUsed(t *testing.T) {
+	now := time.Now()
+	oldest := now.Add(-30 * time.Minute)
+	middle := now.Add(-20 * time.Minute)
+	newest := now.Add(-10 * time.Minute)
+	scheduler := &defaultOpenAIAccountScheduler{}
+	req := OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}
+	plan := openAIAccountLoadPlan{
+		topK: 3,
+		candidates: []openAIAccountCandidateScore{
+			{
+				account:  &Account{ID: 5201, Priority: 0, LastUsedAt: &newest},
+				loadInfo: &AccountLoadInfo{LoadRate: 10},
+			},
+			{
+				account:  &Account{ID: 5202, Priority: 0, LastUsedAt: &oldest},
+				loadInfo: &AccountLoadInfo{LoadRate: 10},
+			},
+			{
+				account:  &Account{ID: 5203, Priority: 0, LastUsedAt: &middle},
+				loadInfo: &AccountLoadInfo{LoadRate: 10},
+			},
+		},
+	}
+
+	order := scheduler.buildOpenAISelectionOrder(req, plan)
+	require.Len(t, order, 3)
+	require.Equal(t, int64(5202), order[0].account.ID)
+	require.Equal(t, int64(5203), order[1].account.ID)
+	require.Equal(t, int64(5201), order[2].account.ID)
+}
+
+func TestBuildOpenAISelectionOrder_AllCoolingPoolAccountsProbeSoonestReset(t *testing.T) {
+	now := time.Now()
+	oldestUsed := now.Add(-30 * time.Minute)
+	newestUsed := now.Add(-5 * time.Minute)
+	svc := &OpenAIGatewayService{}
+	scheduler := &defaultOpenAIAccountScheduler{service: svc}
+	soonest := &Account{
+		ID:          5301,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Priority:    0,
+		LastUsedAt:  &newestUsed,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	later := &Account{
+		ID:          5302,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Priority:    0,
+		LastUsedAt:  &oldestUsed,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	lowerPrioritySooner := &Account{
+		ID:          5303,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Priority:    5,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	svc.openaiPoolSoftCooldownUntil.Store(soonest.ID, now.Add(5*time.Second))
+	svc.openaiPoolSoftCooldownUntil.Store(later.ID, now.Add(30*time.Second))
+	svc.openaiPoolSoftCooldownUntil.Store(lowerPrioritySooner.ID, now.Add(time.Second))
+
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
+		topK: 3,
+		candidates: []openAIAccountCandidateScore{
+			{account: later, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+			{account: lowerPrioritySooner, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+			{account: soonest, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+		},
+	})
+
+	require.Len(t, order, 3)
+	require.Equal(t, int64(5301), order[0].account.ID)
+	require.Equal(t, int64(5302), order[1].account.ID)
+	require.Equal(t, int64(5303), order[2].account.ID)
+}
+
+func TestReportOpenAIAccountScheduleResult_SuccessClearsPoolSoftCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          5401,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(time.Minute))
+	require.True(t, svc.isOpenAIPoolAccountSoftCooling(account))
+
+	svc.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+	require.False(t, svc.isOpenAIPoolAccountSoftCooling(account))
 }
 
 func TestDeriveOpenAISelectionSeed_NoAffinityAddsEntropy(t *testing.T) {

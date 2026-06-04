@@ -3,12 +3,16 @@ package service
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 )
 
 const (
 	openAIAccountStateUpdateTimeout       = 5 * time.Second
 	openAIOAuth429FallbackCooldown        = 5 * time.Second
+	openAIPoolSoftCooldownDefault         = 10 * time.Second
+	openAIPoolSoftCooldownAuth            = 10 * time.Minute
+	openAIPoolSoftCooldownServerError     = 30 * time.Second
 	openAIStopSchedulingBridgeCooldown    = 2 * time.Minute
 	openAIOAuth429StormWindow             = 10 * time.Second
 	openAIOAuth429StormThreshold          = 20
@@ -113,6 +117,7 @@ func (s *OpenAIGatewayService) ClearAccountSchedulingBlock(accountID int64) {
 		return
 	}
 	s.openaiAccountRuntimeBlockUntil.Delete(accountID)
+	s.openaiPoolSoftCooldownUntil.Delete(accountID)
 }
 
 func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) bool {
@@ -132,6 +137,173 @@ func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) b
 		return true
 	}
 	s.openaiAccountRuntimeBlockUntil.Delete(account.ID)
+	return false
+}
+
+func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldown(ctx context.Context, account *Account, statusCode int, responseBody []byte) {
+	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
+		return
+	}
+	cooldown := openAIPoolSoftCooldownDefault
+	switch {
+	case statusCode == http.StatusTooManyRequests:
+		if s.rateLimitService != nil {
+			if resetAt := parseOpenAIRateLimitResetTime(responseBody); resetAt != nil {
+				if until := time.Unix(*resetAt, 0); until.After(time.Now()) {
+					cooldown = time.Until(until)
+				}
+			} else if configured, ok := s.rateLimitService.get429FallbackCooldown(ctx, account); ok && configured > 0 {
+				cooldown = configured
+			}
+		}
+	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
+		cooldown = openAIPoolSoftCooldownAuth
+	case statusCode >= 500:
+		cooldown = openAIPoolSoftCooldownServerError
+	}
+	if cooldown <= 0 {
+		return
+	}
+	until := time.Now().Add(cooldown)
+	for {
+		current, loaded := s.openaiPoolSoftCooldownUntil.Load(account.ID)
+		if !loaded {
+			if _, stored := s.openaiPoolSoftCooldownUntil.LoadOrStore(account.ID, until); !stored {
+				return
+			}
+			continue
+		}
+		currentUntil, ok := current.(time.Time)
+		if !ok || currentUntil.Before(until) {
+			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(account.ID, current, until) {
+				return
+			}
+			continue
+		}
+		return
+	}
+}
+
+func (s *OpenAIGatewayService) isOpenAIPoolAccountSoftCooling(account *Account) bool {
+	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
+		return false
+	}
+	value, ok := s.openaiPoolSoftCooldownUntil.Load(account.ID)
+	if !ok {
+		return false
+	}
+	until, ok := value.(time.Time)
+	if !ok || until.IsZero() {
+		s.openaiPoolSoftCooldownUntil.Delete(account.ID)
+		return false
+	}
+	if time.Now().Before(until) {
+		return true
+	}
+	s.openaiPoolSoftCooldownUntil.Delete(account.ID)
+	return false
+}
+
+func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownUntil(account *Account) (time.Time, bool) {
+	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
+		return time.Time{}, false
+	}
+	value, ok := s.openaiPoolSoftCooldownUntil.Load(account.ID)
+	if !ok {
+		return time.Time{}, false
+	}
+	until, ok := value.(time.Time)
+	if !ok || until.IsZero() {
+		s.openaiPoolSoftCooldownUntil.Delete(account.ID)
+		return time.Time{}, false
+	}
+	if time.Now().Before(until) {
+		return until, true
+	}
+	s.openaiPoolSoftCooldownUntil.Delete(account.ID)
+	return time.Time{}, false
+}
+
+func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	account *Account,
+	failoverErr *UpstreamFailoverError,
+) {
+	if s == nil || account == nil {
+		return
+	}
+	if failoverErr != nil {
+		s.MarkOpenAIPoolAccountSoftCooldown(ctx, account, failoverErr.StatusCode, failoverErr.ResponseBody)
+	}
+	if strings.TrimSpace(sessionHash) == "" {
+		return
+	}
+	boundAccountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash)
+	if err == nil && boundAccountID == account.ID {
+		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+	}
+}
+
+func (s *OpenAIGatewayService) hasHigherPriorityOpenAIAccountAvailable(
+	ctx context.Context,
+	groupID *int64,
+	current *Account,
+	requestedModel string,
+	requireCompact bool,
+	requiredCapability OpenAIEndpointCapability,
+	requiredTransport OpenAIUpstreamTransport,
+) bool {
+	if s == nil || current == nil {
+		return false
+	}
+	accounts, err := s.listSchedulableAccounts(ctx, groupID)
+	if err != nil || len(accounts) == 0 {
+		return false
+	}
+
+	candidates := make([]*Account, 0, len(accounts))
+	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
+	for i := range accounts {
+		account := &accounts[i]
+		if account.ID == current.ID || account.Priority >= current.Priority {
+			continue
+		}
+		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability) {
+			continue
+		}
+		if s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIPoolAccountSoftCooling(account) {
+			continue
+		}
+		if requiredTransport != OpenAIUpstreamTransportAny &&
+			requiredTransport != OpenAIUpstreamTransportHTTPSSE &&
+			!s.isOpenAIAccountTransportCompatible(account, requiredTransport) {
+			continue
+		}
+		if groupID != nil && s.needsUpstreamChannelRestrictionCheck(ctx, groupID) &&
+			s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact) {
+			continue
+		}
+		candidates = append(candidates, account)
+		loadReq = append(loadReq, AccountWithConcurrency{ID: account.ID, MaxConcurrency: account.EffectiveLoadFactor()})
+	}
+	if len(candidates) == 0 {
+		return false
+	}
+	if s.concurrencyService == nil {
+		return true
+	}
+	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, loadReq)
+	if err != nil {
+		return false
+	}
+	for _, candidate := range candidates {
+		loadInfo := loadMap[candidate.ID]
+		if loadInfo == nil || loadInfo.LoadRate < 100 {
+			return true
+		}
+	}
 	return false
 }
 

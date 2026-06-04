@@ -370,6 +370,10 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
+	if s.service.hasHigherPriorityOpenAIAccountAvailable(ctx, req.GroupID, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredTransport) {
+		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		return nil, nil
+	}
 	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 	if acquireErr == nil && result != nil && result.Acquired {
 		_ = s.service.refreshStickySessionTTL(ctx, req.GroupID, sessionHash, s.service.openAIWSSessionStickyTTL())
@@ -720,15 +724,10 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 	plan openAIAccountLoadPlan,
 ) []openAIAccountCandidateScore {
 	buildSelectionOrder := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
-		if len(pool) == 0 || plan.topK <= 0 {
+		if len(pool) == 0 {
 			return nil
 		}
-		groupTopK := plan.topK
-		if groupTopK > len(pool) {
-			groupTopK = len(pool)
-		}
-		ranked := selectTopKOpenAICandidates(pool, groupTopK)
-		return buildOpenAIWeightedSelectionOrder(ranked, req)
+		return s.buildStrictPrioritySelectionOrder(pool)
 	}
 
 	if req.RequireCompact {
@@ -752,6 +751,109 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 	}
 
 	return buildSelectionOrder(plan.candidates)
+}
+
+func (s *defaultOpenAIAccountScheduler) buildStrictPrioritySelectionOrder(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	if len(pool) == 0 {
+		return nil
+	}
+	active := make([]openAIAccountCandidateScore, 0, len(pool))
+	cooling := make([]openAIAccountCandidateScore, 0, len(pool))
+	for _, candidate := range pool {
+		if s != nil && s.service != nil && s.service.isOpenAIPoolAccountSoftCooling(candidate.account) {
+			cooling = append(cooling, candidate)
+			continue
+		}
+		active = append(active, candidate)
+	}
+
+	ordered := make([]openAIAccountCandidateScore, 0, len(pool))
+	ordered = append(ordered, sortOpenAIStrictPriorityCandidates(active)...)
+	// Pool-mode soft cooldown is advisory: if every other candidate is exhausted,
+	// keep cooled pool accounts as the final fallback so a single-account group
+	// does not get knocked offline by one upstream blip.
+	ordered = append(ordered, s.sortOpenAIPoolCooldownProbeCandidates(cooling)...)
+	return ordered
+}
+
+func (s *defaultOpenAIAccountScheduler) sortOpenAIPoolCooldownProbeCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	if len(pool) == 0 {
+		return nil
+	}
+	ordered := sortOpenAIStrictPriorityCandidates(pool)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if a.account.Priority != b.account.Priority {
+			return a.account.Priority < b.account.Priority
+		}
+		aUntil, aCooling := time.Time{}, false
+		bUntil, bCooling := time.Time{}, false
+		if s != nil && s.service != nil {
+			aUntil, aCooling = s.service.openAIPoolAccountSoftCooldownUntil(a.account)
+			bUntil, bCooling = s.service.openAIPoolAccountSoftCooldownUntil(b.account)
+		}
+		if aCooling != bCooling {
+			return !aCooling
+		}
+		if aCooling && bCooling && !aUntil.Equal(bUntil) {
+			return aUntil.Before(bUntil)
+		}
+		switch {
+		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+			return true
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+			return false
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt != nil:
+			if !a.account.LastUsedAt.Equal(*b.account.LastUsedAt) {
+				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+			}
+		}
+		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		return a.account.ID < b.account.ID
+	})
+	return ordered
+}
+
+func sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	if len(pool) == 0 {
+		return nil
+	}
+	ordered := append([]openAIAccountCandidateScore(nil), pool...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if a.account.Priority != b.account.Priority {
+			return a.account.Priority < b.account.Priority
+		}
+		switch {
+		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+			return true
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+			return false
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt != nil:
+			if !a.account.LastUsedAt.Equal(*b.account.LastUsedAt) {
+				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+			}
+		}
+		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+		}
+		if a.errorRate != b.errorRate {
+			return a.errorRate < b.errorRate
+		}
+		if a.hasTTFT != b.hasTTFT {
+			return a.hasTTFT
+		}
+		if a.hasTTFT && a.ttft != b.ttft {
+			return a.ttft < b.ttft
+		}
+		return a.account.ID < b.account.ID
+	})
+	return ordered
 }
 
 func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
@@ -1275,6 +1377,9 @@ func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Accou
 }
 
 func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64, success bool, firstTokenMs *int) {
+	if s != nil && success {
+		s.openaiPoolSoftCooldownUntil.Delete(accountID)
+	}
 	scheduler := s.getOpenAIAccountScheduler(context.Background())
 	if scheduler == nil {
 		return

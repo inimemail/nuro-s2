@@ -358,6 +358,7 @@ type OpenAIGatewayService struct {
 
 	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockUntil      sync.Map // key: int64(accountID), value: time.Time
+	openaiPoolSoftCooldownUntil         sync.Map // key: int64(accountID), value: time.Time
 	openaiOAuth429WindowStartUnixNano   atomic.Int64
 	openaiOAuth429WindowCount           atomic.Int64
 	openaiWSRetryMetrics                openAIWSRetryMetrics
@@ -1575,6 +1576,117 @@ func prioritizeOpenAICompactAccounts(accounts []*Account) []*Account {
 	return out
 }
 
+func (s *OpenAIGatewayService) orderOpenAIPoolCoolingAccountsLast(accounts []*Account) []*Account {
+	if len(accounts) <= 1 {
+		return accounts
+	}
+	active := make([]*Account, 0, len(accounts))
+	cooling := make([]*Account, 0)
+	for _, account := range accounts {
+		if s.isOpenAIPoolAccountSoftCooling(account) {
+			cooling = append(cooling, account)
+			continue
+		}
+		active = append(active, account)
+	}
+	if len(cooling) == 0 {
+		return accounts
+	}
+	s.sortOpenAIPoolCooldownProbeAccounts(cooling)
+	out := make([]*Account, 0, len(accounts))
+	out = append(out, active...)
+	out = append(out, cooling...)
+	return out
+}
+
+func (s *OpenAIGatewayService) orderOpenAIPoolCoolingLoadedAccountsLast(accounts []accountWithLoad) []accountWithLoad {
+	if len(accounts) <= 1 {
+		return accounts
+	}
+	active := make([]accountWithLoad, 0, len(accounts))
+	cooling := make([]accountWithLoad, 0)
+	for _, item := range accounts {
+		if s.isOpenAIPoolAccountSoftCooling(item.account) {
+			cooling = append(cooling, item)
+			continue
+		}
+		active = append(active, item)
+	}
+	if len(cooling) == 0 {
+		return accounts
+	}
+	s.sortOpenAIPoolCooldownProbeLoadedAccounts(cooling)
+	out := make([]accountWithLoad, 0, len(accounts))
+	out = append(out, active...)
+	out = append(out, cooling...)
+	return out
+}
+
+func (s *OpenAIGatewayService) sortOpenAIPoolCooldownProbeAccounts(accounts []*Account) {
+	sort.SliceStable(accounts, func(i, j int) bool {
+		return s.lessOpenAIPoolCooldownProbeAccount(accounts[i], accounts[j])
+	})
+}
+
+func (s *OpenAIGatewayService) sortOpenAIPoolCooldownProbeLoadedAccounts(accounts []accountWithLoad) {
+	sort.SliceStable(accounts, func(i, j int) bool {
+		a, b := accounts[i], accounts[j]
+		if a.account.Priority != b.account.Priority {
+			return a.account.Priority < b.account.Priority
+		}
+		aUntil, aCooling := s.openAIPoolAccountSoftCooldownUntil(a.account)
+		bUntil, bCooling := s.openAIPoolAccountSoftCooldownUntil(b.account)
+		if aCooling != bCooling {
+			return !aCooling
+		}
+		if aCooling && bCooling && !aUntil.Equal(bUntil) {
+			return aUntil.Before(bUntil)
+		}
+		switch {
+		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+			return true
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+			return false
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt != nil:
+			if !a.account.LastUsedAt.Equal(*b.account.LastUsedAt) {
+				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+			}
+		}
+		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+		}
+		return a.account.ID < b.account.ID
+	})
+}
+
+func (s *OpenAIGatewayService) lessOpenAIPoolCooldownProbeAccount(a, b *Account) bool {
+	if a.Priority != b.Priority {
+		return a.Priority < b.Priority
+	}
+	aUntil, aCooling := s.openAIPoolAccountSoftCooldownUntil(a)
+	bUntil, bCooling := s.openAIPoolAccountSoftCooldownUntil(b)
+	if aCooling != bCooling {
+		return !aCooling
+	}
+	if aCooling && bCooling && !aUntil.Equal(bUntil) {
+		return aUntil.Before(bUntil)
+	}
+	switch {
+	case a.LastUsedAt == nil && b.LastUsedAt != nil:
+		return true
+	case a.LastUsedAt != nil && b.LastUsedAt == nil:
+		return false
+	case a.LastUsedAt != nil && b.LastUsedAt != nil:
+		if !a.LastUsedAt.Equal(*b.LastUsedAt) {
+			return a.LastUsedAt.Before(*b.LastUsedAt)
+		}
+	}
+	return a.ID < b.ID
+}
+
 // resolveOpenAIAccountUpstreamModelForRequest resolves the upstream model that
 // would be sent for a given request, honouring compact-only mappings when the
 // caller is on the /responses/compact path.
@@ -1686,6 +1798,10 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
+	if s.hasHigherPriorityOpenAIAccountAvailable(ctx, groupID, account, requestedModel, requireCompact, requiredCapability, OpenAIUpstreamTransportAny) {
+		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		return nil
+	}
 
 	// 刷新会话 TTL 并返回账号
 	// Refresh session TTL and return account
@@ -1705,6 +1821,8 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	selectedCompactTier := -1
 	compactBlocked := false
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	coolingCandidates := make([]*Account, 0)
+	coolingCompactTiers := make(map[int64]int)
 
 	for i := range accounts {
 		acc := &accounts[i]
@@ -1734,6 +1852,11 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 				continue
 			}
 		}
+		if s.isOpenAIPoolAccountSoftCooling(fresh) {
+			coolingCandidates = append(coolingCandidates, fresh)
+			coolingCompactTiers[fresh.ID] = compactTier
+			continue
+		}
 
 		// 选择优先级最高且最久未使用的账号
 		// Select highest priority and least recently used
@@ -1755,6 +1878,27 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		if s.isBetterAccount(fresh, selected) {
 			selected = fresh
 			selectedCompactTier = compactTier
+		}
+	}
+	if selected == nil {
+		for _, fresh := range coolingCandidates {
+			compactTier := coolingCompactTiers[fresh.ID]
+			if selected == nil {
+				selected = fresh
+				selectedCompactTier = compactTier
+				continue
+			}
+			if requireCompact && compactTier != selectedCompactTier {
+				if compactTier > selectedCompactTier {
+					selected = fresh
+					selectedCompactTier = compactTier
+				}
+				continue
+			}
+			if s.isBetterAccount(fresh, selected) {
+				selected = fresh
+				selectedCompactTier = compactTier
+			}
 		}
 	}
 
@@ -1877,6 +2021,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					} else if s.hasHigherPriorityOpenAIAccountAvailable(ctx, groupID, account, requestedModel, requireCompact, requiredCapability, OpenAIUpstreamTransportAny) {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else {
 						result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 						if err == nil && result != nil && result.Acquired {
@@ -1977,7 +2123,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 			}
 		})
-		shuffleWithinSortGroups(available)
+		available = s.orderOpenAIPoolCoolingLoadedAccountsLast(available)
 
 		selectionOrder := make([]accountWithLoad, 0, len(available))
 		if requireCompact {
@@ -1997,6 +2143,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		} else {
 			selectionOrder = append(selectionOrder, available...)
 		}
+		selectionOrder = s.orderOpenAIPoolCoolingLoadedAccountsLast(selectionOrder)
 
 		for _, item := range selectionOrder {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel, false, requiredCapability)
@@ -2029,8 +2176,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	if err != nil {
 		ordered := append([]*Account(nil), candidates...)
 		sortAccountsByPriorityAndLastUsed(ordered, false)
+		ordered = s.orderOpenAIPoolCoolingAccountsLast(ordered)
 		if requireCompact {
 			ordered = prioritizeOpenAICompactAccounts(ordered)
+			ordered = s.orderOpenAIPoolCoolingAccountsLast(ordered)
 		}
 		for _, acc := range ordered {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability)
@@ -2074,8 +2223,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 
 	// ============ Layer 3: Fallback wait ============
 	sortAccountsByPriorityAndLastUsed(candidates, false)
+	candidates = s.orderOpenAIPoolCoolingAccountsLast(candidates)
 	if requireCompact {
 		candidates = prioritizeOpenAICompactAccounts(candidates)
+		candidates = s.orderOpenAIPoolCoolingAccountsLast(candidates)
 	}
 	for _, acc := range candidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability)
