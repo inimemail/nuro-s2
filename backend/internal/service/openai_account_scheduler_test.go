@@ -1843,6 +1843,31 @@ func TestBuildOpenAISelectionOrder_StrictPriorityBeatsLowerLoad(t *testing.T) {
 	require.Equal(t, int64(5212), order[1].account.ID)
 }
 
+func TestBuildOpenAISelectionOrder_StrictPriorityBeatsLowerTTFT(t *testing.T) {
+	scheduler := &defaultOpenAIAccountScheduler{}
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
+		topK: 2,
+		candidates: []openAIAccountCandidateScore{
+			{
+				account:  &Account{ID: 5213, Priority: 0},
+				loadInfo: &AccountLoadInfo{LoadRate: 80, WaitingCount: 4},
+				hasTTFT:  true,
+				ttft:     5000,
+			},
+			{
+				account:  &Account{ID: 5214, Priority: 5},
+				loadInfo: &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+				hasTTFT:  true,
+				ttft:     300,
+			},
+		},
+	})
+
+	require.Len(t, order, 2)
+	require.Equal(t, int64(5213), order[0].account.ID)
+	require.Equal(t, int64(5214), order[1].account.ID)
+}
+
 func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerLoadBeforeLRU(t *testing.T) {
 	now := time.Now()
 	oldest := now.Add(-30 * time.Minute)
@@ -1889,6 +1914,31 @@ func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerWaitingBeforeLRU(t *t
 	require.Len(t, order, 2)
 	require.Equal(t, int64(5232), order[0].account.ID)
 	require.Equal(t, int64(5231), order[1].account.ID)
+}
+
+func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerTTFTBeforeLoad(t *testing.T) {
+	scheduler := &defaultOpenAIAccountScheduler{}
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
+		topK: 2,
+		candidates: []openAIAccountCandidateScore{
+			{
+				account:  &Account{ID: 5233, Priority: 0},
+				loadInfo: &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+				hasTTFT:  true,
+				ttft:     5000,
+			},
+			{
+				account:  &Account{ID: 5234, Priority: 0},
+				loadInfo: &AccountLoadInfo{LoadRate: 90, WaitingCount: 8},
+				hasTTFT:  true,
+				ttft:     300,
+			},
+		},
+	})
+
+	require.Len(t, order, 2)
+	require.Equal(t, int64(5234), order[0].account.ID)
+	require.Equal(t, int64(5233), order[1].account.ID)
 }
 
 func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerTTFTBeforeLRU(t *testing.T) {

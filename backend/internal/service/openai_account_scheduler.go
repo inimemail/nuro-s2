@@ -835,20 +835,20 @@ func sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []op
 		if a.account.Priority != b.account.Priority {
 			return a.account.Priority < b.account.Priority
 		}
-		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-		}
-		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
-			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
-		}
-		if a.errorRate != b.errorRate {
-			return a.errorRate < b.errorRate
-		}
 		if a.hasTTFT != b.hasTTFT {
 			return a.hasTTFT
 		}
 		if a.hasTTFT && a.ttft != b.ttft {
 			return a.ttft < b.ttft
+		}
+		if a.errorRate != b.errorRate {
+			return a.errorRate < b.errorRate
+		}
+		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
 		}
 		switch {
 		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
