@@ -862,6 +862,7 @@ func sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []op
 		}
 		return a.account.ID < b.account.ID
 	})
+	shuffleOpenAIStrictPriorityTies(ordered)
 	return ordered
 }
 

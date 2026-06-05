@@ -1776,7 +1776,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_StrictPriorityUsesPrima
 
 }
 
-func TestBuildOpenAISelectionOrder_SamePriorityUsesLeastRecentlyUsed(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePriorityLoadTieIsShuffled(t *testing.T) {
 	now := time.Now()
 	oldest := now.Add(-30 * time.Minute)
 	middle := now.Add(-20 * time.Minute)
@@ -1801,11 +1801,17 @@ func TestBuildOpenAISelectionOrder_SamePriorityUsesLeastRecentlyUsed(t *testing.
 		},
 	}
 
-	order := scheduler.buildOpenAISelectionOrder(req, plan)
-	require.Len(t, order, 3)
-	require.Equal(t, int64(5202), order[0].account.ID)
-	require.Equal(t, int64(5203), order[1].account.ID)
-	require.Equal(t, int64(5201), order[2].account.ID)
+	firstSeen := map[int64]struct{}{}
+	for i := 0; i < 40; i++ {
+		order := scheduler.buildOpenAISelectionOrder(req, plan)
+		require.Len(t, order, 3)
+		firstSeen[order[0].account.ID] = struct{}{}
+		if len(firstSeen) > 1 {
+			break
+		}
+		time.Sleep(time.Nanosecond)
+	}
+	require.GreaterOrEqual(t, len(firstSeen), 2)
 }
 
 func TestBuildOpenAISelectionOrder_StrictPriorityBeatsLowerLoad(t *testing.T) {

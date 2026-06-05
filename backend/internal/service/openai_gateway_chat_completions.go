@@ -48,11 +48,11 @@ var cursorResponsesUnsupportedFields = []string{
 // 正确的，但 sub2api 接入 DeepSeek/Kimi/GLM 等第三方 OpenAI 兼容上游后假设破裂：
 // 这些上游普遍只支持 /v1/chat/completions，无 /v1/responses 端点。
 //
-// 当前路由策略（基于账号覆盖模式/探测标记，详见 openai_compat.ShouldUseResponsesAPI）：
-//   - APIKey 账号 + 强制或探测确认不支持 Responses → 走 forwardAsRawChatCompletions
-//     直转上游 /v1/chat/completions，不做协议转换
-//   - 其他所有情况（OAuth、APIKey 强制/探测确认支持、未探测）→ 走原有 CC→Responses
-//     转换路径（保留旧行为，存量未探测账号零兼容破坏）
+// 当前路由策略：
+//   - OAuth 账号：继续走 CC→Responses 转换路径。
+//   - APIKey 账号：只有探测/强制确认支持 Responses 时才走 CC→Responses。
+//   - APIKey 自动模式 Unknown/不支持：直转 /v1/chat/completions，避免真实请求先撞
+//     /responses 再 fallback 的双 RTT。
 func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	ctx context.Context,
 	c *gin.Context,
@@ -61,9 +61,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
-	// 入口分流：APIKey 账号 + 强制或已探测确认上游不支持 Responses，走 CC 直转。
-	// 自动模式下标记缺失（未探测）按"现状即证据"原则继续走下方原 Responses 转换路径。
-	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+	// APIKey auto/unknown goes raw chat completions so a real user request does
+	// not pay an extra /responses 404/405 RTT before fallback.
+	if account.Type == AccountTypeAPIKey && !shouldForwardAPIKeyChatViaResponses(account) {
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 
@@ -406,6 +406,13 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		Stream:        false,
 		Duration:      time.Since(startTime),
 	}, nil
+}
+
+func shouldForwardAPIKeyChatViaResponses(account *Account) bool {
+	if account == nil || account.Type != AccountTypeAPIKey {
+		return true
+	}
+	return openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportYes
 }
 
 // handleChatStreamingResponse reads Responses SSE events from upstream,

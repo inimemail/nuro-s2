@@ -1848,6 +1848,8 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 	coolingCandidates := make([]*Account, 0)
 	coolingCompactTiers := make(map[int64]int)
+	rng := newOpenAISelectionRNG(nextOpenAIAccountBalanceSeed())
+	selectedRankSeen := 0
 
 	for i := range accounts {
 		acc := &accounts[i]
@@ -1888,6 +1890,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		if selected == nil {
 			selected = fresh
 			selectedCompactTier = compactTier
+			selectedRankSeen = 1
 			continue
 		}
 
@@ -1896,33 +1899,55 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			if compactTier > selectedCompactTier {
 				selected = fresh
 				selectedCompactTier = compactTier
+				selectedRankSeen = 1
 			}
 			continue
 		}
 
-		if s.isBetterAccount(fresh, selected) {
+		if fresh.Priority < selected.Priority {
 			selected = fresh
 			selectedCompactTier = compactTier
+			selectedRankSeen = 1
+			continue
+		}
+		if fresh.Priority == selected.Priority {
+			selectedRankSeen++
+			if rng.nextUint64()%uint64(selectedRankSeen) == 0 {
+				selected = fresh
+				selectedCompactTier = compactTier
+			}
 		}
 	}
 	if selected == nil {
+		coolingRankSeen := 0
 		for _, fresh := range coolingCandidates {
 			compactTier := coolingCompactTiers[fresh.ID]
 			if selected == nil {
 				selected = fresh
 				selectedCompactTier = compactTier
+				coolingRankSeen = 1
 				continue
 			}
 			if requireCompact && compactTier != selectedCompactTier {
 				if compactTier > selectedCompactTier {
 					selected = fresh
 					selectedCompactTier = compactTier
+					coolingRankSeen = 1
 				}
 				continue
 			}
-			if s.isBetterAccount(fresh, selected) {
+			if fresh.Priority < selected.Priority {
 				selected = fresh
 				selectedCompactTier = compactTier
+				coolingRankSeen = 1
+				continue
+			}
+			if fresh.Priority == selected.Priority {
+				coolingRankSeen++
+				if rng.nextUint64()%uint64(coolingRankSeen) == 0 {
+					selected = fresh
+					selectedCompactTier = compactTier
+				}
 			}
 		}
 	} else {
@@ -2153,6 +2178,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 			}
 		})
+		shuffleOpenAIAccountLoadTies(available)
 		available = s.orderOpenAIPoolCoolingLoadedAccountsLast(available, requestedModel)
 
 		selectionOrder := make([]accountWithLoad, 0, len(available))
