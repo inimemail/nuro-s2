@@ -332,10 +332,6 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			if !clientDisconnected && clientOutputStarted {
 				c.Writer.Flush()
 			}
-			continue
-		}
-		if !clientDisconnected && clientOutputStarted {
-			c.Writer.Flush()
 		}
 	}
 
@@ -386,6 +382,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 // ensureOpenAIChatStreamUsage 确保 raw Chat Completions 流式请求会让上游返回 usage。
 // usage 也会继续向下游透传，支持级联代理和下游计费系统。
 func ensureOpenAIChatStreamUsage(body []byte) ([]byte, error) {
+	if gjson.GetBytes(body, "stream_options.include_usage").Bool() {
+		return body, nil
+	}
 	updated, err := sjson.SetBytes(body, "stream_options.include_usage", true)
 	if err != nil {
 		return body, err

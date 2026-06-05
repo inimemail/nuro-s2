@@ -1911,10 +1911,18 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			continue
 		}
 		if fresh.Priority == selected.Priority {
-			selectedRankSeen++
-			if rng.nextUint64()%uint64(selectedRankSeen) == 0 {
+			if s.isBetterAccount(fresh, selected) {
 				selected = fresh
 				selectedCompactTier = compactTier
+				selectedRankSeen = 1
+				continue
+			}
+			if sameOpenAIAccountLastUsedTie(fresh, selected) {
+				selectedRankSeen++
+				if rng.nextUint64()%uint64(selectedRankSeen) == 0 {
+					selected = fresh
+					selectedCompactTier = compactTier
+				}
 			}
 		}
 	}
@@ -1943,10 +1951,18 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 				continue
 			}
 			if fresh.Priority == selected.Priority {
-				coolingRankSeen++
-				if rng.nextUint64()%uint64(coolingRankSeen) == 0 {
+				if s.isBetterAccount(fresh, selected) {
 					selected = fresh
 					selectedCompactTier = compactTier
+					coolingRankSeen = 1
+					continue
+				}
+				if sameOpenAIAccountLastUsedTie(fresh, selected) {
+					coolingRankSeen++
+					if rng.nextUint64()%uint64(coolingRankSeen) == 0 {
+						selected = fresh
+						selectedCompactTier = compactTier
+					}
 				}
 			}
 		}
@@ -2364,16 +2380,23 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	if account == nil {
 		return nil
 	}
-	if s.schedulerSnapshot == nil || s.accountRepo == nil {
+	if s.schedulerSnapshot == nil {
 		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability) {
 			return nil
 		}
 		return account
 	}
 
-	latest, err := s.accountRepo.GetByID(ctx, account.ID)
+	latest, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
 	if err != nil || latest == nil {
-		return nil
+		if s.accountRepo == nil {
+			latest = account
+		} else {
+			latest, err = s.accountRepo.GetByID(ctx, account.ID)
+			if err != nil || latest == nil {
+				return nil
+			}
+		}
 	}
 	if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability) {
 		return nil

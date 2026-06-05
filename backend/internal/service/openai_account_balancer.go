@@ -28,7 +28,8 @@ func sameOpenAIAccountLoadTie(a, b accountWithLoad) bool {
 	}
 	return a.account.Priority == b.account.Priority &&
 		a.loadInfo.LoadRate == b.loadInfo.LoadRate &&
-		a.loadInfo.WaitingCount == b.loadInfo.WaitingCount
+		a.loadInfo.WaitingCount == b.loadInfo.WaitingCount &&
+		sameOpenAIAccountLastUsedTie(a.account, b.account)
 }
 
 func shuffleOpenAIStrictPriorityTies(accounts []openAIAccountCandidateScore) {
@@ -55,7 +56,22 @@ func sameOpenAIStrictPriorityTie(a, b openAIAccountCandidateScore) bool {
 		a.loadInfo.WaitingCount == b.loadInfo.WaitingCount &&
 		a.errorRate == b.errorRate &&
 		a.hasTTFT == b.hasTTFT &&
-		(!a.hasTTFT || a.ttft == b.ttft)
+		(!a.hasTTFT || a.ttft == b.ttft) &&
+		sameOpenAIAccountLastUsedTie(a.account, b.account)
+}
+
+func sameOpenAIAccountLastUsedTie(a, b *Account) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	switch {
+	case a.LastUsedAt == nil && b.LastUsedAt == nil:
+		return true
+	case a.LastUsedAt == nil || b.LastUsedAt == nil:
+		return false
+	default:
+		return a.LastUsedAt.Equal(*b.LastUsedAt)
+	}
 }
 
 func shuffleOpenAIAccountLoadRange(items []accountWithLoad, rng *openAISelectionRNG) {

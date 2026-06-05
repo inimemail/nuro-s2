@@ -35,6 +35,16 @@ type snapshotUpdateAccountRepo struct {
 	updateExtraCalls chan map[string]any
 }
 
+type recheckCountingOpenAIAccountRepo struct {
+	stubOpenAIAccountRepo
+	getByIDCalls int
+}
+
+func (r *recheckCountingOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
+	r.getByIDCalls++
+	return r.stubOpenAIAccountRepo.GetByID(ctx, id)
+}
+
 func (r *snapshotUpdateAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	if r.updateExtraCalls != nil {
 		copied := make(map[string]any, len(updates))
@@ -77,6 +87,68 @@ func (r stubOpenAIAccountRepo) ListSchedulableByPlatform(ctx context.Context, pl
 
 func (r stubOpenAIAccountRepo) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error) {
 	return r.ListSchedulableByPlatform(ctx, platform)
+}
+
+func TestRecheckSelectedOpenAIAccountPrefersSchedulerSnapshot(t *testing.T) {
+	cached := &Account{
+		ID:          91001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 8,
+		Priority:    1,
+	}
+	repo := &recheckCountingOpenAIAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{{
+			ID:          cached.ID,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    9,
+		}}},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo: repo,
+		schedulerSnapshot: NewSchedulerSnapshotService(&openAISnapshotCacheStub{
+			accountsByID: map[int64]*Account{cached.ID: cached},
+		}, nil, repo, nil, nil),
+	}
+
+	got := svc.recheckSelectedOpenAIAccountFromDB(context.Background(), &Account{ID: cached.ID}, "", false, "")
+
+	require.NotNil(t, got)
+	require.Equal(t, cached.Concurrency, got.Concurrency)
+	require.Zero(t, repo.getByIDCalls)
+}
+
+func TestRecheckSelectedOpenAIAccountFallsBackToDBWhenSnapshotMisses(t *testing.T) {
+	dbAccount := Account{
+		ID:          91002,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 3,
+		Priority:    1,
+	}
+	repo := &recheckCountingOpenAIAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{dbAccount}},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo: repo,
+		schedulerSnapshot: NewSchedulerSnapshotService(&openAISnapshotCacheStub{
+			accountsByID: map[int64]*Account{},
+		}, nil, repo, nil, nil),
+	}
+
+	got := svc.recheckSelectedOpenAIAccountFromDB(context.Background(), &Account{ID: dbAccount.ID}, "", false, "")
+
+	require.NotNil(t, got)
+	require.Equal(t, dbAccount.Concurrency, got.Concurrency)
+	require.Equal(t, 1, repo.getByIDCalls)
 }
 
 type stubConcurrencyCache struct {

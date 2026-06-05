@@ -114,7 +114,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
-			return derefAccounts(cached), useMixed, nil
+			return filterSnapshotAccountsForBucket(derefAccounts(cached), bucket, useMixed), useMixed, nil
 		}
 	}
 
@@ -139,6 +139,40 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	return accounts, useMixed, nil
 }
 
+func filterSnapshotAccountsForBucket(accounts []Account, bucket SchedulerBucket, useMixed bool) []Account {
+	if len(accounts) == 0 || bucket.GroupID <= 0 {
+		return accounts
+	}
+	filtered := make([]Account, 0, len(accounts))
+	for _, account := range accounts {
+		if !schedulerSnapshotAccountBelongsToGroup(&account, bucket.GroupID) {
+			continue
+		}
+		if useMixed && account.Platform == PlatformAntigravity && !account.IsMixedSchedulingEnabled() {
+			continue
+		}
+		filtered = append(filtered, account)
+	}
+	return filtered
+}
+
+func schedulerSnapshotAccountBelongsToGroup(account *Account, groupID int64) bool {
+	if account == nil || groupID <= 0 {
+		return false
+	}
+	for _, id := range account.GroupIDs {
+		if id == groupID {
+			return true
+		}
+	}
+	for _, accountGroup := range account.AccountGroups {
+		if accountGroup.GroupID == groupID {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
 	if accountID <= 0 {
 		return nil, nil
@@ -154,6 +188,9 @@ func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int
 
 	if err := s.guardFallback(ctx); err != nil {
 		return nil, err
+	}
+	if s.accountRepo == nil {
+		return nil, ErrSchedulerCacheNotReady
 	}
 	fallbackCtx, cancel := s.withFallbackTimeout(ctx)
 	defer cancel()

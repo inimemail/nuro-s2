@@ -847,6 +847,7 @@ func (r *accountRepository) RemoveFromGroup(ctx context.Context, accountID, grou
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue remove from group failed: account=%d group=%d err=%v", accountID, groupID, err)
 	}
+	r.syncSchedulerAccountSnapshot(ctx, accountID)
 	return nil
 }
 
@@ -891,24 +892,19 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 		return err
 	}
 
-	if len(groupIDs) == 0 {
-		if tx != nil {
-			return tx.Commit()
+	if len(groupIDs) > 0 {
+		builders := make([]*dbent.AccountGroupCreate, 0, len(groupIDs))
+		for i, groupID := range groupIDs {
+			builders = append(builders, txClient.AccountGroup.Create().
+				SetAccountID(accountID).
+				SetGroupID(groupID).
+				SetPriority(i+1),
+			)
 		}
-		return nil
-	}
 
-	builders := make([]*dbent.AccountGroupCreate, 0, len(groupIDs))
-	for i, groupID := range groupIDs {
-		builders = append(builders, txClient.AccountGroup.Create().
-			SetAccountID(accountID).
-			SetGroupID(groupID).
-			SetPriority(i+1),
-		)
-	}
-
-	if _, err := txClient.AccountGroup.CreateBulk(builders...).Save(ctx); err != nil {
-		return err
+		if _, err := txClient.AccountGroup.CreateBulk(builders...).Save(ctx); err != nil {
+			return err
+		}
 	}
 
 	if tx != nil {
@@ -920,6 +916,7 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue bind groups failed: account=%d err=%v", accountID, err)
 	}
+	r.syncSchedulerAccountSnapshot(ctx, accountID)
 	return nil
 }
 
@@ -1489,6 +1486,9 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 			shouldSync = true
 		}
 		if updates.Schedulable != nil && !*updates.Schedulable {
+			shouldSync = true
+		}
+		if updates.Priority != nil {
 			shouldSync = true
 		}
 		if shouldSync {

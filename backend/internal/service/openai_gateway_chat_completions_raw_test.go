@@ -546,6 +546,12 @@ func TestEnsureOpenAIChatStreamUsage(t *testing.T) {
 	body, err = ensureOpenAIChatStreamUsage([]byte(`{"model":"gpt-5.4","stream_options":{"include_usage":false}}`))
 	require.NoError(t, err)
 	require.True(t, gjson.GetBytes(body, "stream_options.include_usage").Bool())
+
+	alreadyEnabled := []byte(`{"model":"gpt-5.4","stream_options":{"include_usage":true}}`)
+	body, err = ensureOpenAIChatStreamUsage(alreadyEnabled)
+	require.NoError(t, err)
+	require.True(t, gjson.GetBytes(body, "stream_options.include_usage").Bool())
+	require.True(t, len(body) > 0 && &alreadyEnabled[0] == &body[0])
 }
 
 func TestBufferRawChatCompletions_RejectsOversizedResponse(t *testing.T) {

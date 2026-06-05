@@ -546,16 +546,41 @@ func (s *AccountRepoSuite) TestGroupBinding_And_BindGroups() {
 	s.Require().Len(groups, 2, "expected 2 groups after bind")
 }
 
+func (s *AccountRepoSuite) TestRemoveFromGroup_SyncsSchedulerAccountSnapshot() {
+	group := mustCreateGroup(s.T(), s.client, &service.Group{Name: "g-remove-sync"})
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-remove-sync"})
+	mustBindAccountToGroup(s.T(), s.client, account.ID, group.ID, 1)
+	cacheRecorder := &schedulerCacheRecorder{}
+	s.repo.schedulerCache = cacheRecorder
+
+	s.Require().NoError(s.repo.RemoveFromGroup(s.ctx, account.ID, group.ID))
+
+	s.Require().Len(cacheRecorder.setAccounts, 1)
+	s.Require().Equal(account.ID, cacheRecorder.setAccounts[0].ID)
+	s.Require().Empty(cacheRecorder.setAccounts[0].GroupIDs)
+}
+
 func (s *AccountRepoSuite) TestBindGroups_EmptyList() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-empty"})
 	group := mustCreateGroup(s.T(), s.client, &service.Group{Name: "g-empty"})
 	mustBindAccountToGroup(s.T(), s.client, account.ID, group.ID, 1)
+	cacheRecorder := &schedulerCacheRecorder{}
+	s.repo.schedulerCache = cacheRecorder
+	_, err := s.repo.sql.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+	s.Require().NoError(err)
 
 	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{}), "BindGroups empty")
 
 	groups, err := s.repo.GetGroups(s.ctx, account.ID)
 	s.Require().NoError(err)
 	s.Require().Empty(groups, "expected 0 groups after binding empty list")
+	s.Require().Len(cacheRecorder.setAccounts, 1)
+	s.Require().Empty(cacheRecorder.setAccounts[0].GroupIDs)
+
+	var outboxCount int
+	err = scanSingleRow(s.ctx, s.repo.sql, "SELECT COUNT(*) FROM scheduler_outbox WHERE event_type = $1", []any{service.SchedulerOutboxEventAccountGroupsChanged}, &outboxCount)
+	s.Require().NoError(err)
+	s.Require().Equal(1, outboxCount)
 }
 
 // --- Schedulable ---
@@ -968,6 +993,8 @@ func (s *AccountRepoSuite) TestGetByCRSAccountID_EmptyString() {
 func (s *AccountRepoSuite) TestBulkUpdate() {
 	a1 := mustCreateAccount(s.T(), s.client, &service.Account{Name: "bulk1", Priority: 1})
 	a2 := mustCreateAccount(s.T(), s.client, &service.Account{Name: "bulk2", Priority: 1})
+	cacheRecorder := &schedulerCacheRecorder{}
+	s.repo.schedulerCache = cacheRecorder
 
 	newPriority := 99
 	affected, err := s.repo.BulkUpdate(s.ctx, []int64{a1.ID, a2.ID}, service.AccountBulkUpdate{
@@ -980,6 +1007,9 @@ func (s *AccountRepoSuite) TestBulkUpdate() {
 	got2, _ := s.repo.GetByID(s.ctx, a2.ID)
 	s.Require().Equal(99, got1.Priority)
 	s.Require().Equal(99, got2.Priority)
+	s.Require().Len(cacheRecorder.setAccounts, 2)
+	s.Require().Equal(99, cacheRecorder.accounts[a1.ID].Priority)
+	s.Require().Equal(99, cacheRecorder.accounts[a2.ID].Priority)
 }
 
 func (s *AccountRepoSuite) TestBulkUpdate_MergeCredentials() {

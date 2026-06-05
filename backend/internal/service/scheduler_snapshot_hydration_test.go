@@ -14,7 +14,22 @@ type snapshotHydrationCache struct {
 }
 
 func (c *snapshotHydrationCache) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
-	return c.snapshot, true, nil
+	if c.accounts == nil {
+		return c.snapshot, true, nil
+	}
+	out := make([]*Account, 0, len(c.snapshot))
+	for _, account := range c.snapshot {
+		if account == nil {
+			out = append(out, nil)
+			continue
+		}
+		if fresh, ok := c.accounts[account.ID]; ok {
+			out = append(out, fresh)
+			continue
+		}
+		out = append(out, account)
+	}
+	return out, true, nil
 }
 
 func (c *snapshotHydrationCache) SetSnapshot(ctx context.Context, bucket SchedulerBucket, accounts []Account) error {
@@ -71,6 +86,7 @@ func TestOpenAISelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedul
 				Schedulable: true,
 				Concurrency: 1,
 				Priority:    1,
+				GroupIDs:    []int64{2},
 				Credentials: map[string]any{
 					"model_mapping": map[string]any{
 						"gpt-4": "gpt-4",
@@ -87,6 +103,7 @@ func TestOpenAISelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedul
 				Schedulable: true,
 				Concurrency: 1,
 				Priority:    1,
+				GroupIDs:    []int64{2},
 				Credentials: map[string]any{
 					"api_key":       "sk-live",
 					"model_mapping": map[string]any{"gpt-4": "gpt-4"},
@@ -111,6 +128,44 @@ func TestOpenAISelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedul
 	}
 	if got := selection.Account.GetOpenAIApiKey(); got != "sk-live" {
 		t.Fatalf("expected hydrated api key, got %q", got)
+	}
+}
+
+func TestSchedulerSnapshotListSchedulableAccounts_FiltersStaleGroupMembership(t *testing.T) {
+	cache := &snapshotHydrationCache{
+		snapshot: []*Account{
+			{
+				ID:          1,
+				Platform:    PlatformOpenAI,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Priority:    1,
+				GroupIDs:    []int64{10},
+			},
+		},
+		accounts: map[int64]*Account{
+			1: {
+				ID:          1,
+				Platform:    PlatformOpenAI,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Priority:    1,
+				GroupIDs:    nil,
+			},
+		},
+	}
+
+	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil)
+	groupID := int64(10)
+
+	accounts, _, err := schedulerSnapshot.ListSchedulableAccounts(context.Background(), &groupID, PlatformOpenAI, false)
+	if err != nil {
+		t.Fatalf("ListSchedulableAccounts error: %v", err)
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("expected stale group member to be filtered, got %d accounts", len(accounts))
 	}
 }
 

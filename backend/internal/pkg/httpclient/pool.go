@@ -31,7 +31,7 @@ import (
 // Transport 连接池默认配置
 const (
 	defaultMaxIdleConns        = 100              // 最大空闲连接数
-	defaultMaxIdleConnsPerHost = 10               // 每个主机最大空闲连接数
+	defaultMaxIdleConnsPerHost = 100              // 每个主机最大空闲连接数
 	defaultIdleConnTimeout     = 90 * time.Second // 空闲连接超时时间（建议小于上游 LB 超时）
 	defaultDialTimeout         = 5 * time.Second  // TCP 连接超时（含代理握手），代理不通时快速失败
 	defaultTLSHandshakeTimeout = 5 * time.Second  // TLS 握手超时
@@ -49,7 +49,7 @@ type Options struct {
 
 	// 可选的连接池参数（不设置则使用默认值）
 	MaxIdleConns        int // 最大空闲连接总数（默认 100）
-	MaxIdleConnsPerHost int // 每主机最大空闲连接（默认 10）
+	MaxIdleConnsPerHost int // 每主机最大空闲连接（默认 100）
 	MaxConnsPerHost     int // 每主机最大连接数（默认 0 无限制）
 }
 
