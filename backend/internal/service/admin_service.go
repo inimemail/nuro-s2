@@ -2512,11 +2512,19 @@ func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int,
 	if err != nil {
 		return nil, 0, err
 	}
+	for i := range accounts {
+		s.attachAccountRuntimeState(&accounts[i])
+	}
 	return accounts, result.Total, nil
 }
 
 func (s *adminServiceImpl) GetAccount(ctx context.Context, id int64) (*Account, error) {
-	return s.accountRepo.GetByID(ctx, id)
+	account, err := s.accountRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.attachAccountRuntimeState(account)
+	return account, nil
 }
 
 func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
@@ -2529,7 +2537,34 @@ func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([
 		return nil, fmt.Errorf("failed to get accounts by IDs: %w", err)
 	}
 
+	for _, account := range accounts {
+		s.attachAccountRuntimeState(account)
+	}
 	return accounts, nil
+}
+
+type openAIPoolSoftCooldownStateReader interface {
+	OpenAIPoolSoftCooldownState(accountID int64) OpenAIPoolSoftCooldownState
+}
+
+func (s *adminServiceImpl) attachAccountRuntimeState(account *Account) {
+	if s == nil || account == nil || s.runtimeBlocker == nil {
+		return
+	}
+	reader, ok := s.runtimeBlocker.(openAIPoolSoftCooldownStateReader)
+	if !ok {
+		return
+	}
+	state := reader.OpenAIPoolSoftCooldownState(account.ID)
+	if !state.Cooling {
+		return
+	}
+	until := state.Until
+	account.OpenAIPoolSoftCooldownUntil = &until
+	account.OpenAIPoolSoftCooldownDue = state.Due
+	account.OpenAIPoolSoftCooldownStatusCode = state.StatusCode
+	account.OpenAIPoolSoftCooldownReason = state.Reason
+	account.OpenAIPoolRecoveryProbeInFlight = state.ProbeInFlight
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {

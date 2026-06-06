@@ -362,6 +362,7 @@ type OpenAIGatewayService struct {
 	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockUntil      sync.Map // key: int64(accountID), value: time.Time
 	openaiPoolSoftCooldownUntil         sync.Map // key: int64(accountID), value: time.Time
+	openaiPoolSoftCooldownContext       sync.Map // key: int64(accountID), value: openAIPoolSoftCooldownContext
 	openaiPoolRecoveryProbeInFlight     sync.Map // key: int64(accountID), value: struct{}
 	openaiPoolRecoveryProbeFailureCount sync.Map // key: int64(accountID), value: int
 	openaiOAuth429WindowStartUnixNano   atomic.Int64
@@ -1582,63 +1583,47 @@ func prioritizeOpenAICompactAccounts(accounts []*Account) []*Account {
 }
 
 func (s *OpenAIGatewayService) orderOpenAIPoolCoolingAccountsLast(accounts []*Account, requestedModel string) []*Account {
-	if len(accounts) <= 1 {
+	if len(accounts) == 0 {
 		return accounts
 	}
 	active := make([]*Account, 0, len(accounts))
-	cooling := make([]*Account, 0)
 	probeDue := make([]*Account, 0)
 	for _, account := range accounts {
 		if s.isOpenAIPoolAccountSoftCooling(account) {
 			if s.isOpenAIPoolAccountSoftCooldownDue(account) {
 				probeDue = append(probeDue, account)
 			}
-			cooling = append(cooling, account)
 			continue
 		}
 		active = append(active, account)
 	}
-	if len(cooling) == 0 {
+	if len(active) == len(accounts) {
 		return accounts
 	}
-	s.sortOpenAIPoolCooldownProbeAccounts(cooling)
-	if len(active) > 0 {
-		s.maybeStartOpenAIPoolRecoveryProbes(probeDue, requestedModel)
-	}
-	out := make([]*Account, 0, len(accounts))
-	out = append(out, active...)
-	out = append(out, cooling...)
-	return out
+	s.maybeStartOpenAIPoolRecoveryProbes(probeDue, requestedModel)
+	return active
 }
 
 func (s *OpenAIGatewayService) orderOpenAIPoolCoolingLoadedAccountsLast(accounts []accountWithLoad, requestedModel string) []accountWithLoad {
-	if len(accounts) <= 1 {
+	if len(accounts) == 0 {
 		return accounts
 	}
 	active := make([]accountWithLoad, 0, len(accounts))
-	cooling := make([]accountWithLoad, 0)
 	probeDue := make([]*Account, 0)
 	for _, item := range accounts {
 		if s.isOpenAIPoolAccountSoftCooling(item.account) {
 			if s.isOpenAIPoolAccountSoftCooldownDue(item.account) {
 				probeDue = append(probeDue, item.account)
 			}
-			cooling = append(cooling, item)
 			continue
 		}
 		active = append(active, item)
 	}
-	if len(cooling) == 0 {
+	if len(active) == len(accounts) {
 		return accounts
 	}
-	s.sortOpenAIPoolCooldownProbeLoadedAccounts(cooling)
-	if len(active) > 0 {
-		s.maybeStartOpenAIPoolRecoveryProbes(probeDue, requestedModel)
-	}
-	out := make([]accountWithLoad, 0, len(accounts))
-	out = append(out, active...)
-	out = append(out, cooling...)
-	return out
+	s.maybeStartOpenAIPoolRecoveryProbes(probeDue, requestedModel)
+	return active
 }
 
 func (s *OpenAIGatewayService) maybeStartOpenAIPoolRecoveryProbes(accounts []*Account, requestedModel string) {
@@ -2373,6 +2358,12 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 	if !isOpenAIAccountEligibleForRequest(ctx, fresh, requestedModel, requireCompact, requiredCapability) {
 		return nil
 	}
+	if s.isOpenAIPoolAccountSoftCooling(fresh) {
+		if s.isOpenAIPoolAccountSoftCooldownDue(fresh) {
+			s.maybeStartOpenAIPoolRecoveryProbe(context.Background(), fresh, requestedModel)
+		}
+		return nil
+	}
 	if s.isOpenAIAccountRuntimeBlocked(fresh) {
 		return nil
 	}
@@ -2385,6 +2376,12 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	}
 	if s.schedulerSnapshot == nil {
 		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability) {
+			return nil
+		}
+		if s.isOpenAIPoolAccountSoftCooling(account) {
+			if s.isOpenAIPoolAccountSoftCooldownDue(account) {
+				s.maybeStartOpenAIPoolRecoveryProbe(context.Background(), account, requestedModel)
+			}
 			return nil
 		}
 		return account
@@ -2402,6 +2399,12 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		}
 	}
 	if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability) {
+		return nil
+	}
+	if s.isOpenAIPoolAccountSoftCooling(latest) {
+		if s.isOpenAIPoolAccountSoftCooldownDue(latest) {
+			s.maybeStartOpenAIPoolRecoveryProbe(context.Background(), latest, requestedModel)
+		}
 		return nil
 	}
 	if s.isOpenAIAccountRuntimeBlocked(latest) {
@@ -2514,10 +2517,21 @@ func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool 
 }
 
 func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
-	if s.shouldFailoverUpstreamError(statusCode) {
+	if statusCode == http.StatusBadRequest {
+		return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
+	}
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusPaymentRequired || statusCode == http.StatusForbidden ||
+		statusCode == http.StatusTooManyRequests || statusCode == 529 || statusCode >= 500 {
 		return true
 	}
-	return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
+	return false
+}
+
+func (s *OpenAIGatewayService) shouldFailoverOpenAIAccountResponse(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if account != nil && account.IsOpenAI() && account.IsPoolMode() {
+		return classifyOpenAIPoolFailover(account, statusCode, upstreamMsg, upstreamBody).Failover
+	}
+	return s.shouldFailoverOpenAIUpstreamResponse(statusCode, upstreamMsg, upstreamBody)
 }
 
 func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account, requestedModel ...string) {
@@ -3252,6 +3266,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		if err != nil {
+			if failoverErr := s.newOpenAIPoolRequestFailoverError(c, account, upstreamReq, err, false); failoverErr != nil {
+				return nil, failoverErr
+			}
 			// Ensure the client receives an error response (handlers assume Forward writes on non-failover errors).
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
 			setOpsUpstreamError(c, 0, safeErr, "")
@@ -3293,7 +3310,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				}
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Skip non-WSv2 invalid_encrypted_content retry because encrypted reasoning items are missing (account: %s)", account.Name)
 			}
-			if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+			if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {
 				upstreamDetail := ""
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 					maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
@@ -3317,7 +3334,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				return nil, &UpstreamFailoverError{
 					StatusCode:             resp.StatusCode,
 					ResponseBody:           respBody,
-					RetryableOnSameAccount: account.IsPoolMode() && (account.IsPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
+					RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMsg, respBody),
 				}
 			}
 			return s.handleErrorResponse(ctx, resp, c, account, body, billingModel)
@@ -3548,6 +3565,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
+		if failoverErr := s.newOpenAIPoolRequestFailoverError(c, account, upstreamReq, err, true); failoverErr != nil {
+			return nil, failoverErr
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -3596,7 +3616,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		imageCount = result.imageCount
 		imageOutputSizes = result.imageOutputSizes
 	} else {
-		result, err := s.handleNonStreamingResponsePassthrough(ctx, resp, c, reqModel, upstreamPassthroughModel)
+		result, err := s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel, upstreamPassthroughModel)
 		if err != nil {
 			return nil, err
 		}
@@ -3787,10 +3807,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 
 func shouldFailoverOpenAIPassthroughResponse(statusCode int) bool {
 	switch statusCode {
-	case http.StatusTooManyRequests, 529:
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, 529:
 		return true
 	default:
-		return false
+		return statusCode >= 500
 	}
 }
 
@@ -3830,9 +3850,10 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 		UpstreamResponseBody: upstreamDetail,
 	})
 	return &UpstreamFailoverError{
-		StatusCode:      resp.StatusCode,
-		ResponseBody:    body,
-		ResponseHeaders: resp.Header.Clone(),
+		StatusCode:             resp.StatusCode,
+		ResponseBody:           body,
+		ResponseHeaders:        resp.Header.Clone(),
+		RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMsg, body),
 	}
 }
 
@@ -4050,9 +4071,10 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 		},
 	})
 	return &UpstreamFailoverError{
-		StatusCode:   http.StatusBadGateway,
-		ResponseBody: body,
-		Message:      message,
+		StatusCode:             http.StatusBadGateway,
+		ResponseBody:           body,
+		Message:                message,
+		RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, http.StatusBadGateway, message, body),
 	}
 }
 
@@ -4243,12 +4265,16 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
+	account *Account,
 	originalModel string,
 	mappedModel string,
 ) (*openaiNonStreamingResultPassthrough, error) {
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
+	}
+	if failoverErr := s.newOpenAIPoolEmbeddedFailoverError(ctx, c, account, resp, body, mappedModel, true); failoverErr != nil {
+		return nil, failoverErr
 	}
 
 	// Detect SSE responses from upstream and convert to JSON.
@@ -4647,7 +4673,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           body,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMsg, body),
 		}
 	}
 
@@ -4786,7 +4812,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           body,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMsg, body),
 		}
 	}
 
@@ -5425,6 +5451,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
+	}
+	if failoverErr := s.newOpenAIPoolEmbeddedFailoverError(ctx, c, account, resp, body, mappedModel, false); failoverErr != nil {
+		return nil, failoverErr
 	}
 
 	// Detect SSE responses for ALL account types via Content-Type header.

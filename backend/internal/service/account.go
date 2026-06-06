@@ -48,6 +48,12 @@ type Account struct {
 	TempUnschedulableUntil  *time.Time
 	TempUnschedulableReason string
 
+	OpenAIPoolSoftCooldownUntil      *time.Time
+	OpenAIPoolSoftCooldownDue        bool
+	OpenAIPoolSoftCooldownStatusCode int
+	OpenAIPoolSoftCooldownReason     string
+	OpenAIPoolRecoveryProbeInFlight  bool
+
 	SessionWindowStart  *time.Time
 	SessionWindowEnd    *time.Time
 	SessionWindowStatus string

@@ -125,6 +125,7 @@ func (s *OpenAIGatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	}
 	s.openaiAccountRuntimeBlockUntil.Delete(accountID)
 	s.openaiPoolSoftCooldownUntil.Delete(accountID)
+	s.openaiPoolSoftCooldownContext.Delete(accountID)
 	s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
 	s.openaiPoolRecoveryProbeFailureCount.Delete(accountID)
 }
@@ -150,6 +151,10 @@ func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) b
 }
 
 func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldown(ctx context.Context, account *Account, statusCode int, responseBody []byte) {
+	s.MarkOpenAIPoolAccountSoftCooldownWithContext(ctx, account, statusCode, responseBody, openAIPoolSoftCooldownContext{})
+}
+
+func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx context.Context, account *Account, statusCode int, responseBody []byte, cooldownContext openAIPoolSoftCooldownContext) {
 	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
 		return
 	}
@@ -182,6 +187,16 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldown(ctx context.Con
 	}
 	if cooldown <= 0 {
 		return
+	}
+	if cooldownContext.StatusCode == 0 {
+		cooldownContext.StatusCode = statusCode
+	}
+	if strings.TrimSpace(cooldownContext.Reason) == "" {
+		cooldownContext.Reason = sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(responseBody))
+	}
+	cooldownContext.Reason = truncateString(strings.TrimSpace(cooldownContext.Reason), 256)
+	if cooldownContext.ProbeCapability != "" || cooldownContext.StatusCode > 0 || cooldownContext.Reason != "" {
+		s.openaiPoolSoftCooldownContext.Store(account.ID, cooldownContext)
 	}
 	s.storeOpenAIPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown))
 }
@@ -220,6 +235,7 @@ func (s *OpenAIGatewayService) isOpenAIPoolAccountSoftCooling(account *Account) 
 	until, ok := value.(time.Time)
 	if !ok || until.IsZero() {
 		s.openaiPoolSoftCooldownUntil.Delete(account.ID)
+		s.openaiPoolSoftCooldownContext.Delete(account.ID)
 		return false
 	}
 	return true
@@ -229,21 +245,67 @@ func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownUntil(account *Accou
 	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
 		return time.Time{}, false
 	}
-	value, ok := s.openaiPoolSoftCooldownUntil.Load(account.ID)
+	return s.openAIPoolAccountSoftCooldownUntilByID(account.ID)
+}
+
+func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownUntilByID(accountID int64) (time.Time, bool) {
+	if s == nil || accountID <= 0 {
+		return time.Time{}, false
+	}
+	value, ok := s.openaiPoolSoftCooldownUntil.Load(accountID)
 	if !ok {
 		return time.Time{}, false
 	}
 	until, ok := value.(time.Time)
 	if !ok || until.IsZero() {
-		s.openaiPoolSoftCooldownUntil.Delete(account.ID)
+		s.openaiPoolSoftCooldownUntil.Delete(accountID)
+		s.openaiPoolSoftCooldownContext.Delete(accountID)
 		return time.Time{}, false
 	}
 	return until, true
 }
 
+func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownContext(accountID int64) openAIPoolSoftCooldownContext {
+	if s == nil || accountID <= 0 {
+		return openAIPoolSoftCooldownContext{}
+	}
+	value, ok := s.openaiPoolSoftCooldownContext.Load(accountID)
+	if !ok {
+		return openAIPoolSoftCooldownContext{}
+	}
+	cooldownContext, _ := value.(openAIPoolSoftCooldownContext)
+	return cooldownContext
+}
+
 func (s *OpenAIGatewayService) isOpenAIPoolAccountSoftCooldownDue(account *Account) bool {
 	until, ok := s.openAIPoolAccountSoftCooldownUntil(account)
 	return ok && !time.Now().Before(until)
+}
+
+type OpenAIPoolSoftCooldownState struct {
+	Until         time.Time
+	Cooling       bool
+	Due           bool
+	ProbeInFlight bool
+	StatusCode    int
+	Reason        string
+}
+
+func (s *OpenAIGatewayService) OpenAIPoolSoftCooldownState(accountID int64) OpenAIPoolSoftCooldownState {
+	until, cooling := s.openAIPoolAccountSoftCooldownUntilByID(accountID)
+	if !cooling {
+		return OpenAIPoolSoftCooldownState{}
+	}
+	_, probing := s.openaiPoolRecoveryProbeInFlight.Load(accountID)
+	cooldownContext := s.openAIPoolAccountSoftCooldownContext(accountID)
+	return OpenAIPoolSoftCooldownState{
+		Until:         until,
+		Cooling:       true,
+		Due:           !time.Now().Before(until),
+		ProbeInFlight: probing,
+		StatusCode:    cooldownContext.StatusCode,
+		Reason:        cooldownContext.Reason,
+	}
 }
 
 func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
@@ -257,7 +319,12 @@ func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
 		return
 	}
 	if failoverErr != nil {
-		s.MarkOpenAIPoolAccountSoftCooldown(ctx, account, failoverErr.StatusCode, failoverErr.ResponseBody)
+		decision := classifyOpenAIPoolFailover(account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+		s.MarkOpenAIPoolAccountSoftCooldownWithContext(ctx, account, failoverErr.StatusCode, failoverErr.ResponseBody, openAIPoolSoftCooldownContext{
+			ProbeCapability: decision.ProbeCapability,
+			StatusCode:      failoverErr.StatusCode,
+			Reason:          failoverErr.Message,
+		})
 	}
 	if strings.TrimSpace(sessionHash) == "" {
 		return

@@ -852,6 +852,11 @@ export interface Account {
   overload_until: string | null
   temp_unschedulable_until: string | null
   temp_unschedulable_reason: string | null
+  openai_pool_soft_cooldown_until: string | null
+  openai_pool_soft_cooldown_due: boolean
+  openai_pool_soft_cooldown_status_code?: number
+  openai_pool_soft_cooldown_reason?: string
+  openai_pool_recovery_probe_in_flight: boolean
 
   // Session window fields (5-hour window)
   session_window_start: string | null

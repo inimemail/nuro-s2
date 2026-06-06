@@ -12,6 +12,23 @@
       <span class="text-[11px] text-gray-400 dark:text-gray-500">{{ overloadCountdown }}</span>
     </div>
 
+    <!-- OpenAI Pool Soft Cooldown Display -->
+    <div v-else-if="isOpenAIPoolSoftCooling" class="group/pool relative flex flex-col items-center gap-1">
+      <span :class="['badge text-xs', openAIPoolSoftCooldownBadgeClass]">{{ openAIPoolSoftCooldownStatusText }}</span>
+      <span v-if="openAIPoolSoftCooldownSubText" class="text-[11px] text-gray-400 dark:text-gray-500">
+        {{ openAIPoolSoftCooldownSubText }}
+      </span>
+      <div
+        v-if="openAIPoolSoftCooldownTooltip"
+        class="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 whitespace-normal rounded bg-gray-900 px-3 py-2 text-center text-xs leading-relaxed text-white opacity-0 transition-opacity group-hover/pool:opacity-100 dark:bg-gray-700"
+      >
+        {{ openAIPoolSoftCooldownTooltip }}
+        <div
+          class="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-gray-900 dark:border-t-gray-700"
+        ></div>
+      </div>
+    </div>
+
     <!-- Main Status Badge (shown when not rate limited/overloaded) -->
     <template v-else>
       <button
@@ -283,6 +300,15 @@ const isTempUnschedulable = computed(() => {
   return new Date(props.account.temp_unschedulable_until) > new Date()
 })
 
+const isOpenAIPoolSoftCooling = computed(() => {
+  if (!props.account.openai_pool_soft_cooldown_until) return false
+  return (
+    new Date(props.account.openai_pool_soft_cooldown_until) > new Date() ||
+    props.account.openai_pool_soft_cooldown_due ||
+    props.account.openai_pool_recovery_probe_in_flight
+  )
+})
+
 // Computed: has error status
 const hasError = computed(() => {
   return props.account.status === 'error'
@@ -311,6 +337,51 @@ const rateLimitResumeText = computed(() => {
 // Computed: countdown text for overload (529)
 const overloadCountdown = computed(() => {
   return formatCountdownWithSuffix(props.account.overload_until)
+})
+
+const openAIPoolSoftCooldownStatusText = computed(() => {
+  if (props.account.openai_pool_recovery_probe_in_flight) {
+    return t('admin.accounts.status.poolRecoveryProbing')
+  }
+  if (props.account.openai_pool_soft_cooldown_due) {
+    return t('admin.accounts.status.poolRecoveryPending')
+  }
+  return t('admin.accounts.status.poolSoftCooldown')
+})
+
+const openAIPoolSoftCooldownBadgeClass = computed(() => {
+  if (props.account.openai_pool_recovery_probe_in_flight) {
+    return 'badge-primary'
+  }
+  return 'badge-warning'
+})
+
+const openAIPoolSoftCooldownSubText = computed(() => {
+  if (props.account.openai_pool_recovery_probe_in_flight) {
+    return t('admin.accounts.status.poolRecoveryProbingShort')
+  }
+  if (props.account.openai_pool_soft_cooldown_due) {
+    return t('admin.accounts.status.poolRecoveryPendingShort')
+  }
+  const countdown = formatCountdownWithSuffix(props.account.openai_pool_soft_cooldown_until)
+  if (!countdown) return ''
+  return t('admin.accounts.status.poolSoftCooldownAutoProbe', { time: countdown })
+})
+
+const openAIPoolSoftCooldownTooltip = computed(() => {
+  if (!isOpenAIPoolSoftCooling.value) return ''
+  const code = props.account.openai_pool_soft_cooldown_status_code
+  const reason = props.account.openai_pool_soft_cooldown_reason?.trim()
+  if (code && reason) {
+    return t('admin.accounts.status.poolSoftCooldownReasonWithCode', { code, reason })
+  }
+  if (reason) {
+    return reason
+  }
+  if (code) {
+    return t('admin.accounts.status.poolSoftCooldownCode', { code })
+  }
+  return t('admin.accounts.status.poolSoftCooldownReason')
 })
 
 // Computed: status badge class

@@ -184,6 +184,12 @@ type Account struct {
 	TempUnschedulableUntil  *time.Time `json:"temp_unschedulable_until"`
 	TempUnschedulableReason string     `json:"temp_unschedulable_reason"`
 
+	OpenAIPoolSoftCooldownUntil      *time.Time `json:"openai_pool_soft_cooldown_until"`
+	OpenAIPoolSoftCooldownDue        bool       `json:"openai_pool_soft_cooldown_due"`
+	OpenAIPoolSoftCooldownStatusCode int        `json:"openai_pool_soft_cooldown_status_code,omitempty"`
+	OpenAIPoolSoftCooldownReason     string     `json:"openai_pool_soft_cooldown_reason,omitempty"`
+	OpenAIPoolRecoveryProbeInFlight  bool       `json:"openai_pool_recovery_probe_in_flight"`
+
 	SessionWindowStart  *time.Time `json:"session_window_start"`
 	SessionWindowEnd    *time.Time `json:"session_window_end"`
 	SessionWindowStatus string     `json:"session_window_status"`

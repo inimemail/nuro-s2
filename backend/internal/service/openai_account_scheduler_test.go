@@ -1969,7 +1969,7 @@ func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerTTFTBeforeLRU(t *test
 	require.Equal(t, int64(5241), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_AllCoolingPoolAccountsProbeSoonestReset(t *testing.T) {
+func TestBuildOpenAISelectionOrder_AllCoolingPoolAccountsExcludedUntilProbeSuccess(t *testing.T) {
 	now := time.Now()
 	oldestUsed := now.Add(-30 * time.Minute)
 	newestUsed := now.Add(-5 * time.Minute)
@@ -2017,10 +2017,7 @@ func TestBuildOpenAISelectionOrder_AllCoolingPoolAccountsProbeSoonestReset(t *te
 		},
 	})
 
-	require.Len(t, order, 3)
-	require.Equal(t, int64(5301), order[0].account.ID)
-	require.Equal(t, int64(5302), order[1].account.ID)
-	require.Equal(t, int64(5303), order[2].account.ID)
+	require.Empty(t, order)
 }
 
 func TestReportOpenAIAccountScheduleResult_SuccessClearsPoolSoftCooldown(t *testing.T) {

@@ -80,6 +80,11 @@ func (s *OpenAIGatewayService) runOpenAIPoolRecoveryProbe(ctx context.Context, a
 }
 
 func (s *OpenAIGatewayService) probeOpenAIPoolAccountRecovery(ctx context.Context, account *Account, requestedModel string) openAIPoolRecoveryProbeResult {
+	cooldownContext := s.openAIPoolAccountSoftCooldownContext(account.ID)
+	switch cooldownContext.ProbeCapability {
+	case OpenAIImagesCapabilityBasic, OpenAIImagesCapabilityNative:
+		return s.probeOpenAIPoolAccountImages(ctx, account, cooldownContext.ProbeCapability)
+	}
 	model := resolveOpenAIForwardModel(account, requestedModel, "")
 	if strings.TrimSpace(model) == "" {
 		model = openai.DefaultTestModel
@@ -94,6 +99,35 @@ func (s *OpenAIGatewayService) probeOpenAIPoolAccountRecovery(ctx context.Contex
 		return s.probeOpenAIPoolAccountChatCompletions(ctx, account, model)
 	}
 	return s.probeOpenAIPoolAccountResponses(ctx, account, model)
+}
+
+func (s *OpenAIGatewayService) probeOpenAIPoolAccountImages(ctx context.Context, account *Account, capability OpenAIImagesCapability) openAIPoolRecoveryProbeResult {
+	if account.Type != AccountTypeAPIKey {
+		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: "images", err: fmt.Errorf("image recovery probe unsupported for account type %s", account.Type)}
+	}
+	token, err := s.openAIRecoveryProbeToken(ctx, account)
+	if err != nil {
+		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: "images", err: err}
+	}
+	baseURL := account.GetOpenAIBaseURL()
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = "https://api.openai.com"
+	}
+	validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: "images", err: err}
+	}
+	model := account.GetMappedModel("gpt-image-2")
+	body := openAIRecoveryImagesPayload(model, capability)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildOpenAIImagesURL(validatedURL, openAIImagesGenerationsEndpoint), bytes.NewReader(body))
+	if err != nil {
+		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: "images", err: err}
+	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	return s.doOpenAIPoolRecoveryProbe(req, account, "images")
 }
 
 func (s *OpenAIGatewayService) probeOpenAIPoolAccountResponses(ctx context.Context, account *Account, model string) openAIPoolRecoveryProbeResult {
@@ -249,6 +283,22 @@ func openAIRecoveryChatCompletionsPayload(model string) []byte {
 		"stream":     false,
 		"max_tokens": openAIPoolRecoveryProbeMaxOutputTokens,
 	})
+	return payload
+}
+
+func openAIRecoveryImagesPayload(model string, capability OpenAIImagesCapability) []byte {
+	if strings.TrimSpace(model) == "" {
+		model = "gpt-image-2"
+	}
+	body := map[string]any{
+		"model":  model,
+		"prompt": "small test image",
+		"n":      1,
+	}
+	if capability == OpenAIImagesCapabilityNative {
+		body["size"] = "1024x1024"
+	}
+	payload, _ := json.Marshal(body)
 	return payload
 }
 
