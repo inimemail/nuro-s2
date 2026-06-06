@@ -2657,6 +2657,10 @@ func (r *oauthPendingFlowUserRepo) GetByID(ctx context.Context, id int64) (*serv
 	return oauthPendingFlowServiceUser(entity), nil
 }
 
+func (r *oauthPendingFlowUserRepo) GetByIDIncludeDeleted(ctx context.Context, id int64) (*service.User, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r *oauthPendingFlowUserRepo) GetByEmail(ctx context.Context, email string) (*service.User, error) {
 	entity, err := r.client.User.Query().Where(dbuser.EmailEQ(email)).Only(ctx)
 	if err != nil {

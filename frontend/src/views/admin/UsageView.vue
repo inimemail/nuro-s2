@@ -100,7 +100,26 @@
           </div>
         </template>
       </UsageFilters>
+      <div class="flex gap-2">
+        <button
+          type="button"
+          class="btn btn-sm"
+          :class="activeTab === 'usage' ? 'btn-primary' : 'btn-secondary'"
+          @click="activeTab = 'usage'"
+        >
+          {{ t('usage.tabs.usage') }}
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm"
+          :class="activeTab === 'errors' ? 'btn-primary' : 'btn-secondary'"
+          @click="switchToErrors"
+        >
+          {{ t('usage.tabs.errors') }}
+        </button>
+      </div>
       <UsageTable
+        v-if="activeTab === 'usage'"
         :data="usageLogs"
         :loading="loading"
         :columns="visibleColumns"
@@ -110,7 +129,17 @@
         @sort="handleSort"
         @userClick="handleUserClick"
       />
-      <Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" />
+      <UsageErrorsTable
+        v-else
+        :data="errorLogs"
+        :loading="errorsLoading"
+        :total="errorsPagination.total"
+        :page="errorsPagination.page"
+        :page-size="errorsPagination.page_size"
+        @update:page="handleErrorPageChange"
+        @update:pageSize="handleErrorPageSizeChange"
+      />
+      <Pagination v-if="activeTab === 'usage' && pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" />
     </div>
   </AppLayout>
   <UsageExportProgress :show="exportProgress.show" :progress="exportProgress.progress" :current="exportProgress.current" :total="exportProgress.total" :estimated-time="exportProgress.estimatedTime" @cancel="cancelExport" />
@@ -135,14 +164,16 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { saveAs } from 'file-saver'
 import { useRoute } from 'vue-router'
-import { useAppStore } from '@/stores/app'; import { adminAPI } from '@/api/admin'; import { adminUsageAPI } from '@/api/admin/usage'
+import { useAppStore } from '@/stores/app'; import { adminAPI } from '@/api/admin'; import { adminUsageAPI } from '@/api/admin/usage'; import { opsAPI, type OpsErrorLog } from '@/api/admin/ops'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { formatReasoningEffort } from '@/utils/format'
 import { resolveUsageRequestType, requestTypeToLegacyStream } from '@/utils/usageRequestType'
+import { textOutputTokens } from '@/utils/imageUsage'
 import AppLayout from '@/components/layout/AppLayout.vue'; import Pagination from '@/components/common/Pagination.vue'; import Select from '@/components/common/Select.vue'; import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'; import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'; import UsageExportProgress from '@/components/admin/usage/UsageExportProgress.vue'
 import UsageCleanupDialog from '@/components/admin/usage/UsageCleanupDialog.vue'
+import UsageErrorsTable from '@/components/admin/usage/UsageErrorsTable.vue'
 import UserBalanceHistoryModal from '@/components/admin/user/UserBalanceHistoryModal.vue'
 import ModelDistributionChart from '@/components/charts/ModelDistributionChart.vue'; import GroupDistributionChart from '@/components/charts/GroupDistributionChart.vue'; import TokenUsageTrend from '@/components/charts/TokenUsageTrend.vue'
 import EndpointDistributionChart from '@/components/charts/EndpointDistributionChart.vue'
@@ -156,6 +187,10 @@ type EndpointSource = 'inbound' | 'upstream' | 'path'
 type ModelDistributionSource = 'requested' | 'upstream' | 'mapping'
 const route = useRoute()
 const usageStats = ref<AdminUsageStatsResponse | null>(null); const usageLogs = ref<AdminUsageLog[]>([]); const loading = ref(false); const exporting = ref(false)
+const activeTab = ref<'usage' | 'errors'>('usage')
+const errorLogs = ref<OpsErrorLog[]>([])
+const errorsLoading = ref(false)
+const errorsPagination = reactive({ page: 1, page_size: getPersistedPageSize(), total: 0 })
 const trendData = ref<TrendDataPoint[]>([]); const requestedModelStats = ref<ModelStat[]>([]); const upstreamModelStats = ref<ModelStat[]>([]); const mappingModelStats = ref<ModelStat[]>([]); const groupStats = ref<GroupStat[]>([]); const chartsLoading = ref(false); const modelStatsLoading = ref(false); const granularity = ref<'day' | 'hour'>('hour')
 const modelDistributionMetric = ref<DistributionMetric>('tokens')
 const modelDistributionSource = ref<ModelDistributionSource>('requested')
@@ -194,7 +229,7 @@ const breakdownFilters = computed(() => {
 
 const handleUserClick = async (userId: number) => {
   try {
-    const user = await adminAPI.users.getById(userId)
+    const user = await adminAPI.users.getById(userId, true)
     balanceHistoryUser.value = user
     showBalanceHistoryModal.value = true
   } catch {
@@ -306,13 +341,54 @@ const loadLogs = async () => {
     if(!c.signal.aborted) { usageLogs.value = res.items; pagination.total = res.total }
   } catch (error: any) { if(error?.name !== 'AbortError') console.error('Failed to load usage logs:', error) } finally { if(abortController === c) loading.value = false }
 }
-const loadStats = async () => {
+const dateToRFC3339 = (date: string | undefined, endOfDay = false): string | undefined => {
+  if (!date) return undefined
+  const local = new Date(`${date}T${endOfDay ? '23:59:59' : '00:00:00'}`)
+  return Number.isNaN(local.getTime()) ? undefined : local.toISOString()
+}
+const buildErrorParams = () => {
+  const start = filters.value.start_date || startDate.value
+  const end = filters.value.end_date || endDate.value
+  const params: Record<string, any> = {
+    page: errorsPagination.page,
+    page_size: errorsPagination.page_size,
+    view: 'all',
+    start_time: dateToRFC3339(start),
+    end_time: dateToRFC3339(end, true),
+    user_id: filters.value.user_id,
+    api_key_id: filters.value.api_key_id,
+    account_id: filters.value.account_id,
+    group_id: filters.value.group_id,
+    model: filters.value.model,
+  }
+  return Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ''))
+}
+const loadErrors = async () => {
+  errorsLoading.value = true
+  try {
+    const res = await opsAPI.listErrorLogs(buildErrorParams())
+    errorLogs.value = res.items
+    errorsPagination.total = res.total
+  } catch (error) {
+    console.error('Failed to load usage error logs:', error)
+    appStore.showError(t('usage.errors.failedToLoad'))
+    errorLogs.value = []
+    errorsPagination.total = 0
+  } finally {
+    errorsLoading.value = false
+  }
+}
+const loadStats = async (force = false) => {
   const seq = ++statsReqSeq
   endpointStatsLoading.value = true
   try {
     const requestType = filters.value.request_type
     const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
-    const s = await adminAPI.usage.getStats({ ...filters.value, stream: legacyStream === null ? undefined : legacyStream })
+    const s = await adminAPI.usage.getStats({
+      ...filters.value,
+      stream: legacyStream === null ? undefined : legacyStream,
+      nocache: force ? 1 : undefined
+    })
     if (seq !== statsReqSeq) return
     usageStats.value = s
     inboundEndpointStats.value = s.endpoints || []
@@ -421,18 +497,21 @@ const loadChartData = async () => {
 }
 const applyFilters = () => {
   pagination.page = 1
+  errorsPagination.page = 1
   resetModelStatsCache()
   loadLogs()
   loadStats()
   loadModelStats(modelDistributionSource.value, true)
   loadChartData()
+  if (activeTab.value === 'errors') loadErrors()
 }
 const refreshData = () => {
   resetModelStatsCache()
   loadLogs()
-  loadStats()
+  loadStats(true)
   loadModelStats(modelDistributionSource.value, true)
   loadChartData()
+  if (activeTab.value === 'errors') loadErrors()
 }
 const resetFilters = () => {
   const range = getLast24HoursRangeDates()
@@ -444,6 +523,12 @@ const resetFilters = () => {
 }
 const handlePageChange = (p: number) => { pagination.page = p; loadLogs() }
 const handlePageSizeChange = (s: number) => { pagination.page_size = s; pagination.page = 1; loadLogs() }
+const switchToErrors = () => {
+  activeTab.value = 'errors'
+  if (errorLogs.value.length === 0) loadErrors()
+}
+const handleErrorPageChange = (p: number) => { errorsPagination.page = p; loadErrors() }
+const handleErrorPageSizeChange = (s: number) => { errorsPagination.page_size = s; errorsPagination.page = 1; loadErrors() }
 const handleSort = (key: string, order: 'asc' | 'desc') => {
   sortState.sort_by = key
   sortState.sort_order = order
@@ -471,9 +556,9 @@ const exportToExcel = async () => {
       t('admin.usage.account'), t('usage.model'), t('usage.upstreamModel'), t('usage.reasoningEffort'), t('admin.usage.group'),
       t('usage.inboundEndpoint'), t('usage.upstreamEndpoint'),
       t('usage.type'),
-      t('admin.usage.inputTokens'), t('admin.usage.outputTokens'),
+      t('admin.usage.inputTokens'), t('admin.usage.outputTokens'), t('usage.imageOutputTokens'),
       t('admin.usage.cacheReadTokens'), t('admin.usage.cacheCreationTokens'),
-      t('admin.usage.inputCost'), t('admin.usage.outputCost'),
+      t('admin.usage.inputCost'), t('admin.usage.outputCost'), t('usage.imageOutputCost'),
       t('admin.usage.cacheReadCost'), t('admin.usage.cacheCreationCost'),
       t('usage.rate'), t('usage.accountMultiplier'), t('usage.original'), t('usage.userBilled'), t('usage.accountBilled'),
       t('usage.firstToken'), t('usage.duration'),
@@ -490,8 +575,8 @@ const exportToExcel = async () => {
         log.created_at, log.user?.email || '', log.api_key?.name || '', log.account?.name || '', log.model,
         log.upstream_model || '', formatReasoningEffort(log.reasoning_effort), log.group?.name || '',
         log.inbound_endpoint || '', log.upstream_endpoint || '', getRequestTypeLabel(log),
-        log.input_tokens, log.output_tokens, log.cache_read_tokens, log.cache_creation_tokens,
-        log.input_cost?.toFixed(6) || '0.000000', log.output_cost?.toFixed(6) || '0.000000',
+        log.input_tokens, textOutputTokens(log), log.image_output_tokens ?? 0, log.cache_read_tokens, log.cache_creation_tokens,
+        log.input_cost?.toFixed(6) || '0.000000', log.output_cost?.toFixed(6) || '0.000000', (log.image_output_cost ?? 0).toFixed(6),
         log.cache_read_cost?.toFixed(6) || '0.000000', log.cache_creation_cost?.toFixed(6) || '0.000000',
         log.rate_multiplier?.toPrecision(4) || '1.00', (log.account_rate_multiplier ?? 1).toPrecision(4),
         log.total_cost?.toFixed(6) || '0.000000', log.actual_cost?.toFixed(6) || '0.000000',

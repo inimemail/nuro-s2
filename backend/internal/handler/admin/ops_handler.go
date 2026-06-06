@@ -68,6 +68,33 @@ func parseOpsViewParam(c *gin.Context) string {
 	}
 }
 
+func applyOpsErrorCommonFilters(c *gin.Context, filter *service.OpsErrorLogFilter) bool {
+	if filter == nil {
+		return true
+	}
+	if v := strings.TrimSpace(c.Query("user_id")); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid user_id")
+			return false
+		}
+		filter.UserID = &id
+	}
+	if v := strings.TrimSpace(c.Query("api_key_id")); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid api_key_id")
+			return false
+		}
+		filter.APIKeyID = &id
+	}
+	if model := strings.TrimSpace(c.Query("model")); model != "" {
+		filter.Model = model
+		filter.ModelFuzzy = true
+	}
+	return true
+}
+
 func NewOpsHandler(opsService *service.OpsService) *OpsHandler {
 	return &OpsHandler{opsService: opsService}
 }
@@ -135,6 +162,9 @@ func (h *OpsHandler) GetErrorLogs(c *gin.Context) {
 			return
 		}
 		filter.AccountID = &id
+	}
+	if ok := applyOpsErrorCommonFilters(c, filter); !ok {
+		return
 	}
 
 	if v := strings.TrimSpace(c.Query("resolved")); v != "" {
@@ -236,6 +266,9 @@ func (h *OpsHandler) ListRequestErrors(c *gin.Context) {
 			return
 		}
 		filter.AccountID = &id
+	}
+	if ok := applyOpsErrorCommonFilters(c, filter); !ok {
+		return
 	}
 
 	if v := strings.TrimSpace(c.Query("resolved")); v != "" {
@@ -442,6 +475,9 @@ func (h *OpsHandler) ListUpstreamErrors(c *gin.Context) {
 			return
 		}
 		filter.AccountID = &id
+	}
+	if ok := applyOpsErrorCommonFilters(c, filter); !ok {
+		return
 	}
 
 	if v := strings.TrimSpace(c.Query("resolved")); v != "" {

@@ -33,6 +33,7 @@ type AdminService interface {
 	// User management
 	ListUsers(ctx context.Context, page, pageSize int, filters UserListFilters, sortBy, sortOrder string) ([]User, int64, error)
 	GetUser(ctx context.Context, id int64) (*User, error)
+	GetUserIncludeDeleted(ctx context.Context, id int64) (*User, error)
 	CreateUser(ctx context.Context, input *CreateUserInput) (*User, error)
 	UpdateUser(ctx context.Context, id int64, input *UpdateUserInput) (*User, error)
 	DeleteUser(ctx context.Context, id int64) error
@@ -674,6 +675,28 @@ func (s *adminServiceImpl) GetUser(ctx context.Context, id int64) (*User, error)
 	return user, nil
 }
 
+func (s *adminServiceImpl) GetUserIncludeDeleted(ctx context.Context, id int64) (*User, error) {
+	user, err := s.userRepo.GetByIDIncludeDeleted(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	lastUsedAt, latestErr := s.userRepo.GetLatestUsedAtByUserID(ctx, id)
+	if latestErr != nil {
+		logger.LegacyPrintf("service.admin", "failed to load user last_used_at: user_id=%d err=%v", id, latestErr)
+	} else {
+		user.LastUsedAt = lastUsedAt
+	}
+	if s.userGroupRateRepo != nil {
+		rates, err := s.userGroupRateRepo.GetByUserID(ctx, id)
+		if err != nil {
+			logger.LegacyPrintf("service.admin", "failed to load user group rates: user_id=%d err=%v", id, err)
+		} else {
+			user.GroupRates = rates
+		}
+	}
+	return user, nil
+}
+
 func (s *adminServiceImpl) CreateUser(ctx context.Context, input *CreateUserInput) (*User, error) {
 	user := &User{
 		Email:         input.Email,
@@ -822,14 +845,80 @@ func (s *adminServiceImpl) DeleteUser(ctx context.Context, id int64) error {
 	if user.Role == "admin" {
 		return errors.New("cannot delete admin user")
 	}
-	if err := s.userRepo.Delete(ctx, id); err != nil {
+
+	apiKeys, err := s.listUserAPIKeysForDeletion(ctx, id)
+	if err != nil {
+		return fmt.Errorf("list user api keys: %w", err)
+	}
+
+	if s.entClient != nil {
+		tx, txErr := s.entClient.Tx(ctx)
+		if txErr != nil {
+			return fmt.Errorf("begin delete user transaction: %w", txErr)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		opCtx := dbent.NewTxContext(ctx, tx)
+		if err := s.deleteUserWithAPIKeys(opCtx, id, apiKeys); err != nil {
+			logger.LegacyPrintf("service.admin", "delete user failed: user_id=%d err=%v", id, err)
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit delete user transaction: %w", err)
+		}
+	} else if err := s.deleteUserWithAPIKeys(ctx, id, apiKeys); err != nil {
 		logger.LegacyPrintf("service.admin", "delete user failed: user_id=%d err=%v", id, err)
 		return err
 	}
+
 	if s.authCacheInvalidator != nil {
+		for i := range apiKeys {
+			if key := strings.TrimSpace(apiKeys[i].Key); key != "" {
+				s.authCacheInvalidator.InvalidateAuthCacheByKey(ctx, key)
+			}
+		}
 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, id)
 	}
 	return nil
+}
+
+func (s *adminServiceImpl) listUserAPIKeysForDeletion(ctx context.Context, userID int64) ([]APIKey, error) {
+	if s == nil || s.apiKeyRepo == nil || userID <= 0 {
+		return nil, nil
+	}
+
+	keys := make([]APIKey, 0)
+	for page := 1; ; page++ {
+		params := pagination.PaginationParams{
+			Page:      page,
+			PageSize:  1000,
+			SortBy:    "id",
+			SortOrder: "asc",
+		}
+		pageKeys, result, err := s.apiKeyRepo.ListByUserID(ctx, userID, params, APIKeyListFilters{})
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, pageKeys...)
+		if len(pageKeys) < params.Limit() || result == nil || int64(len(keys)) >= result.Total {
+			break
+		}
+	}
+	return keys, nil
+}
+
+func (s *adminServiceImpl) deleteUserWithAPIKeys(ctx context.Context, userID int64, apiKeys []APIKey) error {
+	if s == nil || s.userRepo == nil {
+		return errors.New("admin service is unavailable")
+	}
+	if s.apiKeyRepo != nil {
+		for i := range apiKeys {
+			if err := s.apiKeyRepo.Delete(ctx, apiKeys[i].ID); err != nil && !errors.Is(err, ErrAPIKeyNotFound) {
+				return fmt.Errorf("delete user api key %d: %w", apiKeys[i].ID, err)
+			}
+		}
+	}
+	return s.userRepo.Delete(ctx, userID)
 }
 
 func (s *adminServiceImpl) BatchUpdateConcurrency(ctx context.Context, userIDs []int64, value int, mode string) (int, error) {

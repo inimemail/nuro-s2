@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,23 @@ func TestSanitizeAndTrimJSONPayload_PreservesTokenBudgetFields(t *testing.T) {
 
 	if got := decoded["access_token"]; got != "[REDACTED]" {
 		t.Fatalf("expected access_token to be redacted, got %#v", got)
+	}
+}
+
+func TestSanitizeErrorBodyForStorage_RedactsPlainTextSecrets(t *testing.T) {
+	t.Parallel()
+
+	raw := "upstream failed access_token=ya29.secret-token api_key: sk-proj-1234567890abcdef Authorization=Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature"
+
+	out, _ := sanitizeErrorBodyForStorage(raw, 10*1024)
+
+	for _, secret := range []string{"ya29.secret-token", "sk-proj-1234567890abcdef", "eyJhbGciOiJIUzI1NiJ9"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("expected %q to be redacted, got %q", secret, out)
+		}
+	}
+	if !strings.Contains(out, "[REDACTED]") {
+		t.Fatalf("expected redaction marker, got %q", out)
 	}
 }
 

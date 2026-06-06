@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +19,14 @@ var ErrOpsDisabled = infraerrors.NotFound("OPS_DISABLED", "Ops monitoring is dis
 const (
 	opsMaxStoredErrorBodyBytes = 20 * 1024
 )
+
+var opsPlainTextSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{12,}`),
+	regexp.MustCompile(`(?i)\b((?:api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token|authorization|password|passwd|secret|client[_-]?secret|private[_-]?key|signature)\s*[:=]\s*)(["']?)[^"'\s,;]{6,}`),
+	regexp.MustCompile(`(?i)([?&](?:key|api_key|apikey|client_secret|access_token|refresh_token|token)=)[^&"\s]+`),
+	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`),
+	regexp.MustCompile(`(?i)\b(?:sk|sk-proj|sk-ant|sess|rk|pk|ak|api|key|token|secret)[_-][A-Za-z0-9._~+/=-]{12,}\b`),
+}
 
 // OpsService provides ingestion and query APIs for the Ops monitoring module.
 type OpsService struct {
@@ -338,6 +347,42 @@ func (s *OpsService) GetErrorLogs(ctx context.Context, filter *OpsErrorLogFilter
 	return result, nil
 }
 
+// ListUserErrorRequests returns the current user's own failed requests.
+func (s *OpsService) ListUserErrorRequests(ctx context.Context, userID int64, filter *OpsErrorLogFilter) (*UserErrorRequestList, error) {
+	if filter == nil {
+		filter = &OpsErrorLogFilter{}
+	}
+	f := *filter
+	filter = &f
+	uid := userID
+	filter.UserID = &uid
+	filter.MatchDeletedKeyOwner = true
+	filter.View = "all"
+	filter.ExcludeCountTokens = true
+	filter.ModelFuzzy = true
+	filter.UserQuery = ""
+	filter.Owner = ""
+	filter.Source = ""
+	filter.Phase = ""
+
+	list, err := s.opsRepo.ListErrorLogs(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]*UserErrorRequest, 0, len(list.Errors))
+	for _, e := range list.Errors {
+		if r := ToUserErrorRequest(e); r != nil {
+			items = append(items, r)
+		}
+	}
+	return &UserErrorRequestList{
+		Items:    items,
+		Total:    list.Total,
+		Page:     list.Page,
+		PageSize: list.PageSize,
+	}, nil
+}
+
 func (s *OpsService) GetErrorLogByID(ctx context.Context, id int64) (*OpsErrorLogDetail, error) {
 	if err := s.RequireMonitoringEnabled(ctx); err != nil {
 		return nil, err
@@ -353,6 +398,37 @@ func (s *OpsService) GetErrorLogByID(ctx context.Context, id int64) (*OpsErrorLo
 		return nil, infraerrors.InternalServer("OPS_ERROR_LOAD_FAILED", "Failed to load ops error log").WithCause(err)
 	}
 	return detail, nil
+}
+
+// GetUserErrorRequestDetail returns a redacted failed-request detail for the
+// owner only. Non-owned records are returned as not found to avoid disclosure.
+func (s *OpsService) GetUserErrorRequestDetail(ctx context.Context, userID, id int64) (*UserErrorRequestDetail, error) {
+	if s.opsRepo == nil {
+		return nil, infraerrors.NotFound("OPS_ERROR_NOT_FOUND", "ops error log not found")
+	}
+	if id <= 0 {
+		return nil, infraerrors.BadRequest("OPS_ERROR_INVALID_ID", "invalid error id")
+	}
+	detail, err := s.opsRepo.GetErrorLogByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, infraerrors.NotFound("OPS_ERROR_NOT_FOUND", "ops error log not found")
+		}
+		return nil, infraerrors.InternalServer("OPS_ERROR_LOAD_FAILED", "Failed to load ops error log").WithCause(err)
+	}
+	ownedDirectly := detail.UserID != nil && *detail.UserID == userID
+	ownedViaDeletedKey := detail.DeletedKeyOwnerUserID != nil && *detail.DeletedKeyOwnerUserID == userID
+	if !ownedDirectly && !ownedViaDeletedKey {
+		return nil, infraerrors.NotFound("OPS_ERROR_NOT_FOUND", "ops error log not found")
+	}
+	return ToUserErrorRequestDetail(detail), nil
+}
+
+func (s *OpsService) LookupDeletedKeyAudit(ctx context.Context, key string) (*DeletedKeyAuditResult, error) {
+	if s.opsRepo == nil {
+		return nil, nil
+	}
+	return s.opsRepo.LookupDeletedKeyAudit(ctx, key)
 }
 
 func (s *OpsService) UpdateErrorResolution(ctx context.Context, errorID int64, resolved bool, resolvedByUserID *int64) error {
@@ -690,9 +766,32 @@ func sanitizeErrorBodyForStorage(raw string, maxBytes int) (sanitized string, tr
 		return out, trunc
 	}
 
-	// Non-JSON: best-effort truncate.
-	if maxBytes > 0 && len(raw) > maxBytes {
-		return truncateString(raw, maxBytes), true
+	// Non-JSON: best-effort text redaction before truncation because user-visible
+	// failed-request details can expose this field when the feature flag is enabled.
+	redacted := redactOpsPlainTextSecrets(raw)
+	if maxBytes > 0 && len(redacted) > maxBytes {
+		return truncateString(redacted, maxBytes), true
 	}
-	return raw, false
+	return redacted, false
+}
+
+func redactOpsPlainTextSecrets(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	out := text
+	for idx, pattern := range opsPlainTextSecretPatterns {
+		switch idx {
+		case 0:
+			out = pattern.ReplaceAllString(out, `${1}[REDACTED]`)
+		case 1:
+			out = pattern.ReplaceAllString(out, `${1}${2}[REDACTED]`)
+		case 2:
+			out = pattern.ReplaceAllString(out, `${1}[REDACTED]`)
+		default:
+			out = pattern.ReplaceAllString(out, `[REDACTED]`)
+		}
+	}
+	return out
 }

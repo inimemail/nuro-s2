@@ -7,7 +7,15 @@ const knownImageBillingSizes = new Set(['1K', '2K', '4K', 'mixed'])
 
 type ImageUsageRow = Pick<
   UsageLog,
-  'image_size' | 'image_input_size' | 'image_output_size' | 'image_size_source' | 'image_size_breakdown'
+  | 'image_size'
+  | 'image_input_size'
+  | 'image_output_size'
+  | 'image_size_source'
+  | 'image_size_breakdown'
+  | 'image_count'
+  | 'image_output_tokens'
+  | 'image_output_cost'
+  | 'output_tokens'
 >
 
 const trimmed = (value: string | null | undefined): string => value?.trim() ?? ''
@@ -53,4 +61,16 @@ export const formatImageSizeBreakdown = (row: ImageUsageRow | null | undefined):
     .filter((tier) => (breakdown[tier] ?? 0) > 0)
     .map((tier) => `${tier} x ${breakdown[tier]}`)
     .join(', ')
+}
+
+export const hasImageOutputTokens = (row: ImageUsageRow | null | undefined): boolean =>
+  (row?.image_output_tokens ?? 0) > 0
+
+export const hasImageOutputCost = (row: ImageUsageRow | null | undefined): boolean =>
+  (row?.image_output_cost ?? 0) > 0
+
+export const textOutputTokens = (row: ImageUsageRow | null | undefined): number => {
+  const total = row?.output_tokens ?? 0
+  const image = row?.image_output_tokens ?? 0
+  return Math.max(0, total - image)
 }

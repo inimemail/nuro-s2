@@ -10,6 +10,7 @@ type OpsRepository interface {
 	BatchInsertErrorLogs(ctx context.Context, inputs []*OpsInsertErrorLogInput) (int64, error)
 	ListErrorLogs(ctx context.Context, filter *OpsErrorLogFilter) (*OpsErrorLogList, error)
 	GetErrorLogByID(ctx context.Context, id int64) (*OpsErrorLogDetail, error)
+	LookupDeletedKeyAudit(ctx context.Context, key string) (*DeletedKeyAuditResult, error)
 	ListRequestDetails(ctx context.Context, filter *OpsRequestDetailFilter) ([]*OpsRequestDetail, int64, error)
 	BatchInsertSystemLogs(ctx context.Context, inputs []*OpsInsertSystemLogInput) (int64, error)
 	ListSystemLogs(ctx context.Context, filter *OpsSystemLogFilter) (*OpsSystemLogList, error)
@@ -59,6 +60,11 @@ type OpsRepository interface {
 	UpsertDailyMetrics(ctx context.Context, startTime, endTime time.Time) error
 	GetLatestHourlyBucketStart(ctx context.Context) (time.Time, bool, error)
 	GetLatestDailyBucketDate(ctx context.Context) (time.Time, bool, error)
+}
+
+type DeletedKeyAuditResult struct {
+	UserID  int64
+	KeyName string
 }
 
 type OpsInsertErrorLogInput struct {
@@ -118,6 +124,11 @@ type OpsInsertErrorLogInput struct {
 	TimeToFirstTokenMs *int64
 
 	CreatedAt time.Time
+
+	AttemptedKeyPrefix    string
+	DeletedKeyOwnerUserID *int64
+	DeletedKeyName        string
+	APIKeyPrefix          string
 }
 
 type OpsInsertSystemMetricsInput struct {

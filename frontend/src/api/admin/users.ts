@@ -102,8 +102,10 @@ export async function list(
  * @param id - User ID
  * @returns User details
  */
-export async function getById(id: number): Promise<AdminUser> {
-  const { data } = await apiClient.get<AdminUser>(`/admin/users/${id}`)
+export async function getById(id: number, includeDeleted = false): Promise<AdminUser> {
+  const { data } = await apiClient.get<AdminUser>(`/admin/users/${id}`, {
+    params: includeDeleted ? { include_deleted: true } : undefined
+  })
   return data
 }
 

@@ -907,6 +907,8 @@ export interface OpsErrorLog {
   user_id?: number | null
   user_email: string
   api_key_id?: number | null
+  api_key_name?: string
+  api_key_deleted?: boolean
   account_id?: number | null
   account_name: string
   group_id?: number | null
@@ -1085,6 +1087,9 @@ export type OpsErrorListQueryParams = {
   q?: string
   status_codes?: string
   status_codes_other?: string
+  user_id?: number | null
+  api_key_id?: number | null
+  model?: string
 }
 
 // Legacy unified endpoints

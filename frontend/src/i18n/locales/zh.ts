@@ -937,7 +937,49 @@ export default {
     exportExcelSuccess: '使用数据导出成功（Excel格式）',
     exportExcelFailed: '使用数据导出失败',
     imageUnit: '张',
-    userAgent: 'User-Agent'
+    userAgent: 'User-Agent',
+    cacheHit: '缓存命中',
+    cacheCreate: '缓存写入',
+    cacheHitRate: '命中率',
+    imageOutputTokens: '图片输出 Token',
+    imageOutputTokenPrice: '图片输出 Token 单价',
+    imageOutputCost: '图片输出成本',
+    tabs: {
+      usage: '用量记录',
+      errors: '失败请求'
+    },
+    errors: {
+      time: '时间',
+      model: '模型',
+      endpoint: '入口',
+      status: '状态码',
+      category: '分类',
+      platform: '平台',
+      message: '错误信息',
+      keyName: 'API Key',
+      keyDeleted: '已删除',
+      allKeys: '全部 Key',
+      modelPlaceholder: '筛选模型',
+      allCategories: '全部分类',
+      empty: '当前时间范围内没有失败请求',
+      failedToLoad: '加载失败请求失败',
+      categories: {
+        auth: '认证',
+        rate_limit: '限速',
+        quota: '额度',
+        invalid_request: '请求错误',
+        service_unavailable: '服务不可用',
+        upstream: '上游',
+        internal: '内部',
+        other: '其他'
+      },
+      detail: {
+        title: '失败请求详情',
+        responseBody: '脱敏响应内容',
+        upstreamStatus: '上游状态码',
+        loadFailed: '加载错误详情失败'
+      }
+    }
   },
 
   // Shared keys for channel monitor (admin + user views)
@@ -5509,6 +5551,12 @@ export default {
           configureLink: '前往 渠道管理 > 渠道定价 配置模型价格',
           enabled: '启用可用渠道',
           enabledHint: '关闭后用户端侧边栏入口隐藏，接口返回空数组。',
+        },
+        userErrorRequests: {
+          title: '用户失败请求',
+          description: '允许用户在用量页查看自己的失败请求和脱敏错误详情。默认关闭。',
+          enabled: '允许用户查看失败请求',
+          enabledHint: '关闭后用户用量页隐藏失败请求入口，用户侧接口返回无权限。',
         },
         riskControl: {
           title: '风控中心',

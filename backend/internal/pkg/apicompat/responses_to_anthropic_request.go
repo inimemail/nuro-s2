@@ -192,10 +192,92 @@ func convertResponsesInputToAnthropic(inputRaw json.RawMessage) (json.RawMessage
 		}
 	}
 
-	// Merge consecutive same-role messages (Anthropic requires alternating roles)
+	messages = mergeConsecutiveMessages(messages)
+	messages = normalizeAnthropicToolPairing(messages)
 	messages = mergeConsecutiveMessages(messages)
 
 	return system, messages, nil
+}
+
+func normalizeAnthropicToolPairing(messages []AnthropicMessage) []AnthropicMessage {
+	results := make(map[string]AnthropicContentBlock)
+	for _, m := range messages {
+		if m.Role != "user" {
+			continue
+		}
+		for _, b := range parseContentBlocks(m.Content) {
+			if b.Type == "tool_result" && b.ToolUseID != "" {
+				results[b.ToolUseID] = b
+			}
+		}
+	}
+
+	out := make([]AnthropicMessage, 0, len(messages))
+	for _, m := range messages {
+		blocks := parseContentBlocks(m.Content)
+		switch m.Role {
+		case "assistant":
+			var toolUses, others []AnthropicContentBlock
+			for _, b := range blocks {
+				if b.Type == "tool_use" {
+					toolUses = append(toolUses, b)
+				} else {
+					others = append(others, b)
+				}
+			}
+			if len(toolUses) == 0 {
+				out = append(out, m)
+				continue
+			}
+			kept := make([]AnthropicContentBlock, 0, len(toolUses))
+			for _, tu := range toolUses {
+				if _, ok := results[tu.ID]; ok {
+					kept = append(kept, tu)
+				}
+			}
+			if len(kept) == 0 {
+				if len(others) > 0 {
+					out = append(out, anthropicMessageFromBlocks("assistant", others))
+				}
+				continue
+			}
+			asstBlocks := make([]AnthropicContentBlock, 0, len(others)+len(kept))
+			asstBlocks = append(asstBlocks, others...)
+			asstBlocks = append(asstBlocks, kept...)
+			out = append(out, anthropicMessageFromBlocks("assistant", asstBlocks))
+
+			resBlocks := make([]AnthropicContentBlock, 0, len(kept))
+			for _, tu := range kept {
+				resBlocks = append(resBlocks, results[tu.ID])
+			}
+			out = append(out, anthropicMessageFromBlocks("user", resBlocks))
+		case "user":
+			var nonResult []AnthropicContentBlock
+			hasResult := false
+			for _, b := range blocks {
+				if b.Type == "tool_result" {
+					hasResult = true
+					continue
+				}
+				nonResult = append(nonResult, b)
+			}
+			if !hasResult {
+				out = append(out, m)
+				continue
+			}
+			if len(nonResult) > 0 {
+				out = append(out, anthropicMessageFromBlocks("user", nonResult))
+			}
+		default:
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func anthropicMessageFromBlocks(role string, blocks []AnthropicContentBlock) AnthropicMessage {
+	content, _ := json.Marshal(blocks)
+	return AnthropicMessage{Role: role, Content: content}
 }
 
 // extractTextFromContent extracts text from a content field that may be a

@@ -167,6 +167,10 @@ func (r *contentModerationTestUserRepo) GetByID(ctx context.Context, id int64) (
 	return &clone, nil
 }
 
+func (r *contentModerationTestUserRepo) GetByIDIncludeDeleted(ctx context.Context, id int64) (*User, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r *contentModerationTestUserRepo) GetByEmail(ctx context.Context, email string) (*User, error) {
 	panic("unexpected GetByEmail call")
 }

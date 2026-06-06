@@ -25,6 +25,11 @@ var (
 	systemPromptThreshold = 0.5
 )
 
+const (
+	claudeCodeBillingHeaderPrefix = "x-anthropic-billing-header"
+	claudeCodeCLIEntrypointMarker = "cc_entrypoint=cli"
+)
+
 // Claude Code 官方 System Prompt 模板
 // 从 claude-relay-service/src/utils/contents.js 提取
 var claudeCodeSystemPrompts = []string{
@@ -74,6 +79,10 @@ func (v *ClaudeCodeValidator) Validate(r *http.Request, body map[string]any) boo
 	// Step 2: 非 messages 路径，只要 UA 匹配就通过
 	path := r.URL.Path
 	if !strings.Contains(path, "messages") {
+		return true
+	}
+
+	if isMessagesCountTokensPath(path) {
 		return true
 	}
 
@@ -158,6 +167,11 @@ func (v *ClaudeCodeValidator) hasClaudeCodeSystemPrompt(body map[string]any) boo
 			continue
 		}
 
+		if strings.HasPrefix(text, claudeCodeBillingHeaderPrefix) &&
+			strings.Contains(text, claudeCodeCLIEntrypointMarker) {
+			return true
+		}
+
 		// 计算与所有模板的最佳相似度
 		bestScore := v.bestSimilarityScore(text)
 		if bestScore >= systemPromptThreshold {
@@ -166,6 +180,10 @@ func (v *ClaudeCodeValidator) hasClaudeCodeSystemPrompt(body map[string]any) boo
 	}
 
 	return false
+}
+
+func isMessagesCountTokensPath(path string) bool {
+	return strings.HasSuffix(path, "/messages/count_tokens")
 }
 
 // bestSimilarityScore 计算文本与所有 Claude Code 模板的最佳相似度

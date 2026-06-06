@@ -32,6 +32,7 @@ type User struct {
 	LastUsedAt           *time.Time
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+	Deleted              bool
 
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]rateMultiplier

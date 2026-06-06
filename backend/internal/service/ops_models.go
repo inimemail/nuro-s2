@@ -64,6 +64,9 @@ type OpsErrorLog struct {
 	RequestedModel   string `json:"requested_model"`
 	UpstreamModel    string `json:"upstream_model"`
 	RequestType      *int16 `json:"request_type"`
+
+	APIKeyName    string `json:"api_key_name,omitempty"`
+	APIKeyDeleted bool   `json:"api_key_deleted,omitempty"`
 }
 
 type OpsErrorLogDetail struct {
@@ -87,6 +90,12 @@ type OpsErrorLogDetail struct {
 
 	// vNext metric semantics
 	IsBusinessLimited bool `json:"is_business_limited"`
+
+	AttemptedKeyPrefix    string `json:"attempted_key_prefix,omitempty"`
+	DeletedKeyOwnerUserID *int64 `json:"deleted_key_owner_user_id,omitempty"`
+	DeletedKeyOwnerEmail  string `json:"deleted_key_owner_email,omitempty"`
+	DeletedKeyName        string `json:"deleted_key_name,omitempty"`
+	APIKeyPrefix          string `json:"api_key_prefix,omitempty"`
 }
 
 type OpsErrorLogFilter struct {
@@ -109,6 +118,21 @@ type OpsErrorLogFilter struct {
 	// Optional correlation keys for exact matching.
 	RequestID       string
 	ClientRequestID string
+
+	UserID   *int64
+	APIKeyID *int64
+
+	// MatchDeletedKeyOwner lets the user-facing endpoint include invalid-key
+	// failures that can only be attributed through deleted-key audit rows.
+	MatchDeletedKeyOwner bool
+
+	Model      string
+	ModelFuzzy bool
+
+	ExcludeCountTokens bool
+
+	ErrorPhasesAny []string
+	ErrorTypesAny  []string
 
 	// View controls error categorization for list endpoints.
 	// - errors: show actionable errors (exclude business-limited / 429 / 529)

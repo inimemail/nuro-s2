@@ -933,7 +933,49 @@ export default {
     exportExcelSuccess: 'Usage data exported successfully (Excel format)',
     exportExcelFailed: 'Failed to export usage data',
     imageUnit: ' images',
-    userAgent: 'User-Agent'
+    userAgent: 'User-Agent',
+    cacheHit: 'Cache hit',
+    cacheCreate: 'Cache create',
+    cacheHitRate: 'hit rate',
+    imageOutputTokens: 'Image output tokens',
+    imageOutputTokenPrice: 'Image output token price',
+    imageOutputCost: 'Image output cost',
+    tabs: {
+      usage: 'Usage',
+      errors: 'Failed Requests'
+    },
+    errors: {
+      time: 'Time',
+      model: 'Model',
+      endpoint: 'Endpoint',
+      status: 'Status',
+      category: 'Category',
+      platform: 'Platform',
+      message: 'Message',
+      keyName: 'API Key',
+      keyDeleted: 'Deleted',
+      allKeys: 'All API keys',
+      modelPlaceholder: 'Filter model',
+      allCategories: 'All categories',
+      empty: 'No failed requests in this range.',
+      failedToLoad: 'Failed to load failed requests',
+      categories: {
+        auth: 'Auth',
+        rate_limit: 'Rate limit',
+        quota: 'Quota',
+        invalid_request: 'Invalid request',
+        service_unavailable: 'Service unavailable',
+        upstream: 'Upstream',
+        internal: 'Internal',
+        other: 'Other'
+      },
+      detail: {
+        title: 'Failed Request Detail',
+        responseBody: 'Sanitized response body',
+        upstreamStatus: 'Upstream status',
+        loadFailed: 'Failed to load error detail'
+      }
+    }
   },
 
   // Shared keys for channel monitor (admin + user views)
@@ -5349,6 +5391,12 @@ export default {
           configureLink: 'Configure model pricing in Channel Management > Channel Pricing',
           enabled: 'Enable Available Channels',
           enabledHint: 'When off, the sidebar entry is hidden and the endpoint returns an empty list.',
+        },
+        userErrorRequests: {
+          title: 'User Failed Requests',
+          description: 'Allow users to view their own failed requests with sanitized details. Disabled by default.',
+          enabled: 'Allow users to view failed requests',
+          enabledHint: 'When off, the user usage page hides failed requests and the user API returns forbidden.',
         },
         riskControl: {
           title: 'Risk Control',

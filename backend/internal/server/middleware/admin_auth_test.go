@@ -138,6 +138,10 @@ func (s *stubUserRepo) GetByID(ctx context.Context, id int64) (*service.User, er
 	return s.getByID(ctx, id)
 }
 
+func (s *stubUserRepo) GetByIDIncludeDeleted(ctx context.Context, id int64) (*service.User, error) {
+	return s.GetByID(ctx, id)
+}
+
 func (s *stubUserRepo) GetByEmail(ctx context.Context, email string) (*service.User, error) {
 	panic("unexpected GetByEmail call")
 }

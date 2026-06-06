@@ -40,6 +40,16 @@
                 {{ t('usage.in') }}: {{ formatTokens(usageStats?.total_input_tokens || 0) }} /
                 {{ t('usage.out') }}: {{ formatTokens(usageStats?.total_output_tokens || 0) }}
               </p>
+              <p
+                v-if="cacheStats.total > 0"
+                class="text-xs text-gray-500 dark:text-gray-400"
+              >
+                {{ t('usage.cacheHit') }}: {{ formatTokens(cacheStats.read) }} /
+                {{ t('usage.cacheCreate') }}: {{ formatTokens(cacheStats.create) }}
+                <span v-if="cacheStats.hitRate > 0">
+                  ({{ t('usage.cacheHitRate') }} {{ cacheStats.hitRate.toFixed(1) }}%)
+                </span>
+              </p>
             </div>
           </div>
         </div>
@@ -149,11 +159,35 @@
       </template>
 
       <template #table>
+        <div
+          v-if="errorViewEnabled"
+          class="flex flex-shrink-0 gap-2 border-b border-gray-100 px-4 py-3 dark:border-dark-700"
+        >
+          <button
+            type="button"
+            class="btn btn-sm"
+            :class="activeTab === 'usage' ? 'btn-primary' : 'btn-secondary'"
+            @click="switchToUsage"
+          >
+            {{ t('usage.tabs.usage') }}
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm"
+            :class="activeTab === 'errors' ? 'btn-primary' : 'btn-secondary'"
+            @click="switchToErrors"
+          >
+            {{ t('usage.tabs.errors') }}
+          </button>
+        </div>
+        <div v-show="activeTab === 'usage' || !errorViewEnabled" class="flex min-h-0 flex-1 flex-col">
         <DataTable
           :columns="columns"
           :data="usageLogs"
           :loading="loading"
           :server-side-sort="true"
+          :estimate-row-height="88"
+          :overscan="12"
           default-sort-key="created_at"
           default-sort-order="desc"
           @sort="handleSort"
@@ -197,25 +231,34 @@
           </template>
 
           <template #cell-tokens="{ row }">
-            <!-- 图片生成请求 -->
-            <div v-if="isImageUsage(row)" class="flex items-center gap-1.5">
-              <svg
-                class="h-4 w-4 text-indigo-500"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+            <!-- Image generation request -->
+            <div v-if="isImageUsage(row)" class="space-y-1 text-sm">
+              <div class="flex items-center gap-1.5">
+                <svg
+                  class="h-4 w-4 text-indigo-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                  />
+                </svg>
+                <span class="font-medium text-gray-900 dark:text-white">{{ row.image_count }}{{ t('usage.imageUnit') }}</span>
+                <span class="text-gray-400">({{ formatImageBillingSize(row, t) }})</span>
+              </div>
+              <div
+                v-if="hasImageOutputTokens(row)"
+                class="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-300"
               >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-                />
-              </svg>
-              <span class="font-medium text-gray-900 dark:text-white">{{ row.image_count }}{{ t('usage.imageUnit') }}</span>
-              <span class="text-gray-400">({{ formatImageBillingSize(row, t) }})</span>
+                <Icon name="cube" size="sm" />
+                <span>{{ t('usage.imageOutputTokens') }}: {{ (row.image_output_tokens ?? 0).toLocaleString() }}</span>
+              </div>
             </div>
-            <!-- Token 请求 -->
+            <!-- Token request -->
             <div v-else class="flex items-center gap-1.5">
               <div class="space-y-1.5 text-sm">
                 <!-- Input / Output Tokens -->
@@ -224,31 +267,38 @@
                   <div class="inline-flex items-center gap-1">
                     <Icon name="arrowDown" size="sm" class="text-emerald-500" />
                     <span class="font-medium text-gray-900 dark:text-white">{{
-                      row.input_tokens.toLocaleString()
+                      (row.input_tokens ?? 0).toLocaleString()
                     }}</span>
                   </div>
                   <!-- Output -->
                   <div class="inline-flex items-center gap-1">
                     <Icon name="arrowUp" size="sm" class="text-violet-500" />
                     <span class="font-medium text-gray-900 dark:text-white">{{
-                      row.output_tokens.toLocaleString()
+                      textOutputTokens(row).toLocaleString()
                     }}</span>
                   </div>
                 </div>
+                <div
+                  v-if="hasImageOutputTokens(row)"
+                  class="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-300"
+                >
+                  <Icon name="cube" size="sm" />
+                  <span>{{ formatCacheTokens(row.image_output_tokens) }}</span>
+                </div>
                 <!-- Cache Tokens (Read + Write) -->
                 <div
-                  v-if="row.cache_read_tokens > 0 || row.cache_creation_tokens > 0"
+                  v-if="(row.cache_read_tokens ?? 0) > 0 || (row.cache_creation_tokens ?? 0) > 0"
                   class="flex items-center gap-2"
                 >
                   <!-- Cache Read -->
-                  <div v-if="row.cache_read_tokens > 0" class="inline-flex items-center gap-1">
+                  <div v-if="(row.cache_read_tokens ?? 0) > 0" class="inline-flex items-center gap-1">
                     <Icon name="inbox" size="sm" class="text-sky-500" />
                     <span class="font-medium text-sky-600 dark:text-sky-400">{{
                       formatCacheTokens(row.cache_read_tokens)
                     }}</span>
                   </div>
                   <!-- Cache Write -->
-                  <div v-if="row.cache_creation_tokens > 0" class="inline-flex items-center gap-1">
+                  <div v-if="(row.cache_creation_tokens ?? 0) > 0" class="inline-flex items-center gap-1">
                     <Icon name="edit" size="sm" class="text-amber-500" />
                     <span class="font-medium text-amber-600 dark:text-amber-400">{{
                       formatCacheTokens(row.cache_creation_tokens)
@@ -280,7 +330,7 @@
           <template #cell-cost="{ row }">
             <div class="flex items-center gap-1.5 text-sm">
               <span class="font-medium text-green-600 dark:text-green-400">
-                ${{ row.actual_cost.toFixed(6) }}
+                ${{ (row.actual_cost ?? 0).toFixed(6) }}
               </span>
               <!-- Cost Detail Tooltip -->
               <div
@@ -332,11 +382,24 @@
             <EmptyState :message="t('usage.noRecords')" />
           </template>
         </DataTable>
+        </div>
+        <UserErrorRequestsTable
+          v-if="errorViewEnabled && activeTab === 'errors'"
+          :rows="errorRows"
+          :total="errorTotal"
+          :loading="errorLoading"
+          :page="errorPage"
+          :page-size="errorPageSize"
+          :api-keys="apiKeys"
+          @update:page="handleErrorPageChange"
+          @update:pageSize="handleErrorPageSizeChange"
+          @filter="handleErrorFilter"
+        />
       </template>
 
       <template #pagination>
         <Pagination
-          v-if="pagination.total > 0"
+          v-if="pagination.total > 0 && (activeTab === 'usage' || !errorViewEnabled)"
           :page="pagination.page"
           :total="pagination.total"
           :page-size="pagination.page_size"
@@ -368,9 +431,13 @@
               <span class="text-gray-400">{{ t('admin.usage.inputTokens') }}</span>
               <span class="font-medium text-white">{{ tokenTooltipData.input_tokens.toLocaleString() }}</span>
             </div>
-            <div v-if="tokenTooltipData && tokenTooltipData.output_tokens > 0" class="flex items-center justify-between gap-4">
+            <div v-if="tokenTooltipData && textOutputTokens(tokenTooltipData) > 0" class="flex items-center justify-between gap-4">
               <span class="text-gray-400">{{ t('admin.usage.outputTokens') }}</span>
-              <span class="font-medium text-white">{{ tokenTooltipData.output_tokens.toLocaleString() }}</span>
+              <span class="font-medium text-white">{{ textOutputTokens(tokenTooltipData).toLocaleString() }}</span>
+            </div>
+            <div v-if="tokenTooltipData && hasImageOutputTokens(tokenTooltipData)" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.imageOutputTokens') }}</span>
+              <span class="font-medium text-indigo-300">{{ tokenTooltipData.image_output_tokens.toLocaleString() }}</span>
             </div>
             <div v-if="tokenTooltipData && tokenTooltipData.cache_creation_tokens > 0">
               <!-- 有 5m/1h 明细时，展开显示 -->
@@ -411,7 +478,7 @@
           <!-- Total -->
           <div class="flex items-center justify-between gap-6 border-t border-gray-700 pt-1.5">
             <span class="text-gray-400">{{ t('usage.totalTokens') }}</span>
-            <span class="font-semibold text-blue-400">{{ ((tokenTooltipData?.input_tokens || 0) + (tokenTooltipData?.output_tokens || 0) + (tokenTooltipData?.cache_creation_tokens || 0) + (tokenTooltipData?.cache_read_tokens || 0)).toLocaleString() }}</span>
+            <span class="font-semibold text-blue-400">{{ ((tokenTooltipData?.input_tokens || 0) + textOutputTokens(tokenTooltipData) + (tokenTooltipData?.image_output_tokens || 0) + (tokenTooltipData?.cache_creation_tokens || 0) + (tokenTooltipData?.cache_read_tokens || 0)).toLocaleString() }}</span>
           </div>
         </div>
         <!-- Tooltip Arrow (left side) -->
@@ -446,6 +513,10 @@
             <div v-if="tooltipData && tooltipData.output_cost > 0" class="flex items-center justify-between gap-4">
               <span class="text-gray-400">{{ t('admin.usage.outputCost') }}</span>
               <span class="font-medium text-white">${{ tooltipData.output_cost.toFixed(6) }}</span>
+            </div>
+            <div v-if="tooltipData && hasImageOutputCost(tooltipData)" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.imageOutputCost') }}</span>
+              <span class="font-medium text-indigo-300">${{ tooltipData.image_output_cost.toFixed(6) }}</span>
             </div>
             <!-- Per-image billing: show image metadata and unit price -->
             <template v-if="tooltipData && isImageUsage(tooltipData)">
@@ -488,9 +559,13 @@
                 <span class="text-gray-400">{{ t('usage.inputTokenPrice') }}</span>
                 <span class="font-medium text-sky-300">{{ formatTokenPricePerMillion(tooltipData.input_cost, tooltipData.input_tokens) }} {{ t('usage.perMillionTokens') }}</span>
               </div>
-              <div v-if="tooltipData && tooltipData.output_tokens > 0" class="flex items-center justify-between gap-4">
+              <div v-if="tooltipData && textOutputTokens(tooltipData) > 0" class="flex items-center justify-between gap-4">
                 <span class="text-gray-400">{{ t('usage.outputTokenPrice') }}</span>
-                <span class="font-medium text-violet-300">{{ formatTokenPricePerMillion(tooltipData.output_cost, tooltipData.output_tokens) }} {{ t('usage.perMillionTokens') }}</span>
+                <span class="font-medium text-violet-300">{{ formatTokenPricePerMillion(tooltipData.output_cost, textOutputTokens(tooltipData)) }} {{ t('usage.perMillionTokens') }}</span>
+              </div>
+              <div v-if="tooltipData && hasImageOutputTokens(tooltipData)" class="flex items-center justify-between gap-4">
+                <span class="text-gray-400">{{ t('usage.imageOutputTokenPrice') }}</span>
+                <span class="font-medium text-indigo-300">{{ formatTokenPricePerMillion(tooltipData.image_output_cost, tooltipData.image_output_tokens) }} {{ t('usage.perMillionTokens') }}</span>
               </div>
             </template>
             <div v-else class="flex items-center justify-between gap-4">
@@ -519,12 +594,12 @@
           </div>
           <div class="flex items-center justify-between gap-6">
             <span class="text-gray-400">{{ t('usage.original') }}</span>
-            <span class="font-medium text-white">${{ tooltipData?.total_cost.toFixed(6) }}</span>
+            <span class="font-medium text-white">${{ (tooltipData?.total_cost ?? 0).toFixed(6) }}</span>
           </div>
           <div class="flex items-center justify-between gap-6 border-t border-gray-700 pt-1.5">
             <span class="text-gray-400">{{ t('usage.billed') }}</span>
             <span class="font-semibold text-green-400"
-              >${{ tooltipData?.actual_cost.toFixed(6) }}</span
+              >${{ (tooltipData?.actual_cost ?? 0).toFixed(6) }}</span
             >
           </div>
         </div>
@@ -550,7 +625,8 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import Select from '@/components/common/Select.vue'
 import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import Icon from '@/components/icons/Icon.vue'
-import type { UsageLog, ApiKey, UsageQueryParams, UsageStatsResponse } from '@/types'
+import UserErrorRequestsTable from '@/components/user/UserErrorRequestsTable.vue'
+import type { UsageLog, ApiKey, UsageQueryParams, UsageStatsResponse, UserErrorRequest } from '@/types'
 import type { Column } from '@/components/common/types'
 import { formatDateTime, formatReasoningEffort } from '@/utils/format'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
@@ -570,12 +646,16 @@ import {
   formatImageOutputSize,
   formatImageSizeBreakdown,
   formatImageSizeSource,
+  hasImageOutputCost,
+  hasImageOutputTokens,
+  textOutputTokens,
 } from '@/utils/imageUsage'
 
 const { t } = useI18n()
 const appStore = useAppStore()
 
 let abortController: AbortController | null = null
+let errorAbortController: AbortController | null = null
 
 // Tooltip state
 const tooltipVisible = ref(false)
@@ -589,6 +669,13 @@ const tokenTooltipData = ref<UsageLog | null>(null)
 
 // Usage stats from API
 const usageStats = ref<UsageStatsResponse | null>(null)
+const cacheStats = computed(() => {
+  const create = usageStats.value?.total_cache_creation_tokens ?? 0
+  const read = usageStats.value?.total_cache_read_tokens ?? 0
+  const total = create + read
+  const hitRate = total > 0 ? (read / total) * 100 : 0
+  return { create, read, total, hitRate }
+})
 
 const columns = computed<Column[]>(() => [
   { key: 'api_key', label: t('usage.apiKeyFilter'), sortable: false },
@@ -609,6 +696,19 @@ const usageLogs = ref<UsageLog[]>([])
 const apiKeys = ref<ApiKey[]>([])
 const loading = ref(false)
 const exporting = ref(false)
+const activeTab = ref<'usage' | 'errors'>('usage')
+const errorRows = ref<UserErrorRequest[]>([])
+const errorLoading = ref(false)
+const errorPage = ref(1)
+const errorPageSize = ref(20)
+const errorTotal = ref(0)
+const errorFilter = ref<{ model: string; category: string; api_key_id: number | null }>({
+  model: '',
+  category: '',
+  api_key_id: null
+})
+
+const errorViewEnabled = computed(() => appStore.cachedPublicSettings?.allow_user_view_error_requests === true)
 
 const apiKeyOptions = computed(() => {
   return [
@@ -805,10 +905,60 @@ const loadUsageStats = async () => {
   }
 }
 
+const loadErrors = async () => {
+  if (!errorViewEnabled.value) {
+    return
+  }
+  errorAbortController?.abort()
+  const currentAbortController = new AbortController()
+  errorAbortController = currentAbortController
+  const { signal } = currentAbortController
+  errorLoading.value = true
+  try {
+    const response = await usageAPI.listMyErrorRequests(
+      {
+        page: errorPage.value,
+        page_size: errorPageSize.value,
+        start_date: filters.value.start_date || startDate.value,
+        end_date: filters.value.end_date || endDate.value,
+        model: errorFilter.value.model || undefined,
+        category: errorFilter.value.category || undefined,
+        api_key_id: errorFilter.value.api_key_id ?? undefined,
+      },
+      { signal }
+    )
+    if (signal.aborted) {
+      return
+    }
+    errorRows.value = response.items
+    errorTotal.value = response.total
+  } catch (error) {
+    if (signal.aborted) {
+      return
+    }
+    const abortError = error as { name?: string; code?: string }
+    if (abortError?.name === 'AbortError' || abortError?.code === 'ERR_CANCELED') {
+      return
+    }
+    appStore.showError(t('usage.errors.failedToLoad'))
+  } finally {
+    if (errorAbortController === currentAbortController) {
+      errorLoading.value = false
+    }
+  }
+}
+
 const applyFilters = () => {
   pagination.page = 1
   loadUsageLogs()
   loadUsageStats()
+  if (activeTab.value === 'errors') {
+    errorPage.value = 1
+    loadErrors()
+  } else {
+    errorRows.value = []
+    errorTotal.value = 0
+  }
 }
 
 const resetFilters = () => {
@@ -828,6 +978,14 @@ const resetFilters = () => {
   pagination.page = 1
   loadUsageLogs()
   loadUsageStats()
+  errorPage.value = 1
+  errorFilter.value = { model: '', category: '', api_key_id: null }
+  if (activeTab.value === 'errors') {
+    loadErrors()
+  } else {
+    errorRows.value = []
+    errorTotal.value = 0
+  }
 }
 
 const handlePageChange = (page: number) => {
@@ -846,6 +1004,34 @@ const handleSort = (key: string, order: 'asc' | 'desc') => {
   sortState.sort_order = order
   pagination.page = 1
   loadUsageLogs()
+}
+
+const switchToUsage = () => {
+  activeTab.value = 'usage'
+}
+
+const switchToErrors = () => {
+  activeTab.value = 'errors'
+  if (errorRows.value.length === 0) {
+    loadErrors()
+  }
+}
+
+const handleErrorFilter = (value: { model: string; category: string; api_key_id: number | null }) => {
+  errorFilter.value = value
+  errorPage.value = 1
+  loadErrors()
+}
+
+const handleErrorPageChange = (page: number) => {
+  errorPage.value = page
+  loadErrors()
+}
+
+const handleErrorPageSizeChange = (pageSize: number) => {
+  errorPageSize.value = pageSize
+  errorPage.value = 1
+  loadErrors()
 }
 
 /**
@@ -904,11 +1090,13 @@ const exportToCSV = async () => {
       'Billing Mode',
       'Input Tokens',
       'Output Tokens',
+      'Image Output Tokens',
       'Cache Read Tokens',
       'Cache Creation Tokens',
       'Rate Multiplier',
       'Billed Cost',
       'Original Cost',
+      'Image Output Cost',
       'First Token (ms)',
       'Duration (ms)'
     ]
@@ -922,12 +1110,14 @@ const exportToCSV = async () => {
         getRequestTypeExportText(log),
         getBillingModeLabel(getDisplayBillingMode(log), t),
         log.input_tokens,
-        log.output_tokens,
+        textOutputTokens(log),
+        log.image_output_tokens ?? 0,
         log.cache_read_tokens,
         log.cache_creation_tokens,
         log.rate_multiplier,
         log.actual_cost.toFixed(8),
         log.total_cost.toFixed(8),
+        (log.image_output_cost ?? 0).toFixed(8),
         log.first_token_ms ?? '',
         log.duration_ms
       ].map(escapeCSVValue)
