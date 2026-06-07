@@ -2513,7 +2513,7 @@ func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int,
 		return nil, 0, err
 	}
 	for i := range accounts {
-		s.attachAccountRuntimeState(&accounts[i])
+		s.attachAccountRuntimeState(ctx, &accounts[i])
 	}
 	return accounts, result.Total, nil
 }
@@ -2523,7 +2523,7 @@ func (s *adminServiceImpl) GetAccount(ctx context.Context, id int64) (*Account, 
 	if err != nil {
 		return nil, err
 	}
-	s.attachAccountRuntimeState(account)
+	s.attachAccountRuntimeState(ctx, account)
 	return account, nil
 }
 
@@ -2538,7 +2538,7 @@ func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([
 	}
 
 	for _, account := range accounts {
-		s.attachAccountRuntimeState(account)
+		s.attachAccountRuntimeState(ctx, account)
 	}
 	return accounts, nil
 }
@@ -2547,7 +2547,11 @@ type openAIPoolSoftCooldownStateReader interface {
 	OpenAIPoolSoftCooldownState(accountID int64) OpenAIPoolSoftCooldownState
 }
 
-func (s *adminServiceImpl) attachAccountRuntimeState(account *Account) {
+type openAIPoolRecoveryProbeAdminKicker interface {
+	MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account)
+}
+
+func (s *adminServiceImpl) attachAccountRuntimeState(ctx context.Context, account *Account) {
 	if s == nil || account == nil || s.runtimeBlocker == nil {
 		return
 	}
@@ -2559,11 +2563,22 @@ func (s *adminServiceImpl) attachAccountRuntimeState(account *Account) {
 	if !state.Cooling {
 		return
 	}
+	if state.Due && !state.ProbeInFlight {
+		if kicker, ok := s.runtimeBlocker.(openAIPoolRecoveryProbeAdminKicker); ok {
+			kicker.MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx, account)
+			state = reader.OpenAIPoolSoftCooldownState(account.ID)
+		}
+	}
 	until := state.Until
 	account.OpenAIPoolSoftCooldownUntil = &until
 	account.OpenAIPoolSoftCooldownDue = state.Due
 	account.OpenAIPoolSoftCooldownStatusCode = state.StatusCode
 	account.OpenAIPoolSoftCooldownReason = state.Reason
+	account.OpenAIPoolSoftCooldownProbeModel = state.ProbeModel
+	account.OpenAIPoolSoftCooldownProbeKind = state.ProbeKind
+	account.OpenAIPoolSoftCooldownSource = state.CooldownSource
+	account.OpenAIPoolLastProbeStatusCode = state.LastProbeStatus
+	account.OpenAIPoolLastProbeReason = state.LastProbeReason
 	account.OpenAIPoolRecoveryProbeInFlight = state.ProbeInFlight
 }
 
@@ -2909,6 +2924,11 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	if _, err := s.accountRepo.BulkUpdate(ctx, input.AccountIDs, repoUpdates); err != nil {
 		return nil, err
 	}
+	if input.Schedulable != nil && !*input.Schedulable {
+		for _, accountID := range input.AccountIDs {
+			s.clearAccountRuntimeSchedulingBlock(accountID)
+		}
+	}
 
 	// Handle group bindings per account (requires individual operations).
 	for _, accountID := range input.AccountIDs {
@@ -3015,9 +3035,7 @@ func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Ac
 	if err := s.accountRepo.ClearTempUnschedulable(ctx, id); err != nil {
 		return nil, err
 	}
-	if s.runtimeBlocker != nil {
-		s.runtimeBlocker.ClearAccountSchedulingBlock(id)
-	}
+	s.clearAccountRuntimeSchedulingBlock(id)
 	return s.accountRepo.GetByID(ctx, id)
 }
 
@@ -3029,11 +3047,21 @@ func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, 
 	if err := s.accountRepo.SetSchedulable(ctx, id, schedulable); err != nil {
 		return nil, err
 	}
+	if !schedulable {
+		s.clearAccountRuntimeSchedulingBlock(id)
+	}
 	updated, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	return updated, nil
+}
+
+func (s *adminServiceImpl) clearAccountRuntimeSchedulingBlock(accountID int64) {
+	if s == nil || s.runtimeBlocker == nil || accountID <= 0 {
+		return
+	}
+	s.runtimeBlocker.ClearAccountSchedulingBlock(accountID)
 }
 
 // Proxy management implementations

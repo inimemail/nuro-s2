@@ -191,11 +191,26 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 	if cooldownContext.StatusCode == 0 {
 		cooldownContext.StatusCode = statusCode
 	}
+	cooldownContext.ProbeModel = strings.TrimSpace(cooldownContext.ProbeModel)
+	cooldownContext.ProbeKind = strings.TrimSpace(cooldownContext.ProbeKind)
+	if cooldownContext.ProbeKind == "" {
+		if cooldownContext.ProbeCapability != "" || isOpenAIImageGenerationModel(cooldownContext.ProbeModel) {
+			cooldownContext.ProbeKind = "images"
+		} else {
+			cooldownContext.ProbeKind = "openai"
+		}
+	}
+	if strings.TrimSpace(cooldownContext.CooldownSource) == "" {
+		cooldownContext.CooldownSource = "upstream_failure"
+	}
 	if strings.TrimSpace(cooldownContext.Reason) == "" {
 		cooldownContext.Reason = sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(responseBody))
 	}
 	cooldownContext.Reason = truncateString(strings.TrimSpace(cooldownContext.Reason), 256)
-	if cooldownContext.ProbeCapability != "" || cooldownContext.StatusCode > 0 || cooldownContext.Reason != "" {
+	cooldownContext.LastProbeReason = truncateString(strings.TrimSpace(cooldownContext.LastProbeReason), 256)
+	if cooldownContext.ProbeCapability != "" || cooldownContext.ProbeModel != "" || cooldownContext.ProbeKind != "" ||
+		cooldownContext.CooldownSource != "" || cooldownContext.StatusCode > 0 || cooldownContext.Reason != "" ||
+		cooldownContext.LastProbeStatus > 0 || cooldownContext.LastProbeReason != "" {
 		s.openaiPoolSoftCooldownContext.Store(account.ID, cooldownContext)
 	}
 	s.storeOpenAIPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown))
@@ -277,18 +292,34 @@ func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownContext(accountID in
 	return cooldownContext
 }
 
+func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownMatches(accountID int64, expectedUntil time.Time) bool {
+	if expectedUntil.IsZero() {
+		return false
+	}
+	until, ok := s.openAIPoolAccountSoftCooldownUntilByID(accountID)
+	if !ok {
+		return false
+	}
+	return until.Equal(expectedUntil)
+}
+
 func (s *OpenAIGatewayService) isOpenAIPoolAccountSoftCooldownDue(account *Account) bool {
 	until, ok := s.openAIPoolAccountSoftCooldownUntil(account)
 	return ok && !time.Now().Before(until)
 }
 
 type OpenAIPoolSoftCooldownState struct {
-	Until         time.Time
-	Cooling       bool
-	Due           bool
-	ProbeInFlight bool
-	StatusCode    int
-	Reason        string
+	Until           time.Time
+	Cooling         bool
+	Due             bool
+	ProbeInFlight   bool
+	StatusCode      int
+	Reason          string
+	ProbeModel      string
+	ProbeKind       string
+	CooldownSource  string
+	LastProbeStatus int
+	LastProbeReason string
 }
 
 func (s *OpenAIGatewayService) OpenAIPoolSoftCooldownState(accountID int64) OpenAIPoolSoftCooldownState {
@@ -299,12 +330,17 @@ func (s *OpenAIGatewayService) OpenAIPoolSoftCooldownState(accountID int64) Open
 	_, probing := s.openaiPoolRecoveryProbeInFlight.Load(accountID)
 	cooldownContext := s.openAIPoolAccountSoftCooldownContext(accountID)
 	return OpenAIPoolSoftCooldownState{
-		Until:         until,
-		Cooling:       true,
-		Due:           !time.Now().Before(until),
-		ProbeInFlight: probing,
-		StatusCode:    cooldownContext.StatusCode,
-		Reason:        cooldownContext.Reason,
+		Until:           until,
+		Cooling:         true,
+		Due:             !time.Now().Before(until),
+		ProbeInFlight:   probing,
+		StatusCode:      cooldownContext.StatusCode,
+		Reason:          cooldownContext.Reason,
+		ProbeModel:      cooldownContext.ProbeModel,
+		ProbeKind:       cooldownContext.ProbeKind,
+		CooldownSource:  cooldownContext.CooldownSource,
+		LastProbeStatus: cooldownContext.LastProbeStatus,
+		LastProbeReason: cooldownContext.LastProbeReason,
 	}
 }
 
@@ -314,14 +350,26 @@ func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
 	sessionHash string,
 	account *Account,
 	failoverErr *UpstreamFailoverError,
+	requestedModel ...string,
 ) {
 	if s == nil || account == nil {
 		return
 	}
 	if failoverErr != nil {
 		decision := classifyOpenAIPoolFailover(account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+		probeModel := strings.TrimSpace(failoverErr.ProbeModel)
+		if probeModel == "" && len(requestedModel) > 0 {
+			probeModel = strings.TrimSpace(requestedModel[0])
+		}
+		probeKind := strings.TrimSpace(failoverErr.ProbeKind)
+		if probeKind == "" {
+			probeKind = openAIPoolProbeKindForModel(probeModel)
+		}
 		s.MarkOpenAIPoolAccountSoftCooldownWithContext(ctx, account, failoverErr.StatusCode, failoverErr.ResponseBody, openAIPoolSoftCooldownContext{
 			ProbeCapability: decision.ProbeCapability,
+			ProbeModel:      probeModel,
+			ProbeKind:       probeKind,
+			CooldownSource:  "upstream_failure",
 			StatusCode:      failoverErr.StatusCode,
 			Reason:          failoverErr.Message,
 		})

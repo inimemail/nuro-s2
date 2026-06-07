@@ -1521,9 +1521,9 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 	}
 	if result.ClearedError || result.ClearedRateLimit {
 		s.ResetOpenAI403Counter(ctx, accountID)
-		if result.ClearedError && !result.ClearedRateLimit {
-			s.notifyAccountSchedulingBlockCleared(accountID)
-		}
+	}
+	if !result.ClearedRateLimit {
+		s.notifyAccountSchedulingBlockCleared(accountID)
 	}
 
 	return result, nil

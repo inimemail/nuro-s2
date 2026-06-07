@@ -365,6 +365,7 @@ type OpenAIGatewayService struct {
 	openaiPoolSoftCooldownContext       sync.Map // key: int64(accountID), value: openAIPoolSoftCooldownContext
 	openaiPoolRecoveryProbeInFlight     sync.Map // key: int64(accountID), value: struct{}
 	openaiPoolRecoveryProbeFailureCount sync.Map // key: int64(accountID), value: int
+	openaiPoolRecoveryProbeAdminKickAt  sync.Map // key: int64(accountID), value: time.Time
 	openaiOAuth429WindowStartUnixNano   atomic.Int64
 	openaiOAuth429WindowCount           atomic.Int64
 	openaiWSRetryMetrics                openAIWSRetryMetrics

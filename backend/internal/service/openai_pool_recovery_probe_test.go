@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -13,8 +14,9 @@ import (
 )
 
 type openAIPoolProbeHTTPUpstreamRecorder struct {
-	path string
-	body string
+	path       string
+	body       string
+	statusCode int
 }
 
 func (r *openAIPoolProbeHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
@@ -29,8 +31,12 @@ func (r *openAIPoolProbeHTTPUpstreamRecorder) DoWithTLS(req *http.Request, _ str
 		body, _ := io.ReadAll(req.Body)
 		r.body = string(body)
 	}
+	statusCode := r.statusCode
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
 	return &http.Response{
-		StatusCode: http.StatusOK,
+		StatusCode: statusCode,
 		Header:     http.Header{},
 		Body:       io.NopCloser(strings.NewReader(`{}`)),
 	}, nil
@@ -64,4 +70,30 @@ func TestOpenAIPoolRecoveryProbe_ImageCapabilityUsesImagesEndpoint(t *testing.T)
 	require.Contains(t, upstream.body, `"model":"gpt-image-2"`)
 	require.Contains(t, upstream.body, `"size":"1024x1024"`)
 	require.NotContains(t, upstream.body, `"messages"`)
+}
+
+func TestOpenAIPoolRecoveryProbe_StaleResultDoesNotRewriteManualClear(t *testing.T) {
+	upstream := &openAIPoolProbeHTTPUpstreamRecorder{statusCode: http.StatusInternalServerError}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:       202,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+			"api_key":   "sk-test",
+			"base_url":  "https://upstream.example",
+		},
+	}
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, cooldownUntil)
+	svc.ClearAccountSchedulingBlock(account.ID)
+
+	svc.runOpenAIPoolRecoveryProbe(context.Background(), account, "gpt-5.4", cooldownUntil)
+
+	_, cooling := svc.openAIPoolAccountSoftCooldownUntil(account)
+	require.False(t, cooling)
 }

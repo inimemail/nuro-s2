@@ -8,7 +8,10 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => key
+      t: (key: string, params?: Record<string, unknown>) => {
+        if (params?.time) return `${key}:${params.time}`
+        return key
+      }
     })
   }
 })
@@ -35,6 +38,9 @@ function makeAccount(overrides: Partial<Account>): Account {
     overload_until: null,
     temp_unschedulable_until: null,
     temp_unschedulable_reason: null,
+    openai_pool_soft_cooldown_until: null,
+    openai_pool_soft_cooldown_due: false,
+    openai_pool_recovery_probe_in_flight: false,
     session_window_start: null,
     session_window_end: null,
     session_window_status: null,
@@ -158,5 +164,38 @@ describe('AccountStatusIndicator', () => {
     expect(wrapper.text()).not.toContain('⚡')
     // AICredits 积分耗尽状态应显示
     expect(wrapper.text()).toContain('admin.accounts.status.creditsExhausted')
+  })
+
+  it('OpenAI 池软冷却会从倒计时切到待探测，不闪回 active', async () => {
+    const nowMs = Date.parse('2026-06-07T00:00:00Z')
+    const cooldownUntil = new Date(nowMs + 3000).toISOString()
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        nowMs,
+        account: makeAccount({
+          id: 5,
+          name: 'openai-pool',
+          platform: 'openai',
+          type: 'apikey',
+          openai_pool_soft_cooldown_until: cooldownUntil,
+          openai_pool_soft_cooldown_status_code: 429,
+        })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('admin.accounts.status.poolSoftCooldown')
+    expect(wrapper.text()).toContain('admin.accounts.status.poolSoftCooldownAutoProbe')
+    expect(wrapper.text()).toContain('3s')
+
+    await wrapper.setProps({ nowMs: nowMs + 3000 })
+
+    expect(wrapper.text()).toContain('admin.accounts.status.poolRecoveryPending')
+    expect(wrapper.text()).toContain('admin.accounts.status.poolRecoveryPendingShort')
+    expect(wrapper.text()).not.toContain('admin.accounts.status.active')
   })
 })

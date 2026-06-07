@@ -188,6 +188,11 @@ type Account struct {
 	OpenAIPoolSoftCooldownDue        bool       `json:"openai_pool_soft_cooldown_due"`
 	OpenAIPoolSoftCooldownStatusCode int        `json:"openai_pool_soft_cooldown_status_code,omitempty"`
 	OpenAIPoolSoftCooldownReason     string     `json:"openai_pool_soft_cooldown_reason,omitempty"`
+	OpenAIPoolSoftCooldownProbeModel string     `json:"openai_pool_soft_cooldown_probe_model,omitempty"`
+	OpenAIPoolSoftCooldownProbeKind  string     `json:"openai_pool_soft_cooldown_probe_kind,omitempty"`
+	OpenAIPoolSoftCooldownSource     string     `json:"openai_pool_soft_cooldown_source,omitempty"`
+	OpenAIPoolLastProbeStatusCode    int        `json:"openai_pool_last_probe_status_code,omitempty"`
+	OpenAIPoolLastProbeReason        string     `json:"openai_pool_last_probe_reason,omitempty"`
 	OpenAIPoolRecoveryProbeInFlight  bool       `json:"openai_pool_recovery_probe_in_flight"`
 
 	SessionWindowStart  *time.Time `json:"session_window_start"`

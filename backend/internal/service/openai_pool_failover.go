@@ -21,8 +21,13 @@ type openAIPoolFailoverDecision struct {
 
 type openAIPoolSoftCooldownContext struct {
 	ProbeCapability OpenAIImagesCapability
+	ProbeModel      string
+	ProbeKind       string
+	CooldownSource  string
 	StatusCode      int
 	Reason          string
+	LastProbeStatus int
+	LastProbeReason string
 }
 
 func (s *OpenAIGatewayService) newOpenAIPoolRequestFailoverError(
@@ -126,8 +131,17 @@ func (s *OpenAIGatewayService) newOpenAIPoolEmbeddedFailoverError(
 		ResponseBody:           responseBody,
 		ResponseHeaders:        cloneHTTPHeader(header),
 		Message:                msg,
+		ProbeModel:             strings.TrimSpace(requestedModel),
+		ProbeKind:              openAIPoolProbeKindForModel(requestedModel),
 		RetryableOnSameAccount: decision.RetryableOnSameAccount,
 	}
+}
+
+func openAIPoolProbeKindForModel(model string) string {
+	if isOpenAIImageGenerationModel(model) {
+		return "images"
+	}
+	return "openai"
 }
 
 func classifyOpenAIPoolFailover(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) openAIPoolFailoverDecision {

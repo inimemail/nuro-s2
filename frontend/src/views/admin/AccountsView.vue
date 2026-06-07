@@ -255,7 +255,7 @@
           </template>
           <template #cell-status="{ row }">
             <div class="flex items-center gap-1.5">
-              <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
+              <AccountStatusIndicator :account="row" :now-ms="uiNowMs" @show-temp-unsched="handleShowTempUnsched" />
             </div>
           </template>
           <template #cell-schedulable="{ row }">
@@ -543,6 +543,7 @@ const autoRefreshIntervalSeconds = ref<(typeof autoRefreshIntervals)[number]>(30
 const autoRefreshCountdown = ref(0)
 const autoRefreshETag = ref<string | null>(null)
 const autoRefreshFetching = ref(false)
+const uiNowMs = ref(Date.now())
 const AUTO_REFRESH_SILENT_WINDOW_MS = 15000
 const autoRefreshSilentUntil = ref(0)
 const hasPendingListSync = ref(false)
@@ -880,6 +881,16 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.rate_limit_reset_at !== next.rate_limit_reset_at ||
     current.overload_until !== next.overload_until ||
     current.temp_unschedulable_until !== next.temp_unschedulable_until ||
+    current.openai_pool_soft_cooldown_until !== next.openai_pool_soft_cooldown_until ||
+    current.openai_pool_soft_cooldown_due !== next.openai_pool_soft_cooldown_due ||
+    current.openai_pool_soft_cooldown_status_code !== next.openai_pool_soft_cooldown_status_code ||
+    current.openai_pool_soft_cooldown_reason !== next.openai_pool_soft_cooldown_reason ||
+    current.openai_pool_soft_cooldown_probe_model !== next.openai_pool_soft_cooldown_probe_model ||
+    current.openai_pool_soft_cooldown_probe_kind !== next.openai_pool_soft_cooldown_probe_kind ||
+    current.openai_pool_soft_cooldown_source !== next.openai_pool_soft_cooldown_source ||
+    current.openai_pool_last_probe_status_code !== next.openai_pool_last_probe_status_code ||
+    current.openai_pool_last_probe_reason !== next.openai_pool_last_probe_reason ||
+    current.openai_pool_recovery_probe_in_flight !== next.openai_pool_recovery_probe_in_flight ||
     buildOpenAIUsageRefreshKey(current) !== buildOpenAIUsageRefreshKey(next)
   )
 }
@@ -1002,6 +1013,38 @@ const syncPendingListChanges = async () => {
   // Keep behavior consistent with manual refresh.
   usageManualRefreshToken.value += 1
 }
+
+const hasOpenAIPoolRecoveryWatchRows = computed(() => {
+  const now = uiNowMs.value
+  return accounts.value.some((account) => {
+    if (!account.openai_pool_soft_cooldown_until) return false
+    if (account.openai_pool_recovery_probe_in_flight || account.openai_pool_soft_cooldown_due) return true
+    const untilMs = new Date(account.openai_pool_soft_cooldown_until).getTime()
+    return Number.isFinite(untilMs) && untilMs <= now
+  })
+})
+
+const { pause: pauseUiTicker, resume: resumeUiTicker } = useIntervalFn(
+  () => {
+    uiNowMs.value = Date.now()
+  },
+  1000,
+  { immediate: false }
+)
+
+const { pause: pauseOpenAIPoolRecoveryRefresh, resume: resumeOpenAIPoolRecoveryRefresh } = useIntervalFn(
+  async () => {
+    if (!hasOpenAIPoolRecoveryWatchRows.value) return
+    if (document.hidden) return
+    if (loading.value || autoRefreshFetching.value) return
+    if (isAnyModalOpen.value) return
+    if (menu.show || showAccountToolsDropdown.value || showAutoRefreshDropdown.value) return
+    resetAutoRefreshCache()
+    await refreshAccountsIncrementally()
+  },
+  2000,
+  { immediate: false }
+)
 
 const { pause: pauseAutoRefresh, resume: resumeAutoRefresh } = useIntervalFn(
   async () => {
@@ -1243,7 +1286,24 @@ const handleBulkRefreshToken = async () => {
 const updateSchedulableInList = (accountIds: number[], schedulable: boolean) => {
   if (accountIds.length === 0) return
   const idSet = new Set(accountIds)
-  accounts.value = accounts.value.map((account) => (idSet.has(account.id) ? { ...account, schedulable } : account))
+  accounts.value = accounts.value.map((account) => {
+    if (!idSet.has(account.id)) return account
+    const updated = { ...account, schedulable }
+    if (!schedulable) {
+      updated.openai_pool_soft_cooldown_until = null
+      updated.openai_pool_soft_cooldown_due = false
+      updated.openai_pool_soft_cooldown_status_code = undefined
+      updated.openai_pool_soft_cooldown_reason = undefined
+      updated.openai_pool_soft_cooldown_probe_model = undefined
+      updated.openai_pool_soft_cooldown_probe_kind = undefined
+      updated.openai_pool_soft_cooldown_source = undefined
+      updated.openai_pool_last_probe_status_code = undefined
+      updated.openai_pool_last_probe_reason = undefined
+      updated.openai_pool_recovery_probe_in_flight = false
+    }
+    syncAccountRefs(updated)
+    return updated
+  })
 }
 const normalizeBulkSchedulableResult = (
   result: {
@@ -1597,7 +1657,11 @@ const handleToggleSchedulable = async (a: Account) => {
   togglingSchedulable.value = a.id
   try {
     const updated = await adminAPI.accounts.setSchedulable(a.id, nextSchedulable)
-    updateSchedulableInList([a.id], updated?.schedulable ?? nextSchedulable)
+    if (updated) {
+      patchAccountInList(updated)
+    } else {
+      updateSchedulableInList([a.id], nextSchedulable)
+    }
     enterAutoRefreshSilentWindow()
   } catch (error) {
     console.error('Failed to toggle schedulable:', error)
@@ -1651,6 +1715,8 @@ const handleClickOutside = (event: MouseEvent) => {
 
 onMounted(async () => {
   load()
+  resumeUiTicker()
+  resumeOpenAIPoolRecoveryRefresh()
   try {
     const [p, g] = await Promise.all([adminAPI.proxies.getAll(), adminAPI.groups.getAll()])
     proxies.value = p
@@ -1672,6 +1738,9 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('scroll', handleScroll, true)
   document.removeEventListener('click', handleClickOutside)
+  pauseUiTicker()
+  pauseOpenAIPoolRecoveryRefresh()
+  pauseAutoRefresh()
 })
 </script>
 

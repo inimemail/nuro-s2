@@ -856,6 +856,11 @@ export interface Account {
   openai_pool_soft_cooldown_due: boolean
   openai_pool_soft_cooldown_status_code?: number
   openai_pool_soft_cooldown_reason?: string
+  openai_pool_soft_cooldown_probe_model?: string
+  openai_pool_soft_cooldown_probe_kind?: string
+  openai_pool_soft_cooldown_source?: string
+  openai_pool_last_probe_status_code?: number
+  openai_pool_last_probe_reason?: string
   openai_pool_recovery_probe_in_flight: boolean
 
   // Session window fields (5-hour window)

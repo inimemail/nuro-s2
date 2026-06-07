@@ -182,16 +182,41 @@ const { t } = useI18n()
 
 const props = defineProps<{
   account: Account
+  nowMs?: number
 }>()
 
 const emit = defineEmits<{
   (e: 'show-temp-unsched', account: Account): void
 }>()
 
+const nowMs = computed(() => props.nowMs ?? Date.now())
+
+const isAfterNow = (value: string | null | undefined): boolean => {
+  if (!value) return false
+  return new Date(value).getTime() > nowMs.value
+}
+
+const formatCountdownSeconds = (targetDate: string | Date | null | undefined): string | null => {
+  if (!targetDate) return null
+  const targetMs = new Date(targetDate).getTime()
+  if (!Number.isFinite(targetMs)) return null
+  const diffMs = targetMs - nowMs.value
+  if (diffMs <= 0) return null
+  const totalSecs = Math.ceil(diffMs / 1000)
+  const days = Math.floor(totalSecs / 86400)
+  const hours = Math.floor((totalSecs % 86400) / 3600)
+  const minutes = Math.floor((totalSecs % 3600) / 60)
+  const seconds = totalSecs % 60
+  if (days > 0) return `${days}d${hours}h`
+  if (hours > 0) return `${hours}h${minutes}m`
+  if (minutes > 0) return `${minutes}m${seconds}s`
+  return `${seconds}s`
+}
+
 // Computed: is rate limited (429)
 const isRateLimited = computed(() => {
   if (!props.account.rate_limit_reset_at) return false
-  return new Date(props.account.rate_limit_reset_at) > new Date()
+  return isAfterNow(props.account.rate_limit_reset_at)
 })
 
 type AccountModelStatusItem = {
@@ -206,7 +231,7 @@ const activeModelStatuses = computed<AccountModelStatusItem[]>(() => {
   const modelLimits = extra?.model_rate_limits as
     | Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>
     | undefined
-  const now = new Date()
+  const now = new Date(nowMs.value)
   const items: AccountModelStatusItem[] = []
 
   if (!modelLimits) return items
@@ -276,8 +301,7 @@ const formatScopeName = (scope: string): string => {
 
 const formatModelResetTime = (resetAt: string): string => {
   const date = new Date(resetAt)
-  const now = new Date()
-  const diffMs = date.getTime() - now.getTime()
+  const diffMs = date.getTime() - nowMs.value
   if (diffMs <= 0) return ''
   const totalSecs = Math.floor(diffMs / 1000)
   const h = Math.floor(totalSecs / 3600)
@@ -291,21 +315,24 @@ const formatModelResetTime = (resetAt: string): string => {
 // Computed: is overloaded (529)
 const isOverloaded = computed(() => {
   if (!props.account.overload_until) return false
-  return new Date(props.account.overload_until) > new Date()
+  return isAfterNow(props.account.overload_until)
 })
 
 // Computed: is temp unschedulable
 const isTempUnschedulable = computed(() => {
   if (!props.account.temp_unschedulable_until) return false
-  return new Date(props.account.temp_unschedulable_until) > new Date()
+  return isAfterNow(props.account.temp_unschedulable_until)
 })
 
 const isOpenAIPoolSoftCooling = computed(() => {
   if (!props.account.openai_pool_soft_cooldown_until) return false
+  const untilMs = new Date(props.account.openai_pool_soft_cooldown_until).getTime()
+  if (!Number.isFinite(untilMs)) return false
   return (
-    new Date(props.account.openai_pool_soft_cooldown_until) > new Date() ||
+    isAfterNow(props.account.openai_pool_soft_cooldown_until) ||
     props.account.openai_pool_soft_cooldown_due ||
-    props.account.openai_pool_recovery_probe_in_flight
+    props.account.openai_pool_recovery_probe_in_flight ||
+    untilMs <= nowMs.value
   )
 })
 
@@ -326,7 +353,7 @@ const isQuotaExceeded = computed(() => {
 
 // Computed: countdown text for rate limit (429)
 const rateLimitCountdown = computed(() => {
-  return formatCountdown(props.account.rate_limit_reset_at)
+  return formatCountdownSeconds(props.account.rate_limit_reset_at) || formatCountdown(props.account.rate_limit_reset_at)
 })
 
 const rateLimitResumeText = computed(() => {
@@ -336,6 +363,8 @@ const rateLimitResumeText = computed(() => {
 
 // Computed: countdown text for overload (529)
 const overloadCountdown = computed(() => {
+  const countdown = formatCountdownSeconds(props.account.overload_until)
+  if (countdown) return t('common.time.countdown.withSuffix', { time: countdown })
   return formatCountdownWithSuffix(props.account.overload_until)
 })
 
@@ -343,7 +372,7 @@ const openAIPoolSoftCooldownStatusText = computed(() => {
   if (props.account.openai_pool_recovery_probe_in_flight) {
     return t('admin.accounts.status.poolRecoveryProbing')
   }
-  if (props.account.openai_pool_soft_cooldown_due) {
+  if (props.account.openai_pool_soft_cooldown_due || !isAfterNow(props.account.openai_pool_soft_cooldown_until)) {
     return t('admin.accounts.status.poolRecoveryPending')
   }
   return t('admin.accounts.status.poolSoftCooldown')
@@ -360,10 +389,13 @@ const openAIPoolSoftCooldownSubText = computed(() => {
   if (props.account.openai_pool_recovery_probe_in_flight) {
     return t('admin.accounts.status.poolRecoveryProbingShort')
   }
-  if (props.account.openai_pool_soft_cooldown_due) {
+  if (props.account.openai_pool_soft_cooldown_due || !isAfterNow(props.account.openai_pool_soft_cooldown_until)) {
     return t('admin.accounts.status.poolRecoveryPendingShort')
   }
-  const countdown = formatCountdownWithSuffix(props.account.openai_pool_soft_cooldown_until)
+  const rawCountdown = formatCountdownSeconds(props.account.openai_pool_soft_cooldown_until)
+  const countdown = rawCountdown
+    ? t('common.time.countdown.withSuffix', { time: rawCountdown })
+    : formatCountdownWithSuffix(props.account.openai_pool_soft_cooldown_until)
   if (!countdown) return ''
   return t('admin.accounts.status.poolSoftCooldownAutoProbe', { time: countdown })
 })

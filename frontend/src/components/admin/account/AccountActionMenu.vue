@@ -76,8 +76,19 @@ const isRateLimited = computed(() => {
 })
 const isOverloaded = computed(() => props.account?.overload_until && new Date(props.account.overload_until) > new Date())
 const isTempUnschedulable = computed(() => props.account?.temp_unschedulable_until && new Date(props.account.temp_unschedulable_until) > new Date())
+const isOpenAIPoolSoftCooling = computed(() => {
+  if (!props.account?.openai_pool_soft_cooldown_until) return false
+  const untilMs = new Date(props.account.openai_pool_soft_cooldown_until).getTime()
+  if (!Number.isFinite(untilMs)) return false
+  return (
+    new Date(props.account.openai_pool_soft_cooldown_until) > new Date() ||
+    props.account.openai_pool_soft_cooldown_due ||
+    props.account.openai_pool_recovery_probe_in_flight ||
+    untilMs <= Date.now()
+  )
+})
 const hasRecoverableState = computed(() => {
-  return props.account?.status === 'error' || Boolean(isRateLimited.value) || Boolean(isOverloaded.value) || Boolean(isTempUnschedulable.value)
+  return props.account?.status === 'error' || Boolean(isRateLimited.value) || Boolean(isOverloaded.value) || Boolean(isTempUnschedulable.value) || isOpenAIPoolSoftCooling.value
 })
 const isAntigravityOAuth = computed(() => props.account?.platform === 'antigravity' && props.account?.type === 'oauth')
 const isOpenAIOAuth = computed(() => props.account?.platform === 'openai' && props.account?.type === 'oauth')

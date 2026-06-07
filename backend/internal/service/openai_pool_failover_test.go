@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -9,6 +10,33 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+type openAIPoolManualRuntimeBlockRecorder struct {
+	clearedIDs []int64
+}
+
+func (r *openAIPoolManualRuntimeBlockRecorder) BlockAccountScheduling(account *Account, until time.Time, reason string) {
+}
+
+func (r *openAIPoolManualRuntimeBlockRecorder) ClearAccountSchedulingBlock(accountID int64) {
+	r.clearedIDs = append(r.clearedIDs, accountID)
+}
+
+type openAIPoolSchedulableRepo struct {
+	AccountRepository
+	account              *Account
+	setSchedulableValues []bool
+}
+
+func (r *openAIPoolSchedulableRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
+	return r.account, nil
+}
+
+func (r *openAIPoolSchedulableRepo) SetSchedulable(ctx context.Context, id int64, schedulable bool) error {
+	r.setSchedulableValues = append(r.setSchedulableValues, schedulable)
+	r.account.Schedulable = schedulable
+	return nil
+}
 
 func TestOpenAIPoolRequestFailoverError_ConnectionError(t *testing.T) {
 	svc := &OpenAIGatewayService{}
@@ -137,6 +165,51 @@ func TestOpenAIPoolSoftCooldownState_ExposesReasonUntilCleared(t *testing.T) {
 	svc.ClearAccountSchedulingBlock(account.ID)
 	state = svc.OpenAIPoolSoftCooldownState(account.ID)
 	require.False(t, state.Cooling)
+}
+
+func TestRecoverAccountState_ClearsRuntimeOnlyPoolSoftCooldown(t *testing.T) {
+	repo := stubOpenAIAccountRepo{accounts: []Account{
+		{
+			ID:          108,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Credentials: map[string]any{"pool_mode": true},
+		},
+	}}
+	blocker := &openAIPoolManualRuntimeBlockRecorder{}
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	svc.SetAccountRuntimeBlocker(blocker)
+
+	result, err := svc.RecoverAccountState(context.Background(), 108, AccountRecoveryOptions{})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.ClearedError)
+	require.False(t, result.ClearedRateLimit)
+	require.Equal(t, []int64{108}, blocker.clearedIDs)
+}
+
+func TestSetAccountSchedulable_DisablingClearsRuntimePoolSoftCooldown(t *testing.T) {
+	repo := &openAIPoolSchedulableRepo{account: &Account{
+		ID:          109,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{"pool_mode": true},
+	}}
+	blocker := &openAIPoolManualRuntimeBlockRecorder{}
+	svc := &adminServiceImpl{accountRepo: repo, runtimeBlocker: blocker}
+
+	updated, err := svc.SetAccountSchedulable(context.Background(), 109, false)
+
+	require.NoError(t, err)
+	require.NotNil(t, updated)
+	require.False(t, updated.Schedulable)
+	require.Equal(t, []bool{false}, repo.setSchedulableValues)
+	require.Equal(t, []int64{109}, blocker.clearedIDs)
 }
 
 func TestClassifyOpenAIEmbeddedUpstreamError_APIReturned429(t *testing.T) {
