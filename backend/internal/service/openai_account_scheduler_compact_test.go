@@ -25,6 +25,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPrefersSupported
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
+			GroupIDs:    []int64{groupID},
 			Extra:       map[string]any{}, // unknown
 		},
 		{
@@ -35,6 +36,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPrefersSupported
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
+			GroupIDs:    []int64{groupID},
 			Extra:       map[string]any{"openai_compact_supported": true}, // tier=2
 		},
 	}
@@ -79,6 +81,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRejectsExplicitl
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
+			GroupIDs:    []int64{groupID},
 			Extra:       map[string]any{"openai_compact_mode": OpenAICompactModeForceOff},
 		},
 		{
@@ -89,6 +92,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRejectsExplicitl
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
+			GroupIDs:    []int64{groupID},
 			Extra:       map[string]any{"openai_compact_supported": false},
 		},
 	}
@@ -132,6 +136,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
+			GroupIDs:    []int64{groupID},
 			Extra:       map[string]any{"openai_compact_supported": false}, // tier=0
 		},
 		{
@@ -142,6 +147,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
+			GroupIDs:    []int64{groupID},
 			Extra:       map[string]any{}, // unknown -> tier=1
 		},
 	}

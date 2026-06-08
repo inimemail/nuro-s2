@@ -378,6 +378,10 @@ func (s *stubAdminService) ClearAccountError(ctx context.Context, id int64) (*se
 	return &account, nil
 }
 
+func (s *stubAdminService) RevertAccountProxyFallback(ctx context.Context, id int64) error {
+	return nil
+}
+
 func (s *stubAdminService) SetAccountError(ctx context.Context, id int64, errorMsg string) error {
 	return nil
 }

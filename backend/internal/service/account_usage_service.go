@@ -268,6 +268,10 @@ type AccountUsageService struct {
 	tlsFPProfileService     *TLSFingerprintProfileService
 }
 
+type sessionWindowEndUpdater interface {
+	UpdateSessionWindowEnd(ctx context.Context, id int64, end time.Time) error
+}
+
 // NewAccountUsageService 创建AccountUsageService实例
 func NewAccountUsageService(
 	accountRepo AccountRepository,
@@ -490,6 +494,13 @@ func (s *AccountUsageService) syncActiveToPassive(ctx context.Context, accountID
 		extraUpdates["passive_usage_sampled_at"] = time.Now().UTC().Format(time.RFC3339)
 		if err := s.accountRepo.UpdateExtra(ctx, accountID, extraUpdates); err != nil {
 			slog.Warn("sync_active_to_passive_failed", "account_id", accountID, "error", err)
+		}
+	}
+	if usage.FiveHour != nil && usage.FiveHour.ResetsAt != nil {
+		if updater, ok := s.accountRepo.(sessionWindowEndUpdater); ok {
+			if err := updater.UpdateSessionWindowEnd(ctx, accountID, *usage.FiveHour.ResetsAt); err != nil {
+				slog.Warn("sync_active_to_passive_session_window_end_failed", "account_id", accountID, "error", err)
+			}
 		}
 	}
 }
@@ -1297,6 +1308,11 @@ func (s *AccountUsageService) estimateSetupTokenUsage(account *Account) *UsageIn
 			Utilization:      utilization,
 			ResetsAt:         account.SessionWindowEnd,
 			RemainingSeconds: remaining,
+		}
+		if info.FiveHour.ResetsAt != nil && !time.Now().Before(*info.FiveHour.ResetsAt) {
+			info.FiveHour.Utilization = 0
+			info.FiveHour.ResetsAt = nil
+			info.FiveHour.RemainingSeconds = 0
 		}
 	} else {
 		// 没有窗口信息，返回空数据

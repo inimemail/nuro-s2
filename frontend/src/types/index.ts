@@ -692,6 +692,8 @@ export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
+export type ProxyStatus = 'active' | 'inactive' | 'expired'
+export type ProxyFallbackMode = 'none' | 'proxy' | 'direct'
 
 // Claude Model type (returned by /v1/models and account models API)
 export interface ClaudeModel {
@@ -709,7 +711,11 @@ export interface Proxy {
   port: number
   username: string | null
   password?: string | null
-  status: 'active' | 'inactive'
+  status: ProxyStatus
+  expires_at?: string | null
+  fallback_mode?: ProxyFallbackMode
+  backup_proxy_id?: number | null
+  expiry_warn_days?: number
   account_count?: number // Number of accounts using this proxy
   latency_ms?: number
   latency_status?: 'success' | 'failed'
@@ -829,6 +835,8 @@ export interface Account {
     antigravity_credits_overages?: Record<string, { activated_at: string; active_until: string }>
   } & Record<string, unknown>)
   proxy_id: number | null
+  proxy_fallback_origin_id?: number | null
+  proxy_fallback_origin_name?: string | null
   concurrency: number
   load_factor?: number | null
   current_concurrency?: number // Real-time concurrency count from Redis
@@ -1087,6 +1095,10 @@ export interface CreateProxyRequest {
   port: number
   username?: string | null
   password?: string | null
+  expires_at?: number | null
+  fallback_mode?: ProxyFallbackMode
+  backup_proxy_id?: number | null
+  expiry_warn_days?: number
 }
 
 export interface UpdateProxyRequest {
@@ -1096,7 +1108,11 @@ export interface UpdateProxyRequest {
   port?: number
   username?: string | null
   password?: string | null
-  status?: 'active' | 'inactive'
+  status?: ProxyStatus
+  expires_at?: number | null
+  fallback_mode?: ProxyFallbackMode
+  backup_proxy_id?: number | null
+  expiry_warn_days?: number
 }
 
 export interface AdminDataPayload {
@@ -1115,7 +1131,7 @@ export interface AdminDataProxy {
   port: number
   username?: string | null
   password?: string | null
-  status: 'active' | 'inactive'
+  status: ProxyStatus
 }
 
 export interface AdminDataAccount {

@@ -10,6 +10,7 @@ import type {
   ProxyQualityCheckResult,
   CreateProxyRequest,
   UpdateProxyRequest,
+  ProxyStatus,
   PaginatedResponse,
   AdminDataPayload,
   AdminDataImportResult
@@ -27,7 +28,7 @@ export async function list(
   pageSize: number = 20,
   filters?: {
     protocol?: string
-    status?: 'active' | 'inactive'
+    status?: ProxyStatus
     search?: string
     sort_by?: string
     sort_order?: 'asc' | 'desc'
@@ -114,7 +115,7 @@ export async function deleteProxy(id: number): Promise<{ message: string }> {
  * @param status - New status
  * @returns Updated proxy
  */
-export async function toggleStatus(id: number, status: 'active' | 'inactive'): Promise<Proxy> {
+export async function toggleStatus(id: number, status: ProxyStatus): Promise<Proxy> {
   return update(id, { status })
 }
 
@@ -227,7 +228,7 @@ export async function exportData(options?: {
   ids?: number[]
   filters?: {
     protocol?: string
-    status?: 'active' | 'inactive'
+    status?: ProxyStatus
     search?: string
     sort_by?: string
     sort_order?: 'asc' | 'desc'

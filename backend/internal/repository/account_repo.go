@@ -1196,6 +1196,33 @@ func (r *accountRepository) ClearRateLimit(ctx context.Context, id int64) error 
 	return nil
 }
 
+func (r *accountRepository) RevertProxyFallback(ctx context.Context, accountID int64) error {
+	result, err := r.sql.ExecContext(ctx, `
+		UPDATE accounts
+		SET proxy_id = proxy_fallback_origin_id,
+			proxy_fallback_origin_id = NULL,
+			updated_at = NOW()
+		WHERE id = $1
+			AND deleted_at IS NULL
+			AND proxy_fallback_origin_id IS NOT NULL
+	`, accountID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return service.ErrAccountNotFound
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &accountID, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue proxy fallback revert failed: account=%d err=%v", accountID, err)
+	}
+	r.syncSchedulerAccountSnapshot(ctx, accountID)
+	return nil
+}
+
 func (r *accountRepository) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error {
 	client := clientFromContext(ctx, r.client)
 	result, err := client.ExecContext(
@@ -1263,6 +1290,20 @@ func (r *accountRepository) UpdateSessionWindow(ctx context.Context, id int64, s
 		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
 			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue session window update failed: account=%d err=%v", id, err)
 		}
+	}
+	return nil
+}
+
+func (r *accountRepository) UpdateSessionWindowEnd(ctx context.Context, id int64, end time.Time) error {
+	_, err := r.client.Account.Update().
+		Where(dbaccount.IDEQ(id)).
+		SetSessionWindowEnd(end).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue session window end update failed: account=%d err=%v", id, err)
 	}
 	return nil
 }
@@ -1578,6 +1619,9 @@ func (r *accountRepository) accountsToService(ctx context.Context, accounts []*d
 		if acc.ProxyID != nil {
 			proxyIDs = append(proxyIDs, *acc.ProxyID)
 		}
+		if acc.ProxyFallbackOriginID != nil {
+			proxyIDs = append(proxyIDs, *acc.ProxyFallbackOriginID)
+		}
 	}
 
 	proxyMap, err := r.loadProxies(ctx, proxyIDs)
@@ -1598,6 +1642,13 @@ func (r *accountRepository) accountsToService(ctx context.Context, accounts []*d
 		if acc.ProxyID != nil {
 			if proxy, ok := proxyMap[*acc.ProxyID]; ok {
 				out.Proxy = proxy
+			}
+		}
+		out.ProxyFallbackOriginID = acc.ProxyFallbackOriginID
+		if acc.ProxyFallbackOriginID != nil {
+			if proxy, ok := proxyMap[*acc.ProxyFallbackOriginID]; ok && proxy != nil {
+				name := proxy.Name
+				out.ProxyFallbackOriginName = &name
 			}
 		}
 		if groups, ok := groupsByAccount[acc.ID]; ok {
@@ -1751,6 +1802,7 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 		Credentials:             copyJSONMap(m.Credentials),
 		Extra:                   copyJSONMap(m.Extra),
 		ProxyID:                 m.ProxyID,
+		ProxyFallbackOriginID:   m.ProxyFallbackOriginID,
 		Concurrency:             m.Concurrency,
 		Priority:                m.Priority,
 		RateMultiplier:          &rateMultiplier,

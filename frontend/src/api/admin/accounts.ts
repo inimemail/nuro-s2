@@ -289,6 +289,16 @@ export async function recoverState(id: number): Promise<Account> {
 }
 
 /**
+ * Restore the original proxy after an automatic proxy-expiry fallback.
+ * @param id - Account ID
+ * @returns Updated account
+ */
+export async function revertProxyFallback(id: number): Promise<Account> {
+  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/revert-proxy-fallback`)
+  return data
+}
+
+/**
  * Reset account quota usage
  * @param id - Account ID
  * @returns Updated account
@@ -753,6 +763,7 @@ export const accountsAPI = {
   getBatchTodayStats,
   clearRateLimit,
   recoverState,
+  revertProxyFallback,
   resetAccountQuota,
   getTempUnschedulableStatus,
   resetTempUnschedulable,

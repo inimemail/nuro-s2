@@ -84,6 +84,7 @@ type AdminService interface {
 	DeleteAccount(ctx context.Context, id int64) error
 	RefreshAccountCredentials(ctx context.Context, id int64) (*Account, error)
 	ClearAccountError(ctx context.Context, id int64) (*Account, error)
+	RevertAccountProxyFallback(ctx context.Context, id int64) error
 	SetAccountError(ctx context.Context, id int64, errorMsg string) error
 	// EnsureOpenAIPrivacy 检查 OpenAI OAuth 账号 privacy_mode，未设置则尝试关闭训练数据共享并持久化。
 	EnsureOpenAIPrivacy(ctx context.Context, account *Account) string
@@ -384,22 +385,30 @@ type BulkUpdateAccountsResult struct {
 }
 
 type CreateProxyInput struct {
-	Name     string
-	Protocol string
-	Host     string
-	Port     int
-	Username string
-	Password string
+	Name           string
+	Protocol       string
+	Host           string
+	Port           int
+	Username       string
+	Password       string
+	ExpiresAt      *time.Time
+	FallbackMode   string
+	BackupProxyID  *int64
+	ExpiryWarnDays int
 }
 
 type UpdateProxyInput struct {
-	Name     string
-	Protocol string
-	Host     string
-	Port     int
-	Username string
-	Password string
-	Status   string
+	Name           string
+	Protocol       string
+	Host           string
+	Port           int
+	Username       string
+	Password       string
+	Status         string
+	ExpiresAt      *time.Time
+	FallbackMode   string
+	BackupProxyID  *int64
+	ExpiryWarnDays int
 }
 
 type GenerateRedeemCodesInput struct {
@@ -3039,6 +3048,10 @@ func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Ac
 	return s.accountRepo.GetByID(ctx, id)
 }
 
+func (s *adminServiceImpl) RevertAccountProxyFallback(ctx context.Context, id int64) error {
+	return s.accountRepo.RevertProxyFallback(ctx, id)
+}
+
 func (s *adminServiceImpl) SetAccountError(ctx context.Context, id int64, errorMsg string) error {
 	return s.accountRepo.SetError(ctx, id, errorMsg)
 }
@@ -3106,14 +3119,29 @@ func (s *adminServiceImpl) GetProxiesByIDs(ctx context.Context, ids []int64) ([]
 }
 
 func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyInput) (*Proxy, error) {
+	mode := strings.TrimSpace(input.FallbackMode)
+	if mode == "" {
+		mode = FallbackModeNone
+	}
+	if mode == FallbackModeProxy && input.BackupProxyID == nil {
+		return nil, infraerrors.BadRequest("PROXY_BACKUP_REQUIRED", "backup proxy is required when fallback mode is proxy")
+	}
+	if input.ExpiryWarnDays < 0 {
+		return nil, infraerrors.BadRequest("PROXY_WARN_DAYS_INVALID", "expiry warn days must be non-negative")
+	}
+
 	proxy := &Proxy{
-		Name:     input.Name,
-		Protocol: input.Protocol,
-		Host:     input.Host,
-		Port:     input.Port,
-		Username: input.Username,
-		Password: input.Password,
-		Status:   StatusActive,
+		Name:           input.Name,
+		Protocol:       input.Protocol,
+		Host:           input.Host,
+		Port:           input.Port,
+		Username:       input.Username,
+		Password:       input.Password,
+		Status:         StatusActive,
+		ExpiresAt:      input.ExpiresAt,
+		FallbackMode:   mode,
+		BackupProxyID:  input.BackupProxyID,
+		ExpiryWarnDays: input.ExpiryWarnDays,
 	}
 	if err := s.proxyRepo.Create(ctx, proxy); err != nil {
 		return nil, err
@@ -3127,6 +3155,20 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 	proxy, err := s.proxyRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+
+	if input.BackupProxyID != nil && *input.BackupProxyID == id {
+		return nil, infraerrors.BadRequest("PROXY_BACKUP_SELF", "backup proxy cannot be itself")
+	}
+	mode := strings.TrimSpace(input.FallbackMode)
+	if mode == "" {
+		mode = FallbackModeNone
+	}
+	if mode == FallbackModeProxy && input.BackupProxyID == nil {
+		return nil, infraerrors.BadRequest("PROXY_BACKUP_REQUIRED", "backup proxy is required when fallback mode is proxy")
+	}
+	if input.ExpiryWarnDays < 0 {
+		return nil, infraerrors.BadRequest("PROXY_WARN_DAYS_INVALID", "expiry warn days must be non-negative")
 	}
 
 	if input.Name != "" {
@@ -3150,6 +3192,10 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 	if input.Status != "" {
 		proxy.Status = input.Status
 	}
+	proxy.ExpiresAt = input.ExpiresAt
+	proxy.FallbackMode = mode
+	proxy.BackupProxyID = input.BackupProxyID
+	proxy.ExpiryWarnDays = input.ExpiryWarnDays
 
 	if err := s.proxyRepo.Update(ctx, proxy); err != nil {
 		return nil, err
