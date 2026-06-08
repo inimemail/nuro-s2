@@ -286,6 +286,31 @@
               {{ t('admin.accounts.poolModeInfo') }}
             </p>
           </div>
+          <div v-if="poolModeEnabled && account.platform === 'openai'" class="mt-3 rounded-lg bg-gray-50 p-3 dark:bg-dark-700/60">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <label class="input-label mb-0">{{ t('admin.accounts.imagePoolMode') }}</label>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.accounts.imagePoolModeHint') }}
+                </p>
+              </div>
+              <button
+                type="button"
+                @click="imagePoolModeEnabled = !imagePoolModeEnabled"
+                :class="[
+                  'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                  imagePoolModeEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+                ]"
+              >
+                <span
+                  :class="[
+                    'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                    imagePoolModeEnabled ? 'translate-x-5' : 'translate-x-0'
+                  ]"
+                />
+              </button>
+            </div>
+          </div>
           <div v-if="poolModeEnabled" class="mt-3">
             <label class="input-label">{{ t('admin.accounts.poolModeRetryCount') }}</label>
             <input
@@ -2486,6 +2511,7 @@ const DEFAULT_POOL_MODE_RETRY_COUNT = 1
 const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
 const poolModeEnabled = ref(false)
+const imagePoolModeEnabled = ref(false)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const poolModeRetryStatusCodesInput = ref('')
 
@@ -3105,6 +3131,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
     // Load pool mode
     poolModeEnabled.value = credentials.pool_mode === true
+    imagePoolModeEnabled.value = credentials.image_pool_mode === true
     poolModeRetryCount.value = normalizePoolModeRetryCount(
       Number(credentials.pool_mode_retry_count ?? DEFAULT_POOL_MODE_RETRY_COUNT)
     )
@@ -3134,6 +3161,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
     // Load pool mode for bedrock
     poolModeEnabled.value = bedrockCreds.pool_mode === true
+    imagePoolModeEnabled.value = false
     const retryCount = bedrockCreds.pool_mode_retry_count
     poolModeRetryCount.value = (typeof retryCount === 'number' && retryCount >= 0) ? retryCount : DEFAULT_POOL_MODE_RETRY_COUNT
     poolModeRetryStatusCodesInput.value = formatPoolModeRetryStatusCodes(bedrockCreds.pool_mode_retry_status_codes)
@@ -3178,6 +3206,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       allowedModels.value = []
     }
     poolModeEnabled.value = false
+    imagePoolModeEnabled.value = false
     poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
     poolModeRetryStatusCodesInput.value = ''
     customErrorCodesEnabled.value = false
@@ -3208,6 +3237,12 @@ watch(
   },
   { immediate: true }
 )
+
+watch([poolModeEnabled, () => props.account?.platform], ([enabled, platform]) => {
+  if (!enabled || platform !== 'openai') {
+    imagePoolModeEnabled.value = false
+  }
+})
 
 // Model mapping helpers
 const addModelMapping = () => {
@@ -3731,6 +3766,11 @@ const handleSubmit = async () => {
       // Add pool mode if enabled
       if (poolModeEnabled.value) {
         newCredentials.pool_mode = true
+        if (props.account.platform === 'openai' && imagePoolModeEnabled.value) {
+          newCredentials.image_pool_mode = true
+        } else {
+          delete newCredentials.image_pool_mode
+        }
         newCredentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
         const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
         if (parsedRetryStatusCodes.length > 0) {
@@ -3740,6 +3780,7 @@ const handleSubmit = async () => {
         }
       } else {
         delete newCredentials.pool_mode
+        delete newCredentials.image_pool_mode
         delete newCredentials.pool_mode_retry_count
         delete newCredentials.pool_mode_retry_status_codes
       }

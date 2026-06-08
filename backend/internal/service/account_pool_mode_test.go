@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -114,4 +115,37 @@ func TestGetPoolModeRetryCount(t *testing.T) {
 			require.Equal(t, tt.expected, tt.account.GetPoolModeRetryCount())
 		})
 	}
+}
+
+func TestMatchesOpenAIImagePoolRequest(t *testing.T) {
+	textPool := &Account{
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	imagePool := &Account{
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"pool_mode":           true,
+			"image_pool_mode":     true,
+			"model_mapping":       map[string]any{"alias-image": "gpt-image-2"},
+			"openai_capabilities": []any{"chat_completions"},
+		},
+	}
+	plainAccount := &Account{
+		Type:        AccountTypeAPIKey,
+		Platform:    PlatformOpenAI,
+		Credentials: map[string]any{},
+	}
+
+	require.True(t, plainAccount.MatchesOpenAIImagePoolRequest(context.Background(), "gpt-5.4", ""))
+	require.True(t, textPool.MatchesOpenAIImagePoolRequest(context.Background(), "gpt-5.4", ""))
+	require.False(t, textPool.MatchesOpenAIImagePoolRequest(context.Background(), "gpt-image-2", OpenAIImagesCapabilityBasic))
+	require.False(t, imagePool.MatchesOpenAIImagePoolRequest(context.Background(), "gpt-5.4", ""))
+	require.True(t, imagePool.MatchesOpenAIImagePoolRequest(context.Background(), "gpt-image-2", OpenAIImagesCapabilityNative))
+	require.True(t, imagePool.MatchesOpenAIImagePoolRequest(WithOpenAIImageGenerationIntent(context.Background()), "gpt-5.4", ""))
+	require.True(t, imagePool.MatchesOpenAIImagePoolRequest(context.Background(), "alias-image", ""))
 }

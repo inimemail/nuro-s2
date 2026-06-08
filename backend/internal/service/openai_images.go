@@ -642,10 +642,12 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 				Message:            upstreamMsg,
 			})
 			s.handleFailoverSideEffects(upstreamCtx, resp, account, upstreamModel)
+			decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, respBody)
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
-				RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMsg, respBody),
+				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}
 		return s.handleErrorResponse(upstreamCtx, resp, c, account, forwardBody)

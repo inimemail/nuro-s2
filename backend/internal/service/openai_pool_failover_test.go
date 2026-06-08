@@ -140,6 +140,59 @@ func TestClassifyOpenAIPoolFailover_ClientRequestErrorDoesNotSwitch(t *testing.T
 	require.False(t, decision.RetryableOnSameAccount)
 }
 
+func TestClassifyOpenAIPoolFailover_DownstreamRoutingErrorSwitchesWithoutSoftCooldown(t *testing.T) {
+	account := &Account{
+		ID:          110,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "pool_mode_retry_status_codes": []any{float64(503)}},
+	}
+	body := []byte(`{"error":{"message":"No available channel for model gpt-image-1 under group GPT-Image-2 (distributor)"}}`)
+
+	decision := classifyOpenAIPoolFailover(account, http.StatusServiceUnavailable, "No available channel for model gpt-image-1", body)
+
+	require.True(t, decision.Failover)
+	require.False(t, decision.RetryableOnSameAccount)
+	require.True(t, decision.SkipSoftCooldown)
+}
+
+func TestClassifyOpenAIPoolFailover_ClientConfig503SwitchesWithoutSoftCooldown(t *testing.T) {
+	account := &Account{
+		ID:          111,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "pool_mode_retry_status_codes": []any{float64(503)}},
+	}
+	body := []byte(`{"error":{"message":"503 请求体错误：可能与 re 开头错误、/v1 错误、Codex 自动审核或节点/TUN 模式有关，可尝试关闭自动审核或设置 review_model=\"gpt-5.4\""}}`)
+
+	decision := classifyOpenAIPoolFailover(account, http.StatusServiceUnavailable, "请求体错误", body)
+
+	require.True(t, decision.Failover)
+	require.False(t, decision.RetryableOnSameAccount)
+	require.True(t, decision.SkipSoftCooldown)
+}
+
+func TestOpenAIPoolFailoverSwitch_DownstreamRoutingErrorSkipsSoftCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          112,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := []byte(`{"error":{"message":"No available channel for model gpt-image-1 under group GPT-Image-2 (distributor)"}}`)
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:           http.StatusServiceUnavailable,
+		ResponseBody:         body,
+		Message:              "No available channel for model gpt-image-1",
+		SkipPoolSoftCooldown: true,
+	}
+
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "gpt-image-1")
+
+	require.False(t, svc.isOpenAIPoolAccountSoftCooling(account))
+}
+
 func TestOpenAIPoolSoftCooldownState_ExposesReasonUntilCleared(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{

@@ -117,7 +117,7 @@ func TestRecheckSelectedOpenAIAccountPrefersSchedulerSnapshot(t *testing.T) {
 		}, nil, repo, nil, nil),
 	}
 
-	got := svc.recheckSelectedOpenAIAccountFromDB(context.Background(), &Account{ID: cached.ID}, "", false, "")
+	got := svc.recheckSelectedOpenAIAccountFromDB(context.Background(), &Account{ID: cached.ID}, "", false, "", "")
 
 	require.NotNil(t, got)
 	require.Equal(t, cached.Concurrency, got.Concurrency)
@@ -144,7 +144,7 @@ func TestRecheckSelectedOpenAIAccountFallsBackToDBWhenSnapshotMisses(t *testing.
 		}, nil, repo, nil, nil),
 	}
 
-	got := svc.recheckSelectedOpenAIAccountFromDB(context.Background(), &Account{ID: dbAccount.ID}, "", false, "")
+	got := svc.recheckSelectedOpenAIAccountFromDB(context.Background(), &Account{ID: dbAccount.ID}, "", false, "", "")
 
 	require.NotNil(t, got)
 	require.Equal(t, dbAccount.Concurrency, got.Concurrency)

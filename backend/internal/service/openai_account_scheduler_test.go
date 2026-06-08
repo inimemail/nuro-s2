@@ -601,6 +601,245 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_Enabled_EmbeddingsSkips
 	require.Equal(t, 1, decision.CandidateCount)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_FallsBackWithinImagePoolOnly(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10113)
+	accounts := []Account{
+		{
+			ID:          37031,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"pool_mode": true,
+			},
+		},
+		{
+			ID:          37032,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"pool_mode":       true,
+				"image_pool_mode": true,
+			},
+		},
+		{
+			ID:          37033,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"pool_mode":       true,
+				"image_pool_mode": true,
+			},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	concurrencyCache := schedulerTestConcurrencyCache{
+		acquireResults: map[int64]bool{
+			37032: false,
+			37033: true,
+		},
+		loadMap: map[int64]*AccountLoadInfo{
+			37031: {AccountID: 37031, LoadRate: 0, WaitingCount: 0},
+			37032: {AccountID: 37032, LoadRate: 0, WaitingCount: 0},
+			37033: {AccountID: 37033, LoadRate: 0, WaitingCount: 0},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForImages(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-1",
+		nil,
+		OpenAIImagesCapabilityNative,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37033), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, 2, decision.CandidateCount)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_LegacyPathUsesImagePoolOnly(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10114)
+	accounts := []Account{
+		{
+			ID:          37041,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"pool_mode": true,
+			},
+		},
+		{
+			ID:          37042,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"pool_mode":       true,
+				"image_pool_mode": true,
+			},
+		},
+		{
+			ID:          37043,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"pool_mode":       true,
+				"image_pool_mode": true,
+			},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	concurrencyCache := schedulerTestConcurrencyCache{
+		acquireResults: map[int64]bool{
+			37042: false,
+			37043: true,
+		},
+		loadMap: map[int64]*AccountLoadInfo{
+			37041: {AccountID: 37041, LoadRate: 0, WaitingCount: 0},
+			37042: {AccountID: 37042, LoadRate: 0, WaitingCount: 0},
+			37043: {AccountID: 37043, LoadRate: 0, WaitingCount: 0},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("false"),
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForImages(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-1",
+		nil,
+		OpenAIImagesCapabilityNative,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37043), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_WSImageIntentUsesImagePool(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(10115)
+	accounts := []Account{
+		{
+			ID:          37051,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"pool_mode":           true,
+				"openai_capabilities": []any{"chat_completions"},
+			},
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		},
+		{
+			ID:          37052,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"pool_mode":           true,
+				"image_pool_mode":     true,
+				"openai_capabilities": []any{"chat_completions"},
+			},
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		},
+	}
+	cfg := newSchedulerTestOpenAIWSV2Config()
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("false"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapability(
+		WithOpenAIImageGenerationIntent(context.Background()),
+		&groupID,
+		"",
+		"",
+		"gpt-5.4",
+		nil,
+		OpenAIUpstreamTransportResponsesWebsocketV2,
+		OpenAIEndpointCapabilityChatCompletions,
+		false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37052), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_Enabled_EmbeddingsSkipsChatOnlyStickyBindings(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

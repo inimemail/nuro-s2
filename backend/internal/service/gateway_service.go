@@ -563,6 +563,7 @@ type UpstreamFailoverError struct {
 	ProbeKind              string
 	ForceCacheBilling      bool // Antigravity 粘性会话切换时设为 true
 	RetryableOnSameAccount bool // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	SkipPoolSoftCooldown   bool // OpenAI 池下游/客户端配置错误可切换账号，但不应把池账号标记为软冷却
 }
 
 func (e *UpstreamFailoverError) Error() string {

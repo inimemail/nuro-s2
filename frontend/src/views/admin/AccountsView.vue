@@ -440,6 +440,7 @@ type AccountBulkEditTarget =
         group?: string
         search?: string
         privacy_mode?: string
+        pool_mode?: string
         sort_by?: string
         sort_order?: AccountSortOrder
       }
@@ -731,6 +732,7 @@ const {
     type: '',
     status: '',
     privacy_mode: '',
+    pool_mode: '',
     group: '',
     search: '',
     sort_by: sortState.sort_by,
@@ -945,6 +947,7 @@ const refreshAccountsIncrementally = async () => {
         type?: string
         status?: string
         privacy_mode?: string
+        pool_mode?: string
         group?: string
         search?: string
         sort_by?: string
@@ -1412,6 +1415,7 @@ const buildBulkEditFilterSnapshot = () => {
     group: typeof rawParams.group === 'string' ? rawParams.group : '',
     search: typeof rawParams.search === 'string' ? rawParams.search : '',
     privacy_mode: typeof rawParams.privacy_mode === 'string' ? rawParams.privacy_mode : '',
+    pool_mode: typeof rawParams.pool_mode === 'string' ? rawParams.pool_mode : '',
     sort_by: typeof rawParams.sort_by === 'string' ? rawParams.sort_by : '',
     sort_order: sortOrder
   }
@@ -1462,6 +1466,7 @@ const buildAccountQueryFilters = () => ({
   status: params.status || '',
   group: params.group || '',
   privacy_mode: params.privacy_mode || '',
+  pool_mode: params.pool_mode || '',
   search: params.search || '',
   sort_by: sortState.sort_by,
   sort_order: sortState.sort_order
@@ -1503,6 +1508,19 @@ const accountMatchesCurrentFilters = (account: Account) => {
       if (privacyMode.trim() !== '') return false
     } else if (privacyMode !== filters.privacy_mode) {
       return false
+    }
+  }
+  if (filters.pool_mode) {
+    const isPoolMode = account.credentials?.pool_mode === true
+    const isImagePoolMode = isPoolMode && account.credentials?.image_pool_mode === true
+    if (filters.pool_mode === 'non_pool') {
+      if (isPoolMode) return false
+    } else if (filters.pool_mode === 'pool') {
+      if (!isPoolMode) return false
+    } else if (filters.pool_mode === 'image_pool') {
+      if (!isImagePoolMode) return false
+    } else if (filters.pool_mode === 'text_pool') {
+      if (!isPoolMode || isImagePoolMode) return false
     }
   }
   const search = String(filters.search || '').trim().toLowerCase()

@@ -246,6 +246,7 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 		search      string
 		groupID     int64
 		privacyMode string
+		poolMode    string
 		wantCount   int
 		validate    func(accounts []service.Account)
 	}{
@@ -433,6 +434,58 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 				s.ElementsMatch([]string{"privacy-unset", "privacy-empty"}, names)
 			},
 		},
+		{
+			name: "filter_by_non_pool_mode",
+			setup: func(client *dbent.Client) {
+				mustCreateAccount(s.T(), client, &service.Account{Name: "plain-account"})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "pool-account", Credentials: map[string]any{"pool_mode": true}})
+			},
+			poolMode:  service.AccountPoolModeNonPoolFilter,
+			wantCount: 1,
+			validate: func(accounts []service.Account) {
+				s.Require().Equal("plain-account", accounts[0].Name)
+			},
+		},
+		{
+			name: "filter_by_pool_mode",
+			setup: func(client *dbent.Client) {
+				mustCreateAccount(s.T(), client, &service.Account{Name: "plain-account"})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "pool-account", Credentials: map[string]any{"pool_mode": true}})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "image-pool-account", Credentials: map[string]any{"pool_mode": true, "image_pool_mode": true}})
+			},
+			poolMode:  service.AccountPoolModePoolFilter,
+			wantCount: 2,
+			validate: func(accounts []service.Account) {
+				names := []string{accounts[0].Name, accounts[1].Name}
+				s.ElementsMatch([]string{"pool-account", "image-pool-account"}, names)
+			},
+		},
+		{
+			name: "filter_by_image_pool_mode",
+			setup: func(client *dbent.Client) {
+				mustCreateAccount(s.T(), client, &service.Account{Name: "plain-account"})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "pool-account", Credentials: map[string]any{"pool_mode": true}})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "image-pool-account", Credentials: map[string]any{"pool_mode": true, "image_pool_mode": true}})
+			},
+			poolMode:  service.AccountPoolModeImagePoolFilter,
+			wantCount: 1,
+			validate: func(accounts []service.Account) {
+				s.Require().Equal("image-pool-account", accounts[0].Name)
+			},
+		},
+		{
+			name: "filter_by_text_pool_mode",
+			setup: func(client *dbent.Client) {
+				mustCreateAccount(s.T(), client, &service.Account{Name: "plain-account"})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "pool-account", Credentials: map[string]any{"pool_mode": true}})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "image-pool-account", Credentials: map[string]any{"pool_mode": true, "image_pool_mode": true}})
+			},
+			poolMode:  service.AccountPoolModeTextPoolFilter,
+			wantCount: 1,
+			validate: func(accounts []service.Account) {
+				s.Require().Equal("pool-account", accounts[0].Name)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -445,7 +498,7 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 
 			tt.setup(client)
 
-			accounts, _, err := repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, tt.platform, tt.accType, tt.status, tt.search, tt.groupID, tt.privacyMode)
+			accounts, _, err := repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, tt.platform, tt.accType, tt.status, tt.search, tt.groupID, tt.privacyMode, tt.poolMode)
 			s.Require().NoError(err)
 			s.Require().Len(accounts, tt.wantCount)
 			if tt.validate != nil {
@@ -512,7 +565,7 @@ func (s *AccountRepoSuite) TestPreload_And_VirtualFields() {
 	s.Require().Len(got.Groups, 1, "expected Groups to be populated")
 	s.Require().Equal(group.ID, got.Groups[0].ID)
 
-	accounts, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "acc", 0, "")
+	accounts, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "acc", 0, "", "")
 	s.Require().NoError(err, "ListWithFilters")
 	s.Require().Equal(int64(1), page.Total)
 	s.Require().Len(accounts, 1)

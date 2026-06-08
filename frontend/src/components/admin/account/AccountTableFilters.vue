@@ -9,6 +9,7 @@
     />
     <Select :model-value="filters.platform" class="w-40" :options="pOpts" @update:model-value="updatePlatform" @change="$emit('change')" />
     <Select :model-value="filters.type" class="w-40" :options="tOpts" @update:model-value="updateType" @change="$emit('change')" />
+    <Select :model-value="filters.pool_mode" class="w-40" :options="poolModeOpts" @update:model-value="updatePoolMode" @change="$emit('change')" />
     <Select :model-value="filters.status" class="w-40" :options="sOpts" @update:model-value="updateStatus" @change="$emit('change')" />
     <Select :model-value="filters.privacy_mode" class="w-40" :options="privacyOpts" @update:model-value="updatePrivacyMode" @change="$emit('change')" />
     <Select :model-value="filters.group" class="w-40" :options="gOpts" @update:model-value="updateGroup" @change="$emit('change')" />
@@ -22,11 +23,19 @@ const props = defineProps<{ searchQuery: string; filters: Record<string, any>; g
 const emit = defineEmits(['update:searchQuery', 'update:filters', 'change']); const { t } = useI18n()
 const updatePlatform = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, platform: value }) }
 const updateType = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, type: value }) }
+const updatePoolMode = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, pool_mode: value }) }
 const updateStatus = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, status: value }) }
 const updatePrivacyMode = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, privacy_mode: value }) }
 const updateGroup = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, group: value }) }
 const pOpts = computed(() => [{ value: '', label: t('admin.accounts.allPlatforms') }, { value: 'anthropic', label: 'Anthropic' }, { value: 'openai', label: 'OpenAI' }, { value: 'gemini', label: 'Gemini' }, { value: 'antigravity', label: 'Antigravity' }])
 const tOpts = computed(() => [{ value: '', label: t('admin.accounts.allTypes') }, { value: 'oauth', label: t('admin.accounts.oauthType') }, { value: 'setup-token', label: t('admin.accounts.setupToken') }, { value: 'apikey', label: t('admin.accounts.apiKey') }, { value: 'bedrock', label: 'AWS Bedrock' }])
+const poolModeOpts = computed(() => [
+  { value: '', label: t('admin.accounts.allPoolModes') },
+  { value: 'non_pool', label: t('admin.accounts.poolModeFilter.nonPool') },
+  { value: 'pool', label: t('admin.accounts.poolModeFilter.pool') },
+  { value: 'image_pool', label: t('admin.accounts.poolModeFilter.imagePool') },
+  { value: 'text_pool', label: t('admin.accounts.poolModeFilter.textPool') }
+])
 const sOpts = computed(() => [{ value: '', label: t('admin.accounts.allStatus') }, { value: 'active', label: t('admin.accounts.status.active') }, { value: 'inactive', label: t('admin.accounts.status.inactive') }, { value: 'error', label: t('admin.accounts.status.error') }, { value: 'rate_limited', label: t('admin.accounts.status.rateLimited') }, { value: 'temp_unschedulable', label: t('admin.accounts.status.tempUnschedulable') }, { value: 'unschedulable', label: t('admin.accounts.status.unschedulable') }])
 const privacyOpts = computed(() => [
   { value: '', label: t('admin.accounts.allPrivacyModes') },

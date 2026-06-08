@@ -462,10 +462,10 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 }
 
 func (r *accountRepository) List(ctx context.Context, params pagination.PaginationParams) ([]service.Account, *pagination.PaginationResult, error) {
-	return r.ListWithFilters(ctx, params, "", "", "", "", 0, "")
+	return r.ListWithFilters(ctx, params, "", "", "", "", 0, "", "")
 }
 
-func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
+func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode, poolMode string) ([]service.Account, *pagination.PaginationResult, error) {
 	q := r.client.Account.Query()
 
 	if platform != "" {
@@ -554,6 +554,34 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 				))
 			default:
 				s.Where(sqljson.ValueEQ(dbaccount.FieldExtra, privacyMode, path))
+			}
+		}))
+	}
+	if poolMode != "" {
+		q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
+			poolPath := sqljson.Path("pool_mode")
+			imagePoolPath := sqljson.Path("image_pool_mode")
+			switch poolMode {
+			case service.AccountPoolModeNonPoolFilter:
+				s.Where(entsql.Or(
+					entsql.Not(sqljson.HasKey(dbaccount.FieldCredentials, poolPath)),
+					sqljson.ValueEQ(dbaccount.FieldCredentials, false, poolPath),
+				))
+			case service.AccountPoolModePoolFilter:
+				s.Where(sqljson.ValueEQ(dbaccount.FieldCredentials, true, poolPath))
+			case service.AccountPoolModeImagePoolFilter:
+				s.Where(entsql.And(
+					sqljson.ValueEQ(dbaccount.FieldCredentials, true, poolPath),
+					sqljson.ValueEQ(dbaccount.FieldCredentials, true, imagePoolPath),
+				))
+			case service.AccountPoolModeTextPoolFilter:
+				s.Where(entsql.And(
+					sqljson.ValueEQ(dbaccount.FieldCredentials, true, poolPath),
+					entsql.Or(
+						entsql.Not(sqljson.HasKey(dbaccount.FieldCredentials, imagePoolPath)),
+						sqljson.ValueEQ(dbaccount.FieldCredentials, false, imagePoolPath),
+					),
+				))
 			}
 		}))
 	}

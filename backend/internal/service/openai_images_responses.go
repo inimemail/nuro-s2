@@ -131,11 +131,13 @@ func (e *OpenAIImagesUpstreamError) ToFailoverError(account *Account) *UpstreamF
 	statusCode := e.clientStatusCode()
 	msg := e.clientMessage()
 	body := e.failoverBody()
+	decision := classifyOpenAIPoolFailover(account, statusCode, msg, body)
 	return &UpstreamFailoverError{
 		StatusCode:             statusCode,
 		ResponseBody:           body,
 		Message:                msg,
-		RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, statusCode, msg, body),
+		RetryableOnSameAccount: decision.RetryableOnSameAccount,
+		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 	}
 }
 
@@ -1351,10 +1353,12 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 				Message:            upstreamMsg,
 			})
 			s.handleFailoverSideEffects(upstreamCtx, resp, account, requestModel)
+			decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, respBody)
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
-				RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMsg, respBody),
+				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}
 		return s.handleErrorResponse(upstreamCtx, resp, c, account, responsesBody)

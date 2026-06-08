@@ -3188,6 +3188,13 @@ export default {
         expiresAt: '过期时间',
         actions: '操作'
       },
+      allPoolModes: '全部池模式',
+      poolModeFilter: {
+        nonPool: '非池账号',
+        pool: '池模式',
+        imagePool: '图片池',
+        textPool: '非图片池'
+      },
       allPrivacyModes: '全部Privacy状态',
       privacyUnset: '未设置',
       privacyTrainingOff: '已关闭训练数据共享',
@@ -3647,6 +3654,8 @@ export default {
       poolModeHint: '上游为账号池时启用，错误不标记本地账号状态',
       poolModeInfo:
         '启用后，上游 429/403/401 错误将自动重试而不标记账号限流或错误，适用于上游指向另一个 sub2api 实例的场景。',
+      imagePoolMode: '图片池',
+      imagePoolModeHint: '开启后该 OpenAI 池账号只承接生图请求；关闭时生图请求不会调度到这个池账号。',
       poolModeRetryCount: '同账号重试次数',
       poolModeRetryCountHint: '仅在池模式下生效。0 表示不原地重试；默认 {default}，最大 {max}。',
       poolModeRetryStatusCodes: '同账号重试状态码',

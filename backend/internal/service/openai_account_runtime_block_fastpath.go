@@ -357,22 +357,24 @@ func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
 	}
 	if failoverErr != nil {
 		decision := classifyOpenAIPoolFailover(account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
-		probeModel := strings.TrimSpace(failoverErr.ProbeModel)
-		if probeModel == "" && len(requestedModel) > 0 {
-			probeModel = strings.TrimSpace(requestedModel[0])
+		if !failoverErr.SkipPoolSoftCooldown && !decision.SkipSoftCooldown {
+			probeModel := strings.TrimSpace(failoverErr.ProbeModel)
+			if probeModel == "" && len(requestedModel) > 0 {
+				probeModel = strings.TrimSpace(requestedModel[0])
+			}
+			probeKind := strings.TrimSpace(failoverErr.ProbeKind)
+			if probeKind == "" {
+				probeKind = openAIPoolProbeKindForModel(probeModel)
+			}
+			s.MarkOpenAIPoolAccountSoftCooldownWithContext(ctx, account, failoverErr.StatusCode, failoverErr.ResponseBody, openAIPoolSoftCooldownContext{
+				ProbeCapability: decision.ProbeCapability,
+				ProbeModel:      probeModel,
+				ProbeKind:       probeKind,
+				CooldownSource:  "upstream_failure",
+				StatusCode:      failoverErr.StatusCode,
+				Reason:          failoverErr.Message,
+			})
 		}
-		probeKind := strings.TrimSpace(failoverErr.ProbeKind)
-		if probeKind == "" {
-			probeKind = openAIPoolProbeKindForModel(probeModel)
-		}
-		s.MarkOpenAIPoolAccountSoftCooldownWithContext(ctx, account, failoverErr.StatusCode, failoverErr.ResponseBody, openAIPoolSoftCooldownContext{
-			ProbeCapability: decision.ProbeCapability,
-			ProbeModel:      probeModel,
-			ProbeKind:       probeKind,
-			CooldownSource:  "upstream_failure",
-			StatusCode:      failoverErr.StatusCode,
-			Reason:          failoverErr.Message,
-		})
 	}
 	if strings.TrimSpace(sessionHash) == "" {
 		return
@@ -390,6 +392,7 @@ func (s *OpenAIGatewayService) hasHigherPriorityOpenAIAccountAvailable(
 	requestedModel string,
 	requireCompact bool,
 	requiredCapability OpenAIEndpointCapability,
+	requiredImageCapability OpenAIImagesCapability,
 	requiredTransport OpenAIUpstreamTransport,
 ) bool {
 	if s == nil || current == nil {
@@ -407,7 +410,7 @@ func (s *OpenAIGatewayService) hasHigherPriorityOpenAIAccountAvailable(
 		if account.ID == current.ID || account.Priority >= current.Priority {
 			continue
 		}
-		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability) {
+		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability) {
 			continue
 		}
 		if s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIPoolAccountSoftCooling(account) {

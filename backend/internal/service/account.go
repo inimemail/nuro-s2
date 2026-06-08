@@ -2,6 +2,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"hash/fnv"
@@ -865,6 +866,37 @@ func (a *Account) IsPoolMode() bool {
 		}
 	}
 	return false
+}
+
+// IsImagePoolMode marks a pool-mode account as dedicated to image-generation traffic.
+func (a *Account) IsImagePoolMode() bool {
+	if !a.IsPoolMode() || a.Credentials == nil {
+		return false
+	}
+	if v, ok := a.Credentials["image_pool_mode"]; ok {
+		if enabled, ok := v.(bool); ok {
+			return enabled
+		}
+	}
+	return false
+}
+
+func (a *Account) MatchesOpenAIImagePoolRequest(ctx context.Context, requestedModel string, requiredImageCapability OpenAIImagesCapability) bool {
+	if a == nil || !a.IsPoolMode() {
+		return true
+	}
+	isImageRequest := requiredImageCapability != "" ||
+		isOpenAIImageGenerationModel(requestedModel) ||
+		OpenAIImageGenerationIntentFromContext(ctx)
+	if !isImageRequest {
+		if mapped := strings.TrimSpace(a.GetMappedModel(requestedModel)); mapped != "" {
+			isImageRequest = isOpenAIImageGenerationModel(mapped)
+		}
+	}
+	if a.IsImagePoolMode() {
+		return isImageRequest
+	}
+	return !isImageRequest
 }
 
 const (

@@ -17,6 +17,7 @@ type openAIPoolFailoverDecision struct {
 	Failover               bool
 	RetryableOnSameAccount bool
 	ProbeCapability        OpenAIImagesCapability
+	SkipSoftCooldown       bool
 }
 
 type openAIPoolSoftCooldownContext struct {
@@ -134,6 +135,7 @@ func (s *OpenAIGatewayService) newOpenAIPoolEmbeddedFailoverError(
 		ProbeModel:             strings.TrimSpace(requestedModel),
 		ProbeKind:              openAIPoolProbeKindForModel(requestedModel),
 		RetryableOnSameAccount: decision.RetryableOnSameAccount,
+		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 	}
 }
 
@@ -150,6 +152,12 @@ func classifyOpenAIPoolFailover(account *Account, statusCode int, upstreamMsg st
 	}
 	if isOpenAIPoolExplicitClientRequestError(statusCode, upstreamMsg, upstreamBody) {
 		return openAIPoolFailoverDecision{}
+	}
+	if isOpenAIPoolDownstreamRoutingOrClientConfigError(statusCode, upstreamMsg, upstreamBody) {
+		return openAIPoolFailoverDecision{
+			Failover:         true,
+			SkipSoftCooldown: true,
+		}
 	}
 	decision := openAIPoolFailoverDecision{
 		RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, statusCode, upstreamMsg, upstreamBody),
@@ -176,6 +184,9 @@ func openAIPoolFailoverRetryableOnSameAccount(account *Account, statusCode int, 
 	}
 	if isOpenAIPoolExplicitClientRequestError(statusCode, upstreamMsg, upstreamBody) ||
 		isOpenAIPoolImageCapabilityError(statusCode, upstreamMsg, upstreamBody) {
+		return false
+	}
+	if isOpenAIPoolDownstreamRoutingOrClientConfigError(statusCode, upstreamMsg, upstreamBody) {
 		return false
 	}
 	if account.IsPoolModeRetryableStatus(statusCode) {
@@ -224,6 +235,42 @@ func isOpenAIPoolAccountLevelClientError(statusCode int, upstreamMsg string, ups
 		"country",
 		"region",
 		"restricted",
+	}
+	return containsAnySubstring(combined, markers...)
+}
+
+func isOpenAIPoolDownstreamRoutingOrClientConfigError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if statusCode != http.StatusBadGateway && statusCode != http.StatusServiceUnavailable && statusCode != http.StatusGatewayTimeout {
+		return false
+	}
+	combined := openAIPoolCombinedErrorText(upstreamMsg, upstreamBody)
+	if combined == "" {
+		return false
+	}
+	markers := []string{
+		"no available channel",
+		"no available channels",
+		"no available account",
+		"no available accounts",
+		"no available upstream",
+		"no available provider",
+		"no available route",
+		"no channel available",
+		"request body error",
+		"invalid request body",
+		"malformed request body",
+		"请求体错误",
+		"codex auto review",
+		"auto review",
+		"自动审核",
+		"review_model",
+		"review model",
+		"tun mode",
+		"tun 模式",
+		"node/tun",
+		"节点/tun",
+		"/v1 error",
+		"/v1 错误",
 	}
 	return containsAnySubstring(combined, markers...)
 }

@@ -3159,6 +3159,13 @@ export default {
         expiresAt: 'Expires At',
         actions: 'Actions'
       },
+      allPoolModes: 'All Pool Modes',
+      poolModeFilter: {
+        nonPool: 'Non-pool accounts',
+        pool: 'Pool mode',
+        imagePool: 'Image pool',
+        textPool: 'Non-image pool'
+      },
       allPrivacyModes: 'All Privacy States',
       privacyUnset: 'Unset',
       privacyTrainingOff: 'Training data sharing disabled',
@@ -3505,6 +3512,8 @@ export default {
       poolModeHint: 'Enable when upstream is an account pool; errors won\'t mark local account status',
       poolModeInfo:
         'When enabled, upstream 429/403/401 errors will auto-retry without marking the account as rate-limited or errored. Suitable for upstream pointing to another sub2api instance.',
+      imagePoolMode: 'Image Pool',
+      imagePoolModeHint: 'When enabled, this OpenAI pool account only handles image-generation requests; when disabled, image-generation requests will not route to this pool account.',
       poolModeRetryCount: 'Same-Account Retries',
       poolModeRetryCountHint:
         'Only applies in pool mode. Use 0 to disable in-place retry. Default {default}, maximum {max}.',

@@ -157,6 +157,7 @@ type BulkUpdateAccountFilters struct {
 	Group       string `json:"group"`
 	Search      string `json:"search"`
 	PrivacyMode string `json:"privacy_mode"`
+	PoolMode    string `json:"pool_mode"`
 }
 
 // CheckMixedChannelRequest represents check mixed channel risk request
@@ -231,6 +232,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 	status := c.Query("status")
 	search := c.Query("search")
 	privacyMode := strings.TrimSpace(c.Query("privacy_mode"))
+	poolMode := strings.TrimSpace(c.Query("pool_mode"))
 	sortBy := c.DefaultQuery("sort_by", "name")
 	sortOrder := c.DefaultQuery("sort_order", "asc")
 	// 标准化和验证 search 参数
@@ -258,7 +260,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 		}
 	}
 
-	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, sortBy, sortOrder)
+	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, poolMode, sortBy, sortOrder)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -1611,6 +1613,7 @@ func toServiceBulkUpdateAccountFilters(filters *BulkUpdateAccountFilters) *servi
 		Group:       filters.Group,
 		Search:      filters.Search,
 		PrivacyMode: filters.PrivacyMode,
+		PoolMode:    filters.PoolMode,
 	}
 }
 
@@ -2316,7 +2319,7 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 	accounts := make([]*service.Account, 0)
 
 	if len(req.AccountIDs) == 0 {
-		allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, "gemini", "oauth", "", "", 0, "", "name", "asc")
+		allAccounts, _, err := h.adminService.ListAccounts(ctx, 1, 10000, "gemini", "oauth", "", "", 0, "", "", "name", "asc")
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return
