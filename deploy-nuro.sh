@@ -26,6 +26,9 @@ BACKUP_LOG="/var/log/nuro-sub2api_backup.log"
 
 ADMIN_PASS=""
 
+GREEN="\033[32m"
+RESET="\033[0m"
+
 info() { echo -e "\033[32m[INFO]\033[0m $1"; }
 warn() { echo -e "\033[33m[WARN]\033[0m $1" >&2; }
 err()  { echo -e "\033[31m[ERROR]\033[0m $1" >&2; }
@@ -744,6 +747,14 @@ uninstall_service() {
     info "${APP_NAME} 已卸载。"
 }
 
+install_ftp() {
+    clear
+    echo -e "${GREEN}📂 FTP/SFTP 备份工具...${RESET}"
+    bash <(curl -L https://raw.githubusercontent.com/hiapb/ftp/main/back.sh)
+    sleep 2
+    exit 0
+}
+
 main_menu() {
     clear
     echo "==================================================="
@@ -762,9 +773,10 @@ main_menu() {
     echo "  7) 定时备份"
     echo "  8) 完全卸载"
     echo "  9) 查看访问信息"
+    echo " 10) FTP/SFTP 备份工具"
     echo "  0) 退出"
     echo "==================================================="
-    read -r -p "请输入操作序号 [0-9]: " choice
+    read -r -p "请输入操作序号 [0-10]: " choice
 
     case "$choice" in
         1) deploy_service ;;
@@ -780,6 +792,7 @@ main_menu() {
             wd2="$(get_workdir)"
             [[ -n "$wd2" ]] && show_access "$wd2" || err "未检测到部署环境。"
         ;;
+        10) install_ftp ;;
         0) exit 0 ;;
         *) warn "无效选择。" ;;
     esac
