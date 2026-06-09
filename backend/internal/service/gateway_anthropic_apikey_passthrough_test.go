@@ -1415,3 +1415,122 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingUpstreamReadErrorAft
 	require.True(t, result.clientDisconnect)
 	require.Equal(t, 8, result.usage.InputTokens)
 }
+
+func TestGatewayService_AnthropicKiro_ForwardUsesPassthroughWithoutPassthroughFlag(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("Authorization", "Bearer inbound-token")
+
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"system":"Keep answers brief.","messages":[{"role":"user","content":[{"type":"text","text":"Who are you?"}]}]}`)
+	parsed := &ParsedRequest{
+		Body:   body,
+		Model:  "claude-3-7-sonnet-20250219",
+		Stream: false,
+	}
+
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+				"x-request-id": []string{"rid-anthropic-kiro"},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"type":"message","content":[{"type":"text","text":"Claude speaking"}],"usage":{"input_tokens":7,"output_tokens":5}}`)),
+		},
+	}
+
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				MaxLineSize: defaultMaxLineSize,
+			},
+		},
+		responseHeaderFilter: compileResponseHeaderFilter(&config.Config{}),
+		httpUpstream:         upstream,
+		rateLimitService:     &RateLimitService{},
+		deferredService:      &DeferredService{},
+	}
+
+	account := &Account{
+		ID:          301,
+		Name:        "anthropic-kiro",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "upstream-anthropic-key",
+			"base_url": "https://api.anthropic.com",
+		},
+		Extra: map[string]any{
+			"anthropic_kiro": true,
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotNil(t, upstream.lastReq)
+	require.NotNil(t, result)
+	require.Equal(t, "upstream-anthropic-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "authorization"))
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), anthropicKiroIdentityGuardMarker)
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), "Keep answers brief.")
+}
+
+func TestGatewayService_AnthropicKiro_CountTokensUsesPassthroughWithoutPassthroughFlag(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+
+	body := []byte(`{"model":"claude-3-5-sonnet-latest","system":"Count this.","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	parsed := &ParsedRequest{
+		Body:  body,
+		Model: "claude-3-5-sonnet-latest",
+	}
+
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"input_tokens":42}`)),
+		},
+	}
+
+	svc := &GatewayService{
+		cfg:                  &config.Config{},
+		responseHeaderFilter: compileResponseHeaderFilter(&config.Config{}),
+		httpUpstream:         upstream,
+	}
+
+	account := &Account{
+		ID:          302,
+		Name:        "anthropic-kiro-count",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "upstream-anthropic-key",
+			"base_url": "https://api.anthropic.com",
+		},
+		Extra: map[string]any{
+			"anthropic_kiro": true,
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	err := svc.ForwardCountTokens(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "https://api.anthropic.com/v1/messages/count_tokens?beta=true", upstream.lastReq.URL.String())
+	require.Equal(t, "Count this.", gjson.GetBytes(upstream.lastBody, "system").String())
+	require.NotContains(t, string(upstream.lastBody), anthropicKiroIdentityGuardMarker)
+}

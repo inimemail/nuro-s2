@@ -3614,6 +3614,9 @@ export default {
         apiKeyPassthrough: '自动透传（仅替换认证）',
         apiKeyPassthroughDesc:
           '仅对 Anthropic API Key 生效。开启后，messages/count_tokens 请求将透传上游并仅替换认证，保留计费/并发/审计及必要安全过滤；关闭即可回滚到现有兼容链路。',
+        kiroMode: 'Kiro 保护',
+        kiroModeDesc:
+          '仅对 Anthropic API Key 生效。开启后，该账号的 messages/count_tokens 会固定走 Claude 身份保护与 Kiro 泄露清洗链路，不受是否池模式影响。',
         webSearchEmulation: 'Web Search 模拟',
         webSearchEmulationDesc:
           '为该 API Key 账号启用 web search 模拟。客户端发送纯 web_search 请求时，由网关调用第三方搜索 API 并构造响应返回。默认跟随渠道配置。',

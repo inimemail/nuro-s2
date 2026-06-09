@@ -4412,7 +4412,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return s.handleWebSearchEmulation(ctx, c, account, parsed)
 	}
 
-	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
+	if account != nil && (account.IsAnthropicAPIKeyPassthroughEnabled() || account.IsAnthropicKiroEnabled()) {
 		passthroughBody := parsed.Body
 		passthroughModel := parsed.Model
 		if passthroughModel != "" {
@@ -5296,6 +5296,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, clientBeta); changed {
 		body = sanitized
 	}
+	if account != nil && account.IsAnthropicKiroEnabled() {
+		body = injectAnthropicKiroIdentityGuard(body)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -5343,6 +5346,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	if s.rateLimitService != nil {
 		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 	}
+	kiroEnabled := account != nil && account.IsAnthropicKiroEnabled()
 
 	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
@@ -5497,7 +5501,11 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			}
 
 			if !clientDisconnected {
-				restored := string(reverseToolNamesIfPresent(c, []byte(line)))
+				lineToWrite := line
+				if kiroEnabled {
+					lineToWrite = sanitizeAnthropicKiroSSELine(lineToWrite)
+				}
+				restored := string(reverseToolNamesIfPresent(c, []byte(lineToWrite)))
 				if _, err := io.WriteString(w, restored); err != nil {
 					clientDisconnected = true
 					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
@@ -5678,6 +5686,9 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, anthropicTooLargeError)
 	if err != nil {
 		return nil, err
+	}
+	if account != nil && account.IsAnthropicKiroEnabled() {
+		body = sanitizeAnthropicKiroMessagePayload(body)
 	}
 
 	usage := parseClaudeUsageFromResponseBody(body)
@@ -7130,6 +7141,9 @@ func isCountTokensUnsupported404(statusCode int, body []byte) bool {
 
 func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, requestedModel ...string) (*ForwardResult, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if account != nil && account.IsAnthropicKiroEnabled() {
+		body = sanitizeAnthropicKiroErrorPayload(body)
+	}
 
 	// 调试日志：打印上游错误响应
 	logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (non-retryable): Account=%d(%s) Status=%d RequestID=%s Body=%s",
@@ -9179,7 +9193,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return fmt.Errorf("parse request: empty request")
 	}
 
-	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
+	if account != nil && (account.IsAnthropicAPIKeyPassthroughEnabled() || account.IsAnthropicKiroEnabled()) {
 		passthroughBody := parsed.Body
 		if reqModel := parsed.Model; reqModel != "" {
 			if mappedModel := account.GetMappedModel(reqModel); mappedModel != reqModel {
@@ -9413,6 +9427,9 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 			s.countTokensError(c, http.StatusBadGateway, "upstream_error", "Failed to read response")
 		}
 		return err
+	}
+	if account != nil && account.IsAnthropicKiroEnabled() {
+		respBody = sanitizeAnthropicKiroErrorPayload(respBody)
 	}
 
 	if resp.StatusCode >= 400 {
