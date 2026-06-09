@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
@@ -48,6 +49,8 @@ type TooLargeWriter func(c *gin.Context)
 // 超限时自动记录 ops error 并调用 onTooLarge 向客户端写错误。
 func ReadUpstreamResponseBody(reader io.Reader, cfg *config.Config, c *gin.Context, onTooLarge TooLargeWriter) ([]byte, error) {
 	maxBytes := resolveUpstreamResponseReadLimit(cfg)
+	stopKeepalive := startNonStreamKeepalive(c, nonStreamKeepaliveIntervalFromConfig(cfg))
+	defer stopKeepalive()
 	body, err := readUpstreamResponseBodyLimited(reader, maxBytes)
 	if err != nil {
 		if errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
@@ -59,6 +62,48 @@ func ReadUpstreamResponseBody(reader io.Reader, cfg *config.Config, c *gin.Conte
 		return nil, err
 	}
 	return body, nil
+}
+
+func nonStreamKeepaliveIntervalFromConfig(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.Gateway.NonStreamKeepaliveInterval <= 0 {
+		return 0
+	}
+	return time.Duration(cfg.Gateway.NonStreamKeepaliveInterval) * time.Second
+}
+
+func startNonStreamKeepalive(c *gin.Context, interval time.Duration) func() {
+	if c == nil || interval <= 0 {
+		return func() {}
+	}
+	flusher, _ := c.Writer.(http.Flusher)
+	if flusher == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	startedAt := time.Now()
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		wroteFirst := false
+		for {
+			select {
+			case <-ticker.C:
+				if _, err := c.Writer.Write([]byte(" ")); err != nil {
+					return
+				}
+				flusher.Flush()
+				if !wroteFirst {
+					SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startedAt).Milliseconds())
+					wroteFirst = true
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+	}
 }
 
 // anthropicTooLargeError 以 Anthropic Messages API 格式写入超限错误。

@@ -421,6 +421,62 @@ func (_c *UsageLogCreate) SetNillableFirstTokenMs(v *int) *UsageLogCreate {
 	return _c
 }
 
+// SetSlotWaitMs sets the "slot_wait_ms" field.
+func (_c *UsageLogCreate) SetSlotWaitMs(v int) *UsageLogCreate {
+	_c.mutation.SetSlotWaitMs(v)
+	return _c
+}
+
+// SetNillableSlotWaitMs sets the "slot_wait_ms" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableSlotWaitMs(v *int) *UsageLogCreate {
+	if v != nil {
+		_c.SetSlotWaitMs(*v)
+	}
+	return _c
+}
+
+// SetUpstreamHeaderMs sets the "upstream_header_ms" field.
+func (_c *UsageLogCreate) SetUpstreamHeaderMs(v int) *UsageLogCreate {
+	_c.mutation.SetUpstreamHeaderMs(v)
+	return _c
+}
+
+// SetNillableUpstreamHeaderMs sets the "upstream_header_ms" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableUpstreamHeaderMs(v *int) *UsageLogCreate {
+	if v != nil {
+		_c.SetUpstreamHeaderMs(*v)
+	}
+	return _c
+}
+
+// SetUpstreamFirstByteMs sets the "upstream_first_byte_ms" field.
+func (_c *UsageLogCreate) SetUpstreamFirstByteMs(v int) *UsageLogCreate {
+	_c.mutation.SetUpstreamFirstByteMs(v)
+	return _c
+}
+
+// SetNillableUpstreamFirstByteMs sets the "upstream_first_byte_ms" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableUpstreamFirstByteMs(v *int) *UsageLogCreate {
+	if v != nil {
+		_c.SetUpstreamFirstByteMs(*v)
+	}
+	return _c
+}
+
+// SetFirstClientFlushMs sets the "first_client_flush_ms" field.
+func (_c *UsageLogCreate) SetFirstClientFlushMs(v int) *UsageLogCreate {
+	_c.mutation.SetFirstClientFlushMs(v)
+	return _c
+}
+
+// SetNillableFirstClientFlushMs sets the "first_client_flush_ms" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableFirstClientFlushMs(v *int) *UsageLogCreate {
+	if v != nil {
+		_c.SetFirstClientFlushMs(*v)
+	}
+	return _c
+}
+
 // SetUserAgent sets the "user_agent" field.
 func (_c *UsageLogCreate) SetUserAgent(v string) *UsageLogCreate {
 	_c.mutation.SetUserAgent(v)
@@ -962,6 +1018,22 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.FirstTokenMs(); ok {
 		_spec.SetField(usagelog.FieldFirstTokenMs, field.TypeInt, value)
 		_node.FirstTokenMs = &value
+	}
+	if value, ok := _c.mutation.SlotWaitMs(); ok {
+		_spec.SetField(usagelog.FieldSlotWaitMs, field.TypeInt, value)
+		_node.SlotWaitMs = &value
+	}
+	if value, ok := _c.mutation.UpstreamHeaderMs(); ok {
+		_spec.SetField(usagelog.FieldUpstreamHeaderMs, field.TypeInt, value)
+		_node.UpstreamHeaderMs = &value
+	}
+	if value, ok := _c.mutation.UpstreamFirstByteMs(); ok {
+		_spec.SetField(usagelog.FieldUpstreamFirstByteMs, field.TypeInt, value)
+		_node.UpstreamFirstByteMs = &value
+	}
+	if value, ok := _c.mutation.FirstClientFlushMs(); ok {
+		_spec.SetField(usagelog.FieldFirstClientFlushMs, field.TypeInt, value)
+		_node.FirstClientFlushMs = &value
 	}
 	if value, ok := _c.mutation.UserAgent(); ok {
 		_spec.SetField(usagelog.FieldUserAgent, field.TypeString, value)
@@ -1683,6 +1755,102 @@ func (u *UsageLogUpsert) AddFirstTokenMs(v int) *UsageLogUpsert {
 // ClearFirstTokenMs clears the value of the "first_token_ms" field.
 func (u *UsageLogUpsert) ClearFirstTokenMs() *UsageLogUpsert {
 	u.SetNull(usagelog.FieldFirstTokenMs)
+	return u
+}
+
+// SetSlotWaitMs sets the "slot_wait_ms" field.
+func (u *UsageLogUpsert) SetSlotWaitMs(v int) *UsageLogUpsert {
+	u.Set(usagelog.FieldSlotWaitMs, v)
+	return u
+}
+
+// UpdateSlotWaitMs sets the "slot_wait_ms" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateSlotWaitMs() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldSlotWaitMs)
+	return u
+}
+
+// AddSlotWaitMs adds v to the "slot_wait_ms" field.
+func (u *UsageLogUpsert) AddSlotWaitMs(v int) *UsageLogUpsert {
+	u.Add(usagelog.FieldSlotWaitMs, v)
+	return u
+}
+
+// ClearSlotWaitMs clears the value of the "slot_wait_ms" field.
+func (u *UsageLogUpsert) ClearSlotWaitMs() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldSlotWaitMs)
+	return u
+}
+
+// SetUpstreamHeaderMs sets the "upstream_header_ms" field.
+func (u *UsageLogUpsert) SetUpstreamHeaderMs(v int) *UsageLogUpsert {
+	u.Set(usagelog.FieldUpstreamHeaderMs, v)
+	return u
+}
+
+// UpdateUpstreamHeaderMs sets the "upstream_header_ms" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateUpstreamHeaderMs() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldUpstreamHeaderMs)
+	return u
+}
+
+// AddUpstreamHeaderMs adds v to the "upstream_header_ms" field.
+func (u *UsageLogUpsert) AddUpstreamHeaderMs(v int) *UsageLogUpsert {
+	u.Add(usagelog.FieldUpstreamHeaderMs, v)
+	return u
+}
+
+// ClearUpstreamHeaderMs clears the value of the "upstream_header_ms" field.
+func (u *UsageLogUpsert) ClearUpstreamHeaderMs() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldUpstreamHeaderMs)
+	return u
+}
+
+// SetUpstreamFirstByteMs sets the "upstream_first_byte_ms" field.
+func (u *UsageLogUpsert) SetUpstreamFirstByteMs(v int) *UsageLogUpsert {
+	u.Set(usagelog.FieldUpstreamFirstByteMs, v)
+	return u
+}
+
+// UpdateUpstreamFirstByteMs sets the "upstream_first_byte_ms" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateUpstreamFirstByteMs() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldUpstreamFirstByteMs)
+	return u
+}
+
+// AddUpstreamFirstByteMs adds v to the "upstream_first_byte_ms" field.
+func (u *UsageLogUpsert) AddUpstreamFirstByteMs(v int) *UsageLogUpsert {
+	u.Add(usagelog.FieldUpstreamFirstByteMs, v)
+	return u
+}
+
+// ClearUpstreamFirstByteMs clears the value of the "upstream_first_byte_ms" field.
+func (u *UsageLogUpsert) ClearUpstreamFirstByteMs() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldUpstreamFirstByteMs)
+	return u
+}
+
+// SetFirstClientFlushMs sets the "first_client_flush_ms" field.
+func (u *UsageLogUpsert) SetFirstClientFlushMs(v int) *UsageLogUpsert {
+	u.Set(usagelog.FieldFirstClientFlushMs, v)
+	return u
+}
+
+// UpdateFirstClientFlushMs sets the "first_client_flush_ms" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateFirstClientFlushMs() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldFirstClientFlushMs)
+	return u
+}
+
+// AddFirstClientFlushMs adds v to the "first_client_flush_ms" field.
+func (u *UsageLogUpsert) AddFirstClientFlushMs(v int) *UsageLogUpsert {
+	u.Add(usagelog.FieldFirstClientFlushMs, v)
+	return u
+}
+
+// ClearFirstClientFlushMs clears the value of the "first_client_flush_ms" field.
+func (u *UsageLogUpsert) ClearFirstClientFlushMs() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldFirstClientFlushMs)
 	return u
 }
 
@@ -2521,6 +2689,118 @@ func (u *UsageLogUpsertOne) UpdateFirstTokenMs() *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) ClearFirstTokenMs() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearFirstTokenMs()
+	})
+}
+
+// SetSlotWaitMs sets the "slot_wait_ms" field.
+func (u *UsageLogUpsertOne) SetSlotWaitMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetSlotWaitMs(v)
+	})
+}
+
+// AddSlotWaitMs adds v to the "slot_wait_ms" field.
+func (u *UsageLogUpsertOne) AddSlotWaitMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddSlotWaitMs(v)
+	})
+}
+
+// UpdateSlotWaitMs sets the "slot_wait_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateSlotWaitMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateSlotWaitMs()
+	})
+}
+
+// ClearSlotWaitMs clears the value of the "slot_wait_ms" field.
+func (u *UsageLogUpsertOne) ClearSlotWaitMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearSlotWaitMs()
+	})
+}
+
+// SetUpstreamHeaderMs sets the "upstream_header_ms" field.
+func (u *UsageLogUpsertOne) SetUpstreamHeaderMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetUpstreamHeaderMs(v)
+	})
+}
+
+// AddUpstreamHeaderMs adds v to the "upstream_header_ms" field.
+func (u *UsageLogUpsertOne) AddUpstreamHeaderMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddUpstreamHeaderMs(v)
+	})
+}
+
+// UpdateUpstreamHeaderMs sets the "upstream_header_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateUpstreamHeaderMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateUpstreamHeaderMs()
+	})
+}
+
+// ClearUpstreamHeaderMs clears the value of the "upstream_header_ms" field.
+func (u *UsageLogUpsertOne) ClearUpstreamHeaderMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearUpstreamHeaderMs()
+	})
+}
+
+// SetUpstreamFirstByteMs sets the "upstream_first_byte_ms" field.
+func (u *UsageLogUpsertOne) SetUpstreamFirstByteMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetUpstreamFirstByteMs(v)
+	})
+}
+
+// AddUpstreamFirstByteMs adds v to the "upstream_first_byte_ms" field.
+func (u *UsageLogUpsertOne) AddUpstreamFirstByteMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddUpstreamFirstByteMs(v)
+	})
+}
+
+// UpdateUpstreamFirstByteMs sets the "upstream_first_byte_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateUpstreamFirstByteMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateUpstreamFirstByteMs()
+	})
+}
+
+// ClearUpstreamFirstByteMs clears the value of the "upstream_first_byte_ms" field.
+func (u *UsageLogUpsertOne) ClearUpstreamFirstByteMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearUpstreamFirstByteMs()
+	})
+}
+
+// SetFirstClientFlushMs sets the "first_client_flush_ms" field.
+func (u *UsageLogUpsertOne) SetFirstClientFlushMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetFirstClientFlushMs(v)
+	})
+}
+
+// AddFirstClientFlushMs adds v to the "first_client_flush_ms" field.
+func (u *UsageLogUpsertOne) AddFirstClientFlushMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddFirstClientFlushMs(v)
+	})
+}
+
+// UpdateFirstClientFlushMs sets the "first_client_flush_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateFirstClientFlushMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateFirstClientFlushMs()
+	})
+}
+
+// ClearFirstClientFlushMs clears the value of the "first_client_flush_ms" field.
+func (u *UsageLogUpsertOne) ClearFirstClientFlushMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearFirstClientFlushMs()
 	})
 }
 
@@ -3551,6 +3831,118 @@ func (u *UsageLogUpsertBulk) UpdateFirstTokenMs() *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) ClearFirstTokenMs() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearFirstTokenMs()
+	})
+}
+
+// SetSlotWaitMs sets the "slot_wait_ms" field.
+func (u *UsageLogUpsertBulk) SetSlotWaitMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetSlotWaitMs(v)
+	})
+}
+
+// AddSlotWaitMs adds v to the "slot_wait_ms" field.
+func (u *UsageLogUpsertBulk) AddSlotWaitMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddSlotWaitMs(v)
+	})
+}
+
+// UpdateSlotWaitMs sets the "slot_wait_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateSlotWaitMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateSlotWaitMs()
+	})
+}
+
+// ClearSlotWaitMs clears the value of the "slot_wait_ms" field.
+func (u *UsageLogUpsertBulk) ClearSlotWaitMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearSlotWaitMs()
+	})
+}
+
+// SetUpstreamHeaderMs sets the "upstream_header_ms" field.
+func (u *UsageLogUpsertBulk) SetUpstreamHeaderMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetUpstreamHeaderMs(v)
+	})
+}
+
+// AddUpstreamHeaderMs adds v to the "upstream_header_ms" field.
+func (u *UsageLogUpsertBulk) AddUpstreamHeaderMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddUpstreamHeaderMs(v)
+	})
+}
+
+// UpdateUpstreamHeaderMs sets the "upstream_header_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateUpstreamHeaderMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateUpstreamHeaderMs()
+	})
+}
+
+// ClearUpstreamHeaderMs clears the value of the "upstream_header_ms" field.
+func (u *UsageLogUpsertBulk) ClearUpstreamHeaderMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearUpstreamHeaderMs()
+	})
+}
+
+// SetUpstreamFirstByteMs sets the "upstream_first_byte_ms" field.
+func (u *UsageLogUpsertBulk) SetUpstreamFirstByteMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetUpstreamFirstByteMs(v)
+	})
+}
+
+// AddUpstreamFirstByteMs adds v to the "upstream_first_byte_ms" field.
+func (u *UsageLogUpsertBulk) AddUpstreamFirstByteMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddUpstreamFirstByteMs(v)
+	})
+}
+
+// UpdateUpstreamFirstByteMs sets the "upstream_first_byte_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateUpstreamFirstByteMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateUpstreamFirstByteMs()
+	})
+}
+
+// ClearUpstreamFirstByteMs clears the value of the "upstream_first_byte_ms" field.
+func (u *UsageLogUpsertBulk) ClearUpstreamFirstByteMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearUpstreamFirstByteMs()
+	})
+}
+
+// SetFirstClientFlushMs sets the "first_client_flush_ms" field.
+func (u *UsageLogUpsertBulk) SetFirstClientFlushMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetFirstClientFlushMs(v)
+	})
+}
+
+// AddFirstClientFlushMs adds v to the "first_client_flush_ms" field.
+func (u *UsageLogUpsertBulk) AddFirstClientFlushMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddFirstClientFlushMs(v)
+	})
+}
+
+// UpdateFirstClientFlushMs sets the "first_client_flush_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateFirstClientFlushMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateFirstClientFlushMs()
+	})
+}
+
+// ClearFirstClientFlushMs clears the value of the "first_client_flush_ms" field.
+func (u *UsageLogUpsertBulk) ClearFirstClientFlushMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearFirstClientFlushMs()
 	})
 }
 

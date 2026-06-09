@@ -1911,6 +1911,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyEnableCCHSigning] = strconv.FormatBool(settings.EnableCCHSigning)
 	updates[SettingKeyEnableAnthropicCacheTTL1hInjection] = strconv.FormatBool(settings.EnableAnthropicCacheTTL1hInjection)
 	updates[SettingKeyRewriteMessageCacheControl] = strconv.FormatBool(settings.RewriteMessageCacheControl)
+	updates[SettingKeyLowLatencyStreamHeaders] = strconv.FormatBool(settings.LowLatencyStreamHeaders)
 	updates[SettingKeyAntigravityUserAgentVersion] = antigravity.NormalizeUserAgentVersion(settings.AntigravityUserAgentVersion)
 	updates[SettingKeyOpenAICodexUserAgent] = strings.TrimSpace(settings.OpenAICodexUserAgent)
 	updates[SettingKeyOpenAIAllowClaudeCodeCodexPlugin] = strconv.FormatBool(settings.OpenAIAllowClaudeCodeCodexPlugin)
@@ -2078,6 +2079,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	}
 	if s.cfg != nil {
 		s.cfg.SetTrustForwardedIPForAPIKeyACL(settings.APIKeyACLTrustForwardedIP)
+		s.cfg.SetLowLatencyStreamHeaders(settings.LowLatencyStreamHeaders)
 	}
 	s.openAIAllowCodexPluginSF.Forget("openai_allow_codex_plugin_enabled")
 	s.openAIAllowCodexPluginCache.Store(&cachedOpenAIAllowCodexPlugin{
@@ -2091,6 +2093,10 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 
 func (s *SettingService) defaultRewriteMessageCacheControl() bool {
 	return false
+}
+
+func (s *SettingService) defaultLowLatencyStreamHeaders() bool {
+	return s != nil && s.cfg != nil && s.cfg.LowLatencyStreamHeadersEnabled()
 }
 
 func (s *SettingService) validateDefaultSubscriptionGroups(ctx context.Context, items []DefaultSubscriptionSetting) error {
@@ -2827,6 +2833,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyAllowUngroupedKeyScheduling:        "false",
 		SettingKeyEnableAnthropicCacheTTL1hInjection: "false",
 		SettingKeyRewriteMessageCacheControl:         strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
+		SettingKeyLowLatencyStreamHeaders:            strconv.FormatBool(s.defaultLowLatencyStreamHeaders()),
 		SettingKeyAntigravityUserAgentVersion:        "",
 		SettingKeyOpenAICodexUserAgent:               "",
 		SettingPaymentVisibleMethodAlipaySource:      "",
@@ -3347,6 +3354,11 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		result.RewriteMessageCacheControl = v == "true"
 	} else {
 		result.RewriteMessageCacheControl = s.defaultRewriteMessageCacheControl()
+	}
+	if v, ok := settings[SettingKeyLowLatencyStreamHeaders]; ok && v != "" {
+		result.LowLatencyStreamHeaders = v == "true"
+	} else if s.cfg != nil {
+		result.LowLatencyStreamHeaders = s.cfg.LowLatencyStreamHeadersEnabled()
 	}
 	result.AntigravityUserAgentVersion = antigravity.NormalizeUserAgentVersion(settings[SettingKeyAntigravityUserAgentVersion])
 	result.OpenAICodexUserAgent = strings.TrimSpace(settings[SettingKeyOpenAICodexUserAgent])

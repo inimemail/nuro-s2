@@ -658,6 +658,114 @@ func (_u *UsageLogUpdate) ClearFirstTokenMs() *UsageLogUpdate {
 	return _u
 }
 
+// SetSlotWaitMs sets the "slot_wait_ms" field.
+func (_u *UsageLogUpdate) SetSlotWaitMs(v int) *UsageLogUpdate {
+	_u.mutation.ResetSlotWaitMs()
+	_u.mutation.SetSlotWaitMs(v)
+	return _u
+}
+
+// SetNillableSlotWaitMs sets the "slot_wait_ms" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableSlotWaitMs(v *int) *UsageLogUpdate {
+	if v != nil {
+		_u.SetSlotWaitMs(*v)
+	}
+	return _u
+}
+
+// AddSlotWaitMs adds value to the "slot_wait_ms" field.
+func (_u *UsageLogUpdate) AddSlotWaitMs(v int) *UsageLogUpdate {
+	_u.mutation.AddSlotWaitMs(v)
+	return _u
+}
+
+// ClearSlotWaitMs clears the value of the "slot_wait_ms" field.
+func (_u *UsageLogUpdate) ClearSlotWaitMs() *UsageLogUpdate {
+	_u.mutation.ClearSlotWaitMs()
+	return _u
+}
+
+// SetUpstreamHeaderMs sets the "upstream_header_ms" field.
+func (_u *UsageLogUpdate) SetUpstreamHeaderMs(v int) *UsageLogUpdate {
+	_u.mutation.ResetUpstreamHeaderMs()
+	_u.mutation.SetUpstreamHeaderMs(v)
+	return _u
+}
+
+// SetNillableUpstreamHeaderMs sets the "upstream_header_ms" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableUpstreamHeaderMs(v *int) *UsageLogUpdate {
+	if v != nil {
+		_u.SetUpstreamHeaderMs(*v)
+	}
+	return _u
+}
+
+// AddUpstreamHeaderMs adds value to the "upstream_header_ms" field.
+func (_u *UsageLogUpdate) AddUpstreamHeaderMs(v int) *UsageLogUpdate {
+	_u.mutation.AddUpstreamHeaderMs(v)
+	return _u
+}
+
+// ClearUpstreamHeaderMs clears the value of the "upstream_header_ms" field.
+func (_u *UsageLogUpdate) ClearUpstreamHeaderMs() *UsageLogUpdate {
+	_u.mutation.ClearUpstreamHeaderMs()
+	return _u
+}
+
+// SetUpstreamFirstByteMs sets the "upstream_first_byte_ms" field.
+func (_u *UsageLogUpdate) SetUpstreamFirstByteMs(v int) *UsageLogUpdate {
+	_u.mutation.ResetUpstreamFirstByteMs()
+	_u.mutation.SetUpstreamFirstByteMs(v)
+	return _u
+}
+
+// SetNillableUpstreamFirstByteMs sets the "upstream_first_byte_ms" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableUpstreamFirstByteMs(v *int) *UsageLogUpdate {
+	if v != nil {
+		_u.SetUpstreamFirstByteMs(*v)
+	}
+	return _u
+}
+
+// AddUpstreamFirstByteMs adds value to the "upstream_first_byte_ms" field.
+func (_u *UsageLogUpdate) AddUpstreamFirstByteMs(v int) *UsageLogUpdate {
+	_u.mutation.AddUpstreamFirstByteMs(v)
+	return _u
+}
+
+// ClearUpstreamFirstByteMs clears the value of the "upstream_first_byte_ms" field.
+func (_u *UsageLogUpdate) ClearUpstreamFirstByteMs() *UsageLogUpdate {
+	_u.mutation.ClearUpstreamFirstByteMs()
+	return _u
+}
+
+// SetFirstClientFlushMs sets the "first_client_flush_ms" field.
+func (_u *UsageLogUpdate) SetFirstClientFlushMs(v int) *UsageLogUpdate {
+	_u.mutation.ResetFirstClientFlushMs()
+	_u.mutation.SetFirstClientFlushMs(v)
+	return _u
+}
+
+// SetNillableFirstClientFlushMs sets the "first_client_flush_ms" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableFirstClientFlushMs(v *int) *UsageLogUpdate {
+	if v != nil {
+		_u.SetFirstClientFlushMs(*v)
+	}
+	return _u
+}
+
+// AddFirstClientFlushMs adds value to the "first_client_flush_ms" field.
+func (_u *UsageLogUpdate) AddFirstClientFlushMs(v int) *UsageLogUpdate {
+	_u.mutation.AddFirstClientFlushMs(v)
+	return _u
+}
+
+// ClearFirstClientFlushMs clears the value of the "first_client_flush_ms" field.
+func (_u *UsageLogUpdate) ClearFirstClientFlushMs() *UsageLogUpdate {
+	_u.mutation.ClearFirstClientFlushMs()
+	return _u
+}
+
 // SetUserAgent sets the "user_agent" field.
 func (_u *UsageLogUpdate) SetUserAgent(v string) *UsageLogUpdate {
 	_u.mutation.SetUserAgent(v)
@@ -1161,6 +1269,42 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.FirstTokenMsCleared() {
 		_spec.ClearField(usagelog.FieldFirstTokenMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.SlotWaitMs(); ok {
+		_spec.SetField(usagelog.FieldSlotWaitMs, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedSlotWaitMs(); ok {
+		_spec.AddField(usagelog.FieldSlotWaitMs, field.TypeInt, value)
+	}
+	if _u.mutation.SlotWaitMsCleared() {
+		_spec.ClearField(usagelog.FieldSlotWaitMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.UpstreamHeaderMs(); ok {
+		_spec.SetField(usagelog.FieldUpstreamHeaderMs, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamHeaderMs(); ok {
+		_spec.AddField(usagelog.FieldUpstreamHeaderMs, field.TypeInt, value)
+	}
+	if _u.mutation.UpstreamHeaderMsCleared() {
+		_spec.ClearField(usagelog.FieldUpstreamHeaderMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.UpstreamFirstByteMs(); ok {
+		_spec.SetField(usagelog.FieldUpstreamFirstByteMs, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamFirstByteMs(); ok {
+		_spec.AddField(usagelog.FieldUpstreamFirstByteMs, field.TypeInt, value)
+	}
+	if _u.mutation.UpstreamFirstByteMsCleared() {
+		_spec.ClearField(usagelog.FieldUpstreamFirstByteMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.FirstClientFlushMs(); ok {
+		_spec.SetField(usagelog.FieldFirstClientFlushMs, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedFirstClientFlushMs(); ok {
+		_spec.AddField(usagelog.FieldFirstClientFlushMs, field.TypeInt, value)
+	}
+	if _u.mutation.FirstClientFlushMsCleared() {
+		_spec.ClearField(usagelog.FieldFirstClientFlushMs, field.TypeInt)
 	}
 	if value, ok := _u.mutation.UserAgent(); ok {
 		_spec.SetField(usagelog.FieldUserAgent, field.TypeString, value)
@@ -2004,6 +2148,114 @@ func (_u *UsageLogUpdateOne) ClearFirstTokenMs() *UsageLogUpdateOne {
 	return _u
 }
 
+// SetSlotWaitMs sets the "slot_wait_ms" field.
+func (_u *UsageLogUpdateOne) SetSlotWaitMs(v int) *UsageLogUpdateOne {
+	_u.mutation.ResetSlotWaitMs()
+	_u.mutation.SetSlotWaitMs(v)
+	return _u
+}
+
+// SetNillableSlotWaitMs sets the "slot_wait_ms" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableSlotWaitMs(v *int) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetSlotWaitMs(*v)
+	}
+	return _u
+}
+
+// AddSlotWaitMs adds value to the "slot_wait_ms" field.
+func (_u *UsageLogUpdateOne) AddSlotWaitMs(v int) *UsageLogUpdateOne {
+	_u.mutation.AddSlotWaitMs(v)
+	return _u
+}
+
+// ClearSlotWaitMs clears the value of the "slot_wait_ms" field.
+func (_u *UsageLogUpdateOne) ClearSlotWaitMs() *UsageLogUpdateOne {
+	_u.mutation.ClearSlotWaitMs()
+	return _u
+}
+
+// SetUpstreamHeaderMs sets the "upstream_header_ms" field.
+func (_u *UsageLogUpdateOne) SetUpstreamHeaderMs(v int) *UsageLogUpdateOne {
+	_u.mutation.ResetUpstreamHeaderMs()
+	_u.mutation.SetUpstreamHeaderMs(v)
+	return _u
+}
+
+// SetNillableUpstreamHeaderMs sets the "upstream_header_ms" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableUpstreamHeaderMs(v *int) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetUpstreamHeaderMs(*v)
+	}
+	return _u
+}
+
+// AddUpstreamHeaderMs adds value to the "upstream_header_ms" field.
+func (_u *UsageLogUpdateOne) AddUpstreamHeaderMs(v int) *UsageLogUpdateOne {
+	_u.mutation.AddUpstreamHeaderMs(v)
+	return _u
+}
+
+// ClearUpstreamHeaderMs clears the value of the "upstream_header_ms" field.
+func (_u *UsageLogUpdateOne) ClearUpstreamHeaderMs() *UsageLogUpdateOne {
+	_u.mutation.ClearUpstreamHeaderMs()
+	return _u
+}
+
+// SetUpstreamFirstByteMs sets the "upstream_first_byte_ms" field.
+func (_u *UsageLogUpdateOne) SetUpstreamFirstByteMs(v int) *UsageLogUpdateOne {
+	_u.mutation.ResetUpstreamFirstByteMs()
+	_u.mutation.SetUpstreamFirstByteMs(v)
+	return _u
+}
+
+// SetNillableUpstreamFirstByteMs sets the "upstream_first_byte_ms" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableUpstreamFirstByteMs(v *int) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetUpstreamFirstByteMs(*v)
+	}
+	return _u
+}
+
+// AddUpstreamFirstByteMs adds value to the "upstream_first_byte_ms" field.
+func (_u *UsageLogUpdateOne) AddUpstreamFirstByteMs(v int) *UsageLogUpdateOne {
+	_u.mutation.AddUpstreamFirstByteMs(v)
+	return _u
+}
+
+// ClearUpstreamFirstByteMs clears the value of the "upstream_first_byte_ms" field.
+func (_u *UsageLogUpdateOne) ClearUpstreamFirstByteMs() *UsageLogUpdateOne {
+	_u.mutation.ClearUpstreamFirstByteMs()
+	return _u
+}
+
+// SetFirstClientFlushMs sets the "first_client_flush_ms" field.
+func (_u *UsageLogUpdateOne) SetFirstClientFlushMs(v int) *UsageLogUpdateOne {
+	_u.mutation.ResetFirstClientFlushMs()
+	_u.mutation.SetFirstClientFlushMs(v)
+	return _u
+}
+
+// SetNillableFirstClientFlushMs sets the "first_client_flush_ms" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableFirstClientFlushMs(v *int) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetFirstClientFlushMs(*v)
+	}
+	return _u
+}
+
+// AddFirstClientFlushMs adds value to the "first_client_flush_ms" field.
+func (_u *UsageLogUpdateOne) AddFirstClientFlushMs(v int) *UsageLogUpdateOne {
+	_u.mutation.AddFirstClientFlushMs(v)
+	return _u
+}
+
+// ClearFirstClientFlushMs clears the value of the "first_client_flush_ms" field.
+func (_u *UsageLogUpdateOne) ClearFirstClientFlushMs() *UsageLogUpdateOne {
+	_u.mutation.ClearFirstClientFlushMs()
+	return _u
+}
+
 // SetUserAgent sets the "user_agent" field.
 func (_u *UsageLogUpdateOne) SetUserAgent(v string) *UsageLogUpdateOne {
 	_u.mutation.SetUserAgent(v)
@@ -2537,6 +2789,42 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	}
 	if _u.mutation.FirstTokenMsCleared() {
 		_spec.ClearField(usagelog.FieldFirstTokenMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.SlotWaitMs(); ok {
+		_spec.SetField(usagelog.FieldSlotWaitMs, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedSlotWaitMs(); ok {
+		_spec.AddField(usagelog.FieldSlotWaitMs, field.TypeInt, value)
+	}
+	if _u.mutation.SlotWaitMsCleared() {
+		_spec.ClearField(usagelog.FieldSlotWaitMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.UpstreamHeaderMs(); ok {
+		_spec.SetField(usagelog.FieldUpstreamHeaderMs, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamHeaderMs(); ok {
+		_spec.AddField(usagelog.FieldUpstreamHeaderMs, field.TypeInt, value)
+	}
+	if _u.mutation.UpstreamHeaderMsCleared() {
+		_spec.ClearField(usagelog.FieldUpstreamHeaderMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.UpstreamFirstByteMs(); ok {
+		_spec.SetField(usagelog.FieldUpstreamFirstByteMs, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamFirstByteMs(); ok {
+		_spec.AddField(usagelog.FieldUpstreamFirstByteMs, field.TypeInt, value)
+	}
+	if _u.mutation.UpstreamFirstByteMsCleared() {
+		_spec.ClearField(usagelog.FieldUpstreamFirstByteMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.FirstClientFlushMs(); ok {
+		_spec.SetField(usagelog.FieldFirstClientFlushMs, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedFirstClientFlushMs(); ok {
+		_spec.AddField(usagelog.FieldFirstClientFlushMs, field.TypeInt, value)
+	}
+	if _u.mutation.FirstClientFlushMsCleared() {
+		_spec.ClearField(usagelog.FieldFirstClientFlushMs, field.TypeInt)
 	}
 	if value, ok := _u.mutation.UserAgent(); ok {
 		_spec.SetField(usagelog.FieldUserAgent, field.TypeString, value)

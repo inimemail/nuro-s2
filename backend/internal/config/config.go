@@ -605,6 +605,28 @@ func (c *Config) SetTrustForwardedIPForAPIKeyACL(enabled bool) {
 	c.Security.trustForwardedIPForAPIKeyACLLive.Store(enabled)
 }
 
+func (c *Config) LowLatencyStreamHeadersEnabled() bool {
+	if c == nil {
+		return false
+	}
+	live := c.Gateway.lowLatencyStreamHeadersLive
+	if live == nil {
+		return c.Gateway.LowLatencyStreamHeaders
+	}
+	return live.Load()
+}
+
+func (c *Config) SetLowLatencyStreamHeaders(enabled bool) {
+	if c == nil {
+		return
+	}
+	c.Gateway.LowLatencyStreamHeaders = enabled
+	if c.Gateway.lowLatencyStreamHeadersLive == nil {
+		c.Gateway.lowLatencyStreamHeadersLive = &atomic.Bool{}
+	}
+	c.Gateway.lowLatencyStreamHeadersLive.Store(enabled)
+}
+
 type URLAllowlistConfig struct {
 	Enabled           bool     `mapstructure:"enabled"`
 	UpstreamHosts     []string `mapstructure:"upstream_hosts"`
@@ -775,6 +797,14 @@ type GatewayConfig struct {
 	ImageStreamDataIntervalTimeout int `mapstructure:"image_stream_data_interval_timeout"`
 	// ImageStreamKeepaliveInterval: 图片流式 keepalive 间隔（秒），0表示禁用
 	ImageStreamKeepaliveInterval int `mapstructure:"image_stream_keepalive_interval"`
+	// StreamingBootstrapRetries: non-image stream retry override before any client payload is written.
+	// 0 keeps the existing max_account_switches behavior.
+	StreamingBootstrapRetries int `mapstructure:"streaming_bootstrap_retries"`
+	// LowLatencyStreamHeaders: flush SSE headers earlier for stream requests when enabled.
+	LowLatencyStreamHeaders     bool         `mapstructure:"low_latency_stream_headers"`
+	lowLatencyStreamHeadersLive *atomic.Bool `mapstructure:"-"`
+	// NonStreamKeepaliveInterval: reserved non-stream keepalive interval in seconds; 0 disables it.
+	NonStreamKeepaliveInterval int `mapstructure:"nonstream_keepalive_interval"`
 	// MaxLineSize: 上游 SSE 单行最大字节数（0使用默认值）
 	MaxLineSize int `mapstructure:"max_line_size"`
 
@@ -1449,6 +1479,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Security.ResponseHeaders.ForceRemove = normalizeStringSlice(cfg.Security.ResponseHeaders.ForceRemove)
 	cfg.Security.CSP.Policy = strings.TrimSpace(cfg.Security.CSP.Policy)
 	cfg.SetTrustForwardedIPForAPIKeyACL(cfg.Security.TrustForwardedIPForAPIKeyACL)
+	cfg.SetLowLatencyStreamHeaders(cfg.Gateway.LowLatencyStreamHeaders)
 	cfg.Log.Level = strings.ToLower(strings.TrimSpace(cfg.Log.Level))
 	cfg.Log.Format = strings.ToLower(strings.TrimSpace(cfg.Log.Format))
 	cfg.Log.ServiceName = strings.TrimSpace(cfg.Log.ServiceName)
@@ -1902,6 +1933,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
+	viper.SetDefault("gateway.streaming_bootstrap_retries", 0)
+	viper.SetDefault("gateway.low_latency_stream_headers", false)
+	viper.SetDefault("gateway.nonstream_keepalive_interval", 0)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
@@ -2543,6 +2577,16 @@ func (c *Config) Validate() error {
 	if c.Gateway.ImageStreamKeepaliveInterval != 0 &&
 		(c.Gateway.ImageStreamKeepaliveInterval < 5 || c.Gateway.ImageStreamKeepaliveInterval > 60) {
 		return fmt.Errorf("gateway.image_stream_keepalive_interval must be 0 or between 5-60 seconds")
+	}
+	if c.Gateway.StreamingBootstrapRetries < 0 || c.Gateway.StreamingBootstrapRetries > 5 {
+		return fmt.Errorf("gateway.streaming_bootstrap_retries must be between 0-5")
+	}
+	if c.Gateway.NonStreamKeepaliveInterval < 0 {
+		return fmt.Errorf("gateway.nonstream_keepalive_interval must be non-negative")
+	}
+	if c.Gateway.NonStreamKeepaliveInterval != 0 &&
+		(c.Gateway.NonStreamKeepaliveInterval < 5 || c.Gateway.NonStreamKeepaliveInterval > 60) {
+		return fmt.Errorf("gateway.nonstream_keepalive_interval must be 0 or between 5-60 seconds")
 	}
 	// 兼容旧键 sticky_previous_response_ttl_seconds
 	if c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {

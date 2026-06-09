@@ -174,7 +174,9 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	}
 
 	// 执行请求
+	upstreamStart := time.Now()
 	resp, err := entry.client.Do(req)
+	service.RecordOpsLatency(req.Context(), service.OpsUpstreamHeaderMsKey, time.Since(upstreamStart))
 	if err != nil {
 		s.recordOpenAIHTTP2Failure(profile, entry.protocolMode, entry.proxyKey, err)
 		// 请求失败，立即减少计数
@@ -192,6 +194,8 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	resp.Body = wrapTrackedBody(resp.Body, func() {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
+	}, func() {
+		service.RecordOpsUpstreamFirstByte(req.Context(), time.Since(upstreamStart))
 	})
 
 	return resp, nil
@@ -230,7 +234,9 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 		return nil, err
 	}
 
+	upstreamStart := time.Now()
 	resp, err := entry.client.Do(req)
+	service.RecordOpsLatency(req.Context(), service.OpsUpstreamHeaderMsKey, time.Since(upstreamStart))
 	if err != nil {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
@@ -243,6 +249,8 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	resp.Body = wrapTrackedBody(resp.Body, func() {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
+	}, func() {
+		service.RecordOpsUpstreamFirstByte(req.Context(), time.Since(upstreamStart))
 	})
 
 	return resp, nil
@@ -1141,7 +1149,20 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 type trackedBody struct {
 	io.ReadCloser // 原始响应体
 	once          sync.Once
+	readOnce      sync.Once
 	onClose       func() // 关闭时的回调函数
+	onFirstByte   func()
+}
+
+func (b *trackedBody) Read(p []byte) (int, error) {
+	if b == nil || b.ReadCloser == nil {
+		return 0, io.ErrClosedPipe
+	}
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 && b.onFirstByte != nil {
+		b.readOnce.Do(b.onFirstByte)
+	}
+	return n, err
 }
 
 // Close 关闭响应体并执行回调
@@ -1163,11 +1184,15 @@ func (b *trackedBody) Close() error {
 //
 // 返回:
 //   - io.ReadCloser: 包装后的响应体
-func wrapTrackedBody(body io.ReadCloser, onClose func()) io.ReadCloser {
+func wrapTrackedBody(body io.ReadCloser, onClose func(), onFirstByte ...func()) io.ReadCloser {
 	if body == nil {
 		return body
 	}
-	return &trackedBody{ReadCloser: body, onClose: onClose}
+	var firstByte func()
+	if len(onFirstByte) > 0 {
+		firstByte = onFirstByte[0]
+	}
+	return &trackedBody{ReadCloser: body, onClose: onClose, onFirstByte: firstByte}
 }
 
 // decompressResponseBody 根据 Content-Encoding 解压响应体。

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"time"
@@ -17,11 +18,15 @@ const (
 	OpsUpstreamErrorsKey       = "ops_upstream_errors"
 
 	// Optional stage latencies (milliseconds) for troubleshooting and alerting.
-	OpsAuthLatencyMsKey      = "ops_auth_latency_ms"
-	OpsRoutingLatencyMsKey   = "ops_routing_latency_ms"
-	OpsUpstreamLatencyMsKey  = "ops_upstream_latency_ms"
-	OpsResponseLatencyMsKey  = "ops_response_latency_ms"
-	OpsTimeToFirstTokenMsKey = "ops_time_to_first_token_ms"
+	OpsAuthLatencyMsKey       = "ops_auth_latency_ms"
+	OpsRoutingLatencyMsKey    = "ops_routing_latency_ms"
+	OpsSlotWaitMsKey          = "ops_slot_wait_ms"
+	OpsUpstreamLatencyMsKey   = "ops_upstream_latency_ms"
+	OpsUpstreamHeaderMsKey    = "ops_upstream_header_ms"
+	OpsUpstreamFirstByteMsKey = "ops_upstream_first_byte_ms"
+	OpsFirstClientFlushMsKey  = "ops_first_client_flush_ms"
+	OpsResponseLatencyMsKey   = "ops_response_latency_ms"
+	OpsTimeToFirstTokenMsKey  = "ops_time_to_first_token_ms"
 	// OpenAI WS 关键观测字段
 	OpsOpenAIWSQueueWaitMsKey = "ops_openai_ws_queue_wait_ms"
 	OpsOpenAIWSConnPickMsKey  = "ops_openai_ws_conn_pick_ms"
@@ -43,8 +48,52 @@ const (
 	OpsClientBusinessLimitedReasonLocalPolicyDenied      = "local_policy_denied"
 )
 
+type opsLatencyRecorderKey struct{}
+
+func WithOpsLatencyRecorder(ctx context.Context, recorder func(string, time.Duration)) context.Context {
+	if ctx == nil || recorder == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, opsLatencyRecorderKey{}, recorder)
+}
+
+func WithOpsUpstreamFirstByteRecorder(ctx context.Context, recorder func(time.Duration)) context.Context {
+	if ctx == nil || recorder == nil {
+		return ctx
+	}
+	return WithOpsLatencyRecorder(ctx, func(key string, elapsed time.Duration) {
+		if key == OpsUpstreamFirstByteMsKey {
+			recorder(elapsed)
+		}
+	})
+}
+
+func RecordOpsLatency(ctx context.Context, key string, elapsed time.Duration) {
+	if ctx == nil || strings.TrimSpace(key) == "" || elapsed < 0 {
+		return
+	}
+	recorder, _ := ctx.Value(opsLatencyRecorderKey{}).(func(string, time.Duration))
+	if recorder != nil {
+		recorder(key, elapsed)
+	}
+}
+
+func RecordOpsUpstreamFirstByte(ctx context.Context, elapsed time.Duration) {
+	RecordOpsLatency(ctx, OpsUpstreamFirstByteMsKey, elapsed)
+}
+
 func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
 	if c == nil || strings.TrimSpace(key) == "" || value < 0 {
+		return
+	}
+	c.Set(key, value)
+}
+
+func SetOpsLatencyMsOnce(c *gin.Context, key string, value int64) {
+	if c == nil || strings.TrimSpace(key) == "" || value < 0 {
+		return
+	}
+	if _, exists := c.Get(key); exists {
 		return
 	}
 	c.Set(key, value)

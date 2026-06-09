@@ -236,7 +236,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						}
 						err = imageUpstreamErr.ToFailoverError(account)
 					} else {
-						h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+						h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, true, nil, parsed.RequiredCapability)
 						reqLog.Warn("openai.images.upstream_user_error",
 							zap.Int64("account_id", account.ID),
 							zap.Int("status_code", imageUpstreamErr.StatusCode),
@@ -249,7 +249,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+					h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, false, nil, parsed.RequiredCapability)
 					if failoverErr.RetryableOnSameAccount {
 						retryLimit := account.GetPoolModeRetryCount()
 						if sameAccountRetryCount[account.ID] < retryLimit {
@@ -294,7 +294,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					)
 					continue
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, false, nil, parsed.RequiredCapability)
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
@@ -318,9 +318,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			if account.Type == service.AccountTypeOAuth {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, true, result.FirstTokenMs, parsed.RequiredCapability)
 		} else {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+			h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, true, nil, parsed.RequiredCapability)
 		}
 
 		userAgent := c.GetHeader("User-Agent")

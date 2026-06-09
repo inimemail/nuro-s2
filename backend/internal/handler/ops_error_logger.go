@@ -1001,7 +1001,11 @@ func applyOpsLatencyFieldsFromContext(c *gin.Context, entry *service.OpsInsertEr
 	}
 	entry.AuthLatencyMs = getContextLatencyMs(c, service.OpsAuthLatencyMsKey)
 	entry.RoutingLatencyMs = getContextLatencyMs(c, service.OpsRoutingLatencyMsKey)
+	entry.SlotWaitMs = getContextLatencyMs(c, service.OpsSlotWaitMsKey)
 	entry.UpstreamLatencyMs = getContextLatencyMs(c, service.OpsUpstreamLatencyMsKey)
+	entry.UpstreamHeaderMs = getContextLatencyMs(c, service.OpsUpstreamHeaderMsKey)
+	entry.UpstreamFirstByteMs = getContextLatencyMs(c, service.OpsUpstreamFirstByteMsKey)
+	entry.FirstClientFlushMs = getContextLatencyMs(c, service.OpsFirstClientFlushMsKey)
 	entry.ResponseLatencyMs = getContextLatencyMs(c, service.OpsResponseLatencyMsKey)
 	entry.TimeToFirstTokenMs = getContextLatencyMs(c, service.OpsTimeToFirstTokenMsKey)
 }

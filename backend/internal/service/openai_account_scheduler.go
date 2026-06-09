@@ -79,6 +79,8 @@ type OpenAIAccountSchedulerMetricsSnapshot struct {
 type OpenAIAccountScheduler interface {
 	Select(ctx context.Context, req OpenAIAccountScheduleRequest) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error)
 	ReportResult(accountID int64, success bool, firstTokenMs *int)
+	ReportResultForRequest(accountID int64, success bool, firstTokenMs *int, requiredImageCapability OpenAIImagesCapability)
+	ReportResultForRoute(accountID int64, success bool, firstTokenMs *int, requestedModel string, transport OpenAIUpstreamTransport)
 	ReportSwitch()
 	SnapshotMetrics() OpenAIAccountSchedulerMetricsSnapshot
 }
@@ -130,7 +132,15 @@ func (m *openAIAccountSchedulerMetrics) recordSwitch() {
 
 type openAIAccountRuntimeStats struct {
 	accounts     sync.Map
+	accountIDs   sync.Map
 	accountCount atomic.Int64
+}
+
+type openAIAccountRuntimeStatsKey struct {
+	accountID int64
+	kind      string
+	model     string
+	transport string
 }
 
 type openAIAccountRuntimeStat struct {
@@ -143,7 +153,15 @@ func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
 }
 
 func (s *openAIAccountRuntimeStats) loadOrCreate(accountID int64) *openAIAccountRuntimeStat {
-	if value, ok := s.accounts.Load(accountID); ok {
+	return s.loadOrCreateForKey(openAIAccountRuntimeStatsKey{accountID: accountID, kind: "text"})
+}
+
+func (s *openAIAccountRuntimeStats) loadOrCreateForKey(key openAIAccountRuntimeStatsKey) *openAIAccountRuntimeStat {
+	if key.accountID <= 0 {
+		return nil
+	}
+	key = normalizeOpenAIAccountRuntimeStatsKey(key)
+	if value, ok := s.accounts.Load(key); ok {
 		stat, _ := value.(*openAIAccountRuntimeStat)
 		if stat != nil {
 			return stat
@@ -152,9 +170,11 @@ func (s *openAIAccountRuntimeStats) loadOrCreate(accountID int64) *openAIAccount
 
 	stat := &openAIAccountRuntimeStat{}
 	stat.ttftEWMABits.Store(math.Float64bits(math.NaN()))
-	actual, loaded := s.accounts.LoadOrStore(accountID, stat)
+	actual, loaded := s.accounts.LoadOrStore(key, stat)
 	if !loaded {
-		s.accountCount.Add(1)
+		if _, accountLoaded := s.accountIDs.LoadOrStore(key.accountID, struct{}{}); !accountLoaded {
+			s.accountCount.Add(1)
+		}
 		return stat
 	}
 	existing, _ := actual.(*openAIAccountRuntimeStat)
@@ -176,11 +196,41 @@ func updateEWMAAtomic(target *atomic.Uint64, sample float64, alpha float64) {
 }
 
 func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstTokenMs *int) {
-	if s == nil || accountID <= 0 {
+	s.reportForRequest(accountID, success, firstTokenMs, "")
+}
+
+func openAIAccountRuntimeStatsKind(requiredImageCapability OpenAIImagesCapability) string {
+	if requiredImageCapability != "" {
+		return "images"
+	}
+	return "text"
+}
+
+func (s *openAIAccountRuntimeStats) reportForRequest(accountID int64, success bool, firstTokenMs *int, requiredImageCapability OpenAIImagesCapability) {
+	s.reportForKey(openAIAccountRuntimeStatsKey{
+		accountID: accountID,
+		kind:      openAIAccountRuntimeStatsKind(requiredImageCapability),
+	}, success, firstTokenMs)
+}
+
+func (s *openAIAccountRuntimeStats) reportForRoute(accountID int64, success bool, firstTokenMs *int, requestedModel string, transport OpenAIUpstreamTransport) {
+	s.reportForKey(openAIAccountRuntimeStatsKey{
+		accountID: accountID,
+		kind:      "text",
+		model:     requestedModel,
+		transport: string(transport),
+	}, success, firstTokenMs)
+}
+
+func (s *openAIAccountRuntimeStats) reportForKey(key openAIAccountRuntimeStatsKey, success bool, firstTokenMs *int) {
+	if s == nil || key.accountID <= 0 {
 		return
 	}
 	const alpha = 0.2
-	stat := s.loadOrCreate(accountID)
+	stat := s.loadOrCreateForKey(key)
+	if stat == nil {
+		return
+	}
 
 	errorSample := 1.0
 	if success {
@@ -209,23 +259,65 @@ func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstT
 }
 
 func (s *openAIAccountRuntimeStats) snapshot(accountID int64) (errorRate float64, ttft float64, hasTTFT bool) {
+	return s.snapshotForRequest(accountID, "")
+}
+
+func (s *openAIAccountRuntimeStats) snapshotForRequest(accountID int64, requiredImageCapability OpenAIImagesCapability) (errorRate float64, ttft float64, hasTTFT bool) {
+	errorRate, ttft, hasTTFT, _ = s.snapshotForKey(openAIAccountRuntimeStatsKey{
+		accountID: accountID,
+		kind:      openAIAccountRuntimeStatsKind(requiredImageCapability),
+	})
+	return errorRate, ttft, hasTTFT
+}
+
+func (s *openAIAccountRuntimeStats) snapshotForRoute(accountID int64, requestedModel string, transport OpenAIUpstreamTransport) (errorRate float64, ttft float64, hasTTFT bool) {
 	if s == nil || accountID <= 0 {
 		return 0, 0, false
 	}
-	value, ok := s.accounts.Load(accountID)
+	if strings.TrimSpace(requestedModel) != "" || transport != "" {
+		var found bool
+		errorRate, ttft, hasTTFT, found = s.snapshotForKey(openAIAccountRuntimeStatsKey{
+			accountID: accountID,
+			kind:      "text",
+			model:     requestedModel,
+			transport: string(transport),
+		})
+		if found {
+			return errorRate, ttft, hasTTFT
+		}
+	}
+	return s.snapshotForRequest(accountID, "")
+}
+
+func (s *openAIAccountRuntimeStats) snapshotForKey(key openAIAccountRuntimeStatsKey) (errorRate float64, ttft float64, hasTTFT bool, found bool) {
+	if s == nil || key.accountID <= 0 {
+		return 0, 0, false, false
+	}
+	key = normalizeOpenAIAccountRuntimeStatsKey(key)
+	value, ok := s.accounts.Load(key)
 	if !ok {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	stat, _ := value.(*openAIAccountRuntimeStat)
 	if stat == nil {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	errorRate = clamp01(math.Float64frombits(stat.errorRateEWMABits.Load()))
 	ttftValue := math.Float64frombits(stat.ttftEWMABits.Load())
 	if math.IsNaN(ttftValue) {
-		return errorRate, 0, false
+		return errorRate, 0, false, true
 	}
-	return errorRate, ttftValue, true
+	return errorRate, ttftValue, true, true
+}
+
+func normalizeOpenAIAccountRuntimeStatsKey(key openAIAccountRuntimeStatsKey) openAIAccountRuntimeStatsKey {
+	if key.kind == "" {
+		key.kind = "text"
+	}
+	key.kind = strings.TrimSpace(key.kind)
+	key.model = NormalizeOpenAICompatRequestedModel(strings.TrimSpace(key.model))
+	key.transport = strings.TrimSpace(key.transport)
+	return key
 }
 
 func (s *openAIAccountRuntimeStats) size() int {
@@ -634,7 +726,11 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		}
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
 		if s.stats != nil {
-			errorRate, ttft, hasTTFT = s.stats.snapshot(account.ID)
+			if req.RequiredImageCapability != "" {
+				errorRate, ttft, hasTTFT = s.stats.snapshotForRequest(account.ID, req.RequiredImageCapability)
+			} else {
+				errorRate, ttft, hasTTFT = s.stats.snapshotForRoute(account.ID, req.RequestedModel, req.RequiredTransport)
+			}
 		}
 		allCandidates = append(allCandidates, openAIAccountCandidateScore{
 			account:   account,
@@ -849,20 +945,14 @@ func sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []op
 		if a.account.Priority != b.account.Priority {
 			return a.account.Priority < b.account.Priority
 		}
-		if a.hasTTFT != b.hasTTFT {
-			return a.hasTTFT
-		}
-		if a.hasTTFT && a.ttft != b.ttft {
-			return a.ttft < b.ttft
-		}
-		if a.errorRate != b.errorRate {
-			return a.errorRate < b.errorRate
+		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
 		}
 		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
 		}
-		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
-			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+		if a.errorRate != b.errorRate {
+			return a.errorRate < b.errorRate
 		}
 		switch {
 		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
@@ -873,6 +963,12 @@ func sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []op
 			if !a.account.LastUsedAt.Equal(*b.account.LastUsedAt) {
 				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 			}
+		}
+		if a.hasTTFT != b.hasTTFT {
+			return a.hasTTFT
+		}
+		if a.hasTTFT && a.ttft != b.ttft {
+			return a.ttft < b.ttft
 		}
 		return a.account.ID < b.account.ID
 	})
@@ -1119,10 +1215,22 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 }
 
 func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {
+	s.ReportResultForRequest(accountID, success, firstTokenMs, "")
+}
+
+func (s *defaultOpenAIAccountScheduler) ReportResultForRequest(accountID int64, success bool, firstTokenMs *int, requiredImageCapability OpenAIImagesCapability) {
 	if s == nil || s.stats == nil {
 		return
 	}
-	s.stats.report(accountID, success, firstTokenMs)
+	s.stats.reportForRequest(accountID, success, firstTokenMs, requiredImageCapability)
+}
+
+func (s *defaultOpenAIAccountScheduler) ReportResultForRoute(accountID int64, success bool, firstTokenMs *int, requestedModel string, transport OpenAIUpstreamTransport) {
+	if s == nil || s.stats == nil {
+		return
+	}
+	s.stats.reportForRequest(accountID, success, firstTokenMs, "")
+	s.stats.reportForRoute(accountID, success, firstTokenMs, requestedModel, transport)
 }
 
 func (s *defaultOpenAIAccountScheduler) ReportSwitch() {
@@ -1402,14 +1510,43 @@ func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Accou
 }
 
 func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64, success bool, firstTokenMs *int) {
-	if s != nil && success {
+	s.reportOpenAIAccountScheduleResultForCapability(accountID, success, firstTokenMs, "")
+}
+
+func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResultForRequest(account *Account, requestedModel string, success bool, firstTokenMs *int) {
+	if s == nil || account == nil {
+		return
+	}
+	if success {
+		s.openaiPoolSoftCooldownUntil.Delete(account.ID)
+	}
+	scheduler := s.getOpenAIAccountScheduler(context.Background())
+	if scheduler == nil {
+		return
+	}
+	transport := s.getOpenAIWSProtocolResolver().Resolve(account).Transport
+	scheduler.ReportResultForRoute(account.ID, success, firstTokenMs, requestedModel, transport)
+}
+
+func (s *OpenAIGatewayService) ReportOpenAIImageAccountScheduleResult(accountID int64, success bool, firstTokenMs *int, requiredCapability OpenAIImagesCapability) {
+	if requiredCapability == "" {
+		requiredCapability = OpenAIImagesCapabilityBasic
+	}
+	s.reportOpenAIAccountScheduleResultForCapability(accountID, success, firstTokenMs, requiredCapability)
+}
+
+func (s *OpenAIGatewayService) reportOpenAIAccountScheduleResultForCapability(accountID int64, success bool, firstTokenMs *int, requiredImageCapability OpenAIImagesCapability) {
+	if s == nil {
+		return
+	}
+	if success {
 		s.openaiPoolSoftCooldownUntil.Delete(accountID)
 	}
 	scheduler := s.getOpenAIAccountScheduler(context.Background())
 	if scheduler == nil {
 		return
 	}
-	scheduler.ReportResult(accountID, success, firstTokenMs)
+	scheduler.ReportResultForRequest(accountID, success, firstTokenMs, requiredImageCapability)
 }
 
 func (s *OpenAIGatewayService) RecordOpenAIAccountSwitch() {

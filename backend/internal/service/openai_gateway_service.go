@@ -22,6 +22,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -3708,6 +3709,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	}
 	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
 
+	ctx = WithOpsLatencyRecorder(ctx, func(key string, elapsed time.Duration) {
+		SetOpsLatencyMsOnce(c, key, elapsed.Milliseconds())
+	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -4103,6 +4107,12 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
+	if s.lowLatencyStreamHeadersEnabled() {
+		if _, err := w.Write([]byte(":\n\n")); err == nil {
+			flusher.Flush()
+			SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
+		}
+	}
 
 	usage := &OpenAIUsage{}
 	imageCounter := newOpenAIImageOutputCounter()
@@ -4206,6 +4216,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			} else {
 				clientOutputStarted = true
 				flusher.Flush()
+				SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
 			}
 		}
 	}
@@ -4453,6 +4464,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	}
 	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
 
+	ctx = WithOpsLatencyRecorder(ctx, func(key string, elapsed time.Duration) {
+		SetOpsLatencyMsOnce(c, key, elapsed.Milliseconds())
+	})
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -4875,12 +4889,19 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
+	if s.lowLatencyStreamHeadersEnabled() {
+		if _, err := w.Write([]byte(":\n\n")); err == nil {
+			flusher.Flush()
+			SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
+		}
+	}
 	bufferedWriter := bufio.NewWriterSize(w, 4*1024)
 	flushBuffered := func() error {
 		if err := bufferedWriter.Flush(); err != nil {
 			return err
 		}
 		flusher.Flush()
+		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
 		return nil
 	}
 
@@ -5235,6 +5256,21 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 // extractOpenAISSEDataLine 低开销提取 SSE `data:` 行内容。
 // 兼容 `data: xxx` 与 `data:xxx` 两种格式。
+func (s *OpenAIGatewayService) lowLatencyStreamHeadersEnabled() bool {
+	return s != nil && s.cfg != nil && s.cfg.LowLatencyStreamHeadersEnabled()
+}
+
+func (s *OpenAIGatewayService) streamingBootstrapRetries() int {
+	if s == nil || s.cfg == nil || s.cfg.Gateway.StreamingBootstrapRetries <= 0 {
+		return 0
+	}
+	return s.cfg.Gateway.StreamingBootstrapRetries
+}
+
+func (s *OpenAIGatewayService) StreamingBootstrapRetries() int {
+	return s.streamingBootstrapRetries()
+}
+
 func extractOpenAISSEDataLine(line string) (string, bool) {
 	if !strings.HasPrefix(line, "data:") {
 		return "", false
@@ -6141,6 +6177,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	usageLog.OpenAIWSMode = result.OpenAIWSMode
 	usageLog.DurationMs = &durationMs
 	usageLog.FirstTokenMs = result.FirstTokenMs
+	usageLog.SlotWaitMs = usageLogLatencyIntFromContext(ctx, ctxkey.SlotWaitMs)
+	usageLog.UpstreamHeaderMs = usageLogLatencyIntFromContext(ctx, ctxkey.UpstreamHeaderMs)
+	usageLog.UpstreamFirstByteMs = usageLogLatencyIntFromContext(ctx, ctxkey.UpstreamFirstByteMs)
+	usageLog.FirstClientFlushMs = usageLogLatencyIntFromContext(ctx, ctxkey.FirstClientFlushMs)
 	usageLog.CreatedAt = time.Now()
 	// 设置渠道信息
 	usageLog.ChannelID = optionalInt64Ptr(input.ChannelID)
@@ -6256,6 +6296,18 @@ func isUsagePricingUnavailableError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "no pricing available") || strings.Contains(msg, "pricing not found")
+}
+
+func usageLogLatencyIntFromContext(ctx context.Context, key ctxkey.Key) *int {
+	if ctx == nil {
+		return nil
+	}
+	value, ok := ctx.Value(key).(int64)
+	if !ok || value < 0 || value > int64(^uint(0)>>1) {
+		return nil
+	}
+	out := int(value)
+	return &out
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(

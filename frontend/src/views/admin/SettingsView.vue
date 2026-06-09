@@ -3889,6 +3889,29 @@
                 <Toggle v-model="form.rewrite_message_cache_control" />
               </div>
 
+              <!-- Low latency stream headers -->
+              <div class="flex items-center justify-between">
+                <div>
+                  <label
+                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    {{
+                      t(
+                        "admin.settings.gatewayForwarding.lowLatencyStreamHeaders",
+                      )
+                    }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{
+                      t(
+                        "admin.settings.gatewayForwarding.lowLatencyStreamHeadersHint",
+                      )
+                    }}
+                  </p>
+                </div>
+                <Toggle v-model="form.low_latency_stream_headers" />
+              </div>
+
               <!-- Antigravity UA 版本 -->
               <div>
                 <label
@@ -7144,6 +7167,7 @@ const form = reactive<SettingsForm>({
   enable_cch_signing: false,
   enable_anthropic_cache_ttl_1h_injection: false,
   rewrite_message_cache_control: false,
+  low_latency_stream_headers: false,
   antigravity_user_agent_version: "",
   openai_codex_user_agent: "",
   openai_allow_claude_code_codex_plugin: false,
@@ -8248,6 +8272,7 @@ async function saveSettings() {
       enable_anthropic_cache_ttl_1h_injection:
         form.enable_anthropic_cache_ttl_1h_injection,
       rewrite_message_cache_control: form.rewrite_message_cache_control,
+      low_latency_stream_headers: form.low_latency_stream_headers,
       antigravity_user_agent_version:
         form.antigravity_user_agent_version?.trim() || "",
       openai_codex_user_agent:

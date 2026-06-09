@@ -258,6 +258,7 @@ func TestOpenAIPoolSoftCooldownState_ExposesReasonUntilCleared(t *testing.T) {
 	require.False(t, state.Due)
 	require.Equal(t, http.StatusForbidden, state.StatusCode)
 	require.Contains(t, state.Reason, "invalid api key")
+	require.LessOrEqual(t, time.Until(state.Until), openAIPoolSoftCooldownMax+time.Second)
 
 	svc.openaiPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(-time.Second))
 	state = svc.OpenAIPoolSoftCooldownState(account.ID)
@@ -267,6 +268,26 @@ func TestOpenAIPoolSoftCooldownState_ExposesReasonUntilCleared(t *testing.T) {
 	svc.ClearAccountSchedulingBlock(account.ID)
 	state = svc.OpenAIPoolSoftCooldownState(account.ID)
 	require.False(t, state.Cooling)
+}
+
+func TestOpenAIPoolSoftCooldown_CapsLongCooldownsAtOneMinute(t *testing.T) {
+	svc := &OpenAIGatewayService{rateLimitService: &RateLimitService{}}
+	account := &Account{
+		ID:          115,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := []byte(`{"error":{"type":"rate_limit_exceeded","message":"rate limited","resets_in_seconds":600}}`)
+
+	svc.MarkOpenAIPoolAccountSoftCooldownWithContext(context.Background(), account, http.StatusTooManyRequests, body, openAIPoolSoftCooldownContext{})
+
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.False(t, state.Due)
+	require.Equal(t, http.StatusTooManyRequests, state.StatusCode)
+	require.LessOrEqual(t, time.Until(state.Until), openAIPoolSoftCooldownMax+time.Second)
+	require.Greater(t, time.Until(state.Until), openAIPoolSoftCooldownMax-5*time.Second)
 }
 
 func TestRecoverAccountState_ClearsRuntimeOnlyPoolSoftCooldown(t *testing.T) {

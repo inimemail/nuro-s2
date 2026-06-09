@@ -1356,6 +1356,26 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.image_stream_keepalive_interval must be non-negative",
 		},
 		{
+			name:    "gateway streaming bootstrap retries negative",
+			mutate:  func(c *Config) { c.Gateway.StreamingBootstrapRetries = -1 },
+			wantErr: "gateway.streaming_bootstrap_retries",
+		},
+		{
+			name:    "gateway streaming bootstrap retries too high",
+			mutate:  func(c *Config) { c.Gateway.StreamingBootstrapRetries = 6 },
+			wantErr: "gateway.streaming_bootstrap_retries",
+		},
+		{
+			name:    "gateway nonstream keepalive range",
+			mutate:  func(c *Config) { c.Gateway.NonStreamKeepaliveInterval = 4 },
+			wantErr: "gateway.nonstream_keepalive_interval",
+		},
+		{
+			name:    "gateway nonstream keepalive negative",
+			mutate:  func(c *Config) { c.Gateway.NonStreamKeepaliveInterval = -1 },
+			wantErr: "gateway.nonstream_keepalive_interval must be non-negative",
+		},
+		{
 			name:    "gateway image stream data interval range",
 			mutate:  func(c *Config) { c.Gateway.ImageStreamDataIntervalTimeout = 30 },
 			wantErr: "gateway.image_stream_data_interval_timeout",
@@ -1880,6 +1900,15 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	}
 	if cfg.Gateway.ImageStreamKeepaliveInterval != 10 {
 		t.Fatalf("image_stream_keepalive_interval = %d, want 10", cfg.Gateway.ImageStreamKeepaliveInterval)
+	}
+	if cfg.Gateway.StreamingBootstrapRetries != 0 {
+		t.Fatalf("streaming_bootstrap_retries = %d, want 0", cfg.Gateway.StreamingBootstrapRetries)
+	}
+	if cfg.Gateway.LowLatencyStreamHeaders {
+		t.Fatalf("low_latency_stream_headers = true, want false")
+	}
+	if cfg.Gateway.NonStreamKeepaliveInterval != 0 {
+		t.Fatalf("nonstream_keepalive_interval = %d, want 0", cfg.Gateway.NonStreamKeepaliveInterval)
 	}
 	if cfg.Gateway.ImageConcurrency.Enabled {
 		t.Fatalf("image_concurrency.enabled = true, want false")

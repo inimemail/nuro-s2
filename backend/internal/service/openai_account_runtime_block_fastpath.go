@@ -11,8 +11,9 @@ const (
 	openAIAccountStateUpdateTimeout       = 5 * time.Second
 	openAIOAuth429FallbackCooldown        = 5 * time.Second
 	openAIPoolSoftCooldownDefault         = 10 * time.Second
-	openAIPoolSoftCooldownAuth            = 10 * time.Minute
+	openAIPoolSoftCooldownAuth            = time.Minute
 	openAIPoolSoftCooldownServerError     = 30 * time.Second
+	openAIPoolSoftCooldownMax             = time.Minute
 	openAIStopSchedulingBridgeCooldown    = 2 * time.Minute
 	openAIOAuth429StormWindow             = 10 * time.Second
 	openAIOAuth429StormThreshold          = 20
@@ -188,6 +189,7 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 	if cooldown <= 0 {
 		return
 	}
+	cooldown = capOpenAIPoolSoftCooldown(cooldown)
 	if cooldownContext.StatusCode == 0 {
 		cooldownContext.StatusCode = statusCode
 	}
@@ -214,6 +216,13 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 		s.openaiPoolSoftCooldownContext.Store(account.ID, cooldownContext)
 	}
 	s.storeOpenAIPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown))
+}
+
+func capOpenAIPoolSoftCooldown(cooldown time.Duration) time.Duration {
+	if cooldown > openAIPoolSoftCooldownMax {
+		return openAIPoolSoftCooldownMax
+	}
+	return cooldown
 }
 
 func (s *OpenAIGatewayService) storeOpenAIPoolSoftCooldownUntil(accountID int64, until time.Time) {

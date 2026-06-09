@@ -85,6 +85,14 @@ type UsageLog struct {
 	DurationMs *int `json:"duration_ms,omitempty"`
 	// FirstTokenMs holds the value of the "first_token_ms" field.
 	FirstTokenMs *int `json:"first_token_ms,omitempty"`
+	// SlotWaitMs holds the value of the "slot_wait_ms" field.
+	SlotWaitMs *int `json:"slot_wait_ms,omitempty"`
+	// UpstreamHeaderMs holds the value of the "upstream_header_ms" field.
+	UpstreamHeaderMs *int `json:"upstream_header_ms,omitempty"`
+	// UpstreamFirstByteMs holds the value of the "upstream_first_byte_ms" field.
+	UpstreamFirstByteMs *int `json:"upstream_first_byte_ms,omitempty"`
+	// FirstClientFlushMs holds the value of the "first_client_flush_ms" field.
+	FirstClientFlushMs *int `json:"first_client_flush_ms,omitempty"`
 	// UserAgent holds the value of the "user_agent" field.
 	UserAgent *string `json:"user_agent,omitempty"`
 	// IPAddress holds the value of the "ip_address" field.
@@ -194,7 +202,7 @@ func (*UsageLog) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullBool)
 		case usagelog.FieldInputCost, usagelog.FieldOutputCost, usagelog.FieldCacheCreationCost, usagelog.FieldCacheReadCost, usagelog.FieldTotalCost, usagelog.FieldActualCost, usagelog.FieldRateMultiplier, usagelog.FieldAccountRateMultiplier:
 			values[i] = new(sql.NullFloat64)
-		case usagelog.FieldID, usagelog.FieldUserID, usagelog.FieldAPIKeyID, usagelog.FieldAccountID, usagelog.FieldChannelID, usagelog.FieldGroupID, usagelog.FieldSubscriptionID, usagelog.FieldInputTokens, usagelog.FieldOutputTokens, usagelog.FieldCacheCreationTokens, usagelog.FieldCacheReadTokens, usagelog.FieldCacheCreation5mTokens, usagelog.FieldCacheCreation1hTokens, usagelog.FieldBillingType, usagelog.FieldDurationMs, usagelog.FieldFirstTokenMs, usagelog.FieldImageCount:
+		case usagelog.FieldID, usagelog.FieldUserID, usagelog.FieldAPIKeyID, usagelog.FieldAccountID, usagelog.FieldChannelID, usagelog.FieldGroupID, usagelog.FieldSubscriptionID, usagelog.FieldInputTokens, usagelog.FieldOutputTokens, usagelog.FieldCacheCreationTokens, usagelog.FieldCacheReadTokens, usagelog.FieldCacheCreation5mTokens, usagelog.FieldCacheCreation1hTokens, usagelog.FieldBillingType, usagelog.FieldDurationMs, usagelog.FieldFirstTokenMs, usagelog.FieldSlotWaitMs, usagelog.FieldUpstreamHeaderMs, usagelog.FieldUpstreamFirstByteMs, usagelog.FieldFirstClientFlushMs, usagelog.FieldImageCount:
 			values[i] = new(sql.NullInt64)
 		case usagelog.FieldRequestID, usagelog.FieldModel, usagelog.FieldRequestedModel, usagelog.FieldUpstreamModel, usagelog.FieldModelMappingChain, usagelog.FieldBillingTier, usagelog.FieldBillingMode, usagelog.FieldUserAgent, usagelog.FieldIPAddress, usagelog.FieldImageSize, usagelog.FieldImageInputSize, usagelog.FieldImageOutputSize, usagelog.FieldImageSizeSource:
 			values[i] = new(sql.NullString)
@@ -417,6 +425,34 @@ func (_m *UsageLog) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.FirstTokenMs = new(int)
 				*_m.FirstTokenMs = int(value.Int64)
+			}
+		case usagelog.FieldSlotWaitMs:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field slot_wait_ms", values[i])
+			} else if value.Valid {
+				_m.SlotWaitMs = new(int)
+				*_m.SlotWaitMs = int(value.Int64)
+			}
+		case usagelog.FieldUpstreamHeaderMs:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field upstream_header_ms", values[i])
+			} else if value.Valid {
+				_m.UpstreamHeaderMs = new(int)
+				*_m.UpstreamHeaderMs = int(value.Int64)
+			}
+		case usagelog.FieldUpstreamFirstByteMs:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field upstream_first_byte_ms", values[i])
+			} else if value.Valid {
+				_m.UpstreamFirstByteMs = new(int)
+				*_m.UpstreamFirstByteMs = int(value.Int64)
+			}
+		case usagelog.FieldFirstClientFlushMs:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field first_client_flush_ms", values[i])
+			} else if value.Valid {
+				_m.FirstClientFlushMs = new(int)
+				*_m.FirstClientFlushMs = int(value.Int64)
 			}
 		case usagelog.FieldUserAgent:
 			if value, ok := values[i].(*sql.NullString); !ok {
@@ -659,6 +695,26 @@ func (_m *UsageLog) String() string {
 	builder.WriteString(", ")
 	if v := _m.FirstTokenMs; v != nil {
 		builder.WriteString("first_token_ms=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
+	builder.WriteString(", ")
+	if v := _m.SlotWaitMs; v != nil {
+		builder.WriteString("slot_wait_ms=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
+	builder.WriteString(", ")
+	if v := _m.UpstreamHeaderMs; v != nil {
+		builder.WriteString("upstream_header_ms=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
+	builder.WriteString(", ")
+	if v := _m.UpstreamFirstByteMs; v != nil {
+		builder.WriteString("upstream_first_byte_ms=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
+	builder.WriteString(", ")
+	if v := _m.FirstClientFlushMs; v != nil {
+		builder.WriteString("first_client_flush_ms=")
 		builder.WriteString(fmt.Sprintf("%v", *v))
 	}
 	builder.WriteString(", ")

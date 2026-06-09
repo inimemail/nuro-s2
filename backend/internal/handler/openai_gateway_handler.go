@@ -67,7 +67,33 @@ func usageRecordContext(parent context.Context, base context.Context) context.Co
 	if requestID, _ := parent.Value(ctxkey.RequestID).(string); strings.TrimSpace(requestID) != "" {
 		base = context.WithValue(base, ctxkey.RequestID, strings.TrimSpace(requestID))
 	}
+	for _, item := range []struct {
+		serviceKey string
+		contextKey ctxkey.Key
+	}{
+		{service.OpsSlotWaitMsKey, ctxkey.SlotWaitMs},
+		{service.OpsUpstreamHeaderMsKey, ctxkey.UpstreamHeaderMs},
+		{service.OpsUpstreamFirstByteMsKey, ctxkey.UpstreamFirstByteMs},
+		{service.OpsFirstClientFlushMsKey, ctxkey.FirstClientFlushMs},
+	} {
+		if value, ok := parent.Value(item.serviceKey).(int64); ok && value >= 0 {
+			base = context.WithValue(base, item.contextKey, value)
+		}
+	}
 	return base
+}
+
+func (h *OpenAIGatewayHandler) nonImageStreamBootstrapSwitchLimit(reqStream bool) int {
+	if h == nil {
+		return 0
+	}
+	if !reqStream || h.gatewayService == nil {
+		return h.maxAccountSwitches
+	}
+	if retries := h.gatewayService.StreamingBootstrapRetries(); retries > 0 {
+		return retries
+	}
+	return h.maxAccountSwitches
 }
 
 func wrapUsageRecordTaskContext(parent context.Context, task service.UsageRecordTask) service.UsageRecordTask {
@@ -300,7 +326,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
 	requireCompact := isOpenAIRemoteCompactPath(c)
 
-	maxAccountSwitches := h.maxAccountSwitches
+	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
@@ -409,7 +435,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
 					}
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+					h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
 						retryLimit := account.GetPoolModeRetryCount()
@@ -450,7 +476,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					)
 					continue
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
@@ -474,9 +500,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			if account.Type == service.AccountTypeOAuth {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, result.FirstTokenMs)
 		} else {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, nil)
 		}
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
@@ -712,7 +738,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 	sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(sessionHash, promptCacheKey, reqModel, body)
 
-	maxAccountSwitches := h.maxAccountSwitches
+	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
@@ -815,7 +841,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						h.handleAnthropicFailoverExhausted(c, failoverErr, true)
 						return
 					}
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+					h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
 						retryLimit := account.GetPoolModeRetryCount()
@@ -863,7 +889,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					)
 					return
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 				wroteFallback := h.ensureAnthropicErrorResponse(c, streamStarted)
 				reqLog.Warn("openai_messages.forward_failed",
 					zap.Int64("account_id", account.ID),
@@ -874,9 +900,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			}
 		}
 		if result != nil {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, result.FirstTokenMs)
 		} else {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, nil)
 		}
 
 		userAgent := c.GetHeader("User-Agent")
@@ -1056,7 +1082,9 @@ func (h *OpenAIGatewayHandler) acquireResponsesUserSlot(
 		}
 	}()
 
+	slotWaitStart := time.Now()
 	userReleaseFunc, err = h.concurrencyHelper.AcquireUserSlotWithWait(c, userID, userConcurrency, reqStream, streamStarted)
+	service.SetOpsLatencyMsOnce(c, service.OpsSlotWaitMsKey, time.Since(slotWaitStart).Milliseconds())
 	if err != nil {
 		reqLog.Warn("openai.user_slot_acquire_failed_after_wait", zap.Error(err))
 		h.handleConcurrencyError(c, err, "user", *streamStarted)
@@ -1135,6 +1163,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	}
 	defer releaseWait()
 
+	slotWaitStart := time.Now()
 	accountReleaseFunc, err := h.concurrencyHelper.AcquireAccountSlotWithWaitTimeout(
 		c,
 		account.ID,
@@ -1143,6 +1172,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 		reqStream,
 		streamStarted,
 	)
+	service.SetOpsLatencyMsOnce(c, service.OpsSlotWaitMsKey, time.Since(slotWaitStart).Milliseconds())
 	if err != nil {
 		reqLog.Warn("openai.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		h.handleConcurrencyError(c, err, "account", *streamStarted)

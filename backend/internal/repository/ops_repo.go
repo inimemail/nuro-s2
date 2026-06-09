@@ -52,7 +52,11 @@ INSERT INTO ops_error_logs (
   upstream_errors,
   auth_latency_ms,
   routing_latency_ms,
+  slot_wait_ms,
   upstream_latency_ms,
+  upstream_header_ms,
+  upstream_first_byte_ms,
+  first_client_flush_ms,
   response_latency_ms,
   time_to_first_token_ms,
   created_at,
@@ -61,7 +65,7 @@ INSERT INTO ops_error_logs (
   deleted_key_name,
   api_key_prefix
 ) VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45
 )`
 
 func NewOpsRepository(db *sql.DB) service.OpsRepository {
@@ -166,7 +170,11 @@ func opsInsertErrorLogArgs(input *service.OpsInsertErrorLogInput) []any {
 		opsNullString(input.UpstreamErrorsJSON),
 		opsNullInt64(input.AuthLatencyMs),
 		opsNullInt64(input.RoutingLatencyMs),
+		opsNullInt64(input.SlotWaitMs),
 		opsNullInt64(input.UpstreamLatencyMs),
+		opsNullInt64(input.UpstreamHeaderMs),
+		opsNullInt64(input.UpstreamFirstByteMs),
+		opsNullInt64(input.FirstClientFlushMs),
 		opsNullInt64(input.ResponseLatencyMs),
 		opsNullInt64(input.TimeToFirstTokenMs),
 		input.CreatedAt,
@@ -425,7 +433,11 @@ SELECT
   COALESCE(e.user_agent, ''),
   e.auth_latency_ms,
   e.routing_latency_ms,
+  e.slot_wait_ms,
   e.upstream_latency_ms,
+  e.upstream_header_ms,
+  e.upstream_first_byte_ms,
+  e.first_client_flush_ms,
   e.response_latency_ms,
   e.time_to_first_token_ms,
   COALESCE(e.attempted_key_prefix, ''),
@@ -456,7 +468,11 @@ LIMIT 1`
 	var groupID sql.NullInt64
 	var authLatency sql.NullInt64
 	var routingLatency sql.NullInt64
+	var slotWait sql.NullInt64
 	var upstreamLatency sql.NullInt64
+	var upstreamHeader sql.NullInt64
+	var upstreamFirstByte sql.NullInt64
+	var firstClientFlush sql.NullInt64
 	var responseLatency sql.NullInt64
 	var ttft sql.NullInt64
 	var requestType sql.NullInt64
@@ -505,7 +521,11 @@ LIMIT 1`
 		&out.UserAgent,
 		&authLatency,
 		&routingLatency,
+		&slotWait,
 		&upstreamLatency,
+		&upstreamHeader,
+		&upstreamFirstByte,
+		&firstClientFlush,
 		&responseLatency,
 		&ttft,
 		&out.AttemptedKeyPrefix,
@@ -561,9 +581,25 @@ LIMIT 1`
 		v := routingLatency.Int64
 		out.RoutingLatencyMs = &v
 	}
+	if slotWait.Valid {
+		v := slotWait.Int64
+		out.SlotWaitMs = &v
+	}
 	if upstreamLatency.Valid {
 		v := upstreamLatency.Int64
 		out.UpstreamLatencyMs = &v
+	}
+	if upstreamHeader.Valid {
+		v := upstreamHeader.Int64
+		out.UpstreamHeaderMs = &v
+	}
+	if upstreamFirstByte.Valid {
+		v := upstreamFirstByte.Int64
+		out.UpstreamFirstByteMs = &v
+	}
+	if firstClientFlush.Valid {
+		v := firstClientFlush.Int64
+		out.FirstClientFlushMs = &v
 	}
 	if responseLatency.Valid {
 		v := responseLatency.Int64

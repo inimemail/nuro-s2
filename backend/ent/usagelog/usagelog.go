@@ -76,6 +76,14 @@ const (
 	FieldDurationMs = "duration_ms"
 	// FieldFirstTokenMs holds the string denoting the first_token_ms field in the database.
 	FieldFirstTokenMs = "first_token_ms"
+	// FieldSlotWaitMs holds the string denoting the slot_wait_ms field in the database.
+	FieldSlotWaitMs = "slot_wait_ms"
+	// FieldUpstreamHeaderMs holds the string denoting the upstream_header_ms field in the database.
+	FieldUpstreamHeaderMs = "upstream_header_ms"
+	// FieldUpstreamFirstByteMs holds the string denoting the upstream_first_byte_ms field in the database.
+	FieldUpstreamFirstByteMs = "upstream_first_byte_ms"
+	// FieldFirstClientFlushMs holds the string denoting the first_client_flush_ms field in the database.
+	FieldFirstClientFlushMs = "first_client_flush_ms"
 	// FieldUserAgent holds the string denoting the user_agent field in the database.
 	FieldUserAgent = "user_agent"
 	// FieldIPAddress holds the string denoting the ip_address field in the database.
@@ -179,6 +187,10 @@ var Columns = []string{
 	FieldStream,
 	FieldDurationMs,
 	FieldFirstTokenMs,
+	FieldSlotWaitMs,
+	FieldUpstreamHeaderMs,
+	FieldUpstreamFirstByteMs,
+	FieldFirstClientFlushMs,
 	FieldUserAgent,
 	FieldIPAddress,
 	FieldImageCount,
@@ -427,6 +439,26 @@ func ByDurationMs(opts ...sql.OrderTermOption) OrderOption {
 // ByFirstTokenMs orders the results by the first_token_ms field.
 func ByFirstTokenMs(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldFirstTokenMs, opts...).ToFunc()
+}
+
+// BySlotWaitMs orders the results by the slot_wait_ms field.
+func BySlotWaitMs(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldSlotWaitMs, opts...).ToFunc()
+}
+
+// ByUpstreamHeaderMs orders the results by the upstream_header_ms field.
+func ByUpstreamHeaderMs(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUpstreamHeaderMs, opts...).ToFunc()
+}
+
+// ByUpstreamFirstByteMs orders the results by the upstream_first_byte_ms field.
+func ByUpstreamFirstByteMs(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUpstreamFirstByteMs, opts...).ToFunc()
+}
+
+// ByFirstClientFlushMs orders the results by the first_client_flush_ms field.
+func ByFirstClientFlushMs(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldFirstClientFlushMs, opts...).ToFunc()
 }
 
 // ByUserAgent orders the results by the user_agent field.

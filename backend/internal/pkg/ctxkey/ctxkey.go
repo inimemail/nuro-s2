@@ -59,4 +59,16 @@ const (
 
 	// ClaudeCodeVersion stores the extracted Claude Code version from User-Agent (e.g. "2.1.22")
 	ClaudeCodeVersion Key = "ctx_claude_code_version"
+
+	// SlotWaitMs stores request slot wait latency for usage-log troubleshooting.
+	SlotWaitMs Key = "ctx_slot_wait_ms"
+
+	// UpstreamHeaderMs stores upstream response-header latency for usage-log troubleshooting.
+	UpstreamHeaderMs Key = "ctx_upstream_header_ms"
+
+	// UpstreamFirstByteMs stores upstream first body byte latency for usage-log troubleshooting.
+	UpstreamFirstByteMs Key = "ctx_upstream_first_byte_ms"
+
+	// FirstClientFlushMs stores first downstream client flush latency for usage-log troubleshooting.
+	FirstClientFlushMs Key = "ctx_first_client_flush_ms"
 )
