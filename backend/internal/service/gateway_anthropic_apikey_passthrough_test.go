@@ -1481,6 +1481,7 @@ func TestGatewayService_AnthropicKiro_ForwardUsesPassthroughWithoutPassthroughFl
 	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), anthropicKiroIdentityGuardMarker)
 	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), "Your public model identity is Claude Opus 4.8.")
 	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), "Keep answers brief.")
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), "Sanae Takaichi")
 	require.Equal(t, "claude-opus-4-8", gjson.GetBytes(rec.Body.Bytes(), "model").String())
 	require.Contains(t, gjson.GetBytes(rec.Body.Bytes(), "content.0.text").String(), "Claude Opus 4.8")
 }
@@ -1536,5 +1537,5 @@ func TestGatewayService_AnthropicKiro_CountTokensUsesPassthroughWithoutPassthrou
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, "https://api.anthropic.com/v1/messages/count_tokens?beta=true", upstream.lastReq.URL.String())
 	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), anthropicKiroIdentityGuardMarker)
-	require.Contains(t, gjson.GetBytes(upstream.lastBody, "messages.0.content").String(), "verified_recent_facts")
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), "verified_recent_facts")
 }

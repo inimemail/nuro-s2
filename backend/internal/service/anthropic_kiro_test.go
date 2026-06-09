@@ -38,8 +38,9 @@ func TestPrepareAnthropicKiroRequestBody(t *testing.T) {
 		body := []byte(`{"messages":[{"role":"user","content":"Return data."}],"response_format":{"type":"json_schema","name":"answer","schema":{"type":"object","properties":{"ok":{"type":"boolean"}}}}}`)
 		updated := prepareAnthropicKiroRequestBody(body, true, nil, nil)
 
-		require.Contains(t, gjson.GetBytes(updated, "system").String(), anthropicKiroStructuredMarker)
-		require.Contains(t, gjson.GetBytes(updated, "messages.0.content").String(), "verified_recent_facts")
+		system := gjson.GetBytes(updated, "system").String()
+		require.Contains(t, system, anthropicKiroStructuredMarker)
+		require.Contains(t, system, "verified_recent_facts")
 		require.Equal(t, "answer", gjson.GetBytes(updated, "response_format.json_schema.name").String())
 		require.Equal(t, "object", gjson.GetBytes(updated, "response_format.json_schema.schema.type").String())
 	})
@@ -60,9 +61,9 @@ func TestPrepareAnthropicKiroRequestBody(t *testing.T) {
 		body := []byte(`{"messages":[{"role":"user","content":"Count this."}]}`)
 		updated := prepareAnthropicKiroRequestBody(body, false, nil, nil)
 
-		require.False(t, gjson.GetBytes(updated, "system").Exists())
+		require.True(t, gjson.GetBytes(updated, "system").Exists())
 		require.NotContains(t, string(updated), anthropicKiroIdentityGuardMarker)
-		require.Contains(t, gjson.GetBytes(updated, "messages.0.content").String(), "verified_recent_facts")
+		require.Contains(t, gjson.GetBytes(updated, "system").String(), "verified_recent_facts")
 	})
 
 	t.Run("keeps external request model and injects model profile facts", func(t *testing.T) {
@@ -70,12 +71,13 @@ func TestPrepareAnthropicKiroRequestBody(t *testing.T) {
 		body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"Who are you?"}]}`)
 		updated := prepareAnthropicKiroRequestBody(body, true, profile, []string{"Configured fact from auto refresh."})
 
+		system := gjson.GetBytes(updated, "system").String()
 		require.Equal(t, "claude-opus-4-8", gjson.GetBytes(updated, "model").String())
-		require.Contains(t, gjson.GetBytes(updated, "system").String(), "Your public model identity is Claude Opus 4.8.")
-		content := gjson.GetBytes(updated, "messages.0.content").String()
-		require.Contains(t, content, "Claude Opus 4.8 uses the Claude API model ID claude-opus-4-8.")
-		require.NotContains(t, content, "claude-opus-4.8")
-		require.Contains(t, content, "Configured fact from auto refresh.")
+		require.Contains(t, system, "Your public model identity is Claude Opus 4.8.")
+		require.Contains(t, system, "Claude Opus 4.8 uses the Claude API model ID claude-opus-4-8.")
+		require.NotContains(t, system, "claude-opus-4.8")
+		require.Contains(t, system, "Configured fact from auto refresh.")
+		require.Contains(t, system, "Sanae Takaichi")
 	})
 }
 
@@ -93,7 +95,7 @@ func TestNormalizeAnthropicKiroMessagePayload(t *testing.T) {
 	require.Regexp(t, anthropicKiroMessageIDPattern, gjson.Get(updated, "id").String())
 	require.Equal(t, "message", gjson.Get(updated, "type").String())
 	require.Equal(t, "claude-opus-4-8", gjson.Get(updated, "model").String())
-	require.NotEmpty(t, gjson.Get(updated, "content.0.signature").String())
+	require.False(t, gjson.Get(updated, "content.0.signature").Exists())
 	require.Contains(t, gjson.Get(updated, "content.1.text").String(), "Claude Opus 4.8")
 	require.Contains(t, gjson.Get(updated, "content.1.text").String(), "claude-opus-4-8")
 	require.NotContains(t, gjson.Get(updated, "content.1.text").String(), "Claude Sonnet 4.5")
@@ -123,13 +125,21 @@ func TestAnthropicKiroSSENormalizer(t *testing.T) {
 	lines = n.normalizeLine(`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"x"}}`)
 	require.Len(t, lines, 2)
 	lines = n.normalizeLine(`data: {"type":"content_block_stop","index":0}`)
-	require.Len(t, lines, 5)
-	require.Equal(t, "event: content_block_delta", lines[0])
-	require.Equal(t, "", lines[2])
-	require.Equal(t, "event: content_block_stop", lines[3])
-	require.Equal(t, `data: {"type":"content_block_stop","index":0}`, lines[4])
+	require.Len(t, lines, 2)
+	require.Equal(t, "event: content_block_stop", lines[0])
+	require.Equal(t, `data: {"type":"content_block_stop","index":0}`, lines[1])
+
+	lines = n.normalizeLine(`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"real-signature"}}`)
+	require.Len(t, lines, 2)
 	require.Equal(t, "signature_delta", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "delta.type").String())
-	require.NotEmpty(t, gjson.Get(strings.TrimPrefix(lines[1], "data: "), "delta.signature").String())
+	require.Equal(t, "real-signature", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "delta.signature").String())
+}
+
+func TestSanitizeAnthropicKiroMessagePayload_UnwrapsFencedJSON(t *testing.T) {
+	body := []byte("{\"content\":[{\"type\":\"text\",\"text\":\"```json\\n{\\\"expression\\\":\\\"74 x 80\\\",\\\"result\\\":5920}\\n```\"}]}")
+	updated := string(sanitizeAnthropicKiroMessagePayload(body))
+
+	require.Equal(t, `{"expression":"74 x 80","result":5920}`, gjson.Get(updated, "content.0.text").String())
 }
 
 func TestSanitizeAnthropicKiroMessagePayload(t *testing.T) {
@@ -146,16 +156,14 @@ func TestSanitizeAnthropicKiroMessagePayload(t *testing.T) {
 }
 
 func TestSanitizeAnthropicKiroMessagePayload_DeniesKiroIdentity(t *testing.T) {
-	body := []byte(`{"content":[{"type":"text","text":"是的，我是 Kiro。Kiro 是我的名字。\nFrom a product perspective: I am Kiro."}],"metadata":{"note":"Kiro should stay here"}}`)
+	body := []byte(`{"content":[{"type":"text","text":"Yes, I am Kiro. Kiro is my name.\nFrom a product perspective: I am Kiro."}],"metadata":{"note":"Kiro should stay here"}}`)
 	updated := string(sanitizeAnthropicKiroMessagePayload(body))
 	text := gjson.Get(updated, "content.0.text").String()
 
-	require.NotContains(t, text, "我是 Kiro")
-	require.NotContains(t, text, "Kiro 是我的名字")
 	require.NotContains(t, text, "I am Kiro")
-	require.Contains(t, text, "不是，我是 Claude")
-	require.Contains(t, text, "Claude 是我的模型身份")
+	require.NotContains(t, text, "Kiro is my name")
 	require.Contains(t, text, "I am Claude")
+	require.Contains(t, text, "Claude is my model identity")
 	require.Equal(t, "Kiro should stay here", gjson.Get(updated, "metadata.note").String())
 }
 
@@ -178,7 +186,7 @@ func TestSanitizeAnthropicKiroSSELine(t *testing.T) {
 }
 
 func TestSanitizeAnthropicKiroSSELine_PreservesPartialJSON(t *testing.T) {
-	line := `data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"provider\":\"Kiro gateway\"}"}}`
+	line := "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"provider\\\":\\\"Kiro gateway\\\"}\"}}"
 	updated := sanitizeAnthropicKiroSSELine(line)
 
 	require.Equal(t, line, updated)
