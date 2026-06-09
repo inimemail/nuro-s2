@@ -193,6 +193,55 @@ func TestOpenAIPoolFailoverSwitch_DownstreamRoutingErrorSkipsSoftCooldown(t *tes
 	require.False(t, svc.isOpenAIPoolAccountSoftCooling(account))
 }
 
+func TestOpenAIPoolFailoverSwitch_ImagePoolDefaultsToImageProbe(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       113,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":       true,
+			"image_pool_mode": true,
+		},
+	}
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:   529,
+		ResponseBody: []byte(`{"error":{"message":"overloaded"}}`),
+		Message:      "overloaded",
+	}
+
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
+
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.Equal(t, "images", state.ProbeKind)
+}
+
+func TestOpenAIPoolFailoverSwitch_PreservesExplicitImageProbeFields(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          114,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:      529,
+		ResponseBody:    []byte(`{"error":{"message":"overloaded"}}`),
+		Message:         "overloaded",
+		ProbeCapability: OpenAIImagesCapabilityNative,
+		ProbeModel:      "image-alias",
+		ProbeKind:       "images",
+	}
+
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
+
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.Equal(t, "images", state.ProbeKind)
+	require.Equal(t, "image-alias", state.ProbeModel)
+}
+
 func TestOpenAIPoolSoftCooldownState_ExposesReasonUntilCleared(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{

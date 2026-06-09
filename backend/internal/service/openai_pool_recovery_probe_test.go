@@ -72,6 +72,38 @@ func TestOpenAIPoolRecoveryProbe_ImageCapabilityUsesImagesEndpoint(t *testing.T)
 	require.NotContains(t, upstream.body, `"messages"`)
 }
 
+func TestOpenAIPoolRecoveryProbe_ImagePoolKindUsesImagesEndpoint(t *testing.T) {
+	upstream := &openAIPoolProbeHTTPUpstreamRecorder{}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:       203,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":       true,
+			"image_pool_mode": true,
+			"api_key":         "sk-test",
+			"base_url":        "https://upstream.example",
+		},
+	}
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{
+		ProbeKind:  "images",
+		ProbeModel: "image-alias",
+	})
+
+	result := svc.probeOpenAIPoolAccountRecovery(context.Background(), account, "gpt-5.4")
+
+	require.True(t, result.success)
+	require.Equal(t, "images", result.endpoint)
+	require.Equal(t, "/v1/images/generations", upstream.path)
+	require.Contains(t, upstream.body, `"model":"image-alias"`)
+	require.Contains(t, upstream.body, `"prompt":"small test image"`)
+	require.NotContains(t, upstream.body, `"messages"`)
+}
+
 func TestOpenAIPoolRecoveryProbe_StaleResultDoesNotRewriteManualClear(t *testing.T) {
 	upstream := &openAIPoolProbeHTTPUpstreamRecorder{statusCode: http.StatusInternalServerError}
 	svc := &OpenAIGatewayService{

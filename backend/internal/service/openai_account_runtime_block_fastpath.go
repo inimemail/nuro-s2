@@ -364,10 +364,18 @@ func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
 			}
 			probeKind := strings.TrimSpace(failoverErr.ProbeKind)
 			if probeKind == "" {
-				probeKind = openAIPoolProbeKindForModel(probeModel)
+				if account.IsImagePoolMode() {
+					probeKind = "images"
+				} else {
+					probeKind = openAIPoolProbeKindForModel(probeModel)
+				}
+			}
+			probeCapability := failoverErr.ProbeCapability
+			if probeCapability == "" {
+				probeCapability = decision.ProbeCapability
 			}
 			s.MarkOpenAIPoolAccountSoftCooldownWithContext(ctx, account, failoverErr.StatusCode, failoverErr.ResponseBody, openAIPoolSoftCooldownContext{
-				ProbeCapability: decision.ProbeCapability,
+				ProbeCapability: probeCapability,
 				ProbeModel:      probeModel,
 				ProbeKind:       probeKind,
 				CooldownSource:  "upstream_failure",

@@ -268,7 +268,12 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 							continue
 						}
 					}
-					h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, sessionHash, account, failoverErr)
+					if strings.TrimSpace(failoverErr.ProbeModel) == "" {
+						failoverErr.ProbeModel = strings.TrimSpace(parsed.Model)
+					}
+					failoverErr.ProbeKind = "images"
+					failoverErr.ProbeCapability = parsed.RequiredCapability
+					h.gatewayService.HandleOpenAIAccountFailoverSwitch(requestCtx, apiKey.GroupID, sessionHash, account, failoverErr, parsed.Model)
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
