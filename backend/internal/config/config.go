@@ -606,25 +606,75 @@ func (c *Config) SetTrustForwardedIPForAPIKeyACL(enabled bool) {
 }
 
 func (c *Config) LowLatencyStreamHeadersEnabled() bool {
+	return c.StreamLowLatencyMode() != StreamLowLatencyModeOff
+}
+
+func (c *Config) StreamLowLatencyMode() string {
 	if c == nil {
-		return false
+		return StreamLowLatencyModeOff
 	}
-	live := c.Gateway.lowLatencyStreamHeadersLive
+	live := c.Gateway.streamLowLatencyModeLive
 	if live == nil {
-		return c.Gateway.LowLatencyStreamHeaders
+		return NormalizeStreamLowLatencyMode(c.Gateway.StreamLowLatencyMode, c.Gateway.LowLatencyStreamHeaders)
 	}
-	return live.Load()
+	if value, ok := live.Load().(string); ok {
+		return NormalizeStreamLowLatencyMode(value, c.Gateway.LowLatencyStreamHeaders)
+	}
+	return NormalizeStreamLowLatencyMode(c.Gateway.StreamLowLatencyMode, c.Gateway.LowLatencyStreamHeaders)
 }
 
 func (c *Config) SetLowLatencyStreamHeaders(enabled bool) {
+	mode := StreamLowLatencyModeOff
+	if enabled {
+		mode = StreamLowLatencyModeSmart
+	}
+	c.SetStreamLowLatencyMode(mode)
+}
+
+func (c *Config) SetStreamLowLatencyMode(mode string) {
 	if c == nil {
 		return
 	}
-	c.Gateway.LowLatencyStreamHeaders = enabled
+	normalized := NormalizeStreamLowLatencyMode(mode, c.Gateway.LowLatencyStreamHeaders)
+	if normalized == "" {
+		c.Gateway.StreamLowLatencyMode = strings.TrimSpace(mode)
+		c.Gateway.LowLatencyStreamHeaders = false
+		return
+	}
+	c.Gateway.StreamLowLatencyMode = normalized
+	c.Gateway.LowLatencyStreamHeaders = normalized != StreamLowLatencyModeOff
+	if c.Gateway.streamLowLatencyModeLive == nil {
+		c.Gateway.streamLowLatencyModeLive = &atomic.Value{}
+	}
+	c.Gateway.streamLowLatencyModeLive.Store(normalized)
 	if c.Gateway.lowLatencyStreamHeadersLive == nil {
 		c.Gateway.lowLatencyStreamHeadersLive = &atomic.Bool{}
 	}
-	c.Gateway.lowLatencyStreamHeadersLive.Store(enabled)
+	c.Gateway.lowLatencyStreamHeadersLive.Store(c.Gateway.LowLatencyStreamHeaders)
+}
+
+const (
+	StreamLowLatencyModeOff        = "off"
+	StreamLowLatencyModeSmart      = "smart"
+	StreamLowLatencyModeAggressive = "aggressive"
+)
+
+func NormalizeStreamLowLatencyMode(mode string, legacyEnabled bool) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case StreamLowLatencyModeOff:
+		return StreamLowLatencyModeOff
+	case StreamLowLatencyModeSmart:
+		return StreamLowLatencyModeSmart
+	case StreamLowLatencyModeAggressive:
+		return StreamLowLatencyModeAggressive
+	case "":
+		if legacyEnabled {
+			return StreamLowLatencyModeSmart
+		}
+		return StreamLowLatencyModeOff
+	default:
+		return ""
+	}
 }
 
 type URLAllowlistConfig struct {
@@ -800,7 +850,10 @@ type GatewayConfig struct {
 	// StreamingBootstrapRetries: non-image stream retry override before any client payload is written.
 	// 0 keeps the existing max_account_switches behavior.
 	StreamingBootstrapRetries int `mapstructure:"streaming_bootstrap_retries"`
-	// LowLatencyStreamHeaders: flush SSE headers earlier for stream requests when enabled.
+	// StreamLowLatencyMode: off/smart/aggressive low-latency streaming strategy.
+	StreamLowLatencyMode     string        `mapstructure:"stream_low_latency_mode"`
+	streamLowLatencyModeLive *atomic.Value `mapstructure:"-"`
+	// LowLatencyStreamHeaders: legacy bool; true maps to smart mode.
 	LowLatencyStreamHeaders     bool         `mapstructure:"low_latency_stream_headers"`
 	lowLatencyStreamHeadersLive *atomic.Bool `mapstructure:"-"`
 	// NonStreamKeepaliveInterval: reserved non-stream keepalive interval in seconds; 0 disables it.
@@ -1479,7 +1532,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Security.ResponseHeaders.ForceRemove = normalizeStringSlice(cfg.Security.ResponseHeaders.ForceRemove)
 	cfg.Security.CSP.Policy = strings.TrimSpace(cfg.Security.CSP.Policy)
 	cfg.SetTrustForwardedIPForAPIKeyACL(cfg.Security.TrustForwardedIPForAPIKeyACL)
-	cfg.SetLowLatencyStreamHeaders(cfg.Gateway.LowLatencyStreamHeaders)
+	cfg.SetStreamLowLatencyMode(cfg.Gateway.StreamLowLatencyMode)
 	cfg.Log.Level = strings.ToLower(strings.TrimSpace(cfg.Log.Level))
 	cfg.Log.Format = strings.ToLower(strings.TrimSpace(cfg.Log.Format))
 	cfg.Log.ServiceName = strings.TrimSpace(cfg.Log.ServiceName)
@@ -1934,6 +1987,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.streaming_bootstrap_retries", 0)
+	viper.SetDefault("gateway.stream_low_latency_mode", "")
 	viper.SetDefault("gateway.low_latency_stream_headers", false)
 	viper.SetDefault("gateway.nonstream_keepalive_interval", 0)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
@@ -2580,6 +2634,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.StreamingBootstrapRetries < 0 || c.Gateway.StreamingBootstrapRetries > 5 {
 		return fmt.Errorf("gateway.streaming_bootstrap_retries must be between 0-5")
+	}
+	if mode := NormalizeStreamLowLatencyMode(c.Gateway.StreamLowLatencyMode, c.Gateway.LowLatencyStreamHeaders); mode == "" {
+		return fmt.Errorf("gateway.stream_low_latency_mode must be one of: off/smart/aggressive")
 	}
 	if c.Gateway.NonStreamKeepaliveInterval < 0 {
 		return fmt.Errorf("gateway.nonstream_keepalive_interval must be non-negative")

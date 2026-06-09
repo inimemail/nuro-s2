@@ -273,6 +273,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					}
 					failoverErr.ProbeKind = "images"
 					failoverErr.ProbeCapability = parsed.RequiredCapability
+					if failoverErr.StatusCode == http.StatusGatewayTimeout {
+						failoverErr.SkipPoolSoftCooldown = true
+					}
 					h.gatewayService.HandleOpenAIAccountFailoverSwitch(requestCtx, apiKey.GroupID, sessionHash, account, failoverErr, parsed.Model)
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}

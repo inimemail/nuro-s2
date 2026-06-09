@@ -1904,6 +1904,9 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	if cfg.Gateway.StreamingBootstrapRetries != 0 {
 		t.Fatalf("streaming_bootstrap_retries = %d, want 0", cfg.Gateway.StreamingBootstrapRetries)
 	}
+	if cfg.StreamLowLatencyMode() != StreamLowLatencyModeOff {
+		t.Fatalf("stream_low_latency_mode = %q, want %q", cfg.StreamLowLatencyMode(), StreamLowLatencyModeOff)
+	}
 	if cfg.Gateway.LowLatencyStreamHeaders {
 		t.Fatalf("low_latency_stream_headers = true, want false")
 	}
@@ -1928,4 +1931,26 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	if cfg.Gateway.ImageStreamDataIntervalTimeout <= cfg.Gateway.StreamDataIntervalTimeout {
 		t.Fatalf("image stream timeout = %d, want greater than ordinary stream timeout %d", cfg.Gateway.ImageStreamDataIntervalTimeout, cfg.Gateway.StreamDataIntervalTimeout)
 	}
+}
+
+func TestLoad_GatewayLowLatencyLegacyFlagMapsToSmartMode(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	viper.Set("gateway.low_latency_stream_headers", true)
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	require.Equal(t, StreamLowLatencyModeSmart, cfg.StreamLowLatencyMode())
+	require.True(t, cfg.LowLatencyStreamHeadersEnabled())
+}
+
+func TestValidateRejectsInvalidGatewayStreamLowLatencyMode(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	cfg.Gateway.StreamLowLatencyMode = "turbo"
+
+	err = cfg.Validate()
+
+	require.ErrorContains(t, err, "gateway.stream_low_latency_mode")
 }

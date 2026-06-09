@@ -150,6 +150,9 @@ func classifyOpenAIPoolFailover(account *Account, statusCode int, upstreamMsg st
 	if account == nil || !account.IsPoolMode() {
 		return openAIPoolFailoverDecision{}
 	}
+	if isOpenAIPoolUserRequestedModelError(statusCode, upstreamMsg, upstreamBody) {
+		return openAIPoolFailoverDecision{}
+	}
 	if isOpenAIPoolExplicitClientRequestError(statusCode, upstreamMsg, upstreamBody) {
 		return openAIPoolFailoverDecision{}
 	}
@@ -182,7 +185,8 @@ func openAIPoolFailoverRetryableOnSameAccount(account *Account, statusCode int, 
 	if account == nil || !account.IsPoolMode() {
 		return false
 	}
-	if isOpenAIPoolExplicitClientRequestError(statusCode, upstreamMsg, upstreamBody) ||
+	if isOpenAIPoolUserRequestedModelError(statusCode, upstreamMsg, upstreamBody) ||
+		isOpenAIPoolExplicitClientRequestError(statusCode, upstreamMsg, upstreamBody) ||
 		isOpenAIPoolImageCapabilityError(statusCode, upstreamMsg, upstreamBody) {
 		return false
 	}
@@ -239,6 +243,39 @@ func isOpenAIPoolAccountLevelClientError(statusCode int, upstreamMsg string, ups
 	return containsAnySubstring(combined, markers...)
 }
 
+func isOpenAIPoolUserRequestedModelError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if statusCode != http.StatusBadRequest && statusCode != http.StatusNotFound &&
+		statusCode != http.StatusBadGateway && statusCode != http.StatusServiceUnavailable &&
+		statusCode != http.StatusGatewayTimeout {
+		return false
+	}
+	combined := openAIPoolCombinedErrorText(upstreamMsg, upstreamBody)
+	if combined == "" {
+		return false
+	}
+	if strings.Contains(combined, "model") {
+		if containsAnySubstring(combined,
+			"unknown provider",
+			"no provider",
+			"provider not found",
+			"model provider not found",
+			"model route not found",
+			"no route",
+			"no upstream",
+		) {
+			return true
+		}
+	}
+	return containsAnySubstring(combined,
+		"model_not_found",
+		"model not found",
+		"model does not exist",
+		"model doesn't exist",
+		"unknown model",
+		"unsupported model",
+	)
+}
+
 func isOpenAIPoolDownstreamRoutingOrClientConfigError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
 	if statusCode != http.StatusBadGateway && statusCode != http.StatusServiceUnavailable && statusCode != http.StatusGatewayTimeout {
 		return false
@@ -256,6 +293,14 @@ func isOpenAIPoolDownstreamRoutingOrClientConfigError(statusCode int, upstreamMs
 		"no available provider",
 		"no available route",
 		"no channel available",
+		"unknown provider for model",
+		"unknown provider",
+		"no provider for model",
+		"provider not found for model",
+		"model provider not found",
+		"model route not found",
+		"no route for model",
+		"no upstream for model",
 		"request body error",
 		"invalid request body",
 		"malformed request body",

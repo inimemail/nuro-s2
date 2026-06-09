@@ -156,6 +156,22 @@ func TestClassifyOpenAIPoolFailover_DownstreamRoutingErrorSwitchesWithoutSoftCoo
 	require.True(t, decision.SkipSoftCooldown)
 }
 
+func TestClassifyOpenAIPoolFailover_UnknownProviderModelIsUserError(t *testing.T) {
+	account := &Account{
+		ID:          111,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "pool_mode_retry_status_codes": []any{float64(502)}},
+	}
+	body := []byte(`{"error":{"message":"unknown provider customer-router for model user-typed-wrong-model"}}`)
+
+	decision := classifyOpenAIPoolFailover(account, http.StatusBadGateway, "unknown provider customer-router for model user-typed-wrong-model", body)
+
+	require.False(t, decision.Failover)
+	require.False(t, decision.RetryableOnSameAccount)
+	require.False(t, decision.SkipSoftCooldown)
+}
+
 func TestClassifyOpenAIPoolFailover_ClientConfig503SwitchesWithoutSoftCooldown(t *testing.T) {
 	account := &Account{
 		ID:          111,
@@ -189,6 +205,26 @@ func TestOpenAIPoolFailoverSwitch_DownstreamRoutingErrorSkipsSoftCooldown(t *tes
 	}
 
 	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "gpt-image-1")
+
+	require.False(t, svc.isOpenAIPoolAccountSoftCooling(account))
+}
+
+func TestOpenAIPoolFailoverSwitch_UserModelErrorSkipsSoftCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          116,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := []byte(`{"error":{"message":"unknown provider customer-router for model user-typed-wrong-model"}}`)
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:   http.StatusBadGateway,
+		ResponseBody: body,
+		Message:      "unknown provider customer-router for model user-typed-wrong-model",
+	}
+
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "user-typed-wrong-model")
 
 	require.False(t, svc.isOpenAIPoolAccountSoftCooling(account))
 }

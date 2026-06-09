@@ -551,6 +551,8 @@ export interface SystemSettings {
 
   // 分组隔离
   allow_ungrouped_key_scheduling: boolean;
+  openai_pool_recovery_probe_enabled: boolean;
+  openai_image_pool_recovery_probe_enabled: boolean;
 
   // Gateway forwarding behavior
   enable_fingerprint_unification: boolean;
@@ -558,6 +560,7 @@ export interface SystemSettings {
   enable_cch_signing: boolean;
   enable_anthropic_cache_ttl_1h_injection: boolean;
   rewrite_message_cache_control: boolean;
+  stream_low_latency_mode: "off" | "smart" | "aggressive" | string;
   low_latency_stream_headers: boolean;
   antigravity_user_agent_version: string;
   openai_codex_user_agent: string;
@@ -788,11 +791,14 @@ export interface UpdateSettingsRequest {
   min_claude_code_version?: string;
   max_claude_code_version?: string;
   allow_ungrouped_key_scheduling?: boolean;
+  openai_pool_recovery_probe_enabled?: boolean;
+  openai_image_pool_recovery_probe_enabled?: boolean;
   enable_fingerprint_unification?: boolean;
   enable_metadata_passthrough?: boolean;
   enable_cch_signing?: boolean;
   enable_anthropic_cache_ttl_1h_injection?: boolean;
   rewrite_message_cache_control?: boolean;
+  stream_low_latency_mode?: "off" | "smart" | "aggressive" | string;
   low_latency_stream_headers?: boolean;
   antigravity_user_agent_version?: string;
   openai_codex_user_agent?: string;

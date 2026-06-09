@@ -410,6 +410,10 @@ const (
 
 	// SettingKeyAllowUngroupedKeyScheduling 允许未分组 API Key 调度（默认 false：未分组 Key 返回 403）
 	SettingKeyAllowUngroupedKeyScheduling = "allow_ungrouped_key_scheduling"
+	// SettingKeyOpenAIPoolRecoveryProbeEnabled 非图片池软冷却到期后是否启用恢复探测（默认 true）
+	SettingKeyOpenAIPoolRecoveryProbeEnabled = "openai_pool_recovery_probe_enabled"
+	// SettingKeyOpenAIImagePoolRecoveryProbeEnabled 图片池软冷却到期后是否启用恢复探测（默认 true）
+	SettingKeyOpenAIImagePoolRecoveryProbeEnabled = "openai_image_pool_recovery_probe_enabled"
 
 	// SettingKeyBackendModeEnabled Backend 模式：禁用用户注册和自助服务，仅管理员可登录
 	SettingKeyBackendModeEnabled = "backend_mode_enabled"
@@ -425,7 +429,9 @@ const (
 	SettingKeyEnableAnthropicCacheTTL1hInjection = "enable_anthropic_cache_ttl_1h_injection"
 	// SettingKeyRewriteMessageCacheControl 是否改写 messages[*].content[*].cache_control（默认 false）
 	SettingKeyRewriteMessageCacheControl = "rewrite_message_cache_control"
-	// SettingKeyLowLatencyStreamHeaders 是否提前 flush 流式响应头（默认 false）
+	// SettingKeyStreamLowLatencyMode OpenAI 流式低延迟策略：off/smart/aggressive
+	SettingKeyStreamLowLatencyMode = "stream_low_latency_mode"
+	// SettingKeyLowLatencyStreamHeaders 旧版开关；true 兼容映射为 smart
 	SettingKeyLowLatencyStreamHeaders = "low_latency_stream_headers"
 	// SettingKeyAntigravityUserAgentVersion Antigravity 上游 User-Agent 版本号（空值使用环境变量/默认值）
 	SettingKeyAntigravityUserAgentVersion = "antigravity_user_agent_version"

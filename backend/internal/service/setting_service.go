@@ -108,6 +108,8 @@ type cachedGatewayForwardingSettings struct {
 	cchSigning                   bool
 	anthropicCacheTTL1hInjection bool
 	rewriteMessageCacheControl   bool
+	openAIPoolRecoveryProbe      bool
+	openAIImagePoolRecoveryProbe bool
 	expiresAt                    int64 // unix nano
 }
 
@@ -1901,6 +1903,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	// 分组隔离
 	updates[SettingKeyAllowUngroupedKeyScheduling] = strconv.FormatBool(settings.AllowUngroupedKeyScheduling)
+	updates[SettingKeyOpenAIPoolRecoveryProbeEnabled] = strconv.FormatBool(settings.OpenAIPoolRecoveryProbeEnabled)
+	updates[SettingKeyOpenAIImagePoolRecoveryProbeEnabled] = strconv.FormatBool(settings.OpenAIImagePoolRecoveryProbeEnabled)
 
 	// Backend Mode
 	updates[SettingKeyBackendModeEnabled] = strconv.FormatBool(settings.BackendModeEnabled)
@@ -1911,6 +1915,13 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyEnableCCHSigning] = strconv.FormatBool(settings.EnableCCHSigning)
 	updates[SettingKeyEnableAnthropicCacheTTL1hInjection] = strconv.FormatBool(settings.EnableAnthropicCacheTTL1hInjection)
 	updates[SettingKeyRewriteMessageCacheControl] = strconv.FormatBool(settings.RewriteMessageCacheControl)
+	lowLatencyMode := config.NormalizeStreamLowLatencyMode(settings.StreamLowLatencyMode, settings.LowLatencyStreamHeaders)
+	if lowLatencyMode == "" {
+		return nil, fmt.Errorf("stream_low_latency_mode must be one of: off/smart/aggressive")
+	}
+	settings.StreamLowLatencyMode = lowLatencyMode
+	settings.LowLatencyStreamHeaders = lowLatencyMode != config.StreamLowLatencyModeOff
+	updates[SettingKeyStreamLowLatencyMode] = lowLatencyMode
 	updates[SettingKeyLowLatencyStreamHeaders] = strconv.FormatBool(settings.LowLatencyStreamHeaders)
 	updates[SettingKeyAntigravityUserAgentVersion] = antigravity.NormalizeUserAgentVersion(settings.AntigravityUserAgentVersion)
 	updates[SettingKeyOpenAICodexUserAgent] = strings.TrimSpace(settings.OpenAICodexUserAgent)
@@ -2041,6 +2052,8 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		cchSigning:                   settings.EnableCCHSigning,
 		anthropicCacheTTL1hInjection: settings.EnableAnthropicCacheTTL1hInjection,
 		rewriteMessageCacheControl:   settings.RewriteMessageCacheControl,
+		openAIPoolRecoveryProbe:      settings.OpenAIPoolRecoveryProbeEnabled,
+		openAIImagePoolRecoveryProbe: settings.OpenAIImagePoolRecoveryProbeEnabled,
 		expiresAt:                    time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 	})
 	s.antigravityUAVersionSF.Forget("antigravity_user_agent_version")
@@ -2079,7 +2092,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	}
 	if s.cfg != nil {
 		s.cfg.SetTrustForwardedIPForAPIKeyACL(settings.APIKeyACLTrustForwardedIP)
-		s.cfg.SetLowLatencyStreamHeaders(settings.LowLatencyStreamHeaders)
+		s.cfg.SetStreamLowLatencyMode(settings.StreamLowLatencyMode)
 	}
 	s.openAIAllowCodexPluginSF.Forget("openai_allow_codex_plugin_enabled")
 	s.openAIAllowCodexPluginCache.Store(&cachedOpenAIAllowCodexPlugin{
@@ -2097,6 +2110,13 @@ func (s *SettingService) defaultRewriteMessageCacheControl() bool {
 
 func (s *SettingService) defaultLowLatencyStreamHeaders() bool {
 	return s != nil && s.cfg != nil && s.cfg.LowLatencyStreamHeadersEnabled()
+}
+
+func (s *SettingService) defaultStreamLowLatencyMode() string {
+	if s == nil || s.cfg == nil {
+		return config.StreamLowLatencyModeOff
+	}
+	return s.cfg.StreamLowLatencyMode()
 }
 
 func (s *SettingService) validateDefaultSubscriptionGroups(ctx context.Context, items []DefaultSubscriptionSetting) error {
@@ -2250,18 +2270,21 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
 }
 
 type gatewayForwardingSettingsResult struct {
-	fp, mp, cch, cacheTTL1h, rewriteMessageCacheControl bool
+	fp, mp, cch, cacheTTL1h, rewriteMessageCacheControl   bool
+	openAIPoolRecoveryProbe, openAIImagePoolRecoveryProbe bool
 }
 
 func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context) gatewayForwardingSettingsResult {
 	if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
 			return gatewayForwardingSettingsResult{
-				fp:                         cached.fingerprintUnification,
-				mp:                         cached.metadataPassthrough,
-				cch:                        cached.cchSigning,
-				cacheTTL1h:                 cached.anthropicCacheTTL1hInjection,
-				rewriteMessageCacheControl: cached.rewriteMessageCacheControl,
+				fp:                           cached.fingerprintUnification,
+				mp:                           cached.metadataPassthrough,
+				cch:                          cached.cchSigning,
+				cacheTTL1h:                   cached.anthropicCacheTTL1hInjection,
+				rewriteMessageCacheControl:   cached.rewriteMessageCacheControl,
+				openAIPoolRecoveryProbe:      cached.openAIPoolRecoveryProbe,
+				openAIImagePoolRecoveryProbe: cached.openAIImagePoolRecoveryProbe,
 			}
 		}
 	}
@@ -2269,11 +2292,13 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
 				return gatewayForwardingSettingsResult{
-					fp:                         cached.fingerprintUnification,
-					mp:                         cached.metadataPassthrough,
-					cch:                        cached.cchSigning,
-					cacheTTL1h:                 cached.anthropicCacheTTL1hInjection,
-					rewriteMessageCacheControl: cached.rewriteMessageCacheControl,
+					fp:                           cached.fingerprintUnification,
+					mp:                           cached.metadataPassthrough,
+					cch:                          cached.cchSigning,
+					cacheTTL1h:                   cached.anthropicCacheTTL1hInjection,
+					rewriteMessageCacheControl:   cached.rewriteMessageCacheControl,
+					openAIPoolRecoveryProbe:      cached.openAIPoolRecoveryProbe,
+					openAIImagePoolRecoveryProbe: cached.openAIImagePoolRecoveryProbe,
 				}, nil
 			}
 		}
@@ -2285,6 +2310,8 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			SettingKeyEnableCCHSigning,
 			SettingKeyEnableAnthropicCacheTTL1hInjection,
 			SettingKeyRewriteMessageCacheControl,
+			SettingKeyOpenAIPoolRecoveryProbeEnabled,
+			SettingKeyOpenAIImagePoolRecoveryProbeEnabled,
 		})
 		if err != nil {
 			slog.Warn("failed to get gateway forwarding settings", "error", err)
@@ -2294,9 +2321,11 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 				cchSigning:                   false,
 				anthropicCacheTTL1hInjection: false,
 				rewriteMessageCacheControl:   s.defaultRewriteMessageCacheControl(),
+				openAIPoolRecoveryProbe:      true,
+				openAIImagePoolRecoveryProbe: true,
 				expiresAt:                    time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
 			})
-			return gatewayForwardingSettingsResult{fp: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl()}, nil
+			return gatewayForwardingSettingsResult{fp: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true}, nil
 		}
 		fp := true
 		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
@@ -2309,26 +2338,38 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if v, ok := values[SettingKeyRewriteMessageCacheControl]; ok && v != "" {
 			rewriteMessageCacheControl = v == "true"
 		}
+		openAIPoolRecoveryProbe := true
+		if v, ok := values[SettingKeyOpenAIPoolRecoveryProbeEnabled]; ok && v != "" {
+			openAIPoolRecoveryProbe = v == "true"
+		}
+		openAIImagePoolRecoveryProbe := true
+		if v, ok := values[SettingKeyOpenAIImagePoolRecoveryProbeEnabled]; ok && v != "" {
+			openAIImagePoolRecoveryProbe = v == "true"
+		}
 		gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
 			fingerprintUnification:       fp,
 			metadataPassthrough:          mp,
 			cchSigning:                   cch,
 			anthropicCacheTTL1hInjection: cacheTTL1h,
 			rewriteMessageCacheControl:   rewriteMessageCacheControl,
+			openAIPoolRecoveryProbe:      openAIPoolRecoveryProbe,
+			openAIImagePoolRecoveryProbe: openAIImagePoolRecoveryProbe,
 			expiresAt:                    time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 		})
 		return gatewayForwardingSettingsResult{
-			fp:                         fp,
-			mp:                         mp,
-			cch:                        cch,
-			cacheTTL1h:                 cacheTTL1h,
-			rewriteMessageCacheControl: rewriteMessageCacheControl,
+			fp:                           fp,
+			mp:                           mp,
+			cch:                          cch,
+			cacheTTL1h:                   cacheTTL1h,
+			rewriteMessageCacheControl:   rewriteMessageCacheControl,
+			openAIPoolRecoveryProbe:      openAIPoolRecoveryProbe,
+			openAIImagePoolRecoveryProbe: openAIImagePoolRecoveryProbe,
 		}, nil
 	})
 	if r, ok := val.(gatewayForwardingSettingsResult); ok {
 		return r
 	}
-	return gatewayForwardingSettingsResult{fp: true}
+	return gatewayForwardingSettingsResult{fp: true, openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true}
 }
 
 // GetGatewayForwardingSettings returns cached gateway forwarding settings.
@@ -2347,6 +2388,14 @@ func (s *SettingService) IsAnthropicCacheTTL1hInjectionEnabled(ctx context.Conte
 // IsRewriteMessageCacheControlEnabled 检查是否启用 messages cache_control 改写。
 func (s *SettingService) IsRewriteMessageCacheControlEnabled(ctx context.Context) bool {
 	return s.getGatewayForwardingSettingsCached(ctx).rewriteMessageCacheControl
+}
+
+func (s *SettingService) IsOpenAIPoolRecoveryProbeEnabled(ctx context.Context) bool {
+	return s == nil || s.getGatewayForwardingSettingsCached(ctx).openAIPoolRecoveryProbe
+}
+
+func (s *SettingService) IsOpenAIImagePoolRecoveryProbeEnabled(ctx context.Context) bool {
+	return s == nil || s.getGatewayForwardingSettingsCached(ctx).openAIImagePoolRecoveryProbe
 }
 
 // IsEmailVerifyEnabled 检查是否开启邮件验证
@@ -2830,18 +2879,21 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyMaxClaudeCodeVersion: "",
 
 		// 分组隔离（默认不允许未分组 Key 调度）
-		SettingKeyAllowUngroupedKeyScheduling:        "false",
-		SettingKeyEnableAnthropicCacheTTL1hInjection: "false",
-		SettingKeyRewriteMessageCacheControl:         strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
-		SettingKeyLowLatencyStreamHeaders:            strconv.FormatBool(s.defaultLowLatencyStreamHeaders()),
-		SettingKeyAntigravityUserAgentVersion:        "",
-		SettingKeyOpenAICodexUserAgent:               "",
-		SettingPaymentVisibleMethodAlipaySource:      "",
-		SettingPaymentVisibleMethodWxpaySource:       "",
-		SettingPaymentVisibleMethodAlipayEnabled:     "false",
-		SettingPaymentVisibleMethodWxpayEnabled:      "false",
-		openAIAdvancedSchedulerSettingKey:            "false",
-		SettingKeyAllowUserViewErrorRequests:         "false",
+		SettingKeyAllowUngroupedKeyScheduling:         "false",
+		SettingKeyOpenAIPoolRecoveryProbeEnabled:      "true",
+		SettingKeyOpenAIImagePoolRecoveryProbeEnabled: "true",
+		SettingKeyEnableAnthropicCacheTTL1hInjection:  "false",
+		SettingKeyRewriteMessageCacheControl:          strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
+		SettingKeyStreamLowLatencyMode:                s.defaultStreamLowLatencyMode(),
+		SettingKeyLowLatencyStreamHeaders:             strconv.FormatBool(s.defaultLowLatencyStreamHeaders()),
+		SettingKeyAntigravityUserAgentVersion:         "",
+		SettingKeyOpenAICodexUserAgent:                "",
+		SettingPaymentVisibleMethodAlipaySource:       "",
+		SettingPaymentVisibleMethodWxpaySource:        "",
+		SettingPaymentVisibleMethodAlipayEnabled:      "false",
+		SettingPaymentVisibleMethodWxpayEnabled:       "false",
+		openAIAdvancedSchedulerSettingKey:             "false",
+		SettingKeyAllowUserViewErrorRequests:          "false",
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -3340,6 +3392,14 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// 分组隔离
 	result.AllowUngroupedKeyScheduling = settings[SettingKeyAllowUngroupedKeyScheduling] == "true"
+	result.OpenAIPoolRecoveryProbeEnabled = true
+	if v, ok := settings[SettingKeyOpenAIPoolRecoveryProbeEnabled]; ok && v != "" {
+		result.OpenAIPoolRecoveryProbeEnabled = v == "true"
+	}
+	result.OpenAIImagePoolRecoveryProbeEnabled = true
+	if v, ok := settings[SettingKeyOpenAIImagePoolRecoveryProbeEnabled]; ok && v != "" {
+		result.OpenAIImagePoolRecoveryProbeEnabled = v == "true"
+	}
 
 	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false, cch_signing=false)
 	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {
@@ -3355,11 +3415,27 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	} else {
 		result.RewriteMessageCacheControl = s.defaultRewriteMessageCacheControl()
 	}
+	legacyLowLatency := false
+	legacyLowLatencyConfigured := false
 	if v, ok := settings[SettingKeyLowLatencyStreamHeaders]; ok && v != "" {
-		result.LowLatencyStreamHeaders = v == "true"
+		legacyLowLatency = v == "true"
+		legacyLowLatencyConfigured = true
 	} else if s.cfg != nil {
-		result.LowLatencyStreamHeaders = s.cfg.LowLatencyStreamHeadersEnabled()
+		legacyLowLatency = s.cfg.LowLatencyStreamHeadersEnabled()
 	}
+	if v, ok := settings[SettingKeyStreamLowLatencyMode]; ok && v != "" {
+		result.StreamLowLatencyMode = config.NormalizeStreamLowLatencyMode(v, legacyLowLatency)
+	}
+	if result.StreamLowLatencyMode == "" {
+		if legacyLowLatencyConfigured {
+			result.StreamLowLatencyMode = config.NormalizeStreamLowLatencyMode("", legacyLowLatency)
+		} else if s.cfg != nil {
+			result.StreamLowLatencyMode = s.cfg.StreamLowLatencyMode()
+		} else {
+			result.StreamLowLatencyMode = config.NormalizeStreamLowLatencyMode("", legacyLowLatency)
+		}
+	}
+	result.LowLatencyStreamHeaders = result.StreamLowLatencyMode != config.StreamLowLatencyModeOff
 	result.AntigravityUserAgentVersion = antigravity.NormalizeUserAgentVersion(settings[SettingKeyAntigravityUserAgentVersion])
 	result.OpenAICodexUserAgent = strings.TrimSpace(settings[SettingKeyOpenAICodexUserAgent])
 	result.OpenAIAllowClaudeCodeCodexPlugin = settings[SettingKeyOpenAIAllowClaudeCodeCodexPlugin] == "true"

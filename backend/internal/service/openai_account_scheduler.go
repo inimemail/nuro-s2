@@ -878,6 +878,10 @@ func (s *defaultOpenAIAccountScheduler) buildStrictPrioritySelectionOrder(pool [
 	for _, candidate := range pool {
 		if s != nil && s.service != nil && s.service.isOpenAIPoolAccountSoftCooling(candidate.account) {
 			if s.service.isOpenAIPoolAccountSoftCooldownDue(candidate.account) {
+				if s.service.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(context.Background(), candidate.account, requestedModel) {
+					active = append(active, candidate)
+					continue
+				}
 				probeDue = append(probeDue, candidate)
 			}
 			continue

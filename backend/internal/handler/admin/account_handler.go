@@ -741,8 +741,31 @@ func (h *AccountHandler) Test(c *gin.Context) {
 	if h.rateLimitService != nil {
 		if _, err := h.rateLimitService.RecoverAccountAfterSuccessfulTest(c.Request.Context(), accountID); err != nil {
 			_ = c.Error(err)
+			return
 		}
 	}
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	h.sendAccountTestUpdatedEvent(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+}
+
+func (h *AccountHandler) sendAccountTestUpdatedEvent(c *gin.Context, account AccountWithConcurrency) {
+	eventJSON, err := json.Marshal(map[string]any{
+		"type": "account_updated",
+		"data": account,
+	})
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+	if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", eventJSON); err != nil {
+		log.Printf("failed to write account test update SSE event: %v", err)
+		return
+	}
+	c.Writer.Flush()
 }
 
 // RecoverState handles unified recovery of recoverable account runtime state.

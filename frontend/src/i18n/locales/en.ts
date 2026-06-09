@@ -5698,7 +5698,11 @@ export default {
         title: 'Gateway Scheduling Settings',
         description: 'Control API Key scheduling behavior',
         allowUngroupedKey: 'Allow Ungrouped Key Scheduling',
-        allowUngroupedKeyHint: 'When disabled, API Keys not assigned to any group cannot make requests (403 Forbidden). Keep disabled to ensure all Keys belong to a specific group.'
+        allowUngroupedKeyHint: 'When disabled, API Keys not assigned to any group cannot make requests (403 Forbidden). Keep disabled to ensure all Keys belong to a specific group.',
+        openAIPoolRecoveryProbe: 'Enable Non-Image Pool Recovery Probe',
+        openAIPoolRecoveryProbeHint: 'When enabled, non-image pool accounts recover only after a successful probe when soft cooldown expires. When disabled, they recover directly.',
+        openAIImagePoolRecoveryProbe: 'Enable Image Pool Recovery Probe',
+        openAIImagePoolRecoveryProbeHint: 'When enabled, image pool accounts recover only after a successful probe when soft cooldown expires. When disabled, they recover directly.'
       },
       gatewayForwarding: {
         title: 'Request Forwarding',
@@ -5713,8 +5717,11 @@ export default {
         anthropicCacheTTL1hInjectionHint: 'When enabled, existing ephemeral cache_control blocks in Anthropic OAuth/Setup Token request bodies are forced to 1h; response usage is billed back as 5m by default, with account-level TTL billing override taking priority.',
         rewriteMessageCacheControl: 'Rewrite Message Cache Breakpoints',
         rewriteMessageCacheControlHint: 'Default off: preserve client cache_control on message content blocks. When enabled, client breakpoints are stripped and proxy breakpoints are injected for clients that do not manage caching themselves.',
-        lowLatencyStreamHeaders: 'Optional Low-Latency Mode',
-        lowLatencyStreamHeadersHint: 'Disabled by default. Flushes SSE headers or the first valid event earlier so streams feel faster, but once the response is committed there is less room for pre-payload failover.',
+        lowLatencyStreamHeaders: 'Stream Low-Latency Mode',
+        lowLatencyModeOff: '关闭',
+        lowLatencyModeSmart: '智能（推荐）',
+        lowLatencyModeAggressive: '激进',
+        lowLatencyStreamHeadersHint: 'Smart mode preserves pre-payload failover first and only flushes early after a short barrier on healthy accounts. Aggressive mode flushes SSE headers immediately for the fastest feel, with the least failover room.',
         antigravityUserAgentVersion: 'Antigravity UA Version',
         antigravityUserAgentVersionPlaceholder: '1.23.2',
         antigravityUserAgentVersionHint: 'Leave empty to use ANTIGRAVITY_USER_AGENT_VERSION or the built-in default 1.23.2; when set, the admin setting takes precedence.',

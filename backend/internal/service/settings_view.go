@@ -183,6 +183,9 @@ type SystemSettings struct {
 
 	// 分组隔离：允许未分组 Key 调度（默认 false → 403）
 	AllowUngroupedKeyScheduling bool
+	// OpenAI 池恢复探测：默认开启；关闭后软冷却到期直接恢复调度。
+	OpenAIPoolRecoveryProbeEnabled      bool
+	OpenAIImagePoolRecoveryProbeEnabled bool
 
 	// Backend 模式：禁用用户注册和自助服务，仅管理员可登录
 	BackendModeEnabled bool
@@ -193,7 +196,8 @@ type SystemSettings struct {
 	EnableCCHSigning                   bool   // 是否对 billing header cch 进行签名（默认 false）
 	EnableAnthropicCacheTTL1hInjection bool   // 是否对 Anthropic OAuth/SetupToken 请求体注入 1h cache_control ttl（默认 false）
 	RewriteMessageCacheControl         bool   // 是否改写 messages[*].content[*].cache_control（默认 false）
-	LowLatencyStreamHeaders            bool   // 是否提前 flush OpenAI 流式响应头（默认 false）
+	StreamLowLatencyMode               string // OpenAI 流式低延迟策略：off/smart/aggressive
+	LowLatencyStreamHeaders            bool   // 兼容旧版开关；非 off 时为 true
 	AntigravityUserAgentVersion        string // Antigravity 上游 User-Agent 版本号；空值使用配置/默认值
 	OpenAICodexUserAgent               string // OpenAI Codex 上游完整 User-Agent；空值使用内置默认
 	OpenAIAllowClaudeCodeCodexPlugin   bool   // 全局开关：是否额外放行 Claude Code 的 Codex 插件（默认 false）

@@ -1599,6 +1599,10 @@ func (s *OpenAIGatewayService) orderOpenAIPoolCoolingAccountsLast(accounts []*Ac
 	for _, account := range accounts {
 		if s.isOpenAIPoolAccountSoftCooling(account) {
 			if s.isOpenAIPoolAccountSoftCooldownDue(account) {
+				if s.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(context.Background(), account, requestedModel) {
+					active = append(active, account)
+					continue
+				}
 				probeDue = append(probeDue, account)
 			}
 			continue
@@ -1621,6 +1625,10 @@ func (s *OpenAIGatewayService) orderOpenAIPoolCoolingLoadedAccountsLast(accounts
 	for _, item := range accounts {
 		if s.isOpenAIPoolAccountSoftCooling(item.account) {
 			if s.isOpenAIPoolAccountSoftCooldownDue(item.account) {
+				if s.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(context.Background(), item.account, requestedModel) {
+					active = append(active, item)
+					continue
+				}
 				probeDue = append(probeDue, item.account)
 			}
 			continue
@@ -1876,9 +1884,13 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			}
 		}
 		if s.isOpenAIPoolAccountSoftCooling(fresh) {
-			coolingCandidates = append(coolingCandidates, fresh)
-			coolingCompactTiers[fresh.ID] = compactTier
-			continue
+			if s.isOpenAIPoolAccountSoftCooldownDue(fresh) && s.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(ctx, fresh, requestedModel) {
+				// Probe disabled: the expired soft cooldown was cleared, so this account can participate now.
+			} else {
+				coolingCandidates = append(coolingCandidates, fresh)
+				coolingCompactTiers[fresh.ID] = compactTier
+				continue
+			}
 		}
 
 		// 选择优先级最高且最久未使用的账号
@@ -2389,6 +2401,12 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 	}
 	if s.isOpenAIPoolAccountSoftCooling(fresh) {
 		if s.isOpenAIPoolAccountSoftCooldownDue(fresh) {
+			if s.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(ctx, fresh, requestedModel) {
+				if s.isOpenAIAccountRuntimeBlocked(fresh) {
+					return nil
+				}
+				return fresh
+			}
 			s.maybeStartOpenAIPoolRecoveryProbe(context.Background(), fresh, requestedModel)
 		}
 		return nil
@@ -2409,6 +2427,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		}
 		if s.isOpenAIPoolAccountSoftCooling(account) {
 			if s.isOpenAIPoolAccountSoftCooldownDue(account) {
+				if s.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(ctx, account, requestedModel) {
+					return account
+				}
 				s.maybeStartOpenAIPoolRecoveryProbe(context.Background(), account, requestedModel)
 			}
 			return nil
@@ -2432,6 +2453,12 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	}
 	if s.isOpenAIPoolAccountSoftCooling(latest) {
 		if s.isOpenAIPoolAccountSoftCooldownDue(latest) {
+			if s.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(ctx, latest, requestedModel) {
+				if s.isOpenAIAccountRuntimeBlocked(latest) {
+					return nil
+				}
+				return latest
+			}
 			s.maybeStartOpenAIPoolRecoveryProbe(context.Background(), latest, requestedModel)
 		}
 		return nil
@@ -4107,7 +4134,8 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
-	if s.lowLatencyStreamHeadersEnabled() {
+	passthroughLowLatencyPolicy := s.openAIStreamLowLatencyPolicy(account, originalModel)
+	if passthroughLowLatencyPolicy.Enabled && passthroughLowLatencyPolicy.Barrier <= 0 && passthroughLowLatencyPolicy.AllowBootstrapComment {
 		if _, err := w.Write([]byte(":\n\n")); err == nil {
 			flusher.Flush()
 			SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
@@ -4126,6 +4154,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	clientOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	pendingLines := make([]string, 0, 8)
+	pendingLinesAtEventBoundary := func() bool {
+		return len(pendingLines) == 0 || pendingLines[len(pendingLines)-1] == ""
+	}
 	writePendingLines := func() bool {
 		for _, pending := range pendingLines {
 			if _, err := fmt.Fprintln(w, pending); err != nil {
@@ -4136,6 +4167,21 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		}
 		pendingLines = pendingLines[:0]
 		return true
+	}
+	writePassthroughBootstrapComment := func() {
+		if clientDisconnected || openAIStreamClientOutputStarted(c, clientOutputStarted) || !pendingLinesAtEventBoundary() {
+			return
+		}
+		if len(pendingLines) > 0 && !writePendingLines() {
+			return
+		}
+		if _, err := fmt.Fprint(w, ":\n\n"); err != nil {
+			clientDisconnected = true
+			return
+		}
+		clientOutputStarted = true
+		flusher.Flush()
+		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -4158,8 +4204,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		}
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	processPassthroughLine := func(line string) (bool, error) {
 		lineStartsClientOutput := false
 		forceFlushFailedEvent := false
 		if data, ok := extractOpenAISSEDataLine(line); ok {
@@ -4176,8 +4221,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
-					return resultWithUsage(),
-						s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, dataBytes, failedMessage)
+					return false, s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, dataBytes, failedMessage)
 				}
 				forceFlushFailedEvent = true
 				sawFailedEvent = true
@@ -4203,11 +4247,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		if !clientDisconnected {
 			if !clientOutputStarted && !lineStartsClientOutput {
 				pendingLines = append(pendingLines, line)
-				continue
+				return false, nil
 			}
 			if !clientOutputStarted && len(pendingLines) > 0 {
 				if !writePendingLines() {
-					continue
+					return false, nil
 				}
 			}
 			if _, err := fmt.Fprintln(w, line); err != nil {
@@ -4219,7 +4263,72 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
 			}
 		}
+		return false, nil
 	}
+
+	if passthroughLowLatencyPolicy.Enabled && passthroughLowLatencyPolicy.Barrier > 0 && passthroughLowLatencyPolicy.AllowBootstrapComment {
+		type passthroughScanEvent struct {
+			line string
+			err  error
+		}
+		events := make(chan passthroughScanEvent, 16)
+		done := make(chan struct{})
+		go func() {
+			defer close(events)
+			for scanner.Scan() {
+				select {
+				case events <- passthroughScanEvent{line: scanner.Text()}:
+				case <-done:
+					return
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				select {
+				case events <- passthroughScanEvent{err: err}:
+				case <-done:
+				}
+			}
+		}()
+		defer close(done)
+
+		bootstrapTimer := time.NewTimer(passthroughLowLatencyPolicy.Barrier)
+		defer bootstrapTimer.Stop()
+		bootstrapCh := bootstrapTimer.C
+		bootstrapPending := false
+		for {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					goto passthroughScanDone
+				}
+				if ev.err != nil {
+					goto passthroughScanDone
+				}
+				if _, err := processPassthroughLine(ev.line); err != nil {
+					return resultWithUsage(), err
+				}
+				if bootstrapPending {
+					writePassthroughBootstrapComment()
+					if openAIStreamClientOutputStarted(c, clientOutputStarted) || clientDisconnected {
+						bootstrapPending = false
+					}
+				}
+			case <-bootstrapCh:
+				bootstrapCh = nil
+				writePassthroughBootstrapComment()
+				if !clientDisconnected && !openAIStreamClientOutputStarted(c, clientOutputStarted) {
+					bootstrapPending = true
+				}
+			}
+		}
+	}
+
+	for scanner.Scan() {
+		if _, err := processPassthroughLine(scanner.Text()); err != nil {
+			return resultWithUsage(), err
+		}
+	}
+passthroughScanDone:
 	if err := scanner.Err(); err != nil {
 		if sawTerminalEvent && !sawFailedEvent {
 			return resultWithUsage(), nil
@@ -4889,7 +4998,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
-	if s.lowLatencyStreamHeadersEnabled() {
+	lowLatencyPolicy := s.openAIStreamLowLatencyPolicy(account, originalModel)
+	if lowLatencyPolicy.Enabled && lowLatencyPolicy.Barrier <= 0 && lowLatencyPolicy.AllowBootstrapComment {
 		if _, err := w.Write([]byte(":\n\n")); err == nil {
 			flusher.Flush()
 			SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
@@ -4962,6 +5072,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	clientOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	var streamFailoverErr error
+	atSSEEventBoundary := true
 	sendErrorEvent := func(reason string) {
 		if errorEventSent || clientDisconnected {
 			return
@@ -5062,6 +5173,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		if streamFailoverErr != nil {
 			return
 		}
+		defer func() {
+			atSSEEventBoundary = line == ""
+		}()
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 
@@ -5156,17 +5270,21 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 	// 无超时/无 keepalive 的常见路径走同步扫描，减少 goroutine 与 channel 开销。
 	if streamInterval <= 0 && keepaliveInterval <= 0 {
-		defer putSSEScannerBuf64K(scanBuf)
-		for scanner.Scan() {
-			processSSELine(scanner.Text(), true)
-			if streamFailoverErr != nil {
-				return resultWithUsage(), streamFailoverErr
+		if lowLatencyPolicy.Enabled && lowLatencyPolicy.Barrier > 0 && lowLatencyPolicy.AllowBootstrapComment {
+			streamInterval = lowLatencyPolicy.Barrier
+		} else {
+			defer putSSEScannerBuf64K(scanBuf)
+			for scanner.Scan() {
+				processSSELine(scanner.Text(), true)
+				if streamFailoverErr != nil {
+					return resultWithUsage(), streamFailoverErr
+				}
 			}
+			if result, err, done := handleScanErr(scanner.Err()); done {
+				return result, err
+			}
+			return finalizeStream()
 		}
-		if result, err, done := handleScanErr(scanner.Err()); done {
-			return result, err
-		}
-		return finalizeStream()
 	}
 
 	type scanEvent struct {
@@ -5176,6 +5294,30 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	// 独立 goroutine 读取上游，避免读取阻塞影响 keepalive/超时处理
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
+	var bootstrapCh <-chan time.Time
+	var bootstrapTimer *time.Timer
+	if lowLatencyPolicy.Enabled && lowLatencyPolicy.Barrier > 0 && lowLatencyPolicy.AllowBootstrapComment {
+		bootstrapTimer = time.NewTimer(lowLatencyPolicy.Barrier)
+		bootstrapCh = bootstrapTimer.C
+		defer bootstrapTimer.Stop()
+	}
+	writeBootstrapComment := func() {
+		if clientDisconnected || openAIStreamClientOutputStarted(c, clientOutputStarted) || streamFailoverErr != nil || !atSSEEventBoundary {
+			return
+		}
+		if _, err := bufferedWriter.WriteString(":\n\n"); err != nil {
+			clientDisconnected = true
+			logger.LegacyPrintf("service.openai_gateway", "Client disconnected during smart low-latency bootstrap, continuing to drain upstream for billing")
+			return
+		}
+		if err := flushBuffered(); err != nil {
+			clientDisconnected = true
+			logger.LegacyPrintf("service.openai_gateway", "Client disconnected during smart low-latency bootstrap flush, continuing to drain upstream for billing")
+			return
+		}
+		clientOutputStarted = true
+		lastDownstreamWriteAt = time.Now()
+	}
 	sendEvent := func(ev scanEvent) bool {
 		select {
 		case events <- ev:
@@ -5201,6 +5343,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	}(scanBuf)
 	defer close(done)
 
+	bootstrapPending := false
 	for {
 		select {
 		case ev, ok := <-events:
@@ -5213,6 +5356,19 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			processSSELine(ev.line, len(events) == 0)
 			if streamFailoverErr != nil {
 				return resultWithUsage(), streamFailoverErr
+			}
+			if bootstrapPending {
+				writeBootstrapComment()
+				if clientDisconnected || openAIStreamClientOutputStarted(c, clientOutputStarted) {
+					bootstrapPending = false
+				}
+			}
+
+		case <-bootstrapCh:
+			bootstrapCh = nil
+			writeBootstrapComment()
+			if !clientDisconnected && !openAIStreamClientOutputStarted(c, clientOutputStarted) && streamFailoverErr == nil {
+				bootstrapPending = true
 			}
 
 		case <-intervalCh:
@@ -5257,7 +5413,61 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 // extractOpenAISSEDataLine 低开销提取 SSE `data:` 行内容。
 // 兼容 `data: xxx` 与 `data:xxx` 两种格式。
 func (s *OpenAIGatewayService) lowLatencyStreamHeadersEnabled() bool {
-	return s != nil && s.cfg != nil && s.cfg.LowLatencyStreamHeadersEnabled()
+	return s.streamLowLatencyMode() != config.StreamLowLatencyModeOff
+}
+
+func (s *OpenAIGatewayService) streamLowLatencyMode() string {
+	if s == nil || s.cfg == nil {
+		return config.StreamLowLatencyModeOff
+	}
+	return s.cfg.StreamLowLatencyMode()
+}
+
+func (s *OpenAIGatewayService) aggressiveLowLatencyStreamHeadersEnabled() bool {
+	return s.streamLowLatencyMode() == config.StreamLowLatencyModeAggressive
+}
+
+type openAIStreamLowLatencyPolicy struct {
+	Enabled               bool
+	Barrier               time.Duration
+	AllowBootstrapComment bool
+}
+
+func (s *OpenAIGatewayService) openAIStreamLowLatencyPolicy(account *Account, requestedModel string) openAIStreamLowLatencyPolicy {
+	mode := s.streamLowLatencyMode()
+	switch mode {
+	case config.StreamLowLatencyModeAggressive:
+		return openAIStreamLowLatencyPolicy{Enabled: true, AllowBootstrapComment: true}
+	case config.StreamLowLatencyModeSmart:
+		return openAIStreamLowLatencyPolicy{
+			Enabled:               true,
+			Barrier:               200 * time.Millisecond,
+			AllowBootstrapComment: s.openAIStreamSmartLowLatencyEligible(account, requestedModel),
+		}
+	default:
+		return openAIStreamLowLatencyPolicy{}
+	}
+}
+
+func (s *OpenAIGatewayService) openAIStreamSmartLowLatencyEligible(account *Account, requestedModel string) bool {
+	if s == nil || account == nil {
+		return false
+	}
+	if strings.TrimSpace(requestedModel) != "" && isOpenAIImageGenerationModel(requestedModel) {
+		return false
+	}
+	if s.isOpenAIPoolAccountSoftCooling(account) || s.isOpenAIAccountRuntimeBlocked(account) {
+		return false
+	}
+	if s.openaiAccountStats == nil {
+		return true
+	}
+	transport := s.getOpenAIWSProtocolResolver().Resolve(account).Transport
+	errorRate, ttft, hasTTFT := s.openaiAccountStats.snapshotForRoute(account.ID, requestedModel, transport)
+	if errorRate > 0.05 {
+		return false
+	}
+	return !hasTTFT || ttft <= 2500
 }
 
 func (s *OpenAIGatewayService) streamingBootstrapRetries() int {

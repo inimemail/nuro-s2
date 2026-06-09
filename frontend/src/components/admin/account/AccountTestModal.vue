@@ -261,6 +261,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void
+  (e: 'account-updated', account: Account): void
 }>()
 
 const terminalRef = ref<HTMLElement | null>(null)
@@ -470,6 +471,7 @@ const handleEvent = (event: {
   error?: string
   image_url?: string
   mime_type?: string
+  data?: Account
 }) => {
   switch (event.type) {
     case 'test_start':
@@ -515,6 +517,12 @@ const handleEvent = (event: {
       } else {
         status.value = 'error'
         errorMessage.value = event.error || 'Test failed'
+      }
+      break
+
+    case 'account_updated':
+      if (event.data) {
+        emit('account-updated', event.data)
       }
       break
 

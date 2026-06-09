@@ -5852,7 +5852,11 @@ export default {
         title: '网关调度设置',
         description: '控制 API Key 的调度行为',
         allowUngroupedKey: '允许未分组 Key 调度',
-        allowUngroupedKeyHint: '关闭后，未分配到任何分组的 API Key 将无法发起请求（返回 403）。建议保持关闭以确保所有 Key 都归属明确的分组。'
+        allowUngroupedKeyHint: '关闭后，未分配到任何分组的 API Key 将无法发起请求（返回 403）。建议保持关闭以确保所有 Key 都归属明确的分组。',
+        openAIPoolRecoveryProbe: '非图片池启用恢复探测',
+        openAIPoolRecoveryProbeHint: '开启后，非图片池账号软冷却到期需探测成功才恢复；关闭后到期直接恢复调度。',
+        openAIImagePoolRecoveryProbe: '图片池启用恢复探测',
+        openAIImagePoolRecoveryProbeHint: '开启后，图片池账号软冷却到期需探测成功才恢复；关闭后到期直接恢复调度。'
       },
       gatewayForwarding: {
         title: '请求转发行为',
@@ -5867,8 +5871,11 @@ export default {
         anthropicCacheTTL1hInjectionHint: '开启后，对 Anthropic OAuth/Setup Token 请求体中已有的 ephemeral 缓存块强制写入 1h；响应 usage 默认按 5m 回写计费，账号级 TTL 计费设置优先。',
         rewriteMessageCacheControl: '改写消息缓存断点',
         rewriteMessageCacheControlHint: '默认关闭，保留客户端在 messages 内容块中的 cache_control。开启后会清除客户端断点并注入代理断点，适合不自行管理缓存策略的客户端。',
-        lowLatencyStreamHeaders: '可选低延迟模式',
-        lowLatencyStreamHeadersHint: '默认关闭。开启后会更早 flush SSE 响应头/首个合法事件，首包体感更快；但响应一旦提交，首包前故障切换空间会变小。',
+        lowLatencyStreamHeaders: '流式低延迟模式',
+        lowLatencyModeOff: '关闭',
+        lowLatencyModeSmart: '智能（推荐）',
+        lowLatencyModeAggressive: '激进',
+        lowLatencyStreamHeadersHint: '智能模式会先保留首包前故障切换空间，健康账号等待短暂屏障后才提前 flush；激进模式会立即 flush SSE 响应头，首包体感最快但故障切换空间最小。',
         antigravityUserAgentVersion: 'Antigravity UA 版本',
         antigravityUserAgentVersionPlaceholder: '1.23.2',
         antigravityUserAgentVersionHint: '留空时使用 ANTIGRAVITY_USER_AGENT_VERSION 或内置默认值 1.23.2；填写后后台设置优先。',

@@ -248,12 +248,15 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		MinClaudeCodeVersion:                   settings.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:                   settings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:            settings.AllowUngroupedKeyScheduling,
+		OpenAIPoolRecoveryProbeEnabled:         settings.OpenAIPoolRecoveryProbeEnabled,
+		OpenAIImagePoolRecoveryProbeEnabled:    settings.OpenAIImagePoolRecoveryProbeEnabled,
 		BackendModeEnabled:                     settings.BackendModeEnabled,
 		EnableFingerprintUnification:           settings.EnableFingerprintUnification,
 		EnableMetadataPassthrough:              settings.EnableMetadataPassthrough,
 		EnableCCHSigning:                       settings.EnableCCHSigning,
 		EnableAnthropicCacheTTL1hInjection:     settings.EnableAnthropicCacheTTL1hInjection,
 		RewriteMessageCacheControl:             settings.RewriteMessageCacheControl,
+		StreamLowLatencyMode:                   settings.StreamLowLatencyMode,
 		LowLatencyStreamHeaders:                settings.LowLatencyStreamHeaders,
 		AntigravityUserAgentVersion:            settings.AntigravityUserAgentVersion,
 		OpenAICodexUserAgent:                   settings.OpenAICodexUserAgent,
@@ -573,7 +576,9 @@ type UpdateSettingsRequest struct {
 	MaxClaudeCodeVersion string `json:"max_claude_code_version"`
 
 	// 分组隔离
-	AllowUngroupedKeyScheduling bool `json:"allow_ungrouped_key_scheduling"`
+	AllowUngroupedKeyScheduling         bool  `json:"allow_ungrouped_key_scheduling"`
+	OpenAIPoolRecoveryProbeEnabled      *bool `json:"openai_pool_recovery_probe_enabled"`
+	OpenAIImagePoolRecoveryProbeEnabled *bool `json:"openai_image_pool_recovery_probe_enabled"`
 
 	// Backend Mode
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
@@ -584,6 +589,7 @@ type UpdateSettingsRequest struct {
 	EnableCCHSigning                   *bool   `json:"enable_cch_signing"`
 	EnableAnthropicCacheTTL1hInjection *bool   `json:"enable_anthropic_cache_ttl_1h_injection"`
 	RewriteMessageCacheControl         *bool   `json:"rewrite_message_cache_control"`
+	StreamLowLatencyMode               *string `json:"stream_low_latency_mode"`
 	LowLatencyStreamHeaders            *bool   `json:"low_latency_stream_headers"`
 	AntigravityUserAgentVersion        *string `json:"antigravity_user_agent_version"`
 	OpenAICodexUserAgent               *string `json:"openai_codex_user_agent"`
@@ -1592,7 +1598,19 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		MinClaudeCodeVersion:                   req.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:                   req.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:            req.AllowUngroupedKeyScheduling,
-		BackendModeEnabled:                     req.BackendModeEnabled,
+		OpenAIPoolRecoveryProbeEnabled: func() bool {
+			if req.OpenAIPoolRecoveryProbeEnabled != nil {
+				return *req.OpenAIPoolRecoveryProbeEnabled
+			}
+			return previousSettings.OpenAIPoolRecoveryProbeEnabled
+		}(),
+		OpenAIImagePoolRecoveryProbeEnabled: func() bool {
+			if req.OpenAIImagePoolRecoveryProbeEnabled != nil {
+				return *req.OpenAIImagePoolRecoveryProbeEnabled
+			}
+			return previousSettings.OpenAIImagePoolRecoveryProbeEnabled
+		}(),
+		BackendModeEnabled: req.BackendModeEnabled,
 		OpsMonitoringEnabled: func() bool {
 			if req.OpsMonitoringEnabled != nil {
 				return *req.OpsMonitoringEnabled
@@ -1648,10 +1666,25 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			return previousSettings.RewriteMessageCacheControl
 		}(),
 		LowLatencyStreamHeaders: func() bool {
+			if req.StreamLowLatencyMode != nil {
+				return config.NormalizeStreamLowLatencyMode(*req.StreamLowLatencyMode, previousSettings.LowLatencyStreamHeaders) != config.StreamLowLatencyModeOff
+			}
 			if req.LowLatencyStreamHeaders != nil {
 				return *req.LowLatencyStreamHeaders
 			}
 			return previousSettings.LowLatencyStreamHeaders
+		}(),
+		StreamLowLatencyMode: func() string {
+			if req.StreamLowLatencyMode != nil {
+				return config.NormalizeStreamLowLatencyMode(*req.StreamLowLatencyMode, previousSettings.LowLatencyStreamHeaders)
+			}
+			if req.LowLatencyStreamHeaders != nil {
+				if *req.LowLatencyStreamHeaders {
+					return config.StreamLowLatencyModeSmart
+				}
+				return config.StreamLowLatencyModeOff
+			}
+			return previousSettings.StreamLowLatencyMode
 		}(),
 		AntigravityUserAgentVersion: func() string {
 			if req.AntigravityUserAgentVersion != nil {
@@ -2039,12 +2072,15 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		MinClaudeCodeVersion:                   updatedSettings.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:                   updatedSettings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:            updatedSettings.AllowUngroupedKeyScheduling,
+		OpenAIPoolRecoveryProbeEnabled:         updatedSettings.OpenAIPoolRecoveryProbeEnabled,
+		OpenAIImagePoolRecoveryProbeEnabled:    updatedSettings.OpenAIImagePoolRecoveryProbeEnabled,
 		BackendModeEnabled:                     updatedSettings.BackendModeEnabled,
 		EnableFingerprintUnification:           updatedSettings.EnableFingerprintUnification,
 		EnableMetadataPassthrough:              updatedSettings.EnableMetadataPassthrough,
 		EnableCCHSigning:                       updatedSettings.EnableCCHSigning,
 		EnableAnthropicCacheTTL1hInjection:     updatedSettings.EnableAnthropicCacheTTL1hInjection,
 		RewriteMessageCacheControl:             updatedSettings.RewriteMessageCacheControl,
+		StreamLowLatencyMode:                   updatedSettings.StreamLowLatencyMode,
 		LowLatencyStreamHeaders:                updatedSettings.LowLatencyStreamHeaders,
 		AntigravityUserAgentVersion:            updatedSettings.AntigravityUserAgentVersion,
 		OpenAICodexUserAgent:                   updatedSettings.OpenAICodexUserAgent,
@@ -2476,6 +2512,12 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.AllowUngroupedKeyScheduling != after.AllowUngroupedKeyScheduling {
 		changed = append(changed, "allow_ungrouped_key_scheduling")
 	}
+	if before.OpenAIPoolRecoveryProbeEnabled != after.OpenAIPoolRecoveryProbeEnabled {
+		changed = append(changed, "openai_pool_recovery_probe_enabled")
+	}
+	if before.OpenAIImagePoolRecoveryProbeEnabled != after.OpenAIImagePoolRecoveryProbeEnabled {
+		changed = append(changed, "openai_image_pool_recovery_probe_enabled")
+	}
 	if before.BackendModeEnabled != after.BackendModeEnabled {
 		changed = append(changed, "backend_mode_enabled")
 	}
@@ -2514,6 +2556,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.LowLatencyStreamHeaders != after.LowLatencyStreamHeaders {
 		changed = append(changed, "low_latency_stream_headers")
+	}
+	if before.StreamLowLatencyMode != after.StreamLowLatencyMode {
+		changed = append(changed, "stream_low_latency_mode")
 	}
 	if before.AntigravityUserAgentVersion != after.AntigravityUserAgentVersion {
 		changed = append(changed, "antigravity_user_agent_version")

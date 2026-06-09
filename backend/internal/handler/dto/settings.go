@@ -172,7 +172,9 @@ type SystemSettings struct {
 	MaxClaudeCodeVersion string `json:"max_claude_code_version"`
 
 	// 分组隔离
-	AllowUngroupedKeyScheduling bool `json:"allow_ungrouped_key_scheduling"`
+	AllowUngroupedKeyScheduling         bool `json:"allow_ungrouped_key_scheduling"`
+	OpenAIPoolRecoveryProbeEnabled      bool `json:"openai_pool_recovery_probe_enabled"`
+	OpenAIImagePoolRecoveryProbeEnabled bool `json:"openai_image_pool_recovery_probe_enabled"`
 
 	// Backend Mode
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
@@ -183,6 +185,7 @@ type SystemSettings struct {
 	EnableCCHSigning                   bool   `json:"enable_cch_signing"`
 	EnableAnthropicCacheTTL1hInjection bool   `json:"enable_anthropic_cache_ttl_1h_injection"`
 	RewriteMessageCacheControl         bool   `json:"rewrite_message_cache_control"`
+	StreamLowLatencyMode               string `json:"stream_low_latency_mode"`
 	LowLatencyStreamHeaders            bool   `json:"low_latency_stream_headers"`
 	AntigravityUserAgentVersion        string `json:"antigravity_user_agent_version"`
 	OpenAICodexUserAgent               string `json:"openai_codex_user_agent"`

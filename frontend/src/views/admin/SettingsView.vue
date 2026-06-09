@@ -3756,6 +3756,46 @@
                   <label
                     class="text-sm font-medium text-gray-700 dark:text-gray-300"
                   >
+                    {{ t("admin.settings.scheduling.openAIPoolRecoveryProbe") }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{
+                      t(
+                        "admin.settings.scheduling.openAIPoolRecoveryProbeHint",
+                      )
+                    }}
+                  </p>
+                </div>
+                <Toggle v-model="form.openai_pool_recovery_probe_enabled" />
+              </div>
+
+              <div class="flex items-center justify-between">
+                <div>
+                  <label
+                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    {{
+                      t("admin.settings.scheduling.openAIImagePoolRecoveryProbe")
+                    }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{
+                      t(
+                        "admin.settings.scheduling.openAIImagePoolRecoveryProbeHint",
+                      )
+                    }}
+                  </p>
+                </div>
+                <Toggle
+                  v-model="form.openai_image_pool_recovery_probe_enabled"
+                />
+              </div>
+
+              <div class="flex items-center justify-between">
+                <div>
+                  <label
+                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
                     {{ t("admin.settings.openaiExperimentalScheduler.title") }}
                   </label>
                   <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
@@ -3889,11 +3929,11 @@
                 <Toggle v-model="form.rewrite_message_cache_control" />
               </div>
 
-              <!-- Low latency stream headers -->
-              <div class="flex items-center justify-between">
+              <!-- Stream low latency mode -->
+              <div>
                 <div>
                   <label
-                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                    class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
                   >
                     {{
                       t(
@@ -3901,7 +3941,33 @@
                       )
                     }}
                   </label>
-                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  <select
+                    v-model="form.stream_low_latency_mode"
+                    class="input max-w-xs"
+                  >
+                    <option value="off">
+                      {{
+                        t(
+                          "admin.settings.gatewayForwarding.lowLatencyModeOff",
+                        )
+                      }}
+                    </option>
+                    <option value="smart">
+                      {{
+                        t(
+                          "admin.settings.gatewayForwarding.lowLatencyModeSmart",
+                        )
+                      }}
+                    </option>
+                    <option value="aggressive">
+                      {{
+                        t(
+                          "admin.settings.gatewayForwarding.lowLatencyModeAggressive",
+                        )
+                      }}
+                    </option>
+                  </select>
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                     {{
                       t(
                         "admin.settings.gatewayForwarding.lowLatencyStreamHeadersHint",
@@ -3909,7 +3975,6 @@
                     }}
                   </p>
                 </div>
-                <Toggle v-model="form.low_latency_stream_headers" />
               </div>
 
               <!-- Antigravity UA 版本 -->
@@ -7160,6 +7225,8 @@ const form = reactive<SettingsForm>({
   max_claude_code_version: "",
   // 分组隔离
   allow_ungrouped_key_scheduling: false,
+  openai_pool_recovery_probe_enabled: true,
+  openai_image_pool_recovery_probe_enabled: true,
   openai_advanced_scheduler_enabled: false,
   // Gateway forwarding behavior
   enable_fingerprint_unification: true,
@@ -7167,6 +7234,7 @@ const form = reactive<SettingsForm>({
   enable_cch_signing: false,
   enable_anthropic_cache_ttl_1h_injection: false,
   rewrite_message_cache_control: false,
+  stream_low_latency_mode: "off",
   low_latency_stream_headers: false,
   antigravity_user_agent_version: "",
   openai_codex_user_agent: "",
@@ -7787,6 +7855,12 @@ async function loadSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    if (!["off", "smart", "aggressive"].includes(form.stream_low_latency_mode)) {
+      form.stream_low_latency_mode = settings.low_latency_stream_headers
+        ? "smart"
+        : "off";
+    }
+    form.low_latency_stream_headers = form.stream_low_latency_mode !== "off";
     form.login_agreement_mode =
       settings.login_agreement_mode === "checkbox" ? "checkbox" : "modal";
     form.login_agreement_updated_at =
@@ -8266,13 +8340,18 @@ async function saveSettings() {
       min_claude_code_version: form.min_claude_code_version,
       max_claude_code_version: form.max_claude_code_version,
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
+      openai_pool_recovery_probe_enabled:
+        form.openai_pool_recovery_probe_enabled,
+      openai_image_pool_recovery_probe_enabled:
+        form.openai_image_pool_recovery_probe_enabled,
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
       enable_cch_signing: form.enable_cch_signing,
       enable_anthropic_cache_ttl_1h_injection:
         form.enable_anthropic_cache_ttl_1h_injection,
       rewrite_message_cache_control: form.rewrite_message_cache_control,
-      low_latency_stream_headers: form.low_latency_stream_headers,
+      stream_low_latency_mode: form.stream_low_latency_mode,
+      low_latency_stream_headers: form.stream_low_latency_mode !== "off",
       antigravity_user_agent_version:
         form.antigravity_user_agent_version?.trim() || "",
       openai_codex_user_agent:

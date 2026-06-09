@@ -17,6 +17,7 @@ import (
 
 const (
 	openAIPoolRecoveryProbeTimeout         = 8 * time.Second
+	openAIPoolRecoveryProbeImageTimeout    = 6 * time.Minute
 	openAIPoolRecoveryProbeDefaultBackoff  = 5 * time.Second
 	openAIPoolRecoveryProbeMaxBackoff      = 60 * time.Second
 	openAIPoolRecoveryProbeAdminKickEvery  = 5 * time.Second
@@ -41,6 +42,9 @@ func (s *OpenAIGatewayService) maybeStartOpenAIPoolRecoveryProbe(ctx context.Con
 	if !ok || time.Now().Before(cooldownUntil) {
 		return
 	}
+	if s.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(ctx, account, requestedModel) {
+		return
+	}
 	if s.httpUpstream == nil {
 		return
 	}
@@ -49,12 +53,77 @@ func (s *OpenAIGatewayService) maybeStartOpenAIPoolRecoveryProbe(ctx context.Con
 	}
 	accountID := account.ID
 	accountCopy := *account
+	probeTimeout := s.openAIPoolRecoveryProbeTimeout(&accountCopy, requestedModel)
 	go func() {
 		defer s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
-		probeCtx, cancel := context.WithTimeout(context.Background(), openAIPoolRecoveryProbeTimeout)
+		probeCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 		defer cancel()
 		s.runOpenAIPoolRecoveryProbe(probeCtx, &accountCopy, requestedModel, cooldownUntil)
 	}()
+}
+
+func (s *OpenAIGatewayService) clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(ctx context.Context, account *Account, requestedModel string) bool {
+	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
+		return false
+	}
+	cooldownUntil, ok := s.openAIPoolAccountSoftCooldownUntil(account)
+	if !ok || time.Now().Before(cooldownUntil) {
+		return false
+	}
+	if s.openAIPoolRecoveryProbeEnabled(ctx, account, requestedModel) {
+		return false
+	}
+	usesImagePool := s.openAIPoolRecoveryProbeUsesImagePool(account, requestedModel)
+	s.ClearAccountSchedulingBlock(account.ID)
+	loggerLegacyOpenAIPoolRecovery("probe_disabled_recover account_id=%d image_pool=%t", account.ID, usesImagePool)
+	return true
+}
+
+func (s *OpenAIGatewayService) openAIPoolRecoveryProbeEnabled(ctx context.Context, account *Account, requestedModel string) bool {
+	if s == nil || s.settingService == nil {
+		return true
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s.openAIPoolRecoveryProbeUsesImagePool(account, requestedModel) {
+		return s.settingService.IsOpenAIImagePoolRecoveryProbeEnabled(ctx)
+	}
+	return s.settingService.IsOpenAIPoolRecoveryProbeEnabled(ctx)
+}
+
+func (s *OpenAIGatewayService) openAIPoolRecoveryProbeUsesImagePool(account *Account, requestedModel string) bool {
+	if account != nil && account.IsImagePoolMode() {
+		return true
+	}
+	if s != nil && account != nil {
+		cooldownContext := s.openAIPoolAccountSoftCooldownContext(account.ID)
+		if cooldownContext.ProbeKind == "images" ||
+			cooldownContext.ProbeCapability == OpenAIImagesCapabilityBasic ||
+			cooldownContext.ProbeCapability == OpenAIImagesCapabilityNative ||
+			isOpenAIImageGenerationModel(cooldownContext.ProbeModel) {
+			return true
+		}
+	}
+	return isOpenAIImageGenerationModel(requestedModel)
+}
+
+func (s *OpenAIGatewayService) openAIPoolRecoveryProbeTimeout(account *Account, requestedModel string) time.Duration {
+	if s == nil || account == nil {
+		return openAIPoolRecoveryProbeTimeout
+	}
+	cooldownContext := s.openAIPoolAccountSoftCooldownContext(account.ID)
+	switch {
+	case cooldownContext.ProbeKind == "images",
+		cooldownContext.ProbeCapability == OpenAIImagesCapabilityBasic,
+		cooldownContext.ProbeCapability == OpenAIImagesCapabilityNative,
+		account.IsImagePoolMode(),
+		isOpenAIImageGenerationModel(cooldownContext.ProbeModel),
+		isOpenAIImageGenerationModel(requestedModel):
+		return openAIPoolRecoveryProbeImageTimeout
+	default:
+		return openAIPoolRecoveryProbeTimeout
+	}
 }
 
 func (s *OpenAIGatewayService) MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account) {
@@ -130,12 +199,19 @@ func (s *OpenAIGatewayService) probeOpenAIPoolAccountRecovery(ctx context.Contex
 }
 
 func (s *OpenAIGatewayService) resolveOpenAIPoolRecoveryProbeModel(ctx context.Context, account *Account, requestedModel string, cooldownContext openAIPoolSoftCooldownContext) string {
-	for _, candidate := range []string{
+	candidates := []string{
 		requestedModel,
 		cooldownContext.ProbeModel,
 		s.openAIPoolRecoveryProbeFallbackModel(ctx),
 		openai.DefaultTestModel,
-	} {
+	}
+	if openAIPoolCooldownShouldAvoidOriginalProbeModel(cooldownContext) {
+		candidates = []string{
+			s.openAIPoolRecoveryProbeFallbackModel(ctx),
+			openai.DefaultTestModel,
+		}
+	}
+	for _, candidate := range candidates {
 		model := strings.TrimSpace(candidate)
 		if model == "" {
 			continue
@@ -146,6 +222,14 @@ func (s *OpenAIGatewayService) resolveOpenAIPoolRecoveryProbeModel(ctx context.C
 		return model
 	}
 	return openai.DefaultTestModel
+}
+
+func openAIPoolCooldownShouldAvoidOriginalProbeModel(cooldownContext openAIPoolSoftCooldownContext) bool {
+	return isOpenAIPoolDownstreamRoutingOrClientConfigError(
+		cooldownContext.StatusCode,
+		cooldownContext.Reason,
+		[]byte(cooldownContext.LastProbeReason),
+	)
 }
 
 func (s *OpenAIGatewayService) openAIPoolRecoveryProbeFallbackModel(ctx context.Context) string {
