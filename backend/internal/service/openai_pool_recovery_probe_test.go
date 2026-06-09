@@ -171,11 +171,12 @@ func TestOpenAIPoolRecoveryProbe_DisabledImagePoolClearsExpiredCooldown(t *testi
 	require.Empty(t, upstream.path)
 }
 
-func TestOpenAIPoolRecoveryProbe_RoutingErrorSkipsFailedRequestedModel(t *testing.T) {
+func TestOpenAIPoolRecoveryProbe_RegularPoolAlwaysUsesDefaultTestModel(t *testing.T) {
 	upstream := &openAIPoolProbeHTTPUpstreamRecorder{}
 	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
+		cfg:            &config.Config{},
+		httpUpstream:   upstream,
+		settingService: openAIPoolRecoveryProbeTestSettingService(t, true, true),
 	}
 	account := &Account{
 		ID:       205,
@@ -189,9 +190,9 @@ func TestOpenAIPoolRecoveryProbe_RoutingErrorSkipsFailedRequestedModel(t *testin
 	}
 	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{
 		StatusCode: http.StatusBadGateway,
-		Reason:     "unknown provider customer-router for model user-typed-wrong-model",
+		Reason:     "temporary upstream failure",
 		ProbeKind:  "openai",
-		ProbeModel: "user-typed-wrong-model",
+		ProbeModel: "bad-probe-model",
 	})
 
 	result := svc.probeOpenAIPoolAccountRecovery(context.Background(), account, "user-typed-wrong-model")
@@ -200,6 +201,8 @@ func TestOpenAIPoolRecoveryProbe_RoutingErrorSkipsFailedRequestedModel(t *testin
 	require.Equal(t, "responses", result.endpoint)
 	require.Contains(t, upstream.body, `"model":"gpt-5.5"`)
 	require.NotContains(t, upstream.body, `"model":"user-typed-wrong-model"`)
+	require.NotContains(t, upstream.body, `"model":"bad-probe-model"`)
+	require.NotContains(t, upstream.body, `"model":"gpt-4o"`)
 }
 
 func TestOpenAIPoolRecoveryProbeTimeout_ImagesUseLongTimeout(t *testing.T) {

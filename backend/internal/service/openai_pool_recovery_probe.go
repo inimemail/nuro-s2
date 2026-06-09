@@ -199,28 +199,6 @@ func (s *OpenAIGatewayService) probeOpenAIPoolAccountRecovery(ctx context.Contex
 }
 
 func (s *OpenAIGatewayService) resolveOpenAIPoolRecoveryProbeModel(ctx context.Context, account *Account, requestedModel string, cooldownContext openAIPoolSoftCooldownContext) string {
-	candidates := []string{
-		requestedModel,
-		cooldownContext.ProbeModel,
-		s.openAIPoolRecoveryProbeFallbackModel(ctx),
-		openai.DefaultTestModel,
-	}
-	if openAIPoolCooldownShouldAvoidOriginalProbeModel(cooldownContext) {
-		candidates = []string{
-			s.openAIPoolRecoveryProbeFallbackModel(ctx),
-			openai.DefaultTestModel,
-		}
-	}
-	for _, candidate := range candidates {
-		model := strings.TrimSpace(candidate)
-		if model == "" {
-			continue
-		}
-		if resolved := strings.TrimSpace(resolveOpenAIForwardModel(account, model, "")); resolved != "" {
-			return resolved
-		}
-		return model
-	}
 	return openai.DefaultTestModel
 }
 

@@ -241,6 +241,27 @@ func TestOpenAIPoolFailoverSwitch_DownstreamRoutingErrorSkipsSoftCooldown(t *tes
 	require.False(t, svc.isOpenAIPoolAccountSoftCooling(account))
 }
 
+func TestOpenAIPoolFailoverSwitch_ClientConfig503SkipsSoftCooldownWithoutExplicitFlag(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          117,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "pool_mode_retry_status_codes": []any{float64(503)}},
+	}
+	body := []byte(`{"error":{"message":"503 请求体错误：可能与 re 开头错误、/v1 错误、Codex 自动审核或节点/TUN 模式有关"}}`)
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:             http.StatusServiceUnavailable,
+		ResponseBody:           body,
+		Message:                "503 请求体错误",
+		RetryableOnSameAccount: true,
+	}
+
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "gpt-5.5")
+
+	require.False(t, svc.isOpenAIPoolAccountSoftCooling(account))
+}
+
 func TestOpenAIPoolFailoverSwitch_UserModelErrorSkipsSoftCooldown(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{
