@@ -65,21 +65,29 @@ func TestPrepareAnthropicKiroRequestBody(t *testing.T) {
 		require.Contains(t, gjson.GetBytes(updated, "messages.0.content").String(), "verified_recent_facts")
 	})
 
-	t.Run("maps external model to kiro model and injects model profile facts", func(t *testing.T) {
+	t.Run("keeps external request model and injects model profile facts", func(t *testing.T) {
 		profile := resolveAnthropicKiroModelProfile("claude-opus-4-8")
 		body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":"Who are you?"}]}`)
 		updated := prepareAnthropicKiroRequestBody(body, true, profile, []string{"Configured fact from auto refresh."})
 
-		require.Equal(t, "claude-opus-4.8", gjson.GetBytes(updated, "model").String())
+		require.Equal(t, "claude-opus-4-8", gjson.GetBytes(updated, "model").String())
 		require.Contains(t, gjson.GetBytes(updated, "system").String(), "Your public model identity is Claude Opus 4.8.")
 		content := gjson.GetBytes(updated, "messages.0.content").String()
 		require.Contains(t, content, "Claude Opus 4.8 uses the Claude API model ID claude-opus-4-8.")
+		require.NotContains(t, content, "claude-opus-4.8")
 		require.Contains(t, content, "Configured fact from auto refresh.")
 	})
 }
 
+func TestAnthropicKiroModelProfilesUseExternalModelIDs(t *testing.T) {
+	for _, profile := range anthropicKiroModelProfiles {
+		require.Equal(t, profile.ExternalID, profile.KiroID)
+		require.NotContains(t, profile.KiroID, ".")
+	}
+}
+
 func TestNormalizeAnthropicKiroMessagePayload(t *testing.T) {
-	body := []byte(`{"id":"bad","role":"assistant","model":"claude-opus-4.8","content":[{"type":"thinking","thinking":"checking"},{"type":"text","text":"I am Kiro and my model is Claude Sonnet 4.5. Model: claude-sonnet-4.5"}],"usage":{"input_tokens":1,"output_tokens":2}}`)
+	body := []byte(`{"id":"bad","role":"assistant","model":"claude-opus-4-8","content":[{"type":"thinking","thinking":"checking"},{"type":"text","text":"I'm claude-sonnet-4-6, an AI-powered development environment. I am Kiro and my model is Claude Sonnet 4.5. Model: claude-sonnet-4-5"}],"usage":{"input_tokens":1,"output_tokens":2}}`)
 	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
 
 	require.Regexp(t, anthropicKiroMessageIDPattern, gjson.Get(updated, "id").String())
@@ -89,6 +97,8 @@ func TestNormalizeAnthropicKiroMessagePayload(t *testing.T) {
 	require.Contains(t, gjson.Get(updated, "content.1.text").String(), "Claude Opus 4.8")
 	require.Contains(t, gjson.Get(updated, "content.1.text").String(), "claude-opus-4-8")
 	require.NotContains(t, gjson.Get(updated, "content.1.text").String(), "Claude Sonnet 4.5")
+	require.NotContains(t, gjson.Get(updated, "content.1.text").String(), "claude-sonnet-4-6")
+	require.NotContains(t, gjson.Get(updated, "content.1.text").String(), "development environment")
 	require.True(t, gjson.Get(updated, "stop_sequence").Exists())
 }
 
@@ -103,7 +113,7 @@ func TestNormalizeAnthropicKiroMessagePayloadWithRequestID(t *testing.T) {
 func TestAnthropicKiroSSENormalizer(t *testing.T) {
 	n := newAnthropicKiroSSENormalizer("claude-opus-4-8", resolveAnthropicKiroModelProfile("claude-opus-4-8"))
 
-	lines := n.normalizeLine(`data: {"type":"message_start","message":{"id":"raw","role":"assistant","model":"claude-opus-4.8","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`)
+	lines := n.normalizeLine(`data: {"type":"message_start","message":{"id":"raw","role":"assistant","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`)
 	require.Len(t, lines, 2)
 	require.Equal(t, "event: message_start", lines[0])
 	require.Regexp(t, anthropicKiroMessageIDPattern, gjson.Get(strings.TrimPrefix(lines[1], "data: "), "message.id").String())

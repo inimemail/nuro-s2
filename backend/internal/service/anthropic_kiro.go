@@ -55,12 +55,16 @@ var (
 	anthropicKiroClaudeModelPattern  = regexp.MustCompile(`(?i)\bClaude\s+(Opus|Sonnet|Haiku)\s+([0-9]+(?:[.-][0-9]+)*)\b`)
 	anthropicKiroModelIDPattern      = regexp.MustCompile(`\bclaude-(?:opus|sonnet|haiku)-[0-9]+(?:[.-][0-9]+)*(?:-\d{8})?\b`)
 	anthropicKiroModelLinePattern    = regexp.MustCompile(`(?im)(模型|Model)\s*[:：]\s*([^\n\r]+)`)
+	anthropicKiroEnglishIDIntro      = regexp.MustCompile(`(?i)\b(I am|I'm)\s+claude-(?:opus|sonnet|haiku)-[0-9]+(?:[.-][0-9]+)*(?:-\d{8})?\b`)
+	anthropicKiroChineseIDIntro      = regexp.MustCompile(`我是\s*claude-(?:opus|sonnet|haiku)-[0-9]+(?:[.-][0-9]+)*(?:-\d{8})?`)
+	anthropicKiroDevEnvironmentEN    = regexp.MustCompile(`(?i)\ban AI-powered development environment\b`)
+	anthropicKiroDevEnvironmentZH    = regexp.MustCompile(`AI\s*驱动的开发环境`)
 )
 
 var anthropicKiroModelProfiles = []AnthropicKiroModelProfile{
 	{
 		ExternalID:       "claude-opus-4-8",
-		KiroID:           "claude-opus-4.8",
+		KiroID:           "claude-opus-4-8",
 		DisplayName:      "Claude Opus 4.8",
 		ContextWindow:    "1M tokens",
 		MaxOutput:        "128K tokens",
@@ -72,7 +76,7 @@ var anthropicKiroModelProfiles = []AnthropicKiroModelProfile{
 	},
 	{
 		ExternalID:       "claude-opus-4-7",
-		KiroID:           "claude-opus-4.7",
+		KiroID:           "claude-opus-4-7",
 		DisplayName:      "Claude Opus 4.7",
 		ContextWindow:    "1M tokens",
 		MaxOutput:        "128K tokens",
@@ -84,7 +88,7 @@ var anthropicKiroModelProfiles = []AnthropicKiroModelProfile{
 	},
 	{
 		ExternalID:       "claude-opus-4-6",
-		KiroID:           "claude-opus-4.6",
+		KiroID:           "claude-opus-4-6",
 		DisplayName:      "Claude Opus 4.6",
 		ContextWindow:    "1M tokens",
 		MaxOutput:        "128K tokens",
@@ -96,7 +100,7 @@ var anthropicKiroModelProfiles = []AnthropicKiroModelProfile{
 	},
 	{
 		ExternalID:       "claude-sonnet-4-6",
-		KiroID:           "claude-sonnet-4.6",
+		KiroID:           "claude-sonnet-4-6",
 		DisplayName:      "Claude Sonnet 4.6",
 		ContextWindow:    "1M tokens",
 		MaxOutput:        "64K tokens",
@@ -108,7 +112,7 @@ var anthropicKiroModelProfiles = []AnthropicKiroModelProfile{
 	},
 	{
 		ExternalID:       "claude-opus-4-5",
-		KiroID:           "claude-opus-4.5",
+		KiroID:           "claude-opus-4-5",
 		DisplayName:      "Claude Opus 4.5",
 		ContextWindow:    "1M tokens",
 		MaxOutput:        "64K tokens",
@@ -123,7 +127,7 @@ var anthropicKiroModelProfiles = []AnthropicKiroModelProfile{
 	},
 	{
 		ExternalID:       "claude-sonnet-4-5-20250929",
-		KiroID:           "claude-sonnet-4.5",
+		KiroID:           "claude-sonnet-4-5-20250929",
 		DisplayName:      "Claude Sonnet 4.5",
 		ContextWindow:    "200K tokens",
 		MaxOutput:        "64K tokens",
@@ -140,7 +144,7 @@ var anthropicKiroModelProfiles = []AnthropicKiroModelProfile{
 	},
 	{
 		ExternalID:       "claude-haiku-4-5-20251001",
-		KiroID:           "claude-haiku-4.5",
+		KiroID:           "claude-haiku-4-5-20251001",
 		DisplayName:      "Claude Haiku 4.5",
 		ContextWindow:    "200K tokens",
 		MaxOutput:        "64K tokens",
@@ -179,7 +183,6 @@ func prepareAnthropicKiroRequestBody(body []byte, includeIdentityGuard bool, pro
 	}
 	changed = convertAnthropicKiroPDFDocuments(payload) || changed
 	changed = appendAnthropicKiroRecentFacts(payload, profile, extraFacts) || changed
-	changed = rewriteAnthropicKiroRequestModel(payload, profile) || changed
 
 	if !changed {
 		return body
@@ -313,25 +316,6 @@ func anthropicKiroExternalModelFor(model string) string {
 	return strings.TrimSpace(model)
 }
 
-func anthropicKiroKiroModelFor(model string) string {
-	if profile := resolveAnthropicKiroModelProfile(model); profile != nil && strings.TrimSpace(profile.KiroID) != "" {
-		return profile.KiroID
-	}
-	return strings.TrimSpace(model)
-}
-
-func rewriteAnthropicKiroRequestModel(payload map[string]any, profile *AnthropicKiroModelProfile) bool {
-	if profile == nil || strings.TrimSpace(profile.KiroID) == "" {
-		return false
-	}
-	model, _ := payload["model"].(string)
-	if strings.TrimSpace(model) == "" || model == profile.KiroID {
-		return false
-	}
-	payload["model"] = profile.KiroID
-	return true
-}
-
 func sanitizeProviderLeakText(text string) string {
 	return sanitizeProviderLeakTextForProfile(text, nil)
 }
@@ -369,6 +353,10 @@ func sanitizeAnthropicKiroModelIdentityText(text string, profile *AnthropicKiroM
 	display := profile.DisplayName
 	externalID := strings.TrimSpace(profile.ExternalID)
 	text = anthropicKiroClaudeModelPattern.ReplaceAllString(text, display)
+	text = anthropicKiroEnglishIDIntro.ReplaceAllString(text, "${1} "+display)
+	text = anthropicKiroChineseIDIntro.ReplaceAllString(text, "我是 "+display)
+	text = anthropicKiroDevEnvironmentEN.ReplaceAllString(text, "an AI assistant")
+	text = anthropicKiroDevEnvironmentZH.ReplaceAllString(text, "AI 助手")
 	if externalID != "" {
 		text = anthropicKiroModelIDPattern.ReplaceAllStringFunc(text, func(match string) string {
 			if strings.HasPrefix(strings.ToLower(match), "claude-") {
@@ -815,15 +803,15 @@ func anthropicKiroDefaultKnowledgeFacts(profile *AnthropicKiroModelProfile) []st
 	facts := []string{
 		"The current date is June 9, 2026.",
 		"Anthropic's current Claude 4 family includes Claude Opus 4.8, Claude Sonnet 4.6, and Claude Haiku 4.5.",
-		"Claude Opus 4.8 uses the Claude API model ID claude-opus-4-8 and the Kiro internal model ID claude-opus-4.8.",
+		"Claude Opus 4.8 uses the Claude API model ID claude-opus-4-8.",
 		"Claude Opus 4.8 was released in May 2026, has a 1M token context window, supports up to 128K output tokens, and has a January 2026 reliable knowledge cutoff.",
-		"Claude Opus 4.7 uses the Claude API model ID claude-opus-4-7 and the Kiro internal model ID claude-opus-4.7.",
+		"Claude Opus 4.7 uses the Claude API model ID claude-opus-4-7.",
 		"Claude Opus 4.7 was released in April 2026, has a 1M token context window, and supports adaptive thinking.",
-		"Claude Opus 4.6 uses the Claude API model ID claude-opus-4-6 and the Kiro internal model ID claude-opus-4.6.",
+		"Claude Opus 4.6 uses the Claude API model ID claude-opus-4-6.",
 		"Claude Opus 4.6 was released in February 2026 and has a 1M token context window.",
-		"Claude Sonnet 4.6 uses the Claude API model ID claude-sonnet-4-6 and the Kiro internal model ID claude-sonnet-4.6.",
+		"Claude Sonnet 4.6 uses the Claude API model ID claude-sonnet-4-6.",
 		"Claude Sonnet 4.6 was released in February 2026 and has a 1M token context window.",
-		"Claude Haiku 4.5 uses the Claude API model ID claude-haiku-4-5-20251001 and the Kiro internal model ID claude-haiku-4.5.",
+		"Claude Haiku 4.5 uses the Claude API model ID claude-haiku-4-5-20251001.",
 		"Donald Trump is the 45th and 47th president of the United States.",
 		"JD Vance is the vice president of the United States.",
 		"The Milano Cortina 2026 Winter Olympics are scheduled for February 6-22, 2026.",
@@ -833,7 +821,6 @@ func anthropicKiroDefaultKnowledgeFacts(profile *AnthropicKiroModelProfile) []st
 		facts = append([]string{
 			fmt.Sprintf("For this request, the public model identity is %s.", profile.DisplayName),
 			fmt.Sprintf("%s uses the Claude API model ID %s.", profile.DisplayName, profile.ExternalID),
-			fmt.Sprintf("%s uses the Kiro internal model ID %s.", profile.DisplayName, profile.KiroID),
 			fmt.Sprintf("%s has a %s context window and supports up to %s output tokens.", profile.DisplayName, profile.ContextWindow, profile.MaxOutput),
 			fmt.Sprintf("%s was released in %s.", profile.DisplayName, profile.ReleaseDate),
 			fmt.Sprintf("%s has a reliable knowledge cutoff of %s and a training cutoff of %s.", profile.DisplayName, profile.KnowledgeCutoff, profile.TrainingCutoff),
@@ -935,8 +922,8 @@ func anthropicKiroModelFactsFromConfiguredValue(profile *AnthropicKiroModelProfi
 	thinking := firstAnthropicKiroString(obj, "thinking_features", "thinking")
 	facts := []string{
 		fmt.Sprintf("%s uses the Claude API model ID %s.", display, externalID),
-		fmt.Sprintf("%s uses the Kiro internal model ID %s.", display, kiroID),
 	}
+	_ = kiroID
 	if contextWindow != "" || maxOutput != "" {
 		facts = append(facts, fmt.Sprintf("%s has a %s context window and supports up to %s output tokens.", display, contextWindow, maxOutput))
 	}

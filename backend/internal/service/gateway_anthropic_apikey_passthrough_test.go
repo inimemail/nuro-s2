@@ -1438,7 +1438,7 @@ func TestGatewayService_AnthropicKiro_ForwardUsesPassthroughWithoutPassthroughFl
 				"Content-Type": []string{"application/json"},
 				"x-request-id": []string{"rid-anthropic-kiro"},
 			},
-			Body: io.NopCloser(strings.NewReader(`{"type":"message","model":"claude-opus-4.8","content":[{"type":"text","text":"I am Claude Sonnet 4.5"}],"usage":{"input_tokens":7,"output_tokens":5}}`)),
+			Body: io.NopCloser(strings.NewReader(`{"type":"message","model":"claude-opus-4-8","content":[{"type":"text","text":"I am Claude Sonnet 4.5"}],"usage":{"input_tokens":7,"output_tokens":5}}`)),
 		},
 	}
 
@@ -1477,7 +1477,7 @@ func TestGatewayService_AnthropicKiro_ForwardUsesPassthroughWithoutPassthroughFl
 	require.NotNil(t, result)
 	require.Equal(t, "upstream-anthropic-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "authorization"))
-	require.Equal(t, "claude-opus-4.8", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "claude-opus-4-8", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), anthropicKiroIdentityGuardMarker)
 	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), "Your public model identity is Claude Opus 4.8.")
 	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), "Keep answers brief.")
