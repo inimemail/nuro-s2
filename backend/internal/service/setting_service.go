@@ -110,6 +110,7 @@ type cachedGatewayForwardingSettings struct {
 	rewriteMessageCacheControl   bool
 	openAIPoolRecoveryProbe      bool
 	openAIImagePoolRecoveryProbe bool
+	anthropicPoolRecoveryProbe   bool
 	expiresAt                    int64 // unix nano
 }
 
@@ -911,6 +912,24 @@ func clampChannelMonitorInterval(v int) int {
 		return channelMonitorIntervalMax
 	}
 	return v
+}
+
+func clampInt(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if max > min && v > max {
+		return max
+	}
+	return v
+}
+
+func parsePositiveIntSetting(raw string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 // ChannelMonitorRuntime is the lightweight view of the channel monitor feature
@@ -1905,6 +1924,10 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyAllowUngroupedKeyScheduling] = strconv.FormatBool(settings.AllowUngroupedKeyScheduling)
 	updates[SettingKeyOpenAIPoolRecoveryProbeEnabled] = strconv.FormatBool(settings.OpenAIPoolRecoveryProbeEnabled)
 	updates[SettingKeyOpenAIImagePoolRecoveryProbeEnabled] = strconv.FormatBool(settings.OpenAIImagePoolRecoveryProbeEnabled)
+	updates[SettingKeyAnthropicPoolRecoveryProbeEnabled] = strconv.FormatBool(settings.AnthropicPoolRecoveryProbeEnabled)
+	updates[SettingKeyAnthropicPoolRecoveryProbeModel] = strings.TrimSpace(settings.AnthropicPoolRecoveryProbeModel)
+	updates[SettingKeyAnthropicPoolSoftCooldownMaxSeconds] = strconv.Itoa(clampInt(settings.AnthropicPoolSoftCooldownMaxSeconds, 1, 30))
+	updates[SettingKeyAnthropicPoolProbeTimeoutSeconds] = strconv.Itoa(clampInt(settings.AnthropicPoolProbeTimeoutSeconds, 1, 30))
 
 	// Backend Mode
 	updates[SettingKeyBackendModeEnabled] = strconv.FormatBool(settings.BackendModeEnabled)
@@ -2054,6 +2077,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		rewriteMessageCacheControl:   settings.RewriteMessageCacheControl,
 		openAIPoolRecoveryProbe:      settings.OpenAIPoolRecoveryProbeEnabled,
 		openAIImagePoolRecoveryProbe: settings.OpenAIImagePoolRecoveryProbeEnabled,
+		anthropicPoolRecoveryProbe:   settings.AnthropicPoolRecoveryProbeEnabled,
 		expiresAt:                    time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 	})
 	s.antigravityUAVersionSF.Forget("antigravity_user_agent_version")
@@ -2272,6 +2296,7 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
 type gatewayForwardingSettingsResult struct {
 	fp, mp, cch, cacheTTL1h, rewriteMessageCacheControl   bool
 	openAIPoolRecoveryProbe, openAIImagePoolRecoveryProbe bool
+	anthropicPoolRecoveryProbe                            bool
 }
 
 func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context) gatewayForwardingSettingsResult {
@@ -2285,6 +2310,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 				rewriteMessageCacheControl:   cached.rewriteMessageCacheControl,
 				openAIPoolRecoveryProbe:      cached.openAIPoolRecoveryProbe,
 				openAIImagePoolRecoveryProbe: cached.openAIImagePoolRecoveryProbe,
+				anthropicPoolRecoveryProbe:   cached.anthropicPoolRecoveryProbe,
 			}
 		}
 	}
@@ -2299,6 +2325,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 					rewriteMessageCacheControl:   cached.rewriteMessageCacheControl,
 					openAIPoolRecoveryProbe:      cached.openAIPoolRecoveryProbe,
 					openAIImagePoolRecoveryProbe: cached.openAIImagePoolRecoveryProbe,
+					anthropicPoolRecoveryProbe:   cached.anthropicPoolRecoveryProbe,
 				}, nil
 			}
 		}
@@ -2312,6 +2339,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			SettingKeyRewriteMessageCacheControl,
 			SettingKeyOpenAIPoolRecoveryProbeEnabled,
 			SettingKeyOpenAIImagePoolRecoveryProbeEnabled,
+			SettingKeyAnthropicPoolRecoveryProbeEnabled,
 		})
 		if err != nil {
 			slog.Warn("failed to get gateway forwarding settings", "error", err)
@@ -2323,9 +2351,10 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 				rewriteMessageCacheControl:   s.defaultRewriteMessageCacheControl(),
 				openAIPoolRecoveryProbe:      true,
 				openAIImagePoolRecoveryProbe: true,
+				anthropicPoolRecoveryProbe:   true,
 				expiresAt:                    time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
 			})
-			return gatewayForwardingSettingsResult{fp: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true}, nil
+			return gatewayForwardingSettingsResult{fp: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true, anthropicPoolRecoveryProbe: true}, nil
 		}
 		fp := true
 		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
@@ -2346,6 +2375,10 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if v, ok := values[SettingKeyOpenAIImagePoolRecoveryProbeEnabled]; ok && v != "" {
 			openAIImagePoolRecoveryProbe = v == "true"
 		}
+		anthropicPoolRecoveryProbe := true
+		if v, ok := values[SettingKeyAnthropicPoolRecoveryProbeEnabled]; ok && v != "" {
+			anthropicPoolRecoveryProbe = v == "true"
+		}
 		gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
 			fingerprintUnification:       fp,
 			metadataPassthrough:          mp,
@@ -2354,6 +2387,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			rewriteMessageCacheControl:   rewriteMessageCacheControl,
 			openAIPoolRecoveryProbe:      openAIPoolRecoveryProbe,
 			openAIImagePoolRecoveryProbe: openAIImagePoolRecoveryProbe,
+			anthropicPoolRecoveryProbe:   anthropicPoolRecoveryProbe,
 			expiresAt:                    time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 		})
 		return gatewayForwardingSettingsResult{
@@ -2364,12 +2398,13 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			rewriteMessageCacheControl:   rewriteMessageCacheControl,
 			openAIPoolRecoveryProbe:      openAIPoolRecoveryProbe,
 			openAIImagePoolRecoveryProbe: openAIImagePoolRecoveryProbe,
+			anthropicPoolRecoveryProbe:   anthropicPoolRecoveryProbe,
 		}, nil
 	})
 	if r, ok := val.(gatewayForwardingSettingsResult); ok {
 		return r
 	}
-	return gatewayForwardingSettingsResult{fp: true, openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true}
+	return gatewayForwardingSettingsResult{fp: true, openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true, anthropicPoolRecoveryProbe: true}
 }
 
 // GetGatewayForwardingSettings returns cached gateway forwarding settings.
@@ -2396,6 +2431,48 @@ func (s *SettingService) IsOpenAIPoolRecoveryProbeEnabled(ctx context.Context) b
 
 func (s *SettingService) IsOpenAIImagePoolRecoveryProbeEnabled(ctx context.Context) bool {
 	return s == nil || s.getGatewayForwardingSettingsCached(ctx).openAIImagePoolRecoveryProbe
+}
+
+func (s *SettingService) IsAnthropicPoolRecoveryProbeEnabled(ctx context.Context) bool {
+	return s == nil || s.getGatewayForwardingSettingsCached(ctx).anthropicPoolRecoveryProbe
+}
+
+func (s *SettingService) GetAnthropicPoolRecoveryProbeModel(ctx context.Context) string {
+	if s == nil || s.settingRepo == nil {
+		return anthropicPoolProbeDefaultModel
+	}
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyAnthropicPoolRecoveryProbeModel)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return anthropicPoolProbeDefaultModel
+	}
+	return strings.TrimSpace(value)
+}
+
+func (s *SettingService) GetAnthropicPoolSoftCooldownMax(ctx context.Context) time.Duration {
+	seconds := s.getPositiveSettingSeconds(ctx, SettingKeyAnthropicPoolSoftCooldownMaxSeconds, int(anthropicPoolSoftCooldownMaxDefault/time.Second))
+	seconds = clampInt(seconds, 1, 30)
+	return time.Duration(seconds) * time.Second
+}
+
+func (s *SettingService) GetAnthropicPoolProbeTimeout(ctx context.Context) time.Duration {
+	seconds := s.getPositiveSettingSeconds(ctx, SettingKeyAnthropicPoolProbeTimeoutSeconds, int(anthropicPoolRecoveryProbeDefaultTimeout/time.Second))
+	seconds = clampInt(seconds, 1, 30)
+	return time.Duration(seconds) * time.Second
+}
+
+func (s *SettingService) getPositiveSettingSeconds(ctx context.Context, key string, fallback int) int {
+	if s == nil || s.settingRepo == nil {
+		return fallback
+	}
+	value, err := s.settingRepo.GetValue(ctx, key)
+	if err != nil {
+		return fallback
+	}
+	seconds, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || seconds <= 0 {
+		return fallback
+	}
+	return seconds
 }
 
 // IsEmailVerifyEnabled 检查是否开启邮件验证
@@ -2882,6 +2959,10 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyAllowUngroupedKeyScheduling:         "false",
 		SettingKeyOpenAIPoolRecoveryProbeEnabled:      "true",
 		SettingKeyOpenAIImagePoolRecoveryProbeEnabled: "true",
+		SettingKeyAnthropicPoolRecoveryProbeEnabled:   "true",
+		SettingKeyAnthropicPoolRecoveryProbeModel:     anthropicPoolProbeDefaultModel,
+		SettingKeyAnthropicPoolSoftCooldownMaxSeconds: "30",
+		SettingKeyAnthropicPoolProbeTimeoutSeconds:    "5",
 		SettingKeyEnableAnthropicCacheTTL1hInjection:  "false",
 		SettingKeyRewriteMessageCacheControl:          strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
 		SettingKeyStreamLowLatencyMode:                s.defaultStreamLowLatencyMode(),
@@ -3400,6 +3481,16 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	if v, ok := settings[SettingKeyOpenAIImagePoolRecoveryProbeEnabled]; ok && v != "" {
 		result.OpenAIImagePoolRecoveryProbeEnabled = v == "true"
 	}
+	result.AnthropicPoolRecoveryProbeEnabled = true
+	if v, ok := settings[SettingKeyAnthropicPoolRecoveryProbeEnabled]; ok && v != "" {
+		result.AnthropicPoolRecoveryProbeEnabled = v == "true"
+	}
+	result.AnthropicPoolRecoveryProbeModel = strings.TrimSpace(settings[SettingKeyAnthropicPoolRecoveryProbeModel])
+	if result.AnthropicPoolRecoveryProbeModel == "" {
+		result.AnthropicPoolRecoveryProbeModel = anthropicPoolProbeDefaultModel
+	}
+	result.AnthropicPoolSoftCooldownMaxSeconds = clampInt(parsePositiveIntSetting(settings[SettingKeyAnthropicPoolSoftCooldownMaxSeconds], 30), 1, 30)
+	result.AnthropicPoolProbeTimeoutSeconds = clampInt(parsePositiveIntSetting(settings[SettingKeyAnthropicPoolProbeTimeoutSeconds], 5), 1, 30)
 
 	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false, cch_signing=false)
 	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {

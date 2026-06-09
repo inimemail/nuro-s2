@@ -62,6 +62,17 @@ type Account struct {
 	OpenAIPoolLastProbeReason        string
 	OpenAIPoolRecoveryProbeInFlight  bool
 
+	AnthropicPoolSoftCooldownUntil      *time.Time
+	AnthropicPoolSoftCooldownDue        bool
+	AnthropicPoolSoftCooldownStatusCode int
+	AnthropicPoolSoftCooldownReason     string
+	AnthropicPoolSoftCooldownProbeModel string
+	AnthropicPoolSoftCooldownProbeKind  string
+	AnthropicPoolSoftCooldownSource     string
+	AnthropicPoolLastProbeStatusCode    int
+	AnthropicPoolLastProbeReason        string
+	AnthropicPoolRecoveryProbeInFlight  bool
+
 	SessionWindowStart  *time.Time
 	SessionWindowEnd    *time.Time
 	SessionWindowStatus string

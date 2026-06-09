@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -627,6 +628,12 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+
+	anthropicPoolSoftCooldownUntil       sync.Map // key: int64(accountID), value: time.Time
+	anthropicPoolSoftCooldownContext     sync.Map // key: int64(accountID), value: anthropicPoolSoftCooldownContext
+	anthropicPoolRecoveryProbeInFlight   sync.Map // key: int64(accountID), value: struct{}
+	anthropicPoolRecoveryProbeFailureCnt sync.Map // key: int64(accountID), value: int
+	anthropicPoolRecoveryProbeAdminKick  sync.Map // key: int64(accountID), value: time.Time
 }
 
 // NewGatewayService creates a new GatewayService
@@ -2417,7 +2424,26 @@ func (s *GatewayService) isAccountSchedulableForModelSelection(ctx context.Conte
 	if account == nil {
 		return false
 	}
+	if s.shouldSkipAnthropicPoolCoolingAccount(ctx, account, requestedModel) {
+		return false
+	}
 	return account.IsSchedulableForModelWithContext(ctx, requestedModel)
+}
+
+func (s *GatewayService) shouldSkipAnthropicPoolCoolingAccount(ctx context.Context, account *Account, requestedModel string) bool {
+	if s == nil || !isAnthropicAPIKeyPoolAccount(account) {
+		return false
+	}
+	if !s.isAnthropicPoolAccountSoftCooling(account) {
+		return false
+	}
+	if s.isAnthropicPoolAccountSoftCooldownDue(account) {
+		if s.clearAnthropicPoolSoftCooldownIfRecoveryProbeDisabled(ctx, account, requestedModel) {
+			return false
+		}
+		s.maybeStartAnthropicPoolRecoveryProbe(context.Background(), account, requestedModel)
+	}
+	return true
 }
 
 // isAccountInGroup checks if the account belongs to the specified group.
@@ -4621,6 +4647,15 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
+			if isAnthropicAPIKeyPoolAccount(account) {
+				s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, http.StatusBadGateway, nil, anthropicPoolSoftCooldownContext{
+					ProbeModel:     reqModel,
+					ProbeKind:      "messages",
+					CooldownSource: "request_error",
+					StatusCode:     http.StatusBadGateway,
+					Reason:         safeErr,
+				})
+			}
 			c.JSON(http.StatusBadGateway, gin.H{
 				"type": "error",
 				"error": gin.H{
@@ -5108,6 +5143,15 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
+			if isAnthropicAPIKeyPoolAccount(account) {
+				s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, http.StatusBadGateway, nil, anthropicPoolSoftCooldownContext{
+					ProbeModel:     input.RequestModel,
+					ProbeKind:      "messages",
+					CooldownSource: "request_error",
+					StatusCode:     http.StatusBadGateway,
+					Reason:         safeErr,
+				})
+			}
 			c.JSON(http.StatusBadGateway, gin.H{
 				"type": "error",
 				"error": gin.H{
@@ -7349,6 +7393,27 @@ func (s *GatewayService) handleRetryExhaustedSideEffects(ctx context.Context, re
 
 func (s *GatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account, requestedModel ...string) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	model := ""
+	if len(requestedModel) > 0 {
+		model = requestedModel[0]
+	}
+	if isAnthropicAPIKeyPoolAccount(account) {
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
+		decision := classifyAnthropicPoolFailover(account, resp.StatusCode, upstreamMsg, body, model)
+		if decision.Failover && !decision.SkipSoftCooldown {
+			probeModel := strings.TrimSpace(decision.ProbeModel)
+			if probeModel == "" {
+				probeModel = model
+			}
+			s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, resp.StatusCode, body, anthropicPoolSoftCooldownContext{
+				ProbeModel:     probeModel,
+				ProbeKind:      firstNonEmptyString(decision.ProbeKind, "messages"),
+				CooldownSource: "upstream_failure",
+				StatusCode:     resp.StatusCode,
+				Reason:         firstNonEmptyString(upstreamMsg, decision.SoftCooldownMessage),
+			})
+		}
+	}
 	if len(requestedModel) > 0 {
 		s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, requestedModel[0])
 		return

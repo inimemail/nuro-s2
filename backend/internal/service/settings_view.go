@@ -186,6 +186,11 @@ type SystemSettings struct {
 	// OpenAI 池恢复探测：默认开启；关闭后软冷却到期直接恢复调度。
 	OpenAIPoolRecoveryProbeEnabled      bool
 	OpenAIImagePoolRecoveryProbeEnabled bool
+	// Anthropic API Key 池恢复探测：默认开启；关闭后软冷却到期直接恢复调度。
+	AnthropicPoolRecoveryProbeEnabled   bool
+	AnthropicPoolRecoveryProbeModel     string
+	AnthropicPoolSoftCooldownMaxSeconds int
+	AnthropicPoolProbeTimeoutSeconds    int
 
 	// Backend 模式：禁用用户注册和自助服务，仅管理员可登录
 	BackendModeEnabled bool

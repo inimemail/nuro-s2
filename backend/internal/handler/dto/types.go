@@ -197,6 +197,17 @@ type Account struct {
 	OpenAIPoolLastProbeReason        string     `json:"openai_pool_last_probe_reason,omitempty"`
 	OpenAIPoolRecoveryProbeInFlight  bool       `json:"openai_pool_recovery_probe_in_flight"`
 
+	AnthropicPoolSoftCooldownUntil      *time.Time `json:"anthropic_pool_soft_cooldown_until"`
+	AnthropicPoolSoftCooldownDue        bool       `json:"anthropic_pool_soft_cooldown_due"`
+	AnthropicPoolSoftCooldownStatusCode int        `json:"anthropic_pool_soft_cooldown_status_code,omitempty"`
+	AnthropicPoolSoftCooldownReason     string     `json:"anthropic_pool_soft_cooldown_reason,omitempty"`
+	AnthropicPoolSoftCooldownProbeModel string     `json:"anthropic_pool_soft_cooldown_probe_model,omitempty"`
+	AnthropicPoolSoftCooldownProbeKind  string     `json:"anthropic_pool_soft_cooldown_probe_kind,omitempty"`
+	AnthropicPoolSoftCooldownSource     string     `json:"anthropic_pool_soft_cooldown_source,omitempty"`
+	AnthropicPoolLastProbeStatusCode    int        `json:"anthropic_pool_last_probe_status_code,omitempty"`
+	AnthropicPoolLastProbeReason        string     `json:"anthropic_pool_last_probe_reason,omitempty"`
+	AnthropicPoolRecoveryProbeInFlight  bool       `json:"anthropic_pool_recovery_probe_in_flight"`
+
 	SessionWindowStart  *time.Time `json:"session_window_start"`
 	SessionWindowEnd    *time.Time `json:"session_window_end"`
 	SessionWindowStatus string     `json:"session_window_status"`

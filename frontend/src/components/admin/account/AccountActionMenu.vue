@@ -91,8 +91,19 @@ const isOpenAIPoolSoftCooling = computed(() => {
     untilMs <= Date.now()
   )
 })
+const isAnthropicPoolSoftCooling = computed(() => {
+  if (!props.account?.anthropic_pool_soft_cooldown_until) return false
+  const untilMs = new Date(props.account.anthropic_pool_soft_cooldown_until).getTime()
+  if (!Number.isFinite(untilMs)) return false
+  return (
+    new Date(props.account.anthropic_pool_soft_cooldown_until) > new Date() ||
+    props.account.anthropic_pool_soft_cooldown_due ||
+    props.account.anthropic_pool_recovery_probe_in_flight ||
+    untilMs <= Date.now()
+  )
+})
 const hasRecoverableState = computed(() => {
-  return props.account?.status === 'error' || Boolean(isRateLimited.value) || Boolean(isOverloaded.value) || Boolean(isTempUnschedulable.value) || isOpenAIPoolSoftCooling.value
+  return props.account?.status === 'error' || Boolean(isRateLimited.value) || Boolean(isOverloaded.value) || Boolean(isTempUnschedulable.value) || isOpenAIPoolSoftCooling.value || isAnthropicPoolSoftCooling.value
 })
 const hasProxyFallback = computed(() => Boolean(props.account?.proxy_fallback_origin_id))
 const isAntigravityOAuth = computed(() => props.account?.platform === 'antigravity' && props.account?.type === 'oauth')

@@ -13,7 +13,7 @@
     </div>
 
     <!-- OpenAI Pool Soft Cooldown Display -->
-    <div v-else-if="isOpenAIPoolSoftCooling" class="group/pool relative flex flex-col items-center gap-1">
+    <div v-else-if="isPoolSoftCooling" class="group/pool relative flex flex-col items-center gap-1">
       <span :class="['badge text-xs', openAIPoolSoftCooldownBadgeClass]">{{ openAIPoolSoftCooldownStatusText }}</span>
       <span v-if="openAIPoolSoftCooldownSubText" class="text-[11px] text-gray-400 dark:text-gray-500">
         {{ openAIPoolSoftCooldownSubText }}
@@ -336,6 +336,42 @@ const isOpenAIPoolSoftCooling = computed(() => {
   )
 })
 
+const isAnthropicPoolSoftCooling = computed(() => {
+  if (!props.account.anthropic_pool_soft_cooldown_until) return false
+  const untilMs = new Date(props.account.anthropic_pool_soft_cooldown_until).getTime()
+  if (!Number.isFinite(untilMs)) return false
+  return (
+    isAfterNow(props.account.anthropic_pool_soft_cooldown_until) ||
+    props.account.anthropic_pool_soft_cooldown_due ||
+    props.account.anthropic_pool_recovery_probe_in_flight ||
+    untilMs <= nowMs.value
+  )
+})
+
+const activePoolCooldown = computed(() => {
+  if (isAnthropicPoolSoftCooling.value) {
+    return {
+      until: props.account.anthropic_pool_soft_cooldown_until,
+      due: props.account.anthropic_pool_soft_cooldown_due,
+      probing: props.account.anthropic_pool_recovery_probe_in_flight,
+      statusCode: props.account.anthropic_pool_soft_cooldown_status_code,
+      reason: props.account.anthropic_pool_soft_cooldown_reason,
+    }
+  }
+  if (isOpenAIPoolSoftCooling.value) {
+    return {
+      until: props.account.openai_pool_soft_cooldown_until,
+      due: props.account.openai_pool_soft_cooldown_due,
+      probing: props.account.openai_pool_recovery_probe_in_flight,
+      statusCode: props.account.openai_pool_soft_cooldown_status_code,
+      reason: props.account.openai_pool_soft_cooldown_reason,
+    }
+  }
+  return null
+})
+
+const isPoolSoftCooling = computed(() => isOpenAIPoolSoftCooling.value || isAnthropicPoolSoftCooling.value)
+
 // Computed: has error status
 const hasError = computed(() => {
   return props.account.status === 'error'
@@ -369,41 +405,44 @@ const overloadCountdown = computed(() => {
 })
 
 const openAIPoolSoftCooldownStatusText = computed(() => {
-  if (props.account.openai_pool_recovery_probe_in_flight) {
+  const state = activePoolCooldown.value
+  if (state?.probing) {
     return t('admin.accounts.status.poolRecoveryProbing')
   }
-  if (props.account.openai_pool_soft_cooldown_due || !isAfterNow(props.account.openai_pool_soft_cooldown_until)) {
+  if (state?.due || !isAfterNow(state?.until)) {
     return t('admin.accounts.status.poolRecoveryPending')
   }
   return t('admin.accounts.status.poolSoftCooldown')
 })
 
 const openAIPoolSoftCooldownBadgeClass = computed(() => {
-  if (props.account.openai_pool_recovery_probe_in_flight) {
+  if (activePoolCooldown.value?.probing) {
     return 'badge-primary'
   }
   return 'badge-warning'
 })
 
 const openAIPoolSoftCooldownSubText = computed(() => {
-  if (props.account.openai_pool_recovery_probe_in_flight) {
+  const state = activePoolCooldown.value
+  if (state?.probing) {
     return t('admin.accounts.status.poolRecoveryProbingShort')
   }
-  if (props.account.openai_pool_soft_cooldown_due || !isAfterNow(props.account.openai_pool_soft_cooldown_until)) {
+  if (state?.due || !isAfterNow(state?.until)) {
     return t('admin.accounts.status.poolRecoveryPendingShort')
   }
-  const rawCountdown = formatCountdownSeconds(props.account.openai_pool_soft_cooldown_until)
+  const rawCountdown = formatCountdownSeconds(state?.until)
   const countdown = rawCountdown
     ? t('common.time.countdown.withSuffix', { time: rawCountdown })
-    : formatCountdownWithSuffix(props.account.openai_pool_soft_cooldown_until)
+    : formatCountdownWithSuffix(state?.until)
   if (!countdown) return ''
   return t('admin.accounts.status.poolSoftCooldownAutoProbe', { time: countdown })
 })
 
 const openAIPoolSoftCooldownTooltip = computed(() => {
-  if (!isOpenAIPoolSoftCooling.value) return ''
-  const code = props.account.openai_pool_soft_cooldown_status_code
-  const reason = props.account.openai_pool_soft_cooldown_reason?.trim()
+  const state = activePoolCooldown.value
+  if (!state) return ''
+  const code = state.statusCode
+  const reason = state.reason?.trim()
   if (code && reason) {
     return t('admin.accounts.status.poolSoftCooldownReasonWithCode', { code, reason })
   }

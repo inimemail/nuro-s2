@@ -10,10 +10,10 @@ import (
 const (
 	openAIAccountStateUpdateTimeout       = 5 * time.Second
 	openAIOAuth429FallbackCooldown        = 5 * time.Second
-	openAIPoolSoftCooldownDefault         = 10 * time.Second
-	openAIPoolSoftCooldownAuth            = time.Minute
-	openAIPoolSoftCooldownServerError     = 30 * time.Second
-	openAIPoolSoftCooldownMax             = time.Minute
+	openAIPoolSoftCooldownDefault         = 5 * time.Second
+	openAIPoolSoftCooldownAuth            = 30 * time.Second
+	openAIPoolSoftCooldownServerError     = 5 * time.Second
+	openAIPoolSoftCooldownMax             = 30 * time.Second
 	openAIStopSchedulingBridgeCooldown    = 2 * time.Minute
 	openAIOAuth429StormWindow             = 10 * time.Second
 	openAIOAuth429StormThreshold          = 20

@@ -5705,7 +5705,12 @@ export default {
         openAIPoolRecoveryProbe: 'Enable Non-Image Pool Recovery Probe',
         openAIPoolRecoveryProbeHint: 'When enabled, non-image pool accounts recover only after a successful probe when soft cooldown expires. When disabled, they recover directly.',
         openAIImagePoolRecoveryProbe: 'Enable Image Pool Recovery Probe',
-        openAIImagePoolRecoveryProbeHint: 'When enabled, image pool accounts recover only after a successful probe when soft cooldown expires. When disabled, they recover directly.'
+        openAIImagePoolRecoveryProbeHint: 'When enabled, image pool accounts recover only after a successful probe when soft cooldown expires. When disabled, they recover directly.',
+        anthropicPoolRecoveryProbe: 'Enable Anthropic API Key Pool Recovery Probe',
+        anthropicPoolRecoveryProbeHint: 'When enabled, Anthropic API Key pool accounts recover only after a successful probe when soft cooldown expires. When disabled, they recover directly.',
+        anthropicPoolProbeModel: 'Anthropic Probe Model',
+        anthropicPoolSoftCooldownMax: 'Anthropic Max Soft Cooldown Seconds',
+        anthropicPoolProbeTimeout: 'Anthropic Probe Timeout Seconds'
       },
       gatewayForwarding: {
         title: 'Request Forwarding',

@@ -2561,35 +2561,62 @@ type openAIPoolRecoveryProbeAdminKicker interface {
 	MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account)
 }
 
+type anthropicPoolSoftCooldownStateReader interface {
+	AnthropicPoolSoftCooldownState(accountID int64) AnthropicPoolSoftCooldownState
+}
+
+type anthropicPoolRecoveryProbeAdminKicker interface {
+	MaybeKickAnthropicPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account)
+}
+
 func (s *adminServiceImpl) attachAccountRuntimeState(ctx context.Context, account *Account) {
 	if s == nil || account == nil || s.runtimeBlocker == nil {
 		return
 	}
-	reader, ok := s.runtimeBlocker.(openAIPoolSoftCooldownStateReader)
-	if !ok {
-		return
-	}
-	state := reader.OpenAIPoolSoftCooldownState(account.ID)
-	if !state.Cooling {
-		return
-	}
-	if state.Due && !state.ProbeInFlight {
-		if kicker, ok := s.runtimeBlocker.(openAIPoolRecoveryProbeAdminKicker); ok {
-			kicker.MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx, account)
-			state = reader.OpenAIPoolSoftCooldownState(account.ID)
+	if reader, ok := s.runtimeBlocker.(openAIPoolSoftCooldownStateReader); ok {
+		state := reader.OpenAIPoolSoftCooldownState(account.ID)
+		if state.Cooling {
+			if state.Due && !state.ProbeInFlight {
+				if kicker, ok := s.runtimeBlocker.(openAIPoolRecoveryProbeAdminKicker); ok {
+					kicker.MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx, account)
+					state = reader.OpenAIPoolSoftCooldownState(account.ID)
+				}
+			}
+			until := state.Until
+			account.OpenAIPoolSoftCooldownUntil = &until
+			account.OpenAIPoolSoftCooldownDue = state.Due
+			account.OpenAIPoolSoftCooldownStatusCode = state.StatusCode
+			account.OpenAIPoolSoftCooldownReason = state.Reason
+			account.OpenAIPoolSoftCooldownProbeModel = state.ProbeModel
+			account.OpenAIPoolSoftCooldownProbeKind = state.ProbeKind
+			account.OpenAIPoolSoftCooldownSource = state.CooldownSource
+			account.OpenAIPoolLastProbeStatusCode = state.LastProbeStatus
+			account.OpenAIPoolLastProbeReason = state.LastProbeReason
+			account.OpenAIPoolRecoveryProbeInFlight = state.ProbeInFlight
 		}
 	}
-	until := state.Until
-	account.OpenAIPoolSoftCooldownUntil = &until
-	account.OpenAIPoolSoftCooldownDue = state.Due
-	account.OpenAIPoolSoftCooldownStatusCode = state.StatusCode
-	account.OpenAIPoolSoftCooldownReason = state.Reason
-	account.OpenAIPoolSoftCooldownProbeModel = state.ProbeModel
-	account.OpenAIPoolSoftCooldownProbeKind = state.ProbeKind
-	account.OpenAIPoolSoftCooldownSource = state.CooldownSource
-	account.OpenAIPoolLastProbeStatusCode = state.LastProbeStatus
-	account.OpenAIPoolLastProbeReason = state.LastProbeReason
-	account.OpenAIPoolRecoveryProbeInFlight = state.ProbeInFlight
+	if reader, ok := s.runtimeBlocker.(anthropicPoolSoftCooldownStateReader); ok {
+		state := reader.AnthropicPoolSoftCooldownState(account.ID)
+		if state.Cooling {
+			if state.Due && !state.ProbeInFlight {
+				if kicker, ok := s.runtimeBlocker.(anthropicPoolRecoveryProbeAdminKicker); ok {
+					kicker.MaybeKickAnthropicPoolRecoveryProbeFromAdminList(ctx, account)
+					state = reader.AnthropicPoolSoftCooldownState(account.ID)
+				}
+			}
+			until := state.Until
+			account.AnthropicPoolSoftCooldownUntil = &until
+			account.AnthropicPoolSoftCooldownDue = state.Due
+			account.AnthropicPoolSoftCooldownStatusCode = state.StatusCode
+			account.AnthropicPoolSoftCooldownReason = state.Reason
+			account.AnthropicPoolSoftCooldownProbeModel = state.ProbeModel
+			account.AnthropicPoolSoftCooldownProbeKind = state.ProbeKind
+			account.AnthropicPoolSoftCooldownSource = state.CooldownSource
+			account.AnthropicPoolLastProbeStatusCode = state.LastProbeStatus
+			account.AnthropicPoolLastProbeReason = state.LastProbeReason
+			account.AnthropicPoolRecoveryProbeInFlight = state.ProbeInFlight
+		}
+	}
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {

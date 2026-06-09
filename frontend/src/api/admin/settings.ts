@@ -553,6 +553,10 @@ export interface SystemSettings {
   allow_ungrouped_key_scheduling: boolean;
   openai_pool_recovery_probe_enabled: boolean;
   openai_image_pool_recovery_probe_enabled: boolean;
+  anthropic_pool_recovery_probe_enabled: boolean;
+  anthropic_pool_recovery_probe_model: string;
+  anthropic_pool_soft_cooldown_max_seconds: number;
+  anthropic_pool_probe_timeout_seconds: number;
 
   // Gateway forwarding behavior
   enable_fingerprint_unification: boolean;
@@ -793,6 +797,10 @@ export interface UpdateSettingsRequest {
   allow_ungrouped_key_scheduling?: boolean;
   openai_pool_recovery_probe_enabled?: boolean;
   openai_image_pool_recovery_probe_enabled?: boolean;
+  anthropic_pool_recovery_probe_enabled?: boolean;
+  anthropic_pool_recovery_probe_model?: string;
+  anthropic_pool_soft_cooldown_max_seconds?: number;
+  anthropic_pool_probe_timeout_seconds?: number;
   enable_fingerprint_unification?: boolean;
   enable_metadata_passthrough?: boolean;
   enable_cch_signing?: boolean;

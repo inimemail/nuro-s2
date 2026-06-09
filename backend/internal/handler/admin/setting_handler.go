@@ -250,6 +250,10 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		AllowUngroupedKeyScheduling:            settings.AllowUngroupedKeyScheduling,
 		OpenAIPoolRecoveryProbeEnabled:         settings.OpenAIPoolRecoveryProbeEnabled,
 		OpenAIImagePoolRecoveryProbeEnabled:    settings.OpenAIImagePoolRecoveryProbeEnabled,
+		AnthropicPoolRecoveryProbeEnabled:      settings.AnthropicPoolRecoveryProbeEnabled,
+		AnthropicPoolRecoveryProbeModel:        settings.AnthropicPoolRecoveryProbeModel,
+		AnthropicPoolSoftCooldownMaxSeconds:    settings.AnthropicPoolSoftCooldownMaxSeconds,
+		AnthropicPoolProbeTimeoutSeconds:       settings.AnthropicPoolProbeTimeoutSeconds,
 		BackendModeEnabled:                     settings.BackendModeEnabled,
 		EnableFingerprintUnification:           settings.EnableFingerprintUnification,
 		EnableMetadataPassthrough:              settings.EnableMetadataPassthrough,
@@ -576,9 +580,13 @@ type UpdateSettingsRequest struct {
 	MaxClaudeCodeVersion string `json:"max_claude_code_version"`
 
 	// 分组隔离
-	AllowUngroupedKeyScheduling         bool  `json:"allow_ungrouped_key_scheduling"`
-	OpenAIPoolRecoveryProbeEnabled      *bool `json:"openai_pool_recovery_probe_enabled"`
-	OpenAIImagePoolRecoveryProbeEnabled *bool `json:"openai_image_pool_recovery_probe_enabled"`
+	AllowUngroupedKeyScheduling         bool    `json:"allow_ungrouped_key_scheduling"`
+	OpenAIPoolRecoveryProbeEnabled      *bool   `json:"openai_pool_recovery_probe_enabled"`
+	OpenAIImagePoolRecoveryProbeEnabled *bool   `json:"openai_image_pool_recovery_probe_enabled"`
+	AnthropicPoolRecoveryProbeEnabled   *bool   `json:"anthropic_pool_recovery_probe_enabled"`
+	AnthropicPoolRecoveryProbeModel     *string `json:"anthropic_pool_recovery_probe_model"`
+	AnthropicPoolSoftCooldownMaxSeconds *int    `json:"anthropic_pool_soft_cooldown_max_seconds"`
+	AnthropicPoolProbeTimeoutSeconds    *int    `json:"anthropic_pool_probe_timeout_seconds"`
 
 	// Backend Mode
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
@@ -1610,6 +1618,30 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.OpenAIImagePoolRecoveryProbeEnabled
 		}(),
+		AnthropicPoolRecoveryProbeEnabled: func() bool {
+			if req.AnthropicPoolRecoveryProbeEnabled != nil {
+				return *req.AnthropicPoolRecoveryProbeEnabled
+			}
+			return previousSettings.AnthropicPoolRecoveryProbeEnabled
+		}(),
+		AnthropicPoolRecoveryProbeModel: func() string {
+			if req.AnthropicPoolRecoveryProbeModel != nil {
+				return *req.AnthropicPoolRecoveryProbeModel
+			}
+			return previousSettings.AnthropicPoolRecoveryProbeModel
+		}(),
+		AnthropicPoolSoftCooldownMaxSeconds: func() int {
+			if req.AnthropicPoolSoftCooldownMaxSeconds != nil {
+				return *req.AnthropicPoolSoftCooldownMaxSeconds
+			}
+			return previousSettings.AnthropicPoolSoftCooldownMaxSeconds
+		}(),
+		AnthropicPoolProbeTimeoutSeconds: func() int {
+			if req.AnthropicPoolProbeTimeoutSeconds != nil {
+				return *req.AnthropicPoolProbeTimeoutSeconds
+			}
+			return previousSettings.AnthropicPoolProbeTimeoutSeconds
+		}(),
 		BackendModeEnabled: req.BackendModeEnabled,
 		OpsMonitoringEnabled: func() bool {
 			if req.OpsMonitoringEnabled != nil {
@@ -2074,6 +2106,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AllowUngroupedKeyScheduling:            updatedSettings.AllowUngroupedKeyScheduling,
 		OpenAIPoolRecoveryProbeEnabled:         updatedSettings.OpenAIPoolRecoveryProbeEnabled,
 		OpenAIImagePoolRecoveryProbeEnabled:    updatedSettings.OpenAIImagePoolRecoveryProbeEnabled,
+		AnthropicPoolRecoveryProbeEnabled:      updatedSettings.AnthropicPoolRecoveryProbeEnabled,
+		AnthropicPoolRecoveryProbeModel:        updatedSettings.AnthropicPoolRecoveryProbeModel,
+		AnthropicPoolSoftCooldownMaxSeconds:    updatedSettings.AnthropicPoolSoftCooldownMaxSeconds,
+		AnthropicPoolProbeTimeoutSeconds:       updatedSettings.AnthropicPoolProbeTimeoutSeconds,
 		BackendModeEnabled:                     updatedSettings.BackendModeEnabled,
 		EnableFingerprintUnification:           updatedSettings.EnableFingerprintUnification,
 		EnableMetadataPassthrough:              updatedSettings.EnableMetadataPassthrough,
@@ -2517,6 +2553,18 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.OpenAIImagePoolRecoveryProbeEnabled != after.OpenAIImagePoolRecoveryProbeEnabled {
 		changed = append(changed, "openai_image_pool_recovery_probe_enabled")
+	}
+	if before.AnthropicPoolRecoveryProbeEnabled != after.AnthropicPoolRecoveryProbeEnabled {
+		changed = append(changed, "anthropic_pool_recovery_probe_enabled")
+	}
+	if before.AnthropicPoolRecoveryProbeModel != after.AnthropicPoolRecoveryProbeModel {
+		changed = append(changed, "anthropic_pool_recovery_probe_model")
+	}
+	if before.AnthropicPoolSoftCooldownMaxSeconds != after.AnthropicPoolSoftCooldownMaxSeconds {
+		changed = append(changed, "anthropic_pool_soft_cooldown_max_seconds")
+	}
+	if before.AnthropicPoolProbeTimeoutSeconds != after.AnthropicPoolProbeTimeoutSeconds {
+		changed = append(changed, "anthropic_pool_probe_timeout_seconds")
 	}
 	if before.BackendModeEnabled != after.BackendModeEnabled {
 		changed = append(changed, "backend_mode_enabled")

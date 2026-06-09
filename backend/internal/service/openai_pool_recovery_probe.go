@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	openAIPoolRecoveryProbeTimeout         = 8 * time.Second
+	openAIPoolRecoveryProbeTimeout         = 5 * time.Second
 	openAIPoolRecoveryProbeImageTimeout    = 6 * time.Minute
 	openAIPoolRecoveryProbeDefaultBackoff  = 5 * time.Second
-	openAIPoolRecoveryProbeMaxBackoff      = 60 * time.Second
+	openAIPoolRecoveryProbeMaxBackoff      = 30 * time.Second
 	openAIPoolRecoveryProbeAdminKickEvery  = 5 * time.Second
 	openAIPoolRecoveryProbeReadLimit       = 1 << 20
 	openAIPoolRecoveryProbeMaxOutputTokens = 8

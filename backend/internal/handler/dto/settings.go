@@ -172,9 +172,13 @@ type SystemSettings struct {
 	MaxClaudeCodeVersion string `json:"max_claude_code_version"`
 
 	// 分组隔离
-	AllowUngroupedKeyScheduling         bool `json:"allow_ungrouped_key_scheduling"`
-	OpenAIPoolRecoveryProbeEnabled      bool `json:"openai_pool_recovery_probe_enabled"`
-	OpenAIImagePoolRecoveryProbeEnabled bool `json:"openai_image_pool_recovery_probe_enabled"`
+	AllowUngroupedKeyScheduling         bool   `json:"allow_ungrouped_key_scheduling"`
+	OpenAIPoolRecoveryProbeEnabled      bool   `json:"openai_pool_recovery_probe_enabled"`
+	OpenAIImagePoolRecoveryProbeEnabled bool   `json:"openai_image_pool_recovery_probe_enabled"`
+	AnthropicPoolRecoveryProbeEnabled   bool   `json:"anthropic_pool_recovery_probe_enabled"`
+	AnthropicPoolRecoveryProbeModel     string `json:"anthropic_pool_recovery_probe_model"`
+	AnthropicPoolSoftCooldownMaxSeconds int    `json:"anthropic_pool_soft_cooldown_max_seconds"`
+	AnthropicPoolProbeTimeoutSeconds    int    `json:"anthropic_pool_probe_timeout_seconds"`
 
 	// Backend Mode
 	BackendModeEnabled bool `json:"backend_mode_enabled"`

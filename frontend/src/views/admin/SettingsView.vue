@@ -3796,6 +3796,58 @@
                   <label
                     class="text-sm font-medium text-gray-700 dark:text-gray-300"
                   >
+                    {{ t("admin.settings.scheduling.anthropicPoolRecoveryProbe") }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.scheduling.anthropicPoolRecoveryProbeHint") }}
+                  </p>
+                </div>
+                <Toggle v-model="form.anthropic_pool_recovery_probe_enabled" />
+              </div>
+
+              <div class="grid gap-4 md:grid-cols-3">
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.scheduling.anthropicPoolProbeModel") }}
+                  </label>
+                  <input
+                    v-model="form.anthropic_pool_recovery_probe_model"
+                    type="text"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                    placeholder="claude-sonnet-4-6"
+                  />
+                </div>
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.scheduling.anthropicPoolSoftCooldownMax") }}
+                  </label>
+                  <input
+                    v-model.number="form.anthropic_pool_soft_cooldown_max_seconds"
+                    type="number"
+                    min="1"
+                    max="30"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.scheduling.anthropicPoolProbeTimeout") }}
+                  </label>
+                  <input
+                    v-model.number="form.anthropic_pool_probe_timeout_seconds"
+                    type="number"
+                    min="1"
+                    max="30"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between">
+                <div>
+                  <label
+                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
                     {{ t("admin.settings.openaiExperimentalScheduler.title") }}
                   </label>
                   <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
@@ -7227,6 +7279,10 @@ const form = reactive<SettingsForm>({
   allow_ungrouped_key_scheduling: false,
   openai_pool_recovery_probe_enabled: true,
   openai_image_pool_recovery_probe_enabled: true,
+  anthropic_pool_recovery_probe_enabled: true,
+  anthropic_pool_recovery_probe_model: "claude-sonnet-4-6",
+  anthropic_pool_soft_cooldown_max_seconds: 30,
+  anthropic_pool_probe_timeout_seconds: 5,
   openai_advanced_scheduler_enabled: false,
   // Gateway forwarding behavior
   enable_fingerprint_unification: true,
@@ -7842,6 +7898,11 @@ function parseTablePageSizeOptionsInput(raw: string): number[] | null {
   return deduped;
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
 async function loadSettings() {
   loading.value = true;
   loadFailed.value = false;
@@ -8344,6 +8405,14 @@ async function saveSettings() {
         form.openai_pool_recovery_probe_enabled,
       openai_image_pool_recovery_probe_enabled:
         form.openai_image_pool_recovery_probe_enabled,
+      anthropic_pool_recovery_probe_enabled:
+        form.anthropic_pool_recovery_probe_enabled,
+      anthropic_pool_recovery_probe_model:
+        form.anthropic_pool_recovery_probe_model?.trim() || "claude-sonnet-4-6",
+      anthropic_pool_soft_cooldown_max_seconds:
+        clampNumber(Number(form.anthropic_pool_soft_cooldown_max_seconds) || 30, 1, 30),
+      anthropic_pool_probe_timeout_seconds:
+        clampNumber(Number(form.anthropic_pool_probe_timeout_seconds) || 5, 1, 30),
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
       enable_cch_signing: form.enable_cch_signing,

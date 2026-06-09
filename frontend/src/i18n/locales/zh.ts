@@ -5859,7 +5859,12 @@ export default {
         openAIPoolRecoveryProbe: '非图片池启用恢复探测',
         openAIPoolRecoveryProbeHint: '开启后，非图片池账号软冷却到期需探测成功才恢复；关闭后到期直接恢复调度。',
         openAIImagePoolRecoveryProbe: '图片池启用恢复探测',
-        openAIImagePoolRecoveryProbeHint: '开启后，图片池账号软冷却到期需探测成功才恢复；关闭后到期直接恢复调度。'
+        openAIImagePoolRecoveryProbeHint: '开启后，图片池账号软冷却到期需探测成功才恢复；关闭后到期直接恢复调度。',
+        anthropicPoolRecoveryProbe: 'Anthropic API Key 池启用恢复探测',
+        anthropicPoolRecoveryProbeHint: '开启后，Anthropic API Key 池账号软冷却到期需探测成功才恢复；关闭后到期直接恢复调度。',
+        anthropicPoolProbeModel: 'Anthropic 探测模型',
+        anthropicPoolSoftCooldownMax: 'Anthropic 最大软冷却秒数',
+        anthropicPoolProbeTimeout: 'Anthropic 探测超时秒数'
       },
       gatewayForwarding: {
         title: '请求转发行为',
