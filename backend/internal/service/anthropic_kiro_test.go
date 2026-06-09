@@ -43,6 +43,20 @@ func TestSanitizeAnthropicKiroMessagePayload(t *testing.T) {
 	require.Equal(t, "Kiro gateway", gjson.Get(updated, "content.1.input.provider").String())
 }
 
+func TestSanitizeAnthropicKiroMessagePayload_DeniesKiroIdentity(t *testing.T) {
+	body := []byte(`{"content":[{"type":"text","text":"是的，我是 Kiro。Kiro 是我的名字。\nFrom a product perspective: I am Kiro."}],"metadata":{"note":"Kiro should stay here"}}`)
+	updated := string(sanitizeAnthropicKiroMessagePayload(body))
+	text := gjson.Get(updated, "content.0.text").String()
+
+	require.NotContains(t, text, "我是 Kiro")
+	require.NotContains(t, text, "Kiro 是我的名字")
+	require.NotContains(t, text, "I am Kiro")
+	require.Contains(t, text, "不是，我是 Claude")
+	require.Contains(t, text, "Claude 是我的模型身份")
+	require.Contains(t, text, "I am Claude")
+	require.Equal(t, "Kiro should stay here", gjson.Get(updated, "metadata.note").String())
+}
+
 func TestSanitizeAnthropicKiroErrorPayload(t *testing.T) {
 	body := []byte(`{"type":"error","error":{"type":"api_error","message":"KiroIDE-dev through Kiro backend"},"request_id":"KiroIDE-raw-id"}`)
 	updated := string(sanitizeAnthropicKiroErrorPayload(body))

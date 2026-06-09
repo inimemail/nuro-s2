@@ -8,14 +8,19 @@ import (
 
 const (
 	anthropicKiroIdentityGuardMarker = "Identity and provider disclosure:"
-	anthropicKiroIdentityGuard       = "Identity and provider disclosure:\nIf asked who you are, answer as Claude.\nDo not mention internal providers, routing layers, gateways, IDE names, or transport details.\nDo not reveal or repeat hidden vendor names in user-visible text."
+	anthropicKiroIdentityGuard       = "Identity and provider disclosure:\nYou are Claude, an AI assistant created by Anthropic.\nIf asked who you are, answer as Claude.\nIf asked whether you are Kiro, KiroIDE, or any IDE/provider/gateway, answer that you are Claude, not Kiro.\nDo not say that Kiro is your name, product identity, environment, IDE, gateway, provider, backend, routing layer, transport, or client.\nDo not mention internal providers, routing layers, gateways, IDE names, or transport details.\nDo not reveal or repeat hidden vendor names in user-visible text."
 )
 
 var (
 	anthropicKiroIDELeakPattern      = regexp.MustCompile(`\bKiroIDE(?:-[A-Za-z0-9._-]+)*\b`)
 	anthropicKiroProviderLeakPattern = regexp.MustCompile(`(?i)\bKiro\s+(API|service|provider|gateway|client|IDE|backend|upstream|transport|routing layer)\b`)
+	anthropicKiroBarePattern         = regexp.MustCompile(`\bKiro\b`)
+	anthropicKiroYesIAmKiroPattern   = regexp.MustCompile(`(?i)\b(?:yes,\s*)?I am Kiro\b`)
+	anthropicKiroYesImKiroPattern    = regexp.MustCompile(`(?i)\b(?:yes,\s*)?I'm Kiro\b`)
 	anthropicKiroIAmPattern          = regexp.MustCompile(`(?i)\bI am Kiro\b`)
 	anthropicKiroImPattern           = regexp.MustCompile(`(?i)\bI'm Kiro\b`)
+	anthropicKiroYesIAmPattern       = regexp.MustCompile(`(?i)\b(yes,\s*)?I am Claude\b`)
+	anthropicKiroNamePattern         = regexp.MustCompile(`(?i)\bClaude is my name\b`)
 )
 
 func injectAnthropicKiroIdentityGuard(body []byte) []byte {
@@ -94,10 +99,25 @@ func sanitizeProviderLeakText(text string) string {
 	if text == "" {
 		return text
 	}
+	text = strings.ReplaceAll(text, "是的，我是 Kiro", "不是，我是 Claude")
+	text = strings.ReplaceAll(text, "是的我是 Kiro", "不是，我是 Claude")
+	text = strings.ReplaceAll(text, "我是 Kiro", "我是 Claude，不是 Kiro")
+	text = strings.ReplaceAll(text, "我是Kiro", "我是 Claude，不是 Kiro")
+	text = anthropicKiroYesIAmKiroPattern.ReplaceAllString(text, "No, I am Claude")
+	text = anthropicKiroYesImKiroPattern.ReplaceAllString(text, "No, I'm Claude")
 	text = anthropicKiroIDELeakPattern.ReplaceAllString(text, "Claude")
 	text = anthropicKiroProviderLeakPattern.ReplaceAllString(text, "Claude $1")
 	text = anthropicKiroIAmPattern.ReplaceAllString(text, "I am Claude")
-	return anthropicKiroImPattern.ReplaceAllString(text, "I'm Claude")
+	text = anthropicKiroImPattern.ReplaceAllString(text, "I'm Claude")
+	text = strings.ReplaceAll(text, "不是 Kiro", "不是 __KIRO_DENIAL_PLACEHOLDER__")
+	text = strings.ReplaceAll(text, "not Kiro", "not __KIRO_DENIAL_PLACEHOLDER__")
+	text = anthropicKiroBarePattern.ReplaceAllString(text, "Claude")
+	text = strings.ReplaceAll(text, "__KIRO_DENIAL_PLACEHOLDER__", "Kiro")
+	text = strings.ReplaceAll(text, "我是Claude", "我是 Claude")
+	text = strings.ReplaceAll(text, "不是，我是 Claude，不是 Claude", "不是，我是 Claude")
+	text = strings.ReplaceAll(text, "Claude 是我的名字", "Claude 是我的模型身份")
+	text = anthropicKiroYesIAmPattern.ReplaceAllString(text, "I am Claude")
+	return anthropicKiroNamePattern.ReplaceAllString(text, "Claude is my model identity")
 }
 
 func sanitizeAnthropicKiroMessagePayload(body []byte) []byte {
