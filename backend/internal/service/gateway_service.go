@@ -5248,7 +5248,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		firstTokenMs = streamResult.firstTokenMs
 		clientDisconnect = streamResult.clientDisconnect
 	} else {
-		usage, err = s.handleNonStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account)
+		usage, err = s.handleNonStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.RequestModel)
 		if err != nil {
 			return nil, err
 		}
@@ -5297,7 +5297,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 		body = sanitized
 	}
 	if account != nil && account.IsAnthropicKiroEnabled() {
-		body = injectAnthropicKiroIdentityGuard(body)
+		body = prepareAnthropicKiroRequestBody(body, true)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
@@ -5347,6 +5347,10 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 	}
 	kiroEnabled := account != nil && account.IsAnthropicKiroEnabled()
+	var kiroSSE *anthropicKiroSSENormalizer
+	if kiroEnabled {
+		kiroSSE = newAnthropicKiroSSENormalizer()
+	}
 
 	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
@@ -5362,8 +5366,12 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		c.Header("Connection", "keep-alive")
 	}
 	c.Header("X-Accel-Buffering", "no")
-	if v := resp.Header.Get("x-request-id"); v != "" {
-		c.Header("x-request-id", v)
+	if kiroEnabled {
+		c.Header("x-request-id", normalizeAnthropicKiroRequestID(resp.Header.Get("x-request-id")))
+	} else {
+		if v := resp.Header.Get("x-request-id"); v != "" {
+			c.Header("x-request-id", v)
+		}
 	}
 
 	w := c.Writer
@@ -5501,24 +5509,30 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			}
 
 			if !clientDisconnected {
-				lineToWrite := line
-				if kiroEnabled {
-					lineToWrite = sanitizeAnthropicKiroSSELine(lineToWrite)
+				linesToWrite := []string{line}
+				if kiroSSE != nil {
+					linesToWrite = kiroSSE.normalizeLine(line, model)
 				}
-				restored := string(reverseToolNamesIfPresent(c, []byte(lineToWrite)))
-				if _, err := io.WriteString(w, restored); err != nil {
-					clientDisconnected = true
-					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
-				} else if _, err := io.WriteString(w, "\n"); err != nil {
-					clientDisconnected = true
-					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
-				} else if line == "" {
-					// 按 SSE 事件边界刷出，减少每行 flush 带来的 syscall 开销。
-					flusher.Flush()
-					lastDataAt = time.Now()
-					inPartialEvent = false
-				} else {
-					inPartialEvent = true
+				for _, lineToWrite := range linesToWrite {
+					restored := string(reverseToolNamesIfPresent(c, []byte(lineToWrite)))
+					if _, err := io.WriteString(w, restored); err != nil {
+						clientDisconnected = true
+						logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
+						break
+					}
+					if _, err := io.WriteString(w, "\n"); err != nil {
+						clientDisconnected = true
+						logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
+						break
+					}
+					if lineToWrite == "" {
+						// 按 SSE 事件边界刷出，减少每行 flush 带来的 syscall 开销。
+						flusher.Flush()
+						lastDataAt = time.Now()
+						inPartialEvent = false
+					} else {
+						inPartialEvent = true
+					}
 				}
 			}
 
@@ -5678,6 +5692,7 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	resp *http.Response,
 	c *gin.Context,
 	account *Account,
+	model string,
 ) (*ClaudeUsage, error) {
 	if s.rateLimitService != nil {
 		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
@@ -5688,12 +5703,15 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 		return nil, err
 	}
 	if account != nil && account.IsAnthropicKiroEnabled() {
-		body = sanitizeAnthropicKiroMessagePayload(body)
+		body = normalizeAnthropicKiroMessagePayloadWithRequestID(body, model, normalizeAnthropicKiroRequestID(resp.Header.Get("x-request-id")))
 	}
 
 	usage := parseClaudeUsageFromResponseBody(body)
 
 	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	if account != nil && account.IsAnthropicKiroEnabled() {
+		c.Header("x-request-id", gjson.GetBytes(body, "request_id").String())
+	}
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "application/json"
@@ -9521,6 +9539,9 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	}
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, clientBeta); changed {
 		body = sanitized
+	}
+	if account != nil && account.IsAnthropicKiroEnabled() {
+		body = prepareAnthropicKiroRequestBody(body, true)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))

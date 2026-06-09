@@ -1531,6 +1531,6 @@ func TestGatewayService_AnthropicKiro_CountTokensUsesPassthroughWithoutPassthrou
 	require.NoError(t, err)
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, "https://api.anthropic.com/v1/messages/count_tokens?beta=true", upstream.lastReq.URL.String())
-	require.Equal(t, "Count this.", gjson.GetBytes(upstream.lastBody, "system").String())
-	require.NotContains(t, string(upstream.lastBody), anthropicKiroIdentityGuardMarker)
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "system").String(), anthropicKiroIdentityGuardMarker)
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "messages.0.content").String(), "verified_recent_facts")
 }

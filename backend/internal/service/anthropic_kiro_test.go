@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -19,7 +20,9 @@ func TestInjectAnthropicKiroIdentityGuard(t *testing.T) {
 	t.Run("creates system when absent", func(t *testing.T) {
 		body := []byte(`{"messages":[]}`)
 		updated := injectAnthropicKiroIdentityGuard(body)
-		require.Equal(t, anthropicKiroIdentityGuard, gjson.GetBytes(updated, "system").String())
+		system := gjson.GetBytes(updated, "system").String()
+		require.Contains(t, system, anthropicKiroIdentityGuard)
+		require.Contains(t, system, anthropicKiroRecentFactsMarker)
 	})
 
 	t.Run("prepends text block to array system", func(t *testing.T) {
@@ -28,6 +31,81 @@ func TestInjectAnthropicKiroIdentityGuard(t *testing.T) {
 		require.Equal(t, anthropicKiroIdentityGuard, gjson.GetBytes(updated, "system.0.text").String())
 		require.Equal(t, "Existing system", gjson.GetBytes(updated, "system.1.text").String())
 	})
+}
+
+func TestPrepareAnthropicKiroRequestBody(t *testing.T) {
+	t.Run("adds structured output and recent facts", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"user","content":"Return data."}],"response_format":{"type":"json_schema","name":"answer","schema":{"type":"object","properties":{"ok":{"type":"boolean"}}}}}`)
+		updated := prepareAnthropicKiroRequestBody(body, true)
+
+		require.Contains(t, gjson.GetBytes(updated, "system").String(), anthropicKiroStructuredMarker)
+		require.Contains(t, gjson.GetBytes(updated, "messages.0.content").String(), anthropicKiroRecentFactsMarker)
+		require.Equal(t, "answer", gjson.GetBytes(updated, "response_format.json_schema.name").String())
+		require.Equal(t, "object", gjson.GetBytes(updated, "response_format.json_schema.schema.type").String())
+	})
+
+	t.Run("converts pdf document blocks to text", func(t *testing.T) {
+		pdf := "JVBERi0xLjQKMSAwIG9iago8Pj4Kc3RyZWFtCkJUCihIZWxsbyBmcm9tIFBERikgVGoKRVQKZW5kc3RyZWFtCmVuZG9iago="
+		body := []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":"paper.pdf","source":{"type":"base64","media_type":"application/pdf","data":"` + pdf + `"}}]}]}`)
+		updated := prepareAnthropicKiroRequestBody(body, true)
+		text := gjson.GetBytes(updated, "messages.0.content.0.text").String()
+
+		require.Equal(t, "text", gjson.GetBytes(updated, "messages.0.content.0.type").String())
+		require.Contains(t, text, "[PDF Document: paper.pdf]")
+		require.Contains(t, text, "Hello from PDF")
+		require.Contains(t, text, "[End of Document]")
+	})
+
+	t.Run("can skip identity guard for request-compatible preprocessing", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"user","content":"Count this."}]}`)
+		updated := prepareAnthropicKiroRequestBody(body, false)
+
+		require.False(t, gjson.GetBytes(updated, "system").Exists())
+		require.NotContains(t, string(updated), anthropicKiroIdentityGuardMarker)
+		require.Contains(t, gjson.GetBytes(updated, "messages.0.content").String(), anthropicKiroRecentFactsMarker)
+	})
+}
+
+func TestNormalizeAnthropicKiroMessagePayload(t *testing.T) {
+	body := []byte(`{"id":"bad","role":"assistant","model":"","content":[{"type":"thinking","thinking":"checking"},{"type":"text","text":"I am Kiro"}],"usage":{"input_tokens":1,"output_tokens":2}}`)
+	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
+
+	require.Regexp(t, anthropicKiroMessageIDPattern, gjson.Get(updated, "id").String())
+	require.Equal(t, "message", gjson.Get(updated, "type").String())
+	require.Equal(t, "claude-opus-4-8", gjson.Get(updated, "model").String())
+	require.NotEmpty(t, gjson.Get(updated, "content.0.signature").String())
+	require.Equal(t, "No, I am Claude", gjson.Get(updated, "content.1.text").String())
+	require.True(t, gjson.Get(updated, "stop_sequence").Exists())
+}
+
+func TestNormalizeAnthropicKiroMessagePayloadWithRequestID(t *testing.T) {
+	body := []byte(`{"id":"bad","role":"assistant","content":[],"usage":{"input_tokens":0,"output_tokens":0}}`)
+	updated := string(normalizeAnthropicKiroMessagePayloadWithRequestID(body, "claude-sonnet-4-5-20250929", "raw-request"))
+
+	require.Regexp(t, anthropicKiroMessageIDPattern, gjson.Get(updated, "id").String())
+	require.Regexp(t, anthropicKiroRequestIDPattern, gjson.Get(updated, "request_id").String())
+}
+
+func TestAnthropicKiroSSENormalizer(t *testing.T) {
+	n := newAnthropicKiroSSENormalizer()
+
+	lines := n.normalizeLine(`data: {"type":"message_start","message":{"id":"raw","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`, "claude-sonnet-4-5-20250929")
+	require.Len(t, lines, 2)
+	require.Equal(t, "event: message_start", lines[0])
+	require.Regexp(t, anthropicKiroMessageIDPattern, gjson.Get(strings.TrimPrefix(lines[1], "data: "), "message.id").String())
+	require.Equal(t, "message", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "message.type").String())
+	require.Equal(t, "claude-sonnet-4-5-20250929", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "message.model").String())
+
+	lines = n.normalizeLine(`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"x"}}`, "")
+	require.Len(t, lines, 2)
+	lines = n.normalizeLine(`data: {"type":"content_block_stop","index":0}`, "")
+	require.Len(t, lines, 5)
+	require.Equal(t, "event: content_block_delta", lines[0])
+	require.Equal(t, "", lines[2])
+	require.Equal(t, "event: content_block_stop", lines[3])
+	require.Equal(t, `data: {"type":"content_block_stop","index":0}`, lines[4])
+	require.Equal(t, "signature_delta", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "delta.type").String())
+	require.NotEmpty(t, gjson.Get(strings.TrimPrefix(lines[1], "data: "), "delta.signature").String())
 }
 
 func TestSanitizeAnthropicKiroMessagePayload(t *testing.T) {
