@@ -140,6 +140,38 @@ func TestClassifyOpenAIPoolFailover_ClientRequestErrorDoesNotSwitch(t *testing.T
 	require.False(t, decision.RetryableOnSameAccount)
 }
 
+func TestClassifyOpenAIPoolFailover_ContextLengthUserErrorDoesNotSwitch(t *testing.T) {
+	account := &Account{
+		ID:          108,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := []byte(`{"error":{"message":"maximum context length exceeded","type":"context_length_exceeded"}}`)
+
+	decision := classifyOpenAIPoolFailover(account, http.StatusBadRequest, "maximum context length exceeded", body)
+
+	require.False(t, decision.Failover)
+	require.False(t, decision.RetryableOnSameAccount)
+	require.False(t, decision.SkipSoftCooldown)
+}
+
+func TestClassifyOpenAIPoolFailover_AccountPermissionErrorStillSwitches(t *testing.T) {
+	account := &Account{
+		ID:          109,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := []byte(`{"error":{"message":"model is not available for your account","type":"permission_denied"}}`)
+
+	decision := classifyOpenAIPoolFailover(account, http.StatusServiceUnavailable, "model is not available for your account", body)
+
+	require.True(t, decision.Failover)
+	require.True(t, decision.RetryableOnSameAccount)
+	require.False(t, decision.SkipSoftCooldown)
+}
+
 func TestClassifyOpenAIPoolFailover_DownstreamRoutingErrorSwitchesWithoutSoftCooldown(t *testing.T) {
 	account := &Account{
 		ID:          110,

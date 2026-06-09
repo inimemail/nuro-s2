@@ -171,6 +171,13 @@ func classifyOpenAIPoolFailover(account *Account, statusCode int, upstreamMsg st
 		decision.RetryableOnSameAccount = false
 		return decision
 	}
+	// Special handling for image pool 504/timeout errors
+	// Image generation is slow (can take minutes), so 504 is often a normal timeout rather than account failure
+	if account.IsImagePoolMode() && (statusCode == http.StatusGatewayTimeout || statusCode == http.StatusRequestTimeout) {
+		decision.Failover = true
+		decision.SkipSoftCooldown = true // Don't cooldown the account for slow image generation
+		return decision
+	}
 	if statusCode == 0 || statusCode == http.StatusRequestTimeout || statusCode == http.StatusTooManyRequests ||
 		statusCode == 529 || statusCode >= 500 || account.IsPoolModeRetryableStatus(statusCode) ||
 		isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody) ||
@@ -253,6 +260,40 @@ func isOpenAIPoolUserRequestedModelError(statusCode int, upstreamMsg string, ups
 	if combined == "" {
 		return false
 	}
+
+	// Request-shape/model errors are caused by the caller's payload, so they
+	// should not penalize the selected pool account. Keep this list narrow:
+	// account entitlement, auth, quota, billing, and permission failures are
+	// account-level signals and must still be eligible for failover/cooldown.
+	userErrorMarkers := []string{
+		// Model errors
+		"model_not_found",
+		"model not found",
+		"model does not exist",
+		"model doesn't exist",
+		"unknown model",
+		"unsupported model",
+		// Context/token limit errors
+		"context_length_exceeded",
+		"context length exceeded",
+		"maximum context length",
+		"too many tokens",
+		"token limit",
+		"context window",
+		// Invalid request errors
+		"invalid_request",
+		"invalid request",
+		"invalid_request_error",
+		"missing required parameter",
+		"invalid parameter",
+		"malformed request",
+	}
+
+	if containsAnySubstring(combined, userErrorMarkers...) {
+		return true
+	}
+
+	// Model routing errors (downstream issue, not account issue)
 	if strings.Contains(combined, "model") {
 		if containsAnySubstring(combined,
 			"unknown provider",
@@ -266,14 +307,8 @@ func isOpenAIPoolUserRequestedModelError(statusCode int, upstreamMsg string, ups
 			return true
 		}
 	}
-	return containsAnySubstring(combined,
-		"model_not_found",
-		"model not found",
-		"model does not exist",
-		"model doesn't exist",
-		"unknown model",
-		"unsupported model",
-	)
+
+	return false
 }
 
 func isOpenAIPoolDownstreamRoutingOrClientConfigError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
