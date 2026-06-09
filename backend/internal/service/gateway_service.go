@@ -4415,6 +4415,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if account != nil && (account.IsAnthropicAPIKeyPassthroughEnabled() || account.IsAnthropicKiroEnabled()) {
 		passthroughBody := parsed.Body
 		passthroughModel := parsed.Model
+		passthroughOriginalModel := parsed.Model
 		if passthroughModel != "" {
 			if mappedModel := account.GetMappedModel(passthroughModel); mappedModel != passthroughModel {
 				passthroughBody = s.replaceModelInBody(passthroughBody, mappedModel)
@@ -4422,10 +4423,15 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				passthroughModel = mappedModel
 			}
 		}
+		if account.IsAnthropicKiroEnabled() {
+			if externalModel := anthropicKiroExternalModelFor(passthroughModel); externalModel != "" {
+				passthroughOriginalModel = externalModel
+			}
+		}
 		return s.forwardAnthropicAPIKeyPassthroughWithInput(ctx, c, account, anthropicPassthroughForwardInput{
 			Body:          passthroughBody,
 			RequestModel:  passthroughModel,
-			OriginalModel: parsed.Model,
+			OriginalModel: passthroughOriginalModel,
 			RequestStream: parsed.Stream,
 			StartTime:     startTime,
 		})
@@ -5297,7 +5303,8 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 		body = sanitized
 	}
 	if account != nil && account.IsAnthropicKiroEnabled() {
-		body = prepareAnthropicKiroRequestBody(body, true)
+		profile := resolveAnthropicKiroModelProfile(gjson.GetBytes(body, "model").String())
+		body = prepareAnthropicKiroRequestBody(body, true, profile, s.anthropicKiroKnowledgeFacts(ctx, profile))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
@@ -5335,6 +5342,17 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	return req, nil
 }
 
+func (s *GatewayService) anthropicKiroKnowledgeFacts(ctx context.Context, profile *AnthropicKiroModelProfile) []string {
+	if s == nil || s.settingService == nil || s.settingService.settingRepo == nil {
+		return nil
+	}
+	raw, err := s.settingService.settingRepo.GetValue(ctx, SettingKeyAnthropicKiroKnowledgePack)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	return parseAnthropicKiroKnowledgePack(raw, profile)
+}
+
 func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	ctx context.Context,
 	resp *http.Response,
@@ -5349,7 +5367,8 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	kiroEnabled := account != nil && account.IsAnthropicKiroEnabled()
 	var kiroSSE *anthropicKiroSSENormalizer
 	if kiroEnabled {
-		kiroSSE = newAnthropicKiroSSENormalizer()
+		externalModel := anthropicKiroExternalModelFor(model)
+		kiroSSE = newAnthropicKiroSSENormalizer(externalModel, resolveAnthropicKiroModelProfile(externalModel))
 	}
 
 	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -5511,7 +5530,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			if !clientDisconnected {
 				linesToWrite := []string{line}
 				if kiroSSE != nil {
-					linesToWrite = kiroSSE.normalizeLine(line, model)
+					linesToWrite = kiroSSE.normalizeLine(line)
 				}
 				for _, lineToWrite := range linesToWrite {
 					restored := string(reverseToolNamesIfPresent(c, []byte(lineToWrite)))
@@ -5703,7 +5722,8 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 		return nil, err
 	}
 	if account != nil && account.IsAnthropicKiroEnabled() {
-		body = normalizeAnthropicKiroMessagePayloadWithRequestID(body, model, normalizeAnthropicKiroRequestID(resp.Header.Get("x-request-id")))
+		externalModel := anthropicKiroExternalModelFor(model)
+		body = normalizeAnthropicKiroMessagePayloadWithRequestID(body, externalModel, normalizeAnthropicKiroRequestID(resp.Header.Get("x-request-id")))
 	}
 
 	usage := parseClaudeUsageFromResponseBody(body)
@@ -9541,7 +9561,8 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		body = sanitized
 	}
 	if account != nil && account.IsAnthropicKiroEnabled() {
-		body = prepareAnthropicKiroRequestBody(body, true)
+		profile := resolveAnthropicKiroModelProfile(gjson.GetBytes(body, "model").String())
+		body = prepareAnthropicKiroRequestBody(body, true, profile, s.anthropicKiroKnowledgeFacts(ctx, profile))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
