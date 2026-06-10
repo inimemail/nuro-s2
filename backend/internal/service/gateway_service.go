@@ -4647,7 +4647,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			if isAnthropicAPIKeyPoolAccount(account) {
+			if isAnthropicAPIKeyPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) {
 				s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, http.StatusBadGateway, nil, anthropicPoolSoftCooldownContext{
 					ProbeModel:     reqModel,
 					ProbeKind:      "messages",
@@ -4914,7 +4914,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
 
-			s.handleRetryExhaustedSideEffects(ctx, resp, account)
+			s.handleRetryExhaustedSideEffects(ctx, resp, account, reqModel)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -4930,11 +4930,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					return ""
 				}(),
 			})
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-			}
+			return nil, newGatewayUpstreamFailoverError(account, resp.StatusCode, respBody, reqModel)
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account)
 	}
@@ -4964,11 +4960,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				return ""
 			}(),
 		})
-		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           respBody,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-		}
+		return nil, newGatewayUpstreamFailoverError(account, resp.StatusCode, respBody, reqModel)
 	}
 	if resp.StatusCode >= 400 {
 		// 可选：对部分 400 触发 failover（默认关闭以保持语义）
@@ -5013,7 +5005,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					logger.LegacyPrintf("service.gateway", "Account %d: 400 error, attempting failover", account.ID)
 				}
 				s.handleFailoverSideEffects(ctx, resp, account, reqModel)
-				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+				return nil, newGatewayUpstreamFailoverError(account, resp.StatusCode, respBody, reqModel)
 			}
 		}
 		return s.handleErrorResponse(ctx, resp, c, account, reqModel)
@@ -5143,7 +5135,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			if isAnthropicAPIKeyPoolAccount(account) {
+			if isAnthropicAPIKeyPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) {
 				s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, http.StatusBadGateway, nil, anthropicPoolSoftCooldownContext{
 					ProbeModel:     input.RequestModel,
 					ProbeKind:      "messages",
@@ -5224,7 +5216,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
 
-			s.handleRetryExhaustedSideEffects(ctx, resp, account)
+			s.handleRetryExhaustedSideEffects(ctx, resp, account, input.RequestModel)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -5241,11 +5233,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 					return ""
 				}(),
 			})
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-			}
+			return nil, newGatewayUpstreamFailoverError(account, resp.StatusCode, respBody, input.RequestModel)
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account)
 	}
@@ -5275,11 +5263,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				return ""
 			}(),
 		})
-		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           respBody,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-		}
+		return nil, newGatewayUpstreamFailoverError(account, resp.StatusCode, respBody, input.RequestModel)
 	}
 
 	if resp.StatusCode >= 400 {
@@ -6076,11 +6060,7 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 				Kind:               "retry_exhausted_failover",
 				Message:            extractUpstreamErrorMessage(respBody),
 			})
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-			}
+			return nil, newGatewayUpstreamFailoverError(account, resp.StatusCode, respBody, "")
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account)
 	}
@@ -6100,11 +6080,7 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 			Kind:               "failover",
 			Message:            extractUpstreamErrorMessage(respBody),
 		})
-		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           respBody,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-		}
+		return nil, newGatewayUpstreamFailoverError(account, resp.StatusCode, respBody, "")
 	}
 
 	// other errors
@@ -7388,9 +7364,14 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 }
 
-func (s *GatewayService) handleRetryExhaustedSideEffects(ctx context.Context, resp *http.Response, account *Account) {
+func (s *GatewayService) handleRetryExhaustedSideEffects(ctx context.Context, resp *http.Response, account *Account, requestedModel ...string) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	statusCode := resp.StatusCode
+	model := ""
+	if len(requestedModel) > 0 {
+		model = requestedModel[0]
+	}
+	s.maybeMarkAnthropicPoolSoftCooldown(ctx, account, statusCode, body, model, "retry_exhausted")
 
 	// OAuth/Setup Token 账号的 403：标记账号异常
 	if account.IsOAuth() && statusCode == 403 {
@@ -7408,28 +7389,32 @@ func (s *GatewayService) handleFailoverSideEffects(ctx context.Context, resp *ht
 	if len(requestedModel) > 0 {
 		model = requestedModel[0]
 	}
-	if isAnthropicAPIKeyPoolAccount(account) {
-		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
-		decision := classifyAnthropicPoolFailover(account, resp.StatusCode, upstreamMsg, body, model)
-		if decision.Failover && !decision.SkipSoftCooldown {
-			probeModel := strings.TrimSpace(decision.ProbeModel)
-			if probeModel == "" {
-				probeModel = model
-			}
-			s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, resp.StatusCode, body, anthropicPoolSoftCooldownContext{
-				ProbeModel:     probeModel,
-				ProbeKind:      firstNonEmptyString(decision.ProbeKind, "messages"),
-				CooldownSource: "upstream_failure",
-				StatusCode:     resp.StatusCode,
-				Reason:         firstNonEmptyString(upstreamMsg, decision.SoftCooldownMessage),
-			})
-		}
-	}
+	s.maybeMarkAnthropicPoolSoftCooldown(ctx, account, resp.StatusCode, body, model, "upstream_failure")
 	if len(requestedModel) > 0 {
 		s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, requestedModel[0])
 		return
 	}
 	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+}
+
+func (s *GatewayService) maybeMarkAnthropicPoolSoftCooldown(ctx context.Context, account *Account, statusCode int, body []byte, model string, source string) {
+	if isAnthropicAPIKeyPoolAccount(account) {
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
+		decision := classifyAnthropicPoolFailover(account, statusCode, upstreamMsg, body, model)
+		if decision.Failover && !decision.SkipSoftCooldown {
+			probeModel := strings.TrimSpace(decision.ProbeModel)
+			if probeModel == "" {
+				probeModel = model
+			}
+			s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, statusCode, body, anthropicPoolSoftCooldownContext{
+				ProbeModel:     probeModel,
+				ProbeKind:      firstNonEmptyString(decision.ProbeKind, "messages"),
+				CooldownSource: source,
+				StatusCode:     statusCode,
+				Reason:         firstNonEmptyString(upstreamMsg, decision.SoftCooldownMessage),
+			})
+		}
+	}
 }
 
 // handleRetryExhaustedError 处理重试耗尽后的错误

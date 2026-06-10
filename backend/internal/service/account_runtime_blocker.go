@@ -5,11 +5,11 @@ import (
 	"time"
 )
 
-type compositeAccountRuntimeBlocker struct {
+type CompositeAccountRuntimeBlocker struct {
 	blockers []AccountRuntimeBlocker
 }
 
-func NewCompositeAccountRuntimeBlocker(openai *OpenAIGatewayService, anthropic *GatewayService, rateLimitService *RateLimitService, openAITokenProvider *OpenAITokenProvider) AccountRuntimeBlocker {
+func NewCompositeAccountRuntimeBlocker(openai *OpenAIGatewayService, anthropic *GatewayService, rateLimitService *RateLimitService, openAITokenProvider *OpenAITokenProvider) *CompositeAccountRuntimeBlocker {
 	blockers := make([]AccountRuntimeBlocker, 0, 2)
 	if openai != nil {
 		blockers = append(blockers, openai)
@@ -17,7 +17,7 @@ func NewCompositeAccountRuntimeBlocker(openai *OpenAIGatewayService, anthropic *
 	if anthropic != nil {
 		blockers = append(blockers, anthropic)
 	}
-	blocker := &compositeAccountRuntimeBlocker{blockers: blockers}
+	blocker := &CompositeAccountRuntimeBlocker{blockers: blockers}
 	if rateLimitService != nil {
 		rateLimitService.SetAccountRuntimeBlocker(blocker)
 	}
@@ -27,7 +27,7 @@ func NewCompositeAccountRuntimeBlocker(openai *OpenAIGatewayService, anthropic *
 	return blocker
 }
 
-func (b *compositeAccountRuntimeBlocker) BlockAccountScheduling(account *Account, until time.Time, reason string) {
+func (b *CompositeAccountRuntimeBlocker) BlockAccountScheduling(account *Account, until time.Time, reason string) {
 	if b == nil {
 		return
 	}
@@ -38,7 +38,7 @@ func (b *compositeAccountRuntimeBlocker) BlockAccountScheduling(account *Account
 	}
 }
 
-func (b *compositeAccountRuntimeBlocker) ClearAccountSchedulingBlock(accountID int64) {
+func (b *CompositeAccountRuntimeBlocker) ClearAccountSchedulingBlock(accountID int64) {
 	if b == nil {
 		return
 	}
@@ -49,7 +49,7 @@ func (b *compositeAccountRuntimeBlocker) ClearAccountSchedulingBlock(accountID i
 	}
 }
 
-func (b *compositeAccountRuntimeBlocker) OpenAIPoolSoftCooldownState(accountID int64) OpenAIPoolSoftCooldownState {
+func (b *CompositeAccountRuntimeBlocker) OpenAIPoolSoftCooldownState(accountID int64) OpenAIPoolSoftCooldownState {
 	if b == nil {
 		return OpenAIPoolSoftCooldownState{}
 	}
@@ -63,7 +63,7 @@ func (b *compositeAccountRuntimeBlocker) OpenAIPoolSoftCooldownState(accountID i
 	return OpenAIPoolSoftCooldownState{}
 }
 
-func (b *compositeAccountRuntimeBlocker) MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account) {
+func (b *CompositeAccountRuntimeBlocker) MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account) {
 	if b == nil {
 		return
 	}
@@ -74,7 +74,7 @@ func (b *compositeAccountRuntimeBlocker) MaybeKickOpenAIPoolRecoveryProbeFromAdm
 	}
 }
 
-func (b *compositeAccountRuntimeBlocker) AnthropicPoolSoftCooldownState(accountID int64) AnthropicPoolSoftCooldownState {
+func (b *CompositeAccountRuntimeBlocker) AnthropicPoolSoftCooldownState(accountID int64) AnthropicPoolSoftCooldownState {
 	if b == nil {
 		return AnthropicPoolSoftCooldownState{}
 	}
@@ -88,7 +88,7 @@ func (b *compositeAccountRuntimeBlocker) AnthropicPoolSoftCooldownState(accountI
 	return AnthropicPoolSoftCooldownState{}
 }
 
-func (b *compositeAccountRuntimeBlocker) MaybeKickAnthropicPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account) {
+func (b *CompositeAccountRuntimeBlocker) MaybeKickAnthropicPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account) {
 	if b == nil {
 		return
 	}
