@@ -37,6 +37,10 @@ const (
 	// ops_error_logger 中间件检查此 key，为 true 时跳过错误记录。
 	OpsSkipPassthroughKey = "ops_skip_passthrough"
 
+	// ResponseCommittedKey 由 service 层在写完完整错误响应后设置。
+	// handler 层据此跳过兜底错误写入，避免 JSON 后追加 SSE fallback。
+	ResponseCommittedKey = "response_committed"
+
 	// Client-side configuration denials should remain visible in ops_error_logs,
 	// but should be excluded from SLA/error-rate calculations.
 	OpsClientBusinessLimitedKey                          = "ops_client_business_limited"
@@ -47,6 +51,24 @@ const (
 	OpsClientBusinessLimitedReasonLocalFeatureGate       = "local_feature_gate"
 	OpsClientBusinessLimitedReasonLocalPolicyDenied      = "local_policy_denied"
 )
+
+func MarkResponseCommitted(c *gin.Context) {
+	if c != nil {
+		c.Set(ResponseCommittedKey, true)
+	}
+}
+
+func IsResponseCommitted(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	v, ok := c.Get(ResponseCommittedKey)
+	if !ok {
+		return false
+	}
+	committed, _ := v.(bool)
+	return committed
+}
 
 type opsLatencyRecorderKey struct{}
 

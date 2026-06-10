@@ -48,3 +48,23 @@ func TestDefaultBedrockModelMapping_ContainsOpus48(t *testing.T) {
 		t.Fatalf("unexpected Bedrock claude-opus-4-8 mapping: got %q", got)
 	}
 }
+
+func TestDefaultModelMappings_ContainsFable5(t *testing.T) {
+	t.Parallel()
+
+	got, ok := DefaultAntigravityModelMapping["claude-fable-5"]
+	if !ok {
+		t.Fatal("expected Antigravity mapping for claude-fable-5 to exist")
+	}
+	if got != "claude-fable-5" {
+		t.Fatalf("unexpected Antigravity claude-fable-5 mapping: got %q", got)
+	}
+
+	got, ok = DefaultBedrockModelMapping["claude-fable-5"]
+	if !ok {
+		t.Fatal("expected Bedrock mapping for claude-fable-5 to exist")
+	}
+	if got != "anthropic.claude-fable-5" {
+		t.Fatalf("unexpected Bedrock claude-fable-5 mapping: got %q", got)
+	}
+}

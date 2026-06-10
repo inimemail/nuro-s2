@@ -457,6 +457,11 @@ func (r *userRepository) ListWithFilters(ctx context.Context, params pagination.
 			dbgroup.NameContainsFold(filters.GroupName),
 		))
 	}
+	if filters.APIKeyGroupID > 0 {
+		q = q.Where(dbuser.HasAPIKeysWith(
+			apikey.GroupIDEQ(filters.APIKeyGroupID),
+		))
+	}
 
 	// If attribute filters are specified, we need to filter by user IDs first
 	var allowedUserIDs []int64

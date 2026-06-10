@@ -219,6 +219,48 @@ func TestOpenAIEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsRespons
 	assert.Contains(t, body, "Upstream request failed")
 }
 
+func TestOpenAIEnsureForwardErrorResponse_SkipsWhenResponseCommitted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"type": "upstream_error"}})
+	service.MarkResponseCommitted(c)
+	bodyBefore := w.Body.String()
+
+	h := &OpenAIGatewayHandler{}
+	wrote := h.ensureForwardErrorResponse(c, false)
+
+	require.False(t, wrote)
+	assert.Equal(t, bodyBefore, w.Body.String())
+}
+
+func TestOpenAIForwardErrorAlreadyCommunicated_JSONResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	writerSizeBefore := c.Writer.Size()
+
+	c.Header("Content-Type", "application/json")
+	c.String(http.StatusBadRequest, `{"error":{"type":"upstream_error"}}`)
+
+	require.True(t, openAIForwardErrorAlreadyCommunicated(c, writerSizeBefore, assert.AnError))
+}
+
+func TestOpenAIForwardErrorAlreadyCommunicated_SSEStillNeedsFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	writerSizeBefore := c.Writer.Size()
+
+	c.Header("Content-Type", "text/event-stream")
+	_, _ = c.Writer.WriteString(":\n\n")
+
+	require.False(t, openAIForwardErrorAlreadyCommunicated(c, writerSizeBefore, assert.AnError))
+}
+
 func TestShouldLogOpenAIForwardFailureAsWarn(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

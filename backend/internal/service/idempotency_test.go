@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
@@ -792,6 +793,11 @@ func TestIdempotencyCoordinator_HelperBranches(t *testing.T) {
 	body, err := c.marshalStoredResponse(map[string]any{"long": "abcdefghijklmnopqrstuvwxyz"})
 	require.NoError(t, err)
 	require.Contains(t, body, "...(truncated)")
+
+	body, err = c.marshalStoredResponse(map[string]any{"long": "你好🙂abcdefghijklmnopqrstuvwxyz"})
+	require.NoError(t, err)
+	require.Contains(t, body, "...(truncated)")
+	require.True(t, utf8.ValidString(body))
 
 	// decodeStoredResponse empty and invalid json.
 	out, err := c.decodeStoredResponse(nil)

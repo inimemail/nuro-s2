@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -68,4 +69,58 @@ func TestGatewayEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsRespon
 	assert.Contains(t, body, ":\n\n")
 	assert.Contains(t, body, "event: response.failed\n")
 	assert.Contains(t, body, `"type":"response.failed"`)
+}
+
+func TestGatewayEnsureForwardErrorResponse_SkipsWhenResponseCommitted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	c.JSON(http.StatusBadGateway, gin.H{"type": "error"})
+	service.MarkResponseCommitted(c)
+	bodyBefore := w.Body.String()
+
+	h := &GatewayHandler{}
+	wrote := h.ensureForwardErrorResponse(c, false)
+
+	require.False(t, wrote)
+	assert.Equal(t, bodyBefore, w.Body.String())
+}
+
+func TestGatewayForwardErrorAlreadyCommunicated_JSONResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	writerSizeBefore := c.Writer.Size()
+
+	c.Header("Content-Type", "application/json")
+	c.String(http.StatusBadRequest, `{"error":"bad"}`)
+
+	require.True(t, gatewayForwardErrorAlreadyCommunicated(c, writerSizeBefore, assert.AnError))
+}
+
+func TestGatewayForwardErrorAlreadyCommunicated_CommittedResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	writerSizeBefore := c.Writer.Size()
+
+	service.MarkResponseCommitted(c)
+
+	require.True(t, gatewayForwardErrorAlreadyCommunicated(c, writerSizeBefore, assert.AnError))
+}
+
+func TestGatewayForwardErrorAlreadyCommunicated_SSEIsNotConsideredComplete(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	writerSizeBefore := c.Writer.Size()
+
+	c.Header("Content-Type", "text/event-stream")
+	_, _ = c.Writer.WriteString(":\n\n")
+
+	require.False(t, gatewayForwardErrorAlreadyCommunicated(c, writerSizeBefore, assert.AnError))
 }

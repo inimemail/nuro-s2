@@ -5802,15 +5802,23 @@ func writeAnthropicPassthroughResponseHeaders(dst http.Header, src http.Header, 
 }
 
 // ApplyBedrockCCCompat 应用 Bedrock CC 兼容转换（渠道级模型映射后调用）
-// 清理 Anthropic API 专有字段、注入 Bedrock 必需字段、修复 thinking/tool_use ID
-func (s *GatewayService) ApplyBedrockCCCompat(ctx context.Context, body []byte, model string, account *Account, groupID *int64) []byte {
-	if !s.isBedrockCCCompatEnabled(ctx, account, groupID) {
+// 清理 body 中 Anthropic API 专有字段、修复 thinking/tool_use ID、过滤 beta token，
+// 同时过滤 HTTP header 中的 anthropic-beta（防止 passthrough 路径透传不支持的 token）。
+func (s *GatewayService) ApplyBedrockCCCompat(c *gin.Context, body []byte, model string, account *Account, groupID *int64) []byte {
+	if c == nil || c.Request == nil || !s.isBedrockCCCompatEnabled(c.Request.Context(), account, groupID) {
 		return body
 	}
 	body = sanitizeBedrockCCFields(body)
 	body = sanitizeBedrockThinking(body, model)
 	body = sanitizeBedrockToolUseIDs(body)
 	body = sanitizeBedrockCCBetaTokens(body, model)
+	if betaHeader := c.GetHeader("anthropic-beta"); betaHeader != "" {
+		if filtered := ResolveBedrockBetaTokens(betaHeader, body, model); len(filtered) > 0 {
+			c.Request.Header.Set("anthropic-beta", strings.Join(filtered, ", "))
+		} else {
+			c.Request.Header.Del("anthropic-beta")
+		}
+	}
 	return body
 }
 
@@ -7303,6 +7311,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		"upstream_error",
 		"Upstream request failed",
 	); matched {
+		MarkResponseCommitted(c)
 		c.JSON(status, gin.H{
 			"type": "error",
 			"error": gin.H{
@@ -7327,6 +7336,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 
 	switch resp.StatusCode {
 	case 400:
+		MarkResponseCommitted(c)
 		c.Data(http.StatusBadRequest, "application/json", body)
 		summary := upstreamMsg
 		if summary == "" {
@@ -7363,6 +7373,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	}
 
 	// 返回自定义错误响应
+	MarkResponseCommitted(c)
 	c.JSON(statusCode, gin.H{
 		"type": "error",
 		"error": gin.H{
