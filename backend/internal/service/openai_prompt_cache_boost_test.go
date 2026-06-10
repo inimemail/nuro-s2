@@ -3,13 +3,16 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -88,6 +91,173 @@ func TestOpenAIGatewayService_ForwardPromptCacheBoostInjectsFields(t *testing.T)
 	require.True(t, strings.HasPrefix(gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String(), "nuro-pcache-"))
 	require.Equal(t, "24h", gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").String())
 	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
+}
+
+func TestOpenAIPromptCacheBoost_StaticPrefixIgnoresFirstUserContent(t *testing.T) {
+	staticPolicy := strings.Repeat("shared routing policy and tool instructions. ", 80)
+	bodyA := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"` + staticPolicy + `"},{"role":"user","content":"first downstream user question"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}]}`)
+	bodyB := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"` + staticPolicy + `"},{"role":"user","content":"second downstream user question"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}]}`)
+	account := promptCacheBoostTestAccount(351)
+
+	keyA := deriveOpenAIVirtualPromptCacheKey(account, "gpt-5.5", bodyA)
+	keyB := deriveOpenAIVirtualPromptCacheKey(account, "gpt-5.5", bodyB)
+	require.NotEmpty(t, keyA)
+	require.Equal(t, keyA, keyB)
+
+	affinityA := DeriveOpenAIPromptCacheBoostAffinityHash("gpt-5.5", bodyA)
+	affinityB := DeriveOpenAIPromptCacheBoostAffinityHash("gpt-5.5", bodyB)
+	require.NotEmpty(t, affinityA)
+	require.Equal(t, affinityA, affinityB)
+	require.True(t, IsOpenAIPromptCacheBoostAffinitySessionHash(affinityA))
+}
+
+func TestOpenAIPromptCacheBoost_StaticPrefixSeparatesDifferentTools(t *testing.T) {
+	staticPolicy := strings.Repeat("shared routing policy and tool instructions. ", 80)
+	bodyA := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"` + staticPolicy + `"},{"role":"user","content":"same user question"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}]}`)
+	bodyB := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"` + staticPolicy + `"},{"role":"user","content":"same user question"}],"tools":[{"type":"function","function":{"name":"search","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}]}`)
+	account := promptCacheBoostTestAccount(352)
+
+	keyA := deriveOpenAIVirtualPromptCacheKey(account, "gpt-5.5", bodyA)
+	keyB := deriveOpenAIVirtualPromptCacheKey(account, "gpt-5.5", bodyB)
+	require.NotEmpty(t, keyA)
+	require.NotEmpty(t, keyB)
+	require.NotEqual(t, keyA, keyB)
+}
+
+func TestOpenAIPromptCacheBoost_SmallPromptKeepsContentSpecificFallback(t *testing.T) {
+	account := promptCacheBoostTestAccount(353)
+	bodyA := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"short"},{"role":"user","content":"first"}]}`)
+	bodyB := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"short"},{"role":"user","content":"second"}]}`)
+
+	require.NotEqual(t,
+		deriveOpenAIVirtualPromptCacheKey(account, "gpt-5.5", bodyA),
+		deriveOpenAIVirtualPromptCacheKey(account, "gpt-5.5", bodyB),
+	)
+	require.Empty(t, DeriveOpenAIPromptCacheBoostAffinityHash("gpt-5.5", bodyA))
+}
+
+func TestOpenAIAnthropicVirtualPromptCacheKey_IgnoresFirstUserContent(t *testing.T) {
+	staticSystem := strings.Repeat("shared anthropic system prompt. ", 80)
+	bodyA := []byte(`{"model":"claude-sonnet-4-5","system":"` + staticSystem + `","max_tokens":16,"messages":[{"role":"user","content":"first downstream user"}],"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{"q":{"type":"string"}}}}]}`)
+	bodyB := []byte(`{"model":"claude-sonnet-4-5","system":"` + staticSystem + `","max_tokens":16,"messages":[{"role":"user","content":"second downstream user"}],"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{"q":{"type":"string"}}}}]}`)
+	var reqA, reqB apicompat.AnthropicRequest
+	require.NoError(t, json.Unmarshal(bodyA, &reqA))
+	require.NoError(t, json.Unmarshal(bodyB, &reqB))
+	account := promptCacheBoostTestAccount(354)
+
+	keyA := deriveOpenAIAnthropicVirtualPromptCacheKey(account, &reqA, "gpt-5.5")
+	keyB := deriveOpenAIAnthropicVirtualPromptCacheKey(account, &reqB, "gpt-5.5")
+	require.NotEmpty(t, keyA)
+	require.Equal(t, keyA, keyB)
+}
+
+func TestOpenAIPromptCacheBoost_BindStickySessionRequiresEnabledSchedulableAccount(t *testing.T) {
+	ctx := context.Background()
+	sessionHash := openAIPromptCacheBoostAffinitySessionPrefix + "bind-disabled"
+	disabled := *promptCacheBoostTestAccount(355)
+	disabled.Status = StatusActive
+	disabled.Schedulable = true
+	disabled.Credentials = map[string]any{
+		"api_key":   "sk-test",
+		"base_url":  "https://api.openai.com/v1",
+		"pool_mode": true,
+	}
+	cache := &stubGatewayCache{}
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{disabled}},
+		cache:       cache,
+	}
+
+	require.NoError(t, svc.BindStickySession(ctx, nil, sessionHash, disabled.ID))
+	require.Empty(t, cache.sessionBindings)
+}
+
+func TestOpenAIPromptCacheBoost_NormalizeAffinitySessionHashScopesToEnabledTextPool(t *testing.T) {
+	sessionHash := openAIPromptCacheBoostAffinitySessionPrefix + "normalize"
+	normalSessionHash := "normal-session"
+	enabled := *promptCacheBoostTestAccount(358)
+	enabled.Status = StatusActive
+	enabled.Schedulable = true
+
+	disabled := enabled
+	disabled.ID = 359
+	disabled.Credentials = map[string]any{
+		"api_key":   "sk-disabled",
+		"base_url":  "https://api.openai.com/v1",
+		"pool_mode": true,
+	}
+
+	imagePool := enabled
+	imagePool.ID = 360
+	imagePool.Credentials = map[string]any{
+		"api_key":                    "sk-image",
+		"base_url":                   "https://api.openai.com/v1",
+		"pool_mode":                  true,
+		"image_pool_mode":            true,
+		"prompt_cache_boost_enabled": true,
+	}
+
+	oauth := enabled
+	oauth.ID = 361
+	oauth.Type = AccountTypeOAuth
+	oauth.Credentials = map[string]any{
+		"pool_mode":                  true,
+		"prompt_cache_boost_enabled": true,
+	}
+
+	softCooling := enabled
+	softCooling.ID = 362
+	runtimeBlocked := enabled
+	runtimeBlocked.ID = 363
+
+	svc := &OpenAIGatewayService{}
+	svc.openaiPoolSoftCooldownUntil.Store(softCooling.ID, time.Now().Add(time.Minute))
+	svc.openaiAccountRuntimeBlockUntil.Store(runtimeBlocked.ID, time.Now().Add(time.Minute))
+
+	require.Equal(t, sessionHash, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &enabled))
+	require.Empty(t, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &disabled))
+	require.Empty(t, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &imagePool))
+	require.Empty(t, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &oauth))
+	require.Empty(t, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &softCooling))
+	require.Empty(t, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &runtimeBlocked))
+	require.Equal(t, normalSessionHash, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(normalSessionHash, &disabled))
+}
+
+func TestOpenAIPromptCacheBoost_BindStickySessionRejectsSoftCoolingAndRuntimeBlockedAccounts(t *testing.T) {
+	ctx := context.Background()
+	softCooling := *promptCacheBoostTestAccount(356)
+	softCooling.Status = StatusActive
+	softCooling.Schedulable = true
+	runtimeBlocked := *promptCacheBoostTestAccount(357)
+	runtimeBlocked.Status = StatusActive
+	runtimeBlocked.Schedulable = true
+
+	cache := &stubGatewayCache{}
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{softCooling, runtimeBlocked}},
+		cache:       cache,
+	}
+	svc.openaiPoolSoftCooldownUntil.Store(softCooling.ID, time.Now().Add(time.Minute))
+	svc.BlockAccountScheduling(&runtimeBlocked, time.Now().Add(time.Minute), "test")
+
+	softSessionHash := openAIPromptCacheBoostAffinitySessionPrefix + "bind-soft-cooling"
+	require.NoError(t, svc.BindStickySession(ctx, nil, softSessionHash, softCooling.ID))
+	require.NotContains(t, cache.sessionBindings, "openai:"+softSessionHash)
+
+	blockedSessionHash := openAIPromptCacheBoostAffinitySessionPrefix + "bind-runtime-blocked"
+	require.NoError(t, svc.BindStickySession(ctx, nil, blockedSessionHash, runtimeBlocked.ID))
+	require.NotContains(t, cache.sessionBindings, "openai:"+blockedSessionHash)
+}
+
+func TestAccountWriteThrottlePrunesPromptCacheHitRateLogState(t *testing.T) {
+	throttle := newAccountWriteThrottle(5 * time.Minute)
+	now := time.Now()
+
+	for i := int64(1); i <= accountWriteThrottleMaxEntries+32; i++ {
+		require.True(t, throttle.Allow(i, now.Add(time.Duration(i)*time.Second)))
+	}
+
+	require.LessOrEqual(t, len(throttle.lastByID), accountWriteThrottleMaxEntries)
 }
 
 func TestOpenAIGatewayService_ForwardPromptCacheBoostUnsupportedRetentionRetries(t *testing.T) {

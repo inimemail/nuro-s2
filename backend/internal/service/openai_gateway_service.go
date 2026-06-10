@@ -285,6 +285,8 @@ type accountWriteThrottle struct {
 	lastByID    map[int64]time.Time
 }
 
+const accountWriteThrottleMaxEntries = 4096
+
 func newAccountWriteThrottle(minInterval time.Duration) *accountWriteThrottle {
 	return &accountWriteThrottle{
 		minInterval: minInterval,
@@ -305,7 +307,7 @@ func (t *accountWriteThrottle) Allow(id int64, now time.Time) bool {
 	}
 	t.lastByID[id] = now
 
-	if len(t.lastByID) > 4096 {
+	if len(t.lastByID) > accountWriteThrottleMaxEntries {
 		cutoff := now.Add(-4 * t.minInterval)
 		for accountID, writtenAt := range t.lastByID {
 			if writtenAt.Before(cutoff) {
@@ -313,11 +315,28 @@ func (t *accountWriteThrottle) Allow(id int64, now time.Time) bool {
 			}
 		}
 	}
+	if len(t.lastByID) > accountWriteThrottleMaxEntries {
+		type throttleEntry struct {
+			accountID int64
+			written   time.Time
+		}
+		entries := make([]throttleEntry, 0, len(t.lastByID))
+		for accountID, writtenAt := range t.lastByID {
+			entries = append(entries, throttleEntry{accountID: accountID, written: writtenAt})
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].written.Before(entries[j].written)
+		})
+		for i := 0; i < len(entries)-accountWriteThrottleMaxEntries; i++ {
+			delete(t.lastByID, entries[i].accountID)
+		}
+	}
 
 	return true
 }
 
 var defaultOpenAICodexSnapshotPersistThrottle = newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval)
+var defaultOpenAIPromptCacheHitRateLogThrottle = newAccountWriteThrottle(5 * time.Minute)
 
 // ErrNoAvailableCompactAccounts indicates the request needs /responses/compact
 // support but no compatible account is available.
@@ -1223,6 +1242,15 @@ func (s *OpenAIGatewayService) GenerateExplicitSessionHash(c *gin.Context, body 
 	return currentHash
 }
 
+// GeneratePromptCacheBoostAffinitySessionHash generates a sticky hash used only
+// for prompt-cache affinity. Explicit client session signals always win.
+func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHash(c *gin.Context, body []byte, model string) string {
+	if c == nil || len(body) == 0 || explicitOpenAISessionID(c, body) != "" {
+		return ""
+	}
+	return DeriveOpenAIPromptCacheBoostAffinityHash(model, body)
+}
+
 // GenerateSessionHash generates a sticky-session hash for OpenAI requests.
 //
 // Priority:
@@ -1283,6 +1311,11 @@ func resolveOpenAIUpstreamOriginator(c *gin.Context, isOfficialClient bool) stri
 func (s *OpenAIGatewayService) BindStickySession(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
 	if sessionHash == "" || accountID <= 0 {
 		return nil
+	}
+	if IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) {
+		if !s.isOpenAIPromptCacheBoostAffinityAccountBindable(ctx, accountID) {
+			return nil
+		}
 	}
 	ttl := openaiStickySessionTTL
 	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds > 0 {
@@ -1784,6 +1817,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if sessionHash == "" {
 		return nil
 	}
+	isPromptCacheAffinity := IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash)
 
 	accountID := stickyAccountID
 	if accountID <= 0 {
@@ -1821,6 +1855,10 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	}
 	account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability)
 	if account == nil {
+		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		return nil
+	}
+	if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
@@ -2108,15 +2146,21 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
 			if err == nil {
+				isPromptCacheAffinity := IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash)
 				clearSticky := shouldClearStickySession(account, requestedModel)
 				if clearSticky {
 					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+				} else if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
+					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					clearSticky = true
 				}
 				if !clearSticky && isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, false, requiredCapability, requiredImageCapability) {
 					account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability)
 					if account == nil {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else if s.isOpenAIAccountRuntimeBlocked(account) {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					} else if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
@@ -6330,6 +6374,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if actualInputTokens < 0 {
 		actualInputTokens = 0
 	}
+	s.logOpenAIPromptCacheHitRate(ctx, account, result.Usage)
 
 	// Calculate cost
 	tokens := UsageTokens{
@@ -6530,6 +6575,31 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
 
 	return nil
+}
+
+func (s *OpenAIGatewayService) logOpenAIPromptCacheHitRate(ctx context.Context, account *Account, usage OpenAIUsage) {
+	if account == nil || account.Platform != PlatformOpenAI || usage.InputTokens <= 0 {
+		return
+	}
+	if !defaultOpenAIPromptCacheHitRateLogThrottle.Allow(account.ID, time.Now()) {
+		return
+	}
+	cacheRead := usage.CacheReadInputTokens
+	if cacheRead < 0 {
+		cacheRead = 0
+	}
+	if cacheRead > usage.InputTokens {
+		cacheRead = usage.InputTokens
+	}
+	hitRate := float64(cacheRead) / float64(usage.InputTokens)
+	logger.FromContext(ctx).Info("openai.prompt_cache.hit_rate",
+		zap.Int64("account_id", account.ID),
+		zap.Int("input_tokens", usage.InputTokens),
+		zap.Int("cache_read_tokens", cacheRead),
+		zap.Int("cache_creation_tokens", usage.CacheCreationInputTokens),
+		zap.Float64("cache_hit_rate", hitRate),
+		zap.Bool("prompt_cache_boost_enabled", account.IsOpenAIPromptCacheBoostEnabled()),
+	)
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(

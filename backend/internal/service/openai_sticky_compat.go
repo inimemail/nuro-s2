@@ -155,6 +155,11 @@ func (s *OpenAIGatewayService) setStickySessionAccountID(ctx context.Context, gr
 	if s == nil || s.cache == nil || accountID <= 0 {
 		return nil
 	}
+	if IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) {
+		if !s.isOpenAIPromptCacheBoostAffinityAccountBindable(ctx, accountID) {
+			return nil
+		}
+	}
 	primaryKey := s.openAISessionCacheKey(sessionHash)
 	if primaryKey == "" {
 		return nil

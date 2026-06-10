@@ -117,7 +117,7 @@ func deriveOpenAIAnthropicVirtualPromptCacheKey(account *Account, req *apicompat
 	if account == nil || req == nil {
 		return ""
 	}
-	seed := deriveAnthropicCompatPromptCacheKey(req, mappedModel)
+	seed := deriveAnthropicPromptCacheBoostSeed(req, mappedModel)
 	if strings.TrimSpace(seed) == "" {
 		return ""
 	}
@@ -131,6 +131,39 @@ func deriveOpenAIAnthropicVirtualPromptCacheKey(account *Account, req *apicompat
 	return "nuro-pcache-" + hashSensitiveValueForLog(
 		fmt.Sprintf("account|%d|model|%s|anthropic|%s", account.ID, model, seed),
 	)
+}
+
+func deriveAnthropicPromptCacheBoostSeed(req *apicompat.AnthropicRequest, mappedModel string) string {
+	if req == nil {
+		return ""
+	}
+	normalizedModel := normalizeCodexModel(strings.TrimSpace(mappedModel))
+	if normalizedModel == "" {
+		normalizedModel = normalizeCodexModel(strings.TrimSpace(req.Model))
+	}
+	if normalizedModel == "" {
+		normalizedModel = strings.TrimSpace(req.Model)
+	}
+
+	seedParts := []string{"model=" + normalizedModel}
+	if req.OutputConfig != nil && strings.TrimSpace(req.OutputConfig.Effort) != "" {
+		seedParts = append(seedParts, "effort="+strings.TrimSpace(req.OutputConfig.Effort))
+	}
+	if len(req.ToolChoice) > 0 {
+		seedParts = append(seedParts, "tool_choice="+normalizeCompatSeedJSON(req.ToolChoice))
+	}
+	if len(req.Tools) > 0 {
+		if raw, err := json.Marshal(req.Tools); err == nil {
+			seedParts = append(seedParts, "tools="+normalizeCompatSeedJSON(raw))
+		}
+	}
+	if len(req.System) > 0 {
+		seedParts = append(seedParts, "system="+normalizeCompatSeedJSON(req.System))
+	}
+	if len(seedParts) <= 1 {
+		return deriveAnthropicCompatPromptCacheKey(req, mappedModel)
+	}
+	return compatPromptCacheKeyPrefix + hashSensitiveValueForLog(strings.Join(seedParts, "|"))
 }
 
 func deriveAnthropicCacheControlPromptCacheKey(req *apicompat.AnthropicRequest) string {

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"time"
@@ -28,6 +29,39 @@ func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostRuntimeEnabled(account *A
 
 func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostKeyRuntimeEnabled(account *Account) bool {
 	return s.isOpenAIPromptCacheBoostFeatureRuntimeEnabled(account, "key")
+}
+
+func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostAffinityAccountUsable(account *Account) bool {
+	if account == nil || !account.IsOpenAI() || !account.IsSchedulable() {
+		return false
+	}
+	return s.isOpenAIPromptCacheBoostKeyRuntimeEnabled(account) &&
+		!s.isOpenAIPoolAccountSoftCooling(account) &&
+		!s.isOpenAIAccountRuntimeBlocked(account)
+}
+
+func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostAffinityAccountBindable(ctx context.Context, accountID int64) bool {
+	if s == nil || accountID <= 0 || (s.schedulerSnapshot == nil && s.accountRepo == nil) {
+		return false
+	}
+	account, err := s.getSchedulableAccount(ctx, accountID)
+	if err != nil {
+		return false
+	}
+	return s.isOpenAIPromptCacheBoostAffinityAccountUsable(account)
+}
+
+// NormalizeOpenAIPromptCacheBoostAffinitySessionHash keeps prompt-cache affinity
+// only on OpenAI API-key text-pool accounts that explicitly enabled it.
+func (s *OpenAIGatewayService) NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash string, account *Account) string {
+	sessionHash = strings.TrimSpace(sessionHash)
+	if !IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) {
+		return sessionHash
+	}
+	if s.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
+		return sessionHash
+	}
+	return ""
 }
 
 func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostRetentionRuntimeEnabled(account *Account) bool {

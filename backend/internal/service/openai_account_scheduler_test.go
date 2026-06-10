@@ -2172,6 +2172,75 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_StrictPriorityUsesPrima
 
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_PromptCacheAffinityDoesNotBypassPriority(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(151)
+	sessionHash := openAIPromptCacheBoostAffinitySessionPrefix + "priority"
+	primary := Account{
+		ID:          5151,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 3,
+		Priority:    1,
+		GroupIDs:    []int64{groupID},
+		Credentials: map[string]any{
+			"api_key":                    "sk-primary",
+			"pool_mode":                  true,
+			"prompt_cache_boost_enabled": true,
+		},
+	}
+	stickyLowerPriority := Account{
+		ID:          5152,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 3,
+		Priority:    5,
+		GroupIDs:    []int64{groupID},
+		Credentials: map[string]any{
+			"api_key":                    "sk-sticky",
+			"pool_mode":                  true,
+			"prompt_cache_boost_enabled": true,
+		},
+	}
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"openai:" + sessionHash: stickyLowerPriority.ID}}
+	svc := &OpenAIGatewayService{
+		accountRepo:      schedulerTestOpenAIAccountRepo{accounts: []Account{primary, stickyLowerPriority}},
+		cache:            cache,
+		cfg:              &config.Config{},
+		rateLimitService: newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{
+			loadMap: map[int64]*AccountLoadInfo{
+				primary.ID:             {AccountID: primary.ID, LoadRate: 0},
+				stickyLowerPriority.ID: {AccountID: stickyLowerPriority.ID, LoadRate: 0},
+			},
+		}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		sessionHash,
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(5151), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, 1, cache.deletedSessions["openai:"+sessionHash])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_StrictPriorityFallsForwardOnlyWhenLowerPriorityBusy(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(16)
