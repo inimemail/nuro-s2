@@ -552,7 +552,13 @@ export interface SystemSettings {
   // 分组隔离
   allow_ungrouped_key_scheduling: boolean;
   openai_pool_recovery_probe_enabled: boolean;
+  openai_pool_recovery_probe_model: string;
+  openai_pool_soft_cooldown_max_seconds: number;
+  openai_pool_probe_timeout_seconds: number;
   openai_image_pool_recovery_probe_enabled: boolean;
+  openai_image_pool_recovery_probe_model: string;
+  openai_image_pool_soft_cooldown_max_seconds: number;
+  openai_image_pool_probe_timeout_seconds: number;
   anthropic_pool_recovery_probe_enabled: boolean;
   anthropic_pool_recovery_probe_model: string;
   anthropic_pool_soft_cooldown_max_seconds: number;
@@ -796,7 +802,13 @@ export interface UpdateSettingsRequest {
   max_claude_code_version?: string;
   allow_ungrouped_key_scheduling?: boolean;
   openai_pool_recovery_probe_enabled?: boolean;
+  openai_pool_recovery_probe_model?: string;
+  openai_pool_soft_cooldown_max_seconds?: number;
+  openai_pool_probe_timeout_seconds?: number;
   openai_image_pool_recovery_probe_enabled?: boolean;
+  openai_image_pool_recovery_probe_model?: string;
+  openai_image_pool_soft_cooldown_max_seconds?: number;
+  openai_image_pool_probe_timeout_seconds?: number;
   anthropic_pool_recovery_probe_enabled?: boolean;
   anthropic_pool_recovery_probe_model?: string;
   anthropic_pool_soft_cooldown_max_seconds?: number;

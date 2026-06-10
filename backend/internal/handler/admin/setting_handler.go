@@ -249,7 +249,13 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		MaxClaudeCodeVersion:                   settings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:            settings.AllowUngroupedKeyScheduling,
 		OpenAIPoolRecoveryProbeEnabled:         settings.OpenAIPoolRecoveryProbeEnabled,
+		OpenAIPoolRecoveryProbeModel:           settings.OpenAIPoolRecoveryProbeModel,
+		OpenAIPoolSoftCooldownMaxSeconds:       settings.OpenAIPoolSoftCooldownMaxSeconds,
+		OpenAIPoolProbeTimeoutSeconds:          settings.OpenAIPoolProbeTimeoutSeconds,
 		OpenAIImagePoolRecoveryProbeEnabled:    settings.OpenAIImagePoolRecoveryProbeEnabled,
+		OpenAIImagePoolRecoveryProbeModel:      settings.OpenAIImagePoolRecoveryProbeModel,
+		OpenAIImagePoolSoftCooldownMaxSeconds:  settings.OpenAIImagePoolSoftCooldownMaxSeconds,
+		OpenAIImagePoolProbeTimeoutSeconds:     settings.OpenAIImagePoolProbeTimeoutSeconds,
 		AnthropicPoolRecoveryProbeEnabled:      settings.AnthropicPoolRecoveryProbeEnabled,
 		AnthropicPoolRecoveryProbeModel:        settings.AnthropicPoolRecoveryProbeModel,
 		AnthropicPoolSoftCooldownMaxSeconds:    settings.AnthropicPoolSoftCooldownMaxSeconds,
@@ -580,13 +586,19 @@ type UpdateSettingsRequest struct {
 	MaxClaudeCodeVersion string `json:"max_claude_code_version"`
 
 	// 分组隔离
-	AllowUngroupedKeyScheduling         bool    `json:"allow_ungrouped_key_scheduling"`
-	OpenAIPoolRecoveryProbeEnabled      *bool   `json:"openai_pool_recovery_probe_enabled"`
-	OpenAIImagePoolRecoveryProbeEnabled *bool   `json:"openai_image_pool_recovery_probe_enabled"`
-	AnthropicPoolRecoveryProbeEnabled   *bool   `json:"anthropic_pool_recovery_probe_enabled"`
-	AnthropicPoolRecoveryProbeModel     *string `json:"anthropic_pool_recovery_probe_model"`
-	AnthropicPoolSoftCooldownMaxSeconds *int    `json:"anthropic_pool_soft_cooldown_max_seconds"`
-	AnthropicPoolProbeTimeoutSeconds    *int    `json:"anthropic_pool_probe_timeout_seconds"`
+	AllowUngroupedKeyScheduling           bool    `json:"allow_ungrouped_key_scheduling"`
+	OpenAIPoolRecoveryProbeEnabled        *bool   `json:"openai_pool_recovery_probe_enabled"`
+	OpenAIPoolRecoveryProbeModel          *string `json:"openai_pool_recovery_probe_model"`
+	OpenAIPoolSoftCooldownMaxSeconds      *int    `json:"openai_pool_soft_cooldown_max_seconds"`
+	OpenAIPoolProbeTimeoutSeconds         *int    `json:"openai_pool_probe_timeout_seconds"`
+	OpenAIImagePoolRecoveryProbeEnabled   *bool   `json:"openai_image_pool_recovery_probe_enabled"`
+	OpenAIImagePoolRecoveryProbeModel     *string `json:"openai_image_pool_recovery_probe_model"`
+	OpenAIImagePoolSoftCooldownMaxSeconds *int    `json:"openai_image_pool_soft_cooldown_max_seconds"`
+	OpenAIImagePoolProbeTimeoutSeconds    *int    `json:"openai_image_pool_probe_timeout_seconds"`
+	AnthropicPoolRecoveryProbeEnabled     *bool   `json:"anthropic_pool_recovery_probe_enabled"`
+	AnthropicPoolRecoveryProbeModel       *string `json:"anthropic_pool_recovery_probe_model"`
+	AnthropicPoolSoftCooldownMaxSeconds   *int    `json:"anthropic_pool_soft_cooldown_max_seconds"`
+	AnthropicPoolProbeTimeoutSeconds      *int    `json:"anthropic_pool_probe_timeout_seconds"`
 
 	// Backend Mode
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
@@ -1612,11 +1624,47 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.OpenAIPoolRecoveryProbeEnabled
 		}(),
+		OpenAIPoolRecoveryProbeModel: func() string {
+			if req.OpenAIPoolRecoveryProbeModel != nil {
+				return *req.OpenAIPoolRecoveryProbeModel
+			}
+			return previousSettings.OpenAIPoolRecoveryProbeModel
+		}(),
+		OpenAIPoolSoftCooldownMaxSeconds: func() int {
+			if req.OpenAIPoolSoftCooldownMaxSeconds != nil {
+				return *req.OpenAIPoolSoftCooldownMaxSeconds
+			}
+			return previousSettings.OpenAIPoolSoftCooldownMaxSeconds
+		}(),
+		OpenAIPoolProbeTimeoutSeconds: func() int {
+			if req.OpenAIPoolProbeTimeoutSeconds != nil {
+				return *req.OpenAIPoolProbeTimeoutSeconds
+			}
+			return previousSettings.OpenAIPoolProbeTimeoutSeconds
+		}(),
 		OpenAIImagePoolRecoveryProbeEnabled: func() bool {
 			if req.OpenAIImagePoolRecoveryProbeEnabled != nil {
 				return *req.OpenAIImagePoolRecoveryProbeEnabled
 			}
 			return previousSettings.OpenAIImagePoolRecoveryProbeEnabled
+		}(),
+		OpenAIImagePoolRecoveryProbeModel: func() string {
+			if req.OpenAIImagePoolRecoveryProbeModel != nil {
+				return *req.OpenAIImagePoolRecoveryProbeModel
+			}
+			return previousSettings.OpenAIImagePoolRecoveryProbeModel
+		}(),
+		OpenAIImagePoolSoftCooldownMaxSeconds: func() int {
+			if req.OpenAIImagePoolSoftCooldownMaxSeconds != nil {
+				return *req.OpenAIImagePoolSoftCooldownMaxSeconds
+			}
+			return previousSettings.OpenAIImagePoolSoftCooldownMaxSeconds
+		}(),
+		OpenAIImagePoolProbeTimeoutSeconds: func() int {
+			if req.OpenAIImagePoolProbeTimeoutSeconds != nil {
+				return *req.OpenAIImagePoolProbeTimeoutSeconds
+			}
+			return previousSettings.OpenAIImagePoolProbeTimeoutSeconds
 		}(),
 		AnthropicPoolRecoveryProbeEnabled: func() bool {
 			if req.AnthropicPoolRecoveryProbeEnabled != nil {
@@ -2105,7 +2153,13 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		MaxClaudeCodeVersion:                   updatedSettings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:            updatedSettings.AllowUngroupedKeyScheduling,
 		OpenAIPoolRecoveryProbeEnabled:         updatedSettings.OpenAIPoolRecoveryProbeEnabled,
+		OpenAIPoolRecoveryProbeModel:           updatedSettings.OpenAIPoolRecoveryProbeModel,
+		OpenAIPoolSoftCooldownMaxSeconds:       updatedSettings.OpenAIPoolSoftCooldownMaxSeconds,
+		OpenAIPoolProbeTimeoutSeconds:          updatedSettings.OpenAIPoolProbeTimeoutSeconds,
 		OpenAIImagePoolRecoveryProbeEnabled:    updatedSettings.OpenAIImagePoolRecoveryProbeEnabled,
+		OpenAIImagePoolRecoveryProbeModel:      updatedSettings.OpenAIImagePoolRecoveryProbeModel,
+		OpenAIImagePoolSoftCooldownMaxSeconds:  updatedSettings.OpenAIImagePoolSoftCooldownMaxSeconds,
+		OpenAIImagePoolProbeTimeoutSeconds:     updatedSettings.OpenAIImagePoolProbeTimeoutSeconds,
 		AnthropicPoolRecoveryProbeEnabled:      updatedSettings.AnthropicPoolRecoveryProbeEnabled,
 		AnthropicPoolRecoveryProbeModel:        updatedSettings.AnthropicPoolRecoveryProbeModel,
 		AnthropicPoolSoftCooldownMaxSeconds:    updatedSettings.AnthropicPoolSoftCooldownMaxSeconds,
@@ -2551,8 +2605,26 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.OpenAIPoolRecoveryProbeEnabled != after.OpenAIPoolRecoveryProbeEnabled {
 		changed = append(changed, "openai_pool_recovery_probe_enabled")
 	}
+	if before.OpenAIPoolRecoveryProbeModel != after.OpenAIPoolRecoveryProbeModel {
+		changed = append(changed, "openai_pool_recovery_probe_model")
+	}
+	if before.OpenAIPoolSoftCooldownMaxSeconds != after.OpenAIPoolSoftCooldownMaxSeconds {
+		changed = append(changed, "openai_pool_soft_cooldown_max_seconds")
+	}
+	if before.OpenAIPoolProbeTimeoutSeconds != after.OpenAIPoolProbeTimeoutSeconds {
+		changed = append(changed, "openai_pool_probe_timeout_seconds")
+	}
 	if before.OpenAIImagePoolRecoveryProbeEnabled != after.OpenAIImagePoolRecoveryProbeEnabled {
 		changed = append(changed, "openai_image_pool_recovery_probe_enabled")
+	}
+	if before.OpenAIImagePoolRecoveryProbeModel != after.OpenAIImagePoolRecoveryProbeModel {
+		changed = append(changed, "openai_image_pool_recovery_probe_model")
+	}
+	if before.OpenAIImagePoolSoftCooldownMaxSeconds != after.OpenAIImagePoolSoftCooldownMaxSeconds {
+		changed = append(changed, "openai_image_pool_soft_cooldown_max_seconds")
+	}
+	if before.OpenAIImagePoolProbeTimeoutSeconds != after.OpenAIImagePoolProbeTimeoutSeconds {
+		changed = append(changed, "openai_image_pool_probe_timeout_seconds")
 	}
 	if before.AnthropicPoolRecoveryProbeEnabled != after.AnthropicPoolRecoveryProbeEnabled {
 		changed = append(changed, "anthropic_pool_recovery_probe_enabled")

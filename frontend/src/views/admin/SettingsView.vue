@@ -3769,6 +3769,44 @@
                 <Toggle v-model="form.openai_pool_recovery_probe_enabled" />
               </div>
 
+              <div class="grid gap-4 md:grid-cols-3">
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.scheduling.openAIPoolProbeModel") }}
+                  </label>
+                  <input
+                    v-model="form.openai_pool_recovery_probe_model"
+                    type="text"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                    placeholder="gpt-5.5"
+                  />
+                </div>
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.scheduling.openAIPoolSoftCooldownMax") }}
+                  </label>
+                  <input
+                    v-model.number="form.openai_pool_soft_cooldown_max_seconds"
+                    type="number"
+                    min="1"
+                    max="30"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.scheduling.openAIPoolProbeTimeout") }}
+                  </label>
+                  <input
+                    v-model.number="form.openai_pool_probe_timeout_seconds"
+                    type="number"
+                    min="1"
+                    max="30"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
+              </div>
+
               <div class="flex items-center justify-between">
                 <div>
                   <label
@@ -3789,6 +3827,44 @@
                 <Toggle
                   v-model="form.openai_image_pool_recovery_probe_enabled"
                 />
+              </div>
+
+              <div class="grid gap-4 md:grid-cols-3">
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.scheduling.openAIImagePoolProbeModel") }}
+                  </label>
+                  <input
+                    v-model="form.openai_image_pool_recovery_probe_model"
+                    type="text"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                    placeholder="gpt-image-2"
+                  />
+                </div>
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.scheduling.openAIImagePoolSoftCooldownMax") }}
+                  </label>
+                  <input
+                    v-model.number="form.openai_image_pool_soft_cooldown_max_seconds"
+                    type="number"
+                    min="1"
+                    max="30"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.scheduling.openAIImagePoolProbeTimeout") }}
+                  </label>
+                  <input
+                    v-model.number="form.openai_image_pool_probe_timeout_seconds"
+                    type="number"
+                    min="1"
+                    max="600"
+                    class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                  />
+                </div>
               </div>
 
               <div class="flex items-center justify-between">
@@ -7278,7 +7354,13 @@ const form = reactive<SettingsForm>({
   // 分组隔离
   allow_ungrouped_key_scheduling: false,
   openai_pool_recovery_probe_enabled: true,
+  openai_pool_recovery_probe_model: "gpt-5.5",
+  openai_pool_soft_cooldown_max_seconds: 30,
+  openai_pool_probe_timeout_seconds: 5,
   openai_image_pool_recovery_probe_enabled: true,
+  openai_image_pool_recovery_probe_model: "gpt-image-2",
+  openai_image_pool_soft_cooldown_max_seconds: 30,
+  openai_image_pool_probe_timeout_seconds: 360,
   anthropic_pool_recovery_probe_enabled: true,
   anthropic_pool_recovery_probe_model: "claude-sonnet-4-6",
   anthropic_pool_soft_cooldown_max_seconds: 30,
@@ -8403,8 +8485,20 @@ async function saveSettings() {
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
       openai_pool_recovery_probe_enabled:
         form.openai_pool_recovery_probe_enabled,
+      openai_pool_recovery_probe_model:
+        form.openai_pool_recovery_probe_model?.trim() || "gpt-5.5",
+      openai_pool_soft_cooldown_max_seconds:
+        clampNumber(Number(form.openai_pool_soft_cooldown_max_seconds) || 30, 1, 30),
+      openai_pool_probe_timeout_seconds:
+        clampNumber(Number(form.openai_pool_probe_timeout_seconds) || 5, 1, 30),
       openai_image_pool_recovery_probe_enabled:
         form.openai_image_pool_recovery_probe_enabled,
+      openai_image_pool_recovery_probe_model:
+        form.openai_image_pool_recovery_probe_model?.trim() || "gpt-image-2",
+      openai_image_pool_soft_cooldown_max_seconds:
+        clampNumber(Number(form.openai_image_pool_soft_cooldown_max_seconds) || 30, 1, 30),
+      openai_image_pool_probe_timeout_seconds:
+        clampNumber(Number(form.openai_image_pool_probe_timeout_seconds) || 360, 1, 600),
       anthropic_pool_recovery_probe_enabled:
         form.anthropic_pool_recovery_probe_enabled,
       anthropic_pool_recovery_probe_model:

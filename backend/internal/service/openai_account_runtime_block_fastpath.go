@@ -189,7 +189,6 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 	if cooldown <= 0 {
 		return
 	}
-	cooldown = capOpenAIPoolSoftCooldown(cooldown)
 	if cooldownContext.StatusCode == 0 {
 		cooldownContext.StatusCode = statusCode
 	}
@@ -210,6 +209,7 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 	}
 	cooldownContext.Reason = truncateString(strings.TrimSpace(cooldownContext.Reason), 256)
 	cooldownContext.LastProbeReason = truncateString(strings.TrimSpace(cooldownContext.LastProbeReason), 256)
+	cooldown = s.capOpenAIPoolSoftCooldown(ctx, account, cooldown, cooldownContext)
 	if cooldownContext.ProbeCapability != "" || cooldownContext.ProbeModel != "" || cooldownContext.ProbeKind != "" ||
 		cooldownContext.CooldownSource != "" || cooldownContext.StatusCode > 0 || cooldownContext.Reason != "" ||
 		cooldownContext.LastProbeStatus > 0 || cooldownContext.LastProbeReason != "" {
@@ -218,9 +218,25 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 	s.storeOpenAIPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown))
 }
 
-func capOpenAIPoolSoftCooldown(cooldown time.Duration) time.Duration {
-	if cooldown > openAIPoolSoftCooldownMax {
-		return openAIPoolSoftCooldownMax
+func (s *OpenAIGatewayService) capOpenAIPoolSoftCooldown(ctx context.Context, account *Account, cooldown time.Duration, cooldownContext openAIPoolSoftCooldownContext) time.Duration {
+	maxCooldown := openAIPoolSoftCooldownMax
+	if s != nil && s.settingService != nil {
+		usesImagePool := account != nil && account.IsImagePoolMode()
+		usesImagePool = usesImagePool ||
+			cooldownContext.ProbeKind == "images" ||
+			cooldownContext.ProbeCapability == OpenAIImagesCapabilityBasic ||
+			cooldownContext.ProbeCapability == OpenAIImagesCapabilityNative ||
+			isOpenAIImageGenerationModel(cooldownContext.ProbeModel)
+		if usesImagePool {
+			if configured := s.settingService.GetOpenAIImagePoolSoftCooldownMax(ctx); configured > 0 {
+				maxCooldown = configured
+			}
+		} else if configured := s.settingService.GetOpenAIPoolSoftCooldownMax(ctx); configured > 0 {
+			maxCooldown = configured
+		}
+	}
+	if cooldown > maxCooldown {
+		return maxCooldown
 	}
 	return cooldown
 }
@@ -229,6 +245,7 @@ func (s *OpenAIGatewayService) storeOpenAIPoolSoftCooldownUntil(accountID int64,
 	if s == nil || accountID <= 0 || until.IsZero() {
 		return
 	}
+	now := time.Now()
 	for {
 		current, loaded := s.openaiPoolSoftCooldownUntil.Load(accountID)
 		if !loaded {
@@ -238,7 +255,7 @@ func (s *OpenAIGatewayService) storeOpenAIPoolSoftCooldownUntil(accountID int64,
 			continue
 		}
 		currentUntil, ok := current.(time.Time)
-		if !ok || currentUntil.Before(until) {
+		if !ok || currentUntil.IsZero() || !currentUntil.After(now) {
 			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(accountID, current, until) {
 				return
 			}

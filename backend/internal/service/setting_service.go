@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/imroc/req/v3"
 	"golang.org/x/sync/singleflight"
 )
@@ -1923,7 +1924,13 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	// 分组隔离
 	updates[SettingKeyAllowUngroupedKeyScheduling] = strconv.FormatBool(settings.AllowUngroupedKeyScheduling)
 	updates[SettingKeyOpenAIPoolRecoveryProbeEnabled] = strconv.FormatBool(settings.OpenAIPoolRecoveryProbeEnabled)
+	updates[SettingKeyOpenAIPoolRecoveryProbeModel] = strings.TrimSpace(settings.OpenAIPoolRecoveryProbeModel)
+	updates[SettingKeyOpenAIPoolSoftCooldownMaxSeconds] = strconv.Itoa(clampInt(settings.OpenAIPoolSoftCooldownMaxSeconds, 1, 30))
+	updates[SettingKeyOpenAIPoolProbeTimeoutSeconds] = strconv.Itoa(clampInt(settings.OpenAIPoolProbeTimeoutSeconds, 1, 30))
 	updates[SettingKeyOpenAIImagePoolRecoveryProbeEnabled] = strconv.FormatBool(settings.OpenAIImagePoolRecoveryProbeEnabled)
+	updates[SettingKeyOpenAIImagePoolRecoveryProbeModel] = strings.TrimSpace(settings.OpenAIImagePoolRecoveryProbeModel)
+	updates[SettingKeyOpenAIImagePoolSoftCooldownMaxSeconds] = strconv.Itoa(clampInt(settings.OpenAIImagePoolSoftCooldownMaxSeconds, 1, 30))
+	updates[SettingKeyOpenAIImagePoolProbeTimeoutSeconds] = strconv.Itoa(clampInt(settings.OpenAIImagePoolProbeTimeoutSeconds, 1, 600))
 	updates[SettingKeyAnthropicPoolRecoveryProbeEnabled] = strconv.FormatBool(settings.AnthropicPoolRecoveryProbeEnabled)
 	updates[SettingKeyAnthropicPoolRecoveryProbeModel] = strings.TrimSpace(settings.AnthropicPoolRecoveryProbeModel)
 	updates[SettingKeyAnthropicPoolSoftCooldownMaxSeconds] = strconv.Itoa(clampInt(settings.AnthropicPoolSoftCooldownMaxSeconds, 1, 30))
@@ -2429,8 +2436,54 @@ func (s *SettingService) IsOpenAIPoolRecoveryProbeEnabled(ctx context.Context) b
 	return s == nil || s.getGatewayForwardingSettingsCached(ctx).openAIPoolRecoveryProbe
 }
 
+func (s *SettingService) GetOpenAIPoolRecoveryProbeModel(ctx context.Context) string {
+	if s == nil || s.settingRepo == nil {
+		return openai.DefaultTestModel
+	}
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyOpenAIPoolRecoveryProbeModel)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return openai.DefaultTestModel
+	}
+	return strings.TrimSpace(value)
+}
+
+func (s *SettingService) GetOpenAIPoolSoftCooldownMax(ctx context.Context) time.Duration {
+	seconds := s.getPositiveSettingSeconds(ctx, SettingKeyOpenAIPoolSoftCooldownMaxSeconds, int(openAIPoolSoftCooldownMax/time.Second))
+	seconds = clampInt(seconds, 1, 30)
+	return time.Duration(seconds) * time.Second
+}
+
+func (s *SettingService) GetOpenAIPoolProbeTimeout(ctx context.Context) time.Duration {
+	seconds := s.getPositiveSettingSeconds(ctx, SettingKeyOpenAIPoolProbeTimeoutSeconds, int(openAIPoolRecoveryProbeTimeout/time.Second))
+	seconds = clampInt(seconds, 1, 30)
+	return time.Duration(seconds) * time.Second
+}
+
 func (s *SettingService) IsOpenAIImagePoolRecoveryProbeEnabled(ctx context.Context) bool {
 	return s == nil || s.getGatewayForwardingSettingsCached(ctx).openAIImagePoolRecoveryProbe
+}
+
+func (s *SettingService) GetOpenAIImagePoolRecoveryProbeModel(ctx context.Context) string {
+	if s == nil || s.settingRepo == nil {
+		return openAIPoolRecoveryProbeDefaultImageModel
+	}
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyOpenAIImagePoolRecoveryProbeModel)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return openAIPoolRecoveryProbeDefaultImageModel
+	}
+	return strings.TrimSpace(value)
+}
+
+func (s *SettingService) GetOpenAIImagePoolSoftCooldownMax(ctx context.Context) time.Duration {
+	seconds := s.getPositiveSettingSeconds(ctx, SettingKeyOpenAIImagePoolSoftCooldownMaxSeconds, int(openAIPoolSoftCooldownMax/time.Second))
+	seconds = clampInt(seconds, 1, 30)
+	return time.Duration(seconds) * time.Second
+}
+
+func (s *SettingService) GetOpenAIImagePoolProbeTimeout(ctx context.Context) time.Duration {
+	seconds := s.getPositiveSettingSeconds(ctx, SettingKeyOpenAIImagePoolProbeTimeoutSeconds, int(openAIPoolRecoveryProbeImageTimeout/time.Second))
+	seconds = clampInt(seconds, 1, 600)
+	return time.Duration(seconds) * time.Second
 }
 
 func (s *SettingService) IsAnthropicPoolRecoveryProbeEnabled(ctx context.Context) bool {
@@ -2956,25 +3009,31 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyMaxClaudeCodeVersion: "",
 
 		// 分组隔离（默认不允许未分组 Key 调度）
-		SettingKeyAllowUngroupedKeyScheduling:         "false",
-		SettingKeyOpenAIPoolRecoveryProbeEnabled:      "true",
-		SettingKeyOpenAIImagePoolRecoveryProbeEnabled: "true",
-		SettingKeyAnthropicPoolRecoveryProbeEnabled:   "true",
-		SettingKeyAnthropicPoolRecoveryProbeModel:     anthropicPoolProbeDefaultModel,
-		SettingKeyAnthropicPoolSoftCooldownMaxSeconds: "30",
-		SettingKeyAnthropicPoolProbeTimeoutSeconds:    "5",
-		SettingKeyEnableAnthropicCacheTTL1hInjection:  "false",
-		SettingKeyRewriteMessageCacheControl:          strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
-		SettingKeyStreamLowLatencyMode:                s.defaultStreamLowLatencyMode(),
-		SettingKeyLowLatencyStreamHeaders:             strconv.FormatBool(s.defaultLowLatencyStreamHeaders()),
-		SettingKeyAntigravityUserAgentVersion:         "",
-		SettingKeyOpenAICodexUserAgent:                "",
-		SettingPaymentVisibleMethodAlipaySource:       "",
-		SettingPaymentVisibleMethodWxpaySource:        "",
-		SettingPaymentVisibleMethodAlipayEnabled:      "false",
-		SettingPaymentVisibleMethodWxpayEnabled:       "false",
-		openAIAdvancedSchedulerSettingKey:             "false",
-		SettingKeyAllowUserViewErrorRequests:          "false",
+		SettingKeyAllowUngroupedKeyScheduling:           "false",
+		SettingKeyOpenAIPoolRecoveryProbeEnabled:        "true",
+		SettingKeyOpenAIPoolRecoveryProbeModel:          openai.DefaultTestModel,
+		SettingKeyOpenAIPoolSoftCooldownMaxSeconds:      "30",
+		SettingKeyOpenAIPoolProbeTimeoutSeconds:         "5",
+		SettingKeyOpenAIImagePoolRecoveryProbeEnabled:   "true",
+		SettingKeyOpenAIImagePoolRecoveryProbeModel:     openAIPoolRecoveryProbeDefaultImageModel,
+		SettingKeyOpenAIImagePoolSoftCooldownMaxSeconds: "30",
+		SettingKeyOpenAIImagePoolProbeTimeoutSeconds:    "360",
+		SettingKeyAnthropicPoolRecoveryProbeEnabled:     "true",
+		SettingKeyAnthropicPoolRecoveryProbeModel:       anthropicPoolProbeDefaultModel,
+		SettingKeyAnthropicPoolSoftCooldownMaxSeconds:   "30",
+		SettingKeyAnthropicPoolProbeTimeoutSeconds:      "5",
+		SettingKeyEnableAnthropicCacheTTL1hInjection:    "false",
+		SettingKeyRewriteMessageCacheControl:            strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
+		SettingKeyStreamLowLatencyMode:                  s.defaultStreamLowLatencyMode(),
+		SettingKeyLowLatencyStreamHeaders:               strconv.FormatBool(s.defaultLowLatencyStreamHeaders()),
+		SettingKeyAntigravityUserAgentVersion:           "",
+		SettingKeyOpenAICodexUserAgent:                  "",
+		SettingPaymentVisibleMethodAlipaySource:         "",
+		SettingPaymentVisibleMethodWxpaySource:          "",
+		SettingPaymentVisibleMethodAlipayEnabled:        "false",
+		SettingPaymentVisibleMethodWxpayEnabled:         "false",
+		openAIAdvancedSchedulerSettingKey:               "false",
+		SettingKeyAllowUserViewErrorRequests:            "false",
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -3477,10 +3536,22 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	if v, ok := settings[SettingKeyOpenAIPoolRecoveryProbeEnabled]; ok && v != "" {
 		result.OpenAIPoolRecoveryProbeEnabled = v == "true"
 	}
+	result.OpenAIPoolRecoveryProbeModel = strings.TrimSpace(settings[SettingKeyOpenAIPoolRecoveryProbeModel])
+	if result.OpenAIPoolRecoveryProbeModel == "" {
+		result.OpenAIPoolRecoveryProbeModel = openai.DefaultTestModel
+	}
+	result.OpenAIPoolSoftCooldownMaxSeconds = clampInt(parsePositiveIntSetting(settings[SettingKeyOpenAIPoolSoftCooldownMaxSeconds], 30), 1, 30)
+	result.OpenAIPoolProbeTimeoutSeconds = clampInt(parsePositiveIntSetting(settings[SettingKeyOpenAIPoolProbeTimeoutSeconds], 5), 1, 30)
 	result.OpenAIImagePoolRecoveryProbeEnabled = true
 	if v, ok := settings[SettingKeyOpenAIImagePoolRecoveryProbeEnabled]; ok && v != "" {
 		result.OpenAIImagePoolRecoveryProbeEnabled = v == "true"
 	}
+	result.OpenAIImagePoolRecoveryProbeModel = strings.TrimSpace(settings[SettingKeyOpenAIImagePoolRecoveryProbeModel])
+	if result.OpenAIImagePoolRecoveryProbeModel == "" {
+		result.OpenAIImagePoolRecoveryProbeModel = openAIPoolRecoveryProbeDefaultImageModel
+	}
+	result.OpenAIImagePoolSoftCooldownMaxSeconds = clampInt(parsePositiveIntSetting(settings[SettingKeyOpenAIImagePoolSoftCooldownMaxSeconds], 30), 1, 30)
+	result.OpenAIImagePoolProbeTimeoutSeconds = clampInt(parsePositiveIntSetting(settings[SettingKeyOpenAIImagePoolProbeTimeoutSeconds], 360), 1, 600)
 	result.AnthropicPoolRecoveryProbeEnabled = true
 	if v, ok := settings[SettingKeyAnthropicPoolRecoveryProbeEnabled]; ok && v != "" {
 		result.AnthropicPoolRecoveryProbeEnabled = v == "true"

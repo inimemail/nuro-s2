@@ -16,13 +16,14 @@ import (
 )
 
 const (
-	openAIPoolRecoveryProbeTimeout         = 5 * time.Second
-	openAIPoolRecoveryProbeImageTimeout    = 6 * time.Minute
-	openAIPoolRecoveryProbeDefaultBackoff  = 5 * time.Second
-	openAIPoolRecoveryProbeMaxBackoff      = 30 * time.Second
-	openAIPoolRecoveryProbeAdminKickEvery  = 5 * time.Second
-	openAIPoolRecoveryProbeReadLimit       = 1 << 20
-	openAIPoolRecoveryProbeMaxOutputTokens = 8
+	openAIPoolRecoveryProbeTimeout           = 5 * time.Second
+	openAIPoolRecoveryProbeImageTimeout      = 6 * time.Minute
+	openAIPoolRecoveryProbeDefaultImageModel = "gpt-image-2"
+	openAIPoolRecoveryProbeDefaultBackoff    = 5 * time.Second
+	openAIPoolRecoveryProbeMaxBackoff        = 30 * time.Second
+	openAIPoolRecoveryProbeAdminKickEvery    = 5 * time.Second
+	openAIPoolRecoveryProbeReadLimit         = 1 << 20
+	openAIPoolRecoveryProbeMaxOutputTokens   = 8
 )
 
 type openAIPoolRecoveryProbeResult struct {
@@ -53,7 +54,7 @@ func (s *OpenAIGatewayService) maybeStartOpenAIPoolRecoveryProbe(ctx context.Con
 	}
 	accountID := account.ID
 	accountCopy := *account
-	probeTimeout := s.openAIPoolRecoveryProbeTimeout(&accountCopy, requestedModel)
+	probeTimeout := s.openAIPoolRecoveryProbeTimeout(ctx, &accountCopy, requestedModel)
 	go func() {
 		defer s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
 		probeCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
@@ -108,22 +109,24 @@ func (s *OpenAIGatewayService) openAIPoolRecoveryProbeUsesImagePool(account *Acc
 	return isOpenAIImageGenerationModel(requestedModel)
 }
 
-func (s *OpenAIGatewayService) openAIPoolRecoveryProbeTimeout(account *Account, requestedModel string) time.Duration {
+func (s *OpenAIGatewayService) openAIPoolRecoveryProbeTimeout(ctx context.Context, account *Account, requestedModel string) time.Duration {
 	if s == nil || account == nil {
 		return openAIPoolRecoveryProbeTimeout
 	}
-	cooldownContext := s.openAIPoolAccountSoftCooldownContext(account.ID)
-	switch {
-	case cooldownContext.ProbeKind == "images",
-		cooldownContext.ProbeCapability == OpenAIImagesCapabilityBasic,
-		cooldownContext.ProbeCapability == OpenAIImagesCapabilityNative,
-		account.IsImagePoolMode(),
-		isOpenAIImageGenerationModel(cooldownContext.ProbeModel),
-		isOpenAIImageGenerationModel(requestedModel):
+	if s.openAIPoolRecoveryProbeUsesImagePool(account, requestedModel) {
+		if s.settingService != nil {
+			if timeout := s.settingService.GetOpenAIImagePoolProbeTimeout(ctx); timeout > 0 {
+				return timeout
+			}
+		}
 		return openAIPoolRecoveryProbeImageTimeout
-	default:
-		return openAIPoolRecoveryProbeTimeout
 	}
+	if s.settingService != nil {
+		if timeout := s.settingService.GetOpenAIPoolProbeTimeout(ctx); timeout > 0 {
+			return timeout
+		}
+	}
+	return openAIPoolRecoveryProbeTimeout
 }
 
 func (s *OpenAIGatewayService) MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account) {
@@ -181,9 +184,9 @@ func (s *OpenAIGatewayService) probeOpenAIPoolAccountRecovery(ctx context.Contex
 	cooldownContext := s.openAIPoolAccountSoftCooldownContext(account.ID)
 	switch {
 	case cooldownContext.ProbeKind == "images":
-		return s.probeOpenAIPoolAccountImages(ctx, account, cooldownContext.ProbeCapability, cooldownContext.ProbeModel)
+		return s.probeOpenAIPoolAccountImages(ctx, account, cooldownContext.ProbeCapability, s.resolveOpenAIImagePoolRecoveryProbeModel(ctx, account, cooldownContext.ProbeModel))
 	case cooldownContext.ProbeCapability == OpenAIImagesCapabilityBasic || cooldownContext.ProbeCapability == OpenAIImagesCapabilityNative:
-		return s.probeOpenAIPoolAccountImages(ctx, account, cooldownContext.ProbeCapability, cooldownContext.ProbeModel)
+		return s.probeOpenAIPoolAccountImages(ctx, account, cooldownContext.ProbeCapability, s.resolveOpenAIImagePoolRecoveryProbeModel(ctx, account, cooldownContext.ProbeModel))
 	}
 	model := s.resolveOpenAIPoolRecoveryProbeModel(ctx, account, requestedModel, cooldownContext)
 	if account.Type == AccountTypeAPIKey {
@@ -199,7 +202,45 @@ func (s *OpenAIGatewayService) probeOpenAIPoolAccountRecovery(ctx context.Contex
 }
 
 func (s *OpenAIGatewayService) resolveOpenAIPoolRecoveryProbeModel(ctx context.Context, account *Account, requestedModel string, cooldownContext openAIPoolSoftCooldownContext) string {
+	for _, value := range []string{s.configuredOpenAIPoolRecoveryProbeModel(ctx), openai.DefaultTestModel} {
+		if model := strings.TrimSpace(value); model != "" {
+			if account != nil {
+				if mapped := account.GetMappedModel(model); strings.TrimSpace(mapped) != "" {
+					return mapped
+				}
+			}
+			return model
+		}
+	}
 	return openai.DefaultTestModel
+}
+
+func (s *OpenAIGatewayService) configuredOpenAIPoolRecoveryProbeModel(ctx context.Context) string {
+	if s != nil && s.settingService != nil {
+		return strings.TrimSpace(s.settingService.GetOpenAIPoolRecoveryProbeModel(ctx))
+	}
+	return openai.DefaultTestModel
+}
+
+func (s *OpenAIGatewayService) configuredOpenAIImagePoolRecoveryProbeModel(ctx context.Context) string {
+	if s != nil && s.settingService != nil {
+		return strings.TrimSpace(s.settingService.GetOpenAIImagePoolRecoveryProbeModel(ctx))
+	}
+	return openAIPoolRecoveryProbeDefaultImageModel
+}
+
+func (s *OpenAIGatewayService) resolveOpenAIImagePoolRecoveryProbeModel(ctx context.Context, account *Account, requestedModel string) string {
+	for _, value := range []string{requestedModel, s.configuredOpenAIImagePoolRecoveryProbeModel(ctx), openAIPoolRecoveryProbeDefaultImageModel} {
+		if model := strings.TrimSpace(value); model != "" {
+			if account != nil {
+				if mapped := account.GetMappedModel(model); strings.TrimSpace(mapped) != "" {
+					return mapped
+				}
+			}
+			return model
+		}
+	}
+	return openAIPoolRecoveryProbeDefaultImageModel
 }
 
 func openAIPoolCooldownShouldAvoidOriginalProbeModel(cooldownContext openAIPoolSoftCooldownContext) bool {
@@ -239,11 +280,11 @@ func (s *OpenAIGatewayService) probeOpenAIPoolAccountImages(ctx context.Context,
 	}
 	model := strings.TrimSpace(requestedModel)
 	if model == "" {
-		model = "gpt-image-2"
+		model = openAIPoolRecoveryProbeDefaultImageModel
 	}
 	model = account.GetMappedModel(model)
 	if strings.TrimSpace(model) == "" {
-		model = "gpt-image-2"
+		model = openAIPoolRecoveryProbeDefaultImageModel
 	}
 	if account.Type != AccountTypeAPIKey {
 		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: "images", err: fmt.Errorf("image recovery probe unsupported for account type %s", account.Type)}
@@ -438,7 +479,7 @@ func openAIRecoveryChatCompletionsPayload(model string) []byte {
 
 func openAIRecoveryImagesPayload(model string, capability OpenAIImagesCapability) []byte {
 	if strings.TrimSpace(model) == "" {
-		model = "gpt-image-2"
+		model = openAIPoolRecoveryProbeDefaultImageModel
 	}
 	body := map[string]any{
 		"model":  model,

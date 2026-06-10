@@ -88,6 +88,7 @@ func (s *GatewayService) storeAnthropicPoolSoftCooldownUntil(accountID int64, un
 	if s == nil || accountID <= 0 || until.IsZero() {
 		return
 	}
+	now := time.Now()
 	for {
 		current, loaded := s.anthropicPoolSoftCooldownUntil.Load(accountID)
 		if !loaded {
@@ -97,7 +98,7 @@ func (s *GatewayService) storeAnthropicPoolSoftCooldownUntil(accountID int64, un
 			continue
 		}
 		currentUntil, ok := current.(time.Time)
-		if !ok || currentUntil.Before(until) {
+		if !ok || currentUntil.IsZero() || !currentUntil.After(now) {
 			if s.anthropicPoolSoftCooldownUntil.CompareAndSwap(accountID, current, until) {
 				return
 			}

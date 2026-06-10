@@ -413,8 +413,20 @@ const (
 	SettingKeyAllowUngroupedKeyScheduling = "allow_ungrouped_key_scheduling"
 	// SettingKeyOpenAIPoolRecoveryProbeEnabled 非图片池软冷却到期后是否启用恢复探测（默认 true）
 	SettingKeyOpenAIPoolRecoveryProbeEnabled = "openai_pool_recovery_probe_enabled"
+	// SettingKeyOpenAIPoolRecoveryProbeModel 非图片池恢复探测模型（默认 OpenAI 默认测试模型）
+	SettingKeyOpenAIPoolRecoveryProbeModel = "openai_pool_recovery_probe_model"
+	// SettingKeyOpenAIPoolSoftCooldownMaxSeconds 非图片池软冷却最大秒数（默认 30）
+	SettingKeyOpenAIPoolSoftCooldownMaxSeconds = "openai_pool_soft_cooldown_max_seconds"
+	// SettingKeyOpenAIPoolProbeTimeoutSeconds 非图片池恢复探测超时秒数（默认 5）
+	SettingKeyOpenAIPoolProbeTimeoutSeconds = "openai_pool_probe_timeout_seconds"
 	// SettingKeyOpenAIImagePoolRecoveryProbeEnabled 图片池软冷却到期后是否启用恢复探测（默认 true）
 	SettingKeyOpenAIImagePoolRecoveryProbeEnabled = "openai_image_pool_recovery_probe_enabled"
+	// SettingKeyOpenAIImagePoolRecoveryProbeModel 图片池恢复探测模型（默认 gpt-image-2）
+	SettingKeyOpenAIImagePoolRecoveryProbeModel = "openai_image_pool_recovery_probe_model"
+	// SettingKeyOpenAIImagePoolSoftCooldownMaxSeconds 图片池软冷却最大秒数（默认 30）
+	SettingKeyOpenAIImagePoolSoftCooldownMaxSeconds = "openai_image_pool_soft_cooldown_max_seconds"
+	// SettingKeyOpenAIImagePoolProbeTimeoutSeconds 图片池恢复探测超时秒数（默认 360）
+	SettingKeyOpenAIImagePoolProbeTimeoutSeconds = "openai_image_pool_probe_timeout_seconds"
 	// SettingKeyAnthropicPoolRecoveryProbeEnabled Anthropic API Key 池软冷却到期后是否启用恢复探测（默认 true）
 	SettingKeyAnthropicPoolRecoveryProbeEnabled = "anthropic_pool_recovery_probe_enabled"
 	// SettingKeyAnthropicPoolRecoveryProbeModel Anthropic API Key 池恢复探测模型（默认 claude-sonnet-4-6）
