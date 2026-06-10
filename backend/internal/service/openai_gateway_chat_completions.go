@@ -83,6 +83,12 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
+	bodyPromptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	if promptCacheKey == "" {
+		promptCacheKey = bodyPromptCacheKey
+	}
+	incomingPromptCacheKey := promptCacheKey
+	explicitPromptCacheKey := promptCacheKey != ""
 	compatPromptCacheInjected := false
 	if promptCacheKey == "" && account.Type == AccountTypeOAuth && shouldAutoInjectPromptCacheKeyForCompat(upstreamModel) {
 		promptCacheKey = deriveCompatPromptCacheKey(&chatReq, upstreamModel)
@@ -119,6 +125,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		// we must filter these fields explicitly here — otherwise the upstream
 		// rejects the request with "Unsupported parameter: ...".
 		for _, field := range cursorResponsesUnsupportedFields {
+			if field == "prompt_cache_retention" && s.isOpenAIPromptCacheBoostRetentionRuntimeEnabled(account) {
+				continue
+			}
 			if stripped, derr := sjson.DeleteBytes(responsesBody, field); derr == nil {
 				responsesBody = stripped
 			}
@@ -187,7 +196,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		}
 	}
 
+	promptCacheBoostGeneratedKey := false
+	promptCacheBoostKeyInjected := false
+	promptCacheBoostRetentionInjected := false
 	if account.Type == AccountTypeAPIKey {
+		if promptCacheKey == "" && s.isOpenAIPromptCacheBoostKeyRuntimeEnabled(account) {
+			promptCacheKey = deriveOpenAIVirtualPromptCacheKey(account, upstreamModel, body)
+			promptCacheBoostGeneratedKey = promptCacheKey != ""
+		}
 		if trimmedKey := strings.TrimSpace(promptCacheKey); trimmedKey != "" {
 			var reqBody map[string]any
 			if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
@@ -195,9 +211,24 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			}
 			if existing, ok := reqBody["prompt_cache_key"].(string); !ok || strings.TrimSpace(existing) == "" {
 				reqBody["prompt_cache_key"] = trimmedKey
+				promptCacheBoostKeyInjected = promptCacheBoostGeneratedKey
 				responsesBody, err = json.Marshal(reqBody)
 				if err != nil {
 					return nil, fmt.Errorf("remarshal after prompt cache key injection: %w", err)
+				}
+			}
+		}
+		if s.isOpenAIPromptCacheBoostRetentionRuntimeEnabled(account) {
+			var reqBody map[string]any
+			if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
+				return nil, fmt.Errorf("unmarshal for prompt cache retention injection: %w", err)
+			}
+			if existing, ok := reqBody["prompt_cache_retention"].(string); !ok || strings.TrimSpace(existing) == "" {
+				reqBody["prompt_cache_retention"] = "24h"
+				promptCacheBoostRetentionInjected = true
+				responsesBody, err = json.Marshal(reqBody)
+				if err != nil {
+					return nil, fmt.Errorf("remarshal after prompt cache retention injection: %w", err)
 				}
 			}
 		}
@@ -229,7 +260,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
 
-	if promptCacheKey != "" {
+	if promptCacheKey != "" && (explicitPromptCacheKey || !promptCacheBoostGeneratedKey) {
 		sessionSeed := promptCacheKey
 		if account.Type == AccountTypeAPIKey {
 			sessionSeed = isolateOpenAISessionID(getAPIKeyIDFromContext(c), promptCacheKey)
@@ -270,6 +301,22 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if (promptCacheBoostKeyInjected || promptCacheBoostRetentionInjected) && isOpenAIPromptCacheBoostUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+			keyUnsupported, retentionUnsupported := openAIPromptCacheBoostUnsupportedFields(resp.StatusCode, upstreamMsg, respBody)
+			stripKey := promptCacheBoostKeyInjected && keyUnsupported
+			stripRetention := promptCacheBoostRetentionInjected && retentionUnsupported
+			if stripKey || stripRetention {
+				s.temporarilyDisableOpenAIPromptCacheBoost(account, stripKey, stripRetention)
+				logger.L().Info("openai chat_completions: prompt cache boost unsupported, retrying without unsupported fields",
+					zap.Int64("account_id", account.ID),
+					zap.Bool("strip_prompt_cache_key", stripKey),
+					zap.Bool("strip_prompt_cache_retention", stripRetention),
+					zap.Int("upstream_status", resp.StatusCode),
+					zap.String("upstream_message", upstreamMsg),
+				)
+				return s.ForwardAsChatCompletions(ctx, c, account, body, incomingPromptCacheKey, defaultMappedModel)
+			}
+		}
 		if account.Type == AccountTypeAPIKey &&
 			openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportUnknown &&
 			!isResponsesEndpointSupportedByStatus(resp.StatusCode) {

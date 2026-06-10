@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -104,4 +105,28 @@ func deriveOpenAIContentSessionSeed(body []byte) string {
 		return ""
 	}
 	return contentSessionSeedPrefix + b.String()
+}
+
+func deriveOpenAIVirtualPromptCacheKey(account *Account, model string, body []byte) string {
+	if account == nil || len(body) == 0 {
+		return ""
+	}
+	seed := strings.TrimSpace(deriveOpenAIContentSessionSeed(body))
+	if seed == "" {
+		return ""
+	}
+	normalizedModel := strings.TrimSpace(model)
+	if normalizedModel == "" {
+		normalizedModel = strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	}
+	if normalizedModel == "" {
+		normalizedModel = "unknown"
+	}
+	return "nuro-pcache-" + hashSensitiveValueForLog(
+		strings.Join([]string{
+			"account", strconv.FormatInt(account.ID, 10),
+			"model", normalizedModel,
+			"seed", seed,
+		}, "|"),
+	)
 }

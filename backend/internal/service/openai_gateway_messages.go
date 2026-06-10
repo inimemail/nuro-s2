@@ -50,10 +50,13 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	billingModel := resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
+	incomingPromptCacheKey := promptCacheKey
+	explicitPromptCacheKey := promptCacheKey != ""
 	apiKeyID := getAPIKeyIDFromContext(c)
 	anthropicDigestChain := ""
 	anthropicMatchedDigestChain := ""
 	compatPromptCacheInjected := false
+	promptCacheBoostGeneratedKey := false
 	if promptCacheKey == "" && shouldAutoInjectPromptCacheKeyForCompat(upstreamModel) {
 		promptCacheKey = promptCacheKeyFromAnthropicMetadataSession(&anthropicReq)
 		if promptCacheKey == "" {
@@ -70,9 +73,14 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		}
 		compatPromptCacheInjected = promptCacheKey != ""
 	}
+	if promptCacheKey == "" && s.isOpenAIPromptCacheBoostKeyRuntimeEnabled(account) {
+		promptCacheKey = deriveOpenAIAnthropicVirtualPromptCacheKey(account, &anthropicReq, upstreamModel)
+		promptCacheBoostGeneratedKey = promptCacheKey != ""
+	}
 	compatReplayTrimmed := false
 	compatReplayGuardEnabled := shouldAutoInjectPromptCacheKeyForCompat(upstreamModel)
-	compatContinuationEnabled := openAICompatContinuationEnabled(account, upstreamModel)
+	cacheBoostEnabled := s.isOpenAIPromptCacheBoostRuntimeEnabled(account)
+	compatContinuationEnabled := openAICompatContinuationEnabled(account, upstreamModel) && !cacheBoostEnabled
 	previousResponseID := ""
 	if compatContinuationEnabled {
 		previousResponseID = s.getOpenAICompatSessionResponseID(ctx, c, account, promptCacheKey)
@@ -83,7 +91,8 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// OAuth/Plus relies on session_id + x-codex-turn-state; trimming to a
 	// sliding 12-message window makes the cached prefix stall at system/tools.
 	// Keep full replay there so upstream prompt caching can grow turn by turn.
-	if compatReplayGuardEnabled && account.Type != AccountTypeOAuth && previousResponseID == "" && !compatContinuationDisabled {
+	keepFullReplayForCacheBoost := cacheBoostEnabled && len(body) >= openAIPromptCacheBoostMinBodyBytes
+	if compatReplayGuardEnabled && account.Type != AccountTypeOAuth && previousResponseID == "" && !compatContinuationDisabled && !keepFullReplayForCacheBoost {
 		compatReplayTrimmed = applyAnthropicCompatFullReplayGuard(&anthropicReq)
 	}
 
@@ -125,6 +134,15 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			zap.Bool("compat_prompt_cache_key_injected", true),
 			zap.String("compat_prompt_cache_key_sha256", hashSensitiveValueForLog(promptCacheKey)),
 		)
+	}
+	if promptCacheBoostGeneratedKey {
+		logFields = append(logFields,
+			zap.Bool("prompt_cache_boost_key_injected", true),
+			zap.String("prompt_cache_boost_key_sha256", hashSensitiveValueForLog(promptCacheKey)),
+		)
+	}
+	if keepFullReplayForCacheBoost {
+		logFields = append(logFields, zap.Bool("prompt_cache_boost_full_replay", true))
 	}
 	if compatReplayTrimmed {
 		logFields = append(logFields,
@@ -207,6 +225,8 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// upstreams using the Responses API can derive a stable session identifier
 	// from prompt_cache_key. This makes our Anthropic /v1/messages compatibility
 	// path behave more like a native Responses client.
+	promptCacheBoostKeyInjected := false
+	promptCacheBoostRetentionInjected := false
 	if account.Type == AccountTypeAPIKey {
 		if trimmedKey := strings.TrimSpace(promptCacheKey); trimmedKey != "" {
 			var reqBody map[string]any
@@ -215,9 +235,25 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			}
 			if existing, ok := reqBody["prompt_cache_key"].(string); !ok || strings.TrimSpace(existing) == "" {
 				reqBody["prompt_cache_key"] = trimmedKey
+				promptCacheBoostKeyInjected = promptCacheBoostGeneratedKey
 				updated, err := json.Marshal(reqBody)
 				if err != nil {
 					return nil, fmt.Errorf("remarshal after prompt cache key injection: %w", err)
+				}
+				responsesBody = updated
+			}
+		}
+		if s.isOpenAIPromptCacheBoostRetentionRuntimeEnabled(account) {
+			var reqBody map[string]any
+			if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
+				return nil, fmt.Errorf("unmarshal for prompt cache retention injection: %w", err)
+			}
+			if existing, ok := reqBody["prompt_cache_retention"].(string); !ok || strings.TrimSpace(existing) == "" {
+				reqBody["prompt_cache_retention"] = "24h"
+				promptCacheBoostRetentionInjected = true
+				updated, err := json.Marshal(reqBody)
+				if err != nil {
+					return nil, fmt.Errorf("remarshal after prompt cache retention injection: %w", err)
 				}
 				responsesBody = updated
 			}
@@ -254,7 +290,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 
 	// Override session_id with a deterministic UUID derived from the isolated
 	// session key, ensuring different API keys produce different upstream sessions.
-	if promptCacheKey != "" {
+	if promptCacheKey != "" && (explicitPromptCacheKey || (!cacheBoostEnabled && !promptCacheBoostGeneratedKey)) {
 		isolatedSessionID := generateSessionUUID(isolateOpenAISessionID(apiKeyID, promptCacheKey))
 		upstreamReq.Header.Set("session_id", isolatedSessionID)
 		if upstreamReq.Header.Get("conversation_id") != "" {
@@ -309,6 +345,22 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if (promptCacheBoostKeyInjected || promptCacheBoostRetentionInjected) && isOpenAIPromptCacheBoostUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+			keyUnsupported, retentionUnsupported := openAIPromptCacheBoostUnsupportedFields(resp.StatusCode, upstreamMsg, respBody)
+			stripKey := promptCacheBoostKeyInjected && keyUnsupported
+			stripRetention := promptCacheBoostRetentionInjected && retentionUnsupported
+			if stripKey || stripRetention {
+				s.temporarilyDisableOpenAIPromptCacheBoost(account, stripKey, stripRetention)
+				logger.L().Info("openai messages: prompt cache boost unsupported, retrying without unsupported fields",
+					zap.Int64("account_id", account.ID),
+					zap.Bool("strip_prompt_cache_key", stripKey),
+					zap.Bool("strip_prompt_cache_retention", stripRetention),
+					zap.Int("upstream_status", resp.StatusCode),
+					zap.String("upstream_message", upstreamMsg),
+				)
+				return s.ForwardAsAnthropic(ctx, c, account, body, incomingPromptCacheKey, defaultMappedModel)
+			}
+		}
 		if previousResponseID != "" && (isOpenAICompatPreviousResponseNotFound(resp.StatusCode, upstreamMsg, respBody) || isOpenAICompatPreviousResponseUnsupported(resp.StatusCode, upstreamMsg, respBody)) {
 			if isOpenAICompatPreviousResponseUnsupported(resp.StatusCode, upstreamMsg, respBody) {
 				s.disableOpenAICompatSessionContinuation(ctx, c, account, promptCacheKey)

@@ -149,3 +149,43 @@ func TestMatchesOpenAIImagePoolRequest(t *testing.T) {
 	require.True(t, imagePool.MatchesOpenAIImagePoolRequest(WithOpenAIImageGenerationIntent(context.Background()), "gpt-5.4", ""))
 	require.True(t, imagePool.MatchesOpenAIImagePoolRequest(context.Background(), "alias-image", ""))
 }
+
+func TestIsOpenAIPromptCacheBoostEnabled(t *testing.T) {
+	textPool := &Account{
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"pool_mode":                  true,
+			"prompt_cache_boost_enabled": true,
+		},
+	}
+	imagePool := &Account{
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"pool_mode":                  true,
+			"image_pool_mode":            true,
+			"prompt_cache_boost_enabled": true,
+		},
+	}
+	plain := &Account{
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"prompt_cache_boost_enabled": true,
+		},
+	}
+	oauth := &Account{
+		Type:     AccountTypeOAuth,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"pool_mode":                  true,
+			"prompt_cache_boost_enabled": true,
+		},
+	}
+
+	require.True(t, textPool.IsOpenAIPromptCacheBoostEnabled())
+	require.False(t, imagePool.IsOpenAIPromptCacheBoostEnabled())
+	require.False(t, plain.IsOpenAIPromptCacheBoostEnabled())
+	require.False(t, oauth.IsOpenAIPromptCacheBoostEnabled())
+}

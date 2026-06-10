@@ -57,6 +57,7 @@ const (
 	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
 	openAIWSRetryJitterRatioDefault    = 0.2
 	openAICompactSessionSeedKey        = "openai_compact_session_seed"
+	openAIPromptCacheBoostMinBodyBytes = 16 * 1024
 	codexCLIVersion                    = "0.125.0"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
@@ -372,6 +373,7 @@ type OpenAIGatewayService struct {
 	openaiWSRetryMetrics                openAIWSRetryMetrics
 	responseHeaderFilter                *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle               *accountWriteThrottle
+	openaiPromptCacheBoostDisabledUntil sync.Map // key: int64(accountID), value: time.Time
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
 }
@@ -2913,6 +2915,30 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
+	promptCacheBoostKeyInjected := false
+	promptCacheBoostRetentionInjected := false
+	if s.isOpenAIPromptCacheBoostRuntimeEnabled(account) {
+		if promptCacheKey == "" && s.isOpenAIPromptCacheBoostKeyRuntimeEnabled(account) {
+			if generatedKey := deriveOpenAIVirtualPromptCacheKey(account, upstreamModel, body); generatedKey != "" {
+				promptCacheKey = generatedKey
+				if existing, ok := reqBody["prompt_cache_key"].(string); !ok || strings.TrimSpace(existing) == "" {
+					reqBody["prompt_cache_key"] = generatedKey
+					bodyModified = true
+					promptCacheBoostKeyInjected = true
+					disablePatch()
+				}
+			}
+		}
+		if s.isOpenAIPromptCacheBoostRetentionRuntimeEnabled(account) {
+			if existing, ok := reqBody["prompt_cache_retention"].(string); !ok || strings.TrimSpace(existing) == "" {
+				reqBody["prompt_cache_retention"] = "24h"
+				bodyModified = true
+				promptCacheBoostRetentionInjected = true
+				disablePatch()
+			}
+		}
+	}
+
 	// Handle max_output_tokens based on platform and account type
 	if !isCodexCLI {
 		if maxOutputTokens, hasMaxOutputTokens := reqBody["max_output_tokens"]; hasMaxOutputTokens {
@@ -2957,12 +2983,19 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 
 		// Remove unsupported fields (not supported by upstream OpenAI API)
-		unsupportedFields := []string{"prompt_cache_retention", "safety_identifier"}
+		unsupportedFields := []string{"safety_identifier"}
 		for _, unsupportedField := range unsupportedFields {
 			if _, has := reqBody[unsupportedField]; has {
 				delete(reqBody, unsupportedField)
 				bodyModified = true
 				markPatchDelete(unsupportedField)
+			}
+		}
+		if !account.IsOpenAIPromptCacheBoostEnabled() {
+			if _, has := reqBody["prompt_cache_retention"]; has {
+				delete(reqBody, "prompt_cache_retention")
+				bodyModified = true
+				markPatchDelete("prompt_cache_retention")
 			}
 		}
 	}
@@ -3302,6 +3335,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	httpInvalidEncryptedContentRetryTried := false
+	httpPromptCacheBoostRetryTried := false
 	for {
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
@@ -3337,6 +3371,33 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)
+			if !httpPromptCacheBoostRetryTried && (promptCacheBoostKeyInjected || promptCacheBoostRetentionInjected) && isOpenAIPromptCacheBoostUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+				keyUnsupported, retentionUnsupported := openAIPromptCacheBoostUnsupportedFields(resp.StatusCode, upstreamMsg, respBody)
+				stripKey := promptCacheBoostKeyInjected && keyUnsupported
+				stripRetention := promptCacheBoostRetentionInjected && retentionUnsupported
+				if retryBody, changed := stripOpenAIPromptCacheBoostFields(body, stripKey, stripRetention); changed {
+					body = retryBody
+					stripOpenAIPromptCacheBoostFieldsMap(reqBody, stripKey, stripRetention)
+					if stripKey {
+						promptCacheKey = ""
+						promptCacheBoostKeyInjected = false
+					}
+					if stripRetention {
+						promptCacheBoostRetentionInjected = false
+					}
+					s.temporarilyDisableOpenAIPromptCacheBoost(account, stripKey, stripRetention)
+					releaseOpenAIParsedRequestBody(c)
+					httpPromptCacheBoostRetryTried = true
+					logger.L().Info("openai responses: prompt cache boost unsupported, retrying without unsupported fields",
+						zap.Int64("account_id", account.ID),
+						zap.Bool("strip_prompt_cache_key", stripKey),
+						zap.Bool("strip_prompt_cache_retention", stripRetention),
+						zap.Int("upstream_status", resp.StatusCode),
+						zap.String("upstream_message", upstreamMsg),
+					)
+					continue
+				}
+			}
 			if !httpInvalidEncryptedContentRetryTried && resp.StatusCode == http.StatusBadRequest && upstreamCode == "invalid_encrypted_content" {
 				if trimOpenAIEncryptedReasoningItems(reqBody) {
 					body, err = json.Marshal(reqBody)

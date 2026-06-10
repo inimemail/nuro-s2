@@ -892,6 +892,21 @@ func (a *Account) IsImagePoolMode() bool {
 	return false
 }
 
+// IsOpenAIPromptCacheBoostEnabled enables prompt-cache helpers only for
+// OpenAI API key text-pool accounts. Image pools are excluded even if older
+// credentials still contain the flag.
+func (a *Account) IsOpenAIPromptCacheBoostEnabled() bool {
+	if a == nil || !a.IsOpenAIApiKey() || !a.IsPoolMode() || a.IsImagePoolMode() || a.Credentials == nil {
+		return false
+	}
+	if v, ok := a.Credentials["prompt_cache_boost_enabled"]; ok {
+		if enabled, ok := v.(bool); ok {
+			return enabled
+		}
+	}
+	return false
+}
+
 func (a *Account) MatchesOpenAIImagePoolRequest(ctx context.Context, requestedModel string, requiredImageCapability OpenAIImagesCapability) bool {
 	if a == nil || !a.IsPoolMode() {
 		return true

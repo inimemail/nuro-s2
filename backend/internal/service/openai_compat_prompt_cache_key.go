@@ -113,6 +113,26 @@ func deriveAnthropicCompatPromptCacheKey(req *apicompat.AnthropicRequest, mapped
 	return compatPromptCacheKeyPrefix + hashSensitiveValueForLog(strings.Join(seedParts, "|"))
 }
 
+func deriveOpenAIAnthropicVirtualPromptCacheKey(account *Account, req *apicompat.AnthropicRequest, mappedModel string) string {
+	if account == nil || req == nil {
+		return ""
+	}
+	seed := deriveAnthropicCompatPromptCacheKey(req, mappedModel)
+	if strings.TrimSpace(seed) == "" {
+		return ""
+	}
+	model := strings.TrimSpace(mappedModel)
+	if model == "" {
+		model = strings.TrimSpace(req.Model)
+	}
+	if model == "" {
+		model = "unknown"
+	}
+	return "nuro-pcache-" + hashSensitiveValueForLog(
+		fmt.Sprintf("account|%d|model|%s|anthropic|%s", account.ID, model, seed),
+	)
+}
+
 func deriveAnthropicCacheControlPromptCacheKey(req *apicompat.AnthropicRequest) string {
 	if req == nil {
 		return ""

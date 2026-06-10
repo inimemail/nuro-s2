@@ -119,6 +119,22 @@ func TestGetOpenAIRequestBodyMap_UsesContextCache(t *testing.T) {
 	require.Equal(t, cached, got)
 }
 
+func TestDeriveOpenAIVirtualPromptCacheKey(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","instructions":"be helpful","input":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"next"}]}`)
+	accountA := &Account{ID: 1}
+	accountB := &Account{ID: 2}
+
+	key1 := deriveOpenAIVirtualPromptCacheKey(accountA, "gpt-5.5", body)
+	key2 := deriveOpenAIVirtualPromptCacheKey(accountA, "gpt-5.5", body)
+	keyOtherAccount := deriveOpenAIVirtualPromptCacheKey(accountB, "gpt-5.5", body)
+	keyOtherModel := deriveOpenAIVirtualPromptCacheKey(accountA, "gpt-5.4", body)
+
+	require.NotEmpty(t, key1)
+	require.Equal(t, key1, key2)
+	require.NotEqual(t, key1, keyOtherAccount)
+	require.NotEqual(t, key1, keyOtherModel)
+}
+
 func TestGetOpenAIRequestBodyMap_ParseErrorWithoutCache(t *testing.T) {
 	_, err := getOpenAIRequestBodyMap(nil, []byte(`{invalid-json`))
 	require.Error(t, err)

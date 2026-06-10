@@ -253,6 +253,17 @@
           <template #cell-capacity="{ row }">
             <AccountCapacityCell :account="row" />
           </template>
+          <template #cell-prompt_cache_boost="{ row }">
+            <span
+              :class="[
+                'inline-flex items-center rounded px-2 py-0.5 text-xs font-medium',
+                promptCacheBoostMeta(row).className
+              ]"
+              :title="promptCacheBoostMeta(row).title"
+            >
+              {{ promptCacheBoostMeta(row).label }}
+            </span>
+          </template>
           <template #cell-status="{ row }">
             <div class="flex items-center gap-1.5">
               <AccountStatusIndicator :account="row" :now-ms="uiNowMs" @show-temp-unsched="handleShowTempUnsched" />
@@ -1187,6 +1198,7 @@ const allColumns = computed(() => {
     { key: 'name', label: t('admin.accounts.columns.name'), sortable: true },
     { key: 'platform_type', label: t('admin.accounts.columns.platformType'), sortable: false },
     { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false },
+    { key: 'prompt_cache_boost', label: t('admin.accounts.columns.promptCacheBoost'), sortable: false },
     { key: 'status', label: t('admin.accounts.columns.status'), sortable: true },
     { key: 'schedulable', label: t('admin.accounts.columns.schedulable'), sortable: true },
     { key: 'today_stats', label: t('admin.accounts.columns.todayStats'), sortable: false }
@@ -1219,6 +1231,30 @@ const cols = computed(() =>
     col.key === 'select' || col.key === 'name' || col.key === 'actions' || !hiddenColumns.has(col.key)
   )
 )
+
+const promptCacheBoostMeta = (account: Account) => {
+  const isPool = account.credentials?.pool_mode === true
+  const isImagePool = isPool && account.credentials?.image_pool_mode === true
+  if (account.platform !== 'openai' || !isPool || isImagePool) {
+    return {
+      label: t('admin.accounts.promptCacheBoostNotApplicable'),
+      title: t('admin.accounts.promptCacheBoostNotApplicableHint'),
+      className: 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'
+    }
+  }
+  if (account.credentials?.prompt_cache_boost_enabled === true) {
+    return {
+      label: t('admin.accounts.promptCacheBoostEnabled'),
+      title: t('admin.accounts.promptCacheBoostEnabledHint'),
+      className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+    }
+  }
+  return {
+    label: t('admin.accounts.promptCacheBoostDisabled'),
+    title: t('admin.accounts.promptCacheBoostDisabledHint'),
+    className: 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
+  }
+}
 
 const handleEdit = (a: Account) => { edAcc.value = a; showEdit.value = true }
 const openMenu = (a: Account, e: MouseEvent) => {

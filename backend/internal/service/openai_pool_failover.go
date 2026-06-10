@@ -256,6 +256,9 @@ func isOpenAIPoolUserRequestedModelError(statusCode int, upstreamMsg string, ups
 		statusCode != http.StatusGatewayTimeout {
 		return false
 	}
+	if isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody) {
+		return false
+	}
 	combined := openAIPoolCombinedErrorText(upstreamMsg, upstreamBody)
 	if combined == "" {
 		return false

@@ -523,6 +523,7 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		"oauth_type",
 		"pool_mode",
 		"image_pool_mode",
+		"prompt_cache_boost_enabled",
 		"pool_mode_retry_count",
 		"pool_mode_retry_status_codes",
 		"openai_capabilities",
