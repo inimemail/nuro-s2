@@ -565,6 +565,92 @@ const todayStatsError = ref<string | null>(null)
 const todayStatsReqSeq = ref(0)
 const pendingTodayStatsRefresh = ref(false)
 const usageManualRefreshToken = ref(0)
+const poolSoftCooldownMaxSeconds = reactive({
+  openai: 30,
+  openaiImage: 30,
+  anthropic: 30
+})
+
+type PoolSoftCooldownDisplayState = {
+  rawUntil: string
+  firstSeenMs: number
+  displayUntil: string
+}
+
+const poolSoftCooldownDisplayState = new Map<string, PoolSoftCooldownDisplayState>()
+
+const clampPoolSoftCooldownMaxSeconds = (value: unknown) => {
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds)) return 30
+  return Math.min(30, Math.max(1, Math.trunc(seconds)))
+}
+
+const loadPoolSoftCooldownSettings = async () => {
+  try {
+    const settings = await adminAPI.settings.getSettings()
+    poolSoftCooldownMaxSeconds.openai = clampPoolSoftCooldownMaxSeconds(settings.openai_pool_soft_cooldown_max_seconds)
+    poolSoftCooldownMaxSeconds.openaiImage = clampPoolSoftCooldownMaxSeconds(settings.openai_image_pool_soft_cooldown_max_seconds)
+    poolSoftCooldownMaxSeconds.anthropic = clampPoolSoftCooldownMaxSeconds(settings.anthropic_pool_soft_cooldown_max_seconds)
+    normalizeSoftCooldownDisplayRows(accounts.value)
+  } catch (error) {
+    console.error('Failed to load pool soft cooldown settings:', error)
+  }
+}
+
+const normalizeSoftCooldownDisplayUntil = (
+  account: Account,
+  kind: 'openai' | 'anthropic',
+  maxSeconds: number
+) => {
+  const field = kind === 'openai' ? 'openai_pool_soft_cooldown_until' : 'anthropic_pool_soft_cooldown_until'
+  const stateKey = `${kind}:${account.id}`
+  const currentUntil = account[field]
+  const existing = poolSoftCooldownDisplayState.get(stateKey)
+  const rawUntil = existing && currentUntil === existing.displayUntil ? existing.rawUntil : currentUntil
+
+  if (!rawUntil) {
+    poolSoftCooldownDisplayState.delete(stateKey)
+    return
+  }
+
+  const rawUntilMs = new Date(rawUntil).getTime()
+  if (!Number.isFinite(rawUntilMs)) {
+    poolSoftCooldownDisplayState.delete(stateKey)
+    return
+  }
+
+  const nowMs = Date.now()
+  let state = existing
+  if (!state || state.rawUntil !== rawUntil) {
+    state = {
+      rawUntil,
+      firstSeenMs: nowMs,
+      displayUntil: rawUntil
+    }
+    poolSoftCooldownDisplayState.set(stateKey, state)
+  }
+
+  const displayUntilMs = Math.min(rawUntilMs, state.firstSeenMs + maxSeconds * 1000)
+  state.displayUntil = new Date(displayUntilMs).toISOString()
+  account[field] = state.displayUntil
+}
+
+const normalizeSoftCooldownDisplayAccount = (account: Account) => {
+  const usesOpenAIImagePool =
+    account.credentials?.image_pool_mode === true ||
+    account.openai_pool_soft_cooldown_probe_kind === 'images'
+  normalizeSoftCooldownDisplayUntil(
+    account,
+    'openai',
+    usesOpenAIImagePool ? poolSoftCooldownMaxSeconds.openaiImage : poolSoftCooldownMaxSeconds.openai
+  )
+  normalizeSoftCooldownDisplayUntil(account, 'anthropic', poolSoftCooldownMaxSeconds.anthropic)
+}
+
+const normalizeSoftCooldownDisplayRows = (rows: Account[]) => {
+  rows.forEach(normalizeSoftCooldownDisplayAccount)
+  return rows
+}
 
 const buildDefaultTodayStats = (): WindowStats => ({
   requests: 0,
@@ -797,6 +883,7 @@ const load = async () => {
     requestParams.lite = '1'
   }
   await baseLoad()
+  normalizeSoftCooldownDisplayRows(accounts.value)
   if (isFirstLoad.value) {
     isFirstLoad.value = false
     delete requestParams.lite
@@ -809,6 +896,7 @@ const reload = async () => {
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = false
   await baseReload()
+  normalizeSoftCooldownDisplayRows(accounts.value)
   await refreshTodayStatsBatch()
 }
 
@@ -848,6 +936,7 @@ const handleSort = (key: string, order: AccountSortOrder) => {
 
 watch(loading, (isLoading, wasLoading) => {
   if (wasLoading && !isLoading && pendingTodayStatsRefresh.value) {
+    normalizeSoftCooldownDisplayRows(accounts.value)
     pendingTodayStatsRefresh.value = false
     refreshTodayStatsBatch().catch((error) => {
       console.error('Failed to refresh account today stats after table load:', error)
@@ -984,7 +1073,7 @@ const refreshAccountsIncrementally = async () => {
     if (!result.notModified && result.data) {
       pagination.total = result.data.total || 0
       pagination.pages = result.data.pages || 0
-      mergeAccountsIncrementally(result.data.items || [])
+      mergeAccountsIncrementally(normalizeSoftCooldownDisplayRows(result.data.items || []))
       hasPendingListSync.value = false
     }
 
@@ -1629,6 +1718,7 @@ const patchAccountInList = (updatedAccount: Account) => {
     return
   }
   const nextAccounts = [...accounts.value]
+  normalizeSoftCooldownDisplayAccount(mergedAccount)
   nextAccounts[index] = mergedAccount
   accounts.value = nextAccounts
   syncAccountRefs(mergedAccount)
@@ -1809,6 +1899,7 @@ const handleClickOutside = (event: MouseEvent) => {
 }
 
 onMounted(async () => {
+  await loadPoolSoftCooldownSettings()
   load()
   resumeUiTicker()
   resumeOpenAIPoolRecoveryRefresh()

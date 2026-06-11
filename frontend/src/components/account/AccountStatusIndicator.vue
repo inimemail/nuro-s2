@@ -431,11 +431,8 @@ const openAIPoolSoftCooldownSubText = computed(() => {
     return t('admin.accounts.status.poolRecoveryPendingShort')
   }
   const rawCountdown = formatCountdownSeconds(state?.until)
-  const countdown = rawCountdown
-    ? t('common.time.countdown.withSuffix', { time: rawCountdown })
-    : formatCountdownWithSuffix(state?.until)
-  if (!countdown) return ''
-  return t('admin.accounts.status.poolSoftCooldownAutoProbe', { time: countdown })
+  if (!rawCountdown) return ''
+  return t('admin.accounts.status.poolSoftCooldownAutoProbe', { time: rawCountdown })
 })
 
 const openAIPoolSoftCooldownTooltip = computed(() => {
