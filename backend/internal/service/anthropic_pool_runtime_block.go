@@ -113,6 +113,12 @@ func (s *GatewayService) storeAnthropicPoolSoftCooldownUntil(accountID int64, un
 			}
 			continue
 		}
+		if currentUntil.After(until) {
+			if s.anthropicPoolSoftCooldownUntil.CompareAndSwap(accountID, current, until) {
+				return
+			}
+			continue
+		}
 		return
 	}
 }

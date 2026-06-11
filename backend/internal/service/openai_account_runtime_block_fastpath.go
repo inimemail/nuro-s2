@@ -270,6 +270,12 @@ func (s *OpenAIGatewayService) storeOpenAIPoolSoftCooldownUntil(accountID int64,
 			}
 			continue
 		}
+		if currentUntil.After(until) {
+			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(accountID, current, until) {
+				return
+			}
+			continue
+		}
 		return
 	}
 }

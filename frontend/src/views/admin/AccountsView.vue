@@ -1039,24 +1039,21 @@ const syncPendingListChanges = async () => {
 }
 
 const hasOpenAIPoolRecoveryWatchRows = computed(() => {
-  const now = uiNowMs.value
   return accounts.value.some((account) => {
+    const openAIPoolUntilMs = account.openai_pool_soft_cooldown_until
+      ? new Date(account.openai_pool_soft_cooldown_until).getTime()
+      : NaN
+    const anthropicPoolUntilMs = account.anthropic_pool_soft_cooldown_until
+      ? new Date(account.anthropic_pool_soft_cooldown_until).getTime()
+      : NaN
     const openAIPoolWatching =
-      Boolean(account.openai_pool_soft_cooldown_until) &&
-      (account.openai_pool_recovery_probe_in_flight ||
-        account.openai_pool_soft_cooldown_due ||
-        (() => {
-          const untilMs = new Date(account.openai_pool_soft_cooldown_until as string).getTime()
-          return Number.isFinite(untilMs) && untilMs <= now
-        })())
+      account.openai_pool_recovery_probe_in_flight ||
+      account.openai_pool_soft_cooldown_due ||
+      Number.isFinite(openAIPoolUntilMs)
     const anthropicPoolWatching =
-      Boolean(account.anthropic_pool_soft_cooldown_until) &&
-      (account.anthropic_pool_recovery_probe_in_flight ||
-        account.anthropic_pool_soft_cooldown_due ||
-        (() => {
-          const untilMs = new Date(account.anthropic_pool_soft_cooldown_until as string).getTime()
-          return Number.isFinite(untilMs) && untilMs <= now
-        })())
+      account.anthropic_pool_recovery_probe_in_flight ||
+      account.anthropic_pool_soft_cooldown_due ||
+      Number.isFinite(anthropicPoolUntilMs)
     return openAIPoolWatching || anthropicPoolWatching
   })
 })

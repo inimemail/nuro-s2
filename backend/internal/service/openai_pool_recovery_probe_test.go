@@ -635,6 +635,29 @@ func TestOpenAIPoolSoftCooldown_ActiveWindowDoesNotExtend(t *testing.T) {
 	require.LessOrEqual(t, time.Until(second.Until), 4*time.Second)
 }
 
+func TestOpenAIPoolSoftCooldown_ActiveLongWindowShortensToConfiguredCap(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		rateLimitService: &RateLimitService{},
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyOpenAIPoolSoftCooldownMaxSeconds: "3",
+		}),
+	}
+	account := &Account{
+		ID:          222,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(time.Minute))
+
+	svc.MarkOpenAIPoolAccountSoftCooldownWithContext(context.Background(), account, http.StatusForbidden, nil, openAIPoolSoftCooldownContext{})
+
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.LessOrEqual(t, time.Until(state.Until), 4*time.Second)
+	require.Greater(t, time.Until(state.Until), 2*time.Second)
+}
+
 func TestOpenAIPoolSoftCooldown_ExpiredWindowCanStartNewWindow(t *testing.T) {
 	svc := &OpenAIGatewayService{
 		rateLimitService: &RateLimitService{},
@@ -679,6 +702,28 @@ func TestAnthropicPoolSoftCooldown_ActiveWindowDoesNotExtend(t *testing.T) {
 	require.True(t, second.Cooling)
 	require.Equal(t, first.Until, second.Until)
 	require.LessOrEqual(t, time.Until(second.Until), anthropicPoolSoftCooldownMaxDefault+time.Second)
+}
+
+func TestAnthropicPoolSoftCooldown_ActiveLongWindowShortensToConfiguredCap(t *testing.T) {
+	svc := &GatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyAnthropicPoolSoftCooldownMaxSeconds: "4",
+		}),
+	}
+	account := &Account{
+		ID:          311,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	svc.anthropicPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(time.Minute))
+
+	svc.MarkAnthropicPoolAccountSoftCooldown(context.Background(), account, http.StatusForbidden, nil, anthropicPoolSoftCooldownContext{})
+
+	state := svc.AnthropicPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.LessOrEqual(t, time.Until(state.Until), 5*time.Second)
+	require.Greater(t, time.Until(state.Until), 3*time.Second)
 }
 
 func TestAnthropicPoolRecoveryProbeFailure_ReopensConfiguredCooldown(t *testing.T) {
