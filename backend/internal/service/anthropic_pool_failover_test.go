@@ -230,6 +230,24 @@ func TestHandleFailoverSideEffects_AnthropicAccountErrorKeepsSoftCooldown(t *tes
 	require.Equal(t, 529, state.StatusCode)
 }
 
+func TestRateLimitService_AnthropicPoolBalanceErrorDoesNotPauseScheduling(t *testing.T) {
+	account := &Account{
+		ID:       311,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                  true,
+			"custom_error_codes_enabled": true,
+			"custom_error_codes":         []any{float64(http.StatusBadRequest)},
+		},
+	}
+	body := []byte(`{"error":{"message":"Your credit balance is too low to access the Anthropic API","type":"invalid_request_error"}}`)
+	svc := &RateLimitService{}
+
+	require.False(t, svc.HandleUpstreamError(context.Background(), account, http.StatusBadRequest, http.Header{}, body))
+	require.Equal(t, ErrorPolicySkipped, svc.CheckErrorPolicy(context.Background(), account, http.StatusBadRequest, body))
+}
+
 func TestHandleRetryExhaustedSideEffects_AnthropicUserErrorDoesNotSoftCooldown(t *testing.T) {
 	account := &Account{
 		ID:          312,

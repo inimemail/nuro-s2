@@ -20,7 +20,6 @@ const (
 	openAIPoolRecoveryProbeImageTimeout      = 6 * time.Minute
 	openAIPoolRecoveryProbeDefaultImageModel = "gpt-image-2"
 	openAIPoolRecoveryProbeDefaultBackoff    = 5 * time.Second
-	openAIPoolRecoveryProbeMaxBackoff        = 30 * time.Second
 	openAIPoolRecoveryProbeAdminKickEvery    = 5 * time.Second
 	openAIPoolRecoveryProbeReadLimit         = 1 << 20
 	openAIPoolRecoveryProbeMaxOutputTokens   = 8
@@ -37,6 +36,10 @@ type openAIPoolRecoveryProbeResult struct {
 
 func (s *OpenAIGatewayService) maybeStartOpenAIPoolRecoveryProbe(ctx context.Context, account *Account, requestedModel string) {
 	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
+		return
+	}
+	if !account.IsPoolSoftCooldownEnabled() {
+		s.ClearAccountSchedulingBlock(account.ID)
 		return
 	}
 	cooldownUntil, ok := s.openAIPoolAccountSoftCooldownUntil(account)
@@ -70,6 +73,11 @@ func (s *OpenAIGatewayService) clearOpenAIPoolSoftCooldownIfRecoveryProbeDisable
 	cooldownUntil, ok := s.openAIPoolAccountSoftCooldownUntil(account)
 	if !ok || time.Now().Before(cooldownUntil) {
 		return false
+	}
+	if !account.IsPoolSoftCooldownEnabled() {
+		s.ClearAccountSchedulingBlock(account.ID)
+		loggerLegacyOpenAIPoolRecovery("account_soft_cooldown_disabled_recover account_id=%d", account.ID)
+		return true
 	}
 	if s.openAIPoolRecoveryProbeEnabled(ctx, account, requestedModel) {
 		return false
@@ -169,7 +177,7 @@ func (s *OpenAIGatewayService) runOpenAIPoolRecoveryProbe(ctx context.Context, a
 		return
 	}
 
-	backoff := s.nextOpenAIPoolRecoveryProbeBackoff(account.ID, result.retryable)
+	backoff := s.nextOpenAIPoolRecoveryProbeBackoff(ctx, account, result.retryable)
 	until := time.Now().Add(backoff)
 	s.storeOpenAIPoolSoftCooldownUntil(account.ID, until)
 	s.storeOpenAIPoolRecoveryProbeBackoffContext(account.ID, result)
@@ -502,23 +510,24 @@ func openAIPoolRecoveryProbeStatusRetryable(statusCode int) bool {
 	}
 }
 
-func (s *OpenAIGatewayService) nextOpenAIPoolRecoveryProbeBackoff(accountID int64, retryable bool) time.Duration {
-	if !retryable {
-		return openAIPoolSoftCooldownAuth
+func (s *OpenAIGatewayService) nextOpenAIPoolRecoveryProbeBackoff(ctx context.Context, account *Account, retryable bool) time.Duration {
+	if account == nil {
+		return openAIPoolRecoveryProbeDefaultBackoff
 	}
 	failures := 1
-	if current, ok := s.openaiPoolRecoveryProbeFailureCount.Load(accountID); ok {
+	if current, ok := s.openaiPoolRecoveryProbeFailureCount.Load(account.ID); ok {
 		if count, ok := current.(int); ok && count > 0 {
 			failures = count + 1
 		}
 	}
-	s.openaiPoolRecoveryProbeFailureCount.Store(accountID, failures)
-	backoff := openAIPoolRecoveryProbeDefaultBackoff
-	for i := 1; i < failures; i++ {
-		backoff *= 2
-		if backoff >= openAIPoolRecoveryProbeMaxBackoff {
-			return openAIPoolRecoveryProbeMaxBackoff
+	s.openaiPoolRecoveryProbeFailureCount.Store(account.ID, failures)
+	cooldownContext := s.openAIPoolAccountSoftCooldownContext(account.ID)
+	backoff := s.configuredOpenAIPoolSoftCooldownMax(ctx, account, cooldownContext)
+	if backoff <= 0 {
+		if !retryable {
+			return openAIPoolSoftCooldownAuth
 		}
+		return openAIPoolRecoveryProbeDefaultBackoff
 	}
 	return backoff
 }

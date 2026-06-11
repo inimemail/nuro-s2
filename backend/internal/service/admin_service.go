@@ -3022,7 +3022,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	if _, err := s.accountRepo.BulkUpdate(ctx, input.AccountIDs, repoUpdates); err != nil {
 		return nil, err
 	}
-	if input.Schedulable != nil && !*input.Schedulable {
+	if len(input.Credentials) > 0 || (input.Schedulable != nil && !*input.Schedulable) {
 		for _, accountID := range input.AccountIDs {
 			s.clearAccountRuntimeSchedulingBlock(accountID)
 		}

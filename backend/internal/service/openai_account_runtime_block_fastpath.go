@@ -159,6 +159,10 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
 		return
 	}
+	if !account.IsPoolSoftCooldownEnabled() {
+		s.ClearAccountSchedulingBlock(account.ID)
+		return
+	}
 	cooldown := openAIPoolSoftCooldownDefault
 	switch {
 	case statusCode == http.StatusTooManyRequests:
@@ -218,7 +222,7 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 	s.storeOpenAIPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown))
 }
 
-func (s *OpenAIGatewayService) capOpenAIPoolSoftCooldown(ctx context.Context, account *Account, cooldown time.Duration, cooldownContext openAIPoolSoftCooldownContext) time.Duration {
+func (s *OpenAIGatewayService) configuredOpenAIPoolSoftCooldownMax(ctx context.Context, account *Account, cooldownContext openAIPoolSoftCooldownContext) time.Duration {
 	maxCooldown := openAIPoolSoftCooldownMax
 	if s != nil && s.settingService != nil {
 		usesImagePool := account != nil && account.IsImagePoolMode()
@@ -235,6 +239,11 @@ func (s *OpenAIGatewayService) capOpenAIPoolSoftCooldown(ctx context.Context, ac
 			maxCooldown = configured
 		}
 	}
+	return maxCooldown
+}
+
+func (s *OpenAIGatewayService) capOpenAIPoolSoftCooldown(ctx context.Context, account *Account, cooldown time.Duration, cooldownContext openAIPoolSoftCooldownContext) time.Duration {
+	maxCooldown := s.configuredOpenAIPoolSoftCooldownMax(ctx, account, cooldownContext)
 	if cooldown > maxCooldown {
 		return maxCooldown
 	}

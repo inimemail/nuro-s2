@@ -2431,7 +2431,7 @@ func (s *GatewayService) isAccountSchedulableForModelSelection(ctx context.Conte
 }
 
 func (s *GatewayService) shouldSkipAnthropicPoolCoolingAccount(ctx context.Context, account *Account, requestedModel string) bool {
-	if s == nil || !isAnthropicAPIKeyPoolAccount(account) {
+	if s == nil || !isAnthropicPoolAccount(account) {
 		return false
 	}
 	if !s.isAnthropicPoolAccountSoftCooling(account) {
@@ -4647,7 +4647,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			if isAnthropicAPIKeyPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) {
+			if isAnthropicPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) {
 				s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, http.StatusBadGateway, nil, anthropicPoolSoftCooldownContext{
 					ProbeModel:     reqModel,
 					ProbeKind:      "messages",
@@ -5135,7 +5135,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			if isAnthropicAPIKeyPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) {
+			if isAnthropicPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) {
 				s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, http.StatusBadGateway, nil, anthropicPoolSoftCooldownContext{
 					ProbeModel:     input.RequestModel,
 					ProbeKind:      "messages",
@@ -5973,6 +5973,15 @@ func (s *GatewayService) executeBedrockUpstream(
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
+			if isAnthropicPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) {
+				s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, http.StatusBadGateway, nil, anthropicPoolSoftCooldownContext{
+					ProbeModel:     modelID,
+					ProbeKind:      "messages",
+					CooldownSource: "request_error",
+					StatusCode:     http.StatusBadGateway,
+					Reason:         safeErr,
+				})
+			}
 			c.JSON(http.StatusBadGateway, gin.H{
 				"type": "error",
 				"error": gin.H{
@@ -7398,7 +7407,7 @@ func (s *GatewayService) handleFailoverSideEffects(ctx context.Context, resp *ht
 }
 
 func (s *GatewayService) maybeMarkAnthropicPoolSoftCooldown(ctx context.Context, account *Account, statusCode int, body []byte, model string, source string) {
-	if isAnthropicAPIKeyPoolAccount(account) {
+	if isAnthropicPoolAccount(account) {
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		decision := classifyAnthropicPoolFailover(account, statusCode, upstreamMsg, body, model)
 		if decision.Failover && !decision.SkipSoftCooldown {

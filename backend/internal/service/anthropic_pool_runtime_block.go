@@ -30,7 +30,11 @@ type AnthropicPoolSoftCooldownState struct {
 }
 
 func (s *GatewayService) MarkAnthropicPoolAccountSoftCooldown(ctx context.Context, account *Account, statusCode int, responseBody []byte, cooldownContext anthropicPoolSoftCooldownContext) {
-	if s == nil || !isAnthropicAPIKeyPoolAccount(account) {
+	if s == nil || !isAnthropicPoolAccount(account) {
+		return
+	}
+	if !account.IsPoolSoftCooldownEnabled() {
+		s.clearAnthropicPoolSoftCooldown(account.ID)
 		return
 	}
 	cooldown := anthropicPoolSoftCooldownDefault
@@ -72,16 +76,21 @@ func (s *GatewayService) BlockAccountScheduling(account *Account, until time.Tim
 }
 
 func (s *GatewayService) capAnthropicPoolSoftCooldown(ctx context.Context, cooldown time.Duration) time.Duration {
+	maxCooldown := s.configuredAnthropicPoolSoftCooldownMax(ctx)
+	if cooldown > maxCooldown {
+		return maxCooldown
+	}
+	return cooldown
+}
+
+func (s *GatewayService) configuredAnthropicPoolSoftCooldownMax(ctx context.Context) time.Duration {
 	maxCooldown := anthropicPoolSoftCooldownMaxDefault
 	if s != nil && s.settingService != nil {
 		if configured := s.settingService.GetAnthropicPoolSoftCooldownMax(ctx); configured > 0 {
 			maxCooldown = configured
 		}
 	}
-	if cooldown > maxCooldown {
-		return maxCooldown
-	}
-	return cooldown
+	return maxCooldown
 }
 
 func (s *GatewayService) storeAnthropicPoolSoftCooldownUntil(accountID int64, until time.Time) {
@@ -109,7 +118,7 @@ func (s *GatewayService) storeAnthropicPoolSoftCooldownUntil(accountID int64, un
 }
 
 func (s *GatewayService) isAnthropicPoolAccountSoftCooling(account *Account) bool {
-	if s == nil || !isAnthropicAPIKeyPoolAccount(account) {
+	if s == nil || !isAnthropicPoolAccount(account) {
 		return false
 	}
 	_, ok := s.anthropicPoolAccountSoftCooldownUntil(account)
@@ -117,7 +126,7 @@ func (s *GatewayService) isAnthropicPoolAccountSoftCooling(account *Account) boo
 }
 
 func (s *GatewayService) anthropicPoolAccountSoftCooldownUntil(account *Account) (time.Time, bool) {
-	if s == nil || !isAnthropicAPIKeyPoolAccount(account) {
+	if s == nil || !isAnthropicPoolAccount(account) {
 		return time.Time{}, false
 	}
 	return s.anthropicPoolAccountSoftCooldownUntilByID(account.ID)
@@ -197,7 +206,7 @@ func (s *GatewayService) AnthropicPoolSoftCooldownState(accountID int64) Anthrop
 }
 
 func (s *GatewayService) HandleAnthropicAccountFailoverSwitch(ctx context.Context, groupID *int64, sessionHash string, account *Account, failoverErr *UpstreamFailoverError, requestedModel ...string) {
-	if s == nil || !isAnthropicAPIKeyPoolAccount(account) || failoverErr == nil {
+	if s == nil || !isAnthropicPoolAccount(account) || failoverErr == nil {
 		return
 	}
 	model := strings.TrimSpace(failoverErr.ProbeModel)

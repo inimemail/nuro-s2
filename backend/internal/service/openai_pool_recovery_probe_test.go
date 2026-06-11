@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,6 +21,7 @@ type openAIPoolProbeHTTPUpstreamRecorder struct {
 	path       string
 	body       string
 	statusCode int
+	err        error
 }
 
 func (r *openAIPoolProbeHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
@@ -31,6 +35,9 @@ func (r *openAIPoolProbeHTTPUpstreamRecorder) DoWithTLS(req *http.Request, _ str
 	if req.Body != nil {
 		body, _ := io.ReadAll(req.Body)
 		r.body = string(body)
+	}
+	if r.err != nil {
+		return nil, r.err
 	}
 	statusCode := r.statusCode
 	if statusCode == 0 {
@@ -419,6 +426,84 @@ func TestOpenAIPoolSoftCooldown_UsesConfiguredImagePoolCap(t *testing.T) {
 	require.Greater(t, time.Until(state.Until), 2*time.Second)
 }
 
+func TestOpenAIPoolRecoveryProbeFailure_ReopensConfiguredRegularPoolCooldown(t *testing.T) {
+	upstream := &openAIPoolProbeHTTPUpstreamRecorder{statusCode: http.StatusInternalServerError}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyOpenAIPoolSoftCooldownMaxSeconds: "3",
+		}),
+	}
+	account := &Account{
+		ID:       215,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+			"api_key":   "sk-test",
+			"base_url":  "https://upstream.example",
+		},
+	}
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, cooldownUntil)
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{ProbeKind: "openai"})
+
+	svc.runOpenAIPoolRecoveryProbe(context.Background(), account, "gpt-5.4", cooldownUntil)
+
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.False(t, state.Due)
+	require.Equal(t, "probe_backoff", state.CooldownSource)
+	require.LessOrEqual(t, time.Until(state.Until), 4*time.Second)
+	require.Greater(t, time.Until(state.Until), 2*time.Second)
+}
+
+func TestOpenAIPoolRecoveryProbeFailure_ReopensConfiguredImagePoolCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyOpenAIPoolSoftCooldownMaxSeconds:      "3",
+			SettingKeyOpenAIImagePoolSoftCooldownMaxSeconds: "4",
+		}),
+	}
+	account := &Account{
+		ID:       216,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":       true,
+			"image_pool_mode": true,
+		},
+	}
+
+	backoff := svc.nextOpenAIPoolRecoveryProbeBackoff(context.Background(), account, true)
+
+	require.Equal(t, 4*time.Second, backoff)
+}
+
+func TestOpenAIPoolSoftCooldown_AccountLevelDisableSkipsCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		rateLimitService: &RateLimitService{},
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyOpenAIPoolSoftCooldownMaxSeconds: "3",
+		}),
+	}
+	account := &Account{
+		ID:       217,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                  true,
+			"pool_soft_cooldown_enabled": false,
+		},
+	}
+
+	svc.MarkOpenAIPoolAccountSoftCooldownWithContext(context.Background(), account, http.StatusForbidden, nil, openAIPoolSoftCooldownContext{})
+
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.False(t, state.Cooling)
+}
+
 func TestOpenAIPoolSoftCooldown_ActiveWindowDoesNotExtend(t *testing.T) {
 	svc := &OpenAIGatewayService{
 		rateLimitService: &RateLimitService{},
@@ -490,6 +575,146 @@ func TestAnthropicPoolSoftCooldown_ActiveWindowDoesNotExtend(t *testing.T) {
 	require.True(t, second.Cooling)
 	require.Equal(t, first.Until, second.Until)
 	require.LessOrEqual(t, time.Until(second.Until), anthropicPoolSoftCooldownMaxDefault+time.Second)
+}
+
+func TestAnthropicPoolRecoveryProbeFailure_ReopensConfiguredCooldown(t *testing.T) {
+	svc := &GatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyAnthropicPoolSoftCooldownMaxSeconds: "4",
+		}),
+	}
+	account := &Account{
+		ID:          303,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+
+	backoff := svc.nextAnthropicPoolRecoveryProbeBackoff(context.Background(), account, true)
+
+	require.Equal(t, 4*time.Second, backoff)
+}
+
+func TestAnthropicPoolSoftCooldown_AccountLevelDisableSkipsCooldown(t *testing.T) {
+	svc := &GatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyAnthropicPoolSoftCooldownMaxSeconds: "3",
+		}),
+	}
+	account := &Account{
+		ID:       304,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                  true,
+			"pool_soft_cooldown_enabled": false,
+		},
+	}
+
+	svc.MarkAnthropicPoolAccountSoftCooldown(context.Background(), account, http.StatusForbidden, nil, anthropicPoolSoftCooldownContext{})
+
+	state := svc.AnthropicPoolSoftCooldownState(account.ID)
+	require.False(t, state.Cooling)
+}
+
+func TestAnthropicPoolSoftCooldown_BedrockPoolUsesSoftCooldown(t *testing.T) {
+	svc := &GatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyAnthropicPoolSoftCooldownMaxSeconds: "4",
+		}),
+	}
+	account := &Account{
+		ID:       305,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeBedrock,
+		Credentials: map[string]any{
+			"pool_mode": true,
+			"auth_mode": "apikey",
+			"api_key":   "bedrock-test",
+		},
+	}
+
+	svc.MarkAnthropicPoolAccountSoftCooldown(context.Background(), account, http.StatusForbidden, nil, anthropicPoolSoftCooldownContext{})
+
+	state := svc.AnthropicPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.LessOrEqual(t, time.Until(state.Until), 5*time.Second)
+	require.Greater(t, time.Until(state.Until), 3*time.Second)
+}
+
+func TestAnthropicPoolRecoveryProbe_BedrockPoolUsesBedrockEndpoint(t *testing.T) {
+	upstream := &openAIPoolProbeHTTPUpstreamRecorder{}
+	svc := &GatewayService{
+		httpUpstream: upstream,
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyAnthropicPoolRecoveryProbeModel: "anthropic.claude-3-5-sonnet-20240620-v1:0",
+		}),
+	}
+	account := &Account{
+		ID:       306,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeBedrock,
+		Credentials: map[string]any{
+			"pool_mode": true,
+			"auth_mode": "apikey",
+			"api_key":   "bedrock-test",
+		},
+	}
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.anthropicPoolSoftCooldownUntil.Store(account.ID, cooldownUntil)
+	svc.anthropicPoolSoftCooldownContext.Store(account.ID, anthropicPoolSoftCooldownContext{ProbeKind: "messages"})
+
+	svc.runAnthropicPoolRecoveryProbe(context.Background(), account, "anthropic.claude-3-5-sonnet-20240620-v1:0", cooldownUntil)
+
+	require.Contains(t, upstream.path, "/model/")
+	require.Contains(t, upstream.body, "bedrock-2023-05-31")
+	state := svc.AnthropicPoolSoftCooldownState(account.ID)
+	require.False(t, state.Cooling)
+}
+
+func TestAnthropicPoolSoftCooldown_BedrockTransportErrorSoftCooldowns(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &openAIPoolProbeHTTPUpstreamRecorder{err: errors.New("dial tcp upstream refused")}
+	svc := &GatewayService{
+		httpUpstream: upstream,
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyAnthropicPoolSoftCooldownMaxSeconds: "4",
+		}),
+	}
+	account := &Account{
+		ID:       307,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeBedrock,
+		Credentials: map[string]any{
+			"pool_mode": true,
+			"auth_mode": "apikey",
+			"api_key":   "bedrock-test",
+		},
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	resp, err := svc.executeBedrockUpstream(
+		context.Background(),
+		c,
+		account,
+		[]byte(`{"messages":[]}`),
+		"us.anthropic.claude-sonnet-4-6",
+		"us-east-1",
+		false,
+		nil,
+		"bedrock-test",
+		"",
+	)
+
+	require.Nil(t, resp)
+	require.Error(t, err)
+	state := svc.AnthropicPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.Equal(t, http.StatusBadGateway, state.StatusCode)
+	require.Equal(t, "request_error", state.CooldownSource)
+	require.LessOrEqual(t, time.Until(state.Until), 5*time.Second)
+	require.Greater(t, time.Until(state.Until), 3*time.Second)
 }
 
 func TestAnthropicPoolSoftCooldown_ExpiredWindowCanStartNewWindow(t *testing.T) {

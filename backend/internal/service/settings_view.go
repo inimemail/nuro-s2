@@ -192,7 +192,7 @@ type SystemSettings struct {
 	OpenAIImagePoolRecoveryProbeModel     string
 	OpenAIImagePoolSoftCooldownMaxSeconds int
 	OpenAIImagePoolProbeTimeoutSeconds    int
-	// Anthropic API Key 池恢复探测：默认开启；关闭后软冷却到期直接恢复调度。
+	// Anthropic 池恢复探测：默认开启；关闭后软冷却到期直接恢复调度。
 	AnthropicPoolRecoveryProbeEnabled   bool
 	AnthropicPoolRecoveryProbeModel     string
 	AnthropicPoolSoftCooldownMaxSeconds int

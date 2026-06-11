@@ -3519,6 +3519,8 @@ export default {
       poolModeHint: 'Enable when upstream is an account pool; errors won\'t mark local account status',
       poolModeInfo:
         'When enabled, upstream 429/403/401 errors will auto-retry without marking the account as rate-limited or errored. Suitable for upstream pointing to another sub2api instance.',
+      poolSoftCooldown: 'Enable Soft Cooldown',
+      poolSoftCooldownHint: 'After pool-mode failover, cool down for the configured per-round window, then probe for recovery.',
       imagePoolMode: 'Image Pool',
       imagePoolModeHint: 'When enabled, this OpenAI pool account only handles image-generation requests; when disabled, image-generation requests will not route to this pool account.',
       promptCacheBoost: 'Cache Boost',
@@ -5724,8 +5726,8 @@ export default {
         openAIImagePoolProbeModel: 'OpenAI Image Pool Probe Model',
         openAIImagePoolSoftCooldownMax: 'OpenAI Image Pool Max Soft Cooldown Seconds',
         openAIImagePoolProbeTimeout: 'OpenAI Image Pool Probe Timeout Seconds',
-        anthropicPoolRecoveryProbe: 'Enable Anthropic API Key Pool Recovery Probe',
-        anthropicPoolRecoveryProbeHint: 'When enabled, Anthropic API Key pool accounts recover only after a successful probe when soft cooldown expires. When disabled, they recover directly.',
+        anthropicPoolRecoveryProbe: 'Enable Anthropic Pool Recovery Probe',
+        anthropicPoolRecoveryProbeHint: 'When enabled, Anthropic pool accounts recover only after a successful probe when soft cooldown expires. When disabled, they recover directly.',
         anthropicPoolProbeModel: 'Anthropic Probe Model',
         anthropicPoolSoftCooldownMax: 'Anthropic Max Soft Cooldown Seconds',
         anthropicPoolProbeTimeout: 'Anthropic Probe Timeout Seconds'

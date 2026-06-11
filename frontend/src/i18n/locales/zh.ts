@@ -3661,6 +3661,8 @@ export default {
       poolModeHint: '上游为账号池时启用，错误不标记本地账号状态',
       poolModeInfo:
         '启用后，上游 429/403/401 错误将自动重试而不标记账号限流或错误，适用于上游指向另一个 sub2api 实例的场景。',
+      poolSoftCooldown: '开启软冷却',
+      poolSoftCooldownHint: '池模式错误切换账号后，按后台配置进入每轮软冷却，到期后探测恢复。',
       imagePoolMode: '图片池',
       imagePoolModeHint: '开启后该 OpenAI 池账号只承接生图请求；关闭时生图请求不会调度到这个池账号。',
       promptCacheBoost: '缓存增强',
@@ -5878,8 +5880,8 @@ export default {
         openAIImagePoolProbeModel: 'OpenAI 图片池探测模型',
         openAIImagePoolSoftCooldownMax: 'OpenAI 图片池最大软冷却秒数',
         openAIImagePoolProbeTimeout: 'OpenAI 图片池探测超时秒数',
-        anthropicPoolRecoveryProbe: 'Anthropic API Key 池启用恢复探测',
-        anthropicPoolRecoveryProbeHint: '开启后，Anthropic API Key 池账号软冷却到期需探测成功才恢复；关闭后到期直接恢复调度。',
+        anthropicPoolRecoveryProbe: 'Anthropic 池启用恢复探测',
+        anthropicPoolRecoveryProbeHint: '开启后，Anthropic 池账号软冷却到期需探测成功才恢复；关闭后到期直接恢复调度。',
         anthropicPoolProbeModel: 'Anthropic 探测模型',
         anthropicPoolSoftCooldownMax: 'Anthropic 最大软冷却秒数',
         anthropicPoolProbeTimeout: 'Anthropic 探测超时秒数'

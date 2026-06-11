@@ -16,7 +16,6 @@ import (
 const (
 	anthropicPoolRecoveryProbeDefaultTimeout = 5 * time.Second
 	anthropicPoolRecoveryProbeDefaultBackoff = 5 * time.Second
-	anthropicPoolRecoveryProbeMaxBackoff     = 30 * time.Second
 	anthropicPoolRecoveryProbeAdminKickEvery = 5 * time.Second
 	anthropicPoolRecoveryProbeReadLimit      = 1 << 20
 )
@@ -32,7 +31,11 @@ type anthropicPoolRecoveryProbeResult struct {
 }
 
 func (s *GatewayService) maybeStartAnthropicPoolRecoveryProbe(ctx context.Context, account *Account, requestedModel string) {
-	if s == nil || account == nil || !isAnthropicAPIKeyPoolAccount(account) {
+	if s == nil || account == nil || !isAnthropicPoolAccount(account) {
+		return
+	}
+	if !account.IsPoolSoftCooldownEnabled() {
+		s.clearAnthropicPoolSoftCooldown(account.ID)
 		return
 	}
 	cooldownUntil, ok := s.anthropicPoolAccountSoftCooldownUntil(account)
@@ -60,12 +63,17 @@ func (s *GatewayService) maybeStartAnthropicPoolRecoveryProbe(ctx context.Contex
 }
 
 func (s *GatewayService) clearAnthropicPoolSoftCooldownIfRecoveryProbeDisabled(ctx context.Context, account *Account, requestedModel string) bool {
-	if s == nil || account == nil || !isAnthropicAPIKeyPoolAccount(account) {
+	if s == nil || account == nil || !isAnthropicPoolAccount(account) {
 		return false
 	}
 	cooldownUntil, ok := s.anthropicPoolAccountSoftCooldownUntil(account)
 	if !ok || time.Now().Before(cooldownUntil) {
 		return false
+	}
+	if !account.IsPoolSoftCooldownEnabled() {
+		s.clearAnthropicPoolSoftCooldown(account.ID)
+		loggerLegacyAnthropicPoolRecovery("account_soft_cooldown_disabled_recover account_id=%d model=%s", account.ID, requestedModel)
+		return true
 	}
 	if s.anthropicPoolRecoveryProbeEnabled(ctx) {
 		return false
@@ -104,7 +112,7 @@ func (s *GatewayService) anthropicPoolRecoveryProbeTimeout(ctx context.Context) 
 }
 
 func (s *GatewayService) MaybeKickAnthropicPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account) {
-	if s == nil || account == nil || !isAnthropicAPIKeyPoolAccount(account) {
+	if s == nil || account == nil || !isAnthropicPoolAccount(account) {
 		return
 	}
 	cooldownUntil, ok := s.anthropicPoolAccountSoftCooldownUntil(account)
@@ -143,7 +151,7 @@ func (s *GatewayService) runAnthropicPoolRecoveryProbe(ctx context.Context, acco
 		return
 	}
 
-	backoff := s.nextAnthropicPoolRecoveryProbeBackoff(account.ID, result.retryable)
+	backoff := s.nextAnthropicPoolRecoveryProbeBackoff(ctx, account, result.retryable)
 	until := time.Now().Add(backoff)
 	s.storeAnthropicPoolSoftCooldownUntil(account.ID, until)
 	s.storeAnthropicPoolRecoveryProbeBackoffContext(ctx, account.ID, result)
@@ -155,6 +163,9 @@ func (s *GatewayService) runAnthropicPoolRecoveryProbe(ctx context.Context, acco
 }
 
 func (s *GatewayService) probeAnthropicPoolAccountRecovery(ctx context.Context, account *Account, requestedModel string) anthropicPoolRecoveryProbeResult {
+	if account != nil && account.IsBedrock() {
+		return s.probeBedrockPoolAccountRecovery(ctx, account, requestedModel)
+	}
 	model := s.resolveAnthropicPoolRecoveryProbeModel(ctx, account, requestedModel)
 	token := strings.TrimSpace(account.GetCredential("api_key"))
 	if token == "" {
@@ -180,6 +191,44 @@ func (s *GatewayService) probeAnthropicPoolAccountRecovery(ctx context.Context, 
 	return s.doAnthropicPoolRecoveryProbe(req, account, "messages")
 }
 
+func (s *GatewayService) probeBedrockPoolAccountRecovery(ctx context.Context, account *Account, requestedModel string) anthropicPoolRecoveryProbeResult {
+	model := s.resolveAnthropicPoolRecoveryProbeModel(ctx, account, requestedModel)
+	modelID, ok := ResolveBedrockModelID(account, model)
+	if !ok {
+		return anthropicPoolRecoveryProbeResult{
+			retryable:  false,
+			endpoint:   "bedrock",
+			statusCode: http.StatusBadRequest,
+			err:        fmt.Errorf("unsupported bedrock probe model: %s", model),
+			message:    "unsupported bedrock probe model",
+		}
+	}
+	body, err := PrepareBedrockRequestBodyWithTokens(anthropicPoolRecoveryMessagesPayload(model), modelID, nil, false)
+	if err != nil {
+		return anthropicPoolRecoveryProbeResult{retryable: false, endpoint: "bedrock", statusCode: http.StatusBadRequest, err: err}
+	}
+
+	region := bedrockRuntimeRegion(account)
+	var req *http.Request
+	if account.IsBedrockAPIKey() {
+		apiKey := strings.TrimSpace(account.GetCredential("api_key"))
+		if apiKey == "" {
+			return anthropicPoolRecoveryProbeResult{retryable: false, endpoint: "bedrock", statusCode: http.StatusUnauthorized, err: fmt.Errorf("api_key not found")}
+		}
+		req, err = s.buildUpstreamRequestBedrockAPIKey(ctx, body, modelID, region, false, apiKey)
+	} else {
+		var signer *BedrockSigner
+		signer, err = NewBedrockSignerFromAccount(account)
+		if err == nil {
+			req, err = s.buildUpstreamRequestBedrock(ctx, body, modelID, region, false, signer)
+		}
+	}
+	if err != nil {
+		return anthropicPoolRecoveryProbeResult{retryable: false, endpoint: "bedrock", statusCode: http.StatusUnauthorized, err: err}
+	}
+	return s.doBedrockPoolRecoveryProbe(req, account)
+}
+
 func (s *GatewayService) resolveAnthropicPoolRecoveryProbeModel(ctx context.Context, account *Account, requestedModel string) string {
 	cooldownContext := s.anthropicPoolAccountSoftCooldownContext(account.ID)
 	for _, value := range []string{requestedModel, cooldownContext.ProbeModel, s.anthropicPoolRecoveryProbeModel(ctx), anthropicPoolProbeDefaultModel} {
@@ -191,6 +240,43 @@ func (s *GatewayService) resolveAnthropicPoolRecoveryProbeModel(ctx context.Cont
 		}
 	}
 	return anthropicPoolProbeDefaultModel
+}
+
+func (s *GatewayService) doBedrockPoolRecoveryProbe(req *http.Request, account *Account) anthropicPoolRecoveryProbeResult {
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, nil)
+	if err != nil {
+		return anthropicPoolRecoveryProbeResult{retryable: true, endpoint: "bedrock", err: err}
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, anthropicPoolRecoveryProbeReadLimit))
+	msg := strings.TrimSpace(extractUpstreamErrorMessage(body))
+	if readErr != nil {
+		return anthropicPoolRecoveryProbeResult{
+			retryable:      true,
+			statusCode:     resp.StatusCode,
+			endpoint:       "bedrock",
+			responseHeader: resp.Header,
+			err:            readErr,
+			message:        msg,
+		}
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		return anthropicPoolRecoveryProbeResult{success: true, statusCode: resp.StatusCode, endpoint: "bedrock", responseHeader: resp.Header}
+	}
+	if msg == "" {
+		msg = truncateString(strings.TrimSpace(string(body)), 256)
+	}
+	return anthropicPoolRecoveryProbeResult{
+		retryable:      anthropicPoolRecoveryProbeStatusRetryable(resp.StatusCode),
+		statusCode:     resp.StatusCode,
+		endpoint:       "bedrock",
+		responseHeader: resp.Header,
+		message:        msg,
+	}
 }
 
 func (s *GatewayService) doAnthropicPoolRecoveryProbe(req *http.Request, account *Account, endpoint string) anthropicPoolRecoveryProbeResult {
@@ -250,23 +336,23 @@ func anthropicPoolRecoveryProbeStatusRetryable(statusCode int) bool {
 	}
 }
 
-func (s *GatewayService) nextAnthropicPoolRecoveryProbeBackoff(accountID int64, retryable bool) time.Duration {
-	if !retryable {
-		return anthropicPoolSoftCooldownAuth
+func (s *GatewayService) nextAnthropicPoolRecoveryProbeBackoff(ctx context.Context, account *Account, retryable bool) time.Duration {
+	if account == nil {
+		return anthropicPoolRecoveryProbeDefaultBackoff
 	}
 	failures := 1
-	if current, ok := s.anthropicPoolRecoveryProbeFailureCnt.Load(accountID); ok {
+	if current, ok := s.anthropicPoolRecoveryProbeFailureCnt.Load(account.ID); ok {
 		if count, ok := current.(int); ok && count > 0 {
 			failures = count + 1
 		}
 	}
-	s.anthropicPoolRecoveryProbeFailureCnt.Store(accountID, failures)
-	backoff := anthropicPoolRecoveryProbeDefaultBackoff
-	for i := 1; i < failures; i++ {
-		backoff *= 2
-		if backoff >= anthropicPoolRecoveryProbeMaxBackoff {
-			return anthropicPoolRecoveryProbeMaxBackoff
+	s.anthropicPoolRecoveryProbeFailureCnt.Store(account.ID, failures)
+	backoff := s.configuredAnthropicPoolSoftCooldownMax(ctx)
+	if backoff <= 0 {
+		if !retryable {
+			return anthropicPoolSoftCooldownAuth
 		}
+		return anthropicPoolRecoveryProbeDefaultBackoff
 	}
 	return backoff
 }

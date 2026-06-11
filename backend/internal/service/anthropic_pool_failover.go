@@ -27,7 +27,7 @@ type anthropicPoolSoftCooldownContext struct {
 }
 
 func classifyAnthropicPoolFailover(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte, requestedModel string) anthropicPoolFailoverDecision {
-	if !isAnthropicAPIKeyPoolAccount(account) {
+	if !isAnthropicPoolAccount(account) {
 		return anthropicPoolFailoverDecision{}
 	}
 	decision := anthropicPoolFailoverDecision{
@@ -61,10 +61,10 @@ func shouldAnthropicPoolFailoverStatus(statusCode int) bool {
 	}
 }
 
-func isAnthropicAPIKeyPoolAccount(account *Account) bool {
+func isAnthropicPoolAccount(account *Account) bool {
 	return account != nil &&
 		account.Platform == PlatformAnthropic &&
-		account.Type == AccountTypeAPIKey &&
+		(account.Type == AccountTypeAPIKey || account.Type == AccountTypeBedrock) &&
 		account.IsPoolMode()
 }
 
@@ -281,7 +281,7 @@ func newGatewayUpstreamFailoverError(account *Account, statusCode int, responseB
 		ResponseBody:           responseBody,
 		RetryableOnSameAccount: account != nil && account.IsPoolMode() && account.IsPoolModeRetryableStatus(statusCode),
 	}
-	if !isAnthropicAPIKeyPoolAccount(account) {
+	if !isAnthropicPoolAccount(account) {
 		return failoverErr
 	}
 

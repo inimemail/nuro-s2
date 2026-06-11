@@ -892,6 +892,24 @@ func (a *Account) IsImagePoolMode() bool {
 	return false
 }
 
+// IsPoolSoftCooldownEnabled reports whether pool-mode soft cooldown is enabled
+// for this account. Missing credentials default to enabled for backwards
+// compatibility with existing pool accounts.
+func (a *Account) IsPoolSoftCooldownEnabled() bool {
+	if a == nil || !a.IsPoolMode() {
+		return false
+	}
+	if a.Credentials == nil {
+		return true
+	}
+	if v, ok := a.Credentials["pool_soft_cooldown_enabled"]; ok {
+		if enabled, ok := v.(bool); ok {
+			return enabled
+		}
+	}
+	return true
+}
+
 // IsOpenAIPromptCacheBoostEnabled enables prompt-cache helpers only for
 // OpenAI API key text-pool accounts. Image pools are excluded even if older
 // credentials still contain the flag.

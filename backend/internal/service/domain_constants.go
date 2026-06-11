@@ -427,13 +427,13 @@ const (
 	SettingKeyOpenAIImagePoolSoftCooldownMaxSeconds = "openai_image_pool_soft_cooldown_max_seconds"
 	// SettingKeyOpenAIImagePoolProbeTimeoutSeconds 图片池恢复探测超时秒数（默认 360）
 	SettingKeyOpenAIImagePoolProbeTimeoutSeconds = "openai_image_pool_probe_timeout_seconds"
-	// SettingKeyAnthropicPoolRecoveryProbeEnabled Anthropic API Key 池软冷却到期后是否启用恢复探测（默认 true）
+	// SettingKeyAnthropicPoolRecoveryProbeEnabled Anthropic 池软冷却到期后是否启用恢复探测（默认 true）
 	SettingKeyAnthropicPoolRecoveryProbeEnabled = "anthropic_pool_recovery_probe_enabled"
-	// SettingKeyAnthropicPoolRecoveryProbeModel Anthropic API Key 池恢复探测模型（默认 claude-sonnet-4-6）
+	// SettingKeyAnthropicPoolRecoveryProbeModel Anthropic 池恢复探测模型（默认 claude-sonnet-4-6）
 	SettingKeyAnthropicPoolRecoveryProbeModel = "anthropic_pool_recovery_probe_model"
-	// SettingKeyAnthropicPoolSoftCooldownMaxSeconds Anthropic API Key 池软冷却最大秒数（默认 30）
+	// SettingKeyAnthropicPoolSoftCooldownMaxSeconds Anthropic 池软冷却最大秒数（默认 30）
 	SettingKeyAnthropicPoolSoftCooldownMaxSeconds = "anthropic_pool_soft_cooldown_max_seconds"
-	// SettingKeyAnthropicPoolProbeTimeoutSeconds Anthropic API Key 池恢复探测超时秒数（默认 5）
+	// SettingKeyAnthropicPoolProbeTimeoutSeconds Anthropic 池恢复探测超时秒数（默认 5）
 	SettingKeyAnthropicPoolProbeTimeoutSeconds = "anthropic_pool_probe_timeout_seconds"
 
 	// SettingKeyBackendModeEnabled Backend 模式：禁用用户注册和自助服务，仅管理员可登录
