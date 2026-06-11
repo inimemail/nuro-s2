@@ -99,6 +99,15 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		return nil, policyErr
 	}
 	upstreamBody = updatedBody
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, err := applyOpenAIUpstreamStrongIsolationBody(upstreamBody, false)
+		if err != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", err)
+		}
+		if isolated {
+			upstreamBody = isolatedBody
+		}
+	}
 	if clientStream {
 		var usageErr error
 		upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)

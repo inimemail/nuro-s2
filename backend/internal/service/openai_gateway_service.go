@@ -3044,6 +3044,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		if applyOpenAIUpstreamStrongIsolationMap(reqBody, true) {
+			bodyModified = true
+			disablePatch()
+		}
+	}
+
 	// 仅在 WSv2 模式保留 previous_response_id，其他模式（HTTP/WSv1）统一过滤。
 	// 注意：该规则同样适用于 Codex CLI 请求，避免 WSv1 向上游透传不支持字段。
 	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
@@ -3628,6 +3635,15 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, policyErr
 	}
 	body = updatedBody
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, err := applyOpenAIUpstreamStrongIsolationBody(body, true)
+		if err != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", err)
+		}
+		if isolated {
+			body = isolatedBody
+		}
+	}
 
 	apiKey := getAPIKeyFromContext(c)
 	if IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body) && !GroupAllowsImageGeneration(apiKeyGroup(apiKey)) {
@@ -3929,6 +3945,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	// 浏览器型 UA 兜底：仅 OAuth（ChatGPT 内部接口）账号生效，若最终 user-agent 仍为浏览器
 	// （Chrome/Firefox/Safari/Edge 等），替换为后台配置的 Codex UA，避免 Cloudflare 触发 JS 质询。
 	s.overrideBrowserUserAgent(ctx, account, req)
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		applyOpenAIUpstreamStrongIsolationHeaders(req)
+	}
 
 	if req.Header.Get("content-type") == "" {
 		req.Header.Set("content-type", "application/json")
@@ -4760,6 +4779,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 浏览器型 UA 兜底：仅 OAuth（ChatGPT 内部接口）账号生效，若最终 user-agent 仍为浏览器
 	// （Chrome/Firefox/Safari/Edge 等），替换为后台配置的 Codex UA，避免 Cloudflare 触发 JS 质询。
 	s.overrideBrowserUserAgent(ctx, account, req)
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		applyOpenAIUpstreamStrongIsolationHeaders(req)
+	}
 
 	// Ensure required headers exist
 	if req.Header.Get("content-type") == "" {

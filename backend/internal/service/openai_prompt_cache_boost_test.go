@@ -93,6 +93,123 @@ func TestOpenAIGatewayService_ForwardPromptCacheBoostInjectsFields(t *testing.T)
 	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
 }
 
+func TestOpenAIGatewayService_UpstreamStrongIsolationKeepsCacheBoostButDropsContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.5","stream":false,"store":true,"previous_response_id":"resp_leaky","conversation_id":"conv_leaky","input":[{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("session_id", "client-session")
+	c.Request.Header.Set("conversation_id", "client-conversation")
+	c.Request.Header.Set("originator", "codex_cli_rs")
+	c.Request.Header.Set("x-codex-turn-state", "state")
+	c.Request.Header.Set("x-codex-turn-metadata", "metadata")
+
+	upstream := &httpUpstreamRecorder{resp: promptCacheBoostJSONResponse("resp_isolated_forward")}
+	svc := &OpenAIGatewayService{
+		cfg:          promptCacheBoostTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := promptCacheBoostTestAccount(309)
+	account.Credentials["upstream_strong_isolation_enabled"] = true
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, strings.HasPrefix(gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String(), "nuro-pcache-"))
+	require.Equal(t, "24h", gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "previous_response_id").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "conversation_id").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Bool())
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
+	require.Empty(t, upstream.lastReq.Header.Get("conversation_id"))
+	require.Empty(t, upstream.lastReq.Header.Get("originator"))
+	require.Empty(t, upstream.lastReq.Header.Get("x-codex-turn-state"))
+	require.Empty(t, upstream.lastReq.Header.Get("x-codex-turn-metadata"))
+}
+
+func TestOpenAIUpstreamStrongIsolationWSKeepsPromptCacheKeyButDropsContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("accept-language", "zh-CN")
+	c.Request.Header.Set("session_id", "client-session")
+	c.Request.Header.Set("conversation_id", "client-conversation")
+	c.Request.Header.Set("originator", "codex_cli_rs")
+	c.Request.Header.Set(openAIWSTurnStateHeader, "turn-state")
+	c.Request.Header.Set(openAIWSTurnMetadataHeader, "turn-metadata")
+
+	account := promptCacheBoostTestAccount(311)
+	account.Credentials["upstream_strong_isolation_enabled"] = true
+	svc := &OpenAIGatewayService{}
+
+	headers, resolution := svc.buildOpenAIWSHeaders(
+		c,
+		account,
+		"sk-test",
+		OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2},
+		true,
+		"stored-turn-state",
+		"stored-turn-metadata",
+		"nuro-pcache-client",
+	)
+	require.Equal(t, "Bearer sk-test", headers.Get("authorization"))
+	require.Equal(t, openAIWSBetaV2Value, headers.Get("OpenAI-Beta"))
+	require.Equal(t, "zh-CN", headers.Get("accept-language"))
+	require.Empty(t, headers.Get("session_id"))
+	require.Empty(t, headers.Get("conversation_id"))
+	require.Empty(t, headers.Get("originator"))
+	require.Empty(t, headers.Get(openAIWSTurnStateHeader))
+	require.Empty(t, headers.Get(openAIWSTurnMetadataHeader))
+	require.Equal(t, "strong_isolation", resolution.SessionSource)
+	require.Equal(t, "strong_isolation", resolution.ConversationSource)
+
+	payload := svc.buildOpenAIWSCreatePayload(map[string]any{
+		"model":                "gpt-5.5",
+		"prompt_cache_key":     "nuro-pcache-ws",
+		"previous_response_id": "resp_leaky",
+		"conversation_id":      "conv_leaky",
+		"session_id":           "sess_leaky",
+		"store":                true,
+		"client_metadata": map[string]any{
+			openAIWSTurnMetadataHeader: "metadata",
+			openAIWSTurnStateHeader:    "state",
+			"safe":                     "keep",
+		},
+	}, account)
+	require.Equal(t, "nuro-pcache-ws", payload["prompt_cache_key"])
+	require.Equal(t, false, payload["store"])
+	require.NotContains(t, payload, "previous_response_id")
+	require.NotContains(t, payload, "conversation_id")
+	require.NotContains(t, payload, "session_id")
+	require.Equal(t, "response.create", payload["type"])
+	metadata, ok := payload["client_metadata"].(map[string]any)
+	require.True(t, ok)
+	require.NotContains(t, metadata, openAIWSTurnMetadataHeader)
+	require.NotContains(t, metadata, openAIWSTurnStateHeader)
+	require.Equal(t, "keep", metadata["safe"])
+}
+
+func TestOpenAIUpstreamStrongIsolationWSBodyKeepsPromptCacheKeyButDropsContinuation(t *testing.T) {
+	body := []byte(`{"type":"response.create","model":"gpt-5.5","prompt_cache_key":"nuro-pcache-raw","previous_response_id":"resp_leaky","conversation_id":"conv_leaky","session_id":"sess_leaky","store":true,"client_metadata":{"x-codex-turn-metadata":"metadata","x-codex-turn-state":"state","safe":"keep"}}`)
+
+	isolated, changed, err := applyOpenAIUpstreamStrongIsolationWSBody(body, true)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "nuro-pcache-raw", gjson.GetBytes(isolated, "prompt_cache_key").String())
+	require.False(t, gjson.GetBytes(isolated, "store").Bool())
+	require.False(t, gjson.GetBytes(isolated, "previous_response_id").Exists())
+	require.False(t, gjson.GetBytes(isolated, "conversation_id").Exists())
+	require.False(t, gjson.GetBytes(isolated, "session_id").Exists())
+	require.False(t, gjson.GetBytes(isolated, "client_metadata.x-codex-turn-metadata").Exists())
+	require.False(t, gjson.GetBytes(isolated, "client_metadata.x-codex-turn-state").Exists())
+	require.Equal(t, "keep", gjson.GetBytes(isolated, "client_metadata.safe").String())
+}
+
 func TestOpenAIPromptCacheBoost_StaticPrefixIgnoresFirstUserContent(t *testing.T) {
 	staticPolicy := strings.Repeat("shared routing policy and tool instructions. ", 80)
 	bodyA := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"` + staticPolicy + `"},{"role":"user","content":"first downstream user question"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}]}`)
@@ -335,6 +452,33 @@ func TestForwardAsChatCompletions_ExplicitPromptCacheKeySetsSession(t *testing.T
 	require.NotNil(t, result)
 	require.Equal(t, "client-cache-key", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
 	require.Equal(t, generateSessionUUID(isolateOpenAISessionID(0, "client-cache-key")), upstream.lastReq.Header.Get("session_id"))
+}
+
+func TestForwardAsChatCompletions_UpstreamStrongIsolationDoesNotSetSessionForExplicitPromptCacheKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.5","prompt_cache_key":"client-cache-key","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("session_id", "client-session")
+
+	upstream := &httpUpstreamRecorder{resp: openAICompatSSECompletedResponse("resp_pcache_chat_isolated", "gpt-5.5")}
+	svc := &OpenAIGatewayService{
+		cfg:          promptCacheBoostTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := promptCacheBoostResponsesTestAccount(310)
+	account.Credentials["upstream_strong_isolation_enabled"] = true
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "client-cache-key", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Bool())
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
+	require.Empty(t, upstream.lastReq.Header.Get("conversation_id"))
 }
 
 func TestForwardAsChatCompletions_PromptCacheBoostUnsupportedRetentionRetries(t *testing.T) {

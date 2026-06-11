@@ -1346,6 +1346,31 @@
               </button>
             </div>
           </div>
+          <div v-if="showPromptCacheBoostToggle" class="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <label class="input-label mb-0">{{ t('admin.accounts.upstreamStrongIsolation') }}</label>
+                <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                  {{ t('admin.accounts.upstreamStrongIsolationHint') }}
+                </p>
+              </div>
+              <button
+                type="button"
+                @click="upstreamStrongIsolationEnabled = !upstreamStrongIsolationEnabled"
+                :class="[
+                  'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2',
+                  upstreamStrongIsolationEnabled ? 'bg-amber-600' : 'bg-gray-200 dark:bg-dark-600'
+                ]"
+              >
+                <span
+                  :class="[
+                    'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                    upstreamStrongIsolationEnabled ? 'translate-x-5' : 'translate-x-0'
+                  ]"
+                />
+              </button>
+            </div>
+          </div>
           <div v-if="poolModeEnabled" class="mt-3">
             <label class="input-label">{{ t('admin.accounts.poolModeRetryCount') }}</label>
             <input
@@ -3527,6 +3552,7 @@ const poolModeEnabled = ref(false)
 const poolSoftCooldownEnabled = ref(true)
 const imagePoolModeEnabled = ref(false)
 const promptCacheBoostEnabled = ref(false)
+const upstreamStrongIsolationEnabled = ref(false)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const poolModeRetryStatusCodesInput = ref('')
 const showPromptCacheBoostToggle = computed(() =>
@@ -4018,12 +4044,14 @@ watch([poolModeEnabled, () => form.platform], ([enabled, platform]) => {
   }
   if (!enabled || platform !== 'openai') {
     promptCacheBoostEnabled.value = false
+    upstreamStrongIsolationEnabled.value = false
   }
 })
 
 watch(imagePoolModeEnabled, (enabled) => {
   if (enabled) {
     promptCacheBoostEnabled.value = false
+    upstreamStrongIsolationEnabled.value = false
   }
 })
 
@@ -4404,6 +4432,7 @@ const resetForm = () => {
   poolSoftCooldownEnabled.value = true
   imagePoolModeEnabled.value = false
   promptCacheBoostEnabled.value = false
+  upstreamStrongIsolationEnabled.value = false
   poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
   poolModeRetryStatusCodesInput.value = ''
   customErrorCodesEnabled.value = false
@@ -4830,6 +4859,9 @@ const handleSubmit = async () => {
     }
     if (form.platform === 'openai' && !imagePoolModeEnabled.value && promptCacheBoostEnabled.value) {
       credentials.prompt_cache_boost_enabled = true
+    }
+    if (form.platform === 'openai' && !imagePoolModeEnabled.value && upstreamStrongIsolationEnabled.value) {
+      credentials.upstream_strong_isolation_enabled = true
     }
     credentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
     const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)

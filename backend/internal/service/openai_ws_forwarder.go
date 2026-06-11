@@ -1122,13 +1122,22 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	headers.Set("authorization", "Bearer "+token)
 
 	sessionResolution := resolveOpenAIWSSessionHeaders(c, promptCacheKey)
+	strongIsolationEnabled := account != nil && account.IsOpenAIUpstreamStrongIsolationEnabled()
+	if strongIsolationEnabled {
+		sessionResolution = openAIWSSessionHeaderResolution{
+			SessionSource:      "strong_isolation",
+			ConversationSource: "strong_isolation",
+		}
+	}
 	if c != nil && c.Request != nil {
 		if v := strings.TrimSpace(c.Request.Header.Get("accept-language")); v != "" {
 			headers.Set("accept-language", v)
 		}
 	}
 	// OAuth 账号：将 apiKeyID 混入 session 标识符，防止跨用户会话碰撞。
-	if account != nil && account.Type == AccountTypeOAuth {
+	if strongIsolationEnabled {
+		// Strong isolation deliberately leaves session headers empty.
+	} else if account != nil && account.Type == AccountTypeOAuth {
 		apiKeyID := getAPIKeyIDFromContext(c)
 		if sessionResolution.SessionID != "" {
 			headers.Set("session_id", isolateOpenAISessionID(apiKeyID, sessionResolution.SessionID))
@@ -1144,14 +1153,14 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 			headers.Set("conversation_id", sessionResolution.ConversationID)
 		}
 	}
-	if state := strings.TrimSpace(turnState); state != "" {
+	if state := strings.TrimSpace(turnState); state != "" && !strongIsolationEnabled {
 		headers.Set(openAIWSTurnStateHeader, state)
 	}
-	if metadata := strings.TrimSpace(turnMetadata); metadata != "" {
+	if metadata := strings.TrimSpace(turnMetadata); metadata != "" && !strongIsolationEnabled {
 		headers.Set(openAIWSTurnMetadataHeader, metadata)
 	}
 
-	if account != nil && account.Type == AccountTypeOAuth {
+	if account != nil && account.Type == AccountTypeOAuth && !strongIsolationEnabled {
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			headers.Set("chatgpt-account-id", chatgptAccountID)
 		}
@@ -1181,6 +1190,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	if account != nil && account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(headers.Get("user-agent")) {
 		headers.Set("user-agent", codexCLIUserAgent)
 	}
+	if strongIsolationEnabled {
+		applyOpenAIUpstreamStrongIsolationHeaderMap(headers)
+	}
 
 	return headers, sessionResolution
 }
@@ -1202,6 +1214,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSCreatePayload(reqBody map[string]any
 	// OAuth 默认保持 store=false，避免误依赖服务端历史。
 	if account != nil && account.Type == AccountTypeOAuth && !s.isOpenAIWSStoreRecoveryAllowed(account) {
 		payload["store"] = false
+	}
+	if account != nil && account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		applyOpenAIUpstreamStrongIsolationWSMap(payload, true)
 	}
 	return payload
 }
@@ -1769,6 +1784,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	if s == nil || account == nil {
 		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
 	}
+	strongIsolationEnabled := account.IsOpenAIUpstreamStrongIsolationEnabled()
 
 	wsURL, err := s.buildOpenAIResponsesWSURL(account)
 	if err != nil {
@@ -1813,11 +1829,13 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 	turnState := ""
 	turnMetadata := ""
-	if c != nil && c.Request != nil {
+	if !strongIsolationEnabled && c != nil && c.Request != nil {
 		turnState = strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
 		turnMetadata = strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader))
 	}
-	setOpenAIWSTurnMetadata(payload, turnMetadata)
+	if !strongIsolationEnabled {
+		setOpenAIWSTurnMetadata(payload, turnMetadata)
+	}
 	payloadEventType := openAIWSPayloadString(payload, "type")
 	if payloadEventType == "" {
 		payloadEventType = "response.create"
@@ -1842,9 +1860,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 
 	stateStore := s.getOpenAIWSStateStore()
+	if strongIsolationEnabled {
+		stateStore = nil
+	}
 	groupID := getOpenAIGroupIDFromContext(c)
-	sessionHash := s.GenerateSessionHash(c, nil)
-	if sessionHash == "" {
+	sessionHash := ""
+	if !strongIsolationEnabled {
+		sessionHash = s.GenerateSessionHash(c, nil)
+	}
+	if !strongIsolationEnabled && sessionHash == "" {
 		var legacySessionHash string
 		sessionHash, legacySessionHash = openAIWSSessionHashesFromID(promptCacheKey)
 		attachOpenAILegacySessionHashToGin(c, legacySessionHash)
@@ -1869,6 +1893,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
 	forceNewConnByPolicy := shouldForceNewConnOnStoreDisabled(storeDisabledConnMode, lastFailureReason)
 	forceNewConn := forceNewConnByPolicy && storeDisabled && previousResponseID == "" && sessionHash != "" && preferredConnID == ""
+	if strongIsolationEnabled {
+		forceNewConn = true
+	}
 	wsHeaders, sessionResolution := s.buildOpenAIWSHeaders(c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
 	logOpenAIWSModeDebug(
 		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v turn_state_len=%d has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
@@ -1952,7 +1979,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	// 因此 defer 中只需处理正常退出时不 MarkBroken 即可。
 	cleanExit := false
 	defer func() {
-		if !cleanExit {
+		if strongIsolationEnabled || !cleanExit {
 			lease.MarkBroken()
 		}
 		lease.Release()
@@ -2008,26 +2035,28 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		len(handshakeTurnState),
 	)
 	if handshakeTurnState != "" {
-		if stateStore != nil && sessionHash != "" {
+		if !strongIsolationEnabled && stateStore != nil && sessionHash != "" {
 			stateStore.BindSessionTurnState(groupID, sessionHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
 		}
-		if c != nil {
+		if !strongIsolationEnabled && c != nil {
 			c.Header(http.CanonicalHeaderKey(openAIWSTurnStateHeader), handshakeTurnState)
 		}
 	}
 
-	if err := s.performOpenAIWSGeneratePrewarm(
-		ctx,
-		lease,
-		decision,
-		payload,
-		previousResponseID,
-		reqBody,
-		account,
-		stateStore,
-		groupID,
-	); err != nil {
-		return nil, err
+	if !strongIsolationEnabled {
+		if err := s.performOpenAIWSGeneratePrewarm(
+			ctx,
+			lease,
+			decision,
+			payload,
+			previousResponseID,
+			reqBody,
+			account,
+			stateStore,
+			groupID,
+		); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout()); err != nil {
@@ -2446,6 +2475,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if strings.TrimSpace(token) == "" {
 		return errors.New("token is empty")
 	}
+	strongIsolationEnabled := account.IsOpenAIUpstreamStrongIsolationEnabled()
 
 	// 预取一次 OpenAI Fast Policy settings，绑定到 ctx，让该 WS session
 	// 内所有帧的 evaluateOpenAIFastPolicy 调用复用同一份快照，避免每帧
@@ -2611,7 +2641,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				nil,
 			)
 		}
-		if turnMetadata := strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)); turnMetadata != "" {
+		if turnMetadata := strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)); turnMetadata != "" && !strongIsolationEnabled {
 			next, setErr := applyPayloadMutation(normalized, "client_metadata."+openAIWSTurnMetadataHeader, turnMetadata)
 			if setErr != nil {
 				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", setErr)
@@ -2681,6 +2711,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 		normalized = policyApplied
+		if strongIsolationEnabled {
+			isolated, _, isolationErr := applyOpenAIUpstreamStrongIsolationWSBody(normalized, true)
+			if isolationErr != nil {
+				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", isolationErr)
+			}
+			normalized = isolated
+			promptCacheKey = strings.TrimSpace(gjson.GetBytes(normalized, "prompt_cache_key").String())
+			previousResponseID = ""
+		}
 		ingressSessionOriginalModel = originalModel
 
 		return openAIWSClientPayload{
@@ -2722,15 +2761,24 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return err
 	}
 
-	turnState := strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
+	turnState := ""
+	if !strongIsolationEnabled {
+		turnState = strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
+	}
 	stateStore := s.getOpenAIWSStateStore()
+	if strongIsolationEnabled {
+		stateStore = nil
+	}
 	groupID := getOpenAIGroupIDFromContext(c)
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
 	sessionHash := ""
 	preferredConnID := ""
 	storeDisabled := false
 	refreshIngressRouteState := func(payload openAIWSClientPayload) {
-		sessionHash = s.GenerateSessionHash(c, payload.rawForHash)
+		sessionHash = ""
+		if !strongIsolationEnabled {
+			sessionHash = s.GenerateSessionHash(c, payload.rawForHash)
+		}
 		if turnState == "" && stateStore != nil && sessionHash != "" {
 			if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
 				turnState = savedTurnState
@@ -2841,7 +2889,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				bridgeReplayInput = append(bridgeReplayInput, cloneOpenAIWSRawMessages(result.wsReplayInput)...)
 				bridgeReplayInputExists = true
 			}
-			if bridgeTurnState := strings.TrimSpace(result.ResponseHeaders.Get(openAIWSTurnStateHeader)); bridgeTurnState != "" {
+			if bridgeTurnState := strings.TrimSpace(result.ResponseHeaders.Get(openAIWSTurnStateHeader)); bridgeTurnState != "" && !strongIsolationEnabled {
 				turnState = bridgeTurnState
 				if stateStore != nil && sessionHash != "" {
 					stateStore.BindSessionTurnState(groupID, sessionHash, bridgeTurnState, s.openAIWSSessionStickyTTL())
@@ -2949,7 +2997,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		req.PreferredConnID = strings.TrimSpace(preferred)
 		req.ForcePreferredConn = forcePreferredConn
 		// dedicated 模式下每次获取均新建连接，避免跨会话复用残留上下文。
-		req.ForceNewConn = dedicatedMode
+		req.ForceNewConn = dedicatedMode || strongIsolationEnabled
 		acquireCtx, acquireCancel := context.WithTimeout(ctx, acquireTimeout)
 		lease, acquireErr := pool.Acquire(acquireCtx, req)
 		acquireCancel()
@@ -3000,7 +3048,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return nil, acquireErr
 		}
 		connID := strings.TrimSpace(lease.ConnID())
-		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" {
+		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" && !strongIsolationEnabled {
 			turnState = handshakeTurnState
 			if stateStore != nil && sessionHash != "" {
 				stateStore.BindSessionTurnState(groupID, sessionHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
@@ -3319,7 +3367,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if sessionLease == nil {
 			return
 		}
-		if !lastTurnClean {
+		if strongIsolationEnabled || !lastTurnClean {
 			sessionLease.MarkBroken()
 		}
 		unpinSessionConn(sessionConnID)
@@ -3483,7 +3531,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		hasFunctionCallOutput := toolSignals.HasFunctionCallOutput
 		// store=false + function_call_output 场景必须有续链锚点。
 		// 若客户端未传 previous_response_id，优先回填上一轮响应 ID，避免上游报 call_id 无法关联。
-		if shouldInferIngressFunctionCallOutputPreviousResponseID(
+		if !strongIsolationEnabled && shouldInferIngressFunctionCallOutputPreviousResponseID(
 			storeDisabled,
 			turn,
 			toolSignals,
@@ -3827,6 +3875,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		if connID != "" {
 			preferredConnID = connID
+		}
+		if strongIsolationEnabled {
+			resetSessionLease(true)
+			preferredConnID = ""
 		}
 
 		nextClientMessage, readErr := readClientMessage()

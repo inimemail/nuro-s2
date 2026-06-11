@@ -87,6 +87,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if promptCacheKey == "" {
 		promptCacheKey = bodyPromptCacheKey
 	}
+	strongIsolationEnabled := account.IsOpenAIUpstreamStrongIsolationEnabled()
 	incomingPromptCacheKey := promptCacheKey
 	explicitPromptCacheKey := promptCacheKey != ""
 	compatPromptCacheInjected := false
@@ -233,6 +234,15 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			}
 		}
 	}
+	if strongIsolationEnabled {
+		isolatedBody, isolated, err := applyOpenAIUpstreamStrongIsolationBody(responsesBody, true)
+		if err != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", err)
+		}
+		if isolated {
+			responsesBody = isolatedBody
+		}
+	}
 
 	// 4b. Apply OpenAI fast policy (may filter service_tier or block the request).
 	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, responsesBody)
@@ -260,7 +270,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
 
-	if promptCacheKey != "" && (explicitPromptCacheKey || !promptCacheBoostGeneratedKey) {
+	if promptCacheKey != "" && !strongIsolationEnabled && (explicitPromptCacheKey || !promptCacheBoostGeneratedKey) {
 		sessionSeed := promptCacheKey
 		if account.Type == AccountTypeAPIKey {
 			sessionSeed = isolateOpenAISessionID(getAPIKeyIDFromContext(c), promptCacheKey)

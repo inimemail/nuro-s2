@@ -53,6 +53,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	incomingPromptCacheKey := promptCacheKey
 	explicitPromptCacheKey := promptCacheKey != ""
 	apiKeyID := getAPIKeyIDFromContext(c)
+	strongIsolationEnabled := account.IsOpenAIUpstreamStrongIsolationEnabled()
 	anthropicDigestChain := ""
 	anthropicMatchedDigestChain := ""
 	compatPromptCacheInjected := false
@@ -80,7 +81,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	compatReplayTrimmed := false
 	compatReplayGuardEnabled := shouldAutoInjectPromptCacheKeyForCompat(upstreamModel)
 	cacheBoostEnabled := s.isOpenAIPromptCacheBoostRuntimeEnabled(account)
-	compatContinuationEnabled := openAICompatContinuationEnabled(account, upstreamModel) && !cacheBoostEnabled
+	compatContinuationEnabled := openAICompatContinuationEnabled(account, upstreamModel) && !cacheBoostEnabled && !strongIsolationEnabled
 	previousResponseID := ""
 	if compatContinuationEnabled {
 		previousResponseID = s.getOpenAICompatSessionResponseID(ctx, c, account, promptCacheKey)
@@ -259,6 +260,15 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			}
 		}
 	}
+	if strongIsolationEnabled {
+		isolatedBody, isolated, err := applyOpenAIUpstreamStrongIsolationBody(responsesBody, true)
+		if err != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", err)
+		}
+		if isolated {
+			responsesBody = isolatedBody
+		}
+	}
 
 	// 4c. Apply OpenAI fast policy (may filter service_tier or block the request).
 	// Mirrors the Claude anthropic-beta "fast-mode-2026-02-01" filter, but keyed
@@ -290,7 +300,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 
 	// Override session_id with a deterministic UUID derived from the isolated
 	// session key, ensuring different API keys produce different upstream sessions.
-	if promptCacheKey != "" && (explicitPromptCacheKey || (!cacheBoostEnabled && !promptCacheBoostGeneratedKey)) {
+	if promptCacheKey != "" && !strongIsolationEnabled && (explicitPromptCacheKey || (!cacheBoostEnabled && !promptCacheBoostGeneratedKey)) {
 		isolatedSessionID := generateSessionUUID(isolateOpenAISessionID(apiKeyID, promptCacheKey))
 		upstreamReq.Header.Set("session_id", isolatedSessionID)
 		if upstreamReq.Header.Get("conversation_id") != "" {

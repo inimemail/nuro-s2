@@ -246,6 +246,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if strings.TrimSpace(token) == "" {
 		return errors.New("token is empty")
 	}
+	strongIsolationEnabled := account.IsOpenAIUpstreamStrongIsolationEnabled()
 	requestModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
 	requestPreviousResponseID := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "previous_response_id").String())
 	logOpenAIWSV2Passthrough(
@@ -297,6 +298,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, blocked.Message, blocked)
 	}
 	firstClientMessage = updatedFirst
+	if strongIsolationEnabled {
+		isolatedFirst, _, isolationErr := applyOpenAIUpstreamStrongIsolationWSBody(firstClientMessage, true)
+		if isolationErr != nil {
+			return fmt.Errorf("apply upstream strong isolation on first ws frame: %w", isolationErr)
+		}
+		firstClientMessage = isolatedFirst
+	}
 
 	// 在 policy filter 之后再提取 service_tier / reasoning_effort 用于
 	// usage 上报：filter
@@ -341,7 +349,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 	turnState := ""
 	turnMetadata := ""
-	if c != nil {
+	if c != nil && !strongIsolationEnabled {
 		turnState = strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
 		turnMetadata = strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader))
 	}
@@ -436,6 +444,15 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				model = capturedSessionModel
 			}
 			out, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, payload)
+			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+			if policyErr == nil && blocked == nil && strongIsolationEnabled &&
+				(eventType == "" || eventType == "response.create") {
+				var isolationErr error
+				out, _, isolationErr = applyOpenAIUpstreamStrongIsolationWSBody(out, true)
+				if isolationErr != nil {
+					return payload, nil, isolationErr
+				}
+			}
 			// 多轮 passthrough usage：仅在成功（non-block / non-err）
 			// 的 response.create 帧上更新 usageMeta，使用
 			// filter 处理后的 payload，与首帧 policy-after-extract 语义

@@ -925,6 +925,20 @@ func (a *Account) IsOpenAIPromptCacheBoostEnabled() bool {
 	return false
 }
 
+// IsOpenAIUpstreamStrongIsolationEnabled disables upstream session continuation
+// only for OpenAI API-key text-pool accounts that explicitly enabled it.
+func (a *Account) IsOpenAIUpstreamStrongIsolationEnabled() bool {
+	if a == nil || !a.IsOpenAIApiKey() || !a.IsPoolMode() || a.IsImagePoolMode() || a.Credentials == nil {
+		return false
+	}
+	if v, ok := a.Credentials["upstream_strong_isolation_enabled"]; ok {
+		if enabled, ok := v.(bool); ok {
+			return enabled
+		}
+	}
+	return false
+}
+
 func (a *Account) MatchesOpenAIImagePoolRequest(ctx context.Context, requestedModel string, requiredImageCapability OpenAIImagesCapability) bool {
 	if a == nil || !a.IsPoolMode() {
 		return true

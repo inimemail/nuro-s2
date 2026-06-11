@@ -254,15 +254,26 @@
             <AccountCapacityCell :account="row" />
           </template>
           <template #cell-prompt_cache_boost="{ row }">
-            <span
-              :class="[
-                'inline-flex items-center rounded px-2 py-0.5 text-xs font-medium',
-                promptCacheBoostMeta(row).className
-              ]"
-              :title="promptCacheBoostMeta(row).title"
-            >
-              {{ promptCacheBoostMeta(row).label }}
-            </span>
+            <div class="flex flex-col items-start gap-1">
+              <span
+                :class="[
+                  'inline-flex items-center rounded px-2 py-0.5 text-xs font-medium',
+                  promptCacheBoostMeta(row).className
+                ]"
+                :title="promptCacheBoostMeta(row).title"
+              >
+                {{ promptCacheBoostMeta(row).label }}
+              </span>
+              <span
+                :class="[
+                  'inline-flex items-center rounded px-2 py-0.5 text-xs font-medium',
+                  upstreamStrongIsolationMeta(row).className
+                ]"
+                :title="upstreamStrongIsolationMeta(row).title"
+              >
+                {{ upstreamStrongIsolationMeta(row).label }}
+              </span>
+            </div>
           </template>
           <template #cell-status="{ row }">
             <div class="flex items-center gap-1.5">
@@ -1318,10 +1329,14 @@ const cols = computed(() =>
   )
 )
 
-const promptCacheBoostMeta = (account: Account) => {
+const isOpenAITextPoolAccount = (account: Account) => {
   const isPool = account.credentials?.pool_mode === true
   const isImagePool = isPool && account.credentials?.image_pool_mode === true
-  if (account.platform !== 'openai' || !isPool || isImagePool) {
+  return account.platform === 'openai' && isPool && !isImagePool
+}
+
+const promptCacheBoostMeta = (account: Account) => {
+  if (!isOpenAITextPoolAccount(account)) {
     return {
       label: t('admin.accounts.promptCacheBoostNotApplicable'),
       title: t('admin.accounts.promptCacheBoostNotApplicableHint'),
@@ -1338,6 +1353,28 @@ const promptCacheBoostMeta = (account: Account) => {
   return {
     label: t('admin.accounts.promptCacheBoostDisabled'),
     title: t('admin.accounts.promptCacheBoostDisabledHint'),
+    className: 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
+  }
+}
+
+const upstreamStrongIsolationMeta = (account: Account) => {
+  if (!isOpenAITextPoolAccount(account)) {
+    return {
+      label: t('admin.accounts.upstreamStrongIsolationNotApplicable'),
+      title: t('admin.accounts.upstreamStrongIsolationNotApplicableHint'),
+      className: 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'
+    }
+  }
+  if (account.credentials?.upstream_strong_isolation_enabled === true) {
+    return {
+      label: t('admin.accounts.upstreamStrongIsolationEnabled'),
+      title: t('admin.accounts.upstreamStrongIsolationEnabledHint'),
+      className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+    }
+  }
+  return {
+    label: t('admin.accounts.upstreamStrongIsolationDisabled'),
+    title: t('admin.accounts.upstreamStrongIsolationDisabledHint'),
     className: 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
   }
 }
