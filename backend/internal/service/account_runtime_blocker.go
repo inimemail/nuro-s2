@@ -63,6 +63,20 @@ func (b *CompositeAccountRuntimeBlocker) OpenAIPoolSoftCooldownState(accountID i
 	return OpenAIPoolSoftCooldownState{}
 }
 
+func (b *CompositeAccountRuntimeBlocker) OpenAIPoolSoftCooldownStateForAccount(ctx context.Context, account *Account) OpenAIPoolSoftCooldownState {
+	if b == nil || account == nil {
+		return OpenAIPoolSoftCooldownState{}
+	}
+	for _, blocker := range b.blockers {
+		if reader, ok := blocker.(openAIPoolSoftCooldownAccountStateReader); ok {
+			if state := reader.OpenAIPoolSoftCooldownStateForAccount(ctx, account); state.Cooling {
+				return state
+			}
+		}
+	}
+	return b.OpenAIPoolSoftCooldownState(account.ID)
+}
+
 func (b *CompositeAccountRuntimeBlocker) MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account) {
 	if b == nil {
 		return
@@ -86,6 +100,20 @@ func (b *CompositeAccountRuntimeBlocker) AnthropicPoolSoftCooldownState(accountI
 		}
 	}
 	return AnthropicPoolSoftCooldownState{}
+}
+
+func (b *CompositeAccountRuntimeBlocker) AnthropicPoolSoftCooldownStateForAccount(ctx context.Context, account *Account) AnthropicPoolSoftCooldownState {
+	if b == nil || account == nil {
+		return AnthropicPoolSoftCooldownState{}
+	}
+	for _, blocker := range b.blockers {
+		if reader, ok := blocker.(anthropicPoolSoftCooldownAccountStateReader); ok {
+			if state := reader.AnthropicPoolSoftCooldownStateForAccount(ctx, account); state.Cooling {
+				return state
+			}
+		}
+	}
+	return b.AnthropicPoolSoftCooldownState(account.ID)
 }
 
 func (b *CompositeAccountRuntimeBlocker) MaybeKickAnthropicPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account) {

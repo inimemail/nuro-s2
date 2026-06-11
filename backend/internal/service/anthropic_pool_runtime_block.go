@@ -126,10 +126,22 @@ func (s *GatewayService) isAnthropicPoolAccountSoftCooling(account *Account) boo
 }
 
 func (s *GatewayService) anthropicPoolAccountSoftCooldownUntil(account *Account) (time.Time, bool) {
+	return s.anthropicPoolAccountSoftCooldownUntilWithContext(context.Background(), account)
+}
+
+func (s *GatewayService) anthropicPoolAccountSoftCooldownUntilWithContext(ctx context.Context, account *Account) (time.Time, bool) {
 	if s == nil || !isAnthropicPoolAccount(account) {
 		return time.Time{}, false
 	}
-	return s.anthropicPoolAccountSoftCooldownUntilByID(account.ID)
+	until, ok := s.anthropicPoolAccountSoftCooldownUntilByID(account.ID)
+	if !ok {
+		return time.Time{}, false
+	}
+	until = s.clampAnthropicPoolSoftCooldownUntil(ctx, account, until)
+	if until.IsZero() {
+		return time.Time{}, false
+	}
+	return until, true
 }
 
 func (s *GatewayService) anthropicPoolAccountSoftCooldownUntilByID(accountID int64) (time.Time, bool) {
@@ -158,6 +170,35 @@ func (s *GatewayService) anthropicPoolAccountSoftCooldownContext(accountID int64
 	}
 	cooldownContext, _ := value.(anthropicPoolSoftCooldownContext)
 	return cooldownContext
+}
+
+func (s *GatewayService) clampAnthropicPoolSoftCooldownUntil(ctx context.Context, account *Account, until time.Time) time.Time {
+	if s == nil || account == nil || until.IsZero() {
+		return until
+	}
+	maxCooldown := s.configuredAnthropicPoolSoftCooldownMax(ctx)
+	if maxCooldown <= 0 {
+		return until
+	}
+	maxUntil := time.Now().Add(maxCooldown)
+	for current := until; ; {
+		if current.IsZero() || !current.After(maxUntil) {
+			return current
+		}
+		if s.anthropicPoolSoftCooldownUntil.CompareAndSwap(account.ID, current, maxUntil) {
+			return maxUntil
+		}
+		value, ok := s.anthropicPoolSoftCooldownUntil.Load(account.ID)
+		if !ok {
+			return time.Time{}
+		}
+		next, ok := value.(time.Time)
+		if !ok || next.IsZero() {
+			s.clearAnthropicPoolSoftCooldown(account.ID)
+			return time.Time{}
+		}
+		current = next
+	}
 }
 
 func (s *GatewayService) anthropicPoolAccountSoftCooldownMatches(accountID int64, expectedUntil time.Time) bool {
@@ -190,6 +231,31 @@ func (s *GatewayService) AnthropicPoolSoftCooldownState(accountID int64) Anthrop
 	}
 	_, probing := s.anthropicPoolRecoveryProbeInFlight.Load(accountID)
 	cooldownContext := s.anthropicPoolAccountSoftCooldownContext(accountID)
+	return AnthropicPoolSoftCooldownState{
+		Until:           until,
+		Cooling:         true,
+		Due:             !time.Now().Before(until),
+		ProbeInFlight:   probing,
+		StatusCode:      cooldownContext.StatusCode,
+		Reason:          cooldownContext.Reason,
+		ProbeModel:      cooldownContext.ProbeModel,
+		ProbeKind:       cooldownContext.ProbeKind,
+		CooldownSource:  cooldownContext.CooldownSource,
+		LastProbeStatus: cooldownContext.LastProbeStatus,
+		LastProbeReason: cooldownContext.LastProbeReason,
+	}
+}
+
+func (s *GatewayService) AnthropicPoolSoftCooldownStateForAccount(ctx context.Context, account *Account) AnthropicPoolSoftCooldownState {
+	if s == nil || account == nil {
+		return AnthropicPoolSoftCooldownState{}
+	}
+	until, cooling := s.anthropicPoolAccountSoftCooldownUntilWithContext(ctx, account)
+	if !cooling {
+		return AnthropicPoolSoftCooldownState{}
+	}
+	_, probing := s.anthropicPoolRecoveryProbeInFlight.Load(account.ID)
+	cooldownContext := s.anthropicPoolAccountSoftCooldownContext(account.ID)
 	return AnthropicPoolSoftCooldownState{
 		Until:           until,
 		Cooling:         true,

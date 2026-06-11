@@ -504,6 +504,110 @@ func TestOpenAIPoolSoftCooldown_AccountLevelDisableSkipsCooldown(t *testing.T) {
 	require.False(t, state.Cooling)
 }
 
+func TestOpenAIPoolSoftCooldownStateForAccount_ClampsExistingRegularPoolCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyOpenAIPoolSoftCooldownMaxSeconds: "3",
+		}),
+	}
+	account := &Account{
+		ID:       218,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(time.Minute))
+
+	first := svc.OpenAIPoolSoftCooldownStateForAccount(context.Background(), account)
+	second := svc.OpenAIPoolSoftCooldownStateForAccount(context.Background(), account)
+
+	require.True(t, first.Cooling)
+	require.LessOrEqual(t, time.Until(first.Until), 4*time.Second)
+	require.Greater(t, time.Until(first.Until), 2*time.Second)
+	require.Equal(t, first.Until, second.Until)
+}
+
+func TestOpenAIPoolSoftCooldownStateForAccount_ClampsExistingImagePoolCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyOpenAIPoolSoftCooldownMaxSeconds:      "3",
+			SettingKeyOpenAIImagePoolSoftCooldownMaxSeconds: "4",
+		}),
+	}
+	account := &Account{
+		ID:       219,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":       true,
+			"image_pool_mode": true,
+		},
+	}
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(time.Minute))
+
+	first := svc.OpenAIPoolSoftCooldownStateForAccount(context.Background(), account)
+	second := svc.OpenAIPoolSoftCooldownStateForAccount(context.Background(), account)
+
+	require.True(t, first.Cooling)
+	require.LessOrEqual(t, time.Until(first.Until), 5*time.Second)
+	require.Greater(t, time.Until(first.Until), 3*time.Second)
+	require.Equal(t, first.Until, second.Until)
+}
+
+func TestOpenAIPoolSoftCooldownClamp_DoesNotReviveClearedCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyOpenAIPoolSoftCooldownMaxSeconds: "3",
+		}),
+	}
+	account := &Account{
+		ID:       220,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	oldUntil := time.Now().Add(time.Minute)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, oldUntil)
+	svc.ClearAccountSchedulingBlock(account.ID)
+
+	got := svc.clampOpenAIPoolSoftCooldownUntil(context.Background(), account, oldUntil)
+	_, cooling := svc.openAIPoolAccountSoftCooldownUntil(account)
+
+	require.True(t, got.IsZero())
+	require.False(t, cooling)
+}
+
+func TestOpenAIPoolSoftCooldownClamp_DoesNotOverwriteShorterCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyOpenAIPoolSoftCooldownMaxSeconds: "3",
+		}),
+	}
+	account := &Account{
+		ID:       221,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	oldUntil := time.Now().Add(time.Minute)
+	shorterUntil := time.Now().Add(time.Second)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, oldUntil)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, shorterUntil)
+
+	got := svc.clampOpenAIPoolSoftCooldownUntil(context.Background(), account, oldUntil)
+	stored, ok := svc.openAIPoolAccountSoftCooldownUntilByID(account.ID)
+
+	require.True(t, ok)
+	require.Equal(t, shorterUntil, got)
+	require.Equal(t, shorterUntil, stored)
+}
+
 func TestOpenAIPoolSoftCooldown_ActiveWindowDoesNotExtend(t *testing.T) {
 	svc := &OpenAIGatewayService{
 		rateLimitService: &RateLimitService{},
@@ -715,6 +819,83 @@ func TestAnthropicPoolSoftCooldown_BedrockTransportErrorSoftCooldowns(t *testing
 	require.Equal(t, "request_error", state.CooldownSource)
 	require.LessOrEqual(t, time.Until(state.Until), 5*time.Second)
 	require.Greater(t, time.Until(state.Until), 3*time.Second)
+}
+
+func TestAnthropicPoolSoftCooldownStateForAccount_ClampsExistingCooldown(t *testing.T) {
+	svc := &GatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyAnthropicPoolSoftCooldownMaxSeconds: "4",
+		}),
+	}
+	account := &Account{
+		ID:       308,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	svc.anthropicPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(time.Minute))
+
+	first := svc.AnthropicPoolSoftCooldownStateForAccount(context.Background(), account)
+	second := svc.AnthropicPoolSoftCooldownStateForAccount(context.Background(), account)
+
+	require.True(t, first.Cooling)
+	require.LessOrEqual(t, time.Until(first.Until), 5*time.Second)
+	require.Greater(t, time.Until(first.Until), 3*time.Second)
+	require.Equal(t, first.Until, second.Until)
+}
+
+func TestAnthropicPoolSoftCooldownClamp_DoesNotReviveClearedCooldown(t *testing.T) {
+	svc := &GatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyAnthropicPoolSoftCooldownMaxSeconds: "4",
+		}),
+	}
+	account := &Account{
+		ID:       309,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	oldUntil := time.Now().Add(time.Minute)
+	svc.anthropicPoolSoftCooldownUntil.Store(account.ID, oldUntil)
+	svc.clearAnthropicPoolSoftCooldown(account.ID)
+
+	got := svc.clampAnthropicPoolSoftCooldownUntil(context.Background(), account, oldUntil)
+	_, cooling := svc.anthropicPoolAccountSoftCooldownUntil(account)
+
+	require.True(t, got.IsZero())
+	require.False(t, cooling)
+}
+
+func TestAnthropicPoolSoftCooldownClamp_DoesNotOverwriteShorterCooldown(t *testing.T) {
+	svc := &GatewayService{
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyAnthropicPoolSoftCooldownMaxSeconds: "4",
+		}),
+	}
+	account := &Account{
+		ID:       310,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	oldUntil := time.Now().Add(time.Minute)
+	shorterUntil := time.Now().Add(time.Second)
+	svc.anthropicPoolSoftCooldownUntil.Store(account.ID, oldUntil)
+	svc.anthropicPoolSoftCooldownUntil.Store(account.ID, shorterUntil)
+
+	got := svc.clampAnthropicPoolSoftCooldownUntil(context.Background(), account, oldUntil)
+	stored, ok := svc.anthropicPoolAccountSoftCooldownUntilByID(account.ID)
+
+	require.True(t, ok)
+	require.Equal(t, shorterUntil, got)
+	require.Equal(t, shorterUntil, stored)
 }
 
 func TestAnthropicPoolSoftCooldown_ExpiredWindowCanStartNewWindow(t *testing.T) {

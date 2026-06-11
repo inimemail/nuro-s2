@@ -292,10 +292,22 @@ func (s *OpenAIGatewayService) isOpenAIPoolAccountSoftCooling(account *Account) 
 }
 
 func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownUntil(account *Account) (time.Time, bool) {
+	return s.openAIPoolAccountSoftCooldownUntilWithContext(context.Background(), account)
+}
+
+func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownUntilWithContext(ctx context.Context, account *Account) (time.Time, bool) {
 	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
 		return time.Time{}, false
 	}
-	return s.openAIPoolAccountSoftCooldownUntilByID(account.ID)
+	until, ok := s.openAIPoolAccountSoftCooldownUntilByID(account.ID)
+	if !ok {
+		return time.Time{}, false
+	}
+	until = s.clampOpenAIPoolSoftCooldownUntil(ctx, account, until)
+	if until.IsZero() {
+		return time.Time{}, false
+	}
+	return until, true
 }
 
 func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownUntilByID(accountID int64) (time.Time, bool) {
@@ -325,6 +337,37 @@ func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownContext(accountID in
 	}
 	cooldownContext, _ := value.(openAIPoolSoftCooldownContext)
 	return cooldownContext
+}
+
+func (s *OpenAIGatewayService) clampOpenAIPoolSoftCooldownUntil(ctx context.Context, account *Account, until time.Time) time.Time {
+	if s == nil || account == nil || until.IsZero() {
+		return until
+	}
+	cooldownContext := s.openAIPoolAccountSoftCooldownContext(account.ID)
+	maxCooldown := s.configuredOpenAIPoolSoftCooldownMax(ctx, account, cooldownContext)
+	if maxCooldown <= 0 {
+		return until
+	}
+	maxUntil := time.Now().Add(maxCooldown)
+	for current := until; ; {
+		if current.IsZero() || !current.After(maxUntil) {
+			return current
+		}
+		if s.openaiPoolSoftCooldownUntil.CompareAndSwap(account.ID, current, maxUntil) {
+			return maxUntil
+		}
+		value, ok := s.openaiPoolSoftCooldownUntil.Load(account.ID)
+		if !ok {
+			return time.Time{}
+		}
+		next, ok := value.(time.Time)
+		if !ok || next.IsZero() {
+			s.openaiPoolSoftCooldownUntil.Delete(account.ID)
+			s.openaiPoolSoftCooldownContext.Delete(account.ID)
+			return time.Time{}
+		}
+		current = next
+	}
 }
 
 func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownMatches(accountID int64, expectedUntil time.Time) bool {
@@ -364,6 +407,31 @@ func (s *OpenAIGatewayService) OpenAIPoolSoftCooldownState(accountID int64) Open
 	}
 	_, probing := s.openaiPoolRecoveryProbeInFlight.Load(accountID)
 	cooldownContext := s.openAIPoolAccountSoftCooldownContext(accountID)
+	return OpenAIPoolSoftCooldownState{
+		Until:           until,
+		Cooling:         true,
+		Due:             !time.Now().Before(until),
+		ProbeInFlight:   probing,
+		StatusCode:      cooldownContext.StatusCode,
+		Reason:          cooldownContext.Reason,
+		ProbeModel:      cooldownContext.ProbeModel,
+		ProbeKind:       cooldownContext.ProbeKind,
+		CooldownSource:  cooldownContext.CooldownSource,
+		LastProbeStatus: cooldownContext.LastProbeStatus,
+		LastProbeReason: cooldownContext.LastProbeReason,
+	}
+}
+
+func (s *OpenAIGatewayService) OpenAIPoolSoftCooldownStateForAccount(ctx context.Context, account *Account) OpenAIPoolSoftCooldownState {
+	if s == nil || account == nil {
+		return OpenAIPoolSoftCooldownState{}
+	}
+	until, cooling := s.openAIPoolAccountSoftCooldownUntilWithContext(ctx, account)
+	if !cooling {
+		return OpenAIPoolSoftCooldownState{}
+	}
+	_, probing := s.openaiPoolRecoveryProbeInFlight.Load(account.ID)
+	cooldownContext := s.openAIPoolAccountSoftCooldownContext(account.ID)
 	return OpenAIPoolSoftCooldownState{
 		Until:           until,
 		Cooling:         true,

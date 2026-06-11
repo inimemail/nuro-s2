@@ -2605,12 +2605,20 @@ type openAIPoolSoftCooldownStateReader interface {
 	OpenAIPoolSoftCooldownState(accountID int64) OpenAIPoolSoftCooldownState
 }
 
+type openAIPoolSoftCooldownAccountStateReader interface {
+	OpenAIPoolSoftCooldownStateForAccount(ctx context.Context, account *Account) OpenAIPoolSoftCooldownState
+}
+
 type openAIPoolRecoveryProbeAdminKicker interface {
 	MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account)
 }
 
 type anthropicPoolSoftCooldownStateReader interface {
 	AnthropicPoolSoftCooldownState(accountID int64) AnthropicPoolSoftCooldownState
+}
+
+type anthropicPoolSoftCooldownAccountStateReader interface {
+	AnthropicPoolSoftCooldownStateForAccount(ctx context.Context, account *Account) AnthropicPoolSoftCooldownState
 }
 
 type anthropicPoolRecoveryProbeAdminKicker interface {
@@ -2623,11 +2631,17 @@ func (s *adminServiceImpl) attachAccountRuntimeState(ctx context.Context, accoun
 	}
 	if reader, ok := s.runtimeBlocker.(openAIPoolSoftCooldownStateReader); ok {
 		state := reader.OpenAIPoolSoftCooldownState(account.ID)
+		if accountReader, ok := s.runtimeBlocker.(openAIPoolSoftCooldownAccountStateReader); ok {
+			state = accountReader.OpenAIPoolSoftCooldownStateForAccount(ctx, account)
+		}
 		if state.Cooling {
 			if state.Due && !state.ProbeInFlight {
 				if kicker, ok := s.runtimeBlocker.(openAIPoolRecoveryProbeAdminKicker); ok {
 					kicker.MaybeKickOpenAIPoolRecoveryProbeFromAdminList(ctx, account)
 					state = reader.OpenAIPoolSoftCooldownState(account.ID)
+					if accountReader, ok := s.runtimeBlocker.(openAIPoolSoftCooldownAccountStateReader); ok {
+						state = accountReader.OpenAIPoolSoftCooldownStateForAccount(ctx, account)
+					}
 				}
 			}
 			until := state.Until
@@ -2645,11 +2659,17 @@ func (s *adminServiceImpl) attachAccountRuntimeState(ctx context.Context, accoun
 	}
 	if reader, ok := s.runtimeBlocker.(anthropicPoolSoftCooldownStateReader); ok {
 		state := reader.AnthropicPoolSoftCooldownState(account.ID)
+		if accountReader, ok := s.runtimeBlocker.(anthropicPoolSoftCooldownAccountStateReader); ok {
+			state = accountReader.AnthropicPoolSoftCooldownStateForAccount(ctx, account)
+		}
 		if state.Cooling {
 			if state.Due && !state.ProbeInFlight {
 				if kicker, ok := s.runtimeBlocker.(anthropicPoolRecoveryProbeAdminKicker); ok {
 					kicker.MaybeKickAnthropicPoolRecoveryProbeFromAdminList(ctx, account)
 					state = reader.AnthropicPoolSoftCooldownState(account.ID)
+					if accountReader, ok := s.runtimeBlocker.(anthropicPoolSoftCooldownAccountStateReader); ok {
+						state = accountReader.AnthropicPoolSoftCooldownStateForAccount(ctx, account)
+					}
 				}
 			}
 			until := state.Until
