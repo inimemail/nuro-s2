@@ -186,6 +186,90 @@ func TestOpenAIGatewayService_Forward_HTTPIngressStaysHTTPWhenWSEnabled(t *testi
 	require.Equal(t, "client_protocol_http", reason)
 }
 
+func TestOpenAIGatewayService_Forward_StrongIsolationForcesHTTPWhenWSEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	wsFallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer wsFallbackServer.Close()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", "custom-client/1.0")
+	c.Request.Header.Set("session_id", "client-session")
+	c.Request.Header.Set("conversation_id", "client-conversation")
+	c.Request.Header.Set("originator", "codex_cli_rs")
+	c.Request.Header.Set(openAIWSTurnStateHeader, "turn-state")
+	c.Request.Header.Set(openAIWSTurnMetadataHeader, "turn-metadata")
+
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_strong_http"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"resp_strong_http","usage":{"input_tokens":1,"output_tokens":2,"input_tokens_details":{"cached_tokens":1}}}`,
+			)),
+		},
+	}
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.OAuthEnabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     upstream,
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+	}
+
+	account := &Account{
+		ID:          102,
+		Name:        "openai-apikey-strong-isolation",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":                           "sk-test",
+			"base_url":                          wsFallbackServer.URL,
+			"pool_mode":                         true,
+			"prompt_cache_boost_enabled":        true,
+			"upstream_strong_isolation_enabled": true,
+		},
+		Extra: map[string]any{
+			"responses_websockets_v2_enabled": true,
+		},
+	}
+
+	body := []byte(`{"model":"gpt-5.1","stream":false,"store":true,"previous_response_id":"resp_leaky","session_id":"sess_leaky","conversation_id":"conv_leaky","client_metadata":{"x-codex-turn-state":"state","safe":"drop"},"input":[{"type":"input_text","text":"hello"}]}`)
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.OpenAIWSMode, "强隔离账号即使 WSv2 可用也应走 HTTP 上游")
+	require.NotNil(t, upstream.lastReq, "强隔离账号应命中 HTTP 上游")
+	require.True(t, strings.HasPrefix(gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String(), "nuro-pcache-"))
+	require.Equal(t, "24h", gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Bool())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "previous_response_id").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "session_id").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "conversation_id").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "client_metadata").Exists())
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
+	require.Empty(t, upstream.lastReq.Header.Get("conversation_id"))
+	require.Empty(t, upstream.lastReq.Header.Get("originator"))
+	require.Empty(t, upstream.lastReq.Header.Get(openAIWSTurnStateHeader))
+	require.Empty(t, upstream.lastReq.Header.Get(openAIWSTurnMetadataHeader))
+
+	decision, _ := c.Get("openai_ws_transport_decision")
+	reason, _ := c.Get("openai_ws_transport_reason")
+	require.Equal(t, string(OpenAIUpstreamTransportHTTPSSE), decision)
+	require.Equal(t, "upstream_strong_isolation", reason)
+}
+
 func TestOpenAIGatewayService_Forward_HTTPIngressRetriesInvalidEncryptedContentOnce(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	wsFallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

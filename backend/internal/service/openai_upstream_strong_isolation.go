@@ -18,6 +18,7 @@ var openAIUpstreamStrongIsolationHeaders = []string{
 }
 
 var openAIUpstreamStrongIsolationBodyFields = []string{
+	"client_metadata",
 	"conversation_id",
 	"session_id",
 	"previous_response_id",

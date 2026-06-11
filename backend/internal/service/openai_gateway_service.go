@@ -2679,6 +2679,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	clientTransport := GetOpenAIClientTransport(c)
 	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, clientTransport)
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() && wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
+		wsDecision = openAIWSHTTPDecision("upstream_strong_isolation")
+	}
 	if c != nil {
 		c.Set("openai_ws_transport_decision", string(wsDecision.Transport))
 		c.Set("openai_ws_transport_reason", wsDecision.Reason)

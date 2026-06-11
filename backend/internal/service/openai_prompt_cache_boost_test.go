@@ -187,11 +187,7 @@ func TestOpenAIUpstreamStrongIsolationWSKeepsPromptCacheKeyButDropsContinuation(
 	require.NotContains(t, payload, "conversation_id")
 	require.NotContains(t, payload, "session_id")
 	require.Equal(t, "response.create", payload["type"])
-	metadata, ok := payload["client_metadata"].(map[string]any)
-	require.True(t, ok)
-	require.NotContains(t, metadata, openAIWSTurnMetadataHeader)
-	require.NotContains(t, metadata, openAIWSTurnStateHeader)
-	require.Equal(t, "keep", metadata["safe"])
+	require.NotContains(t, payload, "client_metadata")
 }
 
 func TestOpenAIUpstreamStrongIsolationWSBodyKeepsPromptCacheKeyButDropsContinuation(t *testing.T) {
@@ -205,9 +201,7 @@ func TestOpenAIUpstreamStrongIsolationWSBodyKeepsPromptCacheKeyButDropsContinuat
 	require.False(t, gjson.GetBytes(isolated, "previous_response_id").Exists())
 	require.False(t, gjson.GetBytes(isolated, "conversation_id").Exists())
 	require.False(t, gjson.GetBytes(isolated, "session_id").Exists())
-	require.False(t, gjson.GetBytes(isolated, "client_metadata.x-codex-turn-metadata").Exists())
-	require.False(t, gjson.GetBytes(isolated, "client_metadata.x-codex-turn-state").Exists())
-	require.Equal(t, "keep", gjson.GetBytes(isolated, "client_metadata.safe").String())
+	require.False(t, gjson.GetBytes(isolated, "client_metadata").Exists())
 }
 
 func TestOpenAIPromptCacheBoost_StaticPrefixIgnoresFirstUserContent(t *testing.T) {

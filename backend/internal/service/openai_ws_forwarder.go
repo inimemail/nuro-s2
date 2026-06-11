@@ -2498,6 +2498,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				nil,
 			)
 		}
+		if strongIsolationEnabled && ingressMode == OpenAIWSIngressModePassthrough {
+			logOpenAIWSModeInfo(
+				"ingress_ws_strong_isolation_override_mode account_id=%d original_mode=%s effective_mode=%s",
+				account.ID,
+				OpenAIWSIngressModePassthrough,
+				OpenAIWSIngressModeCtxPool,
+			)
+			ingressMode = OpenAIWSIngressModeCtxPool
+		}
 		switch ingressMode {
 		case OpenAIWSIngressModePassthrough:
 			if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
@@ -2801,11 +2810,17 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 	refreshIngressRouteState(firstPayload)
 
-	if s.shouldBridgeOpenAIWSHTTP(firstPayload.payloadBytes, firstPayload.previousResponseID) {
+	forceHTTPBridgeForStrongIsolation := strongIsolationEnabled
+	if forceHTTPBridgeForStrongIsolation || s.shouldBridgeOpenAIWSHTTP(firstPayload.payloadBytes, firstPayload.previousResponseID) {
+		bridgeReason := "threshold"
+		if forceHTTPBridgeForStrongIsolation {
+			bridgeReason = "strong_isolation"
+		}
 		logOpenAIWSModeInfo(
-			"ingress_ws_http_bridge_start account_id=%d account_type=%s payload_bytes=%d threshold_bytes=%d has_session_hash=%v store_disabled=%v",
+			"ingress_ws_http_bridge_start account_id=%d account_type=%s reason=%s payload_bytes=%d threshold_bytes=%d has_session_hash=%v store_disabled=%v",
 			account.ID,
 			account.Type,
+			bridgeReason,
 			firstPayload.payloadBytes,
 			s.openAIWSHTTPBridgeThresholdBytes(),
 			sessionHash != "",

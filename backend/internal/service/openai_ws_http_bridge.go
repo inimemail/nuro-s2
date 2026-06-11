@@ -19,7 +19,6 @@ import (
 const (
 	openAIWSClientReadLimitBytesDefault     int64 = 64 * 1024 * 1024
 	openAIWSHTTPBridgeThresholdBytesDefault int64 = 15 * 1024 * 1024
-	openAIWSHTTPBridgeErrorBodyLimitBytes         = 64 * 1024
 )
 
 func ResolveOpenAIWSClientReadLimitBytes(cfg *config.Config) int64 {
@@ -62,6 +61,7 @@ func prepareOpenAIWSHTTPBridgeBody(payload []byte) ([]byte, error) {
 	delete(body, "type")
 	delete(body, "generate")
 	delete(body, "previous_response_id")
+	delete(body, "client_metadata")
 	body["stream"] = true
 	return json.Marshal(body)
 }
@@ -192,18 +192,78 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	turnStart := time.Now()
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
+		if failoverErr := s.newOpenAIPoolRequestFailoverError(c, account, upstreamReq, err, true); failoverErr != nil {
+			return nil, failoverErr
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		if safeErr == "" {
+			safeErr = "upstream request failed"
+		}
+		setOpsUpstreamError(c, http.StatusBadGateway, safeErr, "")
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: http.StatusBadGateway,
+			Kind:               "request_error",
+			Message:            safeErr,
+		})
 		_ = writeClientMessage(buildOpenAIWSHTTPBridgeErrorEvent(http.StatusBadGateway, "Upstream request failed"))
 		return nil, fmt.Errorf("upstream http bridge request failed: %s", safeErr)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, openAIWSHTTPBridgeErrorBodyLimitBytes))
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
 		if upstreamMsg == "" {
 			upstreamMsg = http.StatusText(resp.StatusCode)
 		}
+		upstreamDetail := ""
+		if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+			maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+			if maxBytes <= 0 {
+				maxBytes = 2048
+			}
+			upstreamDetail = truncateString(string(respBody), maxBytes)
+		}
+		setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+		_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+		if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:             account.Platform,
+				AccountID:            account.ID,
+				AccountName:          account.Name,
+				UpstreamStatusCode:   resp.StatusCode,
+				UpstreamRequestID:    resp.Header.Get("x-request-id"),
+				Passthrough:          true,
+				Kind:                 "failover",
+				Message:              upstreamMsg,
+				Detail:               upstreamDetail,
+				UpstreamResponseBody: upstreamDetail,
+			})
+			decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, respBody)
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           respBody,
+				ResponseHeaders:        resp.Header.Clone(),
+				Message:                upstreamMsg,
+				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
+			}
+		}
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:             account.Platform,
+			AccountID:            account.ID,
+			AccountName:          account.Name,
+			UpstreamStatusCode:   resp.StatusCode,
+			UpstreamRequestID:    resp.Header.Get("x-request-id"),
+			Passthrough:          true,
+			Kind:                 "http_error",
+			Message:              upstreamMsg,
+			Detail:               upstreamDetail,
+			UpstreamResponseBody: upstreamDetail,
+		})
 		_ = writeClientMessage(buildOpenAIWSHTTPBridgeErrorEvent(resp.StatusCode, upstreamMsg))
 		return nil, fmt.Errorf("upstream http bridge error: status=%d message=%s", resp.StatusCode, upstreamMsg)
 	}
