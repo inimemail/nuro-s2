@@ -101,6 +101,8 @@ const (
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
 const openAIOAuthChatGPTPreambleFlushExtraKey = "openai_oauth_chatgpt_preamble_flush_enabled"
 const openAIAPIKeyPreambleFlushExtraKey = "openai_apikey_preamble_flush_enabled"
+const openAIOAuthChatGPTSSECommentPreflushExtraKey = "openai_oauth_chatgpt_sse_comment_preflush_enabled"
+const openAIAPIKeySSECommentPreflushExtraKey = "openai_apikey_sse_comment_preflush_enabled"
 
 type TempUnschedulableRule struct {
 	ErrorCode       int      `json:"error_code"`
@@ -1588,6 +1590,28 @@ func (a *Account) IsOpenAIAPIKeyPreambleFlushEnabled() bool {
 
 func (a *Account) IsOpenAIStreamPreambleFlushEnabled() bool {
 	return a.IsOpenAIOAuthChatGPTPreambleFlushEnabled() || a.IsOpenAIAPIKeyPreambleFlushEnabled()
+}
+
+// IsOpenAIOAuthChatGPTSSECommentPreflushEnabled 返回 OAuth/ChatGPT 账号是否在流开始时预冲 SSE comment。
+// 字段：accounts.extra.openai_oauth_chatgpt_sse_comment_preflush_enabled。
+func (a *Account) IsOpenAIOAuthChatGPTSSECommentPreflushEnabled() bool {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+		return false
+	}
+	return a.getExtraBool(openAIOAuthChatGPTSSECommentPreflushExtraKey)
+}
+
+// IsOpenAIAPIKeySSECommentPreflushEnabled 返回 APIKey 账号是否在流开始时预冲 SSE comment。
+// 字段：accounts.extra.openai_apikey_sse_comment_preflush_enabled。
+func (a *Account) IsOpenAIAPIKeySSECommentPreflushEnabled() bool {
+	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
+		return false
+	}
+	return a.getExtraBool(openAIAPIKeySSECommentPreflushExtraKey)
+}
+
+func (a *Account) IsOpenAISSECommentPreflushEnabled() bool {
+	return a.IsOpenAIOAuthChatGPTSSECommentPreflushEnabled() || a.IsOpenAIAPIKeySSECommentPreflushEnabled()
 }
 
 // IsOpenAIOAuthPassthroughEnabled 兼容旧接口，等价于 OAuth 账号的 IsOpenAIPassthroughEnabled。

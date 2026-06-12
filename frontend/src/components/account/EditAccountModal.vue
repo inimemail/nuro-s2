@@ -1582,6 +1582,29 @@
             />
           </button>
         </div>
+        <div v-if="account?.type === 'oauth'" class="flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.oauthChatGPTSSECommentPreflush') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.oauthChatGPTSSECommentPreflushDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="openaiOAuthChatGPTSSECommentPreflushEnabled = !openaiOAuthChatGPTSSECommentPreflushEnabled"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiOAuthChatGPTSSECommentPreflushEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiOAuthChatGPTSSECommentPreflushEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
         <div v-if="account?.type === 'apikey'" class="flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.openai.apiKeyPreambleFlush') }}</label>
@@ -1601,6 +1624,29 @@
               :class="[
                 'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
                 openaiAPIKeyPreambleFlushEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+        <div v-if="account?.type === 'apikey'" class="flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.apiKeySSECommentPreflush') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.apiKeySSECommentPreflushDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="openaiAPIKeySSECommentPreflushEnabled = !openaiAPIKeySSECommentPreflushEnabled"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiAPIKeySSECommentPreflushEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiAPIKeySSECommentPreflushEnabled ? 'translate-x-5' : 'translate-x-0'
               ]"
             />
           </button>
@@ -2794,6 +2840,8 @@ const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiOAuthChatGPTPreambleFlushEnabled = ref(false)
 const openaiAPIKeyPreambleFlushEnabled = ref(false)
+const openaiOAuthChatGPTSSECommentPreflushEnabled = ref(false)
+const openaiAPIKeySSECommentPreflushEnabled = ref(false)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 type CodexImageGenerationBridgeMode = 'inherit' | 'enabled' | 'disabled'
@@ -3174,6 +3222,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiOAuthChatGPTPreambleFlushEnabled.value = false
   openaiAPIKeyPreambleFlushEnabled.value = false
+  openaiOAuthChatGPTSSECommentPreflushEnabled.value = false
+  openaiAPIKeySSECommentPreflushEnabled.value = false
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   codexImageGenerationBridgeMode.value = 'inherit'
@@ -3186,6 +3236,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     if (newAccount.type === 'apikey') {
       openAIResponsesMode.value = normalizeOpenAIResponsesMode(extra?.openai_responses_mode)
       openaiAPIKeyPreambleFlushEnabled.value = extra?.openai_apikey_preamble_flush_enabled === true
+      openaiAPIKeySSECommentPreflushEnabled.value = extra?.openai_apikey_sse_comment_preflush_enabled === true
       openAIEndpointCapabilities.value = readOpenAIEndpointCapabilities(
         newAccount.credentials as Record<string, unknown> | undefined
       )
@@ -3215,6 +3266,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     })
     if (newAccount.type === 'oauth') {
       openaiOAuthChatGPTPreambleFlushEnabled.value = extra?.openai_oauth_chatgpt_preamble_flush_enabled === true
+      openaiOAuthChatGPTSSECommentPreflushEnabled.value = extra?.openai_oauth_chatgpt_sse_comment_preflush_enabled === true
       codexCLIOnlyEnabled.value = extra?.codex_cli_only === true
       codexCLIOnlyAllowClaudeCodeEnabled.value =
         Array.isArray(extra?.codex_cli_only_allowed_clients) &&
@@ -4360,7 +4412,13 @@ const handleSubmit = async () => {
         } else {
           delete newExtra.openai_oauth_chatgpt_preamble_flush_enabled
         }
+        if (openaiOAuthChatGPTSSECommentPreflushEnabled.value) {
+          newExtra.openai_oauth_chatgpt_sse_comment_preflush_enabled = true
+        } else {
+          delete newExtra.openai_oauth_chatgpt_sse_comment_preflush_enabled
+        }
         delete newExtra.openai_apikey_preamble_flush_enabled
+        delete newExtra.openai_apikey_sse_comment_preflush_enabled
       } else if (props.account.type === 'apikey') {
         newExtra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
         newExtra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
@@ -4369,7 +4427,13 @@ const handleSubmit = async () => {
         } else {
           delete newExtra.openai_apikey_preamble_flush_enabled
         }
+        if (openaiAPIKeySSECommentPreflushEnabled.value) {
+          newExtra.openai_apikey_sse_comment_preflush_enabled = true
+        } else {
+          delete newExtra.openai_apikey_sse_comment_preflush_enabled
+        }
         delete newExtra.openai_oauth_chatgpt_preamble_flush_enabled
+        delete newExtra.openai_oauth_chatgpt_sse_comment_preflush_enabled
       }
       delete newExtra.responses_websockets_v2_enabled
       delete newExtra.openai_ws_enabled

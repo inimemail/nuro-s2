@@ -3407,9 +3407,15 @@ export default {
         oauthChatGPTPreambleFlush: 'OAuth/ChatGPT early first packet passthrough',
         oauthChatGPTPreambleFlushDesc:
           'Forwards response.created / response.in_progress to downstream clients earlier to lower dashboard first-packet time; early upstream failures may no longer switch accounts transparently.',
+        oauthChatGPTSSECommentPreflush: 'OAuth/ChatGPT first packet preflush (SSE comment)',
+        oauthChatGPTSSECommentPreflushDesc:
+          'Sends the shortest SSE comment when the stream starts so downstream clients receive a response body earlier; it does not fake tokens, but early upstream failures may no longer switch accounts transparently.',
         apiKeyPreambleFlush: 'APIKey early first packet passthrough',
         apiKeyPreambleFlushDesc:
           'Useful when an APIKey upstream or relay has slow first packets. Forwards response.created / response.in_progress earlier; early upstream failures may no longer switch accounts transparently.',
+        apiKeySSECommentPreflush: 'APIKey first packet preflush (SSE comment)',
+        apiKeySSECommentPreflushDesc:
+          'Sends the shortest SSE comment when the stream starts so downstream clients receive a response body earlier; it does not fake tokens, but early upstream failures may no longer switch accounts transparently.',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
           'Only applies to OpenAI OAuth. This account can use OpenAI WebSocket Mode only when enabled.',

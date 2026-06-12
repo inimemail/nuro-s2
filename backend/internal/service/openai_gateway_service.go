@@ -4229,6 +4229,16 @@ func (s *OpenAIGatewayService) openAIStreamPreambleFlushEnabled(account *Account
 	return true
 }
 
+func (s *OpenAIGatewayService) openAIStreamSSECommentPreflushEnabled(account *Account, requestedModel string) bool {
+	if account == nil || !account.IsOpenAISSECommentPreflushEnabled() {
+		return false
+	}
+	if isOpenAIImageGenerationModel(requestedModel) {
+		return false
+	}
+	return true
+}
+
 func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool {
 	if isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
 		return true
@@ -4341,8 +4351,17 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
+	accountSSECommentPreflush := s.openAIStreamSSECommentPreflushEnabled(account, originalModel)
+	accountSSECommentPreflushed := false
+	if accountSSECommentPreflush {
+		if _, err := w.Write([]byte(":\n\n")); err == nil {
+			flusher.Flush()
+			accountSSECommentPreflushed = true
+			SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
+		}
+	}
 	passthroughLowLatencyPolicy := s.openAIStreamLowLatencyPolicy(account, originalModel)
-	if passthroughLowLatencyPolicy.Enabled && passthroughLowLatencyPolicy.Barrier <= 0 && passthroughLowLatencyPolicy.AllowBootstrapComment {
+	if !accountSSECommentPreflushed && passthroughLowLatencyPolicy.Enabled && passthroughLowLatencyPolicy.Barrier <= 0 && passthroughLowLatencyPolicy.AllowBootstrapComment {
 		if _, err := w.Write([]byte(":\n\n")); err == nil {
 			flusher.Flush()
 			SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
@@ -4358,7 +4377,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	sawTerminalEvent := false
 	sawFailedEvent := false
 	failedMessage := ""
-	clientOutputStarted := false
+	clientOutputStarted := accountSSECommentPreflushed
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
 	pendingLines := make([]string, 0, 8)
@@ -5237,8 +5256,17 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
+	accountSSECommentPreflush := s.openAIStreamSSECommentPreflushEnabled(account, originalModel)
+	accountSSECommentPreflushed := false
+	if accountSSECommentPreflush {
+		if _, err := w.Write([]byte(":\n\n")); err == nil {
+			flusher.Flush()
+			accountSSECommentPreflushed = true
+			SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
+		}
+	}
 	lowLatencyPolicy := s.openAIStreamLowLatencyPolicy(account, originalModel)
-	if lowLatencyPolicy.Enabled && lowLatencyPolicy.Barrier <= 0 && lowLatencyPolicy.AllowBootstrapComment {
+	if !accountSSECommentPreflushed && lowLatencyPolicy.Enabled && lowLatencyPolicy.Barrier <= 0 && lowLatencyPolicy.AllowBootstrapComment {
 		if _, err := w.Write([]byte(":\n\n")); err == nil {
 			flusher.Flush()
 			SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
@@ -5308,7 +5336,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	sawTerminalEvent := false
 	sawFailedEvent := false
 	failedMessage := ""
-	clientOutputStarted := false
+	clientOutputStarted := accountSSECommentPreflushed
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
 	var streamFailoverErr error
