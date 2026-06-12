@@ -4212,6 +4212,23 @@ func openAIStreamDataStartsClientOutput(data, eventType string) bool {
 	return !openAIStreamEventIsPreamble(eventType)
 }
 
+func openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType string, flushPreamble bool) bool {
+	if openAIStreamDataStartsClientOutput(data, eventType) {
+		return true
+	}
+	return flushPreamble && strings.TrimSpace(data) != "" && openAIStreamEventIsPreamble(eventType)
+}
+
+func (s *OpenAIGatewayService) openAIStreamPreambleFlushEnabled(account *Account, requestedModel string) bool {
+	if account == nil || !account.IsOpenAIOAuthChatGPTPreambleFlushEnabled() {
+		return false
+	}
+	if isOpenAIImageGenerationModel(requestedModel) {
+		return false
+	}
+	return true
+}
+
 func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool {
 	if isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
 		return true
@@ -4343,6 +4360,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	failedMessage := ""
 	clientOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
+	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
 	pendingLines := make([]string, 0, 8)
 	pendingLinesAtEventBoundary := func() bool {
 		return len(pendingLines) == 0 || pendingLines[len(pendingLines)-1] == ""
@@ -4426,7 +4444,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
 			imageCounter.AddSSEData(dataBytes)
-			lineStartsClientOutput = forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
+			lineStartsClientOutput = forceFlushFailedEvent || openAIStreamDataStartsClientOutputWithPreambleFlush(trimmedData, eventType, flushPreamble)
 			if firstTokenMs == nil && lineStartsClientOutput && trimmedData != "[DONE]" {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
@@ -5292,6 +5310,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	failedMessage := ""
 	clientOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
+	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
 	var streamFailoverErr error
 	atSSEEventBoundary := true
 	sendErrorEvent := func(reason string) {
@@ -5434,7 +5453,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				line = "data: " + data
 				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
 			}
-			startsClientOutput := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
+			startsClientOutput := forceFlushFailedEvent || openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType, flushPreamble)
 
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected {
