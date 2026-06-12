@@ -178,7 +178,6 @@ func (s *openaiOAuthService) refreshTokenWithClientID(ctx context.Context, refre
 	formData.Set("grant_type", "refresh_token")
 	formData.Set("refresh_token", refreshToken)
 	formData.Set("client_id", clientID)
-	formData.Set("scope", openai.RefreshScopes)
 
 	var tokenResp openai.TokenResponse
 

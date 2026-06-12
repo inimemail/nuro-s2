@@ -61,6 +61,7 @@ const (
 	codexCLIVersion                    = "0.125.0"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
+	openAIOAuth401RefreshRetryKey         = "openai_oauth_401_refresh_retry"
 )
 
 // OpenAI allowed headers whitelist (for non-passthrough).
@@ -2609,6 +2610,62 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 	}
 }
 
+func (s *OpenAIGatewayService) tryRecoverOpenAIOAuth401(ctx context.Context, c *gin.Context, account *Account, statusCode int, body []byte) (*Account, string, bool) {
+	if s == nil || s.openAITokenProvider == nil || account == nil || c == nil {
+		return nil, "", false
+	}
+	if statusCode != http.StatusUnauthorized || account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
+		return nil, "", false
+	}
+	if retried, _ := c.Get(openAIOAuth401RefreshRetryKey); retried == true {
+		return nil, "", false
+	}
+	upstreamCode := strings.ToLower(strings.TrimSpace(extractUpstreamErrorCode(body)))
+	if upstreamCode == "token_invalidated" || upstreamCode == "token_revoked" {
+		return nil, "", false
+	}
+
+	c.Set(openAIOAuth401RefreshRetryKey, true)
+	refreshedAccount, token, err := s.openAITokenProvider.ForceRefresh(ctx, account)
+	if err != nil {
+		slog.Warn("openai_oauth_401_force_refresh_failed",
+			"account_id", account.ID,
+			"error", err,
+			"upstream_code", upstreamCode,
+		)
+		if isNonRetryableRefreshError(err) {
+			s.markOpenAIOAuthReauthorizationRequired(ctx, account, err)
+		}
+		return nil, "", false
+	}
+	if refreshedAccount == nil {
+		refreshedAccount = account
+	}
+	slog.Info("openai_oauth_401_force_refresh_succeeded",
+		"account_id", account.ID,
+		"upstream_code", upstreamCode,
+	)
+	return refreshedAccount, token, true
+}
+
+func (s *OpenAIGatewayService) markOpenAIOAuthReauthorizationRequired(ctx context.Context, account *Account, err error) {
+	if s == nil || s.accountRepo == nil || account == nil {
+		return
+	}
+	if s.rateLimitService != nil {
+		s.rateLimitService.notifyAccountSchedulingBlocked(account, time.Time{}, "openai_oauth_refresh_non_retryable")
+	}
+	msg := "OpenAI OAuth refresh failed permanently; reauthorization required"
+	if err != nil {
+		msg += ": " + sanitizeUpstreamErrorMessage(err.Error())
+	}
+	if setErr := s.accountRepo.SetError(ctx, account.ID, msg); setErr != nil {
+		slog.Warn("openai_oauth_refresh_set_error_failed", "account_id", account.ID, "error", setErr)
+		return
+	}
+	slog.Warn("openai_oauth_reauthorization_required", "account_id", account.ID, "error", msg)
+}
+
 func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 	switch statusCode {
 	case 401, 402, 403, 429, 529:
@@ -3425,6 +3482,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)
+			if refreshedAccount, refreshedToken, ok := s.tryRecoverOpenAIOAuth401(ctx, c, account, resp.StatusCode, respBody); ok {
+				account = refreshedAccount
+				token = refreshedToken
+				continue
+			}
 			if !httpPromptCacheBoostRetryTried && (promptCacheBoostKeyInjected || promptCacheBoostRetentionInjected) && isOpenAIPromptCacheBoostUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
 				keyUnsupported, retentionUnsupported := openAIPromptCacheBoostUnsupportedFields(resp.StatusCode, upstreamMsg, respBody)
 				stripKey := promptCacheBoostKeyInjected && keyUnsupported

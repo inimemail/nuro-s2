@@ -101,6 +101,24 @@ func TestClaudeTokenRefresher_NeedsRefresh(t *testing.T) {
 	}
 }
 
+func TestOpenAITokenRefresher_NeedsRefresh_ClampsBackgroundWindow(t *testing.T) {
+	refresher := &OpenAITokenRefresher{}
+
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"refresh_token": "rt",
+			"expires_at":    time.Now().Add(10 * time.Minute).Unix(),
+		},
+	}
+
+	require.False(t, refresher.NeedsRefresh(account, 30*time.Minute), "OpenAI should not use the generic 30m background refresh window")
+
+	account.Credentials["expires_at"] = time.Now().Add(2 * time.Minute).Unix()
+	require.True(t, refresher.NeedsRefresh(account, 30*time.Minute), "OpenAI should refresh inside its 3m background window")
+}
+
 func TestClaudeTokenRefresher_NeedsRefresh_WithinWindow(t *testing.T) {
 	refresher := &ClaudeTokenRefresher{}
 	refreshWindow := 30 * time.Minute

@@ -1339,6 +1339,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if refreshedAccount, _, ok := s.tryRecoverOpenAIOAuth401(upstreamCtx, c, account, resp.StatusCode, respBody); ok {
+			return s.forwardOpenAIImagesOAuth(ctx, c, refreshedAccount, parsed, channelMappedModel)
+		}
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {

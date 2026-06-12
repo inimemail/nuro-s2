@@ -33,8 +33,6 @@ const (
 	// Scopes
 	// Keep the Codex browser OAuth request aligned with the official Codex CLI.
 	DefaultScopes = "openid profile email offline_access api.connectors.read api.connectors.invoke"
-	// RefreshScopes - scope for token refresh (without offline_access, aligned with CRS project)
-	RefreshScopes = "openid profile email"
 	// DefaultOriginator identifies the OAuth request as the official Codex CLI family.
 	DefaultOriginator = "codex_cli_rs"
 
@@ -298,7 +296,6 @@ type RefreshTokenRequest struct {
 	GrantType    string `json:"grant_type"`
 	RefreshToken string `json:"refresh_token"`
 	ClientID     string `json:"client_id"`
-	Scope        string `json:"scope"`
 }
 
 // IDTokenClaims represents the claims from OpenAI ID Token
@@ -354,7 +351,6 @@ func BuildRefreshTokenRequest(refreshToken string) *RefreshTokenRequest {
 		GrantType:    "refresh_token",
 		RefreshToken: refreshToken,
 		ClientID:     ClientID,
-		Scope:        RefreshScopes,
 	}
 }
 
@@ -375,7 +371,6 @@ func (r *RefreshTokenRequest) ToFormData() string {
 	params.Set("grant_type", r.GrantType)
 	params.Set("client_id", r.ClientID)
 	params.Set("refresh_token", r.RefreshToken)
-	params.Set("scope", r.Scope)
 	return params.Encode()
 }
 

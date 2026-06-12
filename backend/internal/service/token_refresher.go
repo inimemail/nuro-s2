@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const openAIBackgroundRefreshWindow = 3 * time.Minute
+
 // TokenRefresher 定义平台特定的token刷新策略接口
 // 通过此接口可以扩展支持不同平台（Anthropic/OpenAI/Gemini）
 type TokenRefresher interface {
@@ -98,6 +100,9 @@ func (r *OpenAITokenRefresher) CanRefresh(account *Account) bool {
 func (r *OpenAITokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
 	if strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" {
 		return false
+	}
+	if refreshWindow <= 0 || refreshWindow > openAIBackgroundRefreshWindow {
+		refreshWindow = openAIBackgroundRefreshWindow
 	}
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
