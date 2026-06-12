@@ -4220,7 +4220,7 @@ func openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType string,
 }
 
 func (s *OpenAIGatewayService) openAIStreamPreambleFlushEnabled(account *Account, requestedModel string) bool {
-	if account == nil || !account.IsOpenAIOAuthChatGPTPreambleFlushEnabled() {
+	if account == nil || !account.IsOpenAIStreamPreambleFlushEnabled() {
 		return false
 	}
 	if isOpenAIImageGenerationModel(requestedModel) {

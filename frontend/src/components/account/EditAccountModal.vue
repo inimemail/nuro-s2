@@ -1582,6 +1582,29 @@
             />
           </button>
         </div>
+        <div v-if="account?.type === 'apikey'" class="flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.apiKeyPreambleFlush') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.apiKeyPreambleFlushDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="openaiAPIKeyPreambleFlushEnabled = !openaiAPIKeyPreambleFlushEnabled"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiAPIKeyPreambleFlushEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiAPIKeyPreambleFlushEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
       </div>
 
       <!-- OpenAI APIKey Responses API support mode -->
@@ -2770,6 +2793,7 @@ const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_comple
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiOAuthChatGPTPreambleFlushEnabled = ref(false)
+const openaiAPIKeyPreambleFlushEnabled = ref(false)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 type CodexImageGenerationBridgeMode = 'inherit' | 'enabled' | 'disabled'
@@ -3149,6 +3173,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiOAuthChatGPTPreambleFlushEnabled.value = false
+  openaiAPIKeyPreambleFlushEnabled.value = false
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   codexImageGenerationBridgeMode.value = 'inherit'
@@ -3160,6 +3185,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     openAICompactMode.value = (extra?.openai_compact_mode as OpenAICompactMode) || 'auto'
     if (newAccount.type === 'apikey') {
       openAIResponsesMode.value = normalizeOpenAIResponsesMode(extra?.openai_responses_mode)
+      openaiAPIKeyPreambleFlushEnabled.value = extra?.openai_apikey_preamble_flush_enabled === true
       openAIEndpointCapabilities.value = readOpenAIEndpointCapabilities(
         newAccount.credentials as Record<string, unknown> | undefined
       )
@@ -4334,9 +4360,15 @@ const handleSubmit = async () => {
         } else {
           delete newExtra.openai_oauth_chatgpt_preamble_flush_enabled
         }
+        delete newExtra.openai_apikey_preamble_flush_enabled
       } else if (props.account.type === 'apikey') {
         newExtra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
         newExtra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
+        if (openaiAPIKeyPreambleFlushEnabled.value) {
+          newExtra.openai_apikey_preamble_flush_enabled = true
+        } else {
+          delete newExtra.openai_apikey_preamble_flush_enabled
+        }
         delete newExtra.openai_oauth_chatgpt_preamble_flush_enabled
       }
       delete newExtra.responses_websockets_v2_enabled

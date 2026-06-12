@@ -3554,6 +3554,9 @@ export default {
         oauthChatGPTPreambleFlush: 'OAuth/ChatGPT 首包提前透传',
         oauthChatGPTPreambleFlushDesc:
           '开启后会提前向下游透传 response.created / response.in_progress，用于降低下游面板首包时间；上游早期失败时可能无法无感切换账号。',
+        apiKeyPreambleFlush: 'APIKey 首包提前透传',
+        apiKeyPreambleFlushDesc:
+          '适合 APIKey 接入的上游或中转首包偏慢时开启。会提前向下游透传 response.created / response.in_progress；上游早期失败时可能无法无感切换账号。',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
           '仅对 OpenAI OAuth 生效。开启后该账号才允许使用 OpenAI WebSocket Mode 协议。',

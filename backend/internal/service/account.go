@@ -100,6 +100,7 @@ const (
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
 const openAIOAuthChatGPTPreambleFlushExtraKey = "openai_oauth_chatgpt_preamble_flush_enabled"
+const openAIAPIKeyPreambleFlushExtraKey = "openai_apikey_preamble_flush_enabled"
 
 type TempUnschedulableRule struct {
 	ErrorCode       int      `json:"error_code"`
@@ -1574,6 +1575,19 @@ func (a *Account) IsOpenAIOAuthChatGPTPreambleFlushEnabled() bool {
 		return false
 	}
 	return a.getExtraBool(openAIOAuthChatGPTPreambleFlushExtraKey)
+}
+
+// IsOpenAIAPIKeyPreambleFlushEnabled 返回 APIKey 账号是否提前透传 Responses 前置事件。
+// 字段：accounts.extra.openai_apikey_preamble_flush_enabled。
+func (a *Account) IsOpenAIAPIKeyPreambleFlushEnabled() bool {
+	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
+		return false
+	}
+	return a.getExtraBool(openAIAPIKeyPreambleFlushExtraKey)
+}
+
+func (a *Account) IsOpenAIStreamPreambleFlushEnabled() bool {
+	return a.IsOpenAIOAuthChatGPTPreambleFlushEnabled() || a.IsOpenAIAPIKeyPreambleFlushEnabled()
 }
 
 // IsOpenAIOAuthPassthroughEnabled 兼容旧接口，等价于 OAuth 账号的 IsOpenAIPassthroughEnabled。
