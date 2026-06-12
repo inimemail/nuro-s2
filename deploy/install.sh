@@ -34,8 +34,11 @@ NC='\033[0m' # No Color
 GITHUB_REPO="Wei-Shaw/sub2api"
 INSTALL_DIR="/opt/sub2api"
 SERVICE_NAME="sub2api"
+EDGE_SERVICE_NAME="sub2api-edge-rs"
 SERVICE_USER="sub2api"
 CONFIG_DIR="/etc/sub2api"
+EDGE_LISTEN_ADDR="127.0.0.1:18080"
+EDGE_BINARY_INSTALLED=false
 
 # Server configuration (will be set by user)
 SERVER_HOST="0.0.0.0"
@@ -372,6 +375,24 @@ validate_port() {
     return 1
 }
 
+load_existing_server_config() {
+    local service_file="/etc/systemd/system/sub2api.service"
+    if [ ! -f "$service_file" ]; then
+        return 0
+    fi
+
+    local existing_host existing_port
+    existing_host=$(grep -E '^Environment=SERVER_HOST=' "$service_file" 2>/dev/null | tail -n 1 | sed 's/^Environment=SERVER_HOST=//' | sed 's/^"//;s/"$//' || true)
+    existing_port=$(grep -E '^Environment=SERVER_PORT=' "$service_file" 2>/dev/null | tail -n 1 | sed 's/^Environment=SERVER_PORT=//' | sed 's/^"//;s/"$//' || true)
+
+    if [ -n "$existing_host" ]; then
+        SERVER_HOST="$existing_host"
+    fi
+    if [ -n "$existing_port" ] && validate_port "$existing_port"; then
+        SERVER_PORT="$existing_port"
+    fi
+}
+
 # Configure server settings
 configure_server() {
     # If not interactive (piped), use default settings
@@ -480,6 +501,173 @@ check_dependencies() {
     fi
 }
 
+self_update_installer() {
+    if [ "${SUB2API_INSTALLER_SELF_UPDATED:-}" = "true" ]; then
+        return 0
+    fi
+
+    local script_path="${BASH_SOURCE[0]:-$0}"
+    if [ -z "$script_path" ] || [ "$script_path" = "bash" ] || [ "$script_path" = "sh" ] || [ ! -f "$script_path" ]; then
+        return 0
+    fi
+
+    case "$script_path" in
+        /*) ;;
+        *) script_path="$(pwd)/$script_path" ;;
+    esac
+
+    if [ ! -w "$script_path" ]; then
+        return 0
+    fi
+
+    local tmp_script
+    tmp_script=$(mktemp)
+    local installer_url="https://raw.githubusercontent.com/${GITHUB_REPO}/main/deploy/install.sh"
+    if ! curl -fsSL "$installer_url" -o "$tmp_script"; then
+        rm -f "$tmp_script"
+        print_warning "Installer self-update failed; continuing with current installer"
+        return 0
+    fi
+
+    if ! grep -q "Sub2API Installation Script" "$tmp_script"; then
+        rm -f "$tmp_script"
+        print_warning "Installer self-update returned unexpected content; continuing with current installer"
+        return 0
+    fi
+
+    cp "$tmp_script" "$script_path"
+    chmod +x "$script_path"
+    rm -f "$tmp_script"
+
+    print_info "Installer updated; restarting command with the latest installer..."
+    SUB2API_INSTALLER_SELF_UPDATED=true exec "$script_path" "$@"
+}
+
+generate_edge_secret() {
+    if command -v openssl &> /dev/null; then
+        openssl rand -hex 32
+        return
+    fi
+    if command -v od &> /dev/null; then
+        dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
+        return
+    fi
+    date +%s%N | sha256sum | awk '{print $1}'
+}
+
+read_edge_env_value() {
+    local key="$1"
+    local file="$INSTALL_DIR/edge-rs.env"
+    if [ -f "$file" ]; then
+        grep -E "^${key}=" "$file" | tail -n 1 | cut -d= -f2- || true
+    fi
+}
+
+edge_go_base_url() {
+    local host="$SERVER_HOST"
+    case "$host" in
+        ""|"0.0.0.0"|"::"|"[::]")
+            host="127.0.0.1"
+            ;;
+    esac
+
+    case "$host" in
+        \[*\]) ;;
+        *:*) host="[${host}]" ;;
+    esac
+
+    echo "http://${host}:${SERVER_PORT}"
+}
+
+write_edge_env() {
+    local secret
+    secret=$(read_edge_env_value "SUB2API_EDGE_INTERNAL_SECRET")
+    if [ -z "$secret" ]; then
+        secret=$(read_edge_env_value "GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET")
+    fi
+    if [ -z "$secret" ]; then
+        secret=$(generate_edge_secret)
+    fi
+    local go_base_url
+    go_base_url=$(edge_go_base_url)
+
+    mkdir -p "$INSTALL_DIR"
+    cat > "$INSTALL_DIR/edge-rs.env" << EOF
+# Shared OpenAI Rust edge configuration for both Go and edge-rs.
+GATEWAY_OPENAI_EDGE_RS_ENABLED=true
+GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED=true
+GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET=${secret}
+GATEWAY_OPENAI_EDGE_RS_MODE=relay
+GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED=true
+GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR=${EDGE_LISTEN_ADDR}
+GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL=${go_base_url}
+GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL=${go_base_url}
+GATEWAY_OPENAI_EDGE_RS_RELAY_CHAT_COMPLETIONS=true
+GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES=true
+GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES_WEBSOCKET=true
+GATEWAY_OPENAI_EDGE_RS_ROLLOUT_PERCENT=100
+
+SUB2API_EDGE_LISTEN_ADDR=${EDGE_LISTEN_ADDR}
+SUB2API_EDGE_GO_BASE_URL=${go_base_url}
+SUB2API_EDGE_CONTROL_BASE_URL=${go_base_url}
+SUB2API_EDGE_INTERNAL_SECRET=${secret}
+SUB2API_EDGE_INITIAL_POOL_SIZE=10000
+SUB2API_EDGE_QUEUE_BUFFER_SIZE=20000
+SUB2API_EDGE_PER_ACCOUNT_WORKERS=4
+SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT=8
+SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH=true
+SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES=262144
+SUB2API_EDGE_WS_IDLE_PER_KEY=1
+RUST_LOG=info
+EOF
+    chmod 600 "$INSTALL_DIR/edge-rs.env"
+    chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/edge-rs.env" 2>/dev/null || true
+}
+
+download_edge_binary() {
+    local temp_dir="$1"
+
+    if [ "$OS" != "linux" ]; then
+        return 1
+    fi
+
+    local version_num=${LATEST_VERSION#v}
+    local archive_name="sub2api-edge-rs_${version_num}_${OS}_${ARCH}.tar.gz"
+    local download_url="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/${archive_name}"
+    local checksum_url="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/edge-rs-checksums.txt"
+
+    print_info "$(msg 'downloading') ${archive_name}..."
+    local attempt
+    local downloaded=false
+    for attempt in 1 2 3 4 5; do
+        if curl -fsSL "$download_url" -o "$temp_dir/$archive_name"; then
+            downloaded=true
+            break
+        fi
+        sleep 2
+    done
+    if [ "$downloaded" != "true" ]; then
+        print_warning "Rust edge archive not found for ${OS}_${ARCH}; continuing without edge-rs"
+        return 1
+    fi
+
+    if curl -fsSL "$checksum_url" -o "$temp_dir/edge-rs-checksums.txt" 2>/dev/null; then
+        local expected_checksum
+        expected_checksum=$(grep "$archive_name" "$temp_dir/edge-rs-checksums.txt" | awk '{print $1}' || true)
+        if [ -n "$expected_checksum" ]; then
+            local actual_checksum
+            actual_checksum=$(sha256sum "$temp_dir/$archive_name" | awk '{print $1}')
+            if [ "$expected_checksum" != "$actual_checksum" ]; then
+                print_warning "Rust edge checksum failed; continuing without edge-rs"
+                return 1
+            fi
+        fi
+    fi
+
+    tar -xzf "$temp_dir/$archive_name" -C "$temp_dir"
+    [ -f "$temp_dir/sub2api-edge-rs" ]
+}
+
 # Get latest release version
 get_latest_version() {
     print_info "$(msg 'fetching_version')"
@@ -567,6 +755,7 @@ get_current_version() {
 
 # Download and extract
 download_and_extract() {
+    EDGE_BINARY_INSTALLED=false
     local version_num=${LATEST_VERSION#v}
     local archive_name="sub2api_${version_num}_${OS}_${ARCH}.tar.gz"
     local download_url="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/${archive_name}"
@@ -608,9 +797,25 @@ download_and_extract() {
     # Create install directory
     mkdir -p "$INSTALL_DIR"
 
-    # Copy binary
-    cp "$TEMP_DIR/sub2api" "$INSTALL_DIR/sub2api"
-    chmod +x "$INSTALL_DIR/sub2api"
+    # Install binary atomically so a running service can keep using the old
+    # inode until systemd restarts it.
+    cp "$TEMP_DIR/sub2api" "$INSTALL_DIR/sub2api.new"
+    chmod +x "$INSTALL_DIR/sub2api.new"
+    mv -f "$INSTALL_DIR/sub2api.new" "$INSTALL_DIR/sub2api"
+
+    # Copy Rust edge binary when bundled, otherwise try the optional edge asset.
+    if [ ! -f "$TEMP_DIR/sub2api-edge-rs" ]; then
+        download_edge_binary "$TEMP_DIR" || true
+    fi
+    if [ -f "$TEMP_DIR/sub2api-edge-rs" ]; then
+        cp "$TEMP_DIR/sub2api-edge-rs" "$INSTALL_DIR/sub2api-edge-rs.new"
+        chmod +x "$INSTALL_DIR/sub2api-edge-rs.new"
+        mv -f "$INSTALL_DIR/sub2api-edge-rs.new" "$INSTALL_DIR/sub2api-edge-rs"
+        EDGE_BINARY_INSTALLED=true
+        print_success "Rust edge installed to $INSTALL_DIR/sub2api-edge-rs"
+    else
+        rm -f "$INSTALL_DIR/sub2api-edge-rs" 2>/dev/null || true
+    fi
 
     # Copy deploy files if they exist in the archive
     if [ -d "$TEMP_DIR/deploy" ]; then
@@ -697,6 +902,7 @@ ReadWritePaths=/opt/sub2api
 Environment=GIN_MODE=release
 Environment=SERVER_HOST=${SERVER_HOST}
 Environment=SERVER_PORT=${SERVER_PORT}
+EnvironmentFile=-/opt/sub2api/edge-rs.env
 
 [Install]
 WantedBy=multi-user.target
@@ -706,6 +912,87 @@ EOF
     systemctl daemon-reload
 
     print_success "$(msg 'service_installed')"
+}
+
+ensure_main_service_edge_env() {
+    local service_file="/etc/systemd/system/sub2api.service"
+    if [ ! -f "$service_file" ]; then
+        install_service
+        return 0
+    fi
+    if grep -q '^EnvironmentFile=-/opt/sub2api/edge-rs.env$' "$service_file"; then
+        systemctl daemon-reload
+        return 0
+    fi
+
+    local tmp_file
+    tmp_file=$(mktemp)
+    awk '
+        BEGIN { in_service = 0; added = 0 }
+        /^\[Service\]$/ { in_service = 1; print; next }
+        /^\[/ && in_service && !added {
+            print "EnvironmentFile=-/opt/sub2api/edge-rs.env"
+            added = 1
+            in_service = 0
+        }
+        { print }
+        END {
+            if (in_service && !added) {
+                print "EnvironmentFile=-/opt/sub2api/edge-rs.env"
+            }
+        }
+    ' "$service_file" > "$tmp_file"
+    cat "$tmp_file" > "$service_file"
+    rm -f "$tmp_file"
+    systemctl daemon-reload
+}
+
+install_edge_service() {
+    if [ "$OS" != "linux" ]; then
+        return 0
+    fi
+    if [ "$EDGE_BINARY_INSTALLED" != "true" ] || [ ! -x "$INSTALL_DIR/sub2api-edge-rs" ]; then
+        print_warning "Rust edge binary not installed for this release; disabling edge service"
+        rm -f "$INSTALL_DIR/edge-rs.env" 2>/dev/null || true
+        systemctl stop "$EDGE_SERVICE_NAME" 2>/dev/null || true
+        systemctl disable "$EDGE_SERVICE_NAME" 2>/dev/null || true
+        return 0
+    fi
+
+    write_edge_env
+
+    cat > /etc/systemd/system/${EDGE_SERVICE_NAME}.service << EOF
+[Unit]
+Description=Sub2API OpenAI Rust Edge Data Plane
+Documentation=https://github.com/Wei-Shaw/sub2api
+After=network.target sub2api.service
+Wants=sub2api.service
+
+[Service]
+Type=simple
+User=sub2api
+Group=sub2api
+WorkingDirectory=/opt/sub2api
+EnvironmentFile=/opt/sub2api/edge-rs.env
+ExecStart=/opt/sub2api/sub2api-edge-rs
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sub2api-edge-rs
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/sub2api
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    print_success "Rust edge systemd service installed"
 }
 
 # Prepare for setup wizard (no config file needed - setup wizard will create it)
@@ -741,6 +1028,9 @@ start_service() {
     print_info "$(msg 'starting_service')"
 
     if systemctl start sub2api; then
+        if [ "$EDGE_BINARY_INSTALLED" = "true" ] && [ -x "$INSTALL_DIR/sub2api-edge-rs" ]; then
+            systemctl start "$EDGE_SERVICE_NAME" 2>/dev/null || print_warning "Rust edge service failed to start; Go fallback remains available"
+        fi
         print_success "$(msg 'service_started')"
         return 0
     else
@@ -753,6 +1043,10 @@ start_service() {
 # Enable service auto-start
 enable_autostart() {
     print_info "$(msg 'enabling_autostart')"
+
+    if [ -x "$INSTALL_DIR/sub2api-edge-rs" ]; then
+        systemctl enable "$EDGE_SERVICE_NAME" 2>/dev/null || print_warning "Failed to enable Rust edge auto-start"
+    fi
 
     if systemctl enable sub2api 2>/dev/null; then
         print_success "$(msg 'autostart_enabled')"
@@ -813,20 +1107,25 @@ upgrade() {
     fi
 
     print_info "$(msg 'upgrading')"
+    load_existing_server_config
 
     # Get current version
     CURRENT_VERSION=$("$INSTALL_DIR/sub2api" --version 2>/dev/null | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
     print_info "$(msg 'current_version'): $CURRENT_VERSION"
 
-    # Stop service
-    if systemctl is-active --quiet sub2api; then
-        print_info "$(msg 'stopping_service')"
-        systemctl stop sub2api
-    fi
-
     # Backup current binary
     cp "$INSTALL_DIR/sub2api" "$INSTALL_DIR/sub2api.backup"
     print_info "$(msg 'backup_created'): $INSTALL_DIR/sub2api.backup"
+    if [ -f "$INSTALL_DIR/sub2api-edge-rs" ]; then
+        cp "$INSTALL_DIR/sub2api-edge-rs" "$INSTALL_DIR/sub2api-edge-rs.backup"
+    else
+        rm -f "$INSTALL_DIR/sub2api-edge-rs.backup" 2>/dev/null || true
+    fi
+    if [ -f "$INSTALL_DIR/edge-rs.env" ]; then
+        cp "$INSTALL_DIR/edge-rs.env" "$INSTALL_DIR/edge-rs.env.backup"
+    else
+        rm -f "$INSTALL_DIR/edge-rs.env.backup" 2>/dev/null || true
+    fi
 
     # Download and install new version
     get_latest_version
@@ -834,10 +1133,43 @@ upgrade() {
 
     # Set permissions
     chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/sub2api"
+    if [ -f "$INSTALL_DIR/sub2api-edge-rs" ]; then
+        chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/sub2api-edge-rs"
+    fi
+    ensure_main_service_edge_env
+    install_edge_service
 
-    # Start service
+    # Restart services only after all downloads and file updates succeeded.
+    if systemctl is-active --quiet "$EDGE_SERVICE_NAME"; then
+        print_info "Stopping Rust edge service..."
+        systemctl stop "$EDGE_SERVICE_NAME"
+    fi
+    if systemctl is-active --quiet sub2api; then
+        print_info "$(msg 'stopping_service')"
+        systemctl stop sub2api
+    fi
+
     print_info "$(msg 'starting_service')"
-    systemctl start sub2api
+    if ! start_service; then
+        print_warning "New version failed to start; restoring previous binary"
+        cp "$INSTALL_DIR/sub2api.backup" "$INSTALL_DIR/sub2api"
+        chmod +x "$INSTALL_DIR/sub2api"
+        if [ -f "$INSTALL_DIR/sub2api-edge-rs.backup" ]; then
+            cp "$INSTALL_DIR/sub2api-edge-rs.backup" "$INSTALL_DIR/sub2api-edge-rs"
+            chmod +x "$INSTALL_DIR/sub2api-edge-rs"
+        else
+            rm -f "$INSTALL_DIR/sub2api-edge-rs" 2>/dev/null || true
+        fi
+        if [ -f "$INSTALL_DIR/edge-rs.env.backup" ]; then
+            cp "$INSTALL_DIR/edge-rs.env.backup" "$INSTALL_DIR/edge-rs.env"
+            chmod 600 "$INSTALL_DIR/edge-rs.env"
+        else
+            rm -f "$INSTALL_DIR/edge-rs.env" 2>/dev/null || true
+        fi
+        systemctl start sub2api 2>/dev/null || true
+        systemctl start "$EDGE_SERVICE_NAME" 2>/dev/null || true
+        exit 1
+    fi
 
     print_success "$(msg 'upgrade_complete')"
 }
@@ -858,6 +1190,7 @@ install_version() {
     target_version=$(validate_version "$target_version")
 
     print_info "$(msg 'installing_version'): $target_version"
+    load_existing_server_config
 
     # Get current version
     local current_version
@@ -870,15 +1203,10 @@ install_version() {
         exit 0
     fi
 
-    # Stop service if running
-    if systemctl is-active --quiet sub2api; then
-        print_info "$(msg 'stopping_service')"
-        systemctl stop sub2api
-    fi
-
     # Backup current binary (for potential recovery)
+    local backup_name
+    local edge_backup_name=""
     if [ -f "$INSTALL_DIR/sub2api" ]; then
-        local backup_name
         if [ "$current_version" != "unknown" ] && [ "$current_version" != "not_installed" ]; then
             backup_name="sub2api.backup.${current_version}"
         else
@@ -886,6 +1214,15 @@ install_version() {
         fi
         cp "$INSTALL_DIR/sub2api" "$INSTALL_DIR/$backup_name"
         print_info "$(msg 'backup_created'): $INSTALL_DIR/$backup_name"
+    fi
+    if [ -f "$INSTALL_DIR/sub2api-edge-rs" ]; then
+        edge_backup_name="sub2api-edge-rs.backup.$(date +%Y%m%d%H%M%S)"
+        cp "$INSTALL_DIR/sub2api-edge-rs" "$INSTALL_DIR/$edge_backup_name"
+    fi
+    local edge_env_backup_name=""
+    if [ -f "$INSTALL_DIR/edge-rs.env" ]; then
+        edge_env_backup_name="edge-rs.env.backup.$(date +%Y%m%d%H%M%S)"
+        cp "$INSTALL_DIR/edge-rs.env" "$INSTALL_DIR/$edge_env_backup_name"
     fi
 
     # Set LATEST_VERSION to the target version for download_and_extract
@@ -896,14 +1233,48 @@ install_version() {
 
     # Set permissions
     chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/sub2api"
+    if [ -f "$INSTALL_DIR/sub2api-edge-rs" ]; then
+        chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/sub2api-edge-rs"
+    fi
+    ensure_main_service_edge_env
+    install_edge_service
 
-    # Start service
+    # Restart services only after all downloads and file updates succeeded.
+    if systemctl is-active --quiet "$EDGE_SERVICE_NAME"; then
+        print_info "Stopping Rust edge service..."
+        systemctl stop "$EDGE_SERVICE_NAME"
+    fi
+    if systemctl is-active --quiet sub2api; then
+        print_info "$(msg 'stopping_service')"
+        systemctl stop sub2api
+    fi
+
     print_info "$(msg 'starting_service')"
-    if systemctl start sub2api; then
+    if start_service; then
         print_success "$(msg 'service_started')"
     else
         print_error "$(msg 'service_start_failed')"
         print_info "sudo journalctl -u sub2api -n 50"
+        if [ -n "$backup_name" ] && [ -f "$INSTALL_DIR/$backup_name" ]; then
+            print_warning "New version failed to start; restoring previous binary"
+            cp "$INSTALL_DIR/$backup_name" "$INSTALL_DIR/sub2api"
+            chmod +x "$INSTALL_DIR/sub2api"
+            if [ -n "$edge_backup_name" ] && [ -f "$INSTALL_DIR/$edge_backup_name" ]; then
+                cp "$INSTALL_DIR/$edge_backup_name" "$INSTALL_DIR/sub2api-edge-rs"
+                chmod +x "$INSTALL_DIR/sub2api-edge-rs"
+            else
+                rm -f "$INSTALL_DIR/sub2api-edge-rs" 2>/dev/null || true
+            fi
+            if [ -n "$edge_env_backup_name" ] && [ -f "$INSTALL_DIR/$edge_env_backup_name" ]; then
+                cp "$INSTALL_DIR/$edge_env_backup_name" "$INSTALL_DIR/edge-rs.env"
+                chmod 600 "$INSTALL_DIR/edge-rs.env"
+            else
+                rm -f "$INSTALL_DIR/edge-rs.env" 2>/dev/null || true
+            fi
+            systemctl start sub2api 2>/dev/null || true
+            systemctl start "$EDGE_SERVICE_NAME" 2>/dev/null || true
+        fi
+        exit 1
     fi
 
     # Print completion message
@@ -938,10 +1309,13 @@ uninstall() {
     fi
 
     print_info "$(msg 'stopping_service')"
+    systemctl stop "$EDGE_SERVICE_NAME" 2>/dev/null || true
+    systemctl disable "$EDGE_SERVICE_NAME" 2>/dev/null || true
     systemctl stop sub2api 2>/dev/null || true
     systemctl disable sub2api 2>/dev/null || true
 
     print_info "$(msg 'removing_files')"
+    rm -f "/etc/systemd/system/${EDGE_SERVICE_NAME}.service"
     rm -f /etc/systemd/system/sub2api.service
     systemctl daemon-reload
 
@@ -982,6 +1356,8 @@ uninstall() {
 
 # Main
 main() {
+    local original_args=("$@")
+
     # Parse flags first
     local target_version=""
     local positional_args=()
@@ -1038,6 +1414,7 @@ main() {
             check_root
             detect_platform
             check_dependencies
+            self_update_installer "${original_args[@]}"
             if [ -n "$target_version" ]; then
                 # Upgrade to specific version
                 install_version "$target_version"
@@ -1052,6 +1429,7 @@ main() {
             check_root
             detect_platform
             check_dependencies
+            self_update_installer "${original_args[@]}"
             if [ -n "$target_version" ]; then
                 # Install specific version (fresh install or rollback)
                 if [ -f "$INSTALL_DIR/sub2api" ]; then
@@ -1065,6 +1443,7 @@ main() {
                     create_user
                     setup_directories
                     install_service
+                    install_edge_service
                     prepare_for_setup
                     get_public_ip
                     start_service
@@ -1079,6 +1458,7 @@ main() {
                 create_user
                 setup_directories
                 install_service
+                install_edge_service
                 prepare_for_setup
                 get_public_ip
                 start_service
@@ -1147,6 +1527,7 @@ main() {
     check_root
     detect_platform
     check_dependencies
+    self_update_installer "${original_args[@]}"
 
     if [ -n "$target_version" ]; then
         # Install specific version
@@ -1159,6 +1540,7 @@ main() {
             create_user
             setup_directories
             install_service
+            install_edge_service
             prepare_for_setup
             get_public_ip
             start_service
@@ -1173,6 +1555,7 @@ main() {
         create_user
         setup_directories
         install_service
+        install_edge_service
         prepare_for_setup
         get_public_ip
         start_service

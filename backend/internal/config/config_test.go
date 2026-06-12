@@ -163,6 +163,25 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultOpenAIEdgeRSRelayToggles(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.Gateway.OpenAIEdgeRS.RelayChatCompletions {
+		t.Fatalf("Gateway.OpenAIEdgeRS.RelayChatCompletions = false, want true")
+	}
+	if !cfg.Gateway.OpenAIEdgeRS.RelayResponses {
+		t.Fatalf("Gateway.OpenAIEdgeRS.RelayResponses = false, want true")
+	}
+	if !cfg.Gateway.OpenAIEdgeRS.RelayResponsesWebSocket {
+		t.Fatalf("Gateway.OpenAIEdgeRS.RelayResponsesWebSocket = false, want true")
+	}
+}
+
 func TestLoadDefaultOpenAIHTTP2Enabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 

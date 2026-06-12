@@ -806,6 +806,8 @@ type GatewayConfig struct {
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
 	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
+	// OpenAIEdgeRS: Rust OpenAI data-plane edge settings. Disabled by default.
+	OpenAIEdgeRS GatewayOpenAIEdgeRSConfig `mapstructure:"openai_edge_rs"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
@@ -954,6 +956,67 @@ func (c *UserMessageQueueConfig) GetEffectiveMode() string {
 		return UMQModeSerialize // 向后兼容
 	}
 	return ""
+}
+
+// GatewayOpenAIEdgeRSConfig controls the optional Rust OpenAI data-plane edge.
+// The Go process remains the control plane: auth, billing, scheduling, cooling,
+// pool mode, sticky routing, and usage accounting stay in Go.
+type GatewayOpenAIEdgeRSConfig struct {
+	// Enabled marks that this deployment intends to use the Rust edge.
+	Enabled bool `mapstructure:"enabled"`
+	// InternalAPIEnabled exposes /internal/edge/openai/* for the Rust edge.
+	InternalAPIEnabled bool `mapstructure:"internal_api_enabled"`
+	// InternalSecret is required when InternalAPIEnabled is true.
+	InternalSecret string `mapstructure:"internal_secret"`
+	// Mode controls edge behavior: off, shadow, relay.
+	Mode string `mapstructure:"mode"`
+	// IngressProxyEnabled lets Go forward eligible public OpenAI hot paths to
+	// the local Rust edge without requiring an external reverse proxy.
+	IngressProxyEnabled bool `mapstructure:"ingress_proxy_enabled"`
+	// RelayChatCompletions allows relay plans for raw streaming Chat Completions.
+	RelayChatCompletions bool `mapstructure:"relay_chat_completions"`
+	// RelayResponses allows relay plans for native streaming Responses.
+	RelayResponses bool `mapstructure:"relay_responses"`
+	// RelayResponsesWebSocket allows the Rust edge to relay the narrow safe
+	// WSv2 passthrough subset. Stateful Go WS modes still fall back to Go.
+	RelayResponsesWebSocket bool `mapstructure:"relay_responses_websocket"`
+	// RolloutPercent limits eligible requests by stable hash. 100 means all.
+	RolloutPercent int `mapstructure:"rollout_percent"`
+	// AllowedAPIKeyIDs limits relay to specific API key IDs when non-empty.
+	AllowedAPIKeyIDs []int64 `mapstructure:"allowed_api_key_ids"`
+	// AllowedGroupIDs limits relay to specific group IDs when non-empty.
+	AllowedGroupIDs []int64 `mapstructure:"allowed_group_ids"`
+	// AllowedModels limits relay to requested model names when non-empty.
+	AllowedModels []string `mapstructure:"allowed_models"`
+	// ListenAddr is the recommended address for the Rust process.
+	ListenAddr string `mapstructure:"listen_addr"`
+	// GoBaseURL is used by the Rust edge for fallback-to-Go reverse proxying.
+	GoBaseURL string `mapstructure:"go_base_url"`
+	// ControlBaseURL is used by the Rust edge for Go control-plane callbacks.
+	// Empty means use GoBaseURL.
+	ControlBaseURL string `mapstructure:"control_base_url"`
+	// PrepareTimeoutMS bounds the Go control-plane prepare call.
+	PrepareTimeoutMS int `mapstructure:"prepare_timeout_ms"`
+	// CompleteTimeoutMS bounds complete/retry/abort callbacks.
+	CompleteTimeoutMS int `mapstructure:"complete_timeout_ms"`
+	// LeaseTTLMS is returned to the edge as a crash-recovery bound for slots.
+	LeaseTTLMS int `mapstructure:"lease_ttl_ms"`
+	// InitialPoolSize prewarms edge-side scratch buffers.
+	InitialPoolSize int `mapstructure:"initial_pool_size"`
+	// QueueBufferSize bounds each edge account/proxy/host relay queue.
+	QueueBufferSize int `mapstructure:"queue_buffer_size"`
+	// PerAccountWorkers controls workers per edge account/proxy/host queue.
+	PerAccountWorkers int `mapstructure:"per_account_workers"`
+	// MaxIdleConnsPerAccount is the edge-side upstream connection pool hint.
+	MaxIdleConnsPerAccount int `mapstructure:"max_idle_conns_per_account"`
+	// WSIdlePerKey keeps unused preconnected WSv2 sockets per account/header key.
+	WSIdlePerKey int `mapstructure:"ws_idle_per_key"`
+	// LargePayloadPassthrough sends raw request/plan bodies to the edge so it can
+	// forward bytes without JSON re-materialization.
+	LargePayloadPassthrough bool `mapstructure:"large_payload_passthrough"`
+	// FallbackBeforeFirstWrite allows Rust to call retry/fallback only while
+	// the client response has not been committed.
+	FallbackBeforeFirstWrite bool `mapstructure:"fallback_before_first_write"`
 }
 
 // GatewayOpenAIWSConfig OpenAI Responses WebSocket 配置。
@@ -1950,6 +2013,31 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.queue", 0.7)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.error_rate", 0.8)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.ttft", 0.5)
+	viper.SetDefault("gateway.openai_edge_rs.enabled", false)
+	viper.SetDefault("gateway.openai_edge_rs.internal_api_enabled", false)
+	viper.SetDefault("gateway.openai_edge_rs.internal_secret", "")
+	viper.SetDefault("gateway.openai_edge_rs.mode", "off")
+	viper.SetDefault("gateway.openai_edge_rs.ingress_proxy_enabled", true)
+	viper.SetDefault("gateway.openai_edge_rs.relay_chat_completions", true)
+	viper.SetDefault("gateway.openai_edge_rs.relay_responses", true)
+	viper.SetDefault("gateway.openai_edge_rs.relay_responses_websocket", true)
+	viper.SetDefault("gateway.openai_edge_rs.rollout_percent", 100)
+	viper.SetDefault("gateway.openai_edge_rs.allowed_api_key_ids", []int64{})
+	viper.SetDefault("gateway.openai_edge_rs.allowed_group_ids", []int64{})
+	viper.SetDefault("gateway.openai_edge_rs.allowed_models", []string{})
+	viper.SetDefault("gateway.openai_edge_rs.listen_addr", "127.0.0.1:18080")
+	viper.SetDefault("gateway.openai_edge_rs.go_base_url", "http://127.0.0.1:8080")
+	viper.SetDefault("gateway.openai_edge_rs.control_base_url", "")
+	viper.SetDefault("gateway.openai_edge_rs.prepare_timeout_ms", 1500)
+	viper.SetDefault("gateway.openai_edge_rs.complete_timeout_ms", 1500)
+	viper.SetDefault("gateway.openai_edge_rs.lease_ttl_ms", 30*60*1000)
+	viper.SetDefault("gateway.openai_edge_rs.initial_pool_size", 10000)
+	viper.SetDefault("gateway.openai_edge_rs.queue_buffer_size", 20000)
+	viper.SetDefault("gateway.openai_edge_rs.per_account_workers", 4)
+	viper.SetDefault("gateway.openai_edge_rs.max_idle_conns_per_account", 8)
+	viper.SetDefault("gateway.openai_edge_rs.ws_idle_per_key", 1)
+	viper.SetDefault("gateway.openai_edge_rs.large_payload_passthrough", true)
+	viper.SetDefault("gateway.openai_edge_rs.fallback_before_first_write", true)
 	// OpenAI HTTP upstream protocol strategy
 	viper.SetDefault("gateway.openai_http2.enabled", true)
 	viper.SetDefault("gateway.openai_http2.allow_proxy_fallback_to_http1", true)
@@ -2752,6 +2840,41 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds < 0 {
 		return fmt.Errorf("gateway.openai_ws.sticky_previous_response_ttl_seconds must be non-negative")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Gateway.OpenAIEdgeRS.Mode)) {
+	case "", "off", "shadow", "relay":
+	default:
+		return fmt.Errorf("gateway.openai_edge_rs.mode must be one of off|shadow|relay")
+	}
+	if c.Gateway.OpenAIEdgeRS.InternalAPIEnabled && strings.TrimSpace(c.Gateway.OpenAIEdgeRS.InternalSecret) == "" {
+		return fmt.Errorf("gateway.openai_edge_rs.internal_secret is required when internal_api_enabled is true")
+	}
+	if c.Gateway.OpenAIEdgeRS.RolloutPercent < 0 || c.Gateway.OpenAIEdgeRS.RolloutPercent > 100 {
+		return fmt.Errorf("gateway.openai_edge_rs.rollout_percent must be within [0,100]")
+	}
+	if c.Gateway.OpenAIEdgeRS.PrepareTimeoutMS <= 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.prepare_timeout_ms must be positive")
+	}
+	if c.Gateway.OpenAIEdgeRS.CompleteTimeoutMS <= 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.complete_timeout_ms must be positive")
+	}
+	if c.Gateway.OpenAIEdgeRS.LeaseTTLMS <= 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.lease_ttl_ms must be positive")
+	}
+	if c.Gateway.OpenAIEdgeRS.InitialPoolSize < 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.initial_pool_size must be non-negative")
+	}
+	if c.Gateway.OpenAIEdgeRS.QueueBufferSize <= 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.queue_buffer_size must be positive")
+	}
+	if c.Gateway.OpenAIEdgeRS.PerAccountWorkers <= 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.per_account_workers must be positive")
+	}
+	if c.Gateway.OpenAIEdgeRS.MaxIdleConnsPerAccount < 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.max_idle_conns_per_account must be non-negative")
+	}
+	if c.Gateway.OpenAIEdgeRS.WSIdlePerKey < 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.ws_idle_per_key must be non-negative")
 	}
 	if c.Gateway.OpenAIHTTP2.FallbackErrorThreshold < 0 {
 		return fmt.Errorf("gateway.openai_http2.fallback_error_threshold must be non-negative")

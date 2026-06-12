@@ -1,0 +1,110 @@
+package service
+
+import (
+	"encoding/base64"
+	"encoding/json"
+)
+
+const (
+	OpenAIEdgeActionFallbackGo = "fallback_go"
+	OpenAIEdgeActionRelay      = "relay"
+
+	OpenAIEdgeTransportHTTP2SSE = "http2_sse"
+	OpenAIEdgeTransportWSV2     = "ws_v2"
+
+	OpenAIEdgeDialectChatCompletions = "chat_completions"
+	OpenAIEdgeDialectResponses       = "responses"
+)
+
+// OpenAIEdgePrepareRequest is sent by the Rust data plane to the Go control
+// plane before it commits any client response. Go remains authoritative for
+// auth, billing, scheduling, soft cooling, pool mode, sticky routing, and
+// request transformation.
+type OpenAIEdgePrepareRequest struct {
+	EdgeRequestID string            `json:"edge_request_id"`
+	Method        string            `json:"method"`
+	Path          string            `json:"path"`
+	RawQuery      string            `json:"raw_query,omitempty"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	Body          json.RawMessage   `json:"body,omitempty"`
+	BodyRawBase64 string            `json:"body_raw_base64,omitempty"`
+	ClientIP      string            `json:"client_ip,omitempty"`
+	Stream        *bool             `json:"stream,omitempty"`
+}
+
+type OpenAIEdgePlan struct {
+	Action          string            `json:"action"`
+	Reason          string            `json:"reason,omitempty"`
+	EdgeRequestID   string            `json:"edge_request_id"`
+	LeaseID         string            `json:"lease_id,omitempty"`
+	LeaseTTLMS      int               `json:"lease_ttl_ms,omitempty"`
+	AccountID       int64             `json:"account_id,omitempty"`
+	AccountType     string            `json:"account_type,omitempty"`
+	Transport       string            `json:"transport,omitempty"`
+	ResponseDialect string            `json:"response_dialect,omitempty"`
+	UpstreamURL     string            `json:"upstream_url,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	Body            json.RawMessage   `json:"body,omitempty"`
+	BodyRawBase64   string            `json:"body_raw_base64,omitempty"`
+	ProxyURL        string            `json:"proxy_url,omitempty"`
+	LowLatencyMode  string            `json:"low_latency_mode,omitempty"`
+}
+
+type OpenAIEdgeRetryRequest struct {
+	EdgeRequestID       string          `json:"edge_request_id"`
+	LeaseID             string          `json:"lease_id,omitempty"`
+	AccountID           int64           `json:"account_id,omitempty"`
+	UpstreamStatusCode  int             `json:"upstream_status_code,omitempty"`
+	UpstreamRequestID   string          `json:"upstream_request_id,omitempty"`
+	ErrorType           string          `json:"error_type,omitempty"`
+	ErrorMessage        string          `json:"error_message,omitempty"`
+	ResponseBody        json.RawMessage `json:"response_body,omitempty"`
+	WroteClientResponse bool            `json:"wrote_client_response"`
+}
+
+type OpenAIEdgeRetryDecision struct {
+	Action string          `json:"action"`
+	Reason string          `json:"reason,omitempty"`
+	Plan   *OpenAIEdgePlan `json:"plan,omitempty"`
+}
+
+type OpenAIEdgeCompleteRequest struct {
+	EdgeRequestID       string      `json:"edge_request_id"`
+	LeaseID             string      `json:"lease_id,omitempty"`
+	AccountID           int64       `json:"account_id,omitempty"`
+	Success             bool        `json:"success"`
+	ClientDisconnected  bool        `json:"client_disconnected,omitempty"`
+	RequestID           string      `json:"request_id,omitempty"`
+	ResponseID          string      `json:"response_id,omitempty"`
+	Model               string      `json:"model,omitempty"`
+	UpstreamModel       string      `json:"upstream_model,omitempty"`
+	Usage               OpenAIUsage `json:"usage,omitempty"`
+	DurationMS          int64       `json:"duration_ms,omitempty"`
+	UpstreamHeaderMS    *int64      `json:"upstream_header_ms,omitempty"`
+	UpstreamFirstByteMS *int64      `json:"upstream_first_byte_ms,omitempty"`
+	FirstTokenMS        *int64      `json:"first_token_ms,omitempty"`
+	FirstClientFlushMS  *int64      `json:"first_client_flush_ms,omitempty"`
+	ErrorType           string      `json:"error_type,omitempty"`
+	ErrorMessage        string      `json:"error_message,omitempty"`
+	UpstreamStatusCode  int         `json:"upstream_status_code,omitempty"`
+}
+
+type OpenAIEdgeAbortRequest struct {
+	EdgeRequestID      string `json:"edge_request_id"`
+	LeaseID            string `json:"lease_id,omitempty"`
+	AccountID          int64  `json:"account_id,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+	ClientDisconnected bool   `json:"client_disconnected,omitempty"`
+}
+
+type OpenAIEdgeAck struct {
+	OK     bool   `json:"ok"`
+	Reason string `json:"reason,omitempty"`
+}
+
+func EncodeOpenAIEdgeRawBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(body)
+}

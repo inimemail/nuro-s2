@@ -24,6 +24,10 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
 
+	if h.tryOpenAIEdgeIngressProxy(c) {
+		return
+	}
+
 	requestStart := time.Now()
 
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)

@@ -43,6 +43,8 @@ type OpenAIGatewayHandler struct {
 	imageTaskWorkerDone      chan struct{}
 	imageTaskWorkerWG        sync.WaitGroup
 	imageTaskWorkerStopOnce  sync.Once
+	openAIEdgeLeaseMu        sync.Mutex
+	openAIEdgeLeases         map[string]*openAIEdgeLease
 	maxAccountSwitches       int
 	cfg                      *config.Config
 }
@@ -175,6 +177,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 局部兜底：确保该 handler 内部任何 panic 都不会击穿到进程级。
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
+	if h.tryOpenAIEdgeIngressProxy(c) {
+		return
+	}
 	compactStartedAt := time.Now()
 	defer h.logOpenAIRemoteCompactOutcome(c, compactStartedAt)
 	setOpenAIClientTransportHTTP(c)

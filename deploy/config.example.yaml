@@ -320,6 +320,54 @@ gateway:
       queue: 0.7
       error_rate: 0.8
       ttft: 0.5
+  # Optional Rust OpenAI data-plane edge. The static YAML example is disabled
+  # by default; the one-click systemd installer writes /opt/sub2api/edge-rs.env
+  # to enable it automatically when the edge binary is installed.
+  # Go remains the control plane: auth, billing, scheduling, soft cooling,
+  # priority, pool mode, sticky routing, failover policy, and usage accounting.
+  openai_edge_rs:
+    enabled: false
+    internal_api_enabled: false
+    # Required when internal_api_enabled=true. Send as X-Sub2API-Edge-Secret.
+    internal_secret: ""
+    # off=disabled, shadow=edge observes then falls back to Go, relay=edge may
+    # directly relay an upstream plan produced by Go.
+    mode: off
+    # Let Go forward eligible public OpenAI hot paths to the local Rust edge.
+    # This avoids requiring a separate Caddy/Nginx route for systemd installs.
+    ingress_proxy_enabled: true
+    relay_chat_completions: true
+    relay_responses: true
+    # Safe WSv2 passthrough subset only; stateful ctx_pool/shared/dedicated
+    # modes, WS proxy accounts, and unsupported WS requests still fall back to Go.
+    relay_responses_websocket: true
+    # Gray rollout gates. Empty allow-lists mean "all"; percent is stable-hash
+    # based after the allow-lists pass.
+    rollout_percent: 100
+    allowed_api_key_ids: []
+    allowed_group_ids: []
+    allowed_models: []
+    listen_addr: 127.0.0.1:18080
+    # Existing Go gateway URL for fallback reverse proxying.
+    go_base_url: http://127.0.0.1:8080
+    # Optional separate Go control-plane URL for prepare/retry/complete/abort.
+    # Empty means use go_base_url.
+    control_base_url: ""
+    prepare_timeout_ms: 1500
+    complete_timeout_ms: 1500
+    lease_ttl_ms: 1800000
+    # Edge data-plane pools and queues. Go still owns scheduling decisions; the
+    # Rust edge only queues executable relay plans by account/proxy/upstream host.
+    initial_pool_size: 10000
+    queue_buffer_size: 20000
+    per_account_workers: 4
+    max_idle_conns_per_account: 8
+    # Number of unused preconnected WSv2 sockets kept per account/header key.
+    ws_idle_per_key: 1
+    # Send raw request/plan body bytes through the control protocol so the edge
+    # can forward transformed upstream bodies without JSON re-materialization.
+    large_payload_passthrough: true
+    fallback_before_first_write: true
   # OpenAI HTTP upstream protocol strategy.
   # OpenAI HTTP 上游协议策略（默认 HTTP/2；代理明确不兼容时可临时回退 HTTP/1.1）。
   openai_http2:
