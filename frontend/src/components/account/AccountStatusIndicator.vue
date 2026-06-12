@@ -202,7 +202,7 @@ const formatCountdownSeconds = (targetDate: string | Date | null | undefined): s
   if (!Number.isFinite(targetMs)) return null
   const diffMs = targetMs - nowMs.value
   if (diffMs <= 0) return null
-  const totalSecs = Math.ceil(diffMs / 1000)
+  const totalSecs = Math.max(1, Math.floor(diffMs / 1000))
   const days = Math.floor(totalSecs / 86400)
   const hours = Math.floor((totalSecs % 86400) / 3600)
   const minutes = Math.floor((totalSecs % 3600) / 60)
