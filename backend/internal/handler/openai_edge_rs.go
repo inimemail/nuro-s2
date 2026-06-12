@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
@@ -440,7 +441,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	if strings.TrimSpace(gjson.GetBytes(req.Body, "previous_response_id").String()) != "" {
 		return fallback("previous_response_id_requires_go")
 	}
-	if strings.Contains(string(req.Body), "function_call_output") {
+	if bytes.Contains(req.Body, []byte("function_call_output")) {
 		return fallback("function_call_output_requires_go")
 	}
 	if service.IsImageGenerationIntent("/v1/responses", reqModel, req.Body) {
@@ -514,7 +515,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	account := selection.Account
 	sessionHash = h.gatewayService.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, account)
 	sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
-	if !service.IsOpenAIEdgeRawResponsesRelayEligible(account) {
+	if account.Type != service.AccountTypeOAuth && !service.IsOpenAIEdgeRawResponsesRelayEligible(account) {
 		if selection.ReleaseFunc != nil {
 			selection.ReleaseFunc()
 		}
@@ -544,10 +545,15 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 			accountReleaseFunc()
 		}
 	}()
-	prepared, err := h.gatewayService.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, forwardBody)
+	var prepared *service.OpenAIEdgePreparedChatCompletions
+	if account.Type == service.AccountTypeOAuth {
+		prepared, err = h.gatewayService.BuildChatGPTOAuthResponsesEdgePlan(c.Request.Context(), c, account, forwardBody)
+	} else {
+		prepared, err = h.gatewayService.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, forwardBody)
+	}
 	if err != nil {
-		reqLog.Warn("openai_edge.build_raw_responses_plan_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-		return fallback("build_raw_responses_plan_failed")
+		reqLog.Warn("openai_edge.build_responses_plan_failed", zap.Int64("account_id", account.ID), zap.String("account_type", string(account.Type)), zap.Error(err))
+		return fallback("build_responses_plan_failed")
 	}
 	leaseID := "lease_" + uuid.NewString()
 	edgeRequestID := strings.TrimSpace(req.EdgeRequestID)
@@ -622,7 +628,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	if strings.TrimSpace(gjson.GetBytes(req.Body, "previous_response_id").String()) != "" {
 		return fallback("previous_response_id_requires_go_ws")
 	}
-	if strings.Contains(string(req.Body), "function_call_output") {
+	if bytes.Contains(req.Body, []byte("function_call_output")) {
 		return fallback("function_call_output_requires_go_ws")
 	}
 	if service.IsImageGenerationIntent("/v1/responses", reqModel, req.Body) {

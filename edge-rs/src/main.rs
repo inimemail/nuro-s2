@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use async_stream::stream;
@@ -21,7 +21,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use reqwest::Client;
+use reqwest::{Client, ClientBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpStream;
@@ -278,10 +278,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = Arc::new(EdgeConfig::from_env()?);
-    let client = Client::builder()
-        .http2_adaptive_window(true)
-        .pool_max_idle_per_host(cfg.max_idle_conns_per_account)
-        .build()?;
+    let client = edge_http_client_builder(&cfg).build()?;
     let state = AppState {
         cfg: cfg.clone(),
         client,
@@ -303,6 +300,17 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
     Ok(())
+}
+
+fn edge_http_client_builder(cfg: &EdgeConfig) -> ClientBuilder {
+    Client::builder()
+        .tcp_nodelay(true)
+        .http2_adaptive_window(true)
+        .http2_keep_alive_interval(Duration::from_secs(20))
+        .http2_keep_alive_timeout(Duration::from_secs(5))
+        .http2_keep_alive_while_idle(true)
+        .pool_idle_timeout(Duration::from_secs(300))
+        .pool_max_idle_per_host(cfg.max_idle_conns_per_account)
 }
 
 async fn healthz() -> &'static str {
@@ -1410,9 +1418,7 @@ impl AppState {
             return Ok(client.clone());
         }
 
-        let client = Client::builder()
-            .http2_adaptive_window(true)
-            .pool_max_idle_per_host(self.cfg.max_idle_conns_per_account)
+        let client = edge_http_client_builder(&self.cfg)
             .proxy(reqwest::Proxy::all(proxy_url)?)
             .build()?;
         clients.insert(proxy_url.to_string(), client.clone());

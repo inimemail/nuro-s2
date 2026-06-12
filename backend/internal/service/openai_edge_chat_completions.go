@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -321,6 +322,276 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	}, nil
 }
 
+// BuildChatGPTOAuthResponsesEdgePlan builds the OAuth/ChatGPT native Responses
+// streaming edge plan. Go still owns auth, scheduling, billing preflight, and
+// the Codex request transform; Rust only relays the already-prepared SSE stream.
+func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+) (*OpenAIEdgePreparedChatCompletions, error) {
+	if s == nil {
+		return nil, fmt.Errorf("openai gateway service is nil")
+	}
+	if account == nil {
+		return nil, fmt.Errorf("account is nil")
+	}
+	if err := s.checkOpenAIEdgeLocalAccountPolicy(ctx, c, account, body); err != nil {
+		return nil, err
+	}
+	if account.Type != AccountTypeOAuth {
+		return nil, fmt.Errorf("account is not oauth")
+	}
+	if !gjson.GetBytes(body, "stream").Bool() {
+		return nil, fmt.Errorf("edge oauth responses relay requires stream=true")
+	}
+	if suffix := strings.TrimSpace(openAIResponsesRequestPathSuffix(c)); suffix != "" {
+		return nil, fmt.Errorf("responses path suffix requires Go")
+	}
+	originalModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if originalModel == "" {
+		return nil, fmt.Errorf("missing model in request")
+	}
+	if IsImageGenerationIntent(openAIResponsesEndpoint, originalModel, body) {
+		return nil, fmt.Errorf("image responses require Go")
+	}
+	if previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); previousResponseID != "" {
+		return nil, fmt.Errorf("previous_response_id requires Go WSv2 state")
+	}
+	if bytes.Contains(body, []byte("function_call_output")) {
+		return nil, fmt.Errorf("function_call_output requires Go")
+	}
+
+	reqBody, err := getOpenAIRequestBodyMap(c, body)
+	if err != nil {
+		return nil, err
+	}
+	reqModel := originalModel
+	if model, ok := reqBody["model"].(string); ok && strings.TrimSpace(model) != "" {
+		reqModel = strings.TrimSpace(model)
+	}
+	promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	if promptCacheKey == "" {
+		if v, ok := reqBody["prompt_cache_key"].(string); ok {
+			promptCacheKey = strings.TrimSpace(v)
+		}
+	}
+	isCodexCLI := false
+	if c != nil {
+		isCodexCLI = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
+	}
+	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+		isCodexCLI = true
+	}
+
+	bodyModified := false
+	if isInstructionsEmpty(reqBody) && !isOpenAICompatMessagesBridgeBody(body) {
+		reqBody["instructions"] = "You are a helpful coding assistant."
+		bodyModified = true
+	}
+	billingModel := account.GetMappedModel(reqModel)
+	if billingModel != reqModel {
+		reqBody["model"] = billingModel
+		bodyModified = true
+	}
+	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if upstreamModel != "" && upstreamModel != billingModel {
+		reqBody["model"] = upstreamModel
+		bodyModified = true
+	} else if upstreamModel == "" {
+		upstreamModel = billingModel
+	}
+	if !SupportsVerbosity(upstreamModel) {
+		if text, ok := reqBody["text"].(map[string]any); ok {
+			if _, has := text["verbosity"]; has {
+				delete(text, "verbosity")
+				bodyModified = true
+			}
+		}
+	}
+	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {
+		if effort, ok := reasoning["effort"].(string); ok && effort == "minimal" {
+			reasoning["effort"] = "none"
+			bodyModified = true
+		}
+	}
+
+	codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, false)
+	if codexResult.Modified {
+		bodyModified = true
+	}
+	if applyCodexClientMetadata(reqBody, account) {
+		bodyModified = true
+	}
+	if codexResult.NormalizedModel != "" {
+		upstreamModel = codexResult.NormalizedModel
+	}
+	if codexResult.PromptCacheKey != "" {
+		promptCacheKey = codexResult.PromptCacheKey
+	}
+
+	if s.isOpenAIPromptCacheBoostRuntimeEnabled(account) {
+		if promptCacheKey == "" && s.isOpenAIPromptCacheBoostKeyRuntimeEnabled(account) {
+			if generatedKey := deriveOpenAIVirtualPromptCacheKey(account, upstreamModel, body); generatedKey != "" {
+				promptCacheKey = generatedKey
+				if existing, ok := reqBody["prompt_cache_key"].(string); !ok || strings.TrimSpace(existing) == "" {
+					reqBody["prompt_cache_key"] = generatedKey
+					bodyModified = true
+				}
+			}
+		}
+		if s.isOpenAIPromptCacheBoostRetentionRuntimeEnabled(account) {
+			if existing, ok := reqBody["prompt_cache_retention"].(string); !ok || strings.TrimSpace(existing) == "" {
+				reqBody["prompt_cache_retention"] = "24h"
+				bodyModified = true
+			}
+		}
+	}
+	if _, has := reqBody["safety_identifier"]; has {
+		delete(reqBody, "safety_identifier")
+		bodyModified = true
+	}
+	if !account.IsOpenAIPromptCacheBoostEnabled() {
+		if _, has := reqBody["prompt_cache_retention"]; has {
+			delete(reqBody, "prompt_cache_retention")
+			bodyModified = true
+		}
+	}
+	if sanitizeEmptyBase64InputImagesInOpenAIRequestBodyMap(reqBody) {
+		bodyModified = true
+	}
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		if applyOpenAIUpstreamStrongIsolationMap(reqBody, true) {
+			bodyModified = true
+		}
+	}
+
+	upstreamBody := body
+	if bodyModified {
+		upstreamBody, err = json.Marshal(reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("serialize oauth edge request body: %w", err)
+		}
+	}
+	upstreamBody, err = s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, upstreamBody)
+	if err != nil {
+		return nil, err
+	}
+
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	headers := s.buildChatGPTOAuthEdgeHeaders(ctx, c, account, upstreamBody, token, promptCacheKey, isCodexCLI)
+
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	reasoningEffort := extractOpenAIReasoningEffortFromBody(upstreamBody, originalModel)
+	serviceTier := extractOpenAIServiceTierFromBody(upstreamBody)
+	return &OpenAIEdgePreparedChatCompletions{
+		Plan: OpenAIEdgePlan{
+			Action:          OpenAIEdgeActionRelay,
+			AccountID:       account.ID,
+			AccountType:     account.Type,
+			Transport:       OpenAIEdgeTransportHTTP2SSE,
+			ResponseDialect: OpenAIEdgeDialectResponses,
+			UpstreamURL:     chatgptCodexURL,
+			Headers:         headers,
+			Body:            json.RawMessage(upstreamBody),
+			BodyRawBase64:   EncodeOpenAIEdgeRawBody(upstreamBody),
+			ProxyURL:        proxyURL,
+		},
+		Model:           originalModel,
+		BillingModel:    billingModel,
+		UpstreamModel:   upstreamModel,
+		ReasoningEffort: reasoningEffort,
+		ServiceTier:     serviceTier,
+	}, nil
+}
+
+func (s *OpenAIGatewayService) buildChatGPTOAuthEdgeHeaders(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	token string,
+	promptCacheKey string,
+	isCodexCLI bool,
+) map[string]string {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+token)
+	if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
+		headers.Set("chatgpt-account-id", chatgptAccountID)
+	}
+
+	if c != nil && c.Request != nil {
+		for key, values := range c.Request.Header {
+			if !openaiAllowedHeaders[strings.ToLower(key)] {
+				continue
+			}
+			for _, v := range values {
+				headers.Add(key, v)
+			}
+		}
+	}
+
+	compatMessagesBridge := isOpenAICompatMessagesBridgeContext(c) || isOpenAICompatMessagesBridgeBody(body)
+	clientConversationID := strings.TrimSpace(headers.Get("conversation_id"))
+	headers.Del("conversation_id")
+	headers.Del("session_id")
+	if compatMessagesBridge {
+		headers.Del("OpenAI-Beta")
+		headers.Del("originator")
+	} else {
+		headers.Set("OpenAI-Beta", "responses=experimental")
+		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
+	}
+
+	apiKeyID := getAPIKeyIDFromContext(c)
+	if isOpenAIResponsesCompactPath(c) {
+		headers.Set("accept", "application/json")
+		if headers.Get("version") == "" {
+			headers.Set("version", codexCLIVersion)
+		}
+		compactSession := resolveOpenAICompactSessionID(c)
+		headers.Set("session_id", isolateOpenAISessionID(apiKeyID, compactSession))
+	} else {
+		headers.Set("accept", "text/event-stream")
+	}
+	if promptCacheKey != "" {
+		isolated := isolateOpenAISessionID(apiKeyID, promptCacheKey)
+		headers.Set("session_id", isolated)
+		if !compatMessagesBridge || clientConversationID != "" {
+			headers.Set("conversation_id", isolated)
+		}
+	}
+
+	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
+		headers.Set("user-agent", customUA)
+	}
+	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+		headers.Set("user-agent", codexCLIUserAgent)
+	}
+	s.overrideBrowserUserAgentHeader(ctx, account, headers)
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		applyOpenAIUpstreamStrongIsolationHeaderMap(headers)
+	}
+	if headers.Get("content-type") == "" {
+		headers.Set("content-type", "application/json")
+	}
+
+	result := make(map[string]string, len(headers))
+	for key, values := range headers {
+		if len(values) > 0 {
+			result[key] = values[0]
+		}
+	}
+	return result
+}
+
 func IsOpenAIEdgeRawResponsesRelayEligible(account *Account) bool {
 	return account != nil &&
 		account.Type == AccountTypeAPIKey &&
@@ -389,7 +660,7 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 	if IsImageGenerationIntent(openAIResponsesEndpoint, model, firstMessage) {
 		return nil, fmt.Errorf("image ws requires Go")
 	}
-	if strings.Contains(string(firstMessage), "function_call_output") {
+	if bytes.Contains(firstMessage, []byte("function_call_output")) {
 		return nil, fmt.Errorf("function_call_output requires Go WS state")
 	}
 	policyModel := openAIWSPassthroughPolicyModelForFrame(account, firstMessage)

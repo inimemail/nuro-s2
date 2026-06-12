@@ -1,9 +1,13 @@
 package service
 
 import (
+	"context"
+	"encoding/base64"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
@@ -100,5 +104,72 @@ func TestScrubOpenAIEdgeStrongIsolationHeaders(t *testing.T) {
 	}
 	if headers["Authorization"] == "" || headers["Accept"] == "" || headers["X-Keep-This-Test-Value"] != "ok" {
 		t.Fatalf("expected non-isolation headers to remain: %#v", headers)
+	}
+}
+
+func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", "Mozilla/5.0")
+	c.Request.Header.Set("conversation_id", "client-conv")
+	c.Set("api_key", &APIKey{ID: 42})
+
+	account := &Account{
+		ID:       123,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-account",
+		},
+	}
+	body := []byte(`{"model":"gpt-5","stream":true,"prompt_cache_key":"turn-1","input":[{"role":"user","content":"hi"}]}`)
+
+	plan, err := (&OpenAIGatewayService{}).BuildChatGPTOAuthResponsesEdgePlan(context.Background(), c, account, body)
+	if err != nil {
+		t.Fatalf("build oauth edge plan: %v", err)
+	}
+	if plan.Plan.Action != OpenAIEdgeActionRelay || plan.Plan.Transport != OpenAIEdgeTransportHTTP2SSE {
+		t.Fatalf("unexpected relay plan: %#v", plan.Plan)
+	}
+	if plan.Plan.UpstreamURL != chatgptCodexURL {
+		t.Fatalf("unexpected upstream url: %q", plan.Plan.UpstreamURL)
+	}
+	if got := plan.Plan.Headers["Authorization"]; got != "Bearer oauth-token" {
+		t.Fatalf("unexpected authorization header: %q", got)
+	}
+	if got := plan.Plan.Headers["Chatgpt-Account-Id"]; got != "chatgpt-account" {
+		t.Fatalf("unexpected chatgpt account header: %#v", plan.Plan.Headers)
+	}
+	if got := plan.Plan.Headers["Accept"]; got != "text/event-stream" {
+		t.Fatalf("unexpected accept header: %q", got)
+	}
+	if got := plan.Plan.Headers["Openai-Beta"]; got != "responses=experimental" {
+		t.Fatalf("unexpected beta header: %#v", plan.Plan.Headers)
+	}
+	if got := plan.Plan.Headers["Originator"]; got != "opencode" {
+		t.Fatalf("unexpected originator header: %q", got)
+	}
+	expectedSession := isolateOpenAISessionID(42, "turn-1")
+	if got := plan.Plan.Headers["Session_id"]; got != expectedSession {
+		t.Fatalf("unexpected session header: got %q want %q", got, expectedSession)
+	}
+	if got := plan.Plan.Headers["Conversation_id"]; got != expectedSession {
+		t.Fatalf("unexpected conversation header: got %q want %q", got, expectedSession)
+	}
+	if got := plan.Plan.Headers["User-Agent"]; got != DefaultOpenAICodexUserAgent {
+		t.Fatalf("browser user-agent should be replaced, got %q", got)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
+	if err != nil {
+		t.Fatalf("decode body_raw_base64: %v", err)
+	}
+	if model := gjson.GetBytes(decoded, "model").String(); model == "" {
+		t.Fatalf("expected encoded body to decode to json: %s", string(decoded))
+	}
+	if model := gjson.GetBytes(plan.Plan.Body, "model").String(); model == "" {
+		t.Fatalf("expected response body to remain json: %s", string(plan.Plan.Body))
 	}
 }
