@@ -11,13 +11,16 @@ ENV_RECORD_FILE="/etc/nuro-sub2api_env"
 
 COMPOSE_PROJECT_NAME="nuro-sub2api"
 APP_CONTAINER="nuro-sub2api"
+EDGE_CONTAINER="nuro-sub2api-edge-rs"
 POSTGRES_CONTAINER="nuro-sub2api-postgres"
 REDIS_CONTAINER="nuro-sub2api-redis"
 IMAGE_NAME="nuro-sub2api-local:latest"
+EDGE_IMAGE_NAME="nuro-sub2api-edge-rs-local:latest"
 SOURCE_DIR_NAME="source"
 SOURCE_REPO_URL="${SOURCE_REPO_URL:-https://github.com/inimemail/nuro-s2.git}"
 SOURCE_REPO_BRANCH="${SOURCE_REPO_BRANCH:-main}"
 SCRIPT_RAW_URL="${SCRIPT_RAW_URL:-https://raw.githubusercontent.com/inimemail/nuro-s2/${SOURCE_REPO_BRANCH}/deploy-nuro.sh}"
+NURO_EDGE_ENABLED="${NURO_EDGE_ENABLED:-true}"
 
 DEFAULT_WEB_PORT="6182"
 CRON_TAG_BEGIN="# NURO_SUB2API_BACKUP_BEGIN"
@@ -229,6 +232,78 @@ generate_secret() {
     openssl rand -hex 32
 }
 
+ensure_env_value() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+    local current
+
+    current="$(read_env_value "$file" "$key")"
+    if [[ -z "$current" ]]; then
+        set_env_value "$file" "$key" "$value"
+    fi
+}
+
+ensure_edge_env_values() {
+    local env_file="$1"
+    local secret
+
+    touch "$env_file"
+    ensure_env_value "$env_file" NURO_EDGE_ENABLED "$NURO_EDGE_ENABLED"
+    if [[ "$(read_env_value "$env_file" NURO_EDGE_ENABLED)" != "true" ]]; then
+        secret="$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET)"
+        if [[ -z "$secret" ]]; then
+            secret="$(read_env_value "$env_file" SUB2API_EDGE_INTERNAL_SECRET)"
+        fi
+        if [[ -z "$secret" ]]; then
+            secret="$(generate_secret)"
+        fi
+        set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_ENABLED false
+        set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED false
+        set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET "$secret"
+        set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_MODE off
+        set_env_value "$env_file" GATEWAY_STREAM_LOW_LATENCY_MODE smart
+        set_env_value "$env_file" GATEWAY_LOW_LATENCY_STREAM_HEADERS true
+        set_env_value "$env_file" SUB2API_EDGE_INTERNAL_SECRET "$secret"
+        return
+    fi
+
+    secret="$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET)"
+    if [[ -z "$secret" ]]; then
+        secret="$(read_env_value "$env_file" SUB2API_EDGE_INTERNAL_SECRET)"
+    fi
+    if [[ -z "$secret" ]]; then
+        secret="$(generate_secret)"
+    fi
+
+    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_ENABLED true
+    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED true
+    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET "$secret"
+    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_MODE relay
+    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED true
+    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR edge-rs:18080
+    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL http://app:8080
+    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL http://app:8080
+    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_RELAY_CHAT_COMPLETIONS true
+    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES true
+    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES_WEBSOCKET true
+    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_ROLLOUT_PERCENT 100
+    ensure_env_value "$env_file" GATEWAY_STREAM_LOW_LATENCY_MODE smart
+    ensure_env_value "$env_file" GATEWAY_LOW_LATENCY_STREAM_HEADERS true
+
+    set_env_value "$env_file" SUB2API_EDGE_LISTEN_ADDR 0.0.0.0:18080
+    set_env_value "$env_file" SUB2API_EDGE_GO_BASE_URL http://app:8080
+    set_env_value "$env_file" SUB2API_EDGE_CONTROL_BASE_URL http://app:8080
+    set_env_value "$env_file" SUB2API_EDGE_INTERNAL_SECRET "$secret"
+    ensure_env_value "$env_file" SUB2API_EDGE_INITIAL_POOL_SIZE 10000
+    ensure_env_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 20000
+    ensure_env_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 4
+    ensure_env_value "$env_file" SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT 8
+    ensure_env_value "$env_file" SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH true
+    ensure_env_value "$env_file" SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES 262144
+    ensure_env_value "$env_file" SUB2API_EDGE_WS_IDLE_PER_KEY 1
+}
+
 generate_admin_password() {
     ADMIN_PASS="$(openssl rand -hex 12)"
 }
@@ -288,6 +363,32 @@ GATEWAY_OPENAI_HTTP2_ALLOW_PROXY_FALLBACK_TO_HTTP1=true
 GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD=2
 GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS=60
 GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS=600
+NURO_EDGE_ENABLED=true
+GATEWAY_OPENAI_EDGE_RS_ENABLED=true
+GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED=true
+GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET=$(generate_secret)
+GATEWAY_OPENAI_EDGE_RS_MODE=relay
+GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED=true
+GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR=edge-rs:18080
+GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL=http://app:8080
+GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL=http://app:8080
+GATEWAY_OPENAI_EDGE_RS_RELAY_CHAT_COMPLETIONS=true
+GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES=true
+GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES_WEBSOCKET=true
+GATEWAY_OPENAI_EDGE_RS_ROLLOUT_PERCENT=100
+GATEWAY_STREAM_LOW_LATENCY_MODE=smart
+GATEWAY_LOW_LATENCY_STREAM_HEADERS=true
+SUB2API_EDGE_LISTEN_ADDR=0.0.0.0:18080
+SUB2API_EDGE_GO_BASE_URL=http://app:8080
+SUB2API_EDGE_CONTROL_BASE_URL=http://app:8080
+SUB2API_EDGE_INTERNAL_SECRET=
+SUB2API_EDGE_INITIAL_POOL_SIZE=10000
+SUB2API_EDGE_QUEUE_BUFFER_SIZE=20000
+SUB2API_EDGE_PER_ACCOUNT_WORKERS=4
+SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT=8
+SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH=true
+SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES=262144
+SUB2API_EDGE_WS_IDLE_PER_KEY=1
 GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT=900
 GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL=10
 GATEWAY_IMAGE_CONCURRENCY_ENABLED=false
@@ -297,11 +398,67 @@ GATEWAY_IMAGE_CONCURRENCY_WAIT_TIMEOUT_SECONDS=30
 GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS=100
 EOF
 
+    local edge_secret
+    edge_secret="$(read_env_value "${workdir}/.env" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET)"
+    set_env_value "${workdir}/.env" SUB2API_EDGE_INTERNAL_SECRET "$edge_secret"
     chmod 600 "${workdir}/.env"
 }
 
 create_compose_file() {
     local workdir="$1"
+    local edge_enabled
+    local edge_depends=""
+    local edge_service=""
+
+    edge_enabled="$(read_env_value "${workdir}/.env" NURO_EDGE_ENABLED)"
+    edge_enabled="${edge_enabled:-true}"
+    if [[ "$edge_enabled" == "true" ]]; then
+        edge_depends='
+      edge-rs:
+        condition: service_healthy'
+        edge_service="
+
+  edge-rs:
+    build:
+      context: ./${SOURCE_DIR_NAME}/edge-rs
+      dockerfile: Dockerfile
+    image: ${EDGE_IMAGE_NAME}
+    container_name: ${EDGE_CONTAINER}
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    environment:
+      - TZ=\${TZ:-Asia/Shanghai}
+      - RUST_LOG=\${RUST_LOG:-info}
+      - SUB2API_EDGE_LISTEN_ADDR=\${SUB2API_EDGE_LISTEN_ADDR:-0.0.0.0:18080}
+      - SUB2API_EDGE_GO_BASE_URL=\${SUB2API_EDGE_GO_BASE_URL:-http://app:8080}
+      - SUB2API_EDGE_CONTROL_BASE_URL=\${SUB2API_EDGE_CONTROL_BASE_URL:-http://app:8080}
+      - SUB2API_EDGE_INTERNAL_SECRET=\${SUB2API_EDGE_INTERNAL_SECRET:?SUB2API_EDGE_INTERNAL_SECRET is required}
+      - SUB2API_EDGE_INITIAL_POOL_SIZE=\${SUB2API_EDGE_INITIAL_POOL_SIZE:-10000}
+      - SUB2API_EDGE_QUEUE_BUFFER_SIZE=\${SUB2API_EDGE_QUEUE_BUFFER_SIZE:-20000}
+      - SUB2API_EDGE_PER_ACCOUNT_WORKERS=\${SUB2API_EDGE_PER_ACCOUNT_WORKERS:-4}
+      - SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT=\${SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT:-8}
+      - SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH=\${SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH:-true}
+      - SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES=\${SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES:-262144}
+      - SUB2API_EDGE_WS_IDLE_PER_KEY=\${SUB2API_EDGE_WS_IDLE_PER_KEY:-1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      nuro-sub2api-network:
+        aliases:
+          - edge-rs
+    healthcheck:
+      test: [\"CMD\", \"wget\", \"-q\", \"-T\", \"5\", \"-O\", \"/dev/null\", \"http://localhost:18080/healthz\"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s"
+    fi
 
     cat > "${workdir}/docker-compose.yml" <<EOF
 name: ${COMPOSE_PROJECT_NAME}
@@ -369,6 +526,20 @@ services:
       - GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD=\${GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD:-2}
       - GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS=\${GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS:-60}
       - GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS=\${GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS:-600}
+      - GATEWAY_OPENAI_EDGE_RS_ENABLED=\${GATEWAY_OPENAI_EDGE_RS_ENABLED:-true}
+      - GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED=\${GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED:-true}
+      - GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET=\${GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET:?GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET is required}
+      - GATEWAY_OPENAI_EDGE_RS_MODE=\${GATEWAY_OPENAI_EDGE_RS_MODE:-relay}
+      - GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED=\${GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED:-true}
+      - GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR=\${GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR:-edge-rs:18080}
+      - GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL=\${GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL:-http://app:8080}
+      - GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL=\${GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL:-http://app:8080}
+      - GATEWAY_OPENAI_EDGE_RS_RELAY_CHAT_COMPLETIONS=\${GATEWAY_OPENAI_EDGE_RS_RELAY_CHAT_COMPLETIONS:-true}
+      - GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES=\${GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES:-true}
+      - GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES_WEBSOCKET=\${GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES_WEBSOCKET:-true}
+      - GATEWAY_OPENAI_EDGE_RS_ROLLOUT_PERCENT=\${GATEWAY_OPENAI_EDGE_RS_ROLLOUT_PERCENT:-100}
+      - GATEWAY_STREAM_LOW_LATENCY_MODE=\${GATEWAY_STREAM_LOW_LATENCY_MODE:-smart}
+      - GATEWAY_LOW_LATENCY_STREAM_HEADERS=\${GATEWAY_LOW_LATENCY_STREAM_HEADERS:-true}
       - GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT=\${GATEWAY_IMAGE_STREAM_DATA_INTERVAL_TIMEOUT:-900}
       - GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL=\${GATEWAY_IMAGE_STREAM_KEEPALIVE_INTERVAL:-10}
       - GATEWAY_IMAGE_CONCURRENCY_ENABLED=\${GATEWAY_IMAGE_CONCURRENCY_ENABLED:-false}
@@ -381,6 +552,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+${edge_depends}
     networks:
       - nuro-sub2api-network
     healthcheck:
@@ -389,6 +561,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+${edge_service}
 
   postgres:
     image: postgres:18-alpine
@@ -448,6 +621,27 @@ networks:
   nuro-sub2api-network:
     driver: bridge
 EOF
+}
+
+compose_build_with_edge_fallback() {
+    local workdir="$1"
+    local dc_cmd="$2"
+    local env_file="${workdir}/.env"
+
+    if $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build; then
+        return 0
+    fi
+
+    if [[ "$(read_env_value "$env_file" NURO_EDGE_ENABLED)" == "true" ]]; then
+        warn "包含 Rust edge 的镜像构建失败，自动关闭 edge 后重试，避免影响主服务升级。"
+        set_env_value "$env_file" NURO_EDGE_ENABLED false
+        ensure_edge_env_values "$env_file"
+        create_compose_file "$workdir"
+        $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build
+        return $?
+    fi
+
+    return 1
 }
 
 show_access() {
@@ -527,12 +721,13 @@ deploy_service() {
     chmod 755 data postgres_data redis_data backups
 
     create_env_file "$install_path" "$host_port"
+    ensure_edge_env_values "${install_path}/.env"
     sync_project_source "$install_path" || die "源码同步失败。请检查服务器是否能访问 ${SOURCE_REPO_URL}，或在项目根目录执行本脚本。"
     create_compose_file "$install_path"
 
     info "正在使用项目源码构建本地镜像并启动 ${APP_NAME} ..."
-    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build || die "镜像构建失败"
-    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d || die "容器启动失败"
+    compose_build_with_edge_fallback "$install_path" "$dc_cmd" || die "镜像构建失败"
+    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans || die "容器启动失败"
 
     wait_app_ready || true
     show_access "$install_path"
@@ -549,11 +744,12 @@ upgrade_service() {
     require_cmd git
 
     sync_project_source "$workdir" || die "源码同步失败。请检查服务器是否能访问 ${SOURCE_REPO_URL}，或在项目根目录执行本脚本。"
+    ensure_edge_env_values "${workdir}/.env"
     create_compose_file "$workdir"
 
     info "正在使用项目源码重建 ${APP_NAME} ..."
-    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build || die "镜像构建失败"
-    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d || die "容器启动失败"
+    compose_build_with_edge_fallback "$workdir" "$dc_cmd" || die "镜像构建失败"
+    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans || die "容器启动失败"
 
     wait_app_ready || true
     show_access "$workdir"
@@ -635,7 +831,7 @@ restore_backup() {
         read -r -p "目标路径已存在，是否覆盖？(y/N): " confirm
         [[ ! "$confirm" =~ ^[Yy]$ ]] && { rm -f "$safe_backup"; return; }
         cd "$target" 2>/dev/null && $(docker_compose_cmd) -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml down 2>/dev/null || true
-        docker rm -f "$APP_CONTAINER" "$POSTGRES_CONTAINER" "$REDIS_CONTAINER" 2>/dev/null || true
+        docker rm -f "$APP_CONTAINER" "$EDGE_CONTAINER" "$POSTGRES_CONTAINER" "$REDIS_CONTAINER" 2>/dev/null || true
         safe_remove_dir "$target" || { rm -f "$safe_backup"; return; }
     fi
 
@@ -648,6 +844,8 @@ restore_backup() {
 
     cd "$target" || return
     [[ -f docker-compose.yml ]] || create_compose_file "$target"
+    ensure_edge_env_values "${target}/.env"
+    create_compose_file "$target"
 
     local restored_port host_port
     restored_port="$(read_env_value "${target}/.env" SERVER_PORT)"
@@ -663,8 +861,10 @@ restore_backup() {
     mkdir -p data postgres_data redis_data backups
     chmod 755 data postgres_data redis_data backups
 
-    $(docker_compose_cmd) -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build || die "镜像构建失败"
-    $(docker_compose_cmd) -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d || die "容器启动失败"
+    local restore_dc_cmd
+    restore_dc_cmd="$(docker_compose_cmd)"
+    compose_build_with_edge_fallback "$target" "$restore_dc_cmd" || die "镜像构建失败"
+    $restore_dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans || die "容器启动失败"
 
     wait_app_ready || true
     show_access "$target"
@@ -739,7 +939,7 @@ uninstall_service() {
         cd "$workdir" 2>/dev/null && $(docker_compose_cmd) -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml down 2>/dev/null || true
     fi
 
-    docker rm -f "$APP_CONTAINER" "$POSTGRES_CONTAINER" "$REDIS_CONTAINER" 2>/dev/null || true
+    docker rm -f "$APP_CONTAINER" "$EDGE_CONTAINER" "$POSTGRES_CONTAINER" "$REDIS_CONTAINER" 2>/dev/null || true
     safe_remove_dir "$workdir" || return
     rm -f "$ENV_RECORD_FILE"
     crontab -l 2>/dev/null | sed "/^${CRON_TAG_BEGIN}$/,/^${CRON_TAG_END}$/d" | crontab - 2>/dev/null || true
