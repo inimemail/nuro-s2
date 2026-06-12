@@ -614,6 +614,8 @@ const normalizeSoftCooldownDisplayUntil = (
   maxSeconds: number
 ) => {
   const field = kind === 'openai' ? 'openai_pool_soft_cooldown_until' : 'anthropic_pool_soft_cooldown_until'
+  const dueField = kind === 'openai' ? 'openai_pool_soft_cooldown_due' : 'anthropic_pool_soft_cooldown_due'
+  const probingField = kind === 'openai' ? 'openai_pool_recovery_probe_in_flight' : 'anthropic_pool_recovery_probe_in_flight'
   const stateKey = `${kind}:${account.id}`
   const currentUntil = account[field]
   const existing = poolSoftCooldownDisplayState.get(stateKey)
@@ -630,6 +632,11 @@ const normalizeSoftCooldownDisplayUntil = (
     return
   }
 
+  if (account[dueField] || account[probingField]) {
+    poolSoftCooldownDisplayState.delete(stateKey)
+    return
+  }
+
   const nowMs = Date.now()
   let state = existing
   if (!state || state.rawUntil !== rawUntil) {
@@ -641,7 +648,7 @@ const normalizeSoftCooldownDisplayUntil = (
     poolSoftCooldownDisplayState.set(stateKey, state)
   }
 
-  const displayUntilMs = Math.min(rawUntilMs, state.firstSeenMs + maxSeconds * 1000)
+  const displayUntilMs = state.firstSeenMs + maxSeconds * 1000
   state.displayUntil = new Date(displayUntilMs).toISOString()
   account[field] = state.displayUntil
 }
