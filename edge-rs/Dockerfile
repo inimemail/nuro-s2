@@ -14,7 +14,7 @@ RUN cargo build --release --locked
 
 FROM ${ALPINE_IMAGE}
 
-RUN apk add --no-cache ca-certificates tzdata && rm -rf /var/cache/apk/*
+RUN apk add --no-cache ca-certificates tzdata wget && rm -rf /var/cache/apk/*
 
 RUN addgroup -g 1000 sub2api && \
     adduser -u 1000 -G sub2api -s /bin/sh -D sub2api

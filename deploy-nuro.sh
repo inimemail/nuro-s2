@@ -644,6 +644,28 @@ compose_build_with_edge_fallback() {
     return 1
 }
 
+compose_up_with_edge_fallback() {
+    local workdir="$1"
+    local dc_cmd="$2"
+    local env_file="${workdir}/.env"
+
+    if $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans; then
+        return 0
+    fi
+
+    if [[ "$(read_env_value "$env_file" NURO_EDGE_ENABLED)" == "true" ]]; then
+        warn "Rust edge 启动或健康检查失败，自动关闭 edge 后重试启动主服务。"
+        docker logs --tail=120 "$EDGE_CONTAINER" 2>/dev/null || true
+        set_env_value "$env_file" NURO_EDGE_ENABLED false
+        ensure_edge_env_values "$env_file"
+        create_compose_file "$workdir"
+        $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans
+        return $?
+    fi
+
+    return 1
+}
+
 show_access() {
     local workdir="$1"
     local env_file="${workdir}/.env"
@@ -727,7 +749,7 @@ deploy_service() {
 
     info "正在使用项目源码构建本地镜像并启动 ${APP_NAME} ..."
     compose_build_with_edge_fallback "$install_path" "$dc_cmd" || die "镜像构建失败"
-    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans || die "容器启动失败"
+    compose_up_with_edge_fallback "$install_path" "$dc_cmd" || die "容器启动失败"
 
     wait_app_ready || true
     show_access "$install_path"
@@ -749,7 +771,7 @@ upgrade_service() {
 
     info "正在使用项目源码重建 ${APP_NAME} ..."
     compose_build_with_edge_fallback "$workdir" "$dc_cmd" || die "镜像构建失败"
-    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans || die "容器启动失败"
+    compose_up_with_edge_fallback "$workdir" "$dc_cmd" || die "容器启动失败"
 
     wait_app_ready || true
     show_access "$workdir"
@@ -864,7 +886,7 @@ restore_backup() {
     local restore_dc_cmd
     restore_dc_cmd="$(docker_compose_cmd)"
     compose_build_with_edge_fallback "$target" "$restore_dc_cmd" || die "镜像构建失败"
-    $restore_dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans || die "容器启动失败"
+    compose_up_with_edge_fallback "$target" "$restore_dc_cmd" || die "容器启动失败"
 
     wait_app_ready || true
     show_access "$target"
