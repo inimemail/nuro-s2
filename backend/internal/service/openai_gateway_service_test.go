@@ -1372,6 +1372,150 @@ func TestOpenAIStreamingAPIKeySSECommentPreflushWritesBeforeFailedEvent(t *testi
 	require.Contains(t, rec.Body.String(), "response.failed")
 }
 
+func TestOpenAIStreamingPreambleFlushDoesNotCountCreatedAsFirstToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_pre"}}`,
+			"",
+			"event: response.in_progress",
+			`data: {"type":"response.in_progress","response":{"id":"resp_pre"}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{"X-Request-Id": []string{"rid-preamble-ttft"}},
+	}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Name:     "acc",
+		Extra: map[string]any{
+			openAIOAuthChatGPTPreambleFlushExtraKey: true,
+		},
+	}
+
+	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.4", "gpt-5.4")
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Nil(t, result.firstTokenMs)
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+}
+
+func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesEmptyDeltaAfterCreated(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_safe"}}`,
+			"",
+			`data: {"type":"response.output_text.delta","delta":"ok"}`,
+			"",
+			`data: {"type":"response.completed","response":{"id":"resp_safe","usage":{"input_tokens":1,"output_tokens":1}}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{"X-Request-Id": []string{"rid-safe-placeholder"}},
+	}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Name:     "acc",
+		Extra: map[string]any{
+			openAIOAuthChatGPTSafeTokenPlaceholderExtraKey: true,
+		},
+	}
+
+	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.4", "gpt-5.4")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.firstTokenMs)
+	body := rec.Body.String()
+	require.Contains(t, body, `"type":"response.created"`)
+	require.Contains(t, body, `"type":"response.output_text.delta","delta":""`)
+	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
+	require.Less(t,
+		strings.Index(body, `"type":"response.created"`),
+		strings.Index(body, `"type":"response.output_text.delta","delta":""`),
+	)
+	require.Less(t,
+		strings.Index(body, `"type":"response.output_text.delta","delta":""`),
+		strings.Index(body, `"type":"response.output_text.delta","delta":"ok"`),
+	)
+}
+
+func TestOpenAIStreamingSafeTokenPlaceholderDisabledDoesNotInjectEmptyDelta(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_safe"}}`,
+			"",
+			`data: {"type":"response.output_text.delta","delta":"ok"}`,
+			"",
+			`data: {"type":"response.completed","response":{"id":"resp_safe","usage":{"input_tokens":1,"output_tokens":1}}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{"X-Request-Id": []string{"rid-safe-placeholder-disabled"}},
+	}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Name:     "acc",
+		Extra:    map[string]any{},
+	}
+
+	result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.4", "gpt-5.4")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	body := rec.Body.String()
+	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
+	require.NotContains(t, body, `"type":"response.output_text.delta","delta":""`)
+}
+
 func TestOpenAIStreamingResponseFailedBeforeOutputCapacityErrorReturnsFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
@@ -1847,6 +1991,102 @@ func TestOpenAIStreamingPassthroughAPIKeySSECommentPreflushWritesBeforeFailedEve
 	require.True(t, c.Writer.Written())
 	require.True(t, strings.HasPrefix(rec.Body.String(), ":\n\n"))
 	require.Contains(t, rec.Body.String(), "response.failed")
+}
+
+func TestOpenAIStreamingPassthroughPreambleFlushDoesNotCountCreatedAsFirstToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			MaxLineSize: defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_pre"}}`,
+			"",
+			"event: response.in_progress",
+			`data: {"type":"response.in_progress","response":{"id":"resp_pre"}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{"X-Request-Id": []string{"rid-passthrough-preamble-ttft"}},
+	}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Name:     "acc",
+		Extra: map[string]any{
+			openAIOAuthChatGPTPreambleFlushExtraKey: true,
+		},
+	}
+
+	result, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "", "")
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Nil(t, result.firstTokenMs)
+	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
+}
+
+func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesEmptyDeltaAfterCreated(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			MaxLineSize: defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"id":"resp_safe"}}`,
+			"",
+			`data: {"type":"response.output_text.delta","delta":"ok"}`,
+			"",
+			`data: {"type":"response.completed","response":{"id":"resp_safe","usage":{"input_tokens":1,"output_tokens":1}}}`,
+			"",
+		}, "\n"))),
+		Header: http.Header{"X-Request-Id": []string{"rid-passthrough-safe-placeholder"}},
+	}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Name:     "acc",
+		Extra: map[string]any{
+			openAIOAuthChatGPTSafeTokenPlaceholderExtraKey: true,
+		},
+	}
+
+	result, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.firstTokenMs)
+	body := rec.Body.String()
+	require.Contains(t, body, `"type":"response.created"`)
+	require.Contains(t, body, `"type":"response.output_text.delta","delta":""`)
+	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
+	require.Less(t,
+		strings.Index(body, `"type":"response.created"`),
+		strings.Index(body, `"type":"response.output_text.delta","delta":""`),
+	)
+	require.Less(t,
+		strings.Index(body, `"type":"response.output_text.delta","delta":""`),
+		strings.Index(body, `"type":"response.output_text.delta","delta":"ok"`),
+	)
 }
 
 func TestOpenAIStreamingPassthroughResponseDoneWithoutDoneMarkerStillSucceeds(t *testing.T) {

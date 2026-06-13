@@ -790,6 +790,52 @@
         </div>
       </div>
 
+      <!-- OpenAI OAuth safe first token placeholder -->
+      <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <div class="flex-1 pr-4">
+            <label
+              id="bulk-edit-openai-oauth-safe-token-placeholder-label"
+              class="input-label mb-0"
+              for="bulk-edit-openai-oauth-safe-token-placeholder-enabled"
+            >
+              {{ t('admin.accounts.openai.oauthChatGPTSafeTokenPlaceholder') }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.oauthChatGPTSafeTokenPlaceholderDesc') }}
+            </p>
+          </div>
+          <input
+            v-model="enableOpenAIOAuthSafeTokenPlaceholder"
+            id="bulk-edit-openai-oauth-safe-token-placeholder-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-oauth-safe-token-placeholder"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-oauth-safe-token-placeholder"
+          :class="!enableOpenAIOAuthSafeTokenPlaceholder && 'pointer-events-none opacity-50'"
+        >
+          <button
+            id="bulk-edit-openai-oauth-safe-token-placeholder-toggle"
+            type="button"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiOAuthChatGPTSafeTokenPlaceholderEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+            @click="openaiOAuthChatGPTSafeTokenPlaceholderEnabled = !openaiOAuthChatGPTSafeTokenPlaceholderEnabled"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiOAuthChatGPTSafeTokenPlaceholderEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+      </div>
+
       <!-- OpenAI OAuth Codex CLI only -->
       <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
@@ -1001,6 +1047,52 @@
               :class="[
                 'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
                 openaiAPIKeySSECommentPreflushEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+      </div>
+
+      <!-- OpenAI API Key safe first token placeholder -->
+      <div v-if="allOpenAIAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <div class="flex-1 pr-4">
+            <label
+              id="bulk-edit-openai-apikey-safe-token-placeholder-label"
+              class="input-label mb-0"
+              for="bulk-edit-openai-apikey-safe-token-placeholder-enabled"
+            >
+              {{ t('admin.accounts.openai.apiKeySafeTokenPlaceholder') }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.apiKeySafeTokenPlaceholderDesc') }}
+            </p>
+          </div>
+          <input
+            v-model="enableOpenAIAPIKeySafeTokenPlaceholder"
+            id="bulk-edit-openai-apikey-safe-token-placeholder-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-apikey-safe-token-placeholder"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-apikey-safe-token-placeholder"
+          :class="!enableOpenAIAPIKeySafeTokenPlaceholder && 'pointer-events-none opacity-50'"
+        >
+          <button
+            id="bulk-edit-openai-apikey-safe-token-placeholder-toggle"
+            type="button"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiAPIKeySafeTokenPlaceholderEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+            @click="openaiAPIKeySafeTokenPlaceholderEnabled = !openaiAPIKeySafeTokenPlaceholderEnabled"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiAPIKeySafeTokenPlaceholderEnabled ? 'translate-x-5' : 'translate-x-0'
               ]"
             />
           </button>
@@ -1448,8 +1540,10 @@ const enableOpenAIWSMode = ref(false)
 const enableOpenAIAPIKeyWSMode = ref(false)
 const enableOpenAIOAuthPreambleFlush = ref(false)
 const enableOpenAIOAuthSSECommentPreflush = ref(false)
+const enableOpenAIOAuthSafeTokenPlaceholder = ref(false)
 const enableOpenAIAPIKeyPreambleFlush = ref(false)
 const enableOpenAIAPIKeySSECommentPreflush = ref(false)
+const enableOpenAIAPIKeySafeTokenPlaceholder = ref(false)
 const enableCodexCLIOnly = ref(false)
 const enableCodexCLIOnlyAllowClaudeCode = ref(false)
 const enableOpenAICompactMode = ref(false)
@@ -1480,8 +1574,10 @@ const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiOAuthChatGPTPreambleFlushEnabled = ref(false)
 const openaiOAuthChatGPTSSECommentPreflushEnabled = ref(false)
+const openaiOAuthChatGPTSafeTokenPlaceholderEnabled = ref(false)
 const openaiAPIKeyPreambleFlushEnabled = ref(false)
 const openaiAPIKeySSECommentPreflushEnabled = ref(false)
+const openaiAPIKeySafeTokenPlaceholderEnabled = ref(false)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
@@ -1739,6 +1835,11 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.openai_oauth_chatgpt_sse_comment_preflush_enabled = openaiOAuthChatGPTSSECommentPreflushEnabled.value
   }
 
+  if (enableOpenAIOAuthSafeTokenPlaceholder.value) {
+    const extra = ensureExtra()
+    extra.openai_oauth_chatgpt_safe_token_placeholder_enabled = openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value
+  }
+
   if (enableOpenAIAPIKeyPreambleFlush.value) {
     const extra = ensureExtra()
     extra.openai_apikey_preamble_flush_enabled = openaiAPIKeyPreambleFlushEnabled.value
@@ -1747,6 +1848,11 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   if (enableOpenAIAPIKeySSECommentPreflush.value) {
     const extra = ensureExtra()
     extra.openai_apikey_sse_comment_preflush_enabled = openaiAPIKeySSECommentPreflushEnabled.value
+  }
+
+  if (enableOpenAIAPIKeySafeTokenPlaceholder.value) {
+    const extra = ensureExtra()
+    extra.openai_apikey_safe_token_placeholder_enabled = openaiAPIKeySafeTokenPlaceholderEnabled.value
   }
 
   if (enableCodexCLIOnly.value) {
@@ -1866,8 +1972,10 @@ const handleSubmit = async () => {
     enableOpenAIAPIKeyWSMode.value ||
     enableOpenAIOAuthPreambleFlush.value ||
     enableOpenAIOAuthSSECommentPreflush.value ||
+    enableOpenAIOAuthSafeTokenPlaceholder.value ||
     enableOpenAIAPIKeyPreambleFlush.value ||
     enableOpenAIAPIKeySSECommentPreflush.value ||
+    enableOpenAIAPIKeySafeTokenPlaceholder.value ||
     enableCodexCLIOnly.value ||
     enableCodexCLIOnlyAllowClaudeCode.value ||
     enableOpenAICompactMode.value ||
@@ -1973,8 +2081,10 @@ watch(
       enableOpenAIAPIKeyWSMode.value = false
       enableOpenAIOAuthPreambleFlush.value = false
       enableOpenAIOAuthSSECommentPreflush.value = false
+      enableOpenAIOAuthSafeTokenPlaceholder.value = false
       enableOpenAIAPIKeyPreambleFlush.value = false
       enableOpenAIAPIKeySSECommentPreflush.value = false
+      enableOpenAIAPIKeySafeTokenPlaceholder.value = false
       enableCodexCLIOnly.value = false
       enableCodexCLIOnlyAllowClaudeCode.value = false
       enableOpenAICompactMode.value = false
@@ -2001,8 +2111,10 @@ watch(
       openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       openaiOAuthChatGPTPreambleFlushEnabled.value = false
       openaiOAuthChatGPTSSECommentPreflushEnabled.value = false
+      openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value = false
       openaiAPIKeyPreambleFlushEnabled.value = false
       openaiAPIKeySSECommentPreflushEnabled.value = false
+      openaiAPIKeySafeTokenPlaceholderEnabled.value = false
       codexCLIOnlyEnabled.value = false
       codexCLIOnlyAllowClaudeCodeEnabled.value = false
       openAICompactMode.value = 'auto'

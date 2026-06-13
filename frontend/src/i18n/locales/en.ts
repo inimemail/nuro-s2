@@ -3410,12 +3410,18 @@ export default {
         oauthChatGPTSSECommentPreflush: 'OAuth/ChatGPT first packet preflush (SSE comment)',
         oauthChatGPTSSECommentPreflushDesc:
           'Sends the shortest SSE comment when the stream starts so downstream clients receive a response body earlier; it does not fake tokens, but early upstream failures may no longer switch accounts transparently.',
+        oauthChatGPTSafeTokenPlaceholder: 'OAuth/ChatGPT downstream first-token safe placeholder',
+        oauthChatGPTSafeTokenPlaceholderDesc:
+          'After upstream response.created, injects an empty text delta so original sub2api-like downstream dashboards can record first token earlier. It produces no visible text, but early upstream failures may no longer switch accounts transparently.',
         apiKeyPreambleFlush: 'APIKey early first packet passthrough',
         apiKeyPreambleFlushDesc:
           'Useful when an APIKey upstream or relay has slow first packets. Forwards response.created / response.in_progress earlier; early upstream failures may no longer switch accounts transparently.',
         apiKeySSECommentPreflush: 'APIKey first packet preflush (SSE comment)',
         apiKeySSECommentPreflushDesc:
           'Sends the shortest SSE comment when the stream starts so downstream clients receive a response body earlier; it does not fake tokens, but early upstream failures may no longer switch accounts transparently.',
+        apiKeySafeTokenPlaceholder: 'APIKey downstream first-token safe placeholder',
+        apiKeySafeTokenPlaceholderDesc:
+          'After upstream response.created, injects an empty text delta or empty chat chunk so original sub2api-like downstream dashboards can record first token earlier. It produces no visible text, but early upstream failures may no longer switch accounts transparently.',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
           'Only applies to OpenAI OAuth. This account can use OpenAI WebSocket Mode only when enabled.',

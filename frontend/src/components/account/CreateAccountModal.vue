@@ -2726,6 +2726,29 @@
             />
           </button>
         </div>
+        <div v-if="accountCategory === 'oauth-based'" class="flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.oauthChatGPTSafeTokenPlaceholder') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.oauthChatGPTSafeTokenPlaceholderDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="openaiOAuthChatGPTSafeTokenPlaceholderEnabled = !openaiOAuthChatGPTSafeTokenPlaceholderEnabled"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiOAuthChatGPTSafeTokenPlaceholderEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiOAuthChatGPTSafeTokenPlaceholderEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
         <div v-if="accountCategory === 'apikey'" class="flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.openai.apiKeyPreambleFlush') }}</label>
@@ -2768,6 +2791,29 @@
               :class="[
                 'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
                 openaiAPIKeySSECommentPreflushEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+        <div v-if="accountCategory === 'apikey'" class="flex items-center justify-between">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.apiKeySafeTokenPlaceholder') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.apiKeySafeTokenPlaceholderDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="openaiAPIKeySafeTokenPlaceholderEnabled = !openaiAPIKeySafeTokenPlaceholderEnabled"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiAPIKeySafeTokenPlaceholderEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiAPIKeySafeTokenPlaceholderEnabled ? 'translate-x-5' : 'translate-x-0'
               ]"
             />
           </button>
@@ -3684,6 +3730,8 @@ const openaiOAuthChatGPTPreambleFlushEnabled = ref(false)
 const openaiAPIKeyPreambleFlushEnabled = ref(false)
 const openaiOAuthChatGPTSSECommentPreflushEnabled = ref(false)
 const openaiAPIKeySSECommentPreflushEnabled = ref(false)
+const openaiOAuthChatGPTSafeTokenPlaceholderEnabled = ref(false)
+const openaiAPIKeySafeTokenPlaceholderEnabled = ref(false)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const anthropicPassthroughEnabled = ref(false)
@@ -4118,6 +4166,8 @@ watch(
       openaiAPIKeyPreambleFlushEnabled.value = false
       openaiOAuthChatGPTSSECommentPreflushEnabled.value = false
       openaiAPIKeySSECommentPreflushEnabled.value = false
+      openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value = false
+      openaiAPIKeySafeTokenPlaceholderEnabled.value = false
       codexCLIOnlyEnabled.value = false
       codexCLIOnlyAllowClaudeCodeEnabled.value = false
     }
@@ -4550,6 +4600,8 @@ const resetForm = () => {
   openaiAPIKeyPreambleFlushEnabled.value = false
   openaiOAuthChatGPTSSECommentPreflushEnabled.value = false
   openaiAPIKeySSECommentPreflushEnabled.value = false
+  openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value = false
+  openaiAPIKeySafeTokenPlaceholderEnabled.value = false
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   anthropicPassthroughEnabled.value = false
@@ -4622,7 +4674,14 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     } else {
       delete extra.openai_oauth_chatgpt_sse_comment_preflush_enabled
     }
+    if (openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value) {
+      extra.openai_oauth_chatgpt_safe_token_placeholder_enabled = true
+    } else {
+      delete extra.openai_oauth_chatgpt_safe_token_placeholder_enabled
+    }
+    delete extra.openai_apikey_preamble_flush_enabled
     delete extra.openai_apikey_sse_comment_preflush_enabled
+    delete extra.openai_apikey_safe_token_placeholder_enabled
   } else if (accountCategory.value === 'apikey') {
     extra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
     extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
@@ -4636,8 +4695,14 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     } else {
       delete extra.openai_apikey_sse_comment_preflush_enabled
     }
+    if (openaiAPIKeySafeTokenPlaceholderEnabled.value) {
+      extra.openai_apikey_safe_token_placeholder_enabled = true
+    } else {
+      delete extra.openai_apikey_safe_token_placeholder_enabled
+    }
     delete extra.openai_oauth_chatgpt_preamble_flush_enabled
     delete extra.openai_oauth_chatgpt_sse_comment_preflush_enabled
+    delete extra.openai_oauth_chatgpt_safe_token_placeholder_enabled
   }
   // 清理兼容旧键，统一改用分类型开关。
   delete extra.responses_websockets_v2_enabled

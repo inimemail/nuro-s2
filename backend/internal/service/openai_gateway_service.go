@@ -4239,6 +4239,26 @@ func (s *OpenAIGatewayService) openAIStreamSSECommentPreflushEnabled(account *Ac
 	return true
 }
 
+func (s *OpenAIGatewayService) openAIStreamSafeTokenPlaceholderEnabled(account *Account, requestedModel string) bool {
+	if account == nil || !account.IsOpenAISafeTokenPlaceholderEnabled() {
+		return false
+	}
+	if isOpenAIImageGenerationModel(requestedModel) {
+		return false
+	}
+	return true
+}
+
+func openAIResponsesSafeTokenPlaceholderFrame(responseID string) string {
+	responseID = strings.TrimSpace(responseID)
+	if responseID == "" {
+		responseID = "resp_placeholder"
+	}
+	return `data: {"type":"response.output_text.delta","delta":"","response_id":` +
+		strconv.Quote(responseID) +
+		`,"item_id":"msg_placeholder","output_index":0,"content_index":0}` + "\n\n"
+}
+
 func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool {
 	if isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
 		return true
@@ -4380,6 +4400,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	clientOutputStarted := accountSSECommentPreflushed
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
+	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
+	safeTokenPlaceholderSent := false
+	safeTokenPlaceholderPending := false
 	pendingLines := make([]string, 0, 8)
 	pendingLinesAtEventBoundary := func() bool {
 		return len(pendingLines) == 0 || pendingLines[len(pendingLines)-1] == ""
@@ -4407,6 +4430,26 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			return
 		}
 		clientOutputStarted = true
+		flusher.Flush()
+		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
+	}
+	writeSafeTokenPlaceholder := func() {
+		if !safeTokenPlaceholder || safeTokenPlaceholderSent || clientDisconnected || !pendingLinesAtEventBoundary() {
+			return
+		}
+		if len(pendingLines) > 0 && !writePendingLines() {
+			return
+		}
+		if _, err := fmt.Fprint(w, openAIResponsesSafeTokenPlaceholderFrame(responseID)); err != nil {
+			clientDisconnected = true
+			return
+		}
+		safeTokenPlaceholderSent = true
+		clientOutputStarted = true
+		if firstTokenMs == nil {
+			ms := int(time.Since(startTime).Milliseconds())
+			firstTokenMs = &ms
+		}
 		flusher.Flush()
 		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
 	}
@@ -4463,8 +4506,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
 			imageCounter.AddSSEData(dataBytes)
-			lineStartsClientOutput = forceFlushFailedEvent || openAIStreamDataStartsClientOutputWithPreambleFlush(trimmedData, eventType, flushPreamble)
-			if firstTokenMs == nil && lineStartsClientOutput && trimmedData != "[DONE]" {
+			safeTokenPlaceholderPending = safeTokenPlaceholderPending || eventType == "response.created"
+			lineStartsFirstToken := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
+			lineStartsClientOutput = lineStartsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(trimmedData, eventType, flushPreamble)
+			if firstTokenMs == nil && lineStartsFirstToken && trimmedData != "[DONE]" {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
@@ -4474,6 +4519,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		if !clientDisconnected {
 			if !clientOutputStarted && !lineStartsClientOutput {
 				pendingLines = append(pendingLines, line)
+				if line == "" && safeTokenPlaceholderPending {
+					safeTokenPlaceholderPending = false
+					writeSafeTokenPlaceholder()
+				}
 				return false, nil
 			}
 			if !clientOutputStarted && len(pendingLines) > 0 {
@@ -4488,6 +4537,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				clientOutputStarted = true
 				flusher.Flush()
 				SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
+			}
+			if line == "" && safeTokenPlaceholderPending {
+				safeTokenPlaceholderPending = false
+				writeSafeTokenPlaceholder()
 			}
 		}
 		return false, nil
@@ -5339,6 +5392,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	clientOutputStarted := accountSSECommentPreflushed
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
+	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
+	safeTokenPlaceholderSent := false
+	safeTokenPlaceholderPending := false
 	var streamFailoverErr error
 	atSSEEventBoundary := true
 	sendErrorEvent := func(reason string) {
@@ -5361,6 +5417,26 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		}
 		clientOutputStarted = true
 		lastDownstreamWriteAt = time.Now()
+	}
+	writeSafeTokenPlaceholder := func() {
+		if !safeTokenPlaceholder || safeTokenPlaceholderSent || clientDisconnected || !atSSEEventBoundary {
+			return
+		}
+		if _, err := bufferedWriter.WriteString(openAIResponsesSafeTokenPlaceholderFrame(responseID)); err != nil {
+			clientDisconnected = true
+			return
+		}
+		if err := flushBuffered(); err != nil {
+			clientDisconnected = true
+			return
+		}
+		safeTokenPlaceholderSent = true
+		clientOutputStarted = true
+		lastDownstreamWriteAt = time.Now()
+		if firstTokenMs == nil {
+			ms := int(time.Since(startTime).Milliseconds())
+			firstTokenMs = &ms
+		}
 	}
 
 	needModelReplace := originalModel != mappedModel
@@ -5473,6 +5549,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
 			imageCounter.AddSSEData(dataBytes)
+			safeTokenPlaceholderPending = safeTokenPlaceholderPending || eventType == "response.created"
 
 			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
 			if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
@@ -5481,12 +5558,13 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				line = "data: " + data
 				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
 			}
-			startsClientOutput := forceFlushFailedEvent || openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType, flushPreamble)
+			startsFirstToken := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
+			startsClientOutput := startsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType, flushPreamble)
 
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected {
 				shouldFlush := clientOutputStarted || startsClientOutput
-				if firstTokenMs == nil && startsClientOutput {
+				if firstTokenMs == nil && startsFirstToken {
 					// 保证首个 token 事件尽快出站，避免影响 TTFT。
 					shouldFlush = true
 				}
@@ -5508,7 +5586,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			}
 
 			// Record first token time
-			if firstTokenMs == nil && startsClientOutput {
+			if firstTokenMs == nil && startsFirstToken {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
@@ -5532,6 +5610,11 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					clientOutputStarted = true
 					lastDownstreamWriteAt = time.Now()
 				}
+			}
+			if line == "" && safeTokenPlaceholderPending {
+				safeTokenPlaceholderPending = false
+				atSSEEventBoundary = true
+				writeSafeTokenPlaceholder()
 			}
 		}
 	}

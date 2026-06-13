@@ -548,9 +548,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	var usage OpenAIUsage
 	var firstTokenMs *int
-	firstChunk := true
 	clientDisconnected := false
 	clientOutputStarted := false
+	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
+	safeTokenPlaceholderSent := false
 	pendingSSE := make([]string, 0, 4)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var streamFailoverErr *UpstreamFailoverError
@@ -576,6 +577,56 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		intervalCh = intervalTicker.C
 	}
 
+	markFirstToken := func() {
+		if firstTokenMs != nil {
+			return
+		}
+		ms := int(time.Since(startTime).Milliseconds())
+		firstTokenMs = &ms
+	}
+
+	writeSafeChatPlaceholder := func(createdChunks []apicompat.ChatCompletionsChunk) bool {
+		if !safeTokenPlaceholder || safeTokenPlaceholderSent || clientDisconnected || clientOutputStarted {
+			return false
+		}
+		empty := ""
+		contentChunk := apicompat.ChatCompletionsChunk{
+			ID:      state.ID,
+			Object:  "chat.completion.chunk",
+			Created: state.Created,
+			Model:   state.Model,
+			Choices: []apicompat.ChatChunkChoice{{
+				Index:        0,
+				Delta:        apicompat.ChatDelta{Content: &empty},
+				FinishReason: nil,
+			}},
+		}
+		contentSSE, contentErr := apicompat.ChatChunkToSSE(contentChunk)
+		if contentErr != nil {
+			return false
+		}
+		writeStreamHeaders()
+		for _, chunk := range createdChunks {
+			sse, err := apicompat.ChatChunkToSSE(chunk)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
+				clientDisconnected = true
+				return true
+			}
+		}
+		if _, err := fmt.Fprint(c.Writer, contentSSE); err != nil {
+			clientDisconnected = true
+			return true
+		}
+		safeTokenPlaceholderSent = true
+		clientOutputStarted = true
+		markFirstToken()
+		c.Writer.Flush()
+		return true
+	}
+
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:     requestID,
@@ -590,12 +641,6 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	}
 
 	processDataLine := func(payload string) bool {
-		if firstChunk {
-			firstChunk = false
-			ms := int(time.Since(startTime).Milliseconds())
-			firstTokenMs = &ms
-		}
-
 		var event apicompat.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			logger.L().Warn("openai chat_completions stream: failed to parse event",
@@ -621,8 +666,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, requestID, payloadBytes, message)
 			return true
 		}
-
 		chunks := apicompat.ResponsesEventToChatChunks(&event, state)
+		if strings.TrimSpace(event.Type) == "response.created" && writeSafeChatPlaceholder(chunks) {
+			return false
+		}
 		if !clientDisconnected {
 			for _, chunk := range chunks {
 				refusalDetector.ObserveChatChunk(chunk)
@@ -651,6 +698,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 							)
 							break
 						}
+						markFirstToken()
 					}
 					pendingSSE = pendingSSE[:0]
 					clientOutputStarted = !clientDisconnected
@@ -665,6 +713,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					)
 					break
 				}
+				markFirstToken()
 			}
 		}
 		if len(chunks) > 0 && !clientDisconnected && clientOutputStarted {
@@ -718,6 +767,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					)
 					break
 				}
+				markFirstToken()
 			}
 		}
 		if !clientDisconnected && !clientOutputStarted {
@@ -734,6 +784,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 						)
 						break
 					}
+					markFirstToken()
 				}
 				pendingSSE = pendingSSE[:0]
 				clientOutputStarted = !clientDisconnected
