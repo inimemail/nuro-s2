@@ -58,6 +58,36 @@ func (u *httpUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, acc
 	return u.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
+type delayedSSEChunkReadCloser struct {
+	chunks []delayedSSEChunk
+	idx    int
+	reader *strings.Reader
+}
+
+type delayedSSEChunk struct {
+	delay time.Duration
+	data  string
+}
+
+func (r *delayedSSEChunkReadCloser) Read(p []byte) (int, error) {
+	for r.reader == nil || r.reader.Len() == 0 {
+		if r.idx >= len(r.chunks) {
+			return 0, io.EOF
+		}
+		chunk := r.chunks[r.idx]
+		r.idx++
+		if chunk.delay > 0 {
+			time.Sleep(chunk.delay)
+		}
+		r.reader = strings.NewReader(chunk.data)
+	}
+	return r.reader.Read(p)
+}
+
+func (r *delayedSSEChunkReadCloser) Close() error {
+	return nil
+}
+
 func TestOpenAIGatewayService_ResponsesUnknownModelDoesNotFallbackToGPT54(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1067,6 +1097,66 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamingSetsFirstTokenMs(t *test
 	require.GreaterOrEqual(t, *result.FirstTokenMs, 0)
 	require.NotNil(t, result.ServiceTier)
 	require.Equal(t, "priority", *result.ServiceTier)
+}
+
+func TestOpenAIGatewayService_OAuthPassthrough_FirstTokenMsWaitsForFirstOutputEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+
+	originalBody := []byte(`{"model":"gpt-5.2","stream":true,"input":[{"type":"text","text":"hi"}]}`)
+	firstTokenDelay := 35 * time.Millisecond
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_delayed_ttft"}},
+		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{
+			{
+				data: strings.Join([]string{
+					`data: {"type":"response.created","response":{"id":"resp_delayed","model":"gpt-5.2","status":"in_progress","output":[]}}`,
+					"",
+				}, "\n"),
+			},
+			{
+				delay: firstTokenDelay,
+				data: strings.Join([]string{
+					`data: {"type":"response.output_text.delta","delta":"h"}`,
+					"",
+					`data: {"type":"response.completed","response":{"id":"resp_delayed","object":"response","model":"gpt-5.2","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"h"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+					"",
+					"data: [DONE]",
+					"",
+				}, "\n"),
+			},
+		}},
+	}
+	upstream := &httpUpstreamRecorder{resp: resp}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:             123,
+		Name:           "acc",
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeOAuth,
+		Concurrency:    1,
+		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:          map[string]any{"openai_passthrough": true},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, originalBody)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.FirstTokenMs)
+	require.GreaterOrEqual(t, *result.FirstTokenMs, int((firstTokenDelay - 10*time.Millisecond).Milliseconds()))
+	require.Contains(t, rec.Body.String(), `"type":"response.output_text.delta"`)
 }
 
 func TestOpenAIGatewayService_OAuthPassthrough_StreamClientDisconnectStillCollectsUsage(t *testing.T) {

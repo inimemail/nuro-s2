@@ -1815,7 +1815,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 // tryStickySessionHit attempts to get account from sticky session.
 // Returns account if hit and usable; clears session and returns nil if account is unavailable.
 func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID *int64, sessionHash, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability) *Account {
-	if sessionHash == "" {
+	if sessionHash == "" && stickyAccountID <= 0 {
 		return nil
 	}
 	isPromptCacheAffinity := IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash)
@@ -1891,8 +1891,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	selectedCompactTier := -1
 	compactBlocked := false
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
-	coolingCandidates := make([]*Account, 0)
-	coolingCompactTiers := make(map[int64]int)
+	probeDue := make([]*Account, 0)
 	rng := newOpenAISelectionRNG(nextOpenAIAccountBalanceSeed())
 	selectedRankSeen := 0
 
@@ -1928,8 +1927,9 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			if s.isOpenAIPoolAccountSoftCooldownDue(fresh) && s.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(ctx, fresh, requestedModel) {
 				// Probe disabled: the expired soft cooldown was cleared, so this account can participate now.
 			} else {
-				coolingCandidates = append(coolingCandidates, fresh)
-				coolingCompactTiers[fresh.ID] = compactTier
+				if s.isOpenAIPoolAccountSoftCooldownDue(fresh) {
+					probeDue = append(probeDue, fresh)
+				}
 				continue
 			}
 		}
@@ -1975,49 +1975,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			}
 		}
 	}
-	if selected == nil {
-		coolingRankSeen := 0
-		for _, fresh := range coolingCandidates {
-			compactTier := coolingCompactTiers[fresh.ID]
-			if selected == nil {
-				selected = fresh
-				selectedCompactTier = compactTier
-				coolingRankSeen = 1
-				continue
-			}
-			if requireCompact && compactTier != selectedCompactTier {
-				if compactTier > selectedCompactTier {
-					selected = fresh
-					selectedCompactTier = compactTier
-					coolingRankSeen = 1
-				}
-				continue
-			}
-			if fresh.Priority < selected.Priority {
-				selected = fresh
-				selectedCompactTier = compactTier
-				coolingRankSeen = 1
-				continue
-			}
-			if fresh.Priority == selected.Priority {
-				if s.isBetterAccount(fresh, selected) {
-					selected = fresh
-					selectedCompactTier = compactTier
-					coolingRankSeen = 1
-					continue
-				}
-				if sameOpenAIAccountLastUsedTie(fresh, selected) {
-					coolingRankSeen++
-					if rng.nextUint64()%uint64(coolingRankSeen) == 0 {
-						selected = fresh
-						selectedCompactTier = compactTier
-					}
-				}
-			}
-		}
-	} else {
-		s.maybeStartOpenAIPoolRecoveryProbes(coolingCandidates, requestedModel)
-	}
+	s.maybeStartOpenAIPoolRecoveryProbes(probeDue, requestedModel)
 
 	return selected, compactBlocked
 }
@@ -2057,10 +2015,10 @@ func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool
 
 // SelectAccountWithLoadAwareness selects an account with load-awareness and wait plan.
 func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
-	return s.selectAccountWithLoadAwareness(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, sessionHash, requestedModel, excludedIDs, false, "", "")
+	return s.selectAccountWithLoadAwareness(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, sessionHash, requestedModel, excludedIDs, false, 0, "", "")
 }
 
-func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability) (*AccountSelectionResult, error) {
+func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability) (*AccountSelectionResult, error) {
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
 			"group_id", derefGroupID(groupID),
@@ -2070,9 +2028,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 
 	cfg := s.schedulingConfig()
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
-	var stickyAccountID int64
 	stickyBusyPreserve := false
-	if sessionHash != "" && s.cache != nil {
+	if stickyAccountID <= 0 && sessionHash != "" && s.cache != nil {
 		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil {
 			stickyAccountID = accountID
 		}
@@ -2139,7 +2096,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	// ============ Layer 1: Sticky session ============
-	if sessionHash != "" {
+	if sessionHash != "" || stickyAccountID > 0 {
 		accountID := stickyAccountID
 		if accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
@@ -2147,23 +2104,37 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				isPromptCacheAffinity := IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash)
 				clearSticky := shouldClearStickySession(account, requestedModel)
 				if clearSticky {
-					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					if sessionHash != "" {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					}
 				} else if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
-					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					if sessionHash != "" {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					}
 					clearSticky = true
 				}
 				if !clearSticky && isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, false, requiredCapability, requiredImageCapability) {
 					account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability)
 					if account == nil {
-						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						if sessionHash != "" {
+							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						}
 					} else if s.isOpenAIAccountRuntimeBlocked(account) {
-						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						if sessionHash != "" {
+							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						}
 					} else if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
-						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						if sessionHash != "" {
+							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						}
 					} else if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact) {
-						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						if sessionHash != "" {
+							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						}
 					} else if s.hasHigherPriorityOpenAIAccountAvailable(ctx, groupID, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, OpenAIUpstreamTransportAny) {
-						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						if sessionHash != "" {
+							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						}
 					} else {
 						result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 						if err == nil && result != nil && result.Acquired {
@@ -2171,7 +2142,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 							if selectErr != nil {
 								return nil, selectErr
 							}
-							_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
+							if sessionHash != "" {
+								_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
+							}
 							return selection, nil
 						}
 						stickyBusyPreserve = true
@@ -2463,10 +2436,16 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		if s.isOpenAIPoolAccountSoftCooling(account) {
 			if s.isOpenAIPoolAccountSoftCooldownDue(account) {
 				if s.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(ctx, account, requestedModel) {
+					if s.isOpenAIAccountRuntimeBlocked(account) {
+						return nil
+					}
 					return account
 				}
 				s.maybeStartOpenAIPoolRecoveryProbe(context.Background(), account, requestedModel)
 			}
+			return nil
+		}
+		if s.isOpenAIAccountRuntimeBlocked(account) {
 			return nil
 		}
 		return account

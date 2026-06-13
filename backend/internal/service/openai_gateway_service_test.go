@@ -541,6 +541,131 @@ func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulableWhenNoConcurre
 	}
 }
 
+func TestOpenAISelectAccountWithLoadAwareness_FiltersRuntimeBlockedAccount(t *testing.T) {
+	groupID := int64(1)
+
+	blocked := Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+	}
+	available := Account{
+		ID:          2,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    1,
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{blocked, available}},
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+	svc.BlockAccountScheduling(&blocked, time.Now().Add(10*time.Minute), "429")
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil)
+	if err != nil {
+		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
+	}
+	if selection == nil || selection.Account == nil {
+		t.Fatalf("expected selection with account")
+	}
+	if selection.Account.ID != available.ID {
+		t.Fatalf("expected account %d, got %d", available.ID, selection.Account.ID)
+	}
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_StickyAccountIDWithoutSessionHash(t *testing.T) {
+	groupID := int64(1)
+
+	sticky := Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    1,
+		GroupIDs:    []int64{groupID},
+	}
+	higherPriority := Account{
+		ID:          2,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+		GroupIDs:    []int64{groupID},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{sticky, higherPriority}},
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+
+	selection, err := svc.selectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil, false, sticky.ID, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, higherPriority.ID, selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	higherPriority.Schedulable = false
+	svc = &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{sticky, higherPriority}},
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+	selection, err = svc.selectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil, false, sticky.ID, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, sticky.ID, selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	svc.BlockAccountScheduling(&sticky, time.Now().Add(10*time.Minute), "429")
+	selection, err = svc.selectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil, false, sticky.ID, "", "")
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	require.Nil(t, selection)
+}
+
+func TestOpenAISelectAccountForModelWithExclusions_SkipsCoolingPoolAccounts(t *testing.T) {
+	groupID := int64(1)
+	account := Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
+	}
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(10*time.Minute))
+
+	selected, err := svc.SelectAccountForModelWithExclusions(context.Background(), &groupID, "", "gpt-5.2", nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no available OpenAI accounts")
+	require.Nil(t, selected)
+}
+
 func TestOpenAISelectAccountForModelWithExclusions_StickyUnschedulableClearsSession(t *testing.T) {
 	sessionHash := "session-1"
 	repo := stubOpenAIAccountRepo{
