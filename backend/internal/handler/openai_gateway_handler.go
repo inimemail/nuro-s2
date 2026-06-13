@@ -58,6 +58,30 @@ func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedM
 
 type openAIModelBodyReplaceFunc func([]byte, string) []byte
 
+type openAIAccountSlotAcquireResult struct {
+	ReleaseFunc  func()
+	Acquired     bool
+	CapacityMiss bool
+	Reason       string
+	Err          error
+}
+
+func mergeOpenAIAccountExclusions(sets ...map[int64]struct{}) map[int64]struct{} {
+	var merged map[int64]struct{}
+	for _, set := range sets {
+		for id := range set {
+			if id <= 0 {
+				continue
+			}
+			if merged == nil {
+				merged = make(map[int64]struct{})
+			}
+			merged[id] = struct{}{}
+		}
+	}
+	return merged
+}
+
 func openAIModelMappedBody(body []byte, mapped bool, mappedModel string, replace openAIModelBodyReplaceFunc) []byte {
 	if !mapped || replace == nil {
 		return body
@@ -363,19 +387,21 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
+	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
 
 	for {
+		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
 		// Select account supporting the requested model
-		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(excludedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			requestCtx,
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
 			reqModel,
-			failedAccountIDs,
+			excludedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
 			service.OpenAIEndpointCapabilityChatCompletions,
 			requireCompact,
@@ -424,10 +450,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
-		if !acquired {
+		slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
+		if !slotResult.Acquired {
+			if slotResult.CapacityMiss && previousResponseID == "" {
+				capacitySkippedIDs[account.ID] = struct{}{}
+				reqLog.Info("openai.account_capacity_skip",
+					zap.Int64("account_id", account.ID),
+					zap.String("reason", slotResult.Reason),
+					zap.Int("capacity_skipped_count", len(capacitySkippedIDs)),
+				)
+				continue
+			}
 			return
 		}
+		accountReleaseFunc := slotResult.ReleaseFunc
 
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
@@ -777,23 +813,25 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
+	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
 	effectiveMappedModel := preferredMappedModel
 
 	for {
+		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
 		currentRoutingModel := routingModel
 		if effectiveMappedModel != "" {
 			currentRoutingModel = effectiveMappedModel
 		}
-		reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+		reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(excludedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			c.Request.Context(),
 			apiKey.GroupID,
 			"", // no previous_response_id
 			sessionHash,
 			currentRoutingModel,
-			failedAccountIDs,
+			excludedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
 			service.OpenAIEndpointCapabilityChatCompletions,
 			false,
@@ -830,10 +868,20 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		_ = scheduleDecision
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
-		if !acquired {
+		slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
+		if !slotResult.Acquired {
+			if slotResult.CapacityMiss {
+				capacitySkippedIDs[account.ID] = struct{}{}
+				reqLog.Info("openai_messages.account_capacity_skip",
+					zap.Int64("account_id", account.ID),
+					zap.String("reason", slotResult.Reason),
+					zap.Int("capacity_skipped_count", len(capacitySkippedIDs)),
+				)
+				continue
+			}
 			return
 		}
+		accountReleaseFunc := slotResult.ReleaseFunc
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
@@ -1141,22 +1189,25 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	reqStream bool,
 	streamStarted *bool,
 	reqLog *zap.Logger,
-) (func(), bool) {
+) openAIAccountSlotAcquireResult {
 	if selection == nil || selection.Account == nil {
 		markOpsRoutingCapacityLimited(c)
 		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
-		return nil, false
+		return openAIAccountSlotAcquireResult{Err: errors.New("no available accounts")}
 	}
 
 	ctx := c.Request.Context()
 	account := selection.Account
 	if selection.Acquired {
-		return wrapReleaseOnDone(ctx, selection.ReleaseFunc), true
+		return openAIAccountSlotAcquireResult{
+			ReleaseFunc: wrapReleaseOnDone(ctx, selection.ReleaseFunc),
+			Acquired:    true,
+		}
 	}
 	if selection.WaitPlan == nil {
 		markOpsRoutingCapacityLimited(c)
 		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
-		return nil, false
+		return openAIAccountSlotAcquireResult{Err: errors.New("no account wait plan")}
 	}
 
 	fastReleaseFunc, fastAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(
@@ -1167,13 +1218,16 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	if err != nil {
 		reqLog.Warn("openai.account_slot_quick_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		h.handleConcurrencyError(c, err, "account", *streamStarted)
-		return nil, false
+		return openAIAccountSlotAcquireResult{Err: err}
 	}
 	if fastAcquired {
 		if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
-		return wrapReleaseOnDone(ctx, fastReleaseFunc), true
+		return openAIAccountSlotAcquireResult{
+			ReleaseFunc: wrapReleaseOnDone(ctx, fastReleaseFunc),
+			Acquired:    true,
+		}
 	}
 
 	canWait, waitErr := h.concurrencyHelper.IncrementAccountWaitCount(ctx, account.ID, selection.WaitPlan.MaxWaiting)
@@ -1184,8 +1238,14 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 			zap.Int64("account_id", account.ID),
 			zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 		)
+		if !*streamStarted {
+			return openAIAccountSlotAcquireResult{
+				CapacityMiss: true,
+				Reason:       "account_wait_queue_full",
+			}
+		}
 		h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", *streamStarted)
-		return nil, false
+		return openAIAccountSlotAcquireResult{Err: errors.New("account wait queue full")}
 	}
 
 	accountWaitCounted := waitErr == nil && canWait
@@ -1209,8 +1269,16 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	service.SetOpsLatencyMsOnce(c, service.OpsSlotWaitMsKey, time.Since(slotWaitStart).Milliseconds())
 	if err != nil {
 		reqLog.Warn("openai.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+		var concurrencyErr *ConcurrencyError
+		if !*streamStarted && errors.As(err, &concurrencyErr) && concurrencyErr.SlotType == "account" {
+			return openAIAccountSlotAcquireResult{
+				CapacityMiss: true,
+				Reason:       "account_slot_wait_timeout",
+				Err:          err,
+			}
+		}
 		h.handleConcurrencyError(c, err, "account", *streamStarted)
-		return nil, false
+		return openAIAccountSlotAcquireResult{Err: err}
 	}
 
 	// Slot acquired: no longer waiting in queue.
@@ -1218,7 +1286,10 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
-	return wrapReleaseOnDone(ctx, accountReleaseFunc), true
+	return openAIAccountSlotAcquireResult{
+		ReleaseFunc: wrapReleaseOnDone(ctx, accountReleaseFunc),
+		Acquired:    true,
+	}
 }
 
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
@@ -1402,17 +1473,19 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
+	capacitySkippedIDs := make(map[int64]struct{})
 	var lastFailoverErr *service.UpstreamFailoverError
 
 	for {
-		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
+		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(excludedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			requestCtx,
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
 			reqModel,
-			failedAccountIDs,
+			excludedAccountIDs,
 			service.OpenAIUpstreamTransportResponsesWebsocketV2,
 			service.OpenAIEndpointCapabilityChatCompletions,
 			false,
@@ -1446,6 +1519,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		accountReleaseFunc := selection.ReleaseFunc
 		if !selection.Acquired {
 			if selection.WaitPlan == nil {
+				if previousResponseID == "" {
+					capacitySkippedIDs[account.ID] = struct{}{}
+					reqLog.Info("openai.websocket_account_capacity_skip",
+						zap.Int64("account_id", account.ID),
+						zap.String("reason", "account_slot_not_available"),
+						zap.Int("capacity_skipped_count", len(capacitySkippedIDs)),
+					)
+					continue
+				}
 				closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "account is busy, please retry later")
 				return
 			}
@@ -1460,6 +1542,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				return
 			}
 			if !fastAcquired {
+				if previousResponseID == "" {
+					capacitySkippedIDs[account.ID] = struct{}{}
+					reqLog.Info("openai.websocket_account_capacity_skip",
+						zap.Int64("account_id", account.ID),
+						zap.String("reason", "account_slot_busy"),
+						zap.Int("capacity_skipped_count", len(capacitySkippedIDs)),
+					)
+					continue
+				}
 				closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "account is busy, please retry later")
 				return
 			}

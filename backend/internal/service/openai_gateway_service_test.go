@@ -771,6 +771,99 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyWaitPlan(t *testing.T) {
 	}
 }
 
+func TestOpenAISelectAccountWithLoadAwareness_StickyBusyFallsThrough(t *testing.T) {
+	sessionHash := "sticky-busy-fallthrough"
+	groupID := int64(1)
+	repo := stubOpenAIAccountRepo{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+		},
+	}
+	cache := &stubGatewayCache{
+		sessionBindings: map[string]int64{"openai:" + sessionHash: 1},
+	}
+	concurrencyCache := stubConcurrencyCache{
+		acquireResults: map[int64]bool{1: false, 2: true},
+		loadMap: map[int64]*AccountLoadInfo{
+			1: {AccountID: 1, LoadRate: 90, WaitingCount: 9},
+			2: {AccountID: 2, LoadRate: 1, WaitingCount: 0},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		cache:              cache,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, sessionHash, "gpt-4", nil)
+	if err != nil {
+		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
+	}
+	if selection == nil || selection.Account == nil || selection.Account.ID != 2 {
+		t.Fatalf("expected account 2 after sticky busy fallthrough")
+	}
+	if !selection.Acquired {
+		t.Fatalf("expected acquired account")
+	}
+	if got := cache.sessionBindings["openai:"+sessionHash]; got != 1 {
+		t.Fatalf("expected sticky binding to stay on original account, got %d", got)
+	}
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_NoLoadBatchStickyBusyFallsThrough(t *testing.T) {
+	sessionHash := "sticky-busy-no-load-batch"
+	groupID := int64(1)
+	repo := stubOpenAIAccountRepo{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+		},
+	}
+	cache := &stubGatewayCache{
+		sessionBindings: map[string]int64{"openai:" + sessionHash: 1},
+	}
+	concurrencyCache := stubConcurrencyCache{
+		acquireResults: map[int64]bool{1: false, 2: true},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling = config.GatewaySchedulingConfig{
+		LoadBatchEnabled:         false,
+		StickySessionMaxWaiting:  3,
+		StickySessionWaitTimeout: time.Second,
+		FallbackWaitTimeout:      time.Second,
+		FallbackMaxWaiting:       10,
+	}
+
+	svc := &OpenAIGatewayService{
+		cfg:                cfg,
+		accountRepo:        repo,
+		cache:              cache,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, sessionHash, "gpt-4", nil)
+	if err != nil {
+		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
+	}
+	if selection == nil || selection.Account == nil || selection.Account.ID != 2 {
+		t.Fatalf("expected account 2 after no-load-batch sticky busy fallthrough")
+	}
+	if !selection.Acquired {
+		t.Fatalf("expected acquired account")
+	}
+	if got := cache.sessionBindings["openai:"+sessionHash]; got != 1 {
+		t.Fatalf("expected sticky binding to stay on original account, got %d", got)
+	}
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAISelectAccountWithLoadAwareness_PrefersLowerLoad(t *testing.T) {
 	groupID := int64(1)
 	repo := stubOpenAIAccountRepo{

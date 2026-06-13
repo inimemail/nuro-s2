@@ -62,6 +62,92 @@ type openAIEdgeLease struct {
 	timer              *time.Timer
 }
 
+type openAIEdgeAccountSelection struct {
+	account     *service.Account
+	releaseFunc func()
+}
+
+func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	baseExcluded map[int64]struct{},
+	requiredTransport service.OpenAIUpstreamTransport,
+	requiredCapability service.OpenAIEndpointCapability,
+	eligible func(*service.Account) bool,
+	bindSticky bool,
+	reqLog *zap.Logger,
+) (*openAIEdgeAccountSelection, string, error) {
+	capacitySkippedIDs := make(map[int64]struct{})
+	localSkippedIDs := make(map[int64]struct{})
+	for {
+		excludedIDs := mergeOpenAIAccountExclusions(baseExcluded, capacitySkippedIDs, localSkippedIDs)
+		selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+			ctx,
+			groupID,
+			previousResponseID,
+			sessionHash,
+			requestedModel,
+			excludedIDs,
+			requiredTransport,
+			requiredCapability,
+			false,
+		)
+		if err != nil {
+			return nil, "account_select_failed", err
+		}
+		if selection == nil || selection.Account == nil {
+			return nil, "account_select_failed", nil
+		}
+		account := selection.Account
+		if eligible != nil && !eligible(account) {
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			localSkippedIDs[account.ID] = struct{}{}
+			if reqLog != nil {
+				reqLog.Info("openai_edge.account_local_skip",
+					zap.Int64("account_id", account.ID),
+					zap.String("reason", "edge_ineligible"),
+					zap.Int("local_skipped_count", len(localSkippedIDs)),
+				)
+			}
+			continue
+		}
+		accountReleaseFunc := selection.ReleaseFunc
+		if !selection.Acquired {
+			if selection.WaitPlan == nil {
+				capacitySkippedIDs[account.ID] = struct{}{}
+				continue
+			}
+			var acquired bool
+			accountReleaseFunc, acquired, err = h.concurrencyHelper.TryAcquireAccountSlot(ctx, account.ID, selection.WaitPlan.MaxConcurrency)
+			if err != nil {
+				return nil, "account_slot_acquire_failed", err
+			}
+			if !acquired {
+				capacitySkippedIDs[account.ID] = struct{}{}
+				if reqLog != nil {
+					reqLog.Info("openai_edge.account_capacity_skip",
+						zap.Int64("account_id", account.ID),
+						zap.String("reason", "account_slot_busy"),
+						zap.Int("capacity_skipped_count", len(capacitySkippedIDs)),
+					)
+				}
+				continue
+			}
+			if bindSticky {
+				if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil && reqLog != nil {
+					reqLog.Warn("openai_edge.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+				}
+			}
+		}
+		return &openAIEdgeAccountSelection{account: account, releaseFunc: accountReleaseFunc}, "", nil
+	}
+}
+
 func (l *openAIEdgeLease) release() {
 	if l == nil {
 		return
@@ -307,7 +393,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, req.Body)
 	}
-	selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
 		apiKey.GroupID,
 		"",
@@ -316,41 +402,23 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		nil,
 		service.OpenAIUpstreamTransportAny,
 		service.OpenAIEndpointCapabilityChatCompletions,
-		false,
+		service.IsOpenAIEdgeRawChatRelayEligible,
+		true,
+		reqLog,
 	)
-	if err != nil || selection == nil || selection.Account == nil {
+	if err != nil || edgeSelection == nil || edgeSelection.account == nil {
 		if err != nil {
 			reqLog.Warn("openai_edge.account_select_failed", zap.Error(err))
 		}
-		return fallback("account_select_failed")
+		if reason == "" {
+			reason = "account_select_failed"
+		}
+		return fallback(reason)
 	}
-	account := selection.Account
+	account := edgeSelection.account
 	sessionHash = h.gatewayService.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, account)
 	sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
-	if !service.IsOpenAIEdgeRawChatRelayEligible(account) {
-		if selection.ReleaseFunc != nil {
-			selection.ReleaseFunc()
-		}
-		return fallback("account_requires_go_transform")
-	}
-	accountReleaseFunc := selection.ReleaseFunc
-	if !selection.Acquired {
-		if selection.WaitPlan == nil {
-			return fallback("account_slot_not_available")
-		}
-		var accountAcquired bool
-		accountReleaseFunc, accountAcquired, err = h.concurrencyHelper.TryAcquireAccountSlot(c.Request.Context(), account.ID, selection.WaitPlan.MaxConcurrency)
-		if err != nil {
-			reqLog.Warn("openai_edge.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-			return fallback("account_slot_acquire_failed")
-		}
-		if !accountAcquired {
-			return fallback("account_slot_busy")
-		}
-		if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
-			reqLog.Warn("openai_edge.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-		}
-	}
+	accountReleaseFunc := edgeSelection.releaseFunc
 	releaseAccountOnFailure := true
 	defer func() {
 		if releaseAccountOnFailure && accountReleaseFunc != nil {
@@ -495,7 +563,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, req.Body)
 	}
-	selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
 		apiKey.GroupID,
 		"",
@@ -504,41 +572,25 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		nil,
 		service.OpenAIUpstreamTransportAny,
 		service.OpenAIEndpointCapabilityChatCompletions,
-		false,
+		func(account *service.Account) bool {
+			return account != nil && (account.Type == service.AccountTypeOAuth || service.IsOpenAIEdgeRawResponsesRelayEligible(account))
+		},
+		true,
+		reqLog,
 	)
-	if err != nil || selection == nil || selection.Account == nil {
+	if err != nil || edgeSelection == nil || edgeSelection.account == nil {
 		if err != nil {
 			reqLog.Warn("openai_edge.responses_account_select_failed", zap.Error(err))
 		}
-		return fallback("account_select_failed")
+		if reason == "" {
+			reason = "account_select_failed"
+		}
+		return fallback(reason)
 	}
-	account := selection.Account
+	account := edgeSelection.account
 	sessionHash = h.gatewayService.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, account)
 	sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
-	if account.Type != service.AccountTypeOAuth && !service.IsOpenAIEdgeRawResponsesRelayEligible(account) {
-		if selection.ReleaseFunc != nil {
-			selection.ReleaseFunc()
-		}
-		return fallback("account_requires_go_responses_transform")
-	}
-	accountReleaseFunc := selection.ReleaseFunc
-	if !selection.Acquired {
-		if selection.WaitPlan == nil {
-			return fallback("account_slot_not_available")
-		}
-		var accountAcquired bool
-		accountReleaseFunc, accountAcquired, err = h.concurrencyHelper.TryAcquireAccountSlot(c.Request.Context(), account.ID, selection.WaitPlan.MaxConcurrency)
-		if err != nil {
-			reqLog.Warn("openai_edge.responses_account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-			return fallback("account_slot_acquire_failed")
-		}
-		if !accountAcquired {
-			return fallback("account_slot_busy")
-		}
-		if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
-			reqLog.Warn("openai_edge.responses_bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-		}
-	}
+	accountReleaseFunc := edgeSelection.releaseFunc
 	releaseAccountOnFailure := true
 	defer func() {
 		if releaseAccountOnFailure && accountReleaseFunc != nil {
@@ -675,7 +727,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		return fallback("billing_check_failed")
 	}
 	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(c, req.Body, openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID))
-	selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
 		apiKey.GroupID,
 		"",
@@ -684,30 +736,21 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		nil,
 		service.OpenAIUpstreamTransportResponsesWebsocketV2,
 		service.OpenAIEndpointCapabilityChatCompletions,
+		nil,
 		false,
+		reqLog,
 	)
-	if err != nil || selection == nil || selection.Account == nil {
+	if err != nil || edgeSelection == nil || edgeSelection.account == nil {
 		if err != nil {
 			reqLog.Warn("openai_edge.responses_ws_account_select_failed", zap.Error(err))
 		}
-		return fallback("account_select_failed")
+		if reason == "" {
+			reason = "account_select_failed"
+		}
+		return fallback(reason)
 	}
-	account := selection.Account
-	accountReleaseFunc := selection.ReleaseFunc
-	if !selection.Acquired {
-		if selection.WaitPlan == nil {
-			return fallback("account_slot_not_available")
-		}
-		var accountAcquired bool
-		accountReleaseFunc, accountAcquired, err = h.concurrencyHelper.TryAcquireAccountSlot(c.Request.Context(), account.ID, selection.WaitPlan.MaxConcurrency)
-		if err != nil {
-			reqLog.Warn("openai_edge.responses_ws_account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-			return fallback("account_slot_acquire_failed")
-		}
-		if !accountAcquired {
-			return fallback("account_slot_busy")
-		}
-	}
+	account := edgeSelection.account
+	accountReleaseFunc := edgeSelection.releaseFunc
 	releaseAccountOnFailure := true
 	defer func() {
 		if releaseAccountOnFailure && accountReleaseFunc != nil {
@@ -1023,7 +1066,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	if accountReleaseFuncToCall != nil {
 		accountReleaseFuncToCall()
 	}
-	selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
 		lease.apiKey.GroupID,
 		"",
@@ -1032,39 +1075,23 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		lease.failedAccountIDs,
 		service.OpenAIUpstreamTransportAny,
 		service.OpenAIEndpointCapabilityChatCompletions,
-		false,
+		func(account *service.Account) bool {
+			return service.IsOpenAIEdgeRawRelayEligibleForInboundEndpoint(account, lease.inboundEndpoint)
+		},
+		true,
+		reqLog,
 	)
-	if err != nil || selection == nil || selection.Account == nil {
+	if err != nil || edgeSelection == nil || edgeSelection.account == nil {
 		if err != nil {
 			reqLog.Warn("openai_edge.retry_account_select_failed", zap.Error(err))
 		}
-		return fallback("retry_account_select_failed")
+		if reason == "" {
+			reason = "retry_account_select_failed"
+		}
+		return fallback("retry_" + reason)
 	}
-	account := selection.Account
-	if !service.IsOpenAIEdgeRawRelayEligibleForInboundEndpoint(account, lease.inboundEndpoint) {
-		if selection.ReleaseFunc != nil {
-			selection.ReleaseFunc()
-		}
-		return fallback("retry_account_requires_go_transform")
-	}
-	accountReleaseFunc := selection.ReleaseFunc
-	if !selection.Acquired {
-		if selection.WaitPlan == nil {
-			return fallback("retry_account_slot_not_available")
-		}
-		var acquired bool
-		accountReleaseFunc, acquired, err = h.concurrencyHelper.TryAcquireAccountSlot(c.Request.Context(), account.ID, selection.WaitPlan.MaxConcurrency)
-		if err != nil {
-			reqLog.Warn("openai_edge.retry_account_slot_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-			return fallback("retry_account_slot_failed")
-		}
-		if !acquired {
-			return fallback("retry_account_slot_busy")
-		}
-		if err := h.gatewayService.BindStickySession(c.Request.Context(), lease.apiKey.GroupID, lease.sessionHash, account.ID); err != nil {
-			reqLog.Warn("openai_edge.retry_bind_sticky_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-		}
-	}
+	account := edgeSelection.account
+	accountReleaseFunc := edgeSelection.releaseFunc
 	plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, account, accountReleaseFunc)
 	if err != nil {
 		if accountReleaseFunc != nil {

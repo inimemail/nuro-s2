@@ -133,18 +133,20 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
+	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
 
 	for {
-		reqLog.Debug("openai_chat_completions.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
+		reqLog.Debug("openai_chat_completions.account_selecting", zap.Int("excluded_account_count", len(excludedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			c.Request.Context(),
 			apiKey.GroupID,
 			"",
 			sessionHash,
 			reqModel,
-			failedAccountIDs,
+			excludedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
 			service.OpenAIEndpointCapabilityChatCompletions,
 			false,
@@ -179,10 +181,20 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		_ = scheduleDecision
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
-		if !acquired {
+		slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
+		if !slotResult.Acquired {
+			if slotResult.CapacityMiss {
+				capacitySkippedIDs[account.ID] = struct{}{}
+				reqLog.Info("openai_chat_completions.account_capacity_skip",
+					zap.Int64("account_id", account.ID),
+					zap.String("reason", slotResult.Reason),
+					zap.Int("capacity_skipped_count", len(capacitySkippedIDs)),
+				)
+				continue
+			}
 			return
 		}
+		accountReleaseFunc := slotResult.ReleaseFunc
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()

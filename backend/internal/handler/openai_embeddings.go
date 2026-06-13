@@ -98,6 +98,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 	}
 
 	failedAccountIDs := make(map[int64]struct{})
+	capacitySkippedIDs := make(map[int64]struct{})
 	var lastFailoverErr *service.UpstreamFailoverError
 	switchCount := 0
 	maxAccountSwitches := h.maxAccountSwitches
@@ -107,13 +108,14 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 	routingStart := time.Now()
 
 	for {
+		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
 		selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			c.Request.Context(),
 			apiKey.GroupID,
 			"",
 			"",
 			reqModel,
-			failedAccountIDs,
+			excludedAccountIDs,
 			service.OpenAIUpstreamTransportHTTPSSE,
 			service.OpenAIEndpointCapabilityEmbeddings,
 			false,
@@ -143,10 +145,20 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		accountReleaseFunc, accountAcquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, "", selection, false, &streamStarted, reqLog)
-		if !accountAcquired {
+		slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, "", selection, false, &streamStarted, reqLog)
+		if !slotResult.Acquired {
+			if slotResult.CapacityMiss {
+				capacitySkippedIDs[account.ID] = struct{}{}
+				reqLog.Info("openai_embeddings.account_capacity_skip",
+					zap.Int64("account_id", account.ID),
+					zap.String("reason", slotResult.Reason),
+					zap.Int("capacity_skipped_count", len(capacitySkippedIDs)),
+				)
+				continue
+			}
 			return
 		}
+		accountReleaseFunc := slotResult.ReleaseFunc
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
