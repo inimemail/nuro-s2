@@ -698,6 +698,98 @@
         </div>
       </div>
 
+      <!-- OpenAI OAuth first packet preamble flush -->
+      <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <div class="flex-1 pr-4">
+            <label
+              id="bulk-edit-openai-oauth-preamble-flush-label"
+              class="input-label mb-0"
+              for="bulk-edit-openai-oauth-preamble-flush-enabled"
+            >
+              {{ t('admin.accounts.openai.oauthChatGPTPreambleFlush') }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.oauthChatGPTPreambleFlushDesc') }}
+            </p>
+          </div>
+          <input
+            v-model="enableOpenAIOAuthPreambleFlush"
+            id="bulk-edit-openai-oauth-preamble-flush-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-oauth-preamble-flush"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-oauth-preamble-flush"
+          :class="!enableOpenAIOAuthPreambleFlush && 'pointer-events-none opacity-50'"
+        >
+          <button
+            id="bulk-edit-openai-oauth-preamble-flush-toggle"
+            type="button"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiOAuthChatGPTPreambleFlushEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+            @click="openaiOAuthChatGPTPreambleFlushEnabled = !openaiOAuthChatGPTPreambleFlushEnabled"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiOAuthChatGPTPreambleFlushEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+      </div>
+
+      <!-- OpenAI OAuth first packet SSE comment preflush -->
+      <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <div class="flex-1 pr-4">
+            <label
+              id="bulk-edit-openai-oauth-sse-comment-preflush-label"
+              class="input-label mb-0"
+              for="bulk-edit-openai-oauth-sse-comment-preflush-enabled"
+            >
+              {{ t('admin.accounts.openai.oauthChatGPTSSECommentPreflush') }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.oauthChatGPTSSECommentPreflushDesc') }}
+            </p>
+          </div>
+          <input
+            v-model="enableOpenAIOAuthSSECommentPreflush"
+            id="bulk-edit-openai-oauth-sse-comment-preflush-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-oauth-sse-comment-preflush"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-oauth-sse-comment-preflush"
+          :class="!enableOpenAIOAuthSSECommentPreflush && 'pointer-events-none opacity-50'"
+        >
+          <button
+            id="bulk-edit-openai-oauth-sse-comment-preflush-toggle"
+            type="button"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiOAuthChatGPTSSECommentPreflushEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+            @click="openaiOAuthChatGPTSSECommentPreflushEnabled = !openaiOAuthChatGPTSSECommentPreflushEnabled"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiOAuthChatGPTSSECommentPreflushEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+      </div>
+
       <!-- OpenAI OAuth Codex CLI only -->
       <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
@@ -820,6 +912,98 @@
             :options="openAIWSModeOptions"
             aria-labelledby="bulk-edit-openai-apikey-ws-mode-label"
           />
+        </div>
+      </div>
+
+      <!-- OpenAI API Key first packet preamble flush -->
+      <div v-if="allOpenAIAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <div class="flex-1 pr-4">
+            <label
+              id="bulk-edit-openai-apikey-preamble-flush-label"
+              class="input-label mb-0"
+              for="bulk-edit-openai-apikey-preamble-flush-enabled"
+            >
+              {{ t('admin.accounts.openai.apiKeyPreambleFlush') }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.apiKeyPreambleFlushDesc') }}
+            </p>
+          </div>
+          <input
+            v-model="enableOpenAIAPIKeyPreambleFlush"
+            id="bulk-edit-openai-apikey-preamble-flush-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-apikey-preamble-flush"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-apikey-preamble-flush"
+          :class="!enableOpenAIAPIKeyPreambleFlush && 'pointer-events-none opacity-50'"
+        >
+          <button
+            id="bulk-edit-openai-apikey-preamble-flush-toggle"
+            type="button"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiAPIKeyPreambleFlushEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+            @click="openaiAPIKeyPreambleFlushEnabled = !openaiAPIKeyPreambleFlushEnabled"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiAPIKeyPreambleFlushEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+      </div>
+
+      <!-- OpenAI API Key first packet SSE comment preflush -->
+      <div v-if="allOpenAIAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <div class="flex-1 pr-4">
+            <label
+              id="bulk-edit-openai-apikey-sse-comment-preflush-label"
+              class="input-label mb-0"
+              for="bulk-edit-openai-apikey-sse-comment-preflush-enabled"
+            >
+              {{ t('admin.accounts.openai.apiKeySSECommentPreflush') }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.apiKeySSECommentPreflushDesc') }}
+            </p>
+          </div>
+          <input
+            v-model="enableOpenAIAPIKeySSECommentPreflush"
+            id="bulk-edit-openai-apikey-sse-comment-preflush-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-apikey-sse-comment-preflush"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-apikey-sse-comment-preflush"
+          :class="!enableOpenAIAPIKeySSECommentPreflush && 'pointer-events-none opacity-50'"
+        >
+          <button
+            id="bulk-edit-openai-apikey-sse-comment-preflush-toggle"
+            type="button"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openaiAPIKeySSECommentPreflushEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+            @click="openaiAPIKeySSECommentPreflushEnabled = !openaiAPIKeySSECommentPreflushEnabled"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openaiAPIKeySSECommentPreflushEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
         </div>
       </div>
 
@@ -1262,6 +1446,10 @@ const enableGroups = ref(false)
 const enableOpenAIPassthrough = ref(false)
 const enableOpenAIWSMode = ref(false)
 const enableOpenAIAPIKeyWSMode = ref(false)
+const enableOpenAIOAuthPreambleFlush = ref(false)
+const enableOpenAIOAuthSSECommentPreflush = ref(false)
+const enableOpenAIAPIKeyPreambleFlush = ref(false)
+const enableOpenAIAPIKeySSECommentPreflush = ref(false)
 const enableCodexCLIOnly = ref(false)
 const enableCodexCLIOnlyAllowClaudeCode = ref(false)
 const enableOpenAICompactMode = ref(false)
@@ -1290,6 +1478,10 @@ const groupIds = ref<number[]>([])
 const openaiPassthroughEnabled = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const openaiOAuthChatGPTPreambleFlushEnabled = ref(false)
+const openaiOAuthChatGPTSSECommentPreflushEnabled = ref(false)
+const openaiAPIKeyPreambleFlushEnabled = ref(false)
+const openaiAPIKeySSECommentPreflushEnabled = ref(false)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
@@ -1537,6 +1729,26 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     )
   }
 
+  if (enableOpenAIOAuthPreambleFlush.value) {
+    const extra = ensureExtra()
+    extra.openai_oauth_chatgpt_preamble_flush_enabled = openaiOAuthChatGPTPreambleFlushEnabled.value
+  }
+
+  if (enableOpenAIOAuthSSECommentPreflush.value) {
+    const extra = ensureExtra()
+    extra.openai_oauth_chatgpt_sse_comment_preflush_enabled = openaiOAuthChatGPTSSECommentPreflushEnabled.value
+  }
+
+  if (enableOpenAIAPIKeyPreambleFlush.value) {
+    const extra = ensureExtra()
+    extra.openai_apikey_preamble_flush_enabled = openaiAPIKeyPreambleFlushEnabled.value
+  }
+
+  if (enableOpenAIAPIKeySSECommentPreflush.value) {
+    const extra = ensureExtra()
+    extra.openai_apikey_sse_comment_preflush_enabled = openaiAPIKeySSECommentPreflushEnabled.value
+  }
+
   if (enableCodexCLIOnly.value) {
     const extra = ensureExtra()
     extra.codex_cli_only = codexCLIOnlyEnabled.value
@@ -1652,6 +1864,10 @@ const handleSubmit = async () => {
     enableGroups.value ||
     enableOpenAIWSMode.value ||
     enableOpenAIAPIKeyWSMode.value ||
+    enableOpenAIOAuthPreambleFlush.value ||
+    enableOpenAIOAuthSSECommentPreflush.value ||
+    enableOpenAIAPIKeyPreambleFlush.value ||
+    enableOpenAIAPIKeySSECommentPreflush.value ||
     enableCodexCLIOnly.value ||
     enableCodexCLIOnlyAllowClaudeCode.value ||
     enableOpenAICompactMode.value ||
@@ -1755,6 +1971,10 @@ watch(
       enableOpenAIPassthrough.value = false
       enableOpenAIWSMode.value = false
       enableOpenAIAPIKeyWSMode.value = false
+      enableOpenAIOAuthPreambleFlush.value = false
+      enableOpenAIOAuthSSECommentPreflush.value = false
+      enableOpenAIAPIKeyPreambleFlush.value = false
+      enableOpenAIAPIKeySSECommentPreflush.value = false
       enableCodexCLIOnly.value = false
       enableCodexCLIOnlyAllowClaudeCode.value = false
       enableOpenAICompactMode.value = false
@@ -1779,6 +1999,10 @@ watch(
       groupIds.value = []
       openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+      openaiOAuthChatGPTPreambleFlushEnabled.value = false
+      openaiOAuthChatGPTSSECommentPreflushEnabled.value = false
+      openaiAPIKeyPreambleFlushEnabled.value = false
+      openaiAPIKeySSECommentPreflushEnabled.value = false
       codexCLIOnlyEnabled.value = false
       codexCLIOnlyAllowClaudeCodeEnabled.value = false
       openAICompactMode.value = 'auto'
