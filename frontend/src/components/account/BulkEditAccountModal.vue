@@ -962,7 +962,7 @@
       </div>
 
       <!-- OpenAI API Key first packet preamble flush -->
-      <div v-if="allOpenAIAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="allOpenAITextAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <div class="flex-1 pr-4">
             <label
@@ -1008,7 +1008,7 @@
       </div>
 
       <!-- OpenAI API Key first packet SSE comment preflush -->
-      <div v-if="allOpenAIAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="allOpenAITextAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <div class="flex-1 pr-4">
             <label
@@ -1054,7 +1054,7 @@
       </div>
 
       <!-- OpenAI API Key safe first token placeholder -->
-      <div v-if="allOpenAIAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="allOpenAITextAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <div class="flex-1 pr-4">
             <label
@@ -1438,12 +1438,14 @@ interface Props {
   accountIds: number[]
   selectedPlatforms: AccountPlatform[]
   selectedTypes: AccountType[]
+  selectedImagePoolModes?: boolean[]
   target?: {
     mode: 'selected' | 'filtered'
     filters?: Record<string, unknown>
     previewCount?: number
     selectedPlatforms?: AccountPlatform[]
     selectedTypes?: AccountType[]
+    selectedImagePoolModes?: boolean[]
   }
   proxies: ProxyConfig[]
   groups: AdminGroup[]
@@ -1463,6 +1465,7 @@ const targetMode = computed(() => props.target?.mode ?? 'selected')
 const targetPreviewCount = computed(() => props.target?.previewCount ?? props.accountIds.length)
 const targetSelectedPlatforms = computed(() => props.target?.selectedPlatforms ?? props.selectedPlatforms)
 const targetSelectedTypes = computed(() => props.target?.selectedTypes ?? props.selectedTypes)
+const targetSelectedImagePoolModes = computed(() => props.target?.selectedImagePoolModes ?? props.selectedImagePoolModes ?? [])
 const isMixedPlatform = computed(() => targetSelectedPlatforms.value.length > 1)
 
 const allOpenAIPassthroughCapable = computed(() => {
@@ -1491,6 +1494,11 @@ const allOpenAIAPIKey = computed(() => {
     targetSelectedTypes.value.every(t => t === 'apikey')
   )
 })
+
+const allOpenAITextAPIKey = computed(() => (
+  allOpenAIAPIKey.value &&
+  !targetSelectedImagePoolModes.value.includes(true)
+))
 
 // 是否全部为 Anthropic OAuth/SetupToken（RPM 配置仅在此条件下显示）
 const allAnthropicOAuthOrSetupToken = computed(() => {
@@ -1840,17 +1848,17 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.openai_oauth_chatgpt_safe_token_placeholder_enabled = openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value
   }
 
-  if (enableOpenAIAPIKeyPreambleFlush.value) {
+  if (allOpenAITextAPIKey.value && enableOpenAIAPIKeyPreambleFlush.value) {
     const extra = ensureExtra()
     extra.openai_apikey_preamble_flush_enabled = openaiAPIKeyPreambleFlushEnabled.value
   }
 
-  if (enableOpenAIAPIKeySSECommentPreflush.value) {
+  if (allOpenAITextAPIKey.value && enableOpenAIAPIKeySSECommentPreflush.value) {
     const extra = ensureExtra()
     extra.openai_apikey_sse_comment_preflush_enabled = openaiAPIKeySSECommentPreflushEnabled.value
   }
 
-  if (enableOpenAIAPIKeySafeTokenPlaceholder.value) {
+  if (allOpenAITextAPIKey.value && enableOpenAIAPIKeySafeTokenPlaceholder.value) {
     const extra = ensureExtra()
     extra.openai_apikey_safe_token_placeholder_enabled = openaiAPIKeySafeTokenPlaceholderEnabled.value
   }
@@ -1973,9 +1981,9 @@ const handleSubmit = async () => {
     enableOpenAIOAuthPreambleFlush.value ||
     enableOpenAIOAuthSSECommentPreflush.value ||
     enableOpenAIOAuthSafeTokenPlaceholder.value ||
-    enableOpenAIAPIKeyPreambleFlush.value ||
-    enableOpenAIAPIKeySSECommentPreflush.value ||
-    enableOpenAIAPIKeySafeTokenPlaceholder.value ||
+    (allOpenAITextAPIKey.value && enableOpenAIAPIKeyPreambleFlush.value) ||
+    (allOpenAITextAPIKey.value && enableOpenAIAPIKeySSECommentPreflush.value) ||
+    (allOpenAITextAPIKey.value && enableOpenAIAPIKeySafeTokenPlaceholder.value) ||
     enableCodexCLIOnly.value ||
     enableCodexCLIOnlyAllowClaudeCode.value ||
     enableOpenAICompactMode.value ||

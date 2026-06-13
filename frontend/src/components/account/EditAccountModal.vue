@@ -1628,7 +1628,7 @@
             />
           </button>
         </div>
-        <div v-if="account?.type === 'apikey'" class="flex items-center justify-between">
+        <div v-if="showOpenAIAPIKeyTextStreamToggles" class="flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.openai.apiKeyPreambleFlush') }}</label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -1651,7 +1651,7 @@
             />
           </button>
         </div>
-        <div v-if="account?.type === 'apikey'" class="flex items-center justify-between">
+        <div v-if="showOpenAIAPIKeyTextStreamToggles" class="flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.openai.apiKeySSECommentPreflush') }}</label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -1674,7 +1674,7 @@
             />
           </button>
         </div>
-        <div v-if="account?.type === 'apikey'" class="flex items-center justify-between">
+        <div v-if="showOpenAIAPIKeyTextStreamToggles" class="flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.openai.apiKeySafeTokenPlaceholder') }}</label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -2789,6 +2789,11 @@ const showPromptCacheBoostToggle = computed(() =>
   props.account?.platform === 'openai' &&
   !imagePoolModeEnabled.value
 )
+const showOpenAIAPIKeyTextStreamToggles = computed(() =>
+  props.account?.platform === 'openai' &&
+  props.account?.type === 'apikey' &&
+  !imagePoolModeEnabled.value
+)
 
 function parsePoolModeRetryStatusCodes(input: string): number[] {
   if (!input || !input.trim()) return []
@@ -3559,6 +3564,9 @@ watch(imagePoolModeEnabled, (enabled) => {
   if (enabled) {
     promptCacheBoostEnabled.value = false
     upstreamStrongIsolationEnabled.value = false
+    openaiAPIKeyPreambleFlushEnabled.value = false
+    openaiAPIKeySSECommentPreflushEnabled.value = false
+    openaiAPIKeySafeTokenPlaceholderEnabled.value = false
   }
 })
 
@@ -4481,17 +4489,17 @@ const handleSubmit = async () => {
       } else if (props.account.type === 'apikey') {
         newExtra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
         newExtra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
-        if (openaiAPIKeyPreambleFlushEnabled.value) {
+        if (!imagePoolModeEnabled.value && openaiAPIKeyPreambleFlushEnabled.value) {
           newExtra.openai_apikey_preamble_flush_enabled = true
         } else {
           delete newExtra.openai_apikey_preamble_flush_enabled
         }
-        if (openaiAPIKeySSECommentPreflushEnabled.value) {
+        if (!imagePoolModeEnabled.value && openaiAPIKeySSECommentPreflushEnabled.value) {
           newExtra.openai_apikey_sse_comment_preflush_enabled = true
         } else {
           delete newExtra.openai_apikey_sse_comment_preflush_enabled
         }
-        if (openaiAPIKeySafeTokenPlaceholderEnabled.value) {
+        if (!imagePoolModeEnabled.value && openaiAPIKeySafeTokenPlaceholderEnabled.value) {
           newExtra.openai_apikey_safe_token_placeholder_enabled = true
         } else {
           delete newExtra.openai_apikey_safe_token_placeholder_enabled
