@@ -289,6 +289,7 @@ async fn main() -> anyhow::Result<()> {
         ws_idle: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         pools: Arc::new(BufferPools::prewarmed(cfg.initial_pool_size)),
     };
+    let warm_client = state.client.clone();
     let app = Router::new()
         .route("/healthz", any(healthz))
         .route("/*path", any(handle_openai_edge))
@@ -299,7 +300,6 @@ async fn main() -> anyhow::Result<()> {
     // P3: 启动后台上游连接保活（仅当显式配置了 warm url）。这里使用直连 client，
     // 代理环境不要默认开启，避免保活出口不同于真实业务出口。
     if let Some(warm_url) = cfg.upstream_warm_url.clone() {
-        let warm_client = state.client.clone();
         let interval_secs = cfg.upstream_warm_interval_secs.max(30);
         tokio::spawn(async move {
             run_upstream_keep_warm(warm_client, warm_url, interval_secs).await;
