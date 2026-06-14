@@ -36,6 +36,31 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {
 	require.Nil(t, got.Extra["unused_large_field"])
 }
 
+func TestBuildSchedulerMetadataAccount_KeepsAnthropicAPIKeyBehaviorFlags(t *testing.T) {
+	account := service.Account{
+		ID:       43,
+		Platform: service.PlatformAnthropic,
+		Type:     service.AccountTypeAPIKey,
+		Extra: map[string]any{
+			"anthropic_kiro":        false,
+			"anthropic_passthrough": true,
+			"web_search_emulation":  service.WebSearchModeDisabled,
+			"unused_large_field":    "drop-me",
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.Contains(t, got.Extra, "anthropic_kiro")
+	require.Equal(t, false, got.Extra["anthropic_kiro"])
+	require.Equal(t, true, got.Extra["anthropic_passthrough"])
+	require.Equal(t, service.WebSearchModeDisabled, got.Extra["web_search_emulation"])
+	require.Nil(t, got.Extra["unused_large_field"])
+	require.False(t, got.IsAnthropicKiroEnabled())
+	require.True(t, got.IsAnthropicAPIKeyPassthroughEnabled())
+	require.Equal(t, service.WebSearchModeDisabled, got.GetWebSearchEmulationMode())
+}
+
 func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
 	account := service.Account{
 		ID:       42,

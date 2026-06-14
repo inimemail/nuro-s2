@@ -147,33 +147,51 @@ func TestAnthropicKiroSSENormalizer(t *testing.T) {
 	lines = n.normalizeLine(`event: content_block_start`)
 	require.Nil(t, lines)
 	lines = n.normalizeLine(`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"checking"}}`)
-	require.Nil(t, lines)
+	require.Len(t, lines, 2)
+	require.Equal(t, "event: content_block_start", lines[0])
+	require.Equal(t, "thinking", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "content_block.type").String())
 
 	lines = n.normalizeLine(`event: content_block_delta`)
 	require.Nil(t, lines)
 	lines = n.normalizeLine(`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" next"}}`)
-	require.Nil(t, lines)
+	require.Len(t, lines, 2)
+	require.Equal(t, "event: content_block_delta", lines[0])
+	require.Equal(t, "thinking_delta", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "delta.type").String())
 
 	lines = n.normalizeLine(`event: content_block_delta`)
 	require.Nil(t, lines)
 	lines = n.normalizeLine(`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"real-signature"}}`)
-	require.Nil(t, lines)
+	require.Len(t, lines, 2)
+	require.Equal(t, "event: content_block_delta", lines[0])
+	require.Equal(t, "signature_delta", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "delta.type").String())
 
 	lines = n.normalizeLine(`event: content_block_stop`)
 	require.Nil(t, lines)
 	lines = n.normalizeLine(`data: {"type":"content_block_stop","index":0}`)
-	require.Len(t, lines, 11)
+	require.Len(t, lines, 2)
+	require.Equal(t, "event: content_block_stop", lines[0])
+	require.Equal(t, "content_block_stop", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "type").String())
+
+	lines = n.normalizeLine(`event: content_block_start`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_start","index":4,"content_block":{"type":"thinking","thinking":""}}`)
+	require.Nil(t, lines)
+
+	lines = n.normalizeLine(`event: content_block_delta`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":"safe first token"}}`)
+	require.Len(t, lines, 5)
 	require.Equal(t, "event: content_block_start", lines[0])
 	require.Equal(t, "thinking", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "content_block.type").String())
 	require.Empty(t, lines[2])
 	require.Equal(t, "event: content_block_delta", lines[3])
 	require.Equal(t, "thinking_delta", gjson.Get(strings.TrimPrefix(lines[4], "data: "), "delta.type").String())
-	require.Empty(t, lines[5])
-	require.Equal(t, "event: content_block_delta", lines[6])
-	require.Equal(t, "signature_delta", gjson.Get(strings.TrimPrefix(lines[7], "data: "), "delta.type").String())
-	require.Empty(t, lines[8])
-	require.Equal(t, "event: content_block_stop", lines[9])
-	require.Equal(t, "content_block_stop", gjson.Get(strings.TrimPrefix(lines[10], "data: "), "type").String())
+
+	lines = n.normalizeLine(`event: content_block_stop`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_stop","index":4}`)
+	require.Len(t, lines, 2)
+	require.Equal(t, "event: content_block_stop", lines[0])
 
 	lines = n.normalizeLine(`event: content_block_start`)
 	require.Nil(t, lines)
@@ -281,6 +299,18 @@ func TestSanitizeAnthropicKiroMessagePayload_StripsInternalReasoningLeak(t *test
 	require.NotContains(t, text, "用户问")
 	require.NotContains(t, text, "identity disclosure instructions")
 	require.NotContains(t, text, "我需要")
+}
+
+func TestSanitizeAnthropicKiroMessagePayload_StripsChineseSystemPromptReasoningLeak(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","content":[{"type":"text","text":"用户用中文问\"Kiro 是啥\"。\n\n根据系统提示中的指示，我应该把 Kiro 作为正常话题来解释。\n这意味着我不能声称自己是 Kiro。\n我可以看到 identity 部分说了开发环境描述。\n所以我应该客观回答。\n\nKiro 是一个 AI 驱动的开发环境，可以帮助开发者写代码、运行工具和理解项目。"}]}`)
+	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
+	text := gjson.Get(updated, "content.0.text").String()
+
+	require.Contains(t, text, "Kiro 是一个 AI 驱动的开发环境")
+	require.NotContains(t, text, "用户用中文问")
+	require.NotContains(t, text, "根据系统提示")
+	require.NotContains(t, text, "这意味着")
+	require.NotContains(t, text, "所以我应该")
 }
 
 func TestSanitizeAnthropicKiroMessagePayload_StripsPromptTagLeak(t *testing.T) {

@@ -72,10 +72,15 @@ var anthropicKiroModelIdentitySuffixes = []string{
 var anthropicKiroInternalReasoningLeakMarkers = []string{
 	"用户问",
 	"用户说",
+	"用户用中文问",
+	"根据系统提示",
 	"根据identity disclosure instructions",
 	"根据 identity disclosure instructions",
 	"identity disclosure instructions",
 	"identity 部分",
+	"系统提示中的",
+	"更优先的",
+	"更优先",
 	"根据环境信息",
 	"根据 model_information",
 	"model_information",
@@ -84,11 +89,15 @@ var anthropicKiroInternalReasoningLeakMarkers = []string{
 	"When users ask about",
 	"If a user asks about the model",
 	"这个指示非常明确",
+	"这意味着",
 	"我需要：",
 	"我需要:",
 	"我应该：",
 	"我应该:",
 	"我应该用中文回答",
+	"所以我需要",
+	"所以我应该",
+	"我可以看到",
 }
 
 var anthropicKiroModelProfiles = []AnthropicKiroModelProfile{
@@ -509,6 +518,18 @@ func looksLikeAnthropicKiroInternalReasoningLeak(text string) bool {
 	return markers >= 2
 }
 
+func containsAnthropicKiroInternalReasoningLeakMarker(text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	for _, marker := range anthropicKiroInternalReasoningLeakMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func findAnthropicKiroVisibleAnswerAfterLeak(text string) string {
 	answerPrefixes := []string{
 		"\n不是。",
@@ -517,6 +538,10 @@ func findAnthropicKiroVisibleAnswerAfterLeak(text string) string {
 		"\nNo,",
 		"\n我的能力",
 		"\n关于 Claude",
+		"\nKiro 是",
+		"\nKiro是",
+		"\nClaude ",
+		"\nclaude-",
 	}
 	best := -1
 	for _, prefix := range answerPrefixes {
@@ -696,33 +721,16 @@ func sanitizeAnthropicKiroSSEData(data []byte) []byte {
 }
 
 type anthropicKiroSSENormalizer struct {
-	pendingEvent          string
-	profile               *AnthropicKiroModelProfile
-	fallbackModel         string
-	bufferedThinkingBlock map[int]*anthropicKiroBufferedThinkingBlock
+	pendingEvent       string
+	profile            *AnthropicKiroModelProfile
+	fallbackModel      string
+	thinkingBlockState map[int]*anthropicKiroThinkingBlockState
 }
 
-type anthropicKiroBufferedThinkingBlock struct {
-	lines       []string
-	leakMarkers map[string]bool
-}
-
-func (b *anthropicKiroBufferedThinkingBlock) observe(text string) {
-	if strings.TrimSpace(text) == "" {
-		return
-	}
-	if b.leakMarkers == nil {
-		b.leakMarkers = make(map[string]bool)
-	}
-	for _, marker := range anthropicKiroInternalReasoningLeakMarkers {
-		if strings.Contains(text, marker) {
-			b.leakMarkers[marker] = true
-		}
-	}
-}
-
-func (b *anthropicKiroBufferedThinkingBlock) hasLeak() bool {
-	return len(b.leakMarkers) >= 2
+type anthropicKiroThinkingBlockState struct {
+	pendingStart []string
+	emitted      bool
+	suppress     bool
 }
 
 func newAnthropicKiroSSENormalizer(fallbackModel string, profile *AnthropicKiroModelProfile) *anthropicKiroSSENormalizer {
@@ -837,24 +845,28 @@ func normalizeAnthropicKiroSSEData(data []byte, normalizer *anthropicKiroSSENorm
 		changed = sanitizeAnthropicKiroErrorObjectForProfile(event, profile) || changed
 	case "content_block_delta":
 		index, hasIndex := anthropicKiroEventIndex(event)
-		if normalizer != nil && hasIndex {
-			if buffer := normalizer.bufferedThinkingBlock[index]; buffer != nil {
-				if delta, ok := event["delta"].(map[string]any); ok {
-					text, _ := delta["thinking"].(string)
-					buffer.observe(text)
-				}
-				buffer.lines = append(buffer.lines, anthropicKiroSSELinesForEvent(eventType, data)...)
-				return nil, nil, true
-			}
-		}
 		if delta, ok := event["delta"].(map[string]any); ok {
 			deltaType, _ := delta["type"].(string)
-			if deltaType == "thinking_delta" && normalizer != nil && hasIndex {
-				buffer := normalizer.ensureBufferedThinkingBlock(index)
-				text, _ := delta["thinking"].(string)
-				buffer.observe(text)
-				buffer.lines = append(buffer.lines, anthropicKiroSSELinesForEvent(eventType, data)...)
-				return nil, nil, true
+			if normalizer != nil && hasIndex {
+				state := normalizer.thinkingBlockState[index]
+				if state != nil && state.suppress {
+					return nil, nil, true
+				}
+				if deltaType == "thinking_delta" {
+					text, _ := delta["thinking"].(string)
+					if containsAnthropicKiroInternalReasoningLeakMarker(text) {
+						if state == nil {
+							state = normalizer.ensureThinkingBlockState(index)
+						}
+						state.suppress = true
+						return nil, nil, true
+					}
+				}
+				if state != nil && len(state.pendingStart) > 0 && !state.emitted {
+					insertBefore = append(insertBefore, state.pendingStart...)
+					state.pendingStart = nil
+					state.emitted = true
+				}
 			}
 			changed = sanitizeAnthropicKiroStringFieldForProfile(delta, "text", profile) || changed
 		}
@@ -864,11 +876,17 @@ func normalizeAnthropicKiroSSEData(data []byte, normalizer *anthropicKiroSSENorm
 			blockType, _ := block["type"].(string)
 			if blockType == "thinking" {
 				if normalizer != nil && hasIndex {
-					buffer := normalizer.ensureBufferedThinkingBlock(index)
 					text, _ := block["thinking"].(string)
-					buffer.observe(text)
-					buffer.lines = append(buffer.lines, anthropicKiroSSELinesForEvent(eventType, data)...)
-					return nil, nil, true
+					state := normalizer.ensureThinkingBlockState(index)
+					if containsAnthropicKiroInternalReasoningLeakMarker(text) {
+						state.suppress = true
+						return nil, nil, true
+					}
+					if strings.TrimSpace(text) == "" {
+						state.pendingStart = anthropicKiroSSELinesForEvent(eventType, data)
+						return nil, nil, true
+					}
+					state.emitted = true
 				}
 			}
 			if blockType == "text" {
@@ -878,12 +896,11 @@ func normalizeAnthropicKiroSSEData(data []byte, normalizer *anthropicKiroSSENorm
 	case "content_block_stop":
 		index, hasIndex := anthropicKiroEventIndex(event)
 		if normalizer != nil && hasIndex {
-			if buffer := normalizer.bufferedThinkingBlock[index]; buffer != nil {
-				delete(normalizer.bufferedThinkingBlock, index)
-				if buffer.hasLeak() {
+			if state := normalizer.thinkingBlockState[index]; state != nil {
+				delete(normalizer.thinkingBlockState, index)
+				if !state.emitted {
 					return nil, nil, true
 				}
-				insertBefore = append(insertBefore, buffer.lines...)
 			}
 		}
 	case "message_start":
@@ -919,14 +936,14 @@ func anthropicKiroEventIndex(event map[string]any) (int, bool) {
 	}
 }
 
-func (n *anthropicKiroSSENormalizer) ensureBufferedThinkingBlock(index int) *anthropicKiroBufferedThinkingBlock {
-	if n.bufferedThinkingBlock == nil {
-		n.bufferedThinkingBlock = make(map[int]*anthropicKiroBufferedThinkingBlock)
+func (n *anthropicKiroSSENormalizer) ensureThinkingBlockState(index int) *anthropicKiroThinkingBlockState {
+	if n.thinkingBlockState == nil {
+		n.thinkingBlockState = make(map[int]*anthropicKiroThinkingBlockState)
 	}
-	if n.bufferedThinkingBlock[index] == nil {
-		n.bufferedThinkingBlock[index] = &anthropicKiroBufferedThinkingBlock{}
+	if n.thinkingBlockState[index] == nil {
+		n.thinkingBlockState[index] = &anthropicKiroThinkingBlockState{}
 	}
-	return n.bufferedThinkingBlock[index]
+	return n.thinkingBlockState[index]
 }
 
 func anthropicKiroSSELinesForEvent(eventType string, data []byte) []string {
