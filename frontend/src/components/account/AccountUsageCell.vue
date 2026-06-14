@@ -126,30 +126,21 @@
           :show-now-when-idle="true"
           color="emerald"
         />
-        <div
-          v-if="showCodexResetCredits"
-          class="flex items-center gap-1.5 text-[10px] text-gray-500 dark:text-gray-400"
-        >
-          <span>重置次数 {{ codexResetCreditsAvailable }}</span>
-          <button
-            type="button"
-            class="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-            :class="codexResetConfirming ? 'text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30' : 'text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/30'"
-            :disabled="codexResetCreditLoading || codexResetCreditsAvailable <= 0"
-            @click="consumeCodexResetCredit"
+        <div class="mt-1 flex items-center gap-3 whitespace-nowrap">
+          <span
+            v-if="showCodexResetCredits"
+            class="inline-flex h-6 items-center rounded bg-emerald-50 px-2 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
           >
-            {{ codexResetCreditButtonText }}
-          </button>
-        </div>
-        <div class="flex items-center gap-1.5 mt-0.5">
+            重置次数 {{ codexResetCreditsAvailable }}
+          </span>
           <button
             type="button"
-            class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors"
+            class="inline-flex h-6 items-center gap-0.5 rounded px-1.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors"
             :disabled="activeQueryLoading"
             @click="loadActiveUsage"
           >
             <svg
-              class="h-2.5 w-2.5"
+              class="h-3 w-3"
               :class="{ 'animate-spin': activeQueryLoading }"
               fill="none"
               stroke="currentColor"
@@ -162,7 +153,31 @@
                 d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
               />
             </svg>
-            {{ t('admin.accounts.usageWindow.activeQuery') }}
+            查询
+          </button>
+          <button
+            v-if="showCodexResetCredits"
+            type="button"
+            class="inline-flex h-6 items-center gap-0.5 rounded px-1.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            :class="codexResetConfirming ? 'text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30' : 'text-amber-600 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30'"
+            :disabled="codexResetCreditLoading || codexResetCreditsAvailable <= 0"
+            @click="consumeCodexResetCredit"
+          >
+            <svg
+              class="h-3 w-3"
+              :class="{ 'animate-spin': codexResetCreditLoading }"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+              />
+            </svg>
+            {{ codexResetCreditButtonText }}
           </button>
         </div>
       </div>
