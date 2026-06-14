@@ -22,6 +22,10 @@ $env:SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT = "8"
 $env:SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH = "true"
 $env:SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES = "262144"
 $env:SUB2API_EDGE_WS_IDLE_PER_KEY = "1"
+# Optional. Background direct upstream connection keep-warm (defaults off).
+# Set a URL only when direct egress is expected for real traffic.
+$env:SUB2API_EDGE_UPSTREAM_WARM_URL = ""
+$env:SUB2API_EDGE_UPSTREAM_WARM_INTERVAL_SECS = "240"
 $env:RUST_LOG = "info"
 cargo run --manifest-path edge-rs/Cargo.toml
 ```

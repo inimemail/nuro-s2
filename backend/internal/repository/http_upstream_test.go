@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -73,6 +74,16 @@ func (s *HTTPUpstreamSuite) TestCustomResponseHeaderTimeout() {
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
 	require.Equal(s.T(), 7*time.Second, transport.ResponseHeaderTimeout, "ResponseHeaderTimeout mismatch")
+}
+
+func (s *HTTPUpstreamSuite) TestDefaultProfileKeepsHTTP2WithCustomDialer() {
+	svc := s.newService()
+	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileDefault, false, false)
+	require.NoError(s.T(), err)
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.True(s.T(), transport.ForceAttemptHTTP2, "custom dialer/TLS config should not disable default HTTP/2")
+	require.Equal(s.T(), upstreamProtocolModeDefault, entry.protocolMode)
 }
 
 // TestGetOrCreateClient_InvalidURLReturnsError 测试无效代理 URL 返回错误
@@ -413,6 +424,23 @@ func (s *HTTPUpstreamSuite) TestIdleTTLDoesNotEvictActive() {
 // TestHTTPUpstreamSuite 运行测试套件
 func TestHTTPUpstreamSuite(t *testing.T) {
 	suite.Run(t, new(HTTPUpstreamSuite))
+}
+
+func TestOrderDialCandidatesInterleavesFamilies(t *testing.T) {
+	ips := []net.IPAddr{
+		{IP: net.ParseIP("2001:db8::1")},
+		{IP: net.ParseIP("2001:db8::2")},
+		{IP: net.ParseIP("192.0.2.1")},
+		{IP: net.ParseIP("192.0.2.2")},
+	}
+
+	ordered := orderDialCandidates(ips)
+
+	require.Len(t, ordered, 4)
+	require.Equal(t, "2001:db8::1", ordered[0].String())
+	require.Equal(t, "192.0.2.1", ordered[1].String())
+	require.Equal(t, "2001:db8::2", ordered[2].String())
+	require.Equal(t, "192.0.2.2", ordered[3].String())
 }
 
 // mustGetOrCreateClient 测试辅助函数，调用 getOrCreateClient 并断言无错误

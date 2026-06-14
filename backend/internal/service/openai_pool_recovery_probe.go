@@ -522,12 +522,35 @@ func (s *OpenAIGatewayService) nextOpenAIPoolRecoveryProbeBackoff(ctx context.Co
 	}
 	s.openaiPoolRecoveryProbeFailureCount.Store(account.ID, failures)
 	cooldownContext := s.openAIPoolAccountSoftCooldownContext(account.ID)
-	backoff := s.configuredOpenAIPoolSoftCooldownMax(ctx, account, cooldownContext)
-	if backoff <= 0 {
-		if !retryable {
-			return openAIPoolSoftCooldownAuth
+	configuredMax := s.configuredOpenAIPoolSoftCooldownMax(ctx, account, cooldownContext)
+
+	// 基础退避：可重试错误从默认 backoff 起步，鉴权类(401/403)从更长的 auth 冷却起步。
+	base := openAIPoolRecoveryProbeDefaultBackoff
+	if !retryable {
+		base = openAIPoolSoftCooldownAuth
+	}
+
+	// 指数退避：base * 2^(failures-1)，避免上游持续不稳时反复探测/反复冷却，
+	// 同时让短暂抖动恢复后能快速回到调度。封顶到配置的最大冷却时长。
+	backoff := base
+	if failures > 1 {
+		shift := uint(failures - 1)
+		if shift > 16 { // 2^16 已远超任何合理上限，防止位移溢出
+			shift = 16
 		}
-		return openAIPoolRecoveryProbeDefaultBackoff
+		scaled := base << shift
+		if scaled < base { // 溢出兜底
+			scaled = configuredMax
+		}
+		backoff = scaled
+	}
+
+	// 封顶：不超过配置的最大冷却时长（配置无效时保留指数退避后的基础值）。
+	if configuredMax > 0 && backoff > configuredMax {
+		backoff = configuredMax
+	}
+	if backoff <= 0 {
+		backoff = base
 	}
 	return backoff
 }

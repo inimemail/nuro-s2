@@ -66,6 +66,8 @@ struct EdgeConfig {
     large_payload_passthrough: bool,
     large_payload_threshold_bytes: usize,
     ws_idle_per_key: usize,
+    upstream_warm_url: Option<String>,
+    upstream_warm_interval_secs: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -293,6 +295,17 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state);
 
     info!("sub2api-edge-rs listening on {}", cfg.listen_addr);
+
+    // P3: 启动后台上游连接保活（仅当显式配置了 warm url）。这里使用直连 client，
+    // 代理环境不要默认开启，避免保活出口不同于真实业务出口。
+    if let Some(warm_url) = cfg.upstream_warm_url.clone() {
+        let warm_client = state.client.clone();
+        let interval_secs = cfg.upstream_warm_interval_secs.max(30);
+        tokio::spawn(async move {
+            run_upstream_keep_warm(warm_client, warm_url, interval_secs).await;
+        });
+    }
+
     let listener = tokio::net::TcpListener::bind(cfg.listen_addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -311,6 +324,26 @@ fn edge_http_client_builder(cfg: &EdgeConfig) -> ClientBuilder {
         .http2_keep_alive_while_idle(true)
         .pool_idle_timeout(Duration::from_secs(300))
         .pool_max_idle_per_host(cfg.max_idle_conns_per_account)
+}
+
+// run_upstream_keep_warm 周期性地向上游 origin 发一个轻量请求，保持 reqwest
+// 的 TCP+TLS+h2 连接常驻连接池，使真实请求能复用热连接、省一次握手 RTT。
+// 复用同一个 client（与真实请求共享连接池），不带鉴权；上游返回 401/405 均可接受，
+// 目的只在于保活连接。全程不触碰任何业务路径。
+async fn run_upstream_keep_warm(client: Client, warm_url: String, interval_secs: u64) {
+    let interval = Duration::from_secs(interval_secs);
+    loop {
+        let send = client.get(&warm_url).timeout(Duration::from_secs(10)).send();
+        match send.await {
+            Ok(resp) => {
+                let _ = resp.status();
+            }
+            Err(err) => {
+                warn!("upstream keep-warm request failed: {err}");
+            }
+        }
+        tokio::time::sleep(interval).await;
+    }
 }
 
 async fn healthz() -> &'static str {
@@ -1457,6 +1490,14 @@ impl EdgeConfig {
                 256 * 1024,
             ),
             ws_idle_per_key: env_usize("SUB2API_EDGE_WS_IDLE_PER_KEY", 1),
+            // P3: 后台上游连接保活。显式配置 URL 后启用；默认关闭，避免代理环境
+            // 在没有直连业务时凭空直连上游。
+            upstream_warm_url: match env::var("SUB2API_EDGE_UPSTREAM_WARM_URL") {
+                Ok(v) if v.trim().is_empty() => None, // 显式置空 = 关闭
+                Ok(v) => Some(v),
+                Err(_) => None,
+            },
+            upstream_warm_interval_secs: env_u64("SUB2API_EDGE_UPSTREAM_WARM_INTERVAL_SECS", 240),
         })
     }
 }

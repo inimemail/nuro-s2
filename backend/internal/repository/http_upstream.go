@@ -1068,6 +1068,18 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 		MaxConnsPerHost:       settings.maxConnsPerHost,
 		IdleConnTimeout:       settings.idleConnTimeout,
 		ResponseHeaderTimeout: settings.responseHeaderTimeout,
+		// 自定义 DialContext/TLSClientConfig 会关闭 Go 的自动 HTTP/2；默认显式打开，
+		// 仅在 openai_h1 / fallback 分支里关闭。
+		ForceAttemptHTTP2: true,
+		// N5: 显式关闭 100-continue 协商等待，避免带 body 的 POST 多一个 RTT。
+		ExpectContinueTimeout: 0,
+		// N1: 进程内 DNS 缓存拨号。直连场景生效；下方 socks5 代理会用自己的
+		// DialContext 覆盖此值（DNS 交由代理解析，符合预期，不缓存）。
+		DialContext: sharedCachedDialer.DialContext,
+		// N2: 共享 TLS 会话缓存，开启 session resumption，热账号省一次握手 RTT。
+		TLSClientConfig: &tls.Config{
+			ClientSessionCache: sharedUpstreamTLSSessionCache,
+		},
 	}
 	switch protocolMode {
 	case upstreamProtocolModeOpenAIH2:
@@ -1111,13 +1123,18 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 		ResponseHeaderTimeout: settings.responseHeaderTimeout,
 		// 禁用默认的 TLS，我们使用自定义的 DialTLSContext
 		ForceAttemptHTTP2: false,
+		// N5: 关闭 100-continue 等待。此路径走 DialTLSContext，DialContext 不生效，
+		// 但保留该项以统一行为。
+		ExpectContinueTimeout: 0,
 	}
 
 	// 根据代理类型选择合适的 TLS 指纹 Dialer
 	if proxyURL == nil {
-		// 直连：使用 TLSFingerprintDialer
+		// 直连：使用 TLSFingerprintDialer。
+		// N1: 注入进程内 DNS 缓存拨号作为底层 TCP 拨号器，省掉冷连接的 DNS 解析。
+		// TLS 握手仍由 utls 按指纹完成，不受影响。
 		slog.Debug("tls_fingerprint_transport_direct")
-		dialer := tlsfingerprint.NewDialer(profile, nil)
+		dialer := tlsfingerprint.NewDialer(profile, sharedCachedDialer.DialContext)
 		transport.DialTLSContext = dialer.DialTLSContext
 	} else {
 		scheme := strings.ToLower(proxyURL.Scheme)
