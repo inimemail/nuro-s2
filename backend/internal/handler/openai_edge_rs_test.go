@@ -299,6 +299,22 @@ func TestOpenAIEdgeRetryFallbackBoundaries(t *testing.T) {
 			want: "upstream_status_not_retryable",
 		},
 		{
+			name: "request timeout passes gate then fails on deps",
+			req: service.OpenAIEdgeRetryRequest{
+				LeaseID:            "lease-1",
+				UpstreamStatusCode: http.StatusRequestTimeout,
+			},
+			want: "edge_dependencies_missing",
+		},
+		{
+			name: "server error passes gate then fails on deps",
+			req: service.OpenAIEdgeRetryRequest{
+				LeaseID:            "lease-1",
+				UpstreamStatusCode: http.StatusInternalServerError,
+			},
+			want: "edge_dependencies_missing",
+		},
+		{
 			name: "missing dependencies falls back after retryable status",
 			req: service.OpenAIEdgeRetryRequest{
 				LeaseID:            "lease-1",

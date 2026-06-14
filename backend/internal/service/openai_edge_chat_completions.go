@@ -175,6 +175,7 @@ func OpenAIEdgeRawUpstreamEndpointForInbound(account *Account, inboundEndpoint s
 func OpenAIEdgeHTTPStatusRetryable(status int) bool {
 	return status == http.StatusUnauthorized ||
 		status == http.StatusForbidden ||
+		status == http.StatusRequestTimeout ||
 		status == http.StatusTooManyRequests ||
 		status == http.StatusInternalServerError ||
 		status == http.StatusBadGateway ||

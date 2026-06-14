@@ -188,6 +188,12 @@ func classifyOpenAIPoolFailover(account *Account, statusCode int, upstreamMsg st
 	return decision
 }
 
+// OpenAIPoolFailoverRetryableOnSameAccount 导出版同账号重试判定，供 handler（如 edge 路径）
+// 复用统一分类逻辑，避免各入口手搓状态码集合导致行为不一致。
+func OpenAIPoolFailoverRetryableOnSameAccount(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	return openAIPoolFailoverRetryableOnSameAccount(account, statusCode, upstreamMsg, upstreamBody)
+}
+
 func openAIPoolFailoverRetryableOnSameAccount(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
 	if account == nil || !account.IsPoolMode() {
 		return false

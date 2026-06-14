@@ -1031,7 +1031,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		StatusCode:             status,
 		ResponseBody:           openAIEdgeRetryResponseBody(req),
 		Message:                strings.TrimSpace(req.ErrorMessage),
-		RetryableOnSameAccount: lease.account.IsPoolMode() && lease.account.IsPoolModeRetryableStatus(status),
+		RetryableOnSameAccount: service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, strings.TrimSpace(req.ErrorMessage), openAIEdgeRetryResponseBody(req)),
 	}
 	if failoverErr.RetryableOnSameAccount {
 		retryLimit := lease.account.GetPoolModeRetryCount()
