@@ -313,6 +313,10 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 			Body:            json.RawMessage(upstreamBody),
 			BodyRawBase64:   EncodeOpenAIEdgeRawBody(upstreamBody),
 			ProxyURL:        proxyURL,
+			SafeTokenPlaceholder: s.openAIStreamSafeTokenPlaceholderEnabled(
+				account,
+				originalModel,
+			),
 		},
 		Model:           originalModel,
 		BillingModel:    originalModel,
@@ -503,6 +507,10 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 			Body:            json.RawMessage(upstreamBody),
 			BodyRawBase64:   EncodeOpenAIEdgeRawBody(upstreamBody),
 			ProxyURL:        proxyURL,
+			SafeTokenPlaceholder: s.openAIStreamSafeTokenPlaceholderEnabled(
+				account,
+				originalModel,
+			),
 		},
 		Model:           originalModel,
 		BillingModel:    billingModel,

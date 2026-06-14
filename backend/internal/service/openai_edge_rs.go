@@ -48,6 +48,10 @@ type OpenAIEdgePlan struct {
 	BodyRawBase64   string            `json:"body_raw_base64,omitempty"`
 	ProxyURL        string            `json:"proxy_url,omitempty"`
 	LowLatencyMode  string            `json:"low_latency_mode,omitempty"`
+	// SafeTokenPlaceholder lets edge-rs mirror the Go Responses SSE behavior:
+	// after response.created, inject an empty output_text.delta so compatible
+	// downstream panels can record an early first token without visible text.
+	SafeTokenPlaceholder bool `json:"safe_token_placeholder,omitempty"`
 }
 
 type OpenAIEdgeRetryRequest struct {

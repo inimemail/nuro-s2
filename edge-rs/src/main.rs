@@ -98,6 +98,8 @@ struct EdgePlan {
     body_raw_base64: Option<String>,
     proxy_url: Option<String>,
     low_latency_mode: Option<String>,
+    #[serde(default)]
+    safe_token_placeholder: bool,
 }
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -208,6 +210,30 @@ struct ChatStreamSummary {
     model: Option<String>,
     upstream_model: Option<String>,
     pending: String,
+    response_created_pending_boundary: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ChatStreamObservation {
+    starts_client_output: bool,
+    saw_response_created: bool,
+    response_created_boundary_offset: Option<usize>,
+}
+
+impl ChatStreamObservation {
+    fn merge(&mut self, other: ChatStreamObservation) {
+        self.starts_client_output |= other.starts_client_output;
+        self.saw_response_created |= other.saw_response_created;
+        if self.response_created_boundary_offset.is_none() {
+            self.response_created_boundary_offset = other.response_created_boundary_offset;
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LowLatencyPolicy {
+    enabled: bool,
+    barrier: Option<Duration>,
 }
 
 #[derive(Debug, Serialize)]
@@ -832,6 +858,7 @@ async fn relay_upstream_direct(
             anyhow::bail!("unsupported response dialect {dialect}");
         }
     }
+    let low_latency_policy = low_latency_policy(plan.low_latency_mode.as_deref());
     if let Some(mode) = &plan.low_latency_mode {
         if !mode.is_empty() {
             info!("edge relay low_latency_mode={mode}");
@@ -919,24 +946,81 @@ async fn relay_upstream_direct(
             "stream_dropped_before_complete",
             true,
         );
-        let stream_start = Instant::now();
         let mut first_byte_ms: Option<i64> = None;
         let mut first_flush_ms: Option<i64> = None;
+        let mut first_token_ms: Option<i64> = None;
+        let mut safe_token_placeholder_sent = false;
+        let mut bootstrap_comment_sent = false;
         let mut success = true;
         let mut error_message: Option<String> = None;
         let mut summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string());
         summary.request_id = upstream_request_id;
 
-        while let Some(next) = bytes_stream.next().await {
+        if low_latency_policy.enabled && low_latency_policy.barrier.is_none() {
+            first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
+            bootstrap_comment_sent = true;
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b":\n\n"));
+        }
+
+        let mut bootstrap_timer = low_latency_policy
+            .barrier
+            .map(tokio::time::sleep)
+            .map(Box::pin);
+
+        loop {
+            let next = if let Some(timer) = bootstrap_timer.as_mut() {
+                tokio::select! {
+                    _ = timer.as_mut(), if !bootstrap_comment_sent => {
+                        if first_flush_ms.is_none() {
+                            first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
+                        }
+                        bootstrap_comment_sent = true;
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b":\n\n"));
+                        continue;
+                    }
+                    next = bytes_stream.next() => next,
+                }
+            } else {
+                bytes_stream.next().await
+            };
+            let Some(next) = next else {
+                break;
+            };
             match next {
                 Ok(chunk) => {
                     if first_byte_ms.is_none() {
-                        first_byte_ms = Some(stream_start.elapsed().as_millis() as i64);
+                        first_byte_ms = Some(header_start.elapsed().as_millis() as i64);
                     }
                     if first_flush_ms.is_none() {
                         first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
                     }
-                    summary.observe(&chunk);
+                    bootstrap_comment_sent = true;
+                    let observation = summary.observe(&chunk);
+                    if first_token_ms.is_none() && observation.starts_client_output {
+                        first_token_ms = Some(started_at.elapsed().as_millis() as i64);
+                    }
+                    if plan.safe_token_placeholder && !safe_token_placeholder_sent {
+                        if let Some(offset) = observation.response_created_boundary_offset {
+                            safe_token_placeholder_sent = true;
+                            if first_token_ms.is_none() {
+                                first_token_ms = Some(started_at.elapsed().as_millis() as i64);
+                            }
+                            if first_flush_ms.is_none() {
+                                first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
+                            }
+                            let offset = offset.min(chunk.len());
+                            if offset > 0 {
+                                yield Ok::<Bytes, std::io::Error>(chunk.slice(..offset));
+                            }
+                            let placeholder =
+                                openai_responses_safe_token_placeholder_frame(summary.response_id.as_deref());
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
+                            if offset < chunk.len() {
+                                yield Ok::<Bytes, std::io::Error>(chunk.slice(offset..));
+                            }
+                            continue;
+                        }
+                    }
                     yield Ok::<Bytes, std::io::Error>(chunk);
                 }
                 Err(err) => {
@@ -969,7 +1053,7 @@ async fn relay_upstream_direct(
             duration_ms: started_at.elapsed().as_millis() as i64,
             upstream_header_ms: Some(upstream_header_ms),
             upstream_first_byte_ms: first_byte_ms,
-            first_token_ms: first_flush_ms,
+            first_token_ms,
             first_client_flush_ms: first_flush_ms,
             error_type: if success { None } else { Some("stream_error".to_string()) },
             error_message,
@@ -982,6 +1066,45 @@ async fn relay_upstream_direct(
     let mut builder = Response::builder().status(status.as_u16());
     copy_response_headers(builder.headers_mut().expect("headers"), &headers);
     Ok(builder.body(Body::from_stream(body_stream))?)
+}
+
+fn low_latency_policy(mode: Option<&str>) -> LowLatencyPolicy {
+    match mode.unwrap_or_default().trim().to_ascii_lowercase().as_str() {
+        "aggressive" => LowLatencyPolicy {
+            enabled: true,
+            barrier: None,
+        },
+        "smart" => LowLatencyPolicy {
+            enabled: true,
+            barrier: Some(Duration::from_millis(200)),
+        },
+        _ => LowLatencyPolicy::default(),
+    }
+}
+
+fn json_event_type(value: &Value) -> Option<&str> {
+    value.get("type").and_then(Value::as_str)
+}
+
+fn openai_responses_safe_token_placeholder_frame(response_id: Option<&str>) -> String {
+    let response_id = response_id
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("resp_placeholder");
+    let response_id_json = serde_json::to_string(response_id)
+        .unwrap_or_else(|_| "\"resp_placeholder\"".to_string());
+    format!(
+        "data: {{\"type\":\"response.output_text.delta\",\"delta\":\"\",\"response_id\":{},\"item_id\":\"msg_placeholder\",\"output_index\":0,\"content_index\":0}}\n\n",
+        response_id_json
+    )
+}
+
+fn json_starts_client_output(value: &Value) -> bool {
+    let event_type = json_event_type(value).unwrap_or_default();
+    !matches!(
+        event_type,
+        "response.created" | "response.in_progress" | "response.failed"
+    )
 }
 
 async fn call_retry(state: &AppState, req: RetryRequest) -> anyhow::Result<RetryDecision> {
@@ -1252,35 +1375,63 @@ impl ChatStreamSummary {
         }
     }
 
-    fn observe(&mut self, chunk: &[u8]) {
+    fn observe(&mut self, chunk: &[u8]) -> ChatStreamObservation {
         let text = String::from_utf8_lossy(chunk);
+        let pending_before = self.pending.len();
         self.pending.push_str(&text);
+        let mut observation = ChatStreamObservation::default();
+        let mut consumed_total = 0usize;
         while let Some(pos) = self.pending.find('\n') {
             let mut line = self.pending[..pos].to_string();
             self.pending.drain(..=pos);
+            consumed_total = consumed_total.saturating_add(pos + 1);
             if line.ends_with('\r') {
                 line.pop();
             }
-            self.observe_line(&line);
+            let mut line_observation = self.observe_line(&line);
+            if line_observation.saw_response_created {
+                line_observation.response_created_boundary_offset =
+                    Some(consumed_total.saturating_sub(pending_before).min(chunk.len()));
+            }
+            observation.merge(line_observation);
         }
         if self.pending.len() > 1024 * 1024 {
             self.pending.clear();
         }
+        observation
     }
 
-    fn observe_line(&mut self, line: &str) {
+    fn observe_line(&mut self, line: &str) -> ChatStreamObservation {
         let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            if self.response_created_pending_boundary {
+                self.response_created_pending_boundary = false;
+                return ChatStreamObservation {
+                    starts_client_output: false,
+                    saw_response_created: true,
+                };
+            }
+            return ChatStreamObservation::default();
+        }
         let Some(data) = trimmed.strip_prefix("data:") else {
-            return;
+            return ChatStreamObservation::default();
         };
         let payload = data.trim();
         if payload.is_empty() || payload == "[DONE]" {
-            return;
+            return ChatStreamObservation::default();
         }
         let Ok(value) = serde_json::from_str::<Value>(payload) else {
-            return;
+            return ChatStreamObservation::default();
         };
+        let observation = ChatStreamObservation {
+            starts_client_output: json_starts_client_output(&value),
+            saw_response_created: false,
+        };
+        if json_event_type(&value) == Some("response.created") {
+            self.response_created_pending_boundary = true;
+        }
         self.observe_json(&value);
+        observation
     }
 
     fn observe_ws_message(&mut self, msg: &TungsteniteMessage) {
@@ -1623,6 +1774,80 @@ mod tests {
     }
 
     #[test]
+    fn low_latency_policy_maps_smart_and_aggressive() {
+        let aggressive = low_latency_policy(Some("aggressive"));
+        assert!(aggressive.enabled);
+        assert_eq!(aggressive.barrier, None);
+
+        let smart = low_latency_policy(Some("smart"));
+        assert!(smart.enabled);
+        assert_eq!(smart.barrier, Some(Duration::from_millis(200)));
+
+        let off = low_latency_policy(Some("off"));
+        assert!(!off.enabled);
+        assert_eq!(off.barrier, None);
+    }
+
+    #[test]
+    fn stream_summary_distinguishes_preamble_from_client_output() {
+        let mut summary = ChatStreamSummary::default();
+        let created_data =
+            summary.observe(b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\",\"model\":\"gpt-4.1\"}}\n");
+        assert!(!created_data.starts_client_output);
+        assert!(!created_data.saw_response_created);
+
+        let created = summary.observe(b"\n");
+        assert!(!created.starts_client_output);
+        assert!(created.saw_response_created);
+        assert_eq!(summary.response_id.as_deref(), Some("resp_123"));
+        assert_eq!(summary.model.as_deref(), Some("gpt-4.1"));
+
+        assert!(summary.observe(
+            b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"
+        )
+        .starts_client_output);
+    }
+
+    #[test]
+    fn chat_completion_delta_counts_as_client_output() {
+        let mut summary = ChatStreamSummary::default();
+        assert!(summary.observe(
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"
+        )
+        .starts_client_output);
+    }
+
+    #[test]
+    fn safe_token_placeholder_frame_is_empty_output_delta() {
+        let frame = openai_responses_safe_token_placeholder_frame(Some("resp_123"));
+        assert!(frame.starts_with("data: "));
+        assert!(frame.ends_with("\n\n"));
+        assert!(frame.contains("\"type\":\"response.output_text.delta\""));
+        assert!(frame.contains("\"delta\":\"\""));
+        assert!(frame.contains("\"response_id\":\"resp_123\""));
+    }
+
+    #[test]
+    fn first_token_detection_matches_go_stream_event_semantics() {
+        assert!(!json_starts_client_output(&serde_json::json!({
+            "type": "response.created"
+        })));
+        assert!(!json_starts_client_output(&serde_json::json!({
+            "type": "response.in_progress"
+        })));
+        assert!(!json_starts_client_output(&serde_json::json!({
+            "type": "response.failed"
+        })));
+        assert!(json_starts_client_output(&serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": ""
+        })));
+        assert!(json_starts_client_output(&serde_json::json!({
+            "type": "response.output_item.added"
+        })));
+    }
+
+    #[test]
     fn hop_by_hop_and_edge_secret_headers_are_not_forwarded() {
         for name in [
             "host",
@@ -1676,6 +1901,7 @@ mod tests {
             body_raw_base64: Some(b64_encode(br#"{"rewritten":true}"#)),
             proxy_url: None,
             low_latency_mode: None,
+            safe_token_placeholder: false,
         };
 
         let body = request_body_bytes(&plan).expect("request body");
@@ -1698,6 +1924,7 @@ mod tests {
             body_raw_base64: None,
             proxy_url: Some("http://127.0.0.1:7890".to_string()),
             low_latency_mode: None,
+            safe_token_placeholder: false,
         };
 
         assert_eq!(
