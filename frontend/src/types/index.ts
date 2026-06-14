@@ -953,6 +953,7 @@ export interface UsageProgress {
   utilization: number // Percentage (0-100+, 100 = 100%)
   resets_at: string | null
   remaining_seconds: number
+  window_minutes?: number
   window_stats?: WindowStats | null // 窗口期统计（从窗口开始到当前的使用量）
   used_requests?: number
   limit_requests?: number
@@ -999,6 +1000,7 @@ export interface AccountUsageInfo {
   // OpenAI Codex reset credits
   codex_reset_credits_supported?: boolean
   codex_reset_credits_available_count?: number | null
+  codex_auto_reset_mode?: 'off' | 'short' | 'long' | '5h' | '7d' | string
 
   error?: string            // usage 获取失败时的错误信息
 }

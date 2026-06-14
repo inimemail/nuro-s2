@@ -222,6 +222,62 @@ func TestBuildOpenAIUsageFromExtraIncludesResetCredits(t *testing.T) {
 	if usage.CodexResetCreditsAvailableCount == nil || *usage.CodexResetCreditsAvailableCount != 0 {
 		t.Fatalf("available count = %v, want 0", usage.CodexResetCreditsAvailableCount)
 	}
+	if usage.CodexAutoResetMode != openAICodexAutoResetModeOff {
+		t.Fatalf("auto reset mode = %q, want off when count is 0", usage.CodexAutoResetMode)
+	}
+}
+
+func TestNormalizeOpenAICodexAutoResetModeAliases(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"":       openAICodexAutoResetModeOff,
+		"off":    openAICodexAutoResetModeOff,
+		"short":  openAICodexAutoResetModeShort,
+		"5h":     openAICodexAutoResetModeShort,
+		"hour":   openAICodexAutoResetModeShort,
+		"long":   openAICodexAutoResetModeLong,
+		"7d":     openAICodexAutoResetModeLong,
+		"week":   openAICodexAutoResetModeLong,
+		"month":  openAICodexAutoResetModeLong,
+		"random": openAICodexAutoResetModeOff,
+	}
+	for raw, want := range tests {
+		if got := normalizeOpenAICodexAutoResetMode(raw); got != want {
+			t.Fatalf("normalize(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestSetOpenAICodexAutoResetModeNilExtraFallsBackOff(t *testing.T) {
+	t.Parallel()
+
+	repo := &accountUsageCodexProbeRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{{
+			ID:       123,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra:    nil,
+		}}},
+		updateExtraCh: make(chan map[string]any, 1),
+	}
+	svc := &AccountUsageService{accountRepo: repo}
+
+	usage, err := svc.SetOpenAICodexAutoResetMode(context.Background(), 123, openAICodexAutoResetModeShort)
+	if err != nil {
+		t.Fatalf("SetOpenAICodexAutoResetMode returned error: %v", err)
+	}
+	if usage.CodexAutoResetMode != openAICodexAutoResetModeOff {
+		t.Fatalf("auto reset mode = %q, want off", usage.CodexAutoResetMode)
+	}
+	select {
+	case updates := <-repo.updateExtraCh:
+		if updates["codex_auto_reset_mode"] != openAICodexAutoResetModeOff {
+			t.Fatalf("persisted mode = %v, want off", updates["codex_auto_reset_mode"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected UpdateExtra to be called")
+	}
 }
 
 func TestApplyOpenAICodexResetCreditsFromExtraHonorsUnsupportedFlag(t *testing.T) {

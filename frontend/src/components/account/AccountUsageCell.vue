@@ -119,23 +119,23 @@
         />
         <UsageProgressBar
           v-if="usageInfo?.seven_day"
-          label="7d"
+          :label="codexLongUsageWindowLabel"
           :utilization="usageInfo.seven_day.utilization"
           :resets-at="usageInfo.seven_day.resets_at"
           :window-stats="usageInfo.seven_day.window_stats"
           :show-now-when-idle="true"
           color="emerald"
         />
-        <div class="mt-1 flex items-center gap-3 whitespace-nowrap">
+        <div class="mt-1 flex min-w-max items-center gap-1.5 whitespace-nowrap">
           <span
             v-if="showCodexResetCredits"
-            class="inline-flex h-6 items-center rounded bg-emerald-50 px-2 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+            class="inline-flex h-6 shrink-0 items-center rounded bg-emerald-50 px-1.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
           >
             重置次数 {{ codexResetCreditsAvailable }}
           </span>
           <button
             type="button"
-            class="inline-flex h-6 items-center gap-0.5 rounded px-1.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors"
+            class="inline-flex h-6 shrink-0 items-center gap-0.5 rounded px-1 text-[10px] font-medium text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
             :disabled="activeQueryLoading"
             @click="loadActiveUsage"
           >
@@ -158,7 +158,7 @@
           <button
             v-if="showCodexResetCredits"
             type="button"
-            class="inline-flex h-6 items-center gap-0.5 rounded px-1.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            class="inline-flex h-6 shrink-0 items-center gap-0.5 rounded px-1 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             :class="codexResetConfirming ? 'text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30' : 'text-amber-600 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30'"
             :disabled="codexResetCreditLoading || codexResetCreditsAvailable <= 0"
             @click="consumeCodexResetCredit"
@@ -179,6 +179,36 @@
             </svg>
             {{ codexResetCreditButtonText }}
           </button>
+          <div
+            v-if="showCodexResetCredits"
+            class="inline-flex h-6 shrink-0 items-center gap-1"
+            :class="{ 'opacity-50': codexAutoResetDisabled }"
+          >
+            <span class="shrink-0 text-[10px] font-medium text-gray-500 dark:text-gray-400">自动重置</span>
+            <div
+              class="relative grid h-6 w-[92px] shrink-0 grid-cols-3 rounded bg-gray-100 p-0.5 text-[10px] font-medium dark:bg-gray-800"
+              role="radiogroup"
+              aria-label="自动重置"
+            >
+              <span
+                class="absolute left-0.5 top-0.5 h-5 w-[29px] rounded bg-white shadow-sm transition-transform duration-200 ease-out dark:bg-gray-700"
+                :class="codexAutoResetThumbClass"
+              ></span>
+              <button
+                v-for="option in codexAutoResetOptions"
+                :key="option.value"
+                type="button"
+                class="relative z-10 h-5 shrink-0 rounded transition-colors"
+                :class="codexAutoResetOptionClass(option.value)"
+                :disabled="codexAutoResetDisabled || codexAutoResetModeLoading"
+                role="radio"
+                :aria-checked="codexAutoResetMode === option.value"
+                @click="updateCodexAutoResetMode(option.value)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       <div v-else-if="loading" class="space-y-1.5">
@@ -537,6 +567,7 @@ import AccountQuotaInfo from './AccountQuotaInfo.vue'
 // Module-level cache shared across all AccountUsageCell instances
 const _usageCache = new Map<number, { data: AccountUsageInfo; ts: number }>()
 const USAGE_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+type CodexAutoResetMode = 'off' | 'short' | 'long'
 
 const props = withDefaults(
   defineProps<{
@@ -561,6 +592,7 @@ onBeforeUnmount(() => { unmounted.value = true })
 const loading = ref(false)
 const activeQueryLoading = ref(false)
 const codexResetCreditLoading = ref(false)
+const codexAutoResetModeLoading = ref(false)
 const codexResetConfirming = ref(false)
 const error = ref<string | null>(null)
 const usageInfo = ref<AccountUsageInfo | null>(null)
@@ -628,6 +660,55 @@ const codexResetCreditsAvailable = computed(() => {
   const count = usageInfo.value?.codex_reset_credits_available_count
   return typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
 })
+
+const codexAutoResetDisabled = computed(() => !showCodexResetCredits.value || codexResetCreditsAvailable.value <= 0)
+
+const codexAutoResetMode = computed<CodexAutoResetMode>(() => {
+  if (codexResetCreditsAvailable.value <= 0) return 'off'
+  const mode = usageInfo.value?.codex_auto_reset_mode
+  if (mode === 'short' || mode === '5h') return 'short'
+  if (mode === 'long' || mode === '7d') return 'long'
+  return 'off'
+})
+
+const codexLongWindowLabel = computed(() => {
+  const minutes = usageInfo.value?.seven_day?.window_minutes
+  if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes <= 0) return '周/月'
+  if (minutes >= 27 * 24 * 60) return '月'
+  if (minutes >= 6 * 24 * 60) return '周'
+  return '长'
+})
+
+const codexLongUsageWindowLabel = computed(() => {
+  const minutes = usageInfo.value?.seven_day?.window_minutes
+  if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes <= 0) return '7d'
+  if (minutes >= 27 * 24 * 60) return '月'
+  if (minutes >= 6 * 24 * 60) return '7d'
+  return '长'
+})
+
+const codexAutoResetOptions = computed<Array<{ value: CodexAutoResetMode; label: string }>>(() => [
+  { value: 'off', label: '关' },
+  { value: 'short', label: '小时' },
+  { value: 'long', label: codexLongWindowLabel.value }
+])
+
+const codexAutoResetThumbClass = computed(() => {
+  switch (codexAutoResetMode.value) {
+    case 'short':
+      return 'translate-x-[30px]'
+    case 'long':
+      return 'translate-x-[60px]'
+    default:
+      return 'translate-x-0'
+  }
+})
+
+const codexAutoResetOptionClass = (mode: CodexAutoResetMode) => {
+  return codexAutoResetMode.value === mode
+    ? 'text-gray-900 dark:text-white'
+    : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'
+}
 
 const codexResetCreditButtonText = computed(() => {
   if (codexResetCreditLoading.value) return '处理中'
@@ -1172,6 +1253,21 @@ const consumeCodexResetCredit = async () => {
     console.error('Failed to consume Codex reset credit:', e)
   } finally {
     codexResetCreditLoading.value = false
+  }
+}
+
+const updateCodexAutoResetMode = async (mode: CodexAutoResetMode) => {
+  if (codexAutoResetModeLoading.value) return
+  const nextMode: CodexAutoResetMode = codexResetCreditsAvailable.value <= 0 ? 'off' : mode
+  codexAutoResetModeLoading.value = true
+  try {
+    const result = await adminAPI.accounts.updateCodexAutoResetMode(props.account.id, nextMode)
+    usageInfo.value = result
+    _usageCache.set(props.account.id, { data: result, ts: Date.now() })
+  } catch (e: any) {
+    console.error('Failed to update Codex auto reset mode:', e)
+  } finally {
+    codexAutoResetModeLoading.value = false
   }
 }
 

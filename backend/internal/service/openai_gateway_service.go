@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -388,6 +389,8 @@ type OpenAIGatewayService struct {
 	openaiPoolRecoveryProbeInFlight     sync.Map // key: int64(accountID), value: struct{}
 	openaiPoolRecoveryProbeFailureCount sync.Map // key: int64(accountID), value: int
 	openaiPoolRecoveryProbeAdminKickAt  sync.Map // key: int64(accountID), value: time.Time
+	openaiCodexAutoResetInFlight        sync.Map // key: int64(accountID), value: struct{}
+	openaiCodexAutoResetCooldownUntil   sync.Map // key: int64(accountID), value: time.Time
 	openaiOAuth429WindowStartUnixNano   atomic.Int64
 	openaiOAuth429WindowCount           atomic.Int64
 	openaiWSRetryMetrics                openAIWSRetryMetrics
@@ -2669,6 +2672,238 @@ func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, re
 	s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 }
 
+func (s *OpenAIGatewayService) tryAutoConsumeOpenAICodexResetCredit(ctx context.Context, account *Account, headers http.Header, responseBody []byte) bool {
+	if s == nil || account == nil || !account.IsOpenAIOAuth() || account.Platform != PlatformOpenAI {
+		return false
+	}
+	if account.Extra == nil {
+		return false
+	}
+
+	mode := openAICodexAutoResetModeFromExtra(account.Extra)
+	if mode == openAICodexAutoResetModeOff {
+		return false
+	}
+
+	if untilRaw, ok := s.openaiCodexAutoResetCooldownUntil.Load(account.ID); ok {
+		if until, ok := untilRaw.(time.Time); ok && time.Now().Before(until) {
+			return false
+		}
+	}
+	if _, loaded := s.openaiCodexAutoResetInFlight.LoadOrStore(account.ID, struct{}{}); loaded {
+		return false
+	}
+	defer s.openaiCodexAutoResetInFlight.Delete(account.ID)
+
+	if !s.isOpenAICodexAutoResetEligible(mode, headers) {
+		return false
+	}
+
+	payload, err := json.Marshal(map[string]string{"redeem_request_id": uuid.NewString()})
+	if err != nil {
+		s.openaiCodexAutoResetCooldownUntil.Store(account.ID, time.Now().Add(30*time.Second))
+		return false
+	}
+
+	resp, err := s.doOpenAIWhamRequest(ctx, account, http.MethodPost, openAIWhamConsumeURL, bytes.NewReader(payload))
+	if err != nil {
+		s.openaiCodexAutoResetCooldownUntil.Store(account.ID, time.Now().Add(30*time.Second))
+		slog.Warn("openai_codex_auto_reset_consume_failed", "account_id", account.ID, "error", err)
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		s.openaiCodexAutoResetCooldownUntil.Store(account.ID, time.Now().Add(30*time.Second))
+		slog.Warn("openai_codex_auto_reset_consume_status_failed", "account_id", account.ID, "status", resp.StatusCode)
+		return false
+	}
+
+	updates, err := s.fetchOpenAICodexResetCreditUpdates(ctx, account)
+	if err != nil || len(updates) == 0 {
+		updates = buildOpenAICodexResetCreditOptimisticUpdates(account, time.Now())
+	}
+	if len(updates) > 0 && s.accountRepo != nil {
+		if updateErr := s.accountRepo.UpdateExtra(ctx, account.ID, updates); updateErr != nil {
+			slog.Warn("openai_codex_auto_reset_update_extra_failed", "account_id", account.ID, "error", updateErr)
+		}
+	}
+	mergeAccountExtra(account, updates)
+	if s.rateLimitService != nil {
+		if err := s.rateLimitService.ClearRateLimit(ctx, account.ID); err != nil {
+			slog.Warn("openai_codex_auto_reset_clear_rate_limit_failed", "account_id", account.ID, "error", err)
+		}
+	}
+	s.openaiCodexAutoResetCooldownUntil.Store(account.ID, time.Now().Add(time.Minute))
+	_ = responseBody
+	return true
+}
+
+func (s *OpenAIGatewayService) isOpenAICodexAutoResetEligible(mode string, headers http.Header) bool {
+	if mode != openAICodexAutoResetModeShort && mode != openAICodexAutoResetModeLong {
+		return false
+	}
+	used, ok := openAICodexUsedPercentFromHeaders(headers, mode)
+	if !ok {
+		return false
+	}
+	return used >= 100
+}
+
+func openAICodexUsedPercentFromHeaders(headers http.Header, mode string) (float64, bool) {
+	if headers == nil {
+		return 0, false
+	}
+	snapshot := ParseCodexRateLimitHeaders(headers)
+	if snapshot == nil {
+		return 0, false
+	}
+	normalized := snapshot.Normalize()
+	if normalized == nil {
+		return 0, false
+	}
+	switch mode {
+	case openAICodexAutoResetModeShort:
+		return openAICodexShortWindowUsedPercent(normalized)
+	case openAICodexAutoResetModeLong:
+		return openAICodexLongWindowUsedPercent(normalized)
+	}
+	return 0, false
+}
+
+func openAICodexShortWindowUsedPercent(normalized *NormalizedCodexLimits) (float64, bool) {
+	if normalized == nil {
+		return 0, false
+	}
+	if normalized.Window5hMinutes != nil && normalized.Window7dMinutes != nil {
+		if *normalized.Window5hMinutes <= *normalized.Window7dMinutes {
+			if normalized.Used5hPercent != nil {
+				return *normalized.Used5hPercent, true
+			}
+		} else if normalized.Used7dPercent != nil {
+			return *normalized.Used7dPercent, true
+		}
+	}
+	if normalized.Used5hPercent != nil {
+		return *normalized.Used5hPercent, true
+	}
+	return 0, false
+}
+
+func openAICodexLongWindowUsedPercent(normalized *NormalizedCodexLimits) (float64, bool) {
+	if normalized == nil {
+		return 0, false
+	}
+	if normalized.Window5hMinutes != nil && normalized.Window7dMinutes != nil {
+		if *normalized.Window5hMinutes > *normalized.Window7dMinutes {
+			if normalized.Used5hPercent != nil {
+				return *normalized.Used5hPercent, true
+			}
+		} else if normalized.Used7dPercent != nil {
+			return *normalized.Used7dPercent, true
+		}
+	}
+	if normalized.Used7dPercent != nil {
+		return *normalized.Used7dPercent, true
+	}
+	return 0, false
+}
+
+func (s *OpenAIGatewayService) fetchOpenAICodexResetCreditUpdates(ctx context.Context, account *Account) (map[string]any, error) {
+	resp, err := s.doOpenAIWhamRequest(ctx, account, http.MethodGet, openAIWhamUsageURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		return nil, fmt.Errorf("read openai wham usage response: %w", readErr)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("openai wham usage returned status %d", resp.StatusCode)
+	}
+
+	updates := make(map[string]any)
+	if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
+		if normalized := snapshot.Normalize(); normalized != nil {
+			if normalized.Used5hPercent != nil {
+				updates["codex_5h_used_percent"] = *normalized.Used5hPercent
+			}
+			if normalized.Reset5hSeconds != nil {
+				updates["codex_5h_reset_after_seconds"] = *normalized.Reset5hSeconds
+			}
+			if normalized.Window5hMinutes != nil {
+				updates["codex_5h_window_minutes"] = *normalized.Window5hMinutes
+			}
+			if normalized.Used7dPercent != nil {
+				updates["codex_7d_used_percent"] = *normalized.Used7dPercent
+			}
+			if normalized.Reset7dSeconds != nil {
+				updates["codex_7d_reset_after_seconds"] = *normalized.Reset7dSeconds
+			}
+			if normalized.Window7dMinutes != nil {
+				updates["codex_7d_window_minutes"] = *normalized.Window7dMinutes
+			}
+		}
+	}
+	resetUpdates, supported, ok := extractOpenAICodexResetCreditUpdates(body, time.Now())
+	if !ok {
+		return nil, nil
+	}
+	for k, v := range resetUpdates {
+		updates[k] = v
+	}
+	updates["codex_reset_credits_supported"] = supported
+	return updates, nil
+}
+
+func (s *OpenAIGatewayService) doOpenAIWhamRequest(ctx context.Context, account *Account, method, url string, body io.Reader) (*http.Response, error) {
+	if account == nil || !account.IsOpenAIOAuth() {
+		return nil, fmt.Errorf("account does not support OpenAI Codex reset credits")
+	}
+	accessToken, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("create openai wham request: %w", err)
+	}
+	req.Host = "chatgpt.com"
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Originator", "codex_cli_rs")
+	req.Header.Set("Version", openAICodexProbeVersion)
+	req.Header.Set("User-Agent", codexCLIUserAgent)
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
+		req.Header.Set("User-Agent", customUA)
+	}
+	if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
+		req.Header.Set("chatgpt-account-id", chatgptAccountID)
+	}
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	client, err := httppool.GetClient(httppool.Options{
+		ProxyURL:              proxyURL,
+		Timeout:               15 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build openai wham client: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("openai wham request failed: %w", err)
+	}
+	return resp, nil
+}
+
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
@@ -3414,6 +3649,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	httpInvalidEncryptedContentRetryTried := false
 	httpPromptCacheBoostRetryTried := false
+	httpCodexAutoResetRetryTried := false
 	for {
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
@@ -3492,6 +3728,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					continue
 				}
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Skip non-WSv2 invalid_encrypted_content retry because encrypted reasoning items are missing (account: %s)", account.Name)
+			}
+			if !httpCodexAutoResetRetryTried && resp.StatusCode == http.StatusTooManyRequests {
+				if s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody) {
+					httpCodexAutoResetRetryTried = true
+					continue
+				}
 			}
 			if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {
 				upstreamDetail := ""
@@ -3739,13 +3981,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, err
 	}
 
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
-	upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
-	releaseUpstreamCtx()
-	if err != nil {
-		return nil, err
-	}
-
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
@@ -3755,84 +3990,103 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		c.Set("openai_passthrough", true)
 	}
 
-	upstreamStart := time.Now()
-	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
-	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
-	if err != nil {
-		if failoverErr := s.newOpenAIPoolRequestFailoverError(c, account, upstreamReq, err, true); failoverErr != nil {
-			return nil, failoverErr
-		}
-		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode >= 400 {
-		// 透传模式默认保持原样代理；但 429/529 属于网关必须兜底的
-		// 上游容量类错误，应先触发多账号 failover 以维持基础 SLA。
-		if shouldFailoverOpenAIPassthroughResponse(resp.StatusCode) {
-			return nil, s.handleFailoverErrorResponsePassthrough(ctx, resp, c, account, body)
-		}
-		return nil, s.handleErrorResponsePassthrough(ctx, resp, c, account, body)
-	}
-
-	serviceTier := extractOpenAIServiceTierFromBody(body)
-
-	var usage *OpenAIUsage
-	var firstTokenMs *int
-	responseID := ""
-	imageCount := 0
-	var imageOutputSizes []string
-	if reqStream {
-		result, err := s.handleStreamingResponsePassthrough(ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel)
+	httpCodexAutoResetRetryTried := false
+	for {
+		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+		upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
+		releaseUpstreamCtx()
 		if err != nil {
 			return nil, err
 		}
-		usage = result.usage
-		firstTokenMs = result.firstTokenMs
-		responseID = strings.TrimSpace(result.responseID)
-		imageCount = result.imageCount
-		imageOutputSizes = result.imageOutputSizes
-	} else {
-		result, err := s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel, upstreamPassthroughModel)
+
+		upstreamStart := time.Now()
+		resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		if err != nil {
-			return nil, err
+			if failoverErr := s.newOpenAIPoolRequestFailoverError(c, account, upstreamReq, err, true); failoverErr != nil {
+				return nil, failoverErr
+			}
+			return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
 		}
-		usage = result.usage
-		responseID = strings.TrimSpace(result.responseID)
-		imageCount = result.imageCount
-		imageOutputSizes = result.imageOutputSizes
-	}
-	s.bindHTTPResponseAccount(ctx, c, account, responseID)
 
-	if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-		s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
-	}
+		if resp.StatusCode >= 400 {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-	if usage == nil {
-		usage = &OpenAIUsage{}
-	}
+			if shouldFailoverOpenAIPassthroughResponse(resp.StatusCode) {
+				if !httpCodexAutoResetRetryTried && resp.StatusCode == http.StatusTooManyRequests {
+					if s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody) {
+						httpCodexAutoResetRetryTried = true
+						continue
+					}
+				}
+				return nil, s.handleFailoverErrorResponsePassthrough(ctx, resp, c, account, body)
+			}
+			return nil, s.handleErrorResponsePassthrough(ctx, resp, c, account, body)
+		}
 
-	forwardResult := &OpenAIForwardResult{
-		RequestID:       resp.Header.Get("x-request-id"),
-		ResponseID:      responseID,
-		Usage:           *usage,
-		Model:           reqModel,
-		UpstreamModel:   upstreamPassthroughModel,
-		ServiceTier:     serviceTier,
-		ReasoningEffort: reasoningEffort,
-		Stream:          reqStream,
-		OpenAIWSMode:    false,
-		Duration:        time.Since(startTime),
-		FirstTokenMs:    firstTokenMs,
+		defer func() { _ = resp.Body.Close() }()
+
+		serviceTier := extractOpenAIServiceTierFromBody(body)
+
+		var usage *OpenAIUsage
+		var firstTokenMs *int
+		responseID := ""
+		imageCount := 0
+		var imageOutputSizes []string
+		if reqStream {
+			result, err := s.handleStreamingResponsePassthrough(ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel)
+			if err != nil {
+				return nil, err
+			}
+			usage = result.usage
+			firstTokenMs = result.firstTokenMs
+			responseID = strings.TrimSpace(result.responseID)
+			imageCount = result.imageCount
+			imageOutputSizes = result.imageOutputSizes
+		} else {
+			result, err := s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel, upstreamPassthroughModel)
+			if err != nil {
+				return nil, err
+			}
+			usage = result.usage
+			responseID = strings.TrimSpace(result.responseID)
+			imageCount = result.imageCount
+			imageOutputSizes = result.imageOutputSizes
+		}
+		s.bindHTTPResponseAccount(ctx, c, account, responseID)
+
+		if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
+			s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+		}
+
+		if usage == nil {
+			usage = &OpenAIUsage{}
+		}
+
+		forwardResult := &OpenAIForwardResult{
+			RequestID:       resp.Header.Get("x-request-id"),
+			ResponseID:      responseID,
+			Usage:           *usage,
+			Model:           reqModel,
+			UpstreamModel:   upstreamPassthroughModel,
+			ServiceTier:     serviceTier,
+			ReasoningEffort: reasoningEffort,
+			Stream:          reqStream,
+			OpenAIWSMode:    false,
+			Duration:        time.Since(startTime),
+			FirstTokenMs:    firstTokenMs,
+		}
+		if imageCount > 0 {
+			forwardResult.ImageCount = imageCount
+			forwardResult.ImageSize = imageSizeTier
+			forwardResult.ImageInputSize = imageInputSize
+			forwardResult.ImageOutputSizes = imageOutputSizes
+			forwardResult.BillingModel = imageBillingModel
+		}
+		return forwardResult, nil
 	}
-	if imageCount > 0 {
-		forwardResult.ImageCount = imageCount
-		forwardResult.ImageSize = imageSizeTier
-		forwardResult.ImageInputSize = imageInputSize
-		forwardResult.ImageOutputSizes = imageOutputSizes
-		forwardResult.BillingModel = imageBillingModel
-	}
-	return forwardResult, nil
 }
 
 func logOpenAIPassthroughInstructionsRejected(

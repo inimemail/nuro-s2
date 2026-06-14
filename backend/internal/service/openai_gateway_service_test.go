@@ -2673,6 +2673,34 @@ func TestOpenAIUpdateCodexUsageSnapshotFromHeaders(t *testing.T) {
 	}
 }
 
+func TestOpenAICodexUsedPercentFromHeadersShortLong(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("x-codex-primary-used-percent", "12")
+	headers.Set("x-codex-primary-window-minutes", "10080")
+	headers.Set("x-codex-secondary-used-percent", "99")
+	headers.Set("x-codex-secondary-window-minutes", "300")
+
+	got, ok := openAICodexUsedPercentFromHeaders(headers, openAICodexAutoResetModeShort)
+	require.True(t, ok)
+	require.Equal(t, 99.0, got)
+
+	got, ok = openAICodexUsedPercentFromHeaders(headers, openAICodexAutoResetModeLong)
+	require.True(t, ok)
+	require.Equal(t, 12.0, got)
+}
+
+func TestOpenAICodexAutoResetEligibleRequiresSelectedWindowFull(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	headers := http.Header{}
+	headers.Set("x-codex-primary-used-percent", "100")
+	headers.Set("x-codex-primary-window-minutes", "10080")
+	headers.Set("x-codex-secondary-used-percent", "20")
+	headers.Set("x-codex-secondary-window-minutes", "300")
+
+	require.False(t, svc.isOpenAICodexAutoResetEligible(openAICodexAutoResetModeShort, headers))
+	require.True(t, svc.isOpenAICodexAutoResetEligible(openAICodexAutoResetModeLong, headers))
+}
+
 func TestOpenAIResponsesRequestPathSuffix(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

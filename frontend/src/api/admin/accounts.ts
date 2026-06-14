@@ -280,6 +280,17 @@ export async function consumeCodexResetCredit(id: number): Promise<AccountUsageI
   return data
 }
 
+export async function updateCodexAutoResetMode(
+  id: number,
+  mode: 'off' | 'short' | 'long'
+): Promise<AccountUsageInfo> {
+  const { data } = await apiClient.put<AccountUsageInfo>(
+    `/admin/accounts/${id}/codex/auto-reset-mode`,
+    { mode }
+  )
+  return data
+}
+
 /**
  * Clear account rate limit status
  * @param id - Account ID
@@ -776,6 +787,7 @@ export const accountsAPI = {
   clearError,
   getUsage,
   consumeCodexResetCredit,
+  updateCodexAutoResetMode,
   getTodayStats,
   getBatchTodayStats,
   clearRateLimit,

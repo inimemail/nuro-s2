@@ -118,6 +118,12 @@ const (
 	openAIWhamConsumeURL    = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
 )
 
+const (
+	openAICodexAutoResetModeOff   = "off"
+	openAICodexAutoResetModeShort = "short"
+	openAICodexAutoResetModeLong  = "long"
+)
+
 // UsageCache 封装账户使用量相关的缓存
 type UsageCache struct {
 	apiCache          sync.Map           // accountID -> *apiUsageCache
@@ -148,9 +154,10 @@ type WindowStats struct {
 
 // UsageProgress 使用量进度
 type UsageProgress struct {
-	Utilization      float64      `json:"utilization"`            // 使用率百分比 (0-100+，100表示100%)
-	ResetsAt         *time.Time   `json:"resets_at"`              // 重置时间
-	RemainingSeconds int          `json:"remaining_seconds"`      // 距重置剩余秒数
+	Utilization      float64      `json:"utilization"`       // 使用率百分比 (0-100+，100表示100%)
+	ResetsAt         *time.Time   `json:"resets_at"`         // 重置时间
+	RemainingSeconds int          `json:"remaining_seconds"` // 距重置剩余秒数
+	WindowMinutes    int          `json:"window_minutes,omitempty"`
 	WindowStats      *WindowStats `json:"window_stats,omitempty"` // 窗口期统计（从窗口开始到当前的使用量）
 	UsedRequests     int64        `json:"used_requests,omitempty"`
 	LimitRequests    int64        `json:"limit_requests,omitempty"`
@@ -229,8 +236,9 @@ type UsageInfo struct {
 	Error string `json:"error,omitempty"`
 
 	// OpenAI Codex 官方速率限制重置次数。只有上游返回该字段时才认为支持。
-	CodexResetCreditsSupported      bool `json:"codex_reset_credits_supported,omitempty"`
-	CodexResetCreditsAvailableCount *int `json:"codex_reset_credits_available_count,omitempty"`
+	CodexResetCreditsSupported      bool   `json:"codex_reset_credits_supported,omitempty"`
+	CodexResetCreditsAvailableCount *int   `json:"codex_reset_credits_available_count,omitempty"`
+	CodexAutoResetMode              string `json:"codex_auto_reset_mode,omitempty"`
 }
 
 // ClaudeUsageResponse Anthropic API返回的usage结构
@@ -593,7 +601,9 @@ func applyOpenAICodexResetCreditsFromExtra(usage *UsageInfo, extra map[string]an
 	if usage == nil || len(extra) == 0 {
 		return
 	}
+	usage.CodexAutoResetMode = openAICodexAutoResetModeFromExtra(extra)
 	if supportedRaw, ok := extra["codex_reset_credits_supported"]; ok && !parseExtraBool(supportedRaw) {
+		usage.CodexAutoResetMode = openAICodexAutoResetModeOff
 		return
 	}
 	raw, ok := extra["codex_reset_credits"]
@@ -606,6 +616,27 @@ func applyOpenAICodexResetCreditsFromExtra(usage *UsageInfo, extra map[string]an
 	}
 	usage.CodexResetCreditsSupported = true
 	usage.CodexResetCreditsAvailableCount = &count
+	if count <= 0 {
+		usage.CodexAutoResetMode = openAICodexAutoResetModeOff
+	}
+}
+
+func normalizeOpenAICodexAutoResetMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case openAICodexAutoResetModeShort, "5h", "hour", "hours":
+		return openAICodexAutoResetModeShort
+	case openAICodexAutoResetModeLong, "7d", "week", "weekly", "month", "monthly":
+		return openAICodexAutoResetModeLong
+	default:
+		return openAICodexAutoResetModeOff
+	}
+}
+
+func openAICodexAutoResetModeFromExtra(extra map[string]any) string {
+	if len(extra) == 0 {
+		return openAICodexAutoResetModeOff
+	}
+	return normalizeOpenAICodexAutoResetMode(fmt.Sprint(extra["codex_auto_reset_mode"]))
 }
 
 func parseExtraBool(value any) bool {
@@ -802,6 +833,7 @@ func extractOpenAICodexResetCreditUpdates(body []byte, now time.Time) (map[strin
 	unsupported := map[string]any{
 		"codex_reset_credits_supported":  false,
 		"codex_reset_credits_updated_at": now.UTC().Format(time.RFC3339),
+		"codex_auto_reset_mode":          openAICodexAutoResetModeOff,
 	}
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return unsupported, false, true
@@ -814,11 +846,15 @@ func extractOpenAICodexResetCreditUpdates(body []byte, now time.Time) (map[strin
 	if count < 0 {
 		count = 0
 	}
-	return map[string]any{
+	updates := map[string]any{
 		"codex_reset_credits":            count,
 		"codex_reset_credits_supported":  true,
 		"codex_reset_credits_updated_at": now.UTC().Format(time.RFC3339),
-	}, true, true
+	}
+	if count <= 0 {
+		updates["codex_auto_reset_mode"] = openAICodexAutoResetModeOff
+	}
+	return updates, true, true
 }
 
 func (s *AccountUsageService) ConsumeOpenAICodexResetCredit(ctx context.Context, accountID int64) (*UsageInfo, error) {
@@ -858,6 +894,54 @@ func (s *AccountUsageService) ConsumeOpenAICodexResetCredit(ctx context.Context,
 			mergeAccountExtra(account, updates)
 		}
 	}
+	now := time.Now()
+	usage := buildOpenAIUsageFromExtra(account, now)
+	if s.usageLogRepo != nil {
+		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-5*time.Hour)); err == nil {
+			if usage.FiveHour == nil {
+				usage.FiveHour = &UsageProgress{Utilization: 0}
+			}
+			usage.FiveHour.WindowStats = windowStatsFromAccountStats(stats)
+		}
+		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-7*24*time.Hour)); err == nil {
+			if usage.SevenDay == nil {
+				usage.SevenDay = &UsageProgress{Utilization: 0}
+			}
+			usage.SevenDay.WindowStats = windowStatsFromAccountStats(stats)
+		}
+	}
+	return usage, nil
+}
+
+func (s *AccountUsageService) SetOpenAICodexAutoResetMode(ctx context.Context, accountID int64, mode string) (*UsageInfo, error) {
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("get account failed: %w", err)
+	}
+	if account == nil || !account.IsOpenAIOAuth() {
+		return nil, fmt.Errorf("account does not support OpenAI Codex reset credits")
+	}
+
+	normalizedMode := normalizeOpenAICodexAutoResetMode(mode)
+	if normalizedMode != openAICodexAutoResetModeOff {
+		if len(account.Extra) == 0 {
+			normalizedMode = openAICodexAutoResetModeOff
+		} else if supportedRaw, ok := account.Extra["codex_reset_credits_supported"]; ok && !parseExtraBool(supportedRaw) {
+			normalizedMode = openAICodexAutoResetModeOff
+		} else if parseExtraInt(account.Extra["codex_reset_credits"]) <= 0 {
+			normalizedMode = openAICodexAutoResetModeOff
+		}
+	}
+
+	if s.accountRepo != nil {
+		if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
+			"codex_auto_reset_mode": normalizedMode,
+		}); err != nil {
+			return nil, fmt.Errorf("persist openai codex auto reset mode: %w", err)
+		}
+	}
+	mergeAccountExtra(account, map[string]any{"codex_auto_reset_mode": normalizedMode})
+
 	now := time.Now()
 	usage := buildOpenAIUsageFromExtra(account, now)
 	if s.usageLogRepo != nil {
@@ -942,11 +1026,15 @@ func buildOpenAICodexResetCreditOptimisticUpdates(account *Account, now time.Tim
 	if count > 0 {
 		count--
 	}
-	return map[string]any{
+	updates := map[string]any{
 		"codex_reset_credits":            count,
 		"codex_reset_credits_supported":  true,
 		"codex_reset_credits_updated_at": now.UTC().Format(time.RFC3339),
 	}
+	if count <= 0 {
+		updates["codex_auto_reset_mode"] = openAICodexAutoResetModeOff
+	}
+	return updates
 }
 
 func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, updates map[string]any) {
@@ -1352,6 +1440,7 @@ func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now t
 		usedPercentKey string
 		resetAfterKey  string
 		resetAtKey     string
+		windowKey      string
 	)
 
 	switch window {
@@ -1359,10 +1448,12 @@ func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now t
 		usedPercentKey = "codex_5h_used_percent"
 		resetAfterKey = "codex_5h_reset_after_seconds"
 		resetAtKey = "codex_5h_reset_at"
+		windowKey = "codex_5h_window_minutes"
 	case "7d":
 		usedPercentKey = "codex_7d_used_percent"
 		resetAfterKey = "codex_7d_reset_after_seconds"
 		resetAtKey = "codex_7d_reset_at"
+		windowKey = "codex_7d_window_minutes"
 	default:
 		return nil
 	}
@@ -1373,6 +1464,9 @@ func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now t
 	}
 
 	progress := &UsageProgress{Utilization: parseExtraFloat64(usedRaw)}
+	if windowMinutes := parseExtraInt(extra[windowKey]); windowMinutes > 0 {
+		progress.WindowMinutes = windowMinutes
+	}
 	if resetAtRaw, ok := extra[resetAtKey]; ok {
 		if resetAt, err := parseTime(fmt.Sprint(resetAtRaw)); err == nil {
 			progress.ResetsAt = &resetAt

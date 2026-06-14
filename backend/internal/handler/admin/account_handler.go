@@ -150,6 +150,10 @@ type BulkUpdateAccountsRequest struct {
 	ConfirmMixedChannelRisk *bool                     `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
 }
 
+type UpdateCodexAutoResetModeRequest struct {
+	Mode string `json:"mode" binding:"required,oneof=off short long 5h 7d"`
+}
+
 type BulkUpdateAccountFilters struct {
 	Platform    string `json:"platform"`
 	Type        string `json:"type"`
@@ -1856,6 +1860,34 @@ func (h *AccountHandler) ConsumeCodexResetCredit(c *gin.Context) {
 		slog.Warn("codex_reset_credit_clear_rate_limit_skipped", "account_id", accountID, "reason", "rate limit service unavailable")
 	} else if err := h.rateLimitService.ClearRateLimit(c.Request.Context(), accountID); err != nil {
 		slog.Warn("codex_reset_credit_clear_rate_limit_failed", "account_id", accountID, "error", err)
+	}
+
+	response.Success(c, usage)
+}
+
+// UpdateCodexAutoResetMode handles updating OpenAI Codex auto reset mode.
+// PUT /api/v1/admin/accounts/:id/codex/auto-reset-mode
+func (h *AccountHandler) UpdateCodexAutoResetMode(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if h.accountUsageService == nil {
+		response.InternalError(c, "Account usage service is not available")
+		return
+	}
+
+	var req UpdateCodexAutoResetModeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	usage, err := h.accountUsageService.SetOpenAICodexAutoResetMode(c.Request.Context(), accountID, req.Mode)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
 	}
 
 	response.Success(c, usage)
