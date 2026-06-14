@@ -4769,7 +4769,7 @@ const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unk
   if (anthropicKiroEnabled.value) {
     extra.anthropic_kiro = true
   } else {
-    delete extra.anthropic_kiro
+    extra.anthropic_kiro = false
   }
   if (webSearchEmulationMode.value === 'default') {
     delete extra.web_search_emulation

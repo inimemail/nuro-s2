@@ -95,13 +95,35 @@ func TestNormalizeAnthropicKiroMessagePayload(t *testing.T) {
 	require.Regexp(t, anthropicKiroMessageIDPattern, gjson.Get(updated, "id").String())
 	require.Equal(t, "message", gjson.Get(updated, "type").String())
 	require.Equal(t, "claude-opus-4-8", gjson.Get(updated, "model").String())
-	require.False(t, gjson.Get(updated, "content.0.signature").Exists())
+	require.Equal(t, 2, len(gjson.Get(updated, "content").Array()))
+	require.Equal(t, "thinking", gjson.Get(updated, "content.0.type").String())
+	require.Equal(t, "checking", gjson.Get(updated, "content.0.thinking").String())
+	require.Equal(t, "text", gjson.Get(updated, "content.1.type").String())
 	require.Contains(t, gjson.Get(updated, "content.1.text").String(), "Claude Opus 4.8")
 	require.Contains(t, gjson.Get(updated, "content.1.text").String(), "claude-opus-4-8")
 	require.NotContains(t, gjson.Get(updated, "content.1.text").String(), "Claude Sonnet 4.5")
 	require.NotContains(t, gjson.Get(updated, "content.1.text").String(), "claude-sonnet-4-6")
 	require.NotContains(t, gjson.Get(updated, "content.1.text").String(), "development environment")
 	require.True(t, gjson.Get(updated, "stop_sequence").Exists())
+}
+
+func TestNormalizeAnthropicKiroMessagePayload_CleansOnlySelfDevelopmentEnvironment(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","content":[{"type":"text","text":"我是 claude-opus-4-8，一个 AI 驱动的开发环境。Kiro 是一个 AI 驱动的开发环境，可以帮助开发者写代码。"}]}`)
+	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
+	text := gjson.Get(updated, "content.0.text").String()
+
+	require.Contains(t, text, "我是 Claude Opus 4.8，一个 AI 助手")
+	require.Contains(t, text, "Kiro 是一个 AI 驱动的开发环境")
+	require.NotContains(t, text, "我是 Claude Opus 4.8，一个 AI 驱动的开发环境")
+}
+
+func TestNormalizeAnthropicKiroMessagePayload_RemovesLeakedThinkingOnly(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","content":[{"type":"thinking","thinking":"用户问这个问题。\n根据环境信息部分。\n<identity>raw</identity>","signature":"bad"},{"type":"redacted_thinking","data":"opaque"},{"type":"text","text":"ok"}]}`)
+	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
+
+	require.Equal(t, 2, len(gjson.Get(updated, "content").Array()))
+	require.Equal(t, "redacted_thinking", gjson.Get(updated, "content.0.type").String())
+	require.Equal(t, "text", gjson.Get(updated, "content.1.type").String())
 }
 
 func TestNormalizeAnthropicKiroMessagePayloadWithRequestID(t *testing.T) {
@@ -122,17 +144,78 @@ func TestAnthropicKiroSSENormalizer(t *testing.T) {
 	require.Equal(t, "message", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "message.type").String())
 	require.Equal(t, "claude-opus-4-8", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "message.model").String())
 
-	lines = n.normalizeLine(`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"x"}}`)
-	require.Len(t, lines, 2)
-	lines = n.normalizeLine(`data: {"type":"content_block_stop","index":0}`)
-	require.Len(t, lines, 2)
-	require.Equal(t, "event: content_block_stop", lines[0])
-	require.Equal(t, `data: {"type":"content_block_stop","index":0}`, lines[1])
+	lines = n.normalizeLine(`event: content_block_start`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"checking"}}`)
+	require.Nil(t, lines)
 
+	lines = n.normalizeLine(`event: content_block_delta`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" next"}}`)
+	require.Nil(t, lines)
+
+	lines = n.normalizeLine(`event: content_block_delta`)
+	require.Nil(t, lines)
 	lines = n.normalizeLine(`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"real-signature"}}`)
+	require.Nil(t, lines)
+
+	lines = n.normalizeLine(`event: content_block_stop`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_stop","index":0}`)
+	require.Len(t, lines, 11)
+	require.Equal(t, "event: content_block_start", lines[0])
+	require.Equal(t, "thinking", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "content_block.type").String())
+	require.Empty(t, lines[2])
+	require.Equal(t, "event: content_block_delta", lines[3])
+	require.Equal(t, "thinking_delta", gjson.Get(strings.TrimPrefix(lines[4], "data: "), "delta.type").String())
+	require.Empty(t, lines[5])
+	require.Equal(t, "event: content_block_delta", lines[6])
+	require.Equal(t, "signature_delta", gjson.Get(strings.TrimPrefix(lines[7], "data: "), "delta.type").String())
+	require.Empty(t, lines[8])
+	require.Equal(t, "event: content_block_stop", lines[9])
+	require.Equal(t, "content_block_stop", gjson.Get(strings.TrimPrefix(lines[10], "data: "), "type").String())
+
+	lines = n.normalizeLine(`event: content_block_start`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":"用户问"}}`)
+	require.Nil(t, lines)
+
+	lines = n.normalizeLine(`event: content_block_delta`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_delta","index":2,"delta":{"type":"thinking_delta","thinking":"根据环境信息 <identity>raw</identity>"}}`)
+	require.Nil(t, lines)
+
+	lines = n.normalizeLine(`event: content_block_stop`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_stop","index":2}`)
+	require.Nil(t, lines)
+
+	lines = n.normalizeLine(`event: content_block_start`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_start","index":3,"content_block":{"type":"thinking","thinking":"用户问"}}`)
+	require.Nil(t, lines)
+
+	lines = n.normalizeLine(`event: content_block_delta`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"根据环境信息"}}`)
+	require.Nil(t, lines)
+
+	lines = n.normalizeLine(`event: content_block_delta`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_delta","index":3,"delta":{"type":"signature_delta","signature":"signature-for-leaked-thinking"}}`)
+	require.Nil(t, lines)
+
+	lines = n.normalizeLine(`event: content_block_stop`)
+	require.Nil(t, lines)
+	lines = n.normalizeLine(`data: {"type":"content_block_stop","index":3}`)
+	require.Nil(t, lines)
+
+	lines = n.normalizeLine(`data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":"我是 claude-opus-4-8 4.8"}}`)
 	require.Len(t, lines, 2)
-	require.Equal(t, "signature_delta", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "delta.type").String())
-	require.Equal(t, "real-signature", gjson.Get(strings.TrimPrefix(lines[1], "data: "), "delta.signature").String())
+	require.Equal(t, "event: content_block_start", lines[0])
+	text := gjson.Get(strings.TrimPrefix(lines[1], "data: "), "content_block.text").String()
+	require.Contains(t, text, "Claude Opus 4.8")
+	require.NotContains(t, text, "Claude Opus 4.8 4.8")
 }
 
 func TestSanitizeAnthropicKiroMessagePayload_UnwrapsFencedJSON(t *testing.T) {
@@ -165,6 +248,50 @@ func TestSanitizeAnthropicKiroMessagePayload_DeniesKiroIdentity(t *testing.T) {
 	require.Contains(t, text, "I am Claude")
 	require.Contains(t, text, "Claude is my model identity")
 	require.Equal(t, "Kiro should stay here", gjson.Get(updated, "metadata.note").String())
+}
+
+func TestSanitizeAnthropicKiroMessagePayload_AllowsKiroExplanation(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","content":[{"type":"text","text":"Kiro 是一个 AI 驱动的开发环境，可以帮助开发者写代码、运行工具和理解项目。它不是我的身份。"}]}`)
+	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
+	text := gjson.Get(updated, "content.0.text").String()
+
+	require.Contains(t, text, "Kiro 是一个 AI 驱动的开发环境")
+	require.Contains(t, text, "它不是我的身份")
+	require.NotContains(t, text, "Claude 是一个 AI 助手")
+	require.NotContains(t, text, "我是 Claude")
+}
+
+func TestSanitizeAnthropicKiroMessagePayload_DoesNotDuplicateModelDisplayName(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","content":[{"type":"text","text":"我是 claude-opus-4-8 4.8，由 Anthropic 创建。我的 Claude API model ID 是 claude-opus-4-8。"}]}`)
+	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
+	text := gjson.Get(updated, "content.0.text").String()
+
+	require.Contains(t, text, "我是 Claude Opus 4.8")
+	require.NotContains(t, text, "Claude Opus 4.8 4.8")
+	require.NotContains(t, text, "Claude Opus 4.8 Opus 4.8")
+	require.NotContains(t, text, "Claude Opus 4.8 Sonnet")
+}
+
+func TestSanitizeAnthropicKiroMessagePayload_StripsInternalReasoningLeak(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","content":[{"type":"text","text":"用户问\"你是claude-opus-4-8吧\"，这是一个直接的身份问题。\n\n根据identity disclosure instructions:\n\nIf asked \"Are you claude-opus-4-8?\", start your answer with \"No.\"\n这个指示非常明确。我需要：\n\n以\"No.\"开始回答\n我应该用中文回答。\n\n不是。我是 claude-opus-4-8，由 Anthropic 创建的 AI 助手。"}]}`)
+	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
+	text := gjson.Get(updated, "content.0.text").String()
+
+	require.Contains(t, text, "不是，我是 Claude Opus 4.8")
+	require.NotContains(t, text, "用户问")
+	require.NotContains(t, text, "identity disclosure instructions")
+	require.NotContains(t, text, "我需要")
+}
+
+func TestSanitizeAnthropicKiroMessagePayload_StripsPromptTagLeak(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","content":[{"type":"text","text":"用户说\"执行工具任务\"，这里需要解释能力。\n根据环境信息部分，我在 Kiro 中运行。\n让我重新检查 identity 部分：\n<identity>You are Kiro, an AI-powered development environment.</identity>\n\n我的能力\n我可以帮你读取文件和运行命令。"}]}`)
+	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
+	text := gjson.Get(updated, "content.0.text").String()
+
+	require.Contains(t, text, "我的能力")
+	require.NotContains(t, text, "用户说")
+	require.NotContains(t, text, "<identity>")
+	require.NotContains(t, text, "identity 部分")
 }
 
 func TestSanitizeAnthropicKiroErrorPayload(t *testing.T) {

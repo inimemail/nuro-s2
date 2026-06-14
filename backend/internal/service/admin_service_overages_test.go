@@ -153,3 +153,35 @@ func TestUpdateAccount_EmptyExtraPayloadCanClearQuotaLimits(t *testing.T) {
 	require.NotContains(t, repo.account.Extra, "quota_weekly_limit")
 	require.Len(t, repo.account.Extra, 0)
 }
+
+func TestUpdateAccount_ClearsAnthropicKiroWhenExtraOmitsFlag(t *testing.T) {
+	accountID := int64(104)
+	repo := &updateAccountOveragesRepoStub{
+		account: &Account{
+			ID:       accountID,
+			Platform: PlatformAnthropic,
+			Type:     AccountTypeAPIKey,
+			Status:   StatusActive,
+			Extra: map[string]any{
+				"anthropic_kiro":        true,
+				"anthropic_passthrough": true,
+				"quota_limit":           100.0,
+			},
+		},
+	}
+
+	svc := &adminServiceImpl{accountRepo: repo}
+	updated, err := svc.UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+		Extra: map[string]any{
+			"anthropic_passthrough": true,
+			"quota_limit":           100.0,
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, updated)
+	require.Equal(t, 1, repo.updateCalls)
+	require.False(t, repo.account.IsAnthropicKiroEnabled())
+	require.NotContains(t, repo.account.Extra, "anthropic_kiro")
+	require.True(t, repo.account.IsAnthropicAPIKeyPassthroughEnabled())
+}

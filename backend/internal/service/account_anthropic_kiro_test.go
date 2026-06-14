@@ -27,6 +27,17 @@ func TestAccount_IsAnthropicKiroEnabled(t *testing.T) {
 		require.False(t, account.IsAnthropicKiroEnabled())
 	})
 
+	t.Run("disabled when explicitly false", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformAnthropic,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				"anthropic_kiro": false,
+			},
+		}
+		require.False(t, account.IsAnthropicKiroEnabled())
+	})
+
 	t.Run("disabled for non anthropic apikey account", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,

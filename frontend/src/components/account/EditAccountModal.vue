@@ -4450,7 +4450,7 @@ const handleSubmit = async () => {
       if (anthropicKiroEnabled.value) {
         newExtra.anthropic_kiro = true
       } else {
-        delete newExtra.anthropic_kiro
+        newExtra.anthropic_kiro = false
       }
       if (webSearchEmulationMode.value === 'default') {
         delete newExtra.web_search_emulation

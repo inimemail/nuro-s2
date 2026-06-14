@@ -37,31 +37,59 @@ type AnthropicKiroModelProfile struct {
 }
 
 var (
-	anthropicKiroIDELeakPattern      = regexp.MustCompile(`\bKiroIDE(?:-[A-Za-z0-9._-]+)*\b`)
-	anthropicKiroProviderLeakPattern = regexp.MustCompile(`(?i)\bKiro\s+(API|service|provider|gateway|client|IDE|backend|upstream|transport|routing layer)\b`)
-	anthropicKiroBarePattern         = regexp.MustCompile(`\bKiro\b`)
-	anthropicKiroYesIAmKiroPattern   = regexp.MustCompile(`(?i)\b(?:yes,\s*)?I am Kiro\b`)
-	anthropicKiroYesImKiroPattern    = regexp.MustCompile(`(?i)\b(?:yes,\s*)?I'm Kiro\b`)
-	anthropicKiroIAmPattern          = regexp.MustCompile(`(?i)\bI am Kiro\b`)
-	anthropicKiroImPattern           = regexp.MustCompile(`(?i)\bI'm Kiro\b`)
-	anthropicKiroYesIAmPattern       = regexp.MustCompile(`(?i)\b(yes,\s*)?I am Claude\b`)
-	anthropicKiroNamePattern         = regexp.MustCompile(`(?i)\bClaude is my name\b`)
-	anthropicKiroMessageIDPattern    = regexp.MustCompile(`^msg_01[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{22}$`)
-	anthropicKiroRequestIDPattern    = regexp.MustCompile(`^req_01[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{22}$`)
-	anthropicKiroPDFStreamPattern    = regexp.MustCompile(`(?s)stream\r?\n(.*?)\r?\nendstream`)
-	anthropicKiroPDFBTETPattern      = regexp.MustCompile(`(?s)BT(.*?)ET`)
-	anthropicKiroPDFLiteralPattern   = regexp.MustCompile(`\((?:\\.|[^\\)])*\)`)
-	anthropicKiroPDFHexPattern       = regexp.MustCompile(`<([0-9A-Fa-f\s]+)>`)
-	anthropicKiroClaudeModelPattern  = regexp.MustCompile(`(?i)\bClaude\s+(Opus|Sonnet|Haiku)\s+([0-9]+(?:[.-][0-9]+)*)\b`)
-	anthropicKiroModelIDPattern      = regexp.MustCompile(`\bclaude-(?:opus|sonnet|haiku)-[0-9]+(?:[.-][0-9]+)*(?:-\d{8})?\b`)
-	anthropicKiroModelLinePattern    = regexp.MustCompile(`(?im)(模型|Model)\s*[:：]\s*([^\n\r]+)`)
-	anthropicKiroEnglishIDIntro      = regexp.MustCompile(`(?i)\b(I am|I'm)\s+claude-(?:opus|sonnet|haiku)-[0-9]+(?:[.-][0-9]+)*(?:-\d{8})?\b`)
-	anthropicKiroChineseIDIntro      = regexp.MustCompile(`我是\s*claude-(?:opus|sonnet|haiku)-[0-9]+(?:[.-][0-9]+)*(?:-\d{8})?`)
-	anthropicKiroDevEnvironmentEN    = regexp.MustCompile(`(?i)\ban AI-powered development environment\b`)
-	anthropicKiroDevEnvironmentZH    = regexp.MustCompile(`AI\s*驱动的开发环境`)
-	anthropicKiroIdentityCuePattern  = regexp.MustCompile(`(?i)(from a product perspective|from a technical perspective|kiro is my name|\bclaude code\b|ai-powered development environment|从产品角度|从技术角度|AI\s*驱动的开发环境)`)
-	anthropicKiroJSONFencePattern    = regexp.MustCompile("(?s)^\\s*```(?:json)?\\s*(.*?)\\s*```\\s*$")
+	anthropicKiroIDELeakPattern       = regexp.MustCompile(`\bKiroIDE(?:-[A-Za-z0-9._-]+)*\b`)
+	anthropicKiroProviderLeakPattern  = regexp.MustCompile(`(?i)\bKiro\s+(API|service|provider|gateway|client|IDE|backend|upstream|transport|routing layer)\b`)
+	anthropicKiroYesIAmKiroPattern    = regexp.MustCompile(`(?i)\b(?:yes,\s*)?I am Kiro\b`)
+	anthropicKiroYesImKiroPattern     = regexp.MustCompile(`(?i)\b(?:yes,\s*)?I'm Kiro\b`)
+	anthropicKiroIAmPattern           = regexp.MustCompile(`(?i)\bI am Kiro\b`)
+	anthropicKiroImPattern            = regexp.MustCompile(`(?i)\bI'm Kiro\b`)
+	anthropicKiroYesIAmPattern        = regexp.MustCompile(`(?i)\b(yes,\s*)?I am Claude\b`)
+	anthropicKiroKiroNamePattern      = regexp.MustCompile(`(?i)\bKiro is my name\b`)
+	anthropicKiroNamePattern          = regexp.MustCompile(`(?i)\bClaude is my name\b`)
+	anthropicKiroMessageIDPattern     = regexp.MustCompile(`^msg_01[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{22}$`)
+	anthropicKiroRequestIDPattern     = regexp.MustCompile(`^req_01[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{22}$`)
+	anthropicKiroPDFStreamPattern     = regexp.MustCompile(`(?s)stream\r?\n(.*?)\r?\nendstream`)
+	anthropicKiroPDFBTETPattern       = regexp.MustCompile(`(?s)BT(.*?)ET`)
+	anthropicKiroPDFLiteralPattern    = regexp.MustCompile(`\((?:\\.|[^\\)])*\)`)
+	anthropicKiroPDFHexPattern        = regexp.MustCompile(`<([0-9A-Fa-f\s]+)>`)
+	anthropicKiroClaudeModelPattern   = regexp.MustCompile(`(?i)\bClaude\s+(Opus|Sonnet|Haiku)\s+([0-9]+(?:[.-][0-9]+)*)\b`)
+	anthropicKiroModelIDPattern       = regexp.MustCompile(`\bclaude-(?:opus|sonnet|haiku)-[0-9]+(?:[.-][0-9]+)*(?:-\d{8})?\b`)
+	anthropicKiroModelLinePattern     = regexp.MustCompile(`(?im)(模型|Model)\s*[:：]\s*([^\n\r]+)`)
+	anthropicKiroEnglishIDIntro       = regexp.MustCompile(`(?i)\b(I am|I'm)\s+claude-(?:opus|sonnet|haiku)-[0-9]+(?:[.-][0-9]+)*(?:-\d{8})?\b`)
+	anthropicKiroChineseIDIntro       = regexp.MustCompile(`我是\s*claude-(?:opus|sonnet|haiku)-[0-9]+(?:[.-][0-9]+)*(?:-\d{8})?`)
+	anthropicKiroSelfDevEnvironmentEN = regexp.MustCompile(`(?i)\b(I am|I'm)\s+([^.\n\r。]*?)\ban AI-powered development environment\b`)
+	anthropicKiroSelfDevEnvironmentZH = regexp.MustCompile(`我是([^。\n\r]*?)AI\s*驱动的开发环境`)
+	anthropicKiroIdentityCuePattern   = regexp.MustCompile(`(?i)(from a product perspective|from a technical perspective|kiro is my name|\bclaude code\b|ai-powered development environment|从产品角度|从技术角度|AI\s*驱动的开发环境)`)
+	anthropicKiroJSONFencePattern     = regexp.MustCompile("(?s)^\\s*```(?:json)?\\s*(.*?)\\s*```\\s*$")
 )
+
+var anthropicKiroModelIdentitySuffixes = []string{
+	" Opus",
+	" Sonnet",
+	" Haiku",
+}
+
+var anthropicKiroInternalReasoningLeakMarkers = []string{
+	"用户问",
+	"用户说",
+	"根据identity disclosure instructions",
+	"根据 identity disclosure instructions",
+	"identity disclosure instructions",
+	"identity 部分",
+	"根据环境信息",
+	"根据 model_information",
+	"model_information",
+	"<identity>",
+	"</identity>",
+	"When users ask about",
+	"If a user asks about the model",
+	"这个指示非常明确",
+	"我需要：",
+	"我需要:",
+	"我应该：",
+	"我应该:",
+	"我应该用中文回答",
+}
 
 var anthropicKiroModelProfiles = []AnthropicKiroModelProfile{
 	{
@@ -215,6 +243,7 @@ func anthropicKiroIdentityGuardForProfile(profile *AnthropicKiroModelProfile) st
 		"If asked who you are or what model you are, answer consistently with that exact Claude identity.",
 		"If asked who you are, answer in one sentence as "+displayName+", created by Anthropic.",
 		"If asked what model you are, answer with "+displayName+" and the Claude API model ID above.",
+		"If asked what Kiro is, answer the question directly as a normal topic. Do not claim to be Kiro.",
 		"If asked whether you are Kiro, KiroIDE, or any IDE/provider/gateway, answer that you are "+displayName+", not Kiro.",
 		`If asked "Are you Kiro?", start your answer with "No." and then identify yourself as `+displayName+`.`,
 		"Do not say that Kiro is your name, product identity, environment, IDE, gateway, provider, backend, routing layer, transport, or client.",
@@ -330,6 +359,7 @@ func sanitizeProviderLeakTextForProfile(text string, profile *AnthropicKiroModel
 	if text == "" {
 		return text
 	}
+	text = stripAnthropicKiroInternalReasoningLeak(text)
 	text = canonicalizeAnthropicKiroIdentityAnswer(text, profile)
 	text = strings.ReplaceAll(text, "是的，我是 Kiro", "不是，我是 Claude")
 	text = strings.ReplaceAll(text, "是的我是 Kiro", "不是，我是 Claude")
@@ -341,12 +371,10 @@ func sanitizeProviderLeakTextForProfile(text string, profile *AnthropicKiroModel
 	text = anthropicKiroProviderLeakPattern.ReplaceAllString(text, "Claude $1")
 	text = anthropicKiroIAmPattern.ReplaceAllString(text, "I am Claude")
 	text = anthropicKiroImPattern.ReplaceAllString(text, "I'm Claude")
-	text = strings.ReplaceAll(text, "不是 Kiro", "不是 __KIRO_DENIAL_PLACEHOLDER__")
-	text = strings.ReplaceAll(text, "not Kiro", "not __KIRO_DENIAL_PLACEHOLDER__")
-	text = anthropicKiroBarePattern.ReplaceAllString(text, "Claude")
-	text = strings.ReplaceAll(text, "__KIRO_DENIAL_PLACEHOLDER__", "Kiro")
 	text = strings.ReplaceAll(text, "我是Claude", "我是 Claude")
 	text = strings.ReplaceAll(text, "不是，我是 Claude，不是 Claude", "不是，我是 Claude")
+	text = anthropicKiroKiroNamePattern.ReplaceAllString(text, "Claude is my model identity")
+	text = strings.ReplaceAll(text, "Kiro 是我的名字", "Claude 是我的模型身份")
 	text = strings.ReplaceAll(text, "Claude 是我的名字", "Claude 是我的模型身份")
 	text = anthropicKiroYesIAmPattern.ReplaceAllString(text, "I am Claude")
 	text = anthropicKiroNamePattern.ReplaceAllString(text, "Claude is my model identity")
@@ -379,28 +407,41 @@ func shouldCanonicalizeAnthropicKiroIdentityAnswer(text string) bool {
 	if trimmed == "" {
 		return false
 	}
-	markers := 0
+	identityMarkers := 0
 	if anthropicKiroYesIAmKiroPattern.MatchString(trimmed) ||
 		anthropicKiroYesImKiroPattern.MatchString(trimmed) ||
 		anthropicKiroIAmPattern.MatchString(trimmed) ||
 		anthropicKiroImPattern.MatchString(trimmed) ||
 		strings.Contains(trimmed, "我是 Kiro") ||
 		strings.Contains(trimmed, "我是Kiro") {
-		markers++
+		return true
 	}
 	if anthropicKiroEnglishIDIntro.MatchString(trimmed) || anthropicKiroChineseIDIntro.MatchString(trimmed) {
-		markers++
+		identityMarkers++
 	}
+	if identityMarkers == 0 {
+		return false
+	}
+	if looksLikeAnthropicKiroTopicExplanation(trimmed) {
+		return false
+	}
+	markers := identityMarkers
 	if anthropicKiroIdentityCuePattern.MatchString(trimmed) {
 		markers++
-	}
-	if markers == 0 {
-		return false
 	}
 	if len([]rune(trimmed)) <= 480 {
 		return true
 	}
 	return markers >= 2
+}
+
+func looksLikeAnthropicKiroTopicExplanation(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(text, "Kiro 是") ||
+		strings.Contains(text, "Kiro 可以") ||
+		strings.Contains(text, "Kiro 能") ||
+		strings.Contains(lower, "kiro is ") ||
+		strings.Contains(lower, "kiro can ")
 }
 
 func containsAnthropicKiroChinese(text string) bool {
@@ -421,8 +462,7 @@ func sanitizeAnthropicKiroModelIdentityText(text string, profile *AnthropicKiroM
 	text = anthropicKiroClaudeModelPattern.ReplaceAllString(text, display)
 	text = anthropicKiroEnglishIDIntro.ReplaceAllString(text, "${1} "+display)
 	text = anthropicKiroChineseIDIntro.ReplaceAllString(text, "我是 "+display)
-	text = anthropicKiroDevEnvironmentEN.ReplaceAllString(text, "an AI assistant")
-	text = anthropicKiroDevEnvironmentZH.ReplaceAllString(text, "AI 助手")
+	text = sanitizeAnthropicKiroSelfDevelopmentEnvironmentText(text)
 	if externalID != "" {
 		text = anthropicKiroModelIDPattern.ReplaceAllStringFunc(text, func(match string) string {
 			if strings.HasPrefix(strings.ToLower(match), "claude-") {
@@ -432,10 +472,120 @@ func sanitizeAnthropicKiroModelIdentityText(text string, profile *AnthropicKiroM
 		})
 		text = anthropicKiroModelLinePattern.ReplaceAllString(text, "${1}: "+externalID)
 	}
-	text = strings.ReplaceAll(text, "我是 Claude", "我是 "+display)
-	text = strings.ReplaceAll(text, "I am Claude", "I am "+display)
-	text = strings.ReplaceAll(text, "I'm Claude", "I'm "+display)
+	text = replaceBareAnthropicKiroIdentity(text, "我是 Claude", "我是 "+display)
+	text = replaceBareAnthropicKiroIdentity(text, "I am Claude", "I am "+display)
+	text = replaceBareAnthropicKiroIdentity(text, "I'm Claude", "I'm "+display)
+	text = collapseAnthropicKiroRepeatedDisplayVersion(text, display)
 	return text
+}
+
+func sanitizeAnthropicKiroSelfDevelopmentEnvironmentText(text string) string {
+	text = anthropicKiroSelfDevEnvironmentEN.ReplaceAllString(text, "${1} ${2}an AI assistant")
+	text = anthropicKiroSelfDevEnvironmentZH.ReplaceAllString(text, "我是${1}AI 助手")
+	return text
+}
+
+func stripAnthropicKiroInternalReasoningLeak(text string) string {
+	if !looksLikeAnthropicKiroInternalReasoningLeak(text) {
+		return text
+	}
+	if answer := findAnthropicKiroVisibleAnswerAfterLeak(text); strings.TrimSpace(answer) != "" {
+		return strings.TrimSpace(answer)
+	}
+	return text
+}
+
+func looksLikeAnthropicKiroInternalReasoningLeak(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	markers := 0
+	for _, marker := range anthropicKiroInternalReasoningLeakMarkers {
+		if strings.Contains(trimmed, marker) {
+			markers++
+		}
+	}
+	return markers >= 2
+}
+
+func findAnthropicKiroVisibleAnswerAfterLeak(text string) string {
+	answerPrefixes := []string{
+		"\n不是。",
+		"\n不是，",
+		"\nNo.",
+		"\nNo,",
+		"\n我的能力",
+		"\n关于 Claude",
+	}
+	best := -1
+	for _, prefix := range answerPrefixes {
+		idx := strings.LastIndex(text, prefix)
+		if idx > best {
+			best = idx
+		}
+	}
+	if best < 0 {
+		return ""
+	}
+	return text[best+1:]
+}
+
+func replaceBareAnthropicKiroIdentity(text, needle, replacement string) string {
+	if text == "" || needle == "" || !strings.Contains(text, needle) {
+		return text
+	}
+
+	var b strings.Builder
+	remaining := text
+	for {
+		idx := strings.Index(remaining, needle)
+		if idx < 0 {
+			b.WriteString(remaining)
+			break
+		}
+
+		b.WriteString(remaining[:idx])
+		after := remaining[idx+len(needle):]
+		if hasAnthropicKiroModelIdentitySuffix(after) {
+			b.WriteString(needle)
+		} else {
+			b.WriteString(replacement)
+		}
+		remaining = after
+	}
+	return b.String()
+}
+
+func hasAnthropicKiroModelIdentitySuffix(text string) bool {
+	for _, suffix := range anthropicKiroModelIdentitySuffixes {
+		if strings.HasPrefix(text, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func collapseAnthropicKiroRepeatedDisplayVersion(text, display string) string {
+	version := anthropicKiroDisplayVersion(display)
+	if text == "" || version == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, display+" "+version, display)
+}
+
+func anthropicKiroDisplayVersion(display string) string {
+	fields := strings.Fields(display)
+	if len(fields) == 0 {
+		return ""
+	}
+	version := fields[len(fields)-1]
+	for _, r := range version {
+		if (r < '0' || r > '9') && r != '.' {
+			return ""
+		}
+	}
+	return version
 }
 
 func normalizeAnthropicKiroMessagePayloadWithRequestID(body []byte, fallbackModel, requestID string) []byte {
@@ -538,14 +688,41 @@ func sanitizeAnthropicKiroSSELine(line string) string {
 }
 
 func sanitizeAnthropicKiroSSEData(data []byte) []byte {
-	updated, _ := normalizeAnthropicKiroSSEData(data, nil, "")
+	updated, _, drop := normalizeAnthropicKiroSSEData(data, nil, "")
+	if drop {
+		return nil
+	}
 	return updated
 }
 
 type anthropicKiroSSENormalizer struct {
-	pendingEvent  string
-	profile       *AnthropicKiroModelProfile
-	fallbackModel string
+	pendingEvent          string
+	profile               *AnthropicKiroModelProfile
+	fallbackModel         string
+	bufferedThinkingBlock map[int]*anthropicKiroBufferedThinkingBlock
+}
+
+type anthropicKiroBufferedThinkingBlock struct {
+	lines       []string
+	leakMarkers map[string]bool
+}
+
+func (b *anthropicKiroBufferedThinkingBlock) observe(text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	if b.leakMarkers == nil {
+		b.leakMarkers = make(map[string]bool)
+	}
+	for _, marker := range anthropicKiroInternalReasoningLeakMarkers {
+		if strings.Contains(text, marker) {
+			b.leakMarkers[marker] = true
+		}
+	}
+}
+
+func (b *anthropicKiroBufferedThinkingBlock) hasLeak() bool {
+	return len(b.leakMarkers) >= 2
 }
 
 func newAnthropicKiroSSENormalizer(fallbackModel string, profile *AnthropicKiroModelProfile) *anthropicKiroSSENormalizer {
@@ -601,7 +778,11 @@ func (n *anthropicKiroSSENormalizer) normalizeLine(line string) []string {
 		return n.prependPendingEvent([]string{line})
 	}
 
-	updated, insertBefore := normalizeAnthropicKiroSSEData([]byte(data), n, n.fallbackModel)
+	updated, insertBefore, drop := normalizeAnthropicKiroSSEData([]byte(data), n, n.fallbackModel)
+	if drop {
+		n.pendingEvent = ""
+		return nil
+	}
 	normalized := line[:start] + string(updated)
 	lines := make([]string, 0, len(insertBefore)+3)
 	if len(insertBefore) > 0 {
@@ -638,10 +819,10 @@ func anthropicKiroEventNameFromSSEData(data []byte) string {
 	}
 }
 
-func normalizeAnthropicKiroSSEData(data []byte, normalizer *anthropicKiroSSENormalizer, fallbackModel string) ([]byte, []string) {
+func normalizeAnthropicKiroSSEData(data []byte, normalizer *anthropicKiroSSENormalizer, fallbackModel string) ([]byte, []string, bool) {
 	var event map[string]any
 	if err := json.Unmarshal(data, &event); err != nil {
-		return []byte(sanitizeProviderLeakText(string(data))), nil
+		return []byte(sanitizeProviderLeakText(string(data))), nil, false
 	}
 
 	eventType, _ := event["type"].(string)
@@ -655,19 +836,54 @@ func normalizeAnthropicKiroSSEData(data []byte, normalizer *anthropicKiroSSENorm
 	case "error":
 		changed = sanitizeAnthropicKiroErrorObjectForProfile(event, profile) || changed
 	case "content_block_delta":
+		index, hasIndex := anthropicKiroEventIndex(event)
+		if normalizer != nil && hasIndex {
+			if buffer := normalizer.bufferedThinkingBlock[index]; buffer != nil {
+				if delta, ok := event["delta"].(map[string]any); ok {
+					text, _ := delta["thinking"].(string)
+					buffer.observe(text)
+				}
+				buffer.lines = append(buffer.lines, anthropicKiroSSELinesForEvent(eventType, data)...)
+				return nil, nil, true
+			}
+		}
 		if delta, ok := event["delta"].(map[string]any); ok {
+			deltaType, _ := delta["type"].(string)
+			if deltaType == "thinking_delta" && normalizer != nil && hasIndex {
+				buffer := normalizer.ensureBufferedThinkingBlock(index)
+				text, _ := delta["thinking"].(string)
+				buffer.observe(text)
+				buffer.lines = append(buffer.lines, anthropicKiroSSELinesForEvent(eventType, data)...)
+				return nil, nil, true
+			}
 			changed = sanitizeAnthropicKiroStringFieldForProfile(delta, "text", profile) || changed
 		}
 	case "content_block_start":
+		index, hasIndex := anthropicKiroEventIndex(event)
 		if block, ok := event["content_block"].(map[string]any); ok {
 			blockType, _ := block["type"].(string)
+			if blockType == "thinking" {
+				if normalizer != nil && hasIndex {
+					buffer := normalizer.ensureBufferedThinkingBlock(index)
+					text, _ := block["thinking"].(string)
+					buffer.observe(text)
+					buffer.lines = append(buffer.lines, anthropicKiroSSELinesForEvent(eventType, data)...)
+					return nil, nil, true
+				}
+			}
 			if blockType == "text" {
 				changed = sanitizeAnthropicKiroStringFieldForProfile(block, "text", profile) || changed
-			} else if blockType == "thinking" {
-				if _, ok := block["thinking"].(string); !ok {
-					block["thinking"] = ""
-					changed = true
+			}
+		}
+	case "content_block_stop":
+		index, hasIndex := anthropicKiroEventIndex(event)
+		if normalizer != nil && hasIndex {
+			if buffer := normalizer.bufferedThinkingBlock[index]; buffer != nil {
+				delete(normalizer.bufferedThinkingBlock, index)
+				if buffer.hasLeak() {
+					return nil, nil, true
 				}
+				insertBefore = append(insertBefore, buffer.lines...)
 			}
 		}
 	case "message_start":
@@ -677,13 +893,50 @@ func normalizeAnthropicKiroSSEData(data []byte, normalizer *anthropicKiroSSENorm
 		}
 	}
 	if !changed {
-		return data, insertBefore
+		return data, insertBefore, false
 	}
 	updated, err := json.Marshal(event)
 	if err != nil {
-		return data, insertBefore
+		return data, insertBefore, false
 	}
-	return updated, insertBefore
+	return updated, insertBefore, false
+}
+
+func anthropicKiroEventIndex(event map[string]any) (int, bool) {
+	raw, ok := event["index"]
+	if !ok {
+		return 0, false
+	}
+	switch v := raw.(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	default:
+		return 0, false
+	}
+}
+
+func (n *anthropicKiroSSENormalizer) ensureBufferedThinkingBlock(index int) *anthropicKiroBufferedThinkingBlock {
+	if n.bufferedThinkingBlock == nil {
+		n.bufferedThinkingBlock = make(map[int]*anthropicKiroBufferedThinkingBlock)
+	}
+	if n.bufferedThinkingBlock[index] == nil {
+		n.bufferedThinkingBlock[index] = &anthropicKiroBufferedThinkingBlock{}
+	}
+	return n.bufferedThinkingBlock[index]
+}
+
+func anthropicKiroSSELinesForEvent(eventType string, data []byte) []string {
+	lines := make([]string, 0, 3)
+	if eventType != "" {
+		lines = append(lines, "event: "+eventType)
+	}
+	lines = append(lines, "data: "+string(data))
+	lines = append(lines, "")
+	return lines
 }
 
 func sanitizeAnthropicKiroErrorObject(payload map[string]any) bool {
@@ -1289,31 +1542,44 @@ func normalizeAnthropicKiroMessageObject(payload map[string]any, fallbackModel s
 		payload["usage"] = map[string]any{"input_tokens": 0, "output_tokens": 0}
 		changed = true
 	}
-	changed = normalizeAnthropicKiroThinkingBlocks(payload["content"]) || changed
+	changed = normalizeAnthropicKiroThinkingBlocks(payload, "content") || changed
 	return changed
 }
 
-func normalizeAnthropicKiroThinkingBlocks(value any) bool {
-	blocks, ok := value.([]any)
+func normalizeAnthropicKiroThinkingBlocks(payload map[string]any, field string) bool {
+	blocks, ok := payload[field].([]any)
 	if !ok {
 		return false
 	}
 	changed := false
+	filtered := make([]any, 0, len(blocks))
 	for _, blockValue := range blocks {
 		block, ok := blockValue.(map[string]any)
 		if !ok {
+			filtered = append(filtered, blockValue)
 			continue
 		}
 		blockType, _ := block["type"].(string)
-		if blockType != "thinking" && blockType != "redacted_thinking" {
-			continue
-		}
 		if blockType == "thinking" {
-			if _, ok := block["thinking"].(string); !ok {
+			thinking, ok := block["thinking"].(string)
+			if !ok {
 				block["thinking"] = ""
 				changed = true
 			}
+			if looksLikeAnthropicKiroInternalReasoningLeak(thinking) {
+				changed = true
+				continue
+			}
 		}
+		if blockType == "redacted_thinking" {
+			filtered = append(filtered, blockValue)
+			continue
+		}
+		filtered = append(filtered, blockValue)
+	}
+	if len(filtered) != len(blocks) {
+		payload[field] = filtered
+		changed = true
 	}
 	return changed
 }
