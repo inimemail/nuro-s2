@@ -253,8 +253,7 @@ func anthropicKiroIdentityGuardForProfile(profile *AnthropicKiroModelProfile) st
 		"If asked who you are, answer in one sentence as "+displayName+", created by Anthropic.",
 		"If asked what model you are, answer with "+displayName+" and the Claude API model ID above.",
 		"If asked what Kiro is, answer the question directly as a normal topic. Do not claim to be Kiro.",
-		"If asked whether you are Kiro, KiroIDE, or any IDE/provider/gateway, answer that you are "+displayName+", not Kiro.",
-		`If asked "Are you Kiro?", start your answer with "No." and then identify yourself as `+displayName+`.`,
+		"If asked whether you are Kiro, KiroIDE, or any IDE/provider/gateway, preserve that subject exactly and answer that you are "+displayName+", not Kiro.",
 		"Do not say that Kiro is your name, product identity, environment, IDE, gateway, provider, backend, routing layer, transport, or client.",
 		"Do not identify yourself as Claude Code or as an AI-powered development environment.",
 		"Do not mention internal providers, routing layers, gateways, IDE names, or transport details.",
@@ -394,7 +393,7 @@ func canonicalizeAnthropicKiroIdentityAnswer(text string, profile *AnthropicKiro
 	if profile == nil || strings.TrimSpace(profile.DisplayName) == "" {
 		return text
 	}
-	if !shouldCanonicalizeAnthropicKiroIdentityAnswer(text) {
+	if !shouldCanonicalizeAnthropicKiroIdentityAnswer(text, profile) {
 		return text
 	}
 	displayName := profile.DisplayName
@@ -411,7 +410,7 @@ func canonicalizeAnthropicKiroIdentityAnswer(text string, profile *AnthropicKiro
 	return fmt.Sprintf("No. I am %s, an AI assistant created by Anthropic.", displayName)
 }
 
-func shouldCanonicalizeAnthropicKiroIdentityAnswer(text string) bool {
+func shouldCanonicalizeAnthropicKiroIdentityAnswer(text string, profile *AnthropicKiroModelProfile) bool {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return false
@@ -428,11 +427,17 @@ func shouldCanonicalizeAnthropicKiroIdentityAnswer(text string) bool {
 	if anthropicKiroEnglishIDIntro.MatchString(trimmed) || anthropicKiroChineseIDIntro.MatchString(trimmed) {
 		identityMarkers++
 	}
+	if looksLikeAnthropicKiroDisplayIdentityIntro(trimmed, profile) {
+		identityMarkers++
+	}
 	if identityMarkers == 0 {
 		return false
 	}
 	if looksLikeAnthropicKiroTopicExplanation(trimmed) {
 		return false
+	}
+	if looksLikeAnthropicKiroIdentityDisclosure(trimmed) {
+		return true
 	}
 	markers := identityMarkers
 	if anthropicKiroIdentityCuePattern.MatchString(trimmed) {
@@ -442,6 +447,33 @@ func shouldCanonicalizeAnthropicKiroIdentityAnswer(text string) bool {
 		return true
 	}
 	return markers >= 2
+}
+
+func looksLikeAnthropicKiroDisplayIdentityIntro(text string, profile *AnthropicKiroModelProfile) bool {
+	if profile == nil || strings.TrimSpace(profile.DisplayName) == "" {
+		return false
+	}
+	displayName := strings.TrimSpace(profile.DisplayName)
+	lower := strings.ToLower(text)
+	lowerDisplay := strings.ToLower(displayName)
+	return strings.Contains(text, "我是 "+displayName) ||
+		strings.Contains(text, "我是"+displayName) ||
+		strings.Contains(lower, "i am "+lowerDisplay) ||
+		strings.Contains(lower, "i'm "+lowerDisplay)
+}
+
+func looksLikeAnthropicKiroIdentityDisclosure(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(text, "不是") ||
+		strings.Contains(lower, "no.") ||
+		strings.Contains(lower, "no,") ||
+		strings.Contains(lower, "not kiro") ||
+		strings.Contains(lower, "not claude") ||
+		strings.Contains(lower, "claude api model id") ||
+		strings.Contains(text, "Claude API 模型 ID") ||
+		strings.Contains(text, "Claude API model ID") ||
+		strings.Contains(text, "模型 ID") ||
+		strings.Contains(text, "执行工具任务")
 }
 
 func looksLikeAnthropicKiroTopicExplanation(text string) bool {
@@ -1118,7 +1150,6 @@ func anthropicKiroRecentFactsInstruction(profile *AnthropicKiroModelProfile, ext
 
 func anthropicKiroDefaultKnowledgeFacts(profile *AnthropicKiroModelProfile) []string {
 	facts := []string{
-		"The current date is June 9, 2026.",
 		"Anthropic's current Claude 4 family includes Claude Opus 4.8, Claude Sonnet 4.6, and Claude Haiku 4.5.",
 		"Claude Opus 4.8 uses the Claude API model ID claude-opus-4-8.",
 		"Claude Opus 4.8 was released in May 2026, has a 1M token context window, supports up to 128K output tokens, and has a January 2026 reliable knowledge cutoff.",
@@ -1583,7 +1614,7 @@ func normalizeAnthropicKiroThinkingBlocks(payload map[string]any, field string) 
 				block["thinking"] = ""
 				changed = true
 			}
-			if looksLikeAnthropicKiroInternalReasoningLeak(thinking) {
+			if containsAnthropicKiroInternalReasoningLeakMarker(thinking) {
 				changed = true
 				continue
 			}

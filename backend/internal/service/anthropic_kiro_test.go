@@ -79,6 +79,25 @@ func TestPrepareAnthropicKiroRequestBody(t *testing.T) {
 		require.Contains(t, system, "Configured fact from auto refresh.")
 		require.Contains(t, system, "Sanae Takaichi")
 	})
+
+	t.Run("preserves normal request context while injecting guards", func(t *testing.T) {
+		body := []byte(`{"model":"claude-opus-4-8","system":"Keep context.","tools":[{"name":"lookup","input_schema":{"type":"object"}}],"thinking":{"type":"enabled","budget_tokens":2048},"messages":[{"role":"user","content":"first question"},{"role":"assistant","content":[{"type":"thinking","thinking":"safe chain","signature":"sig"},{"type":"redacted_thinking","data":"opaque"},{"type":"text","text":"first answer"}]},{"role":"user","content":[{"type":"text","text":"你是 Kiro 么"}]}]}`)
+		updated := prepareAnthropicKiroRequestBody(body, true, resolveAnthropicKiroModelProfile("claude-opus-4-8"), nil)
+
+		system := gjson.GetBytes(updated, "system").String()
+		require.Contains(t, system, "Keep context.")
+		require.Contains(t, system, anthropicKiroIdentityGuardMarker)
+		require.Equal(t, "lookup", gjson.GetBytes(updated, "tools.0.name").String())
+		require.Equal(t, "enabled", gjson.GetBytes(updated, "thinking.type").String())
+		require.Equal(t, int64(2048), gjson.GetBytes(updated, "thinking.budget_tokens").Int())
+		require.Equal(t, "first question", gjson.GetBytes(updated, "messages.0.content").String())
+		require.Equal(t, "thinking", gjson.GetBytes(updated, "messages.1.content.0.type").String())
+		require.Equal(t, "safe chain", gjson.GetBytes(updated, "messages.1.content.0.thinking").String())
+		require.Equal(t, "redacted_thinking", gjson.GetBytes(updated, "messages.1.content.1.type").String())
+		require.Equal(t, "opaque", gjson.GetBytes(updated, "messages.1.content.1.data").String())
+		require.Equal(t, "你是 Kiro 么", gjson.GetBytes(updated, "messages.2.content.0.text").String())
+		require.NotContains(t, system, "The current date is")
+	})
 }
 
 func TestAnthropicKiroModelProfilesUseExternalModelIDs(t *testing.T) {
@@ -124,6 +143,18 @@ func TestNormalizeAnthropicKiroMessagePayload_RemovesLeakedThinkingOnly(t *testi
 	require.Equal(t, 2, len(gjson.Get(updated, "content").Array()))
 	require.Equal(t, "redacted_thinking", gjson.Get(updated, "content.0.type").String())
 	require.Equal(t, "text", gjson.Get(updated, "content.1.type").String())
+}
+
+func TestNormalizeAnthropicKiroMessagePayload_RemovesSingleMarkerThinkingLeak(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","content":[{"type":"thinking","thinking":"用户用中文问\"你是 claude-opus-4-8 么\"。","signature":"bad"},{"type":"thinking","thinking":"checking arithmetic","signature":"sig"},{"type":"redacted_thinking","data":"opaque"},{"type":"text","text":"不是，我是 Claude Opus 4.8。"}]}`)
+	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
+
+	require.Equal(t, 3, len(gjson.Get(updated, "content").Array()))
+	require.Equal(t, "thinking", gjson.Get(updated, "content.0.type").String())
+	require.Equal(t, "checking arithmetic", gjson.Get(updated, "content.0.thinking").String())
+	require.Equal(t, "redacted_thinking", gjson.Get(updated, "content.1.type").String())
+	require.Equal(t, "text", gjson.Get(updated, "content.2.type").String())
+	require.NotContains(t, updated, "用户用中文问")
 }
 
 func TestNormalizeAnthropicKiroMessagePayloadWithRequestID(t *testing.T) {
@@ -311,6 +342,27 @@ func TestSanitizeAnthropicKiroMessagePayload_StripsChineseSystemPromptReasoningL
 	require.NotContains(t, text, "根据系统提示")
 	require.NotContains(t, text, "这意味着")
 	require.NotContains(t, text, "所以我应该")
+}
+
+func TestSanitizeAnthropicKiroMessagePayload_CanonicalizesLongIdentityLeak(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","content":[{"type":"text","text":"用户用中文问了三个问题：\n\n你是谁\n你是啥模型\n你是 Kiro 么\n根据系统提示中的身份披露规则，我应该回答。\n所以我需要说明模型 ID。\n\n不，我不是 claude-opus-4-8。我是 claude-opus-4-8，由 Anthropic 创建的 AI 助手。\n\n我使用的模型是 claude-opus-4-8，Claude API model ID 是 claude-opus-4-8。\n\n关于\"执行工具任务\"，请告诉我您具体需要我帮您做什么？比如：\n\n读取或编辑文件\n运行命令\n搜索代码\n分析项目结构\n其他开发相关任务"}]}`)
+	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
+	text := gjson.Get(updated, "content.0.text").String()
+
+	require.Equal(t, "不是，我是 Claude Opus 4.8，由 Anthropic 开发的 AI 助手。我的 Claude API 模型 ID 是 claude-opus-4-8。", text)
+	require.NotContains(t, text, "不，我不是 claude-opus-4-8。我是 claude-opus-4-8")
+	require.NotContains(t, text, "执行工具任务")
+	require.NotContains(t, text, "用户用中文问")
+}
+
+func TestSanitizeAnthropicKiroMessagePayload_CanonicalizesDisplayIdentityBoilerplate(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","content":[{"type":"text","text":"不，我不是 Kiro。我是 Claude Opus 4.8，由 Anthropic 创建的 AI 助手。\n\n我使用的模型是 Claude Opus 4.8，Claude API model ID 是 claude-opus-4-8。\n\n关于\"执行工具任务\"，请告诉我您具体需要我帮您做什么？比如：读取或编辑文件、运行命令、搜索代码。"}]}`)
+	updated := string(normalizeAnthropicKiroMessagePayload(body, "claude-opus-4-8"))
+	text := gjson.Get(updated, "content.0.text").String()
+
+	require.Equal(t, "不是，我是 Claude Opus 4.8，由 Anthropic 开发的 AI 助手。我的 Claude API 模型 ID 是 claude-opus-4-8。", text)
+	require.NotContains(t, text, "执行工具任务")
+	require.NotContains(t, text, "读取或编辑文件")
 }
 
 func TestSanitizeAnthropicKiroMessagePayload_StripsPromptTagLeak(t *testing.T) {
