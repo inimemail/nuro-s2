@@ -426,7 +426,7 @@ func TestHTTPUpstreamSuite(t *testing.T) {
 	suite.Run(t, new(HTTPUpstreamSuite))
 }
 
-func TestOrderDialCandidatesInterleavesFamilies(t *testing.T) {
+func TestOrderDialCandidatesInterleavesFamiliesPreservingFirstFamily(t *testing.T) {
 	ips := []net.IPAddr{
 		{IP: net.ParseIP("2001:db8::1")},
 		{IP: net.ParseIP("2001:db8::2")},
@@ -441,6 +441,23 @@ func TestOrderDialCandidatesInterleavesFamilies(t *testing.T) {
 	require.Equal(t, "192.0.2.1", ordered[1].String())
 	require.Equal(t, "2001:db8::2", ordered[2].String())
 	require.Equal(t, "192.0.2.2", ordered[3].String())
+}
+
+func TestOrderDialCandidatesKeepsIPv4FirstWhenResolverPrefersIPv4(t *testing.T) {
+	ips := []net.IPAddr{
+		{IP: net.ParseIP("192.0.2.1")},
+		{IP: net.ParseIP("192.0.2.2")},
+		{IP: net.ParseIP("2001:db8::1")},
+		{IP: net.ParseIP("2001:db8::2")},
+	}
+
+	ordered := orderDialCandidates(ips)
+
+	require.Len(t, ordered, 4)
+	require.Equal(t, "192.0.2.1", ordered[0].String())
+	require.Equal(t, "2001:db8::1", ordered[1].String())
+	require.Equal(t, "192.0.2.2", ordered[2].String())
+	require.Equal(t, "2001:db8::2", ordered[3].String())
 }
 
 // mustGetOrCreateClient 测试辅助函数，调用 getOrCreateClient 并断言无错误

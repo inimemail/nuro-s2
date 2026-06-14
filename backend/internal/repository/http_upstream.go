@@ -1073,9 +1073,6 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 		ForceAttemptHTTP2: true,
 		// N5: 显式关闭 100-continue 协商等待，避免带 body 的 POST 多一个 RTT。
 		ExpectContinueTimeout: 0,
-		// N1: 进程内 DNS 缓存拨号。直连场景生效；下方 socks5 代理会用自己的
-		// DialContext 覆盖此值（DNS 交由代理解析，符合预期，不缓存）。
-		DialContext: sharedCachedDialer.DialContext,
 		// N2: 共享 TLS 会话缓存，开启 session resumption，热账号省一次握手 RTT。
 		TLSClientConfig: &tls.Config{
 			ClientSessionCache: sharedUpstreamTLSSessionCache,
@@ -1091,6 +1088,11 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 		// 显式禁用 HTTP/2，确保代理不兼容场景回退到 HTTP/1.1。
 		transport.ForceAttemptHTTP2 = false
 		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
+	}
+	if proxyURL == nil {
+		// N1: 进程内 DNS 缓存拨号只用于直连上游。HTTP/HTTPS 代理继续使用
+		// Go 标准拨号，保留系统 Happy Eyeballs / 地址排序策略。
+		transport.DialContext = sharedCachedDialer.DialContext
 	}
 	if err := proxyutil.ConfigureTransportProxy(transport, proxyURL); err != nil {
 		return nil, err

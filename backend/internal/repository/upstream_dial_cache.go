@@ -148,7 +148,27 @@ func (d *cachedDialer) dialCachedIPs(ctx context.Context, network, port string, 
 	finished := 0
 	startDial(candidates[0])
 	timer := time.NewTimer(dnsHappyEyeballsDelay)
-	defer timer.Stop()
+	timerActive := true
+	stopTimer := func() {
+		if !timerActive {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timerActive = false
+	}
+	resetTimer := func() {
+		stopTimer()
+		if started < len(candidates) {
+			timer.Reset(dnsHappyEyeballsDelay)
+			timerActive = true
+		}
+	}
+	defer stopTimer()
 
 	var lastErr error
 	for finished < len(candidates) {
@@ -162,14 +182,18 @@ func (d *cachedDialer) dialCachedIPs(ctx context.Context, network, port string, 
 				return result.conn, nil
 			}
 			lastErr = result.err
+			if started < len(candidates) && started == finished {
+				startDial(candidates[started])
+				started++
+				resetTimer()
+			}
 		case <-timer.C:
+			timerActive = false
 			if started < len(candidates) {
 				startDial(candidates[started])
 				started++
 			}
-			if started < len(candidates) {
-				timer.Reset(dnsHappyEyeballsDelay)
-			}
+			resetTimer()
 		}
 	}
 	if lastErr != nil {
@@ -180,18 +204,40 @@ func (d *cachedDialer) dialCachedIPs(ctx context.Context, network, port string, 
 
 func orderDialCandidates(ips []net.IPAddr) []net.IP {
 	var v6, v4 []net.IP
+	var firstIsV4 *bool
 	for _, ipAddr := range ips {
 		ip := ipAddr.IP
 		if ip == nil {
 			continue
 		}
 		if ip.To4() != nil {
+			if firstIsV4 == nil {
+				v := true
+				firstIsV4 = &v
+			}
 			v4 = append(v4, ip)
 			continue
+		}
+		if firstIsV4 == nil {
+			v := false
+			firstIsV4 = &v
 		}
 		v6 = append(v6, ip)
 	}
 	out := make([]net.IP, 0, len(v4)+len(v6))
+	if firstIsV4 != nil && *firstIsV4 {
+		for len(v4) > 0 || len(v6) > 0 {
+			if len(v4) > 0 {
+				out = append(out, v4[0])
+				v4 = v4[1:]
+			}
+			if len(v6) > 0 {
+				out = append(out, v6[0])
+				v6 = v6[1:]
+			}
+		}
+		return out
+	}
 	for len(v6) > 0 || len(v4) > 0 {
 		if len(v6) > 0 {
 			out = append(out, v6[0])
