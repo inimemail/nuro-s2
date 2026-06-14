@@ -126,6 +126,21 @@
           :show-now-when-idle="true"
           color="emerald"
         />
+        <div
+          v-if="showCodexResetCredits"
+          class="flex items-center gap-1.5 text-[10px] text-gray-500 dark:text-gray-400"
+        >
+          <span>重置次数 {{ codexResetCreditsAvailable }}</span>
+          <button
+            type="button"
+            class="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            :class="codexResetConfirming ? 'text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30' : 'text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/30'"
+            :disabled="codexResetCreditLoading || codexResetCreditsAvailable <= 0"
+            @click="consumeCodexResetCredit"
+          >
+            {{ codexResetCreditButtonText }}
+          </button>
+        </div>
         <div class="flex items-center gap-1.5 mt-0.5">
           <button
             type="button"
@@ -530,6 +545,8 @@ onBeforeUnmount(() => { unmounted.value = true })
 
 const loading = ref(false)
 const activeQueryLoading = ref(false)
+const codexResetCreditLoading = ref(false)
+const codexResetConfirming = ref(false)
 const error = ref<string | null>(null)
 const usageInfo = ref<AccountUsageInfo | null>(null)
 const rootRef = ref<HTMLElement | null>(null)
@@ -584,7 +601,22 @@ const geminiUsageAvailable = computed(() => {
 
 const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
-  return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day
+  return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day || showCodexResetCredits.value
+})
+
+const showCodexResetCredits = computed(() => {
+  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
+  return usageInfo.value?.codex_reset_credits_supported === true
+})
+
+const codexResetCreditsAvailable = computed(() => {
+  const count = usageInfo.value?.codex_reset_credits_available_count
+  return typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
+})
+
+const codexResetCreditButtonText = computed(() => {
+  if (codexResetCreditLoading.value) return '处理中'
+  return codexResetConfirming.value ? '确认重置？' : '重置'
 })
 
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))
@@ -1095,11 +1127,36 @@ const attachVisibilityObserver = () => {
 const loadActiveUsage = async () => {
   activeQueryLoading.value = true
   try {
-    usageInfo.value = await adminAPI.accounts.getUsage(props.account.id, 'active', true)
+    const result = await adminAPI.accounts.getUsage(props.account.id, 'active', true)
+    usageInfo.value = result
+    _usageCache.set(props.account.id, { data: result, ts: Date.now() })
   } catch (e: any) {
     console.error('Failed to load active usage:', e)
   } finally {
     activeQueryLoading.value = false
+  }
+}
+
+const consumeCodexResetCredit = async () => {
+  if (codexResetCreditLoading.value || codexResetCreditsAvailable.value <= 0) return
+  if (!codexResetConfirming.value) {
+    codexResetConfirming.value = true
+    window.setTimeout(() => {
+      codexResetConfirming.value = false
+    }, 3000)
+    return
+  }
+
+  codexResetCreditLoading.value = true
+  try {
+    const result = await adminAPI.accounts.consumeCodexResetCredit(props.account.id)
+    usageInfo.value = result
+    _usageCache.set(props.account.id, { data: result, ts: Date.now() })
+    codexResetConfirming.value = false
+  } catch (e: any) {
+    console.error('Failed to consume Codex reset credit:', e)
+  } finally {
+    codexResetCreditLoading.value = false
   }
 }
 

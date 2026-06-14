@@ -269,6 +269,18 @@ export async function getUsage(id: number, source?: 'passive' | 'active', force?
 }
 
 /**
+ * Consume one OpenAI Codex reset credit and return refreshed usage.
+ * @param id - Account ID
+ * @returns Refreshed account usage info
+ */
+export async function consumeCodexResetCredit(id: number): Promise<AccountUsageInfo> {
+  const { data } = await apiClient.post<AccountUsageInfo>(
+    `/admin/accounts/${id}/codex/reset-credit`
+  )
+  return data
+}
+
+/**
  * Clear account rate limit status
  * @param id - Account ID
  * @returns Updated account
@@ -763,6 +775,7 @@ export const accountsAPI = {
   getStats,
   clearError,
   getUsage,
+  consumeCodexResetCredit,
   getTodayStats,
   getBatchTodayStats,
   clearRateLimit,

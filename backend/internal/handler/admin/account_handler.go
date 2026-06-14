@@ -1834,6 +1834,33 @@ func (h *AccountHandler) ClearRateLimit(c *gin.Context) {
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
+// ConsumeCodexResetCredit handles manually consuming an OpenAI Codex reset credit.
+// POST /api/v1/admin/accounts/:id/codex/reset-credit
+func (h *AccountHandler) ConsumeCodexResetCredit(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if h.accountUsageService == nil {
+		response.InternalError(c, "Account usage service is not available")
+		return
+	}
+
+	usage, err := h.accountUsageService.ConsumeOpenAICodexResetCredit(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if h.rateLimitService == nil {
+		slog.Warn("codex_reset_credit_clear_rate_limit_skipped", "account_id", accountID, "reason", "rate limit service unavailable")
+	} else if err := h.rateLimitService.ClearRateLimit(c.Request.Context(), accountID); err != nil {
+		slog.Warn("codex_reset_credit_clear_rate_limit_failed", "account_id", accountID, "error", err)
+	}
+
+	response.Success(c, usage)
+}
+
 // ResetQuota handles resetting account quota usage
 // POST /api/v1/admin/accounts/:id/reset-quota
 func (h *AccountHandler) ResetQuota(c *gin.Context) {

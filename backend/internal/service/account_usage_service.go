@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"math/rand/v2"
@@ -19,6 +20,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 )
@@ -111,6 +114,8 @@ const (
 	windowStatsCacheTTL     = 1 * time.Minute
 	openAIProbeCacheTTL     = 10 * time.Minute
 	openAICodexProbeVersion = "0.125.0"
+	openAIWhamUsageURL      = "https://chatgpt.com/backend-api/wham/usage"
+	openAIWhamConsumeURL    = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
 )
 
 // UsageCache 封装账户使用量相关的缓存
@@ -222,6 +227,10 @@ type UsageInfo struct {
 
 	// 获取 usage 时的错误信息（降级返回，而非 500）
 	Error string `json:"error,omitempty"`
+
+	// OpenAI Codex 官方速率限制重置次数。只有上游返回该字段时才认为支持。
+	CodexResetCreditsSupported      bool `json:"codex_reset_credits_supported,omitempty"`
+	CodexResetCreditsAvailableCount *int `json:"codex_reset_credits_available_count,omitempty"`
 }
 
 // ClaudeUsageResponse Anthropic API返回的usage结构
@@ -507,17 +516,10 @@ func (s *AccountUsageService) syncActiveToPassive(ctx context.Context, accountID
 
 func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {
 	now := time.Now()
-	usage := &UsageInfo{UpdatedAt: &now}
+	usage := buildOpenAIUsageFromExtra(account, now)
 
 	if account == nil {
 		return usage, nil
-	}
-
-	if progress := buildCodexUsageProgressFromExtra(account.Extra, "5h", now); progress != nil {
-		usage.FiveHour = progress
-	}
-	if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
-		usage.SevenDay = progress
 	}
 
 	if (force || shouldRefreshOpenAICodexSnapshot(account, usage, now)) && s.shouldProbeOpenAICodexSnapshot(account.ID, now, force) {
@@ -526,6 +528,19 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 			if usage.UpdatedAt == nil {
 				usage.UpdatedAt = &now
 			}
+			if progress := buildCodexUsageProgressFromExtra(account.Extra, "5h", now); progress != nil {
+				usage.FiveHour = progress
+			}
+			if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
+				usage.SevenDay = progress
+			}
+		}
+	}
+
+	if s.cache != nil && (force || shouldRefreshOpenAICodexResetCredits(account, now)) {
+		if updates, err := s.fetchOpenAIWhamUsage(ctx, account); err == nil && len(updates) > 0 {
+			mergeAccountExtra(account, updates)
+			applyOpenAICodexResetCreditsFromExtra(usage, account.Extra)
 			if progress := buildCodexUsageProgressFromExtra(account.Extra, "5h", now); progress != nil {
 				usage.FiveHour = progress
 			}
@@ -554,6 +569,77 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	}
 
 	return usage, nil
+}
+
+func shouldRefreshOpenAICodexResetCredits(account *Account, now time.Time) bool {
+	if account == nil || !account.IsOpenAIOAuth() {
+		return false
+	}
+	if account.Extra == nil {
+		return true
+	}
+	raw, ok := account.Extra["codex_reset_credits_updated_at"]
+	if !ok {
+		return true
+	}
+	ts, err := parseTime(fmt.Sprint(raw))
+	if err != nil {
+		return true
+	}
+	return now.Sub(ts) >= openAIProbeCacheTTL
+}
+
+func applyOpenAICodexResetCreditsFromExtra(usage *UsageInfo, extra map[string]any) {
+	if usage == nil || len(extra) == 0 {
+		return
+	}
+	if supportedRaw, ok := extra["codex_reset_credits_supported"]; ok && !parseExtraBool(supportedRaw) {
+		return
+	}
+	raw, ok := extra["codex_reset_credits"]
+	if !ok {
+		return
+	}
+	count := parseExtraInt(raw)
+	if count < 0 {
+		count = 0
+	}
+	usage.CodexResetCreditsSupported = true
+	usage.CodexResetCreditsAvailableCount = &count
+}
+
+func parseExtraBool(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true") || strings.TrimSpace(v) == "1"
+	case json.Number:
+		i, _ := v.Int64()
+		return i != 0
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	}
+	return false
+}
+
+func buildOpenAIUsageFromExtra(account *Account, now time.Time) *UsageInfo {
+	usage := &UsageInfo{UpdatedAt: &now}
+	if account == nil {
+		return usage
+	}
+	if progress := buildCodexUsageProgressFromExtra(account.Extra, "5h", now); progress != nil {
+		usage.FiveHour = progress
+	}
+	if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
+		usage.SevenDay = progress
+	}
+	applyOpenAICodexResetCreditsFromExtra(usage, account.Extra)
+	return usage
 }
 
 func shouldRefreshOpenAICodexSnapshot(account *Account, usage *UsageInfo, now time.Time) bool {
@@ -671,6 +757,196 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 		return updates, nil
 	}
 	return nil, nil
+}
+
+func (s *AccountUsageService) fetchOpenAIWhamUsage(ctx context.Context, account *Account) (map[string]any, error) {
+	resp, err := s.doOpenAIWhamRequest(ctx, account, http.MethodGet, openAIWhamUsageURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		return nil, fmt.Errorf("read openai wham usage response: %w", readErr)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("openai wham usage returned status %d", resp.StatusCode)
+	}
+
+	updates := make(map[string]any)
+	if headerUpdates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(headerUpdates) > 0 {
+		for k, v := range headerUpdates {
+			updates[k] = v
+		}
+	}
+	resetUpdates, supported, ok := extractOpenAICodexResetCreditUpdates(body, time.Now())
+	if !ok {
+		return nil, nil
+	}
+	for k, v := range resetUpdates {
+		updates[k] = v
+	}
+	updates["codex_reset_credits_supported"] = supported
+	if len(updates) > 0 {
+		if s.accountRepo != nil {
+			if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+				return nil, fmt.Errorf("persist openai wham usage: %w", err)
+			}
+		}
+	}
+	return updates, nil
+}
+
+func extractOpenAICodexResetCreditUpdates(body []byte, now time.Time) (map[string]any, bool, bool) {
+	unsupported := map[string]any{
+		"codex_reset_credits_supported":  false,
+		"codex_reset_credits_updated_at": now.UTC().Format(time.RFC3339),
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return unsupported, false, true
+	}
+	result := gjson.GetBytes(body, "rate_limit_reset_credits.available_count")
+	if !result.Exists() {
+		return unsupported, false, true
+	}
+	count := int(result.Int())
+	if count < 0 {
+		count = 0
+	}
+	return map[string]any{
+		"codex_reset_credits":            count,
+		"codex_reset_credits_supported":  true,
+		"codex_reset_credits_updated_at": now.UTC().Format(time.RFC3339),
+	}, true, true
+}
+
+func (s *AccountUsageService) ConsumeOpenAICodexResetCredit(ctx context.Context, accountID int64) (*UsageInfo, error) {
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("get account failed: %w", err)
+	}
+	if account == nil || !account.IsOpenAIOAuth() {
+		return nil, fmt.Errorf("account does not support OpenAI Codex reset credits")
+	}
+
+	payload, err := json.Marshal(map[string]string{"redeem_request_id": uuid.NewString()})
+	if err != nil {
+		return nil, fmt.Errorf("marshal openai reset credit request: %w", err)
+	}
+	resp, err := s.doOpenAIWhamRequest(ctx, account, http.MethodPost, openAIWhamConsumeURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("openai reset credit consume returned status %d", resp.StatusCode)
+	}
+
+	if updates, err := s.fetchOpenAIWhamUsage(ctx, account); err == nil && len(updates) > 0 {
+		mergeAccountExtra(account, updates)
+	} else if err != nil {
+		slog.Warn("openai_codex_reset_credit_refresh_failed", "account_id", accountID, "error", err)
+		if updates := buildOpenAICodexResetCreditOptimisticUpdates(account, time.Now()); len(updates) > 0 {
+			if s.accountRepo != nil {
+				if updateErr := s.accountRepo.UpdateExtra(ctx, account.ID, updates); updateErr != nil {
+					slog.Warn("openai_codex_reset_credit_optimistic_persist_failed", "account_id", accountID, "error", updateErr)
+				}
+			}
+			mergeAccountExtra(account, updates)
+		}
+	}
+	now := time.Now()
+	usage := buildOpenAIUsageFromExtra(account, now)
+	if s.usageLogRepo != nil {
+		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-5*time.Hour)); err == nil {
+			if usage.FiveHour == nil {
+				usage.FiveHour = &UsageProgress{Utilization: 0}
+			}
+			usage.FiveHour.WindowStats = windowStatsFromAccountStats(stats)
+		}
+		if stats, err := s.usageLogRepo.GetAccountWindowStats(ctx, account.ID, now.Add(-7*24*time.Hour)); err == nil {
+			if usage.SevenDay == nil {
+				usage.SevenDay = &UsageProgress{Utilization: 0}
+			}
+			usage.SevenDay.WindowStats = windowStatsFromAccountStats(stats)
+		}
+	}
+	return usage, nil
+}
+
+func (s *AccountUsageService) doOpenAIWhamRequest(ctx context.Context, account *Account, method, url string, body io.Reader) (*http.Response, error) {
+	if account == nil || !account.IsOpenAIOAuth() {
+		return nil, fmt.Errorf("account does not support OpenAI Codex reset credits")
+	}
+	accessToken := account.GetOpenAIAccessToken()
+	if accessToken == "" {
+		return nil, fmt.Errorf("no access token available")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("create openai wham request: %w", err)
+	}
+	req.Host = "chatgpt.com"
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Originator", "codex_cli_rs")
+	req.Header.Set("Version", openAICodexProbeVersion)
+	req.Header.Set("User-Agent", codexCLIUserAgent)
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if s.identityCache != nil {
+		if fp, fpErr := s.identityCache.GetFingerprint(ctx, account.ID); fpErr == nil && fp != nil && strings.TrimSpace(fp.UserAgent) != "" {
+			req.Header.Set("User-Agent", strings.TrimSpace(fp.UserAgent))
+		}
+	}
+	if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
+		req.Header.Set("chatgpt-account-id", chatgptAccountID)
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	client, err := httppool.GetClient(httppool.Options{
+		ProxyURL:              proxyURL,
+		Timeout:               15 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build openai wham client: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("openai wham request failed: %w", err)
+	}
+	return resp, nil
+}
+
+func buildOpenAICodexResetCreditOptimisticUpdates(account *Account, now time.Time) map[string]any {
+	if account == nil || len(account.Extra) == 0 {
+		return nil
+	}
+	if supportedRaw, ok := account.Extra["codex_reset_credits_supported"]; ok && !parseExtraBool(supportedRaw) {
+		return nil
+	}
+	raw, ok := account.Extra["codex_reset_credits"]
+	if !ok {
+		return nil
+	}
+	count := parseExtraInt(raw)
+	if count > 0 {
+		count--
+	}
+	return map[string]any{
+		"codex_reset_credits":            count,
+		"codex_reset_credits_supported":  true,
+		"codex_reset_credits_updated_at": now.UTC().Format(time.RFC3339),
+	}
 }
 
 func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, updates map[string]any) {

@@ -996,6 +996,10 @@ export interface AccountUsageInfo {
   // 机器可读错误码：forbidden / unauthenticated / rate_limited / network_error
   error_code?: string
 
+  // OpenAI Codex reset credits
+  codex_reset_credits_supported?: boolean
+  codex_reset_credits_available_count?: number | null
+
   error?: string            // usage 获取失败时的错误信息
 }
 

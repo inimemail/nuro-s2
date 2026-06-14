@@ -157,6 +157,120 @@ func TestAccountUsageService_GetOpenAIUsage_DoesNotPromoteCodexExtraToRateLimit(
 	}
 }
 
+func TestExtractOpenAICodexResetCreditUpdates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	updates, supported, ok := extractOpenAICodexResetCreditUpdates([]byte(`{"rate_limit_reset_credits":{"available_count":2}}`), now)
+	if !ok {
+		t.Fatal("expected reset credit payload to be recognized")
+	}
+	if !supported {
+		t.Fatal("expected reset credits to be supported")
+	}
+	if got := updates["codex_reset_credits"]; got != 2 {
+		t.Fatalf("codex_reset_credits = %v, want 2", got)
+	}
+	if got := updates["codex_reset_credits_supported"]; got != true {
+		t.Fatalf("codex_reset_credits_supported = %v, want true", got)
+	}
+
+	updates, supported, ok = extractOpenAICodexResetCreditUpdates([]byte(`{"rate_limit_reset_credits":{}}`), now)
+	if !ok {
+		t.Fatal("expected unsupported reset credit payload to be cacheable")
+	}
+	if supported {
+		t.Fatal("expected reset credits to be unsupported without available_count")
+	}
+	if _, exists := updates["codex_reset_credits"]; exists {
+		t.Fatalf("did not expect codex_reset_credits when unsupported: %v", updates)
+	}
+	if got := updates["codex_reset_credits_supported"]; got != false {
+		t.Fatalf("codex_reset_credits_supported = %v, want false", got)
+	}
+
+	updates, supported, ok = extractOpenAICodexResetCreditUpdates([]byte(`not json`), now)
+	if !ok {
+		t.Fatal("expected invalid response body to be cacheable as unsupported")
+	}
+	if supported {
+		t.Fatal("expected invalid response body to be unsupported")
+	}
+	if got := updates["codex_reset_credits_supported"]; got != false {
+		t.Fatalf("invalid body codex_reset_credits_supported = %v, want false", got)
+	}
+	if got := updates["codex_reset_credits_updated_at"]; got != now.Format(time.RFC3339) {
+		t.Fatalf("invalid body updated_at = %v, want %s", got, now.Format(time.RFC3339))
+	}
+}
+
+func TestBuildOpenAIUsageFromExtraIncludesResetCredits(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	usage := buildOpenAIUsageFromExtra(&Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"codex_reset_credits": 0,
+		},
+	}, now)
+
+	if !usage.CodexResetCreditsSupported {
+		t.Fatal("expected reset credits to be supported when count exists in extra")
+	}
+	if usage.CodexResetCreditsAvailableCount == nil || *usage.CodexResetCreditsAvailableCount != 0 {
+		t.Fatalf("available count = %v, want 0", usage.CodexResetCreditsAvailableCount)
+	}
+}
+
+func TestApplyOpenAICodexResetCreditsFromExtraHonorsUnsupportedFlag(t *testing.T) {
+	t.Parallel()
+
+	usage := &UsageInfo{}
+	applyOpenAICodexResetCreditsFromExtra(usage, map[string]any{
+		"codex_reset_credits_supported": false,
+		"codex_reset_credits":           3,
+	})
+	if usage.CodexResetCreditsSupported {
+		t.Fatal("expected unsupported flag to block display")
+	}
+	if usage.CodexResetCreditsAvailableCount != nil {
+		t.Fatalf("expected nil count, got %v", usage.CodexResetCreditsAvailableCount)
+	}
+}
+
+func TestBuildOpenAICodexResetCreditOptimisticUpdates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	updates := buildOpenAICodexResetCreditOptimisticUpdates(&Account{
+		Extra: map[string]any{
+			"codex_reset_credits_supported": true,
+			"codex_reset_credits":           2,
+		},
+	}, now)
+	if got := updates["codex_reset_credits"]; got != 1 {
+		t.Fatalf("codex_reset_credits = %v, want 1", got)
+	}
+	if got := updates["codex_reset_credits_supported"]; got != true {
+		t.Fatalf("codex_reset_credits_supported = %v, want true", got)
+	}
+	if got := updates["codex_reset_credits_updated_at"]; got != now.Format(time.RFC3339) {
+		t.Fatalf("updated_at = %v, want %s", got, now.Format(time.RFC3339))
+	}
+
+	updates = buildOpenAICodexResetCreditOptimisticUpdates(&Account{
+		Extra: map[string]any{
+			"codex_reset_credits_supported": false,
+			"codex_reset_credits":           2,
+		},
+	}, now)
+	if len(updates) != 0 {
+		t.Fatalf("expected no optimistic update for unsupported account, got %v", updates)
+	}
+}
+
 func TestBuildCodexUsageProgressFromExtra_ZerosExpiredWindow(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC)
