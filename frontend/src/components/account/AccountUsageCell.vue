@@ -184,14 +184,14 @@
             class="inline-flex h-6 shrink-0 items-center gap-1"
             :class="{ 'opacity-50': codexAutoResetDisabled }"
           >
-            <span class="shrink-0 text-[10px] font-medium text-gray-500 dark:text-gray-400">自动重置</span>
+            <span :class="['shrink-0 text-[10px] font-semibold transition-colors', codexAutoResetLabelClass]">自动重置</span>
             <div
-              class="relative grid h-6 w-[92px] shrink-0 grid-cols-3 rounded bg-gray-100 p-0.5 text-[10px] font-medium dark:bg-gray-800"
+              class="relative grid h-6 w-[92px] shrink-0 grid-cols-3 rounded-md bg-gray-50 p-0.5 text-[10px] font-semibold ring-1 ring-gray-200 dark:bg-gray-900/60 dark:ring-gray-700"
               role="radiogroup"
               aria-label="自动重置"
             >
               <span
-                class="absolute left-0.5 top-0.5 h-5 w-[29px] rounded bg-white shadow-sm transition-transform duration-200 ease-out dark:bg-gray-700"
+                class="absolute left-0.5 top-0.5 h-5 w-[29px] rounded shadow-sm transition-all duration-200 ease-out"
                 :class="codexAutoResetThumbClass"
               ></span>
               <button
@@ -696,19 +696,38 @@ const codexAutoResetOptions = computed<Array<{ value: CodexAutoResetMode; label:
 const codexAutoResetThumbClass = computed(() => {
   switch (codexAutoResetMode.value) {
     case 'short':
-      return 'translate-x-[30px]'
+      return 'translate-x-[30px] bg-blue-500 shadow-blue-500/20'
     case 'long':
-      return 'translate-x-[60px]'
+      return 'translate-x-[60px] bg-violet-500 shadow-violet-500/20'
     default:
-      return 'translate-x-0'
+      return 'translate-x-0 bg-gray-500 shadow-gray-500/20'
   }
 })
 
 const codexAutoResetOptionClass = (mode: CodexAutoResetMode) => {
-  return codexAutoResetMode.value === mode
-    ? 'text-gray-900 dark:text-white'
-    : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'
+  if (codexAutoResetMode.value === mode) {
+    return 'text-white'
+  }
+  switch (mode) {
+    case 'short':
+      return 'text-blue-600 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-500/10'
+    case 'long':
+      return 'text-violet-600 hover:bg-violet-50 dark:text-violet-300 dark:hover:bg-violet-500/10'
+    default:
+      return 'text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200'
+  }
 }
+
+const codexAutoResetLabelClass = computed(() => {
+  switch (codexAutoResetMode.value) {
+    case 'short':
+      return 'text-blue-600 dark:text-blue-300'
+    case 'long':
+      return 'text-violet-600 dark:text-violet-300'
+    default:
+      return 'text-gray-500 dark:text-gray-400'
+  }
+})
 
 const codexResetCreditButtonText = computed(() => {
   if (codexResetCreditLoading.value) return '处理中'
