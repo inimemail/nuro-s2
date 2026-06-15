@@ -179,35 +179,56 @@
             </svg>
             {{ codexResetCreditButtonText }}
           </button>
-          <div
-            v-if="showCodexResetCredits"
-            class="inline-flex h-6 shrink-0 items-center gap-1"
-            :class="{ 'opacity-50': codexAutoResetDisabled }"
+          <button
+            v-if="showCodexResetInvite"
+            type="button"
+            class="inline-flex h-6 shrink-0 items-center gap-0.5 rounded px-1 text-[10px] font-medium text-cyan-600 transition-colors hover:bg-cyan-50 dark:text-cyan-300 dark:hover:bg-cyan-900/30"
+            @click="copyCodexResetInviteURL"
           >
-            <span :class="['shrink-0 text-[10px] font-semibold transition-colors', codexAutoResetLabelClass]">自动重置</span>
-            <div
-              class="relative grid h-6 w-[92px] shrink-0 grid-cols-3 rounded-md bg-gray-50 p-0.5 text-[10px] font-semibold ring-1 ring-gray-200 dark:bg-gray-900/60 dark:ring-gray-700"
-              role="radiogroup"
-              aria-label="自动重置"
+            <svg
+              class="h-3 w-3"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
             >
-              <span
-                class="absolute left-0.5 top-0.5 h-5 w-[29px] rounded shadow-sm transition-all duration-200 ease-out"
-                :class="codexAutoResetThumbClass"
-              ></span>
-              <button
-                v-for="option in codexAutoResetOptions"
-                :key="option.value"
-                type="button"
-                class="relative z-10 h-5 shrink-0 rounded transition-colors"
-                :class="codexAutoResetOptionClass(option.value)"
-                :disabled="codexAutoResetDisabled || codexAutoResetModeLoading"
-                role="radio"
-                :aria-checked="codexAutoResetMode === option.value"
-                @click="updateCodexAutoResetMode(option.value)"
-              >
-                {{ option.label }}
-              </button>
-            </div>
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M8 7V5a4 4 0 118 0v2m-9 4h10m-10 0a3 3 0 00-3 3v1a4 4 0 004 4h8a4 4 0 004-4v-1a3 3 0 00-3-3m-10 0V9a1 1 0 011-1h8a1 1 0 011 1v2"
+              />
+            </svg>
+            {{ codexInviteCopied ? '已复制' : '邀请' }}
+          </button>
+        </div>
+        <div
+          v-if="showCodexResetCredits"
+          class="mt-1 flex min-w-max items-center gap-1 whitespace-nowrap"
+          :class="{ 'opacity-50': codexAutoResetDisabled }"
+        >
+          <span :class="['shrink-0 text-[10px] font-semibold transition-colors', codexAutoResetLabelClass]">自动重置</span>
+          <div
+            class="relative grid h-6 w-[92px] shrink-0 grid-cols-3 rounded-md bg-gray-50 p-0.5 text-[10px] font-semibold ring-1 ring-gray-200 dark:bg-gray-900/60 dark:ring-gray-700"
+            role="radiogroup"
+            aria-label="自动重置"
+          >
+            <span
+              class="absolute left-0.5 top-0.5 h-5 w-[29px] rounded shadow-sm transition-all duration-200 ease-out"
+              :class="codexAutoResetThumbClass"
+            ></span>
+            <button
+              v-for="option in codexAutoResetOptions"
+              :key="option.value"
+              type="button"
+              class="relative z-10 h-5 shrink-0 rounded transition-colors"
+              :class="codexAutoResetOptionClass(option.value)"
+              :disabled="codexAutoResetDisabled || codexAutoResetModeLoading"
+              role="radio"
+              :aria-checked="codexAutoResetMode === option.value"
+              @click="updateCodexAutoResetMode(option.value)"
+            >
+              {{ option.label }}
+            </button>
           </div>
         </div>
       </div>
@@ -594,6 +615,7 @@ const activeQueryLoading = ref(false)
 const codexResetCreditLoading = ref(false)
 const codexAutoResetModeLoading = ref(false)
 const codexResetConfirming = ref(false)
+const codexInviteCopied = ref(false)
 const error = ref<string | null>(null)
 const usageInfo = ref<AccountUsageInfo | null>(null)
 const rootRef = ref<HTMLElement | null>(null)
@@ -659,6 +681,16 @@ const showCodexResetCredits = computed(() => {
 const codexResetCreditsAvailable = computed(() => {
   const count = usageInfo.value?.codex_reset_credits_available_count
   return typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
+})
+
+const codexResetInviteURL = computed(() => {
+  const url = usageInfo.value?.codex_reset_credits_invite_url
+  return typeof url === 'string' ? url.trim() : ''
+})
+
+const showCodexResetInvite = computed(() => {
+  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
+  return codexResetInviteURL.value.length > 0
 })
 
 const codexAutoResetDisabled = computed(() => !showCodexResetCredits.value || codexResetCreditsAvailable.value <= 0)
@@ -1140,15 +1172,46 @@ const forbiddenBadgeClass = computed(() => {
   return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
 })
 
+const copyTextToClipboard = async (text: string): Promise<boolean> => {
+  if (!text) return false
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // Fall through to the textarea fallback.
+  }
+  try {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+    const copied = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    return copied
+  } catch {
+    return false
+  }
+}
+
 const linkCopied = ref(false)
 const copyValidationURL = async () => {
   if (!validationURL.value) return
-  try {
-    await navigator.clipboard.writeText(validationURL.value)
+  if (await copyTextToClipboard(validationURL.value)) {
     linkCopied.value = true
     setTimeout(() => { linkCopied.value = false }, 2000)
-  } catch {
-    // fallback: ignore
+  }
+}
+
+const copyCodexResetInviteURL = async () => {
+  if (!codexResetInviteURL.value) return
+  if (await copyTextToClipboard(codexResetInviteURL.value)) {
+    codexInviteCopied.value = true
+    setTimeout(() => { codexInviteCopied.value = false }, 2000)
   }
 }
 

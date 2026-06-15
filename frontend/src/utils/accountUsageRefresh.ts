@@ -19,6 +19,7 @@ export const buildOpenAIUsageRefreshKey = (account: Pick<Account, 'id' | 'platfo
     extra.codex_auto_reset_mode,
     extra.codex_reset_credits,
     extra.codex_reset_credits_supported,
+    extra.codex_reset_credits_invite_url,
     extra.codex_reset_credits_updated_at,
     extra.codex_usage_updated_at,
     extra.codex_5h_used_percent,

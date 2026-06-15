@@ -174,6 +174,25 @@ func TestExtractOpenAICodexResetCreditUpdates(t *testing.T) {
 	if got := updates["codex_reset_credits_supported"]; got != true {
 		t.Fatalf("codex_reset_credits_supported = %v, want true", got)
 	}
+	if got := updates["codex_reset_credits_invite_url"]; got != "" {
+		t.Fatalf("codex_reset_credits_invite_url = %v, want empty without upstream URL", got)
+	}
+
+	updates, supported, ok = extractOpenAICodexResetCreditUpdates([]byte(`{"rate_limit_reset_credits":{"available_count":1,"invite_url":"https://chatgpt.com/invite/codex-reset"}}`), now)
+	if !ok || !supported {
+		t.Fatalf("expected supported reset credit payload with invite URL, supported=%v ok=%v", supported, ok)
+	}
+	if got := updates["codex_reset_credits_invite_url"]; got != "https://chatgpt.com/invite/codex-reset" {
+		t.Fatalf("codex_reset_credits_invite_url = %v, want official invite URL", got)
+	}
+
+	updates, supported, ok = extractOpenAICodexResetCreditUpdates([]byte(`{"rate_limit_reset_credits":{"available_count":1,"invite_url":"https://evil.example/invite"}}`), now)
+	if !ok || !supported {
+		t.Fatalf("expected supported reset credit payload with rejected invite URL, supported=%v ok=%v", supported, ok)
+	}
+	if got := updates["codex_reset_credits_invite_url"]; got != "" {
+		t.Fatalf("codex_reset_credits_invite_url = %v, want empty for non-official URL", got)
+	}
 
 	updates, supported, ok = extractOpenAICodexResetCreditUpdates([]byte(`{"rate_limit_reset_credits":{}}`), now)
 	if !ok {
@@ -212,7 +231,8 @@ func TestBuildOpenAIUsageFromExtraIncludesResetCredits(t *testing.T) {
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
 		Extra: map[string]any{
-			"codex_reset_credits": 0,
+			"codex_reset_credits":            0,
+			"codex_reset_credits_invite_url": "https://chatgpt.com/invite/codex-reset",
 		},
 	}, now)
 
@@ -224,6 +244,9 @@ func TestBuildOpenAIUsageFromExtraIncludesResetCredits(t *testing.T) {
 	}
 	if usage.CodexAutoResetMode != openAICodexAutoResetModeOff {
 		t.Fatalf("auto reset mode = %q, want off when count is 0", usage.CodexAutoResetMode)
+	}
+	if usage.CodexResetCreditsInviteURL != "https://chatgpt.com/invite/codex-reset" {
+		t.Fatalf("invite URL = %q, want official invite URL", usage.CodexResetCreditsInviteURL)
 	}
 }
 

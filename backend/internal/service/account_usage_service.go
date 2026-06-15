@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -238,6 +239,7 @@ type UsageInfo struct {
 	// OpenAI Codex 官方速率限制重置次数。只有上游返回该字段时才认为支持。
 	CodexResetCreditsSupported      bool   `json:"codex_reset_credits_supported,omitempty"`
 	CodexResetCreditsAvailableCount *int   `json:"codex_reset_credits_available_count,omitempty"`
+	CodexResetCreditsInviteURL      string `json:"codex_reset_credits_invite_url,omitempty"`
 	CodexAutoResetMode              string `json:"codex_auto_reset_mode,omitempty"`
 }
 
@@ -616,6 +618,9 @@ func applyOpenAICodexResetCreditsFromExtra(usage *UsageInfo, extra map[string]an
 	}
 	usage.CodexResetCreditsSupported = true
 	usage.CodexResetCreditsAvailableCount = &count
+	if inviteURL := parseOpenAICodexResetCreditInviteURL(extra); inviteURL != "" {
+		usage.CodexResetCreditsInviteURL = inviteURL
+	}
 	if count <= 0 {
 		usage.CodexAutoResetMode = openAICodexAutoResetModeOff
 	}
@@ -850,11 +855,60 @@ func extractOpenAICodexResetCreditUpdates(body []byte, now time.Time) (map[strin
 		"codex_reset_credits":            count,
 		"codex_reset_credits_supported":  true,
 		"codex_reset_credits_updated_at": now.UTC().Format(time.RFC3339),
+		"codex_reset_credits_invite_url": "",
+	}
+	if inviteURL := extractOpenAICodexResetCreditInviteURL(body); inviteURL != "" {
+		updates["codex_reset_credits_invite_url"] = inviteURL
 	}
 	if count <= 0 {
 		updates["codex_auto_reset_mode"] = openAICodexAutoResetModeOff
 	}
 	return updates, true, true
+}
+
+func extractOpenAICodexResetCreditInviteURL(body []byte) string {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return ""
+	}
+	paths := []string{
+		"rate_limit_reset_credits.invite_url",
+		"rate_limit_reset_credits.invite_link",
+		"rate_limit_reset_credits.referral_url",
+		"rate_limit_reset_credits.referral_link",
+		"rate_limit_reset_credits.share_url",
+		"rate_limit_reset_credits.share_link",
+		"rate_limit_reset_credits.invitation.url",
+		"rate_limit_reset_credits.invitation.link",
+	}
+	for _, path := range paths {
+		if url := sanitizeOpenAICodexResetCreditInviteURL(gjson.GetBytes(body, path).String()); url != "" {
+			return url
+		}
+	}
+	return ""
+}
+
+func parseOpenAICodexResetCreditInviteURL(extra map[string]any) string {
+	if len(extra) == 0 {
+		return ""
+	}
+	return sanitizeOpenAICodexResetCreditInviteURL(fmt.Sprint(extra["codex_reset_credits_invite_url"]))
+}
+
+func sanitizeOpenAICodexResetCreditInviteURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" {
+		return ""
+	}
+	switch strings.ToLower(parsed.Hostname()) {
+	case "chatgpt.com", "chat.openai.com", "openai.com":
+		return raw
+	}
+	return ""
 }
 
 func (s *AccountUsageService) ConsumeOpenAICodexResetCredit(ctx context.Context, accountID int64) (*UsageInfo, error) {
