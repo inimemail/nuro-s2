@@ -1371,6 +1371,51 @@
               </button>
             </div>
           </div>
+          <div v-if="showUpstreamConcurrencyRaceToggle" class="mt-3 rounded-lg bg-rose-50 p-3 dark:bg-rose-900/15">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <label class="input-label mb-0">{{ t('admin.accounts.upstreamConcurrencyRace') }}</label>
+                <p class="mt-1 text-xs text-rose-700 dark:text-rose-300">
+                  {{ t('admin.accounts.upstreamConcurrencyRaceHint') }}
+                </p>
+              </div>
+              <button
+                type="button"
+                @click="upstreamConcurrencyRaceEnabled = !upstreamConcurrencyRaceEnabled"
+                :class="[
+                  'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2',
+                  upstreamConcurrencyRaceEnabled ? 'bg-rose-600' : 'bg-gray-200 dark:bg-dark-600'
+                ]"
+              >
+                <span
+                  :class="[
+                    'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                    upstreamConcurrencyRaceEnabled ? 'translate-x-5' : 'translate-x-0'
+                  ]"
+                />
+              </button>
+            </div>
+            <div v-if="upstreamConcurrencyRaceEnabled" class="mt-3">
+              <label class="input-label">{{ t('admin.accounts.upstreamConcurrencyRaceDelayMs') }}</label>
+              <input
+                v-model.number="upstreamConcurrencyRaceRetryDelayMs"
+                type="number"
+                :min="MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS"
+                :max="MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS"
+                step="1"
+                class="input"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{
+                  t('admin.accounts.upstreamConcurrencyRaceDelayMsHint', {
+                    default: DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS,
+                    min: MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS,
+                    max: MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
+                  })
+                }}
+              </p>
+            </div>
+          </div>
           <div v-if="poolModeEnabled" class="mt-3">
             <label class="input-label">{{ t('admin.accounts.poolModeRetryCount') }}</label>
             <input
@@ -3686,11 +3731,16 @@ const allowedModels = ref<string[]>([])
 const DEFAULT_POOL_MODE_RETRY_COUNT = 1
 const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
+const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
+const MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
+const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 5000
 const poolModeEnabled = ref(false)
 const poolSoftCooldownEnabled = ref(true)
 const imagePoolModeEnabled = ref(false)
 const promptCacheBoostEnabled = ref(false)
 const upstreamStrongIsolationEnabled = ref(false)
+const upstreamConcurrencyRaceEnabled = ref(false)
+const upstreamConcurrencyRaceRetryDelayMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const poolModeRetryStatusCodesInput = ref('')
 const showPromptCacheBoostToggle = computed(() =>
@@ -3702,6 +3752,9 @@ const showOpenAIAPIKeyTextStreamToggles = computed(() =>
   form.platform === 'openai' &&
   accountCategory.value === 'apikey' &&
   !imagePoolModeEnabled.value
+)
+const showUpstreamConcurrencyRaceToggle = computed(() =>
+  showOpenAIAPIKeyTextStreamToggles.value && poolModeEnabled.value
 )
 
 function parsePoolModeRetryStatusCodes(input: string): number[] {
@@ -4200,6 +4253,7 @@ watch([poolModeEnabled, () => form.platform], ([enabled, platform]) => {
   if (!enabled || platform !== 'openai') {
     promptCacheBoostEnabled.value = false
     upstreamStrongIsolationEnabled.value = false
+    upstreamConcurrencyRaceEnabled.value = false
   }
 })
 
@@ -4207,6 +4261,7 @@ watch(imagePoolModeEnabled, (enabled) => {
   if (enabled) {
     promptCacheBoostEnabled.value = false
     upstreamStrongIsolationEnabled.value = false
+    upstreamConcurrencyRaceEnabled.value = false
     openaiAPIKeyPreambleFlushEnabled.value = false
     openaiAPIKeySSECommentPreflushEnabled.value = false
     openaiAPIKeySafeTokenPlaceholderEnabled.value = false
@@ -4591,6 +4646,8 @@ const resetForm = () => {
   imagePoolModeEnabled.value = false
   promptCacheBoostEnabled.value = false
   upstreamStrongIsolationEnabled.value = false
+  upstreamConcurrencyRaceEnabled.value = false
+  upstreamConcurrencyRaceRetryDelayMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
   poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
   poolModeRetryStatusCodesInput.value = ''
   customErrorCodesEnabled.value = false
@@ -4821,6 +4878,20 @@ const normalizePoolModeRetryCount = (value: number) => {
   }
   if (normalized > MAX_POOL_MODE_RETRY_COUNT) {
     return MAX_POOL_MODE_RETRY_COUNT
+  }
+  return normalized
+}
+
+const normalizeUpstreamConcurrencyRaceRetryDelayMs = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
+  }
+  const normalized = Math.trunc(value)
+  if (normalized < MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS) {
+    return MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
+  }
+  if (normalized > MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS) {
+    return MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
   }
   return normalized
 }
@@ -5062,6 +5133,12 @@ const handleSubmit = async () => {
     }
     if (form.platform === 'openai' && !imagePoolModeEnabled.value && upstreamStrongIsolationEnabled.value) {
       credentials.upstream_strong_isolation_enabled = true
+    }
+    if (form.platform === 'openai' && !imagePoolModeEnabled.value && upstreamConcurrencyRaceEnabled.value) {
+      credentials.upstream_concurrency_race_enabled = true
+      credentials.upstream_concurrency_race_retry_delay_ms = normalizeUpstreamConcurrencyRaceRetryDelayMs(
+        upstreamConcurrencyRaceRetryDelayMs.value
+      )
     }
     credentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
     const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)

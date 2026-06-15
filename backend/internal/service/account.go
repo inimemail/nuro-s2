@@ -968,6 +968,12 @@ const (
 	maxPoolModeRetryCount     = 10
 )
 
+const (
+	defaultPoolModeSameAccountRetryDelay = 500 * time.Millisecond
+	minPoolModeSameAccountRetryDelay     = 20 * time.Millisecond
+	maxPoolModeSameAccountRetryDelay     = 5 * time.Second
+)
+
 // GetPoolModeRetryCount 返回池模式同账号重试次数。
 // 未配置或配置非法时回退为默认值 1；小于 0 按 0 处理；过大则截断到 10。
 func (a *Account) GetPoolModeRetryCount() int {
@@ -1006,6 +1012,56 @@ func parsePoolModeRetryCount(value any) int {
 		}
 	}
 	return defaultPoolModeRetryCount
+}
+
+// GetPoolModeSameAccountRetryDelay returns the delay between same-account
+// retries for pool-mode accounts. Missing or invalid values keep the legacy
+// 500ms delay; OpenAI text pool accounts can opt into a shorter per-account
+// delay for upstream concurrency racing.
+func (a *Account) GetPoolModeSameAccountRetryDelay() time.Duration {
+	if a == nil || !a.IsOpenAIApiKey() || !a.IsPoolMode() || a.IsImagePoolMode() || a.Credentials == nil {
+		return defaultPoolModeSameAccountRetryDelay
+	}
+	enabled, _ := a.Credentials["upstream_concurrency_race_enabled"].(bool)
+	if !enabled {
+		return defaultPoolModeSameAccountRetryDelay
+	}
+	raw, ok := a.Credentials["upstream_concurrency_race_retry_delay_ms"]
+	if !ok || raw == nil {
+		return defaultPoolModeSameAccountRetryDelay
+	}
+	delayMs := parsePoolModeRetryDelayMillis(raw)
+	if delayMs <= 0 {
+		return defaultPoolModeSameAccountRetryDelay
+	}
+	delay := time.Duration(delayMs) * time.Millisecond
+	if delay < minPoolModeSameAccountRetryDelay {
+		return minPoolModeSameAccountRetryDelay
+	}
+	if delay > maxPoolModeSameAccountRetryDelay {
+		return maxPoolModeSameAccountRetryDelay
+	}
+	return delay
+}
+
+func parsePoolModeRetryDelayMillis(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return int(i)
+		}
+	case string:
+		if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return i
+		}
+	}
+	return 0
 }
 
 // defaultPoolModeRetryableStatusCodes 池模式下默认触发同账号重试的状态码。

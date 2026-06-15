@@ -39,6 +39,13 @@ const (
 	singleAccountBackoffDelay = 2 * time.Second
 )
 
+func sameAccountRetryDelayForAccount(account *service.Account) time.Duration {
+	if account == nil {
+		return sameAccountRetryDelay
+	}
+	return account.GetPoolModeSameAccountRetryDelay()
+}
+
 // FailoverState 跨循环迭代共享的 failover 状态
 type FailoverState struct {
 	SwitchCount           int

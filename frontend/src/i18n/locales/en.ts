@@ -3557,6 +3557,12 @@ export default {
       upstreamStrongIsolationDisabledHint: 'This account forwards upstream session signals normally.',
       upstreamStrongIsolationNotApplicable: 'N/A',
       upstreamStrongIsolationNotApplicableHint: 'Available only for OpenAI pool-mode accounts without image pool enabled.',
+      upstreamConcurrencyRace: 'Race Upstream Concurrency',
+      upstreamConcurrencyRaceHint:
+        'Use only for busy upstreams. Same-account pool retries use a shorter delay to race for released upstream slots and may increase upstream request pressure.',
+      upstreamConcurrencyRaceDelayMs: 'Race Retry Delay (ms)',
+      upstreamConcurrencyRaceDelayMsHint:
+        'Only affects this account. Default {default}ms, range {min}-{max}ms; disabled accounts keep the system default 500ms.',
       poolModeRetryCount: 'Same-Account Retries',
       poolModeRetryCountHint:
         'Only applies in pool mode. Use 0 to disable in-place retry. Default {default}, maximum {max}.',

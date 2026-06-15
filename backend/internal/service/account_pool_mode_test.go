@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -113,6 +114,84 @@ func TestGetPoolModeRetryCount(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.expected, tt.account.GetPoolModeRetryCount())
+		})
+	}
+}
+
+func TestGetPoolModeSameAccountRetryDelay(t *testing.T) {
+	tests := []struct {
+		name     string
+		account  *Account
+		expected time.Duration
+	}{
+		{
+			name: "default_when_not_enabled",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode": true,
+				},
+			},
+			expected: defaultPoolModeSameAccountRetryDelay,
+		},
+		{
+			name: "uses_configured_delay",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                                true,
+					"upstream_concurrency_race_enabled":        true,
+					"upstream_concurrency_race_retry_delay_ms": 50,
+				},
+			},
+			expected: 50 * time.Millisecond,
+		},
+		{
+			name: "clamps_below_minimum",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                                true,
+					"upstream_concurrency_race_enabled":        true,
+					"upstream_concurrency_race_retry_delay_ms": 1,
+				},
+			},
+			expected: minPoolModeSameAccountRetryDelay,
+		},
+		{
+			name: "clamps_above_maximum",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                                true,
+					"upstream_concurrency_race_enabled":        true,
+					"upstream_concurrency_race_retry_delay_ms": 999999,
+				},
+			},
+			expected: maxPoolModeSameAccountRetryDelay,
+		},
+		{
+			name: "invalid_delay_falls_back_to_default",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                                true,
+					"upstream_concurrency_race_enabled":        true,
+					"upstream_concurrency_race_retry_delay_ms": "oops",
+				},
+			},
+			expected: defaultPoolModeSameAccountRetryDelay,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, tt.account.GetPoolModeSameAccountRetryDelay())
 		})
 	}
 }
