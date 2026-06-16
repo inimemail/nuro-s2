@@ -73,8 +73,13 @@ func TestCyberPolicySessionBlockMissDoesNotReadRiskControlSetting(t *testing.T) 
 		settingService: NewSettingService(repo, nil),
 	}
 
-	_, blocked := svc.CheckOpenAICyberPolicySessionBlock(&Account{ID: 9, Platform: PlatformOpenAI}, c, nil)
+	_, blocked := svc.CheckOpenAICyberPolicySessionBlock(&Account{ID: 9, Platform: PlatformOpenAI}, c, []byte(`{"prompt_cache_key":"pc-miss"}`))
 	require.False(t, blocked)
+	require.Equal(t, int64(0), repo.getValueCalls.Load())
+
+	anchorType, anchorHash := svc.PrimeOpenAICyberPolicyAnchor(c, []byte(`{"prompt_cache_key":"pc-miss"}`))
+	require.Empty(t, anchorType)
+	require.Empty(t, anchorHash)
 	require.Equal(t, int64(0), repo.getValueCalls.Load())
 }
 

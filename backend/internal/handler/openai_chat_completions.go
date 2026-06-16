@@ -129,7 +129,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 	}
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
-	service.PrimeOpenAICyberPolicyAnchor(c, body)
+	h.gatewayService.PrimeOpenAICyberPolicyAnchor(c, body)
 
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
 	switchCount := 0

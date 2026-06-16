@@ -382,7 +382,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, sessionHashBody)
 	}
-	service.PrimeOpenAICyberPolicyAnchor(c, body)
+	h.gatewayService.PrimeOpenAICyberPolicyAnchor(c, body)
 	requireCompact := isOpenAIRemoteCompactPath(c)
 
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
@@ -822,7 +822,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 	}
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
-	service.PrimeOpenAICyberPolicyAnchor(c, body)
+	h.gatewayService.PrimeOpenAICyberPolicyAnchor(c, body)
 	sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(sessionHash, promptCacheKey, reqModel, body)
 
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
@@ -1498,7 +1498,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		firstMessage,
 		openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID),
 	)
-	service.PrimeOpenAICyberPolicyAnchor(c, firstMessage)
+	h.gatewayService.PrimeOpenAICyberPolicyAnchor(c, firstMessage)
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})

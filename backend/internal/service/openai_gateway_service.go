@@ -400,6 +400,7 @@ type OpenAIGatewayService struct {
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
 	openaiCyberPolicySessionBlocks      sync.Map // key: platform:accountID:anchorType:anchorHash, value: cyberPolicySessionBlock
+	openaiCyberPolicySessionBlockCount  atomic.Int64
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
