@@ -1880,7 +1880,7 @@ func TestOpenAIStreamingPolicyResponseFailedBeforeOutputPassesThrough(t *testing
 	}
 
 	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "model", "model")
-	require.Error(t, err)
+	require.NoError(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr))
 	require.True(t, c.Writer.Written())
@@ -2474,6 +2474,49 @@ func TestOpenAINonStreamingContentTypeDefault(t *testing.T) {
 
 	if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
 		t.Fatalf("expected default Content-Type, got %q", rec.Header().Get("Content-Type"))
+	}
+}
+
+func TestOpenAINonStreamingNonJSON2xxReturnsFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{},
+		settingService: NewSettingService(&openAIFastPolicyRepoStub{values: map[string]string{
+			SettingKeyRiskControlEnabled: "true",
+		}}, &config.Config{}),
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("<html>captcha</html>")),
+		Header:     http.Header{"Content-Type": []string{"text/html"}},
+	}
+
+	account := &Account{
+		ID:       123,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Extra: map[string]any{
+			"pool_mode_enabled": true,
+		},
+	}
+	_, err := svc.handleNonStreamingResponse(c.Request.Context(), resp, c, account, "model", "model")
+	if err == nil {
+		t.Fatal("expected failover error")
+	}
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("expected UpstreamFailoverError, got %T %v", err, err)
+	}
+	if failoverErr.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", failoverErr.StatusCode)
+	}
+	if !failoverErr.RetryableOnSameAccount {
+		t.Fatal("expected same-account retry before switching")
 	}
 }
 
@@ -3182,7 +3225,12 @@ func TestHandleSSEToJSON_CompletedEventReturnsJSON(t *testing.T) {
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
 
-	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{},
+		settingService: NewSettingService(&openAIFastPolicyRepoStub{values: map[string]string{
+			SettingKeyRiskControlEnabled: "true",
+		}}, &config.Config{}),
+	}
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -3193,7 +3241,7 @@ func TestHandleSSEToJSON_CompletedEventReturnsJSON(t *testing.T) {
 		`data: [DONE]`,
 	}, "\n"))
 
-	usage, err := svc.handleSSEToJSON(resp, c, body, "gpt-4o", "gpt-4o")
+	usage, err := svc.handleSSEToJSON(resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, body, "gpt-4o", "gpt-4o")
 	require.NoError(t, err)
 	require.NotNil(t, usage)
 	require.Equal(t, 7, usage.InputTokens)
@@ -3251,7 +3299,7 @@ func TestHandleSSEToJSON_ReconstructsImageGenerationOutputItemDone(t *testing.T)
 		`data: [DONE]`,
 	}, "\n"))
 
-	usage, err := svc.handleSSEToJSON(resp, c, body, "gpt-5.4", "gpt-5.4")
+	usage, err := svc.handleSSEToJSON(resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, body, "gpt-5.4", "gpt-5.4")
 	require.NoError(t, err)
 	require.NotNil(t, usage)
 	require.Equal(t, 4, usage.ImageOutputTokens)
@@ -3277,7 +3325,7 @@ func TestHandleSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
 		`data: [DONE]`,
 	}, "\n"))
 
-	usage, err := svc.handleSSEToJSON(resp, c, body, "gpt-4o", "gpt-4o")
+	usage, err := svc.handleSSEToJSON(resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, body, "gpt-4o", "gpt-4o")
 	require.NoError(t, err)
 	require.NotNil(t, usage)
 	require.Equal(t, 0, usage.InputTokens)
@@ -3301,7 +3349,7 @@ func TestHandleSSEToJSON_ResponseFailedReturnsProtocolError(t *testing.T) {
 		`data: [DONE]`,
 	}, "\n"))
 
-	usage, err := svc.handleSSEToJSON(resp, c, body, "gpt-4o", "gpt-4o")
+	usage, err := svc.handleSSEToJSON(resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, body, "gpt-4o", "gpt-4o")
 	require.Nil(t, usage)
 	require.Error(t, err)
 	require.Equal(t, http.StatusBadGateway, rec.Code)

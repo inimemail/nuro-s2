@@ -1879,6 +1879,28 @@ func (h *AccountHandler) ConsumeCodexResetCredit(c *gin.Context) {
 	response.Success(c, usage)
 }
 
+// QueryCodexResetCreditUsage handles querying OpenAI Codex reset credit usage.
+// GET /api/v1/admin/accounts/:id/codex/reset-credit-usage
+func (h *AccountHandler) QueryCodexResetCreditUsage(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if h.accountUsageService == nil {
+		response.InternalError(c, "Account usage service is not available")
+		return
+	}
+
+	usage, err := h.accountUsageService.QueryOpenAICodexResetCreditUsage(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, usage)
+}
+
 // UpdateCodexAutoResetMode handles updating OpenAI Codex auto reset mode.
 // PUT /api/v1/admin/accounts/:id/codex/auto-reset-mode
 func (h *AccountHandler) UpdateCodexAutoResetMode(c *gin.Context) {

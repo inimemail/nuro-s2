@@ -123,6 +123,32 @@ func TestGetModelPricing_UnknownOpenAIModelReturnsError(t *testing.T) {
 	require.Contains(t, err.Error(), "pricing not found")
 }
 
+func TestGetModelPricing_ChineseFallbacks(t *testing.T) {
+	svc := newTestBillingService()
+
+	tests := []struct {
+		model  string
+		input  float64
+		output float64
+	}{
+		{"deepseek-chat", 1.4e-7, 2.8e-7},
+		{"glm-5.1", 1.4e-6, 4.4e-6},
+		{"kimi-k2.6", 0.95e-6, 4e-6},
+		{"minimax-m2.7-highspeed", 0.60e-6, 2.40e-6},
+		{"doubao-embedding-vision", 0.098e-6, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			pricing, err := svc.GetModelPricing(tt.model)
+			require.NoError(t, err)
+			require.NotNil(t, pricing)
+			require.InDelta(t, tt.input, pricing.InputPricePerToken, 1e-12)
+			require.InDelta(t, tt.output, pricing.OutputPricePerToken, 1e-12)
+		})
+	}
+}
+
 func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -135,6 +161,19 @@ func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
 	require.Equal(t, 272000, pricing.LongContextInputThreshold)
 	require.InDelta(t, 2.0, pricing.LongContextInputMultiplier, 1e-12)
 	require.InDelta(t, 1.5, pricing.LongContextOutputMultiplier, 1e-12)
+}
+
+func TestCalculateCost_ImageInputTokens(t *testing.T) {
+	svc := newTestBillingService()
+
+	tokens := UsageTokens{
+		InputTokens:      1000,
+		ImageInputTokens: 200,
+		OutputTokens:     100,
+	}
+	cost, err := svc.CalculateCost("doubao-embedding-vision", tokens, 1.0)
+	require.NoError(t, err)
+	require.InDelta(t, 800*0.098e-6+200*0.252e-6, cost.InputCost, 1e-12)
 }
 
 func TestGetModelPricing_OpenAICompactAliasesFallback(t *testing.T) {

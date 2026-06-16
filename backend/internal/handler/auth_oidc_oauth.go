@@ -139,6 +139,7 @@ func (h *AuthHandler) OIDCOAuthStart(c *gin.Context) {
 	}
 
 	secureCookie := isRequestHTTPS(c)
+	captureOAuthPromoCode(c, secureCookie)
 	oidcSetCookie(c, oidcOAuthStateCookieName, encodeCookieValue(state), oidcOAuthCookieMaxAgeSec, secureCookie)
 	oidcSetCookie(c, oidcOAuthRedirectCookie, encodeCookieValue(redirectTo), oidcOAuthCookieMaxAgeSec, secureCookie)
 	intent := normalizeOAuthIntent(c.Query("intent"))

@@ -138,6 +138,7 @@ func (h *AuthHandler) DingTalkOAuthStart(c *gin.Context) {
 	}
 
 	secureCookie := isRequestHTTPS(c)
+	captureOAuthPromoCode(c, secureCookie)
 	setDingTalkCookie(c, dingTalkOAuthStateCookieName, encodeCookieValue(state), dingTalkOAuthCookieMaxAgeSec, secureCookie)
 	setDingTalkCookie(c, dingTalkOAuthRedirectCookie, encodeCookieValue(redirectTo), dingTalkOAuthCookieMaxAgeSec, secureCookie)
 

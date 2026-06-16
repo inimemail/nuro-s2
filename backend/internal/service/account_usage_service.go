@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -241,6 +242,57 @@ type UsageInfo struct {
 	CodexResetCreditsAvailableCount *int   `json:"codex_reset_credits_available_count,omitempty"`
 	CodexResetCreditsInviteURL      string `json:"codex_reset_credits_invite_url,omitempty"`
 	CodexAutoResetMode              string `json:"codex_auto_reset_mode,omitempty"`
+}
+
+type OpenAIRateLimitWindow struct {
+	UsedPercent        float64 `json:"used_percent,omitempty"`
+	LimitWindowSeconds int64   `json:"limit_window_seconds,omitempty"`
+	ResetAfterSeconds  int64   `json:"reset_after_seconds,omitempty"`
+	ResetAt            int64   `json:"reset_at,omitempty"`
+}
+
+type OpenAIRateLimit struct {
+	Allowed         bool                   `json:"allowed,omitempty"`
+	LimitReached    bool                   `json:"limit_reached,omitempty"`
+	PrimaryWindow   *OpenAIRateLimitWindow `json:"primary_window,omitempty"`
+	SecondaryWindow *OpenAIRateLimitWindow `json:"secondary_window,omitempty"`
+}
+
+type OpenAIAdditionalRateLimit struct {
+	LimitName      string           `json:"limit_name,omitempty"`
+	MeteredFeature string           `json:"metered_feature,omitempty"`
+	RateLimit      *OpenAIRateLimit `json:"rate_limit,omitempty"`
+}
+
+type OpenAIRateLimitResetCredits struct {
+	AvailableCount int `json:"available_count,omitempty"`
+}
+
+type OpenAIQuotaUsage struct {
+	UserID                string                       `json:"user_id,omitempty"`
+	AccountID             string                       `json:"account_id,omitempty"`
+	Email                 string                       `json:"email,omitempty"`
+	PlanType              string                       `json:"plan_type,omitempty"`
+	RateLimit             *OpenAIRateLimit             `json:"rate_limit,omitempty"`
+	AdditionalRateLimits  []OpenAIAdditionalRateLimit  `json:"additional_rate_limits,omitempty"`
+	RateLimitResetCredits *OpenAIRateLimitResetCredits `json:"rate_limit_reset_credits,omitempty"`
+	FetchedAt             int64                        `json:"fetched_at,omitempty"`
+}
+
+type OpenAIQuotaResetCredit struct {
+	ID              string `json:"id,omitempty"`
+	ResetType       string `json:"reset_type,omitempty"`
+	Status          string `json:"status,omitempty"`
+	GrantedAt       string `json:"granted_at,omitempty"`
+	ExpiresAt       string `json:"expires_at,omitempty"`
+	RedeemStartedAt string `json:"redeem_started_at,omitempty"`
+	RedeemedAt      string `json:"redeemed_at,omitempty"`
+}
+
+type OpenAIQuotaResetResult struct {
+	Code         string                  `json:"code,omitempty"`
+	Credit       *OpenAIQuotaResetCredit `json:"credit,omitempty"`
+	WindowsReset int                     `json:"windows_reset,omitempty"`
 }
 
 // ClaudeUsageResponse Anthropic API返回的usage结构
@@ -796,19 +848,32 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 }
 
 func (s *AccountUsageService) fetchOpenAIWhamUsage(ctx context.Context, account *Account) (map[string]any, error) {
+	_, updates, err := s.queryOpenAIWhamUsage(ctx, account)
+	return updates, err
+}
+
+func (s *AccountUsageService) queryOpenAIWhamUsage(ctx context.Context, account *Account) (*OpenAIQuotaUsage, map[string]any, error) {
 	resp, err := s.doOpenAIWhamRequest(ctx, account, http.MethodGet, openAIWhamUsageURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if readErr != nil {
-		return nil, fmt.Errorf("read openai wham usage response: %w", readErr)
+		return nil, nil, fmt.Errorf("read openai wham usage response: %w", readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("openai wham usage returned status %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("openai wham usage returned status %d", resp.StatusCode)
 	}
+
+	payload := &OpenAIQuotaUsage{}
+	if len(body) > 0 && gjson.ValidBytes(body) {
+		if err := json.Unmarshal(body, payload); err != nil {
+			return nil, nil, fmt.Errorf("parse openai wham usage response: %w", err)
+		}
+	}
+	payload.FetchedAt = time.Now().Unix()
 
 	updates := make(map[string]any)
 	if headerUpdates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(headerUpdates) > 0 {
@@ -818,7 +883,7 @@ func (s *AccountUsageService) fetchOpenAIWhamUsage(ctx context.Context, account 
 	}
 	resetUpdates, supported, ok := extractOpenAICodexResetCreditUpdates(body, time.Now())
 	if !ok {
-		return nil, nil
+		return payload, nil, nil
 	}
 	for k, v := range resetUpdates {
 		updates[k] = v
@@ -827,11 +892,49 @@ func (s *AccountUsageService) fetchOpenAIWhamUsage(ctx context.Context, account 
 	if len(updates) > 0 {
 		if s.accountRepo != nil {
 			if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
-				return nil, fmt.Errorf("persist openai wham usage: %w", err)
+				return nil, nil, fmt.Errorf("persist openai wham usage: %w", err)
 			}
 		}
 	}
-	return updates, nil
+	return payload, updates, nil
+}
+
+func (s *AccountUsageService) QueryOpenAICodexResetCreditUsage(ctx context.Context, accountID int64) (*OpenAIQuotaUsage, error) {
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return nil, infraerrors.InternalServer("OPENAI_CODEX_USAGE_ACCOUNT_LOOKUP_FAILED", fmt.Sprintf("get account failed: %v", err))
+	}
+	if account == nil || !account.IsOpenAIOAuth() {
+		return nil, infraerrors.BadRequest("OPENAI_CODEX_USAGE_UNSUPPORTED_ACCOUNT", "account does not support OpenAI Codex reset credits")
+	}
+
+	usage, updates, err := s.queryOpenAIWhamUsage(ctx, account)
+	if err != nil {
+		return nil, infraerrors.InternalServer("OPENAI_CODEX_USAGE_REFRESH_FAILED", err.Error()).WithCause(err)
+	}
+	if len(updates) > 0 {
+		mergeAccountExtra(account, updates)
+	}
+	if usage == nil {
+		usage = &OpenAIQuotaUsage{FetchedAt: time.Now().Unix()}
+	}
+	usage.AccountID = strings.TrimSpace(usage.AccountID)
+	if usage.AccountID == "" {
+		usage.AccountID = fmt.Sprint(account.ID)
+	}
+	if email := strings.TrimSpace(account.GetCredential("email")); email != "" {
+		usage.Email = email
+	}
+	if usage.RateLimitResetCredits == nil && len(account.Extra) > 0 {
+		if raw, ok := account.Extra["codex_reset_credits"]; ok {
+			count := parseExtraInt(raw)
+			if count < 0 {
+				count = 0
+			}
+			usage.RateLimitResetCredits = &OpenAIRateLimitResetCredits{AvailableCount: count}
+		}
+	}
+	return usage, nil
 }
 
 func extractOpenAICodexResetCreditUpdates(body []byte, now time.Time) (map[string]any, bool, bool) {
@@ -932,7 +1035,7 @@ func (s *AccountUsageService) ConsumeOpenAICodexResetCredit(ctx context.Context,
 
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("openai reset credit consume returned status %d", resp.StatusCode)
+		return nil, infraerrors.Newf(resp.StatusCode, "OPENAI_CODEX_RESET_CONSUME_FAILED", "openai reset credit consume returned status %d", resp.StatusCode)
 	}
 
 	if updates, err := s.fetchOpenAIWhamUsage(ctx, account); err == nil && len(updates) > 0 {

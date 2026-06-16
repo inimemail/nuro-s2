@@ -195,6 +195,11 @@ type OpsUpstreamErrorEvent struct {
 
 	Message string `json:"message,omitempty"`
 	Detail  string `json:"detail,omitempty"`
+
+	CyberPolicy               bool   `json:"cyber_policy,omitempty"`
+	CyberPolicySessionBlocked bool   `json:"cyber_policy_session_block,omitempty"`
+	CyberPolicyAnchorType     string `json:"cyber_policy_anchor_type,omitempty"`
+	CyberPolicyAnchorHash     string `json:"cyber_policy_anchor_hash,omitempty"`
 }
 
 func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
@@ -211,6 +216,8 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	ev.UpstreamURL = strings.TrimSpace(ev.UpstreamURL)
 	ev.Message = strings.TrimSpace(ev.Message)
 	ev.Detail = strings.TrimSpace(ev.Detail)
+	ev.CyberPolicyAnchorType = strings.TrimSpace(ev.CyberPolicyAnchorType)
+	ev.CyberPolicyAnchorHash = strings.TrimSpace(ev.CyberPolicyAnchorHash)
 	if ev.Message != "" {
 		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
 	}

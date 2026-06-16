@@ -129,6 +129,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 	}
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
+	service.PrimeOpenAICyberPolicyAnchor(c, body)
 
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
 	switchCount := 0
@@ -176,6 +177,15 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			return
 		}
 		account := selection.Account
+		if decision, blocked := h.gatewayService.CheckOpenAICyberPolicySessionBlock(account, c, body); blocked {
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			errType, errMsg := openAICyberPolicyErrorText(decision)
+			service.SetOpsUpstreamError(c, http.StatusForbidden, errMsg, "")
+			h.handleStreamingAwareError(c, http.StatusForbidden, errType, errMsg, streamStarted)
+			return
+		}
 		sessionHash = h.gatewayService.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, account)
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai_chat_completions.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))

@@ -128,7 +128,7 @@ func TestPlanSameAccountRetryZeroDelayDoesNotReserveElapsedBudget(t *testing.T) 
 		ID:       100,
 		Platform: service.PlatformOpenAI,
 		Type:     service.AccountTypeAPIKey,
-		Status:   service.AccountStatusActive,
+		Status:   service.StatusActive,
 		Priority: 1,
 		Credentials: map[string]interface{}{
 			"pool_mode":                                true,

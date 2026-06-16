@@ -399,6 +399,7 @@ type OpenAIGatewayService struct {
 	openaiPromptCacheBoostDisabledUntil sync.Map // key: int64(accountID), value: time.Time
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
+	openaiCyberPolicySessionBlocks      sync.Map // key: platform:accountID:anchorType:anchorHash, value: cyberPolicySessionBlock
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -4617,6 +4618,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	sawDone := false
 	sawTerminalEvent := false
 	sawFailedEvent := false
+	sawCyberPolicyEvent := false
 	failedMessage := ""
 	clientOutputStarted := accountSSECommentPreflushed
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
@@ -4711,7 +4713,13 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			eventType := strings.TrimSpace(gjson.Get(trimmedData, "type").String())
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
-				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
+				cyberPolicyMatched := false
+				if decision := s.handleOpenAICyberPolicyEvent(c, account, true, upstreamRequestID, dataBytes, nil); decision.Matched {
+					failedMessage = firstNonEmptyString(decision.Message, failedMessage)
+					sawCyberPolicyEvent = true
+					cyberPolicyMatched = true
+				}
+				if !cyberPolicyMatched && !openAIStreamClientOutputStarted(c, clientOutputStarted) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
 					return false, s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, dataBytes, failedMessage)
 				}
 				forceFlushFailedEvent = true
@@ -4834,7 +4842,7 @@ passthroughScanDone:
 		if sawTerminalEvent && !sawFailedEvent {
 			return resultWithUsage(), nil
 		}
-		if sawFailedEvent {
+		if sawFailedEvent && !sawCyberPolicyEvent {
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -4863,7 +4871,7 @@ passthroughScanDone:
 		)
 		return resultWithUsage(), fmt.Errorf("stream read error: %w", err)
 	}
-	if sawFailedEvent {
+	if sawFailedEvent && !sawCyberPolicyEvent {
 		return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 	}
 	if !clientDisconnected && !sawDone && !sawTerminalEvent && ctx.Err() == nil {
@@ -5233,6 +5241,31 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
+	if decision := s.handleOpenAICyberPolicyEvent(c, account, false, resp.Header.Get("x-request-id"), body, requestBody); decision.Matched {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		statusCode := resp.StatusCode
+		if statusCode < 400 {
+			statusCode = http.StatusForbidden
+		}
+		if len(body) > 0 && gjson.ValidBytes(body) {
+			contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+			if contentType == "" {
+				contentType = "application/json; charset=utf-8"
+			}
+			MarkResponseCommitted(c)
+			c.Data(statusCode, contentType, body)
+		} else {
+			MarkResponseCommitted(c)
+			c.JSON(statusCode, gin.H{
+				"error": gin.H{
+					"type":    firstNonEmptyString(decision.ErrorType, "invalid_request_error"),
+					"code":    "cyber_policy",
+					"message": firstNonEmptyString(decision.Message, "upstream cyber_policy blocked this request"),
+				},
+			})
+		}
+		return nil, fmt.Errorf("upstream cyber_policy blocked request")
+	}
 
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		logger.LegacyPrintf("service.openai_gateway",
@@ -5403,6 +5436,15 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		upstreamDetail = truncateString(string(body), maxBytes)
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+	if decision := s.handleOpenAICyberPolicyEvent(c, account, false, resp.Header.Get("x-request-id"), body, nil); decision.Matched {
+		MarkResponseCommitted(c)
+		statusCode := resp.StatusCode
+		if statusCode < 400 {
+			statusCode = http.StatusForbidden
+		}
+		writeError(c, statusCode, firstNonEmptyString(decision.ErrorType, "invalid_request_error"), firstNonEmptyString(decision.Message, "upstream cyber_policy blocked this request"))
+		return nil, fmt.Errorf("upstream cyber_policy blocked request")
+	}
 
 	// Apply error passthrough rules
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
@@ -5609,6 +5651,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	clientDisconnected := false // 客户端断开后继续 drain 上游以收集 usage
 	sawTerminalEvent := false
 	sawFailedEvent := false
+	sawCyberPolicyEvent := false
 	failedMessage := ""
 	clientOutputStarted := accountSSECommentPreflushed
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
@@ -5684,7 +5727,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			}
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete: missing terminal event")
 		}
-		if sawFailedEvent {
+		if sawFailedEvent && !sawCyberPolicyEvent {
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 		}
 		if !clientDisconnected {
@@ -5707,7 +5750,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			logger.LegacyPrintf("service.openai_gateway", "Upstream scan ended after terminal event: %v", scanErr)
 			return resultWithUsage(), nil, true
 		}
-		if sawFailedEvent {
+		if sawFailedEvent && !sawCyberPolicyEvent {
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage), true
 		}
 		// 客户端断开/取消请求时，上游读取往往会返回 context canceled。
@@ -5758,7 +5801,13 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			forceFlushFailedEvent := false
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
-				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
+				cyberPolicyMatched := false
+				if decision := s.handleOpenAICyberPolicyEvent(c, account, false, upstreamRequestID, dataBytes, nil); decision.Matched {
+					failedMessage = firstNonEmptyString(decision.Message, failedMessage)
+					sawCyberPolicyEvent = true
+					cyberPolicyMatched = true
+				}
+				if !cyberPolicyMatched && !openAIStreamClientOutputStarted(c, clientOutputStarted) && openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
 					sawFailedEvent = true
 					streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, upstreamRequestID, dataBytes, failedMessage)
 					return
@@ -6213,6 +6262,17 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 	return openAIUsageFromGJSON(gjson.GetBytes(body, "response.usage"))
 }
 
+func isOpenAISuccessJSONResponse(resp *http.Response, body []byte) bool {
+	if resp == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false
+	}
+	contentType := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	if contentType != "" && !strings.Contains(contentType, "json") && !strings.Contains(contentType, "event-stream") {
+		return false
+	}
+	return gjson.ValidBytes(body)
+}
+
 func extractOpenAIResponseIDFromJSONBytes(body []byte) string {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return ""
@@ -6282,7 +6342,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	// Some OpenAI-compatible upstreams (including other sub2api instances)
 	// may return SSE even when stream=false was requested.
 	if isEventStreamResponse(resp.Header) {
-		return s.handleSSEToJSON(resp, c, body, originalModel, mappedModel)
+		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
 	}
 	bodyLooksLikeSSE := bytes.Contains(body, []byte("data:")) || bytes.Contains(body, []byte("event:"))
 
@@ -6292,13 +6352,20 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	// positives on JSON responses that coincidentally contain "data:" or
 	// "event:" in their text content.
 	if account.Type == AccountTypeOAuth && bodyLooksLikeSSE {
-		return s.handleSSEToJSON(resp, c, body, originalModel, mappedModel)
+		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
 	}
 
 	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
 	if !usageOK {
 		if bodyLooksLikeSSE {
-			return s.handleSSEToJSON(resp, c, body, originalModel, mappedModel)
+			return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 && !isOpenAISuccessJSONResponse(resp, body) {
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           body,
+				RetryableOnSameAccount: true,
+			}
 		}
 		return nil, fmt.Errorf("parse response: invalid json response")
 	}
@@ -6334,7 +6401,7 @@ func isEventStreamResponse(header http.Header) bool {
 	return strings.Contains(contentType, "text/event-stream")
 }
 
-func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, body []byte, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
+func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
 	bodyText := string(body)
 	finalResponse, ok := extractCodexFinalResponse(bodyText)
 
@@ -6365,6 +6432,26 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 			msg := extractOpenAISSEErrorMessage(terminalPayload)
 			if msg == "" {
 				msg = "Upstream compact response failed"
+			}
+			upstreamRequestID := ""
+			if resp != nil {
+				upstreamRequestID = resp.Header.Get("x-request-id")
+			}
+			if decision := s.handleOpenAICyberPolicyEvent(c, account, false, upstreamRequestID, terminalPayload, nil); decision.Matched {
+				responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+				contentType := resp.Header.Get("Content-Type")
+				if contentType == "" {
+					contentType = "text/event-stream"
+				}
+				MarkResponseCommitted(c)
+				c.Data(resp.StatusCode, contentType, body)
+				return &openaiNonStreamingResult{
+					OpenAIUsage:      usage,
+					usage:            usage,
+					responseID:       extractOpenAIResponseIDFromJSONBytes(terminalPayload),
+					imageCount:       countOpenAIImageOutputsFromSSEBody(bodyText),
+					imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
+				}, nil
 			}
 			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, msg)
 		}

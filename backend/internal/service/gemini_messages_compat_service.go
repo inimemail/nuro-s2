@@ -826,7 +826,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				switch signatureRetryStage {
 				case 0:
 					// Stage 1: disable thinking + thinking->text
-					strippedClaudeBody = FilterThinkingBlocksForRetry(originalClaudeBody)
+					strippedClaudeBody = FilterThinkingBlocksForRetry(originalClaudeBody, originalModel)
 					stageName = "thinking-only"
 					signatureRetryStage = 1
 				default:

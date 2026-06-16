@@ -106,6 +106,7 @@ func (h *AuthHandler) LinuxDoOAuthStart(c *gin.Context) {
 	}
 
 	secureCookie := isRequestHTTPS(c)
+	captureOAuthPromoCode(c, secureCookie)
 	setCookie(c, linuxDoOAuthStateCookieName, encodeCookieValue(state), linuxDoOAuthCookieMaxAgeSec, secureCookie)
 	setCookie(c, linuxDoOAuthRedirectCookie, encodeCookieValue(redirectTo), linuxDoOAuthCookieMaxAgeSec, secureCookie)
 	intent := normalizeOAuthIntent(c.Query("intent"))

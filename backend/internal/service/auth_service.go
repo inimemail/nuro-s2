@@ -273,6 +273,18 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 	return token, user, nil
 }
 
+// ApplyOAuthSignupPromoCode applies a captured promo code after a pending OAuth
+// signup succeeds. Promo failures stay non-fatal, matching normal registration.
+func (s *AuthService) ApplyOAuthSignupPromoCode(ctx context.Context, userID int64, promoCode string) {
+	promoCode = strings.TrimSpace(promoCode)
+	if s == nil || userID <= 0 || promoCode == "" || s.promoService == nil || s.settingService == nil || !s.settingService.IsPromoCodeEnabled(ctx) {
+		return
+	}
+	if err := s.promoService.ApplyPromoCode(ctx, userID, promoCode); err != nil {
+		logger.LegacyPrintf("service.auth", "[Auth] Failed to apply oauth signup promo code for user %d: %v", userID, err)
+	}
+}
+
 // SendVerifyCodeResult 发送验证码返回结果
 type SendVerifyCodeResult struct {
 	Countdown int `json:"countdown"` // 倒计时秒数

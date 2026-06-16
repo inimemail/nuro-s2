@@ -121,6 +121,7 @@ func (h *AuthHandler) WeChatOAuthStart(c *gin.Context) {
 
 	intent := normalizeWeChatOAuthIntent(c.Query("intent"))
 	secureCookie := isRequestHTTPS(c)
+	captureOAuthPromoCode(c, secureCookie)
 	wechatSetCookie(c, wechatOAuthStateCookieName, encodeCookieValue(state), wechatOAuthCookieMaxAgeSec, secureCookie)
 	wechatSetCookie(c, wechatOAuthRedirectCookieName, encodeCookieValue(redirectTo), wechatOAuthCookieMaxAgeSec, secureCookie)
 	wechatSetCookie(c, wechatOAuthIntentCookieName, encodeCookieValue(intent), wechatOAuthCookieMaxAgeSec, secureCookie)

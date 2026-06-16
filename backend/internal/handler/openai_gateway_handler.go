@@ -382,6 +382,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, sessionHashBody)
 	}
+	service.PrimeOpenAICyberPolicyAnchor(c, body)
 	requireCompact := isOpenAIRemoteCompactPath(c)
 
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
@@ -446,6 +447,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.Float64("load_skew", scheduleDecision.LoadSkew),
 		)
 		account := selection.Account
+		if decision, blocked := h.gatewayService.CheckOpenAICyberPolicySessionBlock(account, c, body); blocked {
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			errType, errMsg := openAICyberPolicyErrorText(decision)
+			service.SetOpsUpstreamError(c, http.StatusForbidden, errMsg, "")
+			h.handleStreamingAwareError(c, http.StatusForbidden, errType, errMsg, streamStarted)
+			return
+		}
 		sessionHash = h.gatewayService.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, account)
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
@@ -812,6 +822,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 	}
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
+	service.PrimeOpenAICyberPolicyAnchor(c, body)
 	sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(sessionHash, promptCacheKey, reqModel, body)
 
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
@@ -867,6 +878,15 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			return
 		}
 		account := selection.Account
+		if decision, blocked := h.gatewayService.CheckOpenAICyberPolicySessionBlock(account, c, body); blocked {
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			errType, errMsg := openAICyberPolicyErrorText(decision)
+			service.SetOpsUpstreamError(c, http.StatusForbidden, errMsg, "")
+			h.anthropicStreamingAwareError(c, http.StatusForbidden, errType, errMsg, streamStarted)
+			return
+		}
 		sessionHash = h.gatewayService.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, account)
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai_messages.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
@@ -1478,6 +1498,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		firstMessage,
 		openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID),
 	)
+	service.PrimeOpenAICyberPolicyAnchor(c, firstMessage)
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
@@ -1522,6 +1543,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		account := selection.Account
+		if decision, blocked := h.gatewayService.CheckOpenAICyberPolicySessionBlock(account, c, firstMessage); blocked {
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			_, errMsg := openAICyberPolicyErrorText(decision)
+			service.SetOpsUpstreamError(c, http.StatusForbidden, errMsg, "")
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, errMsg)
+			return
+		}
 		markSameAccountAttemptStart(sameAccountRetryStartedAt, account, time.Now())
 		accountMaxConcurrency := account.Concurrency
 		if selection.WaitPlan != nil && selection.WaitPlan.MaxConcurrency > 0 {
@@ -2150,6 +2180,18 @@ func closeOpenAIClientWS(conn *coderws.Conn, status coderws.StatusCode, reason s
 	}
 	_ = conn.Close(status, reason)
 	_ = conn.CloseNow()
+}
+
+func openAICyberPolicyErrorText(decision service.CyberPolicyDecision) (errType string, message string) {
+	errType = strings.TrimSpace(decision.ErrorType)
+	if errType == "" {
+		errType = "invalid_request_error"
+	}
+	message = strings.TrimSpace(decision.Message)
+	if message == "" {
+		message = "upstream cyber_policy blocked this session"
+	}
+	return errType, message
 }
 
 func closeOpenAIWSFailoverExhausted(conn *coderws.Conn, failoverErr *service.UpstreamFailoverError) {

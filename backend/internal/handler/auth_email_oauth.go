@@ -75,6 +75,7 @@ func (h *AuthHandler) emailOAuthStart(c *gin.Context, provider string) {
 	}
 
 	secureCookie := isRequestHTTPS(c)
+	captureOAuthPromoCode(c, secureCookie)
 	emailOAuthSetCookie(c, emailOAuthStateCookieName, encodeCookieValue(state), secureCookie)
 	emailOAuthSetCookie(c, emailOAuthRedirectCookie, encodeCookieValue(redirectTo), secureCookie)
 	emailOAuthSetCookie(c, emailOAuthProviderCookie, encodeCookieValue(provider), secureCookie)

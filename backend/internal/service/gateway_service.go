@@ -4672,7 +4672,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			if readErr == nil {
 				_ = resp.Body.Close()
 
-				if s.shouldRectifySignatureError(ctx, account, respBody) {
+				if s.shouldRectifySignatureError(ctx, account, respBody, reqModel) {
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 						Platform:           account.Platform,
 						AccountID:          account.ID,
@@ -4712,7 +4712,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					// 2) Only if upstream still errors AND error message points to tool/function signature issues:
 					//    also downgrade tool_use/tool_result blocks to text.
 
-					filteredBody := FilterThinkingBlocksForRetry(body)
+					filteredBody := FilterThinkingBlocksForRetry(body, reqModel)
 					retryCtx, releaseRetryCtx := detachStreamUpstreamContext(ctx, reqStream)
 					retryReq, buildErr := s.buildUpstreamRequest(retryCtx, c, account, filteredBody, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 					releaseRetryCtx()
@@ -4727,7 +4727,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 							retryRespBody, retryReadErr := io.ReadAll(io.LimitReader(retryResp.Body, 2<<20))
 							_ = retryResp.Body.Close()
-							if retryReadErr == nil && retryResp.StatusCode == 400 && s.isSignatureErrorPattern(ctx, account, retryRespBody) {
+							if retryReadErr == nil && retryResp.StatusCode == 400 && s.isSignatureErrorPattern(ctx, account, retryRespBody, reqModel) {
 								appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 									Platform:           account.Platform,
 									AccountID:          account.ID,
@@ -6979,7 +6979,10 @@ func truncateForLog(b []byte, maxBytes int) string {
 
 // shouldRectifySignatureError 统一判断是否应触发签名整流（strip thinking blocks 并重试）。
 // 根据账号类型检查对应的开关和匹配模式。
-func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, account *Account, respBody []byte) bool {
+func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, account *Account, respBody []byte, mappedModel string) bool {
+	if !ShouldRectifyThinkingSignatureError(mappedModel) {
+		return false
+	}
 	if account.Type == AccountTypeAPIKey {
 		// API Key 账号：独立开关，一次读取配置
 		settings, err := s.settingService.GetRectifierSettings(ctx)
@@ -6998,7 +7001,10 @@ func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, accoun
 
 // isSignatureErrorPattern 仅做模式匹配，不检查开关。
 // 用于已进入重试流程后的二阶段检测（此时开关已在首次调用时验证过）。
-func (s *GatewayService) isSignatureErrorPattern(ctx context.Context, account *Account, respBody []byte) bool {
+func (s *GatewayService) isSignatureErrorPattern(ctx context.Context, account *Account, respBody []byte, mappedModel string) bool {
+	if !ShouldApplyRetryFilters(mappedModel) {
+		return false
+	}
 	if s.isThinkingBlockSignatureError(respBody) {
 		return true
 	}
@@ -9416,10 +9422,10 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	// 检测 thinking block 签名错误（400）并重试一次（过滤 thinking blocks）
-	if resp.StatusCode == 400 && s.shouldRectifySignatureError(ctx, account, respBody) {
+	if resp.StatusCode == 400 && s.shouldRectifySignatureError(ctx, account, respBody, reqModel) {
 		logger.LegacyPrintf("service.gateway", "Account %d: detected thinking block signature error on count_tokens, retrying with filtered thinking blocks", account.ID)
 
-		filteredBody := FilterThinkingBlocksForRetry(body)
+		filteredBody := FilterThinkingBlocksForRetry(body, reqModel)
 		retryReq, buildErr := s.buildCountTokensRequest(ctx, c, account, filteredBody, token, tokenType, reqModel, shouldMimicClaudeCode)
 		if buildErr == nil {
 			retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))

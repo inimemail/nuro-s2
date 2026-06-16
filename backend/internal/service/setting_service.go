@@ -32,6 +32,17 @@ func CoerceDingTalkCorpPolicyForWrite(policy string) string {
 	return coerceDeprecatedDingTalkCorpPolicy(policy)
 }
 
+func (s *SettingService) IsRiskControlEnabled(ctx context.Context) bool {
+	if s == nil || s.settingRepo == nil {
+		return false
+	}
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyRiskControlEnabled)
+	if err != nil {
+		return false
+	}
+	return raw == "true"
+}
+
 // coerceDeprecatedDingTalkCorpPolicy 把已废弃的 corp_restriction_policy 值替换成安全的等价值。
 // 升级前残留在 DB 中的 "whitelist" 会导致 callback 链路在 default case 静默 fail-closed
 // （所有钉钉登录被拒）。这里统一退化为 "none" 让服务保持可用，并 warn 日志提醒 admin 重新保存设置。
