@@ -4009,6 +4009,94 @@
                 <Toggle v-model="form.enable_cch_signing" />
               </div>
 
+              <!-- Claude OAuth System Blocks -->
+              <div class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <label
+                      class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{
+                        t(
+                          "admin.settings.gatewayForwarding.claudeOAuthSystemPromptInjection",
+                        )
+                      }}
+                    </label>
+                    <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        t(
+                          "admin.settings.gatewayForwarding.claudeOAuthSystemPromptInjectionHint",
+                        )
+                      }}
+                    </p>
+                  </div>
+                  <Toggle
+                    v-model="form.enable_claude_oauth_system_prompt_injection"
+                  />
+                </div>
+                <div
+                  v-if="form.enable_claude_oauth_system_prompt_injection"
+                  class="space-y-3 border-l border-gray-200 pl-4 dark:border-dark-700"
+                >
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{
+                        t(
+                          "admin.settings.gatewayForwarding.claudeOAuthSystemPrompt",
+                        )
+                      }}
+                    </label>
+                    <textarea
+                      v-model="form.claude_oauth_system_prompt"
+                      rows="4"
+                      class="input font-mono text-xs"
+                      :placeholder="
+                        t(
+                          'admin.settings.gatewayForwarding.claudeOAuthSystemPromptPlaceholder',
+                        )
+                      "
+                    ></textarea>
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        t(
+                          "admin.settings.gatewayForwarding.claudeOAuthSystemPromptHint",
+                        )
+                      }}
+                    </p>
+                  </div>
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{
+                        t(
+                          "admin.settings.gatewayForwarding.claudeOAuthSystemPromptBlocks",
+                        )
+                      }}
+                    </label>
+                    <textarea
+                      v-model="form.claude_oauth_system_prompt_blocks"
+                      rows="7"
+                      class="input font-mono text-xs"
+                      :placeholder="
+                        t(
+                          'admin.settings.gatewayForwarding.claudeOAuthSystemPromptBlocksPlaceholder',
+                        )
+                      "
+                    ></textarea>
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        t(
+                          "admin.settings.gatewayForwarding.claudeOAuthSystemPromptBlocksHint",
+                        )
+                      }}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               <!-- Anthropic Cache TTL 1h Injection -->
               <div class="flex items-center justify-between">
                 <div>
@@ -7370,6 +7458,9 @@ const form = reactive<SettingsForm>({
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
   enable_cch_signing: false,
+  enable_claude_oauth_system_prompt_injection: false,
+  claude_oauth_system_prompt: "",
+  claude_oauth_system_prompt_blocks: "",
   enable_anthropic_cache_ttl_1h_injection: false,
   rewrite_message_cache_control: false,
   stream_low_latency_mode: "off",
@@ -8510,6 +8601,12 @@ async function saveSettings() {
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
       enable_cch_signing: form.enable_cch_signing,
+      enable_claude_oauth_system_prompt_injection:
+        form.enable_claude_oauth_system_prompt_injection,
+      claude_oauth_system_prompt:
+        form.claude_oauth_system_prompt?.trim() || "",
+      claude_oauth_system_prompt_blocks:
+        form.claude_oauth_system_prompt_blocks?.trim() || "",
       enable_anthropic_cache_ttl_1h_injection:
         form.enable_anthropic_cache_ttl_1h_injection,
       rewrite_message_cache_control: form.rewrite_message_cache_control,

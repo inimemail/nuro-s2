@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestIsClaudeCodeClient(t *testing.T) {
@@ -82,6 +83,33 @@ func TestIsClaudeCodeClient(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestRewriteSystemForNonClaudeCodeWithPromptBlocks_DefaultThreeBlocks(t *testing.T) {
+	body := []byte(`{"model":"claude-3","system":"Be brief","messages":[{"role":"user","content":"hello"}]}`)
+
+	result := rewriteSystemForNonClaudeCodeWithPromptBlocks(body, "Be brief", "", "")
+
+	system := gjson.GetBytes(result, "system")
+	require.True(t, system.IsArray())
+	require.Equal(t, 3, len(system.Array()))
+	require.Contains(t, system.Get("0.text").String(), "x-anthropic-billing-header:")
+	require.Equal(t, claudeCodeSystemPrompt, system.Get("1.text").String())
+	require.NotEmpty(t, system.Get("2.text").String())
+	require.Equal(t, "ephemeral", system.Get("2.cache_control.type").String())
+	require.False(t, system.Get("1.cache_control").Exists(), "identity block should not carry cache_control in configured mode")
+
+	messages := gjson.GetBytes(result, "messages")
+	require.True(t, messages.IsArray())
+	require.Equal(t, "[System Instructions]\nBe brief", messages.Get("0.content.0.text").String())
+}
+
+func TestValidateClaudeOAuthSystemPromptBlocksConfig(t *testing.T) {
+	valid := `[{"enabled":true,"type":"text","text":"{billing_header}"},{"type":"text","text":"x","cache_control":true}]`
+	require.NoError(t, ValidateClaudeOAuthSystemPromptBlocksConfig(valid))
+
+	require.Error(t, ValidateClaudeOAuthSystemPromptBlocksConfig(`{"blocks":[{"type":"image","text":"x"}]}`))
+	require.Error(t, ValidateClaudeOAuthSystemPromptBlocksConfig(`[{"type":"text","text":"x","cache_control":"bad"}]`))
 }
 
 func TestSystemIncludesClaudeCodePrompt(t *testing.T) {

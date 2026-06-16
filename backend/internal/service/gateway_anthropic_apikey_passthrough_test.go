@@ -1538,6 +1538,8 @@ func TestGatewayService_AnthropicKiro_DisabledPassthroughDoesNotInjectKiroGuards
 	require.NotContains(t, upstreamBody, anthropicKiroIdentityGuardMarker)
 	require.NotContains(t, upstreamBody, anthropicKiroStructuredMarker)
 	require.NotContains(t, upstreamBody, anthropicKiroRecentFactsMarker)
+	require.NotContains(t, upstreamBody, claudeCodeSystemPrompt)
+	require.NotContains(t, upstreamBody, "x-anthropic-billing-header:")
 	require.Equal(t, "Keep answers brief.", gjson.GetBytes(upstream.lastBody, "system").String())
 
 	responseBody := rec.Body.String()

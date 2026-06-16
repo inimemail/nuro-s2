@@ -71,6 +71,18 @@ func extractFirstUserText(body []byte) string {
 	return first
 }
 
+// buildBillingAttributionText constructs the Claude Code billing attribution text.
+func buildBillingAttributionText(body []byte, cliVersion string) (string, error) {
+	if cliVersion == "" {
+		return "", fmt.Errorf("cliVersion required")
+	}
+	fp := computeClaudeCodeFingerprint(body, cliVersion)
+	return fmt.Sprintf(
+		"x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=cli; cch=00000;",
+		cliVersion, fp,
+	), nil
+}
+
 // buildBillingAttributionBlockJSON 构造 system 数组的 billing attribution block。
 //
 // 形态严格对齐真实 Claude Code CLI：
@@ -83,14 +95,10 @@ func extractFirstUserText(body []byte) string {
 // 此 block 不带 cache_control（与真实 CLI 一致；cache breakpoint 由后续的
 // Claude Code prompt block 承担）。
 func buildBillingAttributionBlockJSON(body []byte, cliVersion string) ([]byte, error) {
-	if cliVersion == "" {
-		return nil, fmt.Errorf("cliVersion required")
+	text, err := buildBillingAttributionText(body, cliVersion)
+	if err != nil {
+		return nil, err
 	}
-	fp := computeClaudeCodeFingerprint(body, cliVersion)
-	text := fmt.Sprintf(
-		"x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=cli; cch=00000;",
-		cliVersion, fp,
-	)
 	return json.Marshal(map[string]string{
 		"type": "text",
 		"text": text,
