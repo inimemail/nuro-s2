@@ -201,6 +201,19 @@ func TestGetPoolModeSameAccountRetryDelay(t *testing.T) {
 			expected: 50 * time.Millisecond,
 		},
 		{
+			name: "uses_10ms_configured_delay",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                                true,
+					"upstream_concurrency_race_enabled":        true,
+					"upstream_concurrency_race_retry_delay_ms": 10,
+				},
+			},
+			expected: 10 * time.Millisecond,
+		},
+		{
 			name: "clamps_below_minimum",
 			account: &Account{
 				Type:     AccountTypeAPIKey,

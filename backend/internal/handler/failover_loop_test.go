@@ -123,6 +123,35 @@ func TestSleepWithContext(t *testing.T) {
 	})
 }
 
+func TestPlanSameAccountRetryZeroDelayDoesNotReserveElapsedBudget(t *testing.T) {
+	account := &service.Account{
+		ID:       100,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Status:   service.AccountStatusActive,
+		Priority: 1,
+		Credentials: map[string]interface{}{
+			"pool_mode":                                true,
+			"pool_mode_retry_count":                    5,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_max_elapsed_ms": 500,
+		},
+	}
+	counts := map[int64]int{}
+	starts := map[int64]time.Time{account.ID: time.Now().Add(-450 * time.Millisecond)}
+
+	if _, ok := planSameAccountRetry(account, counts, starts, 100*time.Millisecond); ok {
+		t.Fatal("expected non-zero delay to be rejected when it would exceed elapsed budget")
+	}
+	require.Equal(t, 0, counts[account.ID])
+
+	plan, ok := planSameAccountRetry(account, counts, starts, 0)
+	require.True(t, ok)
+	require.Equal(t, 1, plan.RetryCount)
+	require.Equal(t, 5, plan.RetryLimit)
+	require.Equal(t, time.Duration(0), plan.Delay)
+}
+
 // ---------------------------------------------------------------------------
 // HandleFailoverError — 基本切换流程
 // ---------------------------------------------------------------------------

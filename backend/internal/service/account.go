@@ -971,7 +971,7 @@ const (
 
 const (
 	defaultPoolModeSameAccountRetryDelay = 500 * time.Millisecond
-	minPoolModeSameAccountRetryDelay     = 20 * time.Millisecond
+	minPoolModeSameAccountRetryDelay     = 10 * time.Millisecond
 	maxPoolModeSameAccountRetryDelay     = 5 * time.Second
 )
 
