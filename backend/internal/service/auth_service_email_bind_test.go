@@ -747,6 +747,10 @@ func (s *emailBindUserRepoStub) GetByID(_ context.Context, id int64) (*service.U
 	return cloneEmailBindUser(user), nil
 }
 
+func (s *emailBindUserRepoStub) GetByIDIncludeDeleted(ctx context.Context, id int64) (*service.User, error) {
+	return s.GetByID(ctx, id)
+}
+
 func (s *emailBindUserRepoStub) GetByEmail(_ context.Context, email string) (*service.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -171,6 +171,10 @@ func (r *openAI429SnapshotRepo) BulkUpdate(_ context.Context, ids []int64, updat
 	return int64(len(ids)), nil
 }
 
+func (r *openAI429SnapshotRepo) RevertProxyFallback(_ context.Context, _ int64) error {
+	return nil
+}
+
 func TestHandle429_OpenAIPersistsCodexSnapshotImmediately(t *testing.T) {
 	repo := &openAI429SnapshotRepo{}
 	svc := NewRateLimitService(repo, nil, nil, nil, nil)

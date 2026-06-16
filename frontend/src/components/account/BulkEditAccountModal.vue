@@ -82,6 +82,54 @@
         </div>
       </div>
 
+      <!-- OpenAI Codex image-generation bridge -->
+      <div
+        v-if="allOpenAIPassthroughCapable"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="mb-3 flex items-start justify-between gap-4">
+          <div class="min-w-0 flex-1">
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.codexImageGenerationBridge') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.codexImageGenerationBridgeBulkDesc') }}
+            </p>
+          </div>
+          <input
+            v-model="enableCodexImageGenerationBridge"
+            id="bulk-edit-codex-image-generation-bridge-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-codex-image-generation-bridge-body"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-codex-image-generation-bridge-body"
+          :class="!enableCodexImageGenerationBridge && 'pointer-events-none opacity-50'"
+          role="group"
+          aria-label="codex image generation bridge"
+        >
+          <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <button
+              v-for="option in codexImageGenerationBridgeOptions"
+              :key="option.value"
+              type="button"
+              :class="[
+                'rounded-md border px-3 py-2 text-left transition-all',
+                codexImageGenerationBridgeMode === option.value
+                  ? 'border-primary-300 bg-primary-50 text-primary-900 dark:border-primary-700 dark:bg-primary-900/25 dark:text-primary-100'
+                  : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-dark-500 dark:bg-dark-700 dark:text-gray-300 dark:hover:bg-dark-600'
+              ]"
+              @click="codexImageGenerationBridgeMode = option.value"
+            >
+              <div class="text-sm font-medium">{{ option.label }}</div>
+              <div class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                {{ option.description }}
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Base URL (API Key only) -->
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
@@ -1557,6 +1605,7 @@ const enableCodexCLIOnlyAllowClaudeCode = ref(false)
 const enableOpenAICompactMode = ref(false)
 const enableOpenAICompactModelMapping = ref(false)
 const enableRpmLimit = ref(false)
+const enableCodexImageGenerationBridge = ref(false)
 
 // State - field values
 const submitting = ref(false)
@@ -1595,6 +1644,24 @@ const bulkBaseRpm = ref<number | null>(null)
 const bulkRpmStrategy = ref<'tiered' | 'sticky_exempt'>('tiered')
 const bulkRpmStickyBuffer = ref<number | null>(null)
 const userMsgQueueMode = ref<string | null>(null)
+const codexImageGenerationBridgeMode = ref<'inherit' | 'enabled' | 'disabled'>('disabled')
+const codexImageGenerationBridgeOptions = computed(() => [
+  {
+    value: 'inherit' as const,
+    label: t('admin.accounts.openai.codexImageGenerationBridgeInherit'),
+    description: t('admin.accounts.openai.codexImageGenerationBridgeInheritDesc')
+  },
+  {
+    value: 'enabled' as const,
+    label: t('admin.accounts.openai.codexImageGenerationBridgeEnabled'),
+    description: t('admin.accounts.openai.codexImageGenerationBridgeEnabledDesc')
+  },
+  {
+    value: 'disabled' as const,
+    label: t('admin.accounts.openai.codexImageGenerationBridgeDisabled'),
+    description: t('admin.accounts.openai.codexImageGenerationBridgeDisabledDesc')
+  }
+])
 const umqModeOptions = computed(() => [
   { value: '', label: t('admin.accounts.quotaControl.rpmLimit.umqModeOff') },
   { value: 'throttle', label: t('admin.accounts.quotaControl.rpmLimit.umqModeThrottle') },
@@ -1883,6 +1950,24 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     credentialsChanged = true
   }
 
+  if (enableCodexImageGenerationBridge.value) {
+    const extra = ensureExtra()
+    const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
+    if (codexImageGenerationBridgeMode.value === 'inherit') {
+      updates.extra_remove_keys = [
+        ...removeKeys,
+        'codex_image_generation_bridge',
+        'codex_image_generation_bridge_enabled'
+      ]
+    } else {
+      extra.codex_image_generation_bridge = codexImageGenerationBridgeMode.value === 'enabled'
+      updates.extra_remove_keys = [
+        ...removeKeys,
+        'codex_image_generation_bridge_enabled'
+      ]
+    }
+  }
+
   // RPM limit settings (写入 extra 字段)
   if (enableRpmLimit.value) {
     const extra = ensureExtra()
@@ -1988,6 +2073,7 @@ const handleSubmit = async () => {
     enableCodexCLIOnlyAllowClaudeCode.value ||
     enableOpenAICompactMode.value ||
     enableOpenAICompactModelMapping.value ||
+    enableCodexImageGenerationBridge.value ||
     enableRpmLimit.value ||
     userMsgQueueMode.value !== null
 
@@ -2097,6 +2183,7 @@ watch(
       enableCodexCLIOnlyAllowClaudeCode.value = false
       enableOpenAICompactMode.value = false
       enableOpenAICompactModelMapping.value = false
+      enableCodexImageGenerationBridge.value = false
       enableRpmLimit.value = false
 
       // Reset all values
@@ -2132,6 +2219,7 @@ watch(
       bulkRpmStrategy.value = 'tiered'
       bulkRpmStickyBuffer.value = null
       userMsgQueueMode.value = null
+      codexImageGenerationBridgeMode.value = 'disabled'
 
       // Reset mixed channel warning state
       showMixedChannelWarning.value = false

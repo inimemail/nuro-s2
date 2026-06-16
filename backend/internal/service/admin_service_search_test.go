@@ -120,6 +120,10 @@ func (s *proxyRepoStubForAdminList) ListWithFiltersAndAccountCount(_ context.Con
 	return s.listWithFiltersAndAccountCountProxies, result, nil
 }
 
+func (s *proxyRepoStubForAdminList) CountExpired(context.Context) (int64, error) {
+	return 0, nil
+}
+
 type redeemRepoStubForAdminList struct {
 	redeemRepoStub
 

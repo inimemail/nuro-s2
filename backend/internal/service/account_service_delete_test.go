@@ -191,6 +191,10 @@ func (s *accountRepoStub) UpdateSessionWindow(ctx context.Context, id int64, sta
 	panic("unexpected UpdateSessionWindow call")
 }
 
+func (s *accountRepoStub) RevertProxyFallback(ctx context.Context, accountID int64) error {
+	panic("unexpected RevertProxyFallback call")
+}
+
 func (s *accountRepoStub) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	panic("unexpected UpdateExtra call")
 }

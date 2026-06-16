@@ -147,7 +147,13 @@ type BulkUpdateAccountsRequest struct {
 	GroupIDs                *[]int64                  `json:"group_ids"`
 	Credentials             map[string]any            `json:"credentials"`
 	Extra                   map[string]any            `json:"extra"`
+	ExtraRemoveKeys         []string                  `json:"extra_remove_keys"`
 	ConfirmMixedChannelRisk *bool                     `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
+}
+
+var allowedBulkExtraRemoveKeys = map[string]struct{}{
+	"codex_image_generation_bridge":         {},
+	"codex_image_generation_bridge_enabled": {},
 }
 
 type UpdateCodexAutoResetModeRequest struct {
@@ -1568,6 +1574,12 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		response.BadRequest(c, "account_ids or filters is required")
 		return
 	}
+	for _, key := range req.ExtraRemoveKeys {
+		if _, ok := allowedBulkExtraRemoveKeys[strings.TrimSpace(key)]; !ok {
+			response.BadRequest(c, "unsupported extra_remove_keys: "+strings.TrimSpace(key))
+			return
+		}
+	}
 	// base_rpm 输入校验：负值归零，超过 10000 截断
 	sanitizeExtraBaseRPM(req.Extra)
 
@@ -1584,7 +1596,8 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		req.Schedulable != nil ||
 		req.GroupIDs != nil ||
 		len(req.Credentials) > 0 ||
-		len(req.Extra) > 0
+		len(req.Extra) > 0 ||
+		len(req.ExtraRemoveKeys) > 0
 
 	if !hasUpdates {
 		response.BadRequest(c, "No updates provided")
@@ -1605,6 +1618,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		GroupIDs:              req.GroupIDs,
 		Credentials:           req.Credentials,
 		Extra:                 req.Extra,
+		ExtraRemoveKeys:       req.ExtraRemoveKeys,
 		SkipMixedChannelCheck: skipCheck,
 	})
 	if err != nil {

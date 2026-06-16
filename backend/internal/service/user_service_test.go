@@ -104,6 +104,9 @@ func (m *mockUserRepo) GetByID(ctx context.Context, _ int64) (*User, error) {
 	}
 	return &User{}, nil
 }
+func (m *mockUserRepo) GetByIDIncludeDeleted(ctx context.Context, id int64) (*User, error) {
+	return m.GetByID(ctx, id)
+}
 func (m *mockUserRepo) GetByEmail(context.Context, string) (*User, error) { return &User{}, nil }
 func (m *mockUserRepo) GetFirstAdmin(context.Context) (*User, error)      { return &User{}, nil }
 func (m *mockUserRepo) Update(ctx context.Context, user *User) error {

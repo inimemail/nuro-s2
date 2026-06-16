@@ -147,7 +147,7 @@ func TestGetPoolModeRetryCount(t *testing.T) {
 					"pool_mode_retry_count":             99,
 				},
 			},
-			expected: maxPoolModeRetryCount,
+			expected: defaultPoolModeRetryCount,
 		},
 		{
 			name: "invalid_value_falls_back_to_default",

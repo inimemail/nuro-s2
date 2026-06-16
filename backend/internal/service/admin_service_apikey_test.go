@@ -36,6 +36,9 @@ func (s *userRepoStubForGroupUpdate) Create(context.Context, *User) error { pani
 func (s *userRepoStubForGroupUpdate) GetByID(context.Context, int64) (*User, error) {
 	panic("unexpected")
 }
+func (s *userRepoStubForGroupUpdate) GetByIDIncludeDeleted(context.Context, int64) (*User, error) {
+	panic("unexpected")
+}
 func (s *userRepoStubForGroupUpdate) GetByEmail(context.Context, string) (*User, error) {
 	panic("unexpected")
 }
@@ -143,6 +146,9 @@ func (s *apiKeyRepoStubForGroupUpdate) GetByKeyForAuth(context.Context, string) 
 	panic("unexpected")
 }
 func (s *apiKeyRepoStubForGroupUpdate) Delete(context.Context, int64) error { panic("unexpected") }
+func (s *apiKeyRepoStubForGroupUpdate) DeleteWithAudit(context.Context, int64) error {
+	panic("unexpected")
+}
 func (s *apiKeyRepoStubForGroupUpdate) ListByUserID(context.Context, int64, pagination.PaginationParams, APIKeyListFilters) ([]APIKey, *pagination.PaginationResult, error) {
 	panic("unexpected")
 }

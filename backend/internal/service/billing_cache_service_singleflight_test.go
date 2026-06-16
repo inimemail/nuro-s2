@@ -114,6 +114,10 @@ func (s *balanceLoadUserRepoStub) GetByID(ctx context.Context, id int64) (*User,
 	return &User{ID: id, Balance: s.balance}, nil
 }
 
+func (s *balanceLoadUserRepoStub) GetByIDIncludeDeleted(ctx context.Context, id int64) (*User, error) {
+	return s.GetByID(ctx, id)
+}
+
 func (s *balanceLoadUserRepoStub) ListUserAuthIdentities(context.Context, int64) ([]UserAuthIdentityRecord, error) {
 	return nil, nil
 }

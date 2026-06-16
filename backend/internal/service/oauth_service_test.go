@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -87,6 +88,18 @@ func (m *mockProxyRepoForOAuth) ListActive(ctx context.Context) ([]Proxy, error)
 func (m *mockProxyRepoForOAuth) ListActiveWithAccountCount(ctx context.Context) ([]ProxyWithAccountCount, error) {
 	panic("ListActiveWithAccountCount not implemented")
 }
+func (m *mockProxyRepoForOAuth) ListAllForFallback(ctx context.Context) ([]Proxy, error) {
+	return nil, nil
+}
+func (m *mockProxyRepoForOAuth) SweepExpiredProxies(ctx context.Context, now time.Time) (int64, error) {
+	return 0, nil
+}
+func (m *mockProxyRepoForOAuth) CountExpired(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+func (m *mockProxyRepoForOAuth) CountExpiringSoon(ctx context.Context, now time.Time) (int64, error) {
+	return 0, nil
+}
 func (m *mockProxyRepoForOAuth) ExistsByHostPortAuth(ctx context.Context, host string, port int, username, password string) (bool, error) {
 	panic("ExistsByHostPortAuth not implemented")
 }
@@ -111,7 +124,7 @@ func TestNewOAuthService(t *testing.T) {
 	if svc == nil {
 		t.Fatal("NewOAuthService 返回 nil")
 	}
-	if svc.proxyRepo != proxyRepo {
+	if svc.proxyRepo != ProxyRepository(proxyRepo) {
 		t.Fatal("proxyRepo 未正确设置")
 	}
 	if svc.oauthClient != client {

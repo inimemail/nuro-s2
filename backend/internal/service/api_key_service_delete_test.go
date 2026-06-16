@@ -79,6 +79,10 @@ func (s *apiKeyRepoStub) Delete(ctx context.Context, id int64) error {
 	return s.deleteErr
 }
 
+func (s *apiKeyRepoStub) DeleteWithAudit(ctx context.Context, id int64) error {
+	return s.Delete(ctx, id)
+}
+
 // 以下是接口要求实现但本测试不关心的方法
 
 func (s *apiKeyRepoStub) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams, filters APIKeyListFilters) ([]APIKey, *pagination.PaginationResult, error) {

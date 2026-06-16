@@ -14,25 +14,26 @@ import (
 
 type accountRepoStubForBulkUpdate struct {
 	accountRepoStub
-	bulkUpdateErr    error
-	bulkUpdateIDs    []int64
-	bindGroupErrByID map[int64]error
-	bindGroupsCalls  []int64
-	getByIDsAccounts []*Account
-	getByIDsErr      error
-	getByIDsCalled   bool
-	getByIDsIDs      []int64
-	getByIDAccounts  map[int64]*Account
-	getByIDErrByID   map[int64]error
-	getByIDCalled    []int64
-	listByGroupData  map[int64][]Account
-	listByGroupErr   map[int64]error
-	listData         []Account
-	listResult       *pagination.PaginationResult
-	listErr          error
-	listCalled       bool
-	lastListParams   pagination.PaginationParams
-	lastListFilters  struct {
+	bulkUpdateErr     error
+	bulkUpdateIDs     []int64
+	bulkUpdatePayload AccountBulkUpdate
+	bindGroupErrByID  map[int64]error
+	bindGroupsCalls   []int64
+	getByIDsAccounts  []*Account
+	getByIDsErr       error
+	getByIDsCalled    bool
+	getByIDsIDs       []int64
+	getByIDAccounts   map[int64]*Account
+	getByIDErrByID    map[int64]error
+	getByIDCalled     []int64
+	listByGroupData   map[int64][]Account
+	listByGroupErr    map[int64]error
+	listData          []Account
+	listResult        *pagination.PaginationResult
+	listErr           error
+	listCalled        bool
+	lastListParams    pagination.PaginationParams
+	lastListFilters   struct {
 		platform    string
 		accountType string
 		status      string
@@ -42,12 +43,35 @@ type accountRepoStubForBulkUpdate struct {
 	}
 }
 
-func (s *accountRepoStubForBulkUpdate) BulkUpdate(_ context.Context, ids []int64, _ AccountBulkUpdate) (int64, error) {
+func (s *accountRepoStubForBulkUpdate) BulkUpdate(_ context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
 	s.bulkUpdateIDs = append([]int64{}, ids...)
+	s.bulkUpdatePayload = updates
 	if s.bulkUpdateErr != nil {
 		return 0, s.bulkUpdateErr
 	}
 	return int64(len(ids)), nil
+}
+
+func TestAdminServiceBulkUpdateAccounts_ForwardsExtraRemoveKeys(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	input := &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1, 2},
+		ExtraRemoveKeys: []string{
+			"codex_image_generation_bridge",
+			"codex_image_generation_bridge_enabled",
+		},
+	}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, 2, result.Success)
+	require.Equal(t, []int64{1, 2}, repo.bulkUpdateIDs)
+	require.Equal(t, []string{
+		"codex_image_generation_bridge",
+		"codex_image_generation_bridge_enabled",
+	}, repo.bulkUpdatePayload.ExtraRemoveKeys)
 }
 
 func (s *accountRepoStubForBulkUpdate) BindGroups(_ context.Context, accountID int64, _ []int64) error {

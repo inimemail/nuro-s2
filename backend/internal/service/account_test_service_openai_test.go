@@ -84,6 +84,10 @@ func (r *openAIAccountTestRepo) BulkUpdate(_ context.Context, ids []int64, updat
 	return int64(len(ids)), nil
 }
 
+func (r *openAIAccountTestRepo) RevertProxyFallback(_ context.Context, _ int64) error {
+	return nil
+}
+
 func (r *openAIAccountTestRepo) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
 	r.rateLimitedID = id
 	r.rateLimitedAt = &resetAt

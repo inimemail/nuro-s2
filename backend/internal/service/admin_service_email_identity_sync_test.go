@@ -52,6 +52,10 @@ func (s *emailSyncRepoStub) GetByID(_ context.Context, _ int64) (*User, error) {
 	return &cloned, nil
 }
 
+func (s *emailSyncRepoStub) GetByIDIncludeDeleted(ctx context.Context, id int64) (*User, error) {
+	return s.GetByID(ctx, id)
+}
+
 func (s *emailSyncRepoStub) GetByEmail(_ context.Context, _ string) (*User, error) {
 	return nil, ErrUserNotFound
 }

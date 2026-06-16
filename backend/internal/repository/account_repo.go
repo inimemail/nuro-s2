@@ -1518,14 +1518,41 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		args = append(args, payload)
 		idx++
 	}
-	if len(updates.Extra) > 0 {
-		payload, err := json.Marshal(updates.Extra)
-		if err != nil {
-			return 0, err
+	if len(updates.ExtraRemoveKeys) > 0 || len(updates.Extra) > 0 {
+		extraExpr := "COALESCE(extra, '{}'::jsonb)"
+		if len(updates.ExtraRemoveKeys) > 0 {
+			removeKeys := make([]string, 0, len(updates.ExtraRemoveKeys))
+			seen := make(map[string]struct{}, len(updates.ExtraRemoveKeys))
+			for _, key := range updates.ExtraRemoveKeys {
+				key = strings.TrimSpace(key)
+				if key == "" {
+					continue
+				}
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				removeKeys = append(removeKeys, key)
+			}
+			if len(removeKeys) > 0 {
+				for _, key := range removeKeys {
+					extraExpr = "(" + extraExpr + " - $" + itoa(idx) + ")"
+					args = append(args, key)
+					idx++
+				}
+			}
 		}
-		setClauses = append(setClauses, "extra = COALESCE(extra, '{}'::jsonb) || $"+itoa(idx)+"::jsonb")
-		args = append(args, payload)
-		idx++
+		if len(updates.Extra) == 0 {
+			setClauses = append(setClauses, "extra = "+extraExpr)
+		} else {
+			payload, err := json.Marshal(updates.Extra)
+			if err != nil {
+				return 0, err
+			}
+			setClauses = append(setClauses, "extra = "+extraExpr+" || $"+itoa(idx)+"::jsonb")
+			args = append(args, payload)
+			idx++
+		}
 	}
 
 	if len(setClauses) == 0 {

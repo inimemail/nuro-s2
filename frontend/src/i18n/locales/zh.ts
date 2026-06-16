@@ -3610,6 +3610,7 @@ export default {
         codexImageGenerationBridgeEnabledDesc: '允许 Codex /responses 请求获得图片工具注入。',
         codexImageGenerationBridgeDisabled: '强制关闭',
         codexImageGenerationBridgeDisabledDesc: '阻断 Codex /responses 的图片工具注入。',
+        codexImageGenerationBridgeBulkDesc: '批量编辑时可强制开启、强制关闭，或清除账号覆盖恢复为渠道策略。',
         codexImageGenerationBridgeBadgeInherit: '渠道策略',
         codexImageGenerationBridgeBadgeEnabled: '账号开启',
         codexImageGenerationBridgeBadgeDisabled: '账号关闭',

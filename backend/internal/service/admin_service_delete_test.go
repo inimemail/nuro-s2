@@ -53,6 +53,10 @@ func (s *userRepoStub) GetByID(ctx context.Context, id int64) (*User, error) {
 	return s.user, nil
 }
 
+func (s *userRepoStub) GetByIDIncludeDeleted(ctx context.Context, id int64) (*User, error) {
+	return s.GetByID(ctx, id)
+}
+
 func (s *userRepoStub) GetByEmail(ctx context.Context, email string) (*User, error) {
 	if s.getByEmailErr != nil {
 		return nil, s.getByEmailErr
@@ -305,6 +309,22 @@ func (s *proxyRepoStub) ListActiveWithAccountCount(ctx context.Context) ([]Proxy
 
 func (s *proxyRepoStub) ListWithFiltersAndAccountCount(ctx context.Context, params pagination.PaginationParams, protocol, status, search string) ([]ProxyWithAccountCount, *pagination.PaginationResult, error) {
 	panic("unexpected ListWithFiltersAndAccountCount call")
+}
+
+func (s *proxyRepoStub) ListAllForFallback(ctx context.Context) ([]Proxy, error) {
+	panic("unexpected ListAllForFallback call")
+}
+
+func (s *proxyRepoStub) SweepExpiredProxies(ctx context.Context, now time.Time) (int64, error) {
+	panic("unexpected SweepExpiredProxies call")
+}
+
+func (s *proxyRepoStub) CountExpired(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
+func (s *proxyRepoStub) CountExpiringSoon(ctx context.Context, now time.Time) (int64, error) {
+	return 0, nil
 }
 
 func (s *proxyRepoStub) ExistsByHostPortAuth(ctx context.Context, host string, port int, username, password string) (bool, error) {
