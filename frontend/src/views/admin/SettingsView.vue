@@ -4036,63 +4036,260 @@
                 </div>
                 <div
                   v-if="form.enable_claude_oauth_system_prompt_injection"
-                  class="space-y-3 border-l border-gray-200 pl-4 dark:border-dark-700"
+                  class="space-y-4 border-l border-gray-200 pl-4 dark:border-dark-700"
                 >
                   <div>
-                    <label
-                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                    >
-                      {{
-                        t(
-                          "admin.settings.gatewayForwarding.claudeOAuthSystemPrompt",
-                        )
-                      }}
-                    </label>
-                    <textarea
-                      v-model="form.claude_oauth_system_prompt"
-                      rows="4"
-                      class="input font-mono text-xs"
-                      :placeholder="
-                        t(
-                          'admin.settings.gatewayForwarding.claudeOAuthSystemPromptPlaceholder',
-                        )
-                      "
-                    ></textarea>
-                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                      {{
-                        t(
-                          "admin.settings.gatewayForwarding.claudeOAuthSystemPromptHint",
-                        )
-                      }}
-                    </p>
-                  </div>
-                  <div>
-                    <label
-                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    <h3
+                      class="text-sm font-semibold text-gray-800 dark:text-gray-100"
                     >
                       {{
                         t(
                           "admin.settings.gatewayForwarding.claudeOAuthSystemPromptBlocks",
                         )
                       }}
-                    </label>
-                    <textarea
-                      v-model="form.claude_oauth_system_prompt_blocks"
-                      rows="7"
-                      class="input font-mono text-xs"
-                      :placeholder="
-                        t(
-                          'admin.settings.gatewayForwarding.claudeOAuthSystemPromptBlocksPlaceholder',
-                        )
-                      "
-                    ></textarea>
-                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    </h3>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                       {{
                         t(
                           "admin.settings.gatewayForwarding.claudeOAuthSystemPromptBlocksHint",
                         )
                       }}
                     </p>
+                  </div>
+
+                  <div class="space-y-4">
+                    <div
+                      v-for="(block, index) in claudeOAuthSystemPromptBlocks"
+                      :key="block.id"
+                      class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/40"
+                    >
+                      <div
+                        class="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between"
+                      >
+                        <div>
+                          <h4
+                            class="text-sm font-semibold text-gray-900 dark:text-gray-100"
+                          >
+                            {{
+                              t(
+                                "admin.settings.gatewayForwarding.claudeOAuthSystemBlockTitle",
+                                { index: index + 1 },
+                              )
+                            }}
+                          </h4>
+                          <p
+                            class="mt-0.5 text-xs text-gray-500 dark:text-gray-400"
+                          >
+                            {{
+                              claudeOAuthBlockPresetLabel(block.preset) ||
+                              t(
+                                "admin.settings.gatewayForwarding.claudeOAuthSystemBlockCustom",
+                              )
+                            }}
+                          </p>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            class="btn btn-secondary btn-icon btn-sm"
+                            :title="
+                              t(
+                                'admin.settings.gatewayForwarding.claudeOAuthSystemBlockToggleVisible',
+                              )
+                            "
+                            @click="block.collapsed = !block.collapsed"
+                          >
+                            <Icon
+                              :name="block.collapsed ? 'eyeOff' : 'eye'"
+                              size="sm"
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            class="btn btn-secondary btn-icon btn-sm"
+                            :disabled="index === 0"
+                            :title="
+                              t(
+                                'admin.settings.gatewayForwarding.claudeOAuthSystemBlockMoveUp',
+                              )
+                            "
+                            @click="moveClaudeOAuthSystemPromptBlock(index, -1)"
+                          >
+                            <Icon name="arrowUp" size="sm" />
+                          </button>
+                          <button
+                            type="button"
+                            class="btn btn-secondary btn-icon btn-sm"
+                            :disabled="
+                              index === claudeOAuthSystemPromptBlocks.length - 1
+                            "
+                            :title="
+                              t(
+                                'admin.settings.gatewayForwarding.claudeOAuthSystemBlockMoveDown',
+                              )
+                            "
+                            @click="moveClaudeOAuthSystemPromptBlock(index, 1)"
+                          >
+                            <Icon name="arrowDown" size="sm" />
+                          </button>
+                          <Toggle
+                            v-model="block.enabled"
+                            @update:modelValue="
+                              syncClaudeOAuthSystemPromptBlocksToForm
+                            "
+                          />
+                          <button
+                            type="button"
+                            class="btn btn-secondary btn-icon btn-sm text-red-600 hover:text-red-700 dark:text-red-400"
+                            :title="
+                              t(
+                                'admin.settings.gatewayForwarding.claudeOAuthSystemBlockDelete',
+                              )
+                            "
+                            @click="removeClaudeOAuthSystemPromptBlock(index)"
+                          >
+                            <Icon name="trash" size="sm" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div v-show="!block.collapsed" class="space-y-4">
+                        <div class="grid gap-4 md:grid-cols-2">
+                          <div>
+                            <label class="input-label">
+                              {{
+                                t(
+                                  "admin.settings.gatewayForwarding.claudeOAuthSystemBlockPreset",
+                                )
+                              }}
+                            </label>
+                            <select
+                              v-model="block.preset"
+                              class="input"
+                              @change="
+                                applyClaudeOAuthSystemPromptPreset(block)
+                              "
+                            >
+                              <option
+                                v-for="preset in claudeOAuthSystemPromptPresetOptions"
+                                :key="preset.value"
+                                :value="preset.value"
+                              >
+                                {{ preset.label }}
+                              </option>
+                            </select>
+                          </div>
+                          <div>
+                            <label class="input-label">
+                              {{
+                                t(
+                                  "admin.settings.gatewayForwarding.claudeOAuthSystemBlockType",
+                                )
+                              }}
+                            </label>
+                            <select
+                              v-model="block.type"
+                              class="input"
+                              @change="syncClaudeOAuthSystemPromptBlocksToForm"
+                            >
+                              <option value="text">
+                                {{
+                                  t(
+                                    "admin.settings.gatewayForwarding.claudeOAuthSystemBlockTypeText",
+                                  )
+                                }}
+                              </option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label class="input-label">
+                            {{
+                              t(
+                                "admin.settings.gatewayForwarding.claudeOAuthSystemBlockContent",
+                              )
+                            }}
+                          </label>
+                          <textarea
+                            v-model="block.text"
+                            rows="5"
+                            class="input font-mono text-xs"
+                            @input="syncClaudeOAuthSystemPromptBlocksToForm"
+                          ></textarea>
+                        </div>
+
+                        <div
+                          class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"
+                        >
+                          <label class="input-label mb-0">
+                            {{
+                              t(
+                                "admin.settings.gatewayForwarding.claudeOAuthSystemBlockCacheControl",
+                              )
+                            }}
+                          </label>
+                          <div class="flex items-center gap-3">
+                            <Toggle
+                              v-model="block.cache_control_enabled"
+                              @update:modelValue="
+                                syncClaudeOAuthSystemPromptBlocksToForm
+                              "
+                            />
+                            <select
+                              v-if="block.cache_control_enabled"
+                              v-model="block.cache_control_ttl"
+                              class="input w-36"
+                              @change="
+                                syncClaudeOAuthSystemPromptBlocksToForm
+                              "
+                            >
+                              <option value="5m">
+                                {{
+                                  t(
+                                    "admin.settings.gatewayForwarding.claudeOAuthSystemBlockCache5m",
+                                  )
+                                }}
+                              </option>
+                              <option value="1h">
+                                {{
+                                  t(
+                                    "admin.settings.gatewayForwarding.claudeOAuthSystemBlockCache1h",
+                                  )
+                                }}
+                              </option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm"
+                      @click="addClaudeOAuthSystemPromptBlock"
+                    >
+                      <Icon name="plus" size="sm" class="mr-1" />
+                      {{
+                        t(
+                          "admin.settings.gatewayForwarding.claudeOAuthSystemBlockAdd",
+                        )
+                      }}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm"
+                      @click="resetClaudeOAuthSystemPromptBlocks"
+                    >
+                      <Icon name="refresh" size="sm" class="mr-1" />
+                      {{
+                        t(
+                          "admin.settings.gatewayForwarding.claudeOAuthSystemBlockRestore",
+                        )
+                      }}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -7091,6 +7288,267 @@ function handleSettingsTabKeydown(event: KeyboardEvent, tab: SettingsTab): void 
   focusSettingsTab(nextTab);
 }
 
+type ClaudeOAuthSystemPromptBlockPreset =
+  | "billing_header"
+  | "claude_code_system_prompt"
+  | "claude_code_expansion_prompt"
+  | "custom";
+
+type ClaudeOAuthSystemPromptBlockForm = {
+  id: number;
+  enabled: boolean;
+  type: "text";
+  text: string;
+  preset: ClaudeOAuthSystemPromptBlockPreset;
+  cache_control_enabled: boolean;
+  cache_control_ttl: "5m" | "1h";
+  collapsed: boolean;
+};
+
+type ClaudeOAuthSystemPromptBlockPayload = {
+  enabled?: boolean;
+  type?: string;
+  text?: string;
+  cache_control?: boolean | null | { type?: string; ttl?: string };
+};
+
+const claudeOAuthSystemPromptExpansionDefault = `You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+
+IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.
+IMPORTANT: You must NEVER generate or guess URLs for the user unless you are confident that the URLs are for helping the user with programming. You may use URLs provided by the user in their messages or local files.
+
+# Tone and style
+ - Only use emojis if the user explicitly requests it. Avoid using emojis in all communication unless asked.
+ - Your responses should be short and concise.
+ - When referencing specific functions or pieces of code include the pattern file_path:line_number to allow the user to easily navigate to the source code location.
+ - When referencing GitHub issues or pull requests, use the owner/repo#123 format (e.g. anthropics/claude-code#100) so they render as clickable links.
+ - Do not use a colon before tool calls. Your tool calls may not be shown directly in the output, so text like "Let me read the file:" followed by a read tool call should just be "Let me read the file." with a period.`;
+
+const claudeOAuthPresetText: Record<ClaudeOAuthSystemPromptBlockPreset, string> = {
+  billing_header: "{billing_header}",
+  claude_code_system_prompt:
+    "You are Claude Code, Anthropic's official CLI for Claude.",
+  claude_code_expansion_prompt: claudeOAuthSystemPromptExpansionDefault,
+  custom: "",
+};
+
+const claudeOAuthSystemPromptBlocks = ref<
+  ClaudeOAuthSystemPromptBlockForm[]
+>([]);
+let claudeOAuthSystemPromptBlockID = 1;
+
+const claudeOAuthSystemPromptPresetOptions = computed(() => [
+  {
+    value: "billing_header" as const,
+    label: t(
+      "admin.settings.gatewayForwarding.claudeOAuthSystemPresetBillingHeader",
+    ),
+  },
+  {
+    value: "claude_code_system_prompt" as const,
+    label: t(
+      "admin.settings.gatewayForwarding.claudeOAuthSystemPresetIdentity",
+    ),
+  },
+  {
+    value: "claude_code_expansion_prompt" as const,
+    label: t(
+      "admin.settings.gatewayForwarding.claudeOAuthSystemPresetExpansion",
+    ),
+  },
+  {
+    value: "custom" as const,
+    label: t("admin.settings.gatewayForwarding.claudeOAuthSystemPresetCustom"),
+  },
+]);
+
+function claudeOAuthBlockPresetLabel(
+  preset: ClaudeOAuthSystemPromptBlockPreset,
+): string {
+  return (
+    claudeOAuthSystemPromptPresetOptions.value.find(
+      (option) => option.value === preset,
+    )?.label || ""
+  );
+}
+
+function inferClaudeOAuthSystemPromptPreset(
+  text: string,
+): ClaudeOAuthSystemPromptBlockPreset {
+  const trimmed = text.trim();
+  if (trimmed === claudeOAuthPresetText.billing_header) {
+    return "billing_header";
+  }
+  if (trimmed === claudeOAuthPresetText.claude_code_system_prompt) {
+    return "claude_code_system_prompt";
+  }
+  if (trimmed === claudeOAuthPresetText.claude_code_expansion_prompt.trim()) {
+    return "claude_code_expansion_prompt";
+  }
+  if (trimmed === "{claude_code_expansion_prompt}") {
+    return "claude_code_expansion_prompt";
+  }
+  return "custom";
+}
+
+function createClaudeOAuthSystemPromptBlock(
+  preset: ClaudeOAuthSystemPromptBlockPreset,
+  overrides: Partial<ClaudeOAuthSystemPromptBlockForm> = {},
+): ClaudeOAuthSystemPromptBlockForm {
+  return {
+    id: claudeOAuthSystemPromptBlockID++,
+    enabled: true,
+    type: "text",
+    text: claudeOAuthPresetText[preset],
+    preset,
+    cache_control_enabled: preset === "claude_code_expansion_prompt",
+    cache_control_ttl: "5m",
+    collapsed: false,
+    ...overrides,
+  };
+}
+
+function defaultClaudeOAuthSystemPromptBlocks(): ClaudeOAuthSystemPromptBlockForm[] {
+  return [
+    createClaudeOAuthSystemPromptBlock("billing_header"),
+    createClaudeOAuthSystemPromptBlock("claude_code_system_prompt"),
+    createClaudeOAuthSystemPromptBlock("claude_code_expansion_prompt"),
+  ];
+}
+
+function normalizeClaudeOAuthSystemPromptBlock(
+  block: ClaudeOAuthSystemPromptBlockPayload,
+): ClaudeOAuthSystemPromptBlockForm {
+  const text = String(block.text || "");
+  const preset = inferClaudeOAuthSystemPromptPreset(text);
+  let cacheControlEnabled = false;
+  let cacheControlTTL: "5m" | "1h" = "5m";
+
+  if (block.cache_control === true) {
+    cacheControlEnabled = true;
+  } else if (
+    block.cache_control &&
+    typeof block.cache_control === "object" &&
+    !Array.isArray(block.cache_control)
+  ) {
+    cacheControlEnabled = true;
+    cacheControlTTL = block.cache_control.ttl === "1h" ? "1h" : "5m";
+  }
+
+  return createClaudeOAuthSystemPromptBlock(preset, {
+    enabled: block.enabled !== false,
+    type: "text",
+    text,
+    cache_control_enabled: cacheControlEnabled,
+    cache_control_ttl: cacheControlTTL,
+  });
+}
+
+function loadClaudeOAuthSystemPromptBlocks(raw: string): void {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    claudeOAuthSystemPromptBlocks.value = defaultClaudeOAuthSystemPromptBlocks();
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) {
+      throw new Error("not array");
+    }
+    claudeOAuthSystemPromptBlocks.value = parsed.map((item) =>
+      normalizeClaudeOAuthSystemPromptBlock(item || {}),
+    );
+  } catch {
+    claudeOAuthSystemPromptBlocks.value = defaultClaudeOAuthSystemPromptBlocks();
+  }
+}
+
+function serializeClaudeOAuthSystemPromptBlocks(): string {
+  return JSON.stringify(
+    claudeOAuthSystemPromptBlocks.value.map((block) => {
+      const item: ClaudeOAuthSystemPromptBlockPayload = {
+        enabled: block.enabled,
+        type: block.type || "text",
+        text: block.text,
+      };
+      if (block.cache_control_enabled) {
+        item.cache_control = {
+          type: "ephemeral",
+          ttl: block.cache_control_ttl || "5m",
+        };
+      }
+      return item;
+    }),
+  );
+}
+
+function syncClaudeOAuthSystemPromptBlocksToForm(): void {
+  if (!form.enable_claude_oauth_system_prompt_injection) {
+    return;
+  }
+  form.claude_oauth_system_prompt_blocks =
+    serializeClaudeOAuthSystemPromptBlocks();
+  const expansionBlock = claudeOAuthSystemPromptBlocks.value.find(
+    (block) => block.preset === "claude_code_expansion_prompt",
+  );
+  form.claude_oauth_system_prompt =
+    expansionBlock?.text === claudeOAuthSystemPromptExpansionDefault
+      ? ""
+      : expansionBlock?.text || "";
+}
+
+function applyClaudeOAuthSystemPromptPreset(
+  block: ClaudeOAuthSystemPromptBlockForm,
+): void {
+  if (block.preset !== "custom") {
+    block.text = claudeOAuthPresetText[block.preset];
+    block.cache_control_enabled =
+      block.preset === "claude_code_expansion_prompt";
+    block.cache_control_ttl = "5m";
+  }
+  syncClaudeOAuthSystemPromptBlocksToForm();
+}
+
+function addClaudeOAuthSystemPromptBlock(): void {
+  claudeOAuthSystemPromptBlocks.value.push(
+    createClaudeOAuthSystemPromptBlock("custom", { text: "" }),
+  );
+  syncClaudeOAuthSystemPromptBlocksToForm();
+}
+
+function removeClaudeOAuthSystemPromptBlock(index: number): void {
+  claudeOAuthSystemPromptBlocks.value.splice(index, 1);
+  if (claudeOAuthSystemPromptBlocks.value.length === 0) {
+    claudeOAuthSystemPromptBlocks.value.push(
+      createClaudeOAuthSystemPromptBlock("custom", {
+        enabled: false,
+        text: "",
+      }),
+    );
+  }
+  syncClaudeOAuthSystemPromptBlocksToForm();
+}
+
+function moveClaudeOAuthSystemPromptBlock(index: number, direction: -1 | 1): void {
+  const targetIndex = index + direction;
+  if (
+    index < 0 ||
+    targetIndex < 0 ||
+    targetIndex >= claudeOAuthSystemPromptBlocks.value.length
+  ) {
+    return;
+  }
+  const [block] = claudeOAuthSystemPromptBlocks.value.splice(index, 1);
+  claudeOAuthSystemPromptBlocks.value.splice(targetIndex, 0, block);
+  syncClaudeOAuthSystemPromptBlocksToForm();
+}
+
+function resetClaudeOAuthSystemPromptBlocks(): void {
+  claudeOAuthSystemPromptBlocks.value = defaultClaudeOAuthSystemPromptBlocks();
+  syncClaudeOAuthSystemPromptBlocksToForm();
+}
+
 const { copyToClipboard } = useClipboard();
 
 const loading = ref(true);
@@ -8089,6 +8547,9 @@ async function loadSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    loadClaudeOAuthSystemPromptBlocks(
+      String(settings.claude_oauth_system_prompt_blocks || ""),
+    );
     if (!["off", "smart", "aggressive"].includes(form.stream_low_latency_mode)) {
       form.stream_low_latency_mode = settings.low_latency_stream_headers
         ? "smart"
@@ -8418,6 +8879,7 @@ async function saveSettings() {
     if (!isValidHttpUrl(form.frontend_url)) form.frontend_url = "";
     if (!isValidHttpUrl(form.doc_url)) form.doc_url = "";
     syncWeChatConnectMode();
+    syncClaudeOAuthSystemPromptBlocksToForm();
     const wechatStoredMode = deriveWeChatConnectStoredMode(
       form.wechat_connect_open_enabled,
       form.wechat_connect_mp_enabled,

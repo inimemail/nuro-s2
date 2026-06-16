@@ -161,6 +161,12 @@ vi.mock("vue-i18n", async () => {
     "admin.settings.payment.findProvider": "查看支持的支付方式",
     "admin.settings.openaiExperimentalScheduler.title": "OpenAI 实验调度策略",
     "admin.settings.openaiExperimentalScheduler.description": "默认关闭。开启后仅影响本网关在 OpenAI 账号间的实验性调度选择逻辑，不代表上游 OpenAI 官方能力。",
+    "admin.settings.gatewayForwarding.claudeOAuthSystemPromptBlocks": "Claude OAuth System Blocks",
+    "admin.settings.gatewayForwarding.claudeOAuthSystemBlockTitle": "System Block {index}",
+    "admin.settings.gatewayForwarding.claudeOAuthSystemPresetBillingHeader": "Billing Header",
+    "admin.settings.gatewayForwarding.claudeOAuthSystemPresetIdentity": "Claude Code 身份提示词",
+    "admin.settings.gatewayForwarding.claudeOAuthSystemPresetExpansion": "Claude Code 扩展提示词",
+    "admin.settings.gatewayForwarding.claudeOAuthSystemPresetCustom": "自定义",
     "admin.settings.site.uploadImage": "上传图片",
     "admin.settings.site.remove": "移除",
     "admin.settings.platformQuota.platform": "平台",
@@ -476,6 +482,16 @@ async function openUsersTab(wrapper: ReturnType<typeof mountView>) {
   await flushPromises();
 }
 
+async function openGatewayTab(wrapper: ReturnType<typeof mountView>) {
+  const gatewayTabButton = wrapper
+    .findAll("button")
+    .find((node) => node.text().includes("admin.settings.tabs.gateway"));
+
+  expect(gatewayTabButton).toBeDefined();
+  await gatewayTabButton?.trigger("click");
+  await flushPromises();
+}
+
 describe("admin SettingsView payment visible method controls", () => {
   beforeEach(() => {
     getSettings.mockReset();
@@ -594,6 +610,71 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(payload).not.toHaveProperty("payment_visible_method_wxpay_source");
     expect(payload).not.toHaveProperty("payment_visible_method_alipay_enabled");
     expect(payload).not.toHaveProperty("payment_visible_method_wxpay_enabled");
+  });
+
+  it("keeps Claude OAuth blocks untouched while injection stays disabled", async () => {
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    const payload = updateSettings.mock.calls[0]?.[0];
+    expect(payload.enable_claude_oauth_system_prompt_injection).toBe(false);
+    expect(payload.claude_oauth_system_prompt_blocks).toBe("");
+  });
+
+  it("renders Claude OAuth system blocks when enabled", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      enable_claude_oauth_system_prompt_injection: true,
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Claude OAuth System Blocks");
+    expect(wrapper.text()).toContain("System Block 1");
+    expect(wrapper.text()).toContain("Billing Header");
+    const textareas = wrapper.findAll("textarea");
+    expect(textareas.some((node) => node.element.value.includes(
+      "You are Claude Code, Anthropic's official CLI for Claude.",
+    ))).toBe(true);
+    expect(textareas.some((node) => node.element.value.includes(
+      "You are an interactive agent that helps users with software engineering tasks.",
+    ))).toBe(true);
+  });
+
+  it("submits structured Claude OAuth system blocks only when enabled", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      enable_claude_oauth_system_prompt_injection: true,
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    const payload = updateSettings.mock.calls[0]?.[0];
+    expect(payload.enable_claude_oauth_system_prompt_injection).toBe(true);
+    const blocks = JSON.parse(payload.claude_oauth_system_prompt_blocks || "[]");
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]).toMatchObject({
+      enabled: true,
+      type: "text",
+      text: "{billing_header}",
+    });
+    expect(blocks[2].cache_control).toMatchObject({
+      type: "ephemeral",
+      ttl: "5m",
+    });
   });
 
   it("submits Anthropic cache TTL injection gateway setting", async () => {
