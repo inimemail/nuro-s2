@@ -1041,8 +1041,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		RetryableOnSameAccount: service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, strings.TrimSpace(req.ErrorMessage), openAIEdgeRetryResponseBody(req)),
 	}
 	if failoverErr.RetryableOnSameAccount {
-		retryDelay := sameAccountRetryDelayForAccount(lease.account)
-		if retryPlan, ok := planSameAccountRetry(lease.account, lease.sameAccountRetries, lease.sameAccountStarted, retryDelay); ok {
+		if retryPlan, ok := planSameAccountRetry(lease.account, lease.sameAccountRetries, lease.sameAccountStarted, 0); ok {
 			plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, lease.account, lease.accountReleaseFunc)
 			if err != nil {
 				reqLog.Warn("openai_edge.same_account_retry_plan_failed", zap.Error(err))
@@ -1051,7 +1050,6 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 			reqLog.Warn("openai_edge.same_account_retry",
 				zap.Int("retry_limit", retryPlan.RetryLimit),
 				zap.Int("retry_count", retryPlan.RetryCount),
-				zap.Duration("retry_delay", retryPlan.Delay),
 				zap.Duration("retry_elapsed", retryPlan.Elapsed),
 				zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
 			)
@@ -1059,7 +1057,6 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 				Action:        service.OpenAIEdgeActionRelay,
 				Reason:        "same_account_retry",
 				Plan:          &plan,
-				RetryDelayMS:  int(retryPlan.Delay / time.Millisecond),
 				RetryMaxDepth: retryPlan.RetryLimit,
 			}
 		}
