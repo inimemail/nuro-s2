@@ -437,7 +437,7 @@
               v-model.number="poolModeRetryCount"
               type="number"
               min="0"
-              :max="MAX_POOL_MODE_RETRY_COUNT"
+              :max="poolModeRetryCountMax"
               step="1"
               class="input"
             />
@@ -445,7 +445,7 @@
               {{
                 t('admin.accounts.poolModeRetryCountHint', {
                   default: DEFAULT_POOL_MODE_RETRY_COUNT,
-                  max: MAX_POOL_MODE_RETRY_COUNT
+                  max: poolModeRetryCountMax
                 })
               }}
             </p>
@@ -1142,7 +1142,7 @@
               v-model.number="poolModeRetryCount"
               type="number"
               min="0"
-              :max="MAX_POOL_MODE_RETRY_COUNT"
+              :max="poolModeRetryCountMax"
               step="1"
               class="input"
             />
@@ -1150,7 +1150,7 @@
               {{
                 t('admin.accounts.poolModeRetryCountHint', {
                   default: DEFAULT_POOL_MODE_RETRY_COUNT,
-                  max: MAX_POOL_MODE_RETRY_COUNT
+                  max: poolModeRetryCountMax
                 })
               }}
             </p>
@@ -2825,6 +2825,9 @@ const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
 const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
 const MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
 const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 5000
+const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 20
+const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 50
+const NORMAL_POOL_MODE_RETRY_MAX = 10
 const poolModeEnabled = ref(false)
 const poolSoftCooldownEnabled = ref(true)
 const imagePoolModeEnabled = ref(false)
@@ -2832,8 +2835,15 @@ const promptCacheBoostEnabled = ref(false)
 const upstreamStrongIsolationEnabled = ref(false)
 const upstreamConcurrencyRaceEnabled = ref(false)
 const upstreamConcurrencyRaceRetryDelayMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
+const upstreamConcurrencyRaceRetryCountBackup = ref<number | null>(null)
+const syncingAccountState = ref(false)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const poolModeRetryStatusCodesInput = ref('')
+const poolModeRetryCountMax = computed(() =>
+  upstreamConcurrencyRaceEnabled.value
+    ? MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
+    : MAX_POOL_MODE_RETRY_COUNT
+)
 const showPromptCacheBoostToggle = computed(() =>
   poolModeEnabled.value &&
   props.account?.platform === 'openai' &&
@@ -3258,8 +3268,22 @@ const normalizePoolModeRetryCount = (value: number) => {
   if (normalized < 0) {
     return 0
   }
-  if (normalized > MAX_POOL_MODE_RETRY_COUNT) {
-    return MAX_POOL_MODE_RETRY_COUNT
+  if (normalized > NORMAL_POOL_MODE_RETRY_MAX) {
+    return NORMAL_POOL_MODE_RETRY_MAX
+  }
+  return normalized
+}
+
+const normalizeUpstreamConcurrencyRaceRetryCount = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
+  }
+  const normalized = Math.trunc(value)
+  if (normalized < 0) {
+    return 0
+  }
+  if (normalized > MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT) {
+    return MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
   }
   return normalized
 }
@@ -3292,6 +3316,8 @@ const buildModelRestrictionMapping = () =>
   buildModelMappingObject('combined', allowedModels.value, modelMappings.value)
 
 const syncFormFromAccount = (newAccount: Account | null) => {
+  syncingAccountState.value = true
+  try {
   if (!newAccount) {
     return
   }
@@ -3508,9 +3534,13 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     upstreamConcurrencyRaceRetryDelayMs.value = normalizeUpstreamConcurrencyRaceRetryDelayMs(
       Number(credentials.upstream_concurrency_race_retry_delay_ms ?? DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
     )
-    poolModeRetryCount.value = normalizePoolModeRetryCount(
-      Number(credentials.pool_mode_retry_count ?? DEFAULT_POOL_MODE_RETRY_COUNT)
-    )
+    poolModeRetryCount.value = upstreamConcurrencyRaceEnabled.value
+      ? normalizeUpstreamConcurrencyRaceRetryCount(
+        Number(credentials.pool_mode_retry_count ?? DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT)
+      )
+      : normalizePoolModeRetryCount(
+        Number(credentials.pool_mode_retry_count ?? DEFAULT_POOL_MODE_RETRY_COUNT)
+      )
     poolModeRetryStatusCodesInput.value = formatPoolModeRetryStatusCodes(credentials.pool_mode_retry_status_codes)
 
     // Load custom error codes
@@ -3521,6 +3551,12 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     } else {
       selectedErrorCodes.value = []
     }
+    upstreamConcurrencyRaceRetryCountBackup.value =
+      typeof credentials.upstream_concurrency_race_retry_count_backup === 'number'
+        ? credentials.upstream_concurrency_race_retry_count_backup
+        : upstreamConcurrencyRaceEnabled.value
+          ? DEFAULT_POOL_MODE_RETRY_COUNT
+          : null
   } else if (newAccount.type === 'bedrock' && newAccount.credentials) {
     const bedrockCreds = newAccount.credentials as Record<string, unknown>
     const authMode = (bedrockCreds.auth_mode as string) || 'sigv4'
@@ -3593,8 +3629,12 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     poolModeRetryStatusCodesInput.value = ''
     customErrorCodesEnabled.value = false
     selectedErrorCodes.value = []
+    upstreamConcurrencyRaceRetryCountBackup.value = null
   }
   editApiKey.value = ''
+  } finally {
+    syncingAccountState.value = false
+  }
 }
 
 async function loadTLSProfiles() {
@@ -3630,7 +3670,11 @@ watch([poolModeEnabled, () => props.account?.platform], ([enabled, platform]) =>
   if (!enabled || platform !== 'openai') {
     promptCacheBoostEnabled.value = false
     upstreamStrongIsolationEnabled.value = false
+    if (upstreamConcurrencyRaceEnabled.value && upstreamConcurrencyRaceRetryCountBackup.value !== null) {
+      poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
+    }
     upstreamConcurrencyRaceEnabled.value = false
+    upstreamConcurrencyRaceRetryCountBackup.value = null
   }
 })
 
@@ -3638,12 +3682,36 @@ watch(imagePoolModeEnabled, (enabled) => {
   if (enabled) {
     promptCacheBoostEnabled.value = false
     upstreamStrongIsolationEnabled.value = false
+    if (upstreamConcurrencyRaceEnabled.value && upstreamConcurrencyRaceRetryCountBackup.value !== null) {
+      poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
+    }
     upstreamConcurrencyRaceEnabled.value = false
     openaiAPIKeyPreambleFlushEnabled.value = false
     openaiAPIKeySSECommentPreflushEnabled.value = false
     openaiAPIKeySafeTokenPlaceholderEnabled.value = false
   }
 })
+
+watch(
+  upstreamConcurrencyRaceEnabled,
+  (enabled) => {
+    if (syncingAccountState.value) {
+      return
+    }
+    if (enabled) {
+      if (upstreamConcurrencyRaceRetryCountBackup.value === null) {
+        upstreamConcurrencyRaceRetryCountBackup.value = normalizePoolModeRetryCount(poolModeRetryCount.value)
+      }
+      poolModeRetryCount.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
+      return
+    }
+    if (upstreamConcurrencyRaceRetryCountBackup.value !== null) {
+      poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
+      upstreamConcurrencyRaceRetryCountBackup.value = null
+    }
+  },
+  { flush: 'sync' }
+)
 
 // Model mapping helpers
 const addModelMapping = () => {
@@ -4188,11 +4256,16 @@ const handleSubmit = async () => {
           newCredentials.upstream_concurrency_race_retry_delay_ms = normalizeUpstreamConcurrencyRaceRetryDelayMs(
             upstreamConcurrencyRaceRetryDelayMs.value
           )
+          newCredentials.upstream_concurrency_race_retry_count_backup =
+            upstreamConcurrencyRaceRetryCountBackup.value ?? normalizePoolModeRetryCount(poolModeRetryCount.value)
         } else {
           delete newCredentials.upstream_concurrency_race_enabled
           delete newCredentials.upstream_concurrency_race_retry_delay_ms
+          delete newCredentials.upstream_concurrency_race_retry_count_backup
         }
-        newCredentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
+        newCredentials.pool_mode_retry_count = upstreamConcurrencyRaceEnabled.value
+          ? normalizeUpstreamConcurrencyRaceRetryCount(poolModeRetryCount.value)
+          : normalizePoolModeRetryCount(poolModeRetryCount.value)
         const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
         if (parsedRetryStatusCodes.length > 0) {
           newCredentials.pool_mode_retry_status_codes = parsedRetryStatusCodes
@@ -4207,6 +4280,7 @@ const handleSubmit = async () => {
         delete newCredentials.upstream_strong_isolation_enabled
         delete newCredentials.upstream_concurrency_race_enabled
         delete newCredentials.upstream_concurrency_race_retry_delay_ms
+        delete newCredentials.upstream_concurrency_race_retry_count_backup
         delete newCredentials.pool_mode_retry_count
         delete newCredentials.pool_mode_retry_status_codes
       }

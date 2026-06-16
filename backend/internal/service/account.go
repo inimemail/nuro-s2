@@ -966,6 +966,7 @@ func (a *Account) MatchesOpenAIImagePoolRequest(ctx context.Context, requestedMo
 const (
 	defaultPoolModeRetryCount = 1
 	maxPoolModeRetryCount     = 10
+	maxPoolModeRaceRetryCount = 50
 )
 
 const (
@@ -975,7 +976,7 @@ const (
 )
 
 // GetPoolModeRetryCount 返回池模式同账号重试次数。
-// 未配置或配置非法时回退为默认值 1；小于 0 按 0 处理；过大则截断到 10。
+// 未配置或配置非法时回退为默认值 1；小于 0 按 0 处理；过大则按账号模式截断。
 func (a *Account) GetPoolModeRetryCount() int {
 	if a == nil || !a.IsPoolMode() || a.Credentials == nil {
 		return defaultPoolModeRetryCount
@@ -988,8 +989,12 @@ func (a *Account) GetPoolModeRetryCount() int {
 	if count < 0 {
 		return 0
 	}
-	if count > maxPoolModeRetryCount {
-		return maxPoolModeRetryCount
+	maxCount := maxPoolModeRetryCount
+	if a.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		maxCount = maxPoolModeRaceRetryCount
+	}
+	if count > maxCount {
+		return maxCount
 	}
 	return count
 }
@@ -1014,16 +1019,20 @@ func parsePoolModeRetryCount(value any) int {
 	return defaultPoolModeRetryCount
 }
 
+func (a *Account) IsOpenAIUpstreamConcurrencyRaceEnabled() bool {
+	if a == nil || !a.IsOpenAIApiKey() || !a.IsPoolMode() || a.IsImagePoolMode() || a.Credentials == nil {
+		return false
+	}
+	enabled, _ := a.Credentials["upstream_concurrency_race_enabled"].(bool)
+	return enabled
+}
+
 // GetPoolModeSameAccountRetryDelay returns the delay between same-account
 // retries for pool-mode accounts. Missing or invalid values keep the legacy
 // 500ms delay; OpenAI text pool accounts can opt into a shorter per-account
 // delay for upstream concurrency racing.
 func (a *Account) GetPoolModeSameAccountRetryDelay() time.Duration {
-	if a == nil || !a.IsOpenAIApiKey() || !a.IsPoolMode() || a.IsImagePoolMode() || a.Credentials == nil {
-		return defaultPoolModeSameAccountRetryDelay
-	}
-	enabled, _ := a.Credentials["upstream_concurrency_race_enabled"].(bool)
-	if !enabled {
+	if !a.IsOpenAIUpstreamConcurrencyRaceEnabled() {
 		return defaultPoolModeSameAccountRetryDelay
 	}
 	raw, ok := a.Credentials["upstream_concurrency_race_retry_delay_ms"]

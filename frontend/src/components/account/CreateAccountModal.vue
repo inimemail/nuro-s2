@@ -1422,7 +1422,7 @@
               v-model.number="poolModeRetryCount"
               type="number"
               min="0"
-              :max="MAX_POOL_MODE_RETRY_COUNT"
+              :max="poolModeRetryCountMax"
               step="1"
               class="input"
             />
@@ -1430,7 +1430,7 @@
               {{
                 t('admin.accounts.poolModeRetryCountHint', {
                   default: DEFAULT_POOL_MODE_RETRY_COUNT,
-                  max: MAX_POOL_MODE_RETRY_COUNT
+                  max: poolModeRetryCountMax
                 })
               }}
             </p>
@@ -1804,7 +1804,7 @@
               v-model.number="poolModeRetryCount"
               type="number"
               min="0"
-              :max="MAX_POOL_MODE_RETRY_COUNT"
+              :max="poolModeRetryCountMax"
               step="1"
               class="input"
             />
@@ -1812,7 +1812,7 @@
               {{
                 t('admin.accounts.poolModeRetryCountHint', {
                   default: DEFAULT_POOL_MODE_RETRY_COUNT,
-                  max: MAX_POOL_MODE_RETRY_COUNT
+                  max: poolModeRetryCountMax
                 })
               }}
             </p>
@@ -3731,6 +3731,8 @@ const allowedModels = ref<string[]>([])
 const DEFAULT_POOL_MODE_RETRY_COUNT = 1
 const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
+const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 20
+const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 50
 const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
 const MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
 const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 5000
@@ -3741,8 +3743,14 @@ const promptCacheBoostEnabled = ref(false)
 const upstreamStrongIsolationEnabled = ref(false)
 const upstreamConcurrencyRaceEnabled = ref(false)
 const upstreamConcurrencyRaceRetryDelayMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
+const upstreamConcurrencyRaceRetryCountBackup = ref<number | null>(null)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const poolModeRetryStatusCodesInput = ref('')
+const poolModeRetryCountMax = computed(() =>
+  upstreamConcurrencyRaceEnabled.value
+    ? MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
+    : MAX_POOL_MODE_RETRY_COUNT
+)
 const showPromptCacheBoostToggle = computed(() =>
   poolModeEnabled.value &&
   form.platform === 'openai' &&
@@ -4253,7 +4261,11 @@ watch([poolModeEnabled, () => form.platform], ([enabled, platform]) => {
   if (!enabled || platform !== 'openai') {
     promptCacheBoostEnabled.value = false
     upstreamStrongIsolationEnabled.value = false
+    if (upstreamConcurrencyRaceEnabled.value && upstreamConcurrencyRaceRetryCountBackup.value !== null) {
+      poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
+    }
     upstreamConcurrencyRaceEnabled.value = false
+    upstreamConcurrencyRaceRetryCountBackup.value = null
   }
 })
 
@@ -4261,10 +4273,32 @@ watch(imagePoolModeEnabled, (enabled) => {
   if (enabled) {
     promptCacheBoostEnabled.value = false
     upstreamStrongIsolationEnabled.value = false
+    if (upstreamConcurrencyRaceEnabled.value && upstreamConcurrencyRaceRetryCountBackup.value !== null) {
+      poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
+    }
     upstreamConcurrencyRaceEnabled.value = false
+    upstreamConcurrencyRaceRetryCountBackup.value = null
     openaiAPIKeyPreambleFlushEnabled.value = false
     openaiAPIKeySSECommentPreflushEnabled.value = false
     openaiAPIKeySafeTokenPlaceholderEnabled.value = false
+  }
+})
+
+watch(upstreamConcurrencyRaceEnabled, (enabled, previous) => {
+  if (enabled) {
+    if (upstreamConcurrencyRaceRetryCountBackup.value === null) {
+      upstreamConcurrencyRaceRetryCountBackup.value = normalizePoolModeRetryCount(
+        poolModeRetryCount.value
+      )
+    }
+    poolModeRetryCount.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
+    return
+  }
+  if (previous && upstreamConcurrencyRaceRetryCountBackup.value !== null) {
+    poolModeRetryCount.value = normalizePoolModeRetryCount(
+      upstreamConcurrencyRaceRetryCountBackup.value
+    )
+    upstreamConcurrencyRaceRetryCountBackup.value = null
   }
 })
 
@@ -4648,6 +4682,7 @@ const resetForm = () => {
   upstreamStrongIsolationEnabled.value = false
   upstreamConcurrencyRaceEnabled.value = false
   upstreamConcurrencyRaceRetryDelayMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
+  upstreamConcurrencyRaceRetryCountBackup.value = null
   poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
   poolModeRetryStatusCodesInput.value = ''
   customErrorCodesEnabled.value = false
@@ -4878,6 +4913,20 @@ const normalizePoolModeRetryCount = (value: number) => {
   }
   if (normalized > MAX_POOL_MODE_RETRY_COUNT) {
     return MAX_POOL_MODE_RETRY_COUNT
+  }
+  return normalized
+}
+
+const normalizeUpstreamConcurrencyRaceRetryCount = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
+  }
+  const normalized = Math.trunc(value)
+  if (normalized < 0) {
+    return 0
+  }
+  if (normalized > MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT) {
+    return MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
   }
   return normalized
 }
@@ -5139,8 +5188,12 @@ const handleSubmit = async () => {
       credentials.upstream_concurrency_race_retry_delay_ms = normalizeUpstreamConcurrencyRaceRetryDelayMs(
         upstreamConcurrencyRaceRetryDelayMs.value
       )
+      credentials.upstream_concurrency_race_retry_count_backup =
+        upstreamConcurrencyRaceRetryCountBackup.value ?? normalizePoolModeRetryCount(poolModeRetryCount.value)
     }
-    credentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
+    credentials.pool_mode_retry_count = upstreamConcurrencyRaceEnabled.value
+      ? normalizeUpstreamConcurrencyRaceRetryCount(poolModeRetryCount.value)
+      : normalizePoolModeRetryCount(poolModeRetryCount.value)
     const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
     if (parsedRetryStatusCodes.length > 0) {
       credentials.pool_mode_retry_status_codes = parsedRetryStatusCodes
