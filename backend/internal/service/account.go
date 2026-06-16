@@ -975,6 +975,12 @@ const (
 	maxPoolModeSameAccountRetryDelay     = 5 * time.Second
 )
 
+const (
+	defaultPoolModeSameAccountRetryMaxElapsed = 2 * time.Second
+	minPoolModeSameAccountRetryMaxElapsed     = 500 * time.Millisecond
+	maxPoolModeSameAccountRetryMaxElapsed     = 30 * time.Second
+)
+
 // GetPoolModeRetryCount 返回池模式同账号重试次数。
 // 未配置或配置非法时回退为默认值 1；小于 0 按 0 处理；过大则按账号模式截断。
 func (a *Account) GetPoolModeRetryCount() int {
@@ -1071,6 +1077,31 @@ func parsePoolModeRetryDelayMillis(value any) int {
 		}
 	}
 	return 0
+}
+
+// GetPoolModeSameAccountRetryMaxElapsed returns the total same-account retry
+// budget for OpenAI text-pool accounts that opt into upstream concurrency race.
+// A zero value means no elapsed-time cap is active.
+func (a *Account) GetPoolModeSameAccountRetryMaxElapsed() time.Duration {
+	if !a.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		return 0
+	}
+	raw, ok := a.Credentials["upstream_concurrency_race_max_elapsed_ms"]
+	if !ok || raw == nil {
+		return defaultPoolModeSameAccountRetryMaxElapsed
+	}
+	elapsedMs := parsePoolModeRetryDelayMillis(raw)
+	if elapsedMs <= 0 {
+		return defaultPoolModeSameAccountRetryMaxElapsed
+	}
+	elapsed := time.Duration(elapsedMs) * time.Millisecond
+	if elapsed < minPoolModeSameAccountRetryMaxElapsed {
+		return minPoolModeSameAccountRetryMaxElapsed
+	}
+	if elapsed > maxPoolModeSameAccountRetryMaxElapsed {
+		return maxPoolModeSameAccountRetryMaxElapsed
+	}
+	return elapsed
 }
 
 // defaultPoolModeRetryableStatusCodes 池模式下默认触发同账号重试的状态码。

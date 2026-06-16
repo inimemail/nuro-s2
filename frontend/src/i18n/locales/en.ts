@@ -3563,6 +3563,9 @@ export default {
       upstreamConcurrencyRaceDelayMs: 'Race Retry Delay (ms)',
       upstreamConcurrencyRaceDelayMsHint:
         'Only affects this account. Default {default}ms, range {min}-{max}ms; disabled accounts keep the system default 500ms.',
+      upstreamConcurrencyRaceMaxElapsedMs: 'Race Elapsed Cap (ms)',
+      upstreamConcurrencyRaceMaxElapsedMsHint:
+        'Only applies when race mode is enabled. Default {default}ms, range {min}-{max}ms; after this, same-account racing stops and normal failover/cooldown continues.',
       poolModeRetryCount: 'Same-Account Retries',
       poolModeRetryCountHint:
         'Only applies in pool mode. Use 0 to disable in-place retry. Default {default}, maximum {max}.',

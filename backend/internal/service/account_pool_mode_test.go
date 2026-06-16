@@ -248,6 +248,123 @@ func TestGetPoolModeSameAccountRetryDelay(t *testing.T) {
 	}
 }
 
+func TestGetPoolModeSameAccountRetryMaxElapsed(t *testing.T) {
+	tests := []struct {
+		name     string
+		account  *Account
+		expected time.Duration
+	}{
+		{
+			name: "disabled_returns_zero",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode": true,
+				},
+			},
+			expected: 0,
+		},
+		{
+			name: "enabled_missing_uses_default",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                         true,
+					"upstream_concurrency_race_enabled": true,
+				},
+			},
+			expected: defaultPoolModeSameAccountRetryMaxElapsed,
+		},
+		{
+			name: "uses_configured_elapsed",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                                true,
+					"upstream_concurrency_race_enabled":        true,
+					"upstream_concurrency_race_max_elapsed_ms": 3000,
+				},
+			},
+			expected: 3 * time.Second,
+		},
+		{
+			name: "clamps_below_minimum",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                                true,
+					"upstream_concurrency_race_enabled":        true,
+					"upstream_concurrency_race_max_elapsed_ms": 1,
+				},
+			},
+			expected: minPoolModeSameAccountRetryMaxElapsed,
+		},
+		{
+			name: "clamps_above_maximum",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                                true,
+					"upstream_concurrency_race_enabled":        true,
+					"upstream_concurrency_race_max_elapsed_ms": 999999,
+				},
+			},
+			expected: maxPoolModeSameAccountRetryMaxElapsed,
+		},
+		{
+			name: "invalid_elapsed_uses_default",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                                true,
+					"upstream_concurrency_race_enabled":        true,
+					"upstream_concurrency_race_max_elapsed_ms": "oops",
+				},
+			},
+			expected: defaultPoolModeSameAccountRetryMaxElapsed,
+		},
+		{
+			name: "image_pool_returns_zero",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                                true,
+					"image_pool_mode":                          true,
+					"upstream_concurrency_race_enabled":        true,
+					"upstream_concurrency_race_max_elapsed_ms": 3000,
+				},
+			},
+			expected: 0,
+		},
+		{
+			name: "oauth_returns_zero",
+			account: &Account{
+				Type:     AccountTypeOAuth,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                                true,
+					"upstream_concurrency_race_enabled":        true,
+					"upstream_concurrency_race_max_elapsed_ms": 3000,
+				},
+			},
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, tt.account.GetPoolModeSameAccountRetryMaxElapsed())
+		})
+	}
+}
+
 func TestMatchesOpenAIImagePoolRequest(t *testing.T) {
 	textPool := &Account{
 		Type:     AccountTypeAPIKey,

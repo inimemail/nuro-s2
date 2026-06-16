@@ -1381,6 +1381,7 @@
               </div>
               <button
                 type="button"
+                data-testid="upstream-concurrency-race-toggle"
                 @click="upstreamConcurrencyRaceEnabled = !upstreamConcurrencyRaceEnabled"
                 :class="[
                   'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2',
@@ -1411,6 +1412,24 @@
                     default: DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS,
                     min: MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS,
                     max: MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
+                  })
+                }}
+              </p>
+              <label class="input-label mt-3">{{ t('admin.accounts.upstreamConcurrencyRaceMaxElapsedMs') }}</label>
+              <input
+                v-model.number="upstreamConcurrencyRaceMaxElapsedMs"
+                type="number"
+                :min="MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS"
+                :max="MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS"
+                step="100"
+                class="input"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{
+                  t('admin.accounts.upstreamConcurrencyRaceMaxElapsedMsHint', {
+                    default: DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS,
+                    min: MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS,
+                    max: MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
                   })
                 }}
               </p>
@@ -3736,6 +3755,9 @@ const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 50
 const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
 const MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
 const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 5000
+const DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 2000
+const MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 500
+const MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 30000
 const poolModeEnabled = ref(false)
 const poolSoftCooldownEnabled = ref(true)
 const imagePoolModeEnabled = ref(false)
@@ -3743,6 +3765,7 @@ const promptCacheBoostEnabled = ref(false)
 const upstreamStrongIsolationEnabled = ref(false)
 const upstreamConcurrencyRaceEnabled = ref(false)
 const upstreamConcurrencyRaceRetryDelayMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
+const upstreamConcurrencyRaceMaxElapsedMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS)
 const upstreamConcurrencyRaceRetryCountBackup = ref<number | null>(null)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const poolModeRetryStatusCodesInput = ref('')
@@ -4265,6 +4288,7 @@ watch([poolModeEnabled, () => form.platform], ([enabled, platform]) => {
       poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
     }
     upstreamConcurrencyRaceEnabled.value = false
+    upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
     upstreamConcurrencyRaceRetryCountBackup.value = null
   }
 })
@@ -4277,6 +4301,7 @@ watch(imagePoolModeEnabled, (enabled) => {
       poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
     }
     upstreamConcurrencyRaceEnabled.value = false
+    upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
     upstreamConcurrencyRaceRetryCountBackup.value = null
     openaiAPIKeyPreambleFlushEnabled.value = false
     openaiAPIKeySSECommentPreflushEnabled.value = false
@@ -4292,6 +4317,7 @@ watch(upstreamConcurrencyRaceEnabled, (enabled, previous) => {
       )
     }
     poolModeRetryCount.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
+    upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
     return
   }
   if (previous && upstreamConcurrencyRaceRetryCountBackup.value !== null) {
@@ -4682,6 +4708,7 @@ const resetForm = () => {
   upstreamStrongIsolationEnabled.value = false
   upstreamConcurrencyRaceEnabled.value = false
   upstreamConcurrencyRaceRetryDelayMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
+  upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
   upstreamConcurrencyRaceRetryCountBackup.value = null
   poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
   poolModeRetryStatusCodesInput.value = ''
@@ -4945,6 +4972,20 @@ const normalizeUpstreamConcurrencyRaceRetryDelayMs = (value: number) => {
   return normalized
 }
 
+const normalizeUpstreamConcurrencyRaceMaxElapsedMs = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
+  }
+  const normalized = Math.trunc(value)
+  if (normalized < MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS) {
+    return MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
+  }
+  if (normalized > MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS) {
+    return MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
+  }
+  return normalized
+}
+
 const applyVertexServiceAccountJson = (value: string) => {
   const raw = value.trim()
   if (!raw) {
@@ -5187,6 +5228,9 @@ const handleSubmit = async () => {
       credentials.upstream_concurrency_race_enabled = true
       credentials.upstream_concurrency_race_retry_delay_ms = normalizeUpstreamConcurrencyRaceRetryDelayMs(
         upstreamConcurrencyRaceRetryDelayMs.value
+      )
+      credentials.upstream_concurrency_race_max_elapsed_ms = normalizeUpstreamConcurrencyRaceMaxElapsedMs(
+        upstreamConcurrencyRaceMaxElapsedMs.value
       )
       credentials.upstream_concurrency_race_retry_count_backup =
         upstreamConcurrencyRaceRetryCountBackup.value ?? normalizePoolModeRetryCount(poolModeRetryCount.value)

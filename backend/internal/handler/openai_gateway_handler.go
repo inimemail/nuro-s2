@@ -389,6 +389,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	sameAccountRetryStartedAt := make(map[int64]time.Time)
 	var lastFailoverErr *service.UpstreamFailoverError
 
 	for {
@@ -468,6 +469,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
+		markSameAccountAttemptStart(sameAccountRetryStartedAt, account, forwardStart)
 		// 应用渠道模型映射到请求体
 		forwardBody := forwardBodyForResponses(channelMapping.Mapped, channelMapping.MappedModel)
 		writerSizeBeforeForward := c.Writer.Size()
@@ -505,21 +507,21 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					}
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
-						retryLimit := account.GetPoolModeRetryCount()
-						if sameAccountRetryCount[account.ID] < retryLimit {
-							sameAccountRetryCount[account.ID]++
-							retryDelay := sameAccountRetryDelayForAccount(account)
+						retryDelay := sameAccountRetryDelayForAccount(account)
+						if retryPlan, ok := planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay); ok {
 							reqLog.Warn("openai.pool_mode_same_account_retry",
 								zap.Int64("account_id", account.ID),
 								zap.Int("upstream_status", failoverErr.StatusCode),
-								zap.Int("retry_limit", retryLimit),
-								zap.Int("retry_count", sameAccountRetryCount[account.ID]),
-								zap.Duration("retry_delay", retryDelay),
+								zap.Int("retry_limit", retryPlan.RetryLimit),
+								zap.Int("retry_count", retryPlan.RetryCount),
+								zap.Duration("retry_delay", retryPlan.Delay),
+								zap.Duration("retry_elapsed", retryPlan.Elapsed),
+								zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
 							)
 							select {
 							case <-requestCtx.Done():
 								return
-							case <-time.After(retryDelay):
+							case <-time.After(retryPlan.Delay):
 							}
 							continue
 						}
@@ -817,6 +819,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	sameAccountRetryStartedAt := make(map[int64]time.Time)
 	var lastFailoverErr *service.UpstreamFailoverError
 	effectiveMappedModel := preferredMappedModel
 
@@ -887,6 +890,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
+		markSameAccountAttemptStart(sameAccountRetryStartedAt, account, forwardStart)
 
 		defaultMappedModel := strings.TrimSpace(effectiveMappedModel)
 		// 应用渠道模型映射到请求体
@@ -927,21 +931,21 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					}
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
-						retryLimit := account.GetPoolModeRetryCount()
-						if sameAccountRetryCount[account.ID] < retryLimit {
-							sameAccountRetryCount[account.ID]++
-							retryDelay := sameAccountRetryDelayForAccount(account)
+						retryDelay := sameAccountRetryDelayForAccount(account)
+						if retryPlan, ok := planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay); ok {
 							reqLog.Warn("openai_messages.pool_mode_same_account_retry",
 								zap.Int64("account_id", account.ID),
 								zap.Int("upstream_status", failoverErr.StatusCode),
-								zap.Int("retry_limit", retryLimit),
-								zap.Int("retry_count", sameAccountRetryCount[account.ID]),
-								zap.Duration("retry_delay", retryDelay),
+								zap.Int("retry_limit", retryPlan.RetryLimit),
+								zap.Int("retry_count", retryPlan.RetryCount),
+								zap.Duration("retry_delay", retryPlan.Delay),
+								zap.Duration("retry_elapsed", retryPlan.Elapsed),
+								zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
 							)
 							select {
 							case <-c.Request.Context().Done():
 								return
-							case <-time.After(retryDelay):
+							case <-time.After(retryPlan.Delay):
 							}
 							continue
 						}
@@ -1479,6 +1483,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	sameAccountRetryStartedAt := make(map[int64]time.Time)
 	var lastFailoverErr *service.UpstreamFailoverError
 
 	for {
@@ -1517,6 +1522,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		account := selection.Account
+		markSameAccountAttemptStart(sameAccountRetryStartedAt, account, time.Now())
 		accountMaxConcurrency := account.Concurrency
 		if selection.WaitPlan != nil && selection.WaitPlan.MaxConcurrency > 0 {
 			accountMaxConcurrency = selection.WaitPlan.MaxConcurrency
@@ -1690,16 +1696,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			if errors.As(err, &failoverErr) {
 				releaseAccountSlot()
 				if failoverErr.RetryableOnSameAccount {
-					retryLimit := account.GetPoolModeRetryCount()
-					if sameAccountRetryCount[account.ID] < retryLimit {
-						sameAccountRetryCount[account.ID]++
-						retryDelay := sameAccountRetryDelayForAccount(account)
+					retryDelay := sameAccountRetryDelayForAccount(account)
+					if retryPlan, ok := planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay); ok {
 						reqLog.Warn("openai.websocket_pool_mode_same_account_retry",
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
-							zap.Int("retry_limit", retryLimit),
-							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
-							zap.Duration("retry_delay", retryDelay),
+							zap.Int("retry_limit", retryPlan.RetryLimit),
+							zap.Int("retry_count", retryPlan.RetryCount),
+							zap.Duration("retry_delay", retryPlan.Delay),
+							zap.Duration("retry_elapsed", retryPlan.Elapsed),
+							zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
 						)
 						if !ensureUserSlotHeld() {
 							return
@@ -1707,7 +1713,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 						select {
 						case <-requestCtx.Done():
 							return
-						case <-time.After(retryDelay):
+						case <-time.After(retryPlan.Delay):
 						}
 						continue
 					}

@@ -157,6 +157,8 @@ struct RetryDecision {
     action: String,
     reason: Option<String>,
     plan: Option<EdgePlan>,
+    retry_delay_ms: Option<u64>,
+    retry_max_depth: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -908,8 +910,12 @@ async fn relay_upstream_direct(
         .await?;
 
         if decision.action == "relay" {
-            if retry_depth >= 5 {
+            let retry_max_depth = decision.retry_max_depth.unwrap_or(5).max(1);
+            if retry_depth >= retry_max_depth {
                 anyhow::bail!("edge retry depth exceeded");
+            }
+            if let Some(delay_ms) = decision.retry_delay_ms.filter(|v| *v > 0) {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
             if let Some(next_plan) = decision.plan {
                 return Box::pin(relay_upstream(

@@ -330,6 +330,37 @@ describe('EditAccountModal', () => {
     ])
   })
 
+  it('persists race max elapsed only while upstream concurrency race is enabled', async () => {
+    const account = buildAccount()
+    account.credentials = {
+      ...account.credentials,
+      pool_mode: true,
+      pool_mode_retry_count: 20,
+      upstream_concurrency_race_enabled: true,
+      upstream_concurrency_race_retry_delay_ms: 20
+    }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.upstream_concurrency_race_max_elapsed_ms).toBe(2000)
+
+    updateAccountMock.mockClear()
+    await wrapper.get('[data-testid="upstream-concurrency-race-toggle"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty(
+      'upstream_concurrency_race_max_elapsed_ms'
+    )
+  })
+
 	it('submits OpenAI quota auto-pause thresholds in extra', async () => {
 	  const account = buildAccount()
 	  account.extra = {

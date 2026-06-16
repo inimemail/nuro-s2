@@ -3703,6 +3703,8 @@ export default {
       upstreamConcurrencyRaceHint: '仅问题上游使用。开启后同账号池模式重试会按更短间隔快速抢槽，可能增加上游请求压力。',
       upstreamConcurrencyRaceDelayMs: '抢并发重试间隔（ms）',
       upstreamConcurrencyRaceDelayMsHint: '仅影响当前账号。默认 {default}ms，范围 {min}-{max}ms；关闭后使用系统默认 500ms。',
+      upstreamConcurrencyRaceMaxElapsedMs: '总抢占耗时上限（ms）',
+      upstreamConcurrencyRaceMaxElapsedMsHint: '仅抢上游开启时生效。默认 {default}ms，范围 {min}-{max}ms；超过后停止同账号抢占并进入正常切号/冷却流程。',
       poolModeRetryCount: '同账号重试次数',
       poolModeRetryCountHint: '仅在池模式下生效。0 表示不原地重试；默认 {default}，最大 {max}。',
       poolModeRetryStatusCodes: '同账号重试状态码',

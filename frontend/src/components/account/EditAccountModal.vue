@@ -396,6 +396,7 @@
               </div>
               <button
                 type="button"
+                data-testid="upstream-concurrency-race-toggle"
                 @click="upstreamConcurrencyRaceEnabled = !upstreamConcurrencyRaceEnabled"
                 :class="[
                   'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2',
@@ -426,6 +427,24 @@
                     default: DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS,
                     min: MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS,
                     max: MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
+                  })
+                }}
+              </p>
+              <label class="input-label mt-3">{{ t('admin.accounts.upstreamConcurrencyRaceMaxElapsedMs') }}</label>
+              <input
+                v-model.number="upstreamConcurrencyRaceMaxElapsedMs"
+                type="number"
+                :min="MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS"
+                :max="MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS"
+                step="100"
+                class="input"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{
+                  t('admin.accounts.upstreamConcurrencyRaceMaxElapsedMsHint', {
+                    default: DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS,
+                    min: MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS,
+                    max: MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
                   })
                 }}
               </p>
@@ -2825,6 +2844,9 @@ const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
 const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
 const MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
 const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 5000
+const DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 2000
+const MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 500
+const MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 30000
 const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 20
 const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 50
 const NORMAL_POOL_MODE_RETRY_MAX = 10
@@ -2835,6 +2857,7 @@ const promptCacheBoostEnabled = ref(false)
 const upstreamStrongIsolationEnabled = ref(false)
 const upstreamConcurrencyRaceEnabled = ref(false)
 const upstreamConcurrencyRaceRetryDelayMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
+const upstreamConcurrencyRaceMaxElapsedMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS)
 const upstreamConcurrencyRaceRetryCountBackup = ref<number | null>(null)
 const syncingAccountState = ref(false)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
@@ -3302,6 +3325,20 @@ const normalizeUpstreamConcurrencyRaceRetryDelayMs = (value: number) => {
   return normalized
 }
 
+const normalizeUpstreamConcurrencyRaceMaxElapsedMs = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
+  }
+  const normalized = Math.trunc(value)
+  if (normalized < MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS) {
+    return MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
+  }
+  if (normalized > MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS) {
+    return MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
+  }
+  return normalized
+}
+
 const loadModelRestrictionFromMapping = (rawMapping?: Record<string, unknown>) => {
   const parsed = splitModelMappingObject(rawMapping)
   allowedModels.value = parsed.allowedModels
@@ -3534,6 +3571,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     upstreamConcurrencyRaceRetryDelayMs.value = normalizeUpstreamConcurrencyRaceRetryDelayMs(
       Number(credentials.upstream_concurrency_race_retry_delay_ms ?? DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
     )
+    upstreamConcurrencyRaceMaxElapsedMs.value = upstreamConcurrencyRaceEnabled.value
+      ? normalizeUpstreamConcurrencyRaceMaxElapsedMs(
+        Number(credentials.upstream_concurrency_race_max_elapsed_ms ?? DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS)
+      )
+      : DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
     poolModeRetryCount.value = upstreamConcurrencyRaceEnabled.value
       ? normalizeUpstreamConcurrencyRaceRetryCount(
         Number(credentials.pool_mode_retry_count ?? DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT)
@@ -3625,6 +3667,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     upstreamStrongIsolationEnabled.value = false
     upstreamConcurrencyRaceEnabled.value = false
     upstreamConcurrencyRaceRetryDelayMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
+    upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
     poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
     poolModeRetryStatusCodesInput.value = ''
     customErrorCodesEnabled.value = false
@@ -3674,6 +3717,7 @@ watch([poolModeEnabled, () => props.account?.platform], ([enabled, platform]) =>
       poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
     }
     upstreamConcurrencyRaceEnabled.value = false
+    upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
     upstreamConcurrencyRaceRetryCountBackup.value = null
   }
 })
@@ -3686,6 +3730,7 @@ watch(imagePoolModeEnabled, (enabled) => {
       poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
     }
     upstreamConcurrencyRaceEnabled.value = false
+    upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
     openaiAPIKeyPreambleFlushEnabled.value = false
     openaiAPIKeySSECommentPreflushEnabled.value = false
     openaiAPIKeySafeTokenPlaceholderEnabled.value = false
@@ -3703,6 +3748,7 @@ watch(
         upstreamConcurrencyRaceRetryCountBackup.value = normalizePoolModeRetryCount(poolModeRetryCount.value)
       }
       poolModeRetryCount.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
+      upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
       return
     }
     if (upstreamConcurrencyRaceRetryCountBackup.value !== null) {
@@ -4256,11 +4302,15 @@ const handleSubmit = async () => {
           newCredentials.upstream_concurrency_race_retry_delay_ms = normalizeUpstreamConcurrencyRaceRetryDelayMs(
             upstreamConcurrencyRaceRetryDelayMs.value
           )
+          newCredentials.upstream_concurrency_race_max_elapsed_ms = normalizeUpstreamConcurrencyRaceMaxElapsedMs(
+            upstreamConcurrencyRaceMaxElapsedMs.value
+          )
           newCredentials.upstream_concurrency_race_retry_count_backup =
             upstreamConcurrencyRaceRetryCountBackup.value ?? normalizePoolModeRetryCount(poolModeRetryCount.value)
         } else {
           delete newCredentials.upstream_concurrency_race_enabled
           delete newCredentials.upstream_concurrency_race_retry_delay_ms
+          delete newCredentials.upstream_concurrency_race_max_elapsed_ms
           delete newCredentials.upstream_concurrency_race_retry_count_backup
         }
         newCredentials.pool_mode_retry_count = upstreamConcurrencyRaceEnabled.value
@@ -4280,6 +4330,7 @@ const handleSubmit = async () => {
         delete newCredentials.upstream_strong_isolation_enabled
         delete newCredentials.upstream_concurrency_race_enabled
         delete newCredentials.upstream_concurrency_race_retry_delay_ms
+        delete newCredentials.upstream_concurrency_race_max_elapsed_ms
         delete newCredentials.upstream_concurrency_race_retry_count_backup
         delete newCredentials.pool_mode_retry_count
         delete newCredentials.pool_mode_retry_status_codes

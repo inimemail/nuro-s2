@@ -45,6 +45,7 @@ type openAIEdgeLease struct {
 	sessionHash        string
 	failedAccountIDs   map[int64]struct{}
 	sameAccountRetries map[int64]int
+	sameAccountStarted map[int64]time.Time
 	switchCount        int
 	maxAccountSwitches int
 	routingModel       string
@@ -444,11 +445,12 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	plan.LeaseID = leaseID
 	plan.LeaseTTLMS = int(ttl / time.Millisecond)
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
+	createdAt := time.Now()
 	h.storeOpenAIEdgeLease(&openAIEdgeLease{
 		edgeRequestID:      edgeRequestID,
 		leaseID:            leaseID,
-		createdAt:          time.Now(),
-		expiresAt:          time.Now().Add(ttl),
+		createdAt:          createdAt,
+		expiresAt:          createdAt.Add(ttl),
 		userReleaseFunc:    userReleaseFunc,
 		accountReleaseFunc: accountReleaseFunc,
 		apiKey:             apiKey,
@@ -460,6 +462,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
 		sameAccountRetries: make(map[int64]int),
+		sameAccountStarted: map[int64]time.Time{account.ID: createdAt},
 		maxAccountSwitches: h.nonImageStreamBootstrapSwitchLimit(true),
 		routingModel:       reqModel,
 		requestModel:       prepared.Model,
@@ -621,11 +624,12 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	plan.LeaseID = leaseID
 	plan.LeaseTTLMS = int(ttl / time.Millisecond)
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
+	createdAt := time.Now()
 	h.storeOpenAIEdgeLease(&openAIEdgeLease{
 		edgeRequestID:      edgeRequestID,
 		leaseID:            leaseID,
-		createdAt:          time.Now(),
-		expiresAt:          time.Now().Add(ttl),
+		createdAt:          createdAt,
+		expiresAt:          createdAt.Add(ttl),
 		userReleaseFunc:    userReleaseFunc,
 		accountReleaseFunc: accountReleaseFunc,
 		apiKey:             apiKey,
@@ -637,6 +641,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
 		sameAccountRetries: make(map[int64]int),
+		sameAccountStarted: map[int64]time.Time{account.ID: createdAt},
 		maxAccountSwitches: h.nonImageStreamBootstrapSwitchLimit(true),
 		routingModel:       reqModel,
 		requestModel:       prepared.Model,
@@ -784,11 +789,12 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	plan.LeaseID = leaseID
 	plan.LeaseTTLMS = int(ttl / time.Millisecond)
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
+	createdAt := time.Now()
 	h.storeOpenAIEdgeLease(&openAIEdgeLease{
 		edgeRequestID:      edgeRequestID,
 		leaseID:            leaseID,
-		createdAt:          time.Now(),
-		expiresAt:          time.Now().Add(ttl),
+		createdAt:          createdAt,
+		expiresAt:          createdAt.Add(ttl),
 		userReleaseFunc:    userReleaseFunc,
 		accountReleaseFunc: accountReleaseFunc,
 		apiKey:             apiKey,
@@ -800,6 +806,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
 		sameAccountRetries: make(map[int64]int),
+		sameAccountStarted: map[int64]time.Time{account.ID: createdAt},
 		maxAccountSwitches: h.maxAccountSwitches,
 		routingModel:       reqModel,
 		requestModel:       prepared.Model,
@@ -1034,19 +1041,27 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		RetryableOnSameAccount: service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, strings.TrimSpace(req.ErrorMessage), openAIEdgeRetryResponseBody(req)),
 	}
 	if failoverErr.RetryableOnSameAccount {
-		retryLimit := lease.account.GetPoolModeRetryCount()
-		if lease.sameAccountRetries[lease.account.ID] < retryLimit {
-			lease.sameAccountRetries[lease.account.ID]++
+		retryDelay := sameAccountRetryDelayForAccount(lease.account)
+		if retryPlan, ok := planSameAccountRetry(lease.account, lease.sameAccountRetries, lease.sameAccountStarted, retryDelay); ok {
 			plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, lease.account, lease.accountReleaseFunc)
 			if err != nil {
 				reqLog.Warn("openai_edge.same_account_retry_plan_failed", zap.Error(err))
 				return fallback("same_account_retry_plan_failed")
 			}
 			reqLog.Warn("openai_edge.same_account_retry",
-				zap.Int("retry_limit", retryLimit),
-				zap.Int("retry_count", lease.sameAccountRetries[lease.account.ID]),
+				zap.Int("retry_limit", retryPlan.RetryLimit),
+				zap.Int("retry_count", retryPlan.RetryCount),
+				zap.Duration("retry_delay", retryPlan.Delay),
+				zap.Duration("retry_elapsed", retryPlan.Elapsed),
+				zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
 			)
-			return service.OpenAIEdgeRetryDecision{Action: service.OpenAIEdgeActionRelay, Reason: "same_account_retry", Plan: &plan}
+			return service.OpenAIEdgeRetryDecision{
+				Action:        service.OpenAIEdgeActionRelay,
+				Reason:        "same_account_retry",
+				Plan:          &plan,
+				RetryDelayMS:  int(retryPlan.Delay / time.Millisecond),
+				RetryMaxDepth: retryPlan.RetryLimit,
+			}
 		}
 	}
 	routingModel := lease.openAIRoutingModel()
@@ -1128,6 +1143,7 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
 	lease.account = account
 	lease.accountReleaseFunc = release
+	markSameAccountAttemptStart(lease.sameAccountStarted, account, time.Now())
 	lease.requestModel = prepared.Model
 	lease.billingModel = prepared.BillingModel
 	lease.upstreamModel = prepared.UpstreamModel

@@ -67,9 +67,11 @@ type OpenAIEdgeRetryRequest struct {
 }
 
 type OpenAIEdgeRetryDecision struct {
-	Action string          `json:"action"`
-	Reason string          `json:"reason,omitempty"`
-	Plan   *OpenAIEdgePlan `json:"plan,omitempty"`
+	Action        string          `json:"action"`
+	Reason        string          `json:"reason,omitempty"`
+	Plan          *OpenAIEdgePlan `json:"plan,omitempty"`
+	RetryDelayMS  int             `json:"retry_delay_ms,omitempty"`
+	RetryMaxDepth int             `json:"retry_max_depth,omitempty"`
 }
 
 type OpenAIEdgeCompleteRequest struct {

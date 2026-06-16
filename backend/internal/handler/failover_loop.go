@@ -46,6 +46,57 @@ func sameAccountRetryDelayForAccount(account *service.Account) time.Duration {
 	return account.GetPoolModeSameAccountRetryDelay()
 }
 
+type sameAccountRetryPlan struct {
+	RetryLimit int
+	RetryCount int
+	Delay      time.Duration
+	Elapsed    time.Duration
+	MaxElapsed time.Duration
+}
+
+func markSameAccountAttemptStart(starts map[int64]time.Time, account *service.Account, startedAt time.Time) {
+	if starts == nil || account == nil || account.ID == 0 || startedAt.IsZero() {
+		return
+	}
+	if _, ok := starts[account.ID]; !ok {
+		starts[account.ID] = startedAt
+	}
+}
+
+func planSameAccountRetry(account *service.Account, counts map[int64]int, starts map[int64]time.Time, delay time.Duration) (sameAccountRetryPlan, bool) {
+	plan := sameAccountRetryPlan{Delay: delay}
+	if account == nil || counts == nil {
+		return plan, false
+	}
+	accountID := account.ID
+	plan.RetryLimit = account.GetPoolModeRetryCount()
+	if counts[accountID] >= plan.RetryLimit {
+		return plan, false
+	}
+	plan.MaxElapsed = account.GetPoolModeSameAccountRetryMaxElapsed()
+	if plan.MaxElapsed > 0 {
+		now := time.Now()
+		startedAt, ok := starts[accountID]
+		if !ok || startedAt.IsZero() {
+			startedAt = now
+			if starts != nil {
+				starts[accountID] = startedAt
+			}
+		}
+		plan.Elapsed = now.Sub(startedAt)
+		if plan.Elapsed < 0 {
+			plan.Elapsed = 0
+		}
+		remaining := plan.MaxElapsed - plan.Elapsed
+		if remaining <= 0 || delay > remaining {
+			return plan, false
+		}
+	}
+	counts[accountID]++
+	plan.RetryCount = counts[accountID]
+	return plan, true
+}
+
 // FailoverState 跨循环迭代共享的 failover 状态
 type FailoverState struct {
 	SwitchCount           int
