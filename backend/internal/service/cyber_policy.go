@@ -19,12 +19,6 @@ const (
 	defaultCyberPolicySessionBlockTTL = 15 * time.Minute
 )
 
-const (
-	openAICyberPolicyAnchorTypeKey   = "openai_cyber_policy_anchor_type"
-	openAICyberPolicyAnchorHashKey   = "openai_cyber_policy_anchor_hash"
-	openAICyberPolicyAnchorPrimedKey = "openai_cyber_policy_anchor_primed"
-)
-
 type CyberPolicyDecision struct {
 	Matched        bool
 	Message        string
@@ -104,20 +98,6 @@ func isOpenAICyberPolicySignal(code, errType, message string) bool {
 
 func OpenAICyberPolicyAnchor(c *gin.Context, body []byte) (anchorType, anchorHash string) {
 	if c != nil {
-		if rawType, ok := c.Get(openAICyberPolicyAnchorTypeKey); ok {
-			if rawHash, okHash := c.Get(openAICyberPolicyAnchorHashKey); okHash {
-				if t, okType := rawType.(string); okType {
-					if h, okHashStr := rawHash.(string); okHashStr && strings.TrimSpace(t) != "" && strings.TrimSpace(h) != "" {
-						return strings.TrimSpace(t), strings.TrimSpace(h)
-					}
-				}
-			}
-		}
-		if rawPrimed, ok := c.Get(openAICyberPolicyAnchorPrimedKey); ok {
-			if primed, _ := rawPrimed.(bool); primed {
-				return "", ""
-			}
-		}
 		if raw := strings.TrimSpace(c.GetHeader("session_id")); raw != "" {
 			return CyberPolicyAnchorSessionID, hashSensitiveValueForLog(raw)
 		}
@@ -131,25 +111,6 @@ func OpenAICyberPolicyAnchor(c *gin.Context, body []byte) (anchorType, anchorHas
 		}
 	}
 	return "", ""
-}
-
-func PrimeOpenAICyberPolicyAnchor(c *gin.Context, body []byte) (anchorType, anchorHash string) {
-	anchorType, anchorHash = OpenAICyberPolicyAnchor(c, body)
-	if c != nil {
-		if anchorType != "" && anchorHash != "" {
-			c.Set(openAICyberPolicyAnchorTypeKey, anchorType)
-			c.Set(openAICyberPolicyAnchorHashKey, anchorHash)
-		}
-		c.Set(openAICyberPolicyAnchorPrimedKey, true)
-	}
-	return anchorType, anchorHash
-}
-
-func (s *OpenAIGatewayService) PrimeOpenAICyberPolicyAnchor(c *gin.Context, body []byte) (anchorType, anchorHash string) {
-	if !s.hasOpenAICyberPolicySessionBlocks() {
-		return "", ""
-	}
-	return PrimeOpenAICyberPolicyAnchor(c, body)
 }
 
 func (s *OpenAIGatewayService) openAICyberPolicyBlockKey(platform string, accountID int64, anchorType, anchorHash string) string {
@@ -177,12 +138,7 @@ func (s *OpenAIGatewayService) markOpenAICyberPolicySessionBlocked(ctx context.C
 		ExpiresAt: time.Now().Add(defaultCyberPolicySessionBlockTTL),
 		Decision:  decision,
 	}
-	_, loaded := s.openaiCyberPolicySessionBlocks.LoadOrStore(key, block)
-	if loaded {
-		s.openaiCyberPolicySessionBlocks.Store(key, block)
-	} else {
-		s.openaiCyberPolicySessionBlockCount.Add(1)
-	}
+	s.openaiCyberPolicySessionBlocks.Store(key, block)
 	decision.SessionBlocked = true
 	return decision
 }
@@ -201,11 +157,7 @@ func (s *OpenAIGatewayService) checkOpenAICyberPolicySessionBlock(ctx context.Co
 	}
 	block, ok := value.(cyberPolicySessionBlock)
 	if !ok || time.Now().After(block.ExpiresAt) {
-		if _, deleted := s.openaiCyberPolicySessionBlocks.LoadAndDelete(key); deleted {
-			if s.openaiCyberPolicySessionBlockCount.Add(-1) < 0 {
-				s.openaiCyberPolicySessionBlockCount.Store(0)
-			}
-		}
+		s.openaiCyberPolicySessionBlocks.Delete(key)
 		return CyberPolicyDecision{}, false
 	}
 	if !s.openAICyberPolicySessionBlockEnabled(ctx) {
@@ -222,27 +174,11 @@ func (s *OpenAIGatewayService) checkOpenAICyberPolicySessionBlock(ctx context.Co
 	return decision, true
 }
 
-func (s *OpenAIGatewayService) CheckOpenAICyberPolicySessionBlock(account *Account, c *gin.Context, body []byte) (CyberPolicyDecision, bool) {
-	if !s.hasOpenAICyberPolicySessionBlocks() {
-		return CyberPolicyDecision{}, false
-	}
-	ctx := requestContextFromGin(c)
-	anchorType, anchorHash := OpenAICyberPolicyAnchor(c, body)
-	if anchorType == "" || anchorHash == "" {
-		return CyberPolicyDecision{}, false
-	}
-	return s.checkOpenAICyberPolicySessionBlock(ctx, account, anchorType, anchorHash)
-}
-
 func (s *OpenAIGatewayService) openAICyberPolicySessionBlockEnabled(ctx context.Context) bool {
 	if s == nil || s.settingService == nil {
 		return false
 	}
 	return s.settingService.IsRiskControlEnabled(ctx)
-}
-
-func (s *OpenAIGatewayService) hasOpenAICyberPolicySessionBlocks() bool {
-	return s != nil && s.openaiCyberPolicySessionBlockCount.Load() > 0
 }
 
 func requestContextFromGin(c *gin.Context) context.Context {

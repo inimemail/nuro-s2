@@ -45,8 +45,6 @@ func TestCyberPolicySessionBlockRequiresRiskControlEnabled(t *testing.T) {
 	decision := disabledSvc.handleOpenAICyberPolicyEvent(c, account, false, "rid-1", payload, nil)
 	require.True(t, decision.Matched)
 	require.False(t, decision.SessionBlocked)
-	_, blocked := disabledSvc.CheckOpenAICyberPolicySessionBlock(account, c, nil)
-	require.False(t, blocked)
 
 	enabledSvc := &OpenAIGatewayService{
 		settingService: NewSettingService(&openAIFastPolicyRepoStub{values: map[string]string{
@@ -55,11 +53,11 @@ func TestCyberPolicySessionBlockRequiresRiskControlEnabled(t *testing.T) {
 	}
 	decision = enabledSvc.handleOpenAICyberPolicyEvent(c, account, false, "rid-2", payload, nil)
 	require.True(t, decision.SessionBlocked)
-	_, blocked = enabledSvc.CheckOpenAICyberPolicySessionBlock(account, c, nil)
+	_, blocked := enabledSvc.checkOpenAICyberPolicySessionBlock(c.Request.Context(), account, decision.AnchorType, decision.AnchorHash)
 	require.True(t, blocked)
 }
 
-func TestCyberPolicySessionBlockMissDoesNotReadRiskControlSetting(t *testing.T) {
+func TestNonCyberPolicyEventDoesNotReadRiskControlSetting(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -73,29 +71,13 @@ func TestCyberPolicySessionBlockMissDoesNotReadRiskControlSetting(t *testing.T) 
 		settingService: NewSettingService(repo, nil),
 	}
 
-	_, blocked := svc.CheckOpenAICyberPolicySessionBlock(&Account{ID: 9, Platform: PlatformOpenAI}, c, []byte(`{"prompt_cache_key":"pc-miss"}`))
-	require.False(t, blocked)
+	decision := svc.handleOpenAICyberPolicyEvent(c, &Account{ID: 9, Platform: PlatformOpenAI}, false, "rid-miss", []byte(`{"error":{"code":"server_error","message":"temporary upstream failure"}}`), nil)
+	require.False(t, decision.Matched)
 	require.Equal(t, int64(0), repo.getValueCalls.Load())
 
-	anchorType, anchorHash := svc.PrimeOpenAICyberPolicyAnchor(c, []byte(`{"prompt_cache_key":"pc-miss"}`))
-	require.Empty(t, anchorType)
-	require.Empty(t, anchorHash)
-	require.Equal(t, int64(0), repo.getValueCalls.Load())
-}
-
-func TestPrimeOpenAICyberPolicyAnchorCachesEmptyAnchor(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
-
-	anchorType, anchorHash := PrimeOpenAICyberPolicyAnchor(c, []byte(`{"model":"gpt-5"}`))
-	require.Empty(t, anchorType)
-	require.Empty(t, anchorHash)
-
-	anchorType, anchorHash = OpenAICyberPolicyAnchor(c, []byte(`{"prompt_cache_key":"late-key"}`))
-	require.Empty(t, anchorType)
-	require.Empty(t, anchorHash)
+	decision = svc.handleOpenAICyberPolicyEvent(c, &Account{ID: 9, Platform: PlatformOpenAI}, false, "rid-hit", []byte(`{"error":{"code":"cyber_policy","message":"This request has been flagged for potentially high-risk cyber activity."}}`), nil)
+	require.True(t, decision.SessionBlocked)
+	require.Equal(t, int64(1), repo.getValueCalls.Load())
 }
 
 func TestCyberPolicyHandleEventSetsBlockWhenEnabled(t *testing.T) {
@@ -114,7 +96,7 @@ func TestCyberPolicyHandleEventSetsBlockWhenEnabled(t *testing.T) {
 	decision := svc.handleOpenAICyberPolicyEvent(c, account, false, "rid-3", payload, nil)
 	require.True(t, decision.Matched)
 	require.True(t, decision.SessionBlocked)
-	_, blocked := svc.CheckOpenAICyberPolicySessionBlock(account, c, nil)
+	_, blocked := svc.checkOpenAICyberPolicySessionBlock(c.Request.Context(), account, decision.AnchorType, decision.AnchorHash)
 	require.True(t, blocked)
 }
 
