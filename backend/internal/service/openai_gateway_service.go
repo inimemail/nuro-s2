@@ -54,13 +54,14 @@ const (
 	// 与 Codex 客户端保持一致：失败后最多重连 5 次。
 	openAIWSReconnectRetryLimit = 5
 	// OpenAI WS Mode 重连退避默认值（可由配置覆盖）。
-	openAIWSRetryBackoffInitialDefault      = 120 * time.Millisecond
-	openAIWSRetryBackoffMaxDefault          = 2 * time.Second
-	openAIWSRetryJitterRatioDefault         = 0.2
-	openAICompactSessionSeedKey             = "openai_compact_session_seed"
-	openAIPromptCacheBoostMinBodyBytes      = 16 * 1024
-	openAIPromptCacheBoostAffinityStickyTTL = 24 * time.Hour
-	codexCLIVersion                         = "0.125.0"
+	openAIWSRetryBackoffInitialDefault       = 120 * time.Millisecond
+	openAIWSRetryBackoffMaxDefault           = 2 * time.Second
+	openAIWSRetryJitterRatioDefault          = 0.2
+	openAICompactSessionSeedKey              = "openai_compact_session_seed"
+	openAIPromptCacheBoostMinBodyBytes       = 16 * 1024
+	openAIPromptCacheBoostAffinityStickyTTL  = 24 * time.Hour
+	openAIPromptCacheBoostAggressiveCacheTTL = 2 * time.Second
+	codexCLIVersion                          = "0.125.0"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
 	openAIOAuth401RefreshRetryKey         = "openai_oauth_401_refresh_retry"
@@ -383,24 +384,30 @@ type OpenAIGatewayService struct {
 	openaiWSPassthroughDialer     openAIWSClientDialer
 	openaiAccountStats            *openAIAccountRuntimeStats
 
-	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
-	openaiAccountRuntimeBlockUntil      sync.Map // key: int64(accountID), value: time.Time
-	openaiPoolSoftCooldownUntil         sync.Map // key: int64(accountID), value: time.Time
-	openaiPoolSoftCooldownContext       sync.Map // key: int64(accountID), value: openAIPoolSoftCooldownContext
-	openaiPoolRecoveryProbeInFlight     sync.Map // key: int64(accountID), value: struct{}
-	openaiPoolRecoveryProbeFailureCount sync.Map // key: int64(accountID), value: int
-	openaiPoolRecoveryProbeAdminKickAt  sync.Map // key: int64(accountID), value: time.Time
-	openaiCodexAutoResetInFlight        sync.Map // key: int64(accountID), value: struct{}
-	openaiCodexAutoResetCooldownUntil   sync.Map // key: int64(accountID), value: time.Time
-	openaiOAuth429WindowStartUnixNano   atomic.Int64
-	openaiOAuth429WindowCount           atomic.Int64
-	openaiWSRetryMetrics                openAIWSRetryMetrics
-	responseHeaderFilter                *responseheaders.CompiledHeaderFilter
-	codexSnapshotThrottle               *accountWriteThrottle
-	openaiPromptCacheBoostDisabledUntil sync.Map // key: int64(accountID), value: time.Time
-	openaiCompatSessionResponses        sync.Map
-	openaiCompatAnthropicDigestSessions sync.Map
-	openaiCyberPolicySessionBlocks      sync.Map // key: platform:accountID:anchorType:anchorHash, value: cyberPolicySessionBlock
+	openaiWSFallbackUntil                      sync.Map // key: int64(accountID), value: time.Time
+	openaiAccountRuntimeBlockUntil             sync.Map // key: int64(accountID), value: time.Time
+	openaiPoolSoftCooldownUntil                sync.Map // key: int64(accountID), value: time.Time
+	openaiPoolSoftCooldownContext              sync.Map // key: int64(accountID), value: openAIPoolSoftCooldownContext
+	openaiPoolRecoveryProbeInFlight            sync.Map // key: int64(accountID), value: struct{}
+	openaiPoolRecoveryProbeFailureCount        sync.Map // key: int64(accountID), value: int
+	openaiPoolRecoveryProbeAdminKickAt         sync.Map // key: int64(accountID), value: time.Time
+	openaiCodexAutoResetInFlight               sync.Map // key: int64(accountID), value: struct{}
+	openaiCodexAutoResetCooldownUntil          sync.Map // key: int64(accountID), value: time.Time
+	openaiOAuth429WindowStartUnixNano          atomic.Int64
+	openaiOAuth429WindowCount                  atomic.Int64
+	openaiWSRetryMetrics                       openAIWSRetryMetrics
+	responseHeaderFilter                       *responseheaders.CompiledHeaderFilter
+	codexSnapshotThrottle                      *accountWriteThrottle
+	openaiPromptCacheBoostDisabledUntil        sync.Map // key: int64(accountID), value: time.Time
+	openaiPromptCacheBoostAggressiveGroupCache sync.Map // key: string(group:model), value: promptCacheBoostAggressiveAvailability
+	openaiCompatSessionResponses               sync.Map
+	openaiCompatAnthropicDigestSessions        sync.Map
+	openaiCyberPolicySessionBlocks             sync.Map // key: platform:accountID:anchorType:anchorHash, value: cyberPolicySessionBlock
+}
+
+type promptCacheBoostAggressiveAvailability struct {
+	expiresAt time.Time
+	enabled   bool
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -1264,6 +1271,27 @@ func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForGro
 	if s == nil || s.schedulerSnapshot == nil || !openAIPromptCacheBoostBodyMayBenefitFromAggressive(body) {
 		return DeriveOpenAIPromptCacheBoostAffinityHash(model, body)
 	}
+	if s.openAIPromptCacheBoostAggressiveAvailableForGroup(ctx, groupID, model) {
+		if aggressiveHash := DeriveOpenAIPromptCacheBoostAggressiveAffinityHash(model, body); aggressiveHash != "" {
+			return aggressiveHash
+		}
+	}
+	return DeriveOpenAIPromptCacheBoostAffinityHash(model, body)
+}
+
+func (s *OpenAIGatewayService) openAIPromptCacheBoostAggressiveAvailableForGroup(ctx context.Context, groupID *int64, model string) bool {
+	if s == nil || s.schedulerSnapshot == nil {
+		return false
+	}
+	cacheKey := strconv.FormatInt(derefGroupID(groupID), 10) + ":" + NormalizeOpenAICompatRequestedModel(model)
+	now := time.Now()
+	if raw, ok := s.openaiPromptCacheBoostAggressiveGroupCache.Load(cacheKey); ok {
+		state, _ := raw.(promptCacheBoostAggressiveAvailability)
+		if !state.expiresAt.IsZero() && now.Before(state.expiresAt) {
+			return state.enabled
+		}
+	}
+	enabled := false
 	accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
 	if err == nil {
 		for i := range accounts {
@@ -1272,14 +1300,16 @@ func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForGro
 				isOpenAIAccountEligibleForRequest(ctx, account, model, false, OpenAIEndpointCapabilityChatCompletions, "") &&
 				!s.isOpenAIPoolAccountSoftCooling(account) &&
 				!s.isOpenAIAccountRuntimeBlocked(account) {
-				if aggressiveHash := DeriveOpenAIPromptCacheBoostAggressiveAffinityHash(model, body); aggressiveHash != "" {
-					return aggressiveHash
-				}
+				enabled = true
 				break
 			}
 		}
 	}
-	return DeriveOpenAIPromptCacheBoostAffinityHash(model, body)
+	s.openaiPromptCacheBoostAggressiveGroupCache.Store(cacheKey, promptCacheBoostAggressiveAvailability{
+		expiresAt: now.Add(openAIPromptCacheBoostAggressiveCacheTTL),
+		enabled:   enabled,
+	})
+	return enabled
 }
 
 func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForAccount(c *gin.Context, body []byte, model string, account *Account) string {
