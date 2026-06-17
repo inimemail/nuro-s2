@@ -390,7 +390,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		reqLog.Info("openai_edge.billing_check_failed", zap.Error(err))
 		return fallback("billing_check_failed")
 	}
-	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHash(c, req.Body, reqModel)
+	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroup(c.Request.Context(), c, apiKey.GroupID, req.Body, reqModel)
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, req.Body)
 	}
@@ -562,7 +562,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		reqLog.Info("openai_edge.responses_billing_check_failed", zap.Error(err))
 		return fallback("billing_check_failed")
 	}
-	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHash(c, req.Body, reqModel)
+	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroup(c.Request.Context(), c, apiKey.GroupID, req.Body, reqModel)
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, req.Body)
 	}

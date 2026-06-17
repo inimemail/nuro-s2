@@ -13,13 +13,14 @@ import (
 const contentSessionSeedPrefix = "compat_cs_"
 
 const (
-	openAIPromptCacheBoostStaticSeedPrefix        = "pcache_static_"
-	openAIPromptCacheBoostAffinitySessionPrefix   = "pcache-affinity:"
-	openAIPromptCacheBoostMinStaticPrefixBytes    = 1024
-	openAIPromptCacheBoostMediumStaticPrefixBytes = 8192
-	openAIPromptCacheBoostLargeStaticPrefixBytes  = 32768
-	openAIPromptCacheBoostHugeStaticPrefixBytes   = 65536
-	openAIPromptCacheBoostMaxLaneCount            = 16
+	openAIPromptCacheBoostStaticSeedPrefix                = "pcache_static_"
+	openAIPromptCacheBoostAffinitySessionPrefix           = "pcache-affinity:"
+	openAIPromptCacheBoostAggressiveAffinitySessionPrefix = "pcache-affinity-aggressive:"
+	openAIPromptCacheBoostMinStaticPrefixBytes            = 1024
+	openAIPromptCacheBoostMediumStaticPrefixBytes         = 8192
+	openAIPromptCacheBoostLargeStaticPrefixBytes          = 32768
+	openAIPromptCacheBoostHugeStaticPrefixBytes           = 65536
+	openAIPromptCacheBoostMaxLaneCount                    = 16
 )
 
 // deriveOpenAIContentSessionSeed builds a stable session seed from an
@@ -127,6 +128,27 @@ func deriveOpenAIPromptCacheBoostSeed(body []byte) (seed string, staticPrefix bo
 		return staticSeed, true, bytes
 	}
 	return strings.TrimSpace(deriveOpenAIContentSessionSeed(body)), false, bytes
+}
+
+func deriveOpenAIPromptCacheBoostSeedAggressive(body []byte) (seed string, staticPrefix bool, staticBytes int) {
+	staticSeed, bytes := deriveOpenAIPromptCacheStaticPrefixSeed(body)
+	if staticSeed != "" {
+		return staticSeed, true, bytes
+	}
+	seed = strings.TrimSpace(deriveOpenAIContentSessionSeed(body))
+	return seed, false, bytes
+}
+
+func openAIPromptCacheBoostBodyMayBenefitFromAggressive(body []byte) bool {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	return gjson.GetBytes(body, "system").Exists() ||
+		gjson.GetBytes(body, "instructions").Exists() ||
+		gjson.GetBytes(body, "tools").Exists() ||
+		gjson.GetBytes(body, "functions").Exists() ||
+		gjson.GetBytes(body, "messages").Exists() ||
+		gjson.GetBytes(body, "input").Exists()
 }
 
 func deriveOpenAIPromptCacheStaticPrefixSeed(body []byte) (string, int) {
@@ -253,7 +275,35 @@ func DeriveOpenAIPromptCacheBoostAffinityHash(model string, body []byte) string 
 }
 
 func IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash string) bool {
-	return strings.HasPrefix(strings.TrimSpace(sessionHash), openAIPromptCacheBoostAffinitySessionPrefix)
+	normalized := strings.TrimSpace(sessionHash)
+	return strings.HasPrefix(normalized, openAIPromptCacheBoostAffinitySessionPrefix) ||
+		strings.HasPrefix(normalized, openAIPromptCacheBoostAggressiveAffinitySessionPrefix)
+}
+
+func IsOpenAIPromptCacheBoostAggressiveAffinitySessionHash(sessionHash string) bool {
+	return strings.HasPrefix(strings.TrimSpace(sessionHash), openAIPromptCacheBoostAggressiveAffinitySessionPrefix)
+}
+
+func DeriveOpenAIPromptCacheBoostAggressiveAffinityHash(model string, body []byte) string {
+	seed, staticBytes := deriveOpenAIPromptCacheStaticPrefixSeed(body)
+	if seed == "" {
+		return ""
+	}
+	normalizedModel := strings.TrimSpace(model)
+	if normalizedModel == "" {
+		normalizedModel = strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	}
+	if normalizedModel == "" {
+		normalizedModel = "unknown"
+	}
+	return openAIPromptCacheBoostAggressiveAffinitySessionPrefix + hashSensitiveValueForLog(
+		strings.Join([]string{
+			"strategy", "aggressive-static-prefix-v1",
+			"model", normalizedModel,
+			"seed", seed,
+			"static_bytes", strconv.Itoa(staticBytes),
+		}, "|"),
+	)
 }
 
 func deriveOpenAIVirtualPromptCacheKey(account *Account, model string, body []byte) string {
@@ -261,6 +311,9 @@ func deriveOpenAIVirtualPromptCacheKey(account *Account, model string, body []by
 		return ""
 	}
 	seed, staticPrefix, staticBytes := deriveOpenAIPromptCacheBoostSeed(body)
+	if account.IsOpenAIPromptCacheBoostAggressive() {
+		seed, staticPrefix, staticBytes = deriveOpenAIPromptCacheBoostSeedAggressive(body)
+	}
 	if seed == "" {
 		return ""
 	}
@@ -285,4 +338,14 @@ func deriveOpenAIVirtualPromptCacheKey(account *Account, model string, body []by
 			"lanes", strconv.Itoa(laneCount),
 		}, "|"),
 	)
+}
+
+func deriveOpenAIPromptCacheBoostAffinityHashForAccount(account *Account, model string, body []byte) string {
+	if account == nil {
+		return ""
+	}
+	if account.IsOpenAIPromptCacheBoostAggressive() {
+		return DeriveOpenAIPromptCacheBoostAggressiveAffinityHash(model, body)
+	}
+	return DeriveOpenAIPromptCacheBoostAffinityHash(model, body)
 }

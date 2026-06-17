@@ -3686,6 +3686,8 @@ export default {
       imagePoolModeHint: '开启后该 OpenAI 池账号只承接生图请求；关闭时生图请求不会调度到这个池账号。',
       promptCacheBoost: '缓存增强',
       promptCacheBoostHint: '仅文本池生效。开启后会自动生成虚拟会话缓存键、使用 24h prompt cache，并在大上下文请求中保留可缓存前缀。',
+      promptCacheBoostAggressive: '加强模式',
+      promptCacheBoostAggressiveHint: '关闭时保持现有策略；开启后会放宽静态前缀门槛，让更多相同系统提示/工具的请求复用缓存键。',
       promptCacheBoostEnabled: '已开启',
       promptCacheBoostEnabledHint: '该 OpenAI 文本池账号会自动增强 prompt cache 命中。',
       promptCacheBoostDisabled: '未开启',

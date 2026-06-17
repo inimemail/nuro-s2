@@ -247,6 +247,99 @@ func TestOpenAIPromptCacheBoost_SmallPromptKeepsContentSpecificFallback(t *testi
 	require.Empty(t, DeriveOpenAIPromptCacheBoostAffinityHash("gpt-5.5", bodyA))
 }
 
+func TestOpenAIPromptCacheBoost_AggressiveSmallStaticPrefixIgnoresFirstUserContent(t *testing.T) {
+	account := promptCacheBoostTestAccount(364)
+	account.Credentials["prompt_cache_boost_level"] = OpenAIPromptCacheBoostLevelAggressive
+	bodyA := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"short shared policy"},{"role":"user","content":"first"}]}`)
+	bodyB := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"short shared policy"},{"role":"user","content":"second"}]}`)
+
+	keyA := deriveOpenAIVirtualPromptCacheKey(account, "gpt-5.5", bodyA)
+	keyB := deriveOpenAIVirtualPromptCacheKey(account, "gpt-5.5", bodyB)
+	require.NotEmpty(t, keyA)
+	require.Equal(t, keyA, keyB)
+
+	affinityA := deriveOpenAIPromptCacheBoostAffinityHashForAccount(account, "gpt-5.5", bodyA)
+	affinityB := deriveOpenAIPromptCacheBoostAffinityHashForAccount(account, "gpt-5.5", bodyB)
+	require.NotEmpty(t, affinityA)
+	require.Equal(t, affinityA, affinityB)
+	require.True(t, IsOpenAIPromptCacheBoostAffinitySessionHash(affinityA))
+	require.True(t, IsOpenAIPromptCacheBoostAggressiveAffinitySessionHash(affinityA))
+}
+
+func TestOpenAIPromptCacheBoost_AffinityStickyTTLUsesRetentionWindow(t *testing.T) {
+	ctx := context.Background()
+	account := promptCacheBoostTestAccount(365)
+	account.Status = StatusActive
+	account.Schedulable = true
+	aggressiveAccount := promptCacheBoostTestAccount(3651)
+	aggressiveAccount.Status = StatusActive
+	aggressiveAccount.Schedulable = true
+	aggressiveAccount.Credentials["prompt_cache_boost_level"] = OpenAIPromptCacheBoostLevelAggressive
+	cache := &stubGatewayCache{}
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{*account, *aggressiveAccount}},
+		cache:       cache,
+	}
+
+	sessionHash := openAIPromptCacheBoostAffinitySessionPrefix + "ttl"
+	require.NoError(t, svc.BindStickySession(ctx, nil, sessionHash, account.ID))
+	require.Equal(t, openaiStickySessionTTL, cache.sessionTTLs["openai:"+sessionHash])
+
+	aggressiveSessionHash := openAIPromptCacheBoostAggressiveAffinitySessionPrefix + "ttl"
+	require.NoError(t, svc.BindStickySession(ctx, nil, aggressiveSessionHash, aggressiveAccount.ID))
+	require.Equal(t, openAIPromptCacheBoostAffinityStickyTTL, cache.sessionTTLs["openai:"+aggressiveSessionHash])
+	require.NoError(t, svc.BindStickySession(ctx, nil, aggressiveSessionHash+"-normal", account.ID))
+	_, ok := cache.sessionTTLs["openai:"+aggressiveSessionHash+"-normal"]
+	require.False(t, ok)
+
+	normalSessionHash := "normal-ttl"
+	require.NoError(t, svc.BindStickySession(ctx, nil, normalSessionHash, account.ID))
+	require.Equal(t, openaiStickySessionTTL, cache.sessionTTLs["openai:"+normalSessionHash])
+}
+
+func TestOpenAIPromptCacheBoost_GroupAffinityUsesAggressiveWhenAvailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx := context.Background()
+	groupID := int64(1)
+	normal := *promptCacheBoostTestAccount(366)
+	normal.Status = StatusActive
+	normal.Schedulable = true
+	normal.Credentials["prompt_cache_boost_level"] = OpenAIPromptCacheBoostLevelNormal
+	aggressive := *promptCacheBoostTestAccount(367)
+	aggressive.Status = StatusActive
+	aggressive.Schedulable = true
+	aggressive.Credentials["prompt_cache_boost_level"] = OpenAIPromptCacheBoostLevelAggressive
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"shared policy"},{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	svc := &OpenAIGatewayService{
+		schedulerSnapshot: NewSchedulerSnapshotService(&openAISnapshotCacheStub{
+			snapshotAccounts: []*Account{&normal, &aggressive},
+		}, nil, nil, nil, nil),
+	}
+
+	sessionHash := svc.GeneratePromptCacheBoostAffinitySessionHashForGroup(ctx, c, &groupID, body, "gpt-5.5")
+	require.True(t, IsOpenAIPromptCacheBoostAggressiveAffinitySessionHash(sessionHash))
+}
+
+func TestOpenAIPromptCacheBoost_NormalizeAggressiveAffinityFallsBackForNormalAccount(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	aggressiveSessionHash := openAIPromptCacheBoostAggressiveAffinitySessionPrefix + "test"
+	normal := promptCacheBoostTestAccount(368)
+	normal.Status = StatusActive
+	normal.Schedulable = true
+	normal.Credentials["prompt_cache_boost_level"] = OpenAIPromptCacheBoostLevelNormal
+	aggressive := promptCacheBoostTestAccount(369)
+	aggressive.Status = StatusActive
+	aggressive.Schedulable = true
+	aggressive.Credentials["prompt_cache_boost_level"] = OpenAIPromptCacheBoostLevelAggressive
+
+	require.Empty(t, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(aggressiveSessionHash, normal))
+	require.Equal(t, aggressiveSessionHash, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(aggressiveSessionHash, aggressive))
+}
+
 func TestOpenAIAnthropicVirtualPromptCacheKey_IgnoresFirstUserContent(t *testing.T) {
 	staticSystem := strings.Repeat("shared anthropic system prompt. ", 80)
 	bodyA := []byte(`{"model":"claude-sonnet-4-5","system":"` + staticSystem + `","max_tokens":16,"messages":[{"role":"user","content":"first downstream user"}],"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{"q":{"type":"string"}}}}]}`)

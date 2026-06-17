@@ -40,7 +40,17 @@ func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostAffinityAccountUsable(acc
 		!s.isOpenAIAccountRuntimeBlocked(account)
 }
 
-func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostAffinityAccountBindable(ctx context.Context, accountID int64) bool {
+func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostAffinityHashUsableForAccount(sessionHash string, account *Account) bool {
+	if !s.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
+		return false
+	}
+	if IsOpenAIPromptCacheBoostAggressiveAffinitySessionHash(sessionHash) {
+		return account.IsOpenAIPromptCacheBoostAggressive()
+	}
+	return true
+}
+
+func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostAffinityAccountBindable(ctx context.Context, sessionHash string, accountID int64) bool {
 	if s == nil || accountID <= 0 || (s.schedulerSnapshot == nil && s.accountRepo == nil) {
 		return false
 	}
@@ -48,7 +58,7 @@ func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostAffinityAccountBindable(c
 	if err != nil {
 		return false
 	}
-	return s.isOpenAIPromptCacheBoostAffinityAccountUsable(account)
+	return s.isOpenAIPromptCacheBoostAffinityHashUsableForAccount(sessionHash, account)
 }
 
 // NormalizeOpenAIPromptCacheBoostAffinitySessionHash keeps prompt-cache affinity
@@ -58,7 +68,7 @@ func (s *OpenAIGatewayService) NormalizeOpenAIPromptCacheBoostAffinitySessionHas
 	if !IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) {
 		return sessionHash
 	}
-	if s.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
+	if s.isOpenAIPromptCacheBoostAffinityHashUsableForAccount(sessionHash, account) {
 		return sessionHash
 	}
 	return ""

@@ -3544,6 +3544,8 @@ export default {
       imagePoolModeHint: 'When enabled, this OpenAI pool account only handles image-generation requests; when disabled, image-generation requests will not route to this pool account.',
       promptCacheBoost: 'Cache Boost',
       promptCacheBoostHint: 'Only applies to text pools. Adds a virtual session cache key, uses 24h prompt cache, and preserves cacheable prefixes for large-context requests.',
+      promptCacheBoostAggressive: 'Aggressive Mode',
+      promptCacheBoostAggressiveHint: 'Off keeps the current policy. On loosens the static-prefix threshold so more requests with the same system prompt/tools can reuse the cache key.',
       promptCacheBoostEnabled: 'Enabled',
       promptCacheBoostEnabledHint: 'This OpenAI text-pool account will boost prompt cache hits automatically.',
       promptCacheBoostDisabled: 'Off',

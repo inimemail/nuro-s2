@@ -459,7 +459,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	if IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) &&
-		!s.service.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
+		!s.service.isOpenAIPromptCacheBoostAffinityHashUsableForAccount(sessionHash, account) {
 		if sessionHash != "" {
 			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		}
@@ -488,7 +488,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	if IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) &&
-		!s.service.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
+		!s.service.isOpenAIPromptCacheBoostAffinityHashUsableForAccount(sessionHash, account) {
 		if sessionHash != "" {
 			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		}

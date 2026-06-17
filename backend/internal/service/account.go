@@ -106,6 +106,11 @@ const openAIAPIKeySSECommentPreflushExtraKey = "openai_apikey_sse_comment_preflu
 const openAIOAuthChatGPTSafeTokenPlaceholderExtraKey = "openai_oauth_chatgpt_safe_token_placeholder_enabled"
 const openAIAPIKeySafeTokenPlaceholderExtraKey = "openai_apikey_safe_token_placeholder_enabled"
 
+const (
+	OpenAIPromptCacheBoostLevelNormal     = "normal"
+	OpenAIPromptCacheBoostLevelAggressive = "aggressive"
+)
+
 type TempUnschedulableRule struct {
 	ErrorCode       int      `json:"error_code"`
 	Keywords        []string `json:"keywords"`
@@ -929,6 +934,25 @@ func (a *Account) IsOpenAIPromptCacheBoostEnabled() bool {
 		}
 	}
 	return false
+}
+
+func (a *Account) OpenAIPromptCacheBoostLevel() string {
+	if !a.IsOpenAIPromptCacheBoostEnabled() {
+		return OpenAIPromptCacheBoostLevelNormal
+	}
+	if v, ok := a.Credentials["prompt_cache_boost_level"]; ok {
+		if level, ok := v.(string); ok {
+			switch strings.TrimSpace(strings.ToLower(level)) {
+			case OpenAIPromptCacheBoostLevelAggressive:
+				return OpenAIPromptCacheBoostLevelAggressive
+			}
+		}
+	}
+	return OpenAIPromptCacheBoostLevelNormal
+}
+
+func (a *Account) IsOpenAIPromptCacheBoostAggressive() bool {
+	return a.OpenAIPromptCacheBoostLevel() == OpenAIPromptCacheBoostLevelAggressive
 }
 
 // IsOpenAIUpstreamStrongIsolationEnabled disables upstream session continuation

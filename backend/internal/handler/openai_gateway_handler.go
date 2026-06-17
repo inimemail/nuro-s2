@@ -378,7 +378,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Generate session hash (explicit client signal first; prompt-cache affinity
 	// only when the request has a substantial static prefix).
-	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHash(c, body, reqModel)
+	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroup(requestCtx, c, apiKey.GroupID, body, reqModel)
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, sessionHashBody)
 	}
@@ -807,7 +807,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHash(c, body, reqModel)
+	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroup(c.Request.Context(), c, apiKey.GroupID, body, reqModel)
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 	}

@@ -54,12 +54,13 @@ const (
 	// 与 Codex 客户端保持一致：失败后最多重连 5 次。
 	openAIWSReconnectRetryLimit = 5
 	// OpenAI WS Mode 重连退避默认值（可由配置覆盖）。
-	openAIWSRetryBackoffInitialDefault = 120 * time.Millisecond
-	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
-	openAIWSRetryJitterRatioDefault    = 0.2
-	openAICompactSessionSeedKey        = "openai_compact_session_seed"
-	openAIPromptCacheBoostMinBodyBytes = 16 * 1024
-	codexCLIVersion                    = "0.125.0"
+	openAIWSRetryBackoffInitialDefault      = 120 * time.Millisecond
+	openAIWSRetryBackoffMaxDefault          = 2 * time.Second
+	openAIWSRetryJitterRatioDefault         = 0.2
+	openAICompactSessionSeedKey             = "openai_compact_session_seed"
+	openAIPromptCacheBoostMinBodyBytes      = 16 * 1024
+	openAIPromptCacheBoostAffinityStickyTTL = 24 * time.Hour
+	codexCLIVersion                         = "0.125.0"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
 	openAIOAuth401RefreshRetryKey         = "openai_oauth_401_refresh_retry"
@@ -1256,6 +1257,48 @@ func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHash(c *gi
 	return DeriveOpenAIPromptCacheBoostAffinityHash(model, body)
 }
 
+func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForGroup(ctx context.Context, c *gin.Context, groupID *int64, body []byte, model string) string {
+	if c == nil || len(body) == 0 || explicitOpenAISessionID(c, body) != "" {
+		return ""
+	}
+	if s == nil || s.schedulerSnapshot == nil || !openAIPromptCacheBoostBodyMayBenefitFromAggressive(body) {
+		return DeriveOpenAIPromptCacheBoostAffinityHash(model, body)
+	}
+	accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
+	if err == nil {
+		for i := range accounts {
+			account := &accounts[i]
+			if account.IsOpenAIPromptCacheBoostAggressive() &&
+				isOpenAIAccountEligibleForRequest(ctx, account, model, false, OpenAIEndpointCapabilityChatCompletions, "") &&
+				!s.isOpenAIPoolAccountSoftCooling(account) &&
+				!s.isOpenAIAccountRuntimeBlocked(account) {
+				if aggressiveHash := DeriveOpenAIPromptCacheBoostAggressiveAffinityHash(model, body); aggressiveHash != "" {
+					return aggressiveHash
+				}
+				break
+			}
+		}
+	}
+	return DeriveOpenAIPromptCacheBoostAffinityHash(model, body)
+}
+
+func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForAccount(c *gin.Context, body []byte, model string, account *Account) string {
+	if c == nil || len(body) == 0 || explicitOpenAISessionID(c, body) != "" {
+		return ""
+	}
+	return deriveOpenAIPromptCacheBoostAffinityHashForAccount(account, model, body)
+}
+
+func (s *OpenAIGatewayService) openAIStickySessionTTLForHash(sessionHash string, fallback time.Duration) time.Duration {
+	if IsOpenAIPromptCacheBoostAggressiveAffinitySessionHash(sessionHash) {
+		return openAIPromptCacheBoostAffinityStickyTTL
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	return openaiStickySessionTTL
+}
+
 // GenerateSessionHash generates a sticky-session hash for OpenAI requests.
 //
 // Priority:
@@ -1318,7 +1361,7 @@ func (s *OpenAIGatewayService) BindStickySession(ctx context.Context, groupID *i
 		return nil
 	}
 	if IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) {
-		if !s.isOpenAIPromptCacheBoostAffinityAccountBindable(ctx, accountID) {
+		if !s.isOpenAIPromptCacheBoostAffinityAccountBindable(ctx, sessionHash, accountID) {
 			return nil
 		}
 	}
@@ -1326,7 +1369,7 @@ func (s *OpenAIGatewayService) BindStickySession(ctx context.Context, groupID *i
 	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds > 0 {
 		ttl = time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
 	}
-	return s.setStickySessionAccountID(ctx, groupID, sessionHash, accountID, ttl)
+	return s.setStickySessionAccountID(ctx, groupID, sessionHash, accountID, s.openAIStickySessionTTLForHash(sessionHash, ttl))
 }
 
 // SelectAccount selects an OpenAI account with sticky session support
@@ -1807,7 +1850,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 	// 4. 设置粘性会话绑定
 	// Set sticky session binding
 	if sessionHash != "" {
-		_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, selected.ID, openaiStickySessionTTL)
+		_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, selected.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
 	}
 
 	return hydrated, nil
@@ -1863,7 +1906,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
-	if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
+	if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityHashUsableForAccount(sessionHash, account) {
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
@@ -1879,7 +1922,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 
 	// 刷新会话 TTL 并返回账号
 	// Refresh session TTL and return account
-	_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
+	_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
 	return account
 }
 
@@ -2111,7 +2154,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					if sessionHash != "" {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					}
-				} else if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
+				} else if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityHashUsableForAccount(sessionHash, account) {
 					if sessionHash != "" {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					}
@@ -2127,7 +2170,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						if sessionHash != "" {
 							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						}
-					} else if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityAccountUsable(account) {
+					} else if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityHashUsableForAccount(sessionHash, account) {
 						if sessionHash != "" {
 							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						}
@@ -2147,7 +2190,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 								return nil, selectErr
 							}
 							if sessionHash != "" {
-								_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
+								_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
 							}
 							return selection, nil
 						}
@@ -2277,7 +2320,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					return nil, true, selectErr
 				}
 				if sessionHash != "" && !stickyBusyPreserve {
-					_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, openaiStickySessionTTL)
+					_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
 				}
 				return selection, true, nil
 			}
@@ -2313,7 +2356,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					return nil, selectErr
 				}
 				if sessionHash != "" && !stickyBusyPreserve {
-					_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, openaiStickySessionTTL)
+					_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
 				}
 				return selection, nil
 			}
