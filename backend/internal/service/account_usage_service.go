@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -913,6 +914,10 @@ func (s *AccountUsageService) QueryOpenAICodexResetCreditUsage(ctx context.Conte
 
 	usage, updates, err := s.queryOpenAIWhamUsage(ctx, account)
 	if err != nil {
+		var appErr *infraerrors.ApplicationError
+		if errors.As(err, &appErr) {
+			return nil, appErr
+		}
 		return nil, infraerrors.InternalServer("OPENAI_CODEX_USAGE_REFRESH_FAILED", err.Error()).WithCause(err)
 	}
 	if len(updates) > 0 {
@@ -1085,6 +1090,10 @@ func (s *AccountUsageService) doOpenAIWhamRequest(ctx context.Context, account *
 	if accessToken == "" {
 		return nil, fmt.Errorf("no access token available")
 	}
+	chatgptAccountID, err := openAIWhamChatGPTAccountID(account)
+	if err != nil {
+		return nil, err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
@@ -1108,9 +1117,7 @@ func (s *AccountUsageService) doOpenAIWhamRequest(ctx context.Context, account *
 			req.Header.Set("User-Agent", strings.TrimSpace(fp.UserAgent))
 		}
 	}
-	if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
-		req.Header.Set("chatgpt-account-id", chatgptAccountID)
-	}
+	req.Header.Set("chatgpt-account-id", chatgptAccountID)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -1139,6 +1146,19 @@ func (s *AccountUsageService) openAIWhamAccessToken(ctx context.Context, account
 		return s.openAITokenProvider.GetAccessToken(ctx, account)
 	}
 	return strings.TrimSpace(account.GetOpenAIAccessToken()), nil
+}
+
+func openAIWhamChatGPTAccountID(account *Account) (string, error) {
+	if account == nil || !account.IsOpenAIOAuth() {
+		return "", fmt.Errorf("account does not support OpenAI Codex reset credits")
+	}
+	if chatgptAccountID := strings.TrimSpace(account.GetChatGPTAccountID()); chatgptAccountID != "" {
+		return chatgptAccountID, nil
+	}
+	if organizationID := strings.TrimSpace(account.GetOpenAIOrganizationID()); organizationID != "" {
+		return organizationID, nil
+	}
+	return "", infraerrors.BadRequest("OPENAI_QUOTA_MISSING_ACCOUNT_ID", "chatgpt_account_id is missing; please re-authorize this account")
 }
 
 func buildOpenAICodexResetCreditOptimisticUpdates(account *Account, now time.Time) map[string]any {

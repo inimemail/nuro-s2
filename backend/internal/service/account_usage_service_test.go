@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 type accountUsageOpenAITokenCacheStub struct {
@@ -256,6 +258,62 @@ func TestAccountUsageOpenAIWhamAccessTokenUsesProvider(t *testing.T) {
 	}
 	if token != "fresh-provider-token" {
 		t.Fatalf("token = %q, want provider token", token)
+	}
+}
+
+func TestOpenAIWhamChatGPTAccountIDFallsBackToOrganizationID(t *testing.T) {
+	t.Parallel()
+
+	got, err := openAIWhamChatGPTAccountID(&Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"organization_id": "org-fallback",
+		},
+	})
+	if err != nil {
+		t.Fatalf("openAIWhamChatGPTAccountID() error = %v", err)
+	}
+	if got != "org-fallback" {
+		t.Fatalf("account id = %q, want organization_id fallback", got)
+	}
+}
+
+func TestOpenAIWhamChatGPTAccountIDPrefersChatGPTAccountID(t *testing.T) {
+	t.Parallel()
+
+	got, err := openAIWhamChatGPTAccountID(&Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"chatgpt_account_id": "chatgpt-account",
+			"organization_id":    "org-fallback",
+		},
+	})
+	if err != nil {
+		t.Fatalf("openAIWhamChatGPTAccountID() error = %v", err)
+	}
+	if got != "chatgpt-account" {
+		t.Fatalf("account id = %q, want chatgpt_account_id", got)
+	}
+}
+
+func TestOpenAIWhamChatGPTAccountIDMissingReturnsStructuredError(t *testing.T) {
+	t.Parallel()
+
+	_, err := openAIWhamChatGPTAccountID(&Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{},
+	})
+	if err == nil {
+		t.Fatal("expected missing account id error")
+	}
+	if got := infraerrors.Reason(err); got != "OPENAI_QUOTA_MISSING_ACCOUNT_ID" {
+		t.Fatalf("reason = %q, want OPENAI_QUOTA_MISSING_ACCOUNT_ID", got)
+	}
+	if got := infraerrors.Code(err); got != 400 {
+		t.Fatalf("code = %d, want 400", got)
 	}
 }
 

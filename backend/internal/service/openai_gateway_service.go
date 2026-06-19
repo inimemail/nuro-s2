@@ -2943,6 +2943,10 @@ func (s *OpenAIGatewayService) doOpenAIWhamRequest(ctx context.Context, account 
 	if err != nil {
 		return nil, err
 	}
+	chatgptAccountID, err := openAIWhamChatGPTAccountID(account)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("create openai wham request: %w", err)
@@ -2963,9 +2967,7 @@ func (s *OpenAIGatewayService) doOpenAIWhamRequest(ctx context.Context, account 
 	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
 		req.Header.Set("User-Agent", customUA)
 	}
-	if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
-		req.Header.Set("chatgpt-account-id", chatgptAccountID)
-	}
+	req.Header.Set("chatgpt-account-id", chatgptAccountID)
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
