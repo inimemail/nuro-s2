@@ -95,6 +95,12 @@ services:
       - ANTIGRAVITY_OAUTH_CLIENT_SECRET=${ANTIGRAVITY_OAUTH_CLIENT_SECRET:-}
       - ANTIGRAVITY_USER_AGENT_VERSION=${ANTIGRAVITY_USER_AGENT_VERSION:-}
 
+      # OpenAI Codex invite adapter (optional, private/undocumented upstream)
+      - OPENAI_CODEX_INVITE_URL=${OPENAI_CODEX_INVITE_URL:-https://chatgpt.com/backend-api/wham/referrals/invite}
+      - OPENAI_CODEX_INVITE_METHOD=${OPENAI_CODEX_INVITE_METHOD:-POST}
+      - OPENAI_CODEX_INVITE_REFERRAL_KEY=${OPENAI_CODEX_INVITE_REFERRAL_KEY:-codex_referral_persistent_invite}
+      - OPENAI_CODEX_INVITE_ACCOUNT_HEADER=${OPENAI_CODEX_INVITE_ACCOUNT_HEADER:-Chatgpt-Account-Id}
+
       # =======================================================================
       # Image Generation Stream & Concurrency
       # =======================================================================

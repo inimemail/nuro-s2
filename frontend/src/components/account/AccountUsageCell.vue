@@ -578,9 +578,6 @@
           </button>
         </div>
         <div class="space-y-3">
-          <div class="text-xs font-medium text-gray-600 dark:text-gray-300">
-            剩余机会：{{ codexInviteSlotsLeft }}
-          </div>
           <div v-if="codexPendingInviteEmails.length" class="space-y-1">
             <div class="mb-1 text-xs text-gray-500 dark:text-gray-400">已邀请</div>
             <div class="max-h-24 space-y-1 overflow-y-auto rounded bg-gray-50 px-2 py-1.5 dark:bg-gray-950/60">
@@ -736,20 +733,16 @@ const canConsumeCodexResetCredit = computed(() => {
 
 const codexInvites = computed(() => usageInfo.value?.codex_invites ?? null)
 
-const codexInviteSlotsLeft = computed(() => {
-  const invites = codexInvites.value
-  if (!invites) return 0
-  const directCount = invites.slotsLeft ?? invites.slots_left
-  if (typeof directCount === 'number' && Number.isFinite(directCount)) return Math.max(0, directCount)
-  const limit = invites.limit
-  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) return 0
-  const created = typeof invites.created === 'number' && Number.isFinite(invites.created) ? invites.created : 0
-  const redeemed = typeof invites.redeemed === 'number' && Number.isFinite(invites.redeemed) ? invites.redeemed : 0
-  return Math.max(0, limit - created - redeemed)
-})
-
 const codexPendingInviteEmails = computed(() => {
-  const emails = codexInvites.value?.pendingEmails
+  const invites = codexInvites.value
+  if (!invites) return []
+  const listEmails = Array.isArray(invites.list)
+    ? invites.list
+      .map((invite) => invite?.email)
+      .filter((email): email is string => typeof email === 'string' && email.trim().length > 0)
+    : []
+  if (listEmails.length > 0) return listEmails
+  const emails = invites.pendingEmails
   return Array.isArray(emails) ? emails.filter((email) => typeof email === 'string' && email.trim()) : []
 })
 
@@ -1459,14 +1452,6 @@ const sendCodexInvite = async () => {
     const result = await adminAPI.accounts.sendOpenAICodexInvite(props.account.id, email)
     codexInviteSent.value = result.sent === true
     codexInviteEmail.value = ''
-    if (result.sent === true && codexInvites.value) {
-      mergeUsageInfo({
-        codex_invites: {
-          ...codexInvites.value,
-          slotsLeft: Math.max(0, codexInviteSlotsLeft.value - 1)
-        }
-      })
-    }
   } catch (e: any) {
     console.error('Failed to send Codex invite:', e)
     codexInviteError.value =

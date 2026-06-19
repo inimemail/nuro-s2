@@ -1009,6 +1009,10 @@ export interface AccountUsageInfo {
     pendingEmails?: string[]
     slotsLeft?: number
     slots_left?: number
+    list?: Array<{
+      email?: string
+      status?: string
+    }>
   } | null
 
   error?: string            // usage 获取失败时的错误信息

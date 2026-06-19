@@ -123,12 +123,13 @@ const (
 var (
 	openAIWhamUsageURL   = "https://chatgpt.com/backend-api/wham/usage"
 	openAIWhamConsumeURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+	openAICodexInviteURL = "https://chatgpt.com/backend-api/wham/referrals/invite"
 )
 
 const (
 	openAICodexInviteURLEnv           = "OPENAI_CODEX_INVITE_URL"
 	openAICodexInviteMethodEnv        = "OPENAI_CODEX_INVITE_METHOD"
-	openAICodexInviteEmailFieldEnv    = "OPENAI_CODEX_INVITE_EMAIL_FIELD"
+	openAICodexInviteReferralKeyEnv   = "OPENAI_CODEX_INVITE_REFERRAL_KEY"
 	openAICodexInviteAccountHeaderEnv = "OPENAI_CODEX_INVITE_ACCOUNT_HEADER"
 )
 
@@ -315,8 +316,8 @@ func (i *OpenAICodexInvites) UnmarshalJSON(data []byte) error {
 		i.SlotsLeft = *v
 	} else if i.Limit > 0 {
 		used := i.Created
-		if i.Redeemed != nil && *i.Redeemed > 0 {
-			used += *i.Redeemed
+		if used == 0 && i.Redeemed != nil && *i.Redeemed > 0 {
+			used = *i.Redeemed
 		}
 		if used < 0 {
 			used = 0
@@ -1016,21 +1017,6 @@ func (s *AccountUsageService) SendOpenAICodexInvite(ctx context.Context, account
 		return nil, infraerrors.BadRequest("OPENAI_CODEX_INVITE_INVALID_EMAIL", "invalid invite email")
 	}
 
-	usage, _, err := s.queryOpenAIWhamUsage(ctx, account)
-	if err != nil {
-		return nil, infraerrors.InternalServer("OPENAI_CODEX_INVITE_QUOTA_REFRESH_FAILED", err.Error()).WithCause(err)
-	}
-	if usage != nil && usage.Invites != nil {
-		if usage.Invites.SlotsLeft <= 0 {
-			return nil, infraerrors.Conflict("OPENAI_CODEX_INVITE_NO_SLOTS", "no OpenAI Codex invite slots left")
-		}
-		for _, pending := range usage.Invites.PendingEmails {
-			if strings.EqualFold(strings.TrimSpace(pending), email) {
-				return nil, infraerrors.Conflict("OPENAI_CODEX_INVITE_EMAIL_ALREADY_PENDING", "email is already invited")
-			}
-		}
-	}
-
 	if err := s.sendOpenAICodexInviteToUpstream(ctx, account, email); err != nil {
 		return nil, err
 	}
@@ -1043,6 +1029,12 @@ func extractOpenAICodexResetCreditUpdates(body []byte, now time.Time) (map[strin
 		return nil, false, false
 	}
 	result := gjson.GetBytes(body, "rate_limit_reset_credits.available_count")
+	if !result.Exists() {
+		result = gjson.GetBytes(body, "resetCreditsAvailable")
+	}
+	if !result.Exists() {
+		result = gjson.GetBytes(body, "reset_credits_available")
+	}
 	count := 0
 	if result.Exists() {
 		count = int(result.Int())
@@ -1284,7 +1276,7 @@ func (s *AccountUsageService) openAIWhamAccessToken(ctx context.Context, account
 func (s *AccountUsageService) sendOpenAICodexInviteToUpstream(ctx context.Context, account *Account, email string) error {
 	inviteURL := strings.TrimSpace(os.Getenv(openAICodexInviteURLEnv))
 	if inviteURL == "" {
-		return infraerrors.New(http.StatusNotImplemented, "OPENAI_CODEX_INVITE_ENDPOINT_NOT_CONFIGURED", "codex invite endpoint is not configured")
+		inviteURL = openAICodexInviteURL
 	}
 
 	accessToken, err := s.openAIWhamAccessToken(ctx, account)
@@ -1299,11 +1291,15 @@ func (s *AccountUsageService) sendOpenAICodexInviteToUpstream(ctx context.Contex
 	if method == "" {
 		method = http.MethodPost
 	}
-	emailField := strings.TrimSpace(os.Getenv(openAICodexInviteEmailFieldEnv))
-	if emailField == "" {
-		emailField = "email"
+	referralKey := strings.TrimSpace(os.Getenv(openAICodexInviteReferralKeyEnv))
+	if referralKey == "" {
+		referralKey = "codex_referral_persistent_invite"
 	}
-	bodyBytes, err := json.Marshal(map[string]any{emailField: email})
+	body := map[string]any{
+		"referral_key": referralKey,
+		"emails":       []string{email},
+	}
+	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("marshal openai codex invite request: %w", err)
 	}
@@ -1323,7 +1319,11 @@ func (s *AccountUsageService) sendOpenAICodexInviteToUpstream(ctx context.Contex
 			req.Header.Set("User-Agent", strings.TrimSpace(fp.UserAgent))
 		}
 	}
-	if accountHeader := strings.TrimSpace(os.Getenv(openAICodexInviteAccountHeaderEnv)); accountHeader != "" {
+	accountHeader := strings.TrimSpace(os.Getenv(openAICodexInviteAccountHeaderEnv))
+	if accountHeader == "" && inviteURL == openAICodexInviteURL {
+		accountHeader = "Chatgpt-Account-Id"
+	}
+	if accountHeader != "" {
 		chatgptAccountID, err := openAIWhamChatGPTAccountID(account)
 		if err != nil {
 			return err

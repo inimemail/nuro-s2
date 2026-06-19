@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,6 +217,14 @@ func TestExtractOpenAICodexResetCreditUpdates(t *testing.T) {
 		t.Fatalf("codex_reset_credits_supported = %v, want true", got)
 	}
 
+	updates, supported, ok = extractOpenAICodexResetCreditUpdates([]byte(`{"resetCreditsAvailable":2}`), now)
+	if !ok || !supported {
+		t.Fatalf("expected camelCase reset credit payload, supported=%v ok=%v", supported, ok)
+	}
+	if got := updates["codex_reset_credits"]; got != 2 {
+		t.Fatalf("codex_reset_credits = %v, want 2 from resetCreditsAvailable", got)
+	}
+
 	updates, supported, ok = extractOpenAICodexResetCreditUpdates([]byte(`{"rate_limit_reset_credits":{"available_count":1,"invite_url":"https://chatgpt.com/invite/codex-reset"}}`), now)
 	if !ok || !supported {
 		t.Fatalf("expected supported reset credit payload with ignored invite URL, supported=%v ok=%v", supported, ok)
@@ -413,17 +422,72 @@ func TestQueryOpenAIWhamUsageNormalizesInviteSlotsLeft(t *testing.T) {
 	}
 }
 
-func TestSendOpenAICodexInviteEndpointNotConfigured(t *testing.T) {
-	t.Setenv(openAICodexInviteURLEnv, "")
-
-	oldUsageURL := openAIWhamUsageURL
+func TestQueryOpenAIWhamUsageHandlesCamelCaseReferralPayload(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"rate_limit_reset_credits":{"available_count":0},"invites":{"slotsLeft":1}}`))
+		_, _ = w.Write([]byte(`{"ok":true,"resetCreditsAvailable":2,"invites":{"created":3,"limit":3,"slotsLeft":0,"redeemed":3,"pendingCount":0,"pendingEmails":[],"list":[{"email":"amymills276586@outlook.com","status":"redeemed"},{"email":"mrspamela25971@outlook.com","status":"redeemed"},{"email":"justinsmith925590@outlook.com","status":"redeemed"}]}}`))
 	}))
 	defer upstream.Close()
-	openAIWhamUsageURL = upstream.URL
+
+	oldUsageURL := openAIWhamUsageURL
+	openAIWhamUsageURL = upstream.URL + "/usage"
 	t.Cleanup(func() { openAIWhamUsageURL = oldUsageURL })
+
+	svc := &AccountUsageService{}
+	usage, updates, err := svc.queryOpenAIWhamUsage(context.Background(), &Account{
+		ID:       20262,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":       "access-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+	})
+	if err != nil {
+		t.Fatalf("queryOpenAIWhamUsage() error = %v", err)
+	}
+	if usage.RateLimitResetCredits == nil || usage.RateLimitResetCredits.AvailableCount != 2 {
+		t.Fatalf("reset credits = %#v, want available_count 2", usage.RateLimitResetCredits)
+	}
+	if got := updates["codex_reset_credits"]; got != 2 {
+		t.Fatalf("codex_reset_credits update = %v, want 2", got)
+	}
+	if usage.Invites == nil {
+		t.Fatal("expected invites to be passed through")
+	}
+	if usage.Invites.Created != 3 || usage.Invites.Limit != 3 || usage.Invites.SlotsLeft != 0 {
+		t.Fatalf("invites = %#v, want created=3 limit=3 slotsLeft=0", usage.Invites)
+	}
+	if usage.Invites.Redeemed == nil || *usage.Invites.Redeemed != 3 {
+		t.Fatalf("redeemed = %#v, want 3", usage.Invites.Redeemed)
+	}
+}
+
+func TestSendOpenAICodexInviteUsesDefaultReferralEndpoint(t *testing.T) {
+	var inviteBody string
+	var inviteAccountHeader string
+	oldInviteURL := openAICodexInviteURL
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/backend-api/wham/referrals/invite":
+			buf, _ := io.ReadAll(r.Body)
+			inviteBody = string(buf)
+			inviteAccountHeader = r.Header.Get("Chatgpt-Account-Id")
+			if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			_, _ = w.Write([]byte(`{"invites":[{"email":"friend@example.com"}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+	openAICodexInviteURL = upstream.URL + "/backend-api/wham/referrals/invite"
+	t.Cleanup(func() {
+		openAICodexInviteURL = oldInviteURL
+	})
+	t.Setenv(openAICodexInviteURLEnv, "")
 
 	svc := &AccountUsageService{accountRepo: &accountUsageStaticAccountRepo{account: &Account{
 		ID:       2027,
@@ -435,19 +499,22 @@ func TestSendOpenAICodexInviteEndpointNotConfigured(t *testing.T) {
 		},
 	}}}
 
-	_, err := svc.SendOpenAICodexInvite(context.Background(), 2027, "friend@example.com")
-	if err == nil {
-		t.Fatal("expected endpoint not configured error")
+	result, err := svc.SendOpenAICodexInvite(context.Background(), 2027, "friend@example.com")
+	if err != nil {
+		t.Fatalf("SendOpenAICodexInvite() error = %v", err)
 	}
-	if got := infraerrors.Reason(err); got != "OPENAI_CODEX_INVITE_ENDPOINT_NOT_CONFIGURED" {
-		t.Fatalf("reason = %q, want OPENAI_CODEX_INVITE_ENDPOINT_NOT_CONFIGURED", got)
+	if result == nil || !result.Sent {
+		t.Fatalf("unexpected result %#v", result)
 	}
-	if got := infraerrors.Code(err); got != http.StatusNotImplemented {
-		t.Fatalf("code = %d, want 501", got)
+	if !strings.Contains(inviteBody, `"emails":["friend@example.com"]`) || !strings.Contains(inviteBody, `"referral_key":"codex_referral_persistent_invite"`) {
+		t.Fatalf("invite body = %s", inviteBody)
+	}
+	if inviteAccountHeader != "chatgpt-acc" {
+		t.Fatalf("Chatgpt-Account-Id = %q, want chatgpt-acc", inviteAccountHeader)
 	}
 }
 
-func TestSendOpenAICodexInvitePostsConfiguredEmailFieldAndDoesNotRefreshInvites(t *testing.T) {
+func TestSendOpenAICodexInvitePostsReferralPayloadWithoutPreflightUsage(t *testing.T) {
 	usageCalls := 0
 	var inviteBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -470,11 +537,8 @@ func TestSendOpenAICodexInvitePostsConfiguredEmailFieldAndDoesNotRefreshInvites(
 	}))
 	defer upstream.Close()
 
-	oldUsageURL := openAIWhamUsageURL
-	openAIWhamUsageURL = upstream.URL + "/usage"
-	t.Cleanup(func() { openAIWhamUsageURL = oldUsageURL })
 	t.Setenv(openAICodexInviteURLEnv, upstream.URL+"/invite")
-	t.Setenv(openAICodexInviteEmailFieldEnv, "recipient_email")
+	t.Setenv(openAICodexInviteReferralKeyEnv, "ref-key")
 
 	svc := &AccountUsageService{accountRepo: &accountUsageStaticAccountRepo{account: &Account{
 		ID:       2028,
@@ -490,24 +554,22 @@ func TestSendOpenAICodexInvitePostsConfiguredEmailFieldAndDoesNotRefreshInvites(
 	if err != nil {
 		t.Fatalf("SendOpenAICodexInvite() error = %v", err)
 	}
-	if inviteBody != `{"recipient_email":"friend@example.com"}` {
+	if !strings.Contains(inviteBody, `"emails":["friend@example.com"]`) || !strings.Contains(inviteBody, `"referral_key":"ref-key"`) {
 		t.Fatalf("invite body = %s", inviteBody)
 	}
 	if result == nil || !result.Sent {
 		t.Fatalf("unexpected result %#v", result)
 	}
-	if usageCalls != 1 {
-		t.Fatalf("usageCalls = %d, want 1", usageCalls)
+	if usageCalls != 0 {
+		t.Fatalf("usageCalls = %d, want 0", usageCalls)
 	}
 }
 
-func TestSendOpenAICodexInvitePostsWhenInviteStateUnavailable(t *testing.T) {
+func TestSendOpenAICodexInviteUsesDefaultReferralKey(t *testing.T) {
 	var inviteBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/usage":
-			_, _ = w.Write([]byte(`{"rate_limit_reset_credits":{"available_count":1}}`))
 		case "/invite":
 			buf, _ := io.ReadAll(r.Body)
 			inviteBody = string(buf)
@@ -519,9 +581,6 @@ func TestSendOpenAICodexInvitePostsWhenInviteStateUnavailable(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	oldUsageURL := openAIWhamUsageURL
-	openAIWhamUsageURL = upstream.URL + "/usage"
-	t.Cleanup(func() { openAIWhamUsageURL = oldUsageURL })
 	t.Setenv(openAICodexInviteURLEnv, upstream.URL+"/invite")
 
 	svc := &AccountUsageService{accountRepo: &accountUsageStaticAccountRepo{account: &Account{
@@ -541,7 +600,7 @@ func TestSendOpenAICodexInvitePostsWhenInviteStateUnavailable(t *testing.T) {
 	if result == nil || !result.Sent {
 		t.Fatalf("unexpected result %#v", result)
 	}
-	if inviteBody != `{"email":"friend@example.com"}` {
+	if !strings.Contains(inviteBody, `"emails":["friend@example.com"]`) || !strings.Contains(inviteBody, `"referral_key":"codex_referral_persistent_invite"`) {
 		t.Fatalf("invite body = %s", inviteBody)
 	}
 }
