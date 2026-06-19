@@ -359,6 +359,89 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).not.toContain('未知')
   })
 
+  it('OpenAI OAuth invites 缺少 slotsLeft 时用 limit-created 显示邀请按钮', async () => {
+    getUsage.mockResolvedValue({
+      updated_at: null,
+      five_hour: null,
+      seven_day: null,
+      seven_day_sonnet: null
+    })
+    queryOpenAIQuota.mockResolvedValue({
+      rate_limit_reset_credits: {
+        available_count: 0
+      },
+      invites: {
+        created: 1,
+        limit: 3
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2022,
+          platform: 'openai',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: true,
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const queryButton = wrapper.findAll('button').find(button => button.text().includes('查询'))
+    expect(queryButton).toBeTruthy()
+    await queryButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('button').some(button => button.text().trim() === '邀请')).toBe(true)
+  })
+
+  it('OpenAI OAuth 未获取到 invites 时仍显示可点邀请按钮', async () => {
+    getUsage.mockResolvedValue({
+      updated_at: null,
+      five_hour: null,
+      seven_day: null,
+      seven_day_sonnet: null,
+      codex_reset_credits_supported: true,
+      codex_reset_credits_available_count: 1
+    })
+    queryOpenAIQuota.mockResolvedValue({
+      rate_limit_reset_credits: {
+        available_count: 1
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2023,
+          platform: 'openai',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: true,
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const inviteButton = wrapper.findAll('button').find(button => button.text().trim() === '邀请')
+    expect(inviteButton).toBeTruthy()
+    expect(inviteButton!.attributes('disabled')).toBeUndefined()
+  })
+
   it('OpenAI OAuth 有现成快照时，手动刷新信号会触发 usage 重拉', async () => {
     getUsage.mockResolvedValue({
       five_hour: {

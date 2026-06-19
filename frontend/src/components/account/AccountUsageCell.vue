@@ -180,7 +180,7 @@
             {{ codexResetCreditButtonText }}
           </button>
           <button
-            v-if="canSendCodexInvite"
+            v-if="showCodexInviteButton"
             type="button"
             class="inline-flex h-6 shrink-0 items-center rounded px-1 text-[10px] font-medium text-emerald-600 transition-colors hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
             @click="openCodexInviteDialog"
@@ -737,8 +737,15 @@ const canConsumeCodexResetCredit = computed(() => {
 const codexInvites = computed(() => usageInfo.value?.codex_invites ?? null)
 
 const codexInviteSlotsLeft = computed(() => {
-  const count = codexInvites.value?.slotsLeft
-  return typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
+  const invites = codexInvites.value
+  if (!invites) return 0
+  const directCount = invites.slotsLeft ?? invites.slots_left
+  if (typeof directCount === 'number' && Number.isFinite(directCount)) return Math.max(0, directCount)
+  const limit = invites.limit
+  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) return 0
+  const created = typeof invites.created === 'number' && Number.isFinite(invites.created) ? invites.created : 0
+  const redeemed = typeof invites.redeemed === 'number' && Number.isFinite(invites.redeemed) ? invites.redeemed : 0
+  return Math.max(0, limit - created - redeemed)
 })
 
 const codexPendingInviteEmails = computed(() => {
@@ -746,8 +753,8 @@ const codexPendingInviteEmails = computed(() => {
   return Array.isArray(emails) ? emails.filter((email) => typeof email === 'string' && email.trim()) : []
 })
 
-const canSendCodexInvite = computed(() => {
-  return props.account.platform === 'openai' && props.account.type === 'oauth' && codexInviteSlotsLeft.value > 0
+const showCodexInviteButton = computed(() => {
+  return props.account.platform === 'openai' && props.account.type === 'oauth'
 })
 
 const codexAutoResetDisabled = computed(() => !canConsumeCodexResetCredit.value)

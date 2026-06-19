@@ -282,6 +282,7 @@ export interface OpenAICodexInvites {
   pendingCount?: number | null
   pendingEmails?: string[]
   slotsLeft?: number
+  slots_left?: number
 }
 
 export async function queryOpenAIQuota(id: number): Promise<OpenAICodexResetCreditUsage> {

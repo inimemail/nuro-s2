@@ -288,6 +288,47 @@ type OpenAICodexInvites struct {
 	SlotsLeft     int      `json:"slotsLeft,omitempty"`
 }
 
+func (i *OpenAICodexInvites) UnmarshalJSON(data []byte) error {
+	type openAICodexInvitesAlias OpenAICodexInvites
+	var raw openAICodexInvitesAlias
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*i = OpenAICodexInvites(raw)
+
+	if v := firstGJSONInt(data, "created", "sent", "sentCount", "sent_count"); v != nil {
+		i.Created = *v
+	}
+	if v := firstGJSONInt(data, "limit", "max", "maxCount", "max_count"); v != nil {
+		i.Limit = *v
+	}
+	if v := firstGJSONInt(data, "redeemed", "redeemedCount", "redeemed_count"); v != nil {
+		i.Redeemed = v
+	}
+	if v := firstGJSONInt(data, "pendingCount", "pending_count"); v != nil {
+		i.PendingCount = v
+	}
+	if emails := firstGJSONStringArray(data, "pendingEmails", "pending_emails"); len(emails) > 0 {
+		i.PendingEmails = emails
+	}
+	if v := firstGJSONInt(data, "slotsLeft", "slots_left", "slotsRemaining", "slots_remaining", "remaining", "remainingCount", "remaining_count"); v != nil {
+		i.SlotsLeft = *v
+	} else if i.Limit > 0 {
+		used := i.Created
+		if i.Redeemed != nil && *i.Redeemed > 0 {
+			used += *i.Redeemed
+		}
+		if used < 0 {
+			used = 0
+		}
+		i.SlotsLeft = i.Limit - used
+	}
+	if i.SlotsLeft < 0 {
+		i.SlotsLeft = 0
+	}
+	return nil
+}
+
 type OpenAIQuotaUsage struct {
 	UserID                string                       `json:"user_id,omitempty"`
 	AccountID             string                       `json:"account_id,omitempty"`
@@ -979,15 +1020,14 @@ func (s *AccountUsageService) SendOpenAICodexInvite(ctx context.Context, account
 	if err != nil {
 		return nil, infraerrors.InternalServer("OPENAI_CODEX_INVITE_QUOTA_REFRESH_FAILED", err.Error()).WithCause(err)
 	}
-	if usage == nil || usage.Invites == nil {
-		return nil, infraerrors.BadRequest("OPENAI_CODEX_INVITE_UNAVAILABLE", "OpenAI Codex invites are unavailable for this account")
-	}
-	if usage.Invites.SlotsLeft <= 0 {
-		return nil, infraerrors.Conflict("OPENAI_CODEX_INVITE_NO_SLOTS", "no OpenAI Codex invite slots left")
-	}
-	for _, pending := range usage.Invites.PendingEmails {
-		if strings.EqualFold(strings.TrimSpace(pending), email) {
-			return nil, infraerrors.Conflict("OPENAI_CODEX_INVITE_EMAIL_ALREADY_PENDING", "email is already invited")
+	if usage != nil && usage.Invites != nil {
+		if usage.Invites.SlotsLeft <= 0 {
+			return nil, infraerrors.Conflict("OPENAI_CODEX_INVITE_NO_SLOTS", "no OpenAI Codex invite slots left")
+		}
+		for _, pending := range usage.Invites.PendingEmails {
+			if strings.EqualFold(strings.TrimSpace(pending), email) {
+				return nil, infraerrors.Conflict("OPENAI_CODEX_INVITE_EMAIL_ALREADY_PENDING", "email is already invited")
+			}
 		}
 	}
 
@@ -1019,6 +1059,37 @@ func extractOpenAICodexResetCreditUpdates(body []byte, now time.Time) (map[strin
 		updates["codex_auto_reset_mode"] = openAICodexAutoResetModeOff
 	}
 	return updates, true, true
+}
+
+func firstGJSONInt(data []byte, paths ...string) *int {
+	for _, path := range paths {
+		result := gjson.GetBytes(data, path)
+		if !result.Exists() {
+			continue
+		}
+		value := int(result.Int())
+		return &value
+	}
+	return nil
+}
+
+func firstGJSONStringArray(data []byte, paths ...string) []string {
+	for _, path := range paths {
+		result := gjson.GetBytes(data, path)
+		if !result.Exists() || !result.IsArray() {
+			continue
+		}
+		values := result.Array()
+		emails := make([]string, 0, len(values))
+		for _, value := range values {
+			email := strings.TrimSpace(value.String())
+			if email != "" {
+				emails = append(emails, email)
+			}
+		}
+		return emails
+	}
+	return nil
 }
 
 func (s *AccountUsageService) ConsumeOpenAICodexResetCredit(ctx context.Context, accountID int64) (*UsageInfo, error) {

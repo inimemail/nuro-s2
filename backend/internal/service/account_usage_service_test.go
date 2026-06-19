@@ -375,6 +375,44 @@ func TestQueryOpenAIWhamUsagePassesThroughInvites(t *testing.T) {
 	}
 }
 
+func TestQueryOpenAIWhamUsageNormalizesInviteSlotsLeft(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"rate_limit_reset_credits":{"available_count":0},"invites":{"created":1,"limit":3,"redeemed_count":0,"pending_count":1,"pending_emails":["friend@example.com"]}}`))
+	}))
+	defer upstream.Close()
+
+	oldUsageURL := openAIWhamUsageURL
+	openAIWhamUsageURL = upstream.URL + "/usage"
+	t.Cleanup(func() { openAIWhamUsageURL = oldUsageURL })
+
+	svc := &AccountUsageService{}
+	usage, _, err := svc.queryOpenAIWhamUsage(context.Background(), &Account{
+		ID:       20261,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":       "access-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+	})
+	if err != nil {
+		t.Fatalf("queryOpenAIWhamUsage() error = %v", err)
+	}
+	if usage.Invites == nil {
+		t.Fatal("expected invites to be passed through")
+	}
+	if usage.Invites.SlotsLeft != 2 {
+		t.Fatalf("slotsLeft = %d, want 2", usage.Invites.SlotsLeft)
+	}
+	if usage.Invites.PendingCount == nil || *usage.Invites.PendingCount != 1 {
+		t.Fatalf("pendingCount = %#v, want 1", usage.Invites.PendingCount)
+	}
+	if len(usage.Invites.PendingEmails) != 1 || usage.Invites.PendingEmails[0] != "friend@example.com" {
+		t.Fatalf("pendingEmails = %#v", usage.Invites.PendingEmails)
+	}
+}
+
 func TestSendOpenAICodexInviteEndpointNotConfigured(t *testing.T) {
 	t.Setenv(openAICodexInviteURLEnv, "")
 
@@ -460,6 +498,51 @@ func TestSendOpenAICodexInvitePostsConfiguredEmailFieldAndDoesNotRefreshInvites(
 	}
 	if usageCalls != 1 {
 		t.Fatalf("usageCalls = %d, want 1", usageCalls)
+	}
+}
+
+func TestSendOpenAICodexInvitePostsWhenInviteStateUnavailable(t *testing.T) {
+	var inviteBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/usage":
+			_, _ = w.Write([]byte(`{"rate_limit_reset_credits":{"available_count":1}}`))
+		case "/invite":
+			buf, _ := io.ReadAll(r.Body)
+			inviteBody = string(buf)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+
+	oldUsageURL := openAIWhamUsageURL
+	openAIWhamUsageURL = upstream.URL + "/usage"
+	t.Cleanup(func() { openAIWhamUsageURL = oldUsageURL })
+	t.Setenv(openAICodexInviteURLEnv, upstream.URL+"/invite")
+
+	svc := &AccountUsageService{accountRepo: &accountUsageStaticAccountRepo{account: &Account{
+		ID:       2029,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":       "access-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+	}}}
+
+	result, err := svc.SendOpenAICodexInvite(context.Background(), 2029, "friend@example.com")
+	if err != nil {
+		t.Fatalf("SendOpenAICodexInvite() error = %v", err)
+	}
+	if result == nil || !result.Sent {
+		t.Fatalf("unexpected result %#v", result)
+	}
+	if inviteBody != `{"email":"friend@example.com"}` {
+		t.Fatalf("invite body = %s", inviteBody)
 	}
 }
 
