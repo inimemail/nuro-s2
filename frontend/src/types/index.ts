@@ -1000,7 +1000,6 @@ export interface AccountUsageInfo {
   // OpenAI Codex reset credits
   codex_reset_credits_supported?: boolean
   codex_reset_credits_available_count?: number | null
-  codex_reset_credits_invite_url?: string
   codex_auto_reset_mode?: 'off' | 'short' | 'long' | '5h' | '7d' | string
 
   error?: string            // usage 获取失败时的错误信息

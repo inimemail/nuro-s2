@@ -268,17 +268,33 @@ export async function getUsage(id: number, source?: 'passive' | 'active', force?
   return data
 }
 
+export interface OpenAICodexResetCreditUsage {
+  rate_limit_reset_credits?: {
+    available_count?: number
+  } | null
+}
+
+export async function queryOpenAIQuota(id: number): Promise<OpenAICodexResetCreditUsage> {
+  const { data } = await apiClient.get<OpenAICodexResetCreditUsage>(
+    `/admin/openai/accounts/${id}/quota`
+  )
+  return data
+}
+
 /**
  * Consume one OpenAI Codex reset credit and return refreshed usage.
  * @param id - Account ID
  * @returns Refreshed account usage info
  */
-export async function consumeCodexResetCredit(id: number): Promise<AccountUsageInfo> {
+export async function resetOpenAIQuota(id: number): Promise<AccountUsageInfo> {
   const { data } = await apiClient.post<AccountUsageInfo>(
-    `/admin/accounts/${id}/codex/reset-credit`
+    `/admin/openai/accounts/${id}/reset-quota`
   )
   return data
 }
+
+export const queryCodexResetCreditUsage = queryOpenAIQuota
+export const consumeCodexResetCredit = resetOpenAIQuota
 
 export async function updateCodexAutoResetMode(
   id: number,
@@ -787,6 +803,9 @@ export const accountsAPI = {
   clearError,
   getUsage,
   consumeCodexResetCredit,
+  queryCodexResetCreditUsage,
+  queryOpenAIQuota,
+  resetOpenAIQuota,
   updateCodexAutoResetMode,
   getTodayStats,
   getBatchTodayStats,

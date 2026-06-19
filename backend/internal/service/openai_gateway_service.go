@@ -2923,6 +2923,9 @@ func (s *OpenAIGatewayService) fetchOpenAICodexResetCreditUpdates(ctx context.Co
 	}
 	resetUpdates, supported, ok := extractOpenAICodexResetCreditUpdates(body, time.Now())
 	if !ok {
+		if len(updates) > 0 {
+			return updates, nil
+		}
 		return nil, nil
 	}
 	for k, v := range resetUpdates {
@@ -2947,8 +2950,12 @@ func (s *OpenAIGatewayService) doOpenAIWhamRequest(ctx context.Context, account 
 	req.Host = "chatgpt.com"
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Originator", "codex_cli_rs")
-	req.Header.Set("Version", openAICodexProbeVersion)
+	req.Header.Set("Originator", openAIWhamOriginator)
+	req.Header.Set("OAI-Language", "zh-CN")
+	req.Header.Set("Sec-Fetch-Site", "none")
+	req.Header.Set("Sec-Fetch-Mode", "no-cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Priority", "u=4, i")
 	req.Header.Set("User-Agent", codexCLIUserAgent)
 	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/json")

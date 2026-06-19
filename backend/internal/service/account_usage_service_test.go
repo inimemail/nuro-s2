@@ -7,6 +7,30 @@ import (
 	"time"
 )
 
+type accountUsageOpenAITokenCacheStub struct {
+	token string
+}
+
+func (s *accountUsageOpenAITokenCacheStub) GetAccessToken(context.Context, string) (string, error) {
+	return s.token, nil
+}
+
+func (s *accountUsageOpenAITokenCacheStub) SetAccessToken(context.Context, string, string, time.Duration) error {
+	return nil
+}
+
+func (s *accountUsageOpenAITokenCacheStub) DeleteAccessToken(context.Context, string) error {
+	return nil
+}
+
+func (s *accountUsageOpenAITokenCacheStub) AcquireRefreshLock(context.Context, string, time.Duration) (bool, error) {
+	return true, nil
+}
+
+func (s *accountUsageOpenAITokenCacheStub) ReleaseRefreshLock(context.Context, string) error {
+	return nil
+}
+
 type accountUsageCodexProbeRepo struct {
 	stubOpenAIAccountRepo
 	updateExtraCh chan map[string]any
@@ -174,52 +198,64 @@ func TestExtractOpenAICodexResetCreditUpdates(t *testing.T) {
 	if got := updates["codex_reset_credits_supported"]; got != true {
 		t.Fatalf("codex_reset_credits_supported = %v, want true", got)
 	}
-	if got := updates["codex_reset_credits_invite_url"]; got != "" {
-		t.Fatalf("codex_reset_credits_invite_url = %v, want empty without upstream URL", got)
-	}
 
 	updates, supported, ok = extractOpenAICodexResetCreditUpdates([]byte(`{"rate_limit_reset_credits":{"available_count":1,"invite_url":"https://chatgpt.com/invite/codex-reset"}}`), now)
 	if !ok || !supported {
-		t.Fatalf("expected supported reset credit payload with invite URL, supported=%v ok=%v", supported, ok)
+		t.Fatalf("expected supported reset credit payload with ignored invite URL, supported=%v ok=%v", supported, ok)
 	}
-	if got := updates["codex_reset_credits_invite_url"]; got != "https://chatgpt.com/invite/codex-reset" {
-		t.Fatalf("codex_reset_credits_invite_url = %v, want official invite URL", got)
-	}
-
-	updates, supported, ok = extractOpenAICodexResetCreditUpdates([]byte(`{"rate_limit_reset_credits":{"available_count":1,"invite_url":"https://evil.example/invite"}}`), now)
-	if !ok || !supported {
-		t.Fatalf("expected supported reset credit payload with rejected invite URL, supported=%v ok=%v", supported, ok)
-	}
-	if got := updates["codex_reset_credits_invite_url"]; got != "" {
-		t.Fatalf("codex_reset_credits_invite_url = %v, want empty for non-official URL", got)
+	if _, exists := updates["codex_reset_credits_invite_url"]; exists {
+		t.Fatalf("did not expect unsupported invite URL field to be persisted: %v", updates)
 	}
 
 	updates, supported, ok = extractOpenAICodexResetCreditUpdates([]byte(`{"rate_limit_reset_credits":{}}`), now)
 	if !ok {
-		t.Fatal("expected unsupported reset credit payload to be cacheable")
+		t.Fatal("expected missing available_count to be cacheable as zero")
 	}
-	if supported {
-		t.Fatal("expected reset credits to be unsupported without available_count")
+	if !supported {
+		t.Fatal("expected reset credits to be supported with zero fallback")
 	}
-	if _, exists := updates["codex_reset_credits"]; exists {
-		t.Fatalf("did not expect codex_reset_credits when unsupported: %v", updates)
+	if got := updates["codex_reset_credits"]; got != 0 {
+		t.Fatalf("codex_reset_credits = %v, want 0 when available_count is missing", got)
 	}
-	if got := updates["codex_reset_credits_supported"]; got != false {
-		t.Fatalf("codex_reset_credits_supported = %v, want false", got)
+	if got := updates["codex_reset_credits_supported"]; got != true {
+		t.Fatalf("codex_reset_credits_supported = %v, want true", got)
+	}
+	if got := updates["codex_auto_reset_mode"]; got != openAICodexAutoResetModeOff {
+		t.Fatalf("codex_auto_reset_mode = %v, want off", got)
 	}
 
 	updates, supported, ok = extractOpenAICodexResetCreditUpdates([]byte(`not json`), now)
-	if !ok {
-		t.Fatal("expected invalid response body to be cacheable as unsupported")
+	if ok {
+		t.Fatal("expected invalid response body to be treated as unknown")
 	}
 	if supported {
-		t.Fatal("expected invalid response body to be unsupported")
+		t.Fatal("expected invalid response support to remain unknown")
 	}
-	if got := updates["codex_reset_credits_supported"]; got != false {
-		t.Fatalf("invalid body codex_reset_credits_supported = %v, want false", got)
+	if len(updates) != 0 {
+		t.Fatalf("expected no updates for invalid response body, got %v", updates)
 	}
-	if got := updates["codex_reset_credits_updated_at"]; got != now.Format(time.RFC3339) {
-		t.Fatalf("invalid body updated_at = %v, want %s", got, now.Format(time.RFC3339))
+}
+
+func TestAccountUsageOpenAIWhamAccessTokenUsesProvider(t *testing.T) {
+	t.Parallel()
+
+	account := &Account{
+		ID:       1234,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "stale-account-token",
+		},
+	}
+	provider := NewOpenAITokenProvider(nil, &accountUsageOpenAITokenCacheStub{token: "fresh-provider-token"}, nil)
+	svc := &AccountUsageService{openAITokenProvider: provider}
+
+	token, err := svc.openAIWhamAccessToken(context.Background(), account)
+	if err != nil {
+		t.Fatalf("openAIWhamAccessToken() error = %v", err)
+	}
+	if token != "fresh-provider-token" {
+		t.Fatalf("token = %q, want provider token", token)
 	}
 }
 
@@ -231,8 +267,7 @@ func TestBuildOpenAIUsageFromExtraIncludesResetCredits(t *testing.T) {
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
 		Extra: map[string]any{
-			"codex_reset_credits":            0,
-			"codex_reset_credits_invite_url": "https://chatgpt.com/invite/codex-reset",
+			"codex_reset_credits": 0,
 		},
 	}, now)
 
@@ -244,9 +279,6 @@ func TestBuildOpenAIUsageFromExtraIncludesResetCredits(t *testing.T) {
 	}
 	if usage.CodexAutoResetMode != openAICodexAutoResetModeOff {
 		t.Fatalf("auto reset mode = %q, want off when count is 0", usage.CodexAutoResetMode)
-	}
-	if usage.CodexResetCreditsInviteURL != "https://chatgpt.com/invite/codex-reset" {
-		t.Fatalf("invite URL = %q, want official invite URL", usage.CodexResetCreditsInviteURL)
 	}
 }
 
@@ -347,6 +379,20 @@ func TestBuildOpenAICodexResetCreditOptimisticUpdates(t *testing.T) {
 	}, now)
 	if len(updates) != 0 {
 		t.Fatalf("expected no optimistic update for unsupported account, got %v", updates)
+	}
+}
+
+func TestOpenAICodexResetCreditUpdatesConfirmed(t *testing.T) {
+	t.Parallel()
+
+	if openAICodexResetCreditUpdatesConfirmed(nil) {
+		t.Fatal("nil updates should not be confirmed")
+	}
+	if openAICodexResetCreditUpdatesConfirmed(map[string]any{"codex_5h_used_percent": 100}) {
+		t.Fatal("usage-only updates should not be confirmed reset credit updates")
+	}
+	if !openAICodexResetCreditUpdatesConfirmed(map[string]any{"codex_reset_credits": 0}) {
+		t.Fatal("presence of codex_reset_credits should confirm reset credit query")
 	}
 }
 

@@ -160,7 +160,7 @@
             type="button"
             class="inline-flex h-6 shrink-0 items-center gap-0.5 rounded px-1 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             :class="codexResetConfirming ? 'text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30' : 'text-amber-600 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30'"
-            :disabled="codexResetCreditLoading || codexResetCreditsAvailable <= 0"
+            :disabled="codexResetCreditLoading || !canConsumeCodexResetCredit"
             @click="consumeCodexResetCredit"
           >
             <svg
@@ -178,27 +178,6 @@
               />
             </svg>
             {{ codexResetCreditButtonText }}
-          </button>
-          <button
-            v-if="showCodexResetInvite"
-            type="button"
-            class="inline-flex h-6 shrink-0 items-center gap-0.5 rounded px-1 text-[10px] font-medium text-cyan-600 transition-colors hover:bg-cyan-50 dark:text-cyan-300 dark:hover:bg-cyan-900/30"
-            @click="copyCodexResetInviteURL"
-          >
-            <svg
-              class="h-3 w-3"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M8 7V5a4 4 0 118 0v2m-9 4h10m-10 0a3 3 0 00-3 3v1a4 4 0 004 4h8a4 4 0 004-4v-1a3 3 0 00-3-3m-10 0V9a1 1 0 011-1h8a1 1 0 011 1v2"
-              />
-            </svg>
-            {{ codexInviteCopied ? '已复制' : '邀请' }}
           </button>
         </div>
         <div
@@ -615,7 +594,6 @@ const activeQueryLoading = ref(false)
 const codexResetCreditLoading = ref(false)
 const codexAutoResetModeLoading = ref(false)
 const codexResetConfirming = ref(false)
-const codexInviteCopied = ref(false)
 const error = ref<string | null>(null)
 const usageInfo = ref<AccountUsageInfo | null>(null)
 const rootRef = ref<HTMLElement | null>(null)
@@ -670,7 +648,7 @@ const geminiUsageAvailable = computed(() => {
 
 const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
-  return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day || showCodexResetCredits.value
+  return true
 })
 
 const showCodexResetCredits = computed(() => {
@@ -683,20 +661,14 @@ const codexResetCreditsAvailable = computed(() => {
   return typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
 })
 
-const codexResetInviteURL = computed(() => {
-  const url = usageInfo.value?.codex_reset_credits_invite_url
-  return typeof url === 'string' ? url.trim() : ''
+const canConsumeCodexResetCredit = computed(() => {
+  return showCodexResetCredits.value && codexResetCreditsAvailable.value > 0
 })
 
-const showCodexResetInvite = computed(() => {
-  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
-  return codexResetInviteURL.value.length > 0
-})
-
-const codexAutoResetDisabled = computed(() => !showCodexResetCredits.value || codexResetCreditsAvailable.value <= 0)
+const codexAutoResetDisabled = computed(() => !canConsumeCodexResetCredit.value)
 
 const codexAutoResetMode = computed<CodexAutoResetMode>(() => {
-  if (codexResetCreditsAvailable.value <= 0) return 'off'
+  if (!canConsumeCodexResetCredit.value) return 'off'
   const mode = usageInfo.value?.codex_auto_reset_mode
   if (mode === 'short' || mode === '5h') return 'short'
   if (mode === 'long' || mode === '7d') return 'long'
@@ -765,6 +737,30 @@ const codexResetCreditButtonText = computed(() => {
   if (codexResetCreditLoading.value) return '处理中'
   return codexResetConfirming.value ? '确认重置？' : '重置'
 })
+
+const mergeUsageInfo = (next: Partial<AccountUsageInfo>) => {
+  const merged = {
+    ...(usageInfo.value ?? {
+      updated_at: null,
+      five_hour: null,
+      seven_day: null,
+      seven_day_sonnet: null
+    }),
+    ...next
+  } as AccountUsageInfo
+  usageInfo.value = merged
+  _usageCache.set(props.account.id, { data: merged, ts: Date.now() })
+}
+
+const refreshCodexResetCreditUsage = async () => {
+  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
+  const result = await adminAPI.accounts.queryOpenAIQuota(props.account.id)
+  const count = result.rate_limit_reset_credits?.available_count
+  mergeUsageInfo({
+    codex_reset_credits_supported: true,
+    codex_reset_credits_available_count: typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
+  })
+}
 
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))
 
@@ -1207,14 +1203,6 @@ const copyValidationURL = async () => {
   }
 }
 
-const copyCodexResetInviteURL = async () => {
-  if (!codexResetInviteURL.value) return
-  if (await copyTextToClipboard(codexResetInviteURL.value)) {
-    codexInviteCopied.value = true
-    setTimeout(() => { codexInviteCopied.value = false }, 2000)
-  }
-}
-
 const isAnthropicOAuthOrSetupToken = computed(() => {
   return props.account.platform === 'anthropic' && (props.account.type === 'oauth' || props.account.type === 'setup-token')
 })
@@ -1308,6 +1296,7 @@ const loadActiveUsage = async () => {
     const result = await adminAPI.accounts.getUsage(props.account.id, 'active', true)
     usageInfo.value = result
     _usageCache.set(props.account.id, { data: result, ts: Date.now() })
+    await refreshCodexResetCreditUsage()
   } catch (e: any) {
     console.error('Failed to load active usage:', e)
   } finally {
@@ -1316,7 +1305,7 @@ const loadActiveUsage = async () => {
 }
 
 const consumeCodexResetCredit = async () => {
-  if (codexResetCreditLoading.value || codexResetCreditsAvailable.value <= 0) return
+  if (codexResetCreditLoading.value || !canConsumeCodexResetCredit.value) return
   if (!codexResetConfirming.value) {
     codexResetConfirming.value = true
     window.setTimeout(() => {
@@ -1327,7 +1316,7 @@ const consumeCodexResetCredit = async () => {
 
   codexResetCreditLoading.value = true
   try {
-    const result = await adminAPI.accounts.consumeCodexResetCredit(props.account.id)
+    const result = await adminAPI.accounts.resetOpenAIQuota(props.account.id)
     usageInfo.value = result
     _usageCache.set(props.account.id, { data: result, ts: Date.now() })
     codexResetConfirming.value = false
@@ -1340,7 +1329,7 @@ const consumeCodexResetCredit = async () => {
 
 const updateCodexAutoResetMode = async (mode: CodexAutoResetMode) => {
   if (codexAutoResetModeLoading.value) return
-  const nextMode: CodexAutoResetMode = codexResetCreditsAvailable.value <= 0 ? 'off' : mode
+  const nextMode: CodexAutoResetMode = canConsumeCodexResetCredit.value ? mode : 'off'
   codexAutoResetModeLoading.value = true
   try {
     const result = await adminAPI.accounts.updateCodexAutoResetMode(props.account.id, nextMode)
@@ -1463,7 +1452,10 @@ watch(openAIUsageRefreshKey, (nextKey, prevKey) => {
   if (!prevKey || nextKey === prevKey) return
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
 
-  requestAutoLoad()
+  _usageCache.delete(props.account.id)
+  loadUsage({ bypassCache: true }).catch((e) => {
+    console.error('Failed to refresh OpenAI usage after account update:', e)
+  })
 })
 
 watch(
