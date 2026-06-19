@@ -354,6 +354,7 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.POST("/accounts/:id/refresh", h.Admin.OpenAIOAuth.RefreshAccountToken)
 		openai.GET("/accounts/:id/quota", h.Admin.Account.QueryCodexResetCreditUsage)
 		openai.POST("/accounts/:id/reset-quota", h.Admin.Account.ConsumeCodexResetCredit)
+		openai.POST("/accounts/:id/codex/invite", h.Admin.Account.SendCodexInvite)
 		openai.POST("/create-from-oauth", h.Admin.OpenAIOAuth.CreateAccountFromOAuth)
 	}
 }

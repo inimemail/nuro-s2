@@ -272,6 +272,16 @@ export interface OpenAICodexResetCreditUsage {
   rate_limit_reset_credits?: {
     available_count?: number
   } | null
+  invites?: OpenAICodexInvites | null
+}
+
+export interface OpenAICodexInvites {
+  created?: number
+  limit?: number
+  redeemed?: number | null
+  pendingCount?: number | null
+  pendingEmails?: string[]
+  slotsLeft?: number
 }
 
 export async function queryOpenAIQuota(id: number): Promise<OpenAICodexResetCreditUsage> {
@@ -289,6 +299,22 @@ export async function queryOpenAIQuota(id: number): Promise<OpenAICodexResetCred
 export async function resetOpenAIQuota(id: number): Promise<AccountUsageInfo> {
   const { data } = await apiClient.post<AccountUsageInfo>(
     `/admin/openai/accounts/${id}/reset-quota`
+  )
+  return data
+}
+
+export interface SendOpenAICodexInviteResponse {
+  sent: boolean
+  message?: string
+}
+
+export async function sendOpenAICodexInvite(
+  id: number,
+  email: string
+): Promise<SendOpenAICodexInviteResponse> {
+  const { data } = await apiClient.post<SendOpenAICodexInviteResponse>(
+    `/admin/openai/accounts/${id}/codex/invite`,
+    { email }
   )
   return data
 }
@@ -806,6 +832,7 @@ export const accountsAPI = {
   queryCodexResetCreditUsage,
   queryOpenAIQuota,
   resetOpenAIQuota,
+  sendOpenAICodexInvite,
   updateCodexAutoResetMode,
   getTodayStats,
   getBatchTodayStats,

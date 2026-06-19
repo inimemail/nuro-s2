@@ -160,6 +160,10 @@ type UpdateCodexAutoResetModeRequest struct {
 	Mode string `json:"mode" binding:"required,oneof=off short long 5h 7d"`
 }
 
+type SendCodexInviteRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
 type BulkUpdateAccountFilters struct {
 	Platform    string `json:"platform"`
 	Type        string `json:"type"`
@@ -1927,6 +1931,34 @@ func (h *AccountHandler) UpdateCodexAutoResetMode(c *gin.Context) {
 	}
 
 	response.Success(c, usage)
+}
+
+// SendCodexInvite handles sending an OpenAI Codex referral invite.
+// POST /api/v1/admin/openai/accounts/:id/codex/invite
+func (h *AccountHandler) SendCodexInvite(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if h.accountUsageService == nil {
+		response.InternalError(c, "Account usage service is not available")
+		return
+	}
+
+	var req SendCodexInviteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	result, err := h.accountUsageService.SendOpenAICodexInvite(c.Request.Context(), accountID, req.Email)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, result)
 }
 
 // ResetQuota handles resetting account quota usage

@@ -179,6 +179,14 @@
             </svg>
             {{ codexResetCreditButtonText }}
           </button>
+          <button
+            v-if="canSendCodexInvite"
+            type="button"
+            class="inline-flex h-6 shrink-0 items-center rounded px-1 text-[10px] font-medium text-emerald-600 transition-colors hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+            @click="openCodexInviteDialog"
+          >
+            邀请
+          </button>
         </div>
         <div
           v-if="showCodexResetCredits"
@@ -551,6 +559,62 @@
       <div v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota" class="text-xs text-gray-400">-</div>
     </div>
   </div>
+  <Teleport to="body">
+    <div
+      v-if="codexInviteDialogOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      @click.self="closeCodexInviteDialog"
+    >
+      <div class="w-full max-w-sm rounded-lg bg-white p-4 shadow-xl ring-1 ring-black/5 dark:bg-gray-900 dark:ring-white/10">
+        <div class="mb-3 flex items-center justify-between">
+          <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">邀请</h3>
+          <button
+            type="button"
+            class="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+            aria-label="关闭"
+            @click="closeCodexInviteDialog"
+          >
+            ×
+          </button>
+        </div>
+        <div class="space-y-3">
+          <div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+            剩余机会：{{ codexInviteSlotsLeft }}
+          </div>
+          <div v-if="codexPendingInviteEmails.length" class="space-y-1">
+            <div class="mb-1 text-xs text-gray-500 dark:text-gray-400">已邀请</div>
+            <div class="max-h-24 space-y-1 overflow-y-auto rounded bg-gray-50 px-2 py-1.5 dark:bg-gray-950/60">
+              <div
+                v-for="email in codexPendingInviteEmails"
+                :key="email"
+                class="truncate text-xs text-gray-700 dark:text-gray-200"
+                :title="email"
+              >
+                {{ email }}
+              </div>
+            </div>
+          </div>
+          <input
+            v-model="codexInviteEmail"
+            type="email"
+            class="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition-colors focus:border-emerald-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+            placeholder="输入邮箱"
+            @keydown.enter="sendCodexInvite"
+          />
+          <button
+            type="button"
+            class="w-full rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="codexInviteSending || !codexInviteEmail.trim()"
+            @click="sendCodexInvite"
+          >
+            {{ codexInviteSending ? '发送中...' : '发送' }}
+          </button>
+          <div v-if="codexInviteSent" class="text-xs text-emerald-600 dark:text-emerald-300">已发送</div>
+          <div v-if="codexInviteError" class="text-xs text-red-500">{{ codexInviteError }}</div>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
@@ -594,6 +658,11 @@ const activeQueryLoading = ref(false)
 const codexResetCreditLoading = ref(false)
 const codexAutoResetModeLoading = ref(false)
 const codexResetConfirming = ref(false)
+const codexInviteDialogOpen = ref(false)
+const codexInviteEmail = ref('')
+const codexInviteSending = ref(false)
+const codexInviteSent = ref(false)
+const codexInviteError = ref('')
 const error = ref<string | null>(null)
 const usageInfo = ref<AccountUsageInfo | null>(null)
 const rootRef = ref<HTMLElement | null>(null)
@@ -663,6 +732,22 @@ const codexResetCreditsAvailable = computed(() => {
 
 const canConsumeCodexResetCredit = computed(() => {
   return showCodexResetCredits.value && codexResetCreditsAvailable.value > 0
+})
+
+const codexInvites = computed(() => usageInfo.value?.codex_invites ?? null)
+
+const codexInviteSlotsLeft = computed(() => {
+  const count = codexInvites.value?.slotsLeft
+  return typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
+})
+
+const codexPendingInviteEmails = computed(() => {
+  const emails = codexInvites.value?.pendingEmails
+  return Array.isArray(emails) ? emails.filter((email) => typeof email === 'string' && email.trim()) : []
+})
+
+const canSendCodexInvite = computed(() => {
+  return props.account.platform === 'openai' && props.account.type === 'oauth' && codexInviteSlotsLeft.value > 0
 })
 
 const codexAutoResetDisabled = computed(() => !canConsumeCodexResetCredit.value)
@@ -758,7 +843,16 @@ const refreshCodexResetCreditUsage = async () => {
   const count = result.rate_limit_reset_credits?.available_count
   mergeUsageInfo({
     codex_reset_credits_supported: true,
-    codex_reset_credits_available_count: typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
+    codex_reset_credits_available_count: typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0,
+    codex_invites: result.invites ?? null
+  })
+}
+
+const refreshCodexInviteUsage = async () => {
+  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
+  const result = await adminAPI.accounts.queryOpenAIQuota(props.account.id)
+  mergeUsageInfo({
+    codex_invites: result.invites ?? null
   })
 }
 
@@ -1319,11 +1413,62 @@ const consumeCodexResetCredit = async () => {
     const result = await adminAPI.accounts.resetOpenAIQuota(props.account.id)
     usageInfo.value = result
     _usageCache.set(props.account.id, { data: result, ts: Date.now() })
+    await refreshCodexResetCreditUsage()
     codexResetConfirming.value = false
   } catch (e: any) {
     console.error('Failed to consume Codex reset credit:', e)
   } finally {
     codexResetCreditLoading.value = false
+  }
+}
+
+const openCodexInviteDialog = async () => {
+  codexInviteDialogOpen.value = true
+  codexInviteSent.value = false
+  codexInviteError.value = ''
+  try {
+    await refreshCodexInviteUsage()
+  } catch (e: any) {
+    console.error('Failed to refresh Codex invite state:', e)
+  }
+}
+
+const closeCodexInviteDialog = () => {
+  codexInviteDialogOpen.value = false
+  codexInviteEmail.value = ''
+  codexInviteSending.value = false
+  codexInviteSent.value = false
+  codexInviteError.value = ''
+}
+
+const sendCodexInvite = async () => {
+  if (codexInviteSending.value) return
+  const email = codexInviteEmail.value.trim()
+  if (!email) return
+  codexInviteSending.value = true
+  codexInviteSent.value = false
+  codexInviteError.value = ''
+  try {
+    const result = await adminAPI.accounts.sendOpenAICodexInvite(props.account.id, email)
+    codexInviteSent.value = result.sent === true
+    codexInviteEmail.value = ''
+    if (result.sent === true && codexInvites.value) {
+      mergeUsageInfo({
+        codex_invites: {
+          ...codexInvites.value,
+          slotsLeft: Math.max(0, codexInviteSlotsLeft.value - 1)
+        }
+      })
+    }
+  } catch (e: any) {
+    console.error('Failed to send Codex invite:', e)
+    codexInviteError.value =
+      e?.response?.data?.message ||
+      e?.response?.data?.error ||
+      e?.message ||
+      '发送失败'
+  } finally {
+    codexInviteSending.value = false
   }
 }
 

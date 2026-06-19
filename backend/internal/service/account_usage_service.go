@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -116,9 +117,19 @@ const (
 	windowStatsCacheTTL     = 1 * time.Minute
 	openAIProbeCacheTTL     = 10 * time.Minute
 	openAICodexProbeVersion = "0.125.0"
-	openAIWhamUsageURL      = "https://chatgpt.com/backend-api/wham/usage"
-	openAIWhamConsumeURL    = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
 	openAIWhamOriginator    = "Codex Desktop"
+)
+
+var (
+	openAIWhamUsageURL   = "https://chatgpt.com/backend-api/wham/usage"
+	openAIWhamConsumeURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+)
+
+const (
+	openAICodexInviteURLEnv           = "OPENAI_CODEX_INVITE_URL"
+	openAICodexInviteMethodEnv        = "OPENAI_CODEX_INVITE_METHOD"
+	openAICodexInviteEmailFieldEnv    = "OPENAI_CODEX_INVITE_EMAIL_FIELD"
+	openAICodexInviteAccountHeaderEnv = "OPENAI_CODEX_INVITE_ACCOUNT_HEADER"
 )
 
 const (
@@ -268,6 +279,15 @@ type OpenAIRateLimitResetCredits struct {
 	AvailableCount int `json:"available_count"`
 }
 
+type OpenAICodexInvites struct {
+	Created       int      `json:"created,omitempty"`
+	Limit         int      `json:"limit,omitempty"`
+	Redeemed      *int     `json:"redeemed,omitempty"`
+	PendingCount  *int     `json:"pendingCount,omitempty"`
+	PendingEmails []string `json:"pendingEmails,omitempty"`
+	SlotsLeft     int      `json:"slotsLeft,omitempty"`
+}
+
 type OpenAIQuotaUsage struct {
 	UserID                string                       `json:"user_id,omitempty"`
 	AccountID             string                       `json:"account_id,omitempty"`
@@ -276,6 +296,7 @@ type OpenAIQuotaUsage struct {
 	RateLimit             *OpenAIRateLimit             `json:"rate_limit,omitempty"`
 	AdditionalRateLimits  []OpenAIAdditionalRateLimit  `json:"additional_rate_limits,omitempty"`
 	RateLimitResetCredits *OpenAIRateLimitResetCredits `json:"rate_limit_reset_credits,omitempty"`
+	Invites               *OpenAICodexInvites          `json:"invites,omitempty"`
 	FetchedAt             int64                        `json:"fetched_at,omitempty"`
 }
 
@@ -936,6 +957,47 @@ func (s *AccountUsageService) QueryOpenAICodexResetCreditUsage(ctx context.Conte
 	return usage, nil
 }
 
+type OpenAICodexInviteResult struct {
+	Sent    bool   `json:"sent"`
+	Message string `json:"message,omitempty"`
+}
+
+func (s *AccountUsageService) SendOpenAICodexInvite(ctx context.Context, accountID int64, email string) (*OpenAICodexInviteResult, error) {
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return nil, infraerrors.InternalServer("OPENAI_CODEX_INVITE_ACCOUNT_LOOKUP_FAILED", fmt.Sprintf("get account failed: %v", err))
+	}
+	if account == nil || !account.IsOpenAIOAuth() {
+		return nil, infraerrors.BadRequest("OPENAI_CODEX_INVITE_UNSUPPORTED_ACCOUNT", "account does not support OpenAI Codex invites")
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" || !strings.Contains(email, "@") {
+		return nil, infraerrors.BadRequest("OPENAI_CODEX_INVITE_INVALID_EMAIL", "invalid invite email")
+	}
+
+	usage, _, err := s.queryOpenAIWhamUsage(ctx, account)
+	if err != nil {
+		return nil, infraerrors.InternalServer("OPENAI_CODEX_INVITE_QUOTA_REFRESH_FAILED", err.Error()).WithCause(err)
+	}
+	if usage == nil || usage.Invites == nil {
+		return nil, infraerrors.BadRequest("OPENAI_CODEX_INVITE_UNAVAILABLE", "OpenAI Codex invites are unavailable for this account")
+	}
+	if usage.Invites.SlotsLeft <= 0 {
+		return nil, infraerrors.Conflict("OPENAI_CODEX_INVITE_NO_SLOTS", "no OpenAI Codex invite slots left")
+	}
+	for _, pending := range usage.Invites.PendingEmails {
+		if strings.EqualFold(strings.TrimSpace(pending), email) {
+			return nil, infraerrors.Conflict("OPENAI_CODEX_INVITE_EMAIL_ALREADY_PENDING", "email is already invited")
+		}
+	}
+
+	if err := s.sendOpenAICodexInviteToUpstream(ctx, account, email); err != nil {
+		return nil, err
+	}
+
+	return &OpenAICodexInviteResult{Sent: true, Message: "已发送"}, nil
+}
+
 func extractOpenAICodexResetCreditUpdates(body []byte, now time.Time) (map[string]any, bool, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return nil, false, false
@@ -1146,6 +1208,94 @@ func (s *AccountUsageService) openAIWhamAccessToken(ctx context.Context, account
 		return s.openAITokenProvider.GetAccessToken(ctx, account)
 	}
 	return strings.TrimSpace(account.GetOpenAIAccessToken()), nil
+}
+
+func (s *AccountUsageService) sendOpenAICodexInviteToUpstream(ctx context.Context, account *Account, email string) error {
+	inviteURL := strings.TrimSpace(os.Getenv(openAICodexInviteURLEnv))
+	if inviteURL == "" {
+		return infraerrors.New(http.StatusNotImplemented, "OPENAI_CODEX_INVITE_ENDPOINT_NOT_CONFIGURED", "codex invite endpoint is not configured")
+	}
+
+	accessToken, err := s.openAIWhamAccessToken(ctx, account)
+	if err != nil {
+		return err
+	}
+	if accessToken == "" {
+		return infraerrors.BadRequest("OPENAI_CODEX_INVITE_MISSING_ACCESS_TOKEN", "no access token available")
+	}
+
+	method := strings.ToUpper(strings.TrimSpace(os.Getenv(openAICodexInviteMethodEnv)))
+	if method == "" {
+		method = http.MethodPost
+	}
+	emailField := strings.TrimSpace(os.Getenv(openAICodexInviteEmailFieldEnv))
+	if emailField == "" {
+		emailField = "email"
+	}
+	bodyBytes, err := json.Marshal(map[string]any{emailField: email})
+	if err != nil {
+		return fmt.Errorf("marshal openai codex invite request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, inviteURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("create openai codex invite request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Originator", openAIWhamOriginator)
+	req.Header.Set("OAI-Language", "zh-CN")
+	req.Header.Set("User-Agent", codexCLIUserAgent)
+	if s.identityCache != nil {
+		if fp, fpErr := s.identityCache.GetFingerprint(ctx, account.ID); fpErr == nil && fp != nil && strings.TrimSpace(fp.UserAgent) != "" {
+			req.Header.Set("User-Agent", strings.TrimSpace(fp.UserAgent))
+		}
+	}
+	if accountHeader := strings.TrimSpace(os.Getenv(openAICodexInviteAccountHeaderEnv)); accountHeader != "" {
+		chatgptAccountID, err := openAIWhamChatGPTAccountID(account)
+		if err != nil {
+			return err
+		}
+		req.Header.Set(accountHeader, chatgptAccountID)
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	client, err := httppool.GetClient(httppool.Options{
+		ProxyURL:              proxyURL,
+		Timeout:               15 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("build openai codex invite client: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("openai codex invite request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	message := strings.TrimSpace(gjson.GetBytes(respBody, "error.message").String())
+	if message == "" {
+		message = strings.TrimSpace(gjson.GetBytes(respBody, "message").String())
+	}
+	if message == "" {
+		message = strings.TrimSpace(string(respBody))
+	}
+	if len(message) > 500 {
+		message = message[:500]
+	}
+	if message == "" {
+		message = fmt.Sprintf("openai codex invite returned status %d", resp.StatusCode)
+	}
+	return infraerrors.New(resp.StatusCode, "OPENAI_CODEX_INVITE_SEND_FAILED", message)
 }
 
 func openAIWhamChatGPTAccountID(account *Account) (string, error) {
