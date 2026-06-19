@@ -605,6 +605,35 @@ func TestSendOpenAICodexInviteUsesDefaultReferralKey(t *testing.T) {
 	}
 }
 
+func TestOpenAICodexInviteUpstreamErrorMessageLocalizesKnownErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "workspace unsupported detail string",
+			body: `{"detail":"Referral invites are not available for this workspace"}`,
+			want: "当前账号或工作区暂不支持 Codex 邀请",
+		},
+		{
+			name: "no remaining detail message",
+			body: `{"detail":{"message":"Supplied 1 invite but only have 0 remaining","remaining_referrals":0}}`,
+			want: "Codex 邀请名额已用完",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := openAICodexInviteUpstreamErrorMessage(http.StatusBadRequest, []byte(tt.body)); got != tt.want {
+				t.Fatalf("message = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildOpenAIUsageFromExtraIncludesResetCredits(t *testing.T) {
 	t.Parallel()
 

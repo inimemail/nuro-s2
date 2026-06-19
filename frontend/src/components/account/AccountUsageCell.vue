@@ -606,7 +606,7 @@
           >
             {{ codexInviteSending ? '发送中...' : '发送' }}
           </button>
-          <div v-if="codexInviteSent" class="text-xs text-emerald-600 dark:text-emerald-300">已发送</div>
+          <div v-if="codexInviteSent" class="text-xs text-emerald-600 dark:text-emerald-300">{{ codexInviteSuccessMessage }}</div>
           <div v-if="codexInviteError" class="text-xs text-red-500">{{ codexInviteError }}</div>
         </div>
       </div>
@@ -660,6 +660,7 @@ const codexInviteEmail = ref('')
 const codexInviteSending = ref(false)
 const codexInviteSent = ref(false)
 const codexInviteError = ref('')
+const codexInviteSuccessMessage = ref('邀请已发送')
 const error = ref<string | null>(null)
 const usageInfo = ref<AccountUsageInfo | null>(null)
 const rootRef = ref<HTMLElement | null>(null)
@@ -1439,6 +1440,7 @@ const closeCodexInviteDialog = () => {
   codexInviteSending.value = false
   codexInviteSent.value = false
   codexInviteError.value = ''
+  codexInviteSuccessMessage.value = '邀请已发送'
 }
 
 const sendCodexInvite = async () => {
@@ -1451,17 +1453,45 @@ const sendCodexInvite = async () => {
   try {
     const result = await adminAPI.accounts.sendOpenAICodexInvite(props.account.id, email)
     codexInviteSent.value = result.sent === true
+    codexInviteSuccessMessage.value = result.message || '邀请已发送'
     codexInviteEmail.value = ''
   } catch (e: any) {
     console.error('Failed to send Codex invite:', e)
-    codexInviteError.value =
-      e?.response?.data?.message ||
-      e?.response?.data?.error ||
-      e?.message ||
-      '发送失败'
+    codexInviteError.value = normalizeCodexInviteError(e)
   } finally {
     codexInviteSending.value = false
   }
+}
+
+const normalizeCodexInviteError = (e: any): string => {
+  const raw =
+    e?.response?.data?.message ||
+    e?.response?.data?.detail?.message ||
+    e?.response?.data?.detail ||
+    e?.response?.data?.error ||
+    e?.message ||
+    ''
+  let message = typeof raw === 'string' ? raw : JSON.stringify(raw)
+  try {
+    const parsed = JSON.parse(message)
+    message = parsed?.detail?.message || parsed?.detail || parsed?.message || parsed?.error || message
+  } catch {
+    // keep upstream text
+  }
+  const lower = String(message).toLowerCase()
+  if (lower.includes('referral invites are not available for this workspace')) {
+    return '当前账号或工作区暂不支持 Codex 邀请'
+  }
+  if (lower.includes('only have 0 remaining') || lower.includes('"remaining_referrals":0')) {
+    return 'Codex 邀请名额已用完'
+  }
+  if (lower.includes('already') && lower.includes('invite')) {
+    return '该邮箱可能已经被邀请过'
+  }
+  if (lower.includes('invalid') && lower.includes('email')) {
+    return '邮箱格式无效或该邮箱无法邀请'
+  }
+  return String(message || '发送失败')
 }
 
 const updateCodexAutoResetMode = async (mode: CodexAutoResetMode) => {

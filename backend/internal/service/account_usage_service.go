@@ -1021,7 +1021,7 @@ func (s *AccountUsageService) SendOpenAICodexInvite(ctx context.Context, account
 		return nil, err
 	}
 
-	return &OpenAICodexInviteResult{Sent: true, Message: "已发送"}, nil
+	return &OpenAICodexInviteResult{Sent: true, Message: "邀请已发送"}, nil
 }
 
 func extractOpenAICodexResetCreditUpdates(body []byte, now time.Time) (map[string]any, bool, bool) {
@@ -1353,20 +1353,50 @@ func (s *AccountUsageService) sendOpenAICodexInviteToUpstream(ctx context.Contex
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	message := strings.TrimSpace(gjson.GetBytes(respBody, "error.message").String())
-	if message == "" {
-		message = strings.TrimSpace(gjson.GetBytes(respBody, "message").String())
+	message := openAICodexInviteUpstreamErrorMessage(resp.StatusCode, respBody)
+	return infraerrors.New(resp.StatusCode, "OPENAI_CODEX_INVITE_SEND_FAILED", message)
+}
+
+func openAICodexInviteUpstreamErrorMessage(statusCode int, body []byte) string {
+	message := ""
+	if len(body) > 0 && gjson.ValidBytes(body) {
+		for _, path := range []string{"error.message", "detail.message", "message", "error", "detail"} {
+			result := gjson.GetBytes(body, path)
+			if result.Exists() && result.Type == gjson.String {
+				message = strings.TrimSpace(result.String())
+				if message != "" {
+					break
+				}
+			}
+		}
 	}
 	if message == "" {
-		message = strings.TrimSpace(string(respBody))
+		message = strings.TrimSpace(string(body))
 	}
+	message = openAICodexInviteLocalizeUpstreamError(message)
 	if len(message) > 500 {
 		message = message[:500]
 	}
 	if message == "" {
-		message = fmt.Sprintf("openai codex invite returned status %d", resp.StatusCode)
+		message = fmt.Sprintf("Codex 邀请发送失败，OpenAI 返回状态码 %d", statusCode)
 	}
-	return infraerrors.New(resp.StatusCode, "OPENAI_CODEX_INVITE_SEND_FAILED", message)
+	return message
+}
+
+func openAICodexInviteLocalizeUpstreamError(message string) string {
+	message = strings.TrimSpace(message)
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "referral invites are not available for this workspace"):
+		return "当前账号或工作区暂不支持 Codex 邀请"
+	case strings.Contains(lower, "only have 0 remaining") || strings.Contains(lower, "remaining_referrals") && strings.Contains(lower, ":0"):
+		return "Codex 邀请名额已用完"
+	case strings.Contains(lower, "already") && strings.Contains(lower, "invite"):
+		return "该邮箱可能已经被邀请过"
+	case strings.Contains(lower, "invalid") && strings.Contains(lower, "email"):
+		return "邮箱格式无效或该邮箱无法邀请"
+	}
+	return message
 }
 
 func openAIWhamChatGPTAccountID(account *Account) (string, error) {
