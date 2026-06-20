@@ -244,6 +244,29 @@ ensure_env_value() {
     fi
 }
 
+edge_auto_disabled() {
+    local env_file="$1"
+    if [[ "$(read_env_value "$env_file" NURO_EDGE_AUTO_DISABLED)" == "true" ]]; then
+        return 0
+    fi
+    if [[ "$(read_env_value "$env_file" NURO_EDGE_ENABLED)" == "false" &&
+        "$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_MODE)" == "off" &&
+        "$(read_env_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE)" == "20000" &&
+        "$(read_env_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS)" == "4" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+reenable_auto_disabled_edge_for_upgrade() {
+    local env_file="$1"
+    if edge_auto_disabled "$env_file"; then
+        warn "检测到上次升级曾因 edge 构建/启动失败自动关闭，本次升级将重新尝试启用 Rust edge。"
+        set_env_value "$env_file" NURO_EDGE_ENABLED true
+        set_env_value "$env_file" NURO_EDGE_AUTO_DISABLED false
+    fi
+}
+
 upgrade_env_default_value() {
     local file="$1"
     local key="$2"
@@ -289,11 +312,12 @@ ensure_edge_env_values() {
         secret="$(generate_secret)"
     fi
 
-    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_ENABLED true
-    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED true
+    set_env_value "$env_file" NURO_EDGE_AUTO_DISABLED false
+    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_ENABLED true
+    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED true
     set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET "$secret"
-    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_MODE relay
-    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED true
+    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_MODE relay
+    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED true
     set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR edge-rs:18080
     set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL http://app:8080
     set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL http://app:8080
@@ -731,6 +755,7 @@ compose_build_with_edge_fallback() {
     if [[ "$(read_env_value "$env_file" NURO_EDGE_ENABLED)" == "true" ]]; then
         warn "包含 Rust edge 的镜像构建失败，自动关闭 edge 后重试，避免影响主服务升级。"
         set_env_value "$env_file" NURO_EDGE_ENABLED false
+        set_env_value "$env_file" NURO_EDGE_AUTO_DISABLED true
         ensure_edge_env_values "$env_file"
         create_compose_file "$workdir"
         $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build
@@ -753,6 +778,7 @@ compose_up_with_edge_fallback() {
         warn "Rust edge 启动或健康检查失败，自动关闭 edge 后重试启动主服务。"
         docker logs --tail=120 "$EDGE_CONTAINER" 2>/dev/null || true
         set_env_value "$env_file" NURO_EDGE_ENABLED false
+        set_env_value "$env_file" NURO_EDGE_AUTO_DISABLED true
         ensure_edge_env_values "$env_file"
         create_compose_file "$workdir"
         $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans
@@ -895,6 +921,7 @@ upgrade_service() {
     require_cmd git
 
     sync_project_source "$workdir" || die "源码同步失败。请检查服务器是否能访问 ${SOURCE_REPO_URL}，或在项目根目录执行本脚本。"
+    reenable_auto_disabled_edge_for_upgrade "${workdir}/.env"
     ensure_edge_env_values "${workdir}/.env"
     ensure_scheduler_env_values "${workdir}/.env"
     create_compose_file "$workdir"
@@ -1091,6 +1118,7 @@ restore_backup() {
 
     cd "$target" || return
     [[ -f docker-compose.yml ]] || create_compose_file "$target"
+    reenable_auto_disabled_edge_for_upgrade "${target}/.env"
     ensure_edge_env_values "${target}/.env"
     ensure_scheduler_env_values "${target}/.env"
     create_compose_file "$target"
