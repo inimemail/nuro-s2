@@ -48,6 +48,21 @@ func promptCacheBoostResponsesTestAccount(id int64) *Account {
 	return account
 }
 
+func promptCacheBoostOAuthTestAccount(id int64) *Account {
+	return &Account{
+		ID:          id,
+		Name:        "openai-oauth-pcache-boost",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":                      "oauth-test-token",
+			"prompt_cache_boost_enabled":        true,
+			"upstream_strong_isolation_enabled": true,
+		},
+	}
+}
+
 func promptCacheBoostJSONResponse(responseID string) *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
@@ -118,6 +133,44 @@ func TestOpenAIGatewayService_UpstreamStrongIsolationKeepsCacheBoostButDropsCont
 	result, err := svc.Forward(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result)
+	require.True(t, strings.HasPrefix(gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String(), "nuro-pcache-"))
+	require.Equal(t, "24h", gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "previous_response_id").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "conversation_id").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Bool())
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
+	require.Empty(t, upstream.lastReq.Header.Get("conversation_id"))
+	require.Empty(t, upstream.lastReq.Header.Get("originator"))
+	require.Empty(t, upstream.lastReq.Header.Get("x-codex-turn-state"))
+	require.Empty(t, upstream.lastReq.Header.Get("x-codex-turn-metadata"))
+}
+
+func TestOpenAIGatewayService_OAuthUpstreamStrongIsolationDropsContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.5","stream":false,"store":true,"previous_response_id":"resp_leaky","conversation_id":"conv_leaky","input":[{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set("session_id", "client-session")
+	c.Request.Header.Set("conversation_id", "client-conversation")
+	c.Request.Header.Set("originator", "codex_cli_rs")
+	c.Request.Header.Set("x-codex-turn-state", "state")
+	c.Request.Header.Set("x-codex-turn-metadata", "metadata")
+
+	upstream := &httpUpstreamRecorder{resp: promptCacheBoostJSONResponse("resp_oauth_isolated_forward")}
+	svc := &OpenAIGatewayService{
+		cfg:          promptCacheBoostTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := promptCacheBoostOAuthTestAccount(310)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "Bearer oauth-test-token", upstream.lastReq.Header.Get("Authorization"))
 	require.True(t, strings.HasPrefix(gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String(), "nuro-pcache-"))
 	require.Equal(t, "24h", gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").String())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "previous_response_id").Exists())

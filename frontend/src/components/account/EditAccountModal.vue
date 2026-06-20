@@ -384,7 +384,7 @@
               </button>
             </div>
           </div>
-          <div v-if="showPromptCacheBoostToggle" class="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
+          <div v-if="showUpstreamStrongIsolationToggle" class="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
             <div class="flex items-center justify-between gap-4">
               <div>
                 <label class="input-label mb-0">{{ t('admin.accounts.upstreamStrongIsolation') }}</label>
@@ -2892,9 +2892,18 @@ const poolModeRetryCountMax = computed(() =>
     : MAX_POOL_MODE_RETRY_COUNT
 )
 const showPromptCacheBoostToggle = computed(() =>
-  poolModeEnabled.value &&
   props.account?.platform === 'openai' &&
-  !imagePoolModeEnabled.value
+  (
+    props.account?.type === 'oauth' ||
+    (props.account?.type === 'apikey' && poolModeEnabled.value && !imagePoolModeEnabled.value)
+  )
+)
+const showUpstreamStrongIsolationToggle = computed(() =>
+  props.account?.platform === 'openai' &&
+  (
+    props.account?.type === 'oauth' ||
+    (props.account?.type === 'apikey' && poolModeEnabled.value && !imagePoolModeEnabled.value)
+  )
 )
 const showOpenAIAPIKeyTextStreamToggles = computed(() =>
   props.account?.platform === 'openai' &&
@@ -3680,17 +3689,20 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     if (newAccount.platform === 'openai' && newAccount.credentials) {
       const oauthCredentials = newAccount.credentials as Record<string, unknown>
       loadModelRestrictionFromMapping(oauthCredentials.model_mapping as Record<string, unknown> | undefined)
+      promptCacheBoostEnabled.value = oauthCredentials.prompt_cache_boost_enabled === true
+      promptCacheBoostAggressiveEnabled.value = oauthCredentials.prompt_cache_boost_level === 'aggressive'
+      upstreamStrongIsolationEnabled.value = oauthCredentials.upstream_strong_isolation_enabled === true
     } else {
       modelRestrictionMode.value = 'whitelist'
       modelMappings.value = []
       allowedModels.value = []
+      promptCacheBoostEnabled.value = false
+      promptCacheBoostAggressiveEnabled.value = false
+      upstreamStrongIsolationEnabled.value = false
     }
     poolModeEnabled.value = false
     poolSoftCooldownEnabled.value = true
     imagePoolModeEnabled.value = false
-    promptCacheBoostEnabled.value = false
-    promptCacheBoostAggressiveEnabled.value = false
-    upstreamStrongIsolationEnabled.value = false
     upstreamConcurrencyRaceEnabled.value = false
     upstreamConcurrencyRaceRetryDelayMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
     upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
@@ -3736,10 +3748,14 @@ watch([poolModeEnabled, () => props.account?.platform], ([enabled, platform]) =>
   if (!enabled || platform !== 'openai') {
     imagePoolModeEnabled.value = false
   }
-  if (!enabled || platform !== 'openai') {
+  if (platform !== 'openai' || (!enabled && props.account?.type !== 'oauth')) {
     promptCacheBoostEnabled.value = false
     promptCacheBoostAggressiveEnabled.value = false
+  }
+  if (platform !== 'openai' || (!enabled && props.account?.type !== 'oauth')) {
     upstreamStrongIsolationEnabled.value = false
+  }
+  if (!enabled || platform !== 'openai') {
     if (upstreamConcurrencyRaceEnabled.value && upstreamConcurrencyRaceRetryCountBackup.value !== null) {
       poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
     }
@@ -4315,17 +4331,6 @@ const handleSubmit = async () => {
         } else {
           delete newCredentials.image_pool_mode
         }
-        if (props.account.platform === 'openai' && !imagePoolModeEnabled.value && promptCacheBoostEnabled.value) {
-          newCredentials.prompt_cache_boost_enabled = true
-          if (promptCacheBoostAggressiveEnabled.value) {
-            newCredentials.prompt_cache_boost_level = 'aggressive'
-          } else {
-            delete newCredentials.prompt_cache_boost_level
-          }
-        } else {
-          delete newCredentials.prompt_cache_boost_enabled
-          delete newCredentials.prompt_cache_boost_level
-        }
         if (props.account.platform === 'openai' && !imagePoolModeEnabled.value && upstreamStrongIsolationEnabled.value) {
           newCredentials.upstream_strong_isolation_enabled = true
         } else {
@@ -4369,6 +4374,17 @@ const handleSubmit = async () => {
         delete newCredentials.upstream_concurrency_race_retry_count_backup
         delete newCredentials.pool_mode_retry_count
         delete newCredentials.pool_mode_retry_status_codes
+      }
+      if (showPromptCacheBoostToggle.value && promptCacheBoostEnabled.value) {
+        newCredentials.prompt_cache_boost_enabled = true
+        if (promptCacheBoostAggressiveEnabled.value) {
+          newCredentials.prompt_cache_boost_level = 'aggressive'
+        } else {
+          delete newCredentials.prompt_cache_boost_level
+        }
+      } else {
+        delete newCredentials.prompt_cache_boost_enabled
+        delete newCredentials.prompt_cache_boost_level
       }
 
       // Add custom error codes if enabled
@@ -4548,6 +4564,22 @@ const handleSubmit = async () => {
         newCredentials.compact_model_mapping = compactModelMapping
       } else {
         delete newCredentials.compact_model_mapping
+      }
+      if (showPromptCacheBoostToggle.value && promptCacheBoostEnabled.value) {
+        newCredentials.prompt_cache_boost_enabled = true
+        if (promptCacheBoostAggressiveEnabled.value) {
+          newCredentials.prompt_cache_boost_level = 'aggressive'
+        } else {
+          delete newCredentials.prompt_cache_boost_level
+        }
+      } else {
+        delete newCredentials.prompt_cache_boost_enabled
+        delete newCredentials.prompt_cache_boost_level
+      }
+      if (showUpstreamStrongIsolationToggle.value && upstreamStrongIsolationEnabled.value) {
+        newCredentials.upstream_strong_isolation_enabled = true
+      } else {
+        delete newCredentials.upstream_strong_isolation_enabled
       }
 
       updatePayload.credentials = newCredentials

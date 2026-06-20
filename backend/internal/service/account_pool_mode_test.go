@@ -485,13 +485,20 @@ func TestIsOpenAIUpstreamStrongIsolationEnabled(t *testing.T) {
 		Type:     AccountTypeOAuth,
 		Platform: PlatformOpenAI,
 		Credentials: map[string]any{
-			"pool_mode":                         true,
 			"upstream_strong_isolation_enabled": true,
+		},
+	}
+	oauthDisabled := &Account{
+		Type:     AccountTypeOAuth,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"upstream_strong_isolation_enabled": false,
 		},
 	}
 
 	require.True(t, textPool.IsOpenAIUpstreamStrongIsolationEnabled())
 	require.False(t, imagePool.IsOpenAIUpstreamStrongIsolationEnabled())
 	require.False(t, plain.IsOpenAIUpstreamStrongIsolationEnabled())
-	require.False(t, oauth.IsOpenAIUpstreamStrongIsolationEnabled())
+	require.True(t, oauth.IsOpenAIUpstreamStrongIsolationEnabled())
+	require.False(t, oauthDisabled.IsOpenAIUpstreamStrongIsolationEnabled())
 }

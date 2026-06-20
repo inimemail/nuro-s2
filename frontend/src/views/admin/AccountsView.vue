@@ -1353,8 +1353,20 @@ const isOpenAITextPoolAccount = (account: Account) => {
   return account.platform === 'openai' && isPool && !isImagePool
 }
 
+const isOpenAIPromptCacheBoostAccount = (account: Account) => {
+  if (account.platform !== 'openai') return false
+  if (account.type === 'oauth') return true
+  return isOpenAITextPoolAccount(account)
+}
+
+const isOpenAIUpstreamStrongIsolationAccount = (account: Account) => {
+  if (account.platform !== 'openai') return false
+  if (account.type === 'oauth') return true
+  return isOpenAITextPoolAccount(account)
+}
+
 const promptCacheBoostMeta = (account: Account) => {
-  if (!isOpenAITextPoolAccount(account)) {
+  if (!isOpenAIPromptCacheBoostAccount(account)) {
     return {
       label: t('admin.accounts.promptCacheBoostNotApplicable'),
       title: t('admin.accounts.promptCacheBoostNotApplicableHint'),
@@ -1376,7 +1388,7 @@ const promptCacheBoostMeta = (account: Account) => {
 }
 
 const upstreamStrongIsolationMeta = (account: Account) => {
-  if (!isOpenAITextPoolAccount(account)) {
+  if (!isOpenAIUpstreamStrongIsolationAccount(account)) {
     return {
       label: t('admin.accounts.upstreamStrongIsolationNotApplicable'),
       title: t('admin.accounts.upstreamStrongIsolationNotApplicableHint'),

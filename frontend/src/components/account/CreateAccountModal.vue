@@ -1369,7 +1369,7 @@
               </button>
             </div>
           </div>
-          <div v-if="showPromptCacheBoostToggle" class="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
+          <div v-if="showUpstreamStrongIsolationToggle" class="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
             <div class="flex items-center justify-between gap-4">
               <div>
                 <label class="input-label mb-0">{{ t('admin.accounts.upstreamStrongIsolation') }}</label>
@@ -2112,6 +2112,85 @@
             </div>
           </div>
         </template>
+      </div>
+
+      <div
+        v-if="form.platform === 'openai' && accountCategory === 'oauth-based'"
+        class="space-y-3 border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="rounded-lg bg-emerald-50 p-3 dark:bg-emerald-900/15">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.promptCacheBoost') }}</label>
+              <p class="mt-1 text-xs text-emerald-700 dark:text-emerald-300">
+                {{ t('admin.accounts.promptCacheBoostHint') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="promptCacheBoostEnabled = !promptCacheBoostEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2',
+                promptCacheBoostEnabled ? 'bg-emerald-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  promptCacheBoostEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+          <div v-if="promptCacheBoostEnabled" class="mt-3 flex items-center justify-between gap-4 rounded-md bg-white/70 px-3 py-2 dark:bg-dark-800/50">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.promptCacheBoostAggressive') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.promptCacheBoostAggressiveHint') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="promptCacheBoostAggressiveEnabled = !promptCacheBoostAggressiveEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2',
+                promptCacheBoostAggressiveEnabled ? 'bg-amber-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  promptCacheBoostAggressiveEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+        </div>
+        <div class="rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.upstreamStrongIsolation') }}</label>
+              <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                {{ t('admin.accounts.upstreamStrongIsolationHint') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="upstreamStrongIsolationEnabled = !upstreamStrongIsolationEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2',
+                upstreamStrongIsolationEnabled ? 'bg-amber-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  upstreamStrongIsolationEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Temp Unschedulable Rules -->
@@ -3799,9 +3878,18 @@ const poolModeRetryCountMax = computed(() =>
     : MAX_POOL_MODE_RETRY_COUNT
 )
 const showPromptCacheBoostToggle = computed(() =>
-  poolModeEnabled.value &&
   form.platform === 'openai' &&
-  !imagePoolModeEnabled.value
+  (
+    accountCategory.value === 'oauth-based' ||
+    (accountCategory.value === 'apikey' && poolModeEnabled.value && !imagePoolModeEnabled.value)
+  )
+)
+const showUpstreamStrongIsolationToggle = computed(() =>
+  form.platform === 'openai' &&
+  (
+    accountCategory.value === 'oauth-based' ||
+    (accountCategory.value === 'apikey' && poolModeEnabled.value && !imagePoolModeEnabled.value)
+  )
 )
 const showOpenAIAPIKeyTextStreamToggles = computed(() =>
   form.platform === 'openai' &&
@@ -4305,10 +4393,14 @@ watch([poolModeEnabled, () => form.platform], ([enabled, platform]) => {
   if (!enabled || platform !== 'openai') {
     imagePoolModeEnabled.value = false
   }
-  if (!enabled || platform !== 'openai') {
+  if (platform !== 'openai' || (!enabled && accountCategory.value !== 'oauth-based')) {
     promptCacheBoostEnabled.value = false
     promptCacheBoostAggressiveEnabled.value = false
+  }
+  if (platform !== 'openai' || (!enabled && accountCategory.value !== 'oauth-based')) {
     upstreamStrongIsolationEnabled.value = false
+  }
+  if (!enabled || platform !== 'openai') {
     if (upstreamConcurrencyRaceEnabled.value && upstreamConcurrencyRaceRetryCountBackup.value !== null) {
       poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
     }
@@ -4332,6 +4424,19 @@ watch(imagePoolModeEnabled, (enabled) => {
     openaiAPIKeyPreambleFlushEnabled.value = false
     openaiAPIKeySSECommentPreflushEnabled.value = false
     openaiAPIKeySafeTokenPlaceholderEnabled.value = false
+  }
+})
+
+watch(showPromptCacheBoostToggle, (visible) => {
+  if (!visible) {
+    promptCacheBoostEnabled.value = false
+    promptCacheBoostAggressiveEnabled.value = false
+  }
+})
+
+watch(showUpstreamStrongIsolationToggle, (visible) => {
+  if (!visible) {
+    upstreamStrongIsolationEnabled.value = false
   }
 })
 
@@ -4901,6 +5006,28 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   return Object.keys(extra).length > 0 ? extra : undefined
 }
 
+const applyOpenAIOAuthPromptCacheAndIsolationCredentials = (credentials: Record<string, unknown>) => {
+  if (form.platform !== 'openai' || accountCategory.value !== 'oauth-based') {
+    return
+  }
+  if (promptCacheBoostEnabled.value) {
+    credentials.prompt_cache_boost_enabled = true
+    if (promptCacheBoostAggressiveEnabled.value) {
+      credentials.prompt_cache_boost_level = 'aggressive'
+    } else {
+      delete credentials.prompt_cache_boost_level
+    }
+  } else {
+    delete credentials.prompt_cache_boost_enabled
+    delete credentials.prompt_cache_boost_level
+  }
+  if (upstreamStrongIsolationEnabled.value) {
+    credentials.upstream_strong_isolation_enabled = true
+  } else {
+    delete credentials.upstream_strong_isolation_enabled
+  }
+}
+
 const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unknown> | undefined => {
   if (form.platform !== 'anthropic' || accountCategory.value !== 'apikey') {
     return base
@@ -5460,6 +5587,7 @@ const handleOpenAIExchange = async (authCode: string) => {
       if (compactModelMapping) {
         credentials.compact_model_mapping = compactModelMapping
       }
+      applyOpenAIOAuthPromptCacheAndIsolationCredentials(credentials)
     }
 
     // 应用临时不可调度配置
@@ -5522,6 +5650,7 @@ const buildOpenAICodexImportCredentialExtras = (): Record<string, unknown> | nul
   if (!applyTempUnschedConfig(credentials)) {
     return null
   }
+  applyOpenAIOAuthPromptCacheAndIsolationCredentials(credentials)
   return credentials
 }
 
@@ -5669,6 +5798,7 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
           if (compactModelMapping) {
             credentials.compact_model_mapping = compactModelMapping
           }
+          applyOpenAIOAuthPromptCacheAndIsolationCredentials(credentials)
         }
 
         // Generate account name; fallback to email if name is empty (ent schema requires NotEmpty)

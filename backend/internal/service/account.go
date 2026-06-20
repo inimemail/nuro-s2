@@ -948,8 +948,8 @@ func (a *Account) isOpenAIPromptCacheBoostTextPoolAccount() bool {
 }
 
 // IsOpenAIPromptCacheBoostEnabled enables prompt-cache helpers only for
-// OpenAI text-pool accounts that explicitly enabled it. Image pools are
-// excluded even if older credentials still contain the flag.
+// OpenAI OAuth accounts or API-key text-pool accounts that explicitly enabled it.
+// Image pools are excluded even if older credentials still contain the flag.
 func (a *Account) IsOpenAIPromptCacheBoostEnabled() bool {
 	return a.isOpenAIPromptCacheBoostTextPoolAccount() &&
 		credentialBool(a.Credentials, "prompt_cache_boost_enabled")
@@ -974,10 +974,24 @@ func (a *Account) IsOpenAIPromptCacheBoostAggressive() bool {
 	return a.OpenAIPromptCacheBoostLevel() == OpenAIPromptCacheBoostLevelAggressive
 }
 
+func (a *Account) isOpenAIUpstreamStrongIsolationApplicableAccount() bool {
+	if a == nil || !a.IsOpenAI() || a.IsImagePoolMode() || a.Credentials == nil {
+		return false
+	}
+	switch a.Type {
+	case AccountTypeAPIKey:
+		return a.IsPoolMode()
+	case AccountTypeOAuth:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsOpenAIUpstreamStrongIsolationEnabled disables upstream session continuation
-// only for OpenAI API-key text-pool accounts that explicitly enabled it.
+// for OpenAI OAuth accounts or API-key text-pool accounts that explicitly enabled it.
 func (a *Account) IsOpenAIUpstreamStrongIsolationEnabled() bool {
-	if a == nil || !a.IsOpenAIApiKey() || !a.IsPoolMode() || a.IsImagePoolMode() || a.Credentials == nil {
+	if !a.isOpenAIUpstreamStrongIsolationApplicableAccount() {
 		return false
 	}
 	if v, ok := a.Credentials["upstream_strong_isolation_enabled"]; ok {
