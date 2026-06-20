@@ -111,6 +111,11 @@ struct EdgePlan {
     safe_token_placeholder: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct EdgePlanEnvelope {
+    plan: Option<EdgePlan>,
+}
+
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 struct WsIdleConn {
@@ -666,10 +671,69 @@ async fn call_prepare(state: &AppState, req: &PrepareRequest) -> anyhow::Result<
         .json(req)
         .send()
         .await?;
-    if !resp.status().is_success() {
-        anyhow::bail!("prepare status {}", resp.status());
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body = resp.bytes().await?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "prepare status {status}; content_type={content_type}; body={}",
+            response_body_preview(&body)
+        );
     }
-    Ok(resp.json::<EdgePlan>().await?)
+    decode_edge_plan(&body).map_err(|err| {
+        anyhow::anyhow!(
+            "prepare decode failed: {err}; status={status}; content_type={content_type}; body={}",
+            response_body_preview(&body)
+        )
+    })
+}
+
+fn decode_edge_plan(body: &[u8]) -> serde_json::Result<EdgePlan> {
+    match serde_json::from_slice::<EdgePlan>(body) {
+        Ok(plan) => Ok(plan),
+        Err(plan_err) => match serde_json::from_slice::<EdgePlanEnvelope>(body) {
+            Ok(EdgePlanEnvelope { plan: Some(plan) }) => Ok(plan),
+            Ok(EdgePlanEnvelope { plan: None }) => Err(plan_err),
+            Err(_) => Err(plan_err),
+        },
+    }
+}
+
+fn response_body_preview(body: &[u8]) -> String {
+    const MAX_PREVIEW: usize = 2048;
+    let mut preview = String::from_utf8_lossy(&body[..body.len().min(MAX_PREVIEW)]).into_owned();
+    preview = redact_json_secret_field(preview, "authorization");
+    preview = redact_json_secret_field(preview, "api-key");
+    preview = redact_json_secret_field(preview, "x-api-key");
+    preview = redact_json_secret_field(preview, "openai-api-key");
+    if body.len() > MAX_PREVIEW {
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn redact_json_secret_field(mut text: String, key: &str) -> String {
+    let needle = format!("\"{key}\":\"");
+    let mut search_from = 0usize;
+    loop {
+        let lower = text.to_ascii_lowercase();
+        let Some(relative_start) = lower[search_from..].find(&needle) else {
+            break;
+        };
+        let value_start = search_from + relative_start + needle.len();
+        let Some(relative_end) = text[value_start..].find('"') else {
+            break;
+        };
+        let value_end = value_start + relative_end;
+        text.replace_range(value_start..value_end, "[redacted]");
+        search_from = value_start + "[redacted]".len();
+    }
+    text
 }
 
 async fn handle_openai_ws_edge(
@@ -2297,6 +2361,25 @@ mod tests {
 
         let body = request_body_bytes(&plan).expect("request body");
         assert_eq!(body, br#"{"rewritten":true}"#);
+    }
+
+    #[test]
+    fn decode_edge_plan_accepts_plan_envelope() {
+        let body = br#"{"plan":{"action":"fallback_go","reason":"edge_disabled","edge_request_id":"edge-1"}}"#;
+        let plan = decode_edge_plan(body).expect("plan envelope");
+        assert_eq!(plan.action, "fallback_go");
+        assert_eq!(plan.reason.as_deref(), Some("edge_disabled"));
+        assert_eq!(plan.edge_request_id, "edge-1");
+    }
+
+    #[test]
+    fn response_body_preview_redacts_secret_headers() {
+        let body = br#"{"headers":{"authorization":"Bearer secret","api-key":"sk-secret","x-api-key":"x-secret"}}"#;
+        let preview = response_body_preview(body);
+        assert!(preview.contains("\"authorization\":\"[redacted]\""));
+        assert!(preview.contains("\"api-key\":\"[redacted]\""));
+        assert!(preview.contains("\"x-api-key\":\"[redacted]\""));
+        assert!(!preview.contains("secret"));
     }
 
     #[test]
