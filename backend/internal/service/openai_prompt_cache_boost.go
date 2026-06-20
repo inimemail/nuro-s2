@@ -62,7 +62,7 @@ func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostAffinityAccountBindable(c
 }
 
 // NormalizeOpenAIPromptCacheBoostAffinitySessionHash keeps prompt-cache affinity
-// only on OpenAI API-key text-pool accounts that explicitly enabled it.
+// only on OpenAI text-pool accounts that explicitly enabled it.
 func (s *OpenAIGatewayService) NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash string, account *Account) string {
 	sessionHash = strings.TrimSpace(sessionHash)
 	if !IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) {

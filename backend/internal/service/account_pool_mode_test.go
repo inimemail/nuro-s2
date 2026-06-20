@@ -440,15 +440,20 @@ func TestIsOpenAIPromptCacheBoostEnabled(t *testing.T) {
 		Type:     AccountTypeOAuth,
 		Platform: PlatformOpenAI,
 		Credentials: map[string]any{
-			"pool_mode":                  true,
 			"prompt_cache_boost_enabled": true,
 		},
+	}
+	oauthDisabled := &Account{
+		Type:        AccountTypeOAuth,
+		Platform:    PlatformOpenAI,
+		Credentials: map[string]any{},
 	}
 
 	require.True(t, textPool.IsOpenAIPromptCacheBoostEnabled())
 	require.False(t, imagePool.IsOpenAIPromptCacheBoostEnabled())
 	require.False(t, plain.IsOpenAIPromptCacheBoostEnabled())
-	require.False(t, oauth.IsOpenAIPromptCacheBoostEnabled())
+	require.True(t, oauth.IsOpenAIPromptCacheBoostEnabled())
+	require.False(t, oauthDisabled.IsOpenAIPromptCacheBoostEnabled())
 }
 
 func TestIsOpenAIUpstreamStrongIsolationEnabled(t *testing.T) {

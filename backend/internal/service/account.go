@@ -921,19 +921,38 @@ func (a *Account) IsPoolSoftCooldownEnabled() bool {
 	return true
 }
 
-// IsOpenAIPromptCacheBoostEnabled enables prompt-cache helpers only for
-// OpenAI API key text-pool accounts. Image pools are excluded even if older
-// credentials still contain the flag.
-func (a *Account) IsOpenAIPromptCacheBoostEnabled() bool {
-	if a == nil || !a.IsOpenAIApiKey() || !a.IsPoolMode() || a.IsImagePoolMode() || a.Credentials == nil {
+func credentialBool(credentials map[string]any, key string) bool {
+	if credentials == nil {
 		return false
 	}
-	if v, ok := a.Credentials["prompt_cache_boost_enabled"]; ok {
+	if v, ok := credentials[key]; ok {
 		if enabled, ok := v.(bool); ok {
 			return enabled
 		}
 	}
 	return false
+}
+
+func (a *Account) isOpenAIPromptCacheBoostTextPoolAccount() bool {
+	if a == nil || !a.IsOpenAI() || a.IsImagePoolMode() || a.Credentials == nil {
+		return false
+	}
+	switch a.Type {
+	case AccountTypeAPIKey:
+		return a.IsPoolMode()
+	case AccountTypeOAuth:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsOpenAIPromptCacheBoostEnabled enables prompt-cache helpers only for
+// OpenAI text-pool accounts that explicitly enabled it. Image pools are
+// excluded even if older credentials still contain the flag.
+func (a *Account) IsOpenAIPromptCacheBoostEnabled() bool {
+	return a.isOpenAIPromptCacheBoostTextPoolAccount() &&
+		credentialBool(a.Credentials, "prompt_cache_boost_enabled")
 }
 
 func (a *Account) OpenAIPromptCacheBoostLevel() string {

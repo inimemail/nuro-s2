@@ -405,7 +405,6 @@ func TestOpenAIPromptCacheBoost_NormalizeAffinitySessionHashScopesToEnabledTextP
 	oauth.ID = 361
 	oauth.Type = AccountTypeOAuth
 	oauth.Credentials = map[string]any{
-		"pool_mode":                  true,
 		"prompt_cache_boost_enabled": true,
 	}
 
@@ -421,7 +420,7 @@ func TestOpenAIPromptCacheBoost_NormalizeAffinitySessionHashScopesToEnabledTextP
 	require.Equal(t, sessionHash, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &enabled))
 	require.Empty(t, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &disabled))
 	require.Empty(t, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &imagePool))
-	require.Empty(t, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &oauth))
+	require.Equal(t, sessionHash, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &oauth))
 	require.Empty(t, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &softCooling))
 	require.Empty(t, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(sessionHash, &runtimeBlocked))
 	require.Equal(t, normalSessionHash, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(normalSessionHash, &disabled))
@@ -451,6 +450,28 @@ func TestOpenAIPromptCacheBoost_BindStickySessionRejectsSoftCoolingAndRuntimeBlo
 	blockedSessionHash := openAIPromptCacheBoostAffinitySessionPrefix + "bind-runtime-blocked"
 	require.NoError(t, svc.BindStickySession(ctx, nil, blockedSessionHash, runtimeBlocked.ID))
 	require.NotContains(t, cache.sessionBindings, "openai:"+blockedSessionHash)
+}
+
+func TestOpenAIPromptCacheBoost_BindStickySessionRejectsRuntimeBlockedOAuthAccount(t *testing.T) {
+	ctx := context.Background()
+	oauth := *promptCacheBoostTestAccount(358)
+	oauth.Type = AccountTypeOAuth
+	oauth.Status = StatusActive
+	oauth.Schedulable = true
+	oauth.Credentials = map[string]any{
+		"prompt_cache_boost_enabled": true,
+	}
+
+	cache := &stubGatewayCache{}
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{oauth}},
+		cache:       cache,
+	}
+	svc.BlockAccountScheduling(&oauth, time.Now().Add(time.Minute), "oauth_runtime_block")
+
+	sessionHash := openAIPromptCacheBoostAffinitySessionPrefix + "bind-oauth-runtime-blocked"
+	require.NoError(t, svc.BindStickySession(ctx, nil, sessionHash, oauth.ID))
+	require.NotContains(t, cache.sessionBindings, "openai:"+sessionHash)
 }
 
 func TestAccountWriteThrottlePrunesPromptCacheHitRateLogState(t *testing.T) {
