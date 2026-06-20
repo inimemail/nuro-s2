@@ -167,6 +167,34 @@ function buildVertexAccount() {
   } as any
 }
 
+function buildOpenAIOAuthAccount() {
+  return {
+    id: 3,
+    name: 'OpenAI OAuth',
+    notes: '',
+    platform: 'openai',
+    type: 'oauth',
+    credentials: {
+      access_token: 'oauth-token',
+      model_mapping: {
+        'gpt-5.2': 'gpt-5.2'
+      },
+      prompt_cache_boost_enabled: true,
+      prompt_cache_boost_level: 'aggressive',
+      upstream_strong_isolation_enabled: true
+    },
+    extra: {},
+    proxy_id: null,
+    concurrency: 1,
+    priority: 1,
+    rate_multiplier: 1,
+    status: 'active',
+    group_ids: [],
+    expires_at: null,
+    auto_pause_on_expired: false
+  } as any
+}
+
 function mountModal(account = buildAccount()) {
   return mount(EditAccountModal, {
     props: {
@@ -189,6 +217,34 @@ function mountModal(account = buildAccount()) {
 }
 
 describe('EditAccountModal', () => {
+  it('renders prompt cache boost and upstream isolation controls for OpenAI OAuth accounts', async () => {
+    const wrapper = mountModal(buildOpenAIOAuthAccount())
+
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheBoost')
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheBoostAggressive')
+    expect(wrapper.text()).toContain('admin.accounts.upstreamStrongIsolation')
+  })
+
+  it('submits prompt cache boost and upstream isolation settings for OpenAI OAuth accounts', async () => {
+    const account = buildOpenAIOAuthAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_boost_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_boost_level).toBe('aggressive')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.upstream_strong_isolation_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('pool_mode')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('pool_soft_cooldown_enabled')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('image_pool_mode')
+  })
+
   it('reopening the same account rehydrates the OpenAI whitelist from props', async () => {
     const account = buildAccount()
     updateAccountMock.mockReset()
