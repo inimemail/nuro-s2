@@ -1736,6 +1736,7 @@ impl ChatStreamSummary {
                 return ChatStreamObservation {
                     starts_client_output: false,
                     saw_response_created: true,
+                    response_created_boundary_offset: None,
                 };
             }
             return ChatStreamObservation::default();
@@ -1753,6 +1754,7 @@ impl ChatStreamSummary {
         let observation = ChatStreamObservation {
             starts_client_output: json_starts_client_output(&value),
             saw_response_created: false,
+            response_created_boundary_offset: None,
         };
         if json_event_type(&value) == Some("response.created") {
             self.response_created_pending_boundary = true;
