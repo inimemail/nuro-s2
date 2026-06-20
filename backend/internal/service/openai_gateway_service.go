@@ -242,6 +242,11 @@ type OpenAIForwardResult struct {
 	ResponseHeaders     http.Header
 	Duration            time.Duration
 	FirstTokenMs        *int
+	EdgePrepareMs       *int
+	EdgeQueueWaitMs     *int
+	EdgeRelayStartMs    *int
+	EdgeFallbackReason  *string
+	EdgeRetryCount      *int
 	ClientDisconnect    bool
 	ImageCount          int
 	ImageSize           string
@@ -7163,6 +7168,26 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	usageLog.UpstreamHeaderMs = usageLogLatencyIntFromContext(ctx, ctxkey.UpstreamHeaderMs)
 	usageLog.UpstreamFirstByteMs = usageLogLatencyIntFromContext(ctx, ctxkey.UpstreamFirstByteMs)
 	usageLog.FirstClientFlushMs = usageLogLatencyIntFromContext(ctx, ctxkey.FirstClientFlushMs)
+	usageLog.EdgePrepareMs = result.EdgePrepareMs
+	if usageLog.EdgePrepareMs == nil {
+		usageLog.EdgePrepareMs = usageLogLatencyIntFromContext(ctx, ctxkey.EdgePrepareMs)
+	}
+	usageLog.EdgeQueueWaitMs = result.EdgeQueueWaitMs
+	if usageLog.EdgeQueueWaitMs == nil {
+		usageLog.EdgeQueueWaitMs = usageLogLatencyIntFromContext(ctx, ctxkey.EdgeQueueWaitMs)
+	}
+	usageLog.EdgeRelayStartMs = result.EdgeRelayStartMs
+	if usageLog.EdgeRelayStartMs == nil {
+		usageLog.EdgeRelayStartMs = usageLogLatencyIntFromContext(ctx, ctxkey.EdgeRelayStartMs)
+	}
+	usageLog.EdgeFallbackReason = result.EdgeFallbackReason
+	if usageLog.EdgeFallbackReason == nil {
+		usageLog.EdgeFallbackReason = usageLogStringFromContext(ctx, ctxkey.EdgeFallbackReason)
+	}
+	usageLog.EdgeRetryCount = result.EdgeRetryCount
+	if usageLog.EdgeRetryCount == nil {
+		usageLog.EdgeRetryCount = usageLogLatencyIntFromContext(ctx, ctxkey.EdgeRetryCount)
+	}
 	usageLog.CreatedAt = time.Now()
 	// 设置渠道信息
 	usageLog.ChannelID = optionalInt64Ptr(input.ChannelID)
@@ -7315,6 +7340,18 @@ func usageLogLatencyIntFromContext(ctx context.Context, key ctxkey.Key) *int {
 	}
 	out := int(value)
 	return &out
+}
+
+func usageLogStringFromContext(ctx context.Context, key ctxkey.Key) *string {
+	if ctx == nil {
+		return nil
+	}
+	value, _ := ctx.Value(key).(string)
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(

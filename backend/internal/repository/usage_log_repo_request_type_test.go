@@ -76,6 +76,11 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			sqlmock.AnyArg(), // upstream_header_ms
 			sqlmock.AnyArg(), // upstream_first_byte_ms
 			sqlmock.AnyArg(), // first_client_flush_ms
+			sqlmock.AnyArg(), // edge_prepare_ms
+			sqlmock.AnyArg(), // edge_queue_wait_ms
+			sqlmock.AnyArg(), // edge_relay_start_ms
+			sqlmock.AnyArg(), // edge_fallback_reason
+			sqlmock.AnyArg(), // edge_retry_count
 			sqlmock.AnyArg(), // user_agent
 			sqlmock.AnyArg(), // ip_address
 			log.ImageCount,
@@ -162,6 +167,11 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			sqlmock.AnyArg(),
 			sqlmock.AnyArg(),
 			sqlmock.AnyArg(),
+			sqlmock.AnyArg(), // edge_prepare_ms
+			sqlmock.AnyArg(), // edge_queue_wait_ms
+			sqlmock.AnyArg(), // edge_relay_start_ms
+			sqlmock.AnyArg(), // edge_fallback_reason
+			sqlmock.AnyArg(), // edge_retry_count
 			sqlmock.AnyArg(),
 			sqlmock.AnyArg(),
 			sqlmock.AnyArg(),
@@ -267,11 +277,11 @@ func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
 		CreatedAt:          time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC),
 	})
 
-	require.Equal(t, sql.NullString{String: imageSize, Valid: true}, prepared.args[38])
-	require.Equal(t, sql.NullString{String: inputSize, Valid: true}, prepared.args[39])
-	require.Equal(t, sql.NullString{String: outputSize, Valid: true}, prepared.args[40])
-	require.Equal(t, sql.NullString{String: source, Valid: true}, prepared.args[41])
-	breakdownJSON, ok := prepared.args[42].(string)
+	require.Equal(t, sql.NullString{String: imageSize, Valid: true}, prepared.args[43])
+	require.Equal(t, sql.NullString{String: inputSize, Valid: true}, prepared.args[44])
+	require.Equal(t, sql.NullString{String: outputSize, Valid: true}, prepared.args[45])
+	require.Equal(t, sql.NullString{String: source, Valid: true}, prepared.args[46])
+	breakdownJSON, ok := prepared.args[47].(string)
 	require.True(t, ok)
 	require.JSONEq(t, `{"1K":1,"4K":1}`, breakdownJSON)
 }
@@ -616,6 +626,22 @@ type usageLogScannerStub struct {
 	values []any
 }
 
+func usageLogScanValuesWithEmptyEdgeMetrics(values ...any) []any {
+	const insertAt = 36
+	edgeValues := []any{
+		sql.NullInt64{},  // edge_prepare_ms
+		sql.NullInt64{},  // edge_queue_wait_ms
+		sql.NullInt64{},  // edge_relay_start_ms
+		sql.NullString{}, // edge_fallback_reason
+		sql.NullInt64{},  // edge_retry_count
+	}
+	out := make([]any, 0, len(values)+len(edgeValues))
+	out = append(out, values[:insertAt]...)
+	out = append(out, edgeValues...)
+	out = append(out, values[insertAt:]...)
+	return out
+}
+
 func (s usageLogScannerStub) Scan(dest ...any) error {
 	if len(dest) != len(s.values) {
 		return fmt.Errorf("scan arg count mismatch: got %d want %d", len(dest), len(s.values))
@@ -633,7 +659,7 @@ func (s usageLogScannerStub) Scan(dest ...any) error {
 func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 	t.Run("image_size_metadata_is_scanned", func(t *testing.T) {
 		now := time.Now().UTC()
-		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+		log, err := scanUsageLog(usageLogScannerStub{values: usageLogScanValuesWithEmptyEdgeMetrics(
 			int64(4),
 			int64(13),
 			int64(23),
@@ -678,7 +704,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			sql.NullFloat64{},
 			now,
-		}})
+		)})
 		require.NoError(t, err)
 		require.Equal(t, 2, log.ImageCount)
 		require.NotNil(t, log.ImageSize)
@@ -694,7 +720,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 
 	t.Run("request_type_ws_v2_overrides_legacy", func(t *testing.T) {
 		now := time.Now().UTC()
-		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+		log, err := scanUsageLog(usageLogScannerStub{values: usageLogScanValuesWithEmptyEdgeMetrics(
 			int64(1),  // id
 			int64(10), // user_id
 			int64(20), // api_key_id
@@ -750,7 +776,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
 			now,
-		}})
+		)})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
 		require.Equal(t, "priority", *log.ServiceTier)
@@ -761,7 +787,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 
 	t.Run("request_type_unknown_falls_back_to_legacy", func(t *testing.T) {
 		now := time.Now().UTC()
-		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+		log, err := scanUsageLog(usageLogScannerStub{values: usageLogScanValuesWithEmptyEdgeMetrics(
 			int64(2),
 			int64(11),
 			int64(21),
@@ -806,7 +832,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
 			now,
-		}})
+		)})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
 		require.Equal(t, "flex", *log.ServiceTier)
@@ -817,7 +843,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 
 	t.Run("service_tier_is_scanned", func(t *testing.T) {
 		now := time.Now().UTC()
-		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+		log, err := scanUsageLog(usageLogScannerStub{values: usageLogScanValuesWithEmptyEdgeMetrics(
 			int64(3),
 			int64(12),
 			int64(22),
@@ -862,7 +888,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
 			now,
-		}})
+		)})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
 		require.Equal(t, "priority", *log.ServiceTier)

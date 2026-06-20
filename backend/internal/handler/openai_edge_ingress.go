@@ -2,17 +2,21 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
 
 const openAIEdgeFallbackHeader = "X-Sub2API-Edge-Fallback"
+const openAIEdgeFallbackReasonHeader = "X-Sub2API-Edge-Fallback-Reason"
 
 var openAIEdgeIngressClient = &http.Client{
 	Transport: &http.Transport{
@@ -41,7 +45,8 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 		return false
 	}
 	if strings.TrimSpace(c.GetHeader(openAIEdgeFallbackHeader)) != "" {
-		c.Request.Header.Del(openAIEdgeFallbackHeader)
+		applyOpenAIEdgeFallbackContext(c)
+		clearOpenAIEdgeFallbackHeaders(c.Request.Header)
 		return false
 	}
 	if c.Request.Method != http.MethodPost {
@@ -78,7 +83,7 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 		return false
 	}
 	req.Header = c.Request.Header.Clone()
-	req.Header.Del(openAIEdgeFallbackHeader)
+	clearOpenAIEdgeFallbackHeaders(req.Header)
 	for name := range req.Header {
 		if isOpenAIEdgeHopHeader(name) {
 			req.Header.Del(name)
@@ -99,6 +104,52 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 	c.Status(resp.StatusCode)
 	copyOpenAIEdgeResponseBody(c.Writer, resp.Body)
 	return true
+}
+
+func clearOpenAIEdgeFallbackHeaders(header http.Header) {
+	if header == nil {
+		return
+	}
+	for _, name := range []string{
+		openAIEdgeFallbackHeader,
+		openAIEdgeFallbackReasonHeader,
+		"X-Sub2API-Edge-Prepare-Ms",
+		"X-Sub2API-Edge-Queue-Wait-Ms",
+		"X-Sub2API-Edge-Relay-Start-Ms",
+		"X-Sub2API-Edge-Retry-Count",
+	} {
+		header.Del(name)
+	}
+}
+
+func applyOpenAIEdgeFallbackContext(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	ctx := c.Request.Context()
+	if reason := strings.TrimSpace(c.GetHeader(openAIEdgeFallbackReasonHeader)); reason != "" {
+		ctx = context.WithValue(ctx, ctxkey.EdgeFallbackReason, reason)
+	}
+	for _, item := range []struct {
+		header string
+		key    ctxkey.Key
+	}{
+		{"X-Sub2API-Edge-Prepare-Ms", ctxkey.EdgePrepareMs},
+		{"X-Sub2API-Edge-Queue-Wait-Ms", ctxkey.EdgeQueueWaitMs},
+		{"X-Sub2API-Edge-Relay-Start-Ms", ctxkey.EdgeRelayStartMs},
+		{"X-Sub2API-Edge-Retry-Count", ctxkey.EdgeRetryCount},
+	} {
+		value := strings.TrimSpace(c.GetHeader(item.header))
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed < 0 {
+			continue
+		}
+		ctx = context.WithValue(ctx, item.key, parsed)
+	}
+	c.Request = c.Request.WithContext(ctx)
 }
 
 func openAIEdgeIngressEligiblePath(path string) bool {

@@ -480,16 +480,21 @@ type UsageLog struct {
 	ActualCost        float64 `json:"actual_cost"`
 	RateMultiplier    float64 `json:"rate_multiplier"`
 
-	BillingType         int8   `json:"billing_type"`
-	RequestType         string `json:"request_type"`
-	Stream              bool   `json:"stream"`
-	OpenAIWSMode        bool   `json:"openai_ws_mode"`
-	DurationMs          *int   `json:"duration_ms"`
-	FirstTokenMs        *int   `json:"first_token_ms"`
-	SlotWaitMs          *int   `json:"slot_wait_ms"`
-	UpstreamHeaderMs    *int   `json:"upstream_header_ms"`
-	UpstreamFirstByteMs *int   `json:"upstream_first_byte_ms"`
-	FirstClientFlushMs  *int   `json:"first_client_flush_ms"`
+	BillingType         int8    `json:"billing_type"`
+	RequestType         string  `json:"request_type"`
+	Stream              bool    `json:"stream"`
+	OpenAIWSMode        bool    `json:"openai_ws_mode"`
+	DurationMs          *int    `json:"duration_ms"`
+	FirstTokenMs        *int    `json:"first_token_ms"`
+	SlotWaitMs          *int    `json:"slot_wait_ms"`
+	UpstreamHeaderMs    *int    `json:"upstream_header_ms"`
+	UpstreamFirstByteMs *int    `json:"upstream_first_byte_ms"`
+	FirstClientFlushMs  *int    `json:"first_client_flush_ms"`
+	EdgePrepareMs       *int    `json:"edge_prepare_ms"`
+	EdgeQueueWaitMs     *int    `json:"edge_queue_wait_ms"`
+	EdgeRelayStartMs    *int    `json:"edge_relay_start_ms"`
+	EdgeFallbackReason  *string `json:"edge_fallback_reason"`
+	EdgeRetryCount      *int    `json:"edge_retry_count"`
 
 	// 图片生成字段
 	ImageCount         int            `json:"image_count"`

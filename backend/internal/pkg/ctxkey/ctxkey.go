@@ -71,4 +71,19 @@ const (
 
 	// FirstClientFlushMs stores first downstream client flush latency for usage-log troubleshooting.
 	FirstClientFlushMs Key = "ctx_first_client_flush_ms"
+
+	// EdgePrepareMs stores edge-rs -> Go /prepare latency for usage-log troubleshooting.
+	EdgePrepareMs Key = "ctx_edge_prepare_ms"
+
+	// EdgeQueueWaitMs stores edge-rs relay queue wait latency for usage-log troubleshooting.
+	EdgeQueueWaitMs Key = "ctx_edge_queue_wait_ms"
+
+	// EdgeRelayStartMs stores request-entered-edge to upstream relay start latency.
+	EdgeRelayStartMs Key = "ctx_edge_relay_start_ms"
+
+	// EdgeFallbackReason stores the edge-rs fallback reason when the relay path falls back to Go.
+	EdgeFallbackReason Key = "ctx_edge_fallback_reason"
+
+	// EdgeRetryCount stores edge-rs retry/account-switch count for this request.
+	EdgeRetryCount Key = "ctx_edge_retry_count"
 )

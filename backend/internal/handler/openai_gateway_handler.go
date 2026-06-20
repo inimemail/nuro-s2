@@ -45,6 +45,7 @@ type OpenAIGatewayHandler struct {
 	imageTaskWorkerStopOnce  sync.Once
 	openAIEdgeLeaseMu        sync.Mutex
 	openAIEdgeLeases         map[string]*openAIEdgeLease
+	openAIEdgePrepareCache   *openAIEdgePrepareCache
 	maxAccountSwitches       int
 	cfg                      *config.Config
 }
@@ -117,6 +118,19 @@ func usageRecordContext(parent context.Context, base context.Context) context.Co
 	if requestID, _ := parent.Value(ctxkey.RequestID).(string); strings.TrimSpace(requestID) != "" {
 		base = context.WithValue(base, ctxkey.RequestID, strings.TrimSpace(requestID))
 	}
+	for _, key := range []ctxkey.Key{
+		ctxkey.EdgePrepareMs,
+		ctxkey.EdgeQueueWaitMs,
+		ctxkey.EdgeRelayStartMs,
+		ctxkey.EdgeRetryCount,
+	} {
+		if value, ok := parent.Value(key).(int64); ok && value >= 0 {
+			base = context.WithValue(base, key, value)
+		}
+	}
+	if reason, _ := parent.Value(ctxkey.EdgeFallbackReason).(string); strings.TrimSpace(reason) != "" {
+		base = context.WithValue(base, ctxkey.EdgeFallbackReason, strings.TrimSpace(reason))
+	}
 	for _, item := range []struct {
 		serviceKey string
 		contextKey ctxkey.Key
@@ -188,6 +202,7 @@ func NewOpenAIGatewayHandler(
 		imageTaskStore:           newOpenAIImageTaskStore(defaultOpenAIImageTaskRetention),
 		imageTaskWorkerStop:      make(chan struct{}),
 		imageTaskWorkerDone:      make(chan struct{}),
+		openAIEdgePrepareCache:   newOpenAIEdgePrepareCache(2*time.Second, openAIEdgePrepareCacheMaxEntries),
 		maxAccountSwitches:       maxAccountSwitches,
 		cfg:                      cfg,
 	}

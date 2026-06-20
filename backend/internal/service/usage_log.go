@@ -159,6 +159,11 @@ type UsageLog struct {
 	UpstreamHeaderMs    *int
 	UpstreamFirstByteMs *int
 	FirstClientFlushMs  *int
+	EdgePrepareMs       *int
+	EdgeQueueWaitMs     *int
+	EdgeRelayStartMs    *int
+	EdgeFallbackReason  *string
+	EdgeRetryCount      *int
 	UserAgent           *string
 	IPAddress           *string
 

@@ -68,6 +68,79 @@ type openAIEdgeAccountSelection struct {
 	releaseFunc func()
 }
 
+const openAIEdgePrepareCacheMaxEntries = 8192
+
+type openAIEdgePrepareCache struct {
+	mu             sync.Mutex
+	ttl            time.Duration
+	maxEntries     int
+	channelMapping map[string]openAIEdgeCachedChannelMapping
+}
+
+type openAIEdgeCachedChannelMapping struct {
+	mapping   service.ChannelMappingResult
+	expiresAt time.Time
+}
+
+func newOpenAIEdgePrepareCache(ttl time.Duration, maxEntries int) *openAIEdgePrepareCache {
+	if ttl <= 0 || maxEntries <= 0 {
+		return nil
+	}
+	return &openAIEdgePrepareCache{
+		ttl:            ttl,
+		maxEntries:     maxEntries,
+		channelMapping: make(map[string]openAIEdgeCachedChannelMapping),
+	}
+}
+
+func (c *openAIEdgePrepareCache) getChannelMapping(key string, now time.Time) (service.ChannelMappingResult, bool) {
+	if c == nil || strings.TrimSpace(key) == "" {
+		return service.ChannelMappingResult{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.channelMapping[key]
+	if !ok || now.After(entry.expiresAt) {
+		delete(c.channelMapping, key)
+		return service.ChannelMappingResult{}, false
+	}
+	return entry.mapping, true
+}
+
+func (c *openAIEdgePrepareCache) setChannelMapping(key string, mapping service.ChannelMappingResult, now time.Time) {
+	if c == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.channelMapping) >= c.maxEntries {
+		c.channelMapping = make(map[string]openAIEdgeCachedChannelMapping)
+	}
+	c.channelMapping[key] = openAIEdgeCachedChannelMapping{mapping: mapping, expiresAt: now.Add(c.ttl)}
+}
+
+func openAIEdgeChannelMappingCacheKey(groupID *int64, model string) string {
+	model = strings.TrimSpace(model)
+	if groupID == nil || model == "" {
+		return ""
+	}
+	return strconv.FormatInt(*groupID, 10) + ":" + model
+}
+
+func (h *OpenAIGatewayHandler) resolveOpenAIEdgeChannelMapping(ctx context.Context, groupID *int64, model string) service.ChannelMappingResult {
+	if h == nil || h.gatewayService == nil {
+		return service.ChannelMappingResult{MappedModel: model}
+	}
+	now := time.Now()
+	cacheKey := openAIEdgeChannelMappingCacheKey(groupID, model)
+	if cached, ok := h.openAIEdgePrepareCache.getChannelMapping(cacheKey, now); ok {
+		return cached
+	}
+	mapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(ctx, groupID, model)
+	h.openAIEdgePrepareCache.setChannelMapping(cacheKey, mapping, now)
+	return mapping
+}
+
 func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 	ctx context.Context,
 	groupID *int64,
@@ -211,6 +284,19 @@ func openAIEdgeFallbackPlan(req service.OpenAIEdgePrepareRequest, reason string,
 		EdgeRequestID:  req.EdgeRequestID,
 		LeaseTTLMS:     cfg.LeaseTTLMS,
 		LowLatencyMode: lowLatencyMode,
+	}
+}
+
+func openAIEdgeLaneFromServiceTier(serviceTier *string) string {
+	serviceTierValue := ""
+	if serviceTier != nil {
+		serviceTierValue = *serviceTier
+	}
+	switch strings.ToLower(strings.TrimSpace(serviceTierValue)) {
+	case "priority":
+		return "priority"
+	default:
+		return "normal"
 	}
 }
 
@@ -367,7 +453,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	if decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIChat, reqModel, req.Body); decision != nil && decision.Blocked {
 		return fallback("content_moderation_blocked")
 	}
-	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	channelMapping := h.resolveOpenAIEdgeChannelMapping(c.Request.Context(), apiKey.GroupID, reqModel)
 	forwardBody := []byte(req.Body)
 	if channelMapping.Mapped {
 		forwardBody = h.gatewayService.ReplaceModelInBody(forwardBody, channelMapping.MappedModel)
@@ -445,6 +531,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	plan.LeaseID = leaseID
 	plan.LeaseTTLMS = int(ttl / time.Millisecond)
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
+	plan.Lane = openAIEdgeLaneFromServiceTier(prepared.ServiceTier)
 	createdAt := time.Now()
 	h.storeOpenAIEdgeLease(&openAIEdgeLease{
 		edgeRequestID:      edgeRequestID,
@@ -538,7 +625,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	if decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, req.Body); decision != nil && decision.Blocked {
 		return fallback("content_moderation_blocked")
 	}
-	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	channelMapping := h.resolveOpenAIEdgeChannelMapping(c.Request.Context(), apiKey.GroupID, reqModel)
 	forwardBody := []byte(req.Body)
 	if channelMapping.Mapped {
 		forwardBody = h.gatewayService.ReplaceModelInBody(forwardBody, channelMapping.MappedModel)
@@ -624,6 +711,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	plan.LeaseID = leaseID
 	plan.LeaseTTLMS = int(ttl / time.Millisecond)
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
+	plan.Lane = openAIEdgeLaneFromServiceTier(prepared.ServiceTier)
 	createdAt := time.Now()
 	h.storeOpenAIEdgeLease(&openAIEdgeLease{
 		edgeRequestID:      edgeRequestID,
@@ -708,7 +796,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	if decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, req.Body); decision != nil && decision.Blocked {
 		return fallback("content_moderation_blocked")
 	}
-	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	channelMapping := h.resolveOpenAIEdgeChannelMapping(c.Request.Context(), apiKey.GroupID, reqModel)
 	forwardBody := []byte(req.Body)
 	if channelMapping.Mapped {
 		forwardBody = h.gatewayService.ReplaceModelInBody(forwardBody, channelMapping.MappedModel)
@@ -789,6 +877,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	plan.LeaseID = leaseID
 	plan.LeaseTTLMS = int(ttl / time.Millisecond)
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
+	plan.Lane = openAIEdgeLaneFromServiceTier(prepared.ServiceTier)
 	createdAt := time.Now()
 	h.storeOpenAIEdgeLease(&openAIEdgeLease{
 		edgeRequestID:      edgeRequestID,
@@ -1022,6 +1111,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	if req.AccountID != 0 && req.AccountID != lease.account.ID {
 		return fallback("account_mismatch")
 	}
+	if strings.TrimSpace(req.ErrorType) == "edge_queue_wait_timeout" {
+		return h.openAIEdgeRetrySwitchAccount(c, lease, req, "queue_wait_timeout")
+	}
 	status := req.UpstreamStatusCode
 	if !service.OpenAIEdgeHTTPStatusRetryable(status) {
 		return fallback("upstream_status_not_retryable")
@@ -1073,6 +1165,32 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	if h.gatewayService.ShouldStopOpenAIOAuth429Failover(lease.account, status, lease.switchCount) {
 		return fallback("oauth_429_storm_stop")
 	}
+	return h.openAIEdgeRetrySwitchAccount(c, lease, req, "account_switch")
+}
+
+func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, lease *openAIEdgeLease, req service.OpenAIEdgeRetryRequest, successReason string) service.OpenAIEdgeRetryDecision {
+	fallback := func(reason string) service.OpenAIEdgeRetryDecision {
+		return service.OpenAIEdgeRetryDecision{Action: service.OpenAIEdgeActionFallbackGo, Reason: reason}
+	}
+	if h == nil || h.gatewayService == nil {
+		return fallback("edge_dependencies_missing")
+	}
+	reqLog := requestLogger(c, "handler.openai_edge.retry_switch",
+		zap.String("lease_id", lease.leaseID),
+		zap.String("reason", successReason),
+		zap.Int64("account_id", lease.account.ID),
+	)
+	routingModel := lease.openAIRoutingModel()
+	if successReason == "queue_wait_timeout" {
+		// Queue wait timeout is local edge-rs pressure, not an upstream account
+		// failure. Exclude this account for the immediate retry without feeding a
+		// false failure sample into scheduler EWMA/soft-cooldown decisions.
+		lease.failedAccountIDs[lease.account.ID] = struct{}{}
+		if lease.switchCount >= lease.maxAccountSwitches {
+			return fallback("max_account_switches_exhausted")
+		}
+		lease.switchCount++
+	}
 	accountReleaseFuncToCall := lease.accountReleaseFunc
 	lease.accountReleaseFunc = nil
 	if accountReleaseFuncToCall != nil {
@@ -1114,7 +1232,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	}
 	lease.account = account
 	lease.accountReleaseFunc = accountReleaseFunc
-	return service.OpenAIEdgeRetryDecision{Action: service.OpenAIEdgeActionRelay, Reason: "account_switch", Plan: &plan}
+	return service.OpenAIEdgeRetryDecision{Action: service.OpenAIEdgeActionRelay, Reason: successReason, Plan: &plan}
 }
 
 func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *openAIEdgeLease, account *service.Account, release func()) (service.OpenAIEdgePlan, error) {
@@ -1138,6 +1256,7 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 		plan.LeaseTTLMS = 1
 	}
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
+	plan.Lane = openAIEdgeLaneFromServiceTier(prepared.ServiceTier)
 	lease.account = account
 	lease.accountReleaseFunc = release
 	markSameAccountAttemptStart(lease.sameAccountStarted, account, time.Now())
@@ -1185,19 +1304,25 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 	}
 	if req.Success && h.gatewayService != nil && lease.account != nil {
 		firstTokenMs := intPointerFromInt64(req.FirstTokenMS)
+		edgeFallbackReason := stringPointerFromTrimmed(req.EdgeFallbackReason)
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), true, firstTokenMs)
 		result := &service.OpenAIForwardResult{
-			RequestID:       req.RequestID,
-			ResponseID:      req.ResponseID,
-			Usage:           req.Usage,
-			Model:           lease.requestModel,
-			BillingModel:    lease.billingModel,
-			UpstreamModel:   lease.upstreamModel,
-			ServiceTier:     lease.serviceTier,
-			ReasoningEffort: lease.reasoningEffort,
-			Stream:          true,
-			Duration:        time.Duration(req.DurationMS) * time.Millisecond,
-			FirstTokenMs:    firstTokenMs,
+			RequestID:          req.RequestID,
+			ResponseID:         req.ResponseID,
+			Usage:              req.Usage,
+			Model:              lease.requestModel,
+			BillingModel:       lease.billingModel,
+			UpstreamModel:      lease.upstreamModel,
+			ServiceTier:        lease.serviceTier,
+			ReasoningEffort:    lease.reasoningEffort,
+			Stream:             true,
+			Duration:           time.Duration(req.DurationMS) * time.Millisecond,
+			FirstTokenMs:       firstTokenMs,
+			EdgePrepareMs:      intPointerFromInt64(req.EdgePrepareMS),
+			EdgeQueueWaitMs:    intPointerFromInt64(req.EdgeQueueWaitMS),
+			EdgeRelayStartMs:   intPointerFromInt64(req.EdgeRelayStartMS),
+			EdgeFallbackReason: edgeFallbackReason,
+			EdgeRetryCount:     intPointerFromInt64(req.EdgeRetryCount),
 		}
 		h.submitOpenAIUsageRecordTask(context.Background(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
@@ -1238,11 +1363,20 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {
 	lease := h.takeOpenAIEdgeLease(req.LeaseID)
 	if lease != nil {
 		lease.release()
-		if h.gatewayService != nil && lease.account != nil {
+		if h.gatewayService != nil && lease.account != nil && !openAIEdgeAbortReasonIsLocalQueuePressure(req.Reason) {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
 		}
 	}
 	c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true})
+}
+
+func openAIEdgeAbortReasonIsLocalQueuePressure(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	return strings.Contains(reason, "edge_queue_wait_timeout") ||
+		strings.Contains(reason, "edge_relay_queue_full") ||
+		strings.Contains(reason, "edge relay queue full") ||
+		strings.Contains(reason, "queue wait budget") ||
+		strings.Contains(reason, "queue_wait_timeout")
 }
 
 func intPointerFromInt64(v *int64) *int {
@@ -1251,4 +1385,12 @@ func intPointerFromInt64(v *int64) *int {
 	}
 	i := int(*v)
 	return &i
+}
+
+func stringPointerFromTrimmed(v string) *string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	return &v
 }

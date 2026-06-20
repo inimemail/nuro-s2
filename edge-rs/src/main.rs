@@ -39,6 +39,11 @@ use uuid::Uuid;
 
 const EDGE_SECRET_HEADER: &str = "X-Sub2API-Edge-Secret";
 const EDGE_FALLBACK_HEADER: &str = "x-sub2api-edge-fallback";
+const EDGE_FALLBACK_REASON_HEADER: &str = "x-sub2api-edge-fallback-reason";
+const EDGE_PREPARE_MS_HEADER: &str = "x-sub2api-edge-prepare-ms";
+const EDGE_QUEUE_WAIT_MS_HEADER: &str = "x-sub2api-edge-queue-wait-ms";
+const EDGE_RELAY_START_MS_HEADER: &str = "x-sub2api-edge-relay-start-ms";
+const EDGE_RETRY_COUNT_HEADER: &str = "x-sub2api-edge-retry-count";
 const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -47,6 +52,7 @@ struct AppState {
     client: Client,
     clients_by_proxy: Arc<Mutex<HashMap<String, Client>>>,
     relay_queues: Arc<Mutex<HashMap<String, mpsc::Sender<RelayJob>>>>,
+    warm_keys: Arc<Mutex<HashMap<String, WarmKeyState>>>,
     ws_idle: Arc<tokio::sync::Mutex<HashMap<String, Vec<WsIdleConn>>>>,
     pools: Arc<BufferPools>,
 }
@@ -63,11 +69,13 @@ struct EdgeConfig {
     queue_buffer_size: usize,
     per_account_workers: usize,
     max_idle_conns_per_account: usize,
+    queue_wait_budget_ms: u64,
     large_payload_passthrough: bool,
     large_payload_threshold_bytes: usize,
     ws_idle_per_key: usize,
     upstream_warm_url: Option<String>,
     upstream_warm_interval_secs: u64,
+    upstream_dynamic_warm_active_secs: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,6 +106,7 @@ struct EdgePlan {
     body_raw_base64: Option<String>,
     proxy_url: Option<String>,
     low_latency_mode: Option<String>,
+    lane: Option<String>,
     #[serde(default)]
     safe_token_placeholder: bool,
 }
@@ -113,8 +122,58 @@ struct RelayJob {
     state: AppState,
     plan: EdgePlan,
     started_at: Instant,
+    enqueued_at: Instant,
+    timing: EdgeTiming,
+    timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
     retry_depth: u8,
     response_tx: oneshot::Sender<anyhow::Result<Response>>,
+}
+
+#[derive(Clone, Debug)]
+struct WarmKeyState {
+    proxy_url: Option<String>,
+    warm_url: String,
+    last_seen: Instant,
+    failures: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct EdgeTiming {
+    prepare_ms: Option<i64>,
+    queue_wait_ms: Option<i64>,
+    relay_start_ms: Option<i64>,
+    fallback_reason: Option<String>,
+    retry_count: i64,
+}
+
+fn update_edge_timing(
+    timing_shared: Option<&Arc<Mutex<EdgeTiming>>>,
+    update: impl FnOnce(&mut EdgeTiming),
+) {
+    let Some(timing_shared) = timing_shared else {
+        return;
+    };
+    if let Ok(mut timing) = timing_shared.lock() {
+        update(&mut timing);
+    }
+}
+
+fn edge_timing_snapshot(timing_shared: &Arc<Mutex<EdgeTiming>>) -> EdgeTiming {
+    timing_shared
+        .lock()
+        .map(|timing| timing.clone())
+        .unwrap_or_default()
+}
+
+fn relay_error_fallback_reason(err: &anyhow::Error) -> &'static str {
+    let message = err.to_string();
+    if message.contains("queue wait budget") || message.contains("edge_queue_wait_timeout") {
+        return "queue_wait_budget_fallback_go";
+    }
+    if message.contains("edge relay queue full") {
+        return "edge_relay_queue_full";
+    }
+    "relay_error_before_commit"
 }
 
 #[derive(Default)]
@@ -190,6 +249,11 @@ struct CompleteRequest {
     upstream_first_byte_ms: Option<i64>,
     first_token_ms: Option<i64>,
     first_client_flush_ms: Option<i64>,
+    edge_prepare_ms: Option<i64>,
+    edge_queue_wait_ms: Option<i64>,
+    edge_relay_start_ms: Option<i64>,
+    edge_fallback_reason: Option<String>,
+    edge_retry_count: i64,
     error_type: Option<String>,
     error_message: Option<String>,
     upstream_status_code: Option<u16>,
@@ -303,7 +367,7 @@ impl Drop for LeaseAbortGuard {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
+        .with_env_filter(env::var("RUST_LOG").unwrap_or_else(|_| "warn".to_string()))
         .init();
 
     let cfg = Arc::new(EdgeConfig::from_env()?);
@@ -313,10 +377,12 @@ async fn main() -> anyhow::Result<()> {
         client,
         clients_by_proxy: Arc::new(Mutex::new(HashMap::new())),
         relay_queues: Arc::new(Mutex::new(HashMap::new())),
+        warm_keys: Arc::new(Mutex::new(HashMap::new())),
         ws_idle: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         pools: Arc::new(BufferPools::prewarmed(cfg.initial_pool_size)),
     };
     let warm_client = state.client.clone();
+    let dynamic_warm_state = state.clone();
     let app = Router::new()
         .route("/healthz", any(healthz))
         .route("/*path", any(handle_openai_edge))
@@ -332,6 +398,9 @@ async fn main() -> anyhow::Result<()> {
             run_upstream_keep_warm(warm_client, warm_url, interval_secs).await;
         });
     }
+    tokio::spawn(async move {
+        run_dynamic_upstream_keep_warm(dynamic_warm_state).await;
+    });
 
     let listener = tokio::net::TcpListener::bind(cfg.listen_addr).await?;
     axum::serve(listener, app)
@@ -370,6 +439,71 @@ async fn run_upstream_keep_warm(client: Client, warm_url: String, interval_secs:
             }
         }
         tokio::time::sleep(interval).await;
+    }
+}
+
+async fn run_dynamic_upstream_keep_warm(state: AppState) {
+    let interval = Duration::from_secs(state.cfg.upstream_warm_interval_secs.max(30));
+    let active_window = Duration::from_secs(state.cfg.upstream_dynamic_warm_active_secs.max(60));
+    loop {
+        tokio::time::sleep(interval).await;
+        let now = Instant::now();
+        let keys = {
+            let mut warm_keys = match state.warm_keys.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    warn!("dynamic upstream warm key map lock poisoned");
+                    continue;
+                }
+            };
+            warm_keys.retain(|_, item| now.duration_since(item.last_seen) <= active_window);
+            warm_keys.values().cloned().collect::<Vec<_>>()
+        };
+        for item in keys {
+            if item.failures >= 3 && item.failures % 3 != 0 {
+                if let Ok(mut warm_keys) = state.warm_keys.lock() {
+                    if let Some(current) =
+                        warm_keys.get_mut(&dynamic_warm_key(item.proxy_url.as_deref(), &item.warm_url))
+                    {
+                        current.failures = current.failures.saturating_add(1);
+                    }
+                }
+                continue;
+            }
+            let client = match state.client_for_proxy(item.proxy_url.as_deref()) {
+                Ok(client) => client,
+                Err(err) => {
+                    warn!("dynamic upstream warm client failed: {err}");
+                    continue;
+                }
+            };
+            let warm_url = item.warm_url.clone();
+            let warm_key = dynamic_warm_key(item.proxy_url.as_deref(), &warm_url);
+            let state_for_update = state.clone();
+            tokio::spawn(async move {
+                let result = client
+                    .get(&warm_url)
+                    .header(header::ACCEPT_ENCODING, HeaderValue::from_static("identity"))
+                    .timeout(Duration::from_secs(10))
+                    .send()
+                    .await;
+                let Ok(mut warm_keys) = state_for_update.warm_keys.lock() else {
+                    return;
+                };
+                if let Some(current) = warm_keys.get_mut(&warm_key) {
+                    match result {
+                        Ok(resp) => {
+                            let _ = resp.status();
+                            current.failures = 0;
+                        }
+                        Err(err) => {
+                            current.failures = current.failures.saturating_add(1);
+                            warn!("dynamic upstream keep-warm request failed: {err}");
+                        }
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -430,39 +564,89 @@ async fn handle_openai_edge(
         client_ip: client_ip_from_headers(&headers),
     };
 
-    let plan = match call_prepare(&state, &prepare).await {
-        Ok(plan) => plan,
+    let prepare_started_at = Instant::now();
+    let (plan, prepare_ms) = match call_prepare(&state, &prepare).await {
+        Ok(plan) => (plan, prepare_started_at.elapsed().as_millis() as i64),
         Err(err) => {
             warn!("prepare failed; falling back to Go: {err}");
-            return fallback_to_go(state, method, uri, headers, Body::from(body_bytes)).await;
+            let mut timing = EdgeTiming {
+                prepare_ms: Some(prepare_started_at.elapsed().as_millis() as i64),
+                ..EdgeTiming::default()
+            };
+            timing.fallback_reason = Some("prepare_failed".to_string());
+            return fallback_to_go(
+                state,
+                method,
+                uri,
+                headers,
+                Body::from(body_bytes),
+                "prepare_failed",
+                timing,
+            )
+            .await;
         }
+    };
+    let timing = EdgeTiming {
+        prepare_ms: Some(prepare_ms),
+        ..EdgeTiming::default()
     };
 
     if plan.action != "relay" {
         if let Some(reason) = &plan.reason {
             info!("edge fallback_to_go reason={reason}");
         }
-        return fallback_to_go(state, method, uri, headers, Body::from(body_bytes)).await;
+        return fallback_to_go(
+            state,
+            method,
+            uri,
+            headers,
+            Body::from(body_bytes),
+            plan.reason.as_deref().unwrap_or("prepare_fallback_go"),
+            timing,
+        )
+        .await;
     }
 
     let relay_lease_id = plan.lease_id.clone();
     let relay_account_id = plan.account_id;
-    match relay_upstream(state.clone(), plan, start, 0).await {
+    let timing_shared = Arc::new(Mutex::new(timing.clone()));
+    match relay_upstream(
+        state.clone(),
+        plan,
+        start,
+        timing,
+        Some(timing_shared.clone()),
+        0,
+    )
+    .await
+    {
         Ok(resp) => resp,
         Err(err) => {
             error!("relay failed before response commit: {err}");
+            let reason = relay_error_fallback_reason(&err);
             let _ = call_abort(
                 &state,
                 AbortRequest {
                     edge_request_id,
                     lease_id: relay_lease_id,
                     account_id: relay_account_id,
-                    reason: format!("relay_error: {err}"),
+                    reason: format!("{reason}: {err}"),
                     client_disconnected: false,
                 },
             )
             .await;
-            fallback_to_go(state, method, uri, headers, Body::from(body_bytes)).await
+            let mut fallback_timing = edge_timing_snapshot(&timing_shared);
+            fallback_timing.fallback_reason = Some(reason.to_string());
+            fallback_to_go(
+                state,
+                method,
+                uri,
+                headers,
+                Body::from(body_bytes),
+                reason,
+                fallback_timing,
+            )
+            .await
         }
     }
 }
@@ -690,6 +874,11 @@ async fn relay_ws_session(
             upstream_first_byte_ms: None,
             first_token_ms: None,
             first_client_flush_ms: None,
+            edge_prepare_ms: None,
+            edge_queue_wait_ms: None,
+            edge_relay_start_ms: None,
+            edge_fallback_reason: None,
+            edge_retry_count: 0,
             error_type: if success {
                 None
             } else {
@@ -814,6 +1003,8 @@ async fn relay_upstream(
     state: AppState,
     plan: EdgePlan,
     started_at: Instant,
+    timing: EdgeTiming,
+    timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
     retry_depth: u8,
 ) -> anyhow::Result<Response> {
     if retry_depth == 0 {
@@ -823,6 +1014,9 @@ async fn relay_upstream(
                 state: state.clone(),
                 plan,
                 started_at,
+                enqueued_at: Instant::now(),
+                timing,
+                timing_shared,
                 retry_depth,
                 response_tx,
             };
@@ -834,15 +1028,26 @@ async fn relay_upstream(
                 .map_err(|err| anyhow::anyhow!("edge relay worker dropped response: {err}"))?;
         }
     }
-    relay_upstream_direct(state, plan, started_at, retry_depth).await
+    relay_upstream_direct(state, plan, started_at, timing, timing_shared, retry_depth).await
 }
 
 async fn relay_upstream_direct(
     state: AppState,
     plan: EdgePlan,
     started_at: Instant,
+    mut timing: EdgeTiming,
+    timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
     retry_depth: u8,
 ) -> anyhow::Result<Response> {
+    if timing.relay_start_ms.is_none() {
+        timing.relay_start_ms = Some(started_at.elapsed().as_millis() as i64);
+    }
+    update_edge_timing(timing_shared.as_ref(), |shared| {
+        shared.relay_start_ms = timing.relay_start_ms;
+        shared.queue_wait_ms = timing.queue_wait_ms;
+        shared.retry_count = timing.retry_count;
+    });
+    state.record_dynamic_warm_key(&plan);
     let upstream_url = plan
         .upstream_url
         .clone()
@@ -873,6 +1078,7 @@ async fn relay_upstream_direct(
             req = req.header(k, v);
         }
     }
+    req = req.header(header::ACCEPT_ENCODING, HeaderValue::from_static("identity"));
     let header_start = Instant::now();
     let upstream = req.body(body).send().await?;
     let upstream_header_ms = header_start.elapsed().as_millis() as i64;
@@ -914,10 +1120,14 @@ async fn relay_upstream_direct(
                 anyhow::bail!("edge retry depth exceeded");
             }
             if let Some(next_plan) = decision.plan {
+                let mut next_timing = timing.clone();
+                next_timing.retry_count += 1;
                 return Box::pin(relay_upstream(
                     state,
                     next_plan,
                     started_at,
+                    next_timing,
+                    timing_shared,
                     retry_depth + 1,
                 ))
                 .await;
@@ -934,6 +1144,11 @@ async fn relay_upstream_direct(
     let edge_request_id = plan.edge_request_id.clone();
     let lease_id = plan.lease_id.clone();
     let account_id = plan.account_id;
+    let edge_prepare_ms = timing.prepare_ms;
+    let edge_queue_wait_ms = timing.queue_wait_ms;
+    let edge_relay_start_ms = timing.relay_start_ms;
+    let edge_fallback_reason = timing.fallback_reason.clone();
+    let edge_retry_count = timing.retry_count;
     let complete_state = state.clone();
     let upstream_request_id = headers
         .get("x-request-id")
@@ -1057,6 +1272,11 @@ async fn relay_upstream_direct(
             upstream_first_byte_ms: first_byte_ms,
             first_token_ms,
             first_client_flush_ms: first_flush_ms,
+            edge_prepare_ms,
+            edge_queue_wait_ms,
+            edge_relay_start_ms,
+            edge_fallback_reason,
+            edge_retry_count,
             error_type: if success { None } else { Some("stream_error".to_string()) },
             error_message,
             upstream_status_code: Some(status.as_u16()),
@@ -1068,6 +1288,62 @@ async fn relay_upstream_direct(
     let mut builder = Response::builder().status(status.as_u16());
     copy_response_headers(builder.headers_mut().expect("headers"), &headers);
     Ok(builder.body(Body::from_stream(body_stream))?)
+}
+
+async fn retry_after_queue_wait_budget(
+    state: AppState,
+    plan: EdgePlan,
+    started_at: Instant,
+    timing: EdgeTiming,
+    timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
+    retry_depth: u8,
+    queue_wait_ms: i64,
+) -> anyhow::Result<Response> {
+    let decision = call_retry(
+        &state,
+        RetryRequest {
+            edge_request_id: plan.edge_request_id.clone(),
+            lease_id: plan.lease_id.clone(),
+            account_id: plan.account_id,
+            upstream_status_code: None,
+            upstream_request_id: None,
+            error_type: Some("edge_queue_wait_timeout".to_string()),
+            error_message: Some(format!(
+                "edge relay queue wait exceeded budget: {queue_wait_ms}ms"
+            )),
+            response_body: None,
+            wrote_client_response: false,
+        },
+    )
+    .await?;
+    if decision.action != "relay" {
+        let reason = decision
+            .reason
+            .unwrap_or_else(|| "queue_wait_budget_fallback_go".to_string());
+        anyhow::bail!("queue wait budget requested Go fallback: {reason}");
+    }
+    let retry_max_depth = decision.retry_max_depth.unwrap_or(5).max(1);
+    if retry_depth >= retry_max_depth {
+        anyhow::bail!("edge queue wait retry depth exceeded");
+    }
+    let Some(next_plan) = decision.plan else {
+        anyhow::bail!("queue wait retry decision missing relay plan");
+    };
+    let mut next_timing = timing;
+    next_timing.retry_count += 1;
+    update_edge_timing(timing_shared.as_ref(), |shared| {
+        shared.retry_count = next_timing.retry_count;
+        shared.queue_wait_ms = next_timing.queue_wait_ms;
+    });
+    Box::pin(relay_upstream(
+        state,
+        next_plan,
+        started_at,
+        next_timing,
+        timing_shared,
+        retry_depth + 1,
+    ))
+    .await
 }
 
 fn low_latency_policy(mode: Option<&str>) -> LowLatencyPolicy {
@@ -1172,6 +1448,8 @@ async fn fallback_to_go(
     uri: Uri,
     headers: HeaderMap,
     body: Body,
+    reason: &str,
+    timing: EdgeTiming,
 ) -> Response {
     let url = format!(
         "{}{}",
@@ -1196,6 +1474,22 @@ async fn fallback_to_go(
         }
     }
     req = req.header(EDGE_FALLBACK_HEADER, "1");
+    let reason = reason.trim();
+    if !reason.is_empty() {
+        req = req.header(EDGE_FALLBACK_REASON_HEADER, reason);
+    }
+    if let Some(value) = timing.prepare_ms {
+        req = req.header(EDGE_PREPARE_MS_HEADER, value.to_string());
+    }
+    if let Some(value) = timing.queue_wait_ms {
+        req = req.header(EDGE_QUEUE_WAIT_MS_HEADER, value.to_string());
+    }
+    if let Some(value) = timing.relay_start_ms {
+        req = req.header(EDGE_RELAY_START_MS_HEADER, value.to_string());
+    }
+    if timing.retry_count > 0 {
+        req = req.header(EDGE_RETRY_COUNT_HEADER, timing.retry_count.to_string());
+    }
     let upstream = match req.body(body_bytes).send().await {
         Ok(resp) => resp,
         Err(err) => {
@@ -1283,7 +1577,38 @@ fn relay_queue_key(plan: &EdgePlan) -> Option<String> {
         .and_then(|url| url.host_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| upstream_url.to_string());
     let proxy = plan.proxy_url.as_deref().unwrap_or("").trim();
-    Some(format!("{account_id}|{proxy}|{host}"))
+    let lane = normalize_relay_lane(plan.lane.as_deref());
+    Some(format!("{account_id}|{proxy}|{host}|{lane}"))
+}
+
+fn normalize_relay_lane(lane: Option<&str>) -> &'static str {
+    match lane.unwrap_or_default().trim().to_ascii_lowercase().as_str() {
+        "priority" => "priority",
+        "bulk" => "bulk",
+        _ => "normal",
+    }
+}
+
+fn upstream_origin_warm_url(upstream_url: Option<&str>) -> Option<String> {
+    let upstream_url = upstream_url.map(str::trim).filter(|v| !v.is_empty())?;
+    let parsed = reqwest::Url::parse(upstream_url).ok()?;
+    let scheme = parsed.scheme();
+    let host = parsed.host_str()?;
+    let mut out = format!("{scheme}://{host}");
+    if let Some(port) = parsed.port() {
+        out.push(':');
+        out.push_str(&port.to_string());
+    }
+    out.push('/');
+    Some(out)
+}
+
+fn dynamic_warm_key(proxy_url: Option<&str>, warm_url: &str) -> String {
+    let proxy = proxy_url
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("-");
+    format!("{proxy}|{warm_url}")
 }
 
 fn ws_idle_key(plan: &EdgePlan) -> Option<String> {
@@ -1578,9 +1903,39 @@ impl AppState {
                     let Some(job) = job else {
                         break;
                     };
-                    let result =
-                        relay_upstream_direct(job.state, job.plan, job.started_at, job.retry_depth)
-                            .await;
+                    let mut timing = job.timing;
+                    let queue_wait_ms = job.enqueued_at.elapsed().as_millis() as i64;
+                    timing.queue_wait_ms = Some(queue_wait_ms);
+                    update_edge_timing(job.timing_shared.as_ref(), |shared| {
+                        shared.queue_wait_ms = Some(queue_wait_ms);
+                        shared.retry_count = timing.retry_count;
+                    });
+                    if job.state.cfg.queue_wait_budget_ms > 0
+                        && queue_wait_ms > job.state.cfg.queue_wait_budget_ms as i64
+                    {
+                        let response_tx = job.response_tx;
+                        let result = retry_after_queue_wait_budget(
+                            job.state,
+                            job.plan,
+                            job.started_at,
+                            timing,
+                            job.timing_shared,
+                            job.retry_depth,
+                            queue_wait_ms,
+                        )
+                        .await;
+                        let _ = response_tx.send(result);
+                        continue;
+                    }
+                    let result = relay_upstream_direct(
+                        job.state,
+                        job.plan,
+                        job.started_at,
+                        timing,
+                        job.timing_shared,
+                        job.retry_depth,
+                    )
+                    .await;
                     let _ = job.response_tx.send(result);
                 }
                 info!("edge relay worker stopped key={queue_key} worker={worker_id}");
@@ -1610,6 +1965,32 @@ impl AppState {
         clients.insert(proxy_url.to_string(), client.clone());
         Ok(client)
     }
+
+    fn record_dynamic_warm_key(&self, plan: &EdgePlan) {
+        let Some(warm_url) = upstream_origin_warm_url(plan.upstream_url.as_deref()) else {
+            return;
+        };
+        let proxy_url = plan
+            .proxy_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToOwned::to_owned);
+        let key = dynamic_warm_key(proxy_url.as_deref(), &warm_url);
+        let Ok(mut warm_keys) = self.warm_keys.lock() else {
+            warn!("dynamic upstream warm key map lock poisoned");
+            return;
+        };
+        warm_keys
+            .entry(key)
+            .and_modify(|item| item.last_seen = Instant::now())
+            .or_insert(WarmKeyState {
+                proxy_url,
+                warm_url,
+                last_seen: Instant::now(),
+                failures: 0,
+            });
+    }
 }
 
 impl EdgeConfig {
@@ -1631,12 +2012,13 @@ impl EdgeConfig {
             prepare_timeout_ms: env_u64("SUB2API_EDGE_PREPARE_TIMEOUT_MS", 1500),
             complete_timeout_ms: env_u64("SUB2API_EDGE_COMPLETE_TIMEOUT_MS", 1500),
             initial_pool_size: env_usize("SUB2API_EDGE_INITIAL_POOL_SIZE", 10000),
-            queue_buffer_size: env_usize("SUB2API_EDGE_QUEUE_BUFFER_SIZE", 20000),
-            per_account_workers: env_usize("SUB2API_EDGE_PER_ACCOUNT_WORKERS", 4),
+            queue_buffer_size: env_usize("SUB2API_EDGE_QUEUE_BUFFER_SIZE", 2000),
+            per_account_workers: env_usize("SUB2API_EDGE_PER_ACCOUNT_WORKERS", 32),
             max_idle_conns_per_account: env_usize(
                 "SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT",
-                env_usize("SUB2API_EDGE_MAX_IDLE_PER_HOST", 8),
+                env_usize("SUB2API_EDGE_MAX_IDLE_PER_HOST", 64),
             ),
+            queue_wait_budget_ms: env_u64("SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS", 150),
             large_payload_passthrough: env_bool("SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH", true),
             large_payload_threshold_bytes: env_usize(
                 "SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES",
@@ -1650,7 +2032,11 @@ impl EdgeConfig {
                 Ok(v) => Some(v),
                 Err(_) => None,
             },
-            upstream_warm_interval_secs: env_u64("SUB2API_EDGE_UPSTREAM_WARM_INTERVAL_SECS", 240),
+            upstream_warm_interval_secs: env_u64("SUB2API_EDGE_UPSTREAM_WARM_INTERVAL_SECS", 30),
+            upstream_dynamic_warm_active_secs: env_u64(
+                "SUB2API_EDGE_UPSTREAM_DYNAMIC_WARM_ACTIVE_SECS",
+                300,
+            ),
         })
     }
 }
@@ -1903,6 +2289,7 @@ mod tests {
             body_raw_base64: Some(b64_encode(br#"{"rewritten":true}"#)),
             proxy_url: None,
             low_latency_mode: None,
+            lane: None,
             safe_token_placeholder: false,
         };
 
@@ -1926,12 +2313,13 @@ mod tests {
             body_raw_base64: None,
             proxy_url: Some("http://127.0.0.1:7890".to_string()),
             low_latency_mode: None,
+            lane: Some("priority".to_string()),
             safe_token_placeholder: false,
         };
 
         assert_eq!(
             relay_queue_key(&plan).as_deref(),
-            Some("42|http://127.0.0.1:7890|api.openai.com")
+            Some("42|http://127.0.0.1:7890|api.openai.com|priority")
         );
     }
 }

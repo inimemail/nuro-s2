@@ -359,9 +359,9 @@ gateway:
     # Edge data-plane pools and queues. Go still owns scheduling decisions; the
     # Rust edge only queues executable relay plans by account/proxy/upstream host.
     initial_pool_size: 10000
-    queue_buffer_size: 20000
-    per_account_workers: 4
-    max_idle_conns_per_account: 8
+    queue_buffer_size: 2000
+    per_account_workers: 32
+    max_idle_conns_per_account: 64
     # Number of unused preconnected WSv2 sockets kept per account/header key.
     ws_idle_per_key: 1
     # Send raw request/plan body bytes through the control protocol so the edge

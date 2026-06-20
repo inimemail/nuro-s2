@@ -48,6 +48,7 @@ type OpenAIEdgePlan struct {
 	BodyRawBase64   string            `json:"body_raw_base64,omitempty"`
 	ProxyURL        string            `json:"proxy_url,omitempty"`
 	LowLatencyMode  string            `json:"low_latency_mode,omitempty"`
+	Lane            string            `json:"lane,omitempty"`
 	// SafeTokenPlaceholder lets edge-rs mirror the Go Responses SSE behavior:
 	// after response.created, inject an empty output_text.delta so compatible
 	// downstream panels can record an early first token without visible text.
@@ -89,6 +90,11 @@ type OpenAIEdgeCompleteRequest struct {
 	UpstreamFirstByteMS *int64      `json:"upstream_first_byte_ms,omitempty"`
 	FirstTokenMS        *int64      `json:"first_token_ms,omitempty"`
 	FirstClientFlushMS  *int64      `json:"first_client_flush_ms,omitempty"`
+	EdgePrepareMS       *int64      `json:"edge_prepare_ms,omitempty"`
+	EdgeQueueWaitMS     *int64      `json:"edge_queue_wait_ms,omitempty"`
+	EdgeRelayStartMS    *int64      `json:"edge_relay_start_ms,omitempty"`
+	EdgeFallbackReason  string      `json:"edge_fallback_reason,omitempty"`
+	EdgeRetryCount      *int64      `json:"edge_retry_count,omitempty"`
 	ErrorType           string      `json:"error_type,omitempty"`
 	ErrorMessage        string      `json:"error_message,omitempty"`
 	UpstreamStatusCode  int         `json:"upstream_status_code,omitempty"`
