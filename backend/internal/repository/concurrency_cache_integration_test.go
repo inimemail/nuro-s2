@@ -485,3 +485,81 @@ func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots_DeletesEmptySlotKey
 	require.NoError(s.T(), err)
 	require.EqualValues(s.T(), 0, exists)
 }
+
+func (s *ConcurrencyCacheSuite) TestAcquireFirstAvailableAccountSlot_IgnoresExpiredMembersWithoutHotCleanup() {
+	fastCache, ok := s.cache.(service.AccountSlotArbitrationCache)
+	require.True(s.T(), ok)
+
+	accountID := int64(910)
+	slotKey := accountSlotKey(accountID)
+	expiredScore := float64(time.Now().Add(-testSlotTTL - time.Minute).Unix())
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, slotKey, redis.Z{Score: expiredScore, Member: "expired-req"}).Err())
+	require.NoError(s.T(), s.rdb.Expire(s.ctx, slotKey, testSlotTTL).Err())
+
+	selected, acquired, err := fastCache.AcquireFirstAvailableAccountSlot(s.ctx, []service.AccountSlotCandidate{
+		{AccountID: accountID, MaxConcurrency: 1},
+	}, "fresh-req")
+	require.NoError(s.T(), err)
+	require.True(s.T(), acquired)
+	require.Equal(s.T(), accountID, selected)
+
+	members, err := s.rdb.ZRange(s.ctx, slotKey, 0, -1).Result()
+	require.NoError(s.T(), err)
+	require.ElementsMatch(s.T(), []string{"expired-req", "fresh-req"}, members)
+}
+
+func (s *ConcurrencyCacheSuite) TestAcquireFirstAvailableAccountSlot_DoesNotReviveExpiredSameRequestID() {
+	fastCache, ok := s.cache.(service.AccountSlotArbitrationCache)
+	require.True(s.T(), ok)
+
+	accountID := int64(911)
+	slotKey := accountSlotKey(accountID)
+	expiredScore := float64(time.Now().Add(-testSlotTTL - time.Minute).Unix())
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, slotKey, redis.Z{Score: expiredScore, Member: "same-req"}).Err())
+	require.NoError(s.T(), s.rdb.Expire(s.ctx, slotKey, testSlotTTL).Err())
+
+	selected, acquired, err := fastCache.AcquireFirstAvailableAccountSlot(s.ctx, []service.AccountSlotCandidate{
+		{AccountID: accountID, MaxConcurrency: 1},
+	}, "same-req")
+	require.NoError(s.T(), err)
+	require.True(s.T(), acquired)
+	require.Equal(s.T(), accountID, selected)
+
+	members, err := s.rdb.ZRange(s.ctx, slotKey, 0, -1).Result()
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), []string{"same-req"}, members)
+	score, err := s.rdb.ZScore(s.ctx, slotKey, "same-req").Result()
+	require.NoError(s.T(), err)
+	require.Greater(s.T(), score, expiredScore)
+}
+
+func (s *ConcurrencyCacheSuite) TestAcquireFirstAvailableUserAccountSlots_SkipsCooldownAndRollsBackUser() {
+	fastCache, ok := s.cache.(service.UserAccountSlotArbitrationCache)
+	require.True(s.T(), ok)
+
+	userID := int64(920)
+	firstAccountID := int64(921)
+	secondAccountID := int64(922)
+	require.NoError(s.T(), s.rdb.Set(s.ctx, accountCooldownKey(firstAccountID), "1", time.Minute).Err())
+
+	selected, acquired, err := fastCache.AcquireFirstAvailableUserAccountSlots(s.ctx, userID, 1, []service.AccountSlotCandidate{
+		{AccountID: firstAccountID, MaxConcurrency: 1},
+		{AccountID: secondAccountID, MaxConcurrency: 1},
+	}, "user-req", "account-req")
+	require.NoError(s.T(), err)
+	require.True(s.T(), acquired)
+	require.Equal(s.T(), secondAccountID, selected)
+
+	require.NoError(s.T(), s.rdb.Set(s.ctx, accountCooldownKey(secondAccountID), "1", time.Minute).Err())
+	selected, acquired, err = fastCache.AcquireFirstAvailableUserAccountSlots(s.ctx, userID+1, 1, []service.AccountSlotCandidate{
+		{AccountID: firstAccountID, MaxConcurrency: 1},
+		{AccountID: secondAccountID, MaxConcurrency: 1},
+	}, "user-req-rollback", "account-req-rollback")
+	require.NoError(s.T(), err)
+	require.False(s.T(), acquired)
+	require.Zero(s.T(), selected)
+
+	userMembers, err := s.rdb.ZRange(s.ctx, userSlotKey(userID+1), 0, -1).Result()
+	require.NoError(s.T(), err)
+	require.Empty(s.T(), userMembers)
+}

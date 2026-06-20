@@ -488,6 +488,28 @@ gateway:
     # Tiny in-process TTL for batch load reads in milliseconds (0 disables)
     # 调度批量负载读取的进程内短缓存 TTL（毫秒，0 表示禁用）
     load_batch_cache_ttl_ms: 200
+    # Enable scheduler cell ownership. Use one local/cell Redis per cell for the
+    # Lua candidate arbiter hot path; Redis Cluster multi-slot Lua will fall back.
+    # 启用调度 cell 归属。Lua 小候选仲裁建议每个 cell 使用独立 Redis；
+    # Redis Cluster 多 slot Lua 会自动回退旧路径。
+    cell_enabled: false
+    cell_id: ""
+    cell_ids: []
+    # OpenAI account slot arbiter: preselect a small local candidate window and
+    # acquire the first available account slot with one Redis Lua call.
+    # OpenAI 账号槽位小候选仲裁：本地预选小窗口后，用一次 Redis Lua 抢第一个可用槽。
+    candidate_slot_arbiter_enabled: false
+    candidate_slot_arbiter_max_candidates: 16
+    # Local scheduler snapshot. When enabled, hot ListSchedulableAccounts reads
+    # avoid Redis snapshot GET/ZRANGE/MGET until TTL/event invalidation.
+    # 本地调度快照：开启后热路径账号列表读取避开 Redis snapshot，直到 TTL/事件失效。
+    local_snapshot_enabled: false
+    local_snapshot_ttl_ms: 500
+    local_snapshot_max_keys: 4096
+    # Scheduler event bus. Use redis_stream for multi-instance invalidation.
+    # 调度事件总线。多实例本地快照失效建议使用 redis_stream。
+    event_bus_enabled: false
+    event_bus_backend: local
     # Slot cleanup interval (duration)
     # 并发槽位清理周期（时间段）
     slot_cleanup_interval: 30s

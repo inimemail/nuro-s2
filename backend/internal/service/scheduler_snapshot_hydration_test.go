@@ -6,6 +6,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 type snapshotHydrationCache struct {
@@ -75,6 +77,83 @@ func (c *snapshotHydrationCache) SetOutboxWatermark(ctx context.Context, id int6
 	return nil
 }
 
+func TestSchedulerSnapshotLocalSnapshot_IgnoresOwnSnapshotUpdatedEvent(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LocalSnapshotEnabled = true
+	cfg.Gateway.Scheduling.LocalSnapshotTTLMS = 1000
+	cfg.Gateway.Scheduling.LocalSnapshotMaxKeys = 16
+	cfg.Gateway.Scheduling.EventBusEnabled = true
+	cfg.Gateway.Scheduling.EventBusBackend = "local"
+	svc := NewSchedulerSnapshotService(&snapshotHydrationCache{}, nil, nil, nil, cfg, nil)
+	bucket := SchedulerBucket{GroupID: 1, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
+	accounts := []Account{{
+		ID:          11,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+	}}
+	svc.storeLocalSnapshot(bucket, accounts)
+
+	svc.handleSchedulerEvent(context.Background(), SchedulerEvent{
+		Type:   SchedulerEventSnapshotUpdated,
+		Bucket: bucket,
+		Source: svc.eventSource,
+	})
+	got, hit := svc.localSnapshot.Get(bucket, time.Now())
+	if !hit || len(got) != 1 {
+		t.Fatalf("expected own snapshot_updated event to keep local snapshot, hit=%v len=%d", hit, len(got))
+	}
+
+	svc.handleSchedulerEvent(context.Background(), SchedulerEvent{
+		Type:   SchedulerEventSnapshotUpdated,
+		Bucket: bucket,
+		Source: "other-instance",
+	})
+	if _, hit = svc.localSnapshot.Get(bucket, time.Now()); hit {
+		t.Fatal("expected remote snapshot_updated event to invalidate local snapshot")
+	}
+}
+
+func TestSchedulerLocalSnapshot_ClonesMutableAccountFields(t *testing.T) {
+	snapshot := NewSchedulerLocalSnapshot(config.GatewaySchedulingConfig{
+		LocalSnapshotEnabled: true,
+		LocalSnapshotTTLMS:   1000,
+		LocalSnapshotMaxKeys: 16,
+	})
+	bucket := SchedulerBucket{GroupID: 1, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
+	accounts := []Account{{
+		ID:          12,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key": "old",
+			"nested":  map[string]any{"flag": "old"},
+		},
+		GroupIDs: []int64{1},
+	}}
+	snapshot.Set(bucket, accounts, time.Now())
+	accounts[0].Credentials["api_key"] = "mutated"
+	accounts[0].Credentials["nested"].(map[string]any)["flag"] = "mutated"
+	accounts[0].GroupIDs[0] = 99
+
+	got, hit := snapshot.Get(bucket, time.Now())
+	if !hit || len(got) != 1 {
+		t.Fatalf("expected local snapshot hit, hit=%v len=%d", hit, len(got))
+	}
+	if got[0].Credentials["api_key"] != "old" {
+		t.Fatalf("expected credentials clone, got %v", got[0].Credentials["api_key"])
+	}
+	if got[0].Credentials["nested"].(map[string]any)["flag"] != "old" {
+		t.Fatalf("expected nested credentials clone, got %v", got[0].Credentials["nested"])
+	}
+	if got[0].GroupIDs[0] != 1 {
+		t.Fatalf("expected group ids clone, got %v", got[0].GroupIDs)
+	}
+}
+
 func TestOpenAISelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedulerSnapshot(t *testing.T) {
 	cache := &snapshotHydrationCache{
 		snapshot: []*Account{
@@ -112,7 +191,7 @@ func TestOpenAISelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedul
 		},
 	}
 
-	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil)
+	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil, nil)
 	groupID := int64(2)
 	svc := &OpenAIGatewayService{
 		schedulerSnapshot: schedulerSnapshot,
@@ -157,7 +236,7 @@ func TestSchedulerSnapshotListSchedulableAccounts_FiltersStaleGroupMembership(t 
 		},
 	}
 
-	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil)
+	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil, nil)
 	groupID := int64(10)
 
 	accounts, _, err := schedulerSnapshot.ListSchedulableAccounts(context.Background(), &groupID, PlatformOpenAI, false)
@@ -173,7 +252,7 @@ func TestOpenAINewAcquiredSelectionResult_ReleasesSlotWhenHydrationFails(t *test
 	cache := &snapshotHydrationCache{
 		accounts: map[int64]*Account{},
 	}
-	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, stubOpenAIAccountRepo{}, nil, nil)
+	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, stubOpenAIAccountRepo{}, nil, nil, nil)
 	svc := &OpenAIGatewayService{
 		schedulerSnapshot: schedulerSnapshot,
 	}
@@ -223,7 +302,7 @@ func TestGatewaySelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedu
 		},
 	}
 
-	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil)
+	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil, nil)
 	svc := &GatewayService{
 		schedulerSnapshot: schedulerSnapshot,
 		cache:             &mockGatewayCacheForPlatform{},

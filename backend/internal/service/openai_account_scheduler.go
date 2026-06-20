@@ -39,6 +39,8 @@ var openAIAdvancedSchedulerSettingSF singleflight.Group
 
 type OpenAIAccountScheduleRequest struct {
 	GroupID                 *int64
+	UserID                  int64
+	UserConcurrency         int
 	SessionHash             string
 	StickyAccountID         int64
 	PreviousResponseID      string
@@ -1037,6 +1039,20 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 	req OpenAIAccountScheduleRequest,
 	selectionOrder []openAIAccountCandidateScore,
 ) (*AccountSelectionResult, bool, error) {
+	if result, compactBlocked, attempted, err := s.tryAcquireOpenAISelectionOrderWithArbiter(ctx, req, selectionOrder); err != nil || result != nil {
+		return result, compactBlocked, err
+	} else if attempted {
+		if req.UserID > 0 && req.UserConcurrency > 0 {
+			return nil, compactBlocked, nil
+		}
+		// Small-window arbitration found no immediately available slot. Continue
+		// through the existing per-account path so fresh-load retry and wait-plan
+		// semantics stay unchanged.
+		_ = compactBlocked
+	} else if req.UserID > 0 && req.UserConcurrency > 0 {
+		return nil, false, nil
+	}
+
 	compactBlocked := false
 	for i := 0; i < len(selectionOrder); i++ {
 		candidate := selectionOrder[i]
@@ -1068,6 +1084,108 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 		}
 	}
 	return nil, compactBlocked, nil
+}
+
+func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithArbiter(
+	ctx context.Context,
+	req OpenAIAccountScheduleRequest,
+	selectionOrder []openAIAccountCandidateScore,
+) (*AccountSelectionResult, bool, bool, error) {
+	if s == nil || s.service == nil || !s.service.openAIAccountSlotArbiterEnabled() || s.service.concurrencyService == nil {
+		return nil, false, false, nil
+	}
+	maxCandidates := s.service.openAIAccountSlotArbiterMaxCandidates()
+	if maxCandidates <= 0 {
+		return nil, false, false, nil
+	}
+
+	compactBlocked := false
+	freshByID := make(map[int64]*Account, maxCandidates)
+	candidates := make([]AccountSlotCandidate, 0, maxCandidates)
+	for i := 0; i < len(selectionOrder) && len(candidates) < maxCandidates; i++ {
+		candidate := selectionOrder[i]
+		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability)
+		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
+			continue
+		}
+		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability)
+		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
+			continue
+		}
+		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
+			compactBlocked = true
+			continue
+		}
+		freshByID[fresh.ID] = fresh
+		candidates = append(candidates, AccountSlotCandidate{
+			AccountID:      fresh.ID,
+			MaxConcurrency: fresh.Concurrency,
+		})
+	}
+	if len(candidates) == 0 {
+		return nil, compactBlocked, false, nil
+	}
+
+	var (
+		accountReleaseFunc func()
+		userReleaseFunc    func()
+		selectedAccountID  int64
+		acquired           bool
+	)
+	if req.UserID > 0 && req.UserConcurrency > 0 {
+		userArbitration, err := s.service.concurrencyService.AcquireFirstAvailableUserAccountSlots(ctx, req.UserID, req.UserConcurrency, candidates)
+		if err != nil {
+			slog.Warn("openai user/account slot arbiter failed, fallback to per-account acquire",
+				"error", err,
+				"candidate_count", len(candidates),
+			)
+			return nil, compactBlocked, false, nil
+		}
+		if userArbitration == nil {
+			return nil, compactBlocked, false, nil
+		}
+		acquired = userArbitration.Acquired
+		selectedAccountID = userArbitration.AccountID
+		accountReleaseFunc = userArbitration.ReleaseFunc
+		userReleaseFunc = userArbitration.UserReleaseFunc
+	} else {
+		arbitration, err := s.service.concurrencyService.AcquireFirstAvailableAccountSlot(ctx, candidates)
+		if err != nil {
+			slog.Warn("openai account slot arbiter failed, fallback to per-account acquire",
+				"error", err,
+				"candidate_count", len(candidates),
+			)
+			return nil, compactBlocked, false, nil
+		}
+		if arbitration == nil {
+			return nil, compactBlocked, false, nil
+		}
+		acquired = arbitration.Acquired
+		selectedAccountID = arbitration.AccountID
+		accountReleaseFunc = arbitration.ReleaseFunc
+	}
+	if !acquired || selectedAccountID <= 0 {
+		return nil, compactBlocked, true, nil
+	}
+	fresh := freshByID[selectedAccountID]
+	if fresh == nil {
+		if accountReleaseFunc != nil {
+			accountReleaseFunc()
+		}
+		if userReleaseFunc != nil {
+			userReleaseFunc()
+		}
+		return nil, compactBlocked, true, nil
+	}
+	if req.SessionHash != "" && !req.PreserveStickyBinding {
+		_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
+	}
+	return &AccountSelectionResult{
+		Account:         fresh,
+		Acquired:        true,
+		ReleaseFunc:     accountReleaseFunc,
+		UserReleaseFunc: userReleaseFunc,
+	}, compactBlocked, true, nil
 }
 
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
@@ -1127,7 +1245,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 
 	loadMap := map[int64]*AccountLoadInfo{}
-	if s.service.concurrencyService != nil {
+	if s.service.concurrencyService != nil && !s.service.openAIAccountSlotArbiterEnabled() {
 		if batchLoad, loadErr := s.service.concurrencyService.GetAccountsLoadBatch(ctx, loadReq); loadErr == nil {
 			loadMap = batchLoad
 		}
@@ -1154,6 +1272,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 	if result != nil {
 		return result, candidateCount, topK, loadSkew, nil
+	}
+	if req.UserID > 0 && req.UserConcurrency > 0 {
+		return nil, candidateCount, topK, loadSkew, nil
 	}
 
 	if s.service.concurrencyService != nil {
@@ -1372,7 +1493,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 	requiredTransport OpenAIUpstreamTransport,
 	requireCompact bool,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, 0, requestedModel, excludedIDs, requiredTransport, "", "", requireCompact)
+	return s.selectAccountWithScheduler(ctx, groupID, 0, 0, previousResponseID, sessionHash, 0, requestedModel, excludedIDs, requiredTransport, "", "", requireCompact)
 }
 
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
@@ -1386,7 +1507,27 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
 	requiredCapability OpenAIEndpointCapability,
 	requireCompact bool,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, 0, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact)
+	return s.selectAccountWithScheduler(ctx, groupID, 0, 0, previousResponseID, sessionHash, 0, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact)
+}
+
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityAndUserSlot(
+	ctx context.Context,
+	groupID *int64,
+	userID int64,
+	userConcurrency int,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requireCompact bool,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	decision := OpenAIAccountScheduleDecision{}
+	if s == nil || !s.openAIAccountSlotArbiterEnabled() || s.getOpenAIAccountScheduler(ctx) == nil {
+		return nil, decision, nil
+	}
+	return s.selectAccountWithScheduler(ctx, groupID, userID, userConcurrency, previousResponseID, sessionHash, 0, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact)
 }
 
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityAndStickyAccount(
@@ -1401,7 +1542,7 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityAndStickyA
 	requiredCapability OpenAIEndpointCapability,
 	requireCompact bool,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, stickyAccountID, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact)
+	return s.selectAccountWithScheduler(ctx, groupID, 0, 0, previousResponseID, sessionHash, stickyAccountID, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact)
 }
 
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
@@ -1412,13 +1553,13 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIImagesCapability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, 0, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false)
+	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, 0, 0, "", sessionHash, 0, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false)
 	if err == nil && selection != nil && selection.Account != nil {
 		return selection, decision, nil
 	}
 	// 如果要求 native 能力（如指定了模型）但没有可用的 APIKey 账号，回退到 basic（OAuth 账号）
 	if requiredCapability == OpenAIImagesCapabilityNative {
-		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, 0, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false)
+		return s.selectAccountWithScheduler(ctx, groupID, 0, 0, "", sessionHash, 0, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false)
 	}
 	return selection, decision, err
 }
@@ -1426,6 +1567,8 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	ctx context.Context,
 	groupID *int64,
+	userID int64,
+	userConcurrency int,
 	previousResponseID string,
 	sessionHash string,
 	stickyAccountID int64,
@@ -1507,6 +1650,8 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	}
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
 		GroupID:                 groupID,
+		UserID:                  userID,
+		UserConcurrency:         userConcurrency,
 		SessionHash:             sessionHash,
 		StickyAccountID:         stickyAccountID,
 		PreviousResponseID:      previousResponseID,

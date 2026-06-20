@@ -34,12 +34,17 @@ type SchedulerSnapshotService struct {
 	accountRepo   AccountRepository
 	groupRepo     GroupRepository
 	cfg           *config.Config
+	localSnapshot *SchedulerLocalSnapshot
+	eventBus      SchedulerEventBus
+	cellRouter    *SchedulerCellRouter
+	eventSource   string
 	stopCh        chan struct{}
 	stopOnce      sync.Once
 	wg            sync.WaitGroup
 	fallbackLimit *fallbackLimiter
 	lagMu         sync.Mutex
 	lagFailures   int
+	unsubscribe   func()
 }
 
 func NewSchedulerSnapshotService(
@@ -48,10 +53,21 @@ func NewSchedulerSnapshotService(
 	accountRepo AccountRepository,
 	groupRepo GroupRepository,
 	cfg *config.Config,
+	eventBus SchedulerEventBus,
 ) *SchedulerSnapshotService {
 	maxQPS := 0
 	if cfg != nil {
 		maxQPS = cfg.Gateway.Scheduling.DbFallbackMaxQPS
+	}
+	localSnapshot := (*SchedulerLocalSnapshot)(nil)
+	resolvedEventBus := eventBus
+	cellRouter := (*SchedulerCellRouter)(nil)
+	if cfg != nil {
+		localSnapshot = NewSchedulerLocalSnapshot(cfg.Gateway.Scheduling)
+		if resolvedEventBus == nil {
+			resolvedEventBus = NewSchedulerEventBus(cfg)
+		}
+		cellRouter = NewSchedulerCellRouter(cfg.Gateway.Scheduling)
 	}
 	return &SchedulerSnapshotService{
 		cache:         cache,
@@ -59,6 +75,10 @@ func NewSchedulerSnapshotService(
 		accountRepo:   accountRepo,
 		groupRepo:     groupRepo,
 		cfg:           cfg,
+		localSnapshot: localSnapshot,
+		eventBus:      resolvedEventBus,
+		cellRouter:    cellRouter,
+		eventSource:   RequestIDPrefix(),
 		stopCh:        make(chan struct{}),
 		fallbackLimit: newFallbackLimiter(maxQPS),
 	}
@@ -67,6 +87,16 @@ func NewSchedulerSnapshotService(
 func (s *SchedulerSnapshotService) Start() {
 	if s == nil || s.cache == nil {
 		return
+	}
+
+	if s.eventBus != nil && s.localSnapshot != nil {
+		events, unsubscribe := s.eventBus.Subscribe(256)
+		s.unsubscribe = unsubscribe
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.runEventWorker(events)
+		}()
 	}
 
 	s.wg.Add(1)
@@ -101,7 +131,75 @@ func (s *SchedulerSnapshotService) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 	})
+	if s.unsubscribe != nil {
+		s.unsubscribe()
+	}
 	s.wg.Wait()
+}
+
+func (s *SchedulerSnapshotService) runEventWorker(events <-chan SchedulerEvent) {
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			s.handleSchedulerEvent(context.Background(), event)
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+func (s *SchedulerSnapshotService) handleSchedulerEvent(ctx context.Context, event SchedulerEvent) {
+	if s == nil {
+		return
+	}
+	if event.Source == s.eventSource && event.Type == SchedulerEventSnapshotUpdated {
+		return
+	}
+	if s.localSnapshot != nil {
+		s.localSnapshot.ApplyEvent(ctx, event)
+	}
+}
+
+func (s *SchedulerSnapshotService) localSnapshotEnabledForBucket(bucket SchedulerBucket) bool {
+	if s == nil || s.localSnapshot == nil || !s.localSnapshot.Enabled() {
+		return false
+	}
+	if s.cellRouter != nil && s.cellRouter.Enabled() {
+		return s.cellRouter.OwnsBucket(bucket)
+	}
+	return true
+}
+
+func (s *SchedulerSnapshotService) storeLocalSnapshot(bucket SchedulerBucket, accounts []Account) {
+	if !s.localSnapshotEnabledForBucket(bucket) {
+		return
+	}
+	s.localSnapshot.Set(bucket, accounts, time.Now())
+}
+
+func (s *SchedulerSnapshotService) publishEvent(ctx context.Context, event SchedulerEvent) {
+	if s == nil || s.eventBus == nil {
+		return
+	}
+	if event.At.IsZero() {
+		event.At = time.Now()
+	}
+	if event.Source == "" {
+		event.Source = s.eventSource
+	}
+	if err := s.eventBus.Publish(ctx, event); err != nil {
+		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] publish event failed: type=%s bucket=%s err=%v", event.Type, event.Bucket.String(), err)
+	}
+}
+
+func (s *SchedulerSnapshotService) LocalSnapshotStats() SchedulerLocalSnapshotStats {
+	if s == nil || s.localSnapshot == nil {
+		return SchedulerLocalSnapshotStats{}
+	}
+	return s.localSnapshot.Stats()
 }
 
 func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
@@ -109,12 +207,20 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	mode := s.resolveMode(platform, hasForcePlatform)
 	bucket := s.bucketFor(groupID, platform, mode)
 
+	if s.localSnapshotEnabledForBucket(bucket) {
+		if accounts, hit := s.localSnapshot.Get(bucket, time.Now()); hit {
+			return filterSnapshotAccountsForBucket(accounts, bucket, useMixed), useMixed, nil
+		}
+	}
+
 	if s.cache != nil {
 		cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
-			return filterSnapshotAccountsForBucket(derefAccounts(cached), bucket, useMixed), useMixed, nil
+			accounts := derefAccounts(cached)
+			s.storeLocalSnapshot(bucket, accounts)
+			return filterSnapshotAccountsForBucket(accounts, bucket, useMixed), useMixed, nil
 		}
 	}
 
@@ -135,6 +241,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache write failed: bucket=%s err=%v", bucket.String(), err)
 		}
 	}
+	s.storeLocalSnapshot(bucket, accounts)
 
 	return accounts, useMixed, nil
 }
@@ -210,7 +317,15 @@ func (s *SchedulerSnapshotService) UpdateAccountInCache(ctx context.Context, acc
 	if s.cache == nil || account == nil {
 		return nil
 	}
-	return s.cache.SetAccount(ctx, account)
+	err := s.cache.SetAccount(ctx, account)
+	if err == nil {
+		s.publishEvent(ctx, SchedulerEvent{
+			Type:      SchedulerEventAccountUpdated,
+			AccountID: account.ID,
+			Reason:    "account_update",
+		})
+	}
+	return err
 }
 
 func (s *SchedulerSnapshotService) runInitialRebuild() {
@@ -597,6 +712,12 @@ func (s *SchedulerSnapshotService) rebuildBucket(ctx context.Context, bucket Sch
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild cache failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
 		return err
 	}
+	s.storeLocalSnapshot(bucket, accounts)
+	s.publishEvent(rebuildCtx, SchedulerEvent{
+		Type:   SchedulerEventSnapshotUpdated,
+		Bucket: bucket,
+		Reason: reason,
+	})
 	slog.Debug("[Scheduler] rebuild ok", "bucket", bucket.String(), "reason", reason, "size", len(accounts))
 	return nil
 }

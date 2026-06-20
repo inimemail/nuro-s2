@@ -804,8 +804,8 @@ func TestConfigAddressHelpers(t *testing.T) {
 }
 
 func TestNormalizeStringSlice(t *testing.T) {
-	values := normalizeStringSlice([]string{" a ", "", "b", "   ", "c"})
-	if len(values) != 3 || values[0] != "a" || values[1] != "b" || values[2] != "c" {
+	values := normalizeStringSlice([]string{" a ", "", "b,c", "   ", " d , e "})
+	if len(values) != 5 || values[0] != "a" || values[1] != "b" || values[2] != "c" || values[3] != "d" || values[4] != "e" {
 		t.Fatalf("normalizeStringSlice() unexpected result: %#v", values)
 	}
 	if normalizeStringSlice(nil) != nil {

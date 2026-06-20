@@ -1209,6 +1209,26 @@ type GatewaySchedulingConfig struct {
 	// 负载计算
 	LoadBatchEnabled    bool `mapstructure:"load_batch_enabled"`
 	LoadBatchCacheTTLMS int  `mapstructure:"load_batch_cache_ttl_ms"`
+
+	// Cell 分片配置。用于把用户/分组路由到稳定 cell，后续可按 cell 部署独立
+	// Redis/实例池，避免几十万人规模时所有实例争抢同一个调度热点。
+	CellEnabled bool     `mapstructure:"cell_enabled"`
+	CellID      string   `mapstructure:"cell_id"`
+	CellIDs     []string `mapstructure:"cell_ids"`
+	// 小候选账号槽位仲裁（灰度开关）。开启后 OpenAI 调度器会先用本地排序候选
+	// 通过 Redis Lua 一次性抢占账号槽，失败自动回退旧逐个抢槽路径。
+	CandidateSlotArbiterEnabled bool `mapstructure:"candidate_slot_arbiter_enabled"`
+	// 单次 Lua 仲裁最多尝试的候选账号数。
+	CandidateSlotArbiterMaxCandidates int `mapstructure:"candidate_slot_arbiter_max_candidates"`
+	// 本地调度快照（RCU）配置。命中后 ListSchedulableAccounts 不再走 Redis
+	// snapshot 热路径；outbox/重建会刷新本地层。
+	LocalSnapshotEnabled bool `mapstructure:"local_snapshot_enabled"`
+	LocalSnapshotTTLMS   int  `mapstructure:"local_snapshot_ttl_ms"`
+	LocalSnapshotMaxKeys int  `mapstructure:"local_snapshot_max_keys"`
+	// 调度事件总线配置。当前内置本地进程总线；多实例广播可接 Redis Stream，
+	// 且每实例需独立消费组/独立 XREAD，不能共享一个 consumer group。
+	EventBusEnabled bool   `mapstructure:"event_bus_enabled"`
+	EventBusBackend string `mapstructure:"event_bus_backend"`
 	// 快照桶读取时的 MGET 分块大小
 	SnapshotMGetChunkSize int `mapstructure:"snapshot_mget_chunk_size"`
 	// 快照重建时的缓存写入分块大小
@@ -1593,6 +1613,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.CORS.AllowedOrigins = normalizeStringSlice(cfg.CORS.AllowedOrigins)
 	cfg.Security.ResponseHeaders.AdditionalAllowed = normalizeStringSlice(cfg.Security.ResponseHeaders.AdditionalAllowed)
 	cfg.Security.ResponseHeaders.ForceRemove = normalizeStringSlice(cfg.Security.ResponseHeaders.ForceRemove)
+	cfg.Gateway.Scheduling.CellIDs = normalizeStringSlice(cfg.Gateway.Scheduling.CellIDs)
 	cfg.Security.CSP.Policy = strings.TrimSpace(cfg.Security.CSP.Policy)
 	cfg.SetTrustForwardedIPForAPIKeyACL(cfg.Security.TrustForwardedIPForAPIKeyACL)
 	cfg.SetStreamLowLatencyMode(cfg.Gateway.StreamLowLatencyMode)
@@ -2086,6 +2107,16 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "last_used")
 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
 	viper.SetDefault("gateway.scheduling.load_batch_cache_ttl_ms", 200)
+	viper.SetDefault("gateway.scheduling.cell_enabled", false)
+	viper.SetDefault("gateway.scheduling.cell_id", "")
+	viper.SetDefault("gateway.scheduling.cell_ids", []string{})
+	viper.SetDefault("gateway.scheduling.candidate_slot_arbiter_enabled", false)
+	viper.SetDefault("gateway.scheduling.candidate_slot_arbiter_max_candidates", 16)
+	viper.SetDefault("gateway.scheduling.local_snapshot_enabled", false)
+	viper.SetDefault("gateway.scheduling.local_snapshot_ttl_ms", 500)
+	viper.SetDefault("gateway.scheduling.local_snapshot_max_keys", 4096)
+	viper.SetDefault("gateway.scheduling.event_bus_enabled", false)
+	viper.SetDefault("gateway.scheduling.event_bus_backend", "local")
 	viper.SetDefault("gateway.scheduling.snapshot_mget_chunk_size", 128)
 	viper.SetDefault("gateway.scheduling.snapshot_write_chunk_size", 256)
 	viper.SetDefault("gateway.scheduling.slot_cleanup_interval", 30*time.Second)
@@ -2985,6 +3016,26 @@ func (c *Config) Validate() error {
 	if c.Gateway.Scheduling.LoadBatchCacheTTLMS < 0 {
 		return fmt.Errorf("gateway.scheduling.load_batch_cache_ttl_ms must be non-negative")
 	}
+	if c.Gateway.Scheduling.CandidateSlotArbiterMaxCandidates < 0 {
+		return fmt.Errorf("gateway.scheduling.candidate_slot_arbiter_max_candidates must be non-negative")
+	}
+	if c.Gateway.Scheduling.CellEnabled {
+		if strings.TrimSpace(c.Gateway.Scheduling.CellID) == "" {
+			return fmt.Errorf("gateway.scheduling.cell_id must be set when cell_enabled is true")
+		}
+		if len(c.Gateway.Scheduling.CellIDs) == 0 {
+			return fmt.Errorf("gateway.scheduling.cell_ids must be set when cell_enabled is true")
+		}
+	}
+	if c.Gateway.Scheduling.LocalSnapshotTTLMS < 0 {
+		return fmt.Errorf("gateway.scheduling.local_snapshot_ttl_ms must be non-negative")
+	}
+	if c.Gateway.Scheduling.LocalSnapshotMaxKeys < 0 {
+		return fmt.Errorf("gateway.scheduling.local_snapshot_max_keys must be non-negative")
+	}
+	if backend := strings.TrimSpace(c.Gateway.Scheduling.EventBusBackend); backend != "" && backend != "local" && backend != "redis_stream" {
+		return fmt.Errorf("gateway.scheduling.event_bus_backend must be local or redis_stream")
+	}
 	if c.Gateway.Scheduling.SnapshotMGetChunkSize <= 0 {
 		return fmt.Errorf("gateway.scheduling.snapshot_mget_chunk_size must be positive")
 	}
@@ -3053,11 +3104,13 @@ func normalizeStringSlice(values []string) []string {
 	}
 	normalized := make([]string, 0, len(values))
 	for _, v := range values {
-		trimmed := strings.TrimSpace(v)
-		if trimmed == "" {
-			continue
+		for _, part := range strings.Split(v, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			normalized = append(normalized, trimmed)
 		}
-		normalized = append(normalized, trimmed)
 	}
 	return normalized
 }

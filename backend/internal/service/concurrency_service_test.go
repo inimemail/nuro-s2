@@ -34,6 +34,8 @@ type stubConcurrencyCacheForTest struct {
 	// 记录调用
 	releasedAccountIDs []int64
 	releasedRequestIDs []string
+	releasedUserIDs    []int64
+	releasedUserReqIDs []string
 	loadBatchCalls     atomic.Int64
 }
 
@@ -72,7 +74,9 @@ func (c *stubConcurrencyCacheForTest) GetAccountWaitingCount(_ context.Context, 
 func (c *stubConcurrencyCacheForTest) AcquireUserSlot(_ context.Context, _ int64, _ int, _ string) (bool, error) {
 	return c.acquireResult, c.acquireErr
 }
-func (c *stubConcurrencyCacheForTest) ReleaseUserSlot(_ context.Context, _ int64, _ string) error {
+func (c *stubConcurrencyCacheForTest) ReleaseUserSlot(_ context.Context, userID int64, requestID string) error {
+	c.releasedUserIDs = append(c.releasedUserIDs, userID)
+	c.releasedUserReqIDs = append(c.releasedUserReqIDs, requestID)
 	return c.releaseErr
 }
 func (c *stubConcurrencyCacheForTest) GetUserConcurrency(_ context.Context, _ int64) (int, error) {
@@ -109,6 +113,38 @@ func (c *trackingConcurrencyCache) CleanupStaleProcessSlots(_ context.Context, p
 	return c.cleanupErr
 }
 
+type arbitrationConcurrencyCacheForTest struct {
+	stubConcurrencyCacheForTest
+	selectedAccountID     int64
+	userSelectedAccountID int64
+	acquired              bool
+	userAcquired          bool
+	err                   error
+	userErr               error
+	candidates            []AccountSlotCandidate
+	userCandidates        []AccountSlotCandidate
+	requestID             string
+	userRequestID         string
+	accountRequestID      string
+	userID                int64
+	userMaxConcurrency    int
+}
+
+func (c *arbitrationConcurrencyCacheForTest) AcquireFirstAvailableAccountSlot(_ context.Context, candidates []AccountSlotCandidate, requestID string) (int64, bool, error) {
+	c.candidates = append([]AccountSlotCandidate(nil), candidates...)
+	c.requestID = requestID
+	return c.selectedAccountID, c.acquired, c.err
+}
+
+func (c *arbitrationConcurrencyCacheForTest) AcquireFirstAvailableUserAccountSlots(_ context.Context, userID int64, userMaxConcurrency int, candidates []AccountSlotCandidate, userRequestID string, accountRequestID string) (int64, bool, error) {
+	c.userID = userID
+	c.userMaxConcurrency = userMaxConcurrency
+	c.userCandidates = append([]AccountSlotCandidate(nil), candidates...)
+	c.userRequestID = userRequestID
+	c.accountRequestID = accountRequestID
+	return c.userSelectedAccountID, c.userAcquired, c.userErr
+}
+
 func TestCleanupStaleProcessSlots_NilCache(t *testing.T) {
 	svc := &ConcurrencyService{cache: nil}
 	require.NoError(t, svc.CleanupStaleProcessSlots(context.Background()))
@@ -129,6 +165,79 @@ func TestAcquireAccountSlot_Success(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Acquired)
 	require.NotNil(t, result.ReleaseFunc)
+}
+
+func TestAcquireFirstAvailableAccountSlot_UsesOptionalCacheAndReleasesSelectedAccount(t *testing.T) {
+	cache := &arbitrationConcurrencyCacheForTest{
+		selectedAccountID: 42,
+		acquired:          true,
+	}
+	svc := NewConcurrencyService(cache)
+
+	result, err := svc.AcquireFirstAvailableAccountSlot(context.Background(), []AccountSlotCandidate{
+		{AccountID: 41, MaxConcurrency: 1},
+		{AccountID: 42, MaxConcurrency: 2},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.Acquired)
+	require.Equal(t, int64(42), result.AccountID)
+	require.Len(t, cache.candidates, 2)
+	require.NotEmpty(t, cache.requestID)
+
+	result.ReleaseFunc()
+	require.Equal(t, []int64{42}, cache.releasedAccountIDs)
+	require.Equal(t, []string{cache.requestID}, cache.releasedRequestIDs)
+}
+
+func TestAcquireFirstAvailableAccountSlot_UnlimitedCandidateSkipsRedis(t *testing.T) {
+	cache := &arbitrationConcurrencyCacheForTest{
+		selectedAccountID: 99,
+		acquired:          true,
+	}
+	svc := NewConcurrencyService(cache)
+
+	result, err := svc.AcquireFirstAvailableAccountSlot(context.Background(), []AccountSlotCandidate{
+		{AccountID: 77, MaxConcurrency: 0},
+		{AccountID: 99, MaxConcurrency: 1},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.Acquired)
+	require.Equal(t, int64(77), result.AccountID)
+	require.Empty(t, cache.candidates)
+}
+
+func TestAcquireFirstAvailableUserAccountSlots_UsesOptionalCacheAndReleasesBothSlots(t *testing.T) {
+	cache := &arbitrationConcurrencyCacheForTest{
+		userSelectedAccountID: 42,
+		userAcquired:          true,
+	}
+	svc := NewConcurrencyService(cache)
+
+	result, err := svc.AcquireFirstAvailableUserAccountSlots(context.Background(), 7, 3, []AccountSlotCandidate{
+		{AccountID: 41, MaxConcurrency: 1},
+		{AccountID: 42, MaxConcurrency: 2},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.Acquired)
+	require.Equal(t, int64(42), result.AccountID)
+	require.Equal(t, int64(7), cache.userID)
+	require.Equal(t, 3, cache.userMaxConcurrency)
+	require.Len(t, cache.userCandidates, 2)
+	require.NotEmpty(t, cache.userRequestID)
+	require.NotEmpty(t, cache.accountRequestID)
+
+	result.ReleaseFunc()
+	result.UserReleaseFunc()
+	require.Equal(t, []int64{42}, cache.releasedAccountIDs)
+	require.Equal(t, []string{cache.accountRequestID}, cache.releasedRequestIDs)
+	require.Equal(t, []int64{7}, cache.releasedUserIDs)
+	require.Equal(t, []string{cache.userRequestID}, cache.releasedUserReqIDs)
 }
 
 func TestAcquireAccountSlot_Failure(t *testing.T) {

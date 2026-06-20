@@ -2616,13 +2616,43 @@ func (s *OpenAIGatewayService) schedulingConfig() config.GatewaySchedulingConfig
 		return s.cfg.Gateway.Scheduling
 	}
 	return config.GatewaySchedulingConfig{
-		StickySessionMaxWaiting:  3,
-		StickySessionWaitTimeout: 45 * time.Second,
-		FallbackWaitTimeout:      30 * time.Second,
-		FallbackMaxWaiting:       100,
-		LoadBatchEnabled:         true,
-		SlotCleanupInterval:      30 * time.Second,
+		StickySessionMaxWaiting:           3,
+		StickySessionWaitTimeout:          45 * time.Second,
+		FallbackWaitTimeout:               30 * time.Second,
+		FallbackMaxWaiting:                100,
+		LoadBatchEnabled:                  true,
+		CandidateSlotArbiterMaxCandidates: 16,
+		SlotCleanupInterval:               30 * time.Second,
 	}
+}
+
+func (s *OpenAIGatewayService) openAIAccountSlotArbiterEnabled() bool {
+	cfg := s.schedulingConfig()
+	return cfg.CandidateSlotArbiterEnabled && cfg.CandidateSlotArbiterMaxCandidates > 0
+}
+
+func (s *OpenAIGatewayService) openAIAccountSlotArbiterMaxCandidates() int {
+	cfg := s.schedulingConfig()
+	if cfg.CandidateSlotArbiterMaxCandidates <= 0 {
+		return 0
+	}
+	return cfg.CandidateSlotArbiterMaxCandidates
+}
+
+func (s *OpenAIGatewayService) publishOpenAISchedulingRuntimeEvent(ctx context.Context, eventType SchedulerEventType, accountID int64, reason string) {
+	if s == nil || s.schedulerSnapshot == nil || accountID <= 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	eventCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	s.schedulerSnapshot.publishEvent(eventCtx, SchedulerEvent{
+		Type:      eventType,
+		AccountID: accountID,
+		Reason:    reason,
+	})
 }
 
 // GetAccessToken gets the access token for an OpenAI account

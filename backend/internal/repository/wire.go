@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"errors"
+	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
@@ -62,6 +63,16 @@ func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.Schedu
 	return newSchedulerCacheWithChunkSizes(rdb, mgetChunkSize, writeChunkSize)
 }
 
+func ProvideSchedulerEventBus(rdb *redis.Client, cfg *config.Config) service.SchedulerEventBus {
+	if cfg == nil || !cfg.Gateway.Scheduling.EventBusEnabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Gateway.Scheduling.EventBusBackend) == "redis_stream" {
+		return NewRedisSchedulerEventBus(rdb)
+	}
+	return service.NewLocalSchedulerEventBus()
+}
+
 // ProviderSet is the Wire provider set for all repositories
 var ProviderSet = wire.NewSet(
 	NewUserRepository,
@@ -117,6 +128,7 @@ var ProviderSet = wire.NewSet(
 	NewUpdateCache,
 	NewGeminiTokenCache,
 	ProvideSchedulerCache,
+	ProvideSchedulerEventBus,
 	NewSchedulerOutboxRepository,
 	NewProxyLatencyCache,
 	NewTotpCache,

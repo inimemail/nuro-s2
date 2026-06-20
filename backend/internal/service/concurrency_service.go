@@ -52,6 +52,45 @@ type ConcurrencyCache interface {
 	CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error
 }
 
+// AccountSlotCandidate is one account candidate for batched slot arbitration.
+type AccountSlotCandidate struct {
+	AccountID      int64
+	MaxConcurrency int
+}
+
+// AccountSlotArbitrationResult describes the account selected by Redis.
+type AccountSlotArbitrationResult struct {
+	Acquired    bool
+	AccountID   int64
+	RequestID   string
+	ReleaseFunc func()
+}
+
+type UserAccountSlotArbitrationResult struct {
+	Acquired         bool
+	AccountID        int64
+	UserRequestID    string
+	AccountRequestID string
+	ReleaseFunc      func()
+	UserReleaseFunc  func()
+}
+
+// AccountSlotArbitrationCache is an optional fast-path implemented by Redis
+// backed caches. It lets a scheduler submit a small ordered candidate window
+// and atomically acquire the first available account slot in one round trip.
+type AccountSlotArbitrationCache interface {
+	AcquireFirstAvailableAccountSlot(ctx context.Context, candidates []AccountSlotCandidate, requestID string) (int64, bool, error)
+}
+
+type UserAccountSlotArbitrationCache interface {
+	AcquireFirstAvailableUserAccountSlots(ctx context.Context, userID int64, userMaxConcurrency int, candidates []AccountSlotCandidate, userRequestID string, accountRequestID string) (int64, bool, error)
+}
+
+type AccountCooldownCache interface {
+	SetAccountCooldown(ctx context.Context, accountID int64, ttl time.Duration) error
+	ClearAccountCooldown(ctx context.Context, accountID int64) error
+}
+
 var (
 	requestIDPrefix  = initRequestIDPrefix()
 	requestIDCounter atomic.Uint64
@@ -196,6 +235,161 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 		Acquired:    false,
 		ReleaseFunc: nil,
 	}, nil
+}
+
+func (s *ConcurrencyService) AcquireFirstAvailableAccountSlot(ctx context.Context, candidates []AccountSlotCandidate) (*AccountSlotArbitrationResult, error) {
+	if len(candidates) == 0 {
+		return &AccountSlotArbitrationResult{}, nil
+	}
+	for _, candidate := range candidates {
+		if candidate.AccountID <= 0 {
+			continue
+		}
+		if candidate.MaxConcurrency <= 0 {
+			return &AccountSlotArbitrationResult{
+				Acquired:    true,
+				AccountID:   candidate.AccountID,
+				ReleaseFunc: func() {},
+			}, nil
+		}
+		break
+	}
+	if s == nil || s.cache == nil {
+		for _, candidate := range candidates {
+			if candidate.AccountID > 0 {
+				return &AccountSlotArbitrationResult{
+					Acquired:    true,
+					AccountID:   candidate.AccountID,
+					ReleaseFunc: func() {},
+				}, nil
+			}
+		}
+		return &AccountSlotArbitrationResult{}, nil
+	}
+	fastCache, ok := s.cache.(AccountSlotArbitrationCache)
+	if !ok {
+		return nil, nil
+	}
+
+	requestID := generateRequestID()
+	accountID, acquired, err := fastCache.AcquireFirstAvailableAccountSlot(ctx, candidates, requestID)
+	if err != nil {
+		return nil, err
+	}
+	if !acquired || accountID <= 0 {
+		return &AccountSlotArbitrationResult{Acquired: false}, nil
+	}
+	return &AccountSlotArbitrationResult{
+		Acquired:  true,
+		AccountID: accountID,
+		RequestID: requestID,
+		ReleaseFunc: func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, requestID); err != nil {
+				logger.LegacyPrintf("service.concurrency", "Warning: failed to release arbitrated account slot for %d (req=%s): %v", accountID, requestID, err)
+			}
+		},
+	}, nil
+}
+
+func (s *ConcurrencyService) AcquireFirstAvailableUserAccountSlots(
+	ctx context.Context,
+	userID int64,
+	userMaxConcurrency int,
+	candidates []AccountSlotCandidate,
+) (*UserAccountSlotArbitrationResult, error) {
+	if len(candidates) == 0 {
+		return &UserAccountSlotArbitrationResult{}, nil
+	}
+	if userMaxConcurrency <= 0 {
+		accountResult, err := s.AcquireFirstAvailableAccountSlot(ctx, candidates)
+		if err != nil || accountResult == nil {
+			return nil, err
+		}
+		return &UserAccountSlotArbitrationResult{
+			Acquired:         accountResult.Acquired,
+			AccountID:        accountResult.AccountID,
+			AccountRequestID: accountResult.RequestID,
+			ReleaseFunc:      accountResult.ReleaseFunc,
+			UserReleaseFunc:  func() {},
+		}, nil
+	}
+	if s == nil || s.cache == nil {
+		accountResult, err := s.AcquireFirstAvailableAccountSlot(ctx, candidates)
+		if err != nil || accountResult == nil {
+			return nil, err
+		}
+		return &UserAccountSlotArbitrationResult{
+			Acquired:         accountResult.Acquired,
+			AccountID:        accountResult.AccountID,
+			AccountRequestID: accountResult.RequestID,
+			ReleaseFunc:      accountResult.ReleaseFunc,
+			UserReleaseFunc:  func() {},
+		}, nil
+	}
+	fastCache, ok := s.cache.(UserAccountSlotArbitrationCache)
+	if !ok {
+		return nil, nil
+	}
+
+	userRequestID := generateRequestID()
+	accountRequestID := generateRequestID()
+	accountID, acquired, err := fastCache.AcquireFirstAvailableUserAccountSlots(ctx, userID, userMaxConcurrency, candidates, userRequestID, accountRequestID)
+	if err != nil {
+		return nil, err
+	}
+	if !acquired || accountID <= 0 {
+		return &UserAccountSlotArbitrationResult{Acquired: false}, nil
+	}
+	releaseUser := func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.cache.ReleaseUserSlot(bgCtx, userID, userRequestID); err != nil {
+			logger.LegacyPrintf("service.concurrency", "Warning: failed to release arbitrated user slot for %d (req=%s): %v", userID, userRequestID, err)
+		}
+	}
+	releaseAccount := func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, accountRequestID); err != nil {
+			logger.LegacyPrintf("service.concurrency", "Warning: failed to release arbitrated account slot for %d (req=%s): %v", accountID, accountRequestID, err)
+		}
+	}
+	return &UserAccountSlotArbitrationResult{
+		Acquired:         true,
+		AccountID:        accountID,
+		UserRequestID:    userRequestID,
+		AccountRequestID: accountRequestID,
+		ReleaseFunc:      releaseAccount,
+		UserReleaseFunc:  releaseUser,
+	}, nil
+}
+
+func (s *ConcurrencyService) SetAccountCooldown(ctx context.Context, accountID int64, until time.Time) error {
+	if s == nil || s.cache == nil || accountID <= 0 || until.IsZero() {
+		return nil
+	}
+	ttl := time.Until(until)
+	if ttl <= 0 {
+		return s.ClearAccountCooldown(ctx, accountID)
+	}
+	cooldownCache, ok := s.cache.(AccountCooldownCache)
+	if !ok {
+		return nil
+	}
+	return cooldownCache.SetAccountCooldown(ctx, accountID, ttl)
+}
+
+func (s *ConcurrencyService) ClearAccountCooldown(ctx context.Context, accountID int64) error {
+	if s == nil || s.cache == nil || accountID <= 0 {
+		return nil
+	}
+	cooldownCache, ok := s.cache.(AccountCooldownCache)
+	if !ok {
+		return nil
+	}
+	return cooldownCache.ClearAccountCooldown(ctx, accountID)
 }
 
 // AcquireUserSlot attempts to acquire a concurrency slot for a user.

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -103,6 +104,8 @@ func (s *OpenAIGatewayService) BlockAccountScheduling(account *Account, until ti
 		if !loaded {
 			actual, stored := s.openaiAccountRuntimeBlockUntil.LoadOrStore(account.ID, blockUntil)
 			if !stored {
+				s.storeOpenAIAccountCooldownInRedis(account.ID, blockUntil)
+				s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, account.ID, firstNonEmptyString(reason, "runtime_block"))
 				return
 			}
 			current = actual
@@ -111,6 +114,8 @@ func (s *OpenAIGatewayService) BlockAccountScheduling(account *Account, until ti
 		currentUntil, ok := current.(time.Time)
 		if !ok || currentUntil.IsZero() {
 			if s.openaiAccountRuntimeBlockUntil.CompareAndSwap(account.ID, current, blockUntil) {
+				s.storeOpenAIAccountCooldownInRedis(account.ID, blockUntil)
+				s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, account.ID, firstNonEmptyString(reason, "runtime_block"))
 				return
 			}
 			continue
@@ -119,6 +124,8 @@ func (s *OpenAIGatewayService) BlockAccountScheduling(account *Account, until ti
 			return
 		}
 		if s.openaiAccountRuntimeBlockUntil.CompareAndSwap(account.ID, current, blockUntil) {
+			s.storeOpenAIAccountCooldownInRedis(account.ID, blockUntil)
+			s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, account.ID, firstNonEmptyString(reason, "runtime_block"))
 			return
 		}
 	}
@@ -133,6 +140,30 @@ func (s *OpenAIGatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	s.openaiPoolSoftCooldownContext.Delete(accountID)
 	s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
 	s.openaiPoolRecoveryProbeFailureCount.Delete(accountID)
+	s.clearOpenAIAccountCooldownInRedis(accountID)
+	s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, accountID, "runtime_clear")
+}
+
+func (s *OpenAIGatewayService) storeOpenAIAccountCooldownInRedis(accountID int64, until time.Time) {
+	if s == nil || s.concurrencyService == nil || accountID <= 0 || until.IsZero() || !until.After(time.Now()) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.concurrencyService.SetAccountCooldown(ctx, accountID, until); err != nil {
+		slog.Warn("openai.account_cooldown_redis_set_failed", "account_id", accountID, "error", err)
+	}
+}
+
+func (s *OpenAIGatewayService) clearOpenAIAccountCooldownInRedis(accountID int64) {
+	if s == nil || s.concurrencyService == nil || accountID <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.concurrencyService.ClearAccountCooldown(ctx, accountID); err != nil {
+		slog.Warn("openai.account_cooldown_redis_clear_failed", "account_id", accountID, "error", err)
+	}
 }
 
 func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) bool {
@@ -263,6 +294,8 @@ func (s *OpenAIGatewayService) storeOpenAIPoolSoftCooldownUntil(accountID int64,
 		current, loaded := s.openaiPoolSoftCooldownUntil.Load(accountID)
 		if !loaded {
 			if _, stored := s.openaiPoolSoftCooldownUntil.LoadOrStore(accountID, until); !stored {
+				s.storeOpenAIAccountCooldownInRedis(accountID, until)
+				s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, accountID, "soft_cooldown")
 				return
 			}
 			continue
@@ -270,12 +303,16 @@ func (s *OpenAIGatewayService) storeOpenAIPoolSoftCooldownUntil(accountID int64,
 		currentUntil, ok := current.(time.Time)
 		if !ok || currentUntil.IsZero() || !currentUntil.After(now) {
 			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(accountID, current, until) {
+				s.storeOpenAIAccountCooldownInRedis(accountID, until)
+				s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, accountID, "soft_cooldown")
 				return
 			}
 			continue
 		}
 		if currentUntil.After(until) {
 			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(accountID, current, until) {
+				s.storeOpenAIAccountCooldownInRedis(accountID, until)
+				s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, accountID, "soft_cooldown")
 				return
 			}
 			continue

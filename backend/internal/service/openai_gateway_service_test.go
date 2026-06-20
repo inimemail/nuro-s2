@@ -114,7 +114,7 @@ func TestRecheckSelectedOpenAIAccountPrefersSchedulerSnapshot(t *testing.T) {
 		accountRepo: repo,
 		schedulerSnapshot: NewSchedulerSnapshotService(&openAISnapshotCacheStub{
 			accountsByID: map[int64]*Account{cached.ID: cached},
-		}, nil, repo, nil, nil),
+		}, nil, repo, nil, nil, nil),
 	}
 
 	got := svc.recheckSelectedOpenAIAccountFromDB(context.Background(), &Account{ID: cached.ID}, "", false, "", "")
@@ -141,7 +141,7 @@ func TestRecheckSelectedOpenAIAccountFallsBackToDBWhenSnapshotMisses(t *testing.
 		accountRepo: repo,
 		schedulerSnapshot: NewSchedulerSnapshotService(&openAISnapshotCacheStub{
 			accountsByID: map[int64]*Account{},
-		}, nil, repo, nil, nil),
+		}, nil, repo, nil, nil, nil),
 	}
 
 	got := svc.recheckSelectedOpenAIAccountFromDB(context.Background(), &Account{ID: dbAccount.ID}, "", false, "", "")

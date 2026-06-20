@@ -308,6 +308,31 @@ ensure_edge_env_values() {
     ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_WARM_INTERVAL_SECS 240
 }
 
+ensure_scheduler_env_values() {
+    local env_file="$1"
+
+    touch "$env_file"
+    ensure_env_value "$env_file" REDIS_POOL_SIZE 1024
+    ensure_env_value "$env_file" REDIS_MIN_IDLE_CONNS 128
+    ensure_env_value "$env_file" REDIS_DIAL_TIMEOUT_SECONDS 1
+    ensure_env_value "$env_file" REDIS_READ_TIMEOUT_SECONDS 1
+    ensure_env_value "$env_file" REDIS_WRITE_TIMEOUT_SECONDS 1
+
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED true
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOAD_BATCH_CACHE_TTL_MS 200
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_ENABLED true
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_ID cell-1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_IDS cell-1
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_ENABLED true
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_MAX_CANDIDATES 16
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_ENABLED true
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_TTL_MS 500
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_MAX_KEYS 4096
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_EVENT_BUS_ENABLED true
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_EVENT_BUS_BACKEND redis_stream
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_SLOT_CLEANUP_INTERVAL 10s
+}
+
 generate_admin_password() {
     ADMIN_PASS="$(openssl rand -hex 12)"
 }
@@ -316,6 +341,12 @@ read_env_value() {
     local file="$1"
     local key="$2"
     grep -E "^${key}=" "$file" 2>/dev/null | tail -n 1 | cut -d= -f2- || true
+}
+
+pg_ident() {
+    local value="$1"
+    value="${value//\"/\"\"}"
+    printf '"%s"' "$value"
 }
 
 create_env_file() {
@@ -340,6 +371,11 @@ POSTGRES_PASSWORD=$(generate_secret)
 
 REDIS_PASSWORD=
 REDIS_DB=0
+REDIS_POOL_SIZE=1024
+REDIS_MIN_IDLE_CONNS=128
+REDIS_DIAL_TIMEOUT_SECONDS=1
+REDIS_READ_TIMEOUT_SECONDS=1
+REDIS_WRITE_TIMEOUT_SECONDS=1
 
 ADMIN_EMAIL=admin@nuro-sub2api.local
 ADMIN_PASSWORD=${ADMIN_PASS}
@@ -402,11 +438,25 @@ GATEWAY_IMAGE_CONCURRENCY_MAX_CONCURRENT_REQUESTS=0
 GATEWAY_IMAGE_CONCURRENCY_OVERFLOW_MODE=reject
 GATEWAY_IMAGE_CONCURRENCY_WAIT_TIMEOUT_SECONDS=30
 GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS=100
+GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED=true
+GATEWAY_SCHEDULING_LOAD_BATCH_CACHE_TTL_MS=200
+GATEWAY_SCHEDULING_CELL_ENABLED=true
+GATEWAY_SCHEDULING_CELL_ID=cell-1
+GATEWAY_SCHEDULING_CELL_IDS=cell-1
+GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_ENABLED=true
+GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_MAX_CANDIDATES=16
+GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_ENABLED=true
+GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_TTL_MS=500
+GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_MAX_KEYS=4096
+GATEWAY_SCHEDULING_EVENT_BUS_ENABLED=true
+GATEWAY_SCHEDULING_EVENT_BUS_BACKEND=redis_stream
+GATEWAY_SCHEDULING_SLOT_CLEANUP_INTERVAL=10s
 EOF
 
     local edge_secret
     edge_secret="$(read_env_value "${workdir}/.env" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET)"
     set_env_value "${workdir}/.env" SUB2API_EDGE_INTERNAL_SECRET "$edge_secret"
+    ensure_scheduler_env_values "${workdir}/.env"
     chmod 600 "${workdir}/.env"
 }
 
@@ -508,7 +558,10 @@ services:
       - REDIS_PASSWORD=\${REDIS_PASSWORD:-}
       - REDIS_DB=\${REDIS_DB:-0}
       - REDIS_POOL_SIZE=\${REDIS_POOL_SIZE:-1024}
-      - REDIS_MIN_IDLE_CONNS=\${REDIS_MIN_IDLE_CONNS:-10}
+      - REDIS_MIN_IDLE_CONNS=\${REDIS_MIN_IDLE_CONNS:-128}
+      - REDIS_DIAL_TIMEOUT_SECONDS=\${REDIS_DIAL_TIMEOUT_SECONDS:-1}
+      - REDIS_READ_TIMEOUT_SECONDS=\${REDIS_READ_TIMEOUT_SECONDS:-1}
+      - REDIS_WRITE_TIMEOUT_SECONDS=\${REDIS_WRITE_TIMEOUT_SECONDS:-1}
       - REDIS_ENABLE_TLS=\${REDIS_ENABLE_TLS:-false}
       - ADMIN_EMAIL=\${ADMIN_EMAIL:-admin@nuro-sub2api.local}
       - ADMIN_PASSWORD=\${ADMIN_PASSWORD:-}
@@ -555,6 +608,19 @@ services:
       - GATEWAY_IMAGE_CONCURRENCY_OVERFLOW_MODE=\${GATEWAY_IMAGE_CONCURRENCY_OVERFLOW_MODE:-reject}
       - GATEWAY_IMAGE_CONCURRENCY_WAIT_TIMEOUT_SECONDS=\${GATEWAY_IMAGE_CONCURRENCY_WAIT_TIMEOUT_SECONDS:-30}
       - GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS=\${GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS:-100}
+      - GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED=\${GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED:-true}
+      - GATEWAY_SCHEDULING_LOAD_BATCH_CACHE_TTL_MS=\${GATEWAY_SCHEDULING_LOAD_BATCH_CACHE_TTL_MS:-200}
+      - GATEWAY_SCHEDULING_CELL_ENABLED=\${GATEWAY_SCHEDULING_CELL_ENABLED:-true}
+      - GATEWAY_SCHEDULING_CELL_ID=\${GATEWAY_SCHEDULING_CELL_ID:-cell-1}
+      - GATEWAY_SCHEDULING_CELL_IDS=\${GATEWAY_SCHEDULING_CELL_IDS:-cell-1}
+      - GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_ENABLED=\${GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_ENABLED:-true}
+      - GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_MAX_CANDIDATES=\${GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_MAX_CANDIDATES:-16}
+      - GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_ENABLED=\${GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_ENABLED:-true}
+      - GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_TTL_MS=\${GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_TTL_MS:-500}
+      - GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_MAX_KEYS=\${GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_MAX_KEYS:-4096}
+      - GATEWAY_SCHEDULING_EVENT_BUS_ENABLED=\${GATEWAY_SCHEDULING_EVENT_BUS_ENABLED:-true}
+      - GATEWAY_SCHEDULING_EVENT_BUS_BACKEND=\${GATEWAY_SCHEDULING_EVENT_BUS_BACKEND:-redis_stream}
+      - GATEWAY_SCHEDULING_SLOT_CLEANUP_INTERVAL=\${GATEWAY_SCHEDULING_SLOT_CLEANUP_INTERVAL:-10s}
     depends_on:
       postgres:
         condition: service_healthy
@@ -609,9 +675,12 @@ ${edge_service}
     command: >
         sh -c '
           redis-server
-          --save 60 1
-          --appendonly yes
-          --appendfsync everysec
+          --save ""
+          --appendonly no
+          --maxmemory-policy noeviction
+          --tcp-backlog 8192
+          --timeout 0
+          --hz 20
           \${REDIS_PASSWORD:+--requirepass "\$REDIS_PASSWORD"}'
     environment:
       - TZ=\${TZ:-Asia/Shanghai}
@@ -619,7 +688,7 @@ ${edge_service}
     networks:
       - nuro-sub2api-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -713,6 +782,38 @@ wait_app_ready() {
     return 1
 }
 
+wait_postgres_ready() {
+    local pg_container="$1"
+    local pg_user="$2"
+    local pg_db="$3"
+
+    info "正在等待 PostgreSQL 就绪 ..."
+    for _ in $(seq 1 60); do
+        if docker exec "$pg_container" pg_isready -U "$pg_user" -d "$pg_db" >/dev/null 2>&1; then
+            info "PostgreSQL 已就绪。"
+            return 0
+        fi
+        sleep 2
+    done
+
+    err "PostgreSQL 等待超时。"
+    return 1
+}
+
+container_running() {
+    local container_name="$1"
+    [[ -n "$container_name" ]] || return 1
+    [[ "$(docker inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)" == "true" ]]
+}
+
+cleanup_old_backups() {
+    local backup_dir="$1"
+    find "$backup_dir" -maxdepth 1 -name 'nuro_sub2api_backup_*.tar.gz' -type f \
+        | sort -r \
+        | awk 'NR>5' \
+        | xargs -r rm -f
+}
+
 deploy_service() {
     info "== 开始部署 ${APP_NAME} =="
 
@@ -752,6 +853,7 @@ deploy_service() {
 
     create_env_file "$install_path" "$host_port"
     ensure_edge_env_values "${install_path}/.env"
+    ensure_scheduler_env_values "${install_path}/.env"
     sync_project_source "$install_path" || die "源码同步失败。请检查服务器是否能访问 ${SOURCE_REPO_URL}，或在项目根目录执行本脚本。"
     create_compose_file "$install_path"
 
@@ -775,6 +877,7 @@ upgrade_service() {
 
     sync_project_source "$workdir" || die "源码同步失败。请检查服务器是否能访问 ${SOURCE_REPO_URL}，或在项目根目录执行本脚本。"
     ensure_edge_env_values "${workdir}/.env"
+    ensure_scheduler_env_values "${workdir}/.env"
     create_compose_file "$workdir"
 
     info "正在使用项目源码重建 ${APP_NAME} ..."
@@ -814,29 +917,96 @@ do_backup() {
     local backup_dir="${workdir}/backups"
     mkdir -p "$backup_dir"
 
-    local timestamp backup_file temp_dir
+    local timestamp backup_file stage_dir hot_dir
     timestamp="$(date +"%Y%m%d_%H%M%S")"
     backup_file="${backup_dir}/nuro_sub2api_backup_${timestamp}.tar.gz"
-    temp_dir="${backup_dir}/tmp_${timestamp}"
+    stage_dir="$(mktemp -d "${backup_dir}/tmp_${timestamp}_XXXXXX")" || return
+    hot_dir="${stage_dir}/hot_backup"
+    mkdir -p "$hot_dir"
 
-    mkdir -p "$temp_dir"
-    cp "${workdir}/docker-compose.yml" "${temp_dir}/" 2>/dev/null || true
-    cp "${workdir}/.env" "${temp_dir}/" 2>/dev/null || true
-    cp "${workdir}/deploy.sh" "${temp_dir}/" 2>/dev/null || true
-    [[ -d "${workdir}/data" ]] && cp -a "${workdir}/data" "${temp_dir}/data"
-    [[ -d "${workdir}/postgres_data" ]] && cp -a "${workdir}/postgres_data" "${temp_dir}/postgres_data"
-    [[ -d "${workdir}/redis_data" ]] && cp -a "${workdir}/redis_data" "${temp_dir}/redis_data"
-    [[ -d "${workdir}/${SOURCE_DIR_NAME}" ]] && cp -a "${workdir}/${SOURCE_DIR_NAME}" "${temp_dir}/${SOURCE_DIR_NAME}"
+    cp "${workdir}/docker-compose.yml" "${stage_dir}/" 2>/dev/null || true
+    cp "${workdir}/.env" "${stage_dir}/" 2>/dev/null || true
+    cp "${workdir}/deploy.sh" "${stage_dir}/" 2>/dev/null || true
+    [[ -d "${workdir}/${SOURCE_DIR_NAME}" ]] && cp -a "${workdir}/${SOURCE_DIR_NAME}" "${stage_dir}/${SOURCE_DIR_NAME}" 2>/dev/null || true
 
-    tar -czf "$backup_file" -C "$temp_dir" .
-    rm -rf "$temp_dir"
+    local env_file pg_container redis_container pg_user pg_db pg_password redis_password
+    env_file="${workdir}/.env"
+    pg_container="${POSTGRES_CONTAINER}"
+    redis_container="${REDIS_CONTAINER}"
+    pg_user="$(read_env_value "$env_file" POSTGRES_USER)"
+    pg_user="${pg_user:-nuro_sub2api}"
+    pg_db="$(read_env_value "$env_file" POSTGRES_DB)"
+    pg_db="${pg_db:-nuro_sub2api}"
+    pg_password="$(read_env_value "$env_file" POSTGRES_PASSWORD)"
+    redis_password="$(read_env_value "$env_file" REDIS_PASSWORD)"
 
-    find "$backup_dir" -maxdepth 1 -name 'nuro_sub2api_backup_*.tar.gz' -type f \
-        | sort -r \
-        | awk 'NR>5' \
-        | xargs -r rm -f
+    if ! container_running "$pg_container"; then
+        rm -rf "$stage_dir"
+        err "PostgreSQL 容器未运行，无法热备份: ${pg_container}"
+        return
+    fi
 
-    info "备份完成: ${backup_file}"
+    info "正在热备份 PostgreSQL 数据库，不停止服务 ..."
+    if ! docker exec -e PGPASSWORD="$pg_password" "$pg_container" \
+        pg_dump -U "$pg_user" -d "$pg_db" --no-owner --no-privileges \
+        | gzip -c > "${hot_dir}/postgres_dump.sql.gz"; then
+        rm -rf "$stage_dir"
+        err "PostgreSQL pg_dump 失败。"
+        return
+    fi
+
+    if [[ -d "${workdir}/data" ]]; then
+        info "正在打包业务 data 目录，自动排除实时日志 ..."
+        tar --warning=no-file-changed --ignore-failed-read \
+            -czf "${hot_dir}/data.tar.gz" \
+            -C "$workdir" \
+            --exclude='data/logs' \
+            --exclude='data/*.log' \
+            --exclude='data/**/*.log' \
+            data || warn "data 目录存在运行中变化，已尽量打包；核心数据库备份不受影响。"
+    fi
+
+    if container_running "$redis_container"; then
+        info "正在热备份 Redis 快照（缓存状态，失败不影响核心数据库备份） ..."
+        if docker exec -e REDISCLI_AUTH="$redis_password" "$redis_container" redis-cli PING >/dev/null 2>&1; then
+            docker exec -e REDISCLI_AUTH="$redis_password" "$redis_container" redis-cli BGSAVE >/dev/null 2>&1 || true
+            for _ in $(seq 1 60); do
+                local rdb_in_progress
+                rdb_in_progress="$(docker exec -e REDISCLI_AUTH="$redis_password" "$redis_container" sh -c "redis-cli INFO persistence 2>/dev/null | tr -d '\r' | awk -F: '/^rdb_bgsave_in_progress:/ {print \$2}'" || true)"
+                [[ "$rdb_in_progress" == "0" ]] && break
+                sleep 1
+            done
+            if ! docker cp "${redis_container}:/data/dump.rdb" "${hot_dir}/redis_dump.rdb" >/dev/null 2>&1; then
+                warn "Redis RDB 复制失败，跳过 Redis 缓存快照。"
+            fi
+        else
+            warn "Redis PING 失败，跳过 Redis 缓存快照。"
+        fi
+    else
+        warn "Redis 容器未运行，跳过 Redis 缓存快照: ${redis_container}"
+    fi
+
+    {
+        echo "BACKUP_TYPE=hot"
+        echo "APP_NAME=${APP_NAME}"
+        echo "BACKUP_TIME=$(date -Iseconds)"
+        echo "POSTGRES_CONTAINER=${pg_container}"
+        echo "POSTGRES_DB=${pg_db}"
+        echo "REDIS_CONTAINER=${redis_container}"
+    } > "${hot_dir}/backup_manifest.txt"
+
+    info "正在生成热备份压缩包 ..."
+    if ! tar -czf "$backup_file" -C "$stage_dir" .; then
+        rm -rf "$stage_dir"
+        rm -f "$backup_file"
+        err "生成备份包失败。"
+        return
+    fi
+
+    rm -rf "$stage_dir"
+    cleanup_old_backups "$backup_dir"
+
+    info "热备份完成: ${backup_file}"
 }
 
 restore_backup() {
@@ -856,25 +1026,54 @@ restore_backup() {
 
     read -r -p "恢复目标路径 [默认: ${DEFAULT_INSTALL_PATH}]: " target_dir
     local target="${target_dir:-$DEFAULT_INSTALL_PATH}"
+    local tmp_extract
+    tmp_extract="$(mktemp -d)" || { rm -f "$safe_backup"; return; }
 
     if [[ -d "$target" ]]; then
         read -r -p "目标路径已存在，是否覆盖？(y/N): " confirm
-        [[ ! "$confirm" =~ ^[Yy]$ ]] && { rm -f "$safe_backup"; return; }
+        [[ ! "$confirm" =~ ^[Yy]$ ]] && { rm -rf "$tmp_extract"; rm -f "$safe_backup"; return; }
         cd "$target" 2>/dev/null && $(docker_compose_cmd) -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml down 2>/dev/null || true
         docker rm -f "$APP_CONTAINER" "$EDGE_CONTAINER" "$POSTGRES_CONTAINER" "$REDIS_CONTAINER" 2>/dev/null || true
-        safe_remove_dir "$target" || { rm -f "$safe_backup"; return; }
+        safe_remove_dir "$target" || { rm -rf "$tmp_extract"; rm -f "$safe_backup"; return; }
     fi
 
     mkdir -p "$target"
-    tar -xzf "$safe_backup" -C "$target" || { rm -f "$safe_backup"; die "备份解压失败"; }
+    tar -xzf "$safe_backup" -C "$tmp_extract" || { rm -rf "$tmp_extract"; rm -f "$safe_backup"; die "备份解压失败"; }
+
+    local is_hot_backup=0
+    [[ -f "${tmp_extract}/hot_backup/postgres_dump.sql.gz" ]] && is_hot_backup=1
+
+    if [[ "$is_hot_backup" -eq 1 ]]; then
+        info "检测到热备份包，按 pg_dump 方式恢复。"
+        cp "${tmp_extract}/docker-compose.yml" "${target}/docker-compose.yml" 2>/dev/null || create_compose_file "$target"
+        cp "${tmp_extract}/.env" "${target}/.env" 2>/dev/null || true
+        cp "${tmp_extract}/deploy.sh" "${target}/deploy.sh" 2>/dev/null || true
+        [[ -d "${tmp_extract}/${SOURCE_DIR_NAME}" ]] && cp -a "${tmp_extract}/${SOURCE_DIR_NAME}" "${target}/${SOURCE_DIR_NAME}" 2>/dev/null || true
+        mkdir -p "${target}/backups"
+        cp "${tmp_extract}/hot_backup/postgres_dump.sql.gz" "${target}/backups/postgres_dump.sql.gz"
+        [[ -f "${tmp_extract}/hot_backup/backup_manifest.txt" ]] && cp "${tmp_extract}/hot_backup/backup_manifest.txt" "${target}/backups/backup_manifest.txt" 2>/dev/null || true
+        if [[ -f "${tmp_extract}/hot_backup/data.tar.gz" ]]; then
+            tar -xzf "${tmp_extract}/hot_backup/data.tar.gz" -C "$target" || warn "业务 data 恢复不完整，请检查。"
+        fi
+        if [[ -f "${tmp_extract}/hot_backup/redis_dump.rdb" ]]; then
+            mkdir -p "${target}/redis_data"
+            cp "${tmp_extract}/hot_backup/redis_dump.rdb" "${target}/redis_data/dump.rdb" || warn "Redis RDB 恢复文件复制失败。"
+        fi
+    else
+        info "检测到旧版目录备份包，按原目录结构恢复。"
+        cp -a "${tmp_extract}/." "$target/" || { rm -rf "$tmp_extract"; rm -f "$safe_backup"; die "恢复文件复制失败"; }
+    fi
+
     mkdir -p "${target}/backups"
     cp "$safe_backup" "${target}/backups/$(basename "$safe_backup")" 2>/dev/null || true
     rm -f "$safe_backup"
+    rm -rf "$tmp_extract"
     echo "$target" > "$ENV_RECORD_FILE"
 
     cd "$target" || return
     [[ -f docker-compose.yml ]] || create_compose_file "$target"
     ensure_edge_env_values "${target}/.env"
+    ensure_scheduler_env_values "${target}/.env"
     create_compose_file "$target"
 
     local restored_port host_port
@@ -893,8 +1092,35 @@ restore_backup() {
 
     local restore_dc_cmd
     restore_dc_cmd="$(docker_compose_cmd)"
+    if [[ ! -d "${target}/${SOURCE_DIR_NAME}" ]]; then
+        sync_project_source "$target" || die "源码同步失败，无法构建恢复后的镜像"
+    fi
     compose_build_with_edge_fallback "$target" "$restore_dc_cmd" || die "镜像构建失败"
-    compose_up_with_edge_fallback "$target" "$restore_dc_cmd" || die "容器启动失败"
+    if [[ "$is_hot_backup" -eq 1 ]]; then
+        info "正在启动 PostgreSQL / Redis，用于导入热备份数据 ..."
+        $restore_dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d postgres redis || die "恢复基础容器启动失败"
+
+        local pg_user pg_db pg_password
+        pg_user="$(read_env_value "${target}/.env" POSTGRES_USER)"
+        pg_user="${pg_user:-nuro_sub2api}"
+        pg_db="$(read_env_value "${target}/.env" POSTGRES_DB)"
+        pg_db="${pg_db:-nuro_sub2api}"
+        pg_password="$(read_env_value "${target}/.env" POSTGRES_PASSWORD)"
+        wait_postgres_ready "$POSTGRES_CONTAINER" "$pg_user" "$pg_db" || die "PostgreSQL 未就绪"
+
+        info "正在清空并导入 PostgreSQL 热备份 SQL ..."
+        local pg_user_ident
+        pg_user_ident="$(pg_ident "$pg_user")"
+        docker exec -e PGPASSWORD="$pg_password" "$POSTGRES_CONTAINER" \
+            psql -U "$pg_user" -d "$pg_db" -v ON_ERROR_STOP=1 \
+            -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO ${pg_user_ident}; GRANT ALL ON SCHEMA public TO public;" >/dev/null || die "清空 PostgreSQL schema 失败"
+        gzip -dc "${target}/backups/postgres_dump.sql.gz" | docker exec -i -e PGPASSWORD="$pg_password" "$POSTGRES_CONTAINER" \
+            psql -U "$pg_user" -d "$pg_db" -v ON_ERROR_STOP=1 >/dev/null || die "导入 PostgreSQL 热备份 SQL 失败"
+
+        compose_up_with_edge_fallback "$target" "$restore_dc_cmd" || die "恢复后的容器启动失败"
+    else
+        compose_up_with_edge_fallback "$target" "$restore_dc_cmd" || die "容器启动失败"
+    fi
 
     wait_app_ready || true
     show_access "$target"

@@ -66,11 +66,19 @@ func (r schedulerTestOpenAIAccountRepo) ListSchedulableUngroupedByPlatform(ctx c
 
 type schedulerTestConcurrencyCache struct {
 	ConcurrencyCache
-	loadBatchErr    error
-	loadMap         map[int64]*AccountLoadInfo
-	acquireResults  map[int64]bool
-	waitCounts      map[int64]int
-	skipDefaultLoad bool
+	loadBatchErr          error
+	loadMap               map[int64]*AccountLoadInfo
+	loadBatchCalls        *int
+	acquireResults        map[int64]bool
+	waitCounts            map[int64]int
+	skipDefaultLoad       bool
+	arbitrationAccountID  int64
+	arbitrationAcquired   bool
+	arbitrationCandidates []AccountSlotCandidate
+	arbitrationUserID     int64
+	arbitrationUserMax    int
+	releasedAccountID     *int64
+	releasedUserID        *int64
 }
 
 func (c schedulerTestConcurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -83,10 +91,23 @@ func (c schedulerTestConcurrencyCache) AcquireAccountSlot(ctx context.Context, a
 }
 
 func (c schedulerTestConcurrencyCache) ReleaseAccountSlot(ctx context.Context, accountID int64, requestID string) error {
+	if c.releasedAccountID != nil {
+		*c.releasedAccountID = accountID
+	}
+	return nil
+}
+
+func (c schedulerTestConcurrencyCache) ReleaseUserSlot(ctx context.Context, userID int64, requestID string) error {
+	if c.releasedUserID != nil {
+		*c.releasedUserID = userID
+	}
 	return nil
 }
 
 func (c schedulerTestConcurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts []AccountWithConcurrency) (map[int64]*AccountLoadInfo, error) {
+	if c.loadBatchCalls != nil {
+		(*c.loadBatchCalls)++
+	}
 	if c.loadBatchErr != nil {
 		return nil, c.loadBatchErr
 	}
@@ -118,6 +139,18 @@ func (c schedulerTestConcurrencyCache) GetAccountWaitingCount(ctx context.Contex
 		}
 	}
 	return 0, nil
+}
+
+func (c *schedulerTestConcurrencyCache) AcquireFirstAvailableAccountSlot(ctx context.Context, candidates []AccountSlotCandidate, requestID string) (int64, bool, error) {
+	c.arbitrationCandidates = append([]AccountSlotCandidate(nil), candidates...)
+	return c.arbitrationAccountID, c.arbitrationAcquired, nil
+}
+
+func (c *schedulerTestConcurrencyCache) AcquireFirstAvailableUserAccountSlots(ctx context.Context, userID int64, userMaxConcurrency int, candidates []AccountSlotCandidate, userRequestID string, accountRequestID string) (int64, bool, error) {
+	c.arbitrationCandidates = append([]AccountSlotCandidate(nil), candidates...)
+	c.arbitrationUserID = userID
+	c.arbitrationUserMax = userMaxConcurrency
+	return c.arbitrationAccountID, c.arbitrationAcquired, nil
 }
 
 type schedulerTestGatewayCache struct {
@@ -684,6 +717,164 @@ func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_FallsBackWithi
 	require.Equal(t, int64(37033), selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 	require.Equal(t, 2, decision.CandidateCount)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesCandidateSlotArbiter(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10115)
+	accounts := []Account{
+		{
+			ID:          37101,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+		},
+		{
+			ID:          37102,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 2,
+			Priority:    1,
+			GroupIDs:    []int64{groupID},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	cfg.Gateway.Scheduling.CandidateSlotArbiterEnabled = true
+	cfg.Gateway.Scheduling.CandidateSlotArbiterMaxCandidates = 2
+	loadBatchCalls := 0
+	concurrencyCache := &schedulerTestConcurrencyCache{
+		arbitrationAccountID: 37102,
+		arbitrationAcquired:  true,
+		loadBatchCalls:       &loadBatchCalls,
+		loadMap: map[int64]*AccountLoadInfo{
+			37101: {AccountID: 37101, LoadRate: 0, WaitingCount: 0},
+			37102: {AccountID: 37102, LoadRate: 0, WaitingCount: 0},
+		},
+		acquireResults: map[int64]bool{
+			37101: false,
+		},
+	}
+	gatewayCache := &schedulerTestGatewayCache{}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              gatewayCache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"arbiter-session",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37102), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Len(t, concurrencyCache.arbitrationCandidates, 2)
+	require.Zero(t, loadBatchCalls)
+	stickyAccountID, stickyErr := svc.getStickySessionAccountID(ctx, &groupID, "arbiter-session")
+	require.NoError(t, stickyErr)
+	require.Equal(t, int64(37102), stickyAccountID)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesUserAccountSlotArbiter(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10116)
+	accounts := []Account{
+		{
+			ID:          37111,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+		},
+		{
+			ID:          37112,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 2,
+			Priority:    1,
+			GroupIDs:    []int64{groupID},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	cfg.Gateway.Scheduling.CandidateSlotArbiterEnabled = true
+	cfg.Gateway.Scheduling.CandidateSlotArbiterMaxCandidates = 2
+	var releasedAccountID int64
+	var releasedUserID int64
+	concurrencyCache := &schedulerTestConcurrencyCache{
+		arbitrationAccountID: 37112,
+		arbitrationAcquired:  true,
+		releasedAccountID:    &releasedAccountID,
+		releasedUserID:       &releasedUserID,
+		loadMap: map[int64]*AccountLoadInfo{
+			37111: {AccountID: 37111, LoadRate: 0, WaitingCount: 0},
+			37112: {AccountID: 37112, LoadRate: 0, WaitingCount: 0},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapabilityAndUserSlot(
+		ctx,
+		&groupID,
+		99,
+		4,
+		"",
+		"arbiter-user-session",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIEndpointCapabilityChatCompletions,
+		false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37112), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Len(t, concurrencyCache.arbitrationCandidates, 2)
+	require.Equal(t, int64(99), concurrencyCache.arbitrationUserID)
+	require.Equal(t, 4, concurrencyCache.arbitrationUserMax)
+	require.NotNil(t, selection.ReleaseFunc)
+	require.NotNil(t, selection.UserReleaseFunc)
+
+	selection.ReleaseFunc()
+	selection.UserReleaseFunc()
+	require.Equal(t, int64(37112), releasedAccountID)
+	require.Equal(t, int64(99), releasedUserID)
 }
 
 func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_LegacyPathUsesImagePoolOnly(t *testing.T) {

@@ -527,10 +527,11 @@ type AccountWaitPlan struct {
 }
 
 type AccountSelectionResult struct {
-	Account     *Account
-	Acquired    bool
-	ReleaseFunc func()
-	WaitPlan    *AccountWaitPlan // nil means no wait allowed
+	Account         *Account
+	Acquired        bool
+	ReleaseFunc     func()
+	UserReleaseFunc func()
+	WaitPlan        *AccountWaitPlan // nil means no wait allowed
 }
 
 // ClaudeUsage 表示Claude API返回的usage信息
@@ -2186,12 +2187,13 @@ func (s *GatewayService) schedulingConfig() config.GatewaySchedulingConfig {
 		return s.cfg.Gateway.Scheduling
 	}
 	return config.GatewaySchedulingConfig{
-		StickySessionMaxWaiting:  3,
-		StickySessionWaitTimeout: 45 * time.Second,
-		FallbackWaitTimeout:      30 * time.Second,
-		FallbackMaxWaiting:       100,
-		LoadBatchEnabled:         true,
-		SlotCleanupInterval:      30 * time.Second,
+		StickySessionMaxWaiting:           3,
+		StickySessionWaitTimeout:          45 * time.Second,
+		FallbackWaitTimeout:               30 * time.Second,
+		FallbackMaxWaiting:                100,
+		LoadBatchEnabled:                  true,
+		CandidateSlotArbiterMaxCandidates: 16,
+		SlotCleanupInterval:               30 * time.Second,
 	}
 }
 

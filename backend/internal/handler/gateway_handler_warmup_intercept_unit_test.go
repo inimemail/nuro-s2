@@ -143,7 +143,7 @@ func newTestGatewayHandler(t *testing.T, group *service.Group, accounts []*servi
 	t.Helper()
 
 	schedulerCache := &fakeSchedulerCache{accounts: accounts}
-	schedulerSnapshot := service.NewSchedulerSnapshotService(schedulerCache, nil, nil, nil, nil)
+	schedulerSnapshot := service.NewSchedulerSnapshotService(schedulerCache, nil, nil, nil, nil, nil)
 
 	gwSvc := service.NewGatewayService(
 		nil, // accountRepo (not used: scheduler snapshot hit)

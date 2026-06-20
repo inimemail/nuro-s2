@@ -317,7 +317,7 @@ func TestOpenAIPromptCacheBoost_GroupAffinityUsesAggressiveWhenAvailable(t *test
 	svc := &OpenAIGatewayService{
 		schedulerSnapshot: NewSchedulerSnapshotService(&openAISnapshotCacheStub{
 			snapshotAccounts: []*Account{&normal, &aggressive},
-		}, nil, nil, nil, nil),
+		}, nil, nil, nil, nil, nil),
 	}
 
 	sessionHash := svc.GeneratePromptCacheBoostAffinitySessionHashForGroup(ctx, c, &groupID, body, "gpt-5.5")
