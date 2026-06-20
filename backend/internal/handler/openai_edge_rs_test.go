@@ -163,6 +163,48 @@ func TestOpenAIEdgePrepareResponsesWSDisabledFallsBack(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeToolOutputFallbackReason(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "no_tool_output",
+			body: `{"input":"hello"}`,
+			want: "",
+		},
+		{
+			name: "self_contained_tool_context",
+			body: `{"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
+			want: "",
+		},
+		{
+			name: "item_reference_covers_call_id",
+			body: `{"input":[{"type":"item_reference","id":"call_1"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
+			want: "",
+		},
+		{
+			name: "missing_call_id",
+			body: `{"input":[{"type":"function_call_output","output":"ok"}]}`,
+			want: "function_call_output_missing_call_id_requires_go",
+		},
+		{
+			name: "orphan_tool_output",
+			body: `{"input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`,
+			want: "function_call_output_requires_go",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := openAIEdgeToolOutputFallbackReason([]byte(tc.body)); got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
 func TestOpenAIEdgeRolloutRejectReason(t *testing.T) {
 	groupID := int64(20)
 	apiKey := &service.APIKey{ID: 10, GroupID: &groupID}

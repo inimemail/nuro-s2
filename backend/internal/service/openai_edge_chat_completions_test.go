@@ -173,3 +173,28 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 		t.Fatalf("expected response body to remain json: %s", string(plan.Plan.Body))
 	}
 }
+
+func TestBuildChatGPTOAuthResponsesEdgePlanAllowsSelfContainedFunctionCallOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+
+	account := &Account{
+		ID:       123,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "oauth-token",
+		},
+	}
+	body := []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)
+
+	plan, err := (&OpenAIGatewayService{}).BuildChatGPTOAuthResponsesEdgePlan(context.Background(), c, account, body)
+	if err != nil {
+		t.Fatalf("build oauth edge plan with function_call_output: %v", err)
+	}
+	if plan.Plan.Action != OpenAIEdgeActionRelay {
+		t.Fatalf("unexpected relay action: %#v", plan.Plan)
+	}
+}

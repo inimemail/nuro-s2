@@ -364,9 +364,6 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); previousResponseID != "" {
 		return nil, fmt.Errorf("previous_response_id requires Go WSv2 state")
 	}
-	if bytes.Contains(body, []byte("function_call_output")) {
-		return nil, fmt.Errorf("function_call_output requires Go")
-	}
 
 	reqBody, err := getOpenAIRequestBodyMap(c, body)
 	if err != nil {

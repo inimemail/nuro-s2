@@ -300,6 +300,41 @@ func openAIEdgeLaneFromServiceTier(serviceTier *string) string {
 	}
 }
 
+func openAIEdgeHasToolOutput(body []byte) bool {
+	if !bytes.Contains(body, []byte("function_call_output")) &&
+		!bytes.Contains(body, []byte("tool_search_output")) &&
+		!bytes.Contains(body, []byte("custom_tool_call_output")) &&
+		!bytes.Contains(body, []byte("mcp_tool_call_output")) {
+		return false
+	}
+	var reqBody map[string]any
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		return true
+	}
+	return service.ValidateFunctionCallOutputContext(reqBody).HasFunctionCallOutput
+}
+
+func openAIEdgeToolOutputFallbackReason(body []byte) string {
+	if !openAIEdgeHasToolOutput(body) {
+		return ""
+	}
+	var reqBody map[string]any
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		return "function_call_output_requires_go"
+	}
+	validation := service.ValidateFunctionCallOutputContext(reqBody)
+	if !validation.HasFunctionCallOutput {
+		return ""
+	}
+	if validation.HasToolCallContext || validation.HasItemReferenceForAllCallIDs {
+		return ""
+	}
+	if validation.HasFunctionCallOutputMissingCallID {
+		return "function_call_output_missing_call_id_requires_go"
+	}
+	return "function_call_output_requires_go"
+}
+
 func (h *OpenAIGatewayHandler) openAIEdgeLowLatencyMode() string {
 	if h == nil || h.cfg == nil {
 		return ""
@@ -599,8 +634,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	if strings.TrimSpace(gjson.GetBytes(req.Body, "previous_response_id").String()) != "" {
 		return fallback("previous_response_id_requires_go")
 	}
-	if bytes.Contains(req.Body, []byte("function_call_output")) {
-		return fallback("function_call_output_requires_go")
+	if reason := openAIEdgeToolOutputFallbackReason(req.Body); reason != "" {
+		return fallback(reason)
 	}
 	if service.IsImageGenerationIntent("/v1/responses", reqModel, req.Body) {
 		return fallback("image_responses_require_go")
