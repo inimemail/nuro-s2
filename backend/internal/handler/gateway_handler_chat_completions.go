@@ -266,10 +266,14 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if c.Writer.Size() != writerSizeBeforeForward {
+					h.reportAccountScheduleResult(account, false, nil)
 					h.handleCCFailoverExhausted(c, failoverErr, true)
 					return
 				}
 				action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+				if _, failed := fs.FailedAccountIDs[account.ID]; failed {
+					h.reportAccountScheduleResult(account, false, nil)
+				}
 				switch action {
 				case FailoverContinue:
 					continue
@@ -291,8 +295,10 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				zap.Bool("upstream_error_response_already_written", upstreamErrorAlreadyCommunicated),
 				zap.Error(err),
 			)
+			h.reportAccountScheduleResult(account, false, nil)
 			return
 		}
+		h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
 
 		// 6. Record usage
 		userAgent := c.GetHeader("User-Agent")

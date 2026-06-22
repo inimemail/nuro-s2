@@ -56,6 +56,13 @@ type GatewayHandler struct {
 	settingService            *service.SettingService
 }
 
+func (h *GatewayHandler) reportAccountScheduleResult(account *service.Account, success bool, firstTokenMs *int) {
+	if h == nil || h.gatewayService == nil {
+		return
+	}
+	h.gatewayService.ReportAccountScheduleResult(account, success, firstTokenMs)
+}
+
 // NewGatewayHandler creates a new GatewayHandler
 func NewGatewayHandler(
 	gatewayService *service.GatewayService,
@@ -452,10 +459,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
 					if c.Writer.Size() != writerSizeBeforeForward {
+						h.reportAccountScheduleResult(account, false, nil)
 						h.handleFailoverExhausted(c, failoverErr, service.PlatformGemini, true)
 						return
 					}
 					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+					if _, failed := fs.FailedAccountIDs[account.ID]; failed {
+						h.reportAccountScheduleResult(account, false, nil)
+					}
 					switch action {
 					case FailoverContinue:
 						continue
@@ -489,9 +500,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				} else if account.ProxyID != nil {
 					forwardFailedFields = append(forwardFailedFields, zap.Int64p("proxy_id", account.ProxyID))
 				}
+				h.reportAccountScheduleResult(account, false, nil)
 				reqLog.Error("gateway.forward_failed", forwardFailedFields...)
 				return
 			}
+			h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
 
 			// RPM 计数递增（Forward 成功后）
 			// 注意：TOCTOU 竞态是已知且可接受的设计权衡，与 WindowCost 一致的 soft-limit 模式。
@@ -841,10 +854,14 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
 					if c.Writer.Size() != writerSizeBeforeForward {
+						h.reportAccountScheduleResult(account, false, nil)
 						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
 						return
 					}
 					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+					if _, failed := fs.FailedAccountIDs[account.ID]; failed {
+						h.reportAccountScheduleResult(account, false, nil)
+					}
 					switch action {
 					case FailoverContinue:
 						continue
@@ -878,9 +895,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				} else if account.ProxyID != nil {
 					forwardFailedFields = append(forwardFailedFields, zap.Int64p("proxy_id", account.ProxyID))
 				}
+				h.reportAccountScheduleResult(account, false, nil)
 				reqLog.Error("gateway.forward_failed", forwardFailedFields...)
 				return
 			}
+			h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
 
 			// RPM 计数递增（Forward 成功后）
 			// 注意：TOCTOU 竞态是已知且可接受的设计权衡，与 WindowCost 一致的 soft-limit 模式。

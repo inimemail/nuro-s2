@@ -489,6 +489,9 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failoverAction := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+				if _, failed := fs.FailedAccountIDs[account.ID]; failed {
+					h.reportAccountScheduleResult(account, false, nil)
+				}
 				switch failoverAction {
 				case FailoverContinue:
 					continue
@@ -500,9 +503,11 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				}
 			}
 			// ForwardNative already wrote the response
+			h.reportAccountScheduleResult(account, false, nil)
 			reqLog.Error("gemini.forward_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			return
 		}
+		h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 		userAgent := c.GetHeader("User-Agent")
