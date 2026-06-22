@@ -3,9 +3,12 @@ package service
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -151,4 +154,41 @@ func TestAnthropicUpstreamStrongIsolationHeaders(t *testing.T) {
 	require.Empty(t, req.Header.Get("X-Claude-Code-Session-Id"))
 	require.Empty(t, req.Header.Get("X-Codex-Turn-State"))
 	require.Equal(t, "2023-06-01", req.Header.Get("Anthropic-Version"))
+}
+
+func TestAnthropicBuildUpstreamRequestStrongIsolationStripsClientSessionHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("Session_ID", "sess_1")
+	c.Request.Header.Set("Conversation_ID", "conv_1")
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "claude_sess_1")
+	c.Request.Header.Set("X-Codex-Turn-State", "state")
+	c.Request.Header.Set("Anthropic-Version", "2023-06-01")
+
+	account := &Account{
+		ID:       7106,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+			"anthropic_upstream_strong_isolation_enabled": true,
+		},
+	}
+	svc := &GatewayService{cfg: &config.Config{
+		Security: config.SecurityConfig{
+			URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+		},
+	}}
+
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, body, "sk-test", "apikey", "claude-sonnet-4-6", false, false)
+	require.NoError(t, err)
+	require.Empty(t, req.Header.Get("Session_ID"))
+	require.Empty(t, req.Header.Get("Conversation_ID"))
+	require.Empty(t, req.Header.Get("X-Claude-Code-Session-Id"))
+	require.Empty(t, req.Header.Get("X-Codex-Turn-State"))
+	require.Equal(t, "2023-06-01", getHeaderRaw(req.Header, "anthropic-version"))
+	require.Equal(t, "sk-test", getHeaderRaw(req.Header, "x-api-key"))
 }

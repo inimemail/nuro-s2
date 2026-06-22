@@ -6737,10 +6737,6 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		clientHeaders = clientHeaders.Clone()
 		applyAnthropicUpstreamStrongIsolationHeaderMap(clientHeaders)
 	}
-	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
-		clientHeaders = clientHeaders.Clone()
-		applyAnthropicUpstreamStrongIsolationHeaderMap(clientHeaders)
-	}
 
 	// OAuth账号：应用统一指纹和metadata重写（受设置开关控制）
 	var fingerprint *Fingerprint
@@ -6801,9 +6797,6 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
-	}
-	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
-		applyAnthropicUpstreamStrongIsolationHeaders(req)
 	}
 
 	// 设置认证头（保持原始大小写）

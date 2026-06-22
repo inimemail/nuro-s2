@@ -58,6 +58,31 @@ func TestAccountFromServiceShallow_RedactsSensitiveCredentials(t *testing.T) {
 	require.Equal(t, "rt-secret", src.Credentials["refresh_token"])
 }
 
+func TestAccountFromServiceShallow_PreservesAnthropicCacheControlFields(t *testing.T) {
+	src := &service.Account{
+		ID:       43,
+		Name:     "anthropic-key-pool",
+		Platform: "anthropic",
+		Type:     "apikey",
+		Credentials: map[string]any{
+			"api_key":                       "sk-secret",
+			"pool_mode":                     true,
+			"anthropic_cache_boost_enabled": true,
+			"anthropic_cache_boost_level":   "aggressive",
+			"anthropic_upstream_strong_isolation_enabled": true,
+		},
+	}
+
+	got := AccountFromServiceShallow(src)
+	require.NotNil(t, got)
+	require.NotContains(t, got.Credentials, "api_key")
+	require.Equal(t, true, got.Credentials["pool_mode"])
+	require.Equal(t, true, got.Credentials["anthropic_cache_boost_enabled"])
+	require.Equal(t, "aggressive", got.Credentials["anthropic_cache_boost_level"])
+	require.Equal(t, true, got.Credentials["anthropic_upstream_strong_isolation_enabled"])
+	require.True(t, got.CredentialsStatus["has_api_key"])
+}
+
 func TestAccountFromServiceShallow_NilCredentialsOmitsStatus(t *testing.T) {
 	src := &service.Account{ID: 1, Name: "n", Platform: "anthropic", Type: "oauth"}
 	got := AccountFromServiceShallow(src)

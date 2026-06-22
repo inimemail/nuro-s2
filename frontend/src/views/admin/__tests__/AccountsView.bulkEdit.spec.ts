@@ -33,6 +33,9 @@ vi.mock('@/api/admin', () => ({
     },
     groups: {
       getAll: getAllGroups
+    },
+    settings: {
+      getSettings: vi.fn().mockResolvedValue({})
     }
   }
 }))
@@ -68,6 +71,7 @@ const DataTableStub = {
       <span v-for="column in columns" :key="column.key" data-test="column-key">{{ column.key }}</span>
       <div v-for="row in data" :key="row.id">
         <slot name="cell-created_at" :value="row.created_at" :row="row" />
+        <slot name="cell-prompt_cache_boost" :row="row" />
       </div>
     </div>
   `
@@ -82,6 +86,47 @@ const AccountBulkActionsBarStub = {
 const BulkEditAccountModalStub = {
   props: ['show', 'target'],
   template: '<div data-test="bulk-edit-modal" :data-show="String(show)" :data-target-mode="target?.mode ?? \'\'"></div>'
+}
+
+const accountViewStubs = {
+  AppLayout: { template: '<div><slot /></div>' },
+  TablePageLayout: {
+    template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
+  },
+  DataTable: DataTableStub,
+  Pagination: true,
+  ConfirmDialog: true,
+  AccountTableActions: { template: '<div><slot name="beforeCreate" /><slot name="after" /></div>' },
+  AccountTableFilters: { template: '<div></div>' },
+  AccountBulkActionsBar: AccountBulkActionsBarStub,
+  AccountActionMenu: true,
+  ImportDataModal: true,
+  ReAuthAccountModal: true,
+  AccountTestModal: true,
+  AccountStatsModal: true,
+  ScheduledTestsPanel: true,
+  SyncFromCrsModal: true,
+  TempUnschedStatusModal: true,
+  ErrorPassthroughRulesModal: true,
+  TLSFingerprintProfilesModal: true,
+  CreateAccountModal: true,
+  EditAccountModal: true,
+  BulkEditAccountModal: BulkEditAccountModalStub,
+  PlatformTypeBadge: true,
+  AccountCapacityCell: true,
+  AccountStatusIndicator: true,
+  AccountTodayStatsCell: true,
+  AccountGroupsCell: true,
+  AccountUsageCell: true,
+  Icon: true
+}
+
+function mountAccountsView() {
+  return mount(AccountsView, {
+    global: {
+      stubs: accountViewStubs
+    }
+  })
 }
 
 describe('admin AccountsView bulk edit scope', () => {
@@ -112,42 +157,7 @@ describe('admin AccountsView bulk edit scope', () => {
   })
 
   it('opens bulk edit in filtered-results mode from the bulk actions dropdown', async () => {
-    const wrapper = mount(AccountsView, {
-      global: {
-        stubs: {
-          AppLayout: { template: '<div><slot /></div>' },
-          TablePageLayout: {
-            template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
-          },
-          DataTable: DataTableStub,
-          Pagination: true,
-          ConfirmDialog: true,
-          AccountTableActions: { template: '<div><slot name="beforeCreate" /><slot name="after" /></div>' },
-          AccountTableFilters: { template: '<div></div>' },
-          AccountBulkActionsBar: AccountBulkActionsBarStub,
-          AccountActionMenu: true,
-          ImportDataModal: true,
-          ReAuthAccountModal: true,
-          AccountTestModal: true,
-          AccountStatsModal: true,
-          ScheduledTestsPanel: true,
-          SyncFromCrsModal: true,
-          TempUnschedStatusModal: true,
-          ErrorPassthroughRulesModal: true,
-          TLSFingerprintProfilesModal: true,
-          CreateAccountModal: true,
-          EditAccountModal: true,
-          BulkEditAccountModal: BulkEditAccountModalStub,
-          PlatformTypeBadge: true,
-          AccountCapacityCell: true,
-          AccountStatusIndicator: true,
-          AccountTodayStatsCell: true,
-          AccountGroupsCell: true,
-          AccountUsageCell: true,
-          Icon: true
-        }
-      }
-    })
+    const wrapper = mountAccountsView()
 
     await flushPromises()
     await wrapper.get('[data-test="edit-filtered"]').trigger('click')
@@ -177,42 +187,7 @@ describe('admin AccountsView bulk edit scope', () => {
       pages: 1
     })
 
-    const wrapper = mount(AccountsView, {
-      global: {
-        stubs: {
-          AppLayout: { template: '<div><slot /></div>' },
-          TablePageLayout: {
-            template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
-          },
-          DataTable: DataTableStub,
-          Pagination: true,
-          ConfirmDialog: true,
-          AccountTableActions: { template: '<div><slot name="beforeCreate" /><slot name="after" /></div>' },
-          AccountTableFilters: { template: '<div></div>' },
-          AccountBulkActionsBar: AccountBulkActionsBarStub,
-          AccountActionMenu: true,
-          ImportDataModal: true,
-          ReAuthAccountModal: true,
-          AccountTestModal: true,
-          AccountStatsModal: true,
-          ScheduledTestsPanel: true,
-          SyncFromCrsModal: true,
-          TempUnschedStatusModal: true,
-          ErrorPassthroughRulesModal: true,
-          TLSFingerprintProfilesModal: true,
-          CreateAccountModal: true,
-          EditAccountModal: true,
-          BulkEditAccountModal: BulkEditAccountModalStub,
-          PlatformTypeBadge: true,
-          AccountCapacityCell: true,
-          AccountStatusIndicator: true,
-          AccountTodayStatsCell: true,
-          AccountGroupsCell: true,
-          AccountUsageCell: true,
-          Icon: true
-        }
-      }
-    })
+    const wrapper = mountAccountsView()
 
     await flushPromises()
 
@@ -223,5 +198,85 @@ describe('admin AccountsView bulk edit scope', () => {
       label: 'admin.accounts.columns.createdAt',
       sortable: true
     })
+  })
+
+  it('renders Anthropic cache boost status from Anthropic credentials', async () => {
+    listAccounts.mockResolvedValue({
+      items: [
+        {
+          id: 2,
+          name: 'anthropic-key-pool',
+          platform: 'anthropic',
+          type: 'apikey',
+          status: 'active',
+          schedulable: true,
+          credentials: {
+            pool_mode: true,
+            anthropic_cache_boost_enabled: true,
+            anthropic_upstream_strong_isolation_enabled: true
+          },
+          created_at: '2026-03-07T10:00:00Z',
+          updated_at: '2026-03-07T10:00:00Z'
+        },
+        {
+          id: 3,
+          name: 'anthropic-oauth',
+          platform: 'anthropic',
+          type: 'oauth',
+          status: 'active',
+          schedulable: true,
+          credentials: {
+            anthropic_cache_boost_enabled: true,
+            anthropic_upstream_strong_isolation_enabled: true
+          },
+          created_at: '2026-03-07T10:00:00Z',
+          updated_at: '2026-03-07T10:00:00Z'
+        },
+        {
+          id: 4,
+          name: 'anthropic-key-non-pool',
+          platform: 'anthropic',
+          type: 'apikey',
+          status: 'active',
+          schedulable: true,
+          credentials: {
+            anthropic_cache_boost_enabled: true,
+            anthropic_upstream_strong_isolation_enabled: true
+          },
+          created_at: '2026-03-07T10:00:00Z',
+          updated_at: '2026-03-07T10:00:00Z'
+        },
+        {
+          id: 5,
+          name: 'anthropic-key-pool-disabled',
+          platform: 'anthropic',
+          type: 'apikey',
+          status: 'active',
+          schedulable: true,
+          credentials: {
+            pool_mode: true
+          },
+          created_at: '2026-03-07T10:00:00Z',
+          updated_at: '2026-03-07T10:00:00Z'
+        }
+      ],
+      total: 4,
+      page: 1,
+      page_size: 20,
+      pages: 1
+    })
+
+    const wrapper = mountAccountsView()
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheBoostEnabled')
+    expect(wrapper.text()).toContain('admin.accounts.upstreamStrongIsolationEnabled')
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheBoostDisabled')
+    expect(wrapper.text()).toContain('admin.accounts.upstreamStrongIsolationDisabled')
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheBoostNotApplicable')
+    expect(wrapper.text()).toContain('admin.accounts.upstreamStrongIsolationNotApplicable')
+    expect(wrapper.html()).toContain('admin.accounts.anthropicCacheBoostEnabledHint')
+    expect(wrapper.html()).toContain('admin.accounts.anthropicUpstreamStrongIsolationEnabledHint')
   })
 })

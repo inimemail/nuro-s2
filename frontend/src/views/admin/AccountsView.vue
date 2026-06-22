@@ -1353,58 +1353,102 @@ const isOpenAITextPoolAccount = (account: Account) => {
   return account.platform === 'openai' && isPool && !isImagePool
 }
 
-const isOpenAIPromptCacheBoostAccount = (account: Account) => {
-  if (account.platform !== 'openai') return false
-  if (account.type === 'oauth') return true
-  return isOpenAITextPoolAccount(account)
+const isAnthropicCacheControlAccount = (account: Account) => {
+  if (account.platform !== 'anthropic') return false
+  if (account.type === 'oauth' || account.type === 'setup-token') return true
+  return account.type === 'apikey' && account.credentials?.pool_mode === true
 }
 
-const isOpenAIUpstreamStrongIsolationAccount = (account: Account) => {
-  if (account.platform !== 'openai') return false
-  if (account.type === 'oauth') return true
-  return isOpenAITextPoolAccount(account)
+const isPromptCacheBoostAccount = (account: Account) => {
+  if (account.platform === 'openai') {
+    if (account.type === 'oauth') return true
+    return isOpenAITextPoolAccount(account)
+  }
+  return isAnthropicCacheControlAccount(account)
 }
+
+const isUpstreamStrongIsolationAccount = (account: Account) => {
+  if (account.platform === 'openai') {
+    if (account.type === 'oauth') return true
+    return isOpenAITextPoolAccount(account)
+  }
+  return isAnthropicCacheControlAccount(account)
+}
+
+const promptCacheBoostEnabledForAccount = (account: Account) => {
+  if (account.platform === 'anthropic') {
+    return account.credentials?.anthropic_cache_boost_enabled === true
+  }
+  return account.credentials?.prompt_cache_boost_enabled === true
+}
+
+const upstreamStrongIsolationEnabledForAccount = (account: Account) => {
+  if (account.platform === 'anthropic') {
+    return account.credentials?.anthropic_upstream_strong_isolation_enabled === true
+  }
+  return account.credentials?.upstream_strong_isolation_enabled === true
+}
+
+const promptCacheBoostEnabledHintKey = (account: Account) =>
+  account.platform === 'anthropic'
+    ? 'admin.accounts.anthropicCacheBoostEnabledHint'
+    : 'admin.accounts.promptCacheBoostEnabledHint'
+
+const promptCacheBoostDisabledHintKey = (account: Account) =>
+  account.platform === 'anthropic'
+    ? 'admin.accounts.anthropicCacheBoostDisabledHint'
+    : 'admin.accounts.promptCacheBoostDisabledHint'
+
+const upstreamStrongIsolationEnabledHintKey = (account: Account) =>
+  account.platform === 'anthropic'
+    ? 'admin.accounts.anthropicUpstreamStrongIsolationEnabledHint'
+    : 'admin.accounts.upstreamStrongIsolationEnabledHint'
+
+const upstreamStrongIsolationDisabledHintKey = (account: Account) =>
+  account.platform === 'anthropic'
+    ? 'admin.accounts.anthropicUpstreamStrongIsolationDisabledHint'
+    : 'admin.accounts.upstreamStrongIsolationDisabledHint'
 
 const promptCacheBoostMeta = (account: Account) => {
-  if (!isOpenAIPromptCacheBoostAccount(account)) {
+  if (!isPromptCacheBoostAccount(account)) {
     return {
       label: t('admin.accounts.promptCacheBoostNotApplicable'),
       title: t('admin.accounts.promptCacheBoostNotApplicableHint'),
       className: 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'
     }
   }
-  if (account.credentials?.prompt_cache_boost_enabled === true) {
+  if (promptCacheBoostEnabledForAccount(account)) {
     return {
       label: t('admin.accounts.promptCacheBoostEnabled'),
-      title: t('admin.accounts.promptCacheBoostEnabledHint'),
+      title: t(promptCacheBoostEnabledHintKey(account)),
       className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
     }
   }
   return {
     label: t('admin.accounts.promptCacheBoostDisabled'),
-    title: t('admin.accounts.promptCacheBoostDisabledHint'),
+    title: t(promptCacheBoostDisabledHintKey(account)),
     className: 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
   }
 }
 
 const upstreamStrongIsolationMeta = (account: Account) => {
-  if (!isOpenAIUpstreamStrongIsolationAccount(account)) {
+  if (!isUpstreamStrongIsolationAccount(account)) {
     return {
       label: t('admin.accounts.upstreamStrongIsolationNotApplicable'),
       title: t('admin.accounts.upstreamStrongIsolationNotApplicableHint'),
       className: 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'
     }
   }
-  if (account.credentials?.upstream_strong_isolation_enabled === true) {
+  if (upstreamStrongIsolationEnabledForAccount(account)) {
     return {
       label: t('admin.accounts.upstreamStrongIsolationEnabled'),
-      title: t('admin.accounts.upstreamStrongIsolationEnabledHint'),
+      title: t(upstreamStrongIsolationEnabledHintKey(account)),
       className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
     }
   }
   return {
     label: t('admin.accounts.upstreamStrongIsolationDisabled'),
-    title: t('admin.accounts.upstreamStrongIsolationDisabledHint'),
+    title: t(upstreamStrongIsolationDisabledHintKey(account)),
     className: 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
   }
 }
