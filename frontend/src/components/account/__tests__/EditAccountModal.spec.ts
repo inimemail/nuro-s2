@@ -195,6 +195,58 @@ function buildOpenAIOAuthAccount() {
   } as any
 }
 
+function buildAnthropicOAuthAccount() {
+  return {
+    id: 4,
+    name: 'Anthropic OAuth',
+    notes: '',
+    platform: 'anthropic',
+    type: 'oauth',
+    credentials: {
+      access_token: 'claude-token',
+      anthropic_cache_boost_enabled: true,
+      anthropic_cache_boost_level: 'aggressive',
+      anthropic_upstream_strong_isolation_enabled: true
+    },
+    extra: {},
+    proxy_id: null,
+    concurrency: 1,
+    priority: 1,
+    rate_multiplier: 1,
+    status: 'active',
+    group_ids: [],
+    expires_at: null,
+    auto_pause_on_expired: false
+  } as any
+}
+
+function buildAnthropicAPIKeyAccount(poolMode = false) {
+  return {
+    id: 5,
+    name: 'Anthropic Key',
+    notes: '',
+    platform: 'anthropic',
+    type: 'apikey',
+    credentials: {
+      api_key: 'sk-ant-test',
+      base_url: 'https://api.anthropic.com',
+      ...(poolMode ? { pool_mode: true } : {}),
+      anthropic_cache_boost_enabled: true,
+      anthropic_cache_boost_level: 'aggressive',
+      anthropic_upstream_strong_isolation_enabled: true
+    },
+    extra: {},
+    proxy_id: null,
+    concurrency: 1,
+    priority: 1,
+    rate_multiplier: 1,
+    status: 'active',
+    group_ids: [],
+    expires_at: null,
+    auto_pause_on_expired: false
+  } as any
+}
+
 function mountModal(account = buildAccount()) {
   return mount(EditAccountModal, {
     props: {
@@ -243,6 +295,75 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('pool_mode')
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('pool_soft_cooldown_enabled')
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('image_pool_mode')
+  })
+
+  it('submits independent Anthropic cache boost and isolation settings', async () => {
+    const account = buildAnthropicOAuthAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    expect(wrapper.text()).toContain('admin.accounts.anthropicCacheBoost')
+    expect(wrapper.text()).toContain('admin.accounts.anthropicUpstreamStrongIsolation')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials?.anthropic_cache_boost_enabled).toBe(true)
+    expect(credentials?.anthropic_cache_boost_level).toBe('aggressive')
+    expect(credentials?.anthropic_upstream_strong_isolation_enabled).toBe(true)
+    expect(credentials).not.toHaveProperty('prompt_cache_boost_enabled')
+    expect(credentials).not.toHaveProperty('prompt_cache_boost_level')
+    expect(credentials).not.toHaveProperty('upstream_strong_isolation_enabled')
+  })
+
+  it('does not expose Anthropic API key cache boost and isolation without pool mode', async () => {
+    const account = buildAnthropicAPIKeyAccount(false)
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    expect(wrapper.text()).not.toContain('admin.accounts.anthropicCacheBoost')
+    expect(wrapper.text()).not.toContain('admin.accounts.anthropicUpstreamStrongIsolation')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials?.pool_mode).toBeUndefined()
+    expect(credentials).not.toHaveProperty('anthropic_cache_boost_enabled')
+    expect(credentials).not.toHaveProperty('anthropic_cache_boost_level')
+    expect(credentials).not.toHaveProperty('anthropic_upstream_strong_isolation_enabled')
+    expect(credentials).not.toHaveProperty('prompt_cache_boost_enabled')
+    expect(credentials).not.toHaveProperty('upstream_strong_isolation_enabled')
+  })
+
+  it('keeps Anthropic API key cache boost and isolation with pool mode', async () => {
+    const account = buildAnthropicAPIKeyAccount(true)
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    expect(wrapper.text()).toContain('admin.accounts.anthropicCacheBoost')
+    expect(wrapper.text()).toContain('admin.accounts.anthropicUpstreamStrongIsolation')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials?.pool_mode).toBe(true)
+    expect(credentials?.anthropic_cache_boost_enabled).toBe(true)
+    expect(credentials?.anthropic_cache_boost_level).toBe('aggressive')
+    expect(credentials?.anthropic_upstream_strong_isolation_enabled).toBe(true)
+    expect(credentials).not.toHaveProperty('prompt_cache_boost_enabled')
+    expect(credentials).not.toHaveProperty('upstream_strong_isolation_enabled')
   })
 
   it('reopening the same account rehydrates the OpenAI whitelist from props', async () => {

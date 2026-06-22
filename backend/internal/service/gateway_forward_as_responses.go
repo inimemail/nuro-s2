@@ -99,6 +99,17 @@ func (s *GatewayService) ForwardAsResponses(
 		anthropicBody = s.applyClaudeCodeOAuthMimicryToBody(ctx, c, account, anthropicBody, anthropicReq.System, mappedModel)
 	}
 
+	anthropicBody = s.applyAnthropicCacheBoostBody(ctx, account, anthropicBody)
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyAnthropicUpstreamStrongIsolationBody(anthropicBody)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply anthropic upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			anthropicBody = isolatedBody
+		}
+	}
+
 	// 7. Enforce cache_control block limit
 	anthropicBody = enforceCacheControlLimit(anthropicBody)
 

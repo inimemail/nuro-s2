@@ -111,6 +111,11 @@ const (
 	OpenAIPromptCacheBoostLevelAggressive = "aggressive"
 )
 
+const (
+	AnthropicCacheBoostLevelNormal     = "normal"
+	AnthropicCacheBoostLevelAggressive = "aggressive"
+)
+
 type TempUnschedulableRule struct {
 	ErrorCode       int      `json:"error_code"`
 	Keywords        []string `json:"keywords"`
@@ -995,6 +1000,70 @@ func (a *Account) IsOpenAIUpstreamStrongIsolationEnabled() bool {
 		return false
 	}
 	if v, ok := a.Credentials["upstream_strong_isolation_enabled"]; ok {
+		if enabled, ok := v.(bool); ok {
+			return enabled
+		}
+	}
+	return false
+}
+
+func (a *Account) isAnthropicCacheBoostApplicableAccount() bool {
+	if a == nil || a.Platform != PlatformAnthropic || a.Credentials == nil || a.IsBedrock() {
+		return false
+	}
+	switch a.Type {
+	case AccountTypeAPIKey:
+		return a.IsPoolMode()
+	case AccountTypeOAuth, AccountTypeSetupToken:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Account) IsAnthropicCacheBoostEnabled() bool {
+	return a.isAnthropicCacheBoostApplicableAccount() &&
+		credentialBool(a.Credentials, "anthropic_cache_boost_enabled")
+}
+
+func (a *Account) AnthropicCacheBoostLevel() string {
+	if !a.IsAnthropicCacheBoostEnabled() {
+		return AnthropicCacheBoostLevelNormal
+	}
+	if v, ok := a.Credentials["anthropic_cache_boost_level"]; ok {
+		if level, ok := v.(string); ok {
+			switch strings.TrimSpace(strings.ToLower(level)) {
+			case AnthropicCacheBoostLevelAggressive:
+				return AnthropicCacheBoostLevelAggressive
+			}
+		}
+	}
+	return AnthropicCacheBoostLevelNormal
+}
+
+func (a *Account) IsAnthropicCacheBoostAggressive() bool {
+	return a.AnthropicCacheBoostLevel() == AnthropicCacheBoostLevelAggressive
+}
+
+func (a *Account) isAnthropicUpstreamStrongIsolationApplicableAccount() bool {
+	if a == nil || a.Platform != PlatformAnthropic || a.Credentials == nil || a.IsBedrock() {
+		return false
+	}
+	switch a.Type {
+	case AccountTypeAPIKey:
+		return a.IsPoolMode()
+	case AccountTypeOAuth, AccountTypeSetupToken:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Account) IsAnthropicUpstreamStrongIsolationEnabled() bool {
+	if !a.isAnthropicUpstreamStrongIsolationApplicableAccount() {
+		return false
+	}
+	if v, ok := a.Credentials["anthropic_upstream_strong_isolation_enabled"]; ok {
 		if enabled, ok := v.(bool); ok {
 			return enabled
 		}

@@ -339,9 +339,9 @@
           <div v-if="showPromptCacheBoostToggle" class="mt-3 rounded-lg bg-emerald-50 p-3 dark:bg-emerald-900/15">
             <div class="flex items-center justify-between gap-4">
               <div>
-                <label class="input-label mb-0">{{ t('admin.accounts.promptCacheBoost') }}</label>
+                <label class="input-label mb-0">{{ t(promptCacheBoostTitleKey) }}</label>
                 <p class="mt-1 text-xs text-emerald-700 dark:text-emerald-300">
-                  {{ t('admin.accounts.promptCacheBoostHint') }}
+                  {{ t(promptCacheBoostHintKey) }}
                 </p>
               </div>
               <button
@@ -364,7 +364,7 @@
               <div>
                 <label class="input-label mb-0">{{ t('admin.accounts.promptCacheBoostAggressive') }}</label>
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  {{ t('admin.accounts.promptCacheBoostAggressiveHint') }}
+                  {{ t(promptCacheBoostAggressiveHintKey) }}
                 </p>
               </div>
               <button
@@ -387,9 +387,9 @@
           <div v-if="showUpstreamStrongIsolationToggle" class="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
             <div class="flex items-center justify-between gap-4">
               <div>
-                <label class="input-label mb-0">{{ t('admin.accounts.upstreamStrongIsolation') }}</label>
+                <label class="input-label mb-0">{{ t(upstreamStrongIsolationTitleKey) }}</label>
                 <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">
-                  {{ t('admin.accounts.upstreamStrongIsolationHint') }}
+                  {{ t(upstreamStrongIsolationHintKey) }}
                 </p>
               </div>
               <button
@@ -743,15 +743,15 @@
       </div>
 
       <div
-        v-if="account.platform === 'openai' && account.type === 'oauth'"
+        v-if="showOAuthCacheBoostAndIsolationSection"
         class="space-y-3 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="rounded-lg bg-emerald-50 p-3 dark:bg-emerald-900/15">
           <div class="flex items-center justify-between gap-4">
             <div>
-              <label class="input-label mb-0">{{ t('admin.accounts.promptCacheBoost') }}</label>
+              <label class="input-label mb-0">{{ t(promptCacheBoostTitleKey) }}</label>
               <p class="mt-1 text-xs text-emerald-700 dark:text-emerald-300">
-                {{ t('admin.accounts.promptCacheBoostHint') }}
+                {{ t(promptCacheBoostHintKey) }}
               </p>
             </div>
             <button
@@ -774,7 +774,7 @@
             <div>
               <label class="input-label mb-0">{{ t('admin.accounts.promptCacheBoostAggressive') }}</label>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                {{ t('admin.accounts.promptCacheBoostAggressiveHint') }}
+                {{ t(promptCacheBoostAggressiveHintKey) }}
               </p>
             </div>
             <button
@@ -797,9 +797,9 @@
         <div class="rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
           <div class="flex items-center justify-between gap-4">
             <div>
-              <label class="input-label mb-0">{{ t('admin.accounts.upstreamStrongIsolation') }}</label>
+              <label class="input-label mb-0">{{ t(upstreamStrongIsolationTitleKey) }}</label>
               <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">
-                {{ t('admin.accounts.upstreamStrongIsolationHint') }}
+                {{ t(upstreamStrongIsolationHintKey) }}
               </p>
             </div>
             <button
@@ -2971,19 +2971,92 @@ const poolModeRetryCountMax = computed(() =>
     : MAX_POOL_MODE_RETRY_COUNT
 )
 const showPromptCacheBoostToggle = computed(() =>
-  props.account?.platform === 'openai' &&
-  (
-    props.account?.type === 'oauth' ||
-    (props.account?.type === 'apikey' && poolModeEnabled.value && !imagePoolModeEnabled.value)
-  )
+  (props.account?.platform === 'openai' &&
+    (
+      props.account?.type === 'oauth' ||
+      (props.account?.type === 'apikey' && poolModeEnabled.value && !imagePoolModeEnabled.value)
+    )) ||
+  (props.account?.platform === 'anthropic' &&
+    (
+      props.account?.type === 'oauth' ||
+      props.account?.type === 'setup-token' ||
+      (props.account?.type === 'apikey' && poolModeEnabled.value)
+    ))
 )
 const showUpstreamStrongIsolationToggle = computed(() =>
-  props.account?.platform === 'openai' &&
-  (
-    props.account?.type === 'oauth' ||
-    (props.account?.type === 'apikey' && poolModeEnabled.value && !imagePoolModeEnabled.value)
-  )
+  (props.account?.platform === 'openai' &&
+    (
+      props.account?.type === 'oauth' ||
+      (props.account?.type === 'apikey' && poolModeEnabled.value && !imagePoolModeEnabled.value)
+    )) ||
+  (props.account?.platform === 'anthropic' &&
+    (
+      props.account?.type === 'oauth' ||
+      props.account?.type === 'setup-token' ||
+      (props.account?.type === 'apikey' && poolModeEnabled.value)
+    ))
 )
+const showOAuthCacheBoostAndIsolationSection = computed(() =>
+  (props.account?.type === 'oauth' || props.account?.type === 'setup-token') &&
+  (props.account?.platform === 'openai' || props.account?.platform === 'anthropic')
+)
+const isAnthropicCacheBoostUI = computed(() => props.account?.platform === 'anthropic')
+const promptCacheBoostTitleKey = computed(() =>
+  isAnthropicCacheBoostUI.value ? 'admin.accounts.anthropicCacheBoost' : 'admin.accounts.promptCacheBoost'
+)
+const promptCacheBoostHintKey = computed(() =>
+  isAnthropicCacheBoostUI.value ? 'admin.accounts.anthropicCacheBoostHint' : 'admin.accounts.promptCacheBoostHint'
+)
+const promptCacheBoostAggressiveHintKey = computed(() =>
+  isAnthropicCacheBoostUI.value ? 'admin.accounts.anthropicCacheBoostAggressiveHint' : 'admin.accounts.promptCacheBoostAggressiveHint'
+)
+const upstreamStrongIsolationTitleKey = computed(() =>
+  isAnthropicCacheBoostUI.value ? 'admin.accounts.anthropicUpstreamStrongIsolation' : 'admin.accounts.upstreamStrongIsolation'
+)
+const upstreamStrongIsolationHintKey = computed(() =>
+  isAnthropicCacheBoostUI.value ? 'admin.accounts.anthropicUpstreamStrongIsolationHint' : 'admin.accounts.upstreamStrongIsolationHint'
+)
+const cacheBoostCredentialKeys = computed(() => ({
+  enabled: isAnthropicCacheBoostUI.value ? 'anthropic_cache_boost_enabled' : 'prompt_cache_boost_enabled',
+  level: isAnthropicCacheBoostUI.value ? 'anthropic_cache_boost_level' : 'prompt_cache_boost_level',
+  isolation: isAnthropicCacheBoostUI.value ? 'anthropic_upstream_strong_isolation_enabled' : 'upstream_strong_isolation_enabled'
+}))
+
+const loadCacheBoostAndIsolationFromCredentials = (credentials: Record<string, unknown>) => {
+  const keys = cacheBoostCredentialKeys.value
+  promptCacheBoostEnabled.value = credentials[keys.enabled] === true
+  promptCacheBoostAggressiveEnabled.value = credentials[keys.level] === 'aggressive'
+  upstreamStrongIsolationEnabled.value = credentials[keys.isolation] === true
+}
+
+const applyCacheBoostAndIsolationCredentials = (credentials: Record<string, unknown>) => {
+  if (!showPromptCacheBoostToggle.value && !showUpstreamStrongIsolationToggle.value) {
+    return
+  }
+  const keys = cacheBoostCredentialKeys.value
+  const staleKeys = isAnthropicCacheBoostUI.value
+    ? ['prompt_cache_boost_enabled', 'prompt_cache_boost_level', 'upstream_strong_isolation_enabled']
+    : ['anthropic_cache_boost_enabled', 'anthropic_cache_boost_level', 'anthropic_upstream_strong_isolation_enabled']
+  staleKeys.forEach((key) => {
+    delete credentials[key]
+  })
+  if (showPromptCacheBoostToggle.value && promptCacheBoostEnabled.value) {
+    credentials[keys.enabled] = true
+    if (promptCacheBoostAggressiveEnabled.value) {
+      credentials[keys.level] = 'aggressive'
+    } else {
+      delete credentials[keys.level]
+    }
+  } else {
+    delete credentials[keys.enabled]
+    delete credentials[keys.level]
+  }
+  if (showUpstreamStrongIsolationToggle.value && upstreamStrongIsolationEnabled.value) {
+    credentials[keys.isolation] = true
+  } else {
+    delete credentials[keys.isolation]
+  }
+}
 const showOpenAIAPIKeyTextStreamToggles = computed(() =>
   props.account?.platform === 'openai' &&
   props.account?.type === 'apikey' &&
@@ -3677,9 +3750,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     poolModeEnabled.value = credentials.pool_mode === true
     poolSoftCooldownEnabled.value = credentials.pool_soft_cooldown_enabled !== false
     imagePoolModeEnabled.value = credentials.image_pool_mode === true
-    promptCacheBoostEnabled.value = credentials.prompt_cache_boost_enabled === true
-    promptCacheBoostAggressiveEnabled.value = credentials.prompt_cache_boost_level === 'aggressive'
-    upstreamStrongIsolationEnabled.value = credentials.upstream_strong_isolation_enabled === true
+    loadCacheBoostAndIsolationFromCredentials(credentials)
     upstreamConcurrencyRaceEnabled.value = credentials.upstream_concurrency_race_enabled === true
     upstreamConcurrencyRaceRetryDelayMs.value = normalizeUpstreamConcurrencyRaceRetryDelayMs(
       Number(credentials.upstream_concurrency_race_retry_delay_ms ?? DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
@@ -3764,13 +3835,13 @@ const syncFormFromAccount = (newAccount: Account | null) => {
           : 'https://api.anthropic.com'
     editBaseUrl.value = platformDefaultUrl
 
-    // Load model mappings for OpenAI OAuth accounts
-    if (newAccount.platform === 'openai' && newAccount.credentials) {
+    // Load model mappings for OpenAI OAuth accounts and platform-specific cache controls.
+    if ((newAccount.platform === 'openai' || newAccount.platform === 'anthropic') && newAccount.credentials) {
       const oauthCredentials = newAccount.credentials as Record<string, unknown>
-      loadModelRestrictionFromMapping(oauthCredentials.model_mapping as Record<string, unknown> | undefined)
-      promptCacheBoostEnabled.value = oauthCredentials.prompt_cache_boost_enabled === true
-      promptCacheBoostAggressiveEnabled.value = oauthCredentials.prompt_cache_boost_level === 'aggressive'
-      upstreamStrongIsolationEnabled.value = oauthCredentials.upstream_strong_isolation_enabled === true
+      if (newAccount.platform === 'openai') {
+        loadModelRestrictionFromMapping(oauthCredentials.model_mapping as Record<string, unknown> | undefined)
+      }
+      loadCacheBoostAndIsolationFromCredentials(oauthCredentials)
     } else {
       modelRestrictionMode.value = 'whitelist'
       modelMappings.value = []
@@ -3827,11 +3898,11 @@ watch([poolModeEnabled, () => props.account?.platform], ([enabled, platform]) =>
   if (!enabled || platform !== 'openai') {
     imagePoolModeEnabled.value = false
   }
-  if (platform !== 'openai' || (!enabled && props.account?.type !== 'oauth')) {
+  if (!showPromptCacheBoostToggle.value) {
     promptCacheBoostEnabled.value = false
     promptCacheBoostAggressiveEnabled.value = false
   }
-  if (platform !== 'openai' || (!enabled && props.account?.type !== 'oauth')) {
+  if (!showUpstreamStrongIsolationToggle.value) {
     upstreamStrongIsolationEnabled.value = false
   }
   if (!enabled || platform !== 'openai') {
@@ -4415,6 +4486,7 @@ const handleSubmit = async () => {
         } else {
           delete newCredentials.upstream_strong_isolation_enabled
         }
+        applyCacheBoostAndIsolationCredentials(newCredentials)
         if (props.account.platform === 'openai' && !imagePoolModeEnabled.value && upstreamConcurrencyRaceEnabled.value) {
           newCredentials.upstream_concurrency_race_enabled = true
           newCredentials.upstream_concurrency_race_retry_delay_ms = normalizeUpstreamConcurrencyRaceRetryDelayMs(
@@ -4447,6 +4519,9 @@ const handleSubmit = async () => {
         delete newCredentials.prompt_cache_boost_enabled
         delete newCredentials.prompt_cache_boost_level
         delete newCredentials.upstream_strong_isolation_enabled
+        delete newCredentials.anthropic_cache_boost_enabled
+        delete newCredentials.anthropic_cache_boost_level
+        delete newCredentials.anthropic_upstream_strong_isolation_enabled
         delete newCredentials.upstream_concurrency_race_enabled
         delete newCredentials.upstream_concurrency_race_retry_delay_ms
         delete newCredentials.upstream_concurrency_race_max_elapsed_ms
@@ -4454,18 +4529,7 @@ const handleSubmit = async () => {
         delete newCredentials.pool_mode_retry_count
         delete newCredentials.pool_mode_retry_status_codes
       }
-      if (showPromptCacheBoostToggle.value && promptCacheBoostEnabled.value) {
-        newCredentials.prompt_cache_boost_enabled = true
-        if (promptCacheBoostAggressiveEnabled.value) {
-          newCredentials.prompt_cache_boost_level = 'aggressive'
-        } else {
-          delete newCredentials.prompt_cache_boost_level
-        }
-      } else {
-        delete newCredentials.prompt_cache_boost_enabled
-        delete newCredentials.prompt_cache_boost_level
-      }
-
+      applyCacheBoostAndIsolationCredentials(newCredentials)
       // Add custom error codes if enabled
       if (customErrorCodesEnabled.value) {
         newCredentials.custom_error_codes_enabled = true
@@ -4620,46 +4684,34 @@ const handleSubmit = async () => {
       updatePayload.credentials = newCredentials
     }
 
-    // OpenAI OAuth: persist model mapping to credentials
-    if (props.account.platform === 'openai' && props.account.type === 'oauth') {
+    // OAuth/SetupToken: persist platform-specific cache boost and isolation settings.
+    if ((props.account.platform === 'openai' || props.account.platform === 'anthropic') &&
+      (props.account.type === 'oauth' || props.account.type === 'setup-token')) {
       const currentCredentials = (updatePayload.credentials as Record<string, unknown>) ||
         ((props.account.credentials as Record<string, unknown>) || {})
       const newCredentials: Record<string, unknown> = { ...currentCredentials }
-      const shouldApplyModelMapping = !openaiPassthroughEnabled.value
 
-      if (shouldApplyModelMapping) {
-        const modelMapping = buildModelRestrictionMapping()
-        if (modelMapping) {
-          newCredentials.model_mapping = modelMapping
-        } else {
-          delete newCredentials.model_mapping
+      if (props.account.platform === 'openai' && props.account.type === 'oauth') {
+        const shouldApplyModelMapping = !openaiPassthroughEnabled.value
+        if (shouldApplyModelMapping) {
+          const modelMapping = buildModelRestrictionMapping()
+          if (modelMapping) {
+            newCredentials.model_mapping = modelMapping
+          } else {
+            delete newCredentials.model_mapping
+          }
+        } else if (currentCredentials.model_mapping) {
+          // 透传模式保留现有映射
+          newCredentials.model_mapping = currentCredentials.model_mapping
         }
-      } else if (currentCredentials.model_mapping) {
-        // 透传模式保留现有映射
-        newCredentials.model_mapping = currentCredentials.model_mapping
-      }
-      const compactModelMapping = buildModelMappingObject('mapping', [], openAICompactModelMappings.value)
-      if (compactModelMapping) {
-        newCredentials.compact_model_mapping = compactModelMapping
-      } else {
-        delete newCredentials.compact_model_mapping
-      }
-      if (showPromptCacheBoostToggle.value && promptCacheBoostEnabled.value) {
-        newCredentials.prompt_cache_boost_enabled = true
-        if (promptCacheBoostAggressiveEnabled.value) {
-          newCredentials.prompt_cache_boost_level = 'aggressive'
+        const compactModelMapping = buildModelMappingObject('mapping', [], openAICompactModelMappings.value)
+        if (compactModelMapping) {
+          newCredentials.compact_model_mapping = compactModelMapping
         } else {
-          delete newCredentials.prompt_cache_boost_level
+          delete newCredentials.compact_model_mapping
         }
-      } else {
-        delete newCredentials.prompt_cache_boost_enabled
-        delete newCredentials.prompt_cache_boost_level
       }
-      if (showUpstreamStrongIsolationToggle.value && upstreamStrongIsolationEnabled.value) {
-        newCredentials.upstream_strong_isolation_enabled = true
-      } else {
-        delete newCredentials.upstream_strong_isolation_enabled
-      }
+      applyCacheBoostAndIsolationCredentials(newCredentials)
 
       updatePayload.credentials = newCredentials
     }

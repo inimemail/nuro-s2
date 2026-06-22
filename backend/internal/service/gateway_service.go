@@ -5041,6 +5041,17 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 	}
 
+	body = s.applyAnthropicCacheBoostBody(ctx, account, body)
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyAnthropicUpstreamStrongIsolationBody(body)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply anthropic upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			body = isolatedBody
+		}
+	}
+
 	// 强制执行 cache_control 块数量限制（最多 4 个）
 	body = enforceCacheControlLimit(body)
 
@@ -5601,6 +5612,17 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 	// Pre-filter: strip empty text blocks (including nested in tool_result) to prevent upstream 400.
 	input.Body = StripEmptyTextBlocks(input.Body)
+	input.Body = s.applyAnthropicCacheBoostBody(ctx, account, input.Body)
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyAnthropicUpstreamStrongIsolationBody(input.Body)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply anthropic upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			input.Body = isolatedBody
+		}
+	}
+	input.Body = enforceCacheControlLimit(input.Body)
 
 	var resp *http.Response
 	retryStart := time.Now()
@@ -5849,6 +5871,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 			}
 		}
 	}
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		applyAnthropicUpstreamStrongIsolationHeaders(req)
+	}
 
 	// 覆盖入站鉴权残留，并注入上游认证
 	req.Header.Del("authorization")
@@ -5862,6 +5887,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	}
 	if getHeaderRaw(req.Header, "anthropic-version") == "" {
 		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
+	}
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		applyAnthropicUpstreamStrongIsolationHeaders(req)
 	}
 
 	return req, nil
@@ -6705,6 +6733,14 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if c != nil && c.Request != nil {
 		clientHeaders = c.Request.Header
 	}
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		clientHeaders = clientHeaders.Clone()
+		applyAnthropicUpstreamStrongIsolationHeaderMap(clientHeaders)
+	}
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		clientHeaders = clientHeaders.Clone()
+		applyAnthropicUpstreamStrongIsolationHeaderMap(clientHeaders)
+	}
 
 	// OAuth账号：应用统一指纹和metadata重写（受设置开关控制）
 	var fingerprint *Fingerprint
@@ -6765,6 +6801,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
+	}
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		applyAnthropicUpstreamStrongIsolationHeaders(req)
 	}
 
 	// 设置认证头（保持原始大小写）
@@ -6828,6 +6867,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 				setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", parsed.SessionID)
 			}
 		}
+	}
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		applyAnthropicUpstreamStrongIsolationHeaders(req)
 	}
 
 	// === DEBUG: 打印上游转发请求（headers + body 摘要），与 CLIENT_ORIGINAL 对比 ===
@@ -10374,6 +10416,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 				setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", parsed.SessionID)
 			}
 		}
+	}
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		applyAnthropicUpstreamStrongIsolationHeaders(req)
 	}
 
 	if c != nil && tokenType == "oauth" {
