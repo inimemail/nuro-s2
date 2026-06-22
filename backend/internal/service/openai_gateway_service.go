@@ -1776,6 +1776,11 @@ func (s *OpenAIGatewayService) sortOpenAIPoolCooldownProbeAccounts(accounts []*A
 }
 
 func (s *OpenAIGatewayService) sortOpenAIPoolCooldownProbeLoadedAccounts(accounts []accountWithLoad) {
+	preferSoonestReset := s.schedulingConfig().PreferSoonestReset
+	now := time.Time{}
+	if preferSoonestReset {
+		now = time.Now()
+	}
 	sort.SliceStable(accounts, func(i, j int) bool {
 		a, b := accounts[i], accounts[j]
 		if a.account.Priority != b.account.Priority {
@@ -1794,6 +1799,11 @@ func (s *OpenAIGatewayService) sortOpenAIPoolCooldownProbeLoadedAccounts(account
 		}
 		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
 			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+		}
+		if preferSoonestReset {
+			if less, ok := accountSoonestResetLess(a.account, b.account, now); ok {
+				return less
+			}
 		}
 		switch {
 		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
@@ -2291,6 +2301,11 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			return nil, false, nil
 		}
 
+		preferSoonestReset := cfg.PreferSoonestReset
+		now := time.Time{}
+		if preferSoonestReset {
+			now = time.Now()
+		}
 		sort.SliceStable(available, func(i, j int) bool {
 			a, b := available[i], available[j]
 			if a.account.Priority != b.account.Priority {
@@ -2301,6 +2316,11 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			}
 			if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
 				return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+			}
+			if preferSoonestReset {
+				if less, ok := accountSoonestResetLess(a.account, b.account, now); ok {
+					return less
+				}
 			}
 			switch {
 			case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
@@ -2313,7 +2333,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 			}
 		})
-		shuffleOpenAIAccountLoadTies(available)
+		shuffleOpenAIAccountLoadTiesWithReset(available, preferSoonestReset)
 		available = s.orderOpenAIPoolCoolingLoadedAccountsLast(available, requestedModel)
 
 		selectionOrder := make([]accountWithLoad, 0, len(available))
@@ -2626,6 +2646,7 @@ func (s *OpenAIGatewayService) schedulingConfig() config.GatewaySchedulingConfig
 		FallbackWaitTimeout:               30 * time.Second,
 		FallbackMaxWaiting:                100,
 		LoadBatchEnabled:                  true,
+		PreferSoonestReset:                false,
 		CandidateSlotArbiterMaxCandidates: 16,
 		SlotCleanupInterval:               30 * time.Second,
 	}

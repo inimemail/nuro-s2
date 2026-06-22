@@ -359,6 +359,7 @@ ensure_scheduler_env_values() {
 
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED true
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOAD_BATCH_CACHE_TTL_MS 200
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_PREFER_SOONEST_RESET false
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_ENABLED true
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_ID cell-1
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_CELL_IDS cell-1
@@ -481,6 +482,7 @@ GATEWAY_IMAGE_CONCURRENCY_WAIT_TIMEOUT_SECONDS=30
 GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS=100
 GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED=true
 GATEWAY_SCHEDULING_LOAD_BATCH_CACHE_TTL_MS=200
+GATEWAY_SCHEDULING_PREFER_SOONEST_RESET=false
 GATEWAY_SCHEDULING_CELL_ENABLED=true
 GATEWAY_SCHEDULING_CELL_ID=cell-1
 GATEWAY_SCHEDULING_CELL_IDS=cell-1
@@ -579,7 +581,7 @@ services:
     ports:
       - "\${BIND_HOST:-0.0.0.0}:\${SERVER_PORT:-6182}:8080"
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data:Z
     environment:
       - AUTO_SETUP=true
       - SERVER_HOST=0.0.0.0
@@ -653,6 +655,7 @@ services:
       - GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS=\${GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS:-100}
       - GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED=\${GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED:-true}
       - GATEWAY_SCHEDULING_LOAD_BATCH_CACHE_TTL_MS=\${GATEWAY_SCHEDULING_LOAD_BATCH_CACHE_TTL_MS:-200}
+      - GATEWAY_SCHEDULING_PREFER_SOONEST_RESET=\${GATEWAY_SCHEDULING_PREFER_SOONEST_RESET:-false}
       - GATEWAY_SCHEDULING_CELL_ENABLED=\${GATEWAY_SCHEDULING_CELL_ENABLED:-true}
       - GATEWAY_SCHEDULING_CELL_ID=\${GATEWAY_SCHEDULING_CELL_ID:-cell-1}
       - GATEWAY_SCHEDULING_CELL_IDS=\${GATEWAY_SCHEDULING_CELL_IDS:-cell-1}
@@ -689,7 +692,7 @@ ${edge_service}
         soft: 100000
         hard: 100000
     volumes:
-      - ./postgres_data:/var/lib/postgresql/data
+      - ./postgres_data:/var/lib/postgresql/data:Z
     environment:
       - POSTGRES_USER=\${POSTGRES_USER:-nuro_sub2api}
       - POSTGRES_PASSWORD=\${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
@@ -714,7 +717,7 @@ ${edge_service}
         soft: 100000
         hard: 100000
     volumes:
-      - ./redis_data:/data
+      - ./redis_data:/data:Z
     command: >
         sh -c '
           redis-server

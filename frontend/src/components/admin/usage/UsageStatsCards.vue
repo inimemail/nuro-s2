@@ -19,6 +19,12 @@
           {{ t('usage.in') }}: {{ formatTokens(stats?.total_input_tokens || 0) }} /
           {{ t('usage.out') }}: {{ formatTokens(stats?.total_output_tokens || 0) }}
         </p>
+        <p
+          class="text-xs text-gray-400"
+          :title="cacheBreakdownTitle"
+        >
+          {{ t('usage.cacheTotal') }}: {{ formatTokens(stats?.total_cache_tokens || 0) }}
+        </p>
       </div>
     </div>
     <div class="card p-4 flex items-center gap-3">
@@ -47,13 +53,21 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { AdminUsageStatsResponse } from '@/api/admin/usage'
 import Icon from '@/components/icons/Icon.vue'
 
-defineProps<{ stats: AdminUsageStatsResponse | null }>()
+const props = defineProps<{ stats: AdminUsageStatsResponse | null }>()
 
 const { t } = useI18n()
+
+const cacheBreakdownTitle = computed(() =>
+  t('usage.cacheBreakdown', {
+    creation: formatTokens(props.stats?.total_cache_creation_tokens || 0),
+    read: formatTokens(props.stats?.total_cache_read_tokens || 0)
+  })
+)
 
 const formatDuration = (ms: number) =>
   ms < 1000 ? `${ms.toFixed(0)}ms` : `${(ms / 1000).toFixed(2)}s`

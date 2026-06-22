@@ -18,6 +18,10 @@ describe('ccswitchImport utils', () => {
     usageScript: 'return true'
   }
 
+  it('uses the current Codex import model', () => {
+    expect(OPENAI_CC_SWITCH_CODEX_MODEL).toBe('gpt-5.5')
+  })
+
   it('adds the Codex model parameter for OpenAI imports', () => {
     const params = paramsFromDeeplink(
       buildCcSwitchImportDeeplink({

@@ -2102,13 +2102,17 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 		}
 
-		// 分层过滤选择：优先级 → 负载率 → LRU
+		// 分层过滤选择：优先级 → 负载率 → 可选快重置 → LRU
 		for len(available) > 0 {
 			// 1. 取优先级最小的集合
 			candidates := filterByMinPriority(available)
 			// 2. 取负载率最低的集合
 			candidates = filterByMinLoadRate(candidates)
-			// 3. LRU 选择最久未用的账号
+			// 3. 可选：同优先级、同最低负载内优先快重置账号
+			if cfg.PreferSoonestReset {
+				candidates = filterBySoonestReset(candidates, time.Now())
+			}
+			// 4. LRU 选择最久未用的账号
 			selected := selectByLRU(candidates, preferOAuth)
 			if selected == nil {
 				break
@@ -2192,6 +2196,7 @@ func (s *GatewayService) schedulingConfig() config.GatewaySchedulingConfig {
 		FallbackWaitTimeout:               30 * time.Second,
 		FallbackMaxWaiting:                100,
 		LoadBatchEnabled:                  true,
+		PreferSoonestReset:                false,
 		CandidateSlotArbiterMaxCandidates: 16,
 		SlotCleanupInterval:               30 * time.Second,
 	}
@@ -2879,6 +2884,64 @@ func filterByMinLoadRate(accounts []accountWithLoad) []accountWithLoad {
 		}
 	}
 	return result
+}
+
+// filterBySoonestReset narrows a same-priority/same-load candidate set to the
+// accounts whose current usage window resets first. Accounts without a future
+// SessionWindowEnd are ignored; if none have reset metadata, the input is kept.
+func filterBySoonestReset(accounts []accountWithLoad, now time.Time) []accountWithLoad {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	var soonest time.Time
+	found := false
+	for _, acc := range accounts {
+		if acc.account == nil || acc.account.SessionWindowEnd == nil || !acc.account.SessionWindowEnd.After(now) {
+			continue
+		}
+		if !found || acc.account.SessionWindowEnd.Before(soonest) {
+			soonest = *acc.account.SessionWindowEnd
+			found = true
+		}
+	}
+	if !found {
+		return accounts
+	}
+	result := make([]accountWithLoad, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc.account != nil && acc.account.SessionWindowEnd != nil && acc.account.SessionWindowEnd.Equal(soonest) {
+			result = append(result, acc)
+		}
+	}
+	if len(result) == 0 {
+		return accounts
+	}
+	return result
+}
+
+func accountSoonestResetLess(a, b *Account, now time.Time) (bool, bool) {
+	aReset := futureSessionWindowEnd(a, now)
+	bReset := futureSessionWindowEnd(b, now)
+	switch {
+	case aReset == nil && bReset == nil:
+		return false, false
+	case aReset != nil && bReset == nil:
+		return true, true
+	case aReset == nil && bReset != nil:
+		return false, true
+	default:
+		if !aReset.Equal(*bReset) {
+			return aReset.Before(*bReset), true
+		}
+		return false, false
+	}
+}
+
+func futureSessionWindowEnd(account *Account, now time.Time) *time.Time {
+	if account == nil || account.SessionWindowEnd == nil || !account.SessionWindowEnd.After(now) {
+		return nil
+	}
+	return account.SessionWindowEnd
 }
 
 // selectByLRU 从集合中选择最久未用的账号
@@ -4166,12 +4229,11 @@ func rewriteSystemForNonClaudeCode(body []byte, system any) []byte {
 	}
 
 	// 2. 构造 system 数组，对齐真实 Claude Code CLI 的 2-block 形态：
-	//    [0] billing attribution block（cc_version={cliVer}.{fp}; cc_entrypoint=cli; cch=00000;）
+	//    [0] billing attribution block（cc_version={cliVer}.{fp}; cc_entrypoint=cli;）
 	//    [1] "You are Claude Code..." prompt block（带 cache_control 作为稳定缓存断点）
 	//
-	//    billing block 的 cch=00000 是占位符，会被 buildUpstreamRequest 里的
-	//    signBillingHeaderCCH 替换成 xxhash64 签名。缺失 billing block 的系统 payload
-	//    是 Anthropic 判定第三方的关键信号之一（真实 CLI 每个请求都带）。
+	//    缺失 billing block 的系统 payload 是 Anthropic 判定第三方的关键信号之一
+	//    （真实 CLI 每个请求都带）。新版 CLI 已取消 cch=... 签名字段。
 	billingBlock, billingErr := buildBillingAttributionBlockJSON(body, claude.CLICurrentVersion)
 	ccPromptBlock, ccErr := marshalAnthropicSystemTextBlock(claudeCodeSystemPrompt, true)
 	if billingErr != nil || ccErr != nil {
@@ -6497,9 +6559,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	// OAuth账号：应用统一指纹和metadata重写（受设置开关控制）
 	var fingerprint *Fingerprint
-	enableFP, enableMPT, enableCCH := true, false, false
+	enableFP, enableMPT := true, false
 	if s.settingService != nil {
-		enableFP, enableMPT, enableCCH = s.settingService.GetGatewayForwardingSettings(ctx)
+		enableFP, enableMPT, _ = s.settingService.GetGatewayForwardingSettings(ctx)
 	}
 	if account.IsOAuth() && s.identityService != nil {
 		// 1. 获取或创建指纹（包含随机生成的ClientID）
@@ -6531,17 +6593,15 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		body = syncBillingHeaderVersion(body, fingerprint.UserAgent)
 	}
 
-	// === 计算最终 anthropic-beta header（先于 body sanitize 与 CCH 签名）===
+	// === 计算最终 anthropic-beta header（先于 body sanitize）===
 	//
 	// 顺序约束：
 	//   1) 算 finalBeta（纯函数，不依赖 req.Header；mimicry 路径会忽略客户端 beta，
 	//      与原“OAuth + mimicClaudeCode 跳过白名单透传”行为对齐）
 	//   2) 按 finalBeta 做能力维度 body sanitize（如 context-management beta 缺失 →
 	//      strip body.context_management，与 Bedrock 路径对称）
-	//   3) CCH 签名（必须使用 strip 后的 body，否则 hash 与最终 body 不一致 →
-	//      被 Anthropic 判 third-party）
-	//   4) NewRequest（body 至此最终敲定）
-	//   5) 透传白名单 / fingerprint / mimic header / 写入 finalBeta
+	//   3) NewRequest（body 至此最终敲定）
+	//   4) 透传白名单 / fingerprint / mimic header / 写入 finalBeta
 	policyFilterSet := s.getBetaPolicyFilterSet(ctx, c, account, modelID)
 	effectiveDropSet := mergeDropSets(policyFilterSet)
 	finalBetaHeader, finalBetaShouldSet := s.computeFinalAnthropicBeta(
@@ -6551,11 +6611,6 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// 能力维度 body sanitize：与最终 anthropic-beta header 对称
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, finalBetaHeader); changed {
 		body = sanitized
-	}
-
-	// CCH 签名：将 cch=00000 占位符替换为 xxHash64 签名（需在所有 body 修改之后）
-	if enableCCH {
-		body = signBillingHeaderCCH(body)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
@@ -6662,14 +6717,20 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 		return nil, err
 	}
 
-	// 能力维度 sanitize：Vertex 路径上 anthropic-beta header 原样透传客户端值
-	// （下面白名单跳过 anthropic-version 但保留 anthropic-beta），依此决定是否
-	// 保留 body 中的 context_management，与 Anthropic 直连 / Bedrock 路径对称。
+	clientBeta := ""
 	if c != nil && c.Request != nil {
-		clientBeta := getHeaderRaw(c.Request.Header, "anthropic-beta")
-		if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(vertexBody, clientBeta); changed {
-			vertexBody = sanitized
-		}
+		clientBeta = getHeaderRaw(c.Request.Header, "anthropic-beta")
+	}
+	policy := s.evaluateBetaPolicy(ctx, clientBeta, account, modelID)
+	if policy.blockErr != nil {
+		return nil, policy.blockErr
+	}
+	finalBeta := filterVertexBetaTokens(clientBeta, mergeDropSets(policy.filterSet))
+
+	// 能力维度 sanitize：Vertex 只接受过滤后的 beta 白名单，因此 body 字段也必须
+	// 基于最终 outgoing beta 判断是否保留。
+	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(vertexBody, finalBeta); changed {
+		vertexBody = sanitized
 	}
 	fullURL, err := buildVertexAnthropicURL(account.VertexProjectID(), account.VertexLocation(modelID), modelID, reqStream)
 	if err != nil {
@@ -6698,6 +6759,10 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 	req.Header.Del("x-goog-api-key")
 	req.Header.Del("cookie")
 	req.Header.Del("anthropic-version")
+	deleteHeaderAllForms(req.Header, "anthropic-beta")
+	if finalBeta != "" {
+		setHeaderRaw(req.Header, "anthropic-beta", finalBeta)
+	}
 	setHeaderRaw(req.Header, "authorization", "Bearer "+token)
 	setHeaderRaw(req.Header, "content-type", "application/json")
 
@@ -6709,6 +6774,36 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 	})
 
 	return req, nil
+}
+
+// vertexSupportedBetaTokens 是 Vertex AI Anthropic 端点当前接受的 beta 白名单。
+// Vertex 对未知 beta token 直接 HTTP 400，因此这里采用白名单，而不是透传客户端
+// 可能携带的 Claude Code / OAuth 身份 token 或新实验 token。
+var vertexSupportedBetaTokens = map[string]bool{
+	"context-1m-2025-08-07":                  true,
+	"context-management-2025-06-27":          true,
+	"fine-grained-tool-streaming-2025-05-14": true,
+	"interleaved-thinking-2025-05-14":        true,
+}
+
+func filterVertexBetaTokens(header string, drop map[string]struct{}) string {
+	tokens := parseAnthropicBetaHeader(header)
+	if len(tokens) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(tokens))
+	seen := make(map[string]bool, len(tokens))
+	for _, token := range tokens {
+		if _, dropped := drop[token]; dropped {
+			continue
+		}
+		if !vertexSupportedBetaTokens[token] || seen[token] {
+			continue
+		}
+		seen[token] = true
+		out = append(out, token)
+	}
+	return strings.Join(out, ",")
 }
 
 // getBetaHeader 处理anthropic-beta header
@@ -6843,9 +6938,8 @@ func mergeAnthropicBetaDropping(required []string, incoming string, drop map[str
 //
 // 设计动机：将原本在 buildUpstreamRequest 内联在一起、依赖 req.Header 的
 // anthropic-beta 计算逻辑抽成纯函数。这样调用方可以在 NewRequest 之前
-// 就提前拿到最终 beta header，进而能按它对 body 做能力维度 sanitize 后再做
-// CCH 签名——一举修复了以下之前由顺序依赖导致的能力维度 sanitize
-// 无法部署的问题（签名与最终 body 不一致可以被判 third-party）。
+// 就提前拿到最终 beta header，进而能按它对 body 做能力维度 sanitize，
+// 避免最终 header 与 body 能力字段不一致。
 //
 // 返回 (value, shouldSet)：
 //   - shouldSet=false 意为“不主动设置 anthropic-beta header”，与原代码“
@@ -9996,9 +10090,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	// OAuth 账号：应用统一指纹和重写 userID（受设置开关控制）
 	// 如果启用了会话ID伪装，会在重写后替换 session 部分为固定值
-	ctEnableFP, ctEnableMPT, ctEnableCCH := true, false, false
+	ctEnableFP, ctEnableMPT := true, false
 	if s.settingService != nil {
-		ctEnableFP, ctEnableMPT, ctEnableCCH = s.settingService.GetGatewayForwardingSettings(ctx)
+		ctEnableFP, ctEnableMPT, _ = s.settingService.GetGatewayForwardingSettings(ctx)
 	}
 	var ctFingerprint *Fingerprint
 	if account.IsOAuth() && s.identityService != nil {
@@ -10021,7 +10115,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		body = syncBillingHeaderVersion(body, ctFingerprint.UserAgent)
 	}
 
-	// === 计算最终 anthropic-beta header（先于 body sanitize 与 CCH 签名）===
+	// === 计算最终 anthropic-beta header（先于 body sanitize）===
 	// 顺序约束同 buildUpstreamRequest。
 	ctEffectiveDropSet := mergeDropSets(s.getBetaPolicyFilterSet(ctx, c, account, modelID))
 	finalBetaHeader, finalBetaShouldSet := s.computeFinalCountTokensAnthropicBeta(
@@ -10033,9 +10127,6 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		body = sanitized
 	}
 
-	if ctEnableCCH {
-		body = signBillingHeaderCCH(body)
-	}
 	body = sanitizeCountTokensRequestBody(body)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))

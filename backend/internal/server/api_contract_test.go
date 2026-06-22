@@ -1775,6 +1775,10 @@ func (s *stubAccountRepo) UpdateSessionWindow(ctx context.Context, id int64, sta
 	return errors.New("not implemented")
 }
 
+func (s *stubAccountRepo) RevertProxyFallback(ctx context.Context, accountID int64) error {
+	return errors.New("not implemented")
+}
+
 func (s *stubAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	return errors.New("not implemented")
 }
@@ -1838,11 +1842,27 @@ func (stubProxyRepo) ListActiveWithAccountCount(ctx context.Context) ([]service.
 	return nil, errors.New("not implemented")
 }
 
+func (stubProxyRepo) ListAllForFallback(ctx context.Context) ([]service.Proxy, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubProxyRepo) SweepExpiredProxies(ctx context.Context, now time.Time) (int64, error) {
+	return 0, errors.New("not implemented")
+}
+
 func (stubProxyRepo) ExistsByHostPortAuth(ctx context.Context, host string, port int, username, password string) (bool, error) {
 	return false, errors.New("not implemented")
 }
 
 func (stubProxyRepo) CountAccountsByProxyID(ctx context.Context, proxyID int64) (int64, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (stubProxyRepo) CountExpired(ctx context.Context) (int64, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (stubProxyRepo) CountExpiringSoon(ctx context.Context, now time.Time) (int64, error) {
 	return 0, errors.New("not implemented")
 }
 

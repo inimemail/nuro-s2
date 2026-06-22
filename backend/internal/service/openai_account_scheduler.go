@@ -795,6 +795,14 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	loadRateSumSquares := 0.0
 	minTTFT, maxTTFT := 0.0, 0.0
 	hasTTFTSample := false
+	minResetRemaining, maxResetRemaining := 0.0, 0.0
+	hasResetSample := false
+	weights := s.service.openAIWSSchedulerWeights()
+	preferResetScore := weights.Reset > 0 || s.service.schedulingConfig().PreferSoonestReset
+	now := time.Time{}
+	if preferResetScore {
+		now = time.Now()
+	}
 	for _, candidate := range candidates {
 		if candidate.account.Priority < minPriority {
 			minPriority = candidate.account.Priority
@@ -818,13 +826,28 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 				}
 			}
 		}
+		if preferResetScore {
+			if resetAt := futureSessionWindowEnd(candidate.account, now); resetAt != nil {
+				remaining := resetAt.Sub(now).Seconds()
+				if !hasResetSample {
+					minResetRemaining, maxResetRemaining = remaining, remaining
+					hasResetSample = true
+				} else {
+					if remaining < minResetRemaining {
+						minResetRemaining = remaining
+					}
+					if remaining > maxResetRemaining {
+						maxResetRemaining = remaining
+					}
+				}
+			}
+		}
 		loadRate := float64(candidate.loadInfo.LoadRate)
 		loadRateSum += loadRate
 		loadRateSumSquares += loadRate * loadRate
 	}
 	plan.loadSkew = calcLoadSkewByMoments(loadRateSum, loadRateSumSquares, len(candidates))
 
-	weights := s.service.openAIWSSchedulerWeights()
 	for i := range candidates {
 		item := &candidates[i]
 		priorityFactor := 1.0
@@ -838,12 +861,22 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		if item.hasTTFT && hasTTFTSample && maxTTFT > minTTFT {
 			ttftFactor = 1 - clamp01((item.ttft-minTTFT)/(maxTTFT-minTTFT))
 		}
+		resetFactor := 0.5
+		if preferResetScore {
+			if resetAt := futureSessionWindowEnd(item.account, now); resetAt != nil {
+				resetFactor = 1.0
+				if hasResetSample && maxResetRemaining > minResetRemaining {
+					resetFactor = 1 - clamp01((resetAt.Sub(now).Seconds()-minResetRemaining)/(maxResetRemaining-minResetRemaining))
+				}
+			}
+		}
 
 		item.score = weights.Priority*priorityFactor +
 			weights.Load*loadFactor +
 			weights.Queue*queueFactor +
 			weights.ErrorRate*errorFactor +
-			weights.TTFT*ttftFactor
+			weights.TTFT*ttftFactor +
+			weights.Reset*resetFactor
 	}
 	plan.candidates = candidates
 
@@ -914,7 +947,7 @@ func (s *defaultOpenAIAccountScheduler) buildStrictPrioritySelectionOrder(pool [
 	}
 
 	ordered := make([]openAIAccountCandidateScore, 0, len(pool))
-	ordered = append(ordered, sortOpenAIStrictPriorityCandidates(active)...)
+	ordered = append(ordered, s.sortOpenAIStrictPriorityCandidates(active)...)
 	if len(probeDue) > 0 && s != nil && s.service != nil {
 		for _, candidate := range probeDue {
 			s.service.maybeStartOpenAIPoolRecoveryProbe(context.Background(), candidate.account, requestedModel)
@@ -927,7 +960,7 @@ func (s *defaultOpenAIAccountScheduler) sortOpenAIPoolCooldownProbeCandidates(po
 	if len(pool) == 0 {
 		return nil
 	}
-	ordered := sortOpenAIStrictPriorityCandidates(pool)
+	ordered := s.sortOpenAIStrictPriorityCandidates(pool)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
 		if a.account.Priority != b.account.Priority {
@@ -964,8 +997,25 @@ func (s *defaultOpenAIAccountScheduler) sortOpenAIPoolCooldownProbeCandidates(po
 }
 
 func sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	return sortOpenAIStrictPriorityCandidatesWithReset(pool, false)
+}
+
+func (s *defaultOpenAIAccountScheduler) sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	preferSoonestReset := false
+	if s != nil && s.service != nil {
+		weights := s.service.openAIWSSchedulerWeights()
+		preferSoonestReset = weights.Reset > 0 || s.service.schedulingConfig().PreferSoonestReset
+	}
+	return sortOpenAIStrictPriorityCandidatesWithReset(pool, preferSoonestReset)
+}
+
+func sortOpenAIStrictPriorityCandidatesWithReset(pool []openAIAccountCandidateScore, preferSoonestReset bool) []openAIAccountCandidateScore {
 	if len(pool) == 0 {
 		return nil
+	}
+	now := time.Time{}
+	if preferSoonestReset {
+		now = time.Now()
 	}
 	ordered := append([]openAIAccountCandidateScore(nil), pool...)
 	sort.SliceStable(ordered, func(i, j int) bool {
@@ -978,6 +1028,11 @@ func sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []op
 		}
 		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		if preferSoonestReset {
+			if less, ok := accountSoonestResetLess(a.account, b.account, now); ok {
+				return less
+			}
 		}
 		if a.errorRate != b.errorRate {
 			return a.errorRate < b.errorRate
@@ -1000,7 +1055,7 @@ func sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []op
 		}
 		return a.account.ID < b.account.ID
 	})
-	shuffleOpenAIStrictPriorityTies(ordered)
+	shuffleOpenAIStrictPriorityTiesWithReset(ordered, preferSoonestReset)
 	return ordered
 }
 
@@ -1772,6 +1827,7 @@ func (s *OpenAIGatewayService) openAIWSSchedulerWeights() GatewayOpenAIWSSchedul
 			Queue:     s.cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue,
 			ErrorRate: s.cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate,
 			TTFT:      s.cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT,
+			Reset:     s.cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Reset,
 		}
 	}
 	return GatewayOpenAIWSSchedulerScoreWeightsView{
@@ -1780,6 +1836,7 @@ func (s *OpenAIGatewayService) openAIWSSchedulerWeights() GatewayOpenAIWSSchedul
 		Queue:     0.7,
 		ErrorRate: 0.8,
 		TTFT:      0.5,
+		Reset:     0.0,
 	}
 }
 
@@ -1789,6 +1846,7 @@ type GatewayOpenAIWSSchedulerScoreWeightsView struct {
 	Queue     float64
 	ErrorRate float64
 	TTFT      float64
+	Reset     float64
 }
 
 func clamp01(value float64) float64 {

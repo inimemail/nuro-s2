@@ -2978,6 +2978,7 @@ func TestOpenAIGatewayService_SchedulerWrappersAndDefaults(t *testing.T) {
 	require.Equal(t, 0.7, defaultWeights.Queue)
 	require.Equal(t, 0.8, defaultWeights.ErrorRate)
 	require.Equal(t, 0.5, defaultWeights.TTFT)
+	require.Equal(t, 0.0, defaultWeights.Reset)
 
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.LBTopK = 9
@@ -2987,6 +2988,7 @@ func TestOpenAIGatewayService_SchedulerWrappersAndDefaults(t *testing.T) {
 	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 0.4
 	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate = 0.5
 	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT = 0.6
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Reset = 0.7
 	svcWithCfg := &OpenAIGatewayService{cfg: cfg}
 
 	require.Equal(t, 9, svcWithCfg.openAIWSLBTopK())
@@ -2997,6 +2999,36 @@ func TestOpenAIGatewayService_SchedulerWrappersAndDefaults(t *testing.T) {
 	require.Equal(t, 0.4, customWeights.Queue)
 	require.Equal(t, 0.5, customWeights.ErrorRate)
 	require.Equal(t, 0.6, customWeights.TTFT)
+	require.Equal(t, 0.7, customWeights.Reset)
+}
+
+func TestDefaultOpenAIAccountScheduler_SoonestResetStaysWithinPriorityLayer(t *testing.T) {
+	now := time.Now()
+	soon := now.Add(10 * time.Minute)
+	later := now.Add(2 * time.Hour)
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Reset = 1
+	scheduler := &defaultOpenAIAccountScheduler{service: &OpenAIGatewayService{cfg: cfg}}
+	pool := []openAIAccountCandidateScore{
+		{
+			account:  &Account{ID: 1, Priority: 1, SessionWindowEnd: &later},
+			loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 0},
+		},
+		{
+			account:  &Account{ID: 2, Priority: 2, SessionWindowEnd: &soon},
+			loadInfo: &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+		},
+		{
+			account:  &Account{ID: 3, Priority: 1, SessionWindowEnd: &soon},
+			loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 0},
+		},
+	}
+
+	ordered := scheduler.sortOpenAIStrictPriorityCandidates(pool)
+	require.Len(t, ordered, 3)
+	require.Equal(t, int64(3), ordered[0].account.ID, "same priority/load layer should prefer soonest reset")
+	require.Equal(t, int64(1), ordered[1].account.ID)
+	require.Equal(t, int64(2), ordered[2].account.ID, "higher numeric priority must not jump ahead")
 }
 
 func TestDefaultOpenAIAccountScheduler_IsAccountTransportCompatible_Branches(t *testing.T) {

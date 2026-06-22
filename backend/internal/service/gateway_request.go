@@ -693,8 +693,8 @@ const anthropicBetaContextManagementToken = "context-management-2025-06-27"
 // context_management 字段：缺 beta token → strip。这将限制完全建立在
 // "能力维度" 上，与 model 名 / token type / mimicry 子路径无关。
 //
-// 调用约束：必须在 CCH 签名之前调用，否则签名 hash 与最终 body
-// 不一致，上游会以 third-party 拒收。
+// 调用约束：必须在 NewRequest 之前调用，确保最终 body 与最终 beta header
+// 的能力维度保持一致。
 //
 // 返回 (sanitized, changed)：changed 表示是否发生实际删除，供调用方决定
 // 是否重用原 body 引用。
@@ -1036,6 +1036,53 @@ func NormalizeClaudeOutputEffort(raw string) *string {
 		return &value
 	default:
 		return nil
+	}
+}
+
+// NormalizeGLMOpenAIReasoningEffort rewrites OpenAI Chat Completions
+// reasoning_effort values to the GLM native scale used by z.ai: high/max.
+// It only applies to glm-* mapped models and leaves all other providers untouched.
+func NormalizeGLMOpenAIReasoningEffort(body []byte, mappedModel string) ([]byte, bool) {
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(mappedModel)), "glm-") {
+		return body, false
+	}
+
+	path := "reasoning.effort"
+	raw := strings.TrimSpace(gjson.GetBytes(body, path).String())
+	if raw == "" {
+		path = "reasoning_effort"
+		raw = strings.TrimSpace(gjson.GetBytes(body, path).String())
+	}
+	if raw == "" {
+		return body, false
+	}
+
+	mapped := normalizeGLMOpenAIReasoningEffort(raw)
+	if mapped == "" || mapped == raw {
+		return body, false
+	}
+
+	modified, err := sjson.SetBytes(body, path, mapped)
+	if err != nil {
+		return body, false
+	}
+	return modified, true
+}
+
+func normalizeGLMOpenAIReasoningEffort(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return ""
+	}
+	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
+
+	switch value {
+	case "low", "medium", "high":
+		return "high"
+	case "xhigh", "extrahigh", "max", "ultracode":
+		return "max"
+	default:
+		return ""
 	}
 }
 

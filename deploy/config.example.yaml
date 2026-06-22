@@ -320,6 +320,8 @@ gateway:
       queue: 0.7
       error_rate: 0.8
       ttft: 0.5
+      # 同优先级、同负载层内偏向 5h 窗口更快重置的账号；0=关闭
+      reset: 0.0
   # Optional Rust OpenAI data-plane edge. The static YAML example is disabled
   # by default; the one-click systemd installer writes /opt/sub2api/edge-rs.env
   # to enable it automatically when the edge binary is installed.
@@ -488,6 +490,10 @@ gateway:
     # Tiny in-process TTL for batch load reads in milliseconds (0 disables)
     # 调度批量负载读取的进程内短缓存 TTL（毫秒，0 表示禁用）
     load_batch_cache_ttl_ms: 200
+    # Prefer accounts whose session window resets sooner, only after priority
+    # and minimum-load filters have already selected the same layer.
+    # 同优先级、同最低负载候选内优先快重置账号；不会跨优先级抢号。
+    prefer_soonest_reset: false
     # Enable scheduler cell ownership. Use one local/cell Redis per cell for the
     # Lua candidate arbiter hot path; Redis Cluster multi-slot Lua will fall back.
     # 启用调度 cell 归属。Lua 小候选仲裁建议每个 cell 使用独立 Redis；

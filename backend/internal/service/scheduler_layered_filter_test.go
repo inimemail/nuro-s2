@@ -99,6 +99,53 @@ func TestFilterByMinLoadRate(t *testing.T) {
 	})
 }
 
+func TestFilterBySoonestReset(t *testing.T) {
+	now := time.Now()
+	soon := now.Add(10 * time.Minute)
+	later := now.Add(2 * time.Hour)
+	expired := now.Add(-time.Minute)
+
+	t.Run("empty slice", func(t *testing.T) {
+		result := filterBySoonestReset(nil, now)
+		require.Empty(t, result)
+	})
+
+	t.Run("keeps input when no future reset exists", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1, SessionWindowEnd: nil}, loadInfo: &AccountLoadInfo{}},
+			{account: &Account{ID: 2, SessionWindowEnd: &expired}, loadInfo: &AccountLoadInfo{}},
+		}
+		result := filterBySoonestReset(accounts, now)
+		require.Len(t, result, 2)
+		require.Equal(t, int64(1), result[0].account.ID)
+		require.Equal(t, int64(2), result[1].account.ID)
+	})
+
+	t.Run("selects soonest future reset only", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1, Priority: 1, SessionWindowEnd: &later}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+			{account: &Account{ID: 2, Priority: 1, SessionWindowEnd: &soon}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+			{account: &Account{ID: 3, Priority: 1, SessionWindowEnd: nil}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+		}
+		result := filterBySoonestReset(accounts, now)
+		require.Len(t, result, 1)
+		require.Equal(t, int64(2), result[0].account.ID)
+	})
+
+	t.Run("does not cross priority layer when used after min priority", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1, Priority: 1, SessionWindowEnd: &later}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
+			{account: &Account{ID: 2, Priority: 2, SessionWindowEnd: &soon}, loadInfo: &AccountLoadInfo{LoadRate: 0}},
+		}
+		step1 := filterByMinPriority(accounts)
+		require.Len(t, step1, 1)
+		step2 := filterByMinLoadRate(step1)
+		step3 := filterBySoonestReset(step2, now)
+		require.Len(t, step3, 1)
+		require.Equal(t, int64(1), step3[0].account.ID)
+	})
+}
+
 func TestSelectByLRU(t *testing.T) {
 	now := time.Now()
 	earlier := now.Add(-1 * time.Hour)
