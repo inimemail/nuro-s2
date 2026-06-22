@@ -242,6 +242,9 @@ type OpenAIForwardResult struct {
 	ResponseHeaders     http.Header
 	Duration            time.Duration
 	FirstTokenMs        *int
+	UpstreamHeaderMs    *int
+	UpstreamFirstByteMs *int
+	FirstClientFlushMs  *int
 	EdgePrepareMs       *int
 	EdgeQueueWaitMs     *int
 	EdgeRelayStartMs    *int
@@ -1964,6 +1967,10 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
+	if s.hasSamePriorityNonPoolOpenAIAccountAvailable(ctx, groupID, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, OpenAIUpstreamTransportAny) {
+		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		return nil
+	}
 
 	// 刷新会话 TTL 并返回账号
 	// Refresh session TTL and return account
@@ -2085,6 +2092,10 @@ func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool
 	}
 	if candidate.Priority > current.Priority {
 		return false
+	}
+
+	if less, ok := nonPoolAccountBeforePool(candidate, current); ok {
+		return less
 	}
 
 	// 同优先级，比较最后使用时间
@@ -2311,6 +2322,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			if a.account.Priority != b.account.Priority {
 				return a.account.Priority < b.account.Priority
 			}
+			if less, ok := nonPoolAccountBeforePool(a.account, b.account); ok {
+				return less
+			}
 			if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 				return a.loadInfo.LoadRate < b.loadInfo.LoadRate
 			}
@@ -2386,7 +2400,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
 		ordered := append([]*Account(nil), candidates...)
-		sortAccountsByPriorityAndLastUsed(ordered, false)
+		sortAccountsByPriorityPoolAndLastUsed(ordered, false)
 		ordered = s.orderOpenAIPoolCoolingAccountsLast(ordered, requestedModel)
 		if requireCompact {
 			ordered = prioritizeOpenAICompactAccounts(ordered)
@@ -2433,7 +2447,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	// ============ Layer 3: Fallback wait ============
-	sortAccountsByPriorityAndLastUsed(candidates, false)
+	sortAccountsByPriorityPoolAndLastUsed(candidates, false)
 	candidates = s.orderOpenAIPoolCoolingAccountsLast(candidates, requestedModel)
 	if requireCompact {
 		candidates = prioritizeOpenAICompactAccounts(candidates)
@@ -7186,9 +7200,18 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	usageLog.DurationMs = &durationMs
 	usageLog.FirstTokenMs = result.FirstTokenMs
 	usageLog.SlotWaitMs = usageLogLatencyIntFromContext(ctx, ctxkey.SlotWaitMs)
-	usageLog.UpstreamHeaderMs = usageLogLatencyIntFromContext(ctx, ctxkey.UpstreamHeaderMs)
-	usageLog.UpstreamFirstByteMs = usageLogLatencyIntFromContext(ctx, ctxkey.UpstreamFirstByteMs)
-	usageLog.FirstClientFlushMs = usageLogLatencyIntFromContext(ctx, ctxkey.FirstClientFlushMs)
+	usageLog.UpstreamHeaderMs = result.UpstreamHeaderMs
+	if usageLog.UpstreamHeaderMs == nil {
+		usageLog.UpstreamHeaderMs = usageLogLatencyIntFromContext(ctx, ctxkey.UpstreamHeaderMs)
+	}
+	usageLog.UpstreamFirstByteMs = result.UpstreamFirstByteMs
+	if usageLog.UpstreamFirstByteMs == nil {
+		usageLog.UpstreamFirstByteMs = usageLogLatencyIntFromContext(ctx, ctxkey.UpstreamFirstByteMs)
+	}
+	usageLog.FirstClientFlushMs = result.FirstClientFlushMs
+	if usageLog.FirstClientFlushMs == nil {
+		usageLog.FirstClientFlushMs = usageLogLatencyIntFromContext(ctx, ctxkey.FirstClientFlushMs)
+	}
 	usageLog.EdgePrepareMs = result.EdgePrepareMs
 	if usageLog.EdgePrepareMs == nil {
 		usageLog.EdgePrepareMs = usageLogLatencyIntFromContext(ctx, ctxkey.EdgePrepareMs)

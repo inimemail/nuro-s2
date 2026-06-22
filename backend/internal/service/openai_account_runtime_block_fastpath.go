@@ -607,6 +607,68 @@ func (s *OpenAIGatewayService) hasHigherPriorityOpenAIAccountAvailable(
 	return false
 }
 
+func (s *OpenAIGatewayService) hasSamePriorityNonPoolOpenAIAccountAvailable(
+	ctx context.Context,
+	groupID *int64,
+	current *Account,
+	requestedModel string,
+	requireCompact bool,
+	requiredCapability OpenAIEndpointCapability,
+	requiredImageCapability OpenAIImagesCapability,
+	requiredTransport OpenAIUpstreamTransport,
+) bool {
+	if s == nil || current == nil || !current.IsPoolMode() {
+		return false
+	}
+	accounts, err := s.listSchedulableAccounts(ctx, groupID)
+	if err != nil || len(accounts) == 0 {
+		return false
+	}
+
+	candidates := make([]*Account, 0, len(accounts))
+	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
+	for i := range accounts {
+		account := &accounts[i]
+		if account.ID == current.ID || account.Priority != current.Priority || account.IsPoolMode() {
+			continue
+		}
+		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability) {
+			continue
+		}
+		if s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIPoolAccountSoftCooling(account) {
+			continue
+		}
+		if requiredTransport != OpenAIUpstreamTransportAny &&
+			requiredTransport != OpenAIUpstreamTransportHTTPSSE &&
+			!s.isOpenAIAccountTransportCompatible(account, requiredTransport) {
+			continue
+		}
+		if groupID != nil && s.needsUpstreamChannelRestrictionCheck(ctx, groupID) &&
+			s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact) {
+			continue
+		}
+		candidates = append(candidates, account)
+		loadReq = append(loadReq, AccountWithConcurrency{ID: account.ID, MaxConcurrency: account.EffectiveLoadFactor()})
+	}
+	if len(candidates) == 0 {
+		return false
+	}
+	if s.concurrencyService == nil {
+		return true
+	}
+	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, loadReq)
+	if err != nil {
+		return false
+	}
+	for _, candidate := range candidates {
+		loadInfo := loadMap[candidate.ID]
+		if loadInfo == nil || loadInfo.LoadRate < 100 {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *OpenAIGatewayService) recordOpenAIOAuth429() {
 	if s == nil {
 		return

@@ -1636,8 +1636,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	// 提前构建 accountByID（供 Layer 1 和 Layer 1.5 使用）
 	accountByID := make(map[int64]*Account, len(accounts))
+	accountPtrs := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		accountByID[accounts[i].ID] = &accounts[i]
+		accountPtrs = append(accountPtrs, &accounts[i])
 	}
 	isExcluded := func(accountID int64) bool {
 		if excludedIDs == nil {
@@ -1752,7 +1754,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 						rpmPass := gatePass && s.isAccountSchedulableForRPM(ctx, stickyAccount, true)
 
-						if rpmPass { // 粘性会话窗口费用+RPM 检查
+						if rpmPass && s.hasSamePriorityNonPoolAccountAvailableForSelection(ctx, routingCandidates, groupID, stickyAccount, requestedModel, excludedIDs, platform, useMixed) {
+							stickyCacheMissReason = "same_priority_non_pool_available"
+							if s.cache != nil {
+								_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+							}
+						} else if rpmPass { // 粘性会话窗口费用+RPM 检查
 							result, err := s.tryAcquireAccountSlot(ctx, stickyAccountID, stickyAccount.Concurrency)
 							if err == nil && result.Acquired {
 								// 会话数量限制检查
@@ -1848,6 +1855,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					a, b := routingAvailable[i], routingAvailable[j]
 					if a.account.Priority != b.account.Priority {
 						return a.account.Priority < b.account.Priority
+					}
+					if less, ok := nonPoolAccountBeforePool(a.account, b.account); ok {
+						return less
 					}
 					if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 						return a.loadInfo.LoadRate < b.loadInfo.LoadRate
@@ -1948,7 +1958,18 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					"rpm_ok", rpmOK,
 				)
 
-				if !clearSticky && platformOK && modelSupported && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable {
+				samePriorityNonPoolAvailable := !clearSticky && platformOK && modelSupported && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable &&
+					s.hasSamePriorityNonPoolAccountAvailableForSelection(ctx, accountPtrs, groupID, account, requestedModel, excludedIDs, platform, useMixed)
+				if samePriorityNonPoolAvailable {
+					if s.cache != nil {
+						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+					}
+					slog.Debug("sticky.layer1_5_no_routing_miss",
+						"account_id", accountID,
+						"reason", "same_priority_non_pool_available",
+						"session", shortSessionHash(sessionHash),
+					)
+				} else if !clearSticky && platformOK && modelSupported && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable {
 					result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 					if err == nil && result.Acquired {
 						// 会话数量限制检查
@@ -2106,13 +2127,15 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		for len(available) > 0 {
 			// 1. 取优先级最小的集合
 			candidates := filterByMinPriority(available)
-			// 2. 取负载率最低的集合
+			// 2. 同优先级下，非池模式账号优先；只有非池不可用时才进入池模式均衡
+			candidates = filterByNonPoolModeIfPresent(candidates)
+			// 3. 取负载率最低的集合
 			candidates = filterByMinLoadRate(candidates)
-			// 3. 可选：同优先级、同最低负载内优先快重置账号
+			// 4. 可选：同优先级、同最低负载内优先快重置账号
 			if cfg.PreferSoonestReset {
 				candidates = filterBySoonestReset(candidates, time.Now())
 			}
-			// 4. LRU 选择最久未用的账号
+			// 5. LRU 选择最久未用的账号
 			selected := selectByLRU(candidates, preferOAuth)
 			if selected == nil {
 				break
@@ -2162,7 +2185,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
-	sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
+	sortAccountsByPriorityPoolAndLastUsed(ordered, preferOAuth)
 
 	for _, acc := range ordered {
 		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency)
@@ -2448,6 +2471,75 @@ func (s *GatewayService) isAccountAllowedForPlatform(account *Account, platform 
 		return account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()
 	}
 	return account.Platform == platform
+}
+
+func (s *GatewayService) hasSamePriorityNonPoolAccountAvailableForSelection(
+	ctx context.Context,
+	candidates []*Account,
+	groupID *int64,
+	current *Account,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	platform string,
+	useMixed bool,
+) bool {
+	if s == nil || current == nil || !current.IsPoolMode() || len(candidates) == 0 {
+		return false
+	}
+	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	loadReq := make([]AccountWithConcurrency, 0, len(candidates))
+	eligible := make([]*Account, 0, len(candidates))
+	for _, account := range candidates {
+		if account == nil || account.ID == current.ID || account.Priority != current.Priority || account.IsPoolMode() {
+			continue
+		}
+		if _, excluded := excludedIDs[account.ID]; excluded {
+			continue
+		}
+		if !s.isAccountSchedulableForSelection(account) {
+			continue
+		}
+		if !s.isAccountAllowedForPlatform(account, platform, useMixed) {
+			continue
+		}
+		if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, requestedModel) {
+			continue
+		}
+		if needsUpstreamCheck && groupID != nil && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel) {
+			continue
+		}
+		if !s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) {
+			continue
+		}
+		if !s.isAccountSchedulableForQuota(account) {
+			continue
+		}
+		if !s.isAccountSchedulableForWindowCost(ctx, account, false) {
+			continue
+		}
+		if !s.isAccountSchedulableForRPM(ctx, account, false) {
+			continue
+		}
+		eligible = append(eligible, account)
+		loadReq = append(loadReq, AccountWithConcurrency{ID: account.ID, MaxConcurrency: account.EffectiveLoadFactor()})
+	}
+	if len(eligible) == 0 {
+		return false
+	}
+	if s.concurrencyService == nil {
+		return true
+	}
+	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, loadReq)
+	if err != nil {
+		return false
+	}
+	for _, account := range eligible {
+		loadInfo := loadMap[account.ID]
+		if loadInfo == nil || loadInfo.LoadRate < 100 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *GatewayService) isAccountSchedulableForSelection(account *Account) bool {
@@ -2866,6 +2958,29 @@ func filterByMinPriority(accounts []accountWithLoad) []accountWithLoad {
 	return result
 }
 
+func filterByNonPoolModeIfPresent(accounts []accountWithLoad) []accountWithLoad {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	hasNonPool := false
+	for _, acc := range accounts {
+		if acc.account != nil && !acc.account.IsPoolMode() {
+			hasNonPool = true
+			break
+		}
+	}
+	if !hasNonPool {
+		return accounts
+	}
+	result := make([]accountWithLoad, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc.account != nil && !acc.account.IsPoolMode() {
+			result = append(result, acc)
+		}
+	}
+	return result
+}
+
 // filterByMinLoadRate 过滤出负载率最低的账号集合
 func filterByMinLoadRate(accounts []accountWithLoad) []accountWithLoad {
 	if len(accounts) == 0 {
@@ -3010,6 +3125,9 @@ func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
 		if a.Priority != b.Priority {
 			return a.Priority < b.Priority
 		}
+		if less, ok := nonPoolAccountBeforePool(a, b); ok {
+			return less
+		}
 		switch {
 		case a.LastUsedAt == nil && b.LastUsedAt != nil:
 			return true
@@ -3051,6 +3169,9 @@ func shuffleWithinSortGroups(accounts []accountWithLoad) {
 // sameAccountWithLoadGroup 判断两个 accountWithLoad 是否属于同一排序组
 func sameAccountWithLoadGroup(a, b accountWithLoad) bool {
 	if a.account.Priority != b.account.Priority {
+		return false
+	}
+	if a.account.IsPoolMode() != b.account.IsPoolMode() {
 		return false
 	}
 	if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
@@ -3109,6 +3230,9 @@ func sameAccountGroup(a, b *Account) bool {
 	if a.Priority != b.Priority {
 		return false
 	}
+	if a.IsPoolMode() != b.IsPoolMode() {
+		return false
+	}
 	return sameLastUsedAt(a.LastUsedAt, b.LastUsedAt)
 }
 
@@ -3133,7 +3257,7 @@ func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, preferOA
 		shuffleWithinPriority(accounts)
 	} else {
 		// 默认按最后使用时间排序
-		sortAccountsByPriorityAndLastUsed(accounts, preferOAuth)
+		sortAccountsByPriorityPoolAndLastUsed(accounts, preferOAuth)
 	}
 }
 
@@ -3143,6 +3267,9 @@ func sortAccountsByPriorityOnly(accounts []*Account, preferOAuth bool) {
 		a, b := accounts[i], accounts[j]
 		if a.Priority != b.Priority {
 			return a.Priority < b.Priority
+		}
+		if less, ok := nonPoolAccountBeforePool(a, b); ok {
+			return less
 		}
 		if preferOAuth && a.Type != b.Type {
 			return a.Type == AccountTypeOAuth
@@ -3160,8 +3287,9 @@ func shuffleWithinPriority(accounts []*Account) {
 	start := 0
 	for start < len(accounts) {
 		priority := accounts[start].Priority
+		poolMode := accounts[start].IsPoolMode()
 		end := start + 1
-		for end < len(accounts) && accounts[end].Priority == priority {
+		for end < len(accounts) && accounts[end].Priority == priority && accounts[end].IsPoolMode() == poolMode {
 			end++
 		}
 		// 对 [start, end) 范围内的账户随机打乱
@@ -3284,6 +3412,12 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			if acc.Priority < selected.Priority {
 				selected = acc
 			} else if acc.Priority == selected.Priority {
+				if less, ok := nonPoolAccountBeforePool(acc, selected); ok {
+					if less {
+						selected = acc
+					}
+					continue
+				}
 				switch {
 				case acc.LastUsedAt == nil && selected.LastUsedAt != nil:
 					selected = acc
@@ -3398,6 +3532,12 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		if acc.Priority < selected.Priority {
 			selected = acc
 		} else if acc.Priority == selected.Priority {
+			if less, ok := nonPoolAccountBeforePool(acc, selected); ok {
+				if less {
+					selected = acc
+				}
+				continue
+			}
 			switch {
 			case acc.LastUsedAt == nil && selected.LastUsedAt != nil:
 				selected = acc
@@ -3996,7 +4136,7 @@ func (s *GatewayService) shouldRetryUpstreamError(account *Account, statusCode i
 // shouldFailoverUpstreamError determines whether an upstream error should trigger account failover.
 func (s *GatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 	switch statusCode {
-	case 401, 403, 429, 529:
+	case 401, 402, 403, 429, 529:
 		return true
 	default:
 		return statusCode >= 500
@@ -5314,6 +5454,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return nil, newGatewayUpstreamFailoverError(account, resp.StatusCode, respBody, reqModel)
 	}
 	if resp.StatusCode >= 400 {
+		if failoverErr, ok := s.maybeAnthropicPoolClientErrorFailover(ctx, resp, c, account, reqModel, "[Forward]", false); ok {
+			return nil, failoverErr
+		}
 		// 可选：对部分 400 触发 failover（默认关闭以保持语义）
 		if resp.StatusCode == 400 && s.cfg != nil && s.cfg.Gateway.FailoverOn400 {
 			respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -5618,6 +5761,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 
 	if resp.StatusCode >= 400 {
+		if failoverErr, ok := s.maybeAnthropicPoolClientErrorFailover(ctx, resp, c, account, input.RequestModel, "[Anthropic Passthrough]", true); ok {
+			return nil, failoverErr
+		}
 		return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)
 	}
 
@@ -6444,6 +6590,9 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 	}
 
 	// other errors
+	if failoverErr, ok := s.maybeAnthropicPoolClientErrorFailover(ctx, resp, c, account, "", "[Bedrock]", false); ok {
+		return nil, failoverErr
+	}
 	return s.handleErrorResponse(ctx, resp, c, account)
 }
 
@@ -7788,11 +7937,50 @@ func (s *GatewayService) handleFailoverSideEffects(ctx context.Context, resp *ht
 		model = requestedModel[0]
 	}
 	s.maybeMarkAnthropicPoolSoftCooldown(ctx, account, resp.StatusCode, body, model, "upstream_failure")
+	if s.rateLimitService == nil {
+		return
+	}
 	if len(requestedModel) > 0 {
 		s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, requestedModel[0])
 		return
 	}
 	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+}
+
+func (s *GatewayService) maybeAnthropicPoolClientErrorFailover(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, requestedModel string, logPrefix string, passthrough bool) (*UpstreamFailoverError, bool) {
+	if resp == nil || resp.StatusCode != http.StatusBadRequest || !isAnthropicPoolAccount(account) {
+		return nil, false
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
+	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+	decision := classifyAnthropicPoolFailover(account, resp.StatusCode, upstreamMsg, respBody, requestedModel)
+	if !decision.Failover {
+		return nil, false
+	}
+
+	logger.LegacyPrintf("service.gateway", "%s Anthropic pool client error failover: Account=%d(%s) Status=%d RequestID=%s Body=%s",
+		logPrefix, account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
+
+	s.handleFailoverSideEffects(ctx, resp, account, requestedModel)
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:           account.Platform,
+		AccountID:          account.ID,
+		AccountName:        account.Name,
+		UpstreamStatusCode: resp.StatusCode,
+		UpstreamRequestID:  resp.Header.Get("x-request-id"),
+		Passthrough:        passthrough,
+		Kind:               "anthropic_pool_client_error_failover",
+		Message:            upstreamMsg,
+		Detail: func() string {
+			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+				return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+			}
+			return ""
+		}(),
+	})
+	return newGatewayUpstreamFailoverError(account, resp.StatusCode, respBody, requestedModel), true
 }
 
 func (s *GatewayService) maybeMarkAnthropicPoolSoftCooldown(ctx context.Context, account *Account, statusCode int, body []byte, model string, source string) {

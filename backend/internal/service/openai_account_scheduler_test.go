@@ -531,7 +531,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_EnabledUsesAdvancedPrev
 			Status:      StatusActive,
 			Schedulable: true,
 			Concurrency: 1,
-			Priority:    0,
+			Priority:    5,
 			GroupIDs:    []int64{groupID},
 		},
 	}
@@ -570,6 +570,73 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_EnabledUsesAdvancedPrev
 	require.Equal(t, int64(37001), selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerPreviousResponse, decision.Layer)
 	require.True(t, decision.StickyPreviousHit)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseDoesNotBypassHigherPriority(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10108)
+	accounts := []Account{
+		{
+			ID:          37011,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+			GroupIDs:    []int64{groupID},
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		},
+		{
+			ID:          37012,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			GroupIDs:    []int64{groupID},
+		},
+	}
+	cfg := newSchedulerTestOpenAIWSV2Config()
+	svc := &OpenAIGatewayService{
+		accountRepo:      schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:            &schedulerTestGatewayCache{},
+		cfg:              cfg,
+		rateLimitService: newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{
+			loadMap: map[int64]*AccountLoadInfo{
+				37011: {AccountID: 37011, LoadRate: 0},
+				37012: {AccountID: 37012, LoadRate: 0},
+			},
+		}),
+	}
+
+	store := svc.getOpenAIWSStateStore()
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_priority_001", 37011, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"resp_priority_001",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37012), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
 }
 
 func TestOpenAIGatewayService_SelectAccountWithScheduler_Enabled_EmbeddingsSkipsChatOnlyAccount(t *testing.T) {
@@ -2650,6 +2717,54 @@ func TestBuildOpenAISelectionOrder_StrictPriorityBeatsLowerLoad(t *testing.T) {
 	require.Len(t, order, 2)
 	require.Equal(t, int64(5211), order[0].account.ID)
 	require.Equal(t, int64(5212), order[1].account.ID)
+}
+
+func TestBuildOpenAISelectionOrder_SamePriorityPrefersNonPoolBeforePoolLoad(t *testing.T) {
+	now := time.Now()
+	oldest := now.Add(-30 * time.Minute)
+	newest := now.Add(-5 * time.Minute)
+	scheduler := &defaultOpenAIAccountScheduler{}
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
+		topK: 3,
+		candidates: []openAIAccountCandidateScore{
+			{
+				account: &Account{
+					ID:          5221,
+					Platform:    PlatformOpenAI,
+					Type:        AccountTypeAPIKey,
+					Priority:    1,
+					LastUsedAt:  &newest,
+					Credentials: map[string]any{"pool_mode": true},
+				},
+				loadInfo: &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			},
+			{
+				account: &Account{
+					ID:         5222,
+					Platform:   PlatformOpenAI,
+					Type:       AccountTypeAPIKey,
+					Priority:   1,
+					LastUsedAt: &oldest,
+				},
+				loadInfo: &AccountLoadInfo{LoadRate: 95, WaitingCount: 9},
+			},
+			{
+				account: &Account{
+					ID:         5223,
+					Platform:   PlatformOpenAI,
+					Type:       AccountTypeAPIKey,
+					Priority:   3,
+					LastUsedAt: &oldest,
+				},
+				loadInfo: &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			},
+		},
+	})
+
+	require.Len(t, order, 3)
+	require.Equal(t, int64(5222), order[0].account.ID)
+	require.Equal(t, int64(5221), order[1].account.ID)
+	require.Equal(t, int64(5223), order[2].account.ID)
 }
 
 func TestBuildOpenAISelectionOrder_StrictPriorityBeatsLowerTTFT(t *testing.T) {

@@ -380,6 +380,22 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			}
 		}
 		if selection != nil && selection.Account != nil {
+			if s.service.hasHigherPriorityOpenAIAccountAvailable(ctx, req.GroupID, selection.Account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequiredTransport) {
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				selection = nil
+			}
+		}
+		if selection != nil && selection.Account != nil {
+			if s.service.hasSamePriorityNonPoolOpenAIAccountAvailable(ctx, req.GroupID, selection.Account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequiredTransport) {
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				selection = nil
+			}
+		}
+		if selection != nil && selection.Account != nil {
 			decision.Layer = openAIAccountScheduleLayerPreviousResponse
 			decision.StickyPreviousHit = true
 			decision.SelectedAccountID = selection.Account.ID
@@ -497,6 +513,12 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	if s.service.hasHigherPriorityOpenAIAccountAvailable(ctx, req.GroupID, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequiredTransport) {
+		if sessionHash != "" {
+			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		}
+		return nil, false, nil
+	}
+	if s.service.hasSamePriorityNonPoolOpenAIAccountAvailable(ctx, req.GroupID, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequiredTransport) {
 		if sessionHash != "" {
 			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		}
@@ -1023,6 +1045,9 @@ func sortOpenAIStrictPriorityCandidatesWithReset(pool []openAIAccountCandidateSc
 		if a.account.Priority != b.account.Priority {
 			return a.account.Priority < b.account.Priority
 		}
+		if less, ok := nonPoolAccountBeforePool(a.account, b.account); ok {
+			return less
+		}
 		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
 			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
 		}
@@ -1068,6 +1093,9 @@ func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []open
 		a, b := ordered[i], ordered[j]
 		if a.account.Priority != b.account.Priority {
 			return a.account.Priority < b.account.Priority
+		}
+		if less, ok := nonPoolAccountBeforePool(a.account, b.account); ok {
+			return less
 		}
 		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 			return a.loadInfo.LoadRate < b.loadInfo.LoadRate

@@ -46,6 +46,11 @@ func classifyAnthropicPoolFailover(account *Account, statusCode int, upstreamMsg
 	if isAnthropicPoolUserRequestError(statusCode, decision.SoftCooldownMessage, upstreamBody) {
 		decision.SkipSoftCooldown = true
 	}
+	if !decision.Failover && isAnthropicPoolAccountLevelError(statusCode, openAIPoolCombinedErrorText(decision.SoftCooldownMessage, upstreamBody)) {
+		decision.Failover = true
+		decision.RetryableOnSame = false
+		decision.SkipSoftCooldown = false
+	}
 	if decision.SkipSoftCooldown {
 		decision.RetryableOnSame = false
 	}
@@ -54,7 +59,7 @@ func classifyAnthropicPoolFailover(account *Account, statusCode int, upstreamMsg
 
 func shouldAnthropicPoolFailoverStatus(statusCode int) bool {
 	switch statusCode {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, 529:
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests, 529:
 		return true
 	default:
 		return statusCode >= 500
@@ -177,7 +182,7 @@ func isAnthropicPoolUserRequestError(statusCode int, upstreamMsg string, upstrea
 }
 
 func isAnthropicPoolAccountLevelError(statusCode int, combined string) bool {
-	if statusCode == http.StatusUnauthorized || statusCode == http.StatusTooManyRequests || statusCode == 529 {
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusPaymentRequired || statusCode == http.StatusTooManyRequests || statusCode == 529 {
 		return true
 	}
 	if containsAnySubstring(combined,

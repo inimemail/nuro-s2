@@ -41,7 +41,7 @@ func (s *GatewayService) MarkAnthropicPoolAccountSoftCooldown(ctx context.Contex
 	switch {
 	case statusCode == http.StatusTooManyRequests:
 		cooldown = anthropicPoolSoftCooldownServerError
-	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
+	case statusCode == http.StatusUnauthorized || statusCode == http.StatusPaymentRequired || statusCode == http.StatusForbidden:
 		cooldown = anthropicPoolSoftCooldownAuth
 	case statusCode == 529 || statusCode >= 500:
 		cooldown = anthropicPoolSoftCooldownServerError

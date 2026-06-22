@@ -143,6 +143,18 @@ func TestClassifyAnthropicPoolFailover_AccountAndUpstreamErrorsKeepSoftCooldown(
 			body:       []byte(`{"error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`),
 		},
 		{
+			name:       "payment_required_402",
+			statusCode: http.StatusPaymentRequired,
+			message:    "credit balance is too low",
+			body:       []byte(`{"error":{"type":"permission_error","message":"Your credit balance is too low to access the Anthropic API"}}`),
+		},
+		{
+			name:       "credit_balance_400",
+			statusCode: http.StatusBadRequest,
+			message:    "Your credit balance is too low to access the Anthropic API",
+			body:       []byte(`{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API"}}`),
+		},
+		{
 			name:       "overloaded_529",
 			statusCode: 529,
 			message:    "overloaded",
@@ -290,6 +302,85 @@ func TestHandleRetryExhaustedSideEffects_AnthropicAccountErrorSoftCooldowns(t *t
 	require.True(t, state.Cooling)
 	require.Equal(t, 529, state.StatusCode)
 	require.Equal(t, "retry_exhausted", state.CooldownSource)
+}
+
+func TestGatewayService_ShouldFailoverUpstreamError_IncludesPaymentRequired(t *testing.T) {
+	svc := &GatewayService{}
+	require.True(t, svc.shouldFailoverUpstreamError(http.StatusPaymentRequired))
+}
+
+func TestHandleFailoverSideEffects_AnthropicPoolPaymentRequiredSoftCooldownsWithoutRateLimitService(t *testing.T) {
+	account := &Account{
+		ID:          313,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := `{"error":{"type":"permission_error","message":"Your credit balance is too low to access the Anthropic API"}}`
+	resp := &http.Response{
+		StatusCode: http.StatusPaymentRequired,
+		Header:     http.Header{"x-request-id": []string{"req_credit_402"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	svc := &GatewayService{}
+
+	require.NotPanics(t, func() {
+		svc.handleFailoverSideEffects(context.Background(), resp, account, "claude-sonnet-4-6")
+	})
+
+	state := svc.AnthropicPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.Equal(t, http.StatusPaymentRequired, state.StatusCode)
+	require.Equal(t, "upstream_failure", state.CooldownSource)
+}
+
+func TestMaybeAnthropicPoolClientErrorFailover_CreditBalance400(t *testing.T) {
+	account := &Account{
+		ID:          314,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := `{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API"}}`
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"x-request-id": []string{"req_credit_400"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	svc := &GatewayService{rateLimitService: &RateLimitService{}}
+
+	failoverErr, ok := svc.maybeAnthropicPoolClientErrorFailover(context.Background(), resp, nil, account, "claude-sonnet-4-6", "[test]", false)
+
+	require.True(t, ok)
+	require.NotNil(t, failoverErr)
+	require.Equal(t, http.StatusBadRequest, failoverErr.StatusCode)
+	require.False(t, failoverErr.SkipPoolSoftCooldown)
+	state := svc.AnthropicPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.Equal(t, http.StatusBadRequest, state.StatusCode)
+}
+
+func TestMaybeAnthropicPoolClientErrorFailover_UserBadRequestDoesNotFailover(t *testing.T) {
+	account := &Account{
+		ID:          315,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := `{"error":{"type":"invalid_request_error","message":"max_tokens is too large"}}`
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	svc := &GatewayService{rateLimitService: &RateLimitService{}}
+
+	failoverErr, ok := svc.maybeAnthropicPoolClientErrorFailover(context.Background(), resp, nil, account, "claude-sonnet-4-6", "[test]", false)
+
+	require.False(t, ok)
+	require.Nil(t, failoverErr)
+	state := svc.AnthropicPoolSoftCooldownState(account.ID)
+	require.False(t, state.Cooling)
 }
 
 func TestAnthropicPoolFailoverSwitch_DownstreamRoutingErrorSkipsSoftCooldown(t *testing.T) {

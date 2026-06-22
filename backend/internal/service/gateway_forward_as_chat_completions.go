@@ -155,6 +155,10 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 
+		if failoverErr, ok := s.maybeAnthropicPoolClientErrorFailover(ctx, resp, c, account, mappedModel, "[Anthropic ChatCompletions Compat]", false); ok {
+			return nil, failoverErr
+		}
+
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -165,7 +169,9 @@ func (s *GatewayService) ForwardAsChatCompletions(
 				Kind:               "failover",
 				Message:            upstreamMsg,
 			})
-			if s.rateLimitService != nil {
+			if isAnthropicPoolAccount(account) {
+				s.handleFailoverSideEffects(ctx, resp, account, mappedModel)
+			} else if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
 			}
 			return nil, &UpstreamFailoverError{
