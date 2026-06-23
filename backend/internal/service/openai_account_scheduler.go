@@ -380,6 +380,14 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			}
 		}
 		if selection != nil && selection.Account != nil {
+			if !s.service.latestOpenAIAccountMatchesGroup(ctx, selection.Account, req.GroupID) {
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				selection = nil
+			}
+		}
+		if selection != nil && selection.Account != nil {
 			if s.service.hasHigherPriorityOpenAIAccountAvailable(ctx, req.GroupID, selection.Account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequiredTransport) {
 				if selection.ReleaseFunc != nil {
 					selection.ReleaseFunc()
@@ -499,7 +507,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability)
-	if account == nil || !openAIStickyAccountMatchesGroup(account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+	if account == nil || !s.service.latestOpenAIAccountMatchesGroup(ctx, account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 		if sessionHash != "" {
 			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		}
@@ -556,6 +564,28 @@ func openAIStickyAccountMatchesGroup(account *Account, groupID *int64) bool {
 		}
 	}
 	return false
+}
+
+func (s *OpenAIGatewayService) latestOpenAIAccountMatchesGroup(ctx context.Context, account *Account, groupID *int64) bool {
+	if account == nil {
+		return false
+	}
+	if groupID == nil {
+		return openAIStickyAccountMatchesGroup(account, groupID)
+	}
+	if !accountHasGroupMetadata(account) {
+		return true
+	}
+	if s != nil && s.accountRepo != nil {
+		latest, err := s.accountRepo.GetByID(ctx, account.ID)
+		if err == nil && latest != nil {
+			if !accountHasGroupMetadata(latest) {
+				return true
+			}
+			return openAIStickyAccountMatchesGroup(latest, groupID)
+		}
+	}
+	return openAIStickyAccountMatchesGroup(account, groupID)
 }
 
 type openAIAccountCandidateScore struct {

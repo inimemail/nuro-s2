@@ -1954,6 +1954,10 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
+	if !s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
+		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		return nil
+	}
 	if isPromptCacheAffinity && !s.isOpenAIPromptCacheBoostAffinityHashUsableForAccount(sessionHash, account) {
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
@@ -2222,6 +2226,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						if sessionHash != "" {
 							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						}
+					} else if !s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
+						if sessionHash != "" {
+							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						}
 					} else if s.isOpenAIAccountRuntimeBlocked(account) {
 						if sessionHash != "" {
 							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
@@ -2263,6 +2271,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	for i := range accounts {
 		acc := &accounts[i]
 		if isExcluded(acc.ID) {
+			continue
+		}
+		if groupID != nil && accountHasGroupMetadata(acc) && !openAIStickyAccountMatchesGroup(acc, groupID) {
 			continue
 		}
 		// Scheduler snapshots can be temporarily stale (bucket rebuild is throttled);

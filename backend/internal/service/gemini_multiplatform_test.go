@@ -612,6 +612,71 @@ func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_StickyS
 		require.Equal(t, 1, cache.deletedSessions["gemini:session-123"])
 		require.Equal(t, int64(2), cache.sessionBindings["gemini:session-123"])
 	})
+
+	t.Run("粘性会话账号移出分组-清理并回退当前分组", func(t *testing.T) {
+		groupID := int64(7)
+		repo := &mockAccountRepoForGemini{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformGemini, Priority: 1, Status: StatusActive, Schedulable: true, GroupIDs: []int64{8}},
+				{ID: 2, Platform: PlatformGemini, Priority: 2, Status: StatusActive, Schedulable: true, GroupIDs: []int64{groupID}},
+			},
+			accountsByID: map[int64]*Account{},
+		}
+		for i := range repo.accounts {
+			repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+		}
+
+		cache := &mockGatewayCacheForGemini{
+			sessionBindings: map[string]int64{"gemini:session-moved-group": 1},
+		}
+		groupRepo := &mockGroupRepoForGemini{groups: map[int64]*Group{
+			groupID: {ID: groupID, Platform: PlatformGemini, Status: StatusActive},
+		}}
+
+		svc := &GeminiMessagesCompatService{
+			accountRepo: repo,
+			groupRepo:   groupRepo,
+			cache:       cache,
+		}
+
+		acc, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "session-moved-group", "gemini-2.5-flash", nil)
+		require.NoError(t, err)
+		require.NotNil(t, acc)
+		require.Equal(t, int64(2), acc.ID)
+		require.Equal(t, 1, cache.deletedSessions["gemini:session-moved-group"])
+		require.Equal(t, int64(2), cache.sessionBindings["gemini:session-moved-group"])
+	})
+}
+
+func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_NewGroupFirstUse(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(71)
+	repo := &mockAccountRepoForGemini{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformGemini, Priority: 1, Status: StatusActive, Schedulable: true, GroupIDs: []int64{groupID}},
+			{ID: 2, Platform: PlatformGemini, Priority: 2, Status: StatusActive, Schedulable: true, GroupIDs: []int64{72}},
+		},
+		accountsByID: map[int64]*Account{},
+	}
+	for i := range repo.accounts {
+		repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+	}
+
+	cache := &mockGatewayCacheForGemini{}
+	groupRepo := &mockGroupRepoForGemini{groups: map[int64]*Group{
+		groupID: {ID: groupID, Platform: PlatformGemini, Status: StatusActive},
+	}}
+
+	svc := &GeminiMessagesCompatService{
+		accountRepo: repo,
+		groupRepo:   groupRepo,
+		cache:       cache,
+	}
+
+	acc, err := svc.SelectAccountForModelWithExclusions(ctx, &groupID, "", "gemini-2.5-flash", nil)
+	require.NoError(t, err)
+	require.NotNil(t, acc)
+	require.Equal(t, int64(1), acc.ID)
 }
 
 func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_ForcePlatformFallback(t *testing.T) {

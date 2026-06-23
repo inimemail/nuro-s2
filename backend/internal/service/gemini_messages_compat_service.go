@@ -154,11 +154,12 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 		if err != nil {
 			return nil, fmt.Errorf("query accounts failed: %w", err)
 		}
+		groupID = nil
 	}
 
 	// 4. 按优先级 + LRU 选择最佳账号
 	// Select best account by priority + LRU
-	selected := s.selectBestGeminiAccount(ctx, accounts, requestedModel, excludedIDs, platform, useMixedScheduling)
+	selected := s.selectBestGeminiAccount(ctx, groupID, accounts, requestedModel, excludedIDs, platform, useMixedScheduling)
 
 	if selected == nil {
 		if requestedModel != "" {
@@ -244,6 +245,10 @@ func (s *GeminiMessagesCompatService) tryStickySessionHit(
 		_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
 		return nil
 	}
+	if !s.latestGeminiAccountMatchesGroup(ctx, account, groupID) {
+		_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
+		return nil
+	}
 
 	// 验证账号是否可用于当前请求
 	// Verify account is usable for current request
@@ -305,6 +310,28 @@ func (s *GeminiMessagesCompatService) isAccountUsableForRequestWithPrecheck(
 	return true
 }
 
+func (s *GeminiMessagesCompatService) latestGeminiAccountMatchesGroup(ctx context.Context, account *Account, groupID *int64) bool {
+	if account == nil {
+		return false
+	}
+	if groupID == nil {
+		return accountMatchesGroup(account, groupID)
+	}
+	if !accountHasGroupMetadata(account) {
+		return true
+	}
+	if s != nil && s.accountRepo != nil {
+		latest, err := s.accountRepo.GetByID(ctx, account.ID)
+		if err == nil && latest != nil {
+			if !accountHasGroupMetadata(latest) {
+				return true
+			}
+			return accountMatchesGroup(latest, groupID)
+		}
+	}
+	return accountMatchesGroup(account, groupID)
+}
+
 // isAccountValidForPlatform 检查账号是否匹配目标平台。
 // 原生平台直接匹配；混合调度模式下 antigravity 需要启用 mixed_scheduling。
 //
@@ -345,6 +372,7 @@ func (s *GeminiMessagesCompatService) passesRateLimitPreCheckWithCache(ctx conte
 // Returns nil if no available account.
 func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 	ctx context.Context,
+	groupID *int64,
 	accounts []Account,
 	requestedModel string,
 	excludedIDs map[int64]struct{},
@@ -359,6 +387,9 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 
 		// 跳过被排除的账号
 		if _, excluded := excludedIDs[acc.ID]; excluded {
+			continue
+		}
+		if groupID != nil && accountHasGroupMetadata(acc) && !accountMatchesGroup(acc, groupID) {
 			continue
 		}
 

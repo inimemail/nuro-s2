@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/stretchr/testify/require"
 )
 
 type snapshotHydrationCache struct {
@@ -318,5 +319,97 @@ func TestGatewaySelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedu
 	}
 	if got := result.Account.GetCredential("api_key"); got != "anthropic-live-key" {
 		t.Fatalf("expected hydrated api key, got %q", got)
+	}
+}
+
+func TestGatewaySelectAccountWithLoadAwareness_StickyMovedGroupClearsSession(t *testing.T) {
+	groupID := int64(1)
+	sessionHash := "gateway-session-moved-group"
+	cache := &snapshotHydrationCache{
+		snapshot: []*Account{
+			{
+				ID:          9,
+				Platform:    PlatformAnthropic,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Priority:    1,
+				GroupIDs:    []int64{groupID},
+			},
+			{
+				ID:          10,
+				Platform:    PlatformAnthropic,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Priority:    2,
+				GroupIDs:    []int64{groupID},
+			},
+		},
+		accounts: map[int64]*Account{
+			9: {
+				ID:          9,
+				Platform:    PlatformAnthropic,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Priority:    1,
+				GroupIDs:    []int64{2},
+			},
+			10: {
+				ID:          10,
+				Platform:    PlatformAnthropic,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Priority:    2,
+				GroupIDs:    []int64{groupID},
+				Credentials: map[string]any{"api_key": "current-group-key"},
+			},
+		},
+	}
+	gatewayCache := &mockGatewayCacheForPlatform{
+		sessionBindings: map[string]int64{sessionHash: 9},
+	}
+
+	repo := &mockAccountRepoForPlatform{
+		accounts: []Account{*cache.accounts[9], *cache.accounts[10]},
+		accountsByID: map[int64]*Account{
+			9:  cache.accounts[9],
+			10: cache.accounts[10],
+		},
+	}
+	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, repo, nil, nil, nil)
+	svc := &GatewayService{
+		accountRepo:       repo,
+		groupRepo:         &mockGroupRepoForGateway{groups: map[int64]*Group{groupID: {ID: groupID, Platform: PlatformAnthropic, Status: StatusActive}}},
+		schedulerSnapshot: schedulerSnapshot,
+		cache:             gatewayCache,
+		cfg:               testConfig(),
+		concurrencyService: NewConcurrencyService(&mockConcurrencyCache{
+			loadMap: map[int64]*AccountLoadInfo{
+				9:  {AccountID: 9, LoadRate: 0},
+				10: {AccountID: 10, LoadRate: 0},
+			},
+			acquireResults: map[int64]bool{
+				9:  true,
+				10: true,
+			},
+		}),
+	}
+
+	result, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, sessionHash, "claude-3-5-sonnet-20241022", nil, "", 0)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Account)
+	require.Equal(t, int64(10), result.Account.ID)
+	require.Equal(t, 1, gatewayCache.deletedSessions[sessionHash])
+	require.Equal(t, int64(10), gatewayCache.sessionBindings[sessionHash])
+	if result.ReleaseFunc != nil {
+		result.ReleaseFunc()
 	}
 }

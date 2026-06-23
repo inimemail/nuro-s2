@@ -1743,6 +1743,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				filteredPlatform++
 				continue
 			}
+			if groupID != nil && accountHasGroupMetadata(account) && !s.isAccountInGroup(account, groupID) {
+				filteredMissing++
+				continue
+			}
 			if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, requestedModel) {
 				filteredModelMapping++
 				continue
@@ -1792,8 +1796,16 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					// 粘性账号在路由列表中，优先使用
 					if stickyAccount, ok := accountByID[stickyAccountID]; ok {
 						var stickyCacheMissReason string
+						groupOK := s.latestAccountInGroup(ctx, stickyAccount, groupID)
+						if !groupOK {
+							stickyCacheMissReason = "group_membership"
+							if s.cache != nil {
+								_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+							}
+						}
 
 						gatePass := s.isAccountSchedulableForSelection(stickyAccount) &&
+							groupOK &&
 							s.isAccountAllowedForPlatform(stickyAccount, platform, useMixed) &&
 							(requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, stickyAccount, requestedModel)) &&
 							s.isAccountSchedulableForModelSelection(ctx, stickyAccount, requestedModel) &&
@@ -1824,7 +1836,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 									if s.debugModelRoutingEnabled() {
 										logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), stickyAccountID)
 									}
-									return s.newSelectionResult(ctx, stickyAccount, true, result.ReleaseFunc, nil)
+									selection, err := s.newSelectionResult(ctx, stickyAccount, true, result.ReleaseFunc, nil)
+									if err != nil {
+										result.ReleaseFunc()
+										return nil, err
+									}
+									return selection, nil
 								}
 							}
 
@@ -1836,15 +1853,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 										stickyCacheMissReason = "session_limit"
 										// 会话限制已满，继续到负载感知选择
 									} else {
-										return &AccountSelectionResult{
-											Account: stickyAccount,
-											WaitPlan: &AccountWaitPlan{
-												AccountID:      stickyAccountID,
-												MaxConcurrency: stickyAccount.Concurrency,
-												Timeout:        cfg.StickySessionWaitTimeout,
-												MaxWaiting:     cfg.StickySessionMaxWaiting,
-											},
-										}, nil
+										return s.newSelectionResult(ctx, stickyAccount, false, nil, &AccountWaitPlan{
+											AccountID:      stickyAccountID,
+											MaxConcurrency: stickyAccount.Concurrency,
+											Timeout:        cfg.StickySessionWaitTimeout,
+											MaxWaiting:     cfg.StickySessionMaxWaiting,
+										})
 									}
 								} else {
 									stickyCacheMissReason = "wait_queue_full"
@@ -1995,6 +2009,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				windowCostOK := s.isAccountSchedulableForWindowCost(ctx, account, true)
 				rpmOK := s.isAccountSchedulableForRPM(ctx, account, true)
 				schedulable := s.isAccountSchedulableForSelection(account)
+				groupOK := s.latestAccountInGroup(ctx, account, groupID)
 
 				slog.Debug("sticky.layer1_5_no_routing_checks",
 					"account_id", accountID,
@@ -2007,9 +2022,21 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					"quota_ok", quotaOK,
 					"window_cost_ok", windowCostOK,
 					"rpm_ok", rpmOK,
+					"group_ok", groupOK,
 				)
 
-				samePriorityNonPoolAvailable := !clearSticky && platformOK && modelSupported && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable &&
+				if !groupOK {
+					if s.cache != nil {
+						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+					}
+					slog.Debug("sticky.layer1_5_no_routing_miss",
+						"account_id", accountID,
+						"reason", "group_membership",
+						"session", shortSessionHash(sessionHash),
+					)
+				}
+
+				samePriorityNonPoolAvailable := !clearSticky && groupOK && platformOK && modelSupported && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable &&
 					s.hasSamePriorityNonPoolAccountAvailableForSelection(ctx, accountPtrs, groupID, account, requestedModel, excludedIDs, platform, useMixed)
 				if samePriorityNonPoolAvailable {
 					if s.cache != nil {
@@ -2020,7 +2047,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						"reason", "same_priority_non_pool_available",
 						"session", shortSessionHash(sessionHash),
 					)
-				} else if !clearSticky && platformOK && modelSupported && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable {
+				} else if !clearSticky && groupOK && platformOK && modelSupported && modelSchedulable && quotaOK && windowCostOK && rpmOK && schedulable {
 					result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 					if err == nil && result.Acquired {
 						// 会话数量限制检查
@@ -2040,7 +2067,12 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							if s.cache != nil {
 								_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL)
 							}
-							return s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
+							selection, err := s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
+							if err != nil {
+								result.ReleaseFunc()
+								return nil, err
+							}
+							return selection, nil
 						}
 					} else {
 						slog.Debug("sticky.layer1_5_no_routing_slot_busy",
@@ -2068,7 +2100,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							})
 						}
 					}
-				} else if !clearSticky {
+				} else if !clearSticky && groupOK {
 					slog.Debug("sticky.layer1_5_no_routing_miss",
 						"account_id", accountID,
 						"reason", "gate_check_failed",
@@ -2076,6 +2108,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					)
 				}
 			} else {
+				if s.cache != nil {
+					_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+				}
 				slog.Debug("sticky.layer1_5_no_routing_miss",
 					"account_id", accountID,
 					"reason", "account_not_in_map",
@@ -2117,6 +2152,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			continue
 		}
 		if !s.isAccountAllowedForPlatform(acc, platform, useMixed) {
+			continue
+		}
+		if groupID != nil && accountHasGroupMetadata(acc) && !s.isAccountInGroup(acc, groupID) {
 			continue
 		}
 		if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
@@ -2238,12 +2276,12 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 				result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
 				continue
 			}
-			if sessionHash != "" && s.cache != nil {
-				_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, acc.ID, stickySessionTTL)
-			}
 			selection, err := s.newSelectionResult(ctx, acc, true, result.ReleaseFunc, nil)
 			if err != nil {
 				return nil, false, err
+			}
+			if sessionHash != "" && s.cache != nil {
+				_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selection.Account.ID, stickySessionTTL)
 			}
 			return selection, true, nil
 		}
@@ -2636,12 +2674,21 @@ func (s *GatewayService) shouldSkipAnthropicPoolCoolingAccount(ctx context.Conte
 // isAccountInGroup checks if the account belongs to the specified group.
 // When groupID is nil, returns true only for ungrouped accounts (no group assignments).
 func (s *GatewayService) isAccountInGroup(account *Account, groupID *int64) bool {
+	return accountMatchesGroup(account, groupID)
+}
+
+func accountMatchesGroup(account *Account, groupID *int64) bool {
 	if account == nil {
 		return false
 	}
 	if groupID == nil {
 		// 无分组的 API Key 只能使用未分组的账号
-		return len(account.AccountGroups) == 0
+		return len(account.AccountGroups) == 0 && len(account.GroupIDs) == 0
+	}
+	for _, id := range account.GroupIDs {
+		if id == *groupID {
+			return true
+		}
 	}
 	for _, ag := range account.AccountGroups {
 		if ag.GroupID == *groupID {
@@ -2981,6 +3028,32 @@ func (s *GatewayService) hydrateSelectedAccount(ctx context.Context, account *Ac
 		return nil, fmt.Errorf("selected gateway account %d not found during hydration", account.ID)
 	}
 	return hydrated, nil
+}
+
+func (s *GatewayService) latestAccountInGroup(ctx context.Context, account *Account, groupID *int64) bool {
+	if account == nil {
+		return false
+	}
+	if groupID == nil {
+		return s.isAccountInGroup(account, groupID)
+	}
+	if !accountHasGroupMetadata(account) {
+		return true
+	}
+	if s.accountRepo != nil {
+		latest, err := s.accountRepo.GetByID(ctx, account.ID)
+		if err == nil && latest != nil {
+			if !accountHasGroupMetadata(latest) {
+				return true
+			}
+			return s.isAccountInGroup(latest, groupID)
+		}
+	}
+	return s.isAccountInGroup(account, groupID)
+}
+
+func accountHasGroupMetadata(account *Account) bool {
+	return account != nil && (len(account.GroupIDs) > 0 || len(account.AccountGroups) > 0)
 }
 
 func (s *GatewayService) newSelectionResult(ctx context.Context, account *Account, acquired bool, release func(), waitPlan *AccountWaitPlan) (*AccountSelectionResult, error) {
@@ -3445,7 +3518,11 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 						if clearSticky {
 							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 						}
-						if !clearSticky && s.isAccountInGroup(account, groupID) && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
+						groupOK := s.latestAccountInGroup(ctx, account, groupID)
+						if !clearSticky && !groupOK {
+							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+						}
+						if !clearSticky && groupOK && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
 							if s.debugModelRoutingEnabled() {
 								logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), accountID)
 							}
@@ -3491,6 +3568,9 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			// Scheduler snapshots can be temporarily stale; re-check schedulability here to
 			// avoid selecting accounts that were recently rate-limited/overloaded.
 			if !s.isAccountSchedulableForSelection(acc) {
+				continue
+			}
+			if groupID != nil && accountHasGroupMetadata(acc) && !s.isAccountInGroup(acc, groupID) {
 				continue
 			}
 			// require_privacy_set: 跳过 privacy 未设置的账号并标记异常
@@ -3544,7 +3624,11 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 					if clearSticky {
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 					}
-					if !clearSticky && s.isAccountInGroup(account, groupID) && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
+					groupOK := s.latestAccountInGroup(ctx, account, groupID)
+					if !clearSticky && !groupOK {
+						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+					}
+					if !clearSticky && groupOK && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
 						return account, nil
 					}
 				}
@@ -3582,6 +3666,9 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		// Scheduler snapshots can be temporarily stale; re-check schedulability here to
 		// avoid selecting accounts that were recently rate-limited/overloaded.
 		if !s.isAccountSchedulableForSelection(acc) {
+			continue
+		}
+		if groupID != nil && accountHasGroupMetadata(acc) && !s.isAccountInGroup(acc, groupID) {
 			continue
 		}
 		// require_privacy_set: 跳过 privacy 未设置的账号并标记异常
@@ -3664,7 +3751,11 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 						if clearSticky {
 							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 						}
-						if !clearSticky && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
+						groupOK := s.latestAccountInGroup(ctx, account, groupID)
+						if !clearSticky && !groupOK {
+							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+						}
+						if !clearSticky && groupOK && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
 							if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 								if s.debugModelRoutingEnabled() {
 									logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy mixed routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), accountID)
@@ -3708,6 +3799,9 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			// Scheduler snapshots can be temporarily stale; re-check schedulability here to
 			// avoid selecting accounts that were recently rate-limited/overloaded.
 			if !s.isAccountSchedulableForSelection(acc) {
+				continue
+			}
+			if groupID != nil && accountHasGroupMetadata(acc) && !s.isAccountInGroup(acc, groupID) {
 				continue
 			}
 			// require_privacy_set: 跳过 privacy 未设置的账号并标记异常
@@ -3765,7 +3859,11 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 					if clearSticky {
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 					}
-					if !clearSticky && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
+					groupOK := s.latestAccountInGroup(ctx, account, groupID)
+					if !clearSticky && !groupOK {
+						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+					}
+					if !clearSticky && groupOK && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
 						if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 							return account, nil
 						}
@@ -3800,6 +3898,9 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		// Scheduler snapshots can be temporarily stale; re-check schedulability here to
 		// avoid selecting accounts that were recently rate-limited/overloaded.
 		if !s.isAccountSchedulableForSelection(acc) {
+			continue
+		}
+		if groupID != nil && accountHasGroupMetadata(acc) && !s.isAccountInGroup(acc, groupID) {
 			continue
 		}
 		// require_privacy_set: 跳过 privacy 未设置的账号并标记异常
