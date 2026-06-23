@@ -851,6 +851,66 @@ func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_PreferL
 	require.Equal(t, int64(2), acc.ID)
 }
 
+func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_PrefersHealthySamePriority(t *testing.T) {
+	ctx := context.Background()
+	oldTime := time.Now().Add(-2 * time.Hour)
+	newTime := time.Now().Add(-1 * time.Hour)
+	repo := &mockAccountRepoForGemini{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformGemini, Priority: 1, Status: StatusActive, Schedulable: true, LastUsedAt: &oldTime},
+			{ID: 2, Platform: PlatformGemini, Priority: 1, Status: StatusActive, Schedulable: true, LastUsedAt: &newTime},
+		},
+		accountsByID: map[int64]*Account{},
+	}
+	for i := range repo.accounts {
+		repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+	}
+
+	svc := &GeminiMessagesCompatService{
+		accountRepo: repo,
+		groupRepo:   &mockGroupRepoForGemini{groups: map[int64]*Group{}},
+		cache:       &mockGatewayCacheForGemini{},
+	}
+	slowTTFT := 2600
+	fastTTFT := 120
+	svc.ReportAccountScheduleResult(&repo.accounts[0], true, &slowTTFT)
+	svc.ReportAccountScheduleResult(&repo.accounts[1], true, &fastTTFT)
+
+	acc, err := svc.SelectAccountForModelWithExclusions(ctx, nil, "", "gemini-2.5-pro", nil)
+	require.NoError(t, err)
+	require.NotNil(t, acc)
+	require.Equal(t, int64(2), acc.ID)
+}
+
+func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_HealthDoesNotCrossPriority(t *testing.T) {
+	ctx := context.Background()
+	repo := &mockAccountRepoForGemini{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformGemini, Priority: 1, Status: StatusActive, Schedulable: true},
+			{ID: 2, Platform: PlatformGemini, Priority: 5, Status: StatusActive, Schedulable: true},
+		},
+		accountsByID: map[int64]*Account{},
+	}
+	for i := range repo.accounts {
+		repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+	}
+
+	svc := &GeminiMessagesCompatService{
+		accountRepo: repo,
+		groupRepo:   &mockGroupRepoForGemini{groups: map[int64]*Group{}},
+		cache:       &mockGatewayCacheForGemini{},
+	}
+	slowTTFT := 2600
+	fastTTFT := 120
+	svc.ReportAccountScheduleResult(&repo.accounts[0], true, &slowTTFT)
+	svc.ReportAccountScheduleResult(&repo.accounts[1], true, &fastTTFT)
+
+	acc, err := svc.SelectAccountForModelWithExclusions(ctx, nil, "", "gemini-2.5-pro", nil)
+	require.NoError(t, err)
+	require.NotNil(t, acc)
+	require.Equal(t, int64(1), acc.ID)
+}
+
 // TestGeminiPlatformRouting_DocumentRouteDecision 测试平台路由决策逻辑
 func TestGeminiPlatformRouting_DocumentRouteDecision(t *testing.T) {
 	tests := []struct {

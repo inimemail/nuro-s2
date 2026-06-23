@@ -57,10 +57,15 @@ type GatewayHandler struct {
 }
 
 func (h *GatewayHandler) reportAccountScheduleResult(account *service.Account, success bool, firstTokenMs *int) {
-	if h == nil || h.gatewayService == nil {
+	if h == nil {
 		return
 	}
-	h.gatewayService.ReportAccountScheduleResult(account, success, firstTokenMs)
+	if h.gatewayService != nil {
+		h.gatewayService.ReportAccountScheduleResult(account, success, firstTokenMs)
+	}
+	if h.geminiCompatService != nil {
+		h.geminiCompatService.ReportAccountScheduleResult(account, success, firstTokenMs)
+	}
 }
 
 // NewGatewayHandler creates a new GatewayHandler

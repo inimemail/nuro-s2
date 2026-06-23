@@ -2076,6 +2076,49 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.Equal(t, int64(2), result.Account.ID, "禁用 load-batch 时也应复用健康分层选择")
 	})
 
+	t.Run("禁用负载批量查询-健康账号满了继续用同层旧账号", func(t *testing.T) {
+		now := time.Now()
+		slowLastUsed := now.Add(-10 * time.Minute)
+		fastLastUsed := now.Add(-1 * time.Minute)
+		repo := &mockAccountRepoForPlatform{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, LastUsedAt: &slowLastUsed},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, LastUsedAt: &fastLastUsed},
+			},
+			accountsByID: map[int64]*Account{},
+		}
+		for i := range repo.accounts {
+			repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+		}
+
+		cfg := testConfig()
+		cfg.Gateway.Scheduling.LoadBatchEnabled = false
+		concurrencyCache := &mockConcurrencyCache{
+			acquireResults: map[int64]bool{
+				1: true,
+				2: false,
+			},
+		}
+
+		svc := &GatewayService{
+			accountRepo:        repo,
+			cache:              &mockGatewayCacheForPlatform{},
+			cfg:                cfg,
+			concurrencyService: NewConcurrencyService(concurrencyCache),
+		}
+		slowTTFT := 2600
+		fastTTFT := 120
+		svc.ReportAccountScheduleResult(&repo.accounts[0], true, &slowTTFT)
+		svc.ReportAccountScheduleResult(&repo.accounts[1], true, &fastTTFT)
+
+		result, err := svc.SelectAccountWithLoadAwareness(ctx, nil, "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.Account)
+		require.True(t, result.Acquired)
+		require.Equal(t, int64(1), result.Account.ID, "更健康账号槽位满时应继续尝试同优先级旧账号")
+	})
+
 	t.Run("模型路由-无ConcurrencyService也生效", func(t *testing.T) {
 		groupID := int64(1)
 		sessionHash := "sticky"

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -55,6 +56,7 @@ type GeminiMessagesCompatService struct {
 	antigravityGatewayService *AntigravityGatewayService
 	cfg                       *config.Config
 	responseHeaderFilter      *responseheaders.CompiledHeaderFilter
+	accountHealthStats        atomic.Pointer[accountRuntimeHealthStats]
 }
 
 func NewGeminiMessagesCompatService(
@@ -69,7 +71,7 @@ func NewGeminiMessagesCompatService(
 	antigravityGatewayService *AntigravityGatewayService,
 	cfg *config.Config,
 ) *GeminiMessagesCompatService {
-	return &GeminiMessagesCompatService{
+	svc := &GeminiMessagesCompatService{
 		accountRepo:               accountRepo,
 		groupRepo:                 groupRepo,
 		cache:                     cache,
@@ -82,11 +84,42 @@ func NewGeminiMessagesCompatService(
 		cfg:                       cfg,
 		responseHeaderFilter:      compileResponseHeaderFilter(cfg),
 	}
+	svc.accountHealthStats.Store(newAccountRuntimeHealthStats())
+	return svc
 }
 
 // GetTokenProvider returns the token provider for OAuth accounts
 func (s *GeminiMessagesCompatService) GetTokenProvider() *GeminiTokenProvider {
 	return s.tokenProvider
+}
+
+func (s *GeminiMessagesCompatService) ReportAccountScheduleResult(account *Account, success bool, firstTokenMs *int) {
+	if s == nil || account == nil {
+		return
+	}
+	if account.Platform != PlatformGemini && account.Platform != PlatformAntigravity {
+		return
+	}
+	stats := s.getAccountHealthStats()
+	if stats == nil {
+		return
+	}
+	stats.report(account.ID, success, firstTokenMs)
+}
+
+// getAccountHealthStats 懒加载返回健康统计(与 GatewayService 一致,使用 atomic.Pointer 避免并发竞态)。
+func (s *GeminiMessagesCompatService) getAccountHealthStats() *accountRuntimeHealthStats {
+	if s == nil {
+		return nil
+	}
+	if stats := s.accountHealthStats.Load(); stats != nil {
+		return stats
+	}
+	stats := newAccountRuntimeHealthStats()
+	if s.accountHealthStats.CompareAndSwap(nil, stats) {
+		return stats
+	}
+	return s.accountHealthStats.Load()
 }
 
 func (s *GeminiMessagesCompatService) SelectAccountForModel(ctx context.Context, groupID *int64, sessionHash string, requestedModel string) (*Account, error) {
@@ -318,8 +351,8 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 	platform string,
 	useMixedScheduling bool,
 ) *Account {
-	var selected *Account
 	precheckResult := s.buildPreCheckUsageResultMap(ctx, accounts, requestedModel)
+	candidates := make([]*Account, 0, len(accounts))
 
 	for i := range accounts {
 		acc := &accounts[i]
@@ -334,18 +367,32 @@ func (s *GeminiMessagesCompatService) selectBestGeminiAccount(
 			continue
 		}
 
-		// 选择最佳账号
-		if selected == nil {
-			selected = acc
-			continue
-		}
-
-		if s.isBetterGeminiAccount(acc, selected) {
-			selected = acc
-		}
+		candidates = append(candidates, acc)
 	}
 
-	return selected
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	return s.selectBestGeminiCandidate(candidates)
+}
+
+func (s *GeminiMessagesCompatService) selectBestGeminiCandidate(candidates []*Account) *Account {
+	if len(candidates) == 0 {
+		return nil
+	}
+	selected := selectLayeredAccount(candidates, s.getAccountHealthStats(), s.schedulingConfig(), true, time.Now())
+	if selected != nil {
+		return selected
+	}
+	return candidates[0]
+}
+
+func (s *GeminiMessagesCompatService) schedulingConfig() config.GatewaySchedulingConfig {
+	if s != nil && s.cfg != nil {
+		return s.cfg.Gateway.Scheduling
+	}
+	return config.GatewaySchedulingConfig{}
 }
 
 func (s *GeminiMessagesCompatService) buildPreCheckUsageResultMap(ctx context.Context, accounts []Account, requestedModel string) map[int64]bool {

@@ -2589,6 +2589,90 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_StrictPriorityFallsForw
 	}
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_HealthyBusyFallsThroughToSamePriority(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(160)
+	now := time.Now()
+	slowLastUsed := now.Add(-30 * time.Minute)
+	fastLastUsed := now.Add(-5 * time.Minute)
+	accounts := []Account{
+		{
+			ID:          5115,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			LastUsedAt:  &slowLastUsed,
+			GroupIDs:    []int64{groupID},
+		},
+		{
+			ID:          5116,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			LastUsedAt:  &fastLastUsed,
+			GroupIDs:    []int64{groupID},
+		},
+		{
+			ID:          5117,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    3,
+			GroupIDs:    []int64{groupID},
+		},
+	}
+	concurrencyCache := schedulerTestConcurrencyCache{
+		acquireResults: map[int64]bool{
+			5115: true,
+			5116: false,
+			5117: true,
+		},
+		loadMap: map[int64]*AccountLoadInfo{
+			5115: {AccountID: 5115, LoadRate: 10, WaitingCount: 0},
+			5116: {AccountID: 5116, LoadRate: 10, WaitingCount: 0},
+			5117: {AccountID: 5117, LoadRate: 0, WaitingCount: 0},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{sessionBindings: map[string]int64{}},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+	fastTTFT := 120
+	slowTTFT := 2600
+	svc.ReportOpenAIAccountScheduleResultForRequest(&accounts[1], "gpt-5.1", true, &fastTTFT)
+	svc.ReportOpenAIAccountScheduleResultForRequest(&accounts[0], "gpt-5.1", true, &slowTTFT)
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"session_hash_health_busy",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, int64(5115), selection.Account.ID, "健康账号忙时应继续尝试同优先级旧账号")
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_SkipsStoppedLowestPriorityAndUsesNextActualPriority(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(17)
@@ -2840,7 +2924,7 @@ func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerWaitingBeforeLRU(t *t
 	require.Equal(t, int64(5231), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerLoadBeforeTTFT(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePriorityPrefersHealthyBeforeLoad(t *testing.T) {
 	scheduler := &defaultOpenAIAccountScheduler{}
 	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
 		topK: 2,
@@ -2861,11 +2945,11 @@ func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerLoadBeforeTTFT(t *tes
 	})
 
 	require.Len(t, order, 2)
-	require.Equal(t, int64(5233), order[0].account.ID)
-	require.Equal(t, int64(5234), order[1].account.ID)
+	require.Equal(t, int64(5234), order[0].account.ID)
+	require.Equal(t, int64(5233), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_SamePriorityPrefersLRUBeforeTTFT(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePriorityPrefersHealthBeforeLRU(t *testing.T) {
 	now := time.Now()
 	oldest := now.Add(-30 * time.Minute)
 	newest := now.Add(-5 * time.Minute)
@@ -2889,8 +2973,33 @@ func TestBuildOpenAISelectionOrder_SamePriorityPrefersLRUBeforeTTFT(t *testing.T
 	})
 
 	require.Len(t, order, 2)
-	require.Equal(t, int64(5241), order[0].account.ID)
-	require.Equal(t, int64(5242), order[1].account.ID)
+	require.Equal(t, int64(5242), order[0].account.ID)
+	require.Equal(t, int64(5241), order[1].account.ID)
+}
+
+func TestBuildOpenAISelectionOrder_SamePrioritySimilarHealthStillUsesLoad(t *testing.T) {
+	scheduler := &defaultOpenAIAccountScheduler{}
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
+		topK: 2,
+		candidates: []openAIAccountCandidateScore{
+			{
+				account:  &Account{ID: 5243, Priority: 0},
+				loadInfo: &AccountLoadInfo{LoadRate: 90, WaitingCount: 4},
+				hasTTFT:  true,
+				ttft:     650,
+			},
+			{
+				account:  &Account{ID: 5244, Priority: 0},
+				loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 0},
+				hasTTFT:  true,
+				ttft:     500,
+			},
+		},
+	})
+
+	require.Len(t, order, 2)
+	require.Equal(t, int64(5244), order[0].account.ID)
+	require.Equal(t, int64(5243), order[1].account.ID)
 }
 
 func TestBuildOpenAISelectionOrder_AllCoolingPoolAccountsExcludedUntilProbeSuccess(t *testing.T) {

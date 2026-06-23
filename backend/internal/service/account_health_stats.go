@@ -7,9 +7,17 @@ import (
 )
 
 const (
-	accountHealthScoreBandThreshold = 0.30
+	// accountHealthScoreBandThreshold 是"健康相近视为同带"的容差。带越窄，
+	// 速度/错误率差距越容易把更优账号排到前面；带越宽越偏向负载均衡。
+	// 健康分满分 1.0，TTFT 维度权重见 accountHealthTTFTWeight，因此约 2x 的
+	// 首 token 速度差即可跨带胜出，10%~30% 的抖动仍判为同带走均衡。
+	accountHealthScoreBandThreshold = 0.12
 	accountHealthUnknownScore       = 0.82
 	accountHealthUnknownTTFTScore   = 0.78
+	// 健康分权重：错误率 + 首 token(TTFT)。提高 TTFT 权重让"更丝滑/回复更快"
+	// 的账号在同优先级里更容易被优先选中（仅作用于无粘性的 load-balance 选号层）。
+	accountHealthErrorWeight = 0.55
+	accountHealthTTFTWeight  = 0.45
 )
 
 type accountRuntimeHealthStats struct {
@@ -162,7 +170,7 @@ func filterByAccountHealthBand(accounts []accountWithLoad, stats *accountRuntime
 					ttftFactor = 1 - clamp01((candidates[i].ttft-minTTFT)/ttftSpread)
 				}
 			}
-			candidates[i].score = 0.65*errorFactor + 0.35*ttftFactor
+			candidates[i].score = accountHealthErrorWeight*errorFactor + accountHealthTTFTWeight*ttftFactor
 		}
 		if candidates[i].score > bestScore {
 			bestScore = candidates[i].score

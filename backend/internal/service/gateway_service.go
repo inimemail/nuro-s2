@@ -1610,10 +1610,30 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		for k, v := range excludedIDs {
 			localExcluded[k] = v
 		}
+		type fallbackWaitCandidate struct {
+			account *Account
+			plan    *AccountWaitPlan
+		}
+		var fallbackWaitCandidates []fallbackWaitCandidate
+		returnFallbackWait := func() (*AccountSelectionResult, error) {
+			for _, candidate := range fallbackWaitCandidates {
+				if candidate.account == nil || candidate.plan == nil {
+					continue
+				}
+				if !s.checkAndRegisterSession(ctx, candidate.account, sessionHash) {
+					continue
+				}
+				return s.newSelectionResult(ctx, candidate.account, false, nil, candidate.plan)
+			}
+			return nil, ErrNoAvailableAccounts
+		}
 
 		for {
 			account, err := s.SelectAccountForModelWithExclusions(ctx, groupID, sessionHash, requestedModel, localExcluded)
 			if err != nil {
+				if len(fallbackWaitCandidates) > 0 && errors.Is(err, ErrNoAvailableAccounts) {
+					return returnFallbackWait()
+				}
 				return nil, err
 			}
 
@@ -1629,29 +1649,26 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				}
 			}
 
-			// 对于等待计划的情况，也需要先检查会话限制
-			if !s.checkAndRegisterSession(ctx, account, sessionHash) {
-				localExcluded[account.ID] = struct{}{}
-				continue
-			}
-
+			fallbackWaitCandidates = append(fallbackWaitCandidates, fallbackWaitCandidate{
+				account: account,
+				plan: &AccountWaitPlan{
+					AccountID:      account.ID,
+					MaxConcurrency: account.Concurrency,
+					Timeout:        cfg.FallbackWaitTimeout,
+					MaxWaiting:     cfg.FallbackMaxWaiting,
+				},
+			})
 			if stickyAccountID > 0 && stickyAccountID == account.ID && s.concurrencyService != nil {
 				waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, account.ID)
 				if waitingCount < cfg.StickySessionMaxWaiting {
-					return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
-						AccountID:      account.ID,
-						MaxConcurrency: account.Concurrency,
-						Timeout:        cfg.StickySessionWaitTimeout,
-						MaxWaiting:     cfg.StickySessionMaxWaiting,
-					})
+					fallbackWaitCandidates[len(fallbackWaitCandidates)-1].plan.Timeout = cfg.StickySessionWaitTimeout
+					fallbackWaitCandidates[len(fallbackWaitCandidates)-1].plan.MaxWaiting = cfg.StickySessionMaxWaiting
+					if s.checkAndRegisterSession(ctx, account, sessionHash) {
+						return s.newSelectionResult(ctx, account, false, nil, fallbackWaitCandidates[len(fallbackWaitCandidates)-1].plan)
+					}
 				}
 			}
-			return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
-				AccountID:      account.ID,
-				MaxConcurrency: account.Concurrency,
-				Timeout:        cfg.FallbackWaitTimeout,
-				MaxWaiting:     cfg.FallbackMaxWaiting,
-			})
+			localExcluded[account.ID] = struct{}{}
 		}
 	}
 

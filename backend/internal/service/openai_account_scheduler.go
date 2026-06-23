@@ -1040,12 +1040,16 @@ func sortOpenAIStrictPriorityCandidatesWithReset(pool []openAIAccountCandidateSc
 		now = time.Now()
 	}
 	ordered := append([]openAIAccountCandidateScore(nil), pool...)
+	healthScores := buildOpenAIAccountCandidateHealthScores(ordered)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
 		if a.account.Priority != b.account.Priority {
 			return a.account.Priority < b.account.Priority
 		}
 		if less, ok := nonPoolAccountBeforePool(a.account, b.account); ok {
+			return less
+		}
+		if less, ok := openAIHealthScoreLess(healthScores[a.account.ID], healthScores[b.account.ID]); ok {
 			return less
 		}
 		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
@@ -1082,6 +1086,61 @@ func sortOpenAIStrictPriorityCandidatesWithReset(pool []openAIAccountCandidateSc
 	})
 	shuffleOpenAIStrictPriorityTiesWithReset(ordered, preferSoonestReset)
 	return ordered
+}
+
+func buildOpenAIAccountCandidateHealthScores(pool []openAIAccountCandidateScore) map[int64]float64 {
+	if len(pool) == 0 {
+		return nil
+	}
+	minTTFT, maxTTFT := 0.0, 0.0
+	hasTTFTSample := false
+	for _, candidate := range pool {
+		if candidate.hasTTFT && candidate.ttft > 0 {
+			if !hasTTFTSample || candidate.ttft < minTTFT {
+				minTTFT = candidate.ttft
+			}
+			if !hasTTFTSample || candidate.ttft > maxTTFT {
+				maxTTFT = candidate.ttft
+			}
+			hasTTFTSample = true
+		}
+	}
+
+	scores := make(map[int64]float64, len(pool))
+	for _, candidate := range pool {
+		if candidate.account == nil {
+			continue
+		}
+		scores[candidate.account.ID] = openAIAccountRuntimeHealthScore(candidate.errorRate, candidate.ttft, candidate.hasTTFT, minTTFT, maxTTFT, hasTTFTSample)
+	}
+	return scores
+}
+
+func openAIAccountRuntimeHealthScore(errorRate float64, ttft float64, hasTTFT bool, minTTFT float64, maxTTFT float64, hasTTFTSample bool) float64 {
+	if !hasTTFT && errorRate <= 0 {
+		return accountHealthUnknownScore
+	}
+	errorFactor := 1 - clamp01(errorRate)
+	ttftFactor := accountHealthUnknownTTFTScore
+	if hasTTFT {
+		ttftFactor = 1
+		if hasTTFTSample && maxTTFT > minTTFT {
+			ttftSpread := minTTFT * 2
+			if ttftSpread < 300 {
+				ttftSpread = 300
+			}
+			ttftFactor = 1 - clamp01((ttft-minTTFT)/ttftSpread)
+		}
+	}
+	return accountHealthErrorWeight*errorFactor + accountHealthTTFTWeight*ttftFactor
+}
+
+func openAIHealthScoreLess(aScore, bScore float64) (bool, bool) {
+	diff := aScore - bScore
+	if math.Abs(diff) <= accountHealthScoreBandThreshold {
+		return false, false
+	}
+	return diff > 0, true
 }
 
 func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
