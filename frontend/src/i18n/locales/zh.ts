@@ -97,6 +97,7 @@ export default {
       claude: 'Claude',
       gemini: 'Gemini',
       antigravity: 'Antigravity',
+      grok: 'Grok',
       more: '更多'
     },
     // CTA 区块
@@ -2226,6 +2227,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        grok: 'Grok',
       },
       saving: '保存中...',
       noGroups: '暂无分组',
@@ -3297,6 +3299,7 @@ export default {
         anthropic: 'Anthropic',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        grok: 'Grok',
       },
       types: {
         oauth: 'OAuth',
@@ -3394,7 +3397,9 @@ export default {
         gemini3Image: 'G31FI',
         claude: 'Claude',
         passiveSampled: '被动采样',
-        activeQuery: '查询'
+        activeQuery: '查询',
+        activeQueried: '已主动查询',
+        resetCredits: '重置次数'
       },
       tier: {
         free: 'Free',
@@ -4079,6 +4084,34 @@ export default {
           refreshTokenAuth: '手动输入 RT',
           refreshTokenDesc: '输入您已有的 Antigravity Refresh Token，支持批量输入（每行一个），系统将自动验证并创建账号。',
           refreshTokenPlaceholder: '粘贴您的 Antigravity Refresh Token...\n支持多个，每行一个',
+          validating: '验证中...',
+          validateAndCreate: '验证并创建账号',
+          pleaseEnterRefreshToken: '请输入 Refresh Token',
+          failedToValidateRT: '验证 Refresh Token 失败'
+        },
+        // Grok specific
+        grok: {
+          title: 'Grok 账户授权',
+          followSteps: '请按照以下步骤完成 Grok 账户授权：',
+          step1GenerateUrl: '点击下方按钮生成授权链接',
+          generateAuthUrl: '生成授权链接',
+          step2OpenUrl: '在浏览器中打开链接并完成授权',
+          openUrlDesc: '请在新标签页中打开授权链接，登录您的 Grok/xAI 账户并授权。',
+          importantNotice:
+            '重要提示：授权完成后，请复制浏览器地址栏中包含 code 和 state 的完整回调链接，或仅复制 code 参数值。',
+          step3EnterCode: '输入授权链接或 Code',
+          authCodeDesc:
+            '授权完成后，当页面地址变为 http://localhost:xxx/auth/callback?code=... 时：',
+          authCode: '授权链接或 Code',
+          authCodePlaceholder:
+            '方式1：复制完整的链接\n(http://localhost:xxx/auth/callback?code=...&state=...)\n方式2：仅复制 code 参数的值',
+          authCodeHint: '您可以直接复制整个链接或仅复制 code 参数值，系统会自动识别',
+          failedToGenerateUrl: '生成 Grok 授权链接失败',
+          missingExchangeParams: '缺少 code / session_id',
+          failedToExchangeCode: 'Grok 授权码兑换失败',
+          refreshTokenAuth: '手动输入 RT',
+          refreshTokenDesc: '输入您已有的 Grok Refresh Token，支持批量输入（每行一个），系统将自动验证并创建账号。',
+          refreshTokenPlaceholder: '粘贴您的 Grok Refresh Token...\n支持多个，每行一个',
           validating: '验证中...',
           validateAndCreate: '验证并创建账号',
           pleaseEnterRefreshToken: '请输入 Refresh Token',
@@ -5988,6 +6021,17 @@ export default {
         openaiAllowClaudeCodeCodexPlugin: '允许在 Claude Code 中使用 Codex 插件',
         openaiAllowClaudeCodeCodexPluginDesc:
           '全局开关，仅对已开启「仅允许 Codex 官方客户端」的 OpenAI OAuth 账号生效。开启后，所有此类账号都额外放行通过 Claude Code 的 Codex 插件发起的请求（精确匹配 originator=Claude Code），无需逐账号配置；上游请求仍保持透传。',
+        codexCLIOnlyPolicy: 'Codex 门禁策略',
+        codexCLIOnlyPolicyHint: '仅对开启「仅允许 Codex 官方客户端」的 OpenAI OAuth 账号生效。JSON 留空表示不启用额外策略；右侧开关只启用 app-server 客户端扩展，不改变调度。',
+        codexCLIOnlyBlacklist: '全局黑名单 JSON',
+        codexCLIOnlyBlacklistPlaceholder: '[{"ua_contains":["BadBot/"]}]',
+        codexCLIOnlyBlacklistHint: '黑名单按 OR 语义匹配：originator 或任一 UA 标记命中即可在官方客户端检测前拦截。',
+        codexCLIOnlyWhitelist: '全局白名单 JSON',
+        codexCLIOnlyWhitelistPlaceholder: '[{"originator":"Trusted Tool","ua_contains":["Trusted Tool/"],"skip_engine_fingerprint":true}]',
+        codexCLIOnlyWhitelistHint: '白名单必须同时声明 originator 和 UA 标记；skip_engine_fingerprint 只对命中的自由白名单条目生效。',
+        codexCLIOnlyEngineFingerprintSignals: '引擎指纹信号 JSON',
+        codexCLIOnlyEngineFingerprintSignalsPlaceholder: '[{"type":"header_prefix","match":["x-codex-"],"required":true}]',
+        codexCLIOnlyEngineFingerprintSignalsHint: '配置后，已命中的客户端还必须满足所有 required 信号；留空保持旧的快速路径。',
       },
       webSearchEmulation: {
         title: 'Web Search 模拟',

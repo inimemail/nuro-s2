@@ -34,7 +34,9 @@ func TestIsCodexOfficialClientRequest(t *testing.T) {
 		want bool
 	}{
 		{name: "codex_cli_rs 前缀", ua: "codex_cli_rs/0.98.0", want: true},
+		{name: "codex-tui 前缀", ua: "codex-tui/0.125.0 (Ubuntu 22.4.0; x86_64)", want: true},
 		{name: "codex_vscode 前缀", ua: "codex_vscode/1.0.0", want: true},
+		{name: "codex_vscode_copilot 前缀", ua: "codex_vscode_copilot/0.1.0", want: true},
 		{name: "codex_app 前缀", ua: "codex_app/0.1.0", want: true},
 		{name: "codex_chatgpt_desktop 前缀", ua: "codex_chatgpt_desktop/1.0.0", want: true},
 		{name: "codex_atlas 前缀", ua: "codex_atlas/1.0.0", want: true},
@@ -64,7 +66,9 @@ func TestIsCodexOfficialClientOriginator(t *testing.T) {
 		want       bool
 	}{
 		{name: "codex_cli_rs", originator: "codex_cli_rs", want: true},
+		{name: "codex-tui", originator: "codex-tui", want: true},
 		{name: "codex_vscode", originator: "codex_vscode", want: true},
+		{name: "codex_vscode_copilot", originator: "codex_vscode_copilot", want: true},
 		{name: "codex_app", originator: "codex_app", want: true},
 		{name: "codex_chatgpt_desktop", originator: "codex_chatgpt_desktop", want: true},
 		{name: "codex_atlas", originator: "codex_atlas", want: true},

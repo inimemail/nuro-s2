@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -257,5 +258,92 @@ func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T
 		)
 		require.True(t, result.Matched)
 		require.Equal(t, CodexClientRestrictionReasonMatchedAllowedClient, result.Reason)
+	})
+}
+
+func TestOpenAICodexClientRestrictionDetector_DetectWithPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{"codex_cli_only": true},
+	}
+	detector := NewOpenAICodexClientRestrictionDetector(nil)
+
+	t.Run("空策略保持旧官方客户端放行", func(t *testing.T) {
+		result := detector.DetectWithPolicy(newCodexDetectorTestContext("codex-tui/0.125.0", ""), account, nil, CodexCLIOnlyPolicy{}, nil)
+		require.True(t, result.Enabled)
+		require.True(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
+	})
+
+	t.Run("黑名单优先阻断官方客户端", func(t *testing.T) {
+		result := detector.DetectWithPolicy(
+			newCodexDetectorTestContext("codex-tui/0.125.0", ""),
+			account,
+			nil,
+			CodexCLIOnlyPolicy{Blacklist: []openai.AllowedClientEntry{{UAContains: []string{"codex-tui/"}}}},
+			nil,
+		)
+		require.True(t, result.Enabled)
+		require.False(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonMatchedGlobalBlacklist, result.Reason)
+	})
+
+	t.Run("自由白名单放行匹配客户端", func(t *testing.T) {
+		result := detector.DetectWithPolicy(
+			newCodexDetectorTestContext("Custom Tool/1.0", "Custom Tool"),
+			account,
+			nil,
+			CodexCLIOnlyPolicy{Whitelist: []openai.AllowedClientEntry{{
+				Originator: "Custom Tool",
+				UAContains: []string{"Custom Tool/"},
+			}}},
+			nil,
+		)
+		require.True(t, result.Enabled)
+		require.True(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonMatchedGlobalWhitelist, result.Reason)
+	})
+
+	t.Run("配置指纹后缺失 required 信号则拒绝", func(t *testing.T) {
+		result := detector.DetectWithPolicy(
+			newCodexDetectorTestContext("codex-tui/0.125.0", ""),
+			account,
+			nil,
+			CodexCLIOnlyPolicy{EngineFingerprintSignals: []openai.EngineFingerprintSignal{{
+				Type:     openai.FingerprintSignalHeaderExact,
+				Match:    []string{"x-codex-required"},
+				Required: true,
+			}}},
+			nil,
+		)
+		require.True(t, result.Enabled)
+		require.False(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonEngineFingerprintMissing, result.Reason)
+	})
+
+	t.Run("白名单可显式跳过指纹策略", func(t *testing.T) {
+		result := detector.DetectWithPolicy(
+			newCodexDetectorTestContext("Trusted Proxy/1.0", "Trusted Proxy"),
+			account,
+			nil,
+			CodexCLIOnlyPolicy{
+				Whitelist: []openai.AllowedClientEntry{{
+					Originator:            "Trusted Proxy",
+					UAContains:            []string{"Trusted Proxy/"},
+					SkipEngineFingerprint: true,
+				}},
+				EngineFingerprintSignals: []openai.EngineFingerprintSignal{{
+					Type:     openai.FingerprintSignalHeaderExact,
+					Match:    []string{"x-codex-required"},
+					Required: true,
+				}},
+			},
+			nil,
+		)
+		require.True(t, result.Enabled)
+		require.True(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonMatchedGlobalWhitelist, result.Reason)
 	})
 }

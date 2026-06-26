@@ -15,6 +15,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
 type Account struct {
@@ -1385,12 +1386,20 @@ func (a *Account) IsAnthropic() bool {
 	return a.Platform == PlatformAnthropic
 }
 
+func (a *Account) IsGrok() bool {
+	return a.Platform == PlatformGrok
+}
+
 func (a *Account) IsOpenAIOAuth() bool {
 	return a.IsOpenAI() && a.Type == AccountTypeOAuth
 }
 
 func (a *Account) IsOpenAIApiKey() bool {
 	return a.IsOpenAI() && a.Type == AccountTypeAPIKey
+}
+
+func (a *Account) IsGrokOAuth() bool {
+	return a.IsGrok() && a.Type == AccountTypeOAuth
 }
 
 func (a *Account) GetOpenAIBaseURL() string {
@@ -1434,6 +1443,27 @@ func (a *Account) GetOpenAIApiKey() string {
 	return a.GetCredential("api_key")
 }
 
+func (a *Account) GetGrokBaseURL() string {
+	if !a.IsGrok() {
+		return ""
+	}
+	return xai.EffectiveBaseURL(a.GetCredential("base_url"))
+}
+
+func (a *Account) GetGrokAccessToken() string {
+	if !a.IsGrokOAuth() {
+		return ""
+	}
+	return a.GetCredential("access_token")
+}
+
+func (a *Account) GetGrokRefreshToken() string {
+	if !a.IsGrokOAuth() {
+		return ""
+	}
+	return a.GetCredential("refresh_token")
+}
+
 func (a *Account) GetOpenAIUserAgent() string {
 	if !a.IsOpenAI() {
 		return ""
@@ -1469,13 +1499,13 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if capability == "" {
 		return true
 	}
-	if !a.IsOpenAI() {
-		return false
-	}
 	switch capability {
 	case OpenAIEndpointCapabilityChatCompletions:
+		if !a.IsOpenAI() && !a.IsGrok() {
+			return false
+		}
 	case OpenAIEndpointCapabilityEmbeddings:
-		if a.Type != AccountTypeAPIKey {
+		if !a.IsOpenAI() || a.Type != AccountTypeAPIKey {
 			return false
 		}
 	default:

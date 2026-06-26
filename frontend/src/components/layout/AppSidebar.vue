@@ -178,7 +178,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, ref, watch } from 'vue'
+import { computed, h, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAdminSettingsStore, useAppStore, useAuthStore, useOnboardingStore } from '@/stores'
@@ -881,11 +881,6 @@ watch(
   { immediate: true }
 )
 
-onMounted(() => {
-  if (isAdmin.value) {
-    adminSettingsStore.fetch()
-  }
-})
 </script>
 
 <style scoped>

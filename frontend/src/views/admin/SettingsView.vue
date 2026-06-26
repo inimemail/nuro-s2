@@ -4462,6 +4462,137 @@
                 </div>
                 <Toggle v-model="form.openai_allow_claude_code_codex_plugin" />
               </div>
+
+              <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-700">
+                <div class="mb-4 flex items-center justify-between gap-4">
+                  <div>
+                    <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
+                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyPolicy") }}
+                    </h3>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyPolicyHint") }}
+                    </p>
+                  </div>
+                  <Toggle v-model="form.codex_cli_only_allow_app_server_clients" />
+                </div>
+                <div class="grid gap-4 lg:grid-cols-2">
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyBlacklist") }}
+                    </label>
+                    <textarea
+                      v-model="form.codex_cli_only_blacklist"
+                      rows="5"
+                      class="input w-full font-mono text-xs"
+                      :placeholder="t('admin.settings.gatewayForwarding.codexCLIOnlyBlacklistPlaceholder')"
+                    ></textarea>
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyBlacklistHint") }}
+                    </p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyWhitelist") }}
+                    </label>
+                    <textarea
+                      v-model="form.codex_cli_only_whitelist"
+                      rows="5"
+                      class="input w-full font-mono text-xs"
+                      :placeholder="t('admin.settings.gatewayForwarding.codexCLIOnlyWhitelistPlaceholder')"
+                    ></textarea>
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyWhitelistHint") }}
+                    </p>
+                  </div>
+                </div>
+                <div class="mt-4">
+                  <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyEngineFingerprintSignals") }}
+                    </label>
+                    <div class="flex items-center gap-2">
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-secondary"
+                        @click="resetCodexFingerprintRows"
+                      >
+                        {{ t("common.reset") }}
+                      </button>
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-primary"
+                        @click="addCodexFingerprintRow"
+                      >
+                        {{ t("common.add") }}
+                      </button>
+                    </div>
+                  </div>
+                  <div class="overflow-hidden rounded-lg border border-gray-200 dark:border-dark-700">
+                    <table class="min-w-full divide-y divide-gray-200 text-xs dark:divide-dark-700">
+                      <thead class="bg-gray-50 dark:bg-dark-800">
+                        <tr>
+                          <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">
+                            Type
+                          </th>
+                          <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">
+                            Match
+                          </th>
+                          <th class="w-24 px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">
+                            Required
+                          </th>
+                          <th class="w-16 px-3 py-2"></th>
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
+                        <tr
+                          v-for="(row, index) in codexFingerprintRows"
+                          :key="index"
+                          class="bg-white dark:bg-dark-900"
+                        >
+                          <td class="px-3 py-2 align-top">
+                            <select v-model="row.type" class="input h-9 w-full text-xs">
+                              <option
+                                v-for="type in codexFingerprintTypeOptions"
+                                :key="type"
+                                :value="type"
+                              >
+                                {{ type }}
+                              </option>
+                            </select>
+                          </td>
+                          <td class="px-3 py-2 align-top">
+                            <input
+                              v-model="row.match"
+                              class="input h-9 w-full font-mono text-xs"
+                              placeholder="session-id / session_id"
+                            />
+                          </td>
+                          <td class="px-3 py-2 align-middle">
+                            <Toggle v-model="row.required" />
+                          </td>
+                          <td class="px-3 py-2 align-middle">
+                            <button
+                              type="button"
+                              class="btn btn-sm btn-secondary"
+                              @click="removeCodexFingerprintRow(index)"
+                            >
+                              {{ t("common.delete") }}
+                            </button>
+                          </td>
+                        </tr>
+                        <tr v-if="codexFingerprintRows.length === 0">
+                          <td colspan="4" class="px-3 py-4 text-center text-gray-500 dark:text-gray-400">
+                            {{ t("common.noData") }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.codexCLIOnlyEngineFingerprintSignalsHint") }}
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
           <!-- Web Search Emulation -->
@@ -7193,6 +7324,13 @@ import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
 import BackupSettings from "@/views/admin/BackupView.vue";
 import EmailTemplateEditor from "@/views/admin/settings/EmailTemplateEditor.vue";
+import {
+  defaultFingerprintSignalRows,
+  parseFingerprintSignalsToRows,
+  serializeFingerprintRowsToJSON,
+  type FingerprintSignalRow,
+  type FingerprintSignalType,
+} from "./codexFingerprintSignals";
 import { useClipboard } from "@/composables/useClipboard";
 import { affiliatesAPI, type AffiliateAdminEntry, type SimpleUser as AffiliateSimpleUser } from "@/api/admin/affiliates";
 import { extractApiErrorMessage, extractI18nErrorMessage } from "@/utils/apiError";
@@ -7561,6 +7699,14 @@ const testEmailAddress = ref("");
 const registrationEmailSuffixWhitelistTags = ref<string[]>([]);
 const registrationEmailSuffixWhitelistDraft = ref("");
 const tablePageSizeOptionsInput = ref("10, 20, 50, 100");
+const codexFingerprintRows = ref<FingerprintSignalRow[]>(
+  defaultFingerprintSignalRows(),
+);
+const codexFingerprintTypeOptions: FingerprintSignalType[] = [
+  "header_exact",
+  "header_prefix",
+  "body_path",
+];
 
 // Admin API Key 状态
 const adminApiKeyLoading = ref(true);
@@ -7926,6 +8072,10 @@ const form = reactive<SettingsForm>({
   antigravity_user_agent_version: "",
   openai_codex_user_agent: "",
   openai_allow_claude_code_codex_plugin: false,
+  codex_cli_only_blacklist: "",
+  codex_cli_only_whitelist: "",
+  codex_cli_only_allow_app_server_clients: false,
+  codex_cli_only_engine_fingerprint_signals: "",
   // 余额、订阅到期与账号限额通知
   balance_low_notify_enabled: false,
   balance_low_notify_threshold: 0,
@@ -8534,6 +8684,36 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function syncCodexFingerprintRowsFromForm(): void {
+  const rows = parseFingerprintSignalsToRows(
+    form.codex_cli_only_engine_fingerprint_signals || "",
+  );
+  codexFingerprintRows.value =
+    rows.length > 0 ? rows : defaultFingerprintSignalRows();
+}
+
+function syncCodexFingerprintRowsToForm(): void {
+  form.codex_cli_only_engine_fingerprint_signals = serializeFingerprintRowsToJSON(
+    codexFingerprintRows.value,
+  );
+}
+
+function addCodexFingerprintRow(): void {
+  codexFingerprintRows.value.push({
+    type: "header_exact",
+    match: "",
+    required: false,
+  });
+}
+
+function removeCodexFingerprintRow(index: number): void {
+  codexFingerprintRows.value.splice(index, 1);
+}
+
+function resetCodexFingerprintRows(): void {
+  codexFingerprintRows.value = defaultFingerprintSignalRows();
+}
+
 async function loadSettings() {
   loading.value = true;
   loadFailed.value = false;
@@ -8550,6 +8730,7 @@ async function loadSettings() {
     loadClaudeOAuthSystemPromptBlocks(
       String(settings.claude_oauth_system_prompt_blocks || ""),
     );
+    syncCodexFingerprintRowsFromForm();
     if (!["off", "smart", "aggressive"].includes(form.stream_low_latency_mode)) {
       form.stream_low_latency_mode = settings.low_latency_stream_headers
         ? "smart"
@@ -8880,6 +9061,7 @@ async function saveSettings() {
     if (!isValidHttpUrl(form.doc_url)) form.doc_url = "";
     syncWeChatConnectMode();
     syncClaudeOAuthSystemPromptBlocksToForm();
+    syncCodexFingerprintRowsToForm();
     const wechatStoredMode = deriveWeChatConnectStoredMode(
       form.wechat_connect_open_enabled,
       form.wechat_connect_mp_enabled,
@@ -9079,6 +9261,12 @@ async function saveSettings() {
       openai_codex_user_agent:
         form.openai_codex_user_agent?.trim() || "",
       openai_allow_claude_code_codex_plugin: form.openai_allow_claude_code_codex_plugin,
+      codex_cli_only_blacklist: form.codex_cli_only_blacklist?.trim() || "",
+      codex_cli_only_whitelist: form.codex_cli_only_whitelist?.trim() || "",
+      codex_cli_only_allow_app_server_clients:
+        form.codex_cli_only_allow_app_server_clients,
+      codex_cli_only_engine_fingerprint_signals:
+        form.codex_cli_only_engine_fingerprint_signals?.trim() || "",
       // Payment configuration
       payment_enabled: form.payment_enabled,
       risk_control_enabled: form.risk_control_enabled,

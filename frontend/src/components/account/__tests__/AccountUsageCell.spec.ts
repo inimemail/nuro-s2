@@ -309,14 +309,14 @@ describe('AccountUsageCell', () => {
 
     await flushPromises()
 
-    const queryButton = wrapper.findAll('button').find(button => button.text().includes('查询'))
+    const queryButton = wrapper.findAll('button').find(button => button.text().includes('admin.accounts.usageWindow.activeQuery'))
     expect(queryButton).toBeTruthy()
     await queryButton!.trigger('click')
     await flushPromises()
 
     expect(getUsage).toHaveBeenCalledWith(2020, 'active', true)
     expect(queryOpenAIQuota).toHaveBeenCalledWith(2020)
-    expect(wrapper.text()).toContain('重置次数 1')
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.resetCredits 1')
   })
 
   it('OpenAI OAuth reset credit 查询缺少次数时显示 0', async () => {
@@ -349,13 +349,13 @@ describe('AccountUsageCell', () => {
 
     await flushPromises()
 
-    const queryButton = wrapper.findAll('button').find(button => button.text().includes('查询'))
+    const queryButton = wrapper.findAll('button').find(button => button.text().includes('admin.accounts.usageWindow.activeQuery'))
     expect(queryButton).toBeTruthy()
     await queryButton!.trigger('click')
     await flushPromises()
 
     expect(queryOpenAIQuota).toHaveBeenCalledWith(2021)
-    expect(wrapper.text()).toContain('重置次数 0')
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.resetCredits 0')
     expect(wrapper.text()).not.toContain('未知')
   })
 
@@ -395,7 +395,7 @@ describe('AccountUsageCell', () => {
 
     await flushPromises()
 
-    const queryButton = wrapper.findAll('button').find(button => button.text().includes('查询'))
+    const queryButton = wrapper.findAll('button').find(button => button.text().includes('admin.accounts.usageWindow.activeQuery'))
     expect(queryButton).toBeTruthy()
     await queryButton!.trigger('click')
     await flushPromises()

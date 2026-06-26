@@ -90,6 +90,28 @@ func TestShouldClearStickySession(t *testing.T) {
 			want:           false,           // 不同模型不受影响
 		},
 		{
+			name: "pool mode ignores model rate limit",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Credentials: map[string]any{
+					"api_key":   "sk-test",
+					"pool_mode": true,
+				},
+				Extra: map[string]any{
+					"model_rate_limits": map[string]any{
+						"gpt-5.4-mini": map[string]any{
+							"rate_limit_reset_at": longRateLimitReset,
+						},
+					},
+				},
+			},
+			requestedModel: "gpt-5.4-mini",
+			want:           false,
+		},
+		{
 			name: "apikey quota exceeded",
 			account: &Account{
 				Status:      StatusActive,

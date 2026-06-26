@@ -741,7 +741,7 @@ func (s *OpenAIGatewayService) checkOpenAIEdgeLocalAccountPolicy(ctx context.Con
 	if s == nil {
 		return fmt.Errorf("openai gateway service is nil")
 	}
-	restrictionResult := s.detectCodexClientRestriction(c, account)
+	restrictionResult := s.detectCodexClientRestriction(c, account, body)
 	apiKeyID := getAPIKeyIDFromContext(c)
 	logCodexCLIOnlyDetection(ctx, c, account, apiKeyID, restrictionResult, body)
 	if restrictionResult.Enabled && !restrictionResult.Matched {

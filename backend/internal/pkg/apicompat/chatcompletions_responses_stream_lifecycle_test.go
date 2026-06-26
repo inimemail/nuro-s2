@@ -179,6 +179,22 @@ func TestStream_ToolCallLifecycleComplete(t *testing.T) {
 	require.True(t, sawItemDone, "function_call output_item.done missing")
 }
 
+func TestStream_ToolCallFirstChunkArgumentsNotDoubled(t *testing.T) {
+	events := collectStreamEvents(t, []string{
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"exec","arguments":"{\"cmd\":\"ls\"}"}}]}}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+	})
+
+	for _, e := range events {
+		if e.Type == "response.function_call_arguments.done" {
+			require.Equal(t, `{"cmd":"ls"}`, e.Arguments)
+		}
+		if e.Type == "response.output_item.done" && e.Item != nil && e.Item.Type == "function_call" {
+			require.Equal(t, `{"cmd":"ls"}`, e.Item.Arguments)
+		}
+	}
+}
+
 // TestStream_SSEWireComplete drives the full stream through SSE encoding and
 // asserts the function_call events carry complete fields on the wire.
 func TestStream_SSEWireComplete(t *testing.T) {

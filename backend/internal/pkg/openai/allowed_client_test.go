@@ -93,3 +93,27 @@ func TestMatchAllowedClients(t *testing.T) {
 		})
 	}
 }
+
+func TestAllowedClientEntryValidationAndDenyMatch(t *testing.T) {
+	if !((AllowedClientEntry{Originator: "Tool", UAContains: []string{"Tool/"}}).IsWhitelistable()) {
+		t.Fatal("entry with originator and UA marker should be whitelistable")
+	}
+	if (AllowedClientEntry{Originator: "Tool"}).IsWhitelistable() {
+		t.Fatal("whitelist entry without UA marker should be rejected")
+	}
+	if (AllowedClientEntry{Originator: "Tool", UAContains: []string{" "}}).IsWhitelistable() {
+		t.Fatal("whitelist entry with blank UA marker should be rejected")
+	}
+
+	denyByOriginator := AllowedClientEntry{Originator: "Blocked Tool"}
+	if !IsDeniedClientMatch("curl/8.0", "blocked tool", denyByOriginator) {
+		t.Fatal("deny entry should match originator without requiring UA")
+	}
+	denyByUA := AllowedClientEntry{UAContains: []string{"BadBot/"}}
+	if !IsDeniedClientMatch("BadBot/1.0", "", denyByUA) {
+		t.Fatal("deny entry should match UA marker without requiring originator")
+	}
+	if IsDeniedClientMatch("curl/8.0", "other", denyByUA) {
+		t.Fatal("deny entry should not match unrelated request")
+	}
+}

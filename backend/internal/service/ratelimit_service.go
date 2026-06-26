@@ -1646,6 +1646,10 @@ func (s *RateLimitService) HandleOpenAIImageRateLimit(ctx context.Context, accou
 	if !isOpenAIImageRateLimitError(statusCode, responseBody) {
 		return false
 	}
+	if account.IsPoolMode() {
+		slog.Info("openai_image_rate_limit_skipped_for_pool_mode", "account_id", account.ID)
+		return true
+	}
 
 	resetAt := openAIImageRateLimitResetAt(headers, responseBody)
 	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, openAIImageGenerationRateLimitKey, resetAt, openAIImageRateLimitReason); err != nil {
@@ -1749,6 +1753,10 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 	}
 	if !isUpstreamModelNotFoundError(statusCode, responseBody) {
 		return false
+	}
+	if account.IsPoolMode() {
+		slog.Info("upstream_model_not_found_model_rate_limit_skipped_for_pool_mode", "account_id", account.ID, "model", requestedModel)
+		return true
 	}
 	modelKey := modelRateLimitKeyForUpstreamModelNotFound(ctx, account, requestedModel)
 	if modelKey == "" {

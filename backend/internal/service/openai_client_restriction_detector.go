@@ -1,6 +1,8 @@
 package service
 
 import (
+	"net/http"
+
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/gin-gonic/gin"
@@ -17,11 +19,21 @@ const (
 	CodexClientRestrictionReasonMatchedAllowedClient = "allowed_client_matched"
 	// CodexClientRestrictionReasonMatchedGlobalAllowedClient 表示请求命中全局额外放行的命名客户端预设。
 	CodexClientRestrictionReasonMatchedGlobalAllowedClient = "global_allowed_client_matched"
+	CodexClientRestrictionReasonMatchedGlobalWhitelist     = "global_whitelist_matched"
+	CodexClientRestrictionReasonMatchedGlobalBlacklist     = "global_blacklist_matched"
+	CodexClientRestrictionReasonEngineFingerprintMissing   = "engine_fingerprint_missing"
 	// CodexClientRestrictionReasonNotMatchedUA 表示请求未命中官方客户端 UA 白名单。
 	CodexClientRestrictionReasonNotMatchedUA = "official_client_user_agent_not_matched"
 	// CodexClientRestrictionReasonForceCodexCLI 表示通过 ForceCodexCLI 配置兜底放行。
 	CodexClientRestrictionReasonForceCodexCLI = "force_codex_cli_enabled"
 )
+
+type CodexCLIOnlyPolicy struct {
+	Blacklist                []openai.AllowedClientEntry
+	Whitelist                []openai.AllowedClientEntry
+	AllowAppServerClients    bool
+	EngineFingerprintSignals []openai.EngineFingerprintSignal
+}
 
 // CodexClientRestrictionDetectionResult 是 codex_cli_only 统一检测入口结果。
 type CodexClientRestrictionDetectionResult struct {
@@ -33,6 +45,7 @@ type CodexClientRestrictionDetectionResult struct {
 // CodexClientRestrictionDetector 定义 codex_cli_only 统一检测入口。
 type CodexClientRestrictionDetector interface {
 	Detect(c *gin.Context, account *Account, globalAllowedClients []string) CodexClientRestrictionDetectionResult
+	DetectWithPolicy(c *gin.Context, account *Account, globalAllowedClients []string, policy CodexCLIOnlyPolicy, body []byte) CodexClientRestrictionDetectionResult
 }
 
 // OpenAICodexClientRestrictionDetector 为 OpenAI OAuth codex_cli_only 的默认实现。
@@ -45,6 +58,10 @@ func NewOpenAICodexClientRestrictionDetector(cfg *config.Config) *OpenAICodexCli
 }
 
 func (d *OpenAICodexClientRestrictionDetector) Detect(c *gin.Context, account *Account, globalAllowedClients []string) CodexClientRestrictionDetectionResult {
+	return d.DetectWithPolicy(c, account, globalAllowedClients, CodexCLIOnlyPolicy{}, nil)
+}
+
+func (d *OpenAICodexClientRestrictionDetector) DetectWithPolicy(c *gin.Context, account *Account, globalAllowedClients []string, policy CodexCLIOnlyPolicy, body []byte) CodexClientRestrictionDetectionResult {
 	if account == nil || !account.IsCodexCLIOnlyEnabled() {
 		return CodexClientRestrictionDetectionResult{
 			Enabled: false,
@@ -67,44 +84,82 @@ func (d *OpenAICodexClientRestrictionDetector) Detect(c *gin.Context, account *A
 		userAgent = c.GetHeader("User-Agent")
 		originator = c.GetHeader("originator")
 	}
-	if openai.IsCodexOfficialClientRequest(userAgent) {
+	if openai.MatchDenyEntries(userAgent, originator, policy.Blacklist) {
 		return CodexClientRestrictionDetectionResult{
+			Enabled: true,
+			Matched: false,
+			Reason:  CodexClientRestrictionReasonMatchedGlobalBlacklist,
+		}
+	}
+	if openai.IsCodexOfficialClientRequest(userAgent) {
+		result := CodexClientRestrictionDetectionResult{
 			Enabled: true,
 			Matched: true,
 			Reason:  CodexClientRestrictionReasonMatchedUA,
 		}
+		return applyCodexEngineFingerprintPolicy(c, body, policy, result, false)
 	}
 	if openai.IsCodexOfficialClientOriginator(originator) {
-		return CodexClientRestrictionDetectionResult{
+		result := CodexClientRestrictionDetectionResult{
 			Enabled: true,
 			Matched: true,
 			Reason:  CodexClientRestrictionReasonMatchedOriginator,
 		}
+		return applyCodexEngineFingerprintPolicy(c, body, policy, result, false)
 	}
 
 	// 官方客户端白名单未命中时，先尝试账号级额外放行的命名客户端预设（如 Claude Code codex 插件）。
 	if allowed := account.GetCodexCLIOnlyAllowedClients(); len(allowed) > 0 &&
 		openai.MatchAllowedClients(userAgent, originator, allowed) {
-		return CodexClientRestrictionDetectionResult{
+		result := CodexClientRestrictionDetectionResult{
 			Enabled: true,
 			Matched: true,
 			Reason:  CodexClientRestrictionReasonMatchedAllowedClient,
 		}
+		return applyCodexEngineFingerprintPolicy(c, body, policy, result, false)
 	}
 
 	// 再尝试由更高作用域（全局设置）注入的额外放行客户端列表。
 	if len(globalAllowedClients) > 0 &&
 		openai.MatchAllowedClients(userAgent, originator, globalAllowedClients) {
-		return CodexClientRestrictionDetectionResult{
+		result := CodexClientRestrictionDetectionResult{
 			Enabled: true,
 			Matched: true,
 			Reason:  CodexClientRestrictionReasonMatchedGlobalAllowedClient,
 		}
+		return applyCodexEngineFingerprintPolicy(c, body, policy, result, false)
+	}
+
+	if entry, ok := openai.MatchClientEntry(userAgent, originator, policy.Whitelist); ok {
+		result := CodexClientRestrictionDetectionResult{
+			Enabled: true,
+			Matched: true,
+			Reason:  CodexClientRestrictionReasonMatchedGlobalWhitelist,
+		}
+		return applyCodexEngineFingerprintPolicy(c, body, policy, result, entry.SkipEngineFingerprint)
 	}
 
 	return CodexClientRestrictionDetectionResult{
 		Enabled: true,
 		Matched: false,
 		Reason:  CodexClientRestrictionReasonNotMatchedUA,
+	}
+}
+
+func applyCodexEngineFingerprintPolicy(c *gin.Context, body []byte, policy CodexCLIOnlyPolicy, result CodexClientRestrictionDetectionResult, skip bool) CodexClientRestrictionDetectionResult {
+	if !result.Matched || skip || len(policy.EngineFingerprintSignals) == 0 {
+		return result
+	}
+	var header http.Header
+	if c != nil && c.Request != nil {
+		header = c.Request.Header
+	}
+	if openai.EvaluateEngineFingerprint(header, body, policy.EngineFingerprintSignals) {
+		return result
+	}
+	return CodexClientRestrictionDetectionResult{
+		Enabled: true,
+		Matched: false,
+		Reason:  CodexClientRestrictionReasonEngineFingerprintMissing,
 	}
 }

@@ -33,6 +33,9 @@ func (a *Account) getRateLimitRemainingForKey(key string) time.Duration {
 }
 
 func (a *Account) isModelRateLimitedWithContext(ctx context.Context, requestedModel string) bool {
+	if a == nil || a.IsPoolMode() {
+		return false
+	}
 	for _, key := range a.modelRateLimitKeysForRequest(ctx, requestedModel) {
 		if a.isRateLimitActiveForKey(key) {
 			return true
@@ -48,6 +51,9 @@ func (a *Account) GetModelRateLimitRemainingTime(requestedModel string) time.Dur
 }
 
 func (a *Account) GetModelRateLimitRemainingTimeWithContext(ctx context.Context, requestedModel string) time.Duration {
+	if a == nil || a.IsPoolMode() {
+		return 0
+	}
 	remaining := time.Duration(0)
 	for _, key := range a.modelRateLimitKeysForRequest(ctx, requestedModel) {
 		if keyRemaining := a.getRateLimitRemainingForKey(key); keyRemaining > remaining {

@@ -9,25 +9,30 @@ var CodexCLIUserAgentPrefixes = []string{
 	"codex_cli_rs/",
 }
 
-// CodexOfficialClientUserAgentPrefixes matches Codex 官方客户端家族 User-Agent 前缀。
-// 该列表仅用于 OpenAI OAuth `codex_cli_only` 访问限制判定。
-var CodexOfficialClientUserAgentPrefixes = []string{
+var codexOfficialClientUAPrefixes = []string{
 	"codex_cli_rs/",
+	"codex-tui/",
 	"codex_vscode/",
+	"codex_vscode_copilot/",
 	"codex_app/",
 	"codex_chatgpt_desktop/",
 	"codex_atlas/",
 	"codex_exec/",
 	"codex_sdk_ts/",
-	"codex ",
 }
 
-// CodexOfficialClientOriginatorPrefixes matches Codex 官方客户端家族 originator 前缀。
-// 说明：OpenAI 官方 Codex 客户端并不只使用固定的 codex_app 标识。
-// 例如 codex_cli_rs、codex_vscode、codex_chatgpt_desktop、codex_atlas、codex_exec、codex_sdk_ts 等。
-var CodexOfficialClientOriginatorPrefixes = []string{
-	"codex_",
-	"codex ",
+const codexOfficialClientFamilyPrefix = "codex "
+
+var codexOfficialClientOriginators = map[string]bool{
+	"codex_cli_rs":          true,
+	"codex-tui":             true,
+	"codex_vscode":          true,
+	"codex_vscode_copilot":  true,
+	"codex_app":             true,
+	"codex_chatgpt_desktop": true,
+	"codex_atlas":           true,
+	"codex_exec":            true,
+	"codex_sdk_ts":          true,
 }
 
 // IsBrowserUserAgent 判断 User-Agent 是否来自浏览器（Chrome/Firefox/Safari/Edge/Opera 等）。
@@ -57,7 +62,10 @@ func IsCodexOfficialClientRequest(userAgent string) bool {
 	if ua == "" {
 		return false
 	}
-	return matchCodexClientHeaderPrefixes(ua, CodexOfficialClientUserAgentPrefixes)
+	if matchCodexClientHeaderPrefixes(ua, codexOfficialClientUAPrefixes) {
+		return true
+	}
+	return strings.HasPrefix(ua, codexOfficialClientFamilyPrefix)
 }
 
 // IsCodexOfficialClientOriginator checks if originator indicates a Codex 官方客户端请求。
@@ -66,7 +74,10 @@ func IsCodexOfficialClientOriginator(originator string) bool {
 	if v == "" {
 		return false
 	}
-	return matchCodexClientHeaderPrefixes(v, CodexOfficialClientOriginatorPrefixes)
+	if codexOfficialClientOriginators[v] {
+		return true
+	}
+	return strings.HasPrefix(v, codexOfficialClientFamilyPrefix)
 }
 
 // IsCodexOfficialClientByHeaders checks whether the request headers indicate an

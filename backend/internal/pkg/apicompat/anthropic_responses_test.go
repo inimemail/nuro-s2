@@ -1256,6 +1256,43 @@ func TestResponsesToAnthropicRequest_ToolChoiceLegacyFunctionName(t *testing.T) 
 	assert.Equal(t, "get_weather", tc["name"])
 }
 
+func TestResponsesToAnthropicRequest_CustomToolSchemaNormalized(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "gpt-5.2",
+		Input: json.RawMessage(`[{"role":"user","content":"Hello"}]`),
+		Tools: []ResponsesTool{
+			{
+				Type:        "custom",
+				Name:        "exec",
+				Description: "execute command",
+				Parameters:  json.RawMessage(`{"properties":{"cmd":{"type":"string"}}}`),
+			},
+			{
+				Type:        "unknown_tool",
+				Name:        "bad",
+				Description: "bad schema",
+				Parameters:  json.RawMessage(`{"type":"string"}`),
+			},
+		},
+	}
+
+	resp, err := ResponsesToAnthropicRequest(req)
+	require.NoError(t, err)
+	require.Len(t, resp.Tools, 2)
+
+	var customSchema map[string]any
+	require.NoError(t, json.Unmarshal(resp.Tools[0].InputSchema, &customSchema))
+	assert.Equal(t, "object", customSchema["type"])
+	assert.Contains(t, customSchema, "properties")
+	assert.Empty(t, resp.Tools[0].Type)
+
+	var fallbackSchema map[string]any
+	require.NoError(t, json.Unmarshal(resp.Tools[1].InputSchema, &fallbackSchema))
+	assert.Equal(t, "object", fallbackSchema["type"])
+	assert.Contains(t, fallbackSchema, "properties")
+	assert.Equal(t, "unknown_tool", resp.Tools[1].Type)
+}
+
 // ---------------------------------------------------------------------------
 // Image content block conversion tests
 // ---------------------------------------------------------------------------

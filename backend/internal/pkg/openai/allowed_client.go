@@ -15,9 +15,11 @@ const (
 // UAContains 为必填字段：列表为空，或列表中存在任何空白 marker，均视为非法配置，
 // 整体安全失败（return false）；每一项都必须出现在 User-Agent 中。
 // 这确保双因子匹配不会因缺失 UA 声明而退化为仅凭可伪造的 originator 单因子放行。
+// SkipEngineFingerprint 仅对白名单条目有意义：命中此条则跳过引擎指纹门。
 type AllowedClientEntry struct {
-	Originator string
-	UAContains []string
+	Originator            string   `json:"originator"`
+	UAContains            []string `json:"ua_contains"`
+	SkipEngineFingerprint bool     `json:"skip_engine_fingerprint"`
 }
 
 // allowedClientRegistry 固化各命名预设的签名规则。
@@ -30,6 +32,22 @@ var allowedClientRegistry = map[string]AllowedClientEntry{
 		Originator: "Claude Code",
 		UAContains: []string{"Claude Code/"},
 	},
+}
+
+// IsWhitelistable reports whether the entry can safely act as an allow rule.
+func (e AllowedClientEntry) IsWhitelistable() bool {
+	if normalizeCodexClientHeader(e.Originator) == "" {
+		return false
+	}
+	if len(e.UAContains) == 0 {
+		return false
+	}
+	for _, marker := range e.UAContains {
+		if normalizeCodexClientHeader(marker) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // IsAllowedClientMatch 判断请求头是否命中给定的额外客户端签名。
@@ -60,6 +78,48 @@ func IsAllowedClientMatch(userAgent, originator string, entry AllowedClientEntry
 		}
 	}
 	return true
+}
+
+// MatchClientEntry returns the matching free-form allow entry, if any.
+func MatchClientEntry(userAgent, originator string, entries []AllowedClientEntry) (AllowedClientEntry, bool) {
+	for _, entry := range entries {
+		if IsAllowedClientMatch(userAgent, originator, entry) {
+			return entry, true
+		}
+	}
+	return AllowedClientEntry{}, false
+}
+
+// MatchClientEntries 判断请求头是否命中任一自由白名单条目。
+func MatchClientEntries(userAgent, originator string, entries []AllowedClientEntry) bool {
+	_, ok := MatchClientEntry(userAgent, originator, entries)
+	return ok
+}
+
+// IsDeniedClientMatch 黑名单单条 OR 语义：声明字段中任一命中即 deny。
+func IsDeniedClientMatch(userAgent, originator string, entry AllowedClientEntry) bool {
+	if want := normalizeCodexClientHeader(entry.Originator); want != "" {
+		if normalizeCodexClientHeader(originator) == want {
+			return true
+		}
+	}
+	ua := normalizeCodexClientHeader(userAgent)
+	for _, marker := range entry.UAContains {
+		if m := normalizeCodexClientHeader(marker); m != "" && strings.Contains(ua, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchDenyEntries 判断请求头是否命中任一黑名单条目。
+func MatchDenyEntries(userAgent, originator string, entries []AllowedClientEntry) bool {
+	for _, entry := range entries {
+		if IsDeniedClientMatch(userAgent, originator, entry) {
+			return true
+		}
+	}
+	return false
 }
 
 // MatchAllowedClients 判断请求头是否命中 clientIDs 引用的任一预设签名。

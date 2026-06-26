@@ -201,21 +201,51 @@ describe('useRoutePrefetch', () => {
 
   describe('requestIdleCallback 超时处理', () => {
     it('超时后仍能正常执行预加载', async () => {
-      // 模拟超时情况
-      vi.stubGlobal('requestIdleCallback', (cb: IdleRequestCallback, options?: IdleRequestOptions) => {
-        const timeout = options?.timeout || 2000
-        return setTimeout(() => cb({ didTimeout: true, timeRemaining: () => 0 }), timeout)
+      vi.useFakeTimers()
+      try {
+        // 模拟超时情况
+        vi.stubGlobal('requestIdleCallback', (cb: IdleRequestCallback, options?: IdleRequestOptions) => {
+          const timeout = options?.timeout || 2000
+          return setTimeout(() => cb({ didTimeout: true, timeRemaining: () => 0 }), timeout)
+        })
+
+        const { triggerPrefetch, prefetchedRoutes } = useRoutePrefetch(mockRouter)
+        const route = createMockRoute('/dashboard')
+
+        triggerPrefetch(route)
+
+        // 等待超时执行
+        await vi.advanceTimersByTimeAsync(4100)
+
+        expect(prefetchedRoutes.value.has('/dashboard')).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
+  describe('网络保护', () => {
+    it('省流量模式下应该跳过预加载', async () => {
+      const originalConnectionDescriptor = Object.getOwnPropertyDescriptor(navigator, 'connection')
+      Object.defineProperty(navigator, 'connection', {
+        configurable: true,
+        value: { saveData: true, effectiveType: '4g' }
       })
 
-      const { triggerPrefetch, prefetchedRoutes } = useRoutePrefetch(mockRouter)
-      const route = createMockRoute('/dashboard')
+      try {
+        const { triggerPrefetch, prefetchedRoutes } = useRoutePrefetch(mockRouter)
+        triggerPrefetch(createMockRoute('/admin/dashboard'))
 
-      triggerPrefetch(route)
+        await new Promise((resolve) => setTimeout(resolve, 100))
 
-      // 等待超时执行
-      await new Promise((resolve) => setTimeout(resolve, 2100))
-
-      expect(prefetchedRoutes.value.has('/dashboard')).toBe(true)
+        expect(prefetchedRoutes.value.size).toBe(0)
+      } finally {
+        if (originalConnectionDescriptor) {
+          Object.defineProperty(navigator, 'connection', originalConnectionDescriptor)
+        } else {
+          Reflect.deleteProperty(navigator, 'connection')
+        }
+      }
     })
   })
 

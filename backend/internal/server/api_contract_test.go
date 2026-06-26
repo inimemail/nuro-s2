@@ -847,6 +847,10 @@ func TestAPIContracts(t *testing.T) {
 					"openai_advanced_scheduler_enabled": true,
 					"openai_codex_user_agent":           "",
 					"openai_allow_claude_code_codex_plugin": false,
+					"codex_cli_only_blacklist": "",
+					"codex_cli_only_whitelist": "",
+					"codex_cli_only_allow_app_server_clients": false,
+					"codex_cli_only_engine_fingerprint_signals": "",
 					"openai_fast_policy_settings": {
 						"rules": []
 					},
@@ -1087,6 +1091,10 @@ func TestAPIContracts(t *testing.T) {
 					"openai_advanced_scheduler_enabled": false,
 					"openai_codex_user_agent":           "",
 					"openai_allow_claude_code_codex_plugin": false,
+					"codex_cli_only_blacklist": "",
+					"codex_cli_only_whitelist": "",
+					"codex_cli_only_allow_app_server_clients": false,
+					"codex_cli_only_engine_fingerprint_signals": "",
 					"openai_fast_policy_settings": {
 						"rules": []
 					},
@@ -1287,7 +1295,7 @@ func newContractDeps(t *testing.T) *contractDeps {
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	usageHandler := handler.NewUsageHandler(usageService, apiKeyService, nil, nil)
 	adminSettingHandler := adminhandler.NewSettingHandler(settingService, nil, nil, nil, nil, nil, nil)
-	adminAccountHandler := adminhandler.NewAccountHandler(adminService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	adminAccountHandler := adminhandler.NewAccountHandler(adminService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	jwtAuth := func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{

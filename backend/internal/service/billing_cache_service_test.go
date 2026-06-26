@@ -130,3 +130,15 @@ func TestBillingCacheServiceEnqueueAfterStopReturnsFalse(t *testing.T) {
 	})
 	require.False(t, enqueued)
 }
+
+func TestBillingCacheServiceBalanceEligibilityReserve(t *testing.T) {
+	defaultSvc := &BillingCacheService{cfg: &config.Config{}}
+	require.True(t, defaultSvc.balanceBelowEligibilityThreshold(0))
+	require.False(t, defaultSvc.balanceBelowEligibilityThreshold(0.01))
+
+	reserveSvc := &BillingCacheService{cfg: &config.Config{
+		Billing: config.BillingConfig{MinimumBalanceReserve: 1.5},
+	}}
+	require.True(t, reserveSvc.balanceBelowEligibilityThreshold(1.49))
+	require.False(t, reserveSvc.balanceBelowEligibilityThreshold(1.5))
+}

@@ -131,7 +131,7 @@
             v-if="showCodexResetCredits"
             class="inline-flex h-6 shrink-0 items-center rounded bg-emerald-50 px-1.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
           >
-            重置次数 {{ codexResetCreditsAvailable }}
+            {{ t('admin.accounts.usageWindow.resetCredits') }} {{ codexResetCreditsAvailable }}
           </span>
           <button
             type="button"
@@ -153,7 +153,7 @@
                 d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
               />
             </svg>
-            查询
+            {{ t('admin.accounts.usageWindow.activeQuery') }}
           </button>
           <button
             v-if="showCodexResetCredits"
@@ -487,6 +487,102 @@
       </div>
     </template>
 
+    <!-- Grok OAuth accounts: passive quota headers + admin-triggered probe -->
+    <template v-else-if="account.platform === 'grok' && account.type === 'oauth'">
+      <div v-if="loading" class="space-y-1.5">
+        <div class="flex items-center gap-1">
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+        </div>
+      </div>
+      <div v-else-if="error" class="text-xs text-red-500">
+        {{ error }}
+      </div>
+      <div v-else class="space-y-1">
+        <div v-if="grokEntitlementLabel" class="flex items-center gap-1">
+          <span :class="['inline-block rounded px-1.5 py-0.5 text-[10px] font-medium', grokEntitlementClass]">
+            {{ grokEntitlementLabel }}
+          </span>
+          <span
+            v-if="usageInfo?.grok_quota_snapshot_state"
+            class="text-[9px] text-gray-400 dark:text-gray-500"
+          >
+            {{ usageInfo.grok_quota_snapshot_state }}
+          </span>
+        </div>
+
+        <UsageProgressBar
+          v-if="grokRequestQuotaBar"
+          label="req"
+          :utilization="grokRequestQuotaBar.utilization"
+          :resets-at="grokRequestQuotaBar.resetsAt"
+          color="indigo"
+        />
+        <UsageProgressBar
+          v-if="grokTokenQuotaBar"
+          label="tok"
+          :utilization="grokTokenQuotaBar.utilization"
+          :resets-at="grokTokenQuotaBar.resetsAt"
+          color="emerald"
+        />
+
+        <div
+          v-if="usageInfo?.grok_local_usage || todayStats"
+          class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400"
+        >
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+            {{ formatGrokLocalRequests }} req
+          </span>
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+            {{ formatGrokLocalTokens }}
+          </span>
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
+            ${{ formatGrokLocalCost }}
+          </span>
+        </div>
+
+        <div class="mt-1 flex items-center gap-1.5">
+          <button
+            type="button"
+            class="inline-flex h-6 shrink-0 items-center gap-0.5 rounded px-1 text-[10px] font-medium text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
+            :disabled="activeQueryLoading"
+            @click="loadGrokQuotaProbe"
+          >
+            <svg
+              class="h-3 w-3"
+              :class="{ 'animate-spin': activeQueryLoading }"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+              />
+            </svg>
+            {{ t('admin.accounts.usageWindow.activeQuery') }}
+          </button>
+          <span
+            v-if="grokLastSeenLabel"
+            class="text-[9px] text-gray-400 dark:text-gray-500"
+            :title="grokLastSeenTitle"
+          >
+            {{ grokLastSeenLabel }}
+          </span>
+        </div>
+
+        <div
+          v-if="!grokRequestQuotaBar && !grokTokenQuotaBar && !usageInfo?.grok_local_usage && !todayStats"
+          class="text-xs text-gray-400"
+        >
+          -
+        </div>
+      </div>
+    </template>
+
     <!-- Other accounts: no usage window -->
     <template v-else>
       <div class="text-xs text-gray-400">-</div>
@@ -690,6 +786,9 @@ const shouldFetchUsage = computed(() => {
     return true
   }
   if (props.account.platform === 'antigravity') {
+    return props.account.type === 'oauth'
+  }
+  if (props.account.platform === 'grok') {
     return props.account.type === 'oauth'
   }
   if (props.account.platform === 'openai') {
@@ -1514,6 +1613,85 @@ const updateCodexAutoResetMode = async (mode: CodexAutoResetMode) => {
 interface QuotaBarInfo {
   utilization: number
   resetsAt: string | null
+}
+
+const makeGrokQuotaBar = (
+  quota?: { limit?: number | null; remaining?: number | null; reset_at?: string | null } | null
+): QuotaBarInfo | null => {
+  if (!quota) return null
+  const limit = typeof quota.limit === 'number' && Number.isFinite(quota.limit) ? quota.limit : 0
+  const remaining = typeof quota.remaining === 'number' && Number.isFinite(quota.remaining) ? quota.remaining : null
+  if (limit <= 0 || remaining === null) return null
+  return {
+    utilization: Math.max(0, Math.min(999, ((limit - remaining) / limit) * 100)),
+    resetsAt: quota.reset_at || null
+  }
+}
+
+const grokRequestQuotaBar = computed(() => makeGrokQuotaBar(usageInfo.value?.grok_request_quota))
+const grokTokenQuotaBar = computed(() => makeGrokQuotaBar(usageInfo.value?.grok_token_quota))
+
+const grokEntitlementLabel = computed(() => {
+  if (props.account.platform !== 'grok') return ''
+  const status = (usageInfo.value?.grok_entitlement_status || '').trim()
+  if (status) return status
+  const extra = props.account.extra as Record<string, unknown> | undefined
+  const entitlement = typeof extra?.entitlement_status === 'string' ? extra.entitlement_status : ''
+  const tier = typeof extra?.subscription_tier === 'string' ? extra.subscription_tier : ''
+  return entitlement || tier || 'Grok'
+})
+
+const grokEntitlementClass = computed(() => {
+  const status = grokEntitlementLabel.value.toLowerCase()
+  if (status.includes('denied') || status.includes('inactive') || status.includes('forbidden')) {
+    return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+  }
+  if (status.includes('active') || status.includes('pro') || status.includes('premium')) {
+    return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+  }
+  return 'bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300'
+})
+
+const grokLocalUsage = computed(() => usageInfo.value?.grok_local_usage || props.todayStats || null)
+
+const formatGrokLocalRequests = computed(() => {
+  const stats = grokLocalUsage.value
+  return stats ? formatCompactNumber(stats.requests, { allowBillions: false }) : '0'
+})
+
+const formatGrokLocalTokens = computed(() => {
+  const stats = grokLocalUsage.value
+  return stats ? formatCompactNumber(stats.tokens) : '0'
+})
+
+const formatGrokLocalCost = computed(() => {
+  const stats = grokLocalUsage.value
+  return stats ? stats.cost.toFixed(2) : '0.00'
+})
+
+const grokLastSeenTitle = computed(() => {
+  return usageInfo.value?.grok_last_quota_probe_at || usageInfo.value?.grok_last_headers_seen_at || ''
+})
+
+const grokLastSeenLabel = computed(() => {
+  if (!grokLastSeenTitle.value) return ''
+  return usageInfo.value?.grok_last_quota_probe_at
+    ? t('admin.accounts.usageWindow.activeQueried')
+    : t('admin.accounts.usageWindow.passiveSampled')
+})
+
+const loadGrokQuotaProbe = async () => {
+  if (props.account.platform !== 'grok' || props.account.type !== 'oauth') return
+  activeQueryLoading.value = true
+  try {
+    await adminAPI.grok.queryQuota(props.account.id)
+    _usageCache.delete(props.account.id)
+    await loadUsage({ bypassCache: true })
+  } catch (e: any) {
+    console.error('Failed to probe Grok quota:', e)
+  } finally {
+    activeQueryLoading.value = false
+  }
 }
 
 const makeQuotaBar = (

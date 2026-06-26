@@ -15,6 +15,11 @@ import type { RouteLocationNormalized, Router } from 'vue-router'
  */
 type ComponentImportFn = () => Promise<unknown>
 
+type NetworkInformationLike = {
+  saveData?: boolean
+  effectiveType?: string
+}
+
 /**
  * 预加载邻接表：定义每个路由应该预加载哪些相邻路由
  * 只存储路由路径，不存储 import 函数，避免打包问题
@@ -60,6 +65,14 @@ const cancelScheduledCallback = (handle: IdleCallbackHandle): void => {
   } else {
     clearTimeout(handle)
   }
+}
+
+const shouldSkipPrefetchForNetwork = (): boolean => {
+  if (typeof navigator === 'undefined') return false
+  const connection = (navigator as Navigator & { connection?: NetworkInformationLike }).connection
+  if (!connection) return false
+  if (connection.saveData) return true
+  return connection.effectiveType === 'slow-2g' || connection.effectiveType === '2g'
 }
 
 /**
@@ -130,32 +143,35 @@ export function useRoutePrefetch(router?: Router) {
   const triggerPrefetch = (route: RouteLocationNormalized): void => {
     cancelPendingPrefetch()
 
+    if (shouldSkipPrefetchForNetwork()) return
+
     const prefetchPaths = getPrefetchPaths(route)
     if (prefetchPaths.length === 0) return
 
     pendingPrefetchHandle.value = scheduleIdleCallback(
-      () => {
+      (deadline) => {
         pendingPrefetchHandle.value = null
 
         const routePath = route.path
         if (prefetchedRoutes.value.has(routePath)) return
+        if (!deadline.didTimeout && deadline.timeRemaining() < 10) return
 
         // 获取需要预加载的组件 import 函数
-        const importFns: ComponentImportFn[] = []
+        let importFn: ComponentImportFn | null = null
         for (const path of prefetchPaths) {
-          const importFn = getComponentImporter(path)
+          importFn = getComponentImporter(path)
           if (importFn) {
-            importFns.push(importFn)
+            break
           }
         }
 
-        if (importFns.length > 0) {
-          Promise.all(importFns.map(prefetchComponent)).then(() => {
+        if (importFn) {
+          prefetchComponent(importFn).then(() => {
             prefetchedRoutes.value.add(routePath)
           })
         }
       },
-      { timeout: 2000 }
+      { timeout: 4000 }
     )
   }
 

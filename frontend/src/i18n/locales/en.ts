@@ -97,6 +97,7 @@ export default {
       claude: 'Claude',
       gemini: 'Gemini',
       antigravity: 'Antigravity',
+      grok: 'Grok',
       more: 'More'
     },
     // CTA section
@@ -2198,6 +2199,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        grok: 'Grok',
       },
       deleteConfirm:
         "Are you sure you want to delete '{name}'? All associated API keys will no longer belong to any group.",
@@ -3103,6 +3105,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        grok: 'Grok',
       },
       types: {
         oauth: 'OAuth',
@@ -3958,6 +3961,36 @@ export default {
                     validateAndCreate: 'Validate & Create',
                     pleaseEnterRefreshToken: 'Please enter Refresh Token',
                     failedToValidateRT: 'Failed to validate Refresh Token'
+                  },
+                  // Grok specific
+                  grok: {
+                    title: 'Grok Account Authorization',
+                    followSteps: 'Follow these steps to complete Grok account authorization:',
+                    step1GenerateUrl: 'Click the button below to generate the authorization URL',
+                    generateAuthUrl: 'Generate Auth URL',
+                    step2OpenUrl: 'Open the URL in your browser and complete authorization',
+                    openUrlDesc:
+                      'Open the authorization URL in a new tab, log in to your Grok/xAI account and authorize.',
+                    importantNotice:
+                      'Important: After authorization, copy the full callback URL containing code and state from the browser address bar, or copy only the code parameter value.',
+                    step3EnterCode: 'Enter Authorization URL or Code',
+                    authCodeDesc:
+                      'After authorization is complete, when the page URL becomes http://localhost:xxx/auth/callback?code=...:',
+                    authCode: 'Authorization URL or Code',
+                    authCodePlaceholder:
+                      'Option 1: Copy the complete URL\n(http://localhost:xxx/auth/callback?code=...&state=...)\nOption 2: Copy only the code parameter value',
+                    authCodeHint:
+                      'You can copy the entire URL or just the code parameter value, the system will auto-detect',
+                    failedToGenerateUrl: 'Failed to generate Grok auth URL',
+                    missingExchangeParams: 'Missing code or session ID',
+                    failedToExchangeCode: 'Failed to exchange Grok auth code',
+                    refreshTokenAuth: 'Manual RT',
+                    refreshTokenDesc: 'Enter your existing Grok Refresh Token. Supports batch input (one per line). The system will automatically validate and create accounts.',
+                    refreshTokenPlaceholder: 'Paste your Grok Refresh Token...\nSupports multiple tokens, one per line',
+                    validating: 'Validating...',
+                    validateAndCreate: 'Validate & Create',
+                    pleaseEnterRefreshToken: 'Please enter Refresh Token',
+                    failedToValidateRT: 'Failed to validate Refresh Token'
                   }
                 },      // Gemini specific (platform-wide)
       gemini: {
@@ -4177,7 +4210,9 @@ export default {
         gemini3Image: 'G31FI',
         claude: 'Claude',
         passiveSampled: 'Passive',
-        activeQuery: 'Query'
+        activeQuery: 'Query',
+        activeQueried: 'Queried',
+        resetCredits: 'Reset credits'
       },
       tier: {
         free: 'Free',
@@ -5837,6 +5872,17 @@ export default {
         openaiAllowClaudeCodeCodexPlugin: "Allow using the Codex plugin in Claude Code",
         openaiAllowClaudeCodeCodexPluginDesc:
           "Global switch; only affects OpenAI OAuth accounts that have 'Codex official clients only' enabled. When on, all such accounts additionally allow requests from the Claude Code Codex plugin (exact match on originator=Claude Code) without per-account config; upstream requests remain pass-through.",
+        codexCLIOnlyPolicy: 'Codex Gate Policy',
+        codexCLIOnlyPolicyHint: 'Only applies to OpenAI OAuth accounts with Codex-only enabled. Empty JSON means no extra policy. The toggle enables app-server client extensions without changing scheduling.',
+        codexCLIOnlyBlacklist: 'Global Blacklist JSON',
+        codexCLIOnlyBlacklistPlaceholder: '[{"ua_contains":["BadBot/"]}]',
+        codexCLIOnlyBlacklistHint: 'Deny rules use OR matching: originator or any UA marker can block a request before official-client checks.',
+        codexCLIOnlyWhitelist: 'Global Whitelist JSON',
+        codexCLIOnlyWhitelistPlaceholder: '[{"originator":"Trusted Tool","ua_contains":["Trusted Tool/"],"skip_engine_fingerprint":true}]',
+        codexCLIOnlyWhitelistHint: 'Allow rules require both originator and UA markers. skip_engine_fingerprint only affects entries that match this whitelist.',
+        codexCLIOnlyEngineFingerprintSignals: 'Engine Fingerprint Signals JSON',
+        codexCLIOnlyEngineFingerprintSignalsPlaceholder: '[{"type":"header_prefix","match":["x-codex-"],"required":true}]',
+        codexCLIOnlyEngineFingerprintSignalsHint: 'When configured, matched clients must satisfy all required signals. Leave empty to preserve the old fast path.',
       },
       webSearchEmulation: {
         title: 'Web Search Emulation',

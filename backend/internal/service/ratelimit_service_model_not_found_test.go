@@ -68,6 +68,43 @@ func TestRateLimitService_HandleUpstreamError_ModelNotFoundUsesModelRateLimit(t 
 	require.WithinDuration(t, time.Now().Add(upstreamModelNotFoundCooldown), call.resetAt, 5*time.Second)
 }
 
+func TestRateLimitService_HandleUpstreamError_ModelNotFoundPoolModeSkipsModelRateLimit(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := openAIModelNotFoundTempAccount()
+	account.Credentials["pool_mode"] = true
+
+	handled := svc.HandleUpstreamModelNotFound(
+		context.Background(),
+		account,
+		"gpt-5.4",
+		http.StatusNotFound,
+		[]byte(`{"error":{"code":"model_not_found","message":"model not found"}}`),
+	)
+
+	require.True(t, handled)
+	require.Empty(t, repo.modelRateLimitCalls)
+	require.Zero(t, repo.tempCalls)
+}
+
+func TestRateLimitService_HandleOpenAIImageRateLimitPoolModeSkipsModelRateLimit(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := openAIModelNotFoundTempAccount()
+	account.Credentials["pool_mode"] = true
+
+	handled := svc.HandleOpenAIImageRateLimit(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		http.Header{},
+		[]byte(`{"error":{"message":"Rate limit reached for limit gpt-image"}}`),
+	)
+
+	require.True(t, handled)
+	require.Empty(t, repo.modelRateLimitCalls)
+}
+
 func TestRateLimitService_HandleUpstreamError_ModelNotFoundWriteFailureDoesNotTempUnschedule(t *testing.T) {
 	repo := &modelNotFoundAccountRepoStub{modelRateLimitErr: errors.New("write failed")}
 	svc := &RateLimitService{accountRepo: repo}

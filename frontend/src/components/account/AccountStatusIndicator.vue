@@ -227,6 +227,9 @@ type AccountModelStatusItem = {
 
 // Computed: active model statuses (普通模型限流 + 积分耗尽 + 走积分中)
 const activeModelStatuses = computed<AccountModelStatusItem[]>(() => {
+  const credentials = props.account.credentials as Record<string, unknown> | undefined
+  if (credentials?.pool_mode === true) return []
+
   const extra = props.account.extra as Record<string, unknown> | undefined
   const modelLimits = extra?.model_rate_limits as
     | Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>

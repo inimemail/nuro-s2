@@ -697,6 +697,57 @@ func openAIImagesUpstreamErrorFromSSEPayload(payload []byte) *OpenAIImagesUpstre
 	}
 }
 
+// extractOpenAIImagesModelRefusal extracts text-only refusals from a completed
+// image response. These are content-policy/user errors, not account failures.
+func extractOpenAIImagesModelRefusal(body []byte) string {
+	var b strings.Builder
+	collect := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if b.Len() > 0 {
+			_ = b.WriteByte(' ')
+		}
+		_, _ = b.WriteString(s)
+	}
+	forEachOpenAISSEDataPayload(string(body), func(payload []byte) {
+		if !gjson.ValidBytes(payload) {
+			return
+		}
+		switch gjson.GetBytes(payload, "type").String() {
+		case "response.output_text.delta":
+			collect(gjson.GetBytes(payload, "delta").String())
+		case "response.completed", "response.output_item.done":
+			gjson.GetBytes(payload, "response.output").ForEach(func(_, item gjson.Result) bool {
+				if item.Get("type").String() == "message" {
+					item.Get("content").ForEach(func(_, part gjson.Result) bool {
+						if part.Get("type").String() == "output_text" {
+							collect(part.Get("text").String())
+						}
+						return true
+					})
+				}
+				return true
+			})
+			if item := gjson.GetBytes(payload, "item"); item.Get("type").String() == "message" {
+				item.Get("content").ForEach(func(_, part gjson.Result) bool {
+					if part.Get("type").String() == "output_text" {
+						collect(part.Get("text").String())
+					}
+					return true
+				})
+			}
+		}
+	})
+	refusal := strings.TrimSpace(b.String())
+	const maxRefusal = 600
+	if len(refusal) > maxRefusal {
+		refusal = refusal[:maxRefusal]
+	}
+	return refusal
+}
+
 func summarizeOpenAIImagesNoOutputBody(body []byte) string {
 	var lastType, status, incompleteReason string
 	forEachOpenAISSEDataPayload(string(body), func(payload []byte) {
@@ -969,6 +1020,17 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 			writeOpenAIImagesUpstreamErrorResponse(c, upstreamErr)
 			return OpenAIUsage{}, 0, nil, upstreamErr
 		}
+		if refusal := extractOpenAIImagesModelRefusal(body); refusal != "" {
+			refusalErr := &OpenAIImagesUpstreamError{
+				StatusCode: http.StatusBadRequest,
+				ErrorType:  "image_generation_user_error",
+				Code:       "content_policy_violation",
+				Message:    sanitizeUpstreamErrorMessage(refusal),
+			}
+			setOpsUpstreamError(c, http.StatusBadRequest, refusalErr.clientMessage(), summarizeOpenAIImagesNoOutputBody(body))
+			writeOpenAIImagesUpstreamErrorResponse(c, refusalErr)
+			return OpenAIUsage{}, 0, nil, refusalErr
+		}
 		setOpsUpstreamError(c, http.StatusBadGateway, "upstream did not return image output", summarizeOpenAIImagesNoOutputBody(body))
 		return OpenAIUsage{}, 0, nil, &UpstreamFailoverError{
 			StatusCode:             http.StatusBadGateway,
@@ -1110,6 +1172,19 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 				appendOpenAIResponsesImageResultDedup(&finalResults, finalSeen, "", img)
 			}
 			if len(finalResults) == 0 {
+				if refusal := extractOpenAIImagesModelRefusal(dataBytes); refusal != "" {
+					refusalErr := &OpenAIImagesUpstreamError{
+						StatusCode: http.StatusBadRequest,
+						ErrorType:  "image_generation_user_error",
+						Code:       "content_policy_violation",
+						Message:    sanitizeUpstreamErrorMessage(refusal),
+					}
+					setOpsUpstreamError(c, http.StatusBadRequest, refusalErr.clientMessage(), summarizeOpenAIImagesNoOutputBody(dataBytes))
+					s.tryWriteOpenAIImagesStreamEvent(c, flusher, &clientDisconnected, &lastDownstreamWriteAt, "error", buildOpenAIImagesStreamErrorBodyFromUpstream(refusalErr))
+					processDataErr = refusalErr
+					processDataDone = true
+					return
+				}
 				outputErr := fmt.Errorf("upstream did not return image output")
 				setOpsUpstreamError(c, http.StatusBadGateway, "upstream did not return image output", summarizeOpenAIImagesNoOutputBody(dataBytes))
 				s.tryWriteOpenAIImagesStreamEvent(c, flusher, &clientDisconnected, &lastDownstreamWriteAt, "error", buildOpenAIImagesStreamErrorBody(outputErr.Error()))

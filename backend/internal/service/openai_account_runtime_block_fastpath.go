@@ -554,11 +554,16 @@ func (s *OpenAIGatewayService) hasHigherPriorityOpenAIAccountAvailable(
 	requiredCapability OpenAIEndpointCapability,
 	requiredImageCapability OpenAIImagesCapability,
 	requiredTransport OpenAIUpstreamTransport,
+	requestPlatform ...string,
 ) bool {
 	if s == nil || current == nil {
 		return false
 	}
-	accounts, err := s.listSchedulableAccounts(ctx, groupID)
+	platform := normalizeOpenAICompatibleRequestPlatform("")
+	if len(requestPlatform) > 0 {
+		platform = normalizeOpenAICompatibleRequestPlatform(requestPlatform[0])
+	}
+	accounts, err := s.listSchedulableAccountsForPlatform(ctx, groupID, platform)
 	if err != nil || len(accounts) == 0 {
 		return false
 	}
@@ -570,7 +575,7 @@ func (s *OpenAIGatewayService) hasHigherPriorityOpenAIAccountAvailable(
 		if account.ID == current.ID || account.Priority >= current.Priority {
 			continue
 		}
-		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability) {
+		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, platform) {
 			continue
 		}
 		if s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIPoolAccountSoftCooling(account) {
@@ -616,11 +621,16 @@ func (s *OpenAIGatewayService) hasSamePriorityNonPoolOpenAIAccountAvailable(
 	requiredCapability OpenAIEndpointCapability,
 	requiredImageCapability OpenAIImagesCapability,
 	requiredTransport OpenAIUpstreamTransport,
+	requestPlatform ...string,
 ) bool {
 	if s == nil || current == nil || !current.IsPoolMode() {
 		return false
 	}
-	accounts, err := s.listSchedulableAccounts(ctx, groupID)
+	platform := normalizeOpenAICompatibleRequestPlatform("")
+	if len(requestPlatform) > 0 {
+		platform = normalizeOpenAICompatibleRequestPlatform(requestPlatform[0])
+	}
+	accounts, err := s.listSchedulableAccountsForPlatform(ctx, groupID, platform)
 	if err != nil || len(accounts) == 0 {
 		return false
 	}
@@ -632,7 +642,7 @@ func (s *OpenAIGatewayService) hasSamePriorityNonPoolOpenAIAccountAvailable(
 		if account.ID == current.ID || account.Priority != current.Priority || account.IsPoolMode() {
 			continue
 		}
-		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability) {
+		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, platform) {
 			continue
 		}
 		if s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIPoolAccountSoftCooling(account) {

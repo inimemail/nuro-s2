@@ -104,6 +104,39 @@ describe('AccountStatusIndicator', () => {
     expect(wrapper.text()).not.toContain('⚡')
   })
 
+  it('OpenAI 池模式忽略模型限流状态展示', () => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({
+          id: 22,
+          name: 'openai-pool',
+          platform: 'openai',
+          type: 'apikey',
+          credentials: {
+            api_key: 'sk-test',
+            pool_mode: true
+          },
+          extra: {
+            model_rate_limits: {
+              'gpt-5.4-mini': {
+                rate_limited_at: '2026-03-15T00:00:00Z',
+                rate_limit_reset_at: '2099-03-15T00:00:00Z'
+              }
+            }
+          }
+        })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    expect(wrapper.text()).not.toContain('gpt-5.4-mini')
+    expect(wrapper.text()).not.toContain('admin.accounts.status.modelRateLimitedUntil')
+  })
+
   it('AICredits key 生效 → 显示积分已用尽 (credits_exhausted)', () => {
     const wrapper = mount(AccountStatusIndicator, {
       props: {

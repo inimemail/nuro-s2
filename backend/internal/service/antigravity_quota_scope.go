@@ -32,6 +32,11 @@ func (a *Account) IsSchedulableForModelWithContext(ctx context.Context, requeste
 		return false
 	}
 	if a.isModelRateLimitedWithContext(ctx, requestedModel) {
+		// 池模式账号不能被模型维度限流预过滤卡死：上游如果仍然返回限流，
+		// 请求路径会通过池模式重试/排除当前账号继续抢其它上游。
+		if a.IsPoolMode() {
+			return true
+		}
 		// Antigravity + overages 启用 + 积分未耗尽 → 放行（有积分可用）
 		if a.Platform == PlatformAntigravity && a.IsOveragesEnabled() && !a.isCreditsExhausted() {
 			return true

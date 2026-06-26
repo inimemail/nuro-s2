@@ -622,7 +622,7 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyAccountIDWithoutSessionHash(
 		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
 	}
 
-	selection, err := svc.selectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil, false, sticky.ID, "", "")
+	selection, err := svc.selectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil, false, sticky.ID, "", "", PlatformOpenAI)
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
@@ -636,7 +636,7 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyAccountIDWithoutSessionHash(
 		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{sticky, higherPriority}},
 		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
 	}
-	selection, err = svc.selectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil, false, sticky.ID, "", "")
+	selection, err = svc.selectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil, false, sticky.ID, "", "", PlatformOpenAI)
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
@@ -646,7 +646,7 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyAccountIDWithoutSessionHash(
 	}
 
 	svc.BlockAccountScheduling(&sticky, time.Now().Add(10*time.Minute), "429")
-	selection, err = svc.selectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil, false, sticky.ID, "", "")
+	selection, err = svc.selectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil, false, sticky.ID, "", "", PlatformOpenAI)
 	require.ErrorIs(t, err, ErrNoAvailableAccounts)
 	require.Nil(t, selection)
 }

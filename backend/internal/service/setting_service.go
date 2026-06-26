@@ -171,9 +171,17 @@ type cachedOpenAIAllowCodexPlugin struct {
 	expiresAt int64 // unix nano
 }
 
+type cachedCodexCLIOnlyPolicy struct {
+	policy    CodexCLIOnlyPolicy
+	expiresAt int64
+}
+
 const openAIAllowCodexPluginCacheTTL = 60 * time.Second
 const openAIAllowCodexPluginErrorTTL = 5 * time.Second
 const openAIAllowCodexPluginDBTimeout = 5 * time.Second
+const codexCLIOnlyPolicyCacheTTL = 60 * time.Second
+const codexCLIOnlyPolicyErrorTTL = 5 * time.Second
+const codexCLIOnlyPolicyDBTimeout = 5 * time.Second
 
 const openAIQuotaAutoPauseSettingsCacheTTL = 60 * time.Second
 const openAIQuotaAutoPauseSettingsErrorTTL = 5 * time.Second
@@ -205,6 +213,8 @@ type SettingService struct {
 	openAICodexUASF             singleflight.Group
 	openAIAllowCodexPluginCache atomic.Value // *cachedOpenAIAllowCodexPlugin
 	openAIAllowCodexPluginSF    singleflight.Group
+	codexCLIOnlyPolicyCache     atomic.Value // *cachedCodexCLIOnlyPolicy
+	codexCLIOnlyPolicySF        singleflight.Group
 
 	// openAIQuotaAutoPauseSettingsCache holds the most recently observed quota auto-pause
 	// settings. GetOpenAIQuotaAutoPauseSettings reads this atomic.Value on the request hot
@@ -1146,6 +1156,83 @@ func (s *SettingService) IsOpenAIAllowClaudeCodeCodexPluginEnabled(ctx context.C
 	return false
 }
 
+func (s *SettingService) GetCodexCLIOnlyPolicy(ctx context.Context) CodexCLIOnlyPolicy {
+	if s == nil || s.settingRepo == nil {
+		return CodexCLIOnlyPolicy{}
+	}
+	if cached, ok := s.codexCLIOnlyPolicyCache.Load().(*cachedCodexCLIOnlyPolicy); ok && cached != nil {
+		if time.Now().UnixNano() < cached.expiresAt {
+			return cached.policy
+		}
+	}
+	result, _, _ := s.codexCLIOnlyPolicySF.Do("codex_cli_only_policy", func() (any, error) {
+		if cached, ok := s.codexCLIOnlyPolicyCache.Load().(*cachedCodexCLIOnlyPolicy); ok && cached != nil {
+			if time.Now().UnixNano() < cached.expiresAt {
+				return cached.policy, nil
+			}
+		}
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), codexCLIOnlyPolicyDBTimeout)
+		defer cancel()
+		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
+			SettingKeyCodexCLIOnlyBlacklist,
+			SettingKeyCodexCLIOnlyWhitelist,
+			SettingKeyCodexCLIOnlyAllowAppServerClients,
+			SettingKeyCodexCLIOnlyEngineFingerprintSignals,
+		})
+		if err != nil {
+			slog.Warn("failed to get codex_cli_only policy settings", "error", err)
+			policy := CodexCLIOnlyPolicy{}
+			s.codexCLIOnlyPolicyCache.Store(&cachedCodexCLIOnlyPolicy{
+				policy:    policy,
+				expiresAt: time.Now().Add(codexCLIOnlyPolicyErrorTTL).UnixNano(),
+			})
+			return policy, nil
+		}
+		policy := parseCodexCLIOnlyPolicySettings(values)
+		s.codexCLIOnlyPolicyCache.Store(&cachedCodexCLIOnlyPolicy{
+			policy:    policy,
+			expiresAt: time.Now().Add(codexCLIOnlyPolicyCacheTTL).UnixNano(),
+		})
+		return policy, nil
+	})
+	if policy, ok := result.(CodexCLIOnlyPolicy); ok {
+		return policy
+	}
+	return CodexCLIOnlyPolicy{}
+}
+
+func parseCodexCLIOnlyPolicySettings(values map[string]string) CodexCLIOnlyPolicy {
+	var policy CodexCLIOnlyPolicy
+	policy.Blacklist = parseCodexClientEntriesSetting(values[SettingKeyCodexCLIOnlyBlacklist], false)
+	policy.Whitelist = parseCodexClientEntriesSetting(values[SettingKeyCodexCLIOnlyWhitelist], true)
+	policy.AllowAppServerClients = values[SettingKeyCodexCLIOnlyAllowAppServerClients] == "true"
+	if signals, ok := openai.ParseEngineFingerprintSignals(values[SettingKeyCodexCLIOnlyEngineFingerprintSignals]); ok {
+		policy.EngineFingerprintSignals = signals
+	} else {
+		slog.Warn("invalid codex_cli_only engine fingerprint signals setting, ignoring")
+	}
+	return policy
+}
+
+func parseCodexClientEntriesSetting(raw string, whitelist bool) []openai.AllowedClientEntry {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var entries []openai.AllowedClientEntry
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		slog.Warn("invalid codex client entries setting, ignoring", "whitelist", whitelist, "error", err)
+		return nil
+	}
+	out := make([]openai.AllowedClientEntry, 0, len(entries))
+	for _, entry := range entries {
+		if whitelist && !entry.IsWhitelistable() {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 // SetOnUpdateCallback sets a callback function to be called when settings are updated
 // This is used for cache invalidation (e.g., HTML cache in frontend server)
 func (s *SettingService) SetOnUpdateCallback(callback func()) {
@@ -1973,6 +2060,10 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyAntigravityUserAgentVersion] = antigravity.NormalizeUserAgentVersion(settings.AntigravityUserAgentVersion)
 	updates[SettingKeyOpenAICodexUserAgent] = strings.TrimSpace(settings.OpenAICodexUserAgent)
 	updates[SettingKeyOpenAIAllowClaudeCodeCodexPlugin] = strconv.FormatBool(settings.OpenAIAllowClaudeCodeCodexPlugin)
+	updates[SettingKeyCodexCLIOnlyBlacklist] = strings.TrimSpace(settings.CodexCLIOnlyBlacklist)
+	updates[SettingKeyCodexCLIOnlyWhitelist] = strings.TrimSpace(settings.CodexCLIOnlyWhitelist)
+	updates[SettingKeyCodexCLIOnlyAllowAppServerClients] = strconv.FormatBool(settings.CodexCLIOnlyAllowAppServerClients)
+	updates[SettingKeyCodexCLIOnlyEngineFingerprintSignals] = strings.TrimSpace(settings.CodexCLIOnlyEngineFingerprintSignals)
 	updates[SettingPaymentVisibleMethodAlipaySource] = settings.PaymentVisibleMethodAlipaySource
 	updates[SettingPaymentVisibleMethodWxpaySource] = settings.PaymentVisibleMethodWxpaySource
 	updates[SettingPaymentVisibleMethodAlipayEnabled] = strconv.FormatBool(settings.PaymentVisibleMethodAlipayEnabled)
@@ -2150,6 +2241,8 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		value:     settings.OpenAIAllowClaudeCodeCodexPlugin,
 		expiresAt: time.Now().Add(openAIAllowCodexPluginCacheTTL).UnixNano(),
 	})
+	s.codexCLIOnlyPolicySF.Forget("codex_cli_only_policy")
+	s.codexCLIOnlyPolicyCache.Store(&cachedCodexCLIOnlyPolicy{expiresAt: 0})
 	if s.onUpdate != nil {
 		s.onUpdate() // Invalidate cache after settings update
 	}
@@ -3077,6 +3170,10 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyLowLatencyStreamHeaders:               strconv.FormatBool(s.defaultLowLatencyStreamHeaders()),
 		SettingKeyAntigravityUserAgentVersion:           "",
 		SettingKeyOpenAICodexUserAgent:                  "",
+		SettingKeyCodexCLIOnlyBlacklist:                 "",
+		SettingKeyCodexCLIOnlyWhitelist:                 "",
+		SettingKeyCodexCLIOnlyAllowAppServerClients:     "false",
+		SettingKeyCodexCLIOnlyEngineFingerprintSignals:  "",
 		SettingPaymentVisibleMethodAlipaySource:         "",
 		SettingPaymentVisibleMethodWxpaySource:          "",
 		SettingPaymentVisibleMethodAlipayEnabled:        "false",
@@ -3653,6 +3750,10 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.AntigravityUserAgentVersion = antigravity.NormalizeUserAgentVersion(settings[SettingKeyAntigravityUserAgentVersion])
 	result.OpenAICodexUserAgent = strings.TrimSpace(settings[SettingKeyOpenAICodexUserAgent])
 	result.OpenAIAllowClaudeCodeCodexPlugin = settings[SettingKeyOpenAIAllowClaudeCodeCodexPlugin] == "true"
+	result.CodexCLIOnlyBlacklist = strings.TrimSpace(settings[SettingKeyCodexCLIOnlyBlacklist])
+	result.CodexCLIOnlyWhitelist = strings.TrimSpace(settings[SettingKeyCodexCLIOnlyWhitelist])
+	result.CodexCLIOnlyAllowAppServerClients = settings[SettingKeyCodexCLIOnlyAllowAppServerClients] == "true"
+	result.CodexCLIOnlyEngineFingerprintSignals = strings.TrimSpace(settings[SettingKeyCodexCLIOnlyEngineFingerprintSignals])
 
 	// Web search emulation: quick enabled check from the JSON config
 	if raw := settings[SettingKeyWebSearchEmulationConfig]; raw != "" {

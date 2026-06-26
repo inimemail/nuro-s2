@@ -203,6 +203,10 @@ type SystemSettings struct {
 	AntigravityUserAgentVersion            string `json:"antigravity_user_agent_version"`
 	OpenAICodexUserAgent                   string `json:"openai_codex_user_agent"`
 	OpenAIAllowClaudeCodeCodexPlugin       bool   `json:"openai_allow_claude_code_codex_plugin"`
+	CodexCLIOnlyBlacklist                  string `json:"codex_cli_only_blacklist"`
+	CodexCLIOnlyWhitelist                  string `json:"codex_cli_only_whitelist"`
+	CodexCLIOnlyAllowAppServerClients      bool   `json:"codex_cli_only_allow_app_server_clients"`
+	CodexCLIOnlyEngineFingerprintSignals   string `json:"codex_cli_only_engine_fingerprint_signals"`
 
 	// Web Search Emulation
 	WebSearchEmulationEnabled bool `json:"web_search_emulation_enabled"`

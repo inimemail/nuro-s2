@@ -41,6 +41,7 @@ const (
 	PlatformOpenAI      = domain.PlatformOpenAI
 	PlatformGemini      = domain.PlatformGemini
 	PlatformAntigravity = domain.PlatformAntigravity
+	PlatformGrok        = domain.PlatformGrok
 )
 
 // AllowedQuotaPlatforms 是允许设置 user × platform quota 的平台列表（单一权威来源）。
@@ -51,6 +52,7 @@ var AllowedQuotaPlatforms = []string{
 	PlatformOpenAI,
 	PlatformGemini,
 	PlatformAntigravity,
+	PlatformGrok,
 }
 
 // IsAllowedQuotaPlatform 报告 s 是否为合法的 quota platform 标识。
@@ -470,6 +472,14 @@ const (
 	// SettingKeyOpenAIAllowClaudeCodeCodexPlugin 全局开关：是否额外放行 Claude Code 的 Codex 插件（默认 false）。
 	// 仅在账号 codex_cli_only 开启时生效；开启后无需逐账号配置 codex_cli_only_allowed_clients。
 	SettingKeyOpenAIAllowClaudeCodeCodexPlugin = "openai_allow_claude_code_codex_plugin"
+	// SettingKeyCodexCLIOnlyBlacklist 全局 codex_cli_only 黑名单 JSON。
+	SettingKeyCodexCLIOnlyBlacklist = "codex_cli_only_blacklist"
+	// SettingKeyCodexCLIOnlyWhitelist 全局 codex_cli_only 自由白名单 JSON。
+	SettingKeyCodexCLIOnlyWhitelist = "codex_cli_only_whitelist"
+	// SettingKeyCodexCLIOnlyAllowAppServerClients 是否允许 app-server 客户端策略扩展。
+	SettingKeyCodexCLIOnlyAllowAppServerClients = "codex_cli_only_allow_app_server_clients"
+	// SettingKeyCodexCLIOnlyEngineFingerprintSignals codex_cli_only 引擎指纹信号 JSON。
+	SettingKeyCodexCLIOnlyEngineFingerprintSignals = "codex_cli_only_engine_fingerprint_signals"
 
 	// 余额不足提醒
 	SettingKeyBalanceLowNotifyEnabled     = "balance_low_notify_enabled"      // 全局开关

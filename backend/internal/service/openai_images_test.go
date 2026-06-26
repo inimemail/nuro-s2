@@ -434,6 +434,17 @@ func TestAccountSupportsOpenAIEndpointCapability(t *testing.T) {
 		require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings))
 	})
 
+	t.Run("Grok OAuth 默认仅兼容 chat-compatible 请求", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformGrok,
+			Type:     AccountTypeOAuth,
+		}
+
+		require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityChatCompletions))
+		require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityEmbeddings))
+		require.False(t, account.SupportsOpenAIImageCapability(OpenAIImagesCapabilityBasic))
+	})
+
 	t.Run("显式列表支持同时声明 chat 和 embeddings", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,
