@@ -112,3 +112,56 @@ func TestIsCodexOfficialClientByHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestParseCodexEngineVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		ua          string
+		wantVersion string
+		wantOK      bool
+	}{
+		{
+			name:        "codex tui",
+			ua:          "codex-tui/0.125.0 (Ubuntu 22.4.0; x86_64)",
+			wantVersion: "0.125.0",
+			wantOK:      true,
+		},
+		{
+			name:        "codex cli rs",
+			ua:          "codex_cli_rs/0.98.0",
+			wantVersion: "0.98.0",
+			wantOK:      true,
+		},
+		{
+			name:        "复合 UA 中的 codex app",
+			ua:          "Mozilla/5.0 codex_app/0.142.0",
+			wantVersion: "0.142.0",
+			wantOK:      true,
+		},
+		{
+			name:        "Codex 家族 UA",
+			ua:          "Codex Desktop/1.2.3",
+			wantVersion: "1.2.3",
+			wantOK:      true,
+		},
+		{
+			name:   "没有斜杠",
+			ua:     "codex-tui",
+			wantOK: false,
+		},
+		{
+			name:   "非 semver",
+			ua:     "codex-tui/latest",
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotVersion, gotOK := ParseCodexEngineVersion(tt.ua)
+			if gotOK != tt.wantOK || gotVersion != tt.wantVersion {
+				t.Fatalf("ParseCodexEngineVersion(%q) = (%q, %v), want (%q, %v)", tt.ua, gotVersion, gotOK, tt.wantVersion, tt.wantOK)
+			}
+		})
+	}
+}

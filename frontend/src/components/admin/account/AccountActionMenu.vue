@@ -61,6 +61,7 @@ import { computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Icon } from '@/components/icons'
 import type { Account } from '@/types'
+import { isPoolModeAccount } from '@/utils/accountPoolMode'
 
 const props = defineProps<{ show: boolean; account: Account | null; position: { top: number; left: number } | null }>()
 const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'reauth', 'refresh-token', 'recover-state', 'revert-proxy-fallback', 'reset-quota', 'set-privacy'])
@@ -69,8 +70,7 @@ const isRateLimited = computed(() => {
   if (props.account?.rate_limit_reset_at && new Date(props.account.rate_limit_reset_at) > new Date()) {
     return true
   }
-  const credentials = props.account?.credentials as Record<string, unknown> | undefined
-  if (credentials?.pool_mode === true) {
+  if (isPoolModeAccount(props.account)) {
     return false
   }
   const modelLimits = (props.account?.extra as Record<string, unknown> | undefined)?.model_rate_limits as

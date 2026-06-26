@@ -229,6 +229,37 @@ func TestPoolModeIgnoresModelRateLimit(t *testing.T) {
 	}
 }
 
+func TestPoolModeStringFlagIgnoresModelRateLimit(t *testing.T) {
+	future := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":   "sk-test",
+			"pool_mode": "true",
+		},
+		Extra: map[string]any{
+			modelRateLimitsKey: map[string]any{
+				"gpt-5.4-mini": map[string]any{
+					"rate_limit_reset_at": future,
+				},
+			},
+		},
+	}
+
+	if !account.IsPoolMode() {
+		t.Fatalf("string pool_mode=true should be treated as pool mode")
+	}
+	if account.isModelRateLimitedWithContext(context.Background(), "gpt-5.4-mini") {
+		t.Fatalf("string-flag pool-mode account should ignore model rate limit")
+	}
+	if !account.IsSchedulableForModelWithContext(context.Background(), "gpt-5.4-mini") {
+		t.Fatalf("string-flag pool-mode account should stay schedulable despite model rate limit")
+	}
+}
+
 func TestGetModelRateLimitRemainingTime(t *testing.T) {
 	now := time.Now()
 	future10m := now.Add(10 * time.Minute).Format(time.RFC3339)

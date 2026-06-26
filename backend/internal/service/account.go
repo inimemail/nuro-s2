@@ -888,12 +888,7 @@ func (a *Account) IsPoolMode() bool {
 	if !a.IsAPIKeyOrBedrock() || a.Credentials == nil {
 		return false
 	}
-	if v, ok := a.Credentials["pool_mode"]; ok {
-		if enabled, ok := v.(bool); ok {
-			return enabled
-		}
-	}
-	return false
+	return credentialFlagTruthy(a.Credentials["pool_mode"])
 }
 
 // IsImagePoolMode marks a pool-mode account as dedicated to image-generation traffic.
@@ -901,12 +896,32 @@ func (a *Account) IsImagePoolMode() bool {
 	if !a.IsPoolMode() || a.Credentials == nil {
 		return false
 	}
-	if v, ok := a.Credentials["image_pool_mode"]; ok {
-		if enabled, ok := v.(bool); ok {
-			return enabled
+	return credentialFlagTruthy(a.Credentials["image_pool_mode"])
+}
+
+func credentialFlagTruthy(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "y", "on":
+			return true
+		default:
+			return false
 		}
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	case json.Number:
+		i, err := v.Int64()
+		return err == nil && i != 0
+	default:
+		return false
 	}
-	return false
 }
 
 // IsPoolSoftCooldownEnabled reports whether pool-mode soft cooldown is enabled

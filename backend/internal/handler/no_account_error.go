@@ -44,9 +44,9 @@ func classifyNoAccountError(
 	result := diag.DiagnoseModelAvailabilityForPlatform(ctx, apiKey.GroupID, routingModel, platform)
 	if result.HasAccountsInPool && !result.HasModelSupport {
 		return noAccountErrorClassification{
-			Status:        http.StatusNotFound,
-			ErrType:       "model_not_found",
-			Message:       fmt.Sprintf("Model %q is not supported by any configured account in this group", displayModel),
+			Status:        http.StatusBadRequest,
+			ErrType:       "invalid_request_error",
+			Message:       fmt.Sprintf("Requested model %q is not routable by this group", displayModel),
 			ModelNotFound: true,
 		}
 	}

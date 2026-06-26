@@ -3,17 +3,34 @@ import en from '../locales/en'
 import zh from '../locales/zh'
 
 const gatewayForwardingKeys = [
-  'codexCLIOnlyPolicy',
-  'codexCLIOnlyPolicyHint',
-  'codexCLIOnlyBlacklist',
-  'codexCLIOnlyBlacklistPlaceholder',
-  'codexCLIOnlyBlacklistHint',
-  'codexCLIOnlyWhitelist',
-  'codexCLIOnlyWhitelistPlaceholder',
-  'codexCLIOnlyWhitelistHint',
-  'codexCLIOnlyEngineFingerprintSignals',
-  'codexCLIOnlyEngineFingerprintSignalsPlaceholder',
-  'codexCLIOnlyEngineFingerprintSignalsHint'
+  'codexHardeningTitle',
+  'codexClientRestrictionTitle',
+  'codexHardeningDesc',
+  'minCodexVersion',
+  'minCodexVersionPlaceholder',
+  'maxCodexVersion',
+  'maxCodexVersionPlaceholder',
+  'codexVersionHint',
+  'codexFingerprintSignals',
+  'codexFingerprintSignalsDesc',
+  'codexFpTypeHeaderExact',
+  'codexFpTypeHeaderPrefix',
+  'codexFpTypeBodyPath',
+  'codexFpMatchPlaceholder',
+  'codexFpRequired',
+  'codexFingerprintNoRequiredWarn',
+  'codexAllowAppServer',
+  'codexAllowAppServerDesc',
+  'codexBlacklist',
+  'codexBlacklistDesc',
+  'codexWhitelist',
+  'codexWhitelistDesc',
+  'codexWhitelistSkipFingerprint',
+  'codexWhitelistSkipFingerprintTooltip',
+  'codexOriginatorPlaceholder',
+  'codexUaContainsPlaceholder',
+  'codexAddRow',
+  'codexRemoveRow'
 ] as const
 
 describe('gateway forwarding locale messages', () => {

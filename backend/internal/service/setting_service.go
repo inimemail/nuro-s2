@@ -1174,6 +1174,8 @@ func (s *SettingService) GetCodexCLIOnlyPolicy(ctx context.Context) CodexCLIOnly
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), codexCLIOnlyPolicyDBTimeout)
 		defer cancel()
 		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
+			SettingKeyMinCodexVersion,
+			SettingKeyMaxCodexVersion,
 			SettingKeyCodexCLIOnlyBlacklist,
 			SettingKeyCodexCLIOnlyWhitelist,
 			SettingKeyCodexCLIOnlyAllowAppServerClients,
@@ -1205,6 +1207,8 @@ func parseCodexCLIOnlyPolicySettings(values map[string]string) CodexCLIOnlyPolic
 	var policy CodexCLIOnlyPolicy
 	policy.Blacklist = parseCodexClientEntriesSetting(values[SettingKeyCodexCLIOnlyBlacklist], false)
 	policy.Whitelist = parseCodexClientEntriesSetting(values[SettingKeyCodexCLIOnlyWhitelist], true)
+	policy.MinCodexVersion = strings.TrimSpace(values[SettingKeyMinCodexVersion])
+	policy.MaxCodexVersion = strings.TrimSpace(values[SettingKeyMaxCodexVersion])
 	policy.AllowAppServerClients = values[SettingKeyCodexCLIOnlyAllowAppServerClients] == "true"
 	if signals, ok := openai.ParseEngineFingerprintSignals(values[SettingKeyCodexCLIOnlyEngineFingerprintSignals]); ok {
 		policy.EngineFingerprintSignals = signals
@@ -2060,6 +2064,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyAntigravityUserAgentVersion] = antigravity.NormalizeUserAgentVersion(settings.AntigravityUserAgentVersion)
 	updates[SettingKeyOpenAICodexUserAgent] = strings.TrimSpace(settings.OpenAICodexUserAgent)
 	updates[SettingKeyOpenAIAllowClaudeCodeCodexPlugin] = strconv.FormatBool(settings.OpenAIAllowClaudeCodeCodexPlugin)
+	updates[SettingKeyMinCodexVersion] = strings.TrimSpace(settings.MinCodexVersion)
+	updates[SettingKeyMaxCodexVersion] = strings.TrimSpace(settings.MaxCodexVersion)
 	updates[SettingKeyCodexCLIOnlyBlacklist] = strings.TrimSpace(settings.CodexCLIOnlyBlacklist)
 	updates[SettingKeyCodexCLIOnlyWhitelist] = strings.TrimSpace(settings.CodexCLIOnlyWhitelist)
 	updates[SettingKeyCodexCLIOnlyAllowAppServerClients] = strconv.FormatBool(settings.CodexCLIOnlyAllowAppServerClients)
@@ -3170,6 +3176,8 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyLowLatencyStreamHeaders:               strconv.FormatBool(s.defaultLowLatencyStreamHeaders()),
 		SettingKeyAntigravityUserAgentVersion:           "",
 		SettingKeyOpenAICodexUserAgent:                  "",
+		SettingKeyMinCodexVersion:                       "",
+		SettingKeyMaxCodexVersion:                       "",
 		SettingKeyCodexCLIOnlyBlacklist:                 "",
 		SettingKeyCodexCLIOnlyWhitelist:                 "",
 		SettingKeyCodexCLIOnlyAllowAppServerClients:     "false",
@@ -3750,6 +3758,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.AntigravityUserAgentVersion = antigravity.NormalizeUserAgentVersion(settings[SettingKeyAntigravityUserAgentVersion])
 	result.OpenAICodexUserAgent = strings.TrimSpace(settings[SettingKeyOpenAICodexUserAgent])
 	result.OpenAIAllowClaudeCodeCodexPlugin = settings[SettingKeyOpenAIAllowClaudeCodeCodexPlugin] == "true"
+	result.MinCodexVersion = strings.TrimSpace(settings[SettingKeyMinCodexVersion])
+	result.MaxCodexVersion = strings.TrimSpace(settings[SettingKeyMaxCodexVersion])
 	result.CodexCLIOnlyBlacklist = strings.TrimSpace(settings[SettingKeyCodexCLIOnlyBlacklist])
 	result.CodexCLIOnlyWhitelist = strings.TrimSpace(settings[SettingKeyCodexCLIOnlyWhitelist])
 	result.CodexCLIOnlyAllowAppServerClients = settings[SettingKeyCodexCLIOnlyAllowAppServerClients] == "true"

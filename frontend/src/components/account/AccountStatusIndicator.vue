@@ -177,6 +177,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import type { Account } from '@/types'
 import { formatCountdown, formatDateTime, formatCountdownWithSuffix, formatTime } from '@/utils/format'
+import { isPoolModeAccount } from '@/utils/accountPoolMode'
 
 const { t } = useI18n()
 
@@ -227,8 +228,7 @@ type AccountModelStatusItem = {
 
 // Computed: active model statuses (普通模型限流 + 积分耗尽 + 走积分中)
 const activeModelStatuses = computed<AccountModelStatusItem[]>(() => {
-  const credentials = props.account.credentials as Record<string, unknown> | undefined
-  if (credentials?.pool_mode === true) return []
+  if (isPoolModeAccount(props.account)) return []
 
   const extra = props.account.extra as Record<string, unknown> | undefined
   const modelLimits = extra?.model_rate_limits as

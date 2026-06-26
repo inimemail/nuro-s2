@@ -578,6 +578,8 @@ export interface SystemSettings {
   antigravity_user_agent_version: string;
   openai_codex_user_agent: string;
   openai_allow_claude_code_codex_plugin: boolean;
+  min_codex_version: string;
+  max_codex_version: string;
   codex_cli_only_blacklist: string;
   codex_cli_only_whitelist: string;
   codex_cli_only_allow_app_server_clients: boolean;
@@ -833,6 +835,8 @@ export interface UpdateSettingsRequest {
   antigravity_user_agent_version?: string;
   openai_codex_user_agent?: string;
   openai_allow_claude_code_codex_plugin?: boolean;
+  min_codex_version?: string;
+  max_codex_version?: string;
   codex_cli_only_blacklist?: string;
   codex_cli_only_whitelist?: string;
   codex_cli_only_allow_app_server_clients?: boolean;

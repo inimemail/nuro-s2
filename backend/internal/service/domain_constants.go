@@ -472,6 +472,10 @@ const (
 	// SettingKeyOpenAIAllowClaudeCodeCodexPlugin 全局开关：是否额外放行 Claude Code 的 Codex 插件（默认 false）。
 	// 仅在账号 codex_cli_only 开启时生效；开启后无需逐账号配置 codex_cli_only_allowed_clients。
 	SettingKeyOpenAIAllowClaudeCodeCodexPlugin = "openai_allow_claude_code_codex_plugin"
+	// SettingKeyMinCodexVersion 最低 Codex 引擎版本要求（空值=不检查）。
+	SettingKeyMinCodexVersion = "min_codex_version"
+	// SettingKeyMaxCodexVersion 最高 Codex 引擎版本限制（空值=不检查）。
+	SettingKeyMaxCodexVersion = "max_codex_version"
 	// SettingKeyCodexCLIOnlyBlacklist 全局 codex_cli_only 黑名单 JSON。
 	SettingKeyCodexCLIOnlyBlacklist = "codex_cli_only_blacklist"
 	// SettingKeyCodexCLIOnlyWhitelist 全局 codex_cli_only 自由白名单 JSON。

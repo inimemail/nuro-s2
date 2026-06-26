@@ -22,6 +22,9 @@ const (
 	CodexClientRestrictionReasonMatchedGlobalWhitelist     = "global_whitelist_matched"
 	CodexClientRestrictionReasonMatchedGlobalBlacklist     = "global_blacklist_matched"
 	CodexClientRestrictionReasonEngineFingerprintMissing   = "engine_fingerprint_missing"
+	CodexClientRestrictionReasonVersionUndetectable        = "codex_version_undetectable"
+	CodexClientRestrictionReasonVersionTooLow              = "codex_version_too_low"
+	CodexClientRestrictionReasonVersionTooHigh             = "codex_version_too_high"
 	// CodexClientRestrictionReasonNotMatchedUA 表示请求未命中官方客户端 UA 白名单。
 	CodexClientRestrictionReasonNotMatchedUA = "official_client_user_agent_not_matched"
 	// CodexClientRestrictionReasonForceCodexCLI 表示通过 ForceCodexCLI 配置兜底放行。
@@ -31,6 +34,8 @@ const (
 type CodexCLIOnlyPolicy struct {
 	Blacklist                []openai.AllowedClientEntry
 	Whitelist                []openai.AllowedClientEntry
+	MinCodexVersion          string
+	MaxCodexVersion          string
 	AllowAppServerClients    bool
 	EngineFingerprintSignals []openai.EngineFingerprintSignal
 }
@@ -97,6 +102,9 @@ func (d *OpenAICodexClientRestrictionDetector) DetectWithPolicy(c *gin.Context, 
 			Matched: true,
 			Reason:  CodexClientRestrictionReasonMatchedUA,
 		}
+		if restricted := applyCodexVersionPolicy(userAgent, policy, result); restricted.Reason != "" {
+			return restricted
+		}
 		return applyCodexEngineFingerprintPolicy(c, body, policy, result, false)
 	}
 	if openai.IsCodexOfficialClientOriginator(originator) {
@@ -104,6 +112,9 @@ func (d *OpenAICodexClientRestrictionDetector) DetectWithPolicy(c *gin.Context, 
 			Enabled: true,
 			Matched: true,
 			Reason:  CodexClientRestrictionReasonMatchedOriginator,
+		}
+		if restricted := applyCodexVersionPolicy(userAgent, policy, result); restricted.Reason != "" {
+			return restricted
 		}
 		return applyCodexEngineFingerprintPolicy(c, body, policy, result, false)
 	}
@@ -144,6 +155,35 @@ func (d *OpenAICodexClientRestrictionDetector) DetectWithPolicy(c *gin.Context, 
 		Matched: false,
 		Reason:  CodexClientRestrictionReasonNotMatchedUA,
 	}
+}
+
+func applyCodexVersionPolicy(userAgent string, policy CodexCLIOnlyPolicy, result CodexClientRestrictionDetectionResult) CodexClientRestrictionDetectionResult {
+	if policy.MinCodexVersion == "" && policy.MaxCodexVersion == "" {
+		return CodexClientRestrictionDetectionResult{}
+	}
+	version, ok := openai.ParseCodexEngineVersion(userAgent)
+	if !ok {
+		return CodexClientRestrictionDetectionResult{
+			Enabled: true,
+			Matched: false,
+			Reason:  CodexClientRestrictionReasonVersionUndetectable,
+		}
+	}
+	if policy.MinCodexVersion != "" && CompareVersions(version, policy.MinCodexVersion) < 0 {
+		return CodexClientRestrictionDetectionResult{
+			Enabled: true,
+			Matched: false,
+			Reason:  CodexClientRestrictionReasonVersionTooLow,
+		}
+	}
+	if policy.MaxCodexVersion != "" && CompareVersions(version, policy.MaxCodexVersion) > 0 {
+		return CodexClientRestrictionDetectionResult{
+			Enabled: true,
+			Matched: false,
+			Reason:  CodexClientRestrictionReasonVersionTooHigh,
+		}
+	}
+	return CodexClientRestrictionDetectionResult{}
 }
 
 func applyCodexEngineFingerprintPolicy(c *gin.Context, body []byte, policy CodexCLIOnlyPolicy, result CodexClientRestrictionDetectionResult, skip bool) CodexClientRestrictionDetectionResult {

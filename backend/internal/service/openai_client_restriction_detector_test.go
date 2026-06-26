@@ -277,6 +277,58 @@ func TestOpenAICodexClientRestrictionDetector_DetectWithPolicy(t *testing.T) {
 		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
 	})
 
+	t.Run("版本策略范围内放行官方客户端", func(t *testing.T) {
+		result := detector.DetectWithPolicy(
+			newCodexDetectorTestContext("codex-tui/0.125.0", ""),
+			account,
+			nil,
+			CodexCLIOnlyPolicy{MinCodexVersion: "0.120.0", MaxCodexVersion: "0.130.0"},
+			nil,
+		)
+		require.True(t, result.Enabled)
+		require.True(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
+	})
+
+	t.Run("版本策略阻断过低官方客户端", func(t *testing.T) {
+		result := detector.DetectWithPolicy(
+			newCodexDetectorTestContext("codex-tui/0.119.0", ""),
+			account,
+			nil,
+			CodexCLIOnlyPolicy{MinCodexVersion: "0.120.0"},
+			nil,
+		)
+		require.True(t, result.Enabled)
+		require.False(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonVersionTooLow, result.Reason)
+	})
+
+	t.Run("版本策略阻断过高官方客户端", func(t *testing.T) {
+		result := detector.DetectWithPolicy(
+			newCodexDetectorTestContext("codex-tui/0.131.0", ""),
+			account,
+			nil,
+			CodexCLIOnlyPolicy{MaxCodexVersion: "0.130.0"},
+			nil,
+		)
+		require.True(t, result.Enabled)
+		require.False(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonVersionTooHigh, result.Reason)
+	})
+
+	t.Run("版本策略阻断无法解析版本的官方客户端", func(t *testing.T) {
+		result := detector.DetectWithPolicy(
+			newCodexDetectorTestContext("codex-tui/latest", ""),
+			account,
+			nil,
+			CodexCLIOnlyPolicy{MinCodexVersion: "0.120.0"},
+			nil,
+		)
+		require.True(t, result.Enabled)
+		require.False(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonVersionUndetectable, result.Reason)
+	})
+
 	t.Run("黑名单优先阻断官方客户端", func(t *testing.T) {
 		result := detector.DetectWithPolicy(
 			newCodexDetectorTestContext("codex-tui/0.125.0", ""),

@@ -1,6 +1,9 @@
 package openai
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // CodexCLIUserAgentPrefixes matches Codex CLI User-Agent patterns
 // Examples: "codex_vscode/1.0.0", "codex_cli_rs/0.1.2"
@@ -102,4 +105,55 @@ func matchCodexClientHeaderPrefixes(value string, prefixes []string) bool {
 		}
 	}
 	return false
+}
+
+// codexEngineVersionPattern extracts leading X.Y.Z from a UA version segment.
+var codexEngineVersionPattern = regexp.MustCompile(`^(\d+\.\d+\.\d+)`)
+
+// ParseCodexEngineVersion extracts the codex-rs engine version from a UA like
+// `{originator}/{X.Y.Z} (...)`.
+func ParseCodexEngineVersion(ua string) (string, bool) {
+	ua = strings.TrimSpace(ua)
+	if ua == "" {
+		return "", false
+	}
+	lowerUA := strings.ToLower(ua)
+	for _, prefix := range codexOfficialClientUAPrefixes {
+		idx := strings.Index(lowerUA, prefix)
+		if idx < 0 {
+			continue
+		}
+		if version, ok := parseCodexVersionSegment(ua[idx+len(prefix):]); ok {
+			return version, true
+		}
+	}
+
+	if familyIdx := strings.Index(lowerUA, codexOfficialClientFamilyPrefix); familyIdx >= 0 {
+		rest := ua[familyIdx+len(codexOfficialClientFamilyPrefix):]
+		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+			if version, ok := parseCodexVersionSegment(rest[slash+1:]); ok {
+				return version, true
+			}
+		}
+	}
+
+	if slash := strings.IndexByte(ua, '/'); slash >= 0 {
+		return parseCodexVersionSegment(ua[slash+1:])
+	}
+	return "", false
+}
+
+func parseCodexVersionSegment(rest string) (string, bool) {
+	end := len(rest)
+	for i := 0; i < len(rest); i++ {
+		if rest[i] == ' ' || rest[i] == '(' {
+			end = i
+			break
+		}
+	}
+	version := codexEngineVersionPattern.FindString(strings.TrimSpace(rest[:end]))
+	if version == "" {
+		return "", false
+	}
+	return version, true
 }

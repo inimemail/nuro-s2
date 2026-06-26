@@ -307,6 +307,8 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		AntigravityUserAgentVersion:            settings.AntigravityUserAgentVersion,
 		OpenAICodexUserAgent:                   settings.OpenAICodexUserAgent,
 		OpenAIAllowClaudeCodeCodexPlugin:       settings.OpenAIAllowClaudeCodeCodexPlugin,
+		MinCodexVersion:                        settings.MinCodexVersion,
+		MaxCodexVersion:                        settings.MaxCodexVersion,
 		CodexCLIOnlyBlacklist:                  settings.CodexCLIOnlyBlacklist,
 		CodexCLIOnlyWhitelist:                  settings.CodexCLIOnlyWhitelist,
 		CodexCLIOnlyAllowAppServerClients:      settings.CodexCLIOnlyAllowAppServerClients,
@@ -657,6 +659,8 @@ type UpdateSettingsRequest struct {
 	AntigravityUserAgentVersion            *string `json:"antigravity_user_agent_version"`
 	OpenAICodexUserAgent                   *string `json:"openai_codex_user_agent"`
 	OpenAIAllowClaudeCodeCodexPlugin       *bool   `json:"openai_allow_claude_code_codex_plugin"`
+	MinCodexVersion                        *string `json:"min_codex_version"`
+	MaxCodexVersion                        *string `json:"max_codex_version"`
 	CodexCLIOnlyBlacklist                  *string `json:"codex_cli_only_blacklist"`
 	CodexCLIOnlyWhitelist                  *string `json:"codex_cli_only_whitelist"`
 	CodexCLIOnlyAllowAppServerClients      *bool   `json:"codex_cli_only_allow_app_server_clients"`
@@ -1530,6 +1534,36 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	}
+	if req.MinCodexVersion != nil {
+		normalized := strings.TrimSpace(*req.MinCodexVersion)
+		req.MinCodexVersion = &normalized
+		if normalized != "" && !semverPattern.MatchString(normalized) {
+			response.Error(c, http.StatusBadRequest, "min_codex_version must be empty or a valid semver (e.g. 0.142.0)")
+			return
+		}
+	}
+	if req.MaxCodexVersion != nil {
+		normalized := strings.TrimSpace(*req.MaxCodexVersion)
+		req.MaxCodexVersion = &normalized
+		if normalized != "" && !semverPattern.MatchString(normalized) {
+			response.Error(c, http.StatusBadRequest, "max_codex_version must be empty or a valid semver (e.g. 0.200.0)")
+			return
+		}
+	}
+	effectiveMinCodexVersion := strings.TrimSpace(previousSettings.MinCodexVersion)
+	if req.MinCodexVersion != nil {
+		effectiveMinCodexVersion = strings.TrimSpace(*req.MinCodexVersion)
+	}
+	effectiveMaxCodexVersion := strings.TrimSpace(previousSettings.MaxCodexVersion)
+	if req.MaxCodexVersion != nil {
+		effectiveMaxCodexVersion = strings.TrimSpace(*req.MaxCodexVersion)
+	}
+	if effectiveMinCodexVersion != "" && effectiveMaxCodexVersion != "" {
+		if service.CompareVersions(effectiveMaxCodexVersion, effectiveMinCodexVersion) < 0 {
+			response.Error(c, http.StatusBadRequest, "max_codex_version must be greater than or equal to min_codex_version")
+			return
+		}
+	}
 	if req.CodexCLIOnlyBlacklist != nil {
 		normalized := strings.TrimSpace(*req.CodexCLIOnlyBlacklist)
 		req.CodexCLIOnlyBlacklist = &normalized
@@ -1878,6 +1912,18 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.OpenAIAllowClaudeCodeCodexPlugin
 			}
 			return previousSettings.OpenAIAllowClaudeCodeCodexPlugin
+		}(),
+		MinCodexVersion: func() string {
+			if req.MinCodexVersion != nil {
+				return strings.TrimSpace(*req.MinCodexVersion)
+			}
+			return previousSettings.MinCodexVersion
+		}(),
+		MaxCodexVersion: func() string {
+			if req.MaxCodexVersion != nil {
+				return strings.TrimSpace(*req.MaxCodexVersion)
+			}
+			return previousSettings.MaxCodexVersion
 		}(),
 		CodexCLIOnlyBlacklist: func() string {
 			if req.CodexCLIOnlyBlacklist != nil {
@@ -2297,6 +2343,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AntigravityUserAgentVersion:            updatedSettings.AntigravityUserAgentVersion,
 		OpenAICodexUserAgent:                   updatedSettings.OpenAICodexUserAgent,
 		OpenAIAllowClaudeCodeCodexPlugin:       updatedSettings.OpenAIAllowClaudeCodeCodexPlugin,
+		MinCodexVersion:                        updatedSettings.MinCodexVersion,
+		MaxCodexVersion:                        updatedSettings.MaxCodexVersion,
 		CodexCLIOnlyBlacklist:                  updatedSettings.CodexCLIOnlyBlacklist,
 		CodexCLIOnlyWhitelist:                  updatedSettings.CodexCLIOnlyWhitelist,
 		CodexCLIOnlyAllowAppServerClients:      updatedSettings.CodexCLIOnlyAllowAppServerClients,
@@ -2823,6 +2871,12 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.OpenAIAllowClaudeCodeCodexPlugin != after.OpenAIAllowClaudeCodeCodexPlugin {
 		changed = append(changed, "openai_allow_claude_code_codex_plugin")
+	}
+	if before.MinCodexVersion != after.MinCodexVersion {
+		changed = append(changed, "min_codex_version")
+	}
+	if before.MaxCodexVersion != after.MaxCodexVersion {
+		changed = append(changed, "max_codex_version")
 	}
 	if before.CodexCLIOnlyBlacklist != after.CodexCLIOnlyBlacklist {
 		changed = append(changed, "codex_cli_only_blacklist")

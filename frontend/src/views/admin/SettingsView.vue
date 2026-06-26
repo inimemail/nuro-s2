@@ -4463,138 +4463,193 @@
                 <Toggle v-model="form.openai_allow_claude_code_codex_plugin" />
               </div>
 
-              <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-700">
-                <div class="mb-4 flex items-center justify-between gap-4">
+            </div>
+          </div>
+
+          <!-- Codex Settings -->
+          <div class="card">
+            <div
+              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
+            >
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.gatewayForwarding.codexHardeningTitle") }}
+              </h2>
+            </div>
+            <div class="space-y-4 p-6">
+                <div>
+                  <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+                    {{ t("admin.settings.gatewayForwarding.codexClientRestrictionTitle") }}
+                  </h3>
+                  <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.codexHardeningDesc") }}
+                  </p>
+                </div>
+
+                <div class="grid gap-4 sm:grid-cols-2">
                   <div>
-                    <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
-                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyPolicy") }}
-                    </h3>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayForwarding.minCodexVersion") }}
+                    </label>
+                    <input
+                      v-model="form.min_codex_version"
+                      type="text"
+                      class="input w-full font-mono text-sm"
+                      :placeholder="t('admin.settings.gatewayForwarding.minCodexVersionPlaceholder')"
+                    />
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayForwarding.maxCodexVersion") }}
+                    </label>
+                    <input
+                      v-model="form.max_codex_version"
+                      type="text"
+                      class="input w-full font-mono text-sm"
+                      :placeholder="t('admin.settings.gatewayForwarding.maxCodexVersionPlaceholder')"
+                    />
+                  </div>
+                </div>
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.gatewayForwarding.codexVersionHint") }}
+                </p>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.gatewayForwarding.codexFingerprintSignals") }}
+                  </label>
+                  <p class="mb-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.codexFingerprintSignalsDesc") }}
+                  </p>
+                  <div
+                    v-for="(row, i) in codexFingerprintRows"
+                    :key="`codex-fp-${i}`"
+                    class="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center"
+                  >
+                    <select v-model="row.type" class="input text-sm sm:w-32">
+                      <option value="header_exact">{{ t("admin.settings.gatewayForwarding.codexFpTypeHeaderExact") }}</option>
+                      <option value="header_prefix">{{ t("admin.settings.gatewayForwarding.codexFpTypeHeaderPrefix") }}</option>
+                      <option value="body_path">{{ t("admin.settings.gatewayForwarding.codexFpTypeBodyPath") }}</option>
+                    </select>
+                    <input
+                      v-model="row.match"
+                      type="text"
+                      class="input flex-1 font-mono text-sm"
+                      :placeholder="t('admin.settings.gatewayForwarding.codexFpMatchPlaceholder')"
+                    />
+                    <label class="flex shrink-0 items-center gap-1 text-xs text-gray-600 dark:text-gray-400">
+                      <input v-model="row.required" type="checkbox" />
+                      {{ t("admin.settings.gatewayForwarding.codexFpRequired") }}
+                    </label>
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm shrink-0 text-red-600 hover:text-red-700 dark:text-red-400"
+                      @click="removeCodexFingerprintRow(i)"
+                    >
+                      {{ t("admin.settings.gatewayForwarding.codexRemoveRow") }}
+                    </button>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" @click="addCodexFingerprintRow">
+                    {{ t("admin.settings.gatewayForwarding.codexAddRow") }}
+                  </button>
+                  <p v-if="codexFingerprintNoRequired" class="mt-2 text-xs text-amber-600 dark:text-amber-500">
+                    {{ t("admin.settings.gatewayForwarding.codexFingerprintNoRequiredWarn") }}
+                  </p>
+                </div>
+
+                <div class="flex items-center justify-between">
+                  <div class="pr-4">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayForwarding.codexAllowAppServer") }}
+                    </label>
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyPolicyHint") }}
+                      {{ t("admin.settings.gatewayForwarding.codexAllowAppServerDesc") }}
                     </p>
                   </div>
                   <Toggle v-model="form.codex_cli_only_allow_app_server_clients" />
                 </div>
-                <div class="grid gap-4 lg:grid-cols-2">
-                  <div>
-                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyBlacklist") }}
-                    </label>
-                    <textarea
-                      v-model="form.codex_cli_only_blacklist"
-                      rows="5"
-                      class="input w-full font-mono text-xs"
-                      :placeholder="t('admin.settings.gatewayForwarding.codexCLIOnlyBlacklistPlaceholder')"
-                    ></textarea>
-                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyBlacklistHint") }}
-                    </p>
-                  </div>
-                  <div>
-                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyWhitelist") }}
-                    </label>
-                    <textarea
-                      v-model="form.codex_cli_only_whitelist"
-                      rows="5"
-                      class="input w-full font-mono text-xs"
-                      :placeholder="t('admin.settings.gatewayForwarding.codexCLIOnlyWhitelistPlaceholder')"
-                    ></textarea>
-                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyWhitelistHint") }}
-                    </p>
-                  </div>
-                </div>
-                <div class="mt-4">
-                  <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                      {{ t("admin.settings.gatewayForwarding.codexCLIOnlyEngineFingerprintSignals") }}
-                    </label>
-                    <div class="flex items-center gap-2">
-                      <button
-                        type="button"
-                        class="btn btn-sm btn-secondary"
-                        @click="resetCodexFingerprintRows"
-                      >
-                        {{ t("common.reset") }}
-                      </button>
-                      <button
-                        type="button"
-                        class="btn btn-sm btn-primary"
-                        @click="addCodexFingerprintRow"
-                      >
-                        {{ t("common.add") }}
-                      </button>
-                    </div>
-                  </div>
-                  <div class="overflow-hidden rounded-lg border border-gray-200 dark:border-dark-700">
-                    <table class="min-w-full divide-y divide-gray-200 text-xs dark:divide-dark-700">
-                      <thead class="bg-gray-50 dark:bg-dark-800">
-                        <tr>
-                          <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">
-                            Type
-                          </th>
-                          <th class="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">
-                            Match
-                          </th>
-                          <th class="w-24 px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-300">
-                            Required
-                          </th>
-                          <th class="w-16 px-3 py-2"></th>
-                        </tr>
-                      </thead>
-                      <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
-                        <tr
-                          v-for="(row, index) in codexFingerprintRows"
-                          :key="index"
-                          class="bg-white dark:bg-dark-900"
-                        >
-                          <td class="px-3 py-2 align-top">
-                            <select v-model="row.type" class="input h-9 w-full text-xs">
-                              <option
-                                v-for="type in codexFingerprintTypeOptions"
-                                :key="type"
-                                :value="type"
-                              >
-                                {{ type }}
-                              </option>
-                            </select>
-                          </td>
-                          <td class="px-3 py-2 align-top">
-                            <input
-                              v-model="row.match"
-                              class="input h-9 w-full font-mono text-xs"
-                              placeholder="session-id / session_id"
-                            />
-                          </td>
-                          <td class="px-3 py-2 align-middle">
-                            <Toggle v-model="row.required" />
-                          </td>
-                          <td class="px-3 py-2 align-middle">
-                            <button
-                              type="button"
-                              class="btn btn-sm btn-secondary"
-                              @click="removeCodexFingerprintRow(index)"
-                            >
-                              {{ t("common.delete") }}
-                            </button>
-                          </td>
-                        </tr>
-                        <tr v-if="codexFingerprintRows.length === 0">
-                          <td colspan="4" class="px-3 py-4 text-center text-gray-500 dark:text-gray-400">
-                            {{ t("common.noData") }}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                    {{ t("admin.settings.gatewayForwarding.codexCLIOnlyEngineFingerprintSignalsHint") }}
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.gatewayForwarding.codexBlacklist") }}
+                  </label>
+                  <p class="mb-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.codexBlacklistDesc") }}
                   </p>
+                  <div
+                    v-for="(row, i) in codexBlacklistRows"
+                    :key="`codex-bl-${i}`"
+                    class="mb-2 flex flex-col gap-2 sm:flex-row"
+                  >
+                    <input
+                      v-model="row.originator"
+                      type="text"
+                      class="input font-mono text-sm sm:w-1/3"
+                      :placeholder="t('admin.settings.gatewayForwarding.codexOriginatorPlaceholder')"
+                    />
+                    <input
+                      v-model="row.uaContains"
+                      type="text"
+                      class="input flex-1 font-mono text-sm"
+                      :placeholder="t('admin.settings.gatewayForwarding.codexUaContainsPlaceholder')"
+                    />
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm shrink-0 text-red-600 hover:text-red-700 dark:text-red-400"
+                      @click="removeCodexBlacklistRow(i)"
+                    >
+                      {{ t("admin.settings.gatewayForwarding.codexRemoveRow") }}
+                    </button>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" @click="addCodexBlacklistRow">
+                    {{ t("admin.settings.gatewayForwarding.codexAddRow") }}
+                  </button>
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.gatewayForwarding.codexWhitelist") }}
+                  </label>
+                  <p class="mb-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.codexWhitelistDesc") }}
+                  </p>
+                  <div
+                    v-for="(row, i) in codexWhitelistRows"
+                    :key="`codex-wl-${i}`"
+                    class="mb-2 flex flex-col gap-2 sm:flex-row"
+                  >
+                    <input
+                      v-model="row.originator"
+                      type="text"
+                      class="input font-mono text-sm sm:w-1/3"
+                      :placeholder="t('admin.settings.gatewayForwarding.codexOriginatorPlaceholder')"
+                    />
+                    <input
+                      v-model="row.uaContains"
+                      type="text"
+                      class="input flex-1 font-mono text-sm"
+                      :placeholder="t('admin.settings.gatewayForwarding.codexUaContainsPlaceholder')"
+                    />
+                    <label
+                      class="flex shrink-0 items-center gap-1 text-xs text-gray-600 dark:text-gray-400"
+                      :title="t('admin.settings.gatewayForwarding.codexWhitelistSkipFingerprintTooltip')"
+                    >
+                      <input v-model="row.skipEngineFingerprint" type="checkbox" />
+                      {{ t("admin.settings.gatewayForwarding.codexWhitelistSkipFingerprint") }}
+                    </label>
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm shrink-0 text-red-600 hover:text-red-700 dark:text-red-400"
+                      @click="removeCodexWhitelistRow(i)"
+                    >
+                      {{ t("admin.settings.gatewayForwarding.codexRemoveRow") }}
+                    </button>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" @click="addCodexWhitelistRow">
+                    {{ t("admin.settings.gatewayForwarding.codexAddRow") }}
+                  </button>
                 </div>
               </div>
             </div>
-          </div>
           <!-- Web Search Emulation -->
           <div class="card">
             <div
@@ -7329,7 +7384,6 @@ import {
   parseFingerprintSignalsToRows,
   serializeFingerprintRowsToJSON,
   type FingerprintSignalRow,
-  type FingerprintSignalType,
 } from "./codexFingerprintSignals";
 import { useClipboard } from "@/composables/useClipboard";
 import { affiliatesAPI, type AffiliateAdminEntry, type SimpleUser as AffiliateSimpleUser } from "@/api/admin/affiliates";
@@ -7702,11 +7756,18 @@ const tablePageSizeOptionsInput = ref("10, 20, 50, 100");
 const codexFingerprintRows = ref<FingerprintSignalRow[]>(
   defaultFingerprintSignalRows(),
 );
-const codexFingerprintTypeOptions: FingerprintSignalType[] = [
-  "header_exact",
-  "header_prefix",
-  "body_path",
-];
+const codexFingerprintNoRequired = computed(
+  () => !codexFingerprintRows.value.some((row) => row.required),
+);
+
+interface CodexClientRow {
+  originator: string;
+  uaContains: string;
+  skipEngineFingerprint?: boolean;
+}
+
+const codexBlacklistRows = ref<CodexClientRow[]>([]);
+const codexWhitelistRows = ref<CodexClientRow[]>([]);
 
 // Admin API Key 状态
 const adminApiKeyLoading = ref(true);
@@ -8072,6 +8133,8 @@ const form = reactive<SettingsForm>({
   antigravity_user_agent_version: "",
   openai_codex_user_agent: "",
   openai_allow_claude_code_codex_plugin: false,
+  min_codex_version: "",
+  max_codex_version: "",
   codex_cli_only_blacklist: "",
   codex_cli_only_whitelist: "",
   codex_cli_only_allow_app_server_clients: false,
@@ -8690,11 +8753,23 @@ function syncCodexFingerprintRowsFromForm(): void {
   );
   codexFingerprintRows.value =
     rows.length > 0 ? rows : defaultFingerprintSignalRows();
+  codexBlacklistRows.value = parseCodexEntriesToRows(
+    form.codex_cli_only_blacklist || "",
+  );
+  codexWhitelistRows.value = parseCodexEntriesToRows(
+    form.codex_cli_only_whitelist || "",
+  );
 }
 
 function syncCodexFingerprintRowsToForm(): void {
   form.codex_cli_only_engine_fingerprint_signals = serializeFingerprintRowsToJSON(
     codexFingerprintRows.value,
+  );
+  form.codex_cli_only_blacklist = serializeCodexRowsToJSON(
+    codexBlacklistRows.value,
+  );
+  form.codex_cli_only_whitelist = serializeCodexRowsToJSON(
+    codexWhitelistRows.value,
   );
 }
 
@@ -8710,8 +8785,63 @@ function removeCodexFingerprintRow(index: number): void {
   codexFingerprintRows.value.splice(index, 1);
 }
 
-function resetCodexFingerprintRows(): void {
-  codexFingerprintRows.value = defaultFingerprintSignalRows();
+function parseCodexEntriesToRows(raw: string): CodexClientRow[] {
+  if (!raw || !raw.trim()) return [];
+  try {
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.map((entry) => ({
+      originator: typeof entry?.originator === "string" ? entry.originator : "",
+      uaContains: Array.isArray(entry?.ua_contains)
+        ? entry.ua_contains.filter((value: unknown) => typeof value === "string").join(", ")
+        : "",
+      skipEngineFingerprint: entry?.skip_engine_fingerprint === true,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function serializeCodexRowsToJSON(rows: CodexClientRow[]): string {
+  const entries = rows
+    .map((row) => {
+      const entry: {
+        originator?: string;
+        ua_contains: string[];
+        skip_engine_fingerprint?: boolean;
+      } = {
+        ua_contains: row.uaContains
+          .split(",")
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0),
+      };
+      const originator = row.originator.trim();
+      if (originator) entry.originator = originator;
+      if (row.skipEngineFingerprint) entry.skip_engine_fingerprint = true;
+      return entry;
+    })
+    .filter((entry) => entry.originator || entry.ua_contains.length > 0);
+  return JSON.stringify(entries);
+}
+
+function addCodexBlacklistRow(): void {
+  codexBlacklistRows.value.push({ originator: "", uaContains: "" });
+}
+
+function removeCodexBlacklistRow(index: number): void {
+  codexBlacklistRows.value.splice(index, 1);
+}
+
+function addCodexWhitelistRow(): void {
+  codexWhitelistRows.value.push({
+    originator: "",
+    uaContains: "",
+    skipEngineFingerprint: false,
+  });
+}
+
+function removeCodexWhitelistRow(index: number): void {
+  codexWhitelistRows.value.splice(index, 1);
 }
 
 async function loadSettings() {
@@ -9261,6 +9391,8 @@ async function saveSettings() {
       openai_codex_user_agent:
         form.openai_codex_user_agent?.trim() || "",
       openai_allow_claude_code_codex_plugin: form.openai_allow_claude_code_codex_plugin,
+      min_codex_version: form.min_codex_version?.trim() || "",
+      max_codex_version: form.max_codex_version?.trim() || "",
       codex_cli_only_blacklist: form.codex_cli_only_blacklist?.trim() || "",
       codex_cli_only_whitelist: form.codex_cli_only_whitelist?.trim() || "",
       codex_cli_only_allow_app_server_clients:

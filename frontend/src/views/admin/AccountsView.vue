@@ -436,6 +436,7 @@ import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
+import { isImagePoolModeAccount, isPoolModeAccount } from '@/utils/accountPoolMode'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
 
@@ -493,7 +494,7 @@ const selImagePoolModes = computed<boolean[]>(() => {
   const modes = new Set(
     accounts.value
       .filter(a => isSelected(a.id) && a.platform === 'openai' && a.type === 'apikey')
-      .map(a => (a.credentials as Record<string, unknown> | undefined)?.image_pool_mode === true)
+      .map(a => isImagePoolModeAccount(a))
   )
   return [...modes]
 })
@@ -666,7 +667,7 @@ const normalizeSoftCooldownDisplayUntil = (
 
 const normalizeSoftCooldownDisplayAccount = (account: Account) => {
   const usesOpenAIImagePool =
-    account.credentials?.image_pool_mode === true ||
+    isImagePoolModeAccount(account) ||
     account.openai_pool_soft_cooldown_probe_kind === 'images'
   normalizeSoftCooldownDisplayUntil(
     account,
@@ -1348,15 +1349,13 @@ const cols = computed(() =>
 )
 
 const isOpenAITextPoolAccount = (account: Account) => {
-  const isPool = account.credentials?.pool_mode === true
-  const isImagePool = isPool && account.credentials?.image_pool_mode === true
-  return account.platform === 'openai' && isPool && !isImagePool
+  return account.platform === 'openai' && isPoolModeAccount(account) && !isImagePoolModeAccount(account)
 }
 
 const isAnthropicCacheControlAccount = (account: Account) => {
   if (account.platform !== 'anthropic') return false
   if (account.type === 'oauth' || account.type === 'setup-token') return true
-  return account.type === 'apikey' && account.credentials?.pool_mode === true
+  return account.type === 'apikey' && isPoolModeAccount(account)
 }
 
 const isPromptCacheBoostAccount = (account: Account) => {
@@ -1784,8 +1783,8 @@ const accountMatchesCurrentFilters = (account: Account) => {
     }
   }
   if (filters.pool_mode) {
-    const isPoolMode = account.credentials?.pool_mode === true
-    const isImagePoolMode = isPoolMode && account.credentials?.image_pool_mode === true
+    const isPoolMode = isPoolModeAccount(account)
+    const isImagePoolMode = isImagePoolModeAccount(account)
     if (filters.pool_mode === 'non_pool') {
       if (isPoolMode) return false
     } else if (filters.pool_mode === 'pool') {
