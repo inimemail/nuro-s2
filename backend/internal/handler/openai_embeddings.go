@@ -103,6 +103,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
 	var lastFailoverErr *service.UpstreamFailoverError
 	retryAccountID := int64(0)
+	modelRoutingLockedPriority := -1
 	switchCount := 0
 	maxAccountSwitches := h.maxAccountSwitches
 	if maxAccountSwitches <= 0 {
@@ -112,7 +113,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 
 	for {
 		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
-		selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityAndStickyAccount(
+		selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityAndStickyAccountLockedPriority(
 			c.Request.Context(),
 			apiKey.GroupID,
 			"",
@@ -123,6 +124,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			service.OpenAIUpstreamTransportHTTPSSE,
 			service.OpenAIEndpointCapabilityEmbeddings,
 			false,
+			modelRoutingLockedPriority,
 		)
 		if err != nil {
 			reqLog.Warn("openai_embeddings.account_select_failed",
@@ -228,6 +230,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 				h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, "", account, failoverErr)
 				h.gatewayService.RecordOpenAIAccountSwitch()
+				modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(modelRoutingLockedPriority, account, failoverErr)
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {

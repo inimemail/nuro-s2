@@ -786,6 +786,77 @@ func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_FallsBackWithi
 	require.Equal(t, 2, decision.CandidateCount)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_LockedPriorityDoesNotFallForward(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10114)
+	accounts := []Account{
+		{
+			ID:          37041,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"pool_mode":       true,
+				"image_pool_mode": true,
+			},
+		},
+		{
+			ID:          37042,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"pool_mode":       true,
+				"image_pool_mode": true,
+			},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	concurrencyCache := schedulerTestConcurrencyCache{
+		acquireResults: map[int64]bool{
+			37042: true,
+		},
+		loadMap: map[int64]*AccountLoadInfo{
+			37041: {AccountID: 37041, LoadRate: 0, WaitingCount: 0},
+			37042: {AccountID: 37042, LoadRate: 0, WaitingCount: 0},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForImagesLockedPriority(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-1",
+		map[int64]struct{}{37041: {}},
+		OpenAIImagesCapabilityNative,
+		1,
+	)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no available OpenAI accounts")
+	require.Nil(t, selection)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Zero(t, decision.CandidateCount)
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesCandidateSlotArbiter(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

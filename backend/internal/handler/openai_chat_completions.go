@@ -138,11 +138,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	sameAccountRetryCount := make(map[int64]int)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
 	var lastFailoverErr *service.UpstreamFailoverError
+	modelRoutingLockedPriority := -1
 
 	for {
 		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
 		reqLog.Debug("openai_chat_completions.account_selecting", zap.Int("excluded_account_count", len(excludedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityOnPlatform(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityOnPlatformLockedPriority(
 			c.Request.Context(),
 			apiKey.GroupID,
 			"",
@@ -153,6 +154,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			service.OpenAIEndpointCapabilityChatCompletions,
 			false,
 			requestPlatform,
+			modelRoutingLockedPriority,
 		)
 		if err != nil {
 			reqLog.Warn("openai_chat_completions.account_select_failed",
@@ -271,6 +273,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 					h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, sessionHash, account, failoverErr)
 					h.gatewayService.RecordOpenAIAccountSwitch()
+					modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(modelRoutingLockedPriority, account, failoverErr)
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {

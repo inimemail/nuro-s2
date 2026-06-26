@@ -147,17 +147,19 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	sameAccountRetryCount := make(map[int64]int)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
 	var lastFailoverErr *service.UpstreamFailoverError
+	modelRoutingLockedPriority := -1
 
 	for {
 		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(excludedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImages(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImagesLockedPriority(
 			requestCtx,
 			apiKey.GroupID,
 			sessionHash,
 			parsed.Model,
 			excludedAccountIDs,
 			parsed.RequiredCapability,
+			modelRoutingLockedPriority,
 		)
 		if err != nil {
 			reqLog.Warn("openai.images.account_select_failed",
@@ -294,6 +296,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					}
 					h.gatewayService.HandleOpenAIAccountFailoverSwitch(requestCtx, apiKey.GroupID, sessionHash, account, failoverErr, parsed.Model)
 					h.gatewayService.RecordOpenAIAccountSwitch()
+					modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(modelRoutingLockedPriority, account, failoverErr)
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {

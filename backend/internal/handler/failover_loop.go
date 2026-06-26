@@ -218,6 +218,23 @@ func needForceCacheBilling(hasBoundSession bool, failoverErr *service.UpstreamFa
 	return hasBoundSession || (failoverErr != nil && failoverErr.ForceCacheBilling)
 }
 
+func isOpenAIPoolModelRoutingFailover(account *service.Account, failoverErr *service.UpstreamFailoverError) bool {
+	if account == nil || failoverErr == nil || !account.IsOpenAI() || !account.IsPoolMode() {
+		return false
+	}
+	if !failoverErr.SkipPoolSoftCooldown {
+		return false
+	}
+	return service.IsOpenAIPoolModelRoutingError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+}
+
+func lockOpenAIModelRoutingFailoverPriority(current int, account *service.Account, failoverErr *service.UpstreamFailoverError) int {
+	if current >= 0 || !isOpenAIPoolModelRoutingFailover(account, failoverErr) {
+		return current
+	}
+	return account.Priority
+}
+
 // sleepWithContext 等待指定时长，返回 false 表示 context 已取消。
 func sleepWithContext(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {

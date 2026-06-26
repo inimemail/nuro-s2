@@ -341,6 +341,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 		}
 		if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+			decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, respBody)
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
@@ -363,7 +364,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
-				RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMsg, respBody),
+				Message:                upstreamMsg,
+				ProbeModel:             strings.TrimSpace(upstreamModel),
+				ProbeKind:              openAIPoolProbeKindForModel(upstreamModel),
+				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}
 		return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)

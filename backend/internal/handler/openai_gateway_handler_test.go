@@ -94,6 +94,27 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
 	}
 }
 
+func TestOpenAIFailoverExhausted_PoolModelRoutingErrorIsSanitized(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h := &OpenAIGatewayHandler{}
+	body := []byte(`{"error":{"message":"Model \"gpt-5.4-mini\" is not supported by any configured account in this group","type":"model_not_found"}}`)
+	h.handleFailoverExhausted(c, &service.UpstreamFailoverError{
+		StatusCode:           http.StatusNotFound,
+		ResponseBody:         body,
+		SkipPoolSoftCooldown: true,
+	}, false)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(w.Body.Bytes(), "error.type").String())
+	require.Equal(t, "Requested model is not routable by upstream pool", gjson.GetBytes(w.Body.Bytes(), "error.message").String())
+	require.NotContains(t, w.Body.String(), "model_not_found")
+	require.NotContains(t, w.Body.String(), "not supported by any configured account")
+}
+
 func TestResolveOpenAIMessagesMetadataSession_DoesNotDerivePromptCacheKey(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
 

@@ -150,6 +150,12 @@ func classifyOpenAIPoolFailover(account *Account, statusCode int, upstreamMsg st
 	if account == nil || !account.IsPoolMode() {
 		return openAIPoolFailoverDecision{}
 	}
+	if isOpenAIPoolModelRoutingError(statusCode, upstreamMsg, upstreamBody) {
+		return openAIPoolFailoverDecision{
+			Failover:         true,
+			SkipSoftCooldown: true,
+		}
+	}
 	if isOpenAIPoolUserRequestedModelError(statusCode, upstreamMsg, upstreamBody) {
 		return openAIPoolFailoverDecision{}
 	}
@@ -213,6 +219,43 @@ func openAIPoolFailoverRetryableOnSameAccount(account *Account, statusCode int, 
 		return true
 	}
 	return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
+}
+
+// IsOpenAIPoolModelRoutingError reports upstream model routing/capability
+// failures that should not be exposed to downstream original sub2api clients as
+// 404/model_not_found, because they may turn that into a model-rate-limit state.
+func IsOpenAIPoolModelRoutingError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	return isOpenAIPoolModelRoutingError(statusCode, upstreamMsg, upstreamBody)
+}
+
+func isOpenAIPoolModelRoutingError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if statusCode != http.StatusBadRequest && statusCode != http.StatusNotFound &&
+		statusCode != http.StatusBadGateway && statusCode != http.StatusServiceUnavailable &&
+		statusCode != http.StatusGatewayTimeout {
+		return false
+	}
+	if isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody) {
+		return false
+	}
+	combined := openAIPoolCombinedErrorText(upstreamMsg, upstreamBody)
+	if combined == "" || !strings.Contains(combined, "model") {
+		return false
+	}
+	return containsAnySubstring(combined,
+		"model_not_found",
+		"model not found",
+		"model does not exist",
+		"model doesn't exist",
+		"unknown model",
+		"unsupported model",
+		"not supported by any configured account",
+		"not supported by configured account",
+		"not supported by this group",
+		"not routable",
+		"no configured account",
+		"no account supports",
+		"no account support",
+	)
 }
 
 func isOpenAIPoolAccountLevelClientError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {

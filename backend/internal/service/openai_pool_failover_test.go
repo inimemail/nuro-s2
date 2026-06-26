@@ -156,6 +156,27 @@ func TestClassifyOpenAIPoolFailover_ContextLengthUserErrorDoesNotSwitch(t *testi
 	require.False(t, decision.SkipSoftCooldown)
 }
 
+func TestClassifyOpenAIPoolFailover_UpstreamModelRoutingErrorSwitchesWithoutSoftCooldown(t *testing.T) {
+	account := &Account{
+		ID:          118,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := []byte(`{"error":{"message":"Model \"gpt-5.4-mini\" is not supported by any configured account in this group","type":"model_not_found"}}`)
+
+	decision := classifyOpenAIPoolFailover(
+		account,
+		http.StatusNotFound,
+		`Model "gpt-5.4-mini" is not supported by any configured account in this group`,
+		body,
+	)
+
+	require.True(t, decision.Failover)
+	require.False(t, decision.RetryableOnSameAccount)
+	require.True(t, decision.SkipSoftCooldown)
+}
+
 func TestClassifyOpenAIPoolFailover_AccountPermissionErrorStillSwitches(t *testing.T) {
 	account := &Account{
 		ID:          109,
