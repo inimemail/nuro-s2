@@ -315,7 +315,7 @@
               </button>
             </div>
             <div v-if="poolSoftCooldownEnabled" class="mt-3">
-              <label class="input-label">{{ t('admin.accounts.poolSoftCooldownErrorThreshold') }}</label>
+              <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.accounts.poolSoftCooldownErrorThreshold') }}</label>
               <input
                 v-model.number="poolSoftCooldownErrorThreshold"
                 type="number"
@@ -1280,7 +1280,7 @@
               </button>
             </div>
             <div v-if="poolSoftCooldownEnabled" class="mt-3">
-              <label class="input-label">{{ t('admin.accounts.poolSoftCooldownErrorThreshold') }}</label>
+              <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.accounts.poolSoftCooldownErrorThreshold') }}</label>
               <input
                 v-model.number="poolSoftCooldownErrorThreshold"
                 type="number"
