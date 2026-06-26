@@ -138,6 +138,7 @@ func (s *OpenAIGatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	s.openaiAccountRuntimeBlockUntil.Delete(accountID)
 	s.openaiPoolSoftCooldownUntil.Delete(accountID)
 	s.openaiPoolSoftCooldownContext.Delete(accountID)
+	s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
 	s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
 	s.openaiPoolRecoveryProbeFailureCount.Delete(accountID)
 	s.clearOpenAIAccountCooldownInRedis(accountID)
@@ -255,6 +256,54 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 		s.openaiPoolSoftCooldownContext.Store(account.ID, cooldownContext)
 	}
 	s.storeOpenAIPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown))
+	s.openaiPoolSoftCooldownFailureCount.Delete(account.ID)
+}
+
+func (s *OpenAIGatewayService) shouldStartOpenAIPoolSoftCooldown(account *Account) bool {
+	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
+		return false
+	}
+	if !account.IsPoolSoftCooldownEnabled() {
+		s.ClearAccountSchedulingBlock(account.ID)
+		return false
+	}
+	threshold := account.GetPoolSoftCooldownErrorThreshold()
+	if threshold <= 1 {
+		s.openaiPoolSoftCooldownFailureCount.Delete(account.ID)
+		return true
+	}
+	count := s.incrementOpenAIPoolSoftCooldownFailureCount(account.ID)
+	if count >= threshold {
+		s.openaiPoolSoftCooldownFailureCount.Delete(account.ID)
+		return true
+	}
+	return false
+}
+
+func (s *OpenAIGatewayService) incrementOpenAIPoolSoftCooldownFailureCount(accountID int64) int {
+	if s == nil || accountID <= 0 {
+		return 0
+	}
+	for {
+		current, loaded := s.openaiPoolSoftCooldownFailureCount.Load(accountID)
+		if !loaded {
+			if _, stored := s.openaiPoolSoftCooldownFailureCount.LoadOrStore(accountID, 1); !stored {
+				return 1
+			}
+			continue
+		}
+		count, ok := current.(int)
+		if !ok || count < 0 {
+			if s.openaiPoolSoftCooldownFailureCount.CompareAndSwap(accountID, current, 1) {
+				return 1
+			}
+			continue
+		}
+		next := count + 1
+		if s.openaiPoolSoftCooldownFailureCount.CompareAndSwap(accountID, current, next) {
+			return next
+		}
+	}
 }
 
 func (s *OpenAIGatewayService) configuredOpenAIPoolSoftCooldownMax(ctx context.Context, account *Account, cooldownContext openAIPoolSoftCooldownContext) time.Duration {
@@ -509,7 +558,7 @@ func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
 		decision := classifyOpenAIPoolFailover(account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
 		userRequestError := isOpenAIPoolUserRequestedModelError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody) ||
 			isOpenAIPoolExplicitClientRequestError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
-		if !userRequestError && !failoverErr.SkipPoolSoftCooldown && !decision.SkipSoftCooldown {
+		if !userRequestError && !failoverErr.SkipPoolSoftCooldown && !decision.SkipSoftCooldown && s.shouldStartOpenAIPoolSoftCooldown(account) {
 			probeModel := strings.TrimSpace(failoverErr.ProbeModel)
 			if probeModel == "" && len(requestedModel) > 0 {
 				probeModel = strings.TrimSpace(requestedModel[0])

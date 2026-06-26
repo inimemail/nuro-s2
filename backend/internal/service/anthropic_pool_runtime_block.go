@@ -66,6 +66,7 @@ func (s *GatewayService) MarkAnthropicPoolAccountSoftCooldown(ctx context.Contex
 	cooldownContext.LastProbeReason = truncateString(strings.TrimSpace(cooldownContext.LastProbeReason), 256)
 	s.anthropicPoolSoftCooldownContext.Store(account.ID, cooldownContext)
 	s.storeAnthropicPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown))
+	s.anthropicPoolSoftCooldownFailureCnt.Delete(account.ID)
 }
 
 func (s *GatewayService) ClearAccountSchedulingBlock(accountID int64) {
@@ -226,8 +227,56 @@ func (s *GatewayService) clearAnthropicPoolSoftCooldown(accountID int64) {
 	}
 	s.anthropicPoolSoftCooldownUntil.Delete(accountID)
 	s.anthropicPoolSoftCooldownContext.Delete(accountID)
+	s.anthropicPoolSoftCooldownFailureCnt.Delete(accountID)
 	s.anthropicPoolRecoveryProbeInFlight.Delete(accountID)
 	s.anthropicPoolRecoveryProbeFailureCnt.Delete(accountID)
+}
+
+func (s *GatewayService) shouldStartAnthropicPoolSoftCooldown(account *Account) bool {
+	if s == nil || !isAnthropicPoolAccount(account) {
+		return false
+	}
+	if !account.IsPoolSoftCooldownEnabled() {
+		s.clearAnthropicPoolSoftCooldown(account.ID)
+		return false
+	}
+	threshold := account.GetPoolSoftCooldownErrorThreshold()
+	if threshold <= 1 {
+		s.anthropicPoolSoftCooldownFailureCnt.Delete(account.ID)
+		return true
+	}
+	count := s.incrementAnthropicPoolSoftCooldownFailureCount(account.ID)
+	if count >= threshold {
+		s.anthropicPoolSoftCooldownFailureCnt.Delete(account.ID)
+		return true
+	}
+	return false
+}
+
+func (s *GatewayService) incrementAnthropicPoolSoftCooldownFailureCount(accountID int64) int {
+	if s == nil || accountID <= 0 {
+		return 0
+	}
+	for {
+		current, loaded := s.anthropicPoolSoftCooldownFailureCnt.Load(accountID)
+		if !loaded {
+			if _, stored := s.anthropicPoolSoftCooldownFailureCnt.LoadOrStore(accountID, 1); !stored {
+				return 1
+			}
+			continue
+		}
+		count, ok := current.(int)
+		if !ok || count < 0 {
+			if s.anthropicPoolSoftCooldownFailureCnt.CompareAndSwap(accountID, current, 1) {
+				return 1
+			}
+			continue
+		}
+		next := count + 1
+		if s.anthropicPoolSoftCooldownFailureCnt.CompareAndSwap(accountID, current, next) {
+			return next
+		}
+	}
 }
 
 func (s *GatewayService) AnthropicPoolSoftCooldownState(accountID int64) AnthropicPoolSoftCooldownState {
@@ -286,7 +335,7 @@ func (s *GatewayService) HandleAnthropicAccountFailoverSwitch(ctx context.Contex
 		model = strings.TrimSpace(requestedModel[0])
 	}
 	decision := classifyAnthropicPoolFailover(account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody, model)
-	if !decision.Failover || decision.SkipSoftCooldown || failoverErr.SkipPoolSoftCooldown {
+	if !decision.Failover || decision.SkipSoftCooldown || failoverErr.SkipPoolSoftCooldown || !s.shouldStartAnthropicPoolSoftCooldown(account) {
 		return
 	}
 	if model == "" {

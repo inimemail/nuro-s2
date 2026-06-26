@@ -611,6 +611,7 @@ func (s *GatewayService) ReportAccountScheduleResult(account *Account, success b
 	}
 	if success && isAnthropicPoolAccount(account) {
 		s.clearAnthropicPoolSoftCooldown(account.ID)
+		s.anthropicPoolSoftCooldownFailureCnt.Delete(account.ID)
 	}
 	stats := s.getAccountHealthStats()
 	if stats == nil {
@@ -674,6 +675,7 @@ type GatewayService struct {
 
 	anthropicPoolSoftCooldownUntil       sync.Map // key: int64(accountID), value: time.Time
 	anthropicPoolSoftCooldownContext     sync.Map // key: int64(accountID), value: anthropicPoolSoftCooldownContext
+	anthropicPoolSoftCooldownFailureCnt  sync.Map // key: int64(accountID), value: int
 	anthropicPoolRecoveryProbeInFlight   sync.Map // key: int64(accountID), value: struct{}
 	anthropicPoolRecoveryProbeFailureCnt sync.Map // key: int64(accountID), value: int
 	anthropicPoolRecoveryProbeAdminKick  sync.Map // key: int64(accountID), value: time.Time
@@ -5268,7 +5270,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			if isAnthropicPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) {
+			if isAnthropicPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) && s.shouldStartAnthropicPoolSoftCooldown(account) {
 				s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, http.StatusBadGateway, nil, anthropicPoolSoftCooldownContext{
 					ProbeModel:     reqModel,
 					ProbeKind:      "messages",
@@ -5770,7 +5772,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			if isAnthropicPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) {
+			if isAnthropicPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) && s.shouldStartAnthropicPoolSoftCooldown(account) {
 				s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, http.StatusBadGateway, nil, anthropicPoolSoftCooldownContext{
 					ProbeModel:     input.RequestModel,
 					ProbeKind:      "messages",
@@ -6617,7 +6619,7 @@ func (s *GatewayService) executeBedrockUpstream(
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			if isAnthropicPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) {
+			if isAnthropicPoolAccount(account) && shouldAnthropicPoolRequestErrorSoftCooldown(err, safeErr) && s.shouldStartAnthropicPoolSoftCooldown(account) {
 				s.MarkAnthropicPoolAccountSoftCooldown(ctx, account, http.StatusBadGateway, nil, anthropicPoolSoftCooldownContext{
 					ProbeModel:     modelID,
 					ProbeKind:      "messages",
@@ -8141,7 +8143,7 @@ func (s *GatewayService) maybeMarkAnthropicPoolSoftCooldown(ctx context.Context,
 	if isAnthropicPoolAccount(account) {
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		decision := classifyAnthropicPoolFailover(account, statusCode, upstreamMsg, body, model)
-		if decision.Failover && !decision.SkipSoftCooldown {
+		if decision.Failover && !decision.SkipSoftCooldown && s.shouldStartAnthropicPoolSoftCooldown(account) {
 			probeModel := strings.TrimSpace(decision.ProbeModel)
 			if probeModel == "" {
 				probeModel = model

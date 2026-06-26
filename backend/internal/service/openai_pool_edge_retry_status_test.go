@@ -15,9 +15,10 @@ func poolModeTestAccount(id int64, retryCount int) *Account {
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeAPIKey,
 		Credentials: map[string]any{
-			"pool_mode":                  true,
-			"pool_soft_cooldown_enabled": true,
-			"pool_mode_retry_count":      retryCount,
+			"pool_mode":                          true,
+			"pool_soft_cooldown_enabled":         true,
+			"pool_soft_cooldown_error_threshold": 1,
+			"pool_mode_retry_count":              retryCount,
 		},
 	}
 }

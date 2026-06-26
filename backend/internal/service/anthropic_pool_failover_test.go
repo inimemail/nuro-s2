@@ -32,7 +32,7 @@ func TestClassifyAnthropicPoolFailover_ServerErrorKeepsSoftCooldown(t *testing.T
 		ID:          302,
 		Platform:    PlatformAnthropic,
 		Type:        AccountTypeAPIKey,
-		Credentials: map[string]any{"pool_mode": true},
+		Credentials: map[string]any{"pool_mode": true, "pool_soft_cooldown_error_threshold": 1},
 	}
 	body := []byte(`{"error":{"message":"upstream overloaded","type":"api_error"}}`)
 
@@ -122,7 +122,7 @@ func TestClassifyAnthropicPoolFailover_AccountAndUpstreamErrorsKeepSoftCooldown(
 		ID:          307,
 		Platform:    PlatformAnthropic,
 		Type:        AccountTypeAPIKey,
-		Credentials: map[string]any{"pool_mode": true},
+		Credentials: map[string]any{"pool_mode": true, "pool_soft_cooldown_error_threshold": 1},
 	}
 	tests := []struct {
 		name       string
@@ -225,7 +225,7 @@ func TestHandleFailoverSideEffects_AnthropicAccountErrorKeepsSoftCooldown(t *tes
 		ID:          310,
 		Platform:    PlatformAnthropic,
 		Type:        AccountTypeAPIKey,
-		Credentials: map[string]any{"pool_mode": true},
+		Credentials: map[string]any{"pool_mode": true, "pool_soft_cooldown_error_threshold": 1},
 	}
 	body := `{"error":{"message":"temporarily overloaded","type":"overloaded_error"}}`
 	resp := &http.Response{
@@ -286,7 +286,7 @@ func TestHandleRetryExhaustedSideEffects_AnthropicAccountErrorSoftCooldowns(t *t
 		ID:          313,
 		Platform:    PlatformAnthropic,
 		Type:        AccountTypeAPIKey,
-		Credentials: map[string]any{"pool_mode": true},
+		Credentials: map[string]any{"pool_mode": true, "pool_soft_cooldown_error_threshold": 1},
 	}
 	body := `{"error":{"message":"temporarily overloaded","type":"overloaded_error"}}`
 	resp := &http.Response{
@@ -314,7 +314,7 @@ func TestHandleFailoverSideEffects_AnthropicPoolPaymentRequiredSoftCooldownsWith
 		ID:          313,
 		Platform:    PlatformAnthropic,
 		Type:        AccountTypeAPIKey,
-		Credentials: map[string]any{"pool_mode": true},
+		Credentials: map[string]any{"pool_mode": true, "pool_soft_cooldown_error_threshold": 1},
 	}
 	body := `{"error":{"type":"permission_error","message":"Your credit balance is too low to access the Anthropic API"}}`
 	resp := &http.Response{
@@ -339,7 +339,7 @@ func TestMaybeAnthropicPoolClientErrorFailover_CreditBalance400(t *testing.T) {
 		ID:          314,
 		Platform:    PlatformAnthropic,
 		Type:        AccountTypeAPIKey,
-		Credentials: map[string]any{"pool_mode": true},
+		Credentials: map[string]any{"pool_mode": true, "pool_soft_cooldown_error_threshold": 1},
 	}
 	body := `{"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API"}}`
 	resp := &http.Response{
@@ -401,6 +401,56 @@ func TestAnthropicPoolFailoverSwitch_DownstreamRoutingErrorSkipsSoftCooldown(t *
 
 	state := svc.AnthropicPoolSoftCooldownState(account.ID)
 	require.False(t, state.Cooling)
+}
+
+func TestAnthropicPoolFailoverSwitch_DefaultSoftCooldownThresholdRequiresTenErrors(t *testing.T) {
+	svc := &GatewayService{}
+	account := &Account{
+		ID:          316,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:   http.StatusInternalServerError,
+		Message:      "server error",
+		ResponseBody: []byte(`{"error":{"message":"server error"}}`),
+	}
+
+	for i := 0; i < 9; i++ {
+		svc.HandleAnthropicAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "claude-sonnet-4-6")
+		require.False(t, svc.AnthropicPoolSoftCooldownState(account.ID).Cooling)
+	}
+
+	svc.HandleAnthropicAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "claude-sonnet-4-6")
+	require.True(t, svc.AnthropicPoolSoftCooldownState(account.ID).Cooling)
+}
+
+func TestAnthropicPoolFailoverSwitch_SuccessResetsSoftCooldownFailureThreshold(t *testing.T) {
+	svc := &GatewayService{}
+	account := &Account{
+		ID:          317,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "pool_soft_cooldown_error_threshold": 3},
+	}
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:   http.StatusInternalServerError,
+		Message:      "server error",
+		ResponseBody: []byte(`{"error":{"message":"server error"}}`),
+	}
+
+	svc.HandleAnthropicAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "claude-sonnet-4-6")
+	svc.HandleAnthropicAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "claude-sonnet-4-6")
+	require.False(t, svc.AnthropicPoolSoftCooldownState(account.ID).Cooling)
+
+	svc.ReportAccountScheduleResult(account, true, nil)
+
+	svc.HandleAnthropicAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "claude-sonnet-4-6")
+	svc.HandleAnthropicAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "claude-sonnet-4-6")
+	require.False(t, svc.AnthropicPoolSoftCooldownState(account.ID).Cooling)
+	svc.HandleAnthropicAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "claude-sonnet-4-6")
+	require.True(t, svc.AnthropicPoolSoftCooldownState(account.ID).Cooling)
 }
 
 type accountUpdateRuntimeBlockRepo struct {

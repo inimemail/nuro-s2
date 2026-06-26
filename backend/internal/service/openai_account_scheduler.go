@@ -1975,6 +1975,7 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResultForRequest(accou
 	}
 	if success {
 		s.openaiPoolSoftCooldownUntil.Delete(account.ID)
+		s.openaiPoolSoftCooldownFailureCount.Delete(account.ID)
 	}
 	scheduler := s.getOpenAIAccountScheduler(context.Background())
 	if scheduler == nil {
@@ -1997,6 +1998,7 @@ func (s *OpenAIGatewayService) reportOpenAIAccountScheduleResultForCapability(ac
 	}
 	if success {
 		s.openaiPoolSoftCooldownUntil.Delete(accountID)
+		s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
 	}
 	scheduler := s.getOpenAIAccountScheduler(context.Background())
 	if scheduler == nil {

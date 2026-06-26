@@ -522,6 +522,8 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		"project_id",
 		"oauth_type",
 		"pool_mode",
+		"pool_soft_cooldown_enabled",
+		"pool_soft_cooldown_error_threshold",
 		"image_pool_mode",
 		"prompt_cache_boost_enabled",
 		"upstream_strong_isolation_enabled",

@@ -1112,6 +1112,11 @@ const (
 )
 
 const (
+	defaultPoolSoftCooldownErrorThreshold = 10
+	maxPoolSoftCooldownErrorThreshold     = 100
+)
+
+const (
 	defaultPoolModeSameAccountRetryDelay = 500 * time.Millisecond
 	minPoolModeSameAccountRetryDelay     = 10 * time.Millisecond
 	maxPoolModeSameAccountRetryDelay     = 5 * time.Second
@@ -1165,6 +1170,46 @@ func parsePoolModeRetryCount(value any) int {
 		}
 	}
 	return defaultPoolModeRetryCount
+}
+
+// GetPoolSoftCooldownErrorThreshold returns how many consecutive failover
+// errors are required before a pool account enters soft cooldown.
+func (a *Account) GetPoolSoftCooldownErrorThreshold() int {
+	if a == nil || !a.IsPoolMode() || a.Credentials == nil {
+		return defaultPoolSoftCooldownErrorThreshold
+	}
+	raw, ok := a.Credentials["pool_soft_cooldown_error_threshold"]
+	if !ok || raw == nil {
+		return defaultPoolSoftCooldownErrorThreshold
+	}
+	threshold, ok := parsePoolSoftCooldownErrorThreshold(raw)
+	if !ok || threshold < 1 {
+		return defaultPoolSoftCooldownErrorThreshold
+	}
+	if threshold > maxPoolSoftCooldownErrorThreshold {
+		return maxPoolSoftCooldownErrorThreshold
+	}
+	return threshold
+}
+
+func parsePoolSoftCooldownErrorThreshold(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return int(i), true
+		}
+	case string:
+		if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func (a *Account) IsOpenAIUpstreamConcurrencyRaceEnabled() bool {

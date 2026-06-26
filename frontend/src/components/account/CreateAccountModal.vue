@@ -1294,7 +1294,7 @@
               </div>
               <button
                 type="button"
-                @click="poolSoftCooldownEnabled = !poolSoftCooldownEnabled"
+                @click="togglePoolSoftCooldown"
                 :class="[
                   'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
                   poolSoftCooldownEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
@@ -1307,6 +1307,25 @@
                   ]"
                 />
               </button>
+            </div>
+            <div v-if="poolSoftCooldownEnabled" class="mt-3">
+              <label class="input-label">{{ t('admin.accounts.poolSoftCooldownErrorThreshold') }}</label>
+              <input
+                v-model.number="poolSoftCooldownErrorThreshold"
+                type="number"
+                min="1"
+                :max="MAX_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD"
+                step="1"
+                class="input"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{
+                  t('admin.accounts.poolSoftCooldownErrorThresholdHint', {
+                    default: DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD,
+                    max: MAX_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD
+                  })
+                }}
+              </p>
             </div>
           </div>
           <div v-if="poolModeEnabled && form.platform === 'openai'" class="mt-3 rounded-lg bg-gray-50 p-3 dark:bg-dark-700/60">
@@ -1838,7 +1857,7 @@
               </div>
               <button
                 type="button"
-                @click="poolSoftCooldownEnabled = !poolSoftCooldownEnabled"
+                @click="togglePoolSoftCooldown"
                 :class="[
                   'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
                   poolSoftCooldownEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
@@ -1851,6 +1870,25 @@
                   ]"
                 />
               </button>
+            </div>
+            <div v-if="poolSoftCooldownEnabled" class="mt-3">
+              <label class="input-label">{{ t('admin.accounts.poolSoftCooldownErrorThreshold') }}</label>
+              <input
+                v-model.number="poolSoftCooldownErrorThreshold"
+                type="number"
+                min="1"
+                :max="MAX_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD"
+                step="1"
+                class="input"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{
+                  t('admin.accounts.poolSoftCooldownErrorThresholdHint', {
+                    default: DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD,
+                    max: MAX_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD
+                  })
+                }}
+              </p>
             </div>
           </div>
           <div v-if="poolModeEnabled" class="mt-3">
@@ -3872,6 +3910,8 @@ const allowedModels = ref<string[]>([])
 const DEFAULT_POOL_MODE_RETRY_COUNT = 1
 const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
+const DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD = 10
+const MAX_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD = 100
 const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 20
 const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 50
 const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
@@ -3882,6 +3922,7 @@ const MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 500
 const MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 30000
 const poolModeEnabled = ref(false)
 const poolSoftCooldownEnabled = ref(true)
+const poolSoftCooldownErrorThreshold = ref(DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD)
 const imagePoolModeEnabled = ref(false)
 const promptCacheBoostEnabled = ref(false)
 const promptCacheBoostAggressiveEnabled = ref(false)
@@ -4444,6 +4485,7 @@ watch(
 watch([poolModeEnabled, () => form.platform], ([enabled, platform]) => {
   if (!enabled) {
     poolSoftCooldownEnabled.value = true
+    poolSoftCooldownErrorThreshold.value = DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD
   }
   if (!enabled || platform !== 'openai') {
     imagePoolModeEnabled.value = false
@@ -4889,6 +4931,7 @@ const resetForm = () => {
   })
   poolModeEnabled.value = false
   poolSoftCooldownEnabled.value = true
+  poolSoftCooldownErrorThreshold.value = DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD
   imagePoolModeEnabled.value = false
   promptCacheBoostEnabled.value = false
   promptCacheBoostAggressiveEnabled.value = false
@@ -4898,6 +4941,7 @@ const resetForm = () => {
   upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
   upstreamConcurrencyRaceRetryCountBackup.value = null
   poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
+  poolSoftCooldownErrorThreshold.value = DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD
   poolModeRetryStatusCodesInput.value = ''
   customErrorCodesEnabled.value = false
   selectedErrorCodes.value = []
@@ -5169,6 +5213,28 @@ const normalizePoolModeRetryCount = (value: number) => {
   return normalized
 }
 
+const normalizePoolSoftCooldownErrorThreshold = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD
+  }
+  const normalized = Math.trunc(value)
+  if (normalized < 1) {
+    return DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD
+  }
+  if (normalized > MAX_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD) {
+    return MAX_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD
+  }
+  return normalized
+}
+
+const togglePoolSoftCooldown = () => {
+  const next = !poolSoftCooldownEnabled.value
+  poolSoftCooldownEnabled.value = next
+  if (next) {
+    poolSoftCooldownErrorThreshold.value = DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD
+  }
+}
+
 const normalizeUpstreamConcurrencyRaceRetryCount = (value: number) => {
   if (!Number.isFinite(value)) {
     return DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
@@ -5324,6 +5390,9 @@ const handleSubmit = async () => {
     if (poolModeEnabled.value) {
       credentials.pool_mode = true
       credentials.pool_soft_cooldown_enabled = poolSoftCooldownEnabled.value
+      if (poolSoftCooldownEnabled.value) {
+        credentials.pool_soft_cooldown_error_threshold = normalizePoolSoftCooldownErrorThreshold(poolSoftCooldownErrorThreshold.value)
+      }
       credentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
       const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
       if (parsedRetryStatusCodes.length > 0) {
@@ -5442,6 +5511,9 @@ const handleSubmit = async () => {
   if (poolModeEnabled.value) {
     credentials.pool_mode = true
     credentials.pool_soft_cooldown_enabled = poolSoftCooldownEnabled.value
+    if (poolSoftCooldownEnabled.value) {
+      credentials.pool_soft_cooldown_error_threshold = normalizePoolSoftCooldownErrorThreshold(poolSoftCooldownErrorThreshold.value)
+    }
     if (form.platform === 'openai' && imagePoolModeEnabled.value) {
       credentials.image_pool_mode = true
     }

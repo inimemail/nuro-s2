@@ -397,6 +397,7 @@ type OpenAIGatewayService struct {
 	openaiAccountRuntimeBlockUntil             sync.Map // key: int64(accountID), value: time.Time
 	openaiPoolSoftCooldownUntil                sync.Map // key: int64(accountID), value: time.Time
 	openaiPoolSoftCooldownContext              sync.Map // key: int64(accountID), value: openAIPoolSoftCooldownContext
+	openaiPoolSoftCooldownFailureCount         sync.Map // key: int64(accountID), value: int
 	openaiPoolRecoveryProbeInFlight            sync.Map // key: int64(accountID), value: struct{}
 	openaiPoolRecoveryProbeFailureCount        sync.Map // key: int64(accountID), value: int
 	openaiPoolRecoveryProbeAdminKickAt         sync.Map // key: int64(accountID), value: time.Time

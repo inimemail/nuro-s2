@@ -310,8 +310,9 @@ func TestOpenAIPoolFailoverSwitch_ImagePoolDefaultsToImageProbe(t *testing.T) {
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeAPIKey,
 		Credentials: map[string]any{
-			"pool_mode":       true,
-			"image_pool_mode": true,
+			"pool_mode":                          true,
+			"image_pool_mode":                    true,
+			"pool_soft_cooldown_error_threshold": 1,
 		},
 	}
 	failoverErr := &UpstreamFailoverError{
@@ -333,7 +334,7 @@ func TestOpenAIPoolFailoverSwitch_PreservesExplicitImageProbeFields(t *testing.T
 		ID:          114,
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
-		Credentials: map[string]any{"pool_mode": true},
+		Credentials: map[string]any{"pool_mode": true, "pool_soft_cooldown_error_threshold": 1},
 	}
 	failoverErr := &UpstreamFailoverError{
 		StatusCode:      529,
@@ -350,6 +351,56 @@ func TestOpenAIPoolFailoverSwitch_PreservesExplicitImageProbeFields(t *testing.T
 	require.True(t, state.Cooling)
 	require.Equal(t, "images", state.ProbeKind)
 	require.Equal(t, "image-alias", state.ProbeModel)
+}
+
+func TestOpenAIPoolFailoverSwitch_DefaultSoftCooldownThresholdRequiresTenErrors(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          118,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:   http.StatusInternalServerError,
+		ResponseBody: []byte(`{"error":{"message":"server error"}}`),
+		Message:      "server error",
+	}
+
+	for i := 0; i < 9; i++ {
+		svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
+		require.False(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
+	}
+
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
+	require.True(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
+}
+
+func TestOpenAIPoolFailoverSwitch_SuccessResetsSoftCooldownFailureThreshold(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          119,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "pool_soft_cooldown_error_threshold": 3},
+	}
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:   http.StatusInternalServerError,
+		ResponseBody: []byte(`{"error":{"message":"server error"}}`),
+		Message:      "server error",
+	}
+
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
+	require.False(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
+
+	svc.ReportOpenAIAccountScheduleResultForRequest(account, "gpt-test", true, nil)
+
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
+	require.False(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
+	require.True(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
 }
 
 func TestOpenAIPoolSoftCooldownState_ExposesReasonUntilCleared(t *testing.T) {

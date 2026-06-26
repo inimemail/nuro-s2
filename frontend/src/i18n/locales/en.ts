@@ -3547,6 +3547,8 @@ export default {
         'When enabled, upstream 429/403/401 errors will auto-retry without marking the account as rate-limited or errored. Suitable for upstream pointing to another sub2api instance.',
       poolSoftCooldown: 'Enable Soft Cooldown',
       poolSoftCooldownHint: 'After pool-mode failover, cool down for the configured per-round window, then probe for recovery.',
+      poolSoftCooldownErrorThreshold: 'Soft Cooldown Error Count',
+      poolSoftCooldownErrorThresholdHint: 'Enter soft cooldown after {default} consecutive errors by default. You can set 1-{max}; one success resets the count.',
       imagePoolMode: 'Image Pool',
       imagePoolModeHint: 'When enabled, this OpenAI pool account only handles image-generation requests; when disabled, image-generation requests will not route to this pool account.',
       promptCacheBoost: 'Cache Boost',

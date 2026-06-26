@@ -777,9 +777,10 @@ func TestAnthropicPoolSoftCooldown_BedrockPoolUsesSoftCooldown(t *testing.T) {
 		Platform: PlatformAnthropic,
 		Type:     AccountTypeBedrock,
 		Credentials: map[string]any{
-			"pool_mode": true,
-			"auth_mode": "apikey",
-			"api_key":   "bedrock-test",
+			"pool_mode":                          true,
+			"pool_soft_cooldown_error_threshold": 1,
+			"auth_mode":                          "apikey",
+			"api_key":                            "bedrock-test",
 		},
 	}
 
@@ -804,9 +805,10 @@ func TestAnthropicPoolRecoveryProbe_BedrockPoolUsesBedrockEndpoint(t *testing.T)
 		Platform: PlatformAnthropic,
 		Type:     AccountTypeBedrock,
 		Credentials: map[string]any{
-			"pool_mode": true,
-			"auth_mode": "apikey",
-			"api_key":   "bedrock-test",
+			"pool_mode":                          true,
+			"pool_soft_cooldown_error_threshold": 1,
+			"auth_mode":                          "apikey",
+			"api_key":                            "bedrock-test",
 		},
 	}
 	cooldownUntil := time.Now().Add(-time.Second)
@@ -835,9 +837,10 @@ func TestAnthropicPoolSoftCooldown_BedrockTransportErrorSoftCooldowns(t *testing
 		Platform: PlatformAnthropic,
 		Type:     AccountTypeBedrock,
 		Credentials: map[string]any{
-			"pool_mode": true,
-			"auth_mode": "apikey",
-			"api_key":   "bedrock-test",
+			"pool_mode":                          true,
+			"pool_soft_cooldown_error_threshold": 1,
+			"auth_mode":                          "apikey",
+			"api_key":                            "bedrock-test",
 		},
 	}
 	recorder := httptest.NewRecorder()

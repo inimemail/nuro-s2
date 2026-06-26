@@ -3691,6 +3691,8 @@ export default {
         '启用后，上游 429/403/401 错误将自动重试而不标记账号限流或错误，适用于上游指向另一个 sub2api 实例的场景。',
       poolSoftCooldown: '开启软冷却',
       poolSoftCooldownHint: '池模式错误切换账号后，按后台配置进入每轮软冷却，到期后探测恢复。',
+      poolSoftCooldownErrorThreshold: '软冷却错误次数',
+      poolSoftCooldownErrorThresholdHint: '默认连续错误达到 {default} 次后才进入软冷却，可设置 1-{max} 次；成功一次会重新累计。',
       imagePoolMode: '图片池',
       imagePoolModeHint: '开启后该 OpenAI 池账号只承接生图请求；关闭时生图请求不会调度到这个池账号。',
       promptCacheBoost: '缓存增强',
