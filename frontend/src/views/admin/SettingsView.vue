@@ -3756,6 +3756,32 @@
                   <label
                     class="text-sm font-medium text-gray-700 dark:text-gray-300"
                   >
+                    {{
+                      t(
+                        "admin.settings.scheduling.openAIPoolDownstreamModelLimitProtection",
+                      )
+                    }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{
+                      t(
+                        "admin.settings.scheduling.openAIPoolDownstreamModelLimitProtectionHint",
+                      )
+                    }}
+                  </p>
+                </div>
+                <Toggle
+                  v-model="
+                    form.openai_pool_downstream_model_limit_protection_enabled
+                  "
+                />
+              </div>
+
+              <div class="flex items-center justify-between">
+                <div>
+                  <label
+                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
                     {{ t("admin.settings.scheduling.openAIPoolRecoveryProbe") }}
                   </label>
                   <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
@@ -8106,6 +8132,7 @@ const form = reactive<SettingsForm>({
   max_claude_code_version: "",
   // 分组隔离
   allow_ungrouped_key_scheduling: false,
+  openai_pool_downstream_model_limit_protection_enabled: true,
   openai_pool_recovery_probe_enabled: true,
   openai_pool_recovery_probe_model: "gpt-5.5",
   openai_pool_soft_cooldown_max_seconds: 30,
@@ -9348,6 +9375,8 @@ async function saveSettings() {
       min_claude_code_version: form.min_claude_code_version,
       max_claude_code_version: form.max_claude_code_version,
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
+      openai_pool_downstream_model_limit_protection_enabled:
+        form.openai_pool_downstream_model_limit_protection_enabled,
       openai_pool_recovery_probe_enabled:
         form.openai_pool_recovery_probe_enabled,
       openai_pool_recovery_probe_model:

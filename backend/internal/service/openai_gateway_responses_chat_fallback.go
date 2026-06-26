@@ -172,7 +172,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+		if s.shouldFailoverOpenAIAccountResponse(ctx, account, resp.StatusCode, upstreamMsg, respBody) {
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes

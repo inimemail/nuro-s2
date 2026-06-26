@@ -113,7 +113,7 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+		if s.shouldFailoverOpenAIAccountResponse(ctx, account, resp.StatusCode, upstreamMsg, respBody) {
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
@@ -133,10 +133,12 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 				Detail:             upstreamDetail,
 			})
 			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
-				RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMsg, respBody),
+				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}
 		writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter)

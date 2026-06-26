@@ -5804,6 +5804,8 @@ export default {
         description: 'Control API Key scheduling behavior',
         allowUngroupedKey: 'Allow Ungrouped Key Scheduling',
         allowUngroupedKeyHint: 'When disabled, API Keys not assigned to any group cannot make requests (403 Forbidden). Keep disabled to ensure all Keys belong to a specific group.',
+        openAIPoolDownstreamModelLimitProtection: 'OpenAI Pool Downstream Model Limit Protection',
+        openAIPoolDownstreamModelLimitProtectionHint: 'When enabled, pool model-routing errors fail over within the same priority and return 400 after exhaustion to avoid downstream model limits.',
         openAIPoolRecoveryProbe: 'Enable Non-Image Pool Recovery Probe',
         openAIPoolRecoveryProbeHint: 'When enabled, non-image pool accounts recover only after a successful probe when soft cooldown expires. When disabled, they recover directly.',
         openAIPoolProbeModel: 'OpenAI Non-Image Pool Probe Model',

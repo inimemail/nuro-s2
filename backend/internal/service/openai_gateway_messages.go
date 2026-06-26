@@ -387,7 +387,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			)
 			return s.ForwardAsAnthropic(ctx, c, account, body, promptCacheKey, defaultMappedModel)
 		}
-		if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+		if s.shouldFailoverOpenAIAccountResponse(ctx, account, resp.StatusCode, upstreamMsg, respBody) {
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
@@ -407,10 +407,12 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				Detail:             upstreamDetail,
 			})
 			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
-				RetryableOnSameAccount: classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, respBody).RetryableOnSameAccount,
+				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}
 		// Non-failover error: return Anthropic-formatted error to client

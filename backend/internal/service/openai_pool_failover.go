@@ -84,7 +84,7 @@ func (s *OpenAIGatewayService) newOpenAIPoolEmbeddedFailoverError(
 	if !ok {
 		return nil
 	}
-	decision := classifyOpenAIPoolFailover(account, statusCode, msg, body)
+	decision := s.classifyOpenAIPoolFailover(ctx, account, statusCode, msg, body)
 	if !decision.Failover {
 		return nil
 	}
@@ -147,10 +147,20 @@ func openAIPoolProbeKindForModel(model string) string {
 }
 
 func classifyOpenAIPoolFailover(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) openAIPoolFailoverDecision {
+	return classifyOpenAIPoolFailoverWithModelLimitProtection(account, statusCode, upstreamMsg, upstreamBody, true)
+}
+
+func classifyOpenAIPoolFailoverWithModelLimitProtection(
+	account *Account,
+	statusCode int,
+	upstreamMsg string,
+	upstreamBody []byte,
+	downstreamModelLimitProtectionEnabled bool,
+) openAIPoolFailoverDecision {
 	if account == nil || !account.IsPoolMode() {
 		return openAIPoolFailoverDecision{}
 	}
-	if isOpenAIPoolModelRoutingError(statusCode, upstreamMsg, upstreamBody) {
+	if downstreamModelLimitProtectionEnabled && isOpenAIPoolModelRoutingError(statusCode, upstreamMsg, upstreamBody) {
 		return openAIPoolFailoverDecision{
 			Failover:         true,
 			SkipSoftCooldown: true,

@@ -5953,6 +5953,8 @@ export default {
         description: '控制 API Key 的调度行为',
         allowUngroupedKey: '允许未分组 Key 调度',
         allowUngroupedKeyHint: '关闭后，未分配到任何分组的 API Key 将无法发起请求（返回 403）。建议保持关闭以确保所有 Key 都归属明确的分组。',
+        openAIPoolDownstreamModelLimitProtection: 'OpenAI 池模式下游模型限流保护',
+        openAIPoolDownstreamModelLimitProtectionHint: '开启后，池模式模型路由错误会继续同优先级重试，耗尽后对下游返回 400，避免下游原版写入模型限流。',
         openAIPoolRecoveryProbe: '非图片池启用恢复探测',
         openAIPoolRecoveryProbeHint: '开启后，非图片池账号软冷却到期需探测成功才恢复；关闭后到期直接恢复调度。',
         openAIPoolProbeModel: 'OpenAI 非图片池探测模型',

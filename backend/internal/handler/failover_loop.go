@@ -228,8 +228,8 @@ func isOpenAIPoolModelRoutingFailover(account *service.Account, failoverErr *ser
 	return service.IsOpenAIPoolModelRoutingError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
 }
 
-func lockOpenAIModelRoutingFailoverPriority(current int, account *service.Account, failoverErr *service.UpstreamFailoverError) int {
-	if current >= 0 || !isOpenAIPoolModelRoutingFailover(account, failoverErr) {
+func lockOpenAIModelRoutingFailoverPriority(current int, account *service.Account, failoverErr *service.UpstreamFailoverError, protectionEnabled bool) int {
+	if current >= 0 || !protectionEnabled || !isOpenAIPoolModelRoutingFailover(account, failoverErr) {
 		return current
 	}
 	return account.Priority

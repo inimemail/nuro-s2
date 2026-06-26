@@ -230,7 +230,12 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 				h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, "", account, failoverErr)
 				h.gatewayService.RecordOpenAIAccountSwitch()
-				modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(modelRoutingLockedPriority, account, failoverErr)
+				modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
+					modelRoutingLockedPriority,
+					account,
+					failoverErr,
+					h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+				)
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {

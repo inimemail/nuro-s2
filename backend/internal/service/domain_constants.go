@@ -413,6 +413,8 @@ const (
 
 	// SettingKeyAllowUngroupedKeyScheduling 允许未分组 API Key 调度（默认 false：未分组 Key 返回 403）
 	SettingKeyAllowUngroupedKeyScheduling = "allow_ungrouped_key_scheduling"
+	// SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled OpenAI 池模式对下游隐藏模型路由 404/model_not_found，避免下游写入模型限流（默认 true）
+	SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled = "openai_pool_downstream_model_limit_protection_enabled"
 	// SettingKeyOpenAIPoolRecoveryProbeEnabled 非图片池软冷却到期后是否启用恢复探测（默认 true）
 	SettingKeyOpenAIPoolRecoveryProbeEnabled = "openai_pool_recovery_probe_enabled"
 	// SettingKeyOpenAIPoolRecoveryProbeModel 非图片池恢复探测模型（默认 OpenAI 默认测试模型）

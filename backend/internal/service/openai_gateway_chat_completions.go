@@ -340,8 +340,8 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			)
 			return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 		}
-		if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {
-			decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, respBody)
+		if s.shouldFailoverOpenAIAccountResponse(ctx, account, resp.StatusCode, upstreamMsg, respBody) {
+			decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes

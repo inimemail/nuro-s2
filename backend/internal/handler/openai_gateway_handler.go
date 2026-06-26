@@ -594,7 +594,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 					h.gatewayService.HandleOpenAIAccountFailoverSwitch(requestCtx, apiKey.GroupID, sessionHash, account, failoverErr)
 					h.gatewayService.RecordOpenAIAccountSwitch()
-					modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(modelRoutingLockedPriority, account, failoverErr)
+					modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
+						modelRoutingLockedPriority,
+						account,
+						failoverErr,
+						h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+					)
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
@@ -1029,7 +1034,12 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 					h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, sessionHash, account, failoverErr)
 					h.gatewayService.RecordOpenAIAccountSwitch()
-					modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(modelRoutingLockedPriority, account, failoverErr)
+					modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
+						modelRoutingLockedPriority,
+						account,
+						failoverErr,
+						h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+					)
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
@@ -1799,7 +1809,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					}
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
-				modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(modelRoutingLockedPriority, account, failoverErr)
+				modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
+					modelRoutingLockedPriority,
+					account,
+					failoverErr,
+					h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+				)
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {
@@ -2043,7 +2058,9 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		return
 	}
 	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
-	if failoverErr.SkipPoolSoftCooldown && service.IsOpenAIPoolModelRoutingError(statusCode, upstreamMsg, responseBody) {
+	if failoverErr.SkipPoolSoftCooldown &&
+		(h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context())) &&
+		service.IsOpenAIPoolModelRoutingError(statusCode, upstreamMsg, responseBody) {
 		service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
 		h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", "Requested model is not routable by upstream pool", streamStarted)
 		return

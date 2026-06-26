@@ -2958,9 +2958,23 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 	return false
 }
 
-func (s *OpenAIGatewayService) shouldFailoverOpenAIAccountResponse(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+func (s *OpenAIGatewayService) IsOpenAIPoolDownstreamModelLimitProtectionEnabled(ctx context.Context) bool {
+	return s == nil || s.settingService == nil || s.settingService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(ctx)
+}
+
+func (s *OpenAIGatewayService) classifyOpenAIPoolFailover(ctx context.Context, account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) openAIPoolFailoverDecision {
+	return classifyOpenAIPoolFailoverWithModelLimitProtection(
+		account,
+		statusCode,
+		upstreamMsg,
+		upstreamBody,
+		s.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(ctx),
+	)
+}
+
+func (s *OpenAIGatewayService) shouldFailoverOpenAIAccountResponse(ctx context.Context, account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
 	if account != nil && account.IsOpenAI() && account.IsPoolMode() {
-		return classifyOpenAIPoolFailover(account, statusCode, upstreamMsg, upstreamBody).Failover
+		return s.classifyOpenAIPoolFailover(ctx, account, statusCode, upstreamMsg, upstreamBody).Failover
 	}
 	return s.shouldFailoverOpenAIUpstreamResponse(statusCode, upstreamMsg, upstreamBody)
 }
@@ -4050,7 +4064,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					continue
 				}
 			}
-			if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+			if s.shouldFailoverOpenAIAccountResponse(ctx, account, resp.StatusCode, upstreamMsg, respBody) {
 				upstreamDetail := ""
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 					maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
@@ -4071,7 +4085,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				})
 
 				s.handleFailoverSideEffects(ctx, resp, account, upstreamModel)
-				decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, respBody)
+				decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)
 				return nil, &UpstreamFailoverError{
 					StatusCode:             resp.StatusCode,
 					ResponseBody:           respBody,
@@ -4601,7 +4615,7 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 		Detail:               upstreamDetail,
 		UpstreamResponseBody: upstreamDetail,
 	})
-	decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, body)
+	decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, body)
 	return &UpstreamFailoverError{
 		StatusCode:             resp.StatusCode,
 		ResponseBody:           body,
@@ -4872,7 +4886,7 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 			"message": message,
 		},
 	})
-	decision := classifyOpenAIPoolFailover(account, http.StatusBadGateway, message, body)
+	decision := s.classifyOpenAIPoolFailover(c.Request.Context(), account, http.StatusBadGateway, message, body)
 	return &UpstreamFailoverError{
 		StatusCode:             http.StatusBadGateway,
 		ResponseBody:           body,
@@ -5671,7 +5685,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		Detail:             upstreamDetail,
 	})
 	if shouldDisable {
-		decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, body)
+		decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, body)
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           body,
@@ -5756,12 +5770,13 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	if account != nil && account.IsOpenAI() && account.IsPoolMode() &&
+		s.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()) &&
 		isOpenAIPoolModelRoutingError(resp.StatusCode, upstreamMsg, body) {
 		modelForCooldown := ""
 		if len(requestedModel) > 0 {
 			modelForCooldown = requestedModel[0]
 		}
-		decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, body)
+		decision := s.classifyOpenAIPoolFailover(c.Request.Context(), account, resp.StatusCode, upstreamMsg, body)
 		s.handleOpenAIAccountUpstreamError(
 			c.Request.Context(), account, resp.StatusCode, resp.Header, body, modelForCooldown,
 		)
@@ -5855,7 +5870,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		Detail:             upstreamDetail,
 	})
 	if shouldDisable {
-		decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, body)
+		decision := s.classifyOpenAIPoolFailover(c.Request.Context(), account, resp.StatusCode, upstreamMsg, body)
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           body,

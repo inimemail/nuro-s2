@@ -112,6 +112,10 @@ func (e *OpenAIImagesUpstreamError) failoverBody() []byte {
 }
 
 func (e *OpenAIImagesUpstreamError) ShouldFailover(account *Account) bool {
+	return e.ShouldFailoverWithModelLimitProtection(account, true)
+}
+
+func (e *OpenAIImagesUpstreamError) ShouldFailoverWithModelLimitProtection(account *Account, downstreamModelLimitProtectionEnabled bool) bool {
 	if e == nil {
 		return false
 	}
@@ -119,19 +123,23 @@ func (e *OpenAIImagesUpstreamError) ShouldFailover(account *Account) bool {
 	msg := e.clientMessage()
 	body := e.failoverBody()
 	if account != nil && account.IsOpenAI() && account.IsPoolMode() {
-		return classifyOpenAIPoolFailover(account, statusCode, msg, body).Failover
+		return classifyOpenAIPoolFailoverWithModelLimitProtection(account, statusCode, msg, body, downstreamModelLimitProtectionEnabled).Failover
 	}
 	return (&OpenAIGatewayService{}).shouldFailoverOpenAIUpstreamResponse(statusCode, msg, body)
 }
 
 func (e *OpenAIImagesUpstreamError) ToFailoverError(account *Account) *UpstreamFailoverError {
+	return e.ToFailoverErrorWithModelLimitProtection(account, true)
+}
+
+func (e *OpenAIImagesUpstreamError) ToFailoverErrorWithModelLimitProtection(account *Account, downstreamModelLimitProtectionEnabled bool) *UpstreamFailoverError {
 	if e == nil {
 		return nil
 	}
 	statusCode := e.clientStatusCode()
 	msg := e.clientMessage()
 	body := e.failoverBody()
-	decision := classifyOpenAIPoolFailover(account, statusCode, msg, body)
+	decision := classifyOpenAIPoolFailoverWithModelLimitProtection(account, statusCode, msg, body, downstreamModelLimitProtectionEnabled)
 	return &UpstreamFailoverError{
 		StatusCode:             statusCode,
 		ResponseBody:           body,
@@ -1014,8 +1022,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 	if len(results) == 0 {
 		if upstreamErr := extractOpenAIImagesUpstreamError(body); upstreamErr != nil {
 			setOpsUpstreamError(c, upstreamErr.clientStatusCode(), upstreamErr.clientMessage(), "")
-			if upstreamErr.ShouldFailover(account) {
-				return OpenAIUsage{}, 0, nil, upstreamErr.ToFailoverError(account)
+			protectionEnabled := s.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(ctx)
+			if upstreamErr.ShouldFailoverWithModelLimitProtection(account, protectionEnabled) {
+				return OpenAIUsage{}, 0, nil, upstreamErr.ToFailoverErrorWithModelLimitProtection(account, protectionEnabled)
 			}
 			writeOpenAIImagesUpstreamErrorResponse(c, upstreamErr)
 			return OpenAIUsage{}, 0, nil, upstreamErr
@@ -1496,7 +1505,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		}
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+		if s.shouldFailoverOpenAIAccountResponse(upstreamCtx, account, resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -1508,7 +1517,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 				Message:            upstreamMsg,
 			})
 			s.handleFailoverSideEffects(upstreamCtx, resp, account, requestModel)
-			decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, respBody)
+			decision := s.classifyOpenAIPoolFailover(upstreamCtx, account, resp.StatusCode, upstreamMsg, respBody)
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,

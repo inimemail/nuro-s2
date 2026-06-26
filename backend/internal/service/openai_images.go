@@ -630,7 +630,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if s.shouldFailoverOpenAIAccountResponse(account, resp.StatusCode, upstreamMsg, respBody) {
+		if s.shouldFailoverOpenAIAccountResponse(upstreamCtx, account, resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -642,7 +642,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 				Message:            upstreamMsg,
 			})
 			s.handleFailoverSideEffects(upstreamCtx, resp, account, upstreamModel)
-			decision := classifyOpenAIPoolFailover(account, resp.StatusCode, upstreamMsg, respBody)
+			decision := s.classifyOpenAIPoolFailover(upstreamCtx, account, resp.StatusCode, upstreamMsg, respBody)
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,

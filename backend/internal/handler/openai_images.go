@@ -245,12 +245,13 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			} else {
 				var imageUpstreamErr *service.OpenAIImagesUpstreamError
 				if errors.As(err, &imageUpstreamErr) {
-					if imageUpstreamErr.ShouldFailover(account) {
+					protectionEnabled := h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context())
+					if imageUpstreamErr.ShouldFailoverWithModelLimitProtection(account, protectionEnabled) {
 						if c.Writer.Size() != writerSizeBeforeForward {
-							h.handleFailoverExhausted(c, imageUpstreamErr.ToFailoverError(account), true)
+							h.handleFailoverExhausted(c, imageUpstreamErr.ToFailoverErrorWithModelLimitProtection(account, protectionEnabled), true)
 							return
 						}
-						err = imageUpstreamErr.ToFailoverError(account)
+						err = imageUpstreamErr.ToFailoverErrorWithModelLimitProtection(account, protectionEnabled)
 					} else {
 						h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, true, nil, parsed.RequiredCapability)
 						reqLog.Warn("openai.images.upstream_user_error",
@@ -296,7 +297,12 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					}
 					h.gatewayService.HandleOpenAIAccountFailoverSwitch(requestCtx, apiKey.GroupID, sessionHash, account, failoverErr, parsed.Model)
 					h.gatewayService.RecordOpenAIAccountSwitch()
-					modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(modelRoutingLockedPriority, account, failoverErr)
+					modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
+						modelRoutingLockedPriority,
+						account,
+						failoverErr,
+						h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+					)
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {

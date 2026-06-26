@@ -172,19 +172,20 @@ type SystemSettings struct {
 	MaxClaudeCodeVersion string `json:"max_claude_code_version"`
 
 	// 分组隔离
-	AllowUngroupedKeyScheduling           bool   `json:"allow_ungrouped_key_scheduling"`
-	OpenAIPoolRecoveryProbeEnabled        bool   `json:"openai_pool_recovery_probe_enabled"`
-	OpenAIPoolRecoveryProbeModel          string `json:"openai_pool_recovery_probe_model"`
-	OpenAIPoolSoftCooldownMaxSeconds      int    `json:"openai_pool_soft_cooldown_max_seconds"`
-	OpenAIPoolProbeTimeoutSeconds         int    `json:"openai_pool_probe_timeout_seconds"`
-	OpenAIImagePoolRecoveryProbeEnabled   bool   `json:"openai_image_pool_recovery_probe_enabled"`
-	OpenAIImagePoolRecoveryProbeModel     string `json:"openai_image_pool_recovery_probe_model"`
-	OpenAIImagePoolSoftCooldownMaxSeconds int    `json:"openai_image_pool_soft_cooldown_max_seconds"`
-	OpenAIImagePoolProbeTimeoutSeconds    int    `json:"openai_image_pool_probe_timeout_seconds"`
-	AnthropicPoolRecoveryProbeEnabled     bool   `json:"anthropic_pool_recovery_probe_enabled"`
-	AnthropicPoolRecoveryProbeModel       string `json:"anthropic_pool_recovery_probe_model"`
-	AnthropicPoolSoftCooldownMaxSeconds   int    `json:"anthropic_pool_soft_cooldown_max_seconds"`
-	AnthropicPoolProbeTimeoutSeconds      int    `json:"anthropic_pool_probe_timeout_seconds"`
+	AllowUngroupedKeyScheduling                     bool   `json:"allow_ungrouped_key_scheduling"`
+	OpenAIPoolDownstreamModelLimitProtectionEnabled bool   `json:"openai_pool_downstream_model_limit_protection_enabled"`
+	OpenAIPoolRecoveryProbeEnabled                  bool   `json:"openai_pool_recovery_probe_enabled"`
+	OpenAIPoolRecoveryProbeModel                    string `json:"openai_pool_recovery_probe_model"`
+	OpenAIPoolSoftCooldownMaxSeconds                int    `json:"openai_pool_soft_cooldown_max_seconds"`
+	OpenAIPoolProbeTimeoutSeconds                   int    `json:"openai_pool_probe_timeout_seconds"`
+	OpenAIImagePoolRecoveryProbeEnabled             bool   `json:"openai_image_pool_recovery_probe_enabled"`
+	OpenAIImagePoolRecoveryProbeModel               string `json:"openai_image_pool_recovery_probe_model"`
+	OpenAIImagePoolSoftCooldownMaxSeconds           int    `json:"openai_image_pool_soft_cooldown_max_seconds"`
+	OpenAIImagePoolProbeTimeoutSeconds              int    `json:"openai_image_pool_probe_timeout_seconds"`
+	AnthropicPoolRecoveryProbeEnabled               bool   `json:"anthropic_pool_recovery_probe_enabled"`
+	AnthropicPoolRecoveryProbeModel                 string `json:"anthropic_pool_recovery_probe_model"`
+	AnthropicPoolSoftCooldownMaxSeconds             int    `json:"anthropic_pool_soft_cooldown_max_seconds"`
+	AnthropicPoolProbeTimeoutSeconds                int    `json:"anthropic_pool_probe_timeout_seconds"`
 
 	// Backend Mode
 	BackendModeEnabled bool `json:"backend_mode_enabled"`

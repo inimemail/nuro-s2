@@ -551,6 +551,7 @@ export interface SystemSettings {
 
   // 分组隔离
   allow_ungrouped_key_scheduling: boolean;
+  openai_pool_downstream_model_limit_protection_enabled: boolean;
   openai_pool_recovery_probe_enabled: boolean;
   openai_pool_recovery_probe_model: string;
   openai_pool_soft_cooldown_max_seconds: number;
@@ -810,6 +811,7 @@ export interface UpdateSettingsRequest {
   min_claude_code_version?: string;
   max_claude_code_version?: string;
   allow_ungrouped_key_scheduling?: boolean;
+  openai_pool_downstream_model_limit_protection_enabled?: boolean;
   openai_pool_recovery_probe_enabled?: boolean;
   openai_pool_recovery_probe_model?: string;
   openai_pool_soft_cooldown_max_seconds?: number;

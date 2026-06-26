@@ -1520,7 +1520,10 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 		return
 	}
 	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
-	if platform == service.PlatformOpenAI && failoverErr.SkipPoolSoftCooldown && service.IsOpenAIPoolModelRoutingError(statusCode, upstreamMsg, responseBody) {
+	if platform == service.PlatformOpenAI &&
+		failoverErr.SkipPoolSoftCooldown &&
+		(h.settingService == nil || h.settingService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context())) &&
+		service.IsOpenAIPoolModelRoutingError(statusCode, upstreamMsg, responseBody) {
 		service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
 		h.handleStreamingAwareError(c, http.StatusBadRequest, "invalid_request_error", "Requested model is not routable by upstream pool", streamStarted)
 		return

@@ -555,7 +555,7 @@ func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
 		return
 	}
 	if failoverErr != nil {
-		decision := classifyOpenAIPoolFailover(account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+		decision := s.classifyOpenAIPoolFailover(ctx, account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
 		userRequestError := isOpenAIPoolUserRequestedModelError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody) ||
 			isOpenAIPoolExplicitClientRequestError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
 		if !userRequestError && !failoverErr.SkipPoolSoftCooldown && !decision.SkipSoftCooldown && s.shouldStartOpenAIPoolSoftCooldown(account) {
