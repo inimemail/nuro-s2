@@ -59,6 +59,10 @@
                   :to="child.path"
                   class="sidebar-link mb-0.5 py-1.5 text-sm"
                   :class="{ 'sidebar-link-active': route.path === child.path }"
+                  @mouseenter="scheduleMenuPrefetch(child.path)"
+                  @mouseleave="cancelScheduledMenuPrefetch"
+                  @focus="prefetchMenuItem(child.path)"
+                  @touchstart.passive="prefetchMenuItem(child.path)"
                   @click="handleMenuItemClick(child.path)"
                 >
                   <component :is="child.icon" class="h-4 w-4 flex-shrink-0" />
@@ -82,6 +86,10 @@
                       ? 'sidebar-wallet'
                       : undefined
               "
+              @mouseenter="scheduleMenuPrefetch(item.path)"
+              @mouseleave="cancelScheduledMenuPrefetch"
+              @focus="prefetchMenuItem(item.path)"
+              @touchstart.passive="prefetchMenuItem(item.path)"
               @click="handleMenuItemClick(item.path)"
             >
               <span v-if="item.iconSvg" class="h-5 w-5 flex-shrink-0 sidebar-svg-icon" v-html="sanitizeSvg(item.iconSvg)"></span>
@@ -107,6 +115,10 @@
             :class="{ 'sidebar-link-active': isActive(item.path), 'sidebar-link-collapsed': sidebarCollapsed }"
             :title="sidebarCollapsed ? item.label : undefined"
             :data-tour="item.path === '/keys' ? 'sidebar-my-keys' : undefined"
+            @mouseenter="scheduleMenuPrefetch(item.path)"
+            @mouseleave="cancelScheduledMenuPrefetch"
+            @focus="prefetchMenuItem(item.path)"
+            @touchstart.passive="prefetchMenuItem(item.path)"
             @click="handleMenuItemClick(item.path)"
           >
             <span v-if="item.iconSvg" class="h-5 w-5 flex-shrink-0 sidebar-svg-icon" v-html="sanitizeSvg(item.iconSvg)"></span>
@@ -127,6 +139,10 @@
             :class="{ 'sidebar-link-active': isActive(item.path), 'sidebar-link-collapsed': sidebarCollapsed }"
             :title="sidebarCollapsed ? item.label : undefined"
             :data-tour="item.path === '/keys' ? 'sidebar-my-keys' : undefined"
+            @mouseenter="scheduleMenuPrefetch(item.path)"
+            @mouseleave="cancelScheduledMenuPrefetch"
+            @focus="prefetchMenuItem(item.path)"
+            @touchstart.passive="prefetchMenuItem(item.path)"
             @click="handleMenuItemClick(item.path)"
           >
             <span v-if="item.iconSvg" class="h-5 w-5 flex-shrink-0 sidebar-svg-icon" v-html="sanitizeSvg(item.iconSvg)"></span>
@@ -178,10 +194,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useAdminSettingsStore, useAppStore, useAuthStore, useOnboardingStore } from '@/stores'
+import { useAdminSettingsStore } from '@/stores/adminSettings'
+import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
+import { useOnboardingStore } from '@/stores/onboarding'
+import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { sanitizeSvg } from '@/utils/sanitize'
 import { FeatureFlags, makeSidebarFlag } from '@/utils/featureFlags'
 
@@ -229,6 +249,8 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 const onboardingStore = useOnboardingStore()
 const adminSettingsStore = useAdminSettingsStore()
+const routePrefetch = useRoutePrefetch(router)
+let menuPrefetchTimer: ReturnType<typeof setTimeout> | null = null
 
 const sidebarCollapsed = computed(() => appStore.sidebarCollapsed)
 const mobileOpen = computed(() => appStore.mobileOpen)
@@ -816,6 +838,28 @@ function handleMenuItemClick(itemPath: string) {
     onboardingStore.nextStep(500)
   }
 }
+
+function prefetchMenuItem(itemPath: string) {
+  cancelScheduledMenuPrefetch()
+  void routePrefetch.prefetchRoute(itemPath)
+}
+
+function scheduleMenuPrefetch(itemPath: string) {
+  cancelScheduledMenuPrefetch()
+  menuPrefetchTimer = setTimeout(() => {
+    prefetchMenuItem(itemPath)
+  }, 120)
+}
+
+function cancelScheduledMenuPrefetch() {
+  if (menuPrefetchTimer === null) return
+  clearTimeout(menuPrefetchTimer)
+  menuPrefetchTimer = null
+}
+
+onBeforeUnmount(() => {
+  cancelScheduledMenuPrefetch()
+})
 
 function isActive(path: string): boolean {
   return route.path === path || route.path.startsWith(path + '/')

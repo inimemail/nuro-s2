@@ -126,7 +126,8 @@ watch(
         fileInput.value.value = ''
       }
     }
-  }
+  },
+  { immediate: true }
 )
 
 const openFilePicker = () => {

@@ -4,6 +4,7 @@ import { announcementsAPI } from '@/api'
 import type { UserAnnouncement } from '@/types'
 
 const THROTTLE_MS = 20 * 60 * 1000 // 20 minutes
+const FAILURE_RETRY_MS = 30 * 1000 // Avoid retrying on every route change when the endpoint is unhealthy.
 
 export const useAnnouncementStore = defineStore('announcements', () => {
   // State
@@ -37,8 +38,8 @@ export const useAnnouncementStore = defineStore('announcements', () => {
       announcements.value = all.slice(0, 20)
       enqueueNewPopups()
     } catch (err: any) {
-      // Revert throttle timestamp on failure so retry is allowed
-      lastFetchTime.value = 0
+      // Keep a short retry window so route changes do not repeatedly hit a slow/failing endpoint.
+      lastFetchTime.value = Date.now() - THROTTLE_MS + FAILURE_RETRY_MS
       console.error('Failed to fetch announcements:', err)
     } finally {
       loading.value = false

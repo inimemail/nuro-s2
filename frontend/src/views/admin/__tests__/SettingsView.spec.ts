@@ -92,6 +92,16 @@ vi.mock("@/stores", () => ({
   }),
 }));
 
+vi.mock("@/stores/app", () => ({
+  useAppStore: () => ({
+    showError,
+    showSuccess,
+    showWarning: vi.fn(),
+    showInfo: vi.fn(),
+    fetchPublicSettings,
+  }),
+}));
+
 vi.mock("@/stores/adminSettings", () => ({
   useAdminSettingsStore: () => ({
     fetch: adminSettingsFetch,
@@ -832,6 +842,7 @@ describe("admin SettingsView payment visible method controls", () => {
     const wrapper = mountView();
 
     await flushPromises();
+    await openGatewayTab(wrapper);
 
     expect(wrapper.text()).toContain("OpenAI 实验调度策略");
     expect(wrapper.text()).toContain(

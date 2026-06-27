@@ -541,10 +541,11 @@ watch(
       showAddForm.value = false
       showDeleteConfirm.value = false
     }
-  }
+  },
+  { immediate: true }
 )
 
-const loadPlans = async () => {
+async function loadPlans() {
   if (!props.accountId) return
   loading.value = true
   try {

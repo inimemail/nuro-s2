@@ -5,7 +5,11 @@ import Toast from '@/components/common/Toast.vue'
 import NavigationProgress from '@/components/common/NavigationProgress.vue'
 import { resolveRouteDocumentTitle } from '@/router/title'
 import AnnouncementPopup from '@/components/common/AnnouncementPopup.vue'
-import { useAppStore, useAuthStore, useSubscriptionStore, useAnnouncementStore, useAdminSettingsStore } from '@/stores'
+import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
+import { useSubscriptionStore } from '@/stores/subscriptions'
+import { useAnnouncementStore } from '@/stores/announcements'
+import { useAdminSettingsStore } from '@/stores/adminSettings'
 import { getSetupStatus } from '@/api/setup'
 
 const router = useRouter()

@@ -498,9 +498,9 @@ watch(() => props.show, (newVal) => {
   if (newVal) {
     loadRules()
   }
-})
+}, { immediate: true })
 
-const loadRules = async () => {
+async function loadRules() {
   loading.value = true
   try {
     rules.value = await adminAPI.errorPassthrough.list()

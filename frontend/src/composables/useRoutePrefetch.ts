@@ -39,6 +39,12 @@ const PREFETCH_ADJACENCY: Record<string, string[]> = {
   '/profile': ['/dashboard', '/keys']
 }
 
+const AUTO_PREFETCH_BLOCKLIST = new Set([
+  '/admin/accounts',
+  '/admin/settings',
+  '/admin/ops'
+])
+
 /**
  * requestIdleCallback 的返回类型
  */
@@ -93,8 +99,10 @@ export function useRoutePrefetch(router?: Router) {
   const getComponentImporter = (path: string): ComponentImportFn | null => {
     if (!router) return null
 
-    const routes = router.getRoutes()
-    const route = routes.find((r) => r.path === path)
+    const resolved = typeof router.resolve === 'function' ? router.resolve(path) : null
+    const route = resolved?.matched?.length
+      ? [...resolved.matched].reverse().find((r) => r.components?.default)
+      : router.getRoutes().find((r) => r.path === path)
 
     if (route && route.components?.default) {
       const component = route.components.default
@@ -140,6 +148,17 @@ export function useRoutePrefetch(router?: Router) {
   /**
    * 触发路由预加载
    */
+  const prefetchRoute = async (path: string): Promise<void> => {
+    if (shouldSkipPrefetchForNetwork()) return
+    if (prefetchedRoutes.value.has(path)) return
+
+    const importFn = getComponentImporter(path)
+    if (!importFn) return
+
+    await prefetchComponent(importFn)
+    prefetchedRoutes.value.add(path)
+  }
+
   const triggerPrefetch = (route: RouteLocationNormalized): void => {
     cancelPendingPrefetch()
 
@@ -152,23 +171,21 @@ export function useRoutePrefetch(router?: Router) {
       (deadline) => {
         pendingPrefetchHandle.value = null
 
-        const routePath = route.path
-        if (prefetchedRoutes.value.has(routePath)) return
         if (!deadline.didTimeout && deadline.timeRemaining() < 10) return
 
         // 获取需要预加载的组件 import 函数
-        let importFn: ComponentImportFn | null = null
+        let targetPath: string | null = null
         for (const path of prefetchPaths) {
-          importFn = getComponentImporter(path)
-          if (importFn) {
+          if (AUTO_PREFETCH_BLOCKLIST.has(path)) continue
+          if (prefetchedRoutes.value.has(path)) continue
+          if (getComponentImporter(path)) {
+            targetPath = path
             break
           }
         }
 
-        if (importFn) {
-          prefetchComponent(importFn).then(() => {
-            prefetchedRoutes.value.add(routePath)
-          })
+        if (targetPath) {
+          void prefetchRoute(targetPath)
         }
       },
       { timeout: 4000 }
@@ -205,6 +222,7 @@ export function useRoutePrefetch(router?: Router) {
 
   return {
     prefetchedRoutes: readonly(prefetchedRoutes),
+    prefetchRoute,
     triggerPrefetch,
     cancelPendingPrefetch,
     resetPrefetchState,

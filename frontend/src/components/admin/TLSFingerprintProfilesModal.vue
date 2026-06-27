@@ -384,9 +384,9 @@ watch(() => props.show, (newVal) => {
   if (newVal) {
     loadProfiles()
   }
-})
+}, { immediate: true })
 
-const loadProfiles = async () => {
+async function loadProfiles() {
   loading.value = true
   try {
     profiles.value = await adminAPI.tlsFingerprintProfiles.list()

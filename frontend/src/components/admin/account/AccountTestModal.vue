@@ -306,15 +306,16 @@ const sortTestModels = (models: ClaudeModel[]) => {
 // Load available models when modal opens
 watch(
   () => props.show,
-  async (newVal) => {
+  async (newVal, oldVal) => {
     if (newVal && props.account) {
       testPrompt.value = ''
       resetState()
       await loadAvailableModels()
-    } else {
+    } else if (oldVal) {
       abortStream()
     }
-  }
+  },
+  { immediate: true }
 )
 
 watch(selectedModelId, () => {
@@ -323,7 +324,7 @@ watch(selectedModelId, () => {
   }
 })
 
-const loadAvailableModels = async () => {
+async function loadAvailableModels() {
   if (!props.account) return
 
   loadingModels.value = true
@@ -353,7 +354,7 @@ const loadAvailableModels = async () => {
   }
 }
 
-const resetState = () => {
+function resetState() {
   status.value = 'idle'
   outputLines.value = []
   streamingContent.value = ''
@@ -367,7 +368,7 @@ const handleClose = () => {
   emit('close')
 }
 
-const abortStream = () => {
+function abortStream() {
   if (abortController) {
     abortController.abort()
     abortController = null

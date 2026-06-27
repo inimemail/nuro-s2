@@ -121,7 +121,7 @@ describe('useRoutePrefetch', () => {
       // 等待 requestIdleCallback 执行
       await new Promise((resolve) => setTimeout(resolve, 100))
 
-      expect(prefetchedRoutes.value.has('/admin/dashboard')).toBe(true)
+      expect(prefetchedRoutes.value.has('/admin/users')).toBe(true)
     })
 
     it('应该避免重复预加载同一路由', async () => {
@@ -167,7 +167,7 @@ describe('useRoutePrefetch', () => {
       await new Promise((resolve) => setTimeout(resolve, 100))
 
       // 只有最后一个路由应该被预加载
-      expect(prefetchedRoutes.value.has('/admin/users')).toBe(true)
+      expect(prefetchedRoutes.value.has('/admin/groups')).toBe(true)
     })
   })
 
@@ -217,7 +217,7 @@ describe('useRoutePrefetch', () => {
         // 等待超时执行
         await vi.advanceTimersByTimeAsync(4100)
 
-        expect(prefetchedRoutes.value.has('/dashboard')).toBe(true)
+        expect(prefetchedRoutes.value.has('/keys')).toBe(true)
       } finally {
         vi.useRealTimers()
       }
