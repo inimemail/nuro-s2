@@ -222,6 +222,9 @@ struct RetryDecision {
     reason: Option<String>,
     plan: Option<EdgePlan>,
     retry_max_depth: Option<u8>,
+    status_code: Option<u16>,
+    error_type: Option<String>,
+    error_message: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1198,6 +1201,35 @@ async fn relay_upstream_direct(
             }
             anyhow::bail!("retry decision missing relay plan");
         }
+        if decision.action == "respond_error" {
+            let reason = decision
+                .reason
+                .clone()
+                .unwrap_or_else(|| "retry_respond_error".to_string());
+            let _ = call_abort(
+                &state,
+                AbortRequest {
+                    edge_request_id: plan.edge_request_id.clone(),
+                    lease_id: plan.lease_id.clone(),
+                    account_id: plan.account_id,
+                    reason,
+                    client_disconnected: false,
+                },
+            )
+            .await;
+            return Ok(openai_error_response(
+                StatusCode::from_u16(decision.status_code.unwrap_or(400))
+                    .unwrap_or(StatusCode::BAD_REQUEST),
+                decision
+                    .error_type
+                    .as_deref()
+                    .unwrap_or("invalid_request_error"),
+                decision
+                    .error_message
+                    .as_deref()
+                    .unwrap_or("Requested model is not routable by upstream pool"),
+            ));
+        }
         let reason = decision
             .reason
             .unwrap_or_else(|| "retry_fallback_go".to_string());
@@ -1758,6 +1790,20 @@ fn text_response(status: StatusCode, body: &str) -> Response {
         .unwrap()
 }
 
+fn openai_error_response(status: StatusCode, error_type: &str, message: &str) -> Response {
+    let body = serde_json::json!({
+        "error": {
+            "message": message,
+            "type": error_type,
+        }
+    });
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 impl ChatStreamSummary {
     fn with_pending(pending: String) -> Self {
         Self {
@@ -2279,6 +2325,25 @@ mod tests {
         assert!(frame.contains("\"type\":\"response.output_text.delta\""));
         assert!(frame.contains("\"delta\":\"\""));
         assert!(frame.contains("\"response_id\":\"resp_123\""));
+    }
+
+    #[test]
+    fn openai_error_response_is_sanitized_json() {
+        let response = openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "Requested model is not routable by upstream pool",
+        );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "application/json"
+        );
     }
 
     #[test]

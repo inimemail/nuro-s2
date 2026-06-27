@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -374,6 +375,47 @@ func TestOpenAIEdgeRetryFallbackBoundaries(t *testing.T) {
 				t.Fatalf("expected reason %q, got %q", tc.want, decision.Reason)
 			}
 		})
+	}
+}
+
+func TestOpenAIEdgeRetryProtectsPoolModelRouting404(t *testing.T) {
+	h := &OpenAIGatewayHandler{
+		openAIEdgeLeases: map[string]*openAIEdgeLease{
+			"lease-1": {
+				leaseID: "lease-1",
+				account: &service.Account{
+					ID:       1001,
+					Platform: service.PlatformOpenAI,
+					Type:     service.AccountTypeAPIKey,
+					Credentials: map[string]any{
+						"pool_mode": true,
+					},
+				},
+			},
+		},
+	}
+	body := `{"error":{"message":"Model \"gpt-5.4-mini\" is not supported by any configured account in this group","type":"model_not_found"}}`
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:            "lease-1",
+		AccountID:          1001,
+		UpstreamStatusCode: http.StatusNotFound,
+		ErrorMessage:       body,
+		ResponseBody:       json.RawMessage(strconv.Quote(body)),
+	})
+
+	if decision.Action != service.OpenAIEdgeActionRespondError {
+		t.Fatalf("expected protected response action, got %q (%s)", decision.Action, decision.Reason)
+	}
+	if decision.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected sanitized 400, got %d", decision.StatusCode)
+	}
+	if decision.ErrorType != "invalid_request_error" {
+		t.Fatalf("expected sanitized error type, got %q", decision.ErrorType)
+	}
+	if decision.ErrorMessage != "Requested model is not routable by upstream pool" {
+		t.Fatalf("expected sanitized error message, got %q", decision.ErrorMessage)
 	}
 }
 

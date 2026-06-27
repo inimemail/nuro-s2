@@ -1241,10 +1241,16 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		return h.openAIEdgeRetrySwitchAccount(c, lease, req, "queue_wait_timeout")
 	}
 	status := req.UpstreamStatusCode
-	if !service.OpenAIEdgeHTTPStatusRetryable(status) {
+	responseBody := openAIEdgeRetryResponseBody(req)
+	upstreamMsg := strings.TrimSpace(req.ErrorMessage)
+	modelRoutingError := h.openAIEdgeShouldProtectModelRoutingError(c, lease.account, status, upstreamMsg, responseBody)
+	if !service.OpenAIEdgeHTTPStatusRetryable(status) && !modelRoutingError {
 		return fallback("upstream_status_not_retryable")
 	}
 	if h == nil || h.gatewayService == nil || h.concurrencyHelper == nil {
+		if modelRoutingError {
+			return openAIEdgeModelRoutingErrorDecision("model_routing_error_protected")
+		}
 		return fallback("edge_dependencies_missing")
 	}
 	reqLog := requestLogger(c, "handler.openai_edge.retry",
@@ -1254,9 +1260,10 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	)
 	failoverErr := &service.UpstreamFailoverError{
 		StatusCode:             status,
-		ResponseBody:           openAIEdgeRetryResponseBody(req),
-		Message:                strings.TrimSpace(req.ErrorMessage),
-		RetryableOnSameAccount: service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, strings.TrimSpace(req.ErrorMessage), openAIEdgeRetryResponseBody(req)),
+		ResponseBody:           responseBody,
+		Message:                upstreamMsg,
+		RetryableOnSameAccount: service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, upstreamMsg, responseBody),
+		SkipPoolSoftCooldown:   modelRoutingError,
 	}
 	if failoverErr.RetryableOnSameAccount {
 		if retryPlan, ok := planSameAccountRetry(lease.account, lease.sameAccountRetries, lease.sameAccountStarted, 0); ok {
@@ -1285,6 +1292,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	h.gatewayService.RecordOpenAIAccountSwitch()
 	lease.failedAccountIDs[lease.account.ID] = struct{}{}
 	if lease.switchCount >= lease.maxAccountSwitches {
+		if modelRoutingError {
+			return openAIEdgeModelRoutingErrorDecision("model_routing_error_exhausted")
+		}
 		return fallback("max_account_switches_exhausted")
 	}
 	lease.switchCount++
@@ -1292,6 +1302,26 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		return fallback("oauth_429_storm_stop")
 	}
 	return h.openAIEdgeRetrySwitchAccount(c, lease, req, "account_switch")
+}
+
+func (h *OpenAIGatewayHandler) openAIEdgeShouldProtectModelRoutingError(c *gin.Context, account *service.Account, status int, upstreamMsg string, responseBody []byte) bool {
+	if account == nil || !account.IsPoolMode() {
+		return false
+	}
+	if h != nil && h.gatewayService != nil && !h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()) {
+		return false
+	}
+	return service.IsOpenAIPoolModelRoutingError(status, upstreamMsg, responseBody)
+}
+
+func openAIEdgeModelRoutingErrorDecision(reason string) service.OpenAIEdgeRetryDecision {
+	return service.OpenAIEdgeRetryDecision{
+		Action:       service.OpenAIEdgeActionRespondError,
+		Reason:       reason,
+		StatusCode:   http.StatusBadRequest,
+		ErrorType:    "invalid_request_error",
+		ErrorMessage: "Requested model is not routable by upstream pool",
+	}
 }
 
 func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, lease *openAIEdgeLease, req service.OpenAIEdgeRetryRequest, successReason string) service.OpenAIEdgeRetryDecision {
@@ -1307,6 +1337,8 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 		zap.Int64("account_id", lease.account.ID),
 	)
 	routingModel := lease.openAIRoutingModel()
+	responseBody := openAIEdgeRetryResponseBody(req)
+	modelRoutingError := h.openAIEdgeShouldProtectModelRoutingError(c, lease.account, req.UpstreamStatusCode, strings.TrimSpace(req.ErrorMessage), responseBody)
 	if successReason == "queue_wait_timeout" {
 		// Queue wait timeout is local edge-rs pressure, not an upstream account
 		// failure. Exclude this account for the immediate retry without feeding a
@@ -1345,6 +1377,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 		}
 		if reason == "" {
 			reason = "retry_account_select_failed"
+		}
+		if modelRoutingError {
+			return openAIEdgeModelRoutingErrorDecision("model_routing_error_no_retry_account")
 		}
 		return fallback("retry_" + reason)
 	}

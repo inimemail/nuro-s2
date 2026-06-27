@@ -6,8 +6,9 @@ import (
 )
 
 const (
-	OpenAIEdgeActionFallbackGo = "fallback_go"
-	OpenAIEdgeActionRelay      = "relay"
+	OpenAIEdgeActionFallbackGo   = "fallback_go"
+	OpenAIEdgeActionRelay        = "relay"
+	OpenAIEdgeActionRespondError = "respond_error"
 
 	OpenAIEdgeTransportHTTP2SSE = "http2_sse"
 	OpenAIEdgeTransportWSV2     = "ws_v2"
@@ -72,6 +73,9 @@ type OpenAIEdgeRetryDecision struct {
 	Reason        string          `json:"reason,omitempty"`
 	Plan          *OpenAIEdgePlan `json:"plan,omitempty"`
 	RetryMaxDepth int             `json:"retry_max_depth,omitempty"`
+	StatusCode    int             `json:"status_code,omitempty"`
+	ErrorType     string          `json:"error_type,omitempty"`
+	ErrorMessage  string          `json:"error_message,omitempty"`
 }
 
 type OpenAIEdgeCompleteRequest struct {
