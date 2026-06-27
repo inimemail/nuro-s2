@@ -1227,7 +1227,7 @@ async fn relay_upstream_direct(
                 decision
                     .error_message
                     .as_deref()
-                    .unwrap_or("Requested model is not routable by upstream pool"),
+                    .unwrap_or("Upstream pool rejected this request; check routing configuration"),
             ));
         }
         let reason = decision
@@ -2332,7 +2332,7 @@ mod tests {
         let response = openai_error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
-            "Requested model is not routable by upstream pool",
+            "Upstream pool rejected this request; check routing configuration",
         );
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(

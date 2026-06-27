@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -23,7 +22,7 @@ func classifyNoAccountError(
 	diag service.ModelAvailabilityDiagnoser,
 	apiKey *service.APIKey,
 	routingModel string,
-	displayModel string,
+	_ string,
 	platform string,
 ) noAccountErrorClassification {
 	fallback := noAccountErrorClassification{
@@ -33,10 +32,6 @@ func classifyNoAccountError(
 	}
 
 	routingModel = strings.TrimSpace(routingModel)
-	displayModel = strings.TrimSpace(displayModel)
-	if displayModel == "" {
-		displayModel = routingModel
-	}
 	if diag == nil || apiKey == nil || apiKey.GroupID == nil || routingModel == "" {
 		return fallback
 	}
@@ -46,7 +41,7 @@ func classifyNoAccountError(
 		return noAccountErrorClassification{
 			Status:        http.StatusBadRequest,
 			ErrType:       "invalid_request_error",
-			Message:       fmt.Sprintf("Requested model %q is not routable by this group", displayModel),
+			Message:       service.OpenAIPoolModelRoutingClientMessage(),
 			ModelNotFound: true,
 		}
 	}

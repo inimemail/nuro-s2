@@ -110,7 +110,7 @@ func TestOpenAIFailoverExhausted_PoolModelRoutingErrorIsSanitized(t *testing.T) 
 
 	require.Equal(t, http.StatusBadRequest, w.Code)
 	require.Equal(t, "invalid_request_error", gjson.GetBytes(w.Body.Bytes(), "error.type").String())
-	require.Equal(t, "Requested model is not routable by upstream pool", gjson.GetBytes(w.Body.Bytes(), "error.message").String())
+	require.Equal(t, service.OpenAIPoolModelRoutingClientMessage(), gjson.GetBytes(w.Body.Bytes(), "error.message").String())
 	require.NotContains(t, w.Body.String(), "model_not_found")
 	require.NotContains(t, w.Body.String(), "not supported by any configured account")
 }

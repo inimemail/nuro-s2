@@ -414,7 +414,7 @@ func TestOpenAIEdgeRetryProtectsPoolModelRouting404(t *testing.T) {
 	if decision.ErrorType != "invalid_request_error" {
 		t.Fatalf("expected sanitized error type, got %q", decision.ErrorType)
 	}
-	if decision.ErrorMessage != "Requested model is not routable by upstream pool" {
+	if decision.ErrorMessage != service.OpenAIPoolModelRoutingClientMessage() {
 		t.Fatalf("expected sanitized error message, got %q", decision.ErrorMessage)
 	}
 }

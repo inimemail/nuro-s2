@@ -70,6 +70,7 @@ type AccountTestService struct {
 	antigravityGatewayService *AntigravityGatewayService
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
+	settingService            *SettingService
 	tlsFPProfileService       *TLSFingerprintProfileService
 }
 
@@ -81,6 +82,7 @@ func NewAccountTestService(
 	antigravityGatewayService *AntigravityGatewayService,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
+	settingService *SettingService,
 	tlsFPProfileService *TLSFingerprintProfileService,
 ) *AccountTestService {
 	return &AccountTestService{
@@ -90,6 +92,7 @@ func NewAccountTestService(
 		antigravityGatewayService: antigravityGatewayService,
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
+		settingService:            settingService,
 		tlsFPProfileService:       tlsFPProfileService,
 	}
 }
@@ -625,7 +628,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
-		return s.sendErrorAndEnd(c, openAIAccountTestHTTPError("API", account, resp.StatusCode, body))
+		return s.sendErrorAndEnd(c, s.openAIAccountTestHTTPError(c, "API", account, resp.StatusCode, body))
 	}
 
 	// Process SSE stream
@@ -686,7 +689,7 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 			errMsg := fmt.Sprintf("Chat Completions authentication failed (401): %s", string(body))
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
-		return s.sendErrorAndEnd(c, openAIAccountTestHTTPError("Chat Completions API (/v1/chat/completions)", account, resp.StatusCode, body))
+		return s.sendErrorAndEnd(c, s.openAIAccountTestHTTPError(c, "Chat Completions API (/v1/chat/completions)", account, resp.StatusCode, body))
 	}
 
 	return s.processOpenAIChatCompletionsStream(c, resp.Body)
@@ -1530,7 +1533,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return s.sendErrorAndEnd(c, openAIAccountTestHTTPError("API", account, resp.StatusCode, body))
+		return s.sendErrorAndEnd(c, s.openAIAccountTestHTTPError(c, "API", account, resp.StatusCode, body))
 	}
 
 	// Parse {"data": [{"b64_json": "...", "revised_prompt": "..."}]}
@@ -1629,7 +1632,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	}()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		if msg := openAIAccountTestModelRoutingError(account, resp.StatusCode, body); msg != "" {
+		if msg := s.openAIAccountTestModelRoutingError(c, account, resp.StatusCode, body); msg != "" {
 			return s.sendErrorAndEnd(c, msg)
 		}
 		message := strings.TrimSpace(extractUpstreamErrorMessage(body))
@@ -1677,15 +1680,18 @@ func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
 	c.Writer.Flush()
 }
 
-func openAIAccountTestHTTPError(prefix string, account *Account, statusCode int, body []byte) string {
-	if msg := openAIAccountTestModelRoutingError(account, statusCode, body); msg != "" {
+func (s *AccountTestService) openAIAccountTestHTTPError(c *gin.Context, prefix string, account *Account, statusCode int, body []byte) string {
+	if msg := s.openAIAccountTestModelRoutingError(c, account, statusCode, body); msg != "" {
 		return msg
 	}
 	return fmt.Sprintf("%s returned %d: %s", prefix, statusCode, string(body))
 }
 
-func openAIAccountTestModelRoutingError(account *Account, statusCode int, body []byte) string {
+func (s *AccountTestService) openAIAccountTestModelRoutingError(c *gin.Context, account *Account, statusCode int, body []byte) string {
 	if account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
+		return ""
+	}
+	if !s.openAIAccountTestModelLimitProtectionEnabled(c) {
 		return ""
 	}
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
@@ -1693,6 +1699,17 @@ func openAIAccountTestModelRoutingError(account *Account, statusCode int, body [
 		return openAIAccountTestModelRoutingErrorMessage
 	}
 	return ""
+}
+
+func (s *AccountTestService) openAIAccountTestModelLimitProtectionEnabled(c *gin.Context) bool {
+	if s == nil || s.settingService == nil {
+		return true
+	}
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	return s.settingService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(ctx)
 }
 
 // sendErrorAndEnd sends an error event and ends the stream

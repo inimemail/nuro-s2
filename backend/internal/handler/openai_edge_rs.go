@@ -1320,7 +1320,7 @@ func openAIEdgeModelRoutingErrorDecision(reason string) service.OpenAIEdgeRetryD
 		Reason:       reason,
 		StatusCode:   http.StatusBadRequest,
 		ErrorType:    "invalid_request_error",
-		ErrorMessage: "Requested model is not routable by upstream pool",
+		ErrorMessage: service.OpenAIPoolModelRoutingClientMessage(),
 	}
 }
 

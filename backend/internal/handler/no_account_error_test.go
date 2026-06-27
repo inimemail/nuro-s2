@@ -40,8 +40,10 @@ func TestClassifyNoAccountError_ModelUnsupportedByGroupDoesNotLookLikeUpstreamMo
 
 	require.Equal(t, http.StatusBadRequest, cls.Status)
 	require.Equal(t, "invalid_request_error", cls.ErrType)
-	require.Contains(t, cls.Message, "gpt-5.4-mini")
 	require.NotContains(t, cls.ErrType, "model_not_found")
+	require.NotContains(t, cls.Message, "gpt-5.4-mini")
+	require.NotContains(t, cls.Message, "model")
+	require.NotContains(t, cls.Message, "not routable")
 	require.NotContains(t, cls.Message, "not supported by any configured account")
 	require.True(t, cls.ModelNotFound)
 }

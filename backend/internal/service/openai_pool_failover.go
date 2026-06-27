@@ -238,6 +238,10 @@ func IsOpenAIPoolModelRoutingError(statusCode int, upstreamMsg string, upstreamB
 	return isOpenAIPoolModelRoutingError(statusCode, upstreamMsg, upstreamBody)
 }
 
+func OpenAIPoolModelRoutingClientMessage() string {
+	return "Upstream pool rejected this request; check routing configuration"
+}
+
 func isOpenAIPoolModelRoutingError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
 	if statusCode != http.StatusBadRequest && statusCode != http.StatusNotFound &&
 		statusCode != http.StatusBadGateway && statusCode != http.StatusServiceUnavailable &&
