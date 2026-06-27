@@ -51,9 +51,10 @@ type TestEvent struct {
 }
 
 const (
-	defaultGeminiTextTestPrompt  = "hi"
-	defaultGeminiImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
-	defaultOpenAIImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultGeminiTextTestPrompt               = "hi"
+	defaultGeminiImageTestPrompt              = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultOpenAIImageTestPrompt              = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	openAIAccountTestModelRoutingErrorMessage = "Upstream account cannot serve requested model; check model mapping or upstream group config"
 )
 
 // isOpenAIImageModel checks if the model is an OpenAI image generation model (e.g. gpt-image-2).
@@ -624,7 +625,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
-		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+		return s.sendErrorAndEnd(c, openAIAccountTestHTTPError("API", account, resp.StatusCode, body))
 	}
 
 	// Process SSE stream
@@ -685,7 +686,7 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 			errMsg := fmt.Sprintf("Chat Completions authentication failed (401): %s", string(body))
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) returned %d: %s", resp.StatusCode, string(body)))
+		return s.sendErrorAndEnd(c, openAIAccountTestHTTPError("Chat Completions API (/v1/chat/completions)", account, resp.StatusCode, body))
 	}
 
 	return s.processOpenAIChatCompletionsStream(c, resp.Body)
@@ -1529,7 +1530,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+		return s.sendErrorAndEnd(c, openAIAccountTestHTTPError("API", account, resp.StatusCode, body))
 	}
 
 	// Parse {"data": [{"b64_json": "...", "revised_prompt": "..."}]}
@@ -1628,6 +1629,9 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	}()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		if msg := openAIAccountTestModelRoutingError(account, resp.StatusCode, body); msg != "" {
+			return s.sendErrorAndEnd(c, msg)
+		}
 		message := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		if message == "" {
 			message = fmt.Sprintf("Responses API returned %d", resp.StatusCode)
@@ -1671,6 +1675,24 @@ func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
 		return
 	}
 	c.Writer.Flush()
+}
+
+func openAIAccountTestHTTPError(prefix string, account *Account, statusCode int, body []byte) string {
+	if msg := openAIAccountTestModelRoutingError(account, statusCode, body); msg != "" {
+		return msg
+	}
+	return fmt.Sprintf("%s returned %d: %s", prefix, statusCode, string(body))
+}
+
+func openAIAccountTestModelRoutingError(account *Account, statusCode int, body []byte) string {
+	if account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
+		return ""
+	}
+	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
+	if isOpenAIPoolModelRoutingError(statusCode, upstreamMsg, body) {
+		return openAIAccountTestModelRoutingErrorMessage
+	}
+	return ""
 }
 
 // sendErrorAndEnd sends an error event and ends the stream

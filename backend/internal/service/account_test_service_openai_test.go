@@ -342,6 +342,40 @@ func TestAccountTestService_OpenAI401SetsPermanentErrorOnly(t *testing.T) {
 	require.Nil(t, account.RateLimitResetAt)
 }
 
+func TestAccountTestService_OpenAIModelRouting404IsSanitized(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newTestContext()
+
+	resp := newJSONResponse(http.StatusNotFound, `{"error":{"message":"Model \"gpt-5.4-mini\" is not supported by any configured account in this group","type":"model_not_found"}}`)
+
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{
+		httpUpstream: upstream,
+		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+	}
+	account := &Account{
+		ID:          82,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":   "sk-test",
+			"base_url":  "https://compat-upstream.example",
+			"pool_mode": true,
+		},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4-mini", "", "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), openAIAccountTestModelRoutingErrorMessage)
+
+	body := recorder.Body.String()
+	require.Contains(t, body, openAIAccountTestModelRoutingErrorMessage)
+	require.NotContains(t, body, "model_not_found")
+	require.NotContains(t, body, "not supported by any configured account")
+	require.NotContains(t, body, "API returned 404")
+}
+
 func TestAccountTestService_OpenAIAPIKeyResponsesUnsupportedUsesChatCompletionsPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, recorder := newTestContext()
@@ -408,8 +442,9 @@ func TestAccountTestService_OpenAIChatCompletionsPathReturns4xx(t *testing.T) {
 		Type:        AccountTypeAPIKey,
 		Concurrency: 1,
 		Credentials: map[string]any{
-			"api_key":  "sk-test",
-			"base_url": "https://compat-upstream.example",
+			"api_key":   "sk-test",
+			"base_url":  "https://compat-upstream.example",
+			"pool_mode": true,
 		},
 		Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: false},
 	}
@@ -420,6 +455,39 @@ func TestAccountTestService_OpenAIChatCompletionsPathReturns4xx(t *testing.T) {
 	require.Contains(t, err.Error(), "Chat Completions API (/v1/chat/completions) returned 400")
 	require.Contains(t, recorder.Body.String(), "/v1/chat/completions")
 	require.NotContains(t, recorder.Body.String(), `"success":true`)
+}
+
+func TestAccountTestService_OpenAIChatCompletionsModelRouting404IsSanitized(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newTestContext()
+
+	upstream := &httpUpstreamRecorder{resp: newJSONResponse(http.StatusNotFound, `{"error":{"message":"Model \"gpt-5.4-mini\" is not supported by any configured account in this group","type":"model_not_found"}}`)}
+	svc := &AccountTestService{
+		httpUpstream: upstream,
+		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+	}
+	account := &Account{
+		ID:          95,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":   "sk-test",
+			"base_url":  "https://compat-upstream.example",
+			"pool_mode": true,
+		},
+		Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: false},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4-mini", "", "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), openAIAccountTestModelRoutingErrorMessage)
+
+	body := recorder.Body.String()
+	require.Contains(t, body, openAIAccountTestModelRoutingErrorMessage)
+	require.NotContains(t, body, "model_not_found")
+	require.NotContains(t, body, "not supported by any configured account")
+	require.NotContains(t, body, "returned 404")
 }
 
 func TestAccountTestService_OpenAIChatCompletionsPathTimeout(t *testing.T) {
