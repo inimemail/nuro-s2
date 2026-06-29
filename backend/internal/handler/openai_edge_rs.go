@@ -40,7 +40,6 @@ type openAIEdgeLease struct {
 	subject            middleware2.AuthSubject
 	subscription       *service.UserSubscription
 	account            *service.Account
-	requestBody        []byte
 	forwardBody        []byte
 	sessionHash        string
 	failedAccountIDs   map[int64]struct{}
@@ -668,7 +667,6 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		subject:            subject,
 		subscription:       subscription,
 		account:            account,
-		requestBody:        append([]byte(nil), req.Body...),
 		forwardBody:        append([]byte(nil), forwardBody...),
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
@@ -849,7 +847,6 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		subject:            subject,
 		subscription:       subscription,
 		account:            account,
-		requestBody:        append([]byte(nil), req.Body...),
 		forwardBody:        append([]byte(nil), forwardBody...),
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
@@ -1016,7 +1013,6 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		subject:            subject,
 		subscription:       subscription,
 		account:            account,
-		requestBody:        append([]byte(nil), req.Body...),
 		forwardBody:        append([]byte(nil), forwardBody...),
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),

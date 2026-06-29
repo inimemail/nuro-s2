@@ -45,6 +45,8 @@ const EDGE_QUEUE_WAIT_MS_HEADER: &str = "x-sub2api-edge-queue-wait-ms";
 const EDGE_RELAY_START_MS_HEADER: &str = "x-sub2api-edge-relay-start-ms";
 const EDGE_RETRY_COUNT_HEADER: &str = "x-sub2api-edge-retry-count";
 const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
+const SSE_STRING_INITIAL_CAPACITY: usize = 8192;
+const SSE_STRING_IDLE_MAX_CAPACITY: usize = 64 * 1024;
 
 #[derive(Clone)]
 struct AppState {
@@ -126,6 +128,7 @@ struct WsIdleConn {
 struct RelayJob {
     state: AppState,
     plan: EdgePlan,
+    request_body: Vec<u8>,
     started_at: Instant,
     enqueued_at: Instant,
     timing: EdgeTiming,
@@ -184,16 +187,18 @@ fn relay_error_fallback_reason(err: &anyhow::Error) -> &'static str {
 #[derive(Default)]
 struct BufferPools {
     sse_strings: Mutex<Vec<String>>,
+    max_sse_strings: usize,
 }
 
 impl BufferPools {
     fn prewarmed(initial_pool_size: usize) -> Self {
         let mut strings = Vec::with_capacity(initial_pool_size);
         for _ in 0..initial_pool_size {
-            strings.push(String::with_capacity(8192));
+            strings.push(String::with_capacity(SSE_STRING_INITIAL_CAPACITY));
         }
         Self {
             sse_strings: Mutex::new(strings),
+            max_sse_strings: initial_pool_size.max(1),
         }
     }
 
@@ -202,16 +207,18 @@ impl BufferPools {
             .lock()
             .ok()
             .and_then(|mut pool| pool.pop())
-            .unwrap_or_else(|| String::with_capacity(8192))
+            .unwrap_or_else(|| String::with_capacity(SSE_STRING_INITIAL_CAPACITY))
     }
 
     fn recycle_sse_string(&self, mut value: String) {
-        if value.capacity() > 1024 * 1024 {
+        if value.capacity() > SSE_STRING_IDLE_MAX_CAPACITY {
             return;
         }
         value.clear();
         if let Ok(mut pool) = self.sse_strings.lock() {
-            pool.push(value);
+            if pool.len() < self.max_sse_strings {
+                pool.push(value);
+            }
         }
     }
 }
@@ -1068,7 +1075,7 @@ fn tungstenite_to_axum_message(msg: TungsteniteMessage) -> anyhow::Result<AxumWs
 
 async fn relay_upstream(
     state: AppState,
-    plan: EdgePlan,
+    mut plan: EdgePlan,
     started_at: Instant,
     timing: EdgeTiming,
     timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
@@ -1076,10 +1083,12 @@ async fn relay_upstream(
 ) -> anyhow::Result<Response> {
     if retry_depth == 0 {
         if let Some(sender) = state.relay_queue_for_plan(&plan)? {
+            let request_body = take_request_body_bytes(&mut plan)?;
             let (response_tx, response_rx) = oneshot::channel();
             let job = RelayJob {
                 state: state.clone(),
                 plan,
+                request_body,
                 started_at,
                 enqueued_at: Instant::now(),
                 timing,
@@ -1095,12 +1104,23 @@ async fn relay_upstream(
                 .map_err(|err| anyhow::anyhow!("edge relay worker dropped response: {err}"))?;
         }
     }
-    relay_upstream_direct(state, plan, started_at, timing, timing_shared, retry_depth).await
+    let request_body = take_request_body_bytes(&mut plan)?;
+    relay_upstream_direct(
+        state,
+        plan,
+        request_body,
+        started_at,
+        timing,
+        timing_shared,
+        retry_depth,
+    )
+    .await
 }
 
 async fn relay_upstream_direct(
     state: AppState,
     plan: EdgePlan,
+    request_body: Vec<u8>,
     started_at: Instant,
     mut timing: EdgeTiming,
     timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
@@ -1119,7 +1139,6 @@ async fn relay_upstream_direct(
         .upstream_url
         .clone()
         .ok_or_else(|| anyhow::anyhow!("missing upstream_url"))?;
-    let body = request_body_bytes(&plan)?;
     if let Some(transport) = &plan.transport {
         if transport != "http2_sse" {
             anyhow::bail!("unsupported edge transport {transport}");
@@ -1147,7 +1166,7 @@ async fn relay_upstream_direct(
     }
     req = req.header(header::ACCEPT_ENCODING, HeaderValue::from_static("identity"));
     let header_start = Instant::now();
-    let upstream = req.body(body).send().await?;
+    let upstream = req.body(request_body).send().await?;
     let upstream_header_ms = header_start.elapsed().as_millis() as i64;
     let status = upstream.status();
     let headers = upstream.headers().clone();
@@ -1246,10 +1265,12 @@ async fn relay_upstream_direct(
     let edge_fallback_reason = timing.fallback_reason.clone();
     let edge_retry_count = timing.retry_count;
     let complete_state = state.clone();
+    let safe_token_placeholder = plan.safe_token_placeholder;
     let upstream_request_id = headers
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .map(ToOwned::to_owned);
+    drop(plan);
     let body_stream = stream! {
         let guard = LeaseAbortGuard::new(
             complete_state.clone(),
@@ -1312,7 +1333,7 @@ async fn relay_upstream_direct(
                     if first_token_ms.is_none() && observation.starts_client_output {
                         first_token_ms = Some(started_at.elapsed().as_millis() as i64);
                     }
-                    if plan.safe_token_placeholder && !safe_token_placeholder_sent {
+                    if safe_token_placeholder && !safe_token_placeholder_sent {
                         if let Some(offset) = observation.response_created_boundary_offset {
                             safe_token_placeholder_sent = true;
                             if first_token_ms.is_none() {
@@ -1651,18 +1672,16 @@ fn openai_prepare_raw_body(state: &AppState, body: &[u8]) -> Option<String> {
     None
 }
 
-fn request_body_bytes(plan: &EdgePlan) -> anyhow::Result<Vec<u8>> {
-    if let Some(raw) = plan
-        .body_raw_base64
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        return b64_decode(raw);
+fn take_request_body_bytes(plan: &mut EdgePlan) -> anyhow::Result<Vec<u8>> {
+    if let Some(raw) = plan.body_raw_base64.take() {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            plan.body = None;
+            return b64_decode(raw);
+        }
     }
-    Ok(serde_json::to_vec(
-        &plan.body.clone().unwrap_or(Value::Null),
-    )?)
+    let body = plan.body.take().unwrap_or(Value::Null);
+    Ok(serde_json::to_vec(&body)?)
 }
 
 fn relay_queue_key(plan: &EdgePlan) -> Option<String> {
@@ -2042,6 +2061,7 @@ impl AppState {
                     let result = relay_upstream_direct(
                         job.state,
                         job.plan,
+                        job.request_body,
                         job.started_at,
                         timing,
                         job.timing_shared,
@@ -2405,8 +2425,8 @@ mod tests {
     }
 
     #[test]
-    fn request_body_prefers_raw_base64() {
-        let plan = EdgePlan {
+    fn take_request_body_prefers_raw_base64_and_clears_plan_body() {
+        let mut plan = EdgePlan {
             action: "relay".to_string(),
             reason: None,
             edge_request_id: "edge-1".to_string(),
@@ -2424,8 +2444,36 @@ mod tests {
             safe_token_placeholder: false,
         };
 
-        let body = request_body_bytes(&plan).expect("request body");
+        let body = take_request_body_bytes(&mut plan).expect("request body");
         assert_eq!(body, br#"{"rewritten":true}"#);
+        assert!(plan.body.is_none());
+        assert!(plan.body_raw_base64.is_none());
+    }
+
+    #[test]
+    fn buffer_pool_recycle_is_capped_at_initial_size() {
+        let pools = BufferPools::prewarmed(1);
+        let first = pools.take_sse_string();
+        let second = pools.take_sse_string();
+
+        pools.recycle_sse_string(first);
+        pools.recycle_sse_string(second);
+
+        let retained = pools.sse_strings.lock().expect("pool lock").len();
+        assert_eq!(retained, 1);
+    }
+
+    #[test]
+    fn buffer_pool_drops_oversized_idle_strings() {
+        let pools = BufferPools::prewarmed(1);
+        let _existing = pools.take_sse_string();
+        let mut oversized = String::with_capacity(SSE_STRING_IDLE_MAX_CAPACITY + 1);
+        oversized.push_str("data: {}\n\n");
+
+        pools.recycle_sse_string(oversized);
+
+        let retained = pools.sse_strings.lock().expect("pool lock").len();
+        assert_eq!(retained, 0);
     }
 
     #[test]

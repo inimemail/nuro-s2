@@ -124,7 +124,6 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 			ResponseDialect: OpenAIEdgeDialectChatCompletions,
 			UpstreamURL:     buildOpenAIChatCompletionsURL(validatedURL),
 			Headers:         headers,
-			Body:            json.RawMessage(upstreamBody),
 			BodyRawBase64:   EncodeOpenAIEdgeRawBody(upstreamBody),
 			ProxyURL:        proxyURL,
 		},
@@ -311,7 +310,6 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 			ResponseDialect: OpenAIEdgeDialectResponses,
 			UpstreamURL:     buildOpenAIResponsesURL(validatedURL),
 			Headers:         headers,
-			Body:            json.RawMessage(upstreamBody),
 			BodyRawBase64:   EncodeOpenAIEdgeRawBody(upstreamBody),
 			ProxyURL:        proxyURL,
 			SafeTokenPlaceholder: s.openAIStreamSafeTokenPlaceholderEnabled(
@@ -502,7 +500,6 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 			ResponseDialect: OpenAIEdgeDialectResponses,
 			UpstreamURL:     chatgptCodexURL,
 			Headers:         headers,
-			Body:            json.RawMessage(upstreamBody),
 			BodyRawBase64:   EncodeOpenAIEdgeRawBody(upstreamBody),
 			ProxyURL:        proxyURL,
 			SafeTokenPlaceholder: s.openAIStreamSafeTokenPlaceholderEnabled(

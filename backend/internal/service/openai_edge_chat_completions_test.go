@@ -169,8 +169,8 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 	if model := gjson.GetBytes(decoded, "model").String(); model == "" {
 		t.Fatalf("expected encoded body to decode to json: %s", string(decoded))
 	}
-	if model := gjson.GetBytes(plan.Plan.Body, "model").String(); model == "" {
-		t.Fatalf("expected response body to remain json: %s", string(plan.Plan.Body))
+	if len(plan.Plan.Body) != 0 {
+		t.Fatalf("expected http edge plan to omit duplicate body, got %s", string(plan.Plan.Body))
 	}
 }
 
