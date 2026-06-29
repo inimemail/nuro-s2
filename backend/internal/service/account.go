@@ -1112,7 +1112,7 @@ const (
 )
 
 const (
-	defaultPoolSoftCooldownErrorThreshold = 10
+	defaultPoolSoftCooldownErrorThreshold = 5
 	maxPoolSoftCooldownErrorThreshold     = 100
 )
 

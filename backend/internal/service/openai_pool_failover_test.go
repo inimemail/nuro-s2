@@ -374,7 +374,7 @@ func TestOpenAIPoolFailoverSwitch_PreservesExplicitImageProbeFields(t *testing.T
 	require.Equal(t, "image-alias", state.ProbeModel)
 }
 
-func TestOpenAIPoolFailoverSwitch_DefaultSoftCooldownThresholdRequiresTenErrors(t *testing.T) {
+func TestOpenAIPoolFailoverSwitch_DefaultSoftCooldownThresholdRequiresFiveErrors(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{
 		ID:          118,
@@ -388,7 +388,7 @@ func TestOpenAIPoolFailoverSwitch_DefaultSoftCooldownThresholdRequiresTenErrors(
 		Message:      "server error",
 	}
 
-	for i := 0; i < 9; i++ {
+	for i := 0; i < 4; i++ {
 		svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
 		require.False(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
 	}
