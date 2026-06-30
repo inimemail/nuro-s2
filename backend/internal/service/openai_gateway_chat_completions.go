@@ -556,7 +556,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	clientDisconnected := false
 	clientOutputStarted := false
 	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
+	firstTokenTimeoutPlaceholder := s.openAIStreamFirstTokenTimeoutPlaceholder(account, originalModel)
 	safeTokenPlaceholderSent := false
+	firstTokenTimeoutPlaceholderSent := false
+	firstTokenTimeoutPlaceholderID := ""
 	pendingSSE := make([]string, 0, 4)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var streamFailoverErr *UpstreamFailoverError
@@ -631,6 +634,55 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		c.Writer.Flush()
 		return true
 	}
+	writeFirstTokenTimeoutChatPlaceholder := func() bool {
+		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || firstTokenMs != nil {
+			return false
+		}
+		empty := ""
+		chunks := make([]apicompat.ChatCompletionsChunk, 0, 2)
+		if !state.SentRole {
+			state.SentRole = true
+			chunks = append(chunks, apicompat.ChatCompletionsChunk{
+				ID:      state.ID,
+				Object:  "chat.completion.chunk",
+				Created: state.Created,
+				Model:   state.Model,
+				Choices: []apicompat.ChatChunkChoice{{
+					Index:        0,
+					Delta:        apicompat.ChatDelta{Role: "assistant"},
+					FinishReason: nil,
+				}},
+			})
+		}
+		chunks = append(chunks, apicompat.ChatCompletionsChunk{
+			ID:      state.ID,
+			Object:  "chat.completion.chunk",
+			Created: state.Created,
+			Model:   state.Model,
+			Choices: []apicompat.ChatChunkChoice{{
+				Index:        0,
+				Delta:        apicompat.ChatDelta{Content: &empty},
+				FinishReason: nil,
+			}},
+		})
+		writeStreamHeaders()
+		for _, chunk := range chunks {
+			sse, err := apicompat.ChatChunkToSSE(chunk)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
+				clientDisconnected = true
+				return true
+			}
+		}
+		firstTokenTimeoutPlaceholderSent = true
+		firstTokenTimeoutPlaceholderID = state.ID
+		safeTokenPlaceholderSent = true
+		clientOutputStarted = true
+		c.Writer.Flush()
+		return true
+	}
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
@@ -672,6 +724,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			return true
 		}
 		chunks := apicompat.ResponsesEventToChatChunks(&event, state)
+		if firstTokenTimeoutPlaceholderID != "" {
+			state.ID = firstTokenTimeoutPlaceholderID
+		}
 		if strings.TrimSpace(event.Type) == "response.created" && writeSafeChatPlaceholder(chunks) {
 			return false
 		}
@@ -838,7 +893,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	}
 
 	// No keepalive: fast synchronous path
-	if streamInterval <= 0 && keepaliveInterval <= 0 {
+	if streamInterval <= 0 && keepaliveInterval <= 0 && firstTokenTimeoutPlaceholder <= 0 {
 		var parser openAICompatSSEFrameParser
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -908,6 +963,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	if keepaliveTicker != nil {
 		keepaliveCh = keepaliveTicker.C
 	}
+	firstTokenTimeoutTimer, firstTokenTimeoutCh := openAIStreamFirstTokenTimeoutTimer(startTime, firstTokenTimeoutPlaceholder)
+	if firstTokenTimeoutTimer != nil {
+		defer firstTokenTimeoutTimer.Stop()
+	}
 	lastDataAt := time.Now()
 	var parser openAICompatSSEFrameParser
 
@@ -956,6 +1015,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				zap.Duration("interval", streamInterval),
 			)
 			return resultWithUsage(), fmt.Errorf("stream data interval timeout")
+
+		case <-firstTokenTimeoutCh:
+			firstTokenTimeoutCh = nil
+			writeFirstTokenTimeoutChatPlaceholder()
 
 		case <-keepaliveCh:
 			if clientDisconnected {

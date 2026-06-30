@@ -126,6 +126,10 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 			Headers:         headers,
 			BodyRawBase64:   EncodeOpenAIEdgeRawBody(upstreamBody),
 			ProxyURL:        proxyURL,
+			FirstTokenTimeoutPlaceholderMS: s.openAIStreamFirstTokenTimeoutPlaceholderMs(
+				account,
+				originalModel,
+			),
 		},
 		Model:           originalModel,
 		BillingModel:    billingModel,
@@ -316,6 +320,10 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 				account,
 				originalModel,
 			),
+			FirstTokenTimeoutPlaceholderMS: s.openAIStreamFirstTokenTimeoutPlaceholderMs(
+				account,
+				originalModel,
+			),
 		},
 		Model:           originalModel,
 		BillingModel:    originalModel,
@@ -503,6 +511,10 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 			BodyRawBase64:   EncodeOpenAIEdgeRawBody(upstreamBody),
 			ProxyURL:        proxyURL,
 			SafeTokenPlaceholder: s.openAIStreamSafeTokenPlaceholderEnabled(
+				account,
+				originalModel,
+			),
+			FirstTokenTimeoutPlaceholderMS: s.openAIStreamFirstTokenTimeoutPlaceholderMs(
 				account,
 				originalModel,
 			),

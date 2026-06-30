@@ -884,6 +884,74 @@
         </div>
       </div>
 
+      <!-- OpenAI OAuth first token timeout placeholder -->
+      <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <div class="flex-1 pr-4">
+            <label
+              id="bulk-edit-openai-oauth-first-token-timeout-placeholder-label"
+              class="input-label mb-0"
+              for="bulk-edit-openai-oauth-first-token-timeout-placeholder-enabled"
+            >
+              {{ t('admin.accounts.openai.oauthChatGPTFirstTokenTimeoutPlaceholder') }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.oauthChatGPTFirstTokenTimeoutPlaceholderDesc') }}
+            </p>
+          </div>
+          <input
+            v-model="enableOpenAIOAuthFirstTokenTimeoutPlaceholder"
+            id="bulk-edit-openai-oauth-first-token-timeout-placeholder-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-oauth-first-token-timeout-placeholder"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-oauth-first-token-timeout-placeholder"
+          class="space-y-3"
+          :class="[
+            !enableOpenAIOAuthFirstTokenTimeoutPlaceholder && 'pointer-events-none opacity-50',
+            openAIFirstTokenTimeoutPanelClass(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled)
+          ]"
+        >
+          <div class="flex items-center justify-between gap-4">
+            <label class="input-label mb-0 flex flex-wrap items-center gap-2">
+              <span>{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderMs') }}</span>
+              <span
+                v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled"
+                class="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+              >
+                {{ openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs }} ms
+              </span>
+            </label>
+            <button
+              id="bulk-edit-openai-oauth-first-token-timeout-placeholder-toggle"
+              type="button"
+              :class="openAIFirstTokenTimeoutSwitchClass(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled)"
+              @click="
+                openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled =
+                  !openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled
+              "
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+          <div v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled" class="max-w-xs">
+            <Select
+              v-model="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs"
+              :options="openAIFirstTokenTimeoutPlaceholderOptions"
+              aria-labelledby="bulk-edit-openai-oauth-first-token-timeout-placeholder-label"
+            />
+          </div>
+        </div>
+      </div>
+
       <!-- OpenAI OAuth Codex CLI only -->
       <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
@@ -1144,6 +1212,74 @@
               ]"
             />
           </button>
+        </div>
+      </div>
+
+      <!-- OpenAI API Key first token timeout placeholder -->
+      <div v-if="allOpenAITextAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <div class="flex-1 pr-4">
+            <label
+              id="bulk-edit-openai-apikey-first-token-timeout-placeholder-label"
+              class="input-label mb-0"
+              for="bulk-edit-openai-apikey-first-token-timeout-placeholder-enabled"
+            >
+              {{ t('admin.accounts.openai.apiKeyFirstTokenTimeoutPlaceholder') }}
+            </label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.apiKeyFirstTokenTimeoutPlaceholderDesc') }}
+            </p>
+          </div>
+          <input
+            v-model="enableOpenAIAPIKeyFirstTokenTimeoutPlaceholder"
+            id="bulk-edit-openai-apikey-first-token-timeout-placeholder-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-apikey-first-token-timeout-placeholder"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-apikey-first-token-timeout-placeholder"
+          class="space-y-3"
+          :class="[
+            !enableOpenAIAPIKeyFirstTokenTimeoutPlaceholder && 'pointer-events-none opacity-50',
+            openAIFirstTokenTimeoutPanelClass(openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled)
+          ]"
+        >
+          <div class="flex items-center justify-between gap-4">
+            <label class="input-label mb-0 flex flex-wrap items-center gap-2">
+              <span>{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderMs') }}</span>
+              <span
+                v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled"
+                class="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+              >
+                {{ openaiAPIKeyFirstTokenTimeoutPlaceholderMs }} ms
+              </span>
+            </label>
+            <button
+              id="bulk-edit-openai-apikey-first-token-timeout-placeholder-toggle"
+              type="button"
+              :class="openAIFirstTokenTimeoutSwitchClass(openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled)"
+              @click="
+                openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled =
+                  !openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled
+              "
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+          <div v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled" class="max-w-xs">
+            <Select
+              v-model="openaiAPIKeyFirstTokenTimeoutPlaceholderMs"
+              :options="openAIFirstTokenTimeoutPlaceholderOptions"
+              aria-labelledby="bulk-edit-openai-apikey-first-token-timeout-placeholder-label"
+            />
+          </div>
         </div>
       </div>
 
@@ -1597,9 +1733,11 @@ const enableOpenAIAPIKeyWSMode = ref(false)
 const enableOpenAIOAuthPreambleFlush = ref(false)
 const enableOpenAIOAuthSSECommentPreflush = ref(false)
 const enableOpenAIOAuthSafeTokenPlaceholder = ref(false)
+const enableOpenAIOAuthFirstTokenTimeoutPlaceholder = ref(false)
 const enableOpenAIAPIKeyPreambleFlush = ref(false)
 const enableOpenAIAPIKeySSECommentPreflush = ref(false)
 const enableOpenAIAPIKeySafeTokenPlaceholder = ref(false)
+const enableOpenAIAPIKeyFirstTokenTimeoutPlaceholder = ref(false)
 const enableCodexCLIOnly = ref(false)
 const enableCodexCLIOnlyAllowClaudeCode = ref(false)
 const enableOpenAICompactMode = ref(false)
@@ -1632,9 +1770,13 @@ const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OF
 const openaiOAuthChatGPTPreambleFlushEnabled = ref(false)
 const openaiOAuthChatGPTSSECommentPreflushEnabled = ref(false)
 const openaiOAuthChatGPTSafeTokenPlaceholderEnabled = ref(false)
+const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled = ref(false)
+const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs = ref(500)
 const openaiAPIKeyPreambleFlushEnabled = ref(false)
 const openaiAPIKeySSECommentPreflushEnabled = ref(false)
 const openaiAPIKeySafeTokenPlaceholderEnabled = ref(false)
+const openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled = ref(false)
+const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(500)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
@@ -1695,6 +1837,26 @@ const openAIWSModeOptions = computed(() => [
   { value: OPENAI_WS_MODE_CTX_POOL, label: t('admin.accounts.openai.wsModeCtxPool') },
   { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') }
 ])
+const openAIFirstTokenTimeoutPlaceholderOptions = computed(() => [
+  { value: 200, label: '200 ms' },
+  { value: 500, label: '500 ms' },
+  { value: 1000, label: '1000 ms' },
+  { value: 2000, label: '2000 ms' }
+])
+function openAIFirstTokenTimeoutPanelClass(enabled: boolean) {
+  return [
+    'rounded-lg border p-3 transition-colors',
+    enabled
+      ? 'border-amber-200 bg-amber-50/70 dark:border-amber-800 dark:bg-amber-900/20'
+      : 'border-gray-200 bg-gray-50/70 dark:border-dark-600 dark:bg-dark-800/50'
+  ]
+}
+function openAIFirstTokenTimeoutSwitchClass(enabled: boolean) {
+  return [
+    'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2',
+    enabled ? 'bg-amber-500 shadow-sm shadow-amber-500/25 focus:ring-amber-500' : 'bg-gray-200 focus:ring-primary-500 dark:bg-dark-600'
+  ]
+}
 const openAICompactModeOptions = computed(() => [
   { value: 'auto', label: t('admin.accounts.openai.compactModeAuto') },
   { value: 'force_on', label: t('admin.accounts.openai.compactModeForceOn') },
@@ -1915,6 +2077,22 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.openai_oauth_chatgpt_safe_token_placeholder_enabled = openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value
   }
 
+  if (enableOpenAIOAuthFirstTokenTimeoutPlaceholder.value) {
+    const extra = ensureExtra()
+    extra.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled =
+      openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value
+    if (openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value) {
+      extra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms =
+        openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value
+    } else {
+      const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
+      updates.extra_remove_keys = [
+        ...removeKeys,
+        'openai_oauth_chatgpt_first_token_timeout_placeholder_ms'
+      ]
+    }
+  }
+
   if (allOpenAITextAPIKey.value && enableOpenAIAPIKeyPreambleFlush.value) {
     const extra = ensureExtra()
     extra.openai_apikey_preamble_flush_enabled = openaiAPIKeyPreambleFlushEnabled.value
@@ -1928,6 +2106,21 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   if (allOpenAITextAPIKey.value && enableOpenAIAPIKeySafeTokenPlaceholder.value) {
     const extra = ensureExtra()
     extra.openai_apikey_safe_token_placeholder_enabled = openaiAPIKeySafeTokenPlaceholderEnabled.value
+  }
+
+  if (allOpenAITextAPIKey.value && enableOpenAIAPIKeyFirstTokenTimeoutPlaceholder.value) {
+    const extra = ensureExtra()
+    extra.openai_apikey_first_token_timeout_placeholder_enabled =
+      openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value
+    if (openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value) {
+      extra.openai_apikey_first_token_timeout_placeholder_ms = openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value
+    } else {
+      const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
+      updates.extra_remove_keys = [
+        ...removeKeys,
+        'openai_apikey_first_token_timeout_placeholder_ms'
+      ]
+    }
   }
 
   if (enableCodexCLIOnly.value) {
@@ -2066,9 +2259,11 @@ const handleSubmit = async () => {
     enableOpenAIOAuthPreambleFlush.value ||
     enableOpenAIOAuthSSECommentPreflush.value ||
     enableOpenAIOAuthSafeTokenPlaceholder.value ||
+    enableOpenAIOAuthFirstTokenTimeoutPlaceholder.value ||
     (allOpenAITextAPIKey.value && enableOpenAIAPIKeyPreambleFlush.value) ||
     (allOpenAITextAPIKey.value && enableOpenAIAPIKeySSECommentPreflush.value) ||
     (allOpenAITextAPIKey.value && enableOpenAIAPIKeySafeTokenPlaceholder.value) ||
+    (allOpenAITextAPIKey.value && enableOpenAIAPIKeyFirstTokenTimeoutPlaceholder.value) ||
     enableCodexCLIOnly.value ||
     enableCodexCLIOnlyAllowClaudeCode.value ||
     enableOpenAICompactMode.value ||
@@ -2176,9 +2371,11 @@ watch(
       enableOpenAIOAuthPreambleFlush.value = false
       enableOpenAIOAuthSSECommentPreflush.value = false
       enableOpenAIOAuthSafeTokenPlaceholder.value = false
+      enableOpenAIOAuthFirstTokenTimeoutPlaceholder.value = false
       enableOpenAIAPIKeyPreambleFlush.value = false
       enableOpenAIAPIKeySSECommentPreflush.value = false
       enableOpenAIAPIKeySafeTokenPlaceholder.value = false
+      enableOpenAIAPIKeyFirstTokenTimeoutPlaceholder.value = false
       enableCodexCLIOnly.value = false
       enableCodexCLIOnlyAllowClaudeCode.value = false
       enableOpenAICompactMode.value = false
@@ -2207,9 +2404,13 @@ watch(
       openaiOAuthChatGPTPreambleFlushEnabled.value = false
       openaiOAuthChatGPTSSECommentPreflushEnabled.value = false
       openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value = false
+      openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value = false
+      openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = 500
       openaiAPIKeyPreambleFlushEnabled.value = false
       openaiAPIKeySSECommentPreflushEnabled.value = false
       openaiAPIKeySafeTokenPlaceholderEnabled.value = false
+      openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
+      openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 500
       codexCLIOnlyEnabled.value = false
       codexCLIOnlyAllowClaudeCodeEnabled.value = false
       openAICompactMode.value = 'auto'

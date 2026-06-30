@@ -4848,6 +4848,43 @@ func (s *OpenAIGatewayService) openAIStreamSafeTokenPlaceholderEnabled(account *
 	return true
 }
 
+func (s *OpenAIGatewayService) openAIStreamFirstTokenTimeoutPlaceholder(account *Account, requestedModel string) time.Duration {
+	ms := s.openAIStreamFirstTokenTimeoutPlaceholderMs(account, requestedModel)
+	if ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func (s *OpenAIGatewayService) openAIStreamFirstTokenTimeoutPlaceholderMs(account *Account, requestedModel string) int {
+	if account == nil {
+		return 0
+	}
+	if account.IsImagePoolMode() {
+		return 0
+	}
+	if isOpenAIImageGenerationModel(requestedModel) {
+		return 0
+	}
+	ms := account.GetOpenAIFirstTokenTimeoutPlaceholderMs()
+	if ms <= 0 {
+		return 0
+	}
+	return ms
+}
+
+func openAIStreamFirstTokenTimeoutTimer(startTime time.Time, timeout time.Duration) (*time.Timer, <-chan time.Time) {
+	if timeout <= 0 {
+		return nil, nil
+	}
+	remaining := timeout - time.Since(startTime)
+	if remaining < 0 {
+		remaining = 0
+	}
+	timer := time.NewTimer(remaining)
+	return timer, timer.C
+}
+
 func openAIResponsesSafeTokenPlaceholderFrame(responseID string) string {
 	responseID = strings.TrimSpace(responseID)
 	if responseID == "" {
@@ -5004,8 +5041,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
 	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
+	firstTokenTimeoutPlaceholder := s.openAIStreamFirstTokenTimeoutPlaceholder(account, originalModel)
 	safeTokenPlaceholderSent := false
 	safeTokenPlaceholderPending := false
+	firstTokenTimeoutPlaceholderSent := false
+	firstTokenTimeoutPlaceholderPending := false
 	pendingLines := make([]string, 0, 8)
 	pendingLinesAtEventBoundary := func() bool {
 		return len(pendingLines) == 0 || pendingLines[len(pendingLines)-1] == ""
@@ -5055,6 +5095,33 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		}
 		flusher.Flush()
 		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
+	}
+	writeFirstTokenTimeoutPlaceholder := func() bool {
+		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || firstTokenMs != nil || !pendingLinesAtEventBoundary() {
+			return false
+		}
+		if len(pendingLines) > 0 && !writePendingLines() {
+			return true
+		}
+		if _, err := fmt.Fprint(w, openAIResponsesSafeTokenPlaceholderFrame(responseID)); err != nil {
+			clientDisconnected = true
+			return true
+		}
+		firstTokenTimeoutPlaceholderSent = true
+		safeTokenPlaceholderSent = true
+		clientOutputStarted = true
+		flusher.Flush()
+		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
+		return true
+	}
+	drainFirstTokenTimeoutPlaceholderPending := func() {
+		if !firstTokenTimeoutPlaceholderPending {
+			return
+		}
+		firstTokenTimeoutPlaceholderPending = false
+		if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && firstTokenMs == nil && !firstTokenTimeoutPlaceholderSent {
+			firstTokenTimeoutPlaceholderPending = true
+		}
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -5137,6 +5204,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					safeTokenPlaceholderPending = false
 					writeSafeTokenPlaceholder()
 				}
+				if line == "" {
+					drainFirstTokenTimeoutPlaceholderPending()
+				}
 				return false, nil
 			}
 			if !clientOutputStarted && len(pendingLines) > 0 {
@@ -5156,11 +5226,14 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				safeTokenPlaceholderPending = false
 				writeSafeTokenPlaceholder()
 			}
+			if line == "" {
+				drainFirstTokenTimeoutPlaceholderPending()
+			}
 		}
 		return false, nil
 	}
 
-	if passthroughLowLatencyPolicy.Enabled && passthroughLowLatencyPolicy.Barrier > 0 && passthroughLowLatencyPolicy.AllowBootstrapComment {
+	if (passthroughLowLatencyPolicy.Enabled && passthroughLowLatencyPolicy.Barrier > 0 && passthroughLowLatencyPolicy.AllowBootstrapComment) || firstTokenTimeoutPlaceholder > 0 {
 		type passthroughScanEvent struct {
 			line string
 			err  error
@@ -5185,10 +5258,18 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		}()
 		defer close(done)
 
-		bootstrapTimer := time.NewTimer(passthroughLowLatencyPolicy.Barrier)
-		defer bootstrapTimer.Stop()
-		bootstrapCh := bootstrapTimer.C
 		bootstrapPending := false
+		var bootstrapCh <-chan time.Time
+		var bootstrapTimer *time.Timer
+		if passthroughLowLatencyPolicy.Enabled && passthroughLowLatencyPolicy.Barrier > 0 && passthroughLowLatencyPolicy.AllowBootstrapComment {
+			bootstrapTimer = time.NewTimer(passthroughLowLatencyPolicy.Barrier)
+			defer bootstrapTimer.Stop()
+			bootstrapCh = bootstrapTimer.C
+		}
+		firstTokenTimeoutTimer, firstTokenTimeoutCh := openAIStreamFirstTokenTimeoutTimer(startTime, firstTokenTimeoutPlaceholder)
+		if firstTokenTimeoutTimer != nil {
+			defer firstTokenTimeoutTimer.Stop()
+		}
 		for {
 			select {
 			case ev, ok := <-events:
@@ -5207,11 +5288,17 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 						bootstrapPending = false
 					}
 				}
+				drainFirstTokenTimeoutPlaceholderPending()
 			case <-bootstrapCh:
 				bootstrapCh = nil
 				writePassthroughBootstrapComment()
 				if !clientDisconnected && !openAIStreamClientOutputStarted(c, clientOutputStarted) {
 					bootstrapPending = true
+				}
+			case <-firstTokenTimeoutCh:
+				firstTokenTimeoutCh = nil
+				if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && firstTokenMs == nil && !firstTokenTimeoutPlaceholderSent {
+					firstTokenTimeoutPlaceholderPending = true
 				}
 			}
 		}
@@ -6073,8 +6160,11 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
 	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
+	firstTokenTimeoutPlaceholder := s.openAIStreamFirstTokenTimeoutPlaceholder(account, originalModel)
 	safeTokenPlaceholderSent := false
 	safeTokenPlaceholderPending := false
+	firstTokenTimeoutPlaceholderSent := false
+	firstTokenTimeoutPlaceholderPending := false
 	var streamFailoverErr error
 	atSSEEventBoundary := true
 	sendErrorEvent := func(reason string) {
@@ -6116,6 +6206,33 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		if firstTokenMs == nil {
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
+		}
+	}
+	writeFirstTokenTimeoutPlaceholder := func() bool {
+		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || firstTokenMs != nil || streamFailoverErr != nil || !atSSEEventBoundary {
+			return false
+		}
+		if _, err := bufferedWriter.WriteString(openAIResponsesSafeTokenPlaceholderFrame(responseID)); err != nil {
+			clientDisconnected = true
+			return true
+		}
+		if err := flushBuffered(); err != nil {
+			clientDisconnected = true
+			return true
+		}
+		firstTokenTimeoutPlaceholderSent = true
+		safeTokenPlaceholderSent = true
+		clientOutputStarted = true
+		lastDownstreamWriteAt = time.Now()
+		return true
+	}
+	drainFirstTokenTimeoutPlaceholderPending := func() {
+		if !firstTokenTimeoutPlaceholderPending {
+			return
+		}
+		firstTokenTimeoutPlaceholderPending = false
+		if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && firstTokenMs == nil && !firstTokenTimeoutPlaceholderSent && streamFailoverErr == nil {
+			firstTokenTimeoutPlaceholderPending = true
 		}
 	}
 
@@ -6199,6 +6316,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		}
 		defer func() {
 			atSSEEventBoundary = line == ""
+			if atSSEEventBoundary {
+				drainFirstTokenTimeoutPlaceholderPending()
+			}
 		}()
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
@@ -6311,7 +6431,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	}
 
 	// 无超时/无 keepalive 的常见路径走同步扫描，减少 goroutine 与 channel 开销。
-	if streamInterval <= 0 && keepaliveInterval <= 0 {
+	if streamInterval <= 0 && keepaliveInterval <= 0 && firstTokenTimeoutPlaceholder <= 0 {
 		if lowLatencyPolicy.Enabled && lowLatencyPolicy.Barrier > 0 && lowLatencyPolicy.AllowBootstrapComment {
 			streamInterval = lowLatencyPolicy.Barrier
 		} else {
@@ -6342,6 +6462,10 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		bootstrapTimer = time.NewTimer(lowLatencyPolicy.Barrier)
 		bootstrapCh = bootstrapTimer.C
 		defer bootstrapTimer.Stop()
+	}
+	firstTokenTimeoutTimer, firstTokenTimeoutCh := openAIStreamFirstTokenTimeoutTimer(startTime, firstTokenTimeoutPlaceholder)
+	if firstTokenTimeoutTimer != nil {
+		defer firstTokenTimeoutTimer.Stop()
 	}
 	writeBootstrapComment := func() {
 		if clientDisconnected || openAIStreamClientOutputStarted(c, clientOutputStarted) || streamFailoverErr != nil || !atSSEEventBoundary {
@@ -6411,6 +6535,12 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			writeBootstrapComment()
 			if !clientDisconnected && !openAIStreamClientOutputStarted(c, clientOutputStarted) && streamFailoverErr == nil {
 				bootstrapPending = true
+			}
+
+		case <-firstTokenTimeoutCh:
+			firstTokenTimeoutCh = nil
+			if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && firstTokenMs == nil && !firstTokenTimeoutPlaceholderSent && streamFailoverErr == nil {
+				firstTokenTimeoutPlaceholderPending = true
 			}
 
 		case <-intervalCh:

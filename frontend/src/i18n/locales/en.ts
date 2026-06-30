@@ -3423,6 +3423,9 @@ export default {
         oauthChatGPTSafeTokenPlaceholder: 'OAuth/ChatGPT downstream first-token safe placeholder',
         oauthChatGPTSafeTokenPlaceholderDesc:
           'After upstream response.created, injects an empty text delta so original sub2api-like downstream dashboards can record first token earlier. It produces no visible text, but early upstream failures may no longer switch accounts transparently.',
+        oauthChatGPTFirstTokenTimeoutPlaceholder: 'OAuth/ChatGPT first-token timeout placeholder',
+        oauthChatGPTFirstTokenTimeoutPlaceholderDesc:
+          'When upstream first token is still missing after the threshold, injects an empty placeholder so downstream dashboards can record first token earlier. It produces no visible text, but early upstream failures, account switching, and strict SDK compatibility may degrade.',
         apiKeyPreambleFlush: 'APIKey early first packet passthrough',
         apiKeyPreambleFlushDesc:
           'Useful when an APIKey upstream or relay has slow first packets. Forwards response.created / response.in_progress earlier; early upstream failures may no longer switch accounts transparently.',
@@ -3432,6 +3435,10 @@ export default {
         apiKeySafeTokenPlaceholder: 'APIKey downstream first-token safe placeholder',
         apiKeySafeTokenPlaceholderDesc:
           'After upstream response.created, injects an empty text delta or empty chat chunk so original sub2api-like downstream dashboards can record first token earlier. It produces no visible text, but early upstream failures may no longer switch accounts transparently.',
+        apiKeyFirstTokenTimeoutPlaceholder: 'APIKey first-token timeout placeholder',
+        apiKeyFirstTokenTimeoutPlaceholderDesc:
+          'When upstream first token is still missing after the threshold, injects an empty placeholder so downstream dashboards can record first token earlier. It produces no visible text, but early upstream failures, account switching, and strict SDK compatibility may degrade.',
+        firstTokenTimeoutPlaceholderMs: 'Placeholder timeout',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
           'Only applies to OpenAI OAuth. This account can use OpenAI WebSocket Mode only when enabled.',

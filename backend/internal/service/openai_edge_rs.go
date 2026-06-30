@@ -54,6 +54,10 @@ type OpenAIEdgePlan struct {
 	// after response.created, inject an empty output_text.delta so compatible
 	// downstream panels can record an early first token without visible text.
 	SafeTokenPlaceholder bool `json:"safe_token_placeholder,omitempty"`
+	// FirstTokenTimeoutPlaceholderMS injects an empty placeholder after the
+	// configured timeout when upstream has not produced a real first token.
+	// It must not be reported as first_token_ms.
+	FirstTokenTimeoutPlaceholderMS int `json:"first_token_timeout_placeholder_ms,omitempty"`
 }
 
 type OpenAIEdgeRetryRequest struct {

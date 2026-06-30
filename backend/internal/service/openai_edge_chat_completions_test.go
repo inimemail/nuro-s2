@@ -124,6 +124,10 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-account",
 		},
+		Extra: map[string]any{
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      1000,
+		},
 	}
 	body := []byte(`{"model":"gpt-5","stream":true,"prompt_cache_key":"turn-1","input":[{"role":"user","content":"hi"}]}`)
 
@@ -136,6 +140,9 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 	}
 	if plan.Plan.UpstreamURL != chatgptCodexURL {
 		t.Fatalf("unexpected upstream url: %q", plan.Plan.UpstreamURL)
+	}
+	if got := plan.Plan.FirstTokenTimeoutPlaceholderMS; got != 1000 {
+		t.Fatalf("unexpected first token timeout placeholder ms: %d", got)
 	}
 	if got := plan.Plan.Headers["Authorization"]; got != "Bearer oauth-token" {
 		t.Fatalf("unexpected authorization header: %q", got)

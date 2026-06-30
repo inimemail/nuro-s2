@@ -155,8 +155,10 @@ type BulkUpdateAccountsRequest struct {
 }
 
 var allowedBulkExtraRemoveKeys = map[string]struct{}{
-	"codex_image_generation_bridge":         {},
-	"codex_image_generation_bridge_enabled": {},
+	"codex_image_generation_bridge":                           {},
+	"codex_image_generation_bridge_enabled":                   {},
+	"openai_apikey_first_token_timeout_placeholder_ms":        {},
+	"openai_oauth_chatgpt_first_token_timeout_placeholder_ms": {},
 }
 
 type UpdateCodexAutoResetModeRequest struct {

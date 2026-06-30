@@ -1,12 +1,14 @@
 use std::{
     collections::HashMap,
     env,
+    future::pending,
     net::SocketAddr,
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use async_stream::stream;
@@ -111,6 +113,7 @@ struct EdgePlan {
     lane: Option<String>,
     #[serde(default)]
     safe_token_placeholder: bool,
+    first_token_timeout_placeholder_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1266,6 +1269,9 @@ async fn relay_upstream_direct(
     let edge_retry_count = timing.retry_count;
     let complete_state = state.clone();
     let safe_token_placeholder = plan.safe_token_placeholder;
+    let first_token_timeout_placeholder =
+        normalize_first_token_timeout_placeholder_ms(plan.first_token_timeout_placeholder_ms);
+    let response_dialect = plan.response_dialect.clone();
     let upstream_request_id = headers
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
@@ -1284,6 +1290,7 @@ async fn relay_upstream_direct(
         let mut first_flush_ms: Option<i64> = None;
         let mut first_token_ms: Option<i64> = None;
         let mut safe_token_placeholder_sent = false;
+        let mut first_token_timeout_placeholder_sent = false;
         let mut bootstrap_comment_sent = false;
         let mut success = true;
         let mut error_message: Option<String> = None;
@@ -1300,22 +1307,53 @@ async fn relay_upstream_direct(
             .barrier
             .map(tokio::time::sleep)
             .map(Box::pin);
+        let mut first_token_timeout_timer = first_token_timeout_placeholder
+            .map(|timeout| tokio::time::sleep(delay_until_elapsed(started_at, timeout)))
+            .map(Box::pin);
+
+        enum RelaySelectEvent {
+            BootstrapComment,
+            FirstTokenTimeoutPlaceholder,
+            Upstream(Option<Result<Bytes, reqwest::Error>>),
+        }
 
         loop {
-            let next = if let Some(timer) = bootstrap_timer.as_mut() {
+            let event = if bootstrap_timer.is_some() || first_token_timeout_timer.is_some() {
                 tokio::select! {
-                    _ = timer.as_mut(), if !bootstrap_comment_sent => {
-                        if first_flush_ms.is_none() {
-                            first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
-                        }
-                        bootstrap_comment_sent = true;
-                        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b":\n\n"));
-                        continue;
+                    _ = wait_optional_sleep(&mut bootstrap_timer), if !bootstrap_comment_sent => {
+                        RelaySelectEvent::BootstrapComment
                     }
-                    next = bytes_stream.next() => next,
+                    _ = wait_optional_sleep(&mut first_token_timeout_timer), if !first_token_timeout_placeholder_sent && first_token_ms.is_none() => {
+                        RelaySelectEvent::FirstTokenTimeoutPlaceholder
+                    }
+                    next = bytes_stream.next() => RelaySelectEvent::Upstream(next),
                 }
             } else {
-                bytes_stream.next().await
+                RelaySelectEvent::Upstream(bytes_stream.next().await)
+            };
+            let next = match event {
+                RelaySelectEvent::BootstrapComment => {
+                    if first_flush_ms.is_none() {
+                        first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
+                    }
+                    bootstrap_comment_sent = true;
+                    bootstrap_timer = None;
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b":\n\n"));
+                    continue;
+                }
+                RelaySelectEvent::FirstTokenTimeoutPlaceholder => {
+                    if first_flush_ms.is_none() {
+                        first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
+                    }
+                    first_token_timeout_placeholder_sent = true;
+                    safe_token_placeholder_sent = true;
+                    first_token_timeout_timer = None;
+                    let placeholder =
+                        openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &summary);
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
+                    continue;
+                }
+                RelaySelectEvent::Upstream(next) => next,
             };
             let Some(next) = next else {
                 break;
@@ -1329,15 +1367,18 @@ async fn relay_upstream_direct(
                         first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
                     }
                     bootstrap_comment_sent = true;
+                    bootstrap_timer = None;
                     let observation = summary.observe(&chunk);
                     if first_token_ms.is_none() && observation.starts_client_output {
                         first_token_ms = Some(started_at.elapsed().as_millis() as i64);
+                        first_token_timeout_timer = None;
                     }
                     if safe_token_placeholder && !safe_token_placeholder_sent {
                         if let Some(offset) = observation.response_created_boundary_offset {
                             safe_token_placeholder_sent = true;
                             if first_token_ms.is_none() {
                                 first_token_ms = Some(started_at.elapsed().as_millis() as i64);
+                                first_token_timeout_timer = None;
                             }
                             if first_flush_ms.is_none() {
                                 first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
@@ -1477,6 +1518,30 @@ fn low_latency_policy(mode: Option<&str>) -> LowLatencyPolicy {
     }
 }
 
+fn normalize_first_token_timeout_placeholder_ms(ms: Option<u64>) -> Option<Duration> {
+    match ms {
+        Some(200) => Some(Duration::from_millis(200)),
+        Some(500) => Some(Duration::from_millis(500)),
+        Some(1000) => Some(Duration::from_millis(1000)),
+        Some(2000) => Some(Duration::from_millis(2000)),
+        _ => None,
+    }
+}
+
+fn delay_until_elapsed(started_at: Instant, timeout: Duration) -> Duration {
+    timeout
+        .checked_sub(started_at.elapsed())
+        .unwrap_or(Duration::ZERO)
+}
+
+async fn wait_optional_sleep(timer: &mut Option<Pin<Box<tokio::time::Sleep>>>) {
+    if let Some(timer) = timer.as_mut() {
+        timer.as_mut().await;
+    } else {
+        pending::<()>().await;
+    }
+}
+
 fn json_event_type(value: &Value) -> Option<&str> {
     value.get("type").and_then(Value::as_str)
 }
@@ -1492,6 +1557,35 @@ fn openai_responses_safe_token_placeholder_frame(response_id: Option<&str>) -> S
         "data: {{\"type\":\"response.output_text.delta\",\"delta\":\"\",\"response_id\":{},\"item_id\":\"msg_placeholder\",\"output_index\":0,\"content_index\":0}}\n\n",
         response_id_json
     )
+}
+
+fn openai_chat_safe_token_placeholder_frame(id: Option<&str>, model: Option<&str>) -> String {
+    let id = id
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("chatcmpl-placeholder");
+    let id_json =
+        serde_json::to_string(id).unwrap_or_else(|_| "\"chatcmpl-placeholder\"".to_string());
+    let model = model.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("");
+    let model_json = serde_json::to_string(model).unwrap_or_else(|_| "\"\"".to_string());
+    let created = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!(
+        "data: {{\"id\":{},\"object\":\"chat.completion.chunk\",\"created\":{},\"model\":{},\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"\"}},\"finish_reason\":null}}]}}\n\n",
+        id_json, created, model_json
+    )
+}
+
+fn openai_stream_timeout_placeholder_frame(dialect: Option<&str>, summary: &ChatStreamSummary) -> String {
+    if dialect == Some("chat_completions") {
+        return openai_chat_safe_token_placeholder_frame(
+            summary.response_id.as_deref(),
+            summary.model.as_deref(),
+        );
+    }
+    openai_responses_safe_token_placeholder_frame(summary.response_id.as_deref())
 }
 
 fn json_starts_client_output(value: &Value) -> bool {
@@ -2348,6 +2442,35 @@ mod tests {
     }
 
     #[test]
+    fn first_token_timeout_placeholder_ms_is_allowlisted() {
+        assert_eq!(
+            normalize_first_token_timeout_placeholder_ms(Some(200)),
+            Some(Duration::from_millis(200))
+        );
+        assert_eq!(
+            normalize_first_token_timeout_placeholder_ms(Some(500)),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(normalize_first_token_timeout_placeholder_ms(Some(300)), None);
+        assert_eq!(normalize_first_token_timeout_placeholder_ms(None), None);
+    }
+
+    #[test]
+    fn first_token_timeout_placeholder_uses_chat_chunk_for_chat_dialect() {
+        let mut summary = ChatStreamSummary::default();
+        summary.response_id = Some("chatcmpl_123".to_string());
+        summary.model = Some("gpt-4.1".to_string());
+
+        let frame = openai_stream_timeout_placeholder_frame(Some("chat_completions"), &summary);
+        assert!(frame.starts_with("data: "));
+        assert!(frame.ends_with("\n\n"));
+        assert!(frame.contains("\"object\":\"chat.completion.chunk\""));
+        assert!(frame.contains("\"role\":\"assistant\""));
+        assert!(frame.contains("\"content\":\"\""));
+        assert!(frame.contains("\"id\":\"chatcmpl_123\""));
+    }
+
+    #[test]
     fn openai_error_response_is_sanitized_json() {
         let response = openai_error_response(
             StatusCode::BAD_REQUEST,
@@ -2442,6 +2565,7 @@ mod tests {
             low_latency_mode: None,
             lane: None,
             safe_token_placeholder: false,
+            first_token_timeout_placeholder_ms: None,
         };
 
         let body = take_request_body_bytes(&mut plan).expect("request body");
@@ -2513,6 +2637,7 @@ mod tests {
             low_latency_mode: None,
             lane: Some("priority".to_string()),
             safe_token_placeholder: false,
+            first_token_timeout_placeholder_ms: None,
         };
 
         assert_eq!(

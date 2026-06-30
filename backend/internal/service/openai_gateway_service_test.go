@@ -1785,6 +1785,82 @@ func TestOpenAIStreamingSafeTokenPlaceholderDisabledDoesNotInjectEmptyDelta(t *t
 	require.NotContains(t, body, `"type":"response.output_text.delta","delta":""`)
 }
 
+func TestOpenAIStreamingFirstTokenTimeoutPlaceholderDoesNotSetFirstToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{{
+			delay: 20 * time.Millisecond,
+			data: strings.Join([]string{
+				"event: response.created",
+				`data: {"type":"response.created","response":{"id":"resp_timeout"}}`,
+				"",
+				"event: response.in_progress",
+				`data: {"type":"response.in_progress","response":{"id":"resp_timeout"}}`,
+				"",
+			}, "\n"),
+		}}},
+		Header: http.Header{"X-Request-Id": []string{"rid-timeout-placeholder"}},
+	}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Name:     "acc",
+		Extra: map[string]any{
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      200,
+		},
+	}
+
+	result, err := svc.handleStreamingResponse(
+		c.Request.Context(),
+		resp,
+		c,
+		account,
+		time.Now().Add(-time.Second),
+		"gpt-5.4",
+		"gpt-5.4",
+	)
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Nil(t, result.firstTokenMs)
+	require.Contains(t, rec.Body.String(), `"type":"response.output_text.delta","delta":""`)
+}
+
+func TestOpenAIStreamFirstTokenTimeoutPlaceholderDisabledForImagePoolAccount(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Name:     "image-pool",
+		Credentials: map[string]any{
+			"pool_mode":       true,
+			"image_pool_mode": true,
+		},
+		Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:      200,
+		},
+	}
+
+	require.Zero(t, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+}
+
 func TestOpenAIStreamingResponseFailedBeforeOutputCapacityErrorReturnsFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
@@ -2356,6 +2432,60 @@ func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesEmptyDeltaAfte
 		strings.Index(body, `"type":"response.output_text.delta","delta":""`),
 		strings.Index(body, `"type":"response.output_text.delta","delta":"ok"`),
 	)
+}
+
+func TestOpenAIStreamingPassthroughFirstTokenTimeoutPlaceholderDoesNotSetFirstToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			MaxLineSize: defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{{
+			delay: 20 * time.Millisecond,
+			data: strings.Join([]string{
+				"event: response.created",
+				`data: {"type":"response.created","response":{"id":"resp_timeout_passthrough"}}`,
+				"",
+				"event: response.in_progress",
+				`data: {"type":"response.in_progress","response":{"id":"resp_timeout_passthrough"}}`,
+				"",
+			}, "\n"),
+		}}},
+		Header: http.Header{"X-Request-Id": []string{"rid-passthrough-timeout-placeholder"}},
+	}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Name:     "acc",
+		Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:      200,
+		},
+	}
+
+	result, err := svc.handleStreamingResponsePassthrough(
+		c.Request.Context(),
+		resp,
+		c,
+		account,
+		time.Now().Add(-time.Second),
+		"",
+		"",
+	)
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Nil(t, result.firstTokenMs)
+	require.Contains(t, rec.Body.String(), `"type":"response.output_text.delta","delta":""`)
 }
 
 func TestOpenAIStreamingPassthroughResponseDoneWithoutDoneMarkerStillSucceeds(t *testing.T) {

@@ -106,6 +106,12 @@ const openAIOAuthChatGPTSSECommentPreflushExtraKey = "openai_oauth_chatgpt_sse_c
 const openAIAPIKeySSECommentPreflushExtraKey = "openai_apikey_sse_comment_preflush_enabled"
 const openAIOAuthChatGPTSafeTokenPlaceholderExtraKey = "openai_oauth_chatgpt_safe_token_placeholder_enabled"
 const openAIAPIKeySafeTokenPlaceholderExtraKey = "openai_apikey_safe_token_placeholder_enabled"
+const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey = "openai_oauth_chatgpt_first_token_timeout_placeholder_enabled"
+const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey = "openai_oauth_chatgpt_first_token_timeout_placeholder_ms"
+const openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey = "openai_apikey_first_token_timeout_placeholder_enabled"
+const openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey = "openai_apikey_first_token_timeout_placeholder_ms"
+
+const openAIFirstTokenTimeoutPlaceholderDefaultMs = 500
 
 const (
 	OpenAIPromptCacheBoostLevelNormal     = "normal"
@@ -1948,6 +1954,37 @@ func (a *Account) IsOpenAIAPIKeySafeTokenPlaceholderEnabled() bool {
 
 func (a *Account) IsOpenAISafeTokenPlaceholderEnabled() bool {
 	return a.IsOpenAIOAuthChatGPTSafeTokenPlaceholderEnabled() || a.IsOpenAIAPIKeySafeTokenPlaceholderEnabled()
+}
+
+// GetOpenAIFirstTokenTimeoutPlaceholderMs 返回 OpenAI 流式首 token 超时补帧阈值。
+// 返回 0 表示关闭。仅接受 200/500/1000/2000ms，启用但配置非法时回落到 500ms。
+func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderMs() int {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return 0
+	}
+	switch {
+	case a.IsOpenAIOAuth():
+		if !a.getExtraBool(openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey) {
+			return 0
+		}
+		return normalizeOpenAIFirstTokenTimeoutPlaceholderMs(a.getExtraInt(openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey))
+	case a.IsOpenAIApiKey():
+		if !a.getExtraBool(openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey) {
+			return 0
+		}
+		return normalizeOpenAIFirstTokenTimeoutPlaceholderMs(a.getExtraInt(openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey))
+	default:
+		return 0
+	}
+}
+
+func normalizeOpenAIFirstTokenTimeoutPlaceholderMs(ms int) int {
+	switch ms {
+	case 200, 500, 1000, 2000:
+		return ms
+	default:
+		return openAIFirstTokenTimeoutPlaceholderDefaultMs
+	}
 }
 
 // IsOpenAIOAuthPassthroughEnabled 兼容旧接口，等价于 OAuth 账号的 IsOpenAIPassthroughEnabled。

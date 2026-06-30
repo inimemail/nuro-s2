@@ -333,6 +333,56 @@ func TestForwardAsChatCompletions_SafeTokenPlaceholderWritesRoleAndEmptyContent(
 	require.Less(t, strings.Index(responseBody, `"content":""`), strings.Index(responseBody, `"content":"ok"`))
 }
 
+func TestForwardAsChatCompletions_FirstTokenTimeoutPlaceholderDoesNotSetFirstToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_timeout_chat","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		"",
+		`data: {"type":"response.in_progress","response":{"id":"resp_timeout_chat","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_timeout_placeholder"}},
+		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{{
+			delay: 250 * time.Millisecond,
+			data:  upstreamBody,
+		}}},
+	}}
+
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:          1,
+		Name:        "openai-oauth",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+		Extra: map[string]any{
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      200,
+		},
+	}
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "gpt-5.1")
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Nil(t, result.FirstTokenMs)
+	responseBody := rec.Body.String()
+	require.Contains(t, responseBody, `"role":"assistant"`)
+	require.Contains(t, responseBody, `"content":""`)
+}
+
 func TestForwardAsChatCompletions_SafeTokenPlaceholderDisabledDoesNotWriteEmptyContent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
