@@ -4111,9 +4111,9 @@ const openaiAPIKeySSECommentPreflushEnabled = ref(false)
 const openaiOAuthChatGPTSafeTokenPlaceholderEnabled = ref(false)
 const openaiAPIKeySafeTokenPlaceholderEnabled = ref(false)
 const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled = ref(false)
-const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs = ref(500)
+const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs = ref(200)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled = ref(false)
-const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(500)
+const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(200)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const anthropicPassthroughEnabled = ref(false)
@@ -4587,9 +4587,9 @@ watch(
       openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value = false
       openaiAPIKeySafeTokenPlaceholderEnabled.value = false
       openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value = false
-      openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = 500
+      openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = 200
       openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
-      openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 500
+      openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 200
       codexCLIOnlyEnabled.value = false
       codexCLIOnlyAllowClaudeCodeEnabled.value = false
     }
@@ -4647,7 +4647,7 @@ watch(imagePoolModeEnabled, (enabled) => {
     openaiAPIKeySSECommentPreflushEnabled.value = false
     openaiAPIKeySafeTokenPlaceholderEnabled.value = false
     openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
-    openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 500
+    openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 200
   }
 })
 
@@ -5088,9 +5088,9 @@ const resetForm = () => {
   openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value = false
   openaiAPIKeySafeTokenPlaceholderEnabled.value = false
   openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value = false
-  openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = 500
+  openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = 200
   openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
-  openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 500
+  openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 200
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   anthropicPassthroughEnabled.value = false

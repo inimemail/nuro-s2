@@ -3299,9 +3299,9 @@ const openaiAPIKeySSECommentPreflushEnabled = ref(false)
 const openaiOAuthChatGPTSafeTokenPlaceholderEnabled = ref(false)
 const openaiAPIKeySafeTokenPlaceholderEnabled = ref(false)
 const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled = ref(false)
-const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs = ref(500)
+const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs = ref(200)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled = ref(false)
-const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(500)
+const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(200)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 type CodexImageGenerationBridgeMode = 'inherit' | 'enabled' | 'disabled'
@@ -3347,7 +3347,7 @@ const openAIFirstTokenTimeoutPlaceholderOptions = computed(() => [
 ])
 function normalizeOpenAIFirstTokenTimeoutPlaceholderMs(value: unknown): number {
   const ms = Number(value)
-  return [200, 500, 1000, 2000].includes(ms) ? ms : 500
+  return [200, 500, 1000, 2000].includes(ms) ? ms : 200
 }
 
 function openAIFirstTokenTimeoutPanelClass(enabled: boolean) {
@@ -3787,9 +3787,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value = false
   openaiAPIKeySafeTokenPlaceholderEnabled.value = false
   openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value = false
-  openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = 500
+  openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = 200
   openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
-  openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 500
+  openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 200
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   codexImageGenerationBridgeMode.value = 'inherit'
@@ -4145,7 +4145,7 @@ watch(imagePoolModeEnabled, (enabled) => {
     openaiAPIKeySSECommentPreflushEnabled.value = false
     openaiAPIKeySafeTokenPlaceholderEnabled.value = false
     openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
-    openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 500
+    openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 200
   }
 })
 
