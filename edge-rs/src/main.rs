@@ -1520,6 +1520,7 @@ fn low_latency_policy(mode: Option<&str>) -> LowLatencyPolicy {
 
 fn normalize_first_token_timeout_placeholder_ms(ms: Option<u64>) -> Option<Duration> {
     match ms {
+        Some(100) => Some(Duration::from_millis(100)),
         Some(200) => Some(Duration::from_millis(200)),
         Some(500) => Some(Duration::from_millis(500)),
         Some(1000) => Some(Duration::from_millis(1000)),
@@ -2443,6 +2444,10 @@ mod tests {
 
     #[test]
     fn first_token_timeout_placeholder_ms_is_allowlisted() {
+        assert_eq!(
+            normalize_first_token_timeout_placeholder_ms(Some(100)),
+            Some(Duration::from_millis(100))
+        );
         assert_eq!(
             normalize_first_token_timeout_placeholder_ms(Some(200)),
             Some(Duration::from_millis(200))

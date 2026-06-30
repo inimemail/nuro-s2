@@ -3340,6 +3340,7 @@ const openAIWSModeOptions = computed(() => [
   { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') }
 ])
 const openAIFirstTokenTimeoutPlaceholderOptions = computed(() => [
+  { value: 100, label: '100 ms' },
   { value: 200, label: '200 ms' },
   { value: 500, label: '500 ms' },
   { value: 1000, label: '1000 ms' },
@@ -3347,7 +3348,7 @@ const openAIFirstTokenTimeoutPlaceholderOptions = computed(() => [
 ])
 function normalizeOpenAIFirstTokenTimeoutPlaceholderMs(value: unknown): number {
   const ms = Number(value)
-  return [200, 500, 1000, 2000].includes(ms) ? ms : 200
+  return [100, 200, 500, 1000, 2000].includes(ms) ? ms : 200
 }
 
 function openAIFirstTokenTimeoutPanelClass(enabled: boolean) {
