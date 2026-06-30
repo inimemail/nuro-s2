@@ -403,7 +403,7 @@ func TestAnthropicPoolFailoverSwitch_DownstreamRoutingErrorSkipsSoftCooldown(t *
 	require.False(t, state.Cooling)
 }
 
-func TestAnthropicPoolFailoverSwitch_DefaultSoftCooldownThresholdRequiresFiveErrors(t *testing.T) {
+func TestAnthropicPoolFailoverSwitch_DefaultSoftCooldownThresholdRequiresThreeErrors(t *testing.T) {
 	svc := &GatewayService{}
 	account := &Account{
 		ID:          316,
@@ -417,7 +417,7 @@ func TestAnthropicPoolFailoverSwitch_DefaultSoftCooldownThresholdRequiresFiveErr
 		ResponseBody: []byte(`{"error":{"message":"server error"}}`),
 	}
 
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 2; i++ {
 		svc.HandleAnthropicAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "claude-sonnet-4-6")
 		require.False(t, svc.AnthropicPoolSoftCooldownState(account.ID).Cooling)
 	}
