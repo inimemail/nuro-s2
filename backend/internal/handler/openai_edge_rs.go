@@ -39,6 +39,7 @@ type openAIEdgeLease struct {
 	apiKey             *service.APIKey
 	subject            middleware2.AuthSubject
 	subscription       *service.UserSubscription
+	quotaPlatform      string
 	account            *service.Account
 	forwardBody        []byte
 	sessionHash        string
@@ -666,6 +667,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		apiKey:             apiKey,
 		subject:            subject,
 		subscription:       subscription,
+		quotaPlatform:      service.QuotaPlatform(c.Request.Context(), apiKey),
 		account:            account,
 		forwardBody:        append([]byte(nil), forwardBody...),
 		sessionHash:        sessionHash,
@@ -846,6 +848,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		apiKey:             apiKey,
 		subject:            subject,
 		subscription:       subscription,
+		quotaPlatform:      service.QuotaPlatform(c.Request.Context(), apiKey),
 		account:            account,
 		forwardBody:        append([]byte(nil), forwardBody...),
 		sessionHash:        sessionHash,
@@ -1012,6 +1015,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		apiKey:             apiKey,
 		subject:            subject,
 		subscription:       subscription,
+		quotaPlatform:      service.QuotaPlatform(c.Request.Context(), apiKey),
 		account:            account,
 		forwardBody:        append([]byte(nil), forwardBody...),
 		sessionHash:        sessionHash,
@@ -1493,6 +1497,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 				User:               lease.apiKey.User,
 				Account:            lease.account,
 				Subscription:       lease.subscription,
+				QuotaPlatform:      lease.quotaPlatform,
 				InboundEndpoint:    lease.inboundEndpoint,
 				UpstreamEndpoint:   lease.upstreamEndpoint,
 				UserAgent:          lease.userAgent,

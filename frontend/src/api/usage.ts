@@ -72,6 +72,41 @@ export interface ModelStatsResponse {
   end_date: string
 }
 
+export interface UsageSnapshotV2Params extends TrendParams {
+  api_key_id?: number
+  group_id?: number
+  model?: string
+  request_type?: string | number
+  stream?: boolean
+  billing_type?: number
+  billing_mode?: string
+  include_stats?: boolean
+  include_trend?: boolean
+  include_model_stats?: boolean
+  include_group_stats?: boolean
+}
+
+export interface GroupStat {
+  group_id: number
+  group_name: string
+  requests: number
+  total_tokens: number
+  cost: number
+  actual_cost: number
+  account_cost: number
+}
+
+export interface UsageSnapshotV2Response {
+  generated_at: string
+  start_date: string
+  end_date: string
+  granularity: string
+  stats?: UsageStatsResponse
+  trend?: TrendDataPoint[]
+  models?: ModelStat[]
+  groups?: GroupStat[]
+}
+
 export interface ApiKeyDailyUsagePoint {
   date: string
   requests: number
@@ -257,6 +292,14 @@ export async function getDashboardModels(params?: {
 }
 
 /**
+ * Get combined user dashboard snapshot.
+ */
+export async function getDashboardSnapshotV2(params?: UsageSnapshotV2Params): Promise<UsageSnapshotV2Response> {
+  const { data } = await apiClient.get<UsageSnapshotV2Response>('/usage/dashboard/snapshot-v2', { params })
+  return data
+}
+
+/**
  * Get daily usage details for one API key owned by the current user.
  * @param apiKeyId - API key ID
  * @param days - Number of days to include (1-90)
@@ -334,6 +377,7 @@ export const usageAPI = {
   getDashboardStats,
   getDashboardTrend,
   getDashboardModels,
+  getDashboardSnapshotV2,
   getMyApiKeyDailyUsage,
   getDashboardApiKeysUsage,
   listMyErrorRequests,

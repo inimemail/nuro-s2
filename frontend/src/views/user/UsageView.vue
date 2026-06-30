@@ -156,6 +156,31 @@
           </div>
         </div>
         </div>
+        <div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <ModelDistributionChart
+            v-model:metric="modelDistributionMetric"
+            :model-stats="requestedModelStats"
+            :loading="chartsLoading"
+            :show-source-toggle="false"
+            :show-metric-toggle="true"
+            :enable-breakdown="false"
+            :show-account-cost="false"
+            :start-date="startDate"
+            :end-date="endDate"
+          />
+          <GroupDistributionChart
+            v-model:metric="groupDistributionMetric"
+            :group-stats="groupStats"
+            :loading="chartsLoading"
+            :show-metric-toggle="true"
+            :show-account-cost="false"
+            :start-date="startDate"
+            :end-date="endDate"
+          />
+          <div class="xl:col-span-2">
+            <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
+          </div>
+        </div>
       </template>
 
       <template #table>
@@ -626,7 +651,19 @@ import Select from '@/components/common/Select.vue'
 import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import Icon from '@/components/icons/Icon.vue'
 import UserErrorRequestsTable from '@/components/user/UserErrorRequestsTable.vue'
-import type { UsageLog, ApiKey, UsageQueryParams, UsageStatsResponse, UserErrorRequest } from '@/types'
+import ModelDistributionChart from '@/components/charts/ModelDistributionChart.vue'
+import GroupDistributionChart from '@/components/charts/GroupDistributionChart.vue'
+import TokenUsageTrend from '@/components/charts/TokenUsageTrend.vue'
+import type {
+  UsageLog,
+  ApiKey,
+  UsageQueryParams,
+  UsageStatsResponse,
+  UserErrorRequest,
+  TrendDataPoint,
+  ModelStat,
+  GroupStat,
+} from '@/types'
 import type { Column } from '@/components/common/types'
 import { formatDateTime, formatReasoningEffort } from '@/utils/format'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
@@ -656,6 +693,7 @@ const appStore = useAppStore()
 
 let abortController: AbortController | null = null
 let errorAbortController: AbortController | null = null
+let usageOverviewSeq = 0
 
 // Tooltip state
 const tooltipVisible = ref(false)
@@ -669,6 +707,13 @@ const tokenTooltipData = ref<UsageLog | null>(null)
 
 // Usage stats from API
 const usageStats = ref<UsageStatsResponse | null>(null)
+type DistributionMetric = 'tokens' | 'actual_cost'
+const trendData = ref<TrendDataPoint[]>([])
+const requestedModelStats = ref<ModelStat[]>([])
+const groupStats = ref<GroupStat[]>([])
+const chartsLoading = ref(false)
+const modelDistributionMetric = ref<DistributionMetric>('tokens')
+const groupDistributionMetric = ref<DistributionMetric>('tokens')
 const cacheStats = computed(() => {
   const create = usageStats.value?.total_cache_creation_tokens ?? 0
   const read = usageStats.value?.total_cache_read_tokens ?? 0
@@ -743,6 +788,13 @@ const filters = ref<UsageQueryParams>({
 // Initialize filters with date range
 filters.value.start_date = startDate.value
 filters.value.end_date = endDate.value
+
+const dashboardGranularity = computed<'day' | 'hour'>(() => {
+  const start = new Date(`${filters.value.start_date || startDate.value}T00:00:00`).getTime()
+  const end = new Date(`${filters.value.end_date || endDate.value}T00:00:00`).getTime()
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 'day'
+  return Math.ceil((end - start) / (1000 * 60 * 60 * 24)) <= 1 ? 'hour' : 'day'
+})
 
 // Handle date range change from DateRangePicker
 const onDateRangeChange = (range: {
@@ -892,16 +944,38 @@ const loadApiKeys = async () => {
 }
 
 const loadUsageStats = async () => {
+  const seq = ++usageOverviewSeq
+  chartsLoading.value = true
   try {
     const apiKeyId = filters.value.api_key_id ? Number(filters.value.api_key_id) : undefined
-    const stats = await usageAPI.getStatsByDateRange(
-      filters.value.start_date || startDate.value,
-      filters.value.end_date || endDate.value,
-      apiKeyId
-    )
-    usageStats.value = stats
+    const snapshot = await usageAPI.getDashboardSnapshotV2({
+      start_date: filters.value.start_date || startDate.value,
+      end_date: filters.value.end_date || endDate.value,
+      api_key_id: apiKeyId,
+      granularity: dashboardGranularity.value,
+      include_stats: true,
+      include_trend: true,
+      include_model_stats: true,
+      include_group_stats: true,
+    })
+    if (seq !== usageOverviewSeq) return
+    usageStats.value = snapshot.stats || null
+    trendData.value = snapshot.trend || []
+    requestedModelStats.value = snapshot.models || []
+    groupStats.value = (snapshot.groups || []).map((group) => ({
+      ...group,
+      account_cost: group.account_cost ?? 0,
+    }))
   } catch (error) {
+    if (seq !== usageOverviewSeq) return
     console.error('Failed to load usage stats:', error)
+    trendData.value = []
+    requestedModelStats.value = []
+    groupStats.value = []
+  } finally {
+    if (seq === usageOverviewSeq) {
+      chartsLoading.value = false
+    }
   }
 }
 

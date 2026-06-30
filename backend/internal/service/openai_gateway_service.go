@@ -42,9 +42,10 @@ const (
 	// ChatGPT internal API for OAuth accounts
 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
 	// OpenAI Platform API for API Key accounts (fallback)
-	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
-	openaiStickySessionTTL = time.Hour // 粘性会话TTL
-	codexCLIUserAgent      = "codex_cli_rs/0.125.0"
+	openaiPlatformAPIURL            = "https://api.openai.com/v1/responses"
+	openaiPlatformAPIInputTokensURL = "https://api.openai.com/v1/responses/input_tokens"
+	openaiStickySessionTTL          = time.Hour // 粘性会话TTL
+	codexCLIUserAgent               = "codex_cli_rs/0.125.0"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -1225,6 +1226,51 @@ func isOpenAITransientProcessingError(upstreamStatusCode int, upstreamMsg string
 	}
 	if match(gjson.GetBytes(upstreamBody, "error.message").String()) {
 		return true
+	}
+	return match(string(upstreamBody))
+}
+
+func isOpenAIContextWindowError(upstreamMsg string, upstreamBody []byte) bool {
+	match := func(text string) bool {
+		lower := strings.ToLower(strings.TrimSpace(text))
+		if lower == "" {
+			return false
+		}
+		if strings.Contains(lower, "context_too_large") || strings.Contains(lower, "context_length_exceeded") {
+			return true
+		}
+		if strings.Contains(lower, "maximum context length") || strings.Contains(lower, "max context length") {
+			return true
+		}
+		hasExceeded := strings.Contains(lower, "exceed") || strings.Contains(lower, "too large") || strings.Contains(lower, "too long")
+		if strings.Contains(lower, "context window") && hasExceeded {
+			return true
+		}
+		if strings.Contains(lower, "context length") && hasExceeded {
+			return true
+		}
+		return strings.Contains(lower, "token limit") &&
+			strings.Contains(lower, "context") &&
+			hasExceeded
+	}
+
+	if match(upstreamMsg) {
+		return true
+	}
+	if len(upstreamBody) == 0 {
+		return false
+	}
+	for _, path := range []string{
+		"error.message",
+		"response.error.message",
+		"message",
+		"error.code",
+		"response.error.code",
+		"code",
+	} {
+		if match(gjson.GetBytes(upstreamBody, path).String()) {
+			return true
+		}
 	}
 	return match(string(upstreamBody))
 }
@@ -2948,6 +2994,9 @@ func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool 
 }
 
 func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if isOpenAIContextWindowError(upstreamMsg, upstreamBody) {
+		return false
+	}
 	if statusCode == http.StatusBadRequest {
 		return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
 	}
@@ -4810,6 +4859,9 @@ func openAIResponsesSafeTokenPlaceholderFrame(responseID string) string {
 }
 
 func openAIStreamFailedEventShouldFailover(payload []byte, message string) bool {
+	if isOpenAIContextWindowError(message, payload) {
+		return false
+	}
 	if isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
 		return true
 	}
@@ -7285,6 +7337,7 @@ type OpenAIRecordUsageInput struct {
 	User               *User
 	Account            *Account
 	Subscription       *UserSubscription
+	QuotaPlatform      string
 	InboundEndpoint    string
 	UpstreamEndpoint   string
 	UserAgent          string // 请求的 User-Agent
@@ -7527,6 +7580,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		return nil
 	}
 
+	quotaPlatform := strings.TrimSpace(input.QuotaPlatform)
+	if quotaPlatform == "" {
+		quotaPlatform = PlatformFromAPIKey(apiKey)
+	}
+
 	billingErr := func() error {
 		_, err := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
 			Cost:                  cost,
@@ -7538,7 +7596,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			IsSubscriptionBill:    isSubscriptionBilling,
 			AccountRateMultiplier: accountRateMultiplier,
 			APIKeyService:         input.APIKeyService,
-			Platform:              PlatformFromAPIKey(apiKey),
+			Platform:              quotaPlatform,
 		}, s.billingDeps(), s.usageBillingRepo)
 		return err
 	}()

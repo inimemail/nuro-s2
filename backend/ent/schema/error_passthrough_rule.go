@@ -75,7 +75,7 @@ func (ErrorPassthroughRule) Fields() []ent.Field {
 			Default("any"),
 
 		// platforms: 适用平台列表
-		// 例如：["anthropic", "openai", "gemini", "antigravity"]
+		// 例如：["anthropic", "openai", "gemini", "antigravity", "grok"]
 		// 空列表表示适用于所有平台
 		field.JSON("platforms", []string{}).
 			Optional().

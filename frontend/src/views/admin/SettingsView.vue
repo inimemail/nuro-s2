@@ -3276,54 +3276,57 @@
                     {{ t("admin.settings.defaults.platformQuotaNotice") }}
                   </p>
                 </div>
-                <div class="overflow-x-auto">
-                  <table class="min-w-full text-sm">
-                    <thead>
-                      <tr class="text-left text-xs text-gray-500 dark:text-gray-400">
-                        <th class="pb-2 pr-4 font-medium">{{ t("admin.settings.platformQuota.platform") }}</th>
-                        <th class="pb-2 pr-4 font-medium">{{ t("admin.settings.platformQuota.daily") }}</th>
-                        <th class="pb-2 pr-4 font-medium">{{ t("admin.settings.platformQuota.weekly") }}</th>
-                        <th class="pb-2 font-medium">{{ t("admin.settings.platformQuota.monthly") }}</th>
-                      </tr>
-                    </thead>
-                    <tbody class="space-y-2">
-                      <tr v-for="p in (['anthropic', 'openai', 'gemini', 'antigravity'] as const)" :key="p" class="align-top">
-                        <td class="pr-4 py-1">
-                          <span class="font-mono text-xs text-gray-700 dark:text-gray-300">{{ p }}</span>
-                        </td>
-                        <td class="pr-4 py-1">
-                          <input
-                            v-model.number="form.default_platform_quotas[p]!.daily"
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            class="input h-8 w-28 text-sm"
-                            :placeholder="t('admin.settings.platformQuota.placeholder')"
-                          />
-                        </td>
-                        <td class="pr-4 py-1">
-                          <input
-                            v-model.number="form.default_platform_quotas[p]!.weekly"
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            class="input h-8 w-28 text-sm"
-                            :placeholder="t('admin.settings.platformQuota.placeholder')"
-                          />
-                        </td>
-                        <td class="py-1">
-                          <input
-                            v-model.number="form.default_platform_quotas[p]!.monthly"
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            class="input h-8 w-28 text-sm"
-                            :placeholder="t('admin.settings.platformQuota.placeholder')"
-                          />
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
+                <div class="quota-matrix">
+                  <div class="quota-matrix-inner">
+                    <div class="quota-matrix-header">
+                      <div>{{ t("admin.settings.platformQuota.platform") }}</div>
+                      <div>{{ t("admin.settings.platformQuota.daily") }}</div>
+                      <div>{{ t("admin.settings.platformQuota.weekly") }}</div>
+                      <div>{{ t("admin.settings.platformQuota.monthly") }}</div>
+                    </div>
+                    <div
+                      v-for="p in quotaPlatforms"
+                      :key="p"
+                      class="quota-matrix-row"
+                    >
+                      <div class="quota-matrix-platform">
+                        <span class="quota-matrix-platform-name">
+                          {{ platformQuotaLabels[p] }}
+                        </span>
+                        <span class="quota-matrix-platform-key">{{ p }}</span>
+                      </div>
+                      <div class="quota-matrix-cell">
+                        <input
+                          v-model.number="form.default_platform_quotas[p]!.daily"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          class="input quota-matrix-input"
+                          :placeholder="t('admin.settings.platformQuota.placeholder')"
+                        />
+                      </div>
+                      <div class="quota-matrix-cell">
+                        <input
+                          v-model.number="form.default_platform_quotas[p]!.weekly"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          class="input quota-matrix-input"
+                          :placeholder="t('admin.settings.platformQuota.placeholder')"
+                        />
+                      </div>
+                      <div class="quota-matrix-cell">
+                        <input
+                          v-model.number="form.default_platform_quotas[p]!.monthly"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          class="input quota-matrix-input"
+                          :placeholder="t('admin.settings.platformQuota.placeholder')"
+                        />
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
               <!-- /全局平台限额矩阵 -->
@@ -3611,54 +3614,57 @@
                           {{ t("admin.settings.authSourceDefaults.platformQuotasOverrideHint") }}
                         </p>
                       </div>
-                      <div class="overflow-x-auto">
-                        <table class="min-w-full text-sm">
-                          <thead>
-                            <tr class="text-left text-xs text-gray-500 dark:text-gray-400">
-                              <th class="pb-2 pr-4 font-medium">{{ t("admin.settings.platformQuota.platform") }}</th>
-                              <th class="pb-2 pr-4 font-medium">{{ t("admin.settings.platformQuota.daily") }}</th>
-                              <th class="pb-2 pr-4 font-medium">{{ t("admin.settings.platformQuota.weekly") }}</th>
-                              <th class="pb-2 font-medium">{{ t("admin.settings.platformQuota.monthly") }}</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr v-for="p in (['anthropic', 'openai', 'gemini', 'antigravity'] as const)" :key="`${authSource.source}-pq-${p}`" class="align-top">
-                              <td class="pr-4 py-1">
-                                <span class="font-mono text-xs text-gray-700 dark:text-gray-300">{{ p }}</span>
-                              </td>
-                              <td class="pr-4 py-1">
-                                <input
-                                  v-model.number="authSourceDefaults[authSource.source].platform_quotas[p]!.daily"
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
-                                  class="input h-8 w-28 text-sm"
-                                  :placeholder="t('admin.settings.platformQuota.placeholder')"
-                                />
-                              </td>
-                              <td class="pr-4 py-1">
-                                <input
-                                  v-model.number="authSourceDefaults[authSource.source].platform_quotas[p]!.weekly"
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
-                                  class="input h-8 w-28 text-sm"
-                                  :placeholder="t('admin.settings.platformQuota.placeholder')"
-                                />
-                              </td>
-                              <td class="py-1">
-                                <input
-                                  v-model.number="authSourceDefaults[authSource.source].platform_quotas[p]!.monthly"
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
-                                  class="input h-8 w-28 text-sm"
-                                  :placeholder="t('admin.settings.platformQuota.placeholder')"
-                                />
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
+                      <div class="quota-matrix">
+                        <div class="quota-matrix-inner">
+                          <div class="quota-matrix-header">
+                            <div>{{ t("admin.settings.platformQuota.platform") }}</div>
+                            <div>{{ t("admin.settings.platformQuota.daily") }}</div>
+                            <div>{{ t("admin.settings.platformQuota.weekly") }}</div>
+                            <div>{{ t("admin.settings.platformQuota.monthly") }}</div>
+                          </div>
+                          <div
+                            v-for="p in quotaPlatforms"
+                            :key="`${authSource.source}-pq-${p}`"
+                            class="quota-matrix-row"
+                          >
+                            <div class="quota-matrix-platform">
+                              <span class="quota-matrix-platform-name">
+                                {{ platformQuotaLabels[p] }}
+                              </span>
+                              <span class="quota-matrix-platform-key">{{ p }}</span>
+                            </div>
+                            <div class="quota-matrix-cell">
+                              <input
+                                v-model.number="authSourceDefaults[authSource.source].platform_quotas[p]!.daily"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                class="input quota-matrix-input"
+                                :placeholder="t('admin.settings.platformQuota.placeholder')"
+                              />
+                            </div>
+                            <div class="quota-matrix-cell">
+                              <input
+                                v-model.number="authSourceDefaults[authSource.source].platform_quotas[p]!.weekly"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                class="input quota-matrix-input"
+                                :placeholder="t('admin.settings.platformQuota.placeholder')"
+                              />
+                            </div>
+                            <div class="quota-matrix-cell">
+                              <input
+                                v-model.number="authSourceDefaults[authSource.source].platform_quotas[p]!.monthly"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                class="input quota-matrix-input"
+                                :placeholder="t('admin.settings.platformQuota.placeholder')"
+                              />
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                     <!-- /auth source 平台限额覆盖区块 -->
@@ -7363,6 +7369,7 @@ import { ref, reactive, computed, defineAsyncComponent, onMounted, watch } from 
 import { useI18n } from "vue-i18n";
 import { adminAPI } from "@/api";
 import {
+  PLATFORM_QUOTA_PLATFORMS,
   appendAuthSourceDefaultsToUpdateRequest,
   buildAuthSourceDefaultsState,
   normalizePlatformQuotasMap,
@@ -7379,6 +7386,7 @@ import type {
   UpdateSettingsRequest,
   DefaultSubscriptionSetting,
   DefaultPlatformQuotasMap,
+  PlatformType,
   OpenAIFastPolicyRule,
   WeChatConnectMode,
   WebSearchEmulationConfig,
@@ -7873,6 +7881,14 @@ const openaiFastPolicyLoaded = ref(false);
 const tablePageSizeMin = 5;
 const tablePageSizeMax = 1000;
 const tablePageSizeDefault = 20;
+const quotaPlatforms = PLATFORM_QUOTA_PLATFORMS;
+const platformQuotaLabels: Record<PlatformType, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  gemini: "Gemini",
+  antigravity: "Antigravity",
+  grok: "Grok",
+};
 
 function defaultLoginAgreementDocuments(): LoginAgreementDocument[] {
   return [
@@ -7949,7 +7965,7 @@ type SettingsForm = Omit<
   google_oauth_client_secret: string;
   force_email_on_third_party_signup: boolean;
   openai_advanced_scheduler_enabled: boolean;
-  // 系统全局平台限额 map；form 内始终归一化为全 4 平台对象（模板非空绑定依赖此不变量）
+  // 系统全局平台限额 map；form 内始终归一化为全平台对象（模板非空绑定依赖此不变量）
   default_platform_quotas: DefaultPlatformQuotasMap;
 };
 
@@ -10782,6 +10798,49 @@ watch(
 
 .default-sub-delete-btn {
   @apply h-[42px];
+}
+
+.quota-matrix {
+  @apply overflow-x-auto rounded-lg border border-gray-200 bg-white dark:border-dark-700 dark:bg-dark-900/40;
+}
+
+.quota-matrix-inner {
+  min-width: 680px;
+}
+
+.quota-matrix-header,
+.quota-matrix-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) repeat(3, minmax(140px, 160px));
+  align-items: center;
+}
+
+.quota-matrix-header {
+  @apply border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold uppercase text-gray-500 dark:border-dark-700 dark:bg-dark-800/70 dark:text-dark-300;
+}
+
+.quota-matrix-row {
+  @apply border-b border-gray-100 px-3 py-2 last:border-b-0 dark:border-dark-700/70;
+}
+
+.quota-matrix-platform {
+  @apply flex min-w-0 flex-col pr-3;
+}
+
+.quota-matrix-platform-name {
+  @apply truncate text-sm font-medium text-gray-900 dark:text-white;
+}
+
+.quota-matrix-platform-key {
+  @apply mt-0.5 truncate font-mono text-[11px] leading-4 text-gray-500 dark:text-gray-400;
+}
+
+.quota-matrix-cell {
+  @apply min-w-0 pr-3 last:pr-0;
+}
+
+.quota-matrix-input {
+  @apply h-9 w-full min-w-0 text-sm tabular-nums;
 }
 
 /* ============ 系统设置 Tab 导航 ============ */

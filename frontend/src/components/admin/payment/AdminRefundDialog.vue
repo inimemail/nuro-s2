@@ -193,7 +193,7 @@ const form = reactive({
   force: false,
 })
 
-// In REFUND_REQUESTED status, refund_amount is the REQUESTED amount, not actually refunded.
+// In REFUND_REQUESTED / REFUND_PENDING status, refund_amount is requested/pending, not actually refunded.
 // Only PARTIALLY_REFUNDED / REFUNDED have real refund amounts.
 const actuallyRefunded = computed(() => {
   if (!props.order) return 0
@@ -214,8 +214,8 @@ const balanceInsufficient = computed(() => {
 
 watch(() => props.show, (val) => {
   if (val && props.order) {
-    // For REFUND_REQUESTED, pre-fill with the requested amount
-    if (props.order.status === 'REFUND_REQUESTED' && props.order.refund_amount) {
+    // For REFUND_REQUESTED / REFUND_PENDING, pre-fill with the requested amount
+    if ((props.order.status === 'REFUND_REQUESTED' || props.order.status === 'REFUND_PENDING') && props.order.refund_amount) {
       form.amount = props.order.refund_amount
     } else {
       form.amount = maxRefundable.value

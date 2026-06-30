@@ -324,6 +324,9 @@
                         {{ row.email_sent ? t('admin.riskControl.emailSent') : t('admin.riskControl.emailNotSent') }}
                         <span v-if="row.auto_banned"> / {{ t('admin.riskControl.autoBanned') }}</span>
                       </div>
+                      <div v-if="row.action === 'keyword_block' && row.matched_keyword" class="mt-1 max-w-40 truncate text-xs text-red-500 dark:text-red-300">
+                        {{ t('admin.riskControl.matchedKeyword') }}: {{ row.matched_keyword }}
+                      </div>
                       <button
                         v-if="canUnbanRow(row)"
                         type="button"
@@ -1070,6 +1073,10 @@
               <p class="mt-1 truncate text-sm font-semibold text-gray-900 dark:text-white">
                 {{ inputDetailRow.highest_category || '-' }} / {{ percent(inputDetailRow.highest_score) }}
               </p>
+            </div>
+            <div v-if="inputDetailRow.action === 'keyword_block' && inputDetailRow.matched_keyword" class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/70">
+              <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.matchedKeyword') }}</p>
+              <p class="mt-1 truncate text-sm font-semibold text-gray-900 dark:text-white">{{ inputDetailRow.matched_keyword }}</p>
             </div>
           </div>
 

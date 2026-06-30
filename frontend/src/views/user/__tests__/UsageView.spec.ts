@@ -4,8 +4,9 @@ import { nextTick } from 'vue'
 
 import UsageView from '../UsageView.vue'
 
-const { query, getStatsByDateRange, list, showError, showWarning, showSuccess, showInfo } = vi.hoisted(() => ({
+const { query, getDashboardSnapshotV2, getStatsByDateRange, list, showError, showWarning, showSuccess, showInfo } = vi.hoisted(() => ({
   query: vi.fn(),
+  getDashboardSnapshotV2: vi.fn(),
   getStatsByDateRange: vi.fn(),
   list: vi.fn(),
   showError: vi.fn(),
@@ -66,6 +67,7 @@ const messages: Record<string, string> = {
 vi.mock('@/api', () => ({
   usageAPI: {
     query,
+    getDashboardSnapshotV2,
     getStatsByDateRange,
   },
   keysAPI: {
@@ -107,12 +109,25 @@ const DataTableStub = {
 describe('user UsageView tooltip', () => {
   beforeEach(() => {
     query.mockReset()
+    getDashboardSnapshotV2.mockReset()
     getStatsByDateRange.mockReset()
     list.mockReset()
     showError.mockReset()
     showWarning.mockReset()
     showSuccess.mockReset()
     showInfo.mockReset()
+    getDashboardSnapshotV2.mockResolvedValue({
+      stats: {
+        total_requests: 1,
+        total_tokens: 100,
+        total_cost: 0.1,
+        total_actual_cost: 0.1,
+        average_duration_ms: 1,
+      },
+      trend: [],
+      models: [],
+      groups: [],
+    })
 
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
       x: 0,

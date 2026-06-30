@@ -322,6 +322,8 @@ gateway:
       ttft: 0.5
       # 同优先级、同负载层内偏向 5h 窗口更快重置的账号；0=关闭
       reset: 0.0
+      # 偏向 7d 剩余额度更健康的账号；0=关闭，不改变现有调度
+      quota_headroom: 0.0
   # Optional Rust OpenAI data-plane edge. The static YAML example is disabled
   # by default; the one-click systemd installer writes /opt/sub2api/edge-rs.env
   # to enable it automatically when the edge binary is installed.

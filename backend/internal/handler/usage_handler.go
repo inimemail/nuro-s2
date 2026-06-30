@@ -40,6 +40,103 @@ func NewUsageHandler(
 	}
 }
 
+type userUsageSnapshotV2Response struct {
+	GeneratedAt string                      `json:"generated_at"`
+	StartDate   string                      `json:"start_date"`
+	EndDate     string                      `json:"end_date"`
+	Granularity string                      `json:"granularity"`
+	Stats       *usagestats.UsageStats      `json:"stats,omitempty"`
+	Trend       []usagestats.TrendDataPoint `json:"trend,omitempty"`
+	Models      []usagestats.ModelStat      `json:"models,omitempty"`
+	Groups      []usagestats.GroupStat      `json:"groups,omitempty"`
+}
+
+func parseUserSnapshotBool(raw string, def bool) bool {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" {
+		return def
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return def
+	}
+}
+
+func (h *UsageHandler) parseUserDashboardFilters(c *gin.Context, subjectUserID int64, startTime, endTime time.Time) (usagestats.UsageLogFilters, bool) {
+	filters := usagestats.UsageLogFilters{
+		UserID:    subjectUserID,
+		Model:     strings.TrimSpace(c.Query("model")),
+		StartTime: &startTime,
+		EndTime:   &endTime,
+	}
+	if apiKeyIDStr := strings.TrimSpace(c.Query("api_key_id")); apiKeyIDStr != "" {
+		id, err := strconv.ParseInt(apiKeyIDStr, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid api_key_id")
+			return filters, false
+		}
+		if h.apiKeyService == nil {
+			response.InternalError(c, "API key service not available")
+			return filters, false
+		}
+		apiKey, err := h.apiKeyService.GetByID(c.Request.Context(), id)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return filters, false
+		}
+		if apiKey.UserID != subjectUserID {
+			response.Forbidden(c, "Not authorized to access this API key's usage")
+			return filters, false
+		}
+		filters.APIKeyID = id
+	}
+	if groupIDStr := strings.TrimSpace(c.Query("group_id")); groupIDStr != "" {
+		id, err := strconv.ParseInt(groupIDStr, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid group_id")
+			return filters, false
+		}
+		filters.GroupID = id
+	}
+	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
+		parsed, err := service.ParseUsageRequestType(requestTypeStr)
+		if err != nil {
+			response.BadRequest(c, err.Error())
+			return filters, false
+		}
+		value := int16(parsed)
+		filters.RequestType = &value
+	} else if streamStr := strings.TrimSpace(c.Query("stream")); streamStr != "" {
+		val, err := strconv.ParseBool(streamStr)
+		if err != nil {
+			response.BadRequest(c, "Invalid stream value, use true or false")
+			return filters, false
+		}
+		filters.Stream = &val
+	}
+	if billingTypeStr := strings.TrimSpace(c.Query("billing_type")); billingTypeStr != "" {
+		val, err := strconv.ParseInt(billingTypeStr, 10, 8)
+		if err != nil {
+			response.BadRequest(c, "Invalid billing_type")
+			return filters, false
+		}
+		bt := int8(val)
+		filters.BillingType = &bt
+	}
+	if billingMode := strings.TrimSpace(c.Query("billing_mode")); billingMode != "" {
+		if !service.BillingMode(billingMode).IsValid() {
+			response.BadRequest(c, "Invalid billing_mode")
+			return filters, false
+		}
+		filters.BillingMode = billingMode
+	}
+	return filters, true
+}
+
 // List handles listing usage records with pagination
 // GET /api/v1/usage
 func (h *UsageHandler) List(c *gin.Context) {
@@ -505,6 +602,75 @@ func (h *UsageHandler) DashboardModels(c *gin.Context) {
 		"start_date": startTime.Format("2006-01-02"),
 		"end_date":   endTime.Add(-24 * time.Hour).Format("2006-01-02"),
 	})
+}
+
+// DashboardSnapshotV2 returns a combined user usage dashboard snapshot.
+// GET /api/v1/usage/dashboard/snapshot-v2
+func (h *UsageHandler) DashboardSnapshotV2(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+
+	startTime, endTime := parseUserTimeRange(c)
+	granularity := strings.TrimSpace(c.DefaultQuery("granularity", "day"))
+	if granularity != "hour" {
+		granularity = "day"
+	}
+	filters, ok := h.parseUserDashboardFilters(c, subject.UserID, startTime, endTime)
+	if !ok {
+		return
+	}
+
+	includeStats := parseUserSnapshotBool(c.Query("include_stats"), true)
+	includeTrend := parseUserSnapshotBool(c.Query("include_trend"), true)
+	includeModels := parseUserSnapshotBool(c.Query("include_model_stats"), true)
+	includeGroups := parseUserSnapshotBool(c.Query("include_group_stats"), false)
+
+	resp := &userUsageSnapshotV2Response{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		StartDate:   startTime.Format("2006-01-02"),
+		EndDate:     endTime.Add(-24 * time.Hour).Format("2006-01-02"),
+		Granularity: granularity,
+	}
+
+	if includeStats {
+		stats, err := h.usageService.GetStatsWithFilters(c.Request.Context(), filters)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		stats.TotalAccountCost = nil
+		stats.UpstreamEndpoints = nil
+		resp.Stats = stats
+	}
+	if includeTrend {
+		trend, err := h.usageService.GetUsageTrendWithFilters(c.Request.Context(), startTime, endTime, granularity, filters)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		resp.Trend = trend
+	}
+	if includeModels {
+		models, err := h.usageService.GetModelStatsWithFiltersBySource(c.Request.Context(), startTime, endTime, filters, usagestats.ModelSourceRequested)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		resp.Models = models
+	}
+	if includeGroups {
+		groups, err := h.usageService.GetGroupStatsWithFilters(c.Request.Context(), startTime, endTime, filters)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		resp.Groups = groups
+	}
+
+	response.Success(c, resp)
 }
 
 // BatchAPIKeysUsageRequest represents the request for batch API keys usage

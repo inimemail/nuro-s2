@@ -548,7 +548,7 @@ const handleExchangeCode = async () => {
 }
 
 const handleCookieAuth = async (sessionKey: string) => {
-  if (!props.account || isOpenAILike.value) return
+  if (!props.account || !isAnthropic.value) return
 
   claudeOAuth.loading.value = true
   claudeOAuth.error.value = ''

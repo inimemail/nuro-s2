@@ -6,10 +6,11 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios'
 import type { ApiResponse } from '@/types'
 import { getLocale } from '@/i18n'
+import { buildApiUrl, buildGatewayUrl, getAPIBaseURL } from './url'
 
 // ==================== Axios Instance Configuration ====================
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
+const API_BASE_URL = getAPIBaseURL()
 
 export const apiClient: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -19,6 +20,8 @@ export const apiClient: AxiosInstance = axios.create({
     'Content-Type': 'application/json'
   }
 })
+
+export { buildApiUrl, buildGatewayUrl, getAPIBaseURL }
 
 // ==================== Token Refresh State ====================
 

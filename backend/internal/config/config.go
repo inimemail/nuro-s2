@@ -1116,12 +1116,13 @@ type GatewayOpenAIWSConfig struct {
 
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
 type GatewayOpenAIWSSchedulerScoreWeights struct {
-	Priority  float64 `mapstructure:"priority"`
-	Load      float64 `mapstructure:"load"`
-	Queue     float64 `mapstructure:"queue"`
-	ErrorRate float64 `mapstructure:"error_rate"`
-	TTFT      float64 `mapstructure:"ttft"`
-	Reset     float64 `mapstructure:"reset"`
+	Priority      float64 `mapstructure:"priority"`
+	Load          float64 `mapstructure:"load"`
+	Queue         float64 `mapstructure:"queue"`
+	ErrorRate     float64 `mapstructure:"error_rate"`
+	TTFT          float64 `mapstructure:"ttft"`
+	Reset         float64 `mapstructure:"reset"`
+	QuotaHeadroom float64 `mapstructure:"quota_headroom"`
 }
 
 // GatewayUsageRecordConfig 使用量记录异步队列配置
@@ -2042,6 +2043,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.error_rate", 0.8)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.ttft", 0.5)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.reset", 0.0)
+	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.quota_headroom", 0.0)
 	viper.SetDefault("gateway.openai_edge_rs.enabled", false)
 	viper.SetDefault("gateway.openai_edge_rs.internal_api_enabled", false)
 	viper.SetDefault("gateway.openai_edge_rs.internal_secret", "")
@@ -2933,7 +2935,8 @@ func (c *Config) Validate() error {
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.Queue < 0 ||
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate < 0 ||
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT < 0 ||
-		c.Gateway.OpenAIWS.SchedulerScoreWeights.Reset < 0 {
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.Reset < 0 ||
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.QuotaHeadroom < 0 {
 		return fmt.Errorf("gateway.openai_ws.scheduler_score_weights.* must be non-negative")
 	}
 	weightSum := c.Gateway.OpenAIWS.SchedulerScoreWeights.Priority +
@@ -2941,7 +2944,8 @@ func (c *Config) Validate() error {
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.Queue +
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate +
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT +
-		c.Gateway.OpenAIWS.SchedulerScoreWeights.Reset
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.Reset +
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.QuotaHeadroom
 	if weightSum <= 0 {
 		return fmt.Errorf("gateway.openai_ws.scheduler_score_weights must not all be zero")
 	}

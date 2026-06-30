@@ -201,6 +201,9 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	if normalizeCodexToolChoice(reqBody) {
 		result.Modified = true
 	}
+	if ensureOpenAIResponsesImageGenerationToolChoiceAuto(reqBody) {
+		result.Modified = true
+	}
 
 	if v, ok := reqBody["prompt_cache_key"].(string); ok {
 		result.PromptCacheKey = strings.TrimSpace(v)
@@ -709,6 +712,20 @@ func ensureOpenAIResponsesImageGenerationTool(reqBody map[string]any) bool {
 	}
 
 	reqBody["tools"] = append(tools, tool)
+	return true
+}
+
+func ensureOpenAIResponsesImageGenerationToolChoiceAuto(reqBody map[string]any) bool {
+	if len(reqBody) == 0 || !hasOpenAIImageGenerationTool(reqBody) {
+		return false
+	}
+	if isCodexSparkModel(firstNonEmptyString(reqBody["model"])) {
+		return false
+	}
+	if _, ok := reqBody["tool_choice"]; ok {
+		return false
+	}
+	reqBody["tool_choice"] = "auto"
 	return true
 }
 
