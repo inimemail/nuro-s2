@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"context"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -214,6 +216,10 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 		response.BadRequest(c, "Cannot refresh non-OAuth account credentials")
 		return
 	}
+	if account.IsCredentialShadow() {
+		response.BadRequest(c, "Cannot refresh spark shadow account; its credentials are managed by the parent account")
+		return
+	}
 
 	// Use OpenAI OAuth service to refresh token
 	tokenInfo, err := h.openaiOAuthService.RefreshAccountToken(c.Request.Context(), account)
@@ -307,4 +313,45 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 	}
 
 	response.Success(c, dto.AccountFromService(account))
+}
+
+type CreateShadowRequest struct {
+	Name        string  `json:"name"`
+	Priority    int     `json:"priority"`
+	Concurrency int     `json:"concurrency"`
+	GroupIDs    []int64 `json:"group_ids"`
+}
+
+type sparkShadowCreator interface {
+	CreateShadow(ctx context.Context, parentID int64, opts service.ShadowOptions) (*service.Account, error)
+}
+
+// CreateShadow creates a spark-dimension shadow account for a parent OpenAI OAuth account.
+func (h *OpenAIOAuthHandler) CreateShadow(c *gin.Context) {
+	parentID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	var req CreateShadowRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	creator, ok := h.adminService.(sparkShadowCreator)
+	if !ok {
+		response.Error(c, http.StatusServiceUnavailable, "Spark shadow creation is unavailable")
+		return
+	}
+	shadow, err := creator.CreateShadow(c.Request.Context(), parentID, service.ShadowOptions{
+		Name:        req.Name,
+		Priority:    req.Priority,
+		Concurrency: req.Concurrency,
+		GroupIDs:    req.GroupIDs,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.AccountFromServiceShallow(shadow))
 }

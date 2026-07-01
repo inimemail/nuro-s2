@@ -161,6 +161,7 @@
             class="inline-flex h-6 shrink-0 items-center gap-0.5 rounded px-1 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             :class="codexResetConfirming ? 'text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30' : 'text-amber-600 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30'"
             :disabled="codexResetCreditLoading || !canConsumeCodexResetCredit"
+            :title="codexResetCreditButtonTitle"
             @click="consumeCodexResetCredit"
           >
             <svg
@@ -817,6 +818,8 @@ const hasOpenAIUsageFallback = computed(() => {
   return true
 })
 
+const isShadow = computed(() => props.account.parent_account_id != null)
+
 const showCodexResetCredits = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
   return usageInfo.value?.codex_reset_credits_supported === true
@@ -828,7 +831,13 @@ const codexResetCreditsAvailable = computed(() => {
 })
 
 const canConsumeCodexResetCredit = computed(() => {
-  return showCodexResetCredits.value && codexResetCreditsAvailable.value > 0
+  return showCodexResetCredits.value && !isShadow.value && codexResetCreditsAvailable.value > 0
+})
+
+const codexResetCreditButtonTitle = computed(() => {
+  if (isShadow.value) return '影子账号不支持重置次数消耗，请在母账号上操作'
+  if (codexResetCreditsAvailable.value <= 0) return '没有可用重置次数'
+  return ''
 })
 
 const codexInvites = computed(() => usageInfo.value?.codex_invites ?? null)
@@ -847,7 +856,7 @@ const codexPendingInviteEmails = computed(() => {
 })
 
 const showCodexInviteButton = computed(() => {
-  return props.account.platform === 'openai' && props.account.type === 'oauth'
+  return props.account.platform === 'openai' && props.account.type === 'oauth' && !isShadow.value
 })
 
 const codexAutoResetDisabled = computed(() => !canConsumeCodexResetCredit.value)

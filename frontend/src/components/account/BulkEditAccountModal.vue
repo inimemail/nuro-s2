@@ -31,6 +31,15 @@
         </p>
       </div>
 
+      <div v-if="targetIncludesShadow" class="rounded-lg bg-amber-50 p-4 dark:bg-amber-900/20">
+        <p class="text-sm text-amber-700 dark:text-amber-400">
+          <svg class="mr-1.5 inline h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          {{ t('admin.accounts.bulkEdit.shadowWarning') }}
+        </p>
+      </div>
+
       <!-- OpenAI passthrough -->
       <div
         v-if="allOpenAIPassthroughCapable"
@@ -131,7 +140,7 @@
       </div>
 
       <!-- Base URL (API Key only) -->
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="!targetAllShadow" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <label
             id="bulk-edit-base-url-label"
@@ -164,7 +173,7 @@
       </div>
 
       <!-- Model restriction -->
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="!targetAllShadow" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <label
             id="bulk-edit-model-restriction-label"
@@ -535,7 +544,7 @@
       </div>
 
       <!-- Proxy -->
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="!targetAllShadow" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <label
             id="bulk-edit-proxy-label"
@@ -1647,6 +1656,7 @@ interface Props {
   selectedPlatforms: AccountPlatform[]
   selectedTypes: AccountType[]
   selectedImagePoolModes?: boolean[]
+  selectedShadowModes?: boolean[]
   target?: {
     mode: 'selected' | 'filtered'
     filters?: Record<string, unknown>
@@ -1654,6 +1664,7 @@ interface Props {
     selectedPlatforms?: AccountPlatform[]
     selectedTypes?: AccountType[]
     selectedImagePoolModes?: boolean[]
+    selectedShadowModes?: boolean[]
   }
   proxies: ProxyConfig[]
   groups: AdminGroup[]
@@ -1674,10 +1685,14 @@ const targetPreviewCount = computed(() => props.target?.previewCount ?? props.ac
 const targetSelectedPlatforms = computed(() => props.target?.selectedPlatforms ?? props.selectedPlatforms)
 const targetSelectedTypes = computed(() => props.target?.selectedTypes ?? props.selectedTypes)
 const targetSelectedImagePoolModes = computed(() => props.target?.selectedImagePoolModes ?? props.selectedImagePoolModes ?? [])
+const targetSelectedShadowModes = computed(() => props.target?.selectedShadowModes ?? props.selectedShadowModes ?? [])
 const isMixedPlatform = computed(() => targetSelectedPlatforms.value.length > 1)
+const targetIncludesShadow = computed(() => targetSelectedShadowModes.value.includes(true))
+const targetAllShadow = computed(() => targetSelectedShadowModes.value.length > 0 && targetSelectedShadowModes.value.every(Boolean))
 
 const allOpenAIPassthroughCapable = computed(() => {
   return (
+    !targetIncludesShadow.value &&
     targetSelectedPlatforms.value.length === 1 &&
     targetSelectedPlatforms.value[0] === 'openai' &&
     targetSelectedTypes.value.length > 0 &&
@@ -1687,6 +1702,7 @@ const allOpenAIPassthroughCapable = computed(() => {
 
 const allOpenAIOAuth = computed(() => {
   return (
+    !targetIncludesShadow.value &&
     targetSelectedPlatforms.value.length === 1 &&
     targetSelectedPlatforms.value[0] === 'openai' &&
     targetSelectedTypes.value.length > 0 &&

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -707,6 +708,99 @@ func TestSetOpenAICodexAutoResetModeNilExtraFallsBackOff(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected UpdateExtra to be called")
+	}
+}
+
+func TestSetOpenAICodexAutoResetModeRejectsSparkShadow(t *testing.T) {
+	t.Parallel()
+
+	parentID := int64(10)
+	repo := &accountUsageCodexProbeRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{{
+			ID:              123,
+			Platform:        PlatformOpenAI,
+			Type:            AccountTypeOAuth,
+			ParentAccountID: &parentID,
+			QuotaDimension:  QuotaDimensionSpark,
+			Extra: map[string]any{
+				"codex_reset_credits": 2,
+			},
+		}}},
+	}
+	svc := &AccountUsageService{accountRepo: repo}
+
+	_, err := svc.SetOpenAICodexAutoResetMode(context.Background(), 123, openAICodexAutoResetModeShort)
+	if err == nil {
+		t.Fatal("expected spark shadow auto reset update to be rejected")
+	}
+	var appErr *infraerrors.ApplicationError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected application error, got %T: %v", err, err)
+	}
+	if appErr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", appErr.Code)
+	}
+}
+
+func TestBuildCodexSparkWindowExtraUpdates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	updates := buildCodexSparkWindowExtraUpdates(&OpenAIQuotaUsage{
+		AdditionalRateLimits: []OpenAIAdditionalRateLimit{
+			{
+				MeteredFeature: "other",
+				RateLimit:      &OpenAIRateLimit{PrimaryWindow: &OpenAIRateLimitWindow{UsedPercent: 1}},
+			},
+			{
+				MeteredFeature: "codex_bengalfox",
+				RateLimit: &OpenAIRateLimit{
+					PrimaryWindow: &OpenAIRateLimitWindow{
+						UsedPercent:        45,
+						LimitWindowSeconds: 5 * 60 * 60,
+						ResetAfterSeconds:  3600,
+					},
+					SecondaryWindow: &OpenAIRateLimitWindow{
+						UsedPercent:        80,
+						LimitWindowSeconds: 7 * 24 * 60 * 60,
+						ResetAfterSeconds:  7200,
+					},
+				},
+			},
+		},
+	}, now)
+
+	if got := updates["codex_5h_used_percent"]; got != 45.0 {
+		t.Fatalf("codex_5h_used_percent = %v, want 45", got)
+	}
+	if got := updates["codex_7d_used_percent"]; got != 80.0 {
+		t.Fatalf("codex_7d_used_percent = %v, want 80", got)
+	}
+	if got := updates["codex_5h_reset_at"]; got != "2026-06-14T13:00:00Z" {
+		t.Fatalf("codex_5h_reset_at = %v, want 2026-06-14T13:00:00Z", got)
+	}
+	if got := updates["codex_usage_updated_at"]; got != now.Format(time.RFC3339) {
+		t.Fatalf("codex_usage_updated_at = %v, want %s", got, now.Format(time.RFC3339))
+	}
+}
+
+func TestShadowOpenAICodexSnapshotStaleDoesNotRequireWSv2(t *testing.T) {
+	t.Parallel()
+
+	parentID := int64(10)
+	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	account := &Account{
+		Platform:        PlatformOpenAI,
+		Type:            AccountTypeOAuth,
+		ParentAccountID: &parentID,
+		QuotaDimension:  QuotaDimensionSpark,
+		Extra: map[string]any{
+			"codex_usage_updated_at": now.Add(-(openAIProbeCacheTTL + time.Minute)).Format(time.RFC3339),
+		},
+	}
+
+	if !isOpenAICodexSnapshotStale(account, now) {
+		t.Fatal("expected spark shadow usage to be stale without WSv2 gate")
 	}
 }
 

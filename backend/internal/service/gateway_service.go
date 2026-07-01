@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicfp"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -5019,6 +5020,24 @@ func (s *GatewayService) shouldInjectAnthropicCacheTTL1h(ctx context.Context, ac
 	return s.settingService.IsAnthropicCacheTTL1hInjectionEnabled(ctx)
 }
 
+func (s *GatewayService) shouldNormalizeClientDateline(ctx context.Context, account *Account) bool {
+	if account == nil || !account.IsAnthropicOAuthOrSetupToken() || s == nil || s.settingService == nil {
+		return false
+	}
+	return s.settingService.IsClientDatelineNormalizationEnabled(ctx)
+}
+
+func (s *GatewayService) normalizeClientDatelineIfEnabled(ctx context.Context, account *Account, body []byte) []byte {
+	if !s.shouldNormalizeClientDateline(ctx, account) {
+		return body
+	}
+	next, _, changed := anthropicfp.NormalizeDateline(body)
+	if !changed {
+		return body
+	}
+	return next
+}
+
 func (s *GatewayService) claudeOAuthSystemPromptInjectionSettings(ctx context.Context) (bool, string, string) {
 	if s == nil || s.settingService == nil {
 		return false, "", ""
@@ -5163,6 +5182,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}
 
 	body = s.applyAnthropicCacheBoostBody(ctx, account, body)
+	body = s.normalizeClientDatelineIfEnabled(ctx, account, body)
 	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
 		isolatedBody, isolated, isolationErr := applyAnthropicUpstreamStrongIsolationBody(body)
 		if isolationErr != nil {

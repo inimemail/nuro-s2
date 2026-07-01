@@ -1566,6 +1566,16 @@ func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, re
 	return true
 }
 
+func (s *OpenAIGatewayService) parentAccountLookup(ctx context.Context) func(int64) *Account {
+	return func(id int64) *Account {
+		if s == nil || s.accountRepo == nil {
+			return nil
+		}
+		account, _ := s.accountRepo.GetByID(ctx, id)
+		return account
+	}
+}
+
 type openAIQuotaAutoPauseDecision struct {
 	window      string
 	threshold   float64
@@ -2320,6 +2330,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						if sessionHash != "" {
 							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						}
+					} else if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
+						if sessionHash != "" {
+							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						}
 					} else if s.hasHigherPriorityOpenAIAccountAvailable(ctx, groupID, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, OpenAIUpstreamTransportAny, requestPlatform) {
 						if sessionHash != "" {
 							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
@@ -2346,6 +2360,15 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	// ============ Layer 2: Load-aware selection ============
 	baseCandidateCount := 0
 	candidates := make([]*Account, 0, len(accounts))
+	parentCacheL2 := make(map[int64]*Account)
+	parentLookupL2 := func(id int64) *Account {
+		if account, ok := parentCacheL2[id]; ok {
+			return account
+		}
+		account := s.parentAccountLookup(ctx)(id)
+		parentCacheL2[id] = account
+		return account
+	}
 	for i := range accounts {
 		acc := &accounts[i]
 		if isExcluded(acc.ID) {
@@ -2361,6 +2384,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			continue
 		}
 		if !openAIAccountMatchesLockedPriority(acc, lockedPriority) {
+			continue
+		}
+		if !parentHealthyForShadow(acc, parentLookupL2) {
 			continue
 		}
 		if s.isOpenAIAccountRuntimeBlocked(acc) {
@@ -2710,6 +2736,9 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 	if !isOpenAIAccountEligibleForRequest(ctx, fresh, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
 		return nil
 	}
+	if !parentHealthyForShadow(fresh, s.parentAccountLookup(ctx)) {
+		return nil
+	}
 	if s.isOpenAIPoolAccountSoftCooling(fresh) {
 		if s.isOpenAIPoolAccountSoftCooldownDue(fresh) {
 			if s.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(ctx, fresh, requestedModel) {
@@ -2734,6 +2763,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	}
 	if s.schedulerSnapshot == nil {
 		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
+			return nil
+		}
+		if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 			return nil
 		}
 		if s.isOpenAIPoolAccountSoftCooling(account) {
@@ -2766,6 +2798,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		}
 	}
 	if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
+		return nil
+	}
+	if !parentHealthyForShadow(latest, s.parentAccountLookup(ctx)) {
 		return nil
 	}
 	if s.isOpenAIPoolAccountSoftCooling(latest) {
@@ -2884,6 +2919,13 @@ func (s *OpenAIGatewayService) publishOpenAISchedulingRuntimeEvent(ctx context.C
 
 // GetAccessToken gets the access token for an OpenAI account
 func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Account) (string, string, error) {
+	if account != nil && account.IsShadow() {
+		credentialAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
+		if err != nil {
+			return "", "", err
+		}
+		account = credentialAccount
+	}
 	if account != nil && account.Platform == PlatformGrok {
 		if account.Type != AccountTypeOAuth {
 			return "", "", fmt.Errorf("unsupported grok account type: %s", account.Type)
@@ -2952,18 +2994,38 @@ func (s *OpenAIGatewayService) tryRecoverOpenAIOAuth401(ctx context.Context, c *
 			"upstream_code", upstreamCode,
 		)
 		if isNonRetryableRefreshError(err) {
-			s.markOpenAIOAuthReauthorizationRequired(ctx, account, err)
+			s.markOpenAIOAuthReauthorizationRequired(ctx, s.openAIOAuthReauthorizationAccount(ctx, account), err)
 		}
 		return nil, "", false
 	}
 	if refreshedAccount == nil {
 		refreshedAccount = account
 	}
+	credentialAccountID := refreshedAccount.ID
+	if account.IsCredentialShadow() {
+		refreshedAccount = account
+	}
 	slog.Info("openai_oauth_401_force_refresh_succeeded",
 		"account_id", account.ID,
+		"credential_account_id", credentialAccountID,
 		"upstream_code", upstreamCode,
 	)
 	return refreshedAccount, token, true
+}
+
+func (s *OpenAIGatewayService) openAIOAuthReauthorizationAccount(ctx context.Context, account *Account) *Account {
+	if s == nil || account == nil || !account.IsCredentialShadow() {
+		return account
+	}
+	credentialAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
+	if err != nil || credentialAccount == nil {
+		slog.Warn("openai_oauth_reauthorization_parent_resolve_failed",
+			"account_id", account.ID,
+			"error", err,
+		)
+		return account
+	}
+	return credentialAccount
 }
 
 func (s *OpenAIGatewayService) markOpenAIOAuthReauthorizationRequired(ctx context.Context, account *Account, err error) {
@@ -3039,6 +3101,9 @@ func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, re
 
 func (s *OpenAIGatewayService) tryAutoConsumeOpenAICodexResetCredit(ctx context.Context, account *Account, headers http.Header, responseBody []byte) bool {
 	if s == nil || account == nil || !account.IsOpenAIOAuth() || account.Platform != PlatformOpenAI {
+		return false
+	}
+	if account.IsShadow() {
 		return false
 	}
 	if account.Extra == nil {
@@ -4237,8 +4302,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		s.bindHTTPResponseAccount(ctx, c, account, responseID)
 
-		// Extract and save Codex usage snapshot from response headers (for OAuth accounts)
-		if account.Type == AccountTypeOAuth {
+		// Extract and save Codex usage snapshot from response headers (for real OAuth accounts).
+		if account.Type == AccountTypeOAuth && !account.IsShadow() {
 			if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 				s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
 			}
@@ -4556,8 +4621,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 		s.bindHTTPResponseAccount(ctx, c, account, responseID)
 
-		if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
-			s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+		if !account.IsShadow() {
+			if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
+				s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
+			}
 		}
 
 		if usage == nil {
@@ -4673,9 +4740,17 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 
 	// OAuth 透传到 ChatGPT internal API 时补齐必要头。
 	if account.Type == AccountTypeOAuth {
+		credentialAccount := account
+		if account.IsShadow() {
+			resolved, err := resolveCredentialAccount(ctx, s.accountRepo, account)
+			if err != nil {
+				return nil, fmt.Errorf("resolve chatgpt account headers: %w", err)
+			}
+			credentialAccount = resolved
+		}
 		promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
 		req.Host = "chatgpt.com"
-		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
+		if chatgptAccountID := credentialAccount.GetChatGPTAccountID(); chatgptAccountID != "" {
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
 		}
 		apiKeyID := getAPIKeyIDFromContext(c)
@@ -5914,10 +5989,18 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 
 	// Set headers specific to OAuth accounts (ChatGPT internal API)
 	if account.Type == AccountTypeOAuth {
+		credentialAccount := account
+		if account.IsShadow() {
+			resolved, err := resolveCredentialAccount(ctx, s.accountRepo, account)
+			if err != nil {
+				return nil, fmt.Errorf("resolve chatgpt account headers: %w", err)
+			}
+			credentialAccount = resolved
+		}
 		// Required: set Host for ChatGPT API (must use req.Host, not Header.Set)
 		req.Host = "chatgpt.com"
 		// Required: set chatgpt-account-id header
-		chatgptAccountID := account.GetChatGPTAccountID()
+		chatgptAccountID := credentialAccount.GetChatGPTAccountID()
 		if chatgptAccountID != "" {
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
 		}

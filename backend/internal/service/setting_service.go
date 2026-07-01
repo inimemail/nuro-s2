@@ -123,6 +123,7 @@ type cachedGatewayForwardingSettings struct {
 	claudeOAuthSystemPromptBlocks            string
 	anthropicCacheTTL1hInjection             bool
 	rewriteMessageCacheControl               bool
+	clientDatelineNormalization              bool
 	openAIPoolDownstreamModelLimitProtection bool
 	openAIPoolRecoveryProbe                  bool
 	openAIImagePoolRecoveryProbe             bool
@@ -2055,6 +2056,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyClaudeOAuthSystemPromptBlocks] = settings.ClaudeOAuthSystemPromptBlocks
 	updates[SettingKeyEnableAnthropicCacheTTL1hInjection] = strconv.FormatBool(settings.EnableAnthropicCacheTTL1hInjection)
 	updates[SettingKeyRewriteMessageCacheControl] = strconv.FormatBool(settings.RewriteMessageCacheControl)
+	updates[SettingKeyEnableClientDatelineNormalization] = strconv.FormatBool(settings.EnableClientDatelineNormalization)
 	lowLatencyMode := config.NormalizeStreamLowLatencyMode(settings.StreamLowLatencyMode, settings.LowLatencyStreamHeaders)
 	if lowLatencyMode == "" {
 		return nil, fmt.Errorf("stream_low_latency_mode must be one of: off/smart/aggressive")
@@ -2201,6 +2203,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		claudeOAuthSystemPromptBlocks:            settings.ClaudeOAuthSystemPromptBlocks,
 		anthropicCacheTTL1hInjection:             settings.EnableAnthropicCacheTTL1hInjection,
 		rewriteMessageCacheControl:               settings.RewriteMessageCacheControl,
+		clientDatelineNormalization:              settings.EnableClientDatelineNormalization,
 		openAIPoolDownstreamModelLimitProtection: settings.OpenAIPoolDownstreamModelLimitProtectionEnabled,
 		openAIPoolRecoveryProbe:                  settings.OpenAIPoolRecoveryProbeEnabled,
 		openAIImagePoolRecoveryProbe:             settings.OpenAIImagePoolRecoveryProbeEnabled,
@@ -2424,6 +2427,7 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
 
 type gatewayForwardingSettingsResult struct {
 	fp, mp, cch, cacheTTL1h, rewriteMessageCacheControl    bool
+	clientDatelineNormalization                            bool
 	claudeOAuthSystemPromptInjection                       bool
 	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks string
 	openAIPoolDownstreamModelLimitProtection               bool
@@ -2443,6 +2447,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 				claudeOAuthSystemPromptBlocks:            cached.claudeOAuthSystemPromptBlocks,
 				cacheTTL1h:                               cached.anthropicCacheTTL1hInjection,
 				rewriteMessageCacheControl:               cached.rewriteMessageCacheControl,
+				clientDatelineNormalization:              cached.clientDatelineNormalization,
 				openAIPoolDownstreamModelLimitProtection: cached.openAIPoolDownstreamModelLimitProtection,
 				openAIPoolRecoveryProbe:                  cached.openAIPoolRecoveryProbe,
 				openAIImagePoolRecoveryProbe:             cached.openAIImagePoolRecoveryProbe,
@@ -2462,6 +2467,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 					claudeOAuthSystemPromptBlocks:            cached.claudeOAuthSystemPromptBlocks,
 					cacheTTL1h:                               cached.anthropicCacheTTL1hInjection,
 					rewriteMessageCacheControl:               cached.rewriteMessageCacheControl,
+					clientDatelineNormalization:              cached.clientDatelineNormalization,
 					openAIPoolDownstreamModelLimitProtection: cached.openAIPoolDownstreamModelLimitProtection,
 					openAIPoolRecoveryProbe:                  cached.openAIPoolRecoveryProbe,
 					openAIImagePoolRecoveryProbe:             cached.openAIImagePoolRecoveryProbe,
@@ -2480,6 +2486,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			SettingKeyClaudeOAuthSystemPromptBlocks,
 			SettingKeyEnableAnthropicCacheTTL1hInjection,
 			SettingKeyRewriteMessageCacheControl,
+			SettingKeyEnableClientDatelineNormalization,
 			SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled,
 			SettingKeyOpenAIPoolRecoveryProbeEnabled,
 			SettingKeyOpenAIImagePoolRecoveryProbeEnabled,
@@ -2494,13 +2501,14 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 				claudeOAuthSystemPromptInjection:         false,
 				anthropicCacheTTL1hInjection:             false,
 				rewriteMessageCacheControl:               s.defaultRewriteMessageCacheControl(),
+				clientDatelineNormalization:              true,
 				openAIPoolDownstreamModelLimitProtection: true,
 				openAIPoolRecoveryProbe:                  true,
 				openAIImagePoolRecoveryProbe:             true,
 				anthropicPoolRecoveryProbe:               true,
 				expiresAt:                                time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
 			})
-			return gatewayForwardingSettingsResult{fp: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), openAIPoolDownstreamModelLimitProtection: true, openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true, anthropicPoolRecoveryProbe: true}, nil
+			return gatewayForwardingSettingsResult{fp: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true, openAIPoolDownstreamModelLimitProtection: true, openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true, anthropicPoolRecoveryProbe: true}, nil
 		}
 		fp := true
 		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
@@ -2515,6 +2523,10 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		rewriteMessageCacheControl := s.defaultRewriteMessageCacheControl()
 		if v, ok := values[SettingKeyRewriteMessageCacheControl]; ok && v != "" {
 			rewriteMessageCacheControl = v == "true"
+		}
+		clientDatelineNormalization := true
+		if v, ok := values[SettingKeyEnableClientDatelineNormalization]; ok && v != "" {
+			clientDatelineNormalization = v == "true"
 		}
 		openAIPoolDownstreamModelLimitProtection := true
 		if v, ok := values[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled]; ok && v != "" {
@@ -2541,6 +2553,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			claudeOAuthSystemPromptBlocks:            claudeOAuthSystemPromptBlocks,
 			anthropicCacheTTL1hInjection:             cacheTTL1h,
 			rewriteMessageCacheControl:               rewriteMessageCacheControl,
+			clientDatelineNormalization:              clientDatelineNormalization,
 			openAIPoolDownstreamModelLimitProtection: openAIPoolDownstreamModelLimitProtection,
 			openAIPoolRecoveryProbe:                  openAIPoolRecoveryProbe,
 			openAIImagePoolRecoveryProbe:             openAIImagePoolRecoveryProbe,
@@ -2556,6 +2569,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			claudeOAuthSystemPromptBlocks:            claudeOAuthSystemPromptBlocks,
 			cacheTTL1h:                               cacheTTL1h,
 			rewriteMessageCacheControl:               rewriteMessageCacheControl,
+			clientDatelineNormalization:              clientDatelineNormalization,
 			openAIPoolDownstreamModelLimitProtection: openAIPoolDownstreamModelLimitProtection,
 			openAIPoolRecoveryProbe:                  openAIPoolRecoveryProbe,
 			openAIImagePoolRecoveryProbe:             openAIImagePoolRecoveryProbe,
@@ -2565,7 +2579,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 	if r, ok := val.(gatewayForwardingSettingsResult); ok {
 		return r
 	}
-	return gatewayForwardingSettingsResult{fp: true, openAIPoolDownstreamModelLimitProtection: true, openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true, anthropicPoolRecoveryProbe: true}
+	return gatewayForwardingSettingsResult{fp: true, clientDatelineNormalization: true, openAIPoolDownstreamModelLimitProtection: true, openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true, anthropicPoolRecoveryProbe: true}
 }
 
 // GetGatewayForwardingSettings returns cached gateway forwarding settings.
@@ -2584,6 +2598,12 @@ func (s *SettingService) IsAnthropicCacheTTL1hInjectionEnabled(ctx context.Conte
 // IsRewriteMessageCacheControlEnabled 检查是否启用 messages cache_control 改写。
 func (s *SettingService) IsRewriteMessageCacheControlEnabled(ctx context.Context) bool {
 	return s.getGatewayForwardingSettingsCached(ctx).rewriteMessageCacheControl
+}
+
+// IsClientDatelineNormalizationEnabled 检查是否启用 Anthropic OAuth/SetupToken
+// 请求体 dateline 指纹归一化。默认开启。
+func (s *SettingService) IsClientDatelineNormalizationEnabled(ctx context.Context) bool {
+	return s.getGatewayForwardingSettingsCached(ctx).clientDatelineNormalization
 }
 
 // GetClaudeOAuthSystemPromptInjectionSettings returns the optional Claude OAuth
@@ -3191,6 +3211,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyAnthropicPoolProbeTimeoutSeconds:                "5",
 		SettingKeyEnableAnthropicCacheTTL1hInjection:              "false",
 		SettingKeyRewriteMessageCacheControl:                      strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
+		SettingKeyEnableClientDatelineNormalization:               "true",
 		SettingKeyStreamLowLatencyMode:                            s.defaultStreamLowLatencyMode(),
 		SettingKeyLowLatencyStreamHeaders:                         strconv.FormatBool(s.defaultLowLatencyStreamHeaders()),
 		SettingKeyAntigravityUserAgentVersion:                     "",
@@ -3756,6 +3777,11 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		result.RewriteMessageCacheControl = v == "true"
 	} else {
 		result.RewriteMessageCacheControl = s.defaultRewriteMessageCacheControl()
+	}
+	if v, ok := settings[SettingKeyEnableClientDatelineNormalization]; ok && v != "" {
+		result.EnableClientDatelineNormalization = v == "true"
+	} else {
+		result.EnableClientDatelineNormalization = true
 	}
 	legacyLowLatency := false
 	legacyLowLatencyConfigured := false

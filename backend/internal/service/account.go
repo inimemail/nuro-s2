@@ -78,6 +78,9 @@ type Account struct {
 	SessionWindowEnd    *time.Time
 	SessionWindowStatus string
 
+	ParentAccountID *int64
+	QuotaDimension  string
+
 	Proxy         *Proxy
 	AccountGroups []AccountGroup
 	GroupIDs      []int64
@@ -181,6 +184,23 @@ func (a *Account) IsSchedulable() bool {
 		return false
 	}
 	if a.IsAPIKeyOrBedrock() && a.IsQuotaExceeded() {
+		return false
+	}
+	return true
+}
+
+// IsCredentialUsableForShadow reports whether this parent account can provide
+// credentials/transport for a spark shadow account. It intentionally ignores
+// global rate-limit windows so a parent's global 429 does not block spark.
+func (a *Account) IsCredentialUsableForShadow() bool {
+	if a == nil || !a.IsActive() {
+		return false
+	}
+	now := time.Now()
+	if a.AutoPauseOnExpired && a.ExpiresAt != nil && !now.Before(*a.ExpiresAt) {
+		return false
+	}
+	if a.TempUnschedulableUntil != nil && now.Before(*a.TempUnschedulableUntil) {
 		return false
 	}
 	return true
@@ -2927,4 +2947,23 @@ func parseExtraInt(value any) int {
 		}
 	}
 	return 0
+}
+
+// IsShadow reports whether the account is a credential shadow account.
+func (a *Account) IsShadow() bool {
+	return a != nil && a.ParentAccountID != nil
+}
+
+// IsCredentialShadow is a semantic alias for credential consumers that must
+// skip accounts without their own credentials.
+func (a *Account) IsCredentialShadow() bool {
+	return a.IsShadow()
+}
+
+// QuotaDimensionOrDefault returns the account quota dimension.
+func (a *Account) QuotaDimensionOrDefault() string {
+	if a == nil || strings.TrimSpace(a.QuotaDimension) == "" {
+		return QuotaDimensionGlobal
+	}
+	return a.QuotaDimension
 }

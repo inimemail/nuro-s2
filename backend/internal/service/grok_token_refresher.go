@@ -27,7 +27,10 @@ func (r *GrokTokenRefresher) CacheKey(account *Account) string {
 }
 
 func (r *GrokTokenRefresher) CanRefresh(account *Account) bool {
-	return account != nil && account.Platform == PlatformGrok && account.Type == AccountTypeOAuth
+	return account != nil &&
+		!account.IsCredentialShadow() &&
+		account.Platform == PlatformGrok &&
+		account.Type == AccountTypeOAuth
 }
 
 func (r *GrokTokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {

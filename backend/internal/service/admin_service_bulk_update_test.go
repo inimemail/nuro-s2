@@ -17,6 +17,7 @@ type accountRepoStubForBulkUpdate struct {
 	bulkUpdateErr     error
 	bulkUpdateIDs     []int64
 	bulkUpdatePayload AccountBulkUpdate
+	bulkUpdateCalls   []bulkUpdateCall
 	bindGroupErrByID  map[int64]error
 	bindGroupsCalls   []int64
 	getByIDsAccounts  []*Account
@@ -41,15 +42,39 @@ type accountRepoStubForBulkUpdate struct {
 		groupID     int64
 		privacyMode string
 	}
+	shadowsByParent map[int64][]*Account
+	updateCalls     []*Account
+}
+
+type bulkUpdateCall struct {
+	IDs     []int64
+	Updates AccountBulkUpdate
 }
 
 func (s *accountRepoStubForBulkUpdate) BulkUpdate(_ context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
 	s.bulkUpdateIDs = append([]int64{}, ids...)
 	s.bulkUpdatePayload = updates
+	s.bulkUpdateCalls = append(s.bulkUpdateCalls, bulkUpdateCall{
+		IDs:     append([]int64{}, ids...),
+		Updates: updates,
+	})
 	if s.bulkUpdateErr != nil {
 		return 0, s.bulkUpdateErr
 	}
 	return int64(len(ids)), nil
+}
+
+func (s *accountRepoStubForBulkUpdate) ListShadowsByParent(_ context.Context, parentID int64) ([]*Account, error) {
+	if s.shadowsByParent == nil {
+		return nil, nil
+	}
+	return s.shadowsByParent[parentID], nil
+}
+
+func (s *accountRepoStubForBulkUpdate) Update(_ context.Context, account *Account) error {
+	copied := *account
+	s.updateCalls = append(s.updateCalls, &copied)
+	return nil
 }
 
 func TestAdminServiceBulkUpdateAccounts_ForwardsExtraRemoveKeys(t *testing.T) {
@@ -72,6 +97,76 @@ func TestAdminServiceBulkUpdateAccounts_ForwardsExtraRemoveKeys(t *testing.T) {
 		"codex_image_generation_bridge",
 		"codex_image_generation_bridge_enabled",
 	}, repo.bulkUpdatePayload.ExtraRemoveKeys)
+}
+
+func TestAdminServiceBulkUpdateAccounts_SanitizesShadowUnsafeFields(t *testing.T) {
+	parentID := int64(1)
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{
+			{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+			{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, ParentAccountID: &parentID, QuotaDimension: QuotaDimensionSpark},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	proxyID := int64(99)
+	concurrency := 7
+	input := &BulkUpdateAccountsInput{
+		AccountIDs:      []int64{1, 2},
+		ProxyID:         &proxyID,
+		Concurrency:     &concurrency,
+		Credentials:     map[string]any{"model_mapping": map[string]string{"spark": "spark", "": "drop", "blank": ""}, "custom_error_codes_enabled": true},
+		Extra:           map[string]any{"openai_passthrough": true},
+		ExtraRemoveKeys: []string{"codex_cli_only"},
+	}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	require.NoError(t, err)
+	require.Equal(t, 2, result.Success)
+	require.Len(t, repo.bulkUpdateCalls, 2)
+
+	normalCall := repo.bulkUpdateCalls[0]
+	require.Equal(t, []int64{1}, normalCall.IDs)
+	require.Equal(t, &proxyID, normalCall.Updates.ProxyID)
+	require.Equal(t, map[string]any{"openai_passthrough": true}, normalCall.Updates.Extra)
+	require.Equal(t, []string{"codex_cli_only"}, normalCall.Updates.ExtraRemoveKeys)
+	require.Equal(t, true, normalCall.Updates.Credentials["custom_error_codes_enabled"])
+
+	shadowCall := repo.bulkUpdateCalls[1]
+	require.Equal(t, []int64{2}, shadowCall.IDs)
+	require.Nil(t, shadowCall.Updates.ProxyID)
+	require.Nil(t, shadowCall.Updates.Extra)
+	require.Empty(t, shadowCall.Updates.ExtraRemoveKeys)
+	require.Equal(t, &concurrency, shadowCall.Updates.Concurrency)
+	require.Equal(t, map[string]any{"model_mapping": map[string]any{"spark": "spark"}}, shadowCall.Updates.Credentials)
+}
+
+func TestAdminServiceBulkUpdateAccounts_PropagatesParentProxyToShadows(t *testing.T) {
+	parentID := int64(1)
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{
+			{ID: parentID, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+		},
+		shadowsByParent: map[int64][]*Account{
+			parentID: {
+				{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, ParentAccountID: &parentID, QuotaDimension: QuotaDimensionSpark},
+			},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	proxyID := int64(99)
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{parentID},
+		ProxyID:    &proxyID,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.Len(t, repo.updateCalls, 1)
+	require.Equal(t, int64(2), repo.updateCalls[0].ID)
+	require.NotNil(t, repo.updateCalls[0].ProxyID)
+	require.Equal(t, proxyID, *repo.updateCalls[0].ProxyID)
 }
 
 func (s *accountRepoStubForBulkUpdate) BindGroups(_ context.Context, accountID int64, _ []int64) error {

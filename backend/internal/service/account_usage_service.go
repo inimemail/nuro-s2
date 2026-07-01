@@ -674,16 +674,21 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	}
 
 	if (force || shouldRefreshOpenAICodexSnapshot(account, usage, now)) && s.shouldProbeOpenAICodexSnapshot(account.ID, now, force) {
-		if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
-			mergeAccountExtra(account, updates)
-			if usage.UpdatedAt == nil {
-				usage.UpdatedAt = &now
+		if account.IsShadow() {
+			if _, updates, err := s.queryOpenAIWhamUsage(ctx, account); err == nil && len(updates) > 0 {
+				mergeAccountExtra(account, updates)
+				if usage.UpdatedAt == nil {
+					usage.UpdatedAt = &now
+				}
+				applyExtraToUsage(usage, account.Extra, now)
 			}
-			if progress := buildCodexUsageProgressFromExtra(account.Extra, "5h", now); progress != nil {
-				usage.FiveHour = progress
-			}
-			if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
-				usage.SevenDay = progress
+		} else {
+			if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
+				mergeAccountExtra(account, updates)
+				if usage.UpdatedAt == nil {
+					usage.UpdatedAt = &now
+				}
+				applyExtraToUsage(usage, account.Extra, now)
 			}
 		}
 	}
@@ -820,7 +825,10 @@ func shouldRefreshOpenAICodexSnapshot(account *Account, usage *UsageInfo, now ti
 }
 
 func isOpenAICodexSnapshotStale(account *Account, now time.Time) bool {
-	if account == nil || !account.IsOpenAIOAuth() || !account.IsOpenAIResponsesWebSocketV2Enabled() {
+	if account == nil || !account.IsOpenAIOAuth() {
+		return false
+	}
+	if !account.IsShadow() && !account.IsOpenAIResponsesWebSocketV2Enabled() {
 		return false
 	}
 	if account.Extra == nil {
@@ -835,6 +843,19 @@ func isOpenAICodexSnapshotStale(account *Account, now time.Time) bool {
 		return true
 	}
 	return now.Sub(ts) >= openAIProbeCacheTTL
+}
+
+func applyExtraToUsage(usage *UsageInfo, extra map[string]any, now time.Time) {
+	if usage == nil {
+		return
+	}
+	if progress := buildCodexUsageProgressFromExtra(extra, "5h", now); progress != nil {
+		usage.FiveHour = progress
+	}
+	if progress := buildCodexUsageProgressFromExtra(extra, "7d", now); progress != nil {
+		usage.SevenDay = progress
+	}
+	applyOpenAICodexResetCreditsFromExtra(usage, extra)
 }
 
 func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, now time.Time, force ...bool) bool {
@@ -951,6 +972,11 @@ func (s *AccountUsageService) queryOpenAIWhamUsage(ctx context.Context, account 
 	updates := make(map[string]any)
 	if headerUpdates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(headerUpdates) > 0 {
 		for k, v := range headerUpdates {
+			updates[k] = v
+		}
+	}
+	if account.IsShadow() {
+		for k, v := range buildCodexSparkWindowExtraUpdates(payload, time.Now()) {
 			updates[k] = v
 		}
 	}
@@ -1076,6 +1102,76 @@ func extractOpenAICodexResetCreditUpdates(body []byte, now time.Time) (map[strin
 	return updates, true, true
 }
 
+func buildCodexSparkWindowExtraUpdates(usage *OpenAIQuotaUsage, now time.Time) map[string]any {
+	if usage == nil {
+		return nil
+	}
+	var spark *OpenAIRateLimit
+	for i := range usage.AdditionalRateLimits {
+		limit := usage.AdditionalRateLimits[i]
+		if limit.MeteredFeature == "codex_bengalfox" {
+			spark = limit.RateLimit
+			break
+		}
+	}
+	if spark == nil {
+		return nil
+	}
+
+	snapshot := &OpenAICodexUsageSnapshot{}
+	if window := spark.PrimaryWindow; window != nil {
+		used := window.UsedPercent
+		reset := int(window.ResetAfterSeconds)
+		minutes := int(window.LimitWindowSeconds / 60)
+		snapshot.PrimaryUsedPercent = &used
+		snapshot.PrimaryResetAfterSeconds = &reset
+		snapshot.PrimaryWindowMinutes = &minutes
+	}
+	if window := spark.SecondaryWindow; window != nil {
+		used := window.UsedPercent
+		reset := int(window.ResetAfterSeconds)
+		minutes := int(window.LimitWindowSeconds / 60)
+		snapshot.SecondaryUsedPercent = &used
+		snapshot.SecondaryResetAfterSeconds = &reset
+		snapshot.SecondaryWindowMinutes = &minutes
+	}
+
+	normalized := snapshot.Normalize()
+	if normalized == nil {
+		return nil
+	}
+	updates := make(map[string]any)
+	if normalized.Used5hPercent != nil {
+		updates["codex_5h_used_percent"] = *normalized.Used5hPercent
+	}
+	if normalized.Reset5hSeconds != nil {
+		updates["codex_5h_reset_after_seconds"] = *normalized.Reset5hSeconds
+	}
+	if normalized.Window5hMinutes != nil {
+		updates["codex_5h_window_minutes"] = *normalized.Window5hMinutes
+	}
+	if normalized.Used7dPercent != nil {
+		updates["codex_7d_used_percent"] = *normalized.Used7dPercent
+	}
+	if normalized.Reset7dSeconds != nil {
+		updates["codex_7d_reset_after_seconds"] = *normalized.Reset7dSeconds
+	}
+	if normalized.Window7dMinutes != nil {
+		updates["codex_7d_window_minutes"] = *normalized.Window7dMinutes
+	}
+	if resetAt := codexResetAtRFC3339(now, normalized.Reset5hSeconds); resetAt != nil {
+		updates["codex_5h_reset_at"] = *resetAt
+	}
+	if resetAt := codexResetAtRFC3339(now, normalized.Reset7dSeconds); resetAt != nil {
+		updates["codex_7d_reset_at"] = *resetAt
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	updates["codex_usage_updated_at"] = now.UTC().Format(time.RFC3339)
+	return updates
+}
+
 func firstGJSONInt(data []byte, paths ...string) *int {
 	for _, path := range paths {
 		result := gjson.GetBytes(data, path)
@@ -1114,6 +1210,9 @@ func (s *AccountUsageService) ConsumeOpenAICodexResetCredit(ctx context.Context,
 	}
 	if account == nil || !account.IsOpenAIOAuth() {
 		return nil, fmt.Errorf("account does not support OpenAI Codex reset credits")
+	}
+	if account.IsShadow() {
+		return nil, infraerrors.New(http.StatusConflict, "SPARK_SHADOW_RESET_NOT_SUPPORTED", "spark shadow account does not support credit reset; reset the parent account")
 	}
 
 	quotaUsage, updates, err := s.queryOpenAIWhamUsage(ctx, account)
@@ -1187,6 +1286,9 @@ func (s *AccountUsageService) SetOpenAICodexAutoResetMode(ctx context.Context, a
 	if account == nil || !account.IsOpenAIOAuth() {
 		return nil, fmt.Errorf("account does not support OpenAI Codex reset credits")
 	}
+	if account.IsShadow() {
+		return nil, infraerrors.New(http.StatusConflict, "SPARK_SHADOW_RESET_NOT_SUPPORTED", "spark shadow account does not support credit reset; reset the parent account")
+	}
 
 	normalizedMode := normalizeOpenAICodexAutoResetMode(mode)
 	if normalizedMode != openAICodexAutoResetModeOff {
@@ -1230,6 +1332,13 @@ func (s *AccountUsageService) SetOpenAICodexAutoResetMode(ctx context.Context, a
 func (s *AccountUsageService) doOpenAIWhamRequest(ctx context.Context, account *Account, method, url string, body io.Reader) (*http.Response, error) {
 	if account == nil || !account.IsOpenAIOAuth() {
 		return nil, fmt.Errorf("account does not support OpenAI Codex reset credits")
+	}
+	if account.IsShadow() {
+		resolved, err := resolveCredentialAccount(ctx, s.accountRepo, account)
+		if err != nil {
+			return nil, fmt.Errorf("resolve spark shadow credential account: %w", err)
+		}
+		account = resolved
 	}
 	accessToken, err := s.openAIWhamAccessToken(ctx, account)
 	if err != nil {

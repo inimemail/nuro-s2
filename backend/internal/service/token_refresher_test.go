@@ -204,6 +204,7 @@ func TestClaudeTokenRefresher_CanRefresh(t *testing.T) {
 		name     string
 		platform string
 		accType  string
+		shadow   bool
 		want     bool
 	}{
 		{
@@ -230,19 +231,33 @@ func TestClaudeTokenRefresher_CanRefresh(t *testing.T) {
 			accType:  AccountTypeOAuth,
 			want:     false,
 		},
+		{
+			name:     "anthropic shadow oauth - cannot refresh",
+			platform: PlatformAnthropic,
+			accType:  AccountTypeOAuth,
+			shadow:   true,
+			want:     false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var parentID *int64
+			if tt.shadow {
+				id := int64(1)
+				parentID = &id
+			}
 			account := &Account{
-				Platform: tt.platform,
-				Type:     tt.accType,
+				Platform:        tt.platform,
+				Type:            tt.accType,
+				ParentAccountID: parentID,
 			}
 
 			got := refresher.CanRefresh(account)
 			require.Equal(t, tt.want, got)
 		})
 	}
+	require.False(t, refresher.CanRefresh(nil))
 }
 
 func TestOpenAITokenRefresher_CanRefresh(t *testing.T) {
@@ -252,6 +267,7 @@ func TestOpenAITokenRefresher_CanRefresh(t *testing.T) {
 		name     string
 		platform string
 		accType  string
+		shadow   bool
 		want     bool
 	}{
 		{
@@ -266,15 +282,88 @@ func TestOpenAITokenRefresher_CanRefresh(t *testing.T) {
 			accType:  AccountTypeAPIKey,
 			want:     false,
 		},
+		{
+			name:     "openai shadow oauth - cannot refresh",
+			platform: PlatformOpenAI,
+			accType:  AccountTypeOAuth,
+			shadow:   true,
+			want:     false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var parentID *int64
+			if tt.shadow {
+				id := int64(1)
+				parentID = &id
+			}
 			account := &Account{
-				Platform: tt.platform,
-				Type:     tt.accType,
+				Platform:        tt.platform,
+				Type:            tt.accType,
+				ParentAccountID: parentID,
 			}
 			require.Equal(t, tt.want, refresher.CanRefresh(account))
+		})
+	}
+	require.False(t, refresher.CanRefresh(nil))
+}
+
+func TestPlatformTokenRefreshers_CanRefreshRejectShadowAndNil(t *testing.T) {
+	parentID := int64(1)
+	tests := []struct {
+		name      string
+		refresher TokenRefresher
+		account   *Account
+		want      bool
+	}{
+		{
+			name:      "gemini oauth",
+			refresher: &GeminiTokenRefresher{},
+			account:   &Account{Platform: PlatformGemini, Type: AccountTypeOAuth},
+			want:      true,
+		},
+		{
+			name:      "gemini shadow",
+			refresher: &GeminiTokenRefresher{},
+			account:   &Account{Platform: PlatformGemini, Type: AccountTypeOAuth, ParentAccountID: &parentID},
+			want:      false,
+		},
+		{
+			name:      "grok oauth",
+			refresher: &GrokTokenRefresher{},
+			account:   &Account{Platform: PlatformGrok, Type: AccountTypeOAuth},
+			want:      true,
+		},
+		{
+			name:      "grok shadow",
+			refresher: &GrokTokenRefresher{},
+			account:   &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, ParentAccountID: &parentID},
+			want:      false,
+		},
+		{
+			name:      "antigravity oauth",
+			refresher: &AntigravityTokenRefresher{},
+			account:   &Account{Platform: PlatformAntigravity, Type: AccountTypeOAuth},
+			want:      true,
+		},
+		{
+			name:      "antigravity shadow",
+			refresher: &AntigravityTokenRefresher{},
+			account:   &Account{Platform: PlatformAntigravity, Type: AccountTypeOAuth, ParentAccountID: &parentID},
+			want:      false,
+		},
+		{
+			name:      "nil account",
+			refresher: &GeminiTokenRefresher{},
+			account:   nil,
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.refresher.CanRefresh(tt.account))
 		})
 	}
 }

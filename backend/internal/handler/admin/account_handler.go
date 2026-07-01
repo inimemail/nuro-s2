@@ -876,6 +876,9 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 	if !account.IsOAuth() {
 		return nil, "", infraerrors.BadRequest("NOT_OAUTH", "cannot refresh non-OAuth account")
 	}
+	if account.IsCredentialShadow() {
+		return nil, "", infraerrors.BadRequest("SPARK_SHADOW_CREDENTIALS_INHERITED", "cannot refresh spark shadow account; credentials are managed by the parent account")
+	}
 
 	var newCredentials map[string]any
 
@@ -1079,6 +1082,10 @@ func (h *AccountHandler) ApplyOAuthCredentials(c *gin.Context) {
 	}
 	if !existing.IsOAuth() {
 		response.ErrorFrom(c, infraerrors.BadRequest("NOT_OAUTH", "cannot apply oauth credentials to non-OAuth account"))
+		return
+	}
+	if existing.IsCredentialShadow() {
+		response.ErrorFrom(c, infraerrors.BadRequest("SPARK_SHADOW_CREDENTIALS_INHERITED", "cannot apply oauth credentials to spark shadow account; credentials are managed by the parent account"))
 		return
 	}
 
@@ -1528,6 +1535,7 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 	type accountUpdate struct {
 		ID          int64
 		Credentials map[string]any
+		PrecheckErr string
 	}
 	updates := make([]accountUpdate, 0, len(req.AccountIDs))
 	for _, accountID := range req.AccountIDs {
@@ -1535,6 +1543,13 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 		if err != nil {
 			response.Error(c, 404, fmt.Sprintf("Account %d not found", accountID))
 			return
+		}
+		if account.IsCredentialShadow() {
+			updates = append(updates, accountUpdate{
+				ID:          accountID,
+				PrecheckErr: "spark shadow credentials are managed by the parent account",
+			})
+			continue
 		}
 		if account.Credentials == nil {
 			account.Credentials = make(map[string]any)
@@ -1550,6 +1565,16 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 	failedIDs := make([]int64, 0, len(updates))
 	results := make([]gin.H, 0, len(updates))
 	for _, u := range updates {
+		if u.PrecheckErr != "" {
+			failed++
+			failedIDs = append(failedIDs, u.ID)
+			results = append(results, gin.H{
+				"account_id": u.ID,
+				"success":    false,
+				"error":      u.PrecheckErr,
+			})
+			continue
+		}
 		updateInput := &service.UpdateAccountInput{Credentials: u.Credentials}
 		if _, err := h.adminService.UpdateAccount(ctx, u.ID, updateInput); err != nil {
 			failed++

@@ -32,7 +32,10 @@ func (r *AntigravityTokenRefresher) CacheKey(account *Account) string {
 
 // CanRefresh 检查是否可以刷新此账户
 func (r *AntigravityTokenRefresher) CanRefresh(account *Account) bool {
-	return account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth
+	return account != nil &&
+		!account.IsCredentialShadow() &&
+		account.Platform == PlatformAntigravity &&
+		account.Type == AccountTypeOAuth
 }
 
 // NeedsRefresh 检查账户是否需要刷新

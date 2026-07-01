@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -42,6 +43,26 @@ func NewCRSSyncService(
 		geminiOAuthService: geminiOAuthService,
 		cfg:                cfg,
 	}
+}
+
+func guardCRSShadowParentInvariant(ctx context.Context, repo AccountRepository, existing *Account, newPlatform, newType string) error {
+	if existing == nil {
+		return nil
+	}
+	if existing.IsCredentialShadow() {
+		return fmt.Errorf("cannot sync CRS account into a spark-shadow account; sync the parent account instead")
+	}
+	if newPlatform == PlatformOpenAI && newType == AccountTypeOAuth {
+		return nil
+	}
+	shadows, err := listSparkShadowsByParent(ctx, repo, existing.ID)
+	if err != nil {
+		return fmt.Errorf("check spark shadows for crs update: %w", err)
+	}
+	if len(shadows) > 0 {
+		return fmt.Errorf("cannot change a spark-shadow parent account to %s/%s; delete the shadow first", newPlatform, newType)
+	}
+	return nil
 }
 
 type SyncFromCRSInput struct {
@@ -376,6 +397,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			continue
 		}
 
+		if gerr := guardCRSShadowParentInvariant(ctx, s.accountRepo, existing, PlatformAnthropic, targetType); gerr != nil {
+			item.Action = "failed"
+			item.Error = gerr.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
+
 		// Update existing
 		existing.Extra = mergeMap(existing.Extra, extra)
 		existing.Name = defaultName(src.Name, src.ID)
@@ -488,6 +517,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			}
 			item.Action = "created"
 			result.Created++
+			result.Items = append(result.Items, item)
+			continue
+		}
+
+		if gerr := guardCRSShadowParentInvariant(ctx, s.accountRepo, existing, PlatformAnthropic, AccountTypeAPIKey); gerr != nil {
+			item.Action = "failed"
+			item.Error = gerr.Error()
+			result.Failed++
 			result.Items = append(result.Items, item)
 			continue
 		}
@@ -626,6 +663,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			continue
 		}
 
+		if gerr := guardCRSShadowParentInvariant(ctx, s.accountRepo, existing, PlatformOpenAI, AccountTypeOAuth); gerr != nil {
+			item.Action = "failed"
+			item.Error = gerr.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
+
 		existing.Extra = mergeMap(existing.Extra, extra)
 		existing.Name = defaultName(src.Name, src.ID)
 		existing.Platform = PlatformOpenAI
@@ -650,6 +695,9 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		// 🔄 Refresh OAuth token after update
 		if refreshedCreds := s.refreshOAuthToken(ctx, existing); refreshedCreds != nil {
 			_ = persistAccountCredentials(ctx, s.accountRepo, existing, refreshedCreds)
+		}
+		if perr := propagateAccountProxyToShadows(ctx, s.accountRepo, existing.ID, existing.ProxyID); perr != nil {
+			slog.Warn("crs_sync_propagate_proxy_to_shadows_failed", "account_id", existing.ID, "error", perr)
 		}
 
 		item.Action = "updated"
@@ -744,6 +792,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			}
 			item.Action = "created"
 			result.Created++
+			result.Items = append(result.Items, item)
+			continue
+		}
+
+		if gerr := guardCRSShadowParentInvariant(ctx, s.accountRepo, existing, PlatformOpenAI, AccountTypeAPIKey); gerr != nil {
+			item.Action = "failed"
+			item.Error = gerr.Error()
+			result.Failed++
 			result.Items = append(result.Items, item)
 			continue
 		}
@@ -866,6 +922,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			continue
 		}
 
+		if gerr := guardCRSShadowParentInvariant(ctx, s.accountRepo, existing, PlatformGemini, AccountTypeOAuth); gerr != nil {
+			item.Action = "failed"
+			item.Error = gerr.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
+
 		existing.Extra = mergeMap(existing.Extra, extra)
 		existing.Name = defaultName(src.Name, src.ID)
 		existing.Platform = PlatformGemini
@@ -975,6 +1039,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			}
 			item.Action = "created"
 			result.Created++
+			result.Items = append(result.Items, item)
+			continue
+		}
+
+		if gerr := guardCRSShadowParentInvariant(ctx, s.accountRepo, existing, PlatformGemini, AccountTypeAPIKey); gerr != nil {
+			item.Action = "failed"
+			item.Error = gerr.Error()
+			result.Failed++
 			result.Items = append(result.Items, item)
 			continue
 		}
@@ -1223,6 +1295,9 @@ func crsExportAccounts(ctx context.Context, client *http.Client, baseURL, adminT
 // refreshOAuthToken attempts to refresh OAuth token for a synced account
 // Returns updated credentials or nil if refresh failed/not applicable
 func (s *CRSSyncService) refreshOAuthToken(ctx context.Context, account *Account) map[string]any {
+	if account == nil || account.IsCredentialShadow() {
+		return nil
+	}
 	if account.Type != AccountTypeOAuth {
 		return nil
 	}

@@ -129,6 +129,10 @@ func (r *accountRepository) Create(ctx context.Context, account *service.Account
 	if account.SessionWindowStatus != "" {
 		builder.SetSessionWindowStatus(account.SessionWindowStatus)
 	}
+	builder.SetQuotaDimension(dbaccount.QuotaDimension(account.QuotaDimensionOrDefault()))
+	if account.ParentAccountID != nil {
+		builder.SetParentAccountID(*account.ParentAccountID)
+	}
 
 	created, err := builder.Save(ctx)
 	if err != nil {
@@ -390,6 +394,8 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 	} else {
 		builder.ClearSessionWindowStatus()
 	}
+	builder.SetQuotaDimension(dbaccount.QuotaDimension(account.QuotaDimensionOrDefault()))
+	builder.SetNillableParentAccountID(account.ParentAccountID)
 	if account.Notes == nil {
 		builder.ClearNotes()
 	}
@@ -1878,6 +1884,8 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 		SessionWindowStart:      m.SessionWindowStart,
 		SessionWindowEnd:        m.SessionWindowEnd,
 		SessionWindowStatus:     derefString(m.SessionWindowStatus),
+		ParentAccountID:         m.ParentAccountID,
+		QuotaDimension:          string(m.QuotaDimension),
 	}
 }
 
@@ -2149,4 +2157,19 @@ func (r *accountRepository) ResetQuotaUsed(ctx context.Context, id int64) error 
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue quota reset failed: account=%d err=%v", id, err)
 	}
 	return nil
+}
+
+// ListShadowsByParent returns spark shadow accounts for the given parent account.
+func (r *accountRepository) ListShadowsByParent(ctx context.Context, parentID int64) ([]*service.Account, error) {
+	rows, err := r.client.Account.Query().
+		Where(dbaccount.ParentAccountIDEQ(parentID), dbaccount.QuotaDimensionEQ(dbaccount.QuotaDimensionSpark)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*service.Account, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, accountEntityToService(m))
+	}
+	return out, nil
 }

@@ -457,6 +457,8 @@ func isNonRetryableRefreshError(err error) bool {
 		"access_denied",             // 访问被拒绝
 		"missing_project_id",        // 缺少 project_id
 		"no refresh token available",
+		"refresh_token is missing",
+		"refresh token is missing",
 	}
 	for _, needle := range nonRetryable {
 		if strings.Contains(msg, needle) {

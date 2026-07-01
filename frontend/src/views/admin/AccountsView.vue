@@ -369,7 +369,7 @@
     <AccountTestModal v-if="showTest" :show="showTest" :account="testingAcc" @close="closeTestModal" @account-updated="handleAccountUpdated" />
     <AccountStatsModal v-if="showStats" :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel v-if="showSchedulePanel" :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @revert-proxy-fallback="handleRevertProxyFallback" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @revert-proxy-fallback="handleRevertProxyFallback" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
     <SyncFromCrsModal v-if="showSync" :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal v-if="showImportData" :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -387,6 +387,7 @@
     />
     <TempUnschedStatusModal v-if="showTempUnsched" :show="showTempUnsched" :account="tempUnschedAcc" @close="showTempUnsched = false" @reset="handleTempUnschedReset" />
     <ConfirmDialog :show="showDeleteDialog" :title="t('admin.accounts.deleteAccount')" :message="t('admin.accounts.deleteConfirm', { name: deletingAcc?.name })" :confirm-text="t('common.delete')" :cancel-text="t('common.cancel')" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
+    <ConfirmDialog :show="showCreateShadowDialog" :title="t('admin.accounts.createSparkShadow')" :message="t('admin.accounts.createSparkShadowConfirm', { name: creatingShadowAcc?.name })" :confirm-text="t('admin.accounts.createSparkShadow')" :cancel-text="t('common.cancel')" @confirm="confirmCreateSparkShadow" @cancel="closeCreateSparkShadowDialog" />
     <ConfirmDialog :show="showExportDataDialog" :title="t('admin.accounts.dataExport')" :message="t('admin.accounts.dataExportConfirmMessage')" :confirm-text="t('admin.accounts.dataExportConfirm')" :cancel-text="t('common.cancel')" @confirm="handleExportData" @cancel="showExportDataDialog = false">
       <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
         <input type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" v-model="includeProxyOnExport" />
@@ -458,6 +459,7 @@ type AccountBulkEditTarget =
       selectedPlatforms: AccountPlatform[]
       selectedTypes: AccountType[]
       selectedImagePoolModes: boolean[]
+      selectedShadowModes: boolean[]
     }
   | {
       mode: 'filtered'
@@ -476,6 +478,7 @@ type AccountBulkEditTarget =
       selectedPlatforms: AccountPlatform[]
       selectedTypes: AccountType[]
       selectedImagePoolModes: boolean[]
+      selectedShadowModes: boolean[]
     }
 const selPlatforms = computed<AccountPlatform[]>(() => {
   const platforms = new Set(
@@ -501,6 +504,14 @@ const selImagePoolModes = computed<boolean[]>(() => {
   )
   return [...modes]
 })
+const selShadowModes = computed<boolean[]>(() => {
+  const modes = new Set(
+    accounts.value
+      .filter(a => isSelected(a.id))
+      .map(a => a.parent_account_id != null)
+  )
+  return [...modes]
+})
 const showCreate = ref(false)
 const showEdit = ref(false)
 const showSync = ref(false)
@@ -519,6 +530,7 @@ const showTLSFingerprintProfiles = ref(false)
 const edAcc = ref<Account | null>(null)
 const tempUnschedAcc = ref<Account | null>(null)
 const deletingAcc = ref<Account | null>(null)
+const creatingShadowAcc = ref<Account | null>(null)
 const reAuthAcc = ref<Account | null>(null)
 const testingAcc = ref<Account | null>(null)
 const statsAcc = ref<Account | null>(null)
@@ -528,6 +540,7 @@ const scheduleModelOptions = ref<SelectOption[]>([])
 const togglingSchedulable = ref<number | null>(null)
 const menu = reactive<{show:boolean, acc:Account|null, pos:{top:number, left:number}|null}>({ show: false, acc: null, pos: null })
 const exportingData = ref(false)
+const showCreateShadowDialog = ref(false)
 
 // Account tools dropdown
 const showAccountToolsDropdown = ref(false)
@@ -1053,6 +1066,7 @@ const isAnyModalOpen = computed(() => {
     showBulkEdit.value ||
     showTempUnsched.value ||
     showDeleteDialog.value ||
+    showCreateShadowDialog.value ||
     showReAuth.value ||
     showTest.value ||
     showStats.value ||
@@ -1777,7 +1791,8 @@ const collectSelectionMetadata = (rows: Account[]) => {
       .filter(account => account.platform === 'openai' && account.type === 'apikey')
       .map(account => (account.credentials as Record<string, unknown> | undefined)?.image_pool_mode === true)
   ))
-  return { selectedPlatforms, selectedTypes, selectedImagePoolModes }
+  const selectedShadowModes = Array.from(new Set(rows.map(account => account.parent_account_id != null)))
+  return { selectedPlatforms, selectedTypes, selectedImagePoolModes, selectedShadowModes }
 }
 
 const openBulkEditSelected = () => {
@@ -1787,7 +1802,8 @@ const openBulkEditSelected = () => {
     accountIds: [...selIds.value],
     selectedPlatforms: [...selPlatforms.value],
     selectedTypes: [...selTypes.value],
-    selectedImagePoolModes: [...selImagePoolModes.value]
+    selectedImagePoolModes: [...selImagePoolModes.value],
+    selectedShadowModes: [...selShadowModes.value]
   }
   showBulkEdit.value = true
 }
@@ -1796,14 +1812,15 @@ const openBulkEditFiltered = async () => {
   warmAccountToolsChunks()
   const filters = buildBulkEditFilterSnapshot()
   const preview = await adminAPI.accounts.list(1, 100, filters)
-  const { selectedPlatforms, selectedTypes, selectedImagePoolModes } = collectSelectionMetadata(preview.items)
+  const { selectedPlatforms, selectedTypes, selectedImagePoolModes, selectedShadowModes } = collectSelectionMetadata(preview.items)
   bulkEditTarget.value = {
     mode: 'filtered',
     filters,
     previewCount: preview.total,
     selectedPlatforms,
     selectedTypes,
-    selectedImagePoolModes
+    selectedImagePoolModes,
+    selectedShadowModes
   }
   showBulkEdit.value = true
 }
@@ -2036,6 +2053,27 @@ const handleSetPrivacy = async (a: Account) => {
   } catch (error: any) {
     console.error('Failed to set privacy:', error)
     appStore.showError(error?.response?.data?.message || t('admin.accounts.privacyFailed'))
+  }
+}
+const handleCreateSparkShadow = (a: Account) => {
+  creatingShadowAcc.value = a
+  showCreateShadowDialog.value = true
+}
+const closeCreateSparkShadowDialog = () => {
+  showCreateShadowDialog.value = false
+  creatingShadowAcc.value = null
+}
+const confirmCreateSparkShadow = async () => {
+  const account = creatingShadowAcc.value
+  if (!account) return
+  try {
+    await adminAPI.accounts.createSparkShadow(account.id, { name: `${account.name} (Spark)` })
+    closeCreateSparkShadowDialog()
+    appStore.showSuccess(t('admin.accounts.createSparkShadowSuccess'))
+    await reload()
+  } catch (error: any) {
+    console.error('Failed to create spark shadow account:', error)
+    appStore.showError(error?.response?.data?.message || t('admin.accounts.createSparkShadowFailed'))
   }
 }
 const handleDelete = (a: Account) => { deletingAcc.value = a; showDeleteDialog.value = true }

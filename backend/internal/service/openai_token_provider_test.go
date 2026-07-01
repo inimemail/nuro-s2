@@ -156,6 +156,41 @@ func TestOpenAITokenProvider_CacheHit(t *testing.T) {
 	require.Equal(t, int32(0), atomic.LoadInt32(&cache.setCalled))
 }
 
+func TestOpenAITokenProvider_ShadowUsesParentTokenCache(t *testing.T) {
+	cache := newOpenAITokenCacheStub()
+	parentID := int64(1001)
+	parent := &Account{
+		ID:       parentID,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "parent-db-token",
+		},
+	}
+	shadow := &Account{
+		ID:              1002,
+		Platform:        PlatformOpenAI,
+		Type:            AccountTypeOAuth,
+		ParentAccountID: &parentID,
+		QuotaDimension:  QuotaDimensionSpark,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5": "gpt-5-thinking"},
+		},
+	}
+	cache.tokens[OpenAITokenCacheKey(parent)] = "parent-cached-token"
+	cache.tokens[OpenAITokenCacheKey(shadow)] = "shadow-cache-should-not-be-used"
+	provider := NewOpenAITokenProvider(&mockAccountRepoForGemini{
+		accountsByID: map[int64]*Account{parentID: parent},
+	}, cache, nil)
+
+	token, err := provider.GetAccessToken(context.Background(), shadow)
+
+	require.NoError(t, err)
+	require.Equal(t, "parent-cached-token", token)
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.getCalled))
+	require.Equal(t, int32(0), atomic.LoadInt32(&cache.setCalled))
+}
+
 func TestOpenAITokenProvider_CacheMiss_FromCredentials(t *testing.T) {
 	cache := newOpenAITokenCacheStub()
 	// Token expires in far future, no refresh needed

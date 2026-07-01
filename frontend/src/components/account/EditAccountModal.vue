@@ -1614,7 +1614,7 @@
         </div>
       </div>
 
-      <div>
+      <div v-if="!isSparkShadowAccount">
         <div class="mb-1 flex items-center gap-2">
           <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
           <ProxyAdBanner />
@@ -1660,7 +1660,7 @@
 
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey')"
+        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey') && !isSparkShadowAccount"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -1690,7 +1690,7 @@
 
       <!-- OpenAI Codex 图片生成桥接账号级覆盖 -->
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey')"
+        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey') && !isSparkShadowAccount"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="overflow-hidden rounded-lg border border-sky-100 bg-sky-50/60 shadow-sm dark:border-sky-900/50 dark:bg-sky-950/20">
@@ -1750,7 +1750,7 @@
 
       <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey')"
+        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey') && !isSparkShadowAccount"
         class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -2257,7 +2257,7 @@
 
       <!-- OpenAI OAuth Codex 官方客户端限制开关 -->
       <div
-        v-if="account?.platform === 'openai' && account?.type === 'oauth'"
+        v-if="account?.platform === 'openai' && account?.type === 'oauth' && !isSparkShadowAccount"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -2312,7 +2312,7 @@
       </div>
 
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey')"
+        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey') && !isSparkShadowAccount"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="flex items-center justify-between">
@@ -3124,12 +3124,14 @@ const upstreamConcurrencyRaceRetryCountBackup = ref<number | null>(null)
 const syncingAccountState = ref(false)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const poolModeRetryStatusCodesInput = ref('')
+const isSparkShadowAccount = computed(() => props.account?.parent_account_id != null)
 const poolModeRetryCountMax = computed(() =>
   upstreamConcurrencyRaceEnabled.value
     ? MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
     : MAX_POOL_MODE_RETRY_COUNT
 )
 const showPromptCacheBoostToggle = computed(() =>
+  !isSparkShadowAccount.value &&
   (props.account?.platform === 'openai' &&
     (
       props.account?.type === 'oauth' ||
@@ -3143,6 +3145,7 @@ const showPromptCacheBoostToggle = computed(() =>
     ))
 )
 const showUpstreamStrongIsolationToggle = computed(() =>
+  !isSparkShadowAccount.value &&
   (props.account?.platform === 'openai' &&
     (
       props.account?.type === 'oauth' ||
@@ -3156,6 +3159,7 @@ const showUpstreamStrongIsolationToggle = computed(() =>
     ))
 )
 const showOAuthCacheBoostAndIsolationSection = computed(() =>
+  !isSparkShadowAccount.value &&
   (props.account?.type === 'oauth' || props.account?.type === 'setup-token') &&
   (props.account?.platform === 'openai' || props.account?.platform === 'anthropic')
 )
@@ -3222,7 +3226,7 @@ const showOpenAIAPIKeyTextStreamToggles = computed(() =>
   !imagePoolModeEnabled.value
 )
 const showUpstreamConcurrencyRaceToggle = computed(() =>
-  showOpenAIAPIKeyTextStreamToggles.value && poolModeEnabled.value
+  !isSparkShadowAccount.value && showOpenAIAPIKeyTextStreamToggles.value && poolModeEnabled.value
 )
 
 function parsePoolModeRetryStatusCodes(input: string): number[] {
@@ -4689,6 +4693,14 @@ const handleSubmit = async () => {
       updatePayload.load_factor = 0
     }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
+
+    if (isSparkShadowAccount.value) {
+      delete updatePayload.proxy_id
+      const modelMapping = buildModelRestrictionMapping()
+      updatePayload.credentials = modelMapping ? { model_mapping: modelMapping } : {}
+      await submitUpdateAccount(accountID, updatePayload)
+      return
+    }
 
     // For apikey type, handle credentials update
     if (props.account.type === 'apikey') {

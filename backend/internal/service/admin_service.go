@@ -292,6 +292,14 @@ type CreateAccountInput struct {
 	SkipMixedChannelCheck bool
 }
 
+// ShadowOptions is the input for creating a spark shadow account.
+type ShadowOptions struct {
+	Name        string
+	Priority    int
+	Concurrency int
+	GroupIDs    []int64
+}
+
 type UpdateAccountInput struct {
 	Name                  string
 	Notes                 *string
@@ -2799,6 +2807,14 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	wasOveragesEnabled := account.IsOveragesEnabled()
 	clearRuntimeBlock := false
+	if account.IsCredentialShadow() {
+		if input.Type != "" && input.Type != account.Type {
+			return nil, infraerrors.New(http.StatusBadRequest, "SPARK_SHADOW_IMMUTABLE_TYPE", "spark shadow account type cannot be changed")
+		}
+		if input.ProxyID != nil {
+			return nil, infraerrors.New(http.StatusBadRequest, "SPARK_SHADOW_PROXY_INHERITED", "spark shadow proxy is inherited from its parent")
+		}
+	}
 
 	if input.Name != "" {
 		account.Name = input.Name
@@ -2812,7 +2828,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if input.Notes != nil {
 		account.Notes = normalizeAccountNotes(input.Notes)
 	}
-	if len(input.Credentials) > 0 {
+	if account.IsCredentialShadow() && input.Credentials != nil {
+		account.Credentials = sanitizeSparkShadowCredentials(input.Credentials)
+	} else if len(input.Credentials) > 0 {
 		clearRuntimeBlock = true
 		// 敏感子键采用"incoming 没提供就保留"的合并语义：前端响应已脱敏，
 		// 全对象 PUT 编辑时不会再带回 token，避免覆盖时清空已有凭证。
@@ -2913,6 +2931,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 
 	if err := s.accountRepo.Update(ctx, account); err != nil {
 		return nil, err
+	}
+	if input.ProxyID != nil && !account.IsCredentialShadow() {
+		if err := propagateAccountProxyToShadows(ctx, s.accountRepo, account.ID, account.ProxyID); err != nil {
+			return nil, err
+		}
 	}
 
 	// 绑定分组
@@ -3040,9 +3063,54 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		repoUpdates.Schedulable = input.Schedulable
 	}
 
+	normalIDs := append([]int64(nil), input.AccountIDs...)
+	shadowIDs := []int64(nil)
+	if shouldSplitShadowBulkUpdate(input) {
+		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
+		if err != nil {
+			return nil, err
+		}
+		known := make(map[int64]*Account, len(accounts))
+		for _, account := range accounts {
+			if account != nil {
+				known[account.ID] = account
+			}
+		}
+		normalIDs = normalIDs[:0]
+		for _, accountID := range input.AccountIDs {
+			account := known[accountID]
+			if account != nil && account.IsCredentialShadow() {
+				shadowIDs = append(shadowIDs, accountID)
+				continue
+			}
+			normalIDs = append(normalIDs, accountID)
+		}
+	}
+
 	// Run bulk update for column/jsonb fields first.
-	if _, err := s.accountRepo.BulkUpdate(ctx, input.AccountIDs, repoUpdates); err != nil {
-		return nil, err
+	if len(normalIDs) > 0 {
+		if _, err := s.accountRepo.BulkUpdate(ctx, normalIDs, repoUpdates); err != nil {
+			return nil, err
+		}
+	}
+	if len(shadowIDs) > 0 {
+		shadowUpdates := sanitizeShadowBulkUpdate(repoUpdates)
+		if !shadowUpdates.IsZero() {
+			if _, err := s.accountRepo.BulkUpdate(ctx, shadowIDs, shadowUpdates); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if input.ProxyID != nil {
+		proxyID := input.ProxyID
+		if *input.ProxyID == 0 {
+			proxyID = nil
+		}
+		for _, accountID := range normalIDs {
+			if err := propagateAccountProxyToShadows(ctx, s.accountRepo, accountID, proxyID); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if len(input.Credentials) > 0 || (input.Schedulable != nil && !*input.Schedulable) {
 		for _, accountID := range input.AccountIDs {
@@ -3072,6 +3140,30 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 
 	return result, nil
+}
+
+func shouldSplitShadowBulkUpdate(input *BulkUpdateAccountsInput) bool {
+	if input == nil {
+		return false
+	}
+	return input.ProxyID != nil ||
+		len(input.Credentials) > 0 ||
+		len(input.Extra) > 0 ||
+		len(input.ExtraRemoveKeys) > 0
+}
+
+func sanitizeShadowBulkUpdate(updates AccountBulkUpdate) AccountBulkUpdate {
+	out := updates
+	out.ProxyID = nil
+	out.Extra = nil
+	out.ExtraRemoveKeys = nil
+	out.Credentials = nil
+	if updates.Credentials != nil {
+		if _, ok := updates.Credentials["model_mapping"]; ok {
+			out.Credentials = sanitizeSparkShadowCredentials(updates.Credentials)
+		}
+	}
+	return out
 }
 
 func (s *adminServiceImpl) resolveBulkUpdateTargetIDs(ctx context.Context, filters *BulkUpdateAccountFilters) ([]int64, error) {
@@ -3125,6 +3217,18 @@ func (s *adminServiceImpl) resolveBulkUpdateTargetIDs(ctx context.Context, filte
 }
 
 func (s *adminServiceImpl) DeleteAccount(ctx context.Context, id int64) error {
+	shadows, err := listSparkShadowsByParent(ctx, s.accountRepo, id)
+	if err != nil {
+		return fmt.Errorf("list spark shadows for cascade delete: %w", err)
+	}
+	for _, shadow := range shadows {
+		if shadow == nil {
+			continue
+		}
+		if err := s.accountRepo.Delete(ctx, shadow.ID); err != nil {
+			return fmt.Errorf("cascade delete spark shadow %d: %w", shadow.ID, err)
+		}
+	}
 	if err := s.accountRepo.Delete(ctx, id); err != nil {
 		return err
 	}
@@ -3161,7 +3265,161 @@ func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Ac
 }
 
 func (s *adminServiceImpl) RevertAccountProxyFallback(ctx context.Context, id int64) error {
-	return s.accountRepo.RevertProxyFallback(ctx, id)
+	if err := s.accountRepo.RevertProxyFallback(ctx, id); err != nil {
+		return err
+	}
+	account, err := s.accountRepo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	return propagateAccountProxyToShadows(ctx, s.accountRepo, id, account.ProxyID)
+}
+
+// CreateShadow creates a spark-dimension shadow account for an OpenAI OAuth parent.
+func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opts ShadowOptions) (*Account, error) {
+	parent, err := s.accountRepo.GetByID(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	if !parent.IsOpenAIOAuth() {
+		return nil, infraerrors.New(http.StatusBadRequest, "SPARK_SHADOW_INVALID_PARENT", "spark shadow requires an OpenAI OAuth parent account")
+	}
+	if parent.IsCredentialShadow() {
+		return nil, infraerrors.New(http.StatusBadRequest, "SPARK_SHADOW_PARENT_IS_SHADOW", "spark shadow parent must be a real account")
+	}
+	shadows, err := listSparkShadowsByParent(ctx, s.accountRepo, parentID)
+	if err != nil {
+		return nil, err
+	}
+	if len(shadows) > 0 {
+		return nil, infraerrors.New(http.StatusConflict, "SPARK_SHADOW_ALREADY_EXISTS", "parent account already has a spark shadow account")
+	}
+
+	groupIDs := append([]int64(nil), opts.GroupIDs...)
+	if len(groupIDs) > 0 {
+		if err := s.validateGroupIDsExist(ctx, groupIDs); err != nil {
+			return nil, err
+		}
+	} else if len(parent.GroupIDs) > 0 {
+		groupIDs = append(groupIDs, parent.GroupIDs...)
+	} else if s.groupRepo != nil {
+		if groups, err := s.groupRepo.ListActiveByPlatform(ctx, PlatformOpenAI); err == nil {
+			for _, g := range groups {
+				if g.Name == PlatformOpenAI+"-default" {
+					groupIDs = []int64{g.ID}
+					break
+				}
+			}
+		}
+	}
+
+	name := strings.TrimSpace(opts.Name)
+	if name == "" {
+		name = parent.Name + " (Spark)"
+	}
+	if runes := []rune(name); len(runes) > 100 {
+		name = string(runes[:100])
+	}
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = parent.Concurrency
+	}
+	priority := opts.Priority
+	if priority <= 0 {
+		priority = parent.Priority
+	}
+
+	shadow := &Account{
+		Name:            name,
+		Platform:        PlatformOpenAI,
+		Type:            AccountTypeOAuth,
+		Credentials:     sanitizeSparkShadowCredentials(nil),
+		Extra:           map[string]any{},
+		ProxyID:         parent.ProxyID,
+		Concurrency:     concurrency,
+		Priority:        priority,
+		Status:          StatusActive,
+		Schedulable:     true,
+		ParentAccountID: &parentID,
+		QuotaDimension:  QuotaDimensionSpark,
+	}
+	if err := s.accountRepo.Create(ctx, shadow); err != nil {
+		if existing, qerr := listSparkShadowsByParent(ctx, s.accountRepo, parentID); qerr == nil && len(existing) > 0 {
+			return nil, infraerrors.New(http.StatusConflict, "SPARK_SHADOW_ALREADY_EXISTS", "parent account already has a spark shadow account")
+		}
+		return nil, err
+	}
+	if len(groupIDs) > 0 {
+		if err := s.accountRepo.BindGroups(ctx, shadow.ID, groupIDs); err != nil {
+			_ = s.accountRepo.Delete(context.WithoutCancel(ctx), shadow.ID)
+			return nil, err
+		}
+		shadow.GroupIDs = groupIDs
+	}
+	return shadow, nil
+}
+
+type accountShadowLister interface {
+	ListShadowsByParent(ctx context.Context, parentID int64) ([]*Account, error)
+}
+
+func listSparkShadowsByParent(ctx context.Context, repo AccountRepository, parentID int64) ([]*Account, error) {
+	lister, ok := repo.(accountShadowLister)
+	if !ok {
+		return nil, nil
+	}
+	return lister.ListShadowsByParent(ctx, parentID)
+}
+
+func propagateAccountProxyToShadows(ctx context.Context, repo AccountRepository, parentID int64, proxyID *int64) error {
+	shadows, err := listSparkShadowsByParent(ctx, repo, parentID)
+	if err != nil {
+		return err
+	}
+	for _, shadow := range shadows {
+		if shadow == nil {
+			continue
+		}
+		shadow.ProxyID = proxyID
+		if err := repo.Update(ctx, shadow); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sanitizeSparkShadowCredentials(in map[string]any) map[string]any {
+	mapping := defaultSparkShadowModelMapping()
+	if raw := sanitizeSparkShadowModelMapping(in["model_mapping"]); len(raw) > 0 {
+		mapping = raw
+	}
+	return map[string]any{"model_mapping": mapping}
+}
+
+func sanitizeSparkShadowModelMapping(raw any) map[string]any {
+	switch mapping := raw.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(mapping))
+		for key, value := range mapping {
+			str, ok := value.(string)
+			if !ok || strings.TrimSpace(key) == "" || strings.TrimSpace(str) == "" {
+				continue
+			}
+			out[key] = str
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]any, len(mapping))
+		for key, value := range mapping {
+			if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+				continue
+			}
+			out[key] = value
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func (s *adminServiceImpl) SetAccountError(ctx context.Context, id int64, errorMsg string) error {

@@ -38,6 +38,7 @@ func setupAccountHandlerWithService(adminSvc service.AdminService) (*gin.Engine,
 	router := gin.New()
 	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router.POST("/api/v1/admin/accounts/batch-update-credentials", handler.BatchUpdateCredentials)
+	router.POST("/api/v1/admin/accounts/:id/apply-oauth-credentials", handler.ApplyOAuthCredentials)
 	return router, handler
 }
 
@@ -205,4 +206,75 @@ func TestBatchUpdateCredentials_AccountUUID_NullValue(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code,
 		"account_uuid 传入 null 应返回 200")
+}
+
+type shadowAwareAdminService struct {
+	*failingAdminService
+	shadowID int64
+}
+
+func (s *shadowAwareAdminService) GetAccount(ctx context.Context, id int64) (*service.Account, error) {
+	if id == s.shadowID {
+		parentID := int64(1)
+		return &service.Account{
+			ID:              id,
+			Name:            "spark-shadow",
+			Platform:        service.PlatformOpenAI,
+			Type:            service.AccountTypeOAuth,
+			ParentAccountID: &parentID,
+			QuotaDimension:  service.QuotaDimensionSpark,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gpt-5.3-codex-spark": "gpt-5.3-codex-spark"},
+			},
+		}, nil
+	}
+	return s.failingAdminService.GetAccount(ctx, id)
+}
+
+func TestBatchUpdateCredentials_SkipsSparkShadow(t *testing.T) {
+	svc := &shadowAwareAdminService{
+		failingAdminService: &failingAdminService{stubAdminService: newStubAdminService()},
+		shadowID:            2,
+	}
+	router, _ := setupAccountHandlerWithService(svc)
+
+	body, _ := json.Marshal(BatchUpdateCredentialsRequest{
+		AccountIDs: []int64{1, 2},
+		Field:      "account_uuid",
+		Value:      "test-uuid",
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/v1/admin/accounts/batch-update-credentials", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data := resp["data"].(map[string]any)
+	require.Equal(t, float64(1), data["success"])
+	require.Equal(t, float64(1), data["failed"])
+	require.Equal(t, int64(1), svc.updateCallCount.Load(), "shadow credentials must not be updated")
+}
+
+func TestApplyOAuthCredentialsRejectsSparkShadow(t *testing.T) {
+	svc := &shadowAwareAdminService{
+		failingAdminService: &failingAdminService{stubAdminService: newStubAdminService()},
+		shadowID:            2,
+	}
+	router, _ := setupAccountHandlerWithService(svc)
+
+	body, _ := json.Marshal(ApplyOAuthCredentialsRequest{
+		Type:        service.AccountTypeOAuth,
+		Credentials: map[string]any{"access_token": "new-token"},
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/v1/admin/accounts/2/apply-oauth-credentials", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Equal(t, int64(0), svc.updateCallCount.Load(), "shadow oauth credentials must not be overwritten")
 }

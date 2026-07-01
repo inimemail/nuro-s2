@@ -938,6 +938,8 @@ export interface Account {
   current_window_cost?: number | null // 当前窗口费用
   active_sessions?: number | null // 当前活跃会话数
   current_rpm?: number | null // 当前分钟 RPM 计数
+  parent_account_id?: number | null
+  quota_dimension?: string
 }
 
 // Account Usage types

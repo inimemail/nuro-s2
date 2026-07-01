@@ -18,6 +18,7 @@ type Model struct {
 
 // DefaultModels OpenAI models list
 var DefaultModels = []Model{
+	{ID: "gpt-5.5-pro", Object: "model", Created: 1776873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5 Pro"},
 	{ID: "gpt-5.5", Object: "model", Created: 1776873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5"},
 	{ID: "gpt-5.4", Object: "model", Created: 1738368000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4"},
 	{ID: "gpt-5.4-mini", Object: "model", Created: 1738368000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4 Mini"},
@@ -54,12 +55,23 @@ var instructionsGPT51 string
 //go:embed instructions_gpt5_2.txt
 var instructionsGPT52 string
 
+// instructionsGPT55 currently reuses the newest locally available Codex base
+// instructions. Replace this embed with upstream instructions_gpt5_5.txt when
+// the upstream blob is available locally.
+//
+//go:embed instructions_gpt5_2.txt
+var instructionsGPT55 string
+
 // CodexBaseInstructionsForModel returns the closest Codex CLI base instructions for a model.
 func CodexBaseInstructionsForModel(model string) string {
 	m := strings.ToLower(strings.TrimSpace(model))
 	switch {
 	case strings.Contains(m, "codex"):
 		return DefaultInstructions
+	case strings.HasPrefix(m, "gpt-5.5"):
+		if strings.TrimSpace(instructionsGPT55) != "" {
+			return instructionsGPT55
+		}
 	case strings.HasPrefix(m, "gpt-5.2"):
 		if strings.TrimSpace(instructionsGPT52) != "" {
 			return instructionsGPT52

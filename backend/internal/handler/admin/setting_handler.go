@@ -656,6 +656,7 @@ type UpdateSettingsRequest struct {
 	ClaudeOAuthSystemPromptBlocks          *string `json:"claude_oauth_system_prompt_blocks"`
 	EnableAnthropicCacheTTL1hInjection     *bool   `json:"enable_anthropic_cache_ttl_1h_injection"`
 	RewriteMessageCacheControl             *bool   `json:"rewrite_message_cache_control"`
+	EnableClientDatelineNormalization      *bool   `json:"enable_client_dateline_normalization"`
 	StreamLowLatencyMode                   *string `json:"stream_low_latency_mode"`
 	LowLatencyStreamHeaders                *bool   `json:"low_latency_stream_headers"`
 	AntigravityUserAgentVersion            *string `json:"antigravity_user_agent_version"`
@@ -1882,6 +1883,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.RewriteMessageCacheControl
 		}(),
+		EnableClientDatelineNormalization: func() bool {
+			if req.EnableClientDatelineNormalization != nil {
+				return *req.EnableClientDatelineNormalization
+			}
+			return previousSettings.EnableClientDatelineNormalization
+		}(),
 		LowLatencyStreamHeaders: func() bool {
 			if req.StreamLowLatencyMode != nil {
 				return config.NormalizeStreamLowLatencyMode(*req.StreamLowLatencyMode, previousSettings.LowLatencyStreamHeaders) != config.StreamLowLatencyModeOff
@@ -2348,6 +2355,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		EnableAnthropicCacheTTL1hInjection:              updatedSettings.EnableAnthropicCacheTTL1hInjection,
 		RewriteMessageCacheControl:                      updatedSettings.RewriteMessageCacheControl,
 		StreamLowLatencyMode:                            updatedSettings.StreamLowLatencyMode,
+		EnableClientDatelineNormalization:               updatedSettings.EnableClientDatelineNormalization,
 		LowLatencyStreamHeaders:                         updatedSettings.LowLatencyStreamHeaders,
 		AntigravityUserAgentVersion:                     updatedSettings.AntigravityUserAgentVersion,
 		OpenAICodexUserAgent:                            updatedSettings.OpenAICodexUserAgent,

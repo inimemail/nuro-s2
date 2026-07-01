@@ -8,7 +8,7 @@ const openaiModels = [
   'gpt-5.2', 'gpt-5.2-2025-12-11', 'gpt-5.2-chat-latest',
   'gpt-5.2-pro', 'gpt-5.2-pro-2025-12-11',
   // GPT-5.5 系列
-  'gpt-5.5',
+  'gpt-5.5', 'gpt-5.5-pro',
   // GPT-5.4 系列
   'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-2026-03-05',
   // GPT-5.3 / Codex 系列
@@ -30,6 +30,7 @@ export const claudeModels = [
   'claude-opus-4-6',
   'claude-opus-4-7',
   'claude-opus-4-8',
+  'claude-sonnet-5',
   'claude-sonnet-4-6',
   'claude-fable-5'
 ]
@@ -134,6 +135,8 @@ const xaiModels = [
   'grok-4', 'grok-4-0709',
   'grok-3-beta', 'grok-3-mini-beta', 'grok-3-fast-beta',
   'grok-2', 'grok-2-vision', 'grok-2-image',
+  'grok-imagine', 'grok-imagine-image', 'grok-imagine-image-quality',
+  'grok-imagine-edit', 'grok-imagine-video', 'grok-imagine-video-1.5',
   'grok-beta', 'grok-vision-beta'
 ]
 

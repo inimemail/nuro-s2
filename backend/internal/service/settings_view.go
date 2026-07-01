@@ -212,6 +212,7 @@ type SystemSettings struct {
 	ClaudeOAuthSystemPromptBlocks          string // Claude OAuth mimic 路径注入的 system blocks JSON 配置；空值使用内置默认
 	EnableAnthropicCacheTTL1hInjection     bool   // 是否对 Anthropic OAuth/SetupToken 请求体注入 1h cache_control ttl（默认 false）
 	RewriteMessageCacheControl             bool   // 是否改写 messages[*].content[*].cache_control（默认 false）
+	EnableClientDatelineNormalization      bool   // 是否规范化客户端 dateline/reminder 日期指纹（默认 true）
 	StreamLowLatencyMode                   string // OpenAI 流式低延迟策略：off/smart/aggressive
 	LowLatencyStreamHeaders                bool   // 兼容旧版开关；非 off 时为 true
 	AntigravityUserAgentVersion            string // Antigravity 上游 User-Agent 版本号；空值使用配置/默认值

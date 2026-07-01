@@ -97,6 +97,20 @@ type AccountBulkUpdate struct {
 	ExtraRemoveKeys []string
 }
 
+func (u AccountBulkUpdate) IsZero() bool {
+	return u.Name == nil &&
+		u.ProxyID == nil &&
+		u.Concurrency == nil &&
+		u.Priority == nil &&
+		u.RateMultiplier == nil &&
+		u.LoadFactor == nil &&
+		u.Status == nil &&
+		u.Schedulable == nil &&
+		len(u.Credentials) == 0 &&
+		len(u.Extra) == 0 &&
+		len(u.ExtraRemoveKeys) == 0
+}
+
 // CreateAccountRequest 创建账号请求
 type CreateAccountRequest struct {
 	Name               string         `json:"name"`

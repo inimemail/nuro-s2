@@ -2,10 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,7 +44,9 @@ func (s *forceRefreshCacheStub) ReleaseRefreshLock(context.Context, string) erro
 }
 
 type forceRefreshExecutorStub struct {
-	refreshCalls int
+	refreshCalls  int
+	lastAccountID int64
+	refreshErr    error
 }
 
 func (s *forceRefreshExecutorStub) CanRefresh(*Account) bool {
@@ -51,13 +57,56 @@ func (s *forceRefreshExecutorStub) NeedsRefresh(*Account, time.Duration) bool {
 	return true
 }
 
-func (s *forceRefreshExecutorStub) Refresh(context.Context, *Account) (map[string]any, error) {
+func (s *forceRefreshExecutorStub) Refresh(_ context.Context, account *Account) (map[string]any, error) {
 	s.refreshCalls++
-	return map[string]any{"access_token": "new-token"}, nil
+	if account != nil {
+		s.lastAccountID = account.ID
+	}
+	if s.refreshErr != nil {
+		return nil, s.refreshErr
+	}
+	return map[string]any{
+		"access_token":  "new-token",
+		"refresh_token": "new-refresh-token",
+	}, nil
 }
 
 func (s *forceRefreshExecutorStub) CacheKey(account *Account) string {
 	return OpenAITokenCacheKey(account)
+}
+
+type forceRefreshAccountRepoStub struct {
+	AccountRepository
+	accounts        map[int64]*Account
+	setErrorCalls   int
+	setErrorID      int64
+	setErrorMessage string
+}
+
+func (s *forceRefreshAccountRepoStub) GetByID(_ context.Context, id int64) (*Account, error) {
+	if s.accounts == nil {
+		return nil, errors.New("account not found")
+	}
+	account := s.accounts[id]
+	if account == nil {
+		return nil, errors.New("account not found")
+	}
+	return account, nil
+}
+
+func (s *forceRefreshAccountRepoStub) Update(_ context.Context, account *Account) error {
+	if s.accounts == nil {
+		s.accounts = map[int64]*Account{}
+	}
+	s.accounts[account.ID] = account
+	return nil
+}
+
+func (s *forceRefreshAccountRepoStub) SetError(_ context.Context, id int64, errorMsg string) error {
+	s.setErrorCalls++
+	s.setErrorID = id
+	s.setErrorMessage = errorMsg
+	return nil
 }
 
 func TestOpenAITokenProvider_ForceRefreshLockHeldDoesNotReturnOldToken(t *testing.T) {
@@ -91,4 +140,151 @@ func TestOpenAITokenProvider_ForceRefreshLockHeldDoesNotReturnOldToken(t *testin
 	require.Empty(t, token)
 	require.NotContains(t, strings.ToLower(err.Error()), "old-token")
 	require.Equal(t, 0, executor.refreshCalls)
+}
+
+func TestOpenAITokenProvider_ForceRefreshShadowUsesParentCredentials(t *testing.T) {
+	parentID := int64(9201)
+	parent := &Account{
+		ID:       parentID,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":  "old-parent-token",
+			"refresh_token": "old-parent-refresh",
+		},
+	}
+	shadow := &Account{
+		ID:              9202,
+		Platform:        PlatformOpenAI,
+		Type:            AccountTypeOAuth,
+		ParentAccountID: &parentID,
+		QuotaDimension:  QuotaDimensionSpark,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5": "gpt-5-thinking"},
+		},
+	}
+	repo := &forceRefreshAccountRepoStub{accounts: map[int64]*Account{
+		parent.ID: parent,
+		shadow.ID: shadow,
+	}}
+	cache := &forceRefreshCacheStub{tokens: map[string]string{
+		OpenAITokenCacheKey(parent): "old-parent-token",
+		OpenAITokenCacheKey(shadow): "shadow-cache-should-not-be-used",
+	}, lockResult: true}
+	executor := &forceRefreshExecutorStub{}
+	provider := NewOpenAITokenProvider(repo, cache, nil)
+	provider.SetRefreshAPI(NewOAuthRefreshAPI(repo, cache), executor)
+
+	refreshedAccount, token, err := provider.ForceRefresh(context.Background(), shadow)
+
+	require.NoError(t, err)
+	require.Equal(t, "new-token", token)
+	require.NotNil(t, refreshedAccount)
+	require.Equal(t, parent.ID, refreshedAccount.ID)
+	require.Equal(t, 1, executor.refreshCalls)
+	require.Equal(t, parent.ID, executor.lastAccountID)
+	require.Equal(t, "new-token", parent.GetOpenAIAccessToken())
+	require.Equal(t, "new-refresh-token", parent.GetOpenAIRefreshToken())
+	require.Empty(t, shadow.GetOpenAIAccessToken())
+	require.Equal(t, "new-token", cache.tokens[OpenAITokenCacheKey(parent)])
+	require.Equal(t, "shadow-cache-should-not-be-used", cache.tokens[OpenAITokenCacheKey(shadow)])
+}
+
+func TestOpenAIGatewayService_TryRecoverOpenAIOAuth401KeepsShadowForRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	parentID := int64(9301)
+	parent := &Account{
+		ID:       parentID,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":  "old-parent-token",
+			"refresh_token": "old-parent-refresh",
+		},
+	}
+	shadow := &Account{
+		ID:              9302,
+		Platform:        PlatformOpenAI,
+		Type:            AccountTypeOAuth,
+		ParentAccountID: &parentID,
+		QuotaDimension:  QuotaDimensionSpark,
+	}
+	repo := &forceRefreshAccountRepoStub{accounts: map[int64]*Account{
+		parent.ID: parent,
+		shadow.ID: shadow,
+	}}
+	cache := &forceRefreshCacheStub{tokens: map[string]string{}, lockResult: true}
+	executor := &forceRefreshExecutorStub{}
+	provider := NewOpenAITokenProvider(repo, cache, nil)
+	provider.SetRefreshAPI(NewOAuthRefreshAPI(repo, cache), executor)
+	svc := &OpenAIGatewayService{openAITokenProvider: provider}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	retryAccount, token, ok := svc.tryRecoverOpenAIOAuth401(
+		context.Background(),
+		c,
+		shadow,
+		http.StatusUnauthorized,
+		[]byte(`{"error":{"code":"expired_token"}}`),
+	)
+
+	require.True(t, ok)
+	require.Equal(t, "new-token", token)
+	require.NotNil(t, retryAccount)
+	require.Equal(t, shadow.ID, retryAccount.ID)
+	require.Equal(t, parent.ID, executor.lastAccountID)
+	require.Equal(t, "new-token", parent.GetOpenAIAccessToken())
+}
+
+func TestOpenAIGatewayService_TryRecoverOpenAIOAuth401MarksParentOnShadowRefreshFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	parentID := int64(9401)
+	parent := &Account{
+		ID:       parentID,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":  "old-parent-token",
+			"refresh_token": "old-parent-refresh",
+		},
+	}
+	shadow := &Account{
+		ID:              9402,
+		Platform:        PlatformOpenAI,
+		Type:            AccountTypeOAuth,
+		ParentAccountID: &parentID,
+		QuotaDimension:  QuotaDimensionSpark,
+	}
+	repo := &forceRefreshAccountRepoStub{accounts: map[int64]*Account{
+		parent.ID: parent,
+		shadow.ID: shadow,
+	}}
+	cache := &forceRefreshCacheStub{tokens: map[string]string{}, lockResult: true}
+	executor := &forceRefreshExecutorStub{refreshErr: errors.New("invalid_grant")}
+	provider := NewOpenAITokenProvider(repo, cache, nil)
+	provider.SetRefreshAPI(NewOAuthRefreshAPI(repo, cache), executor)
+	svc := &OpenAIGatewayService{
+		accountRepo:         repo,
+		openAITokenProvider: provider,
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	retryAccount, token, ok := svc.tryRecoverOpenAIOAuth401(
+		context.Background(),
+		c,
+		shadow,
+		http.StatusUnauthorized,
+		[]byte(`{"error":{"code":"expired_token"}}`),
+	)
+
+	require.False(t, ok)
+	require.Nil(t, retryAccount)
+	require.Empty(t, token)
+	require.Equal(t, 1, executor.refreshCalls)
+	require.Equal(t, parent.ID, executor.lastAccountID)
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Equal(t, parent.ID, repo.setErrorID)
+	require.Contains(t, repo.setErrorMessage, "reauthorization required")
 }
