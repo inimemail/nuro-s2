@@ -1841,6 +1841,50 @@ func TestOpenAIStreamingFirstTokenTimeoutPlaceholderDoesNotSetFirstToken(t *test
 	require.Contains(t, rec.Body.String(), `"type":"response.output_text.delta","delta":""`)
 }
 
+func TestOpenAIRequestFirstTokenTimeoutPlaceholderWritesBeforeUpstreamResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Name:     "acc",
+		Extra: map[string]any{
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      100,
+		},
+	}
+
+	upstreamStarted := time.Now()
+	resp, state, elapsed, err := svc.doOpenAIUpstreamWithFirstTokenTimeoutPlaceholder(
+		c,
+		account,
+		"gpt-5.4",
+		upstreamStarted,
+		openAIRequestFirstTokenPlaceholderDialectResponses,
+		func() (*http.Response, error) {
+			time.Sleep(150 * time.Millisecond)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     http.Header{"X-Request-Id": []string{"rid-request-placeholder"}},
+			}, nil
+		},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, state.Sent)
+	require.GreaterOrEqual(t, elapsed, 100*time.Millisecond)
+	require.Contains(t, rec.Body.String(), `"type":"response.output_text.delta","delta":""`)
+	require.True(t, IsResponseCommitted(c))
+}
+
 func TestOpenAIStreamFirstTokenTimeoutPlaceholderDisabledForImagePoolAccount(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{
@@ -1859,6 +1903,37 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderDisabledForImagePoolAccount(t *
 	}
 
 	require.Zero(t, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+}
+
+func TestOpenAICommittedFirstTokenTimeoutPlaceholderRecordsPoolSoftCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Name:     "pool",
+		Credentials: map[string]any{
+			"pool_mode":                          true,
+			"pool_soft_cooldown_error_threshold": 1,
+		},
+	}
+	body := []byte(`{"error":{"message":"rate limited"}}`)
+
+	svc.RecordOpenAIPoolFailureAfterCommittedResponse(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		body,
+		"gpt-5.4",
+		"rate limited",
+	)
+
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.Equal(t, http.StatusTooManyRequests, state.StatusCode)
+	require.Equal(t, "gpt-5.4", state.ProbeModel)
+	require.Equal(t, "openai", state.ProbeKind)
+	require.Equal(t, "rate limited", state.Reason)
 }
 
 func TestOpenAIStreamingResponseFailedBeforeOutputCapacityErrorReturnsFailover(t *testing.T) {

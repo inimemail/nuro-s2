@@ -1162,15 +1162,222 @@ async fn relay_upstream_direct(
 
     let upstream_client = state.client_for_proxy(plan.proxy_url.as_deref())?;
     let mut req = upstream_client.post(upstream_url);
-    if let Some(headers) = &plan.headers {
-        for (k, v) in headers {
-            req = req.header(k, v);
-        }
-    }
-    req = req.header(header::ACCEPT_ENCODING, HeaderValue::from_static("identity"));
-    let header_start = Instant::now();
-    let upstream = req.body(request_body).send().await?;
-    let upstream_header_ms = header_start.elapsed().as_millis() as i64;
+	    if let Some(headers) = &plan.headers {
+	        for (k, v) in headers {
+	            req = req.header(k, v);
+	        }
+	    }
+	    req = req.header(header::ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+	    let edge_request_id = plan.edge_request_id.clone();
+	    let lease_id = plan.lease_id.clone();
+	    let account_id = plan.account_id;
+	    let edge_prepare_ms = timing.prepare_ms;
+	    let edge_queue_wait_ms = timing.queue_wait_ms;
+	    let edge_relay_start_ms = timing.relay_start_ms;
+	    let edge_fallback_reason = timing.fallback_reason.clone();
+	    let edge_retry_count = timing.retry_count;
+	    let complete_state = state.clone();
+	    let safe_token_placeholder = plan.safe_token_placeholder;
+	    let first_token_timeout_placeholder =
+	        normalize_first_token_timeout_placeholder_ms(plan.first_token_timeout_placeholder_ms);
+	    let response_dialect = plan.response_dialect.clone();
+	    let header_start = Instant::now();
+	    let mut upstream_send = Box::pin(req.body(request_body).send());
+	    let upstream = if let Some(timeout) = first_token_timeout_placeholder {
+	        tokio::select! {
+	            result = &mut upstream_send => result?,
+	            _ = tokio::time::sleep(timeout) => {
+	                let early_body_stream = stream! {
+	                    let guard = LeaseAbortGuard::new(
+	                        complete_state.clone(),
+	                        edge_request_id.clone(),
+	                        lease_id.clone(),
+	                        account_id,
+	                        "stream_dropped_before_complete",
+	                        true,
+	                    );
+	                    let mut first_byte_ms: Option<i64> = None;
+	                    let first_flush_ms: Option<i64> = Some(started_at.elapsed().as_millis() as i64);
+	                    let mut first_token_ms: Option<i64> = None;
+	                    let mut success = true;
+	                    let mut error_message: Option<String> = None;
+	                    let mut upstream_status_code: Option<u16> = None;
+	                    let mut upstream_header_ms: Option<i64> = None;
+	                    let mut summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string());
+	                    let placeholder =
+	                        openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &summary);
+	                    yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
+
+	                    let upstream = match upstream_send.await {
+	                        Ok(upstream) => upstream,
+	                        Err(err) => {
+	                            success = false;
+	                            error_message = Some(err.to_string());
+	                            let frame = openai_stream_error_frame(
+	                                response_dialect.as_deref(),
+	                                summary.model.as_deref(),
+	                                "Upstream request failed",
+	                            );
+	                            yield Ok::<Bytes, std::io::Error>(Bytes::from(frame));
+	                            complete_state.pools.recycle_sse_string(std::mem::take(&mut summary.pending));
+	                            if call_complete(&complete_state, CompleteRequest {
+	                                edge_request_id: edge_request_id.clone(),
+	                                lease_id: lease_id.clone(),
+	                                account_id,
+	                                success,
+	                                client_disconnected: false,
+	                                request_id: summary.request_id.clone(),
+	                                response_id: summary.response_id.clone(),
+	                                model: summary.model.clone(),
+	                                upstream_model: summary.upstream_model.clone(),
+	                                usage: summary.usage.clone(),
+	                                duration_ms: started_at.elapsed().as_millis() as i64,
+	                                upstream_header_ms,
+	                                upstream_first_byte_ms: first_byte_ms,
+	                                first_token_ms,
+	                                first_client_flush_ms: first_flush_ms,
+	                                edge_prepare_ms,
+	                                edge_queue_wait_ms,
+	                                edge_relay_start_ms,
+	                                edge_fallback_reason: edge_fallback_reason.clone(),
+	                                edge_retry_count,
+	                                error_type: Some("request_error".to_string()),
+	                                error_message,
+	                                upstream_status_code,
+	                            }).await.is_ok() {
+	                                guard.mark_done();
+	                            }
+	                            return;
+	                        }
+	                    };
+
+	                    upstream_header_ms = Some(header_start.elapsed().as_millis() as i64);
+	                    let status = upstream.status();
+	                    upstream_status_code = Some(status.as_u16());
+	                    let headers = upstream.headers().clone();
+	                    summary.request_id = headers
+	                        .get("x-request-id")
+	                        .and_then(|v| v.to_str().ok())
+	                        .map(ToOwned::to_owned);
+	                    if status.is_client_error() || status.is_server_error() {
+	                        success = false;
+	                        let error_body = upstream
+	                            .bytes()
+	                            .await
+	                            .map(|b| String::from_utf8_lossy(&b).into_owned())
+	                            .unwrap_or_default();
+	                        let message = if error_body.trim().is_empty() {
+	                            "Upstream request failed".to_string()
+	                        } else {
+	                            error_body
+	                        };
+	                        error_message = Some(message.clone());
+	                        let frame = openai_stream_error_frame(
+	                            response_dialect.as_deref(),
+	                            summary.model.as_deref(),
+	                            &message,
+	                        );
+	                        yield Ok::<Bytes, std::io::Error>(Bytes::from(frame));
+	                        complete_state.pools.recycle_sse_string(std::mem::take(&mut summary.pending));
+	                        if call_complete(&complete_state, CompleteRequest {
+	                            edge_request_id: edge_request_id.clone(),
+	                            lease_id: lease_id.clone(),
+	                            account_id,
+	                            success,
+	                            client_disconnected: false,
+	                            request_id: summary.request_id.clone(),
+	                            response_id: summary.response_id.clone(),
+	                            model: summary.model.clone(),
+	                            upstream_model: summary.upstream_model.clone(),
+	                            usage: summary.usage.clone(),
+	                            duration_ms: started_at.elapsed().as_millis() as i64,
+	                            upstream_header_ms,
+	                            upstream_first_byte_ms: first_byte_ms,
+	                            first_token_ms,
+	                            first_client_flush_ms: first_flush_ms,
+	                            edge_prepare_ms,
+	                            edge_queue_wait_ms,
+	                            edge_relay_start_ms,
+	                            edge_fallback_reason: edge_fallback_reason.clone(),
+	                            edge_retry_count,
+	                            error_type: Some("upstream_error".to_string()),
+	                            error_message,
+	                            upstream_status_code,
+	                        }).await.is_ok() {
+	                            guard.mark_done();
+	                        }
+	                        return;
+	                    }
+
+                    let mut bytes_stream = upstream.bytes_stream();
+                    while let Some(next) = bytes_stream.next().await {
+                        match next {
+                            Ok(chunk) => {
+                                if first_byte_ms.is_none() {
+                                    first_byte_ms = Some(header_start.elapsed().as_millis() as i64);
+                                }
+                                let observation = summary.observe(&chunk);
+                                if first_token_ms.is_none() && observation.starts_client_output {
+                                    first_token_ms = Some(started_at.elapsed().as_millis() as i64);
+                                }
+                                yield Ok::<Bytes, std::io::Error>(chunk);
+                            }
+	                            Err(err) => {
+	                                success = false;
+	                                error_message = Some(err.to_string());
+	                                yield Err(std::io::Error::new(std::io::ErrorKind::Other, err.to_string()));
+	                                break;
+	                            }
+	                        }
+	                    }
+
+	                    let request_id = summary.request_id.clone();
+	                    let response_id = summary.response_id.clone();
+	                    let model = summary.model.clone();
+	                    let upstream_model = summary.upstream_model.clone();
+	                    let usage = summary.usage.clone();
+	                    complete_state.pools.recycle_sse_string(std::mem::take(&mut summary.pending));
+	                    if call_complete(&complete_state, CompleteRequest {
+	                        edge_request_id: edge_request_id.clone(),
+	                        lease_id: lease_id.clone(),
+	                        account_id,
+	                        success,
+	                        client_disconnected: false,
+	                        request_id,
+	                        response_id,
+	                        model,
+	                        upstream_model,
+	                        usage,
+	                        duration_ms: started_at.elapsed().as_millis() as i64,
+	                        upstream_header_ms,
+	                        upstream_first_byte_ms: first_byte_ms,
+	                        first_token_ms,
+	                        first_client_flush_ms: first_flush_ms,
+	                        edge_prepare_ms,
+	                        edge_queue_wait_ms,
+	                        edge_relay_start_ms,
+	                        edge_fallback_reason: edge_fallback_reason.clone(),
+	                        edge_retry_count,
+	                        error_type: if success { None } else { Some("stream_error".to_string()) },
+	                        error_message,
+	                        upstream_status_code,
+	                    }).await.is_ok() {
+	                        guard.mark_done();
+	                    }
+                };
+
+	                let mut builder = Response::builder().status(StatusCode::OK);
+	                let headers = builder.headers_mut().expect("headers");
+	                headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+	                headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+	                headers.insert(HeaderName::from_static("x-accel-buffering"), HeaderValue::from_static("no"));
+	                return Ok(builder.body(Body::from_stream(early_body_stream))?);
+	            }
+	        }
+	    } else {
+	        upstream_send.await?
+	    };
+	    let upstream_header_ms = header_start.elapsed().as_millis() as i64;
     let status = upstream.status();
     let headers = upstream.headers().clone();
     if status.is_client_error() || status.is_server_error() {
@@ -1259,20 +1466,7 @@ async fn relay_upstream_direct(
     }
     let mut bytes_stream = upstream.bytes_stream();
 
-    let edge_request_id = plan.edge_request_id.clone();
-    let lease_id = plan.lease_id.clone();
-    let account_id = plan.account_id;
-    let edge_prepare_ms = timing.prepare_ms;
-    let edge_queue_wait_ms = timing.queue_wait_ms;
-    let edge_relay_start_ms = timing.relay_start_ms;
-    let edge_fallback_reason = timing.fallback_reason.clone();
-    let edge_retry_count = timing.retry_count;
-    let complete_state = state.clone();
-    let safe_token_placeholder = plan.safe_token_placeholder;
-    let first_token_timeout_placeholder =
-        normalize_first_token_timeout_placeholder_ms(plan.first_token_timeout_placeholder_ms);
-    let response_dialect = plan.response_dialect.clone();
-    let upstream_request_id = headers
+	    let upstream_request_id = headers
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .map(ToOwned::to_owned);
@@ -1587,6 +1781,29 @@ fn openai_stream_timeout_placeholder_frame(dialect: Option<&str>, summary: &Chat
         );
     }
     openai_responses_safe_token_placeholder_frame(summary.response_id.as_deref())
+}
+
+fn openai_stream_error_frame(dialect: Option<&str>, model: Option<&str>, message: &str) -> String {
+    let message = message.trim();
+    let message = if message.is_empty() {
+        "Upstream request failed"
+    } else {
+        message
+    };
+    let message_json =
+        serde_json::to_string(message).unwrap_or_else(|_| "\"Upstream request failed\"".to_string());
+    if dialect == Some("chat_completions") {
+        return format!(
+            "event: error\ndata: {{\"error\":{{\"type\":\"upstream_error\",\"message\":{}}}}}\n\n",
+            message_json
+        );
+    }
+    let model = model.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("");
+    let model_json = serde_json::to_string(model).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        "event: response.failed\ndata: {{\"type\":\"response.failed\",\"response\":{{\"id\":\"resp_placeholder_failed\",\"object\":\"response\",\"model\":{},\"status\":\"failed\",\"output\":[],\"error\":{{\"code\":\"upstream_error\",\"message\":{}}}}}}}\n\n",
+        model_json, message_json
+    )
 }
 
 fn json_starts_client_output(value: &Value) -> bool {

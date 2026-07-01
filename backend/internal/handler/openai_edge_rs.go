@@ -1513,6 +1513,27 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 			}
 		})
 	} else if h.gatewayService != nil && lease.account != nil {
+		statusCode := req.UpstreamStatusCode
+		if statusCode == 0 {
+			statusCode = http.StatusBadGateway
+		}
+		message := strings.TrimSpace(req.ErrorMessage)
+		h.gatewayService.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(
+			lease.account,
+			statusCode,
+			message,
+			[]byte(message),
+			true,
+			true,
+		)
+		h.gatewayService.RecordOpenAIPoolFailureAfterCommittedResponse(
+			c.Request.Context(),
+			lease.account,
+			statusCode,
+			[]byte(message),
+			lease.openAIRoutingModel(),
+			message,
+		)
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
 	}
 	c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true})

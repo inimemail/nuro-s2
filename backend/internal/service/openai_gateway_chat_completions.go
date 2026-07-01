@@ -283,8 +283,37 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
+	var requestFirstTokenPlaceholder openAIRequestFirstTokenPlaceholderState
+	var resp *http.Response
+	doUpstream := func() (*http.Response, error) {
+		return s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
+	}
+	if clientStream {
+		resp, requestFirstTokenPlaceholder, _, err = s.doOpenAIUpstreamWithFirstTokenTimeoutPlaceholder(
+			c,
+			account,
+			originalModel,
+			startTime,
+			openAIRequestFirstTokenPlaceholderDialectChatCompletions,
+			doUpstream,
+		)
+	} else {
+		resp, err = doUpstream()
+	}
 	if err != nil {
+		if requestFirstTokenPlaceholder.Sent {
+			_ = s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, http.StatusBadGateway, openAITransportFailoverBody, upstreamModel, err.Error())
+			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", "Upstream request failed")
+			return &OpenAIForwardResult{
+				Usage:         OpenAIUsage{},
+				Model:         originalModel,
+				BillingModel:  billingModel,
+				UpstreamModel: upstreamModel,
+				Stream:        true,
+				Duration:      time.Since(startTime),
+			}, fmt.Errorf("chat_completions upstream request failed after first token placeholder: %w", err)
+		}
 		if failoverErr := s.newOpenAIPoolRequestFailoverError(c, account, upstreamReq, err, false); failoverErr != nil {
 			return nil, failoverErr
 		}
@@ -311,6 +340,34 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if requestFirstTokenPlaceholder.Sent {
+			s.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(account, resp.StatusCode, upstreamMsg, respBody, promptCacheBoostKeyInjected, promptCacheBoostRetentionInjected)
+			if resp.StatusCode == http.StatusTooManyRequests {
+				_ = s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody)
+			}
+			setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, "")
+			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, upstreamModel, upstreamMsg)
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				Kind:               "http_error",
+				Message:            upstreamMsg,
+			})
+			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", firstNonEmptyString(upstreamMsg, "Upstream request failed"))
+			return &OpenAIForwardResult{
+				RequestID:     resp.Header.Get("x-request-id"),
+				Usage:         OpenAIUsage{},
+				Model:         originalModel,
+				BillingModel:  billingModel,
+				UpstreamModel: upstreamModel,
+				Stream:        true,
+				Duration:      time.Since(startTime),
+			}, fmt.Errorf("chat_completions upstream error after first token placeholder: %d message=%s", resp.StatusCode, upstreamMsg)
+		}
 		if refreshedAccount, _, ok := s.tryRecoverOpenAIOAuth401(ctx, c, account, resp.StatusCode, respBody); ok {
 			return s.ForwardAsChatCompletions(ctx, c, refreshedAccount, body, incomingPromptCacheKey, defaultMappedModel)
 		}
@@ -378,7 +435,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleChatStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime, len(body))
+		result, handleErr = s.handleChatStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime, len(body), requestFirstTokenPlaceholder)
 	} else {
 		result, handleErr = s.handleChatBufferedStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime)
 	}
@@ -526,10 +583,15 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	upstreamModel string,
 	startTime time.Time,
 	requestBodyLen int,
+	requestFirstTokenPlaceholderOpt ...openAIRequestFirstTokenPlaceholderState,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
+	requestFirstTokenPlaceholder := openAIRequestFirstTokenPlaceholderState{}
+	if len(requestFirstTokenPlaceholderOpt) > 0 {
+		requestFirstTokenPlaceholder = requestFirstTokenPlaceholderOpt[0]
+	}
 
-	headersWritten := false
+	headersWritten := requestFirstTokenPlaceholder.Sent
 	writeStreamHeaders := func() {
 		if headersWritten {
 			return
@@ -547,6 +609,15 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	state := apicompat.NewResponsesEventToChatState()
 	state.Model = originalModel
+	if requestFirstTokenPlaceholder.Sent {
+		if requestFirstTokenPlaceholder.ChatID != "" {
+			state.ID = requestFirstTokenPlaceholder.ChatID
+		}
+		if requestFirstTokenPlaceholder.ChatCreated > 0 {
+			state.Created = requestFirstTokenPlaceholder.ChatCreated
+		}
+		state.SentRole = true
+	}
 	// 网关作为计费链路的一环，不能把下游 usage 输出绑定到客户端是否显式请求。
 	// raw Chat Completions 直转路径已经强制透出 usage，这里保持同样行为，避免级联代理计费为 0。
 	state.IncludeUsage = true
@@ -554,12 +625,12 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	var usage OpenAIUsage
 	var firstTokenMs *int
 	clientDisconnected := false
-	clientOutputStarted := false
+	clientOutputStarted := requestFirstTokenPlaceholder.Sent
 	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
 	firstTokenTimeoutPlaceholder := s.openAIStreamFirstTokenTimeoutPlaceholder(account, originalModel)
-	safeTokenPlaceholderSent := false
-	firstTokenTimeoutPlaceholderSent := false
-	firstTokenTimeoutPlaceholderID := ""
+	safeTokenPlaceholderSent := requestFirstTokenPlaceholder.Sent
+	firstTokenTimeoutPlaceholderSent := requestFirstTokenPlaceholder.Sent
+	firstTokenTimeoutPlaceholderID := requestFirstTokenPlaceholder.ChatID
 	pendingSSE := make([]string, 0, 4)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var streamFailoverErr *UpstreamFailoverError

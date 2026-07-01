@@ -145,6 +145,31 @@ func (s *OpenAIGatewayService) temporarilyDisableOpenAIPromptCacheBoost(account 
 	}
 }
 
+// RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse preserves the
+// unsupported-field backoff when a streaming response has already been committed
+// and the current request can no longer be retried without those fields.
+func (s *OpenAIGatewayService) RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(
+	account *Account,
+	statusCode int,
+	upstreamMsg string,
+	upstreamBody []byte,
+	keyInjected bool,
+	retentionInjected bool,
+) {
+	if account == nil || !account.IsOpenAIPromptCacheBoostEnabled() {
+		return
+	}
+	if !keyInjected && !retentionInjected {
+		return
+	}
+	keyUnsupported, retentionUnsupported := openAIPromptCacheBoostUnsupportedFields(statusCode, upstreamMsg, upstreamBody)
+	disableKey := keyInjected && keyUnsupported
+	disableRetention := retentionInjected && retentionUnsupported
+	if disableKey || disableRetention {
+		s.temporarilyDisableOpenAIPromptCacheBoost(account, disableKey, disableRetention)
+	}
+}
+
 func isOpenAIPromptCacheBoostUnsupportedError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
 	keyUnsupported, retentionUnsupported := openAIPromptCacheBoostUnsupportedFields(statusCode, upstreamMsg, upstreamBody)
 	return keyUnsupported || retentionUnsupported

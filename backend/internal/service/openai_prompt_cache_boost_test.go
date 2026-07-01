@@ -568,6 +568,25 @@ func TestOpenAIGatewayService_ForwardPromptCacheBoostUnsupportedRetentionRetries
 	require.False(t, svc.isOpenAIPromptCacheBoostRetentionRuntimeEnabled(account))
 }
 
+func TestOpenAIPromptCacheBoostUnsupportedAfterCommittedResponseDisablesFutureInjection(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := promptCacheBoostTestAccount(303)
+	require.True(t, svc.isOpenAIPromptCacheBoostKeyRuntimeEnabled(account))
+	require.True(t, svc.isOpenAIPromptCacheBoostRetentionRuntimeEnabled(account))
+
+	svc.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(
+		account,
+		http.StatusBadRequest,
+		"Unsupported parameter: 'prompt_cache_retention'",
+		nil,
+		true,
+		true,
+	)
+
+	require.True(t, svc.isOpenAIPromptCacheBoostKeyRuntimeEnabled(account))
+	require.False(t, svc.isOpenAIPromptCacheBoostRetentionRuntimeEnabled(account))
+}
+
 func TestForwardAsChatCompletions_PromptCacheBoostInjectsFieldsWithoutGeneratedSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

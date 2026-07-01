@@ -3574,7 +3574,7 @@ export default {
           '开启后会在上游 response.created 后注入空文本 delta，让原版 sub2api 等下游面板更早记录首 Token；不产生可见文本，但上游早期失败时可能无法无感切换账号。',
         oauthChatGPTFirstTokenTimeoutPlaceholder: 'OAuth/ChatGPT 首 Token 超时补帧',
         oauthChatGPTFirstTokenTimeoutPlaceholderDesc:
-          '开启后若上游首 Token 超过阈值仍未到达，会先向下游注入空补帧，帮助下游面板更早记录首 Token；不产生可见文本，但上游早期失败、账号切换和严格 SDK 兼容性会变差。',
+          '超时注入空补帧，让下游更早记录首 Token；早期失败和切号兼容性会变差。',
         apiKeyPreambleFlush: 'APIKey 首包提前透传',
         apiKeyPreambleFlushDesc:
           '适合 APIKey 接入的上游或中转首包偏慢时开启。会提前向下游透传 response.created / response.in_progress；上游早期失败时可能无法无感切换账号。',
@@ -3586,7 +3586,7 @@ export default {
           '开启后会在上游 response.created 后注入空文本 delta 或空 chat chunk，让原版 sub2api 等下游面板更早记录首 Token；不产生可见文本，但上游早期失败时可能无法无感切换账号。',
         apiKeyFirstTokenTimeoutPlaceholder: 'APIKey 首 Token 超时补帧',
         apiKeyFirstTokenTimeoutPlaceholderDesc:
-          '开启后若上游首 Token 超过阈值仍未到达，会先向下游注入空补帧，帮助下游面板更早记录首 Token；不产生可见文本，但上游早期失败、账号切换和严格 SDK 兼容性会变差。',
+          '超时注入空补帧，让下游更早记录首 Token；早期失败和切号兼容性会变差。',
         firstTokenTimeoutPlaceholderMs: '补帧阈值',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
