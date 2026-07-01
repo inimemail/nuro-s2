@@ -3588,6 +3588,7 @@ export default {
         apiKeyFirstTokenTimeoutPlaceholderDesc:
           '超时注入空补帧，让下游更早记录首 Token；早期失败和切号兼容性会变差。',
         firstTokenTimeoutPlaceholderMs: '补帧阈值',
+        firstTokenTimeoutPlaceholderMsHint: '1-3000 ms，默认 1000 ms。',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
           '仅对 OpenAI OAuth 生效。开启后该账号才允许使用 OpenAI WebSocket Mode 协议。',

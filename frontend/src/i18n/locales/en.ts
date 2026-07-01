@@ -3439,6 +3439,7 @@ export default {
         apiKeyFirstTokenTimeoutPlaceholderDesc:
           'Injects an empty timeout placeholder so downstream records first token earlier; early failures and account switching compatibility may degrade.',
         firstTokenTimeoutPlaceholderMs: 'Placeholder timeout',
+        firstTokenTimeoutPlaceholderMsHint: '1-3000 ms, default 1000 ms.',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
           'Only applies to OpenAI OAuth. This account can use OpenAI WebSocket Mode only when enabled.',

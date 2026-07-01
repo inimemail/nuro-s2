@@ -2987,10 +2987,7 @@
             </div>
             <button
               type="button"
-              @click="
-                openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled =
-                  !openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled
-              "
+              @click="toggleOpenAIFirstTokenTimeoutPlaceholder('oauth')"
               :class="openAIFirstTokenTimeoutSwitchClass(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled)"
             >
               <span
@@ -3003,10 +3000,25 @@
           </div>
           <div v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled" class="mt-3 max-w-xs">
             <label class="input-label">{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderMs') }}</label>
-            <Select
-              v-model="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs"
-              :options="openAIFirstTokenTimeoutPlaceholderOptions"
-            />
+            <div class="relative">
+              <input
+                v-model.number="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs"
+                type="number"
+                inputmode="numeric"
+                step="1"
+                :min="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS"
+                :max="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS"
+                class="input pr-12 font-mono"
+                @blur="
+                  openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs =
+                    normalizeOpenAIFirstTokenTimeoutPlaceholderMs(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs)
+                "
+              />
+              <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-gray-400">
+                ms
+              </span>
+            </div>
+            <p class="input-hint">{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderMsHint') }}</p>
           </div>
         </div>
         <div v-if="showOpenAIAPIKeyTextStreamToggles" class="flex items-center justify-between">
@@ -3099,10 +3111,7 @@
             </div>
             <button
               type="button"
-              @click="
-                openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled =
-                  !openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled
-              "
+              @click="toggleOpenAIFirstTokenTimeoutPlaceholder('apikey')"
               :class="openAIFirstTokenTimeoutSwitchClass(openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled)"
             >
               <span
@@ -3115,10 +3124,25 @@
           </div>
           <div v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled" class="mt-3 max-w-xs">
             <label class="input-label">{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderMs') }}</label>
-            <Select
-              v-model="openaiAPIKeyFirstTokenTimeoutPlaceholderMs"
-              :options="openAIFirstTokenTimeoutPlaceholderOptions"
-            />
+            <div class="relative">
+              <input
+                v-model.number="openaiAPIKeyFirstTokenTimeoutPlaceholderMs"
+                type="number"
+                inputmode="numeric"
+                step="1"
+                :min="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS"
+                :max="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS"
+                class="input pr-12 font-mono"
+                @blur="
+                  openaiAPIKeyFirstTokenTimeoutPlaceholderMs =
+                    normalizeOpenAIFirstTokenTimeoutPlaceholderMs(openaiAPIKeyFirstTokenTimeoutPlaceholderMs)
+                "
+              />
+              <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-gray-400">
+                ms
+              </span>
+            </div>
+            <p class="input-hint">{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderMsHint') }}</p>
           </div>
         </div>
       </div>
@@ -4006,6 +4030,9 @@ const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 5000
 const DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 2000
 const MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 500
 const MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 30000
+const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS = 1000
+const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS = 1
+const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 3000
 const poolModeEnabled = ref(false)
 const poolSoftCooldownEnabled = ref(true)
 const poolSoftCooldownErrorThreshold = ref(DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD)
@@ -4111,9 +4138,9 @@ const openaiAPIKeySSECommentPreflushEnabled = ref(false)
 const openaiOAuthChatGPTSafeTokenPlaceholderEnabled = ref(false)
 const openaiAPIKeySafeTokenPlaceholderEnabled = ref(false)
 const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled = ref(false)
-const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs = ref(200)
+const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled = ref(false)
-const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(200)
+const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const anthropicPassthroughEnabled = ref(false)
@@ -4299,13 +4326,36 @@ const openAIWSModeOptions = computed(() => [
   { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') }
 ])
 
-const openAIFirstTokenTimeoutPlaceholderOptions = computed(() => [
-  { value: 100, label: '100 ms' },
-  { value: 200, label: '200 ms' },
-  { value: 500, label: '500 ms' },
-  { value: 1000, label: '1000 ms' },
-  { value: 2000, label: '2000 ms' }
-])
+function normalizeOpenAIFirstTokenTimeoutPlaceholderMs(value: unknown): number {
+  const ms = Math.trunc(Number(value))
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS
+  }
+  return Math.min(
+    OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS,
+    Math.max(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS, ms)
+  )
+}
+
+function resetOpenAIFirstTokenTimeoutPlaceholderMs(kind: 'oauth' | 'apikey') {
+  if (kind === 'oauth') {
+    openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS
+  } else {
+    openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS
+  }
+}
+
+function toggleOpenAIFirstTokenTimeoutPlaceholder(kind: 'oauth' | 'apikey') {
+  if (kind === 'oauth') {
+    openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value =
+      !openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value
+    resetOpenAIFirstTokenTimeoutPlaceholderMs('oauth')
+  } else {
+    openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value =
+      !openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value
+    resetOpenAIFirstTokenTimeoutPlaceholderMs('apikey')
+  }
+}
 
 function openAIFirstTokenTimeoutPanelClass(enabled: boolean) {
   return [
@@ -4588,9 +4638,9 @@ watch(
       openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value = false
       openaiAPIKeySafeTokenPlaceholderEnabled.value = false
       openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value = false
-      openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = 200
+      resetOpenAIFirstTokenTimeoutPlaceholderMs('oauth')
       openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
-      openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 200
+      resetOpenAIFirstTokenTimeoutPlaceholderMs('apikey')
       codexCLIOnlyEnabled.value = false
       codexCLIOnlyAllowClaudeCodeEnabled.value = false
     }
@@ -4648,7 +4698,7 @@ watch(imagePoolModeEnabled, (enabled) => {
     openaiAPIKeySSECommentPreflushEnabled.value = false
     openaiAPIKeySafeTokenPlaceholderEnabled.value = false
     openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
-    openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 200
+    resetOpenAIFirstTokenTimeoutPlaceholderMs('apikey')
   }
 })
 
@@ -5089,9 +5139,9 @@ const resetForm = () => {
   openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value = false
   openaiAPIKeySafeTokenPlaceholderEnabled.value = false
   openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value = false
-  openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = 200
+  resetOpenAIFirstTokenTimeoutPlaceholderMs('oauth')
   openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
-  openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 200
+  resetOpenAIFirstTokenTimeoutPlaceholderMs('apikey')
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   anthropicPassthroughEnabled.value = false
@@ -5171,7 +5221,8 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     }
     if (openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value) {
       extra.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled = true
-      extra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms = openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value
+      extra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms =
+        normalizeOpenAIFirstTokenTimeoutPlaceholderMs(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value)
     } else {
       delete extra.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled
       delete extra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms
@@ -5201,7 +5252,8 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     }
     if (!imagePoolModeEnabled.value && openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value) {
       extra.openai_apikey_first_token_timeout_placeholder_enabled = true
-      extra.openai_apikey_first_token_timeout_placeholder_ms = openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value
+      extra.openai_apikey_first_token_timeout_placeholder_ms =
+        normalizeOpenAIFirstTokenTimeoutPlaceholderMs(openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value)
     } else {
       delete extra.openai_apikey_first_token_timeout_placeholder_enabled
       delete extra.openai_apikey_first_token_timeout_placeholder_ms

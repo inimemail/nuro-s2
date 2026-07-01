@@ -929,10 +929,7 @@
               id="bulk-edit-openai-oauth-first-token-timeout-placeholder-toggle"
               type="button"
               :class="openAIFirstTokenTimeoutSwitchClass(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled)"
-              @click="
-                openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled =
-                  !openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled
-              "
+              @click="toggleOpenAIFirstTokenTimeoutPlaceholder('oauth')"
             >
               <span
                 :class="[
@@ -943,11 +940,26 @@
             </button>
           </div>
           <div v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled" class="max-w-xs">
-            <Select
-              v-model="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs"
-              :options="openAIFirstTokenTimeoutPlaceholderOptions"
-              aria-labelledby="bulk-edit-openai-oauth-first-token-timeout-placeholder-label"
-            />
+            <div class="relative">
+              <input
+                v-model.number="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs"
+                type="number"
+                inputmode="numeric"
+                step="1"
+                :min="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS"
+                :max="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS"
+                class="input pr-12 font-mono"
+                aria-labelledby="bulk-edit-openai-oauth-first-token-timeout-placeholder-label"
+                @blur="
+                  openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs =
+                    normalizeOpenAIFirstTokenTimeoutPlaceholderMs(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs)
+                "
+              />
+              <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-gray-400">
+                ms
+              </span>
+            </div>
+            <p class="input-hint">{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderMsHint') }}</p>
           </div>
         </div>
       </div>
@@ -1260,10 +1272,7 @@
               id="bulk-edit-openai-apikey-first-token-timeout-placeholder-toggle"
               type="button"
               :class="openAIFirstTokenTimeoutSwitchClass(openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled)"
-              @click="
-                openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled =
-                  !openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled
-              "
+              @click="toggleOpenAIFirstTokenTimeoutPlaceholder('apikey')"
             >
               <span
                 :class="[
@@ -1274,11 +1283,26 @@
             </button>
           </div>
           <div v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled" class="max-w-xs">
-            <Select
-              v-model="openaiAPIKeyFirstTokenTimeoutPlaceholderMs"
-              :options="openAIFirstTokenTimeoutPlaceholderOptions"
-              aria-labelledby="bulk-edit-openai-apikey-first-token-timeout-placeholder-label"
-            />
+            <div class="relative">
+              <input
+                v-model.number="openaiAPIKeyFirstTokenTimeoutPlaceholderMs"
+                type="number"
+                inputmode="numeric"
+                step="1"
+                :min="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS"
+                :max="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS"
+                class="input pr-12 font-mono"
+                aria-labelledby="bulk-edit-openai-apikey-first-token-timeout-placeholder-label"
+                @blur="
+                  openaiAPIKeyFirstTokenTimeoutPlaceholderMs =
+                    normalizeOpenAIFirstTokenTimeoutPlaceholderMs(openaiAPIKeyFirstTokenTimeoutPlaceholderMs)
+                "
+              />
+              <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-gray-400">
+                ms
+              </span>
+            </div>
+            <p class="input-hint">{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderMsHint') }}</p>
           </div>
         </div>
       </div>
@@ -1771,12 +1795,15 @@ const openaiOAuthChatGPTPreambleFlushEnabled = ref(false)
 const openaiOAuthChatGPTSSECommentPreflushEnabled = ref(false)
 const openaiOAuthChatGPTSafeTokenPlaceholderEnabled = ref(false)
 const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled = ref(false)
-const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs = ref(200)
+const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS = 1000
+const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS = 1
+const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 3000
+const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS)
 const openaiAPIKeyPreambleFlushEnabled = ref(false)
 const openaiAPIKeySSECommentPreflushEnabled = ref(false)
 const openaiAPIKeySafeTokenPlaceholderEnabled = ref(false)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled = ref(false)
-const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(200)
+const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
@@ -1837,13 +1864,36 @@ const openAIWSModeOptions = computed(() => [
   { value: OPENAI_WS_MODE_CTX_POOL, label: t('admin.accounts.openai.wsModeCtxPool') },
   { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') }
 ])
-const openAIFirstTokenTimeoutPlaceholderOptions = computed(() => [
-  { value: 100, label: '100 ms' },
-  { value: 200, label: '200 ms' },
-  { value: 500, label: '500 ms' },
-  { value: 1000, label: '1000 ms' },
-  { value: 2000, label: '2000 ms' }
-])
+function normalizeOpenAIFirstTokenTimeoutPlaceholderMs(value: unknown): number {
+  const ms = Math.trunc(Number(value))
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS
+  }
+  return Math.min(
+    OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS,
+    Math.max(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS, ms)
+  )
+}
+
+function resetOpenAIFirstTokenTimeoutPlaceholderMs(kind: 'oauth' | 'apikey') {
+  if (kind === 'oauth') {
+    openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS
+  } else {
+    openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS
+  }
+}
+
+function toggleOpenAIFirstTokenTimeoutPlaceholder(kind: 'oauth' | 'apikey') {
+  if (kind === 'oauth') {
+    openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value =
+      !openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value
+    resetOpenAIFirstTokenTimeoutPlaceholderMs('oauth')
+  } else {
+    openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value =
+      !openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value
+    resetOpenAIFirstTokenTimeoutPlaceholderMs('apikey')
+  }
+}
 function openAIFirstTokenTimeoutPanelClass(enabled: boolean) {
   return [
     'rounded-lg border p-3 transition-colors',
@@ -2084,7 +2134,7 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
       openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value
     if (openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value) {
       extra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms =
-        openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value
+        normalizeOpenAIFirstTokenTimeoutPlaceholderMs(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value)
     } else {
       const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
       updates.extra_remove_keys = [
@@ -2114,7 +2164,8 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.openai_apikey_first_token_timeout_placeholder_enabled =
       openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value
     if (openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value) {
-      extra.openai_apikey_first_token_timeout_placeholder_ms = openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value
+      extra.openai_apikey_first_token_timeout_placeholder_ms =
+        normalizeOpenAIFirstTokenTimeoutPlaceholderMs(openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value)
     } else {
       const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
       updates.extra_remove_keys = [
@@ -2406,12 +2457,12 @@ watch(
       openaiOAuthChatGPTSSECommentPreflushEnabled.value = false
       openaiOAuthChatGPTSafeTokenPlaceholderEnabled.value = false
       openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value = false
-      openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = 200
+      resetOpenAIFirstTokenTimeoutPlaceholderMs('oauth')
       openaiAPIKeyPreambleFlushEnabled.value = false
       openaiAPIKeySSECommentPreflushEnabled.value = false
       openaiAPIKeySafeTokenPlaceholderEnabled.value = false
       openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
-      openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = 200
+      resetOpenAIFirstTokenTimeoutPlaceholderMs('apikey')
       codexCLIOnlyEnabled.value = false
       codexCLIOnlyAllowClaudeCodeEnabled.value = false
       openAICompactMode.value = 'auto'

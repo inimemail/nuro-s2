@@ -1714,11 +1714,7 @@ fn low_latency_policy(mode: Option<&str>) -> LowLatencyPolicy {
 
 fn normalize_first_token_timeout_placeholder_ms(ms: Option<u64>) -> Option<Duration> {
     match ms {
-        Some(100) => Some(Duration::from_millis(100)),
-        Some(200) => Some(Duration::from_millis(200)),
-        Some(500) => Some(Duration::from_millis(500)),
-        Some(1000) => Some(Duration::from_millis(1000)),
-        Some(2000) => Some(Duration::from_millis(2000)),
+        Some(value @ 1..=3000) => Some(Duration::from_millis(value)),
         _ => None,
     }
 }
@@ -2660,7 +2656,11 @@ mod tests {
     }
 
     #[test]
-    fn first_token_timeout_placeholder_ms_is_allowlisted() {
+    fn first_token_timeout_placeholder_ms_accepts_safe_range() {
+        assert_eq!(
+            normalize_first_token_timeout_placeholder_ms(Some(1)),
+            Some(Duration::from_millis(1))
+        );
         assert_eq!(
             normalize_first_token_timeout_placeholder_ms(Some(100)),
             Some(Duration::from_millis(100))
@@ -2670,10 +2670,11 @@ mod tests {
             Some(Duration::from_millis(200))
         );
         assert_eq!(
-            normalize_first_token_timeout_placeholder_ms(Some(500)),
-            Some(Duration::from_millis(500))
+            normalize_first_token_timeout_placeholder_ms(Some(3000)),
+            Some(Duration::from_millis(3000))
         );
-        assert_eq!(normalize_first_token_timeout_placeholder_ms(Some(300)), None);
+        assert_eq!(normalize_first_token_timeout_placeholder_ms(Some(0)), None);
+        assert_eq!(normalize_first_token_timeout_placeholder_ms(Some(3001)), None);
         assert_eq!(normalize_first_token_timeout_placeholder_ms(None), None);
     }
 

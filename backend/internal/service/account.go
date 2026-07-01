@@ -111,7 +111,9 @@ const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey = "openai_oauth_c
 const openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey = "openai_apikey_first_token_timeout_placeholder_enabled"
 const openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey = "openai_apikey_first_token_timeout_placeholder_ms"
 
-const openAIFirstTokenTimeoutPlaceholderDefaultMs = 200
+const openAIFirstTokenTimeoutPlaceholderDefaultMs = 1000
+const openAIFirstTokenTimeoutPlaceholderMinMs = 1
+const openAIFirstTokenTimeoutPlaceholderMaxMs = 3000
 
 const (
 	OpenAIPromptCacheBoostLevelNormal     = "normal"
@@ -1957,7 +1959,7 @@ func (a *Account) IsOpenAISafeTokenPlaceholderEnabled() bool {
 }
 
 // GetOpenAIFirstTokenTimeoutPlaceholderMs 返回 OpenAI 流式首 token 超时补帧阈值。
-// 返回 0 表示关闭。仅接受 100/200/500/1000/2000ms，启用但配置非法时回落到 200ms。
+// 返回 0 表示关闭。启用但配置非法时回落到 1000ms，有效范围 1-3000ms。
 func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderMs() int {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
 		return 0
@@ -1979,12 +1981,16 @@ func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderMs() int {
 }
 
 func normalizeOpenAIFirstTokenTimeoutPlaceholderMs(ms int) int {
-	switch ms {
-	case 100, 200, 500, 1000, 2000:
-		return ms
-	default:
+	if ms <= 0 {
 		return openAIFirstTokenTimeoutPlaceholderDefaultMs
 	}
+	if ms < openAIFirstTokenTimeoutPlaceholderMinMs {
+		return openAIFirstTokenTimeoutPlaceholderMinMs
+	}
+	if ms > openAIFirstTokenTimeoutPlaceholderMaxMs {
+		return openAIFirstTokenTimeoutPlaceholderMaxMs
+	}
+	return ms
 }
 
 // IsOpenAIOAuthPassthroughEnabled 兼容旧接口，等价于 OAuth 账号的 IsOpenAIPassthroughEnabled。
