@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	openaiPkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -258,7 +259,7 @@ func TestOpenAIPoolRecoveryProbe_RegularPoolAlwaysUsesDefaultTestModel(t *testin
 
 	require.True(t, result.success)
 	require.Equal(t, "responses", result.endpoint)
-	require.Contains(t, upstream.body, `"model":"gpt-5.5"`)
+	require.Contains(t, upstream.body, `"model":"`+openaiPkg.DefaultTestModel+`"`)
 	require.NotContains(t, upstream.body, `"model":"user-typed-wrong-model"`)
 	require.NotContains(t, upstream.body, `"model":"bad-probe-model"`)
 	require.NotContains(t, upstream.body, `"model":"gpt-4o"`)
