@@ -133,6 +133,24 @@
           >
             {{ t('admin.accounts.usageWindow.resetCredits') }} {{ codexResetCreditsAvailable }}
           </span>
+          <div v-if="primaryCodexResetCreditExpiry" class="flex shrink-0 items-center gap-1">
+            <span
+              class="inline-flex h-6 max-w-[118px] items-center truncate rounded bg-gray-100 px-1.5 text-[10px] leading-4 text-gray-600 tabular-nums dark:bg-gray-800 dark:text-gray-300"
+              :title="formatCodexResetCreditExpiry(primaryCodexResetCreditExpiry, 'full')"
+            >
+              {{ formatCodexResetCreditExpiry(primaryCodexResetCreditExpiry, 'short') }}
+            </span>
+            <button
+              v-if="hiddenCodexResetCreditExpiryCount > 0"
+              type="button"
+              class="inline-flex h-6 items-center rounded-full bg-gray-100 px-1.5 text-[10px] font-medium leading-4 text-gray-600 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+              :aria-expanded="showCodexResetCreditDetails"
+              :title="codexResetCreditExpiryTitle"
+              @click="toggleCodexResetCreditDetails"
+            >
+              +{{ hiddenCodexResetCreditExpiryCount }}
+            </button>
+          </div>
           <button
             type="button"
             class="inline-flex h-6 shrink-0 items-center gap-0.5 rounded px-1 text-[10px] font-medium text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
@@ -188,6 +206,20 @@
           >
             邀请
           </button>
+        </div>
+        <div
+          v-if="showCodexResetCreditDetails && codexResetCreditExpirations.length > 1"
+          class="mt-1 inline-grid max-w-full gap-0.5 rounded border border-gray-200 bg-white px-1.5 py-1 text-[10px] leading-4 text-gray-600 shadow-sm dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+        >
+          <span
+            v-for="(expiresAt, index) in codexResetCreditExpirations"
+            :key="`${expiresAt}-${index}`"
+            class="flex min-w-0 items-center gap-1 tabular-nums"
+            :title="formatCodexResetCreditExpiry(expiresAt, 'full')"
+          >
+            <span class="h-1 w-1 shrink-0 rounded-full bg-gray-400 dark:bg-gray-500" />
+            <span class="truncate">{{ formatCodexResetCreditExpiry(expiresAt, 'short') }}</span>
+          </span>
         </div>
         <div
           v-if="showCodexResetCredits"
@@ -752,6 +784,7 @@ const activeQueryLoading = ref(false)
 const codexResetCreditLoading = ref(false)
 const codexAutoResetModeLoading = ref(false)
 const codexResetConfirming = ref(false)
+const showCodexResetCreditDetails = ref(false)
 const codexInviteDialogOpen = ref(false)
 const codexInviteEmail = ref('')
 const codexInviteSending = ref(false)
@@ -829,6 +862,22 @@ const codexResetCreditsAvailable = computed(() => {
   const count = usageInfo.value?.codex_reset_credits_available_count
   return typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
 })
+
+const codexResetCreditExpirations = computed(() => {
+  const values = usageInfo.value?.codex_reset_credit_expirations ?? []
+  return values
+    .map((expiresAt) => expiresAt?.trim() ?? '')
+    .filter((expiresAt) => expiresAt.length > 0)
+    .sort(compareCodexResetCreditExpiry)
+})
+
+const primaryCodexResetCreditExpiry = computed(() => codexResetCreditExpirations.value[0] ?? '')
+const hiddenCodexResetCreditExpiryCount = computed(() => Math.max(codexResetCreditExpirations.value.length - 1, 0))
+const codexResetCreditExpiryTitle = computed(() =>
+  codexResetCreditExpirations.value
+    .map((expiresAt) => formatCodexResetCreditExpiry(expiresAt, 'full'))
+    .join('\n')
+)
 
 const canConsumeCodexResetCredit = computed(() => {
   return showCodexResetCredits.value && !isShadow.value && codexResetCreditsAvailable.value > 0
@@ -932,6 +981,37 @@ const codexResetCreditButtonText = computed(() => {
   return codexResetConfirming.value ? '确认重置？' : '重置'
 })
 
+const getCodexResetCreditExpiryTime = (value: string): number => {
+  const time = new Date(value).getTime()
+  return Number.isNaN(time) ? Number.POSITIVE_INFINITY : time
+}
+
+const compareCodexResetCreditExpiry = (a: string, b: string): number => {
+  const diff = getCodexResetCreditExpiryTime(a) - getCodexResetCreditExpiryTime(b)
+  if (diff !== 0) return diff
+  return a.localeCompare(b)
+}
+
+const formatCodexResetCreditExpiry = (value: string, style: 'short' | 'full'): string => {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const options: Intl.DateTimeFormatOptions = {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  }
+  if (style === 'full') {
+    options.year = 'numeric'
+  }
+  return new Intl.DateTimeFormat(undefined, options).format(date)
+}
+
+const toggleCodexResetCreditDetails = () => {
+  if (hiddenCodexResetCreditExpiryCount.value <= 0) return
+  showCodexResetCreditDetails.value = !showCodexResetCreditDetails.value
+}
+
 const mergeUsageInfo = (next: Partial<AccountUsageInfo>) => {
   const merged = {
     ...(usageInfo.value ?? {
@@ -950,9 +1030,13 @@ const refreshCodexResetCreditUsage = async () => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return
   const result = await adminAPI.accounts.queryOpenAIQuota(props.account.id)
   const count = result.rate_limit_reset_credits?.available_count
+  const expirations = result.rate_limit_reset_credits?.credits
+    ?.map((credit) => credit.expires_at?.trim() ?? '')
+    .filter((expiresAt) => expiresAt.length > 0) ?? []
   mergeUsageInfo({
     codex_reset_credits_supported: true,
     codex_reset_credits_available_count: typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0,
+    codex_reset_credit_expirations: expirations,
     codex_invites: result.invites ?? null
   })
 }
@@ -1847,6 +1931,12 @@ watch(isDesktopViewport, (isDesktop) => {
   }
   hasEnteredViewport.value = false
   attachVisibilityObserver()
+})
+
+watch(codexResetCreditExpirations, () => {
+  if (hiddenCodexResetCreditExpiryCount.value <= 0) {
+    showCodexResetCreditDetails.value = false
+  }
 })
 
 onUnmounted(() => {

@@ -271,6 +271,9 @@ export async function getUsage(id: number, source?: 'passive' | 'active', force?
 export interface OpenAICodexResetCreditUsage {
   rate_limit_reset_credits?: {
     available_count?: number
+    credits?: Array<{
+      expires_at?: string
+    }>
   } | null
   invites?: OpenAICodexInvites | null
 }

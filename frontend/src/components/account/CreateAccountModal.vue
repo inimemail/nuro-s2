@@ -2031,7 +2031,7 @@
 
       <!-- OpenAI OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'oauth-based'"
+        v-if="isOpenAIOAuthCreate"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
@@ -2909,7 +2909,7 @@
 
       <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
       <div
-        v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
+        v-if="isOpenAIRequestPathCreate"
         class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -2926,7 +2926,7 @@
             <Select v-model="openaiResponsesWebSocketV2Mode" :options="openAIWSModeOptions" />
           </div>
         </div>
-        <div v-if="accountCategory === 'oauth-based'" class="flex items-center justify-between">
+        <div v-if="isOpenAIOAuthCreate" class="flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.openai.oauthChatGPTPreambleFlush') }}</label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -2949,7 +2949,7 @@
             />
           </button>
         </div>
-        <div v-if="accountCategory === 'oauth-based'" class="flex items-center justify-between">
+        <div v-if="isOpenAIOAuthCreate" class="flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.openai.oauthChatGPTSSECommentPreflush') }}</label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -2972,7 +2972,7 @@
             />
           </button>
         </div>
-        <div v-if="accountCategory === 'oauth-based'" class="flex items-center justify-between">
+        <div v-if="isOpenAIOAuthCreate" class="flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.openai.oauthChatGPTSafeTokenPlaceholder') }}</label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -2996,7 +2996,7 @@
           </button>
         </div>
         <div
-          v-if="accountCategory === 'oauth-based'"
+          v-if="isOpenAIOAuthCreate"
           :class="openAIFirstTokenTimeoutPanelClass(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled)"
         >
           <div class="flex items-center justify-between gap-4">
@@ -3179,7 +3179,7 @@
       <!-- Anthropic API Key 自动透传开关 -->
       <div
         v-if="form.platform === 'anthropic' && accountCategory === 'apikey'"
-        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+        class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
           <div>
@@ -3203,6 +3203,18 @@
               ]"
             />
           </button>
+        </div>
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.anthropic.apiKeyAuthScheme') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.anthropic.apiKeyAuthSchemeDesc') }}
+            </p>
+          </div>
+          <select v-model="anthropicAPIKeyAuthScheme" class="input w-44 text-sm">
+            <option value="x_api_key">{{ t('admin.accounts.anthropic.apiKeyAuthSchemeXApiKey') }}</option>
+            <option value="authorization_bearer">{{ t('admin.accounts.anthropic.apiKeyAuthSchemeBearer') }}</option>
+          </select>
         </div>
       </div>
 
@@ -3257,7 +3269,7 @@
 
       <!-- OpenAI OAuth Codex 官方客户端限制开关 -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'oauth-based'"
+        v-if="isOpenAIOAuthCreate"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -3313,7 +3325,7 @@
 
       <!-- OpenAI Compact 能力配置 -->
       <div
-        v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
+        v-if="isOpenAIRequestPathCreate"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="flex items-center justify-between">
@@ -3352,7 +3364,7 @@
 
       <!-- OpenAI APIKey Responses API support mode -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'apikey'"
+        v-if="isOpenAIAPIKeyCreate"
         class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
@@ -3898,6 +3910,7 @@ import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
 import {
   OPENAI_WS_MODE_CTX_POOL,
+  OPENAI_WS_MODE_HTTP_BRIDGE,
   OPENAI_WS_MODE_OFF,
   OPENAI_WS_MODE_PASSTHROUGH,
   isOpenAIWSModeEnabled,
@@ -4080,11 +4093,27 @@ const poolModeRetryCountMax = computed(() =>
     ? MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
     : MAX_POOL_MODE_RETRY_COUNT
 )
+const isOpenAIOAuthCreate = computed(() =>
+  form.platform === 'openai' &&
+  accountCategory.value === 'oauth-based' &&
+  addMethod.value === 'oauth'
+)
+const isOpenAIAPIKeyCreate = computed(() =>
+  form.platform === 'openai' &&
+  accountCategory.value === 'apikey'
+)
+const isOpenAIRequestPathCreate = computed(() =>
+  isOpenAIOAuthCreate.value || isOpenAIAPIKeyCreate.value
+)
+const isAnthropicOAuthBasedCreate = computed(() =>
+  form.platform === 'anthropic' &&
+  accountCategory.value === 'oauth-based'
+)
 const showPromptCacheBoostToggle = computed(() =>
-  (form.platform === 'openai' &&
+  (isOpenAIRequestPathCreate.value &&
     (
-      accountCategory.value === 'oauth-based' ||
-      (accountCategory.value === 'apikey' && poolModeEnabled.value && !imagePoolModeEnabled.value)
+      isOpenAIOAuthCreate.value ||
+      (isOpenAIAPIKeyCreate.value && poolModeEnabled.value && !imagePoolModeEnabled.value)
     )) ||
   (form.platform === 'anthropic' &&
     (
@@ -4093,10 +4122,10 @@ const showPromptCacheBoostToggle = computed(() =>
     ))
 )
 const showUpstreamStrongIsolationToggle = computed(() =>
-  (form.platform === 'openai' &&
+  (isOpenAIRequestPathCreate.value &&
     (
-      accountCategory.value === 'oauth-based' ||
-      (accountCategory.value === 'apikey' && poolModeEnabled.value && !imagePoolModeEnabled.value)
+      isOpenAIOAuthCreate.value ||
+      (isOpenAIAPIKeyCreate.value && poolModeEnabled.value && !imagePoolModeEnabled.value)
     )) ||
   (form.platform === 'anthropic' &&
     (
@@ -4105,8 +4134,7 @@ const showUpstreamStrongIsolationToggle = computed(() =>
     ))
 )
 const showOAuthCacheBoostAndIsolationSection = computed(() =>
-  accountCategory.value === 'oauth-based' &&
-  (form.platform === 'openai' || form.platform === 'anthropic')
+  isOpenAIOAuthCreate.value || isAnthropicOAuthBasedCreate.value
 )
 const isAnthropicCacheBoostUI = computed(() => form.platform === 'anthropic')
 const promptCacheBoostTitleKey = computed(() =>
@@ -4125,8 +4153,7 @@ const upstreamStrongIsolationHintKey = computed(() =>
   isAnthropicCacheBoostUI.value ? 'admin.accounts.anthropicUpstreamStrongIsolationHint' : 'admin.accounts.upstreamStrongIsolationHint'
 )
 const showOpenAIAPIKeyTextStreamToggles = computed(() =>
-  form.platform === 'openai' &&
-  accountCategory.value === 'apikey' &&
+  isOpenAIAPIKeyCreate.value &&
   !imagePoolModeEnabled.value
 )
 const showUpstreamConcurrencyRaceToggle = computed(() =>
@@ -4175,6 +4202,7 @@ const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const anthropicPassthroughEnabled = ref(false)
 const anthropicKiroEnabled = ref(false)
+const anthropicAPIKeyAuthScheme = ref<'x_api_key' | 'authorization_bearer'>('x_api_key')
 const webSearchEmulationMode = ref('default')
 const webSearchGlobalEnabled = ref(false)
 const {
@@ -4353,7 +4381,8 @@ const geminiSelectedTier = computed(() => {
 const openAIWSModeOptions = computed(() => [
   { value: OPENAI_WS_MODE_OFF, label: t('admin.accounts.openai.wsModeOff') },
   { value: OPENAI_WS_MODE_CTX_POOL, label: t('admin.accounts.openai.wsModeCtxPool') },
-  { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') }
+  { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') },
+  { value: OPENAI_WS_MODE_HTTP_BRIDGE, label: t('admin.accounts.openai.wsModeHttpBridge') }
 ])
 
 function normalizeOpenAIFirstTokenTimeoutPlaceholderMs(value: unknown): number {
@@ -4607,6 +4636,9 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
+    if (newPlatform !== 'anthropic') {
+      addMethod.value = 'oauth'
+    }
     // Reset base URL based on platform
     apiKeyBaseUrl.value =
       (newPlatform === 'openai')
@@ -4775,6 +4807,7 @@ watch(
     if (platform !== 'anthropic' || category !== 'apikey') {
       anthropicPassthroughEnabled.value = false
       anthropicKiroEnabled.value = false
+      anthropicAPIKeyAuthScheme.value = 'x_api_key'
       webSearchEmulationMode.value = 'default'
     }
   }
@@ -5177,6 +5210,7 @@ const resetForm = () => {
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   anthropicPassthroughEnabled.value = false
   anthropicKiroEnabled.value = false
+  anthropicAPIKeyAuthScheme.value = 'x_api_key'
   webSearchEmulationMode.value = 'default'
   // Reset quota control state
   windowCostEnabled.value = false
@@ -5232,7 +5266,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   }
 
   const extra: Record<string, unknown> = { ...(base || {}) }
-  if (accountCategory.value === 'oauth-based') {
+  if (isOpenAIOAuthCreate.value) {
     extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
     extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
     if (openaiOAuthChatGPTPreambleFlushEnabled.value) {
@@ -5263,7 +5297,9 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     delete extra.openai_apikey_safe_token_placeholder_enabled
     delete extra.openai_apikey_first_token_timeout_placeholder_enabled
     delete extra.openai_apikey_first_token_timeout_placeholder_ms
-  } else if (accountCategory.value === 'apikey') {
+    delete extra.openai_apikey_responses_websockets_v2_mode
+    delete extra.openai_apikey_responses_websockets_v2_enabled
+  } else if (isOpenAIAPIKeyCreate.value) {
     extra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
     extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
     if (!imagePoolModeEnabled.value && openaiAPIKeyPreambleFlushEnabled.value) {
@@ -5294,18 +5330,35 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     delete extra.openai_oauth_chatgpt_safe_token_placeholder_enabled
     delete extra.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled
     delete extra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms
+    delete extra.openai_oauth_responses_websockets_v2_mode
+    delete extra.openai_oauth_responses_websockets_v2_enabled
+  } else {
+    delete extra.openai_oauth_responses_websockets_v2_mode
+    delete extra.openai_oauth_responses_websockets_v2_enabled
+    delete extra.openai_oauth_chatgpt_preamble_flush_enabled
+    delete extra.openai_oauth_chatgpt_sse_comment_preflush_enabled
+    delete extra.openai_oauth_chatgpt_safe_token_placeholder_enabled
+    delete extra.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled
+    delete extra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms
+    delete extra.openai_apikey_responses_websockets_v2_mode
+    delete extra.openai_apikey_responses_websockets_v2_enabled
+    delete extra.openai_apikey_preamble_flush_enabled
+    delete extra.openai_apikey_sse_comment_preflush_enabled
+    delete extra.openai_apikey_safe_token_placeholder_enabled
+    delete extra.openai_apikey_first_token_timeout_placeholder_enabled
+    delete extra.openai_apikey_first_token_timeout_placeholder_ms
   }
   // 清理兼容旧键，统一改用分类型开关。
   delete extra.responses_websockets_v2_enabled
   delete extra.openai_ws_enabled
-  if (openaiPassthroughEnabled.value) {
+  if (isOpenAIRequestPathCreate.value && openaiPassthroughEnabled.value) {
     extra.openai_passthrough = true
   } else {
     delete extra.openai_passthrough
     delete extra.openai_oauth_passthrough
   }
   if (
-    accountCategory.value === 'apikey' &&
+    isOpenAIAPIKeyCreate.value &&
     openaiPassthroughEnabled.value &&
     openAIResponsesPassthroughCompatEnabled.value
   ) {
@@ -5314,13 +5367,13 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     delete extra.openai_responses_passthrough_compat
   }
 
-  if (accountCategory.value === 'oauth-based' && codexCLIOnlyEnabled.value) {
+  if (isOpenAIOAuthCreate.value && codexCLIOnlyEnabled.value) {
     extra.codex_cli_only = true
   } else {
     delete extra.codex_cli_only
   }
   if (
-    accountCategory.value === 'oauth-based' &&
+    isOpenAIOAuthCreate.value &&
     codexCLIOnlyEnabled.value &&
     codexCLIOnlyAllowClaudeCodeEnabled.value
   ) {
@@ -5328,14 +5381,14 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   } else {
     delete extra.codex_cli_only_allowed_clients
   }
-  if (openAICompactMode.value !== 'auto') {
+  if (isOpenAIRequestPathCreate.value && openAICompactMode.value !== 'auto') {
     extra.openai_compact_mode = openAICompactMode.value
   } else {
     delete extra.openai_compact_mode
   }
 
   if (
-    accountCategory.value === 'apikey' &&
+    isOpenAIAPIKeyCreate.value &&
     openAITextGenerationCapabilityEnabled.value &&
     openAIResponsesMode.value !== 'auto'
   ) {
@@ -5379,7 +5432,7 @@ const applyPlatformCacheBoostAndIsolationCredentials = (credentials: Record<stri
 }
 
 const applyOpenAIOAuthPromptCacheAndIsolationCredentials = (credentials: Record<string, unknown>) => {
-  if (accountCategory.value !== 'oauth-based' || (form.platform !== 'openai' && form.platform !== 'anthropic')) {
+  if (!isOpenAIOAuthCreate.value && !isAnthropicOAuthBasedCreate.value) {
     return
   }
   applyPlatformCacheBoostAndIsolationCredentials(credentials)
@@ -5400,6 +5453,11 @@ const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unk
     extra.anthropic_kiro = true
   } else {
     extra.anthropic_kiro = false
+  }
+  if (anthropicAPIKeyAuthScheme.value === 'authorization_bearer') {
+    extra.anthropic_apikey_auth_scheme = 'authorization_bearer'
+  } else {
+    delete extra.anthropic_apikey_auth_scheme
   }
   if (webSearchEmulationMode.value === 'default') {
     delete extra.web_search_emulation
@@ -5903,7 +5961,7 @@ const createAccountAndFinish = async (
       finalExtra = quotaExtra
     }
   }
-  if (platform === 'openai') {
+  if (platform === 'openai' && (type === 'oauth' || type === 'apikey')) {
     if (type === 'apikey') {
       applyOpenAIEndpointCapabilities(credentials)
     }
@@ -5915,8 +5973,8 @@ const createAccountAndFinish = async (
     }
   }
   if (
-    (platform === 'openai' || platform === 'anthropic') &&
-    (type === 'oauth' || type === 'setup-token')
+    (platform === 'openai' && type === 'oauth') ||
+    (platform === 'anthropic' && (type === 'oauth' || type === 'setup-token'))
   ) {
     applyPlatformCacheBoostAndIsolationCredentials(credentials)
   }

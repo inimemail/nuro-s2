@@ -122,9 +122,10 @@ const (
 )
 
 var (
-	openAIWhamUsageURL   = "https://chatgpt.com/backend-api/wham/usage"
-	openAIWhamConsumeURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
-	openAICodexInviteURL = "https://chatgpt.com/backend-api/wham/referrals/invite"
+	openAIWhamUsageURL              = "https://chatgpt.com/backend-api/wham/usage"
+	openAIWhamResetCreditDetailsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	openAIWhamConsumeURL            = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+	openAICodexInviteURL            = "https://chatgpt.com/backend-api/wham/referrals/invite"
 )
 
 const (
@@ -289,7 +290,12 @@ type OpenAIAdditionalRateLimit struct {
 }
 
 type OpenAIRateLimitResetCredits struct {
-	AvailableCount int `json:"available_count"`
+	AvailableCount int                                `json:"available_count"`
+	Credits        []OpenAIRateLimitResetCreditDetail `json:"credits,omitempty"`
+}
+
+type OpenAIRateLimitResetCreditDetail struct {
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 type OpenAICodexInvites struct {
@@ -968,6 +974,9 @@ func (s *AccountUsageService) queryOpenAIWhamUsage(ctx context.Context, account 
 		}
 	}
 	payload.FetchedAt = time.Now().Unix()
+	if payload.RateLimitResetCredits != nil && payload.RateLimitResetCredits.AvailableCount > 0 {
+		payload.RateLimitResetCredits.Credits = s.queryOpenAIWhamResetCreditDetails(ctx, account)
+	}
 
 	updates := make(map[string]any)
 	if headerUpdates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(headerUpdates) > 0 {
@@ -1013,6 +1022,91 @@ func (s *AccountUsageService) queryOpenAIWhamUsage(ctx context.Context, account 
 		}
 	}
 	return payload, updates, nil
+}
+
+func (s *AccountUsageService) queryOpenAIWhamResetCreditDetails(ctx context.Context, account *Account) []OpenAIRateLimitResetCreditDetail {
+	resp, err := s.doOpenAIWhamRequest(ctx, account, http.MethodGet, openAIWhamResetCreditDetailsURL, nil)
+	if err != nil {
+		slog.Warn("openai_codex_reset_credit_details_failed", "account_id", accountIDForLog(account), "error", err)
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		slog.Warn("openai_codex_reset_credit_details_read_failed", "account_id", accountIDForLog(account), "error", readErr)
+		return nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Warn("openai_codex_reset_credit_details_failed", "account_id", accountIDForLog(account), "status", resp.StatusCode)
+		return nil
+	}
+	credits, parseErr := parseOpenAIRateLimitResetCreditDetails(body)
+	if parseErr != nil {
+		slog.Warn("openai_codex_reset_credit_details_parse_failed", "account_id", accountIDForLog(account), "error", parseErr)
+		return nil
+	}
+	return credits
+}
+
+type openAIRateLimitResetCreditDetailPayload struct {
+	ExpiresAt      string `json:"expires_at,omitempty"`
+	ExpiresAtCamel string `json:"expiresAt,omitempty"`
+}
+
+type openAIRateLimitResetCreditDetailsPayload struct {
+	Credits               []openAIRateLimitResetCreditDetailPayload `json:"credits,omitempty"`
+	RateLimitResetCredits []openAIRateLimitResetCreditDetailPayload `json:"rate_limit_reset_credits,omitempty"`
+	Items                 []openAIRateLimitResetCreditDetailPayload `json:"items,omitempty"`
+	Data                  []openAIRateLimitResetCreditDetailPayload `json:"data,omitempty"`
+}
+
+func parseOpenAIRateLimitResetCreditDetails(body []byte) ([]OpenAIRateLimitResetCreditDetail, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+
+	var rawCredits []openAIRateLimitResetCreditDetailPayload
+	if trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &rawCredits); err != nil {
+			return nil, err
+		}
+	} else {
+		var payload openAIRateLimitResetCreditDetailsPayload
+		if err := json.Unmarshal(trimmed, &payload); err != nil {
+			return nil, err
+		}
+		rawCredits = firstNonEmptyResetCreditPayload(payload.Credits, payload.RateLimitResetCredits, payload.Items, payload.Data)
+	}
+
+	credits := make([]OpenAIRateLimitResetCreditDetail, 0, len(rawCredits))
+	for _, raw := range rawCredits {
+		expiresAt := strings.TrimSpace(raw.ExpiresAt)
+		if expiresAt == "" {
+			expiresAt = strings.TrimSpace(raw.ExpiresAtCamel)
+		}
+		if expiresAt == "" {
+			continue
+		}
+		credits = append(credits, OpenAIRateLimitResetCreditDetail{ExpiresAt: expiresAt})
+	}
+	return credits, nil
+}
+
+func firstNonEmptyResetCreditPayload(lists ...[]openAIRateLimitResetCreditDetailPayload) []openAIRateLimitResetCreditDetailPayload {
+	for _, list := range lists {
+		if len(list) > 0 {
+			return list
+		}
+	}
+	return nil
+}
+
+func accountIDForLog(account *Account) int64 {
+	if account == nil {
+		return 0
+	}
+	return account.ID
 }
 
 func (s *AccountUsageService) QueryOpenAICodexResetCreditUsage(ctx context.Context, accountID int64) (*OpenAIQuotaUsage, error) {
@@ -1359,6 +1453,7 @@ func (s *AccountUsageService) doOpenAIWhamRequest(ctx context.Context, account *
 	req.Host = "chatgpt.com"
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("OpenAI-Beta", "codex-1")
 	req.Header.Set("Originator", openAIWhamOriginator)
 	req.Header.Set("OAI-Language", "zh-CN")
 	req.Header.Set("Sec-Fetch-Site", "none")

@@ -1772,6 +1772,14 @@ func (a *Account) IsOpenAIResponsesWebSocketV2Enabled() bool {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
 		return false
 	}
+	if mode, ok := a.openAIResponsesWebSocketV2ModeForCurrentType(); ok {
+		switch mode {
+		case OpenAIWSIngressModeOff, OpenAIWSIngressModeHTTPBridge:
+			return false
+		case OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
+			return true
+		}
+	}
 	if a.IsOpenAIOAuth() {
 		if enabled, ok := a.Extra["openai_oauth_responses_websockets_v2_enabled"].(bool); ok {
 			return enabled
@@ -1791,12 +1799,41 @@ func (a *Account) IsOpenAIResponsesWebSocketV2Enabled() bool {
 	return false
 }
 
+func (a *Account) openAIResponsesWebSocketV2ModeForCurrentType() (string, bool) {
+	if a == nil || a.Extra == nil {
+		return "", false
+	}
+	key := ""
+	switch {
+	case a.IsOpenAIOAuth():
+		key = "openai_oauth_responses_websockets_v2_mode"
+	case a.IsOpenAIApiKey():
+		key = "openai_apikey_responses_websockets_v2_mode"
+	default:
+		return "", false
+	}
+	raw, ok := a.Extra[key]
+	if !ok {
+		return "", false
+	}
+	mode, ok := raw.(string)
+	if !ok {
+		return "", false
+	}
+	normalized := normalizeOpenAIWSIngressMode(mode)
+	if normalized == "" {
+		return "", false
+	}
+	return normalized, true
+}
+
 const (
 	OpenAIWSIngressModeOff         = "off"
 	OpenAIWSIngressModeShared      = "shared"
 	OpenAIWSIngressModeDedicated   = "dedicated"
 	OpenAIWSIngressModeCtxPool     = "ctx_pool"
 	OpenAIWSIngressModePassthrough = "passthrough"
+	OpenAIWSIngressModeHTTPBridge  = "http_bridge"
 )
 
 func normalizeOpenAIWSIngressMode(mode string) string {
@@ -1807,6 +1844,8 @@ func normalizeOpenAIWSIngressMode(mode string) string {
 		return OpenAIWSIngressModeCtxPool
 	case OpenAIWSIngressModePassthrough:
 		return OpenAIWSIngressModePassthrough
+	case OpenAIWSIngressModeHTTPBridge:
+		return OpenAIWSIngressModeHTTPBridge
 	case OpenAIWSIngressModeShared:
 		return OpenAIWSIngressModeShared
 	case OpenAIWSIngressModeDedicated:

@@ -61,6 +61,10 @@ type APIKeyAuthGroupSnapshot struct {
 	Status                          string   `json:"status"`
 	SubscriptionType                string   `json:"subscription_type"`
 	RateMultiplier                  float64  `json:"rate_multiplier"`
+	PeakRateEnabled                 bool     `json:"peak_rate_enabled"`
+	PeakStart                       string   `json:"peak_start,omitempty"`
+	PeakEnd                         string   `json:"peak_end,omitempty"`
+	PeakRateMultiplier              float64  `json:"peak_rate_multiplier"`
 	DailyLimitUSD                   *float64 `json:"daily_limit_usd,omitempty"`
 	WeeklyLimitUSD                  *float64 `json:"weekly_limit_usd,omitempty"`
 	MonthlyLimitUSD                 *float64 `json:"monthly_limit_usd,omitempty"`

@@ -509,6 +509,10 @@ export interface Group {
   daily_limit_usd: number | null
   weekly_limit_usd: number | null
   monthly_limit_usd: number | null
+  peak_rate_enabled: boolean
+  peak_start: string
+  peak_end: string
+  peak_rate_multiplier: number
   // 图片生成计费配置
   allow_image_generation: boolean
   image_rate_independent: boolean
@@ -631,6 +635,10 @@ export interface CreateGroupRequest {
   allow_image_generation?: boolean
   image_rate_independent?: boolean
   image_rate_multiplier?: number
+  peak_rate_enabled?: boolean
+  peak_start?: string
+  peak_end?: string
+  peak_rate_multiplier?: number
   image_price_1k?: number | null
   image_price_2k?: number | null
   image_price_4k?: number | null
@@ -666,6 +674,10 @@ export interface UpdateGroupRequest {
   allow_image_generation?: boolean
   image_rate_independent?: boolean
   image_rate_multiplier?: number
+  peak_rate_enabled?: boolean
+  peak_start?: string
+  peak_end?: string
+  peak_rate_multiplier?: number
   image_price_1k?: number | null
   image_price_2k?: number | null
   image_price_4k?: number | null
@@ -1018,6 +1030,7 @@ export interface AccountUsageInfo {
   // OpenAI Codex reset credits
   codex_reset_credits_supported?: boolean
   codex_reset_credits_available_count?: number | null
+  codex_reset_credit_expirations?: string[] | null
   codex_auto_reset_mode?: 'off' | 'short' | 'long' | '5h' | '7d' | string
   codex_invites?: {
     created?: number

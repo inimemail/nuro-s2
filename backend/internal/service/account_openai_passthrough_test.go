@@ -69,6 +69,7 @@ func TestAccount_IsOpenAIOAuthPassthroughEnabled(t *testing.T) {
 		}
 		require.False(t, apiKeyAccount.IsOpenAIOAuthPassthroughEnabled())
 	})
+
 }
 
 func TestAccount_IsOpenAIResponsesPassthroughCompatEnabled(t *testing.T) {
@@ -276,6 +277,30 @@ func TestAccount_IsOpenAIResponsesWebSocketV2Enabled(t *testing.T) {
 		require.False(t, account.IsOpenAIResponsesWebSocketV2Enabled())
 	})
 
+	t.Run("mode field has priority over stale boolean", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_oauth_responses_websockets_v2_mode":    OpenAIWSIngressModeCtxPool,
+				"openai_oauth_responses_websockets_v2_enabled": false,
+			},
+		}
+		require.True(t, account.IsOpenAIResponsesWebSocketV2Enabled())
+	})
+
+	t.Run("http_bridge mode is not upstream ws v2 in legacy resolver", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_oauth_responses_websockets_v2_mode":    OpenAIWSIngressModeHTTPBridge,
+				"openai_oauth_responses_websockets_v2_enabled": true,
+			},
+		}
+		require.False(t, account.IsOpenAIResponsesWebSocketV2Enabled())
+	})
+
 	t.Run("分类型键缺失时回退兼容键", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,
@@ -321,6 +346,17 @@ func TestAccount_ResolveOpenAIResponsesWebSocketV2Mode(t *testing.T) {
 			},
 		}
 		require.Equal(t, OpenAIWSIngressModePassthrough, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeCtxPool))
+	})
+
+	t.Run("oauth mode supports http_bridge", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeHTTPBridge,
+			},
+		}
+		require.Equal(t, OpenAIWSIngressModeHTTPBridge, account.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeCtxPool))
 	})
 
 	t.Run("legacy enabled maps to ctx_pool", func(t *testing.T) {

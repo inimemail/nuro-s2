@@ -943,6 +943,21 @@ export default {
     cacheHit: 'Cache hit',
     cacheCreate: 'Cache create',
     cacheHitRate: 'hit rate',
+    ipGeo: {
+      fetch: 'Lookup location',
+      fetching: 'Looking up...',
+      failed: 'Lookup failed, retry',
+      private: 'Private IP',
+      pending: '{count} IPs pending lookup',
+      batchFetch: 'Lookup page IPs',
+      batchFetching: 'Looking up...',
+      batchFailed: 'Some IP locations failed to load',
+      refreshTitle: 'Refresh IP location',
+      detailOrg: 'Org',
+      detailTimezone: 'Timezone',
+      detailAccuracy: 'Accuracy',
+      detailCoordinates: 'Coordinates'
+    },
     imageOutputTokens: 'Image output tokens',
     imageOutputTokenPrice: 'Image output token price',
     imageOutputCost: 'Image output cost',
@@ -2222,6 +2237,13 @@ export default {
         validityHint: 'Number of days the subscription is valid when assigned to a user',
         noLimit: 'No limit'
       },
+      peakRate: {
+        enable: 'Enable peak rate multiplier',
+        peakStart: 'Peak start',
+        peakEnd: 'Peak end',
+        peakMultiplier: 'Peak multiplier',
+        multiplierHint: 'Applies to token billing multiplier. 0 means peak token requests are billed at 0x.'
+      },
       imagePricing: {
         title: 'Image Generation Pricing',
         description: 'Configure image generation access and base image prices. Leave empty to use default prices.',
@@ -2900,6 +2922,7 @@ export default {
       assignSubscription: 'Assign Subscription',
       adjustSubscription: 'Adjust Subscription',
       revokeSubscription: 'Revoke Subscription',
+      restoreSubscription: 'Restore Subscription',
       allStatus: 'All Status',
       allGroups: 'All Groups',
       allPlatforms: 'All Platforms',
@@ -2951,6 +2974,7 @@ export default {
       adjust: 'Adjust',
       adjusting: 'Adjusting...',
       revoke: 'Revoke',
+      restore: 'Restore',
       resetQuota: 'Reset Quota',
       resetQuotaTitle: 'Reset Usage Quota',
       resetQuotaConfirm: "Reset the daily, weekly, and monthly usage quota for '{user}'? Usage will be zeroed and windows restarted from today.",
@@ -2961,10 +2985,12 @@ export default {
       subscriptionAssigned: 'Subscription assigned successfully',
       subscriptionAdjusted: 'Subscription adjusted successfully',
       subscriptionRevoked: 'Subscription revoked successfully',
+      subscriptionRestored: 'Subscription restored successfully',
       failedToLoad: 'Failed to load subscriptions',
       failedToAssign: 'Failed to assign subscription',
       failedToAdjust: 'Failed to adjust subscription',
       failedToRevoke: 'Failed to revoke subscription',
+      failedToRestore: 'Failed to restore subscription',
       adjustWouldExpire: 'Remaining days after adjustment must be greater than 0',
       adjustOutOfRange: 'Adjustment days must be between -36500 and 36500',
       pleaseSelectUser: 'Please select a user',
@@ -2972,6 +2998,8 @@ export default {
       validityDaysRequired: 'Please enter a valid number of days (at least 1)',
       revokeConfirm:
         "Are you sure you want to revoke the subscription for '{user}'? This action cannot be undone.",
+      restoreConfirm:
+        "Restore the revoked subscription for '{user}'? The restore will fail if the user already has an active subscription for the same group.",
       guide: {
         title: 'Subscription Management Guide',
         subtitle: 'Subscription mode lets you assign time-based usage quotas to users, with daily/weekly/monthly limits. Follow these steps to get started.',
@@ -3417,6 +3445,7 @@ export default {
         wsModeOff: 'Off (off)',
         wsModeCtxPool: 'Context Pool (ctx_pool)',
         wsModePassthrough: 'Passthrough (passthrough)',
+        wsModeHttpBridge: 'HTTP Bridge (http_bridge)',
         wsModeShared: 'Shared (shared)',
         wsModeDedicated: 'Dedicated (dedicated)',
         wsModeConcurrencyHint:
@@ -3520,6 +3549,10 @@ export default {
         apiKeyPassthrough: 'Auto passthrough (auth only)',
         apiKeyPassthroughDesc:
           'Only applies to Anthropic API Key accounts. When enabled, messages/count_tokens are forwarded in passthrough mode with auth replacement only, while billing/concurrency/audit and safety filtering are preserved. Disable to roll back immediately.',
+        apiKeyAuthScheme: 'Upstream auth scheme',
+        apiKeyAuthSchemeDesc: 'Choose the API key auth header used when forwarding to an Anthropic-compatible upstream. Ollama Cloud uses Authorization: Bearer.',
+        apiKeyAuthSchemeXApiKey: 'x-api-key',
+        apiKeyAuthSchemeBearer: 'Authorization: Bearer',
         kiroMode: 'Kiro Guard',
         kiroModeDesc:
           'Only applies to Anthropic API Key accounts. When enabled, this account always uses the Claude identity guard and Kiro leak sanitization path for messages/count_tokens, even if pool mode is off.',

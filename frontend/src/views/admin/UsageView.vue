@@ -128,6 +128,7 @@
         :default-sort-order="'desc'"
         @sort="handleSort"
         @userClick="handleUserClick"
+        @ipGeoBatchFailed="handleIpGeoBatchFailed"
       />
       <UsageErrorsTable
         v-else
@@ -535,6 +536,11 @@ const handleSort = (key: string, order: 'asc' | 'desc') => {
   pagination.page = 1
   loadLogs()
 }
+
+const handleIpGeoBatchFailed = () => {
+  appStore.showError(t('usage.ipGeo.batchFailed'))
+}
+
 const cancelExport = () => exportAbortController?.abort()
 const openCleanupDialog = () => { cleanupDialogVisible.value = true }
 const getRequestTypeLabel = (log: AdminUsageLog): string => {

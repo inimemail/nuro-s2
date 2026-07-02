@@ -28,6 +28,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/cespare/xxhash/v2"
@@ -554,7 +555,7 @@ func (s *OpenAIGatewayService) isUpstreamModelRestrictedByChannel(ctx context.Co
 	if s.channelService == nil {
 		return false
 	}
-	upstreamModel := resolveOpenAIAccountUpstreamModelForRequest(account, requestedModel, requireCompact)
+	upstreamModel := resolveOpenAIAccountUpstreamModelForRequest(account, requestedModel, requireCompact, s.openAICompactModelFallback())
 	if upstreamModel == "" {
 		return false
 	}
@@ -1937,15 +1938,26 @@ func (s *OpenAIGatewayService) lessOpenAIPoolCooldownProbeAccount(a, b *Account)
 // resolveOpenAIAccountUpstreamModelForRequest resolves the upstream model that
 // would be sent for a given request, honouring compact-only mappings when the
 // caller is on the /responses/compact path.
-func resolveOpenAIAccountUpstreamModelForRequest(account *Account, requestedModel string, requireCompact bool) string {
+func resolveOpenAIAccountUpstreamModelForRequest(account *Account, requestedModel string, requireCompact bool, compactFallback string) string {
 	upstreamModel := resolveOpenAIForwardModel(account, requestedModel, "")
 	if upstreamModel == "" {
 		return ""
 	}
 	if requireCompact {
-		return resolveOpenAICompactForwardModel(account, upstreamModel)
+		return resolveOpenAICompactForwardModelWithFallback(account, upstreamModel, compactFallback)
 	}
 	return upstreamModel
+}
+
+func (s *OpenAIGatewayService) openAICompactModelFallback() string {
+	if s == nil || s.cfg == nil {
+		return ""
+	}
+	return s.cfg.Gateway.OpenAICompactModel
+}
+
+func (s *OpenAIGatewayService) resolveOpenAICompactForwardModel(account *Account, model string) string {
+	return resolveOpenAICompactForwardModelWithFallback(account, model, s.openAICompactModelFallback())
 }
 
 func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform string) (*Account, error) {
@@ -3504,6 +3516,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		patchDisabled = true
 	}
 
+	// /responses/compact 不支持 image_generation bridge 注入的 tool_choice 等参数。
+	isCompactRequest := isOpenAIResponsesCompactPath(c)
+
 	if account.Type == AccountTypeAPIKey && normalizeOpenAIResponsesStringInputMap(reqBody) {
 		bodyModified = true
 		disablePatch()
@@ -3516,7 +3531,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		markPatchSet("instructions", "You are a helpful coding assistant.")
 	}
 
-	if codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationTool(reqBody) {
+	if !isCompactRequest && codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationTool(reqBody) {
 		bodyModified = true
 		disablePatch()
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Injected /responses image_generation tool for Codex client")
@@ -3527,7 +3542,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		disablePatch()
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Normalized /responses image_generation tool payload")
 	}
-	if codexImageGenerationBridgeEnabled && applyCodexImageGenerationBridgeInstructions(reqBody) {
+	if !isCompactRequest && codexImageGenerationBridgeEnabled && applyCodexImageGenerationBridgeInstructions(reqBody) {
 		bodyModified = true
 		disablePatch()
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Added Codex image_generation bridge instructions")
@@ -3590,10 +3605,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	// Compact-only model 映射：仅在 /responses/compact 路径生效，且优先级高于
 	// OAuth 模型规范化（避免 OAuth 规范化覆盖 compact-only 自定义模型）。
-	isCompactRequest := isOpenAIResponsesCompactPath(c)
 	compactMapped := false
 	if isCompactRequest {
-		compactMappedModel := resolveOpenAICompactForwardModel(account, billingModel)
+		compactMappedModel := s.resolveOpenAICompactForwardModel(account, billingModel)
 		if compactMappedModel != "" && compactMappedModel != billingModel {
 			compactMapped = true
 			upstreamModel = compactMappedModel
@@ -4354,7 +4368,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 ) (*OpenAIForwardResult, error) {
 	upstreamPassthroughModel := ""
 	if isOpenAIResponsesCompactPath(c) {
-		compactMappedModel := resolveOpenAICompactForwardModel(account, reqModel)
+		compactMappedModel := s.resolveOpenAICompactForwardModel(account, reqModel)
 		if compactMappedModel != "" && compactMappedModel != reqModel {
 			nextBody, setErr := sjson.SetBytes(body, "model", compactMappedModel)
 			if setErr != nil {
@@ -7993,7 +8007,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		}
 		multiplier = resolver.Resolve(ctx, user.ID, *apiKey.GroupID, apiKey.Group.RateMultiplier)
 	}
-	imageMultiplier := resolveImageRateMultiplier(apiKey, multiplier)
+	multiplier, imageMultiplier := computePeakAwareMultipliers(apiKey, multiplier, timezone.Now())
 
 	var cost *CostBreakdown
 	var err error

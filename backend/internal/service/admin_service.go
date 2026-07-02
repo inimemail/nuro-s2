@@ -203,6 +203,10 @@ type CreateGroupInput struct {
 	AllowImageGeneration bool
 	ImageRateIndependent bool
 	ImageRateMultiplier  *float64
+	PeakRateEnabled      bool
+	PeakStart            string
+	PeakEnd              string
+	PeakRateMultiplier   *float64
 	ImagePrice1K         *float64
 	ImagePrice2K         *float64
 	ImagePrice4K         *float64
@@ -244,6 +248,10 @@ type UpdateGroupInput struct {
 	AllowImageGeneration *bool
 	ImageRateIndependent *bool
 	ImageRateMultiplier  *float64
+	PeakRateEnabled      *bool
+	PeakStart            *string
+	PeakEnd              *string
+	PeakRateMultiplier   *float64
 	ImagePrice1K         *float64
 	ImagePrice2K         *float64
 	ImagePrice4K         *float64
@@ -1850,6 +1858,20 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		}
 		imageRateMultiplier = *input.ImageRateMultiplier
 	}
+	peakRateMultiplier := 1.0
+	if input.PeakRateMultiplier != nil {
+		peakRateMultiplier = *input.PeakRateMultiplier
+	}
+	peakRateEnabled, peakStart, peakEnd, peakRateMultiplier := NormalizePeakRateConfig(
+		subscriptionType,
+		input.PeakRateEnabled,
+		input.PeakStart,
+		input.PeakEnd,
+		peakRateMultiplier,
+	)
+	if err := ValidatePeakRateConfig(subscriptionType, peakRateEnabled, peakStart, peakEnd, peakRateMultiplier); err != nil {
+		return nil, err
+	}
 
 	// 校验降级分组
 	if input.FallbackGroupID != nil {
@@ -1920,6 +1942,10 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		AllowImageGeneration:            input.AllowImageGeneration,
 		ImageRateIndependent:            input.ImageRateIndependent,
 		ImageRateMultiplier:             imageRateMultiplier,
+		PeakRateEnabled:                 peakRateEnabled,
+		PeakStart:                       peakStart,
+		PeakEnd:                         peakEnd,
+		PeakRateMultiplier:              peakRateMultiplier,
 		ImagePrice1K:                    imagePrice1K,
 		ImagePrice2K:                    imagePrice2K,
 		ImagePrice4K:                    imagePrice4K,
@@ -2118,6 +2144,30 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.ImagePrice4K != nil {
 		group.ImagePrice4K = normalizePrice(input.ImagePrice4K)
 	}
+	peakRateEnabled := group.PeakRateEnabled
+	if input.PeakRateEnabled != nil {
+		peakRateEnabled = *input.PeakRateEnabled
+	}
+	peakStart := group.PeakStart
+	if input.PeakStart != nil {
+		peakStart = *input.PeakStart
+	}
+	peakEnd := group.PeakEnd
+	if input.PeakEnd != nil {
+		peakEnd = *input.PeakEnd
+	}
+	peakRateMultiplier := group.PeakRateMultiplier
+	if input.PeakRateMultiplier != nil {
+		peakRateMultiplier = *input.PeakRateMultiplier
+	}
+	peakRateEnabled, peakStart, peakEnd, peakRateMultiplier = NormalizePeakRateConfig(group.SubscriptionType, peakRateEnabled, peakStart, peakEnd, peakRateMultiplier)
+	if err := ValidatePeakRateConfig(group.SubscriptionType, peakRateEnabled, peakStart, peakEnd, peakRateMultiplier); err != nil {
+		return nil, err
+	}
+	group.PeakRateEnabled = peakRateEnabled
+	group.PeakStart = peakStart
+	group.PeakEnd = peakEnd
+	group.PeakRateMultiplier = peakRateMultiplier
 
 	// Claude Code 客户端限制
 	if input.ClaudeCodeOnly != nil {

@@ -25,18 +25,20 @@ var MaxExpiresAt = time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC)
 const MaxValidityDays = 36500
 
 var (
-	ErrSubscriptionNotFound       = infraerrors.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found")
-	ErrSubscriptionExpired        = infraerrors.Forbidden("SUBSCRIPTION_EXPIRED", "subscription has expired")
-	ErrSubscriptionSuspended      = infraerrors.Forbidden("SUBSCRIPTION_SUSPENDED", "subscription is suspended")
-	ErrSubscriptionAlreadyExists  = infraerrors.Conflict("SUBSCRIPTION_ALREADY_EXISTS", "subscription already exists for this user and group")
-	ErrSubscriptionAssignConflict = infraerrors.Conflict("SUBSCRIPTION_ASSIGN_CONFLICT", "subscription exists but request conflicts with existing assignment semantics")
-	ErrGroupNotSubscriptionType   = infraerrors.BadRequest("GROUP_NOT_SUBSCRIPTION_TYPE", "group is not a subscription type")
-	ErrInvalidInput               = infraerrors.BadRequest("INVALID_INPUT", "at least one of resetDaily, resetWeekly, or resetMonthly must be true")
-	ErrDailyLimitExceeded         = infraerrors.TooManyRequests("DAILY_LIMIT_EXCEEDED", "daily usage limit exceeded")
-	ErrWeeklyLimitExceeded        = infraerrors.TooManyRequests("WEEKLY_LIMIT_EXCEEDED", "weekly usage limit exceeded")
-	ErrMonthlyLimitExceeded       = infraerrors.TooManyRequests("MONTHLY_LIMIT_EXCEEDED", "monthly usage limit exceeded")
-	ErrSubscriptionNilInput       = infraerrors.BadRequest("SUBSCRIPTION_NIL_INPUT", "subscription input cannot be nil")
-	ErrAdjustWouldExpire          = infraerrors.BadRequest("ADJUST_WOULD_EXPIRE", "adjustment would result in expired subscription (remaining days must be > 0)")
+	ErrSubscriptionNotFound        = infraerrors.NotFound("SUBSCRIPTION_NOT_FOUND", "subscription not found")
+	ErrSubscriptionExpired         = infraerrors.Forbidden("SUBSCRIPTION_EXPIRED", "subscription has expired")
+	ErrSubscriptionSuspended       = infraerrors.Forbidden("SUBSCRIPTION_SUSPENDED", "subscription is suspended")
+	ErrSubscriptionAlreadyExists   = infraerrors.Conflict("SUBSCRIPTION_ALREADY_EXISTS", "subscription already exists for this user and group")
+	ErrSubscriptionAssignConflict  = infraerrors.Conflict("SUBSCRIPTION_ASSIGN_CONFLICT", "subscription exists but request conflicts with existing assignment semantics")
+	ErrSubscriptionNotRevoked      = infraerrors.Conflict("SUBSCRIPTION_NOT_REVOKED", "subscription is not revoked")
+	ErrSubscriptionRestoreConflict = infraerrors.Conflict("SUBSCRIPTION_RESTORE_CONFLICT", "subscription already exists for this user and group")
+	ErrGroupNotSubscriptionType    = infraerrors.BadRequest("GROUP_NOT_SUBSCRIPTION_TYPE", "group is not a subscription type")
+	ErrInvalidInput                = infraerrors.BadRequest("INVALID_INPUT", "at least one of resetDaily, resetWeekly, or resetMonthly must be true")
+	ErrDailyLimitExceeded          = infraerrors.TooManyRequests("DAILY_LIMIT_EXCEEDED", "daily usage limit exceeded")
+	ErrWeeklyLimitExceeded         = infraerrors.TooManyRequests("WEEKLY_LIMIT_EXCEEDED", "weekly usage limit exceeded")
+	ErrMonthlyLimitExceeded        = infraerrors.TooManyRequests("MONTHLY_LIMIT_EXCEEDED", "monthly usage limit exceeded")
+	ErrSubscriptionNilInput        = infraerrors.BadRequest("SUBSCRIPTION_NIL_INPUT", "subscription input cannot be nil")
+	ErrAdjustWouldExpire           = infraerrors.BadRequest("ADJUST_WOULD_EXPIRE", "adjustment would result in expired subscription (remaining days must be > 0)")
 )
 
 // SubscriptionService 订阅服务
@@ -53,6 +55,11 @@ type SubscriptionService struct {
 	subCacheJitter int // 抖动百分比
 
 	maintenanceQueue *SubscriptionMaintenanceQueue
+}
+
+type userSubscriptionRestoreRepository interface {
+	GetByIDIncludeDeleted(ctx context.Context, id int64) (*UserSubscription, error)
+	Restore(ctx context.Context, subscriptionID int64, restoredStatus string) (*UserSubscription, error)
 }
 
 // NewSubscriptionService 创建订阅服务
@@ -538,6 +545,50 @@ func (s *SubscriptionService) RevokeSubscription(ctx context.Context, subscripti
 	}
 
 	return nil
+}
+
+// RestoreSubscription restores a soft-deleted subscription when no active duplicate exists.
+func (s *SubscriptionService) RestoreSubscription(ctx context.Context, subscriptionID int64) (*UserSubscription, error) {
+	restoreRepo, ok := s.userSubRepo.(userSubscriptionRestoreRepository)
+	if !ok {
+		return nil, fmt.Errorf("subscription restore not supported by repository")
+	}
+
+	sub, err := restoreRepo.GetByIDIncludeDeleted(ctx, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	if sub.DeletedAt == nil {
+		return nil, ErrSubscriptionNotRevoked
+	}
+
+	exists, err := s.userSubRepo.ExistsByUserIDAndGroupID(ctx, sub.UserID, sub.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, ErrSubscriptionRestoreConflict
+	}
+
+	restoredStatus := sub.Status
+	now := time.Now()
+	if restoredStatus == SubscriptionStatusActive && !sub.ExpiresAt.After(now) {
+		restoredStatus = SubscriptionStatusExpired
+	}
+
+	restored, err := restoreRepo.Restore(ctx, subscriptionID, restoredStatus)
+	if err != nil {
+		return nil, err
+	}
+
+	s.InvalidateSubCache(restored.UserID, restored.GroupID)
+	if s.subCacheL1 != nil {
+		s.subCacheL1.Wait()
+	}
+	if s.billingCacheService != nil {
+		_ = s.billingCacheService.InvalidateSubscription(ctx, restored.UserID, restored.GroupID)
+	}
+	return restored, nil
 }
 
 // ExtendSubscription 调整订阅时长（正数延长，负数缩短）

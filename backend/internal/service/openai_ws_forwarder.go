@@ -2489,6 +2489,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
 	modeRouterV2Enabled := s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
 	ingressMode := OpenAIWSIngressModeCtxPool
+	forceHTTPBridge := false
 	if modeRouterV2Enabled {
 		ingressMode = account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault)
 		if ingressMode == OpenAIWSIngressModeOff {
@@ -2522,17 +2523,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				hooks,
 				wsDecision,
 			)
+		case OpenAIWSIngressModeHTTPBridge:
+			forceHTTPBridge = true
 		case OpenAIWSIngressModeCtxPool, OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
 			// continue
 		default:
 			return NewOpenAIWSClientCloseError(
 				coderws.StatusPolicyViolation,
-				"websocket mode only supports ctx_pool/passthrough",
+				"websocket mode only supports ctx_pool/passthrough/http_bridge",
 				nil,
 			)
 		}
 	}
-	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
+	if !forceHTTPBridge && wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 		return fmt.Errorf("websocket ingress requires ws_v2 transport, got=%s", wsDecision.Transport)
 	}
 	dedicatedMode := modeRouterV2Enabled && ingressMode == OpenAIWSIngressModeDedicated
@@ -2811,9 +2814,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	refreshIngressRouteState(firstPayload)
 
 	forceHTTPBridgeForStrongIsolation := strongIsolationEnabled
-	if forceHTTPBridgeForStrongIsolation || s.shouldBridgeOpenAIWSHTTP(firstPayload.payloadBytes, firstPayload.previousResponseID) {
+	if forceHTTPBridge || forceHTTPBridgeForStrongIsolation || s.shouldBridgeOpenAIWSHTTP(firstPayload.payloadBytes, firstPayload.previousResponseID) {
 		bridgeReason := "threshold"
-		if forceHTTPBridgeForStrongIsolation {
+		if forceHTTPBridge {
+			bridgeReason = "account_mode"
+		} else if forceHTTPBridgeForStrongIsolation {
 			bridgeReason = "strong_isolation"
 		}
 		logOpenAIWSModeInfo(

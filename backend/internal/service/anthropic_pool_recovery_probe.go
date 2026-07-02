@@ -186,7 +186,7 @@ func (s *GatewayService) probeAnthropicPoolAccountRecovery(ctx context.Context, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-api-key", token)
+	setAnthropicAPIKeyAuthHeader(req.Header, account, token)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	return s.doAnthropicPoolRecoveryProbe(req, account, "messages")
 }

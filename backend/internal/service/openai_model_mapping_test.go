@@ -216,6 +216,89 @@ func TestResolveOpenAICompactForwardModel(t *testing.T) {
 	}
 }
 
+func TestResolveOpenAICompactForwardModelWithFallback(t *testing.T) {
+	tests := []struct {
+		name          string
+		account       *Account
+		model         string
+		fallback      string
+		expectedModel string
+	}{
+		{
+			name: "account compact mapping wins over global fallback",
+			account: &Account{
+				Credentials: map[string]any{
+					"compact_model_mapping": map[string]any{
+						"gpt-5.4": "gpt-5.4-account-compact",
+					},
+				},
+			},
+			model:         "gpt-5.4",
+			fallback:      "gpt-5.4-global-compact",
+			expectedModel: "gpt-5.4-account-compact",
+		},
+		{
+			name: "account compact passthrough mapping suppresses global fallback",
+			account: &Account{
+				Credentials: map[string]any{
+					"compact_model_mapping": map[string]any{
+						"gpt-5.4": "gpt-5.4",
+					},
+				},
+			},
+			model:         "gpt-5.4",
+			fallback:      "gpt-5.4-global-compact",
+			expectedModel: "gpt-5.4",
+		},
+		{
+			name:          "global fallback applies when account mapping misses",
+			account:       &Account{Credentials: map[string]any{}},
+			model:         "gpt-5.4",
+			fallback:      " gpt-5.4-global-compact ",
+			expectedModel: "gpt-5.4-global-compact",
+		},
+		{
+			name:          "empty fallback preserves requested model",
+			account:       &Account{Credentials: map[string]any{}},
+			model:         "gpt-5.4",
+			fallback:      " ",
+			expectedModel: "gpt-5.4",
+		},
+		{
+			name:          "blank model stays blank",
+			account:       &Account{Credentials: map[string]any{}},
+			model:         " ",
+			fallback:      "gpt-5.4-global-compact",
+			expectedModel: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveOpenAICompactForwardModelWithFallback(tt.account, tt.model, tt.fallback); got != tt.expectedModel {
+				t.Fatalf("resolveOpenAICompactForwardModelWithFallback(...) = %q, want %q", got, tt.expectedModel)
+			}
+		})
+	}
+}
+
+func TestResolveOpenAIAccountUpstreamModelForRequestCompactFallback(t *testing.T) {
+	account := &Account{
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"public-model": "upstream-model",
+			},
+		},
+	}
+
+	if got := resolveOpenAIAccountUpstreamModelForRequest(account, "public-model", false, "compact-fallback"); got != "upstream-model" {
+		t.Fatalf("normal request upstream model = %q, want %q", got, "upstream-model")
+	}
+	if got := resolveOpenAIAccountUpstreamModelForRequest(account, "public-model", true, "compact-fallback"); got != "compact-fallback" {
+		t.Fatalf("compact request upstream model = %q, want %q", got, "compact-fallback")
+	}
+}
+
 func TestNormalizeCodexModel(t *testing.T) {
 	cases := map[string]string{
 		"gpt-5.3-codex-spark":       "gpt-5.3-codex-spark",

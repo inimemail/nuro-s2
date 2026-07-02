@@ -1588,7 +1588,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			sessionHash,
 			reqModel,
 			excludedAccountIDs,
-			service.OpenAIUpstreamTransportResponsesWebsocketV2,
+			service.OpenAIUpstreamTransportResponsesWebsocketV2Ingress,
 			service.OpenAIEndpointCapabilityChatCompletions,
 			false,
 			service.PlatformOpenAI,

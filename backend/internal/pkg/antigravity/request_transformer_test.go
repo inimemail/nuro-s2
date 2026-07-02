@@ -376,6 +376,45 @@ func TestBuildGenerationConfig_ThinkingDynamicBudget(t *testing.T) {
 	}
 }
 
+func TestBuildGenerationConfig_GeminiReasoningModelFiltersUnsupportedParams(t *testing.T) {
+	temp := 0.7
+	topP := 0.9
+	topK := 40
+	req := &ClaudeRequest{
+		Model:       "gemini-3.1-pro-high",
+		Temperature: &temp,
+		TopP:        &topP,
+		TopK:        &topK,
+	}
+
+	cfg := buildGenerationConfig(req)
+
+	require.NotNil(t, cfg)
+	require.Nil(t, cfg.StopSequences)
+	require.Nil(t, cfg.Temperature)
+	require.Nil(t, cfg.TopP)
+	require.Nil(t, cfg.TopK)
+}
+
+func TestTransformClaudeToGeminiWithOptions_GeminiReasoningModelSkipsEmptyToolConfig(t *testing.T) {
+	claudeReq := &ClaudeRequest{
+		Model:     "gemini-3.1-pro-high",
+		MaxTokens: 128,
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: json.RawMessage(`"hello"`)},
+		},
+	}
+
+	body, err := TransformClaudeToGeminiWithOptions(claudeReq, "project-1", "gemini-3.1-pro-high", DefaultTransformOptions())
+
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(body, &decoded))
+	request, ok := decoded["request"].(map[string]any)
+	require.True(t, ok)
+	require.NotContains(t, request, "toolConfig")
+}
+
 func TestTransformClaudeToGeminiWithOptions_PreservesBillingHeaderSystemBlock(t *testing.T) {
 	tests := []struct {
 		name   string

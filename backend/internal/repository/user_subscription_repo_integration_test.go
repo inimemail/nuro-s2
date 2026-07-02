@@ -326,6 +326,29 @@ func (s *UserSubscriptionRepoSuite) TestList_FilterByStatus() {
 	s.Require().Equal(service.SubscriptionStatusExpired, subs[0].Status)
 }
 
+func (s *UserSubscriptionRepoSuite) TestList_FilterByRevokedIncludesSoftDeletedOnly() {
+	user := s.mustCreateUser("revoked-list@test.com", service.RoleUser)
+	group := s.mustCreateGroup("g-revoked-list")
+	sub := s.mustCreateSubscription(user.ID, group.ID, nil)
+
+	s.Require().NoError(s.repo.Delete(s.ctx, sub.ID), "Delete")
+
+	subs, page, err := s.repo.List(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, nil, nil, "", "", "", "")
+	s.Require().NoError(err, "List default")
+	s.Require().Empty(subs)
+	s.Require().Equal(int64(0), page.Total)
+
+	revoked, revokedPage, err := s.repo.List(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, nil, nil, service.SubscriptionStatusRevoked, "", "", "")
+	s.Require().NoError(err, "List revoked")
+	s.Require().Len(revoked, 1)
+	s.Require().Equal(int64(1), revokedPage.Total)
+	s.Require().Equal(sub.ID, revoked[0].ID)
+	s.Require().Equal(service.SubscriptionStatusRevoked, revoked[0].Status)
+	s.Require().NotNil(revoked[0].DeletedAt)
+	s.Require().NotNil(revoked[0].User, "expected User preload")
+	s.Require().NotNil(revoked[0].Group, "expected Group preload")
+}
+
 // --- Usage tracking ---
 
 func (s *UserSubscriptionRepoSuite) TestIncrementUsage() {

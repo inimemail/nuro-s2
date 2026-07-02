@@ -38,3 +38,23 @@ func resolveOpenAICompactForwardModel(account *Account, model string) string {
 	}
 	return trimmedModel
 }
+
+func resolveOpenAICompactForwardModelWithFallback(account *Account, model, fallback string) string {
+	trimmedModel := strings.TrimSpace(model)
+	if trimmedModel == "" {
+		return trimmedModel
+	}
+	if account != nil {
+		mappedModel, matched := account.ResolveCompactMappedModel(trimmedModel)
+		if matched {
+			if trimmedMapped := strings.TrimSpace(mappedModel); trimmedMapped != "" {
+				return trimmedMapped
+			}
+			return trimmedModel
+		}
+	}
+	if trimmedFallback := strings.TrimSpace(fallback); trimmedFallback != "" {
+		return trimmedFallback
+	}
+	return trimmedModel
+}

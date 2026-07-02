@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -862,6 +863,66 @@ func TestOpenAICodexResetCreditUpdatesConfirmed(t *testing.T) {
 	}
 	if !openAICodexResetCreditUpdatesConfirmed(map[string]any{"codex_reset_credits": 0}) {
 		t.Fatal("presence of codex_reset_credits should confirm reset credit query")
+	}
+}
+
+func TestParseOpenAIRateLimitResetCreditDetails(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "credits",
+			body: `{"credits":[{"id":"secret-id","expires_at":"2026-07-03T04:05:06Z"}]}`,
+			want: []string{"2026-07-03T04:05:06Z"},
+		},
+		{
+			name: "rate limit reset credits camel expires",
+			body: `{"rate_limit_reset_credits":[{"expiresAt":"2026-07-04T04:05:06Z"}]}`,
+			want: []string{"2026-07-04T04:05:06Z"},
+		},
+		{
+			name: "items",
+			body: `{"items":[{"expires_at":"2026-07-05T04:05:06Z"}]}`,
+			want: []string{"2026-07-05T04:05:06Z"},
+		},
+		{
+			name: "data",
+			body: `{"data":[{"expires_at":"2026-07-06T04:05:06Z"}]}`,
+			want: []string{"2026-07-06T04:05:06Z"},
+		},
+		{
+			name: "array",
+			body: `[{"expires_at":"2026-07-07T04:05:06Z"}]`,
+			want: []string{"2026-07-07T04:05:06Z"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseOpenAIRateLimitResetCreditDetails([]byte(tt.body))
+			if err != nil {
+				t.Fatalf("parseOpenAIRateLimitResetCreditDetails() error = %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("len(got) = %d, want %d", len(got), len(tt.want))
+			}
+			for i := range tt.want {
+				if got[i].ExpiresAt != tt.want[i] {
+					t.Fatalf("got[%d].ExpiresAt = %q, want %q", i, got[i].ExpiresAt, tt.want[i])
+				}
+			}
+			encoded, err := json.Marshal(got)
+			if err != nil {
+				t.Fatalf("marshal result: %v", err)
+			}
+			if strings.Contains(string(encoded), "secret-id") {
+				t.Fatalf("serialized credit details leaked upstream id: %s", encoded)
+			}
+		})
 	}
 }
 

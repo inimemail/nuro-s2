@@ -25,6 +25,38 @@ func TestPatchGrokResponsesBody(t *testing.T) {
 	require.False(t, gjson.GetBytes(patched, "safety_identifier").Exists())
 }
 
+func TestNormalizeGrokMediaModelForEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint GrokMediaEndpoint
+		model    string
+		want     string
+	}{
+		{name: "image generation alias", endpoint: GrokMediaEndpointImagesGenerations, model: "grok-imagine", want: "grok-imagine-image-quality"},
+		{name: "image edit alias", endpoint: GrokMediaEndpointImagesEdits, model: "grok-imagine", want: "grok-imagine-image-quality"},
+		{name: "image quality passthrough", endpoint: GrokMediaEndpointImagesGenerations, model: "grok-imagine-image-quality", want: "grok-imagine-image-quality"},
+		{name: "image fast passthrough", endpoint: GrokMediaEndpointImagesGenerations, model: "grok-imagine-image", want: "grok-imagine-image"},
+		{name: "video passthrough", endpoint: GrokMediaEndpointVideosGenerations, model: "grok-imagine-video", want: "grok-imagine-video"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, normalizeGrokMediaModelForEndpoint(tt.endpoint, tt.model))
+		})
+	}
+}
+
+func TestNormalizeGrokMediaForwardBodyRewritesImagineAlias(t *testing.T) {
+	body := []byte(`{"model":"grok-imagine","prompt":"draw a cat"}`)
+
+	normalized, contentType, err := normalizeGrokMediaForwardBody(GrokMediaEndpointImagesGenerations, body, "application/json")
+
+	require.NoError(t, err)
+	require.Equal(t, "application/json", contentType)
+	require.Equal(t, "grok-imagine-image-quality", gjson.GetBytes(normalized, "model").String())
+	require.Equal(t, "draw a cat", gjson.GetBytes(normalized, "prompt").String())
+}
+
 func TestOpenAIGatewayService_ForwardGrokResponses_UsesGrokUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &httpUpstreamRecorder{

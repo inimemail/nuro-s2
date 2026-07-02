@@ -137,14 +137,18 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 	// 5. 构建内部请求
 	innerRequest := GeminiRequest{
 		Contents: contents,
-		// 总是设置 toolConfig，与官方客户端一致
-		ToolConfig: &GeminiToolConfig{
+		// 总是生成 sessionId，基于用户消息内容
+		SessionID: generateStableSessionID(contents),
+	}
+
+	// Gemini reasoning 模型在未携带工具时不接受强制空 ToolConfig。
+	isReasoning := IsGeminiReasoningModel(targetModel)
+	if !isReasoning || len(tools) > 0 {
+		innerRequest.ToolConfig = &GeminiToolConfig{
 			FunctionCallingConfig: &GeminiFunctionCallingConfig{
 				Mode: "VALIDATED",
 			},
-		},
-		// 总是生成 sessionId，基于用户消息内容
-		SessionID: generateStableSessionID(contents),
+		}
 	}
 
 	if systemInstruction != nil {
@@ -597,7 +601,10 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 	maxLimit := maxOutputTokensLimit(req.Model)
 	config := &GeminiGenerationConfig{
 		MaxOutputTokens: defaultMaxOutputTokens, // 默认最大输出
-		StopSequences:   DefaultStopSequences,
+	}
+	isReasoning := IsGeminiReasoningModel(req.Model)
+	if !isReasoning {
+		config.StopSequences = DefaultStopSequences
 	}
 
 	// 如果请求中指定了 MaxTokens，使用请求值
@@ -642,15 +649,17 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 		config.MaxOutputTokens = maxLimit
 	}
 
-	// 其他参数
-	if req.Temperature != nil {
-		config.Temperature = req.Temperature
-	}
-	if req.TopP != nil {
-		config.TopP = req.TopP
-	}
-	if req.TopK != nil {
-		config.TopK = req.TopK
+	// Gemini reasoning 模型会拒绝部分采样参数，保持请求最小化。
+	if !isReasoning {
+		if req.Temperature != nil {
+			config.Temperature = req.Temperature
+		}
+		if req.TopP != nil {
+			config.TopP = req.TopP
+		}
+		if req.TopK != nil {
+			config.TopK = req.TopK
+		}
 	}
 
 	return config
