@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -42,6 +43,47 @@ func TestOpenAIEdgeRawRelayEligibleForInboundEndpoint(t *testing.T) {
 	}
 	if got := OpenAIEdgeRawUpstreamEndpointForInbound(rawResponsesAccount, "/v1/responses"); got != "/v1/responses" {
 		t.Fatalf("expected responses upstream endpoint, got %q", got)
+	}
+}
+
+func TestBuildRawResponsesEdgePlanNormalizesStringInput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+
+	account := &Account{
+		ID:          456,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-api-key", "base_url": "https://api.openai.com"},
+		Extra: map[string]any{
+			"openai_passthrough":                     true,
+			openai_compat.ExtraKeyResponsesSupported: true,
+		},
+	}
+	body := []byte(`{"model":"gpt-5","stream":true,"input":"hi"}`)
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+			},
+		},
+	}
+
+	plan, err := svc.BuildRawResponsesEdgePlan(context.Background(), c, account, body)
+	if err != nil {
+		t.Fatalf("build raw responses edge plan: %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
+	if err != nil {
+		t.Fatalf("decode body_raw_base64: %v", err)
+	}
+	if !gjson.GetBytes(decoded, "input").IsArray() {
+		t.Fatalf("expected input array in edge body, got %s", string(decoded))
+	}
+	if got := gjson.GetBytes(decoded, "input.0.content.0.text").String(); got != "hi" {
+		t.Fatalf("unexpected normalized input text: %q body=%s", got, string(decoded))
 	}
 }
 

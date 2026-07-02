@@ -3504,6 +3504,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		patchDisabled = true
 	}
 
+	if account.Type == AccountTypeAPIKey && normalizeOpenAIResponsesStringInputMap(reqBody) {
+		bodyModified = true
+		disablePatch()
+	}
+
 	// 非透传模式下，instructions 为空时注入默认指令。
 	if isInstructionsEmpty(reqBody) && !compatMessagesBridge {
 		reqBody["instructions"] = "You are a helpful coding assistant."
@@ -4382,6 +4387,14 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			body = normalizedBody
 		}
 		reqStream = gjson.GetBytes(body, "stream").Bool()
+	}
+
+	normalizedInputBody, normalizedInput, err := normalizeOpenAIResponsesStringInputBody(body)
+	if err != nil {
+		return nil, err
+	}
+	if normalizedInput {
+		body = normalizedInputBody
 	}
 
 	sanitizedBody, sanitized, err := sanitizeEmptyBase64InputImagesInOpenAIBody(body)
