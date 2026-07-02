@@ -52,3 +52,39 @@ func TestNormalizeOpenAIResponsesStringInputBody(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(t *testing.T) {
+	t.Run("strips_token_params", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","max_output_tokens":128,"max_completion_tokens":64,"input":[{"type":"message","role":"user","content":"hi"}]}`)
+		normalized, changed, err := normalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(body)
+		if err != nil {
+			t.Fatalf("normalize unsupported params: %v", err)
+		}
+		if !changed {
+			t.Fatal("expected unsupported params to be stripped")
+		}
+		if gjson.GetBytes(normalized, "max_output_tokens").Exists() {
+			t.Fatalf("expected max_output_tokens to be stripped: %s", string(normalized))
+		}
+		if gjson.GetBytes(normalized, "max_completion_tokens").Exists() {
+			t.Fatalf("expected max_completion_tokens to be stripped: %s", string(normalized))
+		}
+		if !gjson.GetBytes(normalized, "input").IsArray() {
+			t.Fatalf("expected input to remain: %s", string(normalized))
+		}
+	})
+
+	t.Run("unchanged_without_token_params", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","input":[{"type":"message","role":"user","content":"hi"}]}`)
+		normalized, changed, err := normalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(body)
+		if err != nil {
+			t.Fatalf("normalize unchanged body: %v", err)
+		}
+		if changed {
+			t.Fatalf("expected body to be unchanged, got %s", string(normalized))
+		}
+		if string(normalized) != string(body) {
+			t.Fatalf("expected original body to be returned, got %s", string(normalized))
+		}
+	})
+}

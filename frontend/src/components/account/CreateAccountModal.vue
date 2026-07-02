@@ -2876,6 +2876,35 @@
             />
           </button>
         </div>
+
+        <div
+          v-if="accountCategory === 'apikey' && openaiPassthroughEnabled"
+          class="mt-4 border-l-2 border-primary-200 pl-3 dark:border-primary-800"
+        >
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.openai.responsesPassthroughCompat') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.openai.responsesPassthroughCompatDesc') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="openAIResponsesPassthroughCompatEnabled = !openAIResponsesPassthroughCompatEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                openAIResponsesPassthroughCompatEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  openAIResponsesPassthroughCompatEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
@@ -4126,6 +4155,7 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
 const openaiPassthroughEnabled = ref(false)
+const openAIResponsesPassthroughCompatEnabled = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
@@ -5127,6 +5157,7 @@ const resetForm = () => {
   interceptWarmupRequests.value = false
   autoPauseOnExpired.value = true
   openaiPassthroughEnabled.value = false
+  openAIResponsesPassthroughCompatEnabled.value = false
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
@@ -5272,6 +5303,15 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   } else {
     delete extra.openai_passthrough
     delete extra.openai_oauth_passthrough
+  }
+  if (
+    accountCategory.value === 'apikey' &&
+    openaiPassthroughEnabled.value &&
+    openAIResponsesPassthroughCompatEnabled.value
+  ) {
+    extra.openai_responses_passthrough_compat = true
+  } else {
+    delete extra.openai_responses_passthrough_compat
   }
 
   if (accountCategory.value === 'oauth-based' && codexCLIOnlyEnabled.value) {

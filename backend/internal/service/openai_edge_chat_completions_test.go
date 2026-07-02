@@ -25,6 +25,7 @@ func TestOpenAIEdgeRawRelayEligibleForInboundEndpoint(t *testing.T) {
 		Type:     AccountTypeAPIKey,
 		Extra: map[string]any{
 			"openai_passthrough":                     true,
+			"openai_responses_passthrough_compat":    true,
 			openai_compat.ExtraKeyResponsesSupported: true,
 		},
 	}
@@ -59,10 +60,11 @@ func TestBuildRawResponsesEdgePlanNormalizesStringInput(t *testing.T) {
 		Credentials: map[string]any{"api_key": "sk-api-key", "base_url": "https://api.openai.com"},
 		Extra: map[string]any{
 			"openai_passthrough":                     true,
+			"openai_responses_passthrough_compat":    true,
 			openai_compat.ExtraKeyResponsesSupported: true,
 		},
 	}
-	body := []byte(`{"model":"gpt-5","stream":true,"input":"hi"}`)
+	body := []byte(`{"model":"gpt-5","stream":true,"max_output_tokens":128,"input":"hi"}`)
 	svc := &OpenAIGatewayService{
 		cfg: &config.Config{
 			Security: config.SecurityConfig{
@@ -84,6 +86,9 @@ func TestBuildRawResponsesEdgePlanNormalizesStringInput(t *testing.T) {
 	}
 	if got := gjson.GetBytes(decoded, "input.0.content.0.text").String(); got != "hi" {
 		t.Fatalf("unexpected normalized input text: %q body=%s", got, string(decoded))
+	}
+	if gjson.GetBytes(decoded, "max_output_tokens").Exists() {
+		t.Fatalf("expected max_output_tokens to be stripped from edge body: %s", string(decoded))
 	}
 }
 

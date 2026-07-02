@@ -1746,6 +1746,15 @@ func (a *Account) IsOpenAIPassthroughEnabled() bool {
 	return false
 }
 
+// IsOpenAIResponsesPassthroughCompatEnabled returns whether an OpenAI APIKey
+// account should apply narrow Responses passthrough compatibility fixes.
+func (a *Account) IsOpenAIResponsesPassthroughCompatEnabled() bool {
+	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
+		return false
+	}
+	return a.getExtraBool("openai_responses_passthrough_compat")
+}
+
 // IsOpenAIResponsesWebSocketV2Enabled 返回 OpenAI 账号是否开启 Responses WebSocket v2。
 //
 // 分类型新字段：

@@ -235,9 +235,15 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	if !sanitized {
 		upstreamBody = body
 	}
-	upstreamBody, _, err = normalizeOpenAIResponsesStringInputBody(upstreamBody)
-	if err != nil {
-		return nil, err
+	if account.IsOpenAIResponsesPassthroughCompatEnabled() {
+		upstreamBody, _, err = normalizeOpenAIResponsesStringInputBody(upstreamBody)
+		if err != nil {
+			return nil, err
+		}
+		upstreamBody, _, err = normalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(upstreamBody)
+		if err != nil {
+			return nil, err
+		}
 	}
 	policyModel := strings.TrimSpace(gjson.GetBytes(upstreamBody, "model").String())
 	if policyModel == "" {

@@ -4389,12 +4389,21 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		reqStream = gjson.GetBytes(body, "stream").Bool()
 	}
 
-	normalizedInputBody, normalizedInput, err := normalizeOpenAIResponsesStringInputBody(body)
-	if err != nil {
-		return nil, err
-	}
-	if normalizedInput {
-		body = normalizedInputBody
+	if account != nil && account.IsOpenAIResponsesPassthroughCompatEnabled() && isOpenAIResponsesRequestPath(c) {
+		normalizedInputBody, normalizedInput, err := normalizeOpenAIResponsesStringInputBody(body)
+		if err != nil {
+			return nil, err
+		}
+		if normalizedInput {
+			body = normalizedInputBody
+		}
+		normalizedParamsBody, normalizedParams, err := normalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(body)
+		if err != nil {
+			return nil, err
+		}
+		if normalizedParams {
+			body = normalizedParamsBody
+		}
 	}
 
 	sanitizedBody, sanitized, err := sanitizeEmptyBase64InputImagesInOpenAIBody(body)
@@ -7806,6 +7815,22 @@ func NormalizeOpenAICompactRequestBodyForTest(body []byte) ([]byte, bool, error)
 func isOpenAIResponsesCompactPath(c *gin.Context) bool {
 	suffix := strings.TrimSpace(openAIResponsesRequestPathSuffix(c))
 	return suffix == "/compact" || strings.HasPrefix(suffix, "/compact/")
+}
+
+func isOpenAIResponsesRequestPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	if normalizedPath == "" {
+		return false
+	}
+	idx := strings.LastIndex(normalizedPath, "/responses")
+	if idx < 0 {
+		return false
+	}
+	suffix := normalizedPath[idx+len("/responses"):]
+	return suffix == "" || strings.HasPrefix(suffix, "/")
 }
 
 func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
