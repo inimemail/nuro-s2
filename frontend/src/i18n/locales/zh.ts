@@ -6702,6 +6702,8 @@ export default {
         quickPresets: '快捷预设',
         presetOpusOnly: '仅 Opus 允许 1M',
         presetOpusOnlyDesc: 'Opus 透传，其他模型过滤',
+        presetSonnet5Only: '仅 Sonnet 5 允许 1M',
+        presetSonnet5OnlyDesc: 'Sonnet 5 及 Bedrock 区域前缀透传，其他模型过滤',
         commonPatterns: '常用模式'
       },
       openaiFastPolicy: {

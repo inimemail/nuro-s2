@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
 const { updateAccountMock, checkMixedChannelRiskMock } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
@@ -341,6 +341,51 @@ describe('EditAccountModal', () => {
     expect(credentials).not.toHaveProperty('anthropic_upstream_strong_isolation_enabled')
     expect(credentials).not.toHaveProperty('prompt_cache_boost_enabled')
     expect(credentials).not.toHaveProperty('upstream_strong_isolation_enabled')
+  })
+
+  it('shows and submits Anthropic API Key upstream auth scheme from the base API Key section', async () => {
+    const account = buildAnthropicAPIKeyAccount(false)
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    const field = wrapper.get('[data-testid="anthropic-apikey-auth-scheme-field"]')
+    expect(field.text()).toContain('admin.accounts.anthropic.apiKeyAuthScheme')
+
+    await wrapper.get('[data-testid="anthropic-apikey-auth-scheme-select"]').setValue('authorization_bearer')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.anthropic_apikey_auth_scheme).toBe(
+      'authorization_bearer'
+    )
+  })
+
+  it('clears Anthropic API Key upstream auth scheme when reset to x-api-key', async () => {
+    const account = buildAnthropicAPIKeyAccount(false)
+    account.extra = {
+      anthropic_passthrough: true,
+      anthropic_apikey_auth_scheme: 'authorization_bearer'
+    }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    await wrapper.get('[data-testid="anthropic-apikey-auth-scheme-select"]').setValue('x_api_key')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const extra = updateAccountMock.mock.calls[0]?.[1]?.extra
+    expect(extra?.anthropic_passthrough).toBe(true)
+    expect(extra).not.toHaveProperty('anthropic_apikey_auth_scheme')
   })
 
   it('keeps Anthropic API key cache boost and isolation with pool mode', async () => {

@@ -8,6 +8,51 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestDefaultBetaPolicySettings_Context1MSonnet5Whitelist(t *testing.T) {
+	settings := DefaultBetaPolicySettings()
+
+	var rule *BetaPolicyRule
+	for i := range settings.Rules {
+		if settings.Rules[i].BetaToken == claude.BetaContext1M {
+			rule = &settings.Rules[i]
+			break
+		}
+	}
+	require.NotNil(t, rule)
+	require.Equal(t, BetaPolicyActionPass, rule.Action)
+	require.Equal(t, BetaPolicyActionFilter, rule.FallbackAction)
+	require.Contains(t, rule.ModelWhitelist, "claude-sonnet-5")
+	require.Contains(t, rule.ModelWhitelist, "claude-sonnet-5-*")
+	require.Contains(t, rule.ModelWhitelist, "claude-sonnet-5@*")
+	require.Contains(t, rule.ModelWhitelist, "us.anthropic.claude-sonnet-5*")
+	require.Contains(t, rule.ModelWhitelist, "global.anthropic.claude-sonnet-5*")
+}
+
+func TestResolveRuleAction_Context1MSonnet5Whitelist(t *testing.T) {
+	rule := BetaPolicyRule{
+		BetaToken:      claude.BetaContext1M,
+		Action:         BetaPolicyActionPass,
+		ModelWhitelist: defaultContext1MModelWhitelist(),
+		FallbackAction: BetaPolicyActionFilter,
+	}
+
+	for _, model := range []string{
+		"claude-sonnet-5",
+		"claude-sonnet-5-20260807",
+		"claude-sonnet-5@20260807",
+		"us.anthropic.claude-sonnet-5-v1:0",
+		"global.anthropic.claude-sonnet-5-v1:0",
+	} {
+		t.Run(model, func(t *testing.T) {
+			action, _ := resolveRuleAction(rule, model)
+			require.Equal(t, BetaPolicyActionPass, action)
+		})
+	}
+
+	action, _ := resolveRuleAction(rule, "claude-opus-4-6")
+	require.Equal(t, BetaPolicyActionFilter, action)
+}
+
 func TestMergeAnthropicBeta(t *testing.T) {
 	got := mergeAnthropicBeta(
 		[]string{"oauth-2025-04-20", "interleaved-thinking-2025-05-14"},

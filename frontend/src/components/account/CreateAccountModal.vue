@@ -1057,6 +1057,29 @@
           <p class="input-hint">{{ apiKeyHint }}</p>
         </div>
 
+        <div
+          v-if="form.platform === 'anthropic' && accountCategory === 'apikey'"
+          class="border-t border-gray-200 pt-4 dark:border-dark-600"
+          data-testid="anthropic-apikey-auth-scheme-field"
+        >
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div class="min-w-0">
+              <label class="input-label mb-0">{{ t('admin.accounts.anthropic.apiKeyAuthScheme') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.anthropic.apiKeyAuthSchemeDesc') }}
+              </p>
+            </div>
+            <select
+              v-model="anthropicAPIKeyAuthScheme"
+              class="input w-full text-sm sm:w-52"
+              data-testid="anthropic-apikey-auth-scheme-select"
+            >
+              <option value="x_api_key">{{ t('admin.accounts.anthropic.apiKeyAuthSchemeXApiKey') }}</option>
+              <option value="authorization_bearer">{{ t('admin.accounts.anthropic.apiKeyAuthSchemeBearer') }}</option>
+            </select>
+          </div>
+        </div>
+
         <!-- Gemini API Key tier selection -->
         <div v-if="form.platform === 'gemini'">
           <label class="input-label">{{ t('admin.accounts.gemini.tier.label') }}</label>
@@ -3203,18 +3226,6 @@
               ]"
             />
           </button>
-        </div>
-        <div class="flex items-center justify-between gap-4">
-          <div>
-            <label class="input-label mb-0">{{ t('admin.accounts.anthropic.apiKeyAuthScheme') }}</label>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('admin.accounts.anthropic.apiKeyAuthSchemeDesc') }}
-            </p>
-          </div>
-          <select v-model="anthropicAPIKeyAuthScheme" class="input w-44 text-sm">
-            <option value="x_api_key">{{ t('admin.accounts.anthropic.apiKeyAuthSchemeXApiKey') }}</option>
-            <option value="authorization_bearer">{{ t('admin.accounts.anthropic.apiKeyAuthSchemeBearer') }}</option>
-          </select>
         </div>
       </div>
 

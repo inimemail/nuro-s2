@@ -755,6 +755,44 @@
         </div>
       </div>
 
+      <!-- Anthropic API Key upstream auth scheme -->
+      <div v-if="allAnthropicAPIKey" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between">
+          <label
+            id="bulk-edit-anthropic-apikey-auth-scheme-label"
+            class="input-label mb-0"
+            for="bulk-edit-anthropic-apikey-auth-scheme-enabled"
+          >
+            {{ t('admin.accounts.anthropic.apiKeyAuthScheme') }}
+          </label>
+          <input
+            v-model="enableAnthropicAPIKeyAuthScheme"
+            id="bulk-edit-anthropic-apikey-auth-scheme-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-anthropic-apikey-auth-scheme"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-anthropic-apikey-auth-scheme"
+          :class="!enableAnthropicAPIKeyAuthScheme && 'pointer-events-none opacity-50'"
+          role="group"
+          aria-labelledby="bulk-edit-anthropic-apikey-auth-scheme-label"
+        >
+          <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.anthropic.apiKeyAuthSchemeDesc') }}
+          </p>
+          <select
+            v-model="anthropicAPIKeyAuthScheme"
+            class="input w-full text-sm"
+            data-testid="bulk-edit-anthropic-apikey-auth-scheme-select"
+          >
+            <option value="x_api_key">{{ t('admin.accounts.anthropic.apiKeyAuthSchemeXApiKey') }}</option>
+            <option value="authorization_bearer">{{ t('admin.accounts.anthropic.apiKeyAuthSchemeBearer') }}</option>
+          </select>
+        </div>
+      </div>
+
       <!-- OpenAI OAuth first packet preamble flush -->
       <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
@@ -1725,6 +1763,15 @@ const allOpenAITextAPIKey = computed(() => (
   !targetSelectedImagePoolModes.value.includes(true)
 ))
 
+const allAnthropicAPIKey = computed(() => {
+  return (
+    targetSelectedPlatforms.value.length === 1 &&
+    targetSelectedPlatforms.value[0] === 'anthropic' &&
+    targetSelectedTypes.value.length > 0 &&
+    targetSelectedTypes.value.every(t => t === 'apikey')
+  )
+})
+
 // 是否全部为 Anthropic OAuth/SetupToken（RPM 配置仅在此条件下显示）
 const allAnthropicOAuthOrSetupToken = computed(() => {
   return (
@@ -1783,6 +1830,7 @@ const enableCodexCLIOnly = ref(false)
 const enableCodexCLIOnlyAllowClaudeCode = ref(false)
 const enableOpenAICompactMode = ref(false)
 const enableOpenAICompactModelMapping = ref(false)
+const enableAnthropicAPIKeyAuthScheme = ref(false)
 const enableRpmLimit = ref(false)
 const enableCodexImageGenerationBridge = ref(false)
 
@@ -1825,6 +1873,7 @@ const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAICompactModelMappings = ref<ModelMapping[]>([])
+const anthropicAPIKeyAuthScheme = ref<'x_api_key' | 'authorization_bearer'>('x_api_key')
 const rpmLimitEnabled = ref(false)
 const bulkBaseRpm = ref<number | null>(null)
 const bulkRpmStrategy = ref<'tiered' | 'sticky_exempt'>('tiered')
@@ -2213,6 +2262,19 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     credentialsChanged = true
   }
 
+  if (enableAnthropicAPIKeyAuthScheme.value) {
+    const extra = ensureExtra()
+    if (anthropicAPIKeyAuthScheme.value === 'authorization_bearer') {
+      extra.anthropic_apikey_auth_scheme = 'authorization_bearer'
+    } else {
+      const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
+      updates.extra_remove_keys = [
+        ...removeKeys,
+        'anthropic_apikey_auth_scheme'
+      ]
+    }
+  }
+
   if (enableCodexImageGenerationBridge.value) {
     const extra = ensureExtra()
     const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
@@ -2338,6 +2400,7 @@ const handleSubmit = async () => {
     enableCodexCLIOnlyAllowClaudeCode.value ||
     enableOpenAICompactMode.value ||
     enableOpenAICompactModelMapping.value ||
+    enableAnthropicAPIKeyAuthScheme.value ||
     enableCodexImageGenerationBridge.value ||
     enableRpmLimit.value ||
     userMsgQueueMode.value !== null
@@ -2450,6 +2513,7 @@ watch(
       enableCodexCLIOnlyAllowClaudeCode.value = false
       enableOpenAICompactMode.value = false
       enableOpenAICompactModelMapping.value = false
+      enableAnthropicAPIKeyAuthScheme.value = false
       enableCodexImageGenerationBridge.value = false
       enableRpmLimit.value = false
 
@@ -2485,6 +2549,7 @@ watch(
       codexCLIOnlyAllowClaudeCodeEnabled.value = false
       openAICompactMode.value = 'auto'
       openAICompactModelMappings.value = []
+      anthropicAPIKeyAuthScheme.value = 'x_api_key'
       rpmLimitEnabled.value = false
       bulkBaseRpm.value = null
       bulkRpmStrategy.value = 'tiered'
@@ -2500,4 +2565,11 @@ watch(
     }
   }
 )
+
+watch(allAnthropicAPIKey, (enabled) => {
+  if (!enabled) {
+    enableAnthropicAPIKeyAuthScheme.value = false
+    anthropicAPIKeyAuthScheme.value = 'x_api_key'
+  }
+})
 </script>

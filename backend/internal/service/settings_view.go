@@ -517,11 +517,29 @@ func DefaultBetaPolicySettings() *BetaPolicySettings {
 				Scope:     BetaPolicyScopeAll,
 			},
 			{
-				BetaToken: "context-1m-2025-08-07",
-				Action:    BetaPolicyActionFilter,
-				Scope:     BetaPolicyScopeAll,
+				BetaToken:      "context-1m-2025-08-07",
+				Action:         BetaPolicyActionPass,
+				Scope:          BetaPolicyScopeAll,
+				ModelWhitelist: defaultContext1MModelWhitelist(),
+				FallbackAction: BetaPolicyActionFilter,
 			},
 		},
+	}
+}
+
+func defaultContext1MModelWhitelist() []string {
+	return []string{
+		"claude-sonnet-5",
+		"claude-sonnet-5-*",
+		"claude-sonnet-5@*",
+		"us.anthropic.claude-sonnet-5*",
+		"eu.anthropic.claude-sonnet-5*",
+		"apac.anthropic.claude-sonnet-5*",
+		"jp.anthropic.claude-sonnet-5*",
+		"au.anthropic.claude-sonnet-5*",
+		"us-gov.anthropic.claude-sonnet-5*",
+		"global.anthropic.claude-sonnet-5*",
+		"anthropic.claude-sonnet-5*",
 	}
 }
 

@@ -834,7 +834,7 @@
                     </span>
                   </div>
 
-                  <div class="grid grid-cols-2 gap-4">
+                  <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <!-- Action -->
                     <div>
                       <label
@@ -9942,10 +9942,22 @@ const betaPresets: Record<
 > = {
   "context-1m-2025-08-07": [
     {
-      label: t("admin.settings.betaPolicy.presetOpusOnly"),
-      description: t("admin.settings.betaPolicy.presetOpusOnlyDesc"),
+      label: t("admin.settings.betaPolicy.presetSonnet5Only"),
+      description: t("admin.settings.betaPolicy.presetSonnet5OnlyDesc"),
       action: "pass",
-      model_whitelist: ["claude-opus-4-6"],
+      model_whitelist: [
+        "claude-sonnet-5",
+        "claude-sonnet-5-*",
+        "claude-sonnet-5@*",
+        "us.anthropic.claude-sonnet-5*",
+        "eu.anthropic.claude-sonnet-5*",
+        "apac.anthropic.claude-sonnet-5*",
+        "jp.anthropic.claude-sonnet-5*",
+        "au.anthropic.claude-sonnet-5*",
+        "us-gov.anthropic.claude-sonnet-5*",
+        "global.anthropic.claude-sonnet-5*",
+        "anthropic.claude-sonnet-5*",
+      ],
       fallback_action: "filter",
     },
   ],
@@ -9957,6 +9969,11 @@ const commonModelPatterns = [
   "claude-sonnet-4-6",
   "claude-opus-*",
   "claude-sonnet-*",
+  "claude-sonnet-5",
+  "claude-sonnet-5-*",
+  "claude-sonnet-5@*",
+  "us.anthropic.claude-sonnet-5*",
+  "global.anthropic.claude-sonnet-5*",
 ];
 
 function getBetaDisplayName(token: string): string {

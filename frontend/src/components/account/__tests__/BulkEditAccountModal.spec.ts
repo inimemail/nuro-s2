@@ -236,6 +236,51 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
+  it('Anthropic API Key 批量编辑应提交上游 Bearer 认证方式', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['anthropic'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-anthropic-apikey-auth-scheme-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-edit-anthropic-apikey-auth-scheme-select"]').setValue('authorization_bearer')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: {
+        anthropic_apikey_auth_scheme: 'authorization_bearer'
+      }
+    })
+  })
+
+  it('Anthropic API Key 批量编辑应可恢复默认 x-api-key 认证方式', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['anthropic'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-anthropic-apikey-auth-scheme-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: {},
+      extra_remove_keys: ['anthropic_apikey_auth_scheme']
+    })
+  })
+
+  it('非 Anthropic API Key 批量编辑不显示上游认证方式', () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['anthropic'],
+      selectedTypes: ['oauth']
+    })
+
+    expect(wrapper.find('#bulk-edit-anthropic-apikey-auth-scheme-enabled').exists()).toBe(false)
+  })
+
   it('筛选 OpenAI 账号批量编辑应提交 Compact 模式和专属模型映射', async () => {
     const wrapper = mountModal({
       accountIds: [],

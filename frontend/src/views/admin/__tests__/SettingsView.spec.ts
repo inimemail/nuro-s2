@@ -785,6 +785,36 @@ describe("admin SettingsView payment visible method controls", () => {
     );
   });
 
+  it("applies Context 1M Sonnet 5 preset with Bedrock regional model patterns", async () => {
+    getBetaPolicySettings.mockResolvedValueOnce({
+      rules: [
+        {
+          beta_token: "context-1m-2025-08-07",
+          action: "filter",
+          scope: "all",
+        },
+      ],
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+
+    const presetButton = wrapper
+      .findAll("button")
+      .find((node) => node.text().includes("admin.settings.betaPolicy.presetSonnet5Only"));
+
+    expect(presetButton).toBeDefined();
+    await presetButton?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("claude-sonnet-5");
+    expect(wrapper.text()).toContain("claude-sonnet-5-*");
+    expect(wrapper.text()).toContain("claude-sonnet-5@*");
+    expect(wrapper.text()).toContain("us.anthropic.claude-sonnet-5*");
+    expect(wrapper.text()).toContain("global.anthropic.claude-sonnet-5*");
+  });
+
   it("updates provider enablement immediately and reloads providers", async () => {
     const provider = {
       id: 7,

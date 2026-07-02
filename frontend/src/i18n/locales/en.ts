@@ -6553,6 +6553,8 @@ export default {
         quickPresets: 'Quick Presets',
         presetOpusOnly: 'Opus only for 1M',
         presetOpusOnlyDesc: 'Pass for Opus, filter others',
+        presetSonnet5Only: 'Sonnet 5 only for 1M',
+        presetSonnet5OnlyDesc: 'Pass Sonnet 5 and Bedrock regional prefixes, filter other models',
         commonPatterns: 'Common patterns'
       },
       openaiFastPolicy: {
