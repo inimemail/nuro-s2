@@ -31,7 +31,11 @@ func (s *GatewayService) applyAnthropicCacheBoostBody(ctx context.Context, accou
 		out = addSystemLastCacheBreakpoint(out)
 		out = applyToolsLastCacheBreakpoint(out)
 	}
-	out = addMessageCacheBreakpoints(out)
+	if account.IsAnthropicCacheBoostUpstreamHitPriorityEnabled() {
+		out = addMessageCacheBreakpointsUpstreamPriority(out)
+	} else {
+		out = addMessageCacheBreakpoints(out)
+	}
 	out = enforceCacheControlLimit(out)
 	return out
 }

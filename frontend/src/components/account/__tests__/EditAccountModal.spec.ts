@@ -207,6 +207,7 @@ function buildAnthropicOAuthAccount() {
       access_token: 'claude-token',
       anthropic_cache_boost_enabled: true,
       anthropic_cache_boost_level: 'aggressive',
+      anthropic_cache_boost_upstream_hit_priority_enabled: true,
       anthropic_upstream_strong_isolation_enabled: true
     },
     extra: {},
@@ -234,6 +235,7 @@ function buildAnthropicAPIKeyAccount(poolMode = false) {
       ...(poolMode ? { pool_mode: true } : {}),
       anthropic_cache_boost_enabled: true,
       anthropic_cache_boost_level: 'aggressive',
+      anthropic_cache_boost_upstream_hit_priority_enabled: true,
       anthropic_upstream_strong_isolation_enabled: true
     },
     extra: {},
@@ -310,6 +312,7 @@ describe('EditAccountModal', () => {
     const wrapper = mountModal(account)
 
     expect(wrapper.text()).toContain('admin.accounts.anthropicCacheBoost')
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheBoostUpstreamHitPriority')
     expect(wrapper.text()).toContain('admin.accounts.anthropicUpstreamStrongIsolation')
 
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
@@ -317,9 +320,11 @@ describe('EditAccountModal', () => {
     const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
     expect(credentials?.anthropic_cache_boost_enabled).toBe(true)
     expect(credentials?.anthropic_cache_boost_level).toBe('aggressive')
+    expect(credentials?.anthropic_cache_boost_upstream_hit_priority_enabled).toBe(true)
     expect(credentials?.anthropic_upstream_strong_isolation_enabled).toBe(true)
     expect(credentials).not.toHaveProperty('prompt_cache_boost_enabled')
     expect(credentials).not.toHaveProperty('prompt_cache_boost_level')
+    expect(credentials).not.toHaveProperty('prompt_cache_boost_upstream_hit_priority_enabled')
     expect(credentials).not.toHaveProperty('upstream_strong_isolation_enabled')
   })
 
@@ -341,8 +346,10 @@ describe('EditAccountModal', () => {
     expect(credentials?.pool_mode).toBeUndefined()
     expect(credentials).not.toHaveProperty('anthropic_cache_boost_enabled')
     expect(credentials).not.toHaveProperty('anthropic_cache_boost_level')
+    expect(credentials).not.toHaveProperty('anthropic_cache_boost_upstream_hit_priority_enabled')
     expect(credentials).not.toHaveProperty('anthropic_upstream_strong_isolation_enabled')
     expect(credentials).not.toHaveProperty('prompt_cache_boost_enabled')
+    expect(credentials).not.toHaveProperty('prompt_cache_boost_upstream_hit_priority_enabled')
     expect(credentials).not.toHaveProperty('upstream_strong_isolation_enabled')
   })
 
@@ -401,6 +408,7 @@ describe('EditAccountModal', () => {
     const wrapper = mountModal(account)
 
     expect(wrapper.text()).toContain('admin.accounts.anthropicCacheBoost')
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheBoostUpstreamHitPriority')
     expect(wrapper.text()).toContain('admin.accounts.anthropicUpstreamStrongIsolation')
 
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
@@ -409,8 +417,10 @@ describe('EditAccountModal', () => {
     expect(credentials?.pool_mode).toBe(true)
     expect(credentials?.anthropic_cache_boost_enabled).toBe(true)
     expect(credentials?.anthropic_cache_boost_level).toBe('aggressive')
+    expect(credentials?.anthropic_cache_boost_upstream_hit_priority_enabled).toBe(true)
     expect(credentials?.anthropic_upstream_strong_isolation_enabled).toBe(true)
     expect(credentials).not.toHaveProperty('prompt_cache_boost_enabled')
+    expect(credentials).not.toHaveProperty('prompt_cache_boost_upstream_hit_priority_enabled')
     expect(credentials).not.toHaveProperty('upstream_strong_isolation_enabled')
   })
 

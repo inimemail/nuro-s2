@@ -86,6 +86,88 @@ func addMessageCacheBreakpoints(body []byte) []byte {
 	return body
 }
 
+// addMessageCacheBreakpointsUpstreamPriority keeps the legacy short-request
+// behavior, but for long conversations spends scarce Anthropic cache-control
+// slots on reusable history anchors instead of always using the newest message.
+func addMessageCacheBreakpointsUpstreamPriority(body []byte) []byte {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+	arr := messages.Array()
+	if len(arr) == 0 {
+		return body
+	}
+
+	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body)
+	available := maxCacheControlBlocks - len(messagePaths) - len(toolPaths) - len(systemPaths)
+	if available <= 0 {
+		return body
+	}
+	for _, idx := range anthropicUpstreamPriorityMessageBreakpointIndexes(arr, available) {
+		body = injectCacheControlOnLastContentBlock(body, idx, &arr[idx])
+	}
+	return body
+}
+
+func anthropicUpstreamPriorityMessageBreakpointIndexes(messages []gjson.Result, max int) []int {
+	if len(messages) == 0 || max <= 0 {
+		return nil
+	}
+	indexes := make([]int, 0, max)
+	add := func(idx int) {
+		if idx < 0 || idx >= len(messages) || len(indexes) >= max {
+			return
+		}
+		for _, existing := range indexes {
+			if existing == idx {
+				return
+			}
+		}
+		indexes = append(indexes, idx)
+	}
+	findUserAtOrBefore := func(start int) int {
+		if start >= len(messages) {
+			start = len(messages) - 1
+		}
+		for i := start; i >= 0; i-- {
+			if messages[i].Get("role").String() == "user" {
+				return i
+			}
+		}
+		return -1
+	}
+	secondLastUser := func() int {
+		userCount := 0
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Get("role").String() != "user" {
+				continue
+			}
+			userCount++
+			if userCount == 2 {
+				return i
+			}
+		}
+		return -1
+	}
+
+	if len(messages) >= 6 {
+		add(findUserAtOrBefore(len(messages)/2 - 1))
+		add(secondLastUser())
+	} else {
+		add(len(messages) - 1)
+		if len(messages) >= 4 {
+			add(secondLastUser())
+		}
+	}
+
+	add(len(messages) - 1)
+	add(findUserAtOrBefore(len(messages) / 4))
+	add(0)
+
+	return indexes
+}
+
 // rewriteMessageCacheControlIfEnabled 按系统设置决定是否执行旧版 messages 缓存断点改写。
 func (s *GatewayService) rewriteMessageCacheControlIfEnabled(ctx context.Context, body []byte) []byte {
 	if s == nil || !s.isRewriteMessageCacheControlEnabled(ctx) {

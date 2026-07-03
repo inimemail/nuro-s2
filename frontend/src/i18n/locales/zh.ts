@@ -3751,7 +3751,7 @@ export default {
       promptCacheBoostAggressive: '加强模式',
       promptCacheBoostAggressiveHint: '关闭时保持现有策略；开启后会放宽静态前缀门槛，让更多相同系统提示/工具的请求复用缓存键。',
       promptCacheBoostUpstreamHitPriority: '上游缓存优先',
-      promptCacheBoostUpstreamHitPriorityHint: '仅 OpenAI 加强模式生效。开启后会在不绕过调度/软冷却的前提下，让相同缓存前缀更稳定命中同一上游账号。',
+      promptCacheBoostUpstreamHitPriorityHint: '仅缓存增强的加强模式生效。开启后会在不绕过调度/软冷却的前提下，让相同缓存前缀更稳定命中同一上游账号。',
       anthropicCacheBoost: 'Anthropic 缓存增强',
       anthropicCacheBoostHint: 'Anthropic OAuth、Setup Token 或 API Key 文本池生效。开启后会优化 cache_control 断点，让大上下文请求更稳定复用 Anthropic prompt cache。',
       anthropicCacheBoostAggressiveHint: '关闭时保持保守策略；开启后会放宽静态前缀门槛，让更多相同系统提示/工具的请求复用 Anthropic cache_control 断点。',

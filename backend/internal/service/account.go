@@ -1098,6 +1098,14 @@ func (a *Account) IsAnthropicCacheBoostAggressive() bool {
 	return a.AnthropicCacheBoostLevel() == AnthropicCacheBoostLevelAggressive
 }
 
+// IsAnthropicCacheBoostUpstreamHitPriorityEnabled enables conservative
+// upstream-cache affinity tweaks for Anthropic. It is intentionally gated by
+// aggressive cache boost so stale credentials cannot affect existing accounts.
+func (a *Account) IsAnthropicCacheBoostUpstreamHitPriorityEnabled() bool {
+	return a.IsAnthropicCacheBoostAggressive() &&
+		credentialBool(a.Credentials, "anthropic_cache_boost_upstream_hit_priority_enabled")
+}
+
 func (a *Account) isAnthropicUpstreamStrongIsolationApplicableAccount() bool {
 	if a == nil || a.Platform != PlatformAnthropic || a.Credentials == nil || a.IsBedrock() {
 		return false

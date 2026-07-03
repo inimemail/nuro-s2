@@ -3276,7 +3276,7 @@ const promptCacheBoostAggressiveHintKey = computed(() =>
   isAnthropicCacheBoostUI.value ? 'admin.accounts.anthropicCacheBoostAggressiveHint' : 'admin.accounts.promptCacheBoostAggressiveHint'
 )
 const showPromptCacheBoostUpstreamHitPriorityToggle = computed(() =>
-  props.account?.platform === 'openai' &&
+  (props.account?.platform === 'openai' || props.account?.platform === 'anthropic') &&
   promptCacheBoostEnabled.value &&
   promptCacheBoostAggressiveEnabled.value
 )
@@ -3289,7 +3289,7 @@ const upstreamStrongIsolationHintKey = computed(() =>
 const cacheBoostCredentialKeys = computed(() => ({
   enabled: isAnthropicCacheBoostUI.value ? 'anthropic_cache_boost_enabled' : 'prompt_cache_boost_enabled',
   level: isAnthropicCacheBoostUI.value ? 'anthropic_cache_boost_level' : 'prompt_cache_boost_level',
-  upstreamHitPriority: isAnthropicCacheBoostUI.value ? '' : 'prompt_cache_boost_upstream_hit_priority_enabled',
+  upstreamHitPriority: isAnthropicCacheBoostUI.value ? 'anthropic_cache_boost_upstream_hit_priority_enabled' : 'prompt_cache_boost_upstream_hit_priority_enabled',
   isolation: isAnthropicCacheBoostUI.value ? 'anthropic_upstream_strong_isolation_enabled' : 'upstream_strong_isolation_enabled'
 }))
 
@@ -3297,7 +3297,7 @@ const loadCacheBoostAndIsolationFromCredentials = (credentials: Record<string, u
   const keys = cacheBoostCredentialKeys.value
   promptCacheBoostEnabled.value = credentials[keys.enabled] === true
   promptCacheBoostAggressiveEnabled.value = credentials[keys.level] === 'aggressive'
-  promptCacheBoostUpstreamHitPriorityEnabled.value = keys.upstreamHitPriority !== '' && credentials[keys.upstreamHitPriority] === true
+  promptCacheBoostUpstreamHitPriorityEnabled.value = credentials[keys.upstreamHitPriority] === true
   upstreamStrongIsolationEnabled.value = credentials[keys.isolation] === true
 }
 
@@ -3308,7 +3308,7 @@ const applyCacheBoostAndIsolationCredentials = (credentials: Record<string, unkn
   const keys = cacheBoostCredentialKeys.value
   const staleKeys = isAnthropicCacheBoostUI.value
     ? ['prompt_cache_boost_enabled', 'prompt_cache_boost_level', 'prompt_cache_boost_upstream_hit_priority_enabled', 'upstream_strong_isolation_enabled']
-    : ['anthropic_cache_boost_enabled', 'anthropic_cache_boost_level', 'anthropic_upstream_strong_isolation_enabled']
+    : ['anthropic_cache_boost_enabled', 'anthropic_cache_boost_level', 'anthropic_cache_boost_upstream_hit_priority_enabled', 'anthropic_upstream_strong_isolation_enabled']
   staleKeys.forEach((key) => {
     delete credentials[key]
   })
@@ -3316,23 +3316,19 @@ const applyCacheBoostAndIsolationCredentials = (credentials: Record<string, unkn
     credentials[keys.enabled] = true
     if (promptCacheBoostAggressiveEnabled.value) {
       credentials[keys.level] = 'aggressive'
-      if (keys.upstreamHitPriority !== '' && promptCacheBoostUpstreamHitPriorityEnabled.value) {
+      if (promptCacheBoostUpstreamHitPriorityEnabled.value) {
         credentials[keys.upstreamHitPriority] = true
-      } else if (keys.upstreamHitPriority !== '') {
+      } else {
         delete credentials[keys.upstreamHitPriority]
       }
     } else {
       delete credentials[keys.level]
-      if (keys.upstreamHitPriority !== '') {
-        delete credentials[keys.upstreamHitPriority]
-      }
+      delete credentials[keys.upstreamHitPriority]
     }
   } else {
     delete credentials[keys.enabled]
     delete credentials[keys.level]
-    if (keys.upstreamHitPriority !== '') {
-      delete credentials[keys.upstreamHitPriority]
-    }
+    delete credentials[keys.upstreamHitPriority]
   }
   if (showUpstreamStrongIsolationToggle.value && upstreamStrongIsolationEnabled.value) {
     credentials[keys.isolation] = true
@@ -4938,6 +4934,7 @@ const handleSubmit = async () => {
         delete newCredentials.upstream_strong_isolation_enabled
         delete newCredentials.anthropic_cache_boost_enabled
         delete newCredentials.anthropic_cache_boost_level
+        delete newCredentials.anthropic_cache_boost_upstream_hit_priority_enabled
         delete newCredentials.anthropic_upstream_strong_isolation_enabled
         delete newCredentials.upstream_concurrency_race_enabled
         delete newCredentials.upstream_concurrency_race_retry_delay_ms

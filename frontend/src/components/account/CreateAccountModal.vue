@@ -4205,7 +4205,7 @@ const promptCacheBoostAggressiveHintKey = computed(() =>
   isAnthropicCacheBoostUI.value ? 'admin.accounts.anthropicCacheBoostAggressiveHint' : 'admin.accounts.promptCacheBoostAggressiveHint'
 )
 const showPromptCacheBoostUpstreamHitPriorityToggle = computed(() =>
-  form.platform === 'openai' &&
+  (form.platform === 'openai' || form.platform === 'anthropic') &&
   promptCacheBoostEnabled.value &&
   promptCacheBoostAggressiveEnabled.value
 )
@@ -5478,11 +5478,11 @@ const applyPlatformCacheBoostAndIsolationCredentials = (credentials: Record<stri
   }
   const cacheEnabledKey = form.platform === 'anthropic' ? 'anthropic_cache_boost_enabled' : 'prompt_cache_boost_enabled'
   const cacheLevelKey = form.platform === 'anthropic' ? 'anthropic_cache_boost_level' : 'prompt_cache_boost_level'
-  const upstreamHitPriorityKey = form.platform === 'anthropic' ? '' : 'prompt_cache_boost_upstream_hit_priority_enabled'
+  const upstreamHitPriorityKey = form.platform === 'anthropic' ? 'anthropic_cache_boost_upstream_hit_priority_enabled' : 'prompt_cache_boost_upstream_hit_priority_enabled'
   const isolationKey = form.platform === 'anthropic' ? 'anthropic_upstream_strong_isolation_enabled' : 'upstream_strong_isolation_enabled'
   const staleKeys = form.platform === 'anthropic'
     ? ['prompt_cache_boost_enabled', 'prompt_cache_boost_level', 'prompt_cache_boost_upstream_hit_priority_enabled', 'upstream_strong_isolation_enabled']
-    : ['anthropic_cache_boost_enabled', 'anthropic_cache_boost_level', 'anthropic_upstream_strong_isolation_enabled']
+    : ['anthropic_cache_boost_enabled', 'anthropic_cache_boost_level', 'anthropic_cache_boost_upstream_hit_priority_enabled', 'anthropic_upstream_strong_isolation_enabled']
   staleKeys.forEach((key) => {
     delete credentials[key]
   })
@@ -5490,23 +5490,19 @@ const applyPlatformCacheBoostAndIsolationCredentials = (credentials: Record<stri
     credentials[cacheEnabledKey] = true
     if (promptCacheBoostAggressiveEnabled.value) {
       credentials[cacheLevelKey] = 'aggressive'
-      if (upstreamHitPriorityKey !== '' && promptCacheBoostUpstreamHitPriorityEnabled.value) {
+      if (promptCacheBoostUpstreamHitPriorityEnabled.value) {
         credentials[upstreamHitPriorityKey] = true
-      } else if (upstreamHitPriorityKey !== '') {
+      } else {
         delete credentials[upstreamHitPriorityKey]
       }
     } else {
       delete credentials[cacheLevelKey]
-      if (upstreamHitPriorityKey !== '') {
-        delete credentials[upstreamHitPriorityKey]
-      }
+      delete credentials[upstreamHitPriorityKey]
     }
   } else {
     delete credentials[cacheEnabledKey]
     delete credentials[cacheLevelKey]
-    if (upstreamHitPriorityKey !== '') {
-      delete credentials[upstreamHitPriorityKey]
-    }
+    delete credentials[upstreamHitPriorityKey]
   }
   if (upstreamStrongIsolationEnabled.value) {
     credentials[isolationKey] = true

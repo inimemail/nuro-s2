@@ -682,6 +682,7 @@ type GatewayService struct {
 	anthropicPoolRecoveryProbeInFlight   sync.Map // key: int64(accountID), value: struct{}
 	anthropicPoolRecoveryProbeFailureCnt sync.Map // key: int64(accountID), value: int
 	anthropicPoolRecoveryProbeAdminKick  sync.Map // key: int64(accountID), value: time.Time
+	anthropicCacheBoostGroupAvailability sync.Map // key: string(group:model), value: anthropicCacheBoostGroupAvailability
 	accountHealthStats                   atomic.Pointer[accountRuntimeHealthStats]
 }
 
@@ -856,7 +857,11 @@ func (s *GatewayService) BindStickySession(ctx context.Context, groupID *int64, 
 	if sessionHash == "" || accountID <= 0 || s.cache == nil {
 		return nil
 	}
-	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL)
+	if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL); err != nil {
+		return err
+	}
+	s.bindAnthropicCacheAffinitySessionForAccountID(ctx, groupID, accountID)
+	return nil
 }
 
 // GetCachedSessionAccountID retrieves the account ID bound to a sticky session.
@@ -1608,6 +1613,18 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	if s.debugModelRoutingEnabled() && platform == PlatformAnthropic && requestedModel != "" {
 		logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] load-aware enabled: group_id=%v model=%s session=%s platform=%s", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), platform)
 	}
+	anthropicAffinityHash, _ := anthropicCacheAffinitySessionFromContext(ctx)
+	anthropicAffinityActive := platform == PlatformAnthropic && anthropicAffinityHash != ""
+	anthropicAffinityAccountID := int64(0)
+	if anthropicAffinityActive {
+		anthropicAffinityAccountID = s.anthropicCacheAffinityAccountIDFromContext(ctx, groupID)
+	}
+	selectWithLoad := func(items []accountWithLoad) *accountWithLoad {
+		if anthropicAffinityActive {
+			return selectLayeredAccountWithLoadAndAnthropicAffinity(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, true)
+		}
+		return selectLayeredAccountWithLoad(items, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
+	}
 
 	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
 		// 复制排除列表，用于会话限制拒绝时的重试
@@ -1841,6 +1858,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 									if s.debugModelRoutingEnabled() {
 										logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), stickyAccountID)
 									}
+									s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, stickyAccount)
 									selection, err := s.newSelectionResult(ctx, stickyAccount, true, result.ReleaseFunc, nil)
 									if err != nil {
 										result.ReleaseFunc()
@@ -1920,7 +1938,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				// 4. 在路由账号范围内使用同一套分层选择：优先级 → 非池优先 → 健康带宽 → 负载率 → 可选快重置 → LRU
 				routingAvailableForAcquire := append([]accountWithLoad(nil), routingAvailable...)
 				for len(routingAvailableForAcquire) > 0 {
-					selected := selectLayeredAccountWithLoad(routingAvailableForAcquire, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
+					selected := selectWithLoad(routingAvailableForAcquire)
 					if selected == nil || selected.account == nil {
 						break
 					}
@@ -1933,6 +1951,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							if sessionHash != "" && s.cache != nil {
 								_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.account.ID, stickySessionTTL)
 							}
+							s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected.account)
 							if s.debugModelRoutingEnabled() {
 								logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed select: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), selected.account.ID)
 							}
@@ -1954,7 +1973,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				// 遍历找到第一个满足会话限制的账号
 				routingAvailableForWait := append([]accountWithLoad(nil), routingAvailable...)
 				for len(routingAvailableForWait) > 0 {
-					selected := selectLayeredAccountWithLoad(routingAvailableForWait, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
+					selected := selectWithLoad(routingAvailableForWait)
 					if selected == nil || selected.account == nil {
 						break
 					}
@@ -2072,6 +2091,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							if s.cache != nil {
 								_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL)
 							}
+							s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, account)
 							selection, err := s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
 							if err != nil {
 								result.ReleaseFunc()
@@ -2219,7 +2239,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 		// 分层过滤选择：优先级 → 非池优先 → 健康带宽 → 负载率 → 可选快重置 → LRU
 		for len(available) > 0 {
-			selected := selectLayeredAccountWithLoad(available, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
+			selected := selectWithLoad(available)
 			if selected == nil {
 				break
 			}
@@ -2233,6 +2253,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					if sessionHash != "" && s.cache != nil {
 						_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.account.ID, stickySessionTTL)
 					}
+					s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected.account)
 					return s.newSelectionResult(ctx, selected.account, true, result.ReleaseFunc, nil)
 				}
 			}
@@ -2268,9 +2289,15 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool, cfg config.GatewaySchedulingConfig) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
+	anthropicAffinityHash, _ := anthropicCacheAffinitySessionFromContext(ctx)
+	anthropicAffinityActive := anthropicAffinityHash != ""
+	anthropicAffinityAccountID := int64(0)
+	if anthropicAffinityActive {
+		anthropicAffinityAccountID = s.anthropicCacheAffinityAccountIDFromContext(ctx, groupID)
+	}
 
 	for len(ordered) > 0 {
-		acc := selectLayeredAccount(ordered, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
+		acc := selectLayeredAccountWithAnthropicAffinity(ordered, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, anthropicAffinityActive)
 		if acc == nil {
 			break
 		}
@@ -2288,6 +2315,7 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 			if sessionHash != "" && s.cache != nil {
 				_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selection.Account.ID, stickySessionTTL)
 			}
+			s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, acc)
 			return selection, true, nil
 		}
 		ordered = removeAccountFromCandidates(ordered, acc.ID)
@@ -3493,6 +3521,18 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	preferOAuth := platform == PlatformGemini
 	cfg := s.schedulingConfig()
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, platform)
+	anthropicAffinityHash, _ := anthropicCacheAffinitySessionFromContext(ctx)
+	anthropicAffinityActive := platform == PlatformAnthropic && anthropicAffinityHash != ""
+	anthropicAffinityAccountID := int64(0)
+	if anthropicAffinityActive {
+		anthropicAffinityAccountID = s.anthropicCacheAffinityAccountIDFromContext(ctx, groupID)
+	}
+	selectAccount := func(candidates []*Account) *Account {
+		if anthropicAffinityActive {
+			return selectLayeredAccountWithAnthropicAffinity(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, true)
+		}
+		return selectLayeredAccount(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
+	}
 
 	// require_privacy_set: 获取分组信息
 	var schedGroup *Group
@@ -3531,6 +3571,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 							if s.debugModelRoutingEnabled() {
 								logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), accountID)
 							}
+							s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, account)
 							return account, nil
 						}
 					}
@@ -3602,13 +3643,14 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			candidates = append(candidates, acc)
 		}
 
-		selected := selectLayeredAccount(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
+		selected := selectAccount(candidates)
 		if selected != nil {
 			if sessionHash != "" && s.cache != nil {
 				if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
 					logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
 				}
 			}
+			s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected)
 			if s.debugModelRoutingEnabled() {
 				logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy routed select: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), selected.ID)
 			}
@@ -3634,6 +3676,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 					}
 					if !clearSticky && groupOK && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
+						s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, account)
 						return account, nil
 					}
 				}
@@ -3703,7 +3746,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		candidates = append(candidates, acc)
 	}
 
-	selected := selectLayeredAccount(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
+	selected := selectAccount(candidates)
 	if selected == nil {
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, platform, accounts, excludedIDs, false)
 		if requestedModel != "" {
@@ -3718,6 +3761,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
 		}
 	}
+	s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected)
 
 	return selected, nil
 }
@@ -3728,6 +3772,18 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	preferOAuth := nativePlatform == PlatformGemini
 	cfg := s.schedulingConfig()
 	routingAccountIDs := s.routingAccountIDsForRequest(ctx, groupID, requestedModel, nativePlatform)
+	anthropicAffinityHash, _ := anthropicCacheAffinitySessionFromContext(ctx)
+	anthropicAffinityActive := nativePlatform == PlatformAnthropic && anthropicAffinityHash != ""
+	anthropicAffinityAccountID := int64(0)
+	if anthropicAffinityActive {
+		anthropicAffinityAccountID = s.anthropicCacheAffinityAccountIDFromContext(ctx, groupID)
+	}
+	selectAccount := func(candidates []*Account) *Account {
+		if anthropicAffinityActive {
+			return selectLayeredAccountWithAnthropicAffinity(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now(), anthropicAffinityAccountID, true)
+		}
+		return selectLayeredAccount(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
+	}
 
 	// require_privacy_set: 获取分组信息
 	var schedGroup *Group
@@ -3765,6 +3821,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 								if s.debugModelRoutingEnabled() {
 									logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy mixed routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), accountID)
 								}
+								s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, account)
 								return account, nil
 							}
 						}
@@ -3837,13 +3894,14 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			candidates = append(candidates, acc)
 		}
 
-		selected := selectLayeredAccount(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
+		selected := selectAccount(candidates)
 		if selected != nil {
 			if sessionHash != "" && s.cache != nil {
 				if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
 					logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
 				}
 			}
+			s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected)
 			if s.debugModelRoutingEnabled() {
 				logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy mixed routed select: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), selected.ID)
 			}
@@ -3870,6 +3928,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 					}
 					if !clearSticky && groupOK && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
 						if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
+							s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, account)
 							return account, nil
 						}
 					}
@@ -3939,7 +3998,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		candidates = append(candidates, acc)
 	}
 
-	selected := selectLayeredAccount(candidates, s.accountHealthStats.Load(), cfg, preferOAuth, time.Now())
+	selected := selectAccount(candidates)
 	if selected == nil {
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, nativePlatform, accounts, excludedIDs, true)
 		if requestedModel != "" {
@@ -3954,6 +4013,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
 		}
 	}
+	s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected)
 
 	return selected, nil
 }

@@ -301,6 +301,17 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	if platform == service.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
+	if platform == service.PlatformAnthropic &&
+		h.gatewayService.AnthropicCacheBoostUpstreamPriorityAvailableForGroup(c.Request.Context(), apiKey.GroupID, reqModel) {
+		if affinityHash := service.DeriveAnthropicCacheBoostUpstreamAffinityHash(reqModel, body); affinityHash != "" {
+			ctx := service.WithAnthropicCacheAffinitySession(
+				c.Request.Context(),
+				affinityHash,
+				service.DeriveAnthropicCacheAffinityStickyTTL(body),
+			)
+			c.Request = c.Request.WithContext(ctx)
+		}
+	}
 
 	// 查询粘性会话绑定的账号 ID
 	var sessionBoundAccountID int64

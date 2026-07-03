@@ -173,6 +173,17 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 	if groupPlatform == service.PlatformGemini && selectionSessionHash != "" {
 		selectionSessionHash = "gemini:" + selectionSessionHash
 	}
+	if groupPlatform == service.PlatformAnthropic &&
+		h.gatewayService.AnthropicCacheBoostUpstreamPriorityAvailableForGroup(c.Request.Context(), apiKey.GroupID, reqModel) {
+		if affinityHash := service.DeriveAnthropicCacheBoostUpstreamAffinityHash(reqModel, body); affinityHash != "" {
+			ctx := service.WithAnthropicCacheAffinitySession(
+				c.Request.Context(),
+				affinityHash,
+				service.DeriveAnthropicCacheAffinityStickyTTL(body),
+			)
+			c.Request = c.Request.WithContext(ctx)
+		}
+	}
 
 	// 3. Account selection + failover loop
 	fs := NewFailoverState(h.maxAccountSwitches, false)

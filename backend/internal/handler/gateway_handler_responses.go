@@ -174,6 +174,17 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		APIKeyID:  apiKey.ID,
 	}
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
+	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformAnthropic &&
+		h.gatewayService.AnthropicCacheBoostUpstreamPriorityAvailableForGroup(requestCtx, apiKey.GroupID, reqModel) {
+		if affinityHash := service.DeriveAnthropicCacheBoostUpstreamAffinityHash(reqModel, body); affinityHash != "" {
+			requestCtx = service.WithAnthropicCacheAffinitySession(
+				requestCtx,
+				affinityHash,
+				service.DeriveAnthropicCacheAffinityStickyTTL(body),
+			)
+			c.Request = c.Request.WithContext(requestCtx)
+		}
+	}
 
 	// 3. Account selection + failover loop
 	fs := NewFailoverState(h.maxAccountSwitches, false)
