@@ -27,6 +27,27 @@ func shuffleOpenAIAccountLoadTiesWithReset(accounts []accountWithLoad, includeRe
 	}
 }
 
+func prioritizeOpenAIPromptCacheUpstreamLoadTies(accounts []accountWithLoad, sessionHash string, includeReset bool) {
+	if len(accounts) <= 1 || !IsOpenAIPromptCacheBoostUpstreamAffinitySessionHash(sessionHash) {
+		return
+	}
+	for i := 0; i < len(accounts); {
+		j := i + 1
+		for j < len(accounts) && sameOpenAIAccountLoadTie(accounts[i], accounts[j], includeReset) {
+			j++
+		}
+		sort.SliceStable(accounts[i:j], func(a, b int) bool {
+			left := accounts[i+a].account
+			right := accounts[i+b].account
+			if left == nil || right == nil {
+				return false
+			}
+			return left.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() && !right.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled()
+		})
+		i = j
+	}
+}
+
 func sameOpenAIAccountLoadTie(a, b accountWithLoad, includeReset bool) bool {
 	if a.account == nil || b.account == nil || a.loadInfo == nil || b.loadInfo == nil {
 		return false
@@ -56,6 +77,27 @@ func shuffleOpenAIStrictPriorityTiesWithReset(accounts []openAIAccountCandidateS
 			j++
 		}
 		shuffleOpenAIStrictPriorityRange(accounts[i:j], &rng)
+		i = j
+	}
+}
+
+func prioritizeOpenAIPromptCacheUpstreamStrictTies(accounts []openAIAccountCandidateScore, sessionHash string, includeReset bool) {
+	if len(accounts) <= 1 || !IsOpenAIPromptCacheBoostUpstreamAffinitySessionHash(sessionHash) {
+		return
+	}
+	for i := 0; i < len(accounts); {
+		j := i + 1
+		for j < len(accounts) && sameOpenAIStrictPriorityTie(accounts[i], accounts[j], includeReset) {
+			j++
+		}
+		sort.SliceStable(accounts[i:j], func(a, b int) bool {
+			left := accounts[i+a].account
+			right := accounts[i+b].account
+			if left == nil || right == nil {
+				return false
+			}
+			return left.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() && !right.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled()
+		})
 		i = j
 	}
 }

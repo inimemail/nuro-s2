@@ -125,7 +125,13 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroup(c.Request.Context(), c, apiKey.GroupID, body, reqModel)
+	affinityBody := body
+	affinityModel := reqModel
+	if channelMapping.Mapped {
+		affinityBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
+		affinityModel = channelMapping.MappedModel
+	}
+	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroupWithMapped(c.Request.Context(), c, apiKey.GroupID, body, reqModel, affinityBody, affinityModel)
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 	}

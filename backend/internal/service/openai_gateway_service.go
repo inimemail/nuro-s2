@@ -395,31 +395,32 @@ type OpenAIGatewayService struct {
 	openaiWSPassthroughDialer     openAIWSClientDialer
 	openaiAccountStats            *openAIAccountRuntimeStats
 
-	openaiWSFallbackUntil                      sync.Map // key: int64(accountID), value: time.Time
-	openaiAccountRuntimeBlockUntil             sync.Map // key: int64(accountID), value: time.Time
-	openaiPoolSoftCooldownUntil                sync.Map // key: int64(accountID), value: time.Time
-	openaiPoolSoftCooldownContext              sync.Map // key: int64(accountID), value: openAIPoolSoftCooldownContext
-	openaiPoolSoftCooldownFailureCount         sync.Map // key: int64(accountID), value: int
-	openaiPoolRecoveryProbeInFlight            sync.Map // key: int64(accountID), value: struct{}
-	openaiPoolRecoveryProbeFailureCount        sync.Map // key: int64(accountID), value: int
-	openaiPoolRecoveryProbeAdminKickAt         sync.Map // key: int64(accountID), value: time.Time
-	openaiCodexAutoResetInFlight               sync.Map // key: int64(accountID), value: struct{}
-	openaiCodexAutoResetCooldownUntil          sync.Map // key: int64(accountID), value: time.Time
-	openaiOAuth429WindowStartUnixNano          atomic.Int64
-	openaiOAuth429WindowCount                  atomic.Int64
-	openaiWSRetryMetrics                       openAIWSRetryMetrics
-	responseHeaderFilter                       *responseheaders.CompiledHeaderFilter
-	codexSnapshotThrottle                      *accountWriteThrottle
-	openaiPromptCacheBoostDisabledUntil        sync.Map // key: int64(accountID), value: time.Time
-	openaiPromptCacheBoostAggressiveGroupCache sync.Map // key: string(group:model), value: promptCacheBoostAggressiveAvailability
-	openaiCompatSessionResponses               sync.Map
-	openaiCompatAnthropicDigestSessions        sync.Map
-	openaiCyberPolicySessionBlocks             sync.Map // key: platform:accountID:anchorType:anchorHash, value: cyberPolicySessionBlock
+	openaiWSFallbackUntil                        sync.Map // key: int64(accountID), value: time.Time
+	openaiAccountRuntimeBlockUntil               sync.Map // key: int64(accountID), value: time.Time
+	openaiPoolSoftCooldownUntil                  sync.Map // key: int64(accountID), value: time.Time
+	openaiPoolSoftCooldownContext                sync.Map // key: int64(accountID), value: openAIPoolSoftCooldownContext
+	openaiPoolSoftCooldownFailureCount           sync.Map // key: int64(accountID), value: int
+	openaiPoolRecoveryProbeInFlight              sync.Map // key: int64(accountID), value: struct{}
+	openaiPoolRecoveryProbeFailureCount          sync.Map // key: int64(accountID), value: int
+	openaiPoolRecoveryProbeAdminKickAt           sync.Map // key: int64(accountID), value: time.Time
+	openaiCodexAutoResetInFlight                 sync.Map // key: int64(accountID), value: struct{}
+	openaiCodexAutoResetCooldownUntil            sync.Map // key: int64(accountID), value: time.Time
+	openaiOAuth429WindowStartUnixNano            atomic.Int64
+	openaiOAuth429WindowCount                    atomic.Int64
+	openaiWSRetryMetrics                         openAIWSRetryMetrics
+	responseHeaderFilter                         *responseheaders.CompiledHeaderFilter
+	codexSnapshotThrottle                        *accountWriteThrottle
+	openaiPromptCacheBoostDisabledUntil          sync.Map // key: int64(accountID), value: time.Time
+	openaiPromptCacheBoostGroupAvailabilityCache sync.Map // key: string(group:model), value: promptCacheBoostGroupAvailability
+	openaiCompatSessionResponses                 sync.Map
+	openaiCompatAnthropicDigestSessions          sync.Map
+	openaiCyberPolicySessionBlocks               sync.Map // key: platform:accountID:anchorType:anchorHash, value: cyberPolicySessionBlock
 }
 
-type promptCacheBoostAggressiveAvailability struct {
-	expiresAt time.Time
-	enabled   bool
+type promptCacheBoostGroupAvailability struct {
+	expiresAt               time.Time
+	aggressiveEnabled       bool
+	upstreamPriorityEnabled bool
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -1293,6 +1294,13 @@ func (s *OpenAIGatewayService) ExtractSessionID(c *gin.Context, body []byte) str
 }
 
 func explicitOpenAISessionID(c *gin.Context, body []byte) string {
+	if sessionID := explicitOpenAIHeaderSessionID(c); sessionID != "" {
+		return sessionID
+	}
+	return explicitOpenAIBodyPromptCacheKey(body)
+}
+
+func explicitOpenAIHeaderSessionID(c *gin.Context) string {
 	if c == nil {
 		return ""
 	}
@@ -1301,10 +1309,14 @@ func explicitOpenAISessionID(c *gin.Context, body []byte) string {
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
 	}
-	if sessionID == "" && len(body) > 0 {
-		sessionID = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
-	}
 	return sessionID
+}
+
+func explicitOpenAIBodyPromptCacheKey(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
 }
 
 // GenerateExplicitSessionHash generates a sticky-session hash only from explicit
@@ -1322,7 +1334,9 @@ func (s *OpenAIGatewayService) GenerateExplicitSessionHash(c *gin.Context, body 
 }
 
 // GeneratePromptCacheBoostAffinitySessionHash generates a sticky hash used only
-// for prompt-cache affinity. Explicit client session signals always win.
+// for prompt-cache affinity. Explicit client session signals win on the basic
+// path; group-aware callers may upgrade body prompt_cache_key to upstream-cache
+// affinity when that safer mode is enabled for the group.
 func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHash(c *gin.Context, body []byte, model string) string {
 	if c == nil || len(body) == 0 || explicitOpenAISessionID(c, body) != "" {
 		return ""
@@ -1331,11 +1345,34 @@ func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHash(c *gi
 }
 
 func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForGroup(ctx context.Context, c *gin.Context, groupID *int64, body []byte, model string) string {
-	if c == nil || len(body) == 0 || explicitOpenAISessionID(c, body) != "" {
+	return s.GeneratePromptCacheBoostAffinitySessionHashForGroupWithMapped(ctx, c, groupID, body, model, nil, "")
+}
+
+func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForGroupWithMapped(ctx context.Context, c *gin.Context, groupID *int64, body []byte, model string, mappedBody []byte, mappedModel string) string {
+	if c == nil || len(body) == 0 || explicitOpenAIHeaderSessionID(c) != "" {
+		return ""
+	}
+	upstreamBody := body
+	upstreamModel := model
+	if len(mappedBody) > 0 {
+		upstreamBody = mappedBody
+	}
+	if strings.TrimSpace(mappedModel) != "" {
+		upstreamModel = mappedModel
+	}
+	if promptCacheKey := explicitOpenAIBodyPromptCacheKey(body); promptCacheKey != "" {
+		if s != nil && s.schedulerSnapshot != nil && s.openAIPromptCacheBoostUpstreamPriorityAvailableForGroup(ctx, groupID, upstreamModel) {
+			return DeriveOpenAIPromptCacheBoostExplicitKeyUpstreamAffinityHash(upstreamModel, promptCacheKey)
+		}
 		return ""
 	}
 	if s == nil || s.schedulerSnapshot == nil || !openAIPromptCacheBoostBodyMayBenefitFromAggressive(body) {
 		return DeriveOpenAIPromptCacheBoostAffinityHash(model, body)
+	}
+	if s.openAIPromptCacheBoostUpstreamPriorityAvailableForGroup(ctx, groupID, upstreamModel) {
+		if upstreamHash := DeriveOpenAIPromptCacheBoostUpstreamAffinityHash(upstreamModel, upstreamBody); upstreamHash != "" {
+			return upstreamHash
+		}
 	}
 	if s.openAIPromptCacheBoostAggressiveAvailableForGroup(ctx, groupID, model) {
 		if aggressiveHash := DeriveOpenAIPromptCacheBoostAggressiveAffinityHash(model, body); aggressiveHash != "" {
@@ -1345,37 +1382,51 @@ func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForGro
 	return DeriveOpenAIPromptCacheBoostAffinityHash(model, body)
 }
 
+func (s *OpenAIGatewayService) openAIPromptCacheBoostUpstreamPriorityAvailableForGroup(ctx context.Context, groupID *int64, model string) bool {
+	return s.openAIPromptCacheBoostAvailabilityForGroup(ctx, groupID, model).upstreamPriorityEnabled
+}
+
 func (s *OpenAIGatewayService) openAIPromptCacheBoostAggressiveAvailableForGroup(ctx context.Context, groupID *int64, model string) bool {
+	return s.openAIPromptCacheBoostAvailabilityForGroup(ctx, groupID, model).aggressiveEnabled
+}
+
+func (s *OpenAIGatewayService) openAIPromptCacheBoostAvailabilityForGroup(ctx context.Context, groupID *int64, model string) promptCacheBoostGroupAvailability {
 	if s == nil || s.schedulerSnapshot == nil {
-		return false
+		return promptCacheBoostGroupAvailability{}
 	}
 	cacheKey := strconv.FormatInt(derefGroupID(groupID), 10) + ":" + NormalizeOpenAICompatRequestedModel(model)
 	now := time.Now()
-	if raw, ok := s.openaiPromptCacheBoostAggressiveGroupCache.Load(cacheKey); ok {
-		state, _ := raw.(promptCacheBoostAggressiveAvailability)
+	if raw, ok := s.openaiPromptCacheBoostGroupAvailabilityCache.Load(cacheKey); ok {
+		state, _ := raw.(promptCacheBoostGroupAvailability)
 		if !state.expiresAt.IsZero() && now.Before(state.expiresAt) {
-			return state.enabled
+			return state
 		}
 	}
-	enabled := false
+	state := promptCacheBoostGroupAvailability{
+		expiresAt: now.Add(openAIPromptCacheBoostAggressiveCacheTTL),
+	}
 	accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
 	if err == nil {
 		for i := range accounts {
 			account := &accounts[i]
-			if account.IsOpenAIPromptCacheBoostAggressive() &&
-				isOpenAIAccountEligibleForRequest(ctx, account, model, false, OpenAIEndpointCapabilityChatCompletions, "") &&
-				!s.isOpenAIPoolAccountSoftCooling(account) &&
-				!s.isOpenAIAccountRuntimeBlocked(account) {
-				enabled = true
+			if !isOpenAIAccountEligibleForRequest(ctx, account, model, false, OpenAIEndpointCapabilityChatCompletions, "") ||
+				s.isOpenAIPoolAccountSoftCooling(account) ||
+				s.isOpenAIAccountRuntimeBlocked(account) {
+				continue
+			}
+			if account.IsOpenAIPromptCacheBoostAggressive() {
+				state.aggressiveEnabled = true
+			}
+			if account.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() {
+				state.upstreamPriorityEnabled = true
+			}
+			if state.aggressiveEnabled && state.upstreamPriorityEnabled {
 				break
 			}
 		}
 	}
-	s.openaiPromptCacheBoostAggressiveGroupCache.Store(cacheKey, promptCacheBoostAggressiveAvailability{
-		expiresAt: now.Add(openAIPromptCacheBoostAggressiveCacheTTL),
-		enabled:   enabled,
-	})
-	return enabled
+	s.openaiPromptCacheBoostGroupAvailabilityCache.Store(cacheKey, state)
+	return state
 }
 
 func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForAccount(c *gin.Context, body []byte, model string, account *Account) string {
@@ -1386,7 +1437,8 @@ func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForAcc
 }
 
 func (s *OpenAIGatewayService) openAIStickySessionTTLForHash(sessionHash string, fallback time.Duration) time.Duration {
-	if IsOpenAIPromptCacheBoostAggressiveAffinitySessionHash(sessionHash) {
+	if IsOpenAIPromptCacheBoostAggressiveAffinitySessionHash(sessionHash) ||
+		IsOpenAIPromptCacheBoostUpstreamAffinitySessionHash(sessionHash) {
 		return openAIPromptCacheBoostAffinityStickyTTL
 	}
 	if fallback > 0 {
@@ -2482,6 +2534,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			}
 		})
 		shuffleOpenAIAccountLoadTiesWithReset(available, preferSoonestReset)
+		prioritizeOpenAIPromptCacheUpstreamLoadTies(available, sessionHash, preferSoonestReset)
 		available = s.orderOpenAIPoolCoolingLoadedAccountsLast(available, requestedModel)
 
 		selectionOrder := make([]accountWithLoad, 0, len(available))

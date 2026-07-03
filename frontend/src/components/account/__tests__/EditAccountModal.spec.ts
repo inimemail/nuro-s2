@@ -181,6 +181,7 @@ function buildOpenAIOAuthAccount() {
       },
       prompt_cache_boost_enabled: true,
       prompt_cache_boost_level: 'aggressive',
+      prompt_cache_boost_upstream_hit_priority_enabled: true,
       upstream_strong_isolation_enabled: true
     },
     extra: {},
@@ -274,6 +275,7 @@ describe('EditAccountModal', () => {
 
     expect(wrapper.text()).toContain('admin.accounts.promptCacheBoost')
     expect(wrapper.text()).toContain('admin.accounts.promptCacheBoostAggressive')
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheBoostUpstreamHitPriority')
     expect(wrapper.text()).toContain('admin.accounts.upstreamStrongIsolation')
   })
 
@@ -291,6 +293,7 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_boost_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_boost_level).toBe('aggressive')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_boost_upstream_hit_priority_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.upstream_strong_isolation_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('pool_mode')
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('pool_soft_cooldown_enabled')

@@ -3607,6 +3607,8 @@ export default {
       promptCacheBoostHint: 'Applies to OpenAI OAuth accounts or API-key text pools. Adds a virtual session cache key, uses 24h prompt cache, and preserves cacheable prefixes for large-context requests.',
       promptCacheBoostAggressive: 'Aggressive Mode',
       promptCacheBoostAggressiveHint: 'Off keeps the current policy. On loosens the static-prefix threshold so more requests with the same system prompt/tools can reuse the cache key.',
+      promptCacheBoostUpstreamHitPriority: 'Upstream Cache Priority',
+      promptCacheBoostUpstreamHitPriorityHint: 'OpenAI aggressive mode only. Keeps scheduling and soft cooldown first while making identical cache prefixes stick to the same upstream account more consistently.',
       anthropicCacheBoost: 'Anthropic Cache Boost',
       anthropicCacheBoostHint: 'Applies to Anthropic OAuth, Setup Token, or API-key text pools. Optimizes cache_control breakpoints so large-context requests can reuse Anthropic prompt cache more consistently.',
       anthropicCacheBoostAggressiveHint: 'Off keeps the conservative policy. On lowers the static-prefix threshold so more requests with the same system prompt/tools can reuse Anthropic cache_control breakpoints.',

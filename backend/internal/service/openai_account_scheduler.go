@@ -553,7 +553,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 	if acquireErr == nil && result != nil && result.Acquired {
 		if sessionHash != "" {
-			_ = s.service.refreshStickySessionTTL(ctx, req.GroupID, sessionHash, s.service.openAIWSSessionStickyTTL())
+			_ = s.service.refreshStickySessionTTL(ctx, req.GroupID, sessionHash, s.service.openAIStickySessionTTLForHash(sessionHash, s.service.openAIWSSessionStickyTTL()))
 		}
 		return &AccountSelectionResult{
 			Account:     account,
@@ -979,7 +979,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		if len(pool) == 0 {
 			return nil
 		}
-		return s.buildStrictPrioritySelectionOrder(pool, req.RequestedModel)
+		return s.buildStrictPrioritySelectionOrderForSession(pool, req.RequestedModel, req.SessionHash)
 	}
 
 	if req.RequireCompact {
@@ -1006,6 +1006,10 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 }
 
 func (s *defaultOpenAIAccountScheduler) buildStrictPrioritySelectionOrder(pool []openAIAccountCandidateScore, requestedModel string) []openAIAccountCandidateScore {
+	return s.buildStrictPrioritySelectionOrderForSession(pool, requestedModel, "")
+}
+
+func (s *defaultOpenAIAccountScheduler) buildStrictPrioritySelectionOrderForSession(pool []openAIAccountCandidateScore, requestedModel string, sessionHash string) []openAIAccountCandidateScore {
 	if len(pool) == 0 {
 		return nil
 	}
@@ -1026,7 +1030,7 @@ func (s *defaultOpenAIAccountScheduler) buildStrictPrioritySelectionOrder(pool [
 	}
 
 	ordered := make([]openAIAccountCandidateScore, 0, len(pool))
-	ordered = append(ordered, s.sortOpenAIStrictPriorityCandidates(active)...)
+	ordered = append(ordered, s.sortOpenAIStrictPriorityCandidatesForSession(active, sessionHash)...)
 	if len(probeDue) > 0 && s != nil && s.service != nil {
 		for _, candidate := range probeDue {
 			s.service.maybeStartOpenAIPoolRecoveryProbe(context.Background(), candidate.account, requestedModel)
@@ -1080,15 +1084,23 @@ func sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []op
 }
 
 func (s *defaultOpenAIAccountScheduler) sortOpenAIStrictPriorityCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	return s.sortOpenAIStrictPriorityCandidatesForSession(pool, "")
+}
+
+func (s *defaultOpenAIAccountScheduler) sortOpenAIStrictPriorityCandidatesForSession(pool []openAIAccountCandidateScore, sessionHash string) []openAIAccountCandidateScore {
 	preferSoonestReset := false
 	if s != nil && s.service != nil {
 		weights := s.service.openAIWSSchedulerWeights()
 		preferSoonestReset = weights.Reset > 0 || s.service.schedulingConfig().PreferSoonestReset
 	}
-	return sortOpenAIStrictPriorityCandidatesWithReset(pool, preferSoonestReset)
+	return sortOpenAIStrictPriorityCandidatesWithResetAndSession(pool, preferSoonestReset, sessionHash)
 }
 
 func sortOpenAIStrictPriorityCandidatesWithReset(pool []openAIAccountCandidateScore, preferSoonestReset bool) []openAIAccountCandidateScore {
+	return sortOpenAIStrictPriorityCandidatesWithResetAndSession(pool, preferSoonestReset, "")
+}
+
+func sortOpenAIStrictPriorityCandidatesWithResetAndSession(pool []openAIAccountCandidateScore, preferSoonestReset bool, sessionHash string) []openAIAccountCandidateScore {
 	if len(pool) == 0 {
 		return nil
 	}
@@ -1142,6 +1154,7 @@ func sortOpenAIStrictPriorityCandidatesWithReset(pool []openAIAccountCandidateSc
 		return a.account.ID < b.account.ID
 	})
 	shuffleOpenAIStrictPriorityTiesWithReset(ordered, preferSoonestReset)
+	prioritizeOpenAIPromptCacheUpstreamStrictTies(ordered, sessionHash, preferSoonestReset)
 	return ordered
 }
 

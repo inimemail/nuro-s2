@@ -121,8 +121,24 @@ func TestGetOpenAIRequestBodyMap_UsesContextCache(t *testing.T) {
 
 func TestDeriveOpenAIVirtualPromptCacheKey(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","instructions":"be helpful","input":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"next"}]}`)
-	accountA := &Account{ID: 1}
-	accountB := &Account{ID: 2}
+	accountA := &Account{
+		ID:       1,
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"pool_mode":                  true,
+			"prompt_cache_boost_enabled": true,
+		},
+	}
+	accountB := &Account{
+		ID:       2,
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"pool_mode":                  true,
+			"prompt_cache_boost_enabled": true,
+		},
+	}
 
 	key1 := deriveOpenAIVirtualPromptCacheKey(accountA, "gpt-5.5", body)
 	key2 := deriveOpenAIVirtualPromptCacheKey(accountA, "gpt-5.5", body)

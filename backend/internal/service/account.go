@@ -1023,6 +1023,15 @@ func (a *Account) IsOpenAIPromptCacheBoostAggressive() bool {
 	return a.OpenAIPromptCacheBoostLevel() == OpenAIPromptCacheBoostLevelAggressive
 }
 
+// IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled enables the most
+// conservative upstream-cache affinity tweaks. It only applies on top of
+// aggressive prompt-cache boost so the existing normal/aggressive behavior is
+// unchanged for old accounts.
+func (a *Account) IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() bool {
+	return a.IsOpenAIPromptCacheBoostAggressive() &&
+		credentialBool(a.Credentials, "prompt_cache_boost_upstream_hit_priority_enabled")
+}
+
 func (a *Account) isOpenAIUpstreamStrongIsolationApplicableAccount() bool {
 	if a == nil || !a.IsOpenAI() || a.IsImagePoolMode() || a.Credentials == nil {
 		return false

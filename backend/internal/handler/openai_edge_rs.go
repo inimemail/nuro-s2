@@ -592,7 +592,11 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		reqLog.Info("openai_edge.billing_check_failed", zap.Error(err))
 		return fallback("billing_check_failed")
 	}
-	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroup(c.Request.Context(), c, apiKey.GroupID, req.Body, reqModel)
+	affinityModel := reqModel
+	if channelMapping.Mapped {
+		affinityModel = channelMapping.MappedModel
+	}
+	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroupWithMapped(c.Request.Context(), c, apiKey.GroupID, req.Body, reqModel, forwardBody, affinityModel)
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, req.Body)
 	}
@@ -766,7 +770,11 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		reqLog.Info("openai_edge.responses_billing_check_failed", zap.Error(err))
 		return fallback("billing_check_failed")
 	}
-	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroup(c.Request.Context(), c, apiKey.GroupID, req.Body, reqModel)
+	affinityModel := reqModel
+	if channelMapping.Mapped {
+		affinityModel = channelMapping.MappedModel
+	}
+	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroupWithMapped(c.Request.Context(), c, apiKey.GroupID, req.Body, reqModel, forwardBody, affinityModel)
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, req.Body)
 	}

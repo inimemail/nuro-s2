@@ -429,6 +429,29 @@
                 />
               </button>
             </div>
+            <div v-if="showPromptCacheBoostUpstreamHitPriorityToggle" class="mt-3 flex items-center justify-between gap-4 rounded-md bg-white/70 px-3 py-2 dark:bg-dark-800/50">
+              <div>
+                <label class="input-label mb-0">{{ t('admin.accounts.promptCacheBoostUpstreamHitPriority') }}</label>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.accounts.promptCacheBoostUpstreamHitPriorityHint') }}
+                </p>
+              </div>
+              <button
+                type="button"
+                @click="promptCacheBoostUpstreamHitPriorityEnabled = !promptCacheBoostUpstreamHitPriorityEnabled"
+                :class="[
+                  'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2',
+                  promptCacheBoostUpstreamHitPriorityEnabled ? 'bg-teal-600' : 'bg-gray-200 dark:bg-dark-600'
+                ]"
+              >
+                <span
+                  :class="[
+                    'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                    promptCacheBoostUpstreamHitPriorityEnabled ? 'translate-x-5' : 'translate-x-0'
+                  ]"
+                />
+              </button>
+            </div>
           </div>
           <div v-if="showUpstreamStrongIsolationToggle" class="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
             <div class="flex items-center justify-between gap-4">
@@ -835,6 +858,29 @@
                 :class="[
                   'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
                   promptCacheBoostAggressiveEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+          <div v-if="showPromptCacheBoostUpstreamHitPriorityToggle" class="mt-3 flex items-center justify-between gap-4 rounded-md bg-white/70 px-3 py-2 dark:bg-dark-800/50">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.promptCacheBoostUpstreamHitPriority') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.promptCacheBoostUpstreamHitPriorityHint') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="promptCacheBoostUpstreamHitPriorityEnabled = !promptCacheBoostUpstreamHitPriorityEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2',
+                promptCacheBoostUpstreamHitPriorityEnabled ? 'bg-teal-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  promptCacheBoostUpstreamHitPriorityEnabled ? 'translate-x-5' : 'translate-x-0'
                 ]"
               />
             </button>
@@ -3169,6 +3215,7 @@ const poolSoftCooldownErrorThreshold = ref(DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRE
 const imagePoolModeEnabled = ref(false)
 const promptCacheBoostEnabled = ref(false)
 const promptCacheBoostAggressiveEnabled = ref(false)
+const promptCacheBoostUpstreamHitPriorityEnabled = ref(false)
 const upstreamStrongIsolationEnabled = ref(false)
 const upstreamConcurrencyRaceEnabled = ref(false)
 const upstreamConcurrencyRaceRetryDelayMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
@@ -3228,6 +3275,11 @@ const promptCacheBoostHintKey = computed(() =>
 const promptCacheBoostAggressiveHintKey = computed(() =>
   isAnthropicCacheBoostUI.value ? 'admin.accounts.anthropicCacheBoostAggressiveHint' : 'admin.accounts.promptCacheBoostAggressiveHint'
 )
+const showPromptCacheBoostUpstreamHitPriorityToggle = computed(() =>
+  props.account?.platform === 'openai' &&
+  promptCacheBoostEnabled.value &&
+  promptCacheBoostAggressiveEnabled.value
+)
 const upstreamStrongIsolationTitleKey = computed(() =>
   isAnthropicCacheBoostUI.value ? 'admin.accounts.anthropicUpstreamStrongIsolation' : 'admin.accounts.upstreamStrongIsolation'
 )
@@ -3237,6 +3289,7 @@ const upstreamStrongIsolationHintKey = computed(() =>
 const cacheBoostCredentialKeys = computed(() => ({
   enabled: isAnthropicCacheBoostUI.value ? 'anthropic_cache_boost_enabled' : 'prompt_cache_boost_enabled',
   level: isAnthropicCacheBoostUI.value ? 'anthropic_cache_boost_level' : 'prompt_cache_boost_level',
+  upstreamHitPriority: isAnthropicCacheBoostUI.value ? '' : 'prompt_cache_boost_upstream_hit_priority_enabled',
   isolation: isAnthropicCacheBoostUI.value ? 'anthropic_upstream_strong_isolation_enabled' : 'upstream_strong_isolation_enabled'
 }))
 
@@ -3244,6 +3297,7 @@ const loadCacheBoostAndIsolationFromCredentials = (credentials: Record<string, u
   const keys = cacheBoostCredentialKeys.value
   promptCacheBoostEnabled.value = credentials[keys.enabled] === true
   promptCacheBoostAggressiveEnabled.value = credentials[keys.level] === 'aggressive'
+  promptCacheBoostUpstreamHitPriorityEnabled.value = keys.upstreamHitPriority !== '' && credentials[keys.upstreamHitPriority] === true
   upstreamStrongIsolationEnabled.value = credentials[keys.isolation] === true
 }
 
@@ -3253,7 +3307,7 @@ const applyCacheBoostAndIsolationCredentials = (credentials: Record<string, unkn
   }
   const keys = cacheBoostCredentialKeys.value
   const staleKeys = isAnthropicCacheBoostUI.value
-    ? ['prompt_cache_boost_enabled', 'prompt_cache_boost_level', 'upstream_strong_isolation_enabled']
+    ? ['prompt_cache_boost_enabled', 'prompt_cache_boost_level', 'prompt_cache_boost_upstream_hit_priority_enabled', 'upstream_strong_isolation_enabled']
     : ['anthropic_cache_boost_enabled', 'anthropic_cache_boost_level', 'anthropic_upstream_strong_isolation_enabled']
   staleKeys.forEach((key) => {
     delete credentials[key]
@@ -3262,12 +3316,23 @@ const applyCacheBoostAndIsolationCredentials = (credentials: Record<string, unkn
     credentials[keys.enabled] = true
     if (promptCacheBoostAggressiveEnabled.value) {
       credentials[keys.level] = 'aggressive'
+      if (keys.upstreamHitPriority !== '' && promptCacheBoostUpstreamHitPriorityEnabled.value) {
+        credentials[keys.upstreamHitPriority] = true
+      } else if (keys.upstreamHitPriority !== '') {
+        delete credentials[keys.upstreamHitPriority]
+      }
     } else {
       delete credentials[keys.level]
+      if (keys.upstreamHitPriority !== '') {
+        delete credentials[keys.upstreamHitPriority]
+      }
     }
   } else {
     delete credentials[keys.enabled]
     delete credentials[keys.level]
+    if (keys.upstreamHitPriority !== '') {
+      delete credentials[keys.upstreamHitPriority]
+    }
   }
   if (showUpstreamStrongIsolationToggle.value && upstreamStrongIsolationEnabled.value) {
     credentials[keys.isolation] = true
@@ -4178,6 +4243,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       allowedModels.value = []
       promptCacheBoostEnabled.value = false
       promptCacheBoostAggressiveEnabled.value = false
+      promptCacheBoostUpstreamHitPriorityEnabled.value = false
       upstreamStrongIsolationEnabled.value = false
     }
     poolModeEnabled.value = false
@@ -4233,6 +4299,7 @@ watch([poolModeEnabled, () => props.account?.platform], ([enabled, platform]) =>
   if (!showPromptCacheBoostToggle.value) {
     promptCacheBoostEnabled.value = false
     promptCacheBoostAggressiveEnabled.value = false
+    promptCacheBoostUpstreamHitPriorityEnabled.value = false
   }
   if (!showUpstreamStrongIsolationToggle.value) {
     upstreamStrongIsolationEnabled.value = false
@@ -4251,6 +4318,7 @@ watch(imagePoolModeEnabled, (enabled) => {
   if (enabled) {
     promptCacheBoostEnabled.value = false
     promptCacheBoostAggressiveEnabled.value = false
+    promptCacheBoostUpstreamHitPriorityEnabled.value = false
     upstreamStrongIsolationEnabled.value = false
     if (upstreamConcurrencyRaceEnabled.value && upstreamConcurrencyRaceRetryCountBackup.value !== null) {
       poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
@@ -4866,6 +4934,7 @@ const handleSubmit = async () => {
         delete newCredentials.image_pool_mode
         delete newCredentials.prompt_cache_boost_enabled
         delete newCredentials.prompt_cache_boost_level
+        delete newCredentials.prompt_cache_boost_upstream_hit_priority_enabled
         delete newCredentials.upstream_strong_isolation_enabled
         delete newCredentials.anthropic_cache_boost_enabled
         delete newCredentials.anthropic_cache_boost_level
@@ -5461,6 +5530,13 @@ const handleMixedChannelCancel = () => {
 watch(promptCacheBoostEnabled, (enabled) => {
   if (!enabled) {
     promptCacheBoostAggressiveEnabled.value = false
+    promptCacheBoostUpstreamHitPriorityEnabled.value = false
+  }
+})
+
+watch(promptCacheBoostAggressiveEnabled, (enabled) => {
+  if (!enabled) {
+    promptCacheBoostUpstreamHitPriorityEnabled.value = false
   }
 })
 </script>

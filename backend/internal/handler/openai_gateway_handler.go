@@ -390,9 +390,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	// Generate session hash (explicit client signal first; prompt-cache affinity
-	// only when the request has a substantial static prefix).
-	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroup(requestCtx, c, apiKey.GroupID, body, reqModel)
+	// Generate session hash. Header session signals win; prompt-cache affinity can
+	// use either static prefixes or an explicit prompt_cache_key when enabled.
+	affinityBody := forwardBodyForResponses(channelMapping.Mapped, channelMapping.MappedModel)
+	affinityModel := reqModel
+	if channelMapping.Mapped {
+		affinityModel = channelMapping.MappedModel
+	}
+	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroupWithMapped(requestCtx, c, apiKey.GroupID, body, reqModel, affinityBody, affinityModel)
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, sessionHashBody)
 	}
@@ -881,7 +886,12 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroup(c.Request.Context(), c, apiKey.GroupID, body, reqModel)
+	affinityBody := mappedBodyForMessages(channelMappingMsg.Mapped, channelMappingMsg.MappedModel)
+	affinityModel := reqModel
+	if channelMappingMsg.Mapped {
+		affinityModel = channelMappingMsg.MappedModel
+	}
+	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroupWithMapped(c.Request.Context(), c, apiKey.GroupID, body, reqModel, affinityBody, affinityModel)
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 	}
