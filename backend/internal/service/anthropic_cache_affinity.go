@@ -120,13 +120,12 @@ func (s *GatewayService) anthropicCacheBoostUpstreamPriorityAvailableForGroup(ct
 			account := &accounts[i]
 			if !account.IsAnthropicCacheBoostUpstreamHitPriorityEnabled() ||
 				!s.isAccountSchedulableForSelection(account) ||
+				s.isAnthropicPoolAccountSoftCooling(account) ||
 				!s.isAccountAllowedForPlatform(account, PlatformAnthropic, useMixed) ||
 				(groupID != nil && accountHasGroupMetadata(account) && !s.isAccountInGroup(account, groupID)) ||
 				(normalizedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, normalizedModel)) ||
-				!s.isAccountSchedulableForModelSelection(ctx, account, normalizedModel) ||
-				!s.isAccountSchedulableForQuota(account) ||
-				!s.isAccountSchedulableForWindowCost(ctx, account, false) ||
-				!s.isAccountSchedulableForRPM(ctx, account, false) {
+				!account.IsSchedulableForModelWithContext(ctx, normalizedModel) ||
+				!s.isAccountSchedulableForQuota(account) {
 				continue
 			}
 			state.upstreamPriorityEnabled = true
@@ -200,13 +199,14 @@ func deriveAnthropicCacheBoostStaticPrefixSeed(body []byte) (string, int) {
 }
 
 func DeriveAnthropicCacheAffinityStickyTTL(body []byte) time.Duration {
-	if anthropicBodyHasCacheControlTTL(body, cacheTTLTarget1h) {
+	includeMessageTTL := len(body) < anthropicCacheBoostAggressiveMinBodyBytes
+	if anthropicBodyHasCacheControlTTL(body, cacheTTLTarget1h, includeMessageTTL) {
 		return anthropicCacheAffinityStickyTTLExtended
 	}
 	return anthropicCacheAffinityStickyTTLDefault
 }
 
-func anthropicBodyHasCacheControlTTL(body []byte, ttl string) bool {
+func anthropicBodyHasCacheControlTTL(body []byte, ttl string, includeMessages bool) bool {
 	if len(body) == 0 || strings.TrimSpace(ttl) == "" || !gjson.ValidBytes(body) {
 		return false
 	}
@@ -234,18 +234,20 @@ func anthropicBodyHasCacheControlTTL(body []byte, ttl string) bool {
 		})
 	}
 
-	messages := gjson.GetBytes(body, "messages")
-	if messages.IsArray() {
-		messages.ForEach(func(_, msg gjson.Result) bool {
-			content := msg.Get("content")
-			if content.IsArray() {
-				content.ForEach(func(_, block gjson.Result) bool {
-					check(block)
-					return !found
-				})
-			}
-			return !found
-		})
+	if includeMessages {
+		messages := gjson.GetBytes(body, "messages")
+		if messages.IsArray() {
+			messages.ForEach(func(_, msg gjson.Result) bool {
+				content := msg.Get("content")
+				if content.IsArray() {
+					content.ForEach(func(_, block gjson.Result) bool {
+						check(block)
+						return !found
+					})
+				}
+				return !found
+			})
+		}
 	}
 
 	tools := gjson.GetBytes(body, "tools")

@@ -138,6 +138,36 @@ func TestAnthropicCacheBoostUpstreamAffinityHashUsesStaticPrefix(t *testing.T) {
 	require.Empty(t, DeriveAnthropicCacheBoostUpstreamAffinityHash("claude-sonnet-4-6", []byte(`{"model":"claude-sonnet-4-6","system":"short"}`)))
 }
 
+func TestDeriveAnthropicCacheAffinityStickyTTLIgnoresMessageTTLWhenBoostRewritesBody(t *testing.T) {
+	longSystem := strings.Repeat("stable-prefix ", 400)
+	body := []byte(`{
+		"model":"claude-sonnet-4-6",
+		"system":"` + longSystem + `",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]
+	}`)
+
+	require.GreaterOrEqual(t, len(body), anthropicCacheBoostAggressiveMinBodyBytes)
+	require.Equal(t, anthropicCacheAffinityStickyTTLDefault, DeriveAnthropicCacheAffinityStickyTTL(body))
+}
+
+func TestDeriveAnthropicCacheAffinityStickyTTLKeepsDurableOrUnrewrittenTTL(t *testing.T) {
+	longText := strings.Repeat("stable-prefix ", 400)
+	systemTTLBody := []byte(`{
+		"model":"claude-sonnet-4-6",
+		"system":[{"type":"text","text":"` + longText + `","cache_control":{"type":"ephemeral","ttl":"1h"}}],
+		"messages":[{"role":"user","content":"hello"}]
+	}`)
+	smallMessageTTLBody := []byte(`{
+		"model":"claude-sonnet-4-6",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]
+	}`)
+
+	require.GreaterOrEqual(t, len(systemTTLBody), anthropicCacheBoostAggressiveMinBodyBytes)
+	require.Less(t, len(smallMessageTTLBody), anthropicCacheBoostAggressiveMinBodyBytes)
+	require.Equal(t, anthropicCacheAffinityStickyTTLExtended, DeriveAnthropicCacheAffinityStickyTTL(systemTTLBody))
+	require.Equal(t, anthropicCacheAffinityStickyTTLExtended, DeriveAnthropicCacheAffinityStickyTTL(smallMessageTTLBody))
+}
+
 func TestApplyAnthropicCacheBoostBody_AggressiveInjectsStableBreakpoints(t *testing.T) {
 	account := &Account{
 		ID:       7103,
