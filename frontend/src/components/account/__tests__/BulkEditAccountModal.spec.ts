@@ -357,6 +357,26 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
+  it('OpenAI 账号批量编辑可完全阻断 Codex 图片工具', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-codex-image-generation-bridge-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-edit-codex-image-tool-block"]').trigger('click')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: {
+        codex_image_generation_explicit_tool_policy: 'strip'
+      },
+      extra_remove_keys: ['codex_image_generation_bridge', 'codex_image_generation_bridge_enabled']
+    })
+  })
+
   it('OpenAI 账号批量编辑可恢复 Codex 图片生成桥接跟随渠道', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],

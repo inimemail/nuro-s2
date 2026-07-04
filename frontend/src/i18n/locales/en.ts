@@ -3522,7 +3522,7 @@ export default {
         codexImageGenerationBridgeEnabledDesc: 'Allow image tool injection for Codex /responses requests.',
         codexImageGenerationBridgeDisabled: 'Force off',
         codexImageGenerationBridgeDisabledDesc: 'Block image tool injection for Codex /responses requests.',
-        codexImageGenerationBridgeBulkDesc: 'Use this in bulk edit to force on, force off, or clear back to channel policy.',
+        codexImageGenerationBridgeBulkDesc: 'Use this in bulk edit to force on, force off, block all, or clear back to channel policy.',
         codexImageGenerationBridgeBadgeInherit: 'Channel policy',
         codexImageGenerationBridgeBadgeEnabled: 'Account on',
         codexImageGenerationBridgeBadgeDisabled: 'Account off',

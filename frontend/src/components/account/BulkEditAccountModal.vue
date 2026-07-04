@@ -117,11 +117,12 @@
           role="group"
           aria-label="codex image generation bridge"
         >
-          <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
             <button
               v-for="option in codexImageGenerationBridgeOptions"
               :key="option.value"
               type="button"
+              :data-testid="`bulk-edit-codex-image-tool-${option.value}`"
               :class="[
                 'rounded-md border px-3 py-2 text-left transition-all',
                 codexImageGenerationBridgeMode === option.value
@@ -1879,7 +1880,8 @@ const bulkBaseRpm = ref<number | null>(null)
 const bulkRpmStrategy = ref<'tiered' | 'sticky_exempt'>('tiered')
 const bulkRpmStickyBuffer = ref<number | null>(null)
 const userMsgQueueMode = ref<string | null>(null)
-const codexImageGenerationBridgeMode = ref<'inherit' | 'enabled' | 'disabled'>('disabled')
+type CodexImageGenerationBridgeMode = 'inherit' | 'enabled' | 'disabled' | 'block'
+const codexImageGenerationBridgeMode = ref<CodexImageGenerationBridgeMode>('disabled')
 const codexImageGenerationBridgeOptions = computed(() => [
   {
     value: 'inherit' as const,
@@ -1895,6 +1897,11 @@ const codexImageGenerationBridgeOptions = computed(() => [
     value: 'disabled' as const,
     label: t('admin.accounts.openai.codexImageGenerationBridgeDisabled'),
     description: t('admin.accounts.openai.codexImageGenerationBridgeDisabledDesc')
+  },
+  {
+    value: 'block' as const,
+    label: t('admin.accounts.openai.codexImageToolBlock'),
+    description: t('admin.accounts.openai.codexImageToolBlockDesc')
   }
 ])
 const umqModeOptions = computed(() => [
@@ -2278,20 +2285,30 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   if (enableCodexImageGenerationBridge.value) {
     const extra = ensureExtra()
     const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
-    if (codexImageGenerationBridgeMode.value === 'inherit') {
-      updates.extra_remove_keys = [
-        ...removeKeys,
-        'codex_image_generation_bridge',
-        'codex_image_generation_bridge_enabled',
-        'codex_image_generation_explicit_tool_policy'
-      ]
-    } else {
-      extra.codex_image_generation_bridge = codexImageGenerationBridgeMode.value === 'enabled'
-      updates.extra_remove_keys = [
-        ...removeKeys,
-        'codex_image_generation_bridge_enabled',
-        'codex_image_generation_explicit_tool_policy'
-      ]
+    switch (codexImageGenerationBridgeMode.value) {
+      case 'inherit':
+        updates.extra_remove_keys = [
+          ...removeKeys,
+          'codex_image_generation_bridge',
+          'codex_image_generation_bridge_enabled',
+          'codex_image_generation_explicit_tool_policy'
+        ]
+        break
+      case 'block':
+        extra.codex_image_generation_explicit_tool_policy = 'strip'
+        updates.extra_remove_keys = [
+          ...removeKeys,
+          'codex_image_generation_bridge',
+          'codex_image_generation_bridge_enabled'
+        ]
+        break
+      default:
+        extra.codex_image_generation_bridge = codexImageGenerationBridgeMode.value === 'enabled'
+        updates.extra_remove_keys = [
+          ...removeKeys,
+          'codex_image_generation_bridge_enabled',
+          'codex_image_generation_explicit_tool_policy'
+        ]
     }
   }
 
