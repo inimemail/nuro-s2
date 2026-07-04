@@ -142,7 +142,7 @@ func TestNormalizeCodexSessionJSONExtractsCredentialsAndIgnoresSessionToken(t *t
 	}
 }
 
-func TestMergeCodexImportCredentialsClearsStaleRefreshFieldsWhenIncomingHasNoRefreshToken(t *testing.T) {
+func TestMergeCodexImportCredentialsPreservesExistingRefreshFieldsWhenIncomingHasNoRefreshToken(t *testing.T) {
 	existing := map[string]any{
 		"access_token":       "old-access-token",
 		"refresh_token":      "old-refresh-token",
@@ -169,11 +169,11 @@ func TestMergeCodexImportCredentialsClearsStaleRefreshFieldsWhenIncomingHasNoRef
 	if merged["chatgpt_account_id"] != "acct-new" {
 		t.Fatalf("chatgpt_account_id = %v, want acct-new", merged["chatgpt_account_id"])
 	}
-	if _, ok := merged["refresh_token"]; ok {
-		t.Fatalf("refresh_token should be cleared")
+	if merged["refresh_token"] != "old-refresh-token" {
+		t.Fatalf("refresh_token = %v, want old-refresh-token", merged["refresh_token"])
 	}
-	if _, ok := merged["client_id"]; ok {
-		t.Fatalf("client_id should be cleared")
+	if merged["client_id"] != "old-client-id" {
+		t.Fatalf("client_id = %v, want old-client-id", merged["client_id"])
 	}
 	if _, ok := merged["id_token"]; ok {
 		t.Fatalf("id_token should be cleared")
@@ -299,14 +299,14 @@ func TestResolveCodexImportExpiryForNoRefreshTokenUsesEarlierRequestExpiry(t *te
 }
 
 func TestCodexIdentityKeysPreferStrongIdentifiers(t *testing.T) {
-	keys := buildCodexIdentityKeys("acct-1", "user-1", "same@example.com", "token")
+	keys := buildCodexStoredIdentityKeys("acct-1", "user-1", "same@example.com", "token")
 	for _, key := range keys {
 		if strings.HasPrefix(key, "email:") {
 			t.Fatalf("strong identity should not include email fallback: %v", keys)
 		}
 	}
 
-	keys = buildCodexIdentityKeys("", "", "same@example.com", "token")
+	keys = buildCodexStoredIdentityKeys("", "", "same@example.com", "token")
 	hasEmail := false
 	for _, key := range keys {
 		if key == "email:same@example.com" {
@@ -315,6 +315,18 @@ func TestCodexIdentityKeysPreferStrongIdentifiers(t *testing.T) {
 	}
 	if !hasEmail {
 		t.Fatalf("weak identity should include email fallback: %v", keys)
+	}
+}
+
+func TestCodexImportIdentityKeysUseAccessOnlyWhenRefreshMissing(t *testing.T) {
+	keys := buildCodexImportIdentityKeys("acct-1", "user-1", "same@example.com", "token", "")
+	if len(keys) != 1 || !strings.HasPrefix(keys[0], "access:") {
+		t.Fatalf("accessToken-only import keys = %v, want only access fingerprint", keys)
+	}
+
+	keys = buildCodexImportIdentityKeys("acct-1", "user-1", "same@example.com", "token", "refresh-token")
+	if len(keys) == 1 && strings.HasPrefix(keys[0], "access:") {
+		t.Fatalf("refresh-token import should keep stronger identity keys: %v", keys)
 	}
 }
 

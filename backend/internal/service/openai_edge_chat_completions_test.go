@@ -92,6 +92,47 @@ func TestBuildRawResponsesEdgePlanNormalizesStringInput(t *testing.T) {
 	}
 }
 
+func TestBuildRawResponsesEdgePlanKeepsResponsesBodyUntouchedWhenCompatDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+
+	account := &Account{
+		ID:          457,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-api-key", "base_url": "https://api.openai.com"},
+		Extra: map[string]any{
+			"openai_passthrough":                     true,
+			openai_compat.ExtraKeyResponsesSupported: true,
+		},
+	}
+	body := []byte(`{"model":"gpt-5","stream":true,"max_output_tokens":128,"input":"hi"}`)
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+			},
+		},
+	}
+
+	plan, err := svc.BuildRawResponsesEdgePlan(context.Background(), c, account, body)
+	if err != nil {
+		t.Fatalf("build raw responses edge plan: %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
+	if err != nil {
+		t.Fatalf("decode body_raw_base64: %v", err)
+	}
+	if got := gjson.GetBytes(decoded, "input").String(); got != "hi" {
+		t.Fatalf("expected string input to stay untouched when compat disabled, got %q body=%s", got, string(decoded))
+	}
+	if got := gjson.GetBytes(decoded, "max_output_tokens").Int(); got != 128 {
+		t.Fatalf("expected max_output_tokens to stay untouched when compat disabled, got %d body=%s", got, string(decoded))
+	}
+}
+
 func TestOpenAIEdgeStrongIsolationBodyHelpers(t *testing.T) {
 	chatBody := []byte(`{"model":"gpt-4.1","stream":true,"messages":[],"conversation_id":"conv","session_id":"sess","previous_response_id":"resp","store":true}`)
 	isolatedChat, changed, err := applyOpenAIUpstreamStrongIsolationBody(chatBody, false)

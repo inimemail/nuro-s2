@@ -353,7 +353,7 @@ describe('BulkEditAccountModal', () => {
       extra: {
         codex_image_generation_bridge: false
       },
-      extra_remove_keys: ['codex_image_generation_bridge_enabled']
+      extra_remove_keys: ['codex_image_generation_bridge_enabled', 'codex_image_generation_explicit_tool_policy']
     })
   })
 
@@ -374,7 +374,11 @@ describe('BulkEditAccountModal', () => {
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       extra: {},
-      extra_remove_keys: ['codex_image_generation_bridge', 'codex_image_generation_bridge_enabled']
+      extra_remove_keys: [
+        'codex_image_generation_bridge',
+        'codex_image_generation_bridge_enabled',
+        'codex_image_generation_explicit_tool_policy'
+      ]
     })
   })
 

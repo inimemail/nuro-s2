@@ -4,7 +4,7 @@ vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
 
-import { buildModelMappingObject, getModelsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
+import { buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
@@ -33,6 +33,15 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('gemini-2.5-flash-image')
     expect(models).toContain('gemini-3.1-flash-image')
     expect(models).toContain('gemini-3-pro-image')
+  })
+
+  it('antigravity / grok 模型候选跟随源码 144', () => {
+    expect(getModelsByPlatform('antigravity')).toContain('gemini-3.1-pro')
+    expect(getModelsByPlatform('grok')).toContain('grok-4.3')
+    expect(getModelsByPlatform('grok')).toContain('grok-imagine-video-1.5')
+    expect(getPresetMappingsByPlatform('grok')).toContainEqual(
+      expect.objectContaining({ from: 'grok-latest', to: 'grok-4.3' })
+    )
   })
 
   it('Claude 模型列表包含 Opus 4.8', () => {

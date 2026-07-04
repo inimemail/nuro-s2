@@ -327,6 +327,8 @@ func (h *UsageHandler) ListErrors(c *gin.Context) {
 		filter.ErrorTypesAny = types
 	}
 
+	filter.SetSort(c.Query("sort_by"), c.Query("sort_order"))
+
 	result, err := h.opsService.ListUserErrorRequests(c.Request.Context(), subject.UserID, filter)
 	if err != nil {
 		response.ErrorFrom(c, err)

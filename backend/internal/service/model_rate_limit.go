@@ -11,6 +11,8 @@ import (
 const (
 	modelRateLimitsKey                = "model_rate_limits"
 	openAIImageGenerationRateLimitKey = "openai:image_generation"
+	// anthropicFableRateLimitKey 是 Anthropic 7d_oi（Fable 专属 7d 窗口）限流的家族级 scope。
+	anthropicFableRateLimitKey = "claude-fable-5"
 )
 
 // isRateLimitActiveForKey 检查指定 key 的限流是否生效
@@ -78,12 +80,22 @@ func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedMod
 	}
 
 	keys := []string{modelKey}
-	if a.Platform == PlatformOpenAI &&
-		openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) &&
-		modelKey != openAIImageGenerationRateLimitKey {
-		keys = append(keys, openAIImageGenerationRateLimitKey)
+	switch a.Platform {
+	case PlatformOpenAI:
+		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) &&
+			modelKey != openAIImageGenerationRateLimitKey {
+			keys = append(keys, openAIImageGenerationRateLimitKey)
+		}
+	case PlatformAnthropic:
+		if isAnthropicFableModel(modelKey) && modelKey != anthropicFableRateLimitKey {
+			keys = append(keys, anthropicFableRateLimitKey)
+		}
 	}
 	return keys
+}
+
+func isAnthropicFableModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "fable")
 }
 
 func openAIImageGenerationRateLimitApplies(ctx context.Context, requestedModel, modelKey string) bool {

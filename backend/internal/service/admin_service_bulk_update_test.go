@@ -86,6 +86,7 @@ func TestAdminServiceBulkUpdateAccounts_ForwardsExtraRemoveKeys(t *testing.T) {
 		ExtraRemoveKeys: []string{
 			"codex_image_generation_bridge",
 			"codex_image_generation_bridge_enabled",
+			"codex_image_generation_explicit_tool_policy",
 		},
 	}
 
@@ -96,6 +97,7 @@ func TestAdminServiceBulkUpdateAccounts_ForwardsExtraRemoveKeys(t *testing.T) {
 	require.Equal(t, []string{
 		"codex_image_generation_bridge",
 		"codex_image_generation_bridge_enabled",
+		"codex_image_generation_explicit_tool_policy",
 	}, repo.bulkUpdatePayload.ExtraRemoveKeys)
 }
 

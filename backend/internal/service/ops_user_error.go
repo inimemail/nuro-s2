@@ -14,6 +14,11 @@ type UserErrorRequest struct {
 	Message         string    `json:"message"`
 	KeyName         string    `json:"key_name"`
 	KeyDeleted      bool      `json:"key_deleted"`
+	ClientIP        string    `json:"client_ip,omitempty"`
+	GroupName       string    `json:"group_name,omitempty"`
+	RequestType     *int16    `json:"request_type,omitempty"`
+	Stream          bool      `json:"stream"`
+	UserAgent       string    `json:"user_agent,omitempty"`
 }
 
 type UserErrorRequestList struct {
@@ -75,6 +80,10 @@ func ToUserErrorRequest(e *OpsErrorLog) *UserErrorRequest {
 	if model == "" {
 		model = e.Model
 	}
+	clientIP := ""
+	if e.ClientIP != nil {
+		clientIP = *e.ClientIP
+	}
 	return &UserErrorRequest{
 		ID:              e.ID,
 		CreatedAt:       e.CreatedAt,
@@ -86,6 +95,11 @@ func ToUserErrorRequest(e *OpsErrorLog) *UserErrorRequest {
 		Message:         e.Message,
 		KeyName:         e.APIKeyName,
 		KeyDeleted:      e.APIKeyDeleted,
+		ClientIP:        clientIP,
+		GroupName:       e.GroupName,
+		RequestType:     e.RequestType,
+		Stream:          e.Stream,
+		UserAgent:       e.UserAgent,
 	}
 }
 

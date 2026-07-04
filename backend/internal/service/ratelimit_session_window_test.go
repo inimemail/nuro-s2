@@ -17,6 +17,8 @@ type sessionWindowMockRepo struct {
 	sessionWindowCalls []swCall
 	updateExtraCalls   []ueCall
 	clearRateLimitIDs  []int64
+	setRateLimited     []setRateLimitedCall
+	setModelRateLimit  []setModelRateLimitCall
 }
 
 var _ AccountRepository = (*sessionWindowMockRepo)(nil)
@@ -33,6 +35,18 @@ type ueCall struct {
 	Updates map[string]any
 }
 
+type setRateLimitedCall struct {
+	ID      int64
+	ResetAt time.Time
+}
+
+type setModelRateLimitCall struct {
+	ID      int64
+	Scope   string
+	ResetAt time.Time
+	Reason  []string
+}
+
 func (m *sessionWindowMockRepo) UpdateSessionWindow(_ context.Context, id int64, start, end *time.Time, status string) error {
 	m.sessionWindowCalls = append(m.sessionWindowCalls, swCall{ID: id, Start: start, End: end, Status: status})
 	return nil
@@ -43,6 +57,14 @@ func (m *sessionWindowMockRepo) UpdateExtra(_ context.Context, id int64, updates
 }
 func (m *sessionWindowMockRepo) ClearRateLimit(_ context.Context, id int64) error {
 	m.clearRateLimitIDs = append(m.clearRateLimitIDs, id)
+	return nil
+}
+func (m *sessionWindowMockRepo) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
+	m.setRateLimited = append(m.setRateLimited, setRateLimitedCall{ID: id, ResetAt: resetAt})
+	return nil
+}
+func (m *sessionWindowMockRepo) SetModelRateLimit(_ context.Context, id int64, scope string, resetAt time.Time, reason ...string) error {
+	m.setModelRateLimit = append(m.setModelRateLimit, setModelRateLimitCall{ID: id, Scope: scope, ResetAt: resetAt, Reason: reason})
 	return nil
 }
 func (m *sessionWindowMockRepo) RevertProxyFallback(_ context.Context, _ int64) error {
@@ -137,12 +159,6 @@ func (m *sessionWindowMockRepo) ListSchedulableUngroupedByPlatform(context.Conte
 func (m *sessionWindowMockRepo) ListSchedulableUngroupedByPlatforms(context.Context, []string) ([]Account, error) {
 	panic("unexpected")
 }
-func (m *sessionWindowMockRepo) SetRateLimited(context.Context, int64, time.Time) error {
-	panic("unexpected")
-}
-func (m *sessionWindowMockRepo) SetModelRateLimit(context.Context, int64, string, time.Time, ...string) error {
-	panic("unexpected")
-}
 func (m *sessionWindowMockRepo) SetOverloaded(context.Context, int64, time.Time) error {
 	panic("unexpected")
 }
@@ -160,6 +176,78 @@ func (m *sessionWindowMockRepo) ResetQuotaUsed(context.Context, int64) error { p
 // newRateLimitServiceForTest creates a RateLimitService with the given mock repo.
 func newRateLimitServiceForTest(repo AccountRepository) *RateLimitService {
 	return &RateLimitService{accountRepo: repo}
+}
+
+func TestHandle429_AnthropicFable7dOIOnlySetsModelRateLimit(t *testing.T) {
+	repo := &sessionWindowMockRepo{}
+	svc := newRateLimitServiceForTest(repo)
+	account := &Account{ID: 77, Platform: PlatformAnthropic}
+	resetAt := time.Now().Add(4 * time.Hour).Truncate(time.Second)
+
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-7d_oi-status", "rejected")
+	headers.Set("anthropic-ratelimit-unified-7d_oi-utilization", "1.0")
+	headers.Set("anthropic-ratelimit-unified-7d_oi-reset", fmt.Sprintf("%d", resetAt.Unix()))
+
+	svc.handle429(context.Background(), account, headers, nil)
+
+	if len(repo.setModelRateLimit) != 1 {
+		t.Fatalf("expected 1 SetModelRateLimit call, got %d", len(repo.setModelRateLimit))
+	}
+	call := repo.setModelRateLimit[0]
+	if call.ID != account.ID || call.Scope != anthropicFableRateLimitKey {
+		t.Fatalf("unexpected model rate limit call: %+v", call)
+	}
+	if !call.ResetAt.Equal(resetAt) {
+		t.Fatalf("model reset = %v, want %v", call.ResetAt, resetAt)
+	}
+	if len(call.Reason) != 1 || call.Reason[0] != anthropicFableWindowReason {
+		t.Fatalf("model reason = %#v, want %q", call.Reason, anthropicFableWindowReason)
+	}
+	if len(repo.setRateLimited) != 0 {
+		t.Fatalf("expected no account SetRateLimited call, got %d", len(repo.setRateLimited))
+	}
+	if len(repo.updateExtraCalls) != 1 {
+		t.Fatalf("expected passive usage update, got %d", len(repo.updateExtraCalls))
+	}
+	updates := repo.updateExtraCalls[0].Updates
+	if got := updates["passive_usage_7d_oi_utilization"]; got != 1.0 {
+		t.Fatalf("passive_usage_7d_oi_utilization = %#v, want 1.0", got)
+	}
+	if got := updates["passive_usage_7d_oi_reset"]; got != resetAt.Unix() {
+		t.Fatalf("passive_usage_7d_oi_reset = %#v, want %d", got, resetAt.Unix())
+	}
+}
+
+func TestHandle429_AnthropicFableAndAccountWindowSetsBothLimits(t *testing.T) {
+	repo := &sessionWindowMockRepo{}
+	svc := newRateLimitServiceForTest(repo)
+	account := &Account{ID: 88, Platform: PlatformAnthropic}
+	fableReset := time.Now().Add(5 * time.Hour).Truncate(time.Second)
+	fiveHourReset := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-7d_oi-status", "rejected")
+	headers.Set("anthropic-ratelimit-unified-7d_oi-utilization", "1.0")
+	headers.Set("anthropic-ratelimit-unified-7d_oi-reset", fmt.Sprintf("%d", fableReset.Unix()))
+	headers.Set("anthropic-ratelimit-unified-5h-status", "rejected")
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "1.0")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", fmt.Sprintf("%d", fiveHourReset.Unix()))
+
+	svc.handle429(context.Background(), account, headers, nil)
+
+	if len(repo.setModelRateLimit) != 1 {
+		t.Fatalf("expected model SetModelRateLimit call, got %d", len(repo.setModelRateLimit))
+	}
+	if repo.setModelRateLimit[0].Scope != anthropicFableRateLimitKey {
+		t.Fatalf("model scope = %q, want %q", repo.setModelRateLimit[0].Scope, anthropicFableRateLimitKey)
+	}
+	if len(repo.setRateLimited) != 1 {
+		t.Fatalf("expected account SetRateLimited call, got %d", len(repo.setRateLimited))
+	}
+	if !repo.setRateLimited[0].ResetAt.Equal(fiveHourReset) {
+		t.Fatalf("account reset = %v, want %v", repo.setRateLimited[0].ResetAt, fiveHourReset)
+	}
 }
 
 func TestUpdateSessionWindow_UsesResetHeader(t *testing.T) {

@@ -1,6 +1,9 @@
 package service
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type OpsSystemLog struct {
 	ID              int64          `json:"id"`
@@ -65,16 +68,19 @@ type OpsErrorLog struct {
 	RequestedModel   string `json:"requested_model"`
 	UpstreamModel    string `json:"upstream_model"`
 	RequestType      *int16 `json:"request_type"`
+	UserAgent        string `json:"user_agent"`
 
 	APIKeyName    string `json:"api_key_name,omitempty"`
 	APIKeyDeleted bool   `json:"api_key_deleted,omitempty"`
+
+	DeletedKeyOwnerUserID *int64 `json:"deleted_key_owner_user_id,omitempty"`
+	DeletedKeyOwnerEmail  string `json:"deleted_key_owner_email,omitempty"`
 }
 
 type OpsErrorLogDetail struct {
 	OpsErrorLog
 
 	ErrorBody string `json:"error_body"`
-	UserAgent string `json:"user_agent"`
 
 	// Upstream context (optional)
 	UpstreamStatusCode   *int   `json:"upstream_status_code,omitempty"`
@@ -96,11 +102,9 @@ type OpsErrorLogDetail struct {
 	// vNext metric semantics
 	IsBusinessLimited bool `json:"is_business_limited"`
 
-	AttemptedKeyPrefix    string `json:"attempted_key_prefix,omitempty"`
-	DeletedKeyOwnerUserID *int64 `json:"deleted_key_owner_user_id,omitempty"`
-	DeletedKeyOwnerEmail  string `json:"deleted_key_owner_email,omitempty"`
-	DeletedKeyName        string `json:"deleted_key_name,omitempty"`
-	APIKeyPrefix          string `json:"api_key_prefix,omitempty"`
+	AttemptedKeyPrefix string `json:"attempted_key_prefix,omitempty"`
+	DeletedKeyName     string `json:"deleted_key_name,omitempty"`
+	APIKeyPrefix       string `json:"api_key_prefix,omitempty"`
 }
 
 type OpsErrorLogFilter struct {
@@ -136,6 +140,8 @@ type OpsErrorLogFilter struct {
 
 	ExcludeCountTokens bool
 
+	IncludeRecoveredUpstream bool
+
 	ErrorPhasesAny []string
 	ErrorTypesAny  []string
 
@@ -147,6 +153,14 @@ type OpsErrorLogFilter struct {
 
 	Page     int
 	PageSize int
+
+	SortBy    string
+	SortOrder string
+}
+
+func (f *OpsErrorLogFilter) SetSort(sortBy, sortOrder string) {
+	f.SortBy = strings.TrimSpace(sortBy)
+	f.SortOrder = strings.TrimSpace(sortOrder)
 }
 
 type OpsErrorLogList struct {

@@ -2282,13 +2282,15 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
       updates.extra_remove_keys = [
         ...removeKeys,
         'codex_image_generation_bridge',
-        'codex_image_generation_bridge_enabled'
+        'codex_image_generation_bridge_enabled',
+        'codex_image_generation_explicit_tool_policy'
       ]
     } else {
       extra.codex_image_generation_bridge = codexImageGenerationBridgeMode.value === 'enabled'
       updates.extra_remove_keys = [
         ...removeKeys,
-        'codex_image_generation_bridge_enabled'
+        'codex_image_generation_bridge_enabled',
+        'codex_image_generation_explicit_tool_policy'
       ]
     }
   }

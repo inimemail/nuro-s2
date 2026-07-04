@@ -364,6 +364,7 @@ func (s *OpsService) ListUserErrorRequests(ctx context.Context, userID int64, fi
 	filter.Owner = ""
 	filter.Source = ""
 	filter.Phase = ""
+	filter.IncludeRecoveredUpstream = false
 
 	list, err := s.opsRepo.ListErrorLogs(ctx, filter)
 	if err != nil {

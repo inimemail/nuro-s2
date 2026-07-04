@@ -4,6 +4,8 @@ package service
 
 import (
 	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 func TestMatchWildcard(t *testing.T) {
@@ -219,6 +221,17 @@ func TestAccountIsModelSupported(t *testing.T) {
 				t.Errorf("IsModelSupported(%q) = %v, want %v", tt.requestedModel, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestAccountIsModelSupported_GrokDefaultsDoNotBecomeWhitelist(t *testing.T) {
+	account := &Account{Platform: PlatformGrok}
+
+	if !account.IsModelSupported("grok-4.3") {
+		t.Fatal("grok account without explicit model_mapping should allow grok-4.3")
+	}
+	if !account.IsModelSupported("grok-5.5-pro") {
+		t.Fatal("grok account without explicit model_mapping should still allow arbitrary requested models")
 	}
 }
 
@@ -454,6 +467,30 @@ func TestAccountGetModelMapping_AntigravityRespectsWildcardOverride(t *testing.T
 	}
 	if mapped := account.GetMappedModel("gemini-3-flash"); mapped != "gemini-3.1-pro-high" {
 		t.Fatalf("expected wildcard mapping to stay effective, got: %q", mapped)
+	}
+}
+
+func TestAccountGetModelMapping_AntigravityPreservesGemini31ProOverrides(t *testing.T) {
+	account := &Account{
+		Platform: PlatformAntigravity,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				domain.AntigravityGemini31ProAgentModel: domain.AntigravityGemini31ProAgentModel,
+				"gemini-3.1-pro-high":                   "custom-high",
+				"gemini-3.1-pro-preview":                "custom-preview",
+			},
+		},
+	}
+
+	mapping := account.GetModelMapping()
+	if mapping["gemini-3.1-pro-high"] != "custom-high" {
+		t.Fatalf("expected custom high override to be preserved, got: %q", mapping["gemini-3.1-pro-high"])
+	}
+	if mapping["gemini-3.1-pro-preview"] != "custom-preview" {
+		t.Fatalf("expected custom preview override to be preserved, got: %q", mapping["gemini-3.1-pro-preview"])
+	}
+	if mapping["gemini-3.1-pro"] != domain.AntigravityGemini31ProAgentModel {
+		t.Fatalf("expected gemini-3.1-pro alias to default to gemini-pro-agent, got: %q", mapping["gemini-3.1-pro"])
 	}
 }
 
