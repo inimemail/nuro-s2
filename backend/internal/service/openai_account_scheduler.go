@@ -161,6 +161,7 @@ type openAIAccountRuntimeStat struct {
 	errorRateEWMABits atomic.Uint64
 	ttftEWMABits      atomic.Uint64
 	sampleCount       atomic.Int64
+	ttftSampleCount   atomic.Int64
 	lastUpdatedNano   atomic.Int64
 }
 
@@ -257,6 +258,7 @@ func (s *openAIAccountRuntimeStats) reportForKey(key openAIAccountRuntimeStatsKe
 	updateEWMAAtomic(&stat.errorRateEWMABits, errorSample, alpha)
 
 	if firstTokenMs != nil && *firstTokenMs > 0 {
+		stat.ttftSampleCount.Add(1)
 		ttft := float64(*firstTokenMs)
 		ttftBits := math.Float64bits(ttft)
 		for {
@@ -288,12 +290,12 @@ func (s *openAIAccountRuntimeStats) snapshotForRequest(accountID int64, required
 	return errorRate, ttft, hasTTFT
 }
 
-func (s *openAIAccountRuntimeStats) snapshotForRequestWithMeta(accountID int64, requiredImageCapability OpenAIImagesCapability) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, lastUpdated time.Time) {
-	errorRate, ttft, hasTTFT, _, sampleCount, lastUpdated = s.snapshotForKeyWithMeta(openAIAccountRuntimeStatsKey{
+func (s *openAIAccountRuntimeStats) snapshotForRequestWithMeta(accountID int64, requiredImageCapability OpenAIImagesCapability) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, ttftSampleCount int64, lastUpdated time.Time) {
+	errorRate, ttft, hasTTFT, _, sampleCount, ttftSampleCount, lastUpdated = s.snapshotForKeyWithMeta(openAIAccountRuntimeStatsKey{
 		accountID: accountID,
 		kind:      openAIAccountRuntimeStatsKind(requiredImageCapability),
 	})
-	return errorRate, ttft, hasTTFT, sampleCount, lastUpdated
+	return errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated
 }
 
 func (s *openAIAccountRuntimeStats) snapshotForRoute(accountID int64, requestedModel string, transport OpenAIUpstreamTransport) (errorRate float64, ttft float64, hasTTFT bool) {
@@ -315,53 +317,54 @@ func (s *openAIAccountRuntimeStats) snapshotForRoute(accountID int64, requestedM
 	return s.snapshotForRequest(accountID, "")
 }
 
-func (s *openAIAccountRuntimeStats) snapshotForRouteWithMeta(accountID int64, requestedModel string, transport OpenAIUpstreamTransport) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, lastUpdated time.Time) {
+func (s *openAIAccountRuntimeStats) snapshotForRouteWithMeta(accountID int64, requestedModel string, transport OpenAIUpstreamTransport) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, ttftSampleCount int64, lastUpdated time.Time) {
 	if s == nil || accountID <= 0 {
-		return 0, 0, false, 0, time.Time{}
+		return 0, 0, false, 0, 0, time.Time{}
 	}
 	if strings.TrimSpace(requestedModel) != "" || transport != "" {
 		var found bool
-		errorRate, ttft, hasTTFT, found, sampleCount, lastUpdated = s.snapshotForKeyWithMeta(openAIAccountRuntimeStatsKey{
+		errorRate, ttft, hasTTFT, found, sampleCount, ttftSampleCount, lastUpdated = s.snapshotForKeyWithMeta(openAIAccountRuntimeStatsKey{
 			accountID: accountID,
 			kind:      "text",
 			model:     requestedModel,
 			transport: string(transport),
 		})
 		if found {
-			return errorRate, ttft, hasTTFT, sampleCount, lastUpdated
+			return errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated
 		}
 	}
 	return s.snapshotForRequestWithMeta(accountID, "")
 }
 
 func (s *openAIAccountRuntimeStats) snapshotForKey(key openAIAccountRuntimeStatsKey) (errorRate float64, ttft float64, hasTTFT bool, found bool) {
-	errorRate, ttft, hasTTFT, found, _, _ = s.snapshotForKeyWithMeta(key)
+	errorRate, ttft, hasTTFT, found, _, _, _ = s.snapshotForKeyWithMeta(key)
 	return errorRate, ttft, hasTTFT, found
 }
 
-func (s *openAIAccountRuntimeStats) snapshotForKeyWithMeta(key openAIAccountRuntimeStatsKey) (errorRate float64, ttft float64, hasTTFT bool, found bool, sampleCount int64, lastUpdated time.Time) {
+func (s *openAIAccountRuntimeStats) snapshotForKeyWithMeta(key openAIAccountRuntimeStatsKey) (errorRate float64, ttft float64, hasTTFT bool, found bool, sampleCount int64, ttftSampleCount int64, lastUpdated time.Time) {
 	if s == nil || key.accountID <= 0 {
-		return 0, 0, false, false, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}
 	}
 	key = normalizeOpenAIAccountRuntimeStatsKey(key)
 	value, ok := s.accounts.Load(key)
 	if !ok {
-		return 0, 0, false, false, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}
 	}
 	stat, _ := value.(*openAIAccountRuntimeStat)
 	if stat == nil {
-		return 0, 0, false, false, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}
 	}
 	errorRate = clamp01(math.Float64frombits(stat.errorRateEWMABits.Load()))
 	sampleCount = stat.sampleCount.Load()
+	ttftSampleCount = stat.ttftSampleCount.Load()
 	if updated := stat.lastUpdatedNano.Load(); updated > 0 {
 		lastUpdated = time.Unix(0, updated)
 	}
 	ttftValue := math.Float64frombits(stat.ttftEWMABits.Load())
 	if math.IsNaN(ttftValue) {
-		return errorRate, 0, false, true, sampleCount, lastUpdated
+		return errorRate, 0, false, true, sampleCount, ttftSampleCount, lastUpdated
 	}
-	return errorRate, ttftValue, true, true, sampleCount, lastUpdated
+	return errorRate, ttftValue, true, true, sampleCount, ttftSampleCount, lastUpdated
 }
 
 func (s *openAIAccountRuntimeStats) shouldTriggerUnknownExploration() bool {
@@ -693,6 +696,7 @@ type openAIAccountCandidateScore struct {
 	ttft            float64
 	hasTTFT         bool
 	sampleCount     int64
+	ttftSampleCount int64
 	lastUpdated     time.Time
 	healthScore     float64
 	hasHealthScore  bool
@@ -910,12 +914,12 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 			loadInfo = &AccountLoadInfo{AccountID: account.ID}
 		}
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
-		sampleCount, lastUpdated := int64(0), time.Time{}
+		sampleCount, ttftSampleCount, lastUpdated := int64(0), int64(0), time.Time{}
 		if s.stats != nil {
 			if req.RequiredImageCapability != "" {
-				errorRate, ttft, hasTTFT, sampleCount, lastUpdated = s.stats.snapshotForRequestWithMeta(account.ID, req.RequiredImageCapability)
+				errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated = s.stats.snapshotForRequestWithMeta(account.ID, req.RequiredImageCapability)
 			} else {
-				errorRate, ttft, hasTTFT, sampleCount, lastUpdated = s.stats.snapshotForRouteWithMeta(account.ID, req.RequestedModel, req.RequiredTransport)
+				errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated = s.stats.snapshotForRouteWithMeta(account.ID, req.RequestedModel, req.RequiredTransport)
 			}
 		}
 		allCandidates = append(allCandidates, openAIAccountCandidateScore{
@@ -926,6 +930,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 			ttft:            ttft,
 			hasTTFT:         hasTTFT,
 			sampleCount:     sampleCount,
+			ttftSampleCount: ttftSampleCount,
 			lastUpdated:     lastUpdated,
 		})
 	}
@@ -1196,7 +1201,7 @@ func (s *defaultOpenAIAccountScheduler) sortOpenAIStrictPriorityCandidatesForSes
 
 func hasKnownOpenAIHealthSample(candidates []openAIAccountCandidateScore) bool {
 	for _, candidate := range candidates {
-		if candidate.sampleCount >= accountHealthUnknownMinSamples {
+		if accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) {
 			return true
 		}
 	}
@@ -1225,7 +1230,7 @@ func selectOpenAIUnknownExplorationIndex(candidates []openAIAccountCandidateScor
 		return -1
 	}
 	for i, candidate := range candidates {
-		if candidate.account == nil || candidate.sampleCount >= accountHealthUnknownMinSamples {
+		if candidate.account == nil || accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) {
 			continue
 		}
 		if !stats.unknownExplorationDue(candidate.account.ID, now) {
@@ -1251,7 +1256,7 @@ func selectOpenAIDegradedRecoveryIndex(candidates []openAIAccountCandidateScore,
 		return -1
 	}
 	for i, candidate := range candidates {
-		if candidate.account == nil || candidate.sampleCount < accountHealthUnknownMinSamples {
+		if candidate.account == nil || !accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) {
 			continue
 		}
 		if candidate.healthScore >= bestScore-accountHealthScoreBandThreshold {
@@ -1392,9 +1397,6 @@ func buildOpenAIAccountCandidateHealthScores(pool []openAIAccountCandidateScore)
 }
 
 func openAIAccountRuntimeHealthScore(errorRate float64, ttft float64, hasTTFT bool, minTTFT float64, maxTTFT float64, hasTTFTSample bool) float64 {
-	if !hasTTFT && errorRate <= 0 {
-		return accountHealthUnknownScore
-	}
 	errorFactor := 1 - clamp01(errorRate)
 	ttftFactor := accountHealthUnknownTTFTScore
 	if hasTTFT {
@@ -1407,7 +1409,11 @@ func openAIAccountRuntimeHealthScore(errorRate float64, ttft float64, hasTTFT bo
 			ttftFactor = 1 - clamp01((ttft-minTTFT)/ttftSpread)
 		}
 	}
-	return accountHealthErrorWeight*errorFactor + accountHealthTTFTWeight*ttftFactor
+	score := accountHealthErrorWeight*errorFactor + accountHealthTTFTWeight*ttftFactor
+	if !hasTTFT && score > accountHealthUnknownScore {
+		return accountHealthUnknownScore
+	}
+	return score
 }
 
 func openAIHealthScoreLess(aScore, bScore float64) (bool, bool) {

@@ -3185,11 +3185,12 @@ func TestPrioritizeOpenAIHealthProbeCandidate_UnknownExplorationInSamePriority(t
 	now := time.Now()
 	candidates := []openAIAccountCandidateScore{
 		{
-			account:        &Account{ID: 5251, Priority: 0},
-			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
-			sampleCount:    accountHealthUnknownMinSamples,
-			healthScore:    1,
-			hasHealthScore: true,
+			account:         &Account{ID: 5251, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:     accountHealthUnknownMinSamples,
+			ttftSampleCount: accountHealthUnknownMinSamples,
+			healthScore:     1,
+			hasHealthScore:  true,
 		},
 		{
 			account:        &Account{ID: 5252, Priority: 0},
@@ -3208,16 +3209,108 @@ func TestPrioritizeOpenAIHealthProbeCandidate_UnknownExplorationInSamePriority(t
 	require.Equal(t, int64(5252), ordered[0].account.ID)
 }
 
+func TestOpenAIAccountRuntimeHealthScore_NoTTFTDoesNotExceedUnknown(t *testing.T) {
+	require.Equal(t, accountHealthUnknownScore, openAIAccountRuntimeHealthScore(0, 0, false, 0, 0, false))
+	require.Equal(t, accountHealthUnknownScore, openAIAccountRuntimeHealthScore(0.01, 0, false, 0, 0, false))
+	require.Less(t, openAIAccountRuntimeHealthScore(0.5, 0, false, 0, 0, false), accountHealthUnknownScore)
+}
+
+func TestPrioritizeOpenAIHealthProbeCandidate_NilTTFTSamplesRemainUnknown(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	knownTTFT := 120
+	for i := 0; i < int(accountHealthUnknownMinSamples); i++ {
+		stats.reportForRequest(5261, true, &knownTTFT, "")
+		stats.reportForRequest(5262, true, nil, "")
+	}
+
+	_, _, hasTTFT, sampleCount, ttftSampleCount, _ := stats.snapshotForRequestWithMeta(5262, "")
+	require.False(t, hasTTFT)
+	require.Equal(t, accountHealthUnknownMinSamples, sampleCount)
+	require.Equal(t, int64(0), ttftSampleCount)
+
+	_, _, _, knownSampleCount, knownTTFTSampleCount, _ := stats.snapshotForRequestWithMeta(5261, "")
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:         &Account{ID: 5261, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:     knownSampleCount,
+			ttftSampleCount: knownTTFTSampleCount,
+			healthScore:     1,
+			hasHealthScore:  true,
+		},
+		{
+			account:         &Account{ID: 5262, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:     sampleCount,
+			ttftSampleCount: ttftSampleCount,
+			healthScore:     accountHealthUnknownScore,
+			hasHealthScore:  true,
+		},
+	}
+	require.False(t, hasKnownOpenAIHealthSample(candidates[1:]))
+
+	stats.selectionCounter.Store(accountHealthUnknownExploreEvery - 1)
+	ordered := prioritizeOpenAIHealthProbeCandidate(candidates, stats, time.Now())
+	require.Equal(t, int64(5262), ordered[0].account.ID)
+}
+
+func TestPrioritizeOpenAIHealthProbeCandidate_NilTTFTFailuresBecomeDegraded(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	knownTTFT := 120
+	for i := 0; i < int(accountHealthUnknownMinSamples); i++ {
+		stats.reportForRequest(5263, true, &knownTTFT, "")
+		stats.reportForRequest(5264, false, nil, "")
+	}
+
+	knownErrorRate, knownTTFTValue, knownHasTTFT, knownSampleCount, knownTTFTSampleCount, _ := stats.snapshotForRequestWithMeta(5263, "")
+	errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, _ := stats.snapshotForRequestWithMeta(5264, "")
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:         &Account{ID: 5263, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 80, WaitingCount: 0},
+			errorRate:       knownErrorRate,
+			ttft:            knownTTFTValue,
+			hasTTFT:         knownHasTTFT,
+			sampleCount:     knownSampleCount,
+			ttftSampleCount: knownTTFTSampleCount,
+		},
+		{
+			account:         &Account{ID: 5264, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			errorRate:       errorRate,
+			ttft:            ttft,
+			hasTTFT:         hasTTFT,
+			sampleCount:     sampleCount,
+			ttftSampleCount: ttftSampleCount,
+		},
+	}
+	healthScores := buildOpenAIAccountCandidateHealthScores(candidates)
+	for i := range candidates {
+		candidates[i].healthScore = healthScores[candidates[i].account.ID]
+		candidates[i].hasHealthScore = true
+	}
+	require.True(t, hasKnownOpenAIHealthSample(candidates[1:]))
+	require.Less(t, candidates[1].healthScore, accountHealthUnknownScore)
+
+	stats.selectionCounter.Store(accountHealthUnknownExploreEvery - 1)
+	require.Equal(t, -1, selectOpenAIUnknownExplorationIndex(candidates, stats, time.Now()))
+
+	now := time.Now()
+	candidates[1].lastUpdated = now.Add(-accountHealthDegradedRecoveryDelay - time.Second)
+	require.Equal(t, 1, selectOpenAIDegradedRecoveryIndex(candidates, stats, now))
+}
+
 func TestPrioritizeOpenAIHealthProbeCandidate_UnknownExplorationDoesNotCrossPriority(t *testing.T) {
 	stats := newOpenAIAccountRuntimeStats()
 	now := time.Now()
 	candidates := []openAIAccountCandidateScore{
 		{
-			account:        &Account{ID: 5253, Priority: 0},
-			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
-			sampleCount:    accountHealthUnknownMinSamples,
-			healthScore:    1,
-			hasHealthScore: true,
+			account:         &Account{ID: 5253, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:     accountHealthUnknownMinSamples,
+			ttftSampleCount: accountHealthUnknownMinSamples,
+			healthScore:     1,
+			hasHealthScore:  true,
 		},
 		{
 			account:        &Account{ID: 5254, Priority: 10},
@@ -3239,18 +3332,20 @@ func TestPrioritizeOpenAIHealthProbeCandidate_DegradedRecoveryHasCooldown(t *tes
 	now := time.Now()
 	candidates := []openAIAccountCandidateScore{
 		{
-			account:        &Account{ID: 5255, Priority: 0},
-			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
-			sampleCount:    accountHealthUnknownMinSamples,
-			healthScore:    1,
-			hasHealthScore: true,
+			account:         &Account{ID: 5255, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:     accountHealthUnknownMinSamples,
+			ttftSampleCount: accountHealthUnknownMinSamples,
+			healthScore:     1,
+			hasHealthScore:  true,
 		},
 		{
-			account:        &Account{ID: 5256, Priority: 0},
-			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
-			sampleCount:    accountHealthUnknownMinSamples,
-			healthScore:    0.4,
-			hasHealthScore: true,
+			account:         &Account{ID: 5256, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:     accountHealthUnknownMinSamples,
+			ttftSampleCount: accountHealthUnknownMinSamples,
+			healthScore:     0.4,
+			hasHealthScore:  true,
 		},
 	}
 
@@ -3269,20 +3364,22 @@ func TestPrioritizeOpenAIHealthProbeCandidate_DegradedRecoveryWaitsForFreshSampl
 	now := time.Now()
 	candidates := []openAIAccountCandidateScore{
 		{
-			account:        &Account{ID: 5257, Priority: 0},
-			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
-			sampleCount:    accountHealthUnknownMinSamples,
-			lastUpdated:    now,
-			healthScore:    1,
-			hasHealthScore: true,
+			account:         &Account{ID: 5257, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:     accountHealthUnknownMinSamples,
+			ttftSampleCount: accountHealthUnknownMinSamples,
+			lastUpdated:     now,
+			healthScore:     1,
+			hasHealthScore:  true,
 		},
 		{
-			account:        &Account{ID: 5258, Priority: 0},
-			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
-			sampleCount:    accountHealthUnknownMinSamples,
-			lastUpdated:    now.Add(-time.Minute),
-			healthScore:    0.4,
-			hasHealthScore: true,
+			account:         &Account{ID: 5258, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:     accountHealthUnknownMinSamples,
+			ttftSampleCount: accountHealthUnknownMinSamples,
+			lastUpdated:     now.Add(-time.Minute),
+			healthScore:     0.4,
+			hasHealthScore:  true,
 		},
 	}
 
@@ -3300,11 +3397,12 @@ func TestSortOpenAIStrictPriorityCandidatesForSession_PromptCacheAffinitySkipsUn
 	scheduler := &defaultOpenAIAccountScheduler{stats: stats}
 	candidates := []openAIAccountCandidateScore{
 		{
-			account:     &Account{ID: 5259, Priority: 0},
-			loadInfo:    &AccountLoadInfo{LoadRate: 20, WaitingCount: 0},
-			hasTTFT:     true,
-			ttft:        120,
-			sampleCount: accountHealthUnknownMinSamples,
+			account:         &Account{ID: 5259, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 20, WaitingCount: 0},
+			hasTTFT:         true,
+			ttft:            120,
+			sampleCount:     accountHealthUnknownMinSamples,
+			ttftSampleCount: accountHealthUnknownMinSamples,
 		},
 		{
 			account:     &Account{ID: 5260, Priority: 0},

@@ -2789,11 +2789,11 @@ func (s *OpenAIGatewayService) openAIAccountWithLoadHealthCandidates(accounts []
 			continue
 		}
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
-		sampleCount, lastUpdated := int64(0), time.Time{}
+		sampleCount, ttftSampleCount, lastUpdated := int64(0), int64(0), time.Time{}
 		if s != nil {
 			transport := s.getOpenAIWSProtocolResolver().Resolve(item.account).Transport
 			if stats := s.getOpenAIAccountRuntimeStats(); stats != nil {
-				errorRate, ttft, hasTTFT, sampleCount, lastUpdated = stats.snapshotForRouteWithMeta(item.account.ID, requestedModel, transport)
+				errorRate, ttft, hasTTFT, sampleCount, ttftSampleCount, lastUpdated = stats.snapshotForRouteWithMeta(item.account.ID, requestedModel, transport)
 			}
 		}
 		candidates = append(candidates, openAIAccountCandidateScore{
@@ -2804,6 +2804,7 @@ func (s *OpenAIGatewayService) openAIAccountWithLoadHealthCandidates(accounts []
 			ttft:            ttft,
 			hasTTFT:         hasTTFT,
 			sampleCount:     sampleCount,
+			ttftSampleCount: ttftSampleCount,
 			lastUpdated:     lastUpdated,
 		})
 	}

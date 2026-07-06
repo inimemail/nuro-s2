@@ -3242,7 +3242,7 @@ func accountHealthItems(candidates []accountHealthCandidate) []accountWithLoad {
 
 func hasKnownAccountHealthSample(candidates []accountHealthCandidate) bool {
 	for _, candidate := range candidates {
-		if candidate.sampleCount >= accountHealthUnknownMinSamples {
+		if accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) {
 			return true
 		}
 	}
@@ -3255,7 +3255,7 @@ func selectUnknownExplorationCandidate(candidates []accountHealthCandidate, stat
 	}
 	due := make([]accountWithLoad, 0)
 	for _, candidate := range candidates {
-		if candidate.item.account == nil || candidate.sampleCount >= accountHealthUnknownMinSamples {
+		if candidate.item.account == nil || accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) {
 			continue
 		}
 		if !stats.unknownExplorationDue(candidate.item.account.ID, now) {
@@ -3276,7 +3276,7 @@ func selectDegradedRecoveryCandidate(candidates []accountHealthCandidate, stats 
 	}
 	due := make([]accountWithLoad, 0)
 	for _, candidate := range candidates {
-		if candidate.item.account == nil || candidate.sampleCount < accountHealthUnknownMinSamples {
+		if candidate.item.account == nil || !accountHealthHasKnownSamples(candidate.sampleCount, candidate.ttftSampleCount, candidate.errorRate) {
 			continue
 		}
 		if candidate.score >= bestScore-accountHealthScoreBandThreshold {

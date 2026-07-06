@@ -152,6 +152,53 @@ func TestSelectLayeredAccountWithLoad_SimilarHealthUsesLowerLoad(t *testing.T) {
 	require.Equal(t, int64(2), selected.account.ID)
 }
 
+func TestSelectLayeredAccountWithLoad_SecondsLevelSimilarHealthUsesLoad(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	faster := 3000
+	slower := 4000
+	reportHealthSamples(stats, 1, true, &faster, 3)
+	reportHealthSamples(stats, 2, true, &slower, 3)
+
+	now := time.Now()
+	candidates := []accountWithLoad{
+		{account: &Account{ID: 1, Priority: 1, Type: AccountTypeAPIKey}, loadInfo: &AccountLoadInfo{AccountID: 1, LoadRate: 80}},
+		{account: &Account{ID: 2, Priority: 1, Type: AccountTypeAPIKey}, loadInfo: &AccountLoadInfo{AccountID: 2, LoadRate: 0}},
+	}
+
+	filtered := filterByAccountHealthBand(candidates, stats)
+	require.Len(t, filtered, 2)
+	selected := selectLayeredAccountWithLoad(candidates, stats, config.GatewaySchedulingConfig{}, false, now)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2), selected.account.ID)
+}
+
+func TestSelectLayeredAccountWithLoad_TensOfSecondsStillLosesToHealthy(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 3000
+	verySlow := 10000
+	reportHealthSamples(stats, 1, true, &fast, 3)
+	reportHealthSamples(stats, 2, true, &verySlow, 3)
+
+	now := time.Now()
+	candidates := []accountWithLoad{
+		{account: &Account{ID: 1, Priority: 1, Type: AccountTypeAPIKey}, loadInfo: &AccountLoadInfo{AccountID: 1, LoadRate: 80}},
+		{account: &Account{ID: 2, Priority: 1, Type: AccountTypeAPIKey}, loadInfo: &AccountLoadInfo{AccountID: 2, LoadRate: 0}},
+	}
+
+	filtered := filterByAccountHealthBand(candidates, stats)
+	require.Len(t, filtered, 1)
+	require.Equal(t, int64(1), filtered[0].account.ID)
+	selected := selectLayeredAccountWithLoad(candidates, stats, config.GatewaySchedulingConfig{}, false, now)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(1), selected.account.ID)
+}
+
+func TestAccountRuntimeHealthScore_NoTTFTDoesNotExceedUnknown(t *testing.T) {
+	require.Equal(t, accountHealthUnknownScore, accountRuntimeHealthScore(0, 0, false, 0, 0, false))
+	require.Equal(t, accountHealthUnknownScore, accountRuntimeHealthScore(0.01, 0, false, 0, 0, false))
+	require.Less(t, accountRuntimeHealthScore(0.5, 0, false, 0, 0, false), accountHealthUnknownScore)
+}
+
 func TestSelectLayeredAccountWithLoad_UnknownExplorationInSamePriority(t *testing.T) {
 	stats := newAccountRuntimeHealthStats()
 	fast := 120
@@ -170,6 +217,60 @@ func TestSelectLayeredAccountWithLoad_UnknownExplorationInSamePriority(t *testin
 	selected := selectLayeredAccountWithLoad(candidates, stats, config.GatewaySchedulingConfig{}, false, now)
 	require.NotNil(t, selected)
 	require.Equal(t, int64(2), selected.account.ID)
+}
+
+func TestSelectLayeredAccountWithLoad_NilTTFTSamplesRemainUnknown(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 120
+	reportHealthSamples(stats, 1, true, &fast, 3)
+	reportHealthSamples(stats, 2, true, nil, 3)
+
+	_, _, hasTTFT, found, sampleCount, ttftSampleCount, _ := stats.snapshotWithMeta(2)
+	require.True(t, found)
+	require.False(t, hasTTFT)
+	require.Equal(t, int64(3), sampleCount)
+	require.Equal(t, int64(0), ttftSampleCount)
+
+	now := time.Now()
+	candidates := []accountWithLoad{
+		{account: &Account{ID: 1, Priority: 1, Type: AccountTypeAPIKey}, loadInfo: &AccountLoadInfo{AccountID: 1, LoadRate: 0}},
+		{account: &Account{ID: 2, Priority: 1, Type: AccountTypeAPIKey}, loadInfo: &AccountLoadInfo{AccountID: 2, LoadRate: 0}},
+	}
+	unknownOnly := buildAccountHealthCandidates(candidates[1:], stats)
+	require.False(t, hasKnownAccountHealthSample(unknownOnly))
+
+	stats.selectionCounter.Store(accountHealthUnknownExploreEvery - 1)
+	selected := selectLayeredAccountWithLoad(candidates, stats, config.GatewaySchedulingConfig{}, false, now)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2), selected.account.ID)
+}
+
+func TestSelectLayeredAccountWithLoad_NilTTFTFailuresBecomeDegraded(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 120
+	reportHealthSamples(stats, 1, true, &fast, 3)
+	reportHealthSamples(stats, 2, false, nil, 3)
+
+	now := time.Now()
+	candidates := []accountWithLoad{
+		{account: &Account{ID: 1, Priority: 1, Type: AccountTypeAPIKey}, loadInfo: &AccountLoadInfo{AccountID: 1, LoadRate: 80}},
+		{account: &Account{ID: 2, Priority: 1, Type: AccountTypeAPIKey}, loadInfo: &AccountLoadInfo{AccountID: 2, LoadRate: 0}},
+	}
+	healthCandidates := buildAccountHealthCandidates(candidates, stats)
+	require.True(t, hasKnownAccountHealthSample(healthCandidates[1:]))
+	require.Less(t, healthCandidates[1].score, accountHealthUnknownScore)
+
+	stats.selectionCounter.Store(accountHealthUnknownExploreEvery - 1)
+	require.Nil(t, selectUnknownExplorationCandidate(healthCandidates, stats, now, false))
+
+	healthCandidates[1].lastUpdated = now.Add(-accountHealthDegradedRecoveryDelay - time.Second)
+	selectedProbe := selectDegradedRecoveryCandidate(healthCandidates, stats, now, bestAccountHealthScore(healthCandidates), false)
+	require.NotNil(t, selectedProbe)
+	require.Equal(t, int64(2), selectedProbe.account.ID)
+
+	selected := selectLayeredAccountWithLoad(candidates, stats, config.GatewaySchedulingConfig{}, false, now)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(1), selected.account.ID)
 }
 
 func TestSelectLayeredAccountWithLoad_UnknownExplorationDoesNotCrossPriority(t *testing.T) {

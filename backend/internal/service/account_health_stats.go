@@ -11,8 +11,8 @@ const (
 	// accountHealthScoreBandThreshold 是"健康相近视为同带"的容差。带越窄，
 	// 速度/错误率差距越容易把更优账号排到前面；带越宽越偏向负载均衡。
 	// 健康分满分 1.0，TTFT 维度权重见 accountHealthTTFTWeight，因此约 2x 的
-	// 首 token 速度差即可跨带胜出，10%~30% 的抖动仍判为同带走均衡。
-	accountHealthScoreBandThreshold           = 0.05
+	// 首 token 速度差即可跨带胜出，秒级账号之间约 20%~35% 的抖动仍判为同带走均衡。
+	accountHealthScoreBandThreshold           = 0.10
 	accountHealthCacheAffinityMaxGap          = 0.10
 	accountHealthUnknownScore                 = 0.82
 	accountHealthUnknownTTFTScore             = 0.78
@@ -37,6 +37,7 @@ type accountRuntimeHealthStat struct {
 	errorRateEWMABits atomic.Uint64
 	ttftEWMABits      atomic.Uint64
 	sampleCount       atomic.Int64
+	ttftSampleCount   atomic.Int64
 	lastUpdatedNano   atomic.Int64
 }
 
@@ -86,6 +87,7 @@ func (s *accountRuntimeHealthStats) report(accountID int64, success bool, firstT
 	if firstTokenMs == nil || *firstTokenMs <= 0 {
 		return
 	}
+	stat.ttftSampleCount.Add(1)
 	ttft := float64(*firstTokenMs)
 	ttftBits := math.Float64bits(ttft)
 	for {
@@ -105,43 +107,45 @@ func (s *accountRuntimeHealthStats) report(accountID int64, success bool, firstT
 }
 
 func (s *accountRuntimeHealthStats) snapshot(accountID int64) (errorRate float64, ttft float64, hasTTFT bool, found bool) {
-	errorRate, ttft, hasTTFT, found, _, _ = s.snapshotWithMeta(accountID)
+	errorRate, ttft, hasTTFT, found, _, _, _ = s.snapshotWithMeta(accountID)
 	return errorRate, ttft, hasTTFT, found
 }
 
-func (s *accountRuntimeHealthStats) snapshotWithMeta(accountID int64) (errorRate float64, ttft float64, hasTTFT bool, found bool, sampleCount int64, lastUpdated time.Time) {
+func (s *accountRuntimeHealthStats) snapshotWithMeta(accountID int64) (errorRate float64, ttft float64, hasTTFT bool, found bool, sampleCount int64, ttftSampleCount int64, lastUpdated time.Time) {
 	if s == nil || accountID <= 0 {
-		return 0, 0, false, false, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}
 	}
 	value, ok := s.accounts.Load(accountID)
 	if !ok {
-		return 0, 0, false, false, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}
 	}
 	stat, _ := value.(*accountRuntimeHealthStat)
 	if stat == nil {
-		return 0, 0, false, false, 0, time.Time{}
+		return 0, 0, false, false, 0, 0, time.Time{}
 	}
 	errorRate = clamp01(math.Float64frombits(stat.errorRateEWMABits.Load()))
 	sampleCount = stat.sampleCount.Load()
+	ttftSampleCount = stat.ttftSampleCount.Load()
 	if updated := stat.lastUpdatedNano.Load(); updated > 0 {
 		lastUpdated = time.Unix(0, updated)
 	}
 	ttftValue := math.Float64frombits(stat.ttftEWMABits.Load())
 	if math.IsNaN(ttftValue) {
-		return errorRate, 0, false, true, sampleCount, lastUpdated
+		return errorRate, 0, false, true, sampleCount, ttftSampleCount, lastUpdated
 	}
-	return errorRate, ttftValue, true, true, sampleCount, lastUpdated
+	return errorRate, ttftValue, true, true, sampleCount, ttftSampleCount, lastUpdated
 }
 
 type accountHealthCandidate struct {
-	item        accountWithLoad
-	errorRate   float64
-	ttft        float64
-	hasTTFT     bool
-	found       bool
-	sampleCount int64
-	lastUpdated time.Time
-	score       float64
+	item            accountWithLoad
+	errorRate       float64
+	ttft            float64
+	hasTTFT         bool
+	found           bool
+	sampleCount     int64
+	ttftSampleCount int64
+	lastUpdated     time.Time
+	score           float64
 }
 
 func buildAccountHealthCandidates(accounts []accountWithLoad, stats *accountRuntimeHealthStats) []accountHealthCandidate {
@@ -155,16 +159,17 @@ func buildAccountHealthCandidates(accounts []accountWithLoad, stats *accountRunt
 			candidates = append(candidates, accountHealthCandidate{item: item, score: accountHealthUnknownScore})
 			continue
 		}
-		errorRate, ttft, hasTTFT, found, sampleCount, lastUpdated := stats.snapshotWithMeta(item.account.ID)
+		errorRate, ttft, hasTTFT, found, sampleCount, ttftSampleCount, lastUpdated := stats.snapshotWithMeta(item.account.ID)
 		candidates = append(candidates, accountHealthCandidate{
-			item:        item,
-			errorRate:   errorRate,
-			ttft:        ttft,
-			hasTTFT:     hasTTFT,
-			found:       found,
-			sampleCount: sampleCount,
-			lastUpdated: lastUpdated,
-			score:       accountHealthUnknownScore,
+			item:            item,
+			errorRate:       errorRate,
+			ttft:            ttft,
+			hasTTFT:         hasTTFT,
+			found:           found,
+			sampleCount:     sampleCount,
+			ttftSampleCount: ttftSampleCount,
+			lastUpdated:     lastUpdated,
+			score:           accountHealthUnknownScore,
 		})
 		if hasTTFT {
 			if !hasAnyTTFT || ttft < minTTFT {
@@ -198,7 +203,18 @@ func accountRuntimeHealthScore(errorRate float64, ttft float64, hasTTFT bool, mi
 			ttftFactor = 1 - clamp01((ttft-minTTFT)/ttftSpread)
 		}
 	}
-	return accountHealthErrorWeight*errorFactor + accountHealthTTFTWeight*ttftFactor
+	score := accountHealthErrorWeight*errorFactor + accountHealthTTFTWeight*ttftFactor
+	if !hasTTFT && score > accountHealthUnknownScore {
+		return accountHealthUnknownScore
+	}
+	return score
+}
+
+func accountHealthHasKnownSamples(sampleCount int64, ttftSampleCount int64, errorRate float64) bool {
+	if ttftSampleCount >= accountHealthUnknownMinSamples {
+		return true
+	}
+	return sampleCount >= accountHealthUnknownMinSamples && errorRate > 0
 }
 
 func bestAccountHealthScore(candidates []accountHealthCandidate) float64 {
