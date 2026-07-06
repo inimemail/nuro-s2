@@ -387,6 +387,7 @@ type OpenAIGatewayService struct {
 
 	openaiWSPoolOnce              sync.Once
 	openaiWSStateStoreOnce        sync.Once
+	openaiAccountStatsOnce        sync.Once
 	openaiSchedulerOnce           sync.Once
 	openaiWSPassthroughDialerOnce sync.Once
 	openaiWSPool                  *openAIWSConnPool
@@ -2500,6 +2501,13 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			now = time.Now()
 		}
 		healthScores := s.openAIAccountWithLoadHealthScores(available, requestedModel)
+		for i := range available {
+			if available[i].account == nil {
+				continue
+			}
+			available[i].healthScore = healthScores[available[i].account.ID]
+			available[i].hasHealthScore = true
+		}
 		sort.SliceStable(available, func(i, j int) bool {
 			a, b := available[i], available[j]
 			if a.account.Priority != b.account.Priority {
@@ -2510,12 +2518,6 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			}
 			if less, ok := openAIHealthScoreLess(healthScores[a.account.ID], healthScores[b.account.ID]); ok {
 				return less
-			}
-			if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-				return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-			}
-			if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
-				return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
 			}
 			if preferSoonestReset {
 				if less, ok := accountSoonestResetLess(a.account, b.account, now); ok {
@@ -2762,9 +2764,11 @@ func (s *OpenAIGatewayService) openAIAccountWithLoadHealthScores(accounts []acco
 			continue
 		}
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
-		if s != nil && s.openaiAccountStats != nil {
+		if s != nil {
 			transport := s.getOpenAIWSProtocolResolver().Resolve(item.account).Transport
-			errorRate, ttft, hasTTFT = s.openaiAccountStats.snapshotForRoute(item.account.ID, requestedModel, transport)
+			if stats := s.getOpenAIAccountRuntimeStats(); stats != nil {
+				errorRate, ttft, hasTTFT = stats.snapshotForRoute(item.account.ID, requestedModel, transport)
+			}
 		}
 		candidates = append(candidates, openAIAccountCandidateScore{
 			account:   item.account,
@@ -7169,11 +7173,12 @@ func (s *OpenAIGatewayService) openAIStreamSmartLowLatencyEligible(account *Acco
 	if s.isOpenAIPoolAccountSoftCooling(account) || s.isOpenAIAccountRuntimeBlocked(account) {
 		return false
 	}
-	if s.openaiAccountStats == nil {
+	stats := s.getOpenAIAccountRuntimeStats()
+	if stats == nil {
 		return true
 	}
 	transport := s.getOpenAIWSProtocolResolver().Resolve(account).Transport
-	errorRate, ttft, hasTTFT := s.openaiAccountStats.snapshotForRoute(account.ID, requestedModel, transport)
+	errorRate, ttft, hasTTFT := stats.snapshotForRoute(account.ID, requestedModel, transport)
 	if errorRate > 0.05 {
 		return false
 	}

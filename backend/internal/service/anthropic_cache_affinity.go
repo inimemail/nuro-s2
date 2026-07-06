@@ -320,7 +320,6 @@ func selectLayeredAccountWithLoadAndAnthropicAffinity(
 	candidates := filterByMinPriority(accounts)
 	candidates = filterByNonPoolModeIfPresent(candidates)
 	candidates = filterByAccountHealthBand(candidates, healthStats)
-	candidates = filterByMinLoadRate(candidates)
 	if cfg.PreferSoonestReset {
 		candidates = filterBySoonestReset(candidates, now)
 	}

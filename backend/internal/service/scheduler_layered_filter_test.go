@@ -264,7 +264,8 @@ func TestLayeredFilterIntegration(t *testing.T) {
 	muchEarlier := now.Add(-2 * time.Hour)
 
 	t.Run("full layered selection", func(t *testing.T) {
-		// 模拟真实场景：多个账号，不同优先级、负载率、最后使用时间
+		// 模拟真实场景：多个账号，不同优先级、负载率、最后使用时间。
+		// 负载率只作为容量门槛，不在同优先级内压过 LRU/健康层。
 		accounts := []accountWithLoad{
 			// 优先级 1，负载 50%
 			{account: &Account{ID: 1, Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 50}},
@@ -280,12 +281,8 @@ func TestLayeredFilterIntegration(t *testing.T) {
 		step1 := filterByMinPriority(accounts)
 		require.Len(t, step1, 3)
 
-		// 2. 取负载率最低的集合 → ID: 2, 3
-		step2 := filterByMinLoadRate(step1)
-		require.Len(t, step2, 2)
-
-		// 3. LRU 选择 → ID: 3（muchEarlier 最早）
-		selected := selectByLRU(step2, false)
+		// 2. 同优先级内不再按最低负载截断，LRU 选择最早的。
+		selected := selectByLRU(step1, false)
 		require.NotNil(t, selected)
 		require.Equal(t, int64(3), selected.account.ID)
 	})

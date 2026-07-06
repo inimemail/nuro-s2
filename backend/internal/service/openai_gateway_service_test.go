@@ -1040,12 +1040,14 @@ func TestOpenAISelectAccountWithLoadAwareness_NoLoadBatchStickyBusyFallsThrough(
 	}
 }
 
-func TestOpenAISelectAccountWithLoadAwareness_PrefersLowerLoad(t *testing.T) {
+func TestOpenAISelectAccountWithLoadAwareness_IgnoresLowerLoadWithinSamePriority(t *testing.T) {
 	groupID := int64(1)
+	oldTime := time.Now().Add(-2 * time.Hour)
+	newTime := time.Now().Add(-1 * time.Hour)
 	repo := stubOpenAIAccountRepo{
 		accounts: []Account{
-			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
-			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, LastUsedAt: &oldTime},
+			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, LastUsedAt: &newTime},
 		},
 	}
 	cache := &stubGatewayCache{}
@@ -1066,12 +1068,58 @@ func TestOpenAISelectAccountWithLoadAwareness_PrefersLowerLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
 	}
-	if selection == nil || selection.Account == nil || selection.Account.ID != 2 {
-		t.Fatalf("expected account 2")
+	if selection == nil || selection.Account == nil || selection.Account.ID != 1 {
+		t.Fatalf("expected account 1")
 	}
-	if cache.sessionBindings["openai:load"] != 2 {
+	if cache.sessionBindings["openai:load"] != 1 {
 		t.Fatalf("expected sticky session updated")
 	}
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_HealthBeatsHugeConcurrencyLowLoad(t *testing.T) {
+	groupID := int64(1)
+	slowUsed := time.Now().Add(-2 * time.Hour)
+	fastUsed := time.Now().Add(-1 * time.Hour)
+	slow := Account{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 999999999, Priority: 1, LastUsedAt: &slowUsed}
+	fast := Account{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 300, Priority: 1, LastUsedAt: &fastUsed}
+	repo := stubOpenAIAccountRepo{accounts: []Account{slow, fast}}
+	cache := &stubGatewayCache{}
+	concurrencyCache := stubConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			1: {AccountID: 1, LoadRate: 0, WaitingCount: 0},
+			2: {AccountID: 2, LoadRate: 80, WaitingCount: 8},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		cache:              cache,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+	slowTTFT := 15000
+	fastTTFT := 300
+	svc.ReportOpenAIAccountScheduleResultForRequest(&slow, "gpt-4", true, &slowTTFT)
+	svc.ReportOpenAIAccountScheduleResultForRequest(&fast, "gpt-4", true, &fastTTFT)
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-4", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(2), selection.Account.ID)
+}
+
+func TestOpenAIAccountRuntimeStatsRecordWithoutAdvancedScheduler(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	account := &Account{ID: 42, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true}
+	svc := &OpenAIGatewayService{}
+	ttft := 280
+
+	svc.ReportOpenAIAccountScheduleResultForRequest(account, "gpt-4", true, &ttft)
+
+	require.NotNil(t, svc.openaiAccountStats)
+	errorRate, recordedTTFT, hasTTFT := svc.openaiAccountStats.snapshotForRoute(account.ID, "gpt-4", OpenAIUpstreamTransportHTTPSSE)
+	require.Equal(t, 0.0, errorRate)
+	require.True(t, hasTTFT)
+	require.Equal(t, 280.0, recordedTTFT)
 }
 
 func TestOpenAISelectAccountForModelWithExclusions_StickyExcludedFallback(t *testing.T) {
@@ -1233,10 +1281,12 @@ func TestOpenAISelectAccountWithLoadAwareness_LoadBatchErrorNoAcquire(t *testing
 
 func TestOpenAISelectAccountWithLoadAwareness_MissingLoadInfo(t *testing.T) {
 	groupID := int64(1)
+	oldTime := time.Now().Add(-2 * time.Hour)
+	newTime := time.Now().Add(-1 * time.Hour)
 	repo := stubOpenAIAccountRepo{
 		accounts: []Account{
-			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
-			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, LastUsedAt: &oldTime},
+			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, LastUsedAt: &newTime},
 		},
 	}
 	cache := &stubGatewayCache{}
@@ -1257,8 +1307,8 @@ func TestOpenAISelectAccountWithLoadAwareness_MissingLoadInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
 	}
-	if selection == nil || selection.Account == nil || selection.Account.ID != 2 {
-		t.Fatalf("expected account 2")
+	if selection == nil || selection.Account == nil || selection.Account.ID != 1 {
+		t.Fatalf("expected account 1")
 	}
 }
 

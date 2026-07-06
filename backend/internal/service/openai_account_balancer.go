@@ -55,10 +55,11 @@ func sameOpenAIAccountLoadTie(a, b accountWithLoad, includeReset bool) bool {
 	if includeReset && !sameOpenAIAccountResetTie(a.account, b.account) {
 		return false
 	}
+	if !sameOpenAIHealthScoreTie(a.healthScore, a.hasHealthScore, b.healthScore, b.hasHealthScore) {
+		return false
+	}
 	return a.account.Priority == b.account.Priority &&
 		a.account.IsPoolMode() == b.account.IsPoolMode() &&
-		a.loadInfo.LoadRate == b.loadInfo.LoadRate &&
-		a.loadInfo.WaitingCount == b.loadInfo.WaitingCount &&
 		sameOpenAIAccountLastUsedTie(a.account, b.account)
 }
 
@@ -109,14 +110,23 @@ func sameOpenAIStrictPriorityTie(a, b openAIAccountCandidateScore, includeReset 
 	if includeReset && !sameOpenAIAccountResetTie(a.account, b.account) {
 		return false
 	}
+	if !sameOpenAIHealthScoreTie(a.healthScore, a.hasHealthScore, b.healthScore, b.hasHealthScore) {
+		return false
+	}
 	return a.account.Priority == b.account.Priority &&
 		a.account.IsPoolMode() == b.account.IsPoolMode() &&
-		a.loadInfo.LoadRate == b.loadInfo.LoadRate &&
-		a.loadInfo.WaitingCount == b.loadInfo.WaitingCount &&
-		a.errorRate == b.errorRate &&
-		a.hasTTFT == b.hasTTFT &&
-		(!a.hasTTFT || a.ttft == b.ttft) &&
 		sameOpenAIAccountLastUsedTie(a.account, b.account)
+}
+
+func sameOpenAIHealthScoreTie(aScore float64, aOK bool, bScore float64, bOK bool) bool {
+	if aOK != bOK {
+		return false
+	}
+	if !aOK {
+		return true
+	}
+	_, separated := openAIHealthScoreLess(aScore, bScore)
+	return !separated
 }
 
 func sameOpenAIAccountResetTie(a, b *Account) bool {

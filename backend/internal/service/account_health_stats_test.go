@@ -124,7 +124,7 @@ func TestSelectLayeredAccountWithLoad_HealthDoesNotCrossPriority(t *testing.T) {
 	require.Equal(t, int64(1), selected.account.ID)
 }
 
-func TestFilterByAccountHealthBand_KeepsLoadBalanceForSimilarHealth(t *testing.T) {
+func TestSelectLayeredAccountWithLoad_SimilarHealthIgnoresLowerLoad(t *testing.T) {
 	stats := newAccountRuntimeHealthStats()
 	ttftA := 100
 	ttftB := 130
@@ -132,9 +132,10 @@ func TestFilterByAccountHealthBand_KeepsLoadBalanceForSimilarHealth(t *testing.T
 	stats.report(2, true, &ttftB)
 
 	now := time.Now()
+	earlier := now.Add(-time.Hour)
 	candidates := []accountWithLoad{
 		{
-			account:  &Account{ID: 1, Priority: 1, Type: AccountTypeAPIKey, LastUsedAt: &now},
+			account:  &Account{ID: 1, Priority: 1, Type: AccountTypeAPIKey, LastUsedAt: &earlier},
 			loadInfo: &AccountLoadInfo{AccountID: 1, LoadRate: 40},
 		},
 		{
@@ -145,9 +146,9 @@ func TestFilterByAccountHealthBand_KeepsLoadBalanceForSimilarHealth(t *testing.T
 
 	filtered := filterByAccountHealthBand(candidates, stats)
 	require.Len(t, filtered, 2)
-	loadBalanced := filterByMinLoadRate(filtered)
-	require.Len(t, loadBalanced, 1)
-	require.Equal(t, int64(2), loadBalanced[0].account.ID)
+	selected := selectLayeredAccountWithLoad(candidates, stats, config.GatewaySchedulingConfig{}, false, now)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(1), selected.account.ID)
 }
 
 func TestFilterByAccountHealthBand_PenalizesVerySlowTTFTWithoutHardBlocking(t *testing.T) {

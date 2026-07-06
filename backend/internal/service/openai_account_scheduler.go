@@ -607,12 +607,14 @@ func (s *OpenAIGatewayService) latestOpenAIAccountMatchesGroup(ctx context.Conte
 }
 
 type openAIAccountCandidateScore struct {
-	account   *Account
-	loadInfo  *AccountLoadInfo
-	score     float64
-	errorRate float64
-	ttft      float64
-	hasTTFT   bool
+	account        *Account
+	loadInfo       *AccountLoadInfo
+	score          float64
+	errorRate      float64
+	ttft           float64
+	hasTTFT        bool
+	healthScore    float64
+	hasHealthScore bool
 }
 
 type openAIAccountCandidateHeap []openAIAccountCandidateScore
@@ -1110,6 +1112,13 @@ func sortOpenAIStrictPriorityCandidatesWithResetAndSession(pool []openAIAccountC
 	}
 	ordered := append([]openAIAccountCandidateScore(nil), pool...)
 	healthScores := buildOpenAIAccountCandidateHealthScores(ordered)
+	for i := range ordered {
+		if ordered[i].account == nil {
+			continue
+		}
+		ordered[i].healthScore = healthScores[ordered[i].account.ID]
+		ordered[i].hasHealthScore = true
+	}
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
 		if a.account.Priority != b.account.Priority {
@@ -1120,12 +1129,6 @@ func sortOpenAIStrictPriorityCandidatesWithResetAndSession(pool []openAIAccountC
 		}
 		if less, ok := openAIHealthScoreLess(healthScores[a.account.ID], healthScores[b.account.ID]); ok {
 			return less
-		}
-		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
-			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
-		}
-		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
 		}
 		if preferSoonestReset {
 			if less, ok := accountSoonestResetLess(a.account, b.account, now); ok {
@@ -1217,33 +1220,7 @@ func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []open
 	if len(pool) == 0 {
 		return nil
 	}
-	ordered := append([]openAIAccountCandidateScore(nil), pool...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		a, b := ordered[i], ordered[j]
-		if a.account.Priority != b.account.Priority {
-			return a.account.Priority < b.account.Priority
-		}
-		if less, ok := nonPoolAccountBeforePool(a.account, b.account); ok {
-			return less
-		}
-		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-		}
-		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
-			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
-		}
-		switch {
-		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
-			return true
-		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
-			return false
-		case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
-			return false
-		default:
-			return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
-		}
-	})
-	return ordered
+	return sortOpenAIStrictPriorityCandidates(pool)
 }
 
 func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
@@ -1686,14 +1663,23 @@ func (s *OpenAIGatewayService) getOpenAIAccountScheduler(ctx context.Context) Op
 		return nil
 	}
 	s.openaiSchedulerOnce.Do(func() {
-		if s.openaiAccountStats == nil {
-			s.openaiAccountStats = newOpenAIAccountRuntimeStats()
-		}
 		if s.openaiScheduler == nil {
-			s.openaiScheduler = newDefaultOpenAIAccountScheduler(s, s.openaiAccountStats)
+			s.openaiScheduler = newDefaultOpenAIAccountScheduler(s, s.getOpenAIAccountRuntimeStats())
 		}
 	})
 	return s.openaiScheduler
+}
+
+func (s *OpenAIGatewayService) getOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
+	if s == nil {
+		return nil
+	}
+	s.openaiAccountStatsOnce.Do(func() {
+		if s.openaiAccountStats == nil {
+			s.openaiAccountStats = newOpenAIAccountRuntimeStats()
+		}
+	})
+	return s.openaiAccountStats
 }
 
 func resetOpenAIAdvancedSchedulerSettingCacheForTest() {
@@ -2014,12 +2000,13 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResultForRequest(accou
 		s.openaiPoolSoftCooldownUntil.Delete(account.ID)
 		s.openaiPoolSoftCooldownFailureCount.Delete(account.ID)
 	}
-	scheduler := s.getOpenAIAccountScheduler(context.Background())
-	if scheduler == nil {
+	stats := s.getOpenAIAccountRuntimeStats()
+	if stats == nil {
 		return
 	}
 	transport := s.getOpenAIWSProtocolResolver().Resolve(account).Transport
-	scheduler.ReportResultForRoute(account.ID, success, firstTokenMs, requestedModel, transport)
+	stats.reportForRequest(account.ID, success, firstTokenMs, "")
+	stats.reportForRoute(account.ID, success, firstTokenMs, requestedModel, transport)
 }
 
 func (s *OpenAIGatewayService) ReportOpenAIImageAccountScheduleResult(accountID int64, success bool, firstTokenMs *int, requiredCapability OpenAIImagesCapability) {
@@ -2037,11 +2024,11 @@ func (s *OpenAIGatewayService) reportOpenAIAccountScheduleResultForCapability(ac
 		s.openaiPoolSoftCooldownUntil.Delete(accountID)
 		s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
 	}
-	scheduler := s.getOpenAIAccountScheduler(context.Background())
-	if scheduler == nil {
+	stats := s.getOpenAIAccountRuntimeStats()
+	if stats == nil {
 		return
 	}
-	scheduler.ReportResultForRequest(accountID, success, firstTokenMs, requiredImageCapability)
+	stats.reportForRequest(accountID, success, firstTokenMs, requiredImageCapability)
 }
 
 func (s *OpenAIGatewayService) RecordOpenAIAccountSwitch() {

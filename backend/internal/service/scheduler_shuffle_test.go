@@ -34,7 +34,7 @@ func TestShuffleWithinSortGroups_DifferentGroups_OrderPreserved(t *testing.T) {
 		{account: &Account{ID: 3, Priority: 2, LastUsedAt: &earlier}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
 	}
 
-	// 每个元素都属于不同组（Priority 或 LoadRate 或 LastUsedAt 不同），顺序不变
+	// 每个元素都属于不同组（Priority 或 LastUsedAt 不同），顺序不变
 	for i := 0; i < 20; i++ {
 		cpy := make([]accountWithLoad, len(accounts))
 		copy(cpy, accounts)
@@ -97,9 +97,9 @@ func TestShuffleWithinSortGroups_MixedGroups(t *testing.T) {
 	earlier := now.Add(-1 * time.Hour)
 	sameAsNow := time.Unix(now.Unix(), 0)
 
-	// 组1: Priority=1, LoadRate=10, LastUsedAt=earlier (ID 1)  — 单元素组
-	// 组2: Priority=1, LoadRate=20, LastUsedAt=now (ID 2, 3)   — 双元素组
-	// 组3: Priority=2, LoadRate=10, LastUsedAt=earlier (ID 4)  — 单元素组
+	// 组1: Priority=1, LastUsedAt=earlier (ID 1)  — 单元素组
+	// 组2: Priority=1, LastUsedAt=now (ID 2, 3)   — 双元素组
+	// 组3: Priority=2, LastUsedAt=earlier (ID 4)  — 单元素组
 	accounts := []accountWithLoad{
 		{account: &Account{ID: 1, Priority: 1, LastUsedAt: &earlier}, loadInfo: &AccountLoadInfo{LoadRate: 10}},
 		{account: &Account{ID: 2, Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 20}},
@@ -237,10 +237,10 @@ func TestSameAccountWithLoadGroup(t *testing.T) {
 		require.False(t, sameAccountWithLoadGroup(a, b))
 	})
 
-	t.Run("different load rate", func(t *testing.T) {
+	t.Run("load rate does not split health tie group", func(t *testing.T) {
 		a := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 10}}
 		b := accountWithLoad{account: &Account{Priority: 1, LastUsedAt: &now}, loadInfo: &AccountLoadInfo{LoadRate: 20}}
-		require.False(t, sameAccountWithLoadGroup(a, b))
+		require.True(t, sameAccountWithLoadGroup(a, b))
 	})
 
 	t.Run("different last used at", func(t *testing.T) {

@@ -262,7 +262,7 @@ func TestAnthropicCacheBoostUpstreamAffinitySelectionUsesSameLayerOnly(t *testin
 	require.Equal(t, int64(3), selected.ID, "affinity must not cross priority layers")
 }
 
-func TestAnthropicCacheBoostUpstreamAffinityRespectsLoadLayerAndToggle(t *testing.T) {
+func TestAnthropicCacheBoostUpstreamAffinityIgnoresLoadLayerAndRespectsToggle(t *testing.T) {
 	now := time.Now()
 	oldLastUsed := now.Add(-30 * time.Minute)
 	newLastUsed := now.Add(-1 * time.Minute)
@@ -275,7 +275,7 @@ func TestAnthropicCacheBoostUpstreamAffinityRespectsLoadLayerAndToggle(t *testin
 		{account: affinityTarget, loadInfo: &AccountLoadInfo{LoadRate: 60}},
 	}, nil, config.GatewaySchedulingConfig{}, false, now, 2, true)
 	require.NotNil(t, selected)
-	require.Equal(t, int64(1), selected.account.ID, "affinity must not cross load layers")
+	require.Equal(t, int64(2), selected.account.ID, "load must not block same-priority upstream cache affinity")
 
 	selected = selectLayeredAccountWithLoadAndAnthropicAffinity([]accountWithLoad{
 		{account: preferredByLoad, loadInfo: &AccountLoadInfo{LoadRate: 10}},

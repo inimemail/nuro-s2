@@ -91,8 +91,10 @@ type forceCacheBillingKeyType struct{}
 
 // accountWithLoad 账号与负载信息的组合，用于负载感知调度
 type accountWithLoad struct {
-	account  *Account
-	loadInfo *AccountLoadInfo
+	account        *Account
+	loadInfo       *AccountLoadInfo
+	healthScore    float64
+	hasHealthScore bool
 }
 
 var ForceCacheBillingContextKey = forceCacheBillingKeyType{}
@@ -1935,7 +1937,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 
 			if len(routingAvailable) > 0 {
-				// 4. 在路由账号范围内使用同一套分层选择：优先级 → 非池优先 → 健康带宽 → 负载率 → 可选快重置 → LRU
+				// 4. 在路由账号范围内使用同一套分层选择：优先级 → 非池优先 → 健康带宽 → 可选快重置 → LRU
 				routingAvailableForAcquire := append([]accountWithLoad(nil), routingAvailable...)
 				for len(routingAvailableForAcquire) > 0 {
 					selected := selectWithLoad(routingAvailableForAcquire)
@@ -2237,7 +2239,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 		}
 
-		// 分层过滤选择：优先级 → 非池优先 → 健康带宽 → 负载率 → 可选快重置 → LRU
+		// 分层过滤选择：优先级 → 非池优先 → 健康带宽 → 可选快重置 → LRU
 		for len(available) > 0 {
 			selected := selectWithLoad(available)
 			if selected == nil {
@@ -3172,7 +3174,6 @@ func selectLayeredAccountWithLoad(accounts []accountWithLoad, healthStats *accou
 	candidates := filterByMinPriority(accounts)
 	candidates = filterByNonPoolModeIfPresent(candidates)
 	candidates = filterByAccountHealthBand(candidates, healthStats)
-	candidates = filterByMinLoadRate(candidates)
 	if cfg.PreferSoonestReset {
 		candidates = filterBySoonestReset(candidates, now)
 	}
@@ -3348,7 +3349,7 @@ func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
 	shuffleWithinPriorityAndLastUsed(accounts, preferOAuth)
 }
 
-// shuffleWithinSortGroups 对排序后的 accountWithLoad 切片，按 (Priority, LoadRate, LastUsedAt) 分组后组内随机打乱。
+// shuffleWithinSortGroups 对排序后的 accountWithLoad 切片，按 (Priority, PoolMode, LastUsedAt) 分组后组内随机打乱。
 // 防止并发请求读取同一快照时，确定性排序导致所有请求命中相同账号。
 func shuffleWithinSortGroups(accounts []accountWithLoad) {
 	if len(accounts) <= 1 {
@@ -3375,9 +3376,6 @@ func sameAccountWithLoadGroup(a, b accountWithLoad) bool {
 		return false
 	}
 	if a.account.IsPoolMode() != b.account.IsPoolMode() {
-		return false
-	}
-	if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 		return false
 	}
 	return sameLastUsedAt(a.account.LastUsedAt, b.account.LastUsedAt)

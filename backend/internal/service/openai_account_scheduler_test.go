@@ -2042,6 +2042,10 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
 func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(11)
+	now := time.Now()
+	oldest := now.Add(-30 * time.Minute)
+	middle := now.Add(-20 * time.Minute)
+	newest := now.Add(-10 * time.Minute)
 	accounts := []Account{
 		{
 			ID:          3001,
@@ -2051,6 +2055,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
+			LastUsedAt:  &newest,
 			GroupIDs:    []int64{groupID},
 		},
 		{
@@ -2061,6 +2066,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
+			LastUsedAt:  &middle,
 			GroupIDs:    []int64{groupID},
 		},
 		{
@@ -2071,6 +2077,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 			Schedulable: true,
 			Concurrency: 1,
 			Priority:    0,
+			LastUsedAt:  &oldest,
 			GroupIDs:    []int64{groupID},
 		},
 	}
@@ -2090,7 +2097,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 			3003: {AccountID: 3003, LoadRate: 10, WaitingCount: 0},
 		},
 		acquireResults: map[int64]bool{
-			3003: false, // top1 失败，必须回退到 top-K 的下一候选
+			3003: false, // 第一候选失败，必须回退到下一候选
 			3002: true,
 		},
 	}
@@ -3017,7 +3024,7 @@ func TestBuildOpenAISelectionOrder_StrictPriorityBeatsLowerTTFT(t *testing.T) {
 	require.Equal(t, int64(5214), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerLoadBeforeLRU(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePriorityIgnoresLowerLoadBeforeLRU(t *testing.T) {
 	now := time.Now()
 	oldest := now.Add(-30 * time.Minute)
 	newest := now.Add(-5 * time.Minute)
@@ -3037,11 +3044,11 @@ func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerLoadBeforeLRU(t *test
 	})
 
 	require.Len(t, order, 2)
-	require.Equal(t, int64(5222), order[0].account.ID)
-	require.Equal(t, int64(5221), order[1].account.ID)
+	require.Equal(t, int64(5221), order[0].account.ID)
+	require.Equal(t, int64(5222), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerWaitingBeforeLRU(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePriorityIgnoresLowerWaitingBeforeLRU(t *testing.T) {
 	now := time.Now()
 	oldest := now.Add(-30 * time.Minute)
 	newest := now.Add(-5 * time.Minute)
@@ -3061,8 +3068,8 @@ func TestBuildOpenAISelectionOrder_SamePriorityPrefersLowerWaitingBeforeLRU(t *t
 	})
 
 	require.Len(t, order, 2)
-	require.Equal(t, int64(5232), order[0].account.ID)
-	require.Equal(t, int64(5231), order[1].account.ID)
+	require.Equal(t, int64(5231), order[0].account.ID)
+	require.Equal(t, int64(5232), order[1].account.ID)
 }
 
 func TestBuildOpenAISelectionOrder_SamePriorityPrefersHealthyBeforeLoad(t *testing.T) {
@@ -3118,19 +3125,22 @@ func TestBuildOpenAISelectionOrder_SamePriorityPrefersHealthBeforeLRU(t *testing
 	require.Equal(t, int64(5241), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_SamePrioritySimilarHealthStillUsesLoad(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePrioritySimilarHealthIgnoresLoad(t *testing.T) {
+	now := time.Now()
+	oldest := now.Add(-30 * time.Minute)
+	newest := now.Add(-5 * time.Minute)
 	scheduler := &defaultOpenAIAccountScheduler{}
 	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
 		topK: 2,
 		candidates: []openAIAccountCandidateScore{
 			{
-				account:  &Account{ID: 5243, Priority: 0},
+				account:  &Account{ID: 5243, Priority: 0, LastUsedAt: &oldest},
 				loadInfo: &AccountLoadInfo{LoadRate: 90, WaitingCount: 4},
 				hasTTFT:  true,
 				ttft:     650,
 			},
 			{
-				account:  &Account{ID: 5244, Priority: 0},
+				account:  &Account{ID: 5244, Priority: 0, LastUsedAt: &newest},
 				loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 0},
 				hasTTFT:  true,
 				ttft:     500,
@@ -3139,8 +3149,35 @@ func TestBuildOpenAISelectionOrder_SamePrioritySimilarHealthStillUsesLoad(t *tes
 	})
 
 	require.Len(t, order, 2)
-	require.Equal(t, int64(5244), order[0].account.ID)
-	require.Equal(t, int64(5243), order[1].account.ID)
+	require.Equal(t, int64(5243), order[0].account.ID)
+	require.Equal(t, int64(5244), order[1].account.ID)
+}
+
+func TestBuildOpenAISelectionOrder_SamePriorityHealthBeatsHugeConcurrencyLowLoad(t *testing.T) {
+	oldest := time.Now().Add(-30 * time.Minute)
+	newest := time.Now().Add(-5 * time.Minute)
+	scheduler := &defaultOpenAIAccountScheduler{}
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, openAIAccountLoadPlan{
+		topK: 2,
+		candidates: []openAIAccountCandidateScore{
+			{
+				account:  &Account{ID: 5245, Priority: 0, Concurrency: 999999999, LastUsedAt: &oldest},
+				loadInfo: &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+				hasTTFT:  true,
+				ttft:     15000,
+			},
+			{
+				account:  &Account{ID: 5246, Priority: 0, Concurrency: 300, LastUsedAt: &newest},
+				loadInfo: &AccountLoadInfo{LoadRate: 80, WaitingCount: 8},
+				hasTTFT:  true,
+				ttft:     300,
+			},
+		},
+	})
+
+	require.Len(t, order, 2)
+	require.Equal(t, int64(5246), order[0].account.ID)
+	require.Equal(t, int64(5245), order[1].account.ID)
 }
 
 func TestBuildOpenAISelectionOrder_AllCoolingPoolAccountsExcludedUntilProbeSuccess(t *testing.T) {
