@@ -3477,6 +3477,11 @@ export default {
           'Injects an empty timeout placeholder so downstream records first token earlier; early failures and account switching compatibility may degrade.',
         firstTokenTimeoutPlaceholderMs: 'Placeholder timeout',
         firstTokenTimeoutPlaceholderMsHint: '1-3000 ms, default 1000 ms.',
+        firstTokenTimeoutPlaceholderGuard: 'Real first-token guard',
+        firstTokenTimeoutPlaceholderGuardDesc:
+          'Auto-pauses placeholders when real first token exceeds the limit, then resumes after recovery.',
+        firstTokenTimeoutPlaceholderGuardMaxMs: 'Guard limit',
+        firstTokenTimeoutPlaceholderGuardMaxMsHint: '1-30000 ms, default 3000 ms.',
         oauthResponsesWebsocketsV2: 'OAuth WebSocket Mode',
         oauthResponsesWebsocketsV2Desc:
           'Only applies to OpenAI OAuth. This account can use OpenAI WebSocket Mode only when enabled.',

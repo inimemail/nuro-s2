@@ -1475,6 +1475,13 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 	}
 	if req.Success && h.gatewayService != nil && lease.account != nil {
 		firstTokenMs := intPointerFromInt64(req.FirstTokenMS)
+		if realFirstTokenMs := intPointerFromInt64(req.RealFirstTokenMS); realFirstTokenMs != nil {
+			h.gatewayService.RecordOpenAIFirstTokenTimeoutPlaceholderGuardSample(
+				lease.account,
+				lease.openAIRoutingModel(),
+				*realFirstTokenMs,
+			)
+		}
 		edgeFallbackReason := stringPointerFromTrimmed(req.EdgeFallbackReason)
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), true, firstTokenMs)
 		result := &service.OpenAIForwardResult{

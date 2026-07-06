@@ -166,6 +166,60 @@ func TestAccount_GetOpenAIFirstTokenTimeoutPlaceholderMs(t *testing.T) {
 	})
 }
 
+func TestAccount_OpenAIFirstTokenTimeoutPlaceholderGuard(t *testing.T) {
+	t.Run("defaults enabled with three second max when placeholder is enabled", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			},
+		}
+		require.True(t, account.IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled())
+		require.Equal(t, 3000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
+	})
+
+	t.Run("can disable guard independently", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+				openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
+				openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey:   1000,
+			},
+		}
+		require.False(t, account.IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled())
+		require.Equal(t, 1000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
+	})
+
+	t.Run("guard is inactive when placeholder is disabled", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: true,
+			},
+		}
+		require.False(t, account.IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled())
+	})
+
+	t.Run("guard max clamps to supported range", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey:    true,
+				openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey: 99999,
+			},
+		}
+		require.Equal(t, 30000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
+
+		account.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey] = 0
+		require.Equal(t, 3000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
+	})
+}
+
 func TestAccount_IsCodexCLIOnlyEnabled(t *testing.T) {
 	t.Run("OpenAI OAuth 开启", func(t *testing.T) {
 		account := &Account{

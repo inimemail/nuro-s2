@@ -416,6 +416,7 @@ type OpenAIGatewayService struct {
 	openaiCompatSessionResponses                 sync.Map
 	openaiCompatAnthropicDigestSessions          sync.Map
 	openaiCyberPolicySessionBlocks               sync.Map // key: platform:accountID:anchorType:anchorHash, value: cyberPolicySessionBlock
+	openaiFirstTokenTimeoutPlaceholderGuard      openAIFirstTokenTimeoutPlaceholderGuard
 }
 
 type promptCacheBoostGroupAvailability struct {
@@ -5119,6 +5120,26 @@ func openAIStreamDataStartsClientOutput(data, eventType string) bool {
 	return !openAIStreamEventIsPreamble(eventType)
 }
 
+func openAIStreamDataStartsRealOutput(data, eventType string) bool {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" || trimmed == "[DONE]" {
+		return false
+	}
+	switch strings.TrimSpace(eventType) {
+	case "response.output_text.delta",
+		"response.function_call_arguments.delta",
+		"response.custom_tool_call_input.delta",
+		"response.reasoning_summary_text.delta",
+		"response.reasoning_text.delta":
+		return strings.TrimSpace(gjson.Get(trimmed, "delta").String()) != ""
+	case "response.output_item.added":
+		itemType := strings.TrimSpace(gjson.Get(trimmed, "item.type").String())
+		return itemType == "function_call" || itemType == "custom_tool_call"
+	default:
+		return false
+	}
+}
+
 func openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType string, flushPreamble bool) bool {
 	if openAIStreamDataStartsClientOutput(data, eventType) {
 		return true
@@ -5178,7 +5199,33 @@ func (s *OpenAIGatewayService) openAIStreamFirstTokenTimeoutPlaceholderMs(accoun
 	if ms <= 0 {
 		return 0
 	}
+	if account.IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled() {
+		guardMaxMS := account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs()
+		if !s.openaiFirstTokenTimeoutPlaceholderGuard.allow(account.ID, requestedModel, guardMaxMS, time.Now()) {
+			return 0
+		}
+	}
 	return ms
+}
+
+func (s *OpenAIGatewayService) recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account *Account, requestedModel string, realFirstTokenMS int) {
+	if s == nil || account == nil || realFirstTokenMS <= 0 || !account.IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled() {
+		return
+	}
+	if account.IsImagePoolMode() || isOpenAIImageGenerationModel(requestedModel) {
+		return
+	}
+	s.openaiFirstTokenTimeoutPlaceholderGuard.record(
+		account.ID,
+		requestedModel,
+		realFirstTokenMS,
+		account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(),
+		time.Now(),
+	)
+}
+
+func (s *OpenAIGatewayService) RecordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account *Account, requestedModel string, realFirstTokenMS int) {
+	s.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, requestedModel, realFirstTokenMS)
 }
 
 func openAIStreamFirstTokenTimeoutTimer(startTime time.Time, timeout time.Duration) (*time.Timer, <-chan time.Time) {
@@ -5579,6 +5626,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	safeTokenPlaceholderPending := false
 	firstTokenTimeoutPlaceholderSent := requestFirstTokenPlaceholderSent
 	firstTokenTimeoutPlaceholderPending := false
+	firstTokenTimeoutGuardSampleRecorded := false
 	pendingLines := make([]string, 0, 8)
 	pendingLinesAtEventBoundary := func() bool {
 		return len(pendingLines) == 0 || pendingLines[len(pendingLines)-1] == ""
@@ -5656,6 +5704,13 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			firstTokenTimeoutPlaceholderPending = true
 		}
 	}
+	recordFirstTokenTimeoutGuardSample := func() {
+		if firstTokenTimeoutGuardSampleRecorded {
+			return
+		}
+		firstTokenTimeoutGuardSampleRecorded = true
+		s.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, originalModel, int(time.Since(startTime).Milliseconds()))
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -5721,11 +5776,17 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			}
 			imageCounter.AddSSEData(dataBytes)
 			safeTokenPlaceholderPending = safeTokenPlaceholderPending || eventType == "response.created"
+			lineStartsRealOutput := openAIStreamDataStartsRealOutput(trimmedData, eventType)
 			lineStartsFirstToken := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
 			lineStartsClientOutput = lineStartsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(trimmedData, eventType, flushPreamble)
-			if firstTokenMs == nil && lineStartsFirstToken && trimmedData != "[DONE]" {
-				ms := int(time.Since(startTime).Milliseconds())
-				firstTokenMs = &ms
+			if lineStartsRealOutput && trimmedData != "[DONE]" {
+				recordFirstTokenTimeoutGuardSample()
+			}
+			if lineStartsFirstToken && trimmedData != "[DONE]" {
+				if firstTokenMs == nil {
+					ms := int(time.Since(startTime).Milliseconds())
+					firstTokenMs = &ms
+				}
 			}
 			s.parseSSEUsageBytes(dataBytes, usage)
 		}
@@ -6707,6 +6768,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	safeTokenPlaceholderPending := false
 	firstTokenTimeoutPlaceholderSent := requestFirstTokenPlaceholderSent
 	firstTokenTimeoutPlaceholderPending := false
+	firstTokenTimeoutGuardSampleRecorded := false
 	var streamFailoverErr error
 	atSSEEventBoundary := true
 	sendErrorEvent := func(reason string) {
@@ -6776,6 +6838,13 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && firstTokenMs == nil && !firstTokenTimeoutPlaceholderSent && streamFailoverErr == nil {
 			firstTokenTimeoutPlaceholderPending = true
 		}
+	}
+	recordFirstTokenTimeoutGuardSample := func() {
+		if firstTokenTimeoutGuardSampleRecorded {
+			return
+		}
+		firstTokenTimeoutGuardSampleRecorded = true
+		s.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, originalModel, int(time.Since(startTime).Milliseconds()))
 	}
 
 	needModelReplace := originalModel != mappedModel
@@ -6912,6 +6981,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
 			}
 			startsFirstToken := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
+			startsRealOutput := openAIStreamDataStartsRealOutput(data, eventType)
 			startsClientOutput := startsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType, flushPreamble)
 
 			// 写入客户端（客户端断开后继续 drain 上游）
@@ -6939,9 +7009,14 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			}
 
 			// Record first token time
-			if firstTokenMs == nil && startsFirstToken {
-				ms := int(time.Since(startTime).Milliseconds())
-				firstTokenMs = &ms
+			if startsRealOutput {
+				recordFirstTokenTimeoutGuardSample()
+			}
+			if startsFirstToken {
+				if firstTokenMs == nil {
+					ms := int(time.Since(startTime).Milliseconds())
+					firstTokenMs = &ms
+				}
 			}
 			s.parseSSEUsageBytes(dataBytes, usage)
 			return

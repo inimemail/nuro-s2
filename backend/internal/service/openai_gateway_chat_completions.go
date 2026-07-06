@@ -39,6 +39,24 @@ var cursorResponsesUnsupportedFields = []string{
 	"stream_options",
 }
 
+func openAICompatEventStartsRealChatOutput(event *apicompat.ResponsesStreamEvent) bool {
+	if event == nil {
+		return false
+	}
+	switch strings.TrimSpace(event.Type) {
+	case "response.output_text.delta",
+		"response.function_call_arguments.delta",
+		"response.custom_tool_call_input.delta",
+		"response.reasoning_summary_text.delta",
+		"response.reasoning_text.delta":
+		return strings.TrimSpace(event.Delta) != ""
+	case "response.output_item.added":
+		return event.Item != nil && (event.Item.Type == "function_call" || event.Item.Type == "custom_tool_call")
+	default:
+		return false
+	}
+}
+
 // ForwardAsChatCompletions accepts a Chat Completions request body, converts it
 // to OpenAI Responses API format, forwards to the OpenAI upstream, and converts
 // the response back to Chat Completions format.
@@ -631,6 +649,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	safeTokenPlaceholderSent := requestFirstTokenPlaceholder.Sent
 	firstTokenTimeoutPlaceholderSent := requestFirstTokenPlaceholder.Sent
 	firstTokenTimeoutPlaceholderID := requestFirstTokenPlaceholder.ChatID
+	firstTokenTimeoutGuardSampleRecorded := false
 	pendingSSE := make([]string, 0, 4)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var streamFailoverErr *UpstreamFailoverError
@@ -662,6 +681,13 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		ms := int(time.Since(startTime).Milliseconds())
 		firstTokenMs = &ms
+	}
+	recordFirstTokenTimeoutGuardSample := func() {
+		if firstTokenTimeoutGuardSampleRecorded {
+			return
+		}
+		firstTokenTimeoutGuardSampleRecorded = true
+		s.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, originalModel, int(time.Since(startTime).Milliseconds()))
 	}
 
 	writeSafeChatPlaceholder := func(createdChunks []apicompat.ChatCompletionsChunk) bool {
@@ -801,6 +827,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		if strings.TrimSpace(event.Type) == "response.created" && writeSafeChatPlaceholder(chunks) {
 			return false
 		}
+		chunksStartRealOutput := openAICompatEventStartsRealChatOutput(&event)
 		if !clientDisconnected {
 			for _, chunk := range chunks {
 				refusalDetector.ObserveChatChunk(chunk)
@@ -829,6 +856,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 							)
 							break
 						}
+						if chunksStartRealOutput {
+							recordFirstTokenTimeoutGuardSample()
+						}
 						markFirstToken()
 					}
 					pendingSSE = pendingSSE[:0]
@@ -843,6 +873,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 						zap.String("request_id", requestID),
 					)
 					break
+				}
+				if chunksStartRealOutput {
+					recordFirstTokenTimeoutGuardSample()
 				}
 				markFirstToken()
 			}

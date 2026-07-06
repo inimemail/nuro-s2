@@ -111,12 +111,19 @@ const openAIOAuthChatGPTSafeTokenPlaceholderExtraKey = "openai_oauth_chatgpt_saf
 const openAIAPIKeySafeTokenPlaceholderExtraKey = "openai_apikey_safe_token_placeholder_enabled"
 const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey = "openai_oauth_chatgpt_first_token_timeout_placeholder_enabled"
 const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey = "openai_oauth_chatgpt_first_token_timeout_placeholder_ms"
+const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey = "openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled"
+const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey = "openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms"
 const openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey = "openai_apikey_first_token_timeout_placeholder_enabled"
 const openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey = "openai_apikey_first_token_timeout_placeholder_ms"
+const openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey = "openai_apikey_first_token_timeout_placeholder_guard_enabled"
+const openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey = "openai_apikey_first_token_timeout_placeholder_guard_max_ms"
 
 const openAIFirstTokenTimeoutPlaceholderDefaultMs = 1000
 const openAIFirstTokenTimeoutPlaceholderMinMs = 1
 const openAIFirstTokenTimeoutPlaceholderMaxMs = 3000
+const openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs = 3000
+const openAIFirstTokenTimeoutPlaceholderGuardMinMs = 1
+const openAIFirstTokenTimeoutPlaceholderGuardMaxMs = 30000
 
 const (
 	OpenAIPromptCacheBoostLevelNormal     = "normal"
@@ -2152,6 +2159,55 @@ func normalizeOpenAIFirstTokenTimeoutPlaceholderMs(ms int) int {
 	return ms
 }
 
+// IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled 返回真实首 token 保护是否启用。
+// 字段缺失时默认开启；补帧本身关闭时该保护无效。
+func (a *Account) IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled() bool {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil || a.GetOpenAIFirstTokenTimeoutPlaceholderMs() <= 0 {
+		return false
+	}
+	switch {
+	case a.IsOpenAIOAuth():
+		return a.getExtraBoolDefault(openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey, true)
+	case a.IsOpenAIApiKey():
+		return a.getExtraBoolDefault(openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey, true)
+	default:
+		return false
+	}
+}
+
+// GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs 返回真实首 token 保护上限。
+// 启用但配置非法时回落到 3000ms，有效范围 1-30000ms。
+func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs() int {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs
+	}
+	switch {
+	case a.IsOpenAIOAuth():
+		return normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(
+			a.getExtraInt(openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey),
+		)
+	case a.IsOpenAIApiKey():
+		return normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(
+			a.getExtraInt(openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey),
+		)
+	default:
+		return openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs
+	}
+}
+
+func normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(ms int) int {
+	if ms <= 0 {
+		return openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs
+	}
+	if ms < openAIFirstTokenTimeoutPlaceholderGuardMinMs {
+		return openAIFirstTokenTimeoutPlaceholderGuardMinMs
+	}
+	if ms > openAIFirstTokenTimeoutPlaceholderGuardMaxMs {
+		return openAIFirstTokenTimeoutPlaceholderGuardMaxMs
+	}
+	return ms
+}
+
 // IsOpenAIOAuthPassthroughEnabled 兼容旧接口，等价于 OAuth 账号的 IsOpenAIPassthroughEnabled。
 func (a *Account) IsOpenAIOAuthPassthroughEnabled() bool {
 	return a != nil && a.IsOpenAIOAuth() && a.IsOpenAIPassthroughEnabled()
@@ -2480,6 +2536,18 @@ func (a *Account) getExtraBool(key string) bool {
 		}
 	}
 	return false
+}
+
+func (a *Account) getExtraBoolDefault(key string, defaultVal bool) bool {
+	if a.Extra == nil {
+		return defaultVal
+	}
+	if v, ok := a.Extra[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return defaultVal
 }
 
 // getExtraString 从 Extra 中读取指定 key 的字符串值

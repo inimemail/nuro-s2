@@ -266,6 +266,7 @@ struct CompleteRequest {
     upstream_header_ms: Option<i64>,
     upstream_first_byte_ms: Option<i64>,
     first_token_ms: Option<i64>,
+    real_first_token_ms: Option<i64>,
     first_client_flush_ms: Option<i64>,
     edge_prepare_ms: Option<i64>,
     edge_queue_wait_ms: Option<i64>,
@@ -299,6 +300,7 @@ struct ChatStreamSummary {
 #[derive(Clone, Copy, Debug, Default)]
 struct ChatStreamObservation {
     starts_client_output: bool,
+    starts_real_output: bool,
     saw_response_created: bool,
     response_created_boundary_offset: Option<usize>,
 }
@@ -306,6 +308,7 @@ struct ChatStreamObservation {
 impl ChatStreamObservation {
     fn merge(&mut self, other: ChatStreamObservation) {
         self.starts_client_output |= other.starts_client_output;
+        self.starts_real_output |= other.starts_real_output;
         self.saw_response_created |= other.saw_response_created;
         if self.response_created_boundary_offset.is_none() {
             self.response_created_boundary_offset = other.response_created_boundary_offset;
@@ -950,6 +953,7 @@ async fn relay_ws_session(
             upstream_header_ms: None,
             upstream_first_byte_ms: None,
             first_token_ms: None,
+            real_first_token_ms: None,
             first_client_flush_ms: None,
             edge_prepare_ms: None,
             edge_queue_wait_ms: None,
@@ -1199,6 +1203,7 @@ async fn relay_upstream_direct(
 	                    let mut first_byte_ms: Option<i64> = None;
 	                    let first_flush_ms: Option<i64> = Some(started_at.elapsed().as_millis() as i64);
 	                    let mut first_token_ms: Option<i64> = None;
+	                    let mut real_first_token_ms: Option<i64> = None;
 	                    let mut success = true;
 	                    let mut error_message: Option<String> = None;
 	                    let mut upstream_status_code: Option<u16> = None;
@@ -1235,6 +1240,7 @@ async fn relay_upstream_direct(
 	                                upstream_header_ms,
 	                                upstream_first_byte_ms: first_byte_ms,
 	                                first_token_ms,
+	                                real_first_token_ms,
 	                                first_client_flush_ms: first_flush_ms,
 	                                edge_prepare_ms,
 	                                edge_queue_wait_ms,
@@ -1294,6 +1300,7 @@ async fn relay_upstream_direct(
 	                            upstream_header_ms,
 	                            upstream_first_byte_ms: first_byte_ms,
 	                            first_token_ms,
+	                            real_first_token_ms,
 	                            first_client_flush_ms: first_flush_ms,
 	                            edge_prepare_ms,
 	                            edge_queue_wait_ms,
@@ -1317,6 +1324,9 @@ async fn relay_upstream_direct(
                                     first_byte_ms = Some(header_start.elapsed().as_millis() as i64);
                                 }
                                 let observation = summary.observe(&chunk);
+                                if real_first_token_ms.is_none() && observation.starts_real_output {
+                                    real_first_token_ms = Some(started_at.elapsed().as_millis() as i64);
+                                }
                                 if first_token_ms.is_none() && observation.starts_client_output {
                                     first_token_ms = Some(started_at.elapsed().as_millis() as i64);
                                 }
@@ -1352,6 +1362,7 @@ async fn relay_upstream_direct(
 	                        upstream_header_ms,
 	                        upstream_first_byte_ms: first_byte_ms,
 	                        first_token_ms,
+	                        real_first_token_ms,
 	                        first_client_flush_ms: first_flush_ms,
 	                        edge_prepare_ms,
 	                        edge_queue_wait_ms,
@@ -1483,6 +1494,7 @@ async fn relay_upstream_direct(
         let mut first_byte_ms: Option<i64> = None;
         let mut first_flush_ms: Option<i64> = None;
         let mut first_token_ms: Option<i64> = None;
+        let mut real_first_token_ms: Option<i64> = None;
         let mut safe_token_placeholder_sent = false;
         let mut first_token_timeout_placeholder_sent = false;
         let mut bootstrap_comment_sent = false;
@@ -1563,6 +1575,9 @@ async fn relay_upstream_direct(
                     bootstrap_comment_sent = true;
                     bootstrap_timer = None;
                     let observation = summary.observe(&chunk);
+                    if real_first_token_ms.is_none() && observation.starts_real_output {
+                        real_first_token_ms = Some(started_at.elapsed().as_millis() as i64);
+                    }
                     if first_token_ms.is_none() && observation.starts_client_output {
                         first_token_ms = Some(started_at.elapsed().as_millis() as i64);
                         first_token_timeout_timer = None;
@@ -1623,6 +1638,7 @@ async fn relay_upstream_direct(
             upstream_header_ms: Some(upstream_header_ms),
             upstream_first_byte_ms: first_byte_ms,
             first_token_ms,
+            real_first_token_ms,
             first_client_flush_ms: first_flush_ms,
             edge_prepare_ms,
             edge_queue_wait_ms,
@@ -1808,6 +1824,28 @@ fn json_starts_client_output(value: &Value) -> bool {
         event_type,
         "response.created" | "response.in_progress" | "response.failed"
     )
+}
+
+fn json_starts_real_output(value: &Value) -> bool {
+    match json_event_type(value).unwrap_or_default() {
+        "response.output_text.delta"
+        | "response.function_call_arguments.delta"
+        | "response.custom_tool_call_input.delta"
+        | "response.reasoning_summary_text.delta"
+        | "response.reasoning_text.delta" => value
+            .get("delta")
+            .and_then(Value::as_str)
+            .map(|delta| !delta.trim().is_empty())
+            .unwrap_or(false),
+        "response.output_item.added" => value
+            .get("item")
+            .and_then(Value::as_object)
+            .and_then(|item| item.get("type"))
+            .and_then(Value::as_str)
+            .map(|item_type| item_type == "function_call" || item_type == "custom_tool_call")
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 async fn call_retry(state: &AppState, req: RetryRequest) -> anyhow::Result<RetryDecision> {
@@ -2172,6 +2210,7 @@ impl ChatStreamSummary {
                 self.response_created_pending_boundary = false;
                 return ChatStreamObservation {
                     starts_client_output: false,
+                    starts_real_output: false,
                     saw_response_created: true,
                     response_created_boundary_offset: None,
                 };
@@ -2190,6 +2229,7 @@ impl ChatStreamSummary {
         };
         let observation = ChatStreamObservation {
             starts_client_output: json_starts_client_output(&value),
+            starts_real_output: json_starts_real_output(&value),
             saw_response_created: false,
             response_created_boundary_offset: None,
         };
@@ -2729,6 +2769,25 @@ mod tests {
         })));
         assert!(json_starts_client_output(&serde_json::json!({
             "type": "response.output_item.added"
+        })));
+    }
+
+    #[test]
+    fn real_first_token_detection_requires_real_output() {
+        assert!(!json_starts_real_output(&serde_json::json!({
+            "type": "response.completed"
+        })));
+        assert!(!json_starts_real_output(&serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": ""
+        })));
+        assert!(json_starts_real_output(&serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": "hello"
+        })));
+        assert!(json_starts_real_output(&serde_json::json!({
+            "type": "response.output_item.added",
+            "item": { "type": "function_call" }
         })));
     }
 

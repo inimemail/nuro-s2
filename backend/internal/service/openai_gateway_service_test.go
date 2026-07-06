@@ -1955,6 +1955,57 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderDisabledForImagePoolAccount(t *
 	require.Zero(t, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
 }
 
+func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuard(t *testing.T) {
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:           100,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey:   3000,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: true,
+		},
+	}
+	svc := &OpenAIGatewayService{}
+
+	require.Equal(t, 100, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 20000)
+	require.Zero(t, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 800)
+	require.Zero(t, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 900)
+	require.Equal(t, 100, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+}
+
+func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardCanBeDisabled(t *testing.T) {
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:           100,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey:   1000,
+		},
+	}
+	svc := &OpenAIGatewayService{}
+
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 20000)
+	require.Equal(t, 100, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+}
+
+func TestOpenAIStreamDataStartsRealOutput(t *testing.T) {
+	require.False(t, openAIStreamDataStartsRealOutput(`{"type":"response.completed"}`, "response.completed"))
+	require.False(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_text.delta","delta":""}`, "response.output_text.delta"))
+	require.True(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_text.delta","delta":"hello"}`, "response.output_text.delta"))
+	require.True(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_item.added","item":{"type":"function_call"}}`, "response.output_item.added"))
+}
+
 func TestOpenAICommittedFirstTokenTimeoutPlaceholderRecordsPoolSoftCooldown(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{
