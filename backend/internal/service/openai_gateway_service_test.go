@@ -1040,7 +1040,7 @@ func TestOpenAISelectAccountWithLoadAwareness_NoLoadBatchStickyBusyFallsThrough(
 	}
 }
 
-func TestOpenAISelectAccountWithLoadAwareness_IgnoresLowerLoadWithinSamePriority(t *testing.T) {
+func TestOpenAISelectAccountWithLoadAwareness_UsesLowerLoadWithinSameHealthBand(t *testing.T) {
 	groupID := int64(1)
 	oldTime := time.Now().Add(-2 * time.Hour)
 	newTime := time.Now().Add(-1 * time.Hour)
@@ -1068,10 +1068,10 @@ func TestOpenAISelectAccountWithLoadAwareness_IgnoresLowerLoadWithinSamePriority
 	if err != nil {
 		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
 	}
-	if selection == nil || selection.Account == nil || selection.Account.ID != 1 {
-		t.Fatalf("expected account 1")
+	if selection == nil || selection.Account == nil || selection.Account.ID != 2 {
+		t.Fatalf("expected account 2")
 	}
-	if cache.sessionBindings["openai:load"] != 1 {
+	if cache.sessionBindings["openai:load"] != 2 {
 		t.Fatalf("expected sticky session updated")
 	}
 }

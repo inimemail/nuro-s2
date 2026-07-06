@@ -3024,7 +3024,7 @@ func TestBuildOpenAISelectionOrder_StrictPriorityBeatsLowerTTFT(t *testing.T) {
 	require.Equal(t, int64(5214), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_SamePriorityIgnoresLowerLoadBeforeLRU(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePriorityUsesLowerLoadBeforeLRU(t *testing.T) {
 	now := time.Now()
 	oldest := now.Add(-30 * time.Minute)
 	newest := now.Add(-5 * time.Minute)
@@ -3044,11 +3044,11 @@ func TestBuildOpenAISelectionOrder_SamePriorityIgnoresLowerLoadBeforeLRU(t *test
 	})
 
 	require.Len(t, order, 2)
-	require.Equal(t, int64(5221), order[0].account.ID)
-	require.Equal(t, int64(5222), order[1].account.ID)
+	require.Equal(t, int64(5222), order[0].account.ID)
+	require.Equal(t, int64(5221), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_SamePriorityIgnoresLowerWaitingBeforeLRU(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePriorityUsesLowerWaitingBeforeLRU(t *testing.T) {
 	now := time.Now()
 	oldest := now.Add(-30 * time.Minute)
 	newest := now.Add(-5 * time.Minute)
@@ -3068,8 +3068,8 @@ func TestBuildOpenAISelectionOrder_SamePriorityIgnoresLowerWaitingBeforeLRU(t *t
 	})
 
 	require.Len(t, order, 2)
-	require.Equal(t, int64(5231), order[0].account.ID)
-	require.Equal(t, int64(5232), order[1].account.ID)
+	require.Equal(t, int64(5232), order[0].account.ID)
+	require.Equal(t, int64(5231), order[1].account.ID)
 }
 
 func TestBuildOpenAISelectionOrder_SamePriorityPrefersHealthyBeforeLoad(t *testing.T) {
@@ -3125,7 +3125,7 @@ func TestBuildOpenAISelectionOrder_SamePriorityPrefersHealthBeforeLRU(t *testing
 	require.Equal(t, int64(5241), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_SamePrioritySimilarHealthIgnoresLoad(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePrioritySimilarHealthUsesLoad(t *testing.T) {
 	now := time.Now()
 	oldest := now.Add(-30 * time.Minute)
 	newest := now.Add(-5 * time.Minute)
@@ -3137,7 +3137,7 @@ func TestBuildOpenAISelectionOrder_SamePrioritySimilarHealthIgnoresLoad(t *testi
 				account:  &Account{ID: 5243, Priority: 0, LastUsedAt: &oldest},
 				loadInfo: &AccountLoadInfo{LoadRate: 90, WaitingCount: 4},
 				hasTTFT:  true,
-				ttft:     650,
+				ttft:     510,
 			},
 			{
 				account:  &Account{ID: 5244, Priority: 0, LastUsedAt: &newest},
@@ -3149,8 +3149,8 @@ func TestBuildOpenAISelectionOrder_SamePrioritySimilarHealthIgnoresLoad(t *testi
 	})
 
 	require.Len(t, order, 2)
-	require.Equal(t, int64(5243), order[0].account.ID)
-	require.Equal(t, int64(5244), order[1].account.ID)
+	require.Equal(t, int64(5244), order[0].account.ID)
+	require.Equal(t, int64(5243), order[1].account.ID)
 }
 
 func TestBuildOpenAISelectionOrder_SamePriorityHealthBeatsHugeConcurrencyLowLoad(t *testing.T) {
@@ -3178,6 +3178,146 @@ func TestBuildOpenAISelectionOrder_SamePriorityHealthBeatsHugeConcurrencyLowLoad
 	require.Len(t, order, 2)
 	require.Equal(t, int64(5246), order[0].account.ID)
 	require.Equal(t, int64(5245), order[1].account.ID)
+}
+
+func TestPrioritizeOpenAIHealthProbeCandidate_UnknownExplorationInSamePriority(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	now := time.Now()
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:        &Account{ID: 5251, Priority: 0},
+			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:    accountHealthUnknownMinSamples,
+			healthScore:    1,
+			hasHealthScore: true,
+		},
+		{
+			account:        &Account{ID: 5252, Priority: 0},
+			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:    0,
+			healthScore:    accountHealthUnknownScore,
+			hasHealthScore: true,
+		},
+	}
+
+	for i := 0; i < int(accountHealthUnknownExploreEvery)-1; i++ {
+		ordered := prioritizeOpenAIHealthProbeCandidate(candidates, stats, now)
+		require.Equal(t, int64(5251), ordered[0].account.ID)
+	}
+	ordered := prioritizeOpenAIHealthProbeCandidate(candidates, stats, now)
+	require.Equal(t, int64(5252), ordered[0].account.ID)
+}
+
+func TestPrioritizeOpenAIHealthProbeCandidate_UnknownExplorationDoesNotCrossPriority(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	now := time.Now()
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:        &Account{ID: 5253, Priority: 0},
+			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:    accountHealthUnknownMinSamples,
+			healthScore:    1,
+			hasHealthScore: true,
+		},
+		{
+			account:        &Account{ID: 5254, Priority: 10},
+			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:    0,
+			healthScore:    accountHealthUnknownScore,
+			hasHealthScore: true,
+		},
+	}
+
+	for i := 0; i < int(accountHealthUnknownExploreEvery); i++ {
+		ordered := prioritizeOpenAIHealthProbeCandidate(candidates, stats, now)
+		require.Equal(t, int64(5253), ordered[0].account.ID)
+	}
+}
+
+func TestPrioritizeOpenAIHealthProbeCandidate_DegradedRecoveryHasCooldown(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	now := time.Now()
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:        &Account{ID: 5255, Priority: 0},
+			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:    accountHealthUnknownMinSamples,
+			healthScore:    1,
+			hasHealthScore: true,
+		},
+		{
+			account:        &Account{ID: 5256, Priority: 0},
+			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:    accountHealthUnknownMinSamples,
+			healthScore:    0.4,
+			hasHealthScore: true,
+		},
+	}
+
+	ordered := prioritizeOpenAIHealthProbeCandidate(candidates, stats, now)
+	require.Equal(t, int64(5256), ordered[0].account.ID)
+
+	ordered = prioritizeOpenAIHealthProbeCandidate(candidates, stats, now.Add(time.Minute))
+	require.Equal(t, int64(5255), ordered[0].account.ID)
+
+	ordered = prioritizeOpenAIHealthProbeCandidate(candidates, stats, now.Add(accountHealthDegradedRecoveryDelay+time.Second))
+	require.Equal(t, int64(5256), ordered[0].account.ID)
+}
+
+func TestPrioritizeOpenAIHealthProbeCandidate_DegradedRecoveryWaitsForFreshSampleToAge(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	now := time.Now()
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:        &Account{ID: 5257, Priority: 0},
+			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:    accountHealthUnknownMinSamples,
+			lastUpdated:    now,
+			healthScore:    1,
+			hasHealthScore: true,
+		},
+		{
+			account:        &Account{ID: 5258, Priority: 0},
+			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:    accountHealthUnknownMinSamples,
+			lastUpdated:    now.Add(-time.Minute),
+			healthScore:    0.4,
+			hasHealthScore: true,
+		},
+	}
+
+	ordered := prioritizeOpenAIHealthProbeCandidate(candidates, stats, now)
+	require.Equal(t, int64(5257), ordered[0].account.ID)
+
+	candidates[1].lastUpdated = now.Add(-accountHealthDegradedRecoveryDelay - time.Second)
+	ordered = prioritizeOpenAIHealthProbeCandidate(candidates, stats, now)
+	require.Equal(t, int64(5258), ordered[0].account.ID)
+}
+
+func TestSortOpenAIStrictPriorityCandidatesForSession_PromptCacheAffinitySkipsUnknownExploration(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	stats.selectionCounter.Store(accountHealthUnknownExploreEvery - 1)
+	scheduler := &defaultOpenAIAccountScheduler{stats: stats}
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:     &Account{ID: 5259, Priority: 0},
+			loadInfo:    &AccountLoadInfo{LoadRate: 20, WaitingCount: 0},
+			hasTTFT:     true,
+			ttft:        120,
+			sampleCount: accountHealthUnknownMinSamples,
+		},
+		{
+			account:     &Account{ID: 5260, Priority: 0},
+			loadInfo:    &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount: 0,
+		},
+	}
+
+	ordered := scheduler.sortOpenAIStrictPriorityCandidatesForSession(candidates, openAIPromptCacheBoostAffinitySessionPrefix+"health-probe")
+
+	require.Len(t, ordered, 2)
+	require.Equal(t, int64(5259), ordered[0].account.ID)
+	require.Equal(t, accountHealthUnknownExploreEvery-1, stats.selectionCounter.Load())
 }
 
 func TestBuildOpenAISelectionOrder_AllCoolingPoolAccountsExcludedUntilProbeSuccess(t *testing.T) {

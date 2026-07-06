@@ -319,16 +319,7 @@ func selectLayeredAccountWithLoadAndAnthropicAffinity(
 	}
 	candidates := filterByMinPriority(accounts)
 	candidates = filterByNonPoolModeIfPresent(candidates)
-	candidates = filterByAccountHealthBand(candidates, healthStats)
-	if cfg.PreferSoonestReset {
-		candidates = filterBySoonestReset(candidates, now)
-	}
-	if affinityActive {
-		if selected := selectAnthropicCacheAffinityCandidate(candidates, affinityAccountID, preferOAuth); selected != nil {
-			return selected
-		}
-	}
-	return selectByLRU(candidates, preferOAuth)
+	return selectHealthAwareAccountWithLoad(candidates, healthStats, cfg, preferOAuth, now, affinityAccountID, affinityActive, !affinityActive)
 }
 
 func selectLayeredAccountWithAnthropicAffinity(accounts []*Account, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, affinityAccountID int64, affinityActive bool) *Account {

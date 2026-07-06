@@ -142,9 +142,12 @@ func (m *openAIAccountSchedulerMetrics) recordSwitch() {
 }
 
 type openAIAccountRuntimeStats struct {
-	accounts     sync.Map
-	accountIDs   sync.Map
-	accountCount atomic.Int64
+	accounts           sync.Map
+	accountIDs         sync.Map
+	accountCount       atomic.Int64
+	selectionCounter   atomic.Uint64
+	unknownExploreAt   sync.Map
+	degradedRecoveryAt sync.Map
 }
 
 type openAIAccountRuntimeStatsKey struct {
@@ -157,6 +160,8 @@ type openAIAccountRuntimeStatsKey struct {
 type openAIAccountRuntimeStat struct {
 	errorRateEWMABits atomic.Uint64
 	ttftEWMABits      atomic.Uint64
+	sampleCount       atomic.Int64
+	lastUpdatedNano   atomic.Int64
 }
 
 func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
@@ -242,6 +247,8 @@ func (s *openAIAccountRuntimeStats) reportForKey(key openAIAccountRuntimeStatsKe
 	if stat == nil {
 		return
 	}
+	stat.sampleCount.Add(1)
+	stat.lastUpdatedNano.Store(time.Now().UnixNano())
 
 	errorSample := 1.0
 	if success {
@@ -281,6 +288,14 @@ func (s *openAIAccountRuntimeStats) snapshotForRequest(accountID int64, required
 	return errorRate, ttft, hasTTFT
 }
 
+func (s *openAIAccountRuntimeStats) snapshotForRequestWithMeta(accountID int64, requiredImageCapability OpenAIImagesCapability) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, lastUpdated time.Time) {
+	errorRate, ttft, hasTTFT, _, sampleCount, lastUpdated = s.snapshotForKeyWithMeta(openAIAccountRuntimeStatsKey{
+		accountID: accountID,
+		kind:      openAIAccountRuntimeStatsKind(requiredImageCapability),
+	})
+	return errorRate, ttft, hasTTFT, sampleCount, lastUpdated
+}
+
 func (s *openAIAccountRuntimeStats) snapshotForRoute(accountID int64, requestedModel string, transport OpenAIUpstreamTransport) (errorRate float64, ttft float64, hasTTFT bool) {
 	if s == nil || accountID <= 0 {
 		return 0, 0, false
@@ -300,25 +315,88 @@ func (s *openAIAccountRuntimeStats) snapshotForRoute(accountID int64, requestedM
 	return s.snapshotForRequest(accountID, "")
 }
 
+func (s *openAIAccountRuntimeStats) snapshotForRouteWithMeta(accountID int64, requestedModel string, transport OpenAIUpstreamTransport) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, lastUpdated time.Time) {
+	if s == nil || accountID <= 0 {
+		return 0, 0, false, 0, time.Time{}
+	}
+	if strings.TrimSpace(requestedModel) != "" || transport != "" {
+		var found bool
+		errorRate, ttft, hasTTFT, found, sampleCount, lastUpdated = s.snapshotForKeyWithMeta(openAIAccountRuntimeStatsKey{
+			accountID: accountID,
+			kind:      "text",
+			model:     requestedModel,
+			transport: string(transport),
+		})
+		if found {
+			return errorRate, ttft, hasTTFT, sampleCount, lastUpdated
+		}
+	}
+	return s.snapshotForRequestWithMeta(accountID, "")
+}
+
 func (s *openAIAccountRuntimeStats) snapshotForKey(key openAIAccountRuntimeStatsKey) (errorRate float64, ttft float64, hasTTFT bool, found bool) {
+	errorRate, ttft, hasTTFT, found, _, _ = s.snapshotForKeyWithMeta(key)
+	return errorRate, ttft, hasTTFT, found
+}
+
+func (s *openAIAccountRuntimeStats) snapshotForKeyWithMeta(key openAIAccountRuntimeStatsKey) (errorRate float64, ttft float64, hasTTFT bool, found bool, sampleCount int64, lastUpdated time.Time) {
 	if s == nil || key.accountID <= 0 {
-		return 0, 0, false, false
+		return 0, 0, false, false, 0, time.Time{}
 	}
 	key = normalizeOpenAIAccountRuntimeStatsKey(key)
 	value, ok := s.accounts.Load(key)
 	if !ok {
-		return 0, 0, false, false
+		return 0, 0, false, false, 0, time.Time{}
 	}
 	stat, _ := value.(*openAIAccountRuntimeStat)
 	if stat == nil {
-		return 0, 0, false, false
+		return 0, 0, false, false, 0, time.Time{}
 	}
 	errorRate = clamp01(math.Float64frombits(stat.errorRateEWMABits.Load()))
+	sampleCount = stat.sampleCount.Load()
+	if updated := stat.lastUpdatedNano.Load(); updated > 0 {
+		lastUpdated = time.Unix(0, updated)
+	}
 	ttftValue := math.Float64frombits(stat.ttftEWMABits.Load())
 	if math.IsNaN(ttftValue) {
-		return errorRate, 0, false, true
+		return errorRate, 0, false, true, sampleCount, lastUpdated
 	}
-	return errorRate, ttftValue, true, true
+	return errorRate, ttftValue, true, true, sampleCount, lastUpdated
+}
+
+func (s *openAIAccountRuntimeStats) shouldTriggerUnknownExploration() bool {
+	if s == nil || accountHealthUnknownExploreEvery == 0 {
+		return false
+	}
+	return s.selectionCounter.Add(1)%accountHealthUnknownExploreEvery == 0
+}
+
+func (s *openAIAccountRuntimeStats) unknownExplorationDue(accountID int64, now time.Time) bool {
+	if s == nil {
+		return false
+	}
+	return accountHealthProbeDue(&s.unknownExploreAt, accountID, now, accountHealthUnknownExploreCooldown)
+}
+
+func (s *openAIAccountRuntimeStats) markUnknownExploration(accountID int64, now time.Time) {
+	if s == nil {
+		return
+	}
+	accountHealthMarkProbe(&s.unknownExploreAt, accountID, now)
+}
+
+func (s *openAIAccountRuntimeStats) degradedRecoveryDue(accountID int64, now time.Time) bool {
+	if s == nil {
+		return false
+	}
+	return accountHealthProbeDue(&s.degradedRecoveryAt, accountID, now, accountHealthDegradedRecoveryDelay)
+}
+
+func (s *openAIAccountRuntimeStats) markDegradedRecovery(accountID int64, now time.Time) {
+	if s == nil {
+		return
+	}
+	accountHealthMarkProbe(&s.degradedRecoveryAt, accountID, now)
 }
 
 func normalizeOpenAIAccountRuntimeStatsKey(key openAIAccountRuntimeStatsKey) openAIAccountRuntimeStatsKey {
@@ -607,14 +685,17 @@ func (s *OpenAIGatewayService) latestOpenAIAccountMatchesGroup(ctx context.Conte
 }
 
 type openAIAccountCandidateScore struct {
-	account        *Account
-	loadInfo       *AccountLoadInfo
-	score          float64
-	errorRate      float64
-	ttft           float64
-	hasTTFT        bool
-	healthScore    float64
-	hasHealthScore bool
+	account         *Account
+	loadInfo        *AccountLoadInfo
+	loadInfoMissing bool
+	score           float64
+	errorRate       float64
+	ttft            float64
+	hasTTFT         bool
+	sampleCount     int64
+	lastUpdated     time.Time
+	healthScore     float64
+	hasHealthScore  bool
 }
 
 type openAIAccountCandidateHeap []openAIAccountCandidateScore
@@ -654,6 +735,9 @@ func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right open
 	}
 	if left.account.Priority != right.account.Priority {
 		return left.account.Priority < right.account.Priority
+	}
+	if left.loadInfoMissing != right.loadInfoMissing {
+		return !left.loadInfoMissing
 	}
 	if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
 		return left.loadInfo.LoadRate < right.loadInfo.LoadRate
@@ -821,23 +905,28 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	allCandidates := make([]openAIAccountCandidateScore, 0, len(filtered))
 	for _, account := range filtered {
 		loadInfo := loadMap[account.ID]
+		loadInfoMissing := loadInfo == nil
 		if loadInfo == nil {
 			loadInfo = &AccountLoadInfo{AccountID: account.ID}
 		}
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
+		sampleCount, lastUpdated := int64(0), time.Time{}
 		if s.stats != nil {
 			if req.RequiredImageCapability != "" {
-				errorRate, ttft, hasTTFT = s.stats.snapshotForRequest(account.ID, req.RequiredImageCapability)
+				errorRate, ttft, hasTTFT, sampleCount, lastUpdated = s.stats.snapshotForRequestWithMeta(account.ID, req.RequiredImageCapability)
 			} else {
-				errorRate, ttft, hasTTFT = s.stats.snapshotForRoute(account.ID, req.RequestedModel, req.RequiredTransport)
+				errorRate, ttft, hasTTFT, sampleCount, lastUpdated = s.stats.snapshotForRouteWithMeta(account.ID, req.RequestedModel, req.RequiredTransport)
 			}
 		}
 		allCandidates = append(allCandidates, openAIAccountCandidateScore{
-			account:   account,
-			loadInfo:  loadInfo,
-			errorRate: errorRate,
-			ttft:      ttft,
-			hasTTFT:   hasTTFT,
+			account:         account,
+			loadInfo:        loadInfo,
+			loadInfoMissing: loadInfoMissing,
+			errorRate:       errorRate,
+			ttft:            ttft,
+			hasTTFT:         hasTTFT,
+			sampleCount:     sampleCount,
+			lastUpdated:     lastUpdated,
 		})
 	}
 
@@ -1073,6 +1162,9 @@ func (s *defaultOpenAIAccountScheduler) sortOpenAIPoolCooldownProbeCandidates(po
 				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 			}
 		}
+		if a.loadInfoMissing != b.loadInfoMissing {
+			return !a.loadInfoMissing
+		}
 		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
 		}
@@ -1095,7 +1187,108 @@ func (s *defaultOpenAIAccountScheduler) sortOpenAIStrictPriorityCandidatesForSes
 		weights := s.service.openAIWSSchedulerWeights()
 		preferSoonestReset = weights.Reset > 0 || s.service.schedulingConfig().PreferSoonestReset
 	}
-	return sortOpenAIStrictPriorityCandidatesWithResetAndSession(pool, preferSoonestReset, sessionHash)
+	ordered := sortOpenAIStrictPriorityCandidatesWithResetAndSession(pool, preferSoonestReset, sessionHash)
+	if s == nil || s.stats == nil || IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) {
+		return ordered
+	}
+	return prioritizeOpenAIHealthProbeCandidate(ordered, s.stats, time.Now())
+}
+
+func hasKnownOpenAIHealthSample(candidates []openAIAccountCandidateScore) bool {
+	for _, candidate := range candidates {
+		if candidate.sampleCount >= accountHealthUnknownMinSamples {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIHealthProbeTopLayer(candidates []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	if len(candidates) == 0 || candidates[0].account == nil {
+		return nil
+	}
+	priority := candidates[0].account.Priority
+	poolMode := candidates[0].account.IsPoolMode()
+	end := 0
+	for end < len(candidates) {
+		account := candidates[end].account
+		if account == nil || account.Priority != priority || account.IsPoolMode() != poolMode {
+			break
+		}
+		end++
+	}
+	return candidates[:end]
+}
+
+func selectOpenAIUnknownExplorationIndex(candidates []openAIAccountCandidateScore, stats *openAIAccountRuntimeStats, now time.Time) int {
+	if stats == nil || !hasKnownOpenAIHealthSample(candidates) || !stats.shouldTriggerUnknownExploration() {
+		return -1
+	}
+	for i, candidate := range candidates {
+		if candidate.account == nil || candidate.sampleCount >= accountHealthUnknownMinSamples {
+			continue
+		}
+		if !stats.unknownExplorationDue(candidate.account.ID, now) {
+			continue
+		}
+		stats.markUnknownExploration(candidate.account.ID, now)
+		return i
+	}
+	return -1
+}
+
+func selectOpenAIDegradedRecoveryIndex(candidates []openAIAccountCandidateScore, stats *openAIAccountRuntimeStats, now time.Time) int {
+	if stats == nil || !hasKnownOpenAIHealthSample(candidates) {
+		return -1
+	}
+	bestScore := -1.0
+	for _, candidate := range candidates {
+		if candidate.healthScore > bestScore {
+			bestScore = candidate.healthScore
+		}
+	}
+	if bestScore < 0 {
+		return -1
+	}
+	for i, candidate := range candidates {
+		if candidate.account == nil || candidate.sampleCount < accountHealthUnknownMinSamples {
+			continue
+		}
+		if candidate.healthScore >= bestScore-accountHealthScoreBandThreshold {
+			continue
+		}
+		if accountHealthSampleRecentlyUpdated(candidate.lastUpdated, now, accountHealthDegradedRecoveryDelay) {
+			continue
+		}
+		if !stats.degradedRecoveryDue(candidate.account.ID, now) {
+			continue
+		}
+		stats.markDegradedRecovery(candidate.account.ID, now)
+		return i
+	}
+	return -1
+}
+
+func prioritizeOpenAIHealthProbeCandidate(candidates []openAIAccountCandidateScore, stats *openAIAccountRuntimeStats, now time.Time) []openAIAccountCandidateScore {
+	if len(candidates) <= 1 || stats == nil {
+		return candidates
+	}
+	topLayer := openAIHealthProbeTopLayer(candidates)
+	if len(topLayer) <= 1 {
+		return candidates
+	}
+	idx := selectOpenAIUnknownExplorationIndex(topLayer, stats, now)
+	if idx < 0 {
+		idx = selectOpenAIDegradedRecoveryIndex(topLayer, stats, now)
+	}
+	if idx <= 0 {
+		return candidates
+	}
+	ordered := append([]openAIAccountCandidateScore(nil), candidates...)
+	selected := ordered[idx]
+	copy(ordered[1:idx+1], ordered[0:idx])
+	ordered[0] = selected
+	return ordered
 }
 
 func sortOpenAIStrictPriorityCandidatesWithReset(pool []openAIAccountCandidateScore, preferSoonestReset bool) []openAIAccountCandidateScore {
@@ -1134,6 +1327,15 @@ func sortOpenAIStrictPriorityCandidatesWithResetAndSession(pool []openAIAccountC
 			if less, ok := accountSoonestResetLess(a.account, b.account, now); ok {
 				return less
 			}
+		}
+		if a.loadInfoMissing != b.loadInfoMissing {
+			return !a.loadInfoMissing
+		}
+		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
 		}
 		if a.errorRate != b.errorRate {
 			return a.errorRate < b.errorRate

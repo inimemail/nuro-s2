@@ -33,7 +33,7 @@ func prioritizeOpenAIPromptCacheUpstreamLoadTies(accounts []accountWithLoad, ses
 	}
 	for i := 0; i < len(accounts); {
 		j := i + 1
-		for j < len(accounts) && sameOpenAIAccountLoadTie(accounts[i], accounts[j], includeReset) {
+		for j < len(accounts) && sameOpenAIAccountCacheAffinityTie(accounts[i], accounts[j], includeReset) {
 			j++
 		}
 		sort.SliceStable(accounts[i:j], func(a, b int) bool {
@@ -49,6 +49,24 @@ func prioritizeOpenAIPromptCacheUpstreamLoadTies(accounts []accountWithLoad, ses
 }
 
 func sameOpenAIAccountLoadTie(a, b accountWithLoad, includeReset bool) bool {
+	if a.account == nil || b.account == nil || a.loadInfo == nil || b.loadInfo == nil {
+		return false
+	}
+	if includeReset && !sameOpenAIAccountResetTie(a.account, b.account) {
+		return false
+	}
+	if !sameOpenAIHealthScoreTie(a.healthScore, a.hasHealthScore, b.healthScore, b.hasHealthScore) {
+		return false
+	}
+	return a.account.Priority == b.account.Priority &&
+		a.account.IsPoolMode() == b.account.IsPoolMode() &&
+		a.loadInfoMissing == b.loadInfoMissing &&
+		a.loadInfo.LoadRate == b.loadInfo.LoadRate &&
+		a.loadInfo.WaitingCount == b.loadInfo.WaitingCount &&
+		sameOpenAIAccountLastUsedTie(a.account, b.account)
+}
+
+func sameOpenAIAccountCacheAffinityTie(a, b accountWithLoad, includeReset bool) bool {
 	if a.account == nil || b.account == nil || a.loadInfo == nil || b.loadInfo == nil {
 		return false
 	}
@@ -88,7 +106,7 @@ func prioritizeOpenAIPromptCacheUpstreamStrictTies(accounts []openAIAccountCandi
 	}
 	for i := 0; i < len(accounts); {
 		j := i + 1
-		for j < len(accounts) && sameOpenAIStrictPriorityTie(accounts[i], accounts[j], includeReset) {
+		for j < len(accounts) && sameOpenAIStrictPriorityCacheAffinityTie(accounts[i], accounts[j], includeReset) {
 			j++
 		}
 		sort.SliceStable(accounts[i:j], func(a, b int) bool {
@@ -104,6 +122,24 @@ func prioritizeOpenAIPromptCacheUpstreamStrictTies(accounts []openAIAccountCandi
 }
 
 func sameOpenAIStrictPriorityTie(a, b openAIAccountCandidateScore, includeReset bool) bool {
+	if a.account == nil || b.account == nil || a.loadInfo == nil || b.loadInfo == nil {
+		return false
+	}
+	if includeReset && !sameOpenAIAccountResetTie(a.account, b.account) {
+		return false
+	}
+	if !sameOpenAIHealthScoreTie(a.healthScore, a.hasHealthScore, b.healthScore, b.hasHealthScore) {
+		return false
+	}
+	return a.account.Priority == b.account.Priority &&
+		a.account.IsPoolMode() == b.account.IsPoolMode() &&
+		a.loadInfoMissing == b.loadInfoMissing &&
+		a.loadInfo.LoadRate == b.loadInfo.LoadRate &&
+		a.loadInfo.WaitingCount == b.loadInfo.WaitingCount &&
+		sameOpenAIAccountLastUsedTie(a.account, b.account)
+}
+
+func sameOpenAIStrictPriorityCacheAffinityTie(a, b openAIAccountCandidateScore, includeReset bool) bool {
 	if a.account == nil || b.account == nil || a.loadInfo == nil || b.loadInfo == nil {
 		return false
 	}

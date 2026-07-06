@@ -91,10 +91,11 @@ type forceCacheBillingKeyType struct{}
 
 // accountWithLoad 账号与负载信息的组合，用于负载感知调度
 type accountWithLoad struct {
-	account        *Account
-	loadInfo       *AccountLoadInfo
-	healthScore    float64
-	hasHealthScore bool
+	account         *Account
+	loadInfo        *AccountLoadInfo
+	loadInfoMissing bool
+	healthScore     float64
+	hasHealthScore  bool
 }
 
 var ForceCacheBillingContextKey = forceCacheBillingKeyType{}
@@ -1928,11 +1929,16 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			var routingAvailable []accountWithLoad
 			for _, acc := range routingCandidates {
 				loadInfo := routingLoadMap[acc.ID]
+				loadInfoMissing := loadInfo == nil
 				if loadInfo == nil {
 					loadInfo = &AccountLoadInfo{AccountID: acc.ID}
 				}
 				if loadInfo.LoadRate < 100 {
-					routingAvailable = append(routingAvailable, accountWithLoad{account: acc, loadInfo: loadInfo})
+					routingAvailable = append(routingAvailable, accountWithLoad{
+						account:         acc,
+						loadInfo:        loadInfo,
+						loadInfoMissing: loadInfoMissing,
+					})
 				}
 			}
 
@@ -2228,13 +2234,15 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		var available []accountWithLoad
 		for _, acc := range candidates {
 			loadInfo := loadMap[acc.ID]
+			loadInfoMissing := loadInfo == nil
 			if loadInfo == nil {
 				loadInfo = &AccountLoadInfo{AccountID: acc.ID}
 			}
 			if loadInfo.LoadRate < 100 {
 				available = append(available, accountWithLoad{
-					account:  acc,
-					loadInfo: loadInfo,
+					account:         acc,
+					loadInfo:        loadInfo,
+					loadInfoMissing: loadInfoMissing,
 				})
 			}
 		}
@@ -3152,19 +3160,208 @@ func filterByMinLoadRate(accounts []accountWithLoad) []accountWithLoad {
 	if len(accounts) == 0 {
 		return accounts
 	}
-	minLoadRate := accounts[0].loadInfo.LoadRate
-	for _, acc := range accounts[1:] {
-		if acc.loadInfo.LoadRate < minLoadRate {
-			minLoadRate = acc.loadInfo.LoadRate
+	hasKnownLoadInfo := false
+	for _, acc := range accounts {
+		if !acc.loadInfoMissing {
+			hasKnownLoadInfo = true
+			break
 		}
+	}
+	minLoadRate := 0
+	found := false
+	for _, acc := range accounts {
+		if hasKnownLoadInfo && acc.loadInfoMissing {
+			continue
+		}
+		loadRate := 0
+		if acc.loadInfo != nil {
+			loadRate = acc.loadInfo.LoadRate
+		}
+		if !found || loadRate < minLoadRate {
+			minLoadRate = loadRate
+			found = true
+		}
+	}
+	if !found {
+		return accounts
 	}
 	result := make([]accountWithLoad, 0, len(accounts))
 	for _, acc := range accounts {
-		if acc.loadInfo.LoadRate == minLoadRate {
+		if hasKnownLoadInfo && acc.loadInfoMissing {
+			continue
+		}
+		loadRate := 0
+		if acc.loadInfo != nil {
+			loadRate = acc.loadInfo.LoadRate
+		}
+		if loadRate == minLoadRate {
 			result = append(result, acc)
 		}
 	}
 	return result
+}
+
+func filterByMinWaitingCount(accounts []accountWithLoad) []accountWithLoad {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	minWaitingCount := accounts[0].loadInfo.WaitingCount
+	for _, acc := range accounts[1:] {
+		if acc.loadInfo.WaitingCount < minWaitingCount {
+			minWaitingCount = acc.loadInfo.WaitingCount
+		}
+	}
+	result := make([]accountWithLoad, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc.loadInfo.WaitingCount == minWaitingCount {
+			result = append(result, acc)
+		}
+	}
+	return result
+}
+
+func selectByLoadAndLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad {
+	if len(accounts) == 0 {
+		return nil
+	}
+	candidates := filterByMinLoadRate(accounts)
+	candidates = filterByMinWaitingCount(candidates)
+	return selectByLRU(candidates, preferOAuth)
+}
+
+func accountHealthItems(candidates []accountHealthCandidate) []accountWithLoad {
+	if len(candidates) == 0 {
+		return nil
+	}
+	items := make([]accountWithLoad, 0, len(candidates))
+	for _, candidate := range candidates {
+		items = append(items, candidate.item)
+	}
+	return items
+}
+
+func hasKnownAccountHealthSample(candidates []accountHealthCandidate) bool {
+	for _, candidate := range candidates {
+		if candidate.sampleCount >= accountHealthUnknownMinSamples {
+			return true
+		}
+	}
+	return false
+}
+
+func selectUnknownExplorationCandidate(candidates []accountHealthCandidate, stats *accountRuntimeHealthStats, now time.Time, preferOAuth bool) *accountWithLoad {
+	if stats == nil || !hasKnownAccountHealthSample(candidates) || !stats.shouldTriggerUnknownExploration() {
+		return nil
+	}
+	due := make([]accountWithLoad, 0)
+	for _, candidate := range candidates {
+		if candidate.item.account == nil || candidate.sampleCount >= accountHealthUnknownMinSamples {
+			continue
+		}
+		if !stats.unknownExplorationDue(candidate.item.account.ID, now) {
+			continue
+		}
+		due = append(due, candidate.item)
+	}
+	selected := selectByLoadAndLRU(due, preferOAuth)
+	if selected != nil && selected.account != nil {
+		stats.markUnknownExploration(selected.account.ID, now)
+	}
+	return selected
+}
+
+func selectDegradedRecoveryCandidate(candidates []accountHealthCandidate, stats *accountRuntimeHealthStats, now time.Time, bestScore float64, preferOAuth bool) *accountWithLoad {
+	if stats == nil || !hasKnownAccountHealthSample(candidates) {
+		return nil
+	}
+	due := make([]accountWithLoad, 0)
+	for _, candidate := range candidates {
+		if candidate.item.account == nil || candidate.sampleCount < accountHealthUnknownMinSamples {
+			continue
+		}
+		if candidate.score >= bestScore-accountHealthScoreBandThreshold {
+			continue
+		}
+		if accountHealthSampleRecentlyUpdated(candidate.lastUpdated, now, accountHealthDegradedRecoveryDelay) {
+			continue
+		}
+		if !stats.degradedRecoveryDue(candidate.item.account.ID, now) {
+			continue
+		}
+		due = append(due, candidate.item)
+	}
+	selected := selectByLoadAndLRU(due, preferOAuth)
+	if selected != nil && selected.account != nil {
+		stats.markDegradedRecovery(selected.account.ID, now)
+	}
+	return selected
+}
+
+func filterAccountHealthBandCandidates(candidates []accountHealthCandidate, bestScore float64) []accountWithLoad {
+	if len(candidates) == 0 {
+		return nil
+	}
+	if bestScore < 0 || !hasKnownAccountHealthSample(candidates) {
+		return accountHealthItems(candidates)
+	}
+	result := make([]accountWithLoad, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.item.account == nil || candidate.score >= bestScore-accountHealthScoreBandThreshold {
+			result = append(result, candidate.item)
+		}
+	}
+	if len(result) == 0 {
+		return accountHealthItems(candidates)
+	}
+	return result
+}
+
+func selectAnthropicCacheAffinityHealthCandidate(candidates []accountHealthCandidate, affinityAccountID int64, bestScore float64, preferOAuth bool) *accountWithLoad {
+	if len(candidates) == 0 {
+		return nil
+	}
+	allowed := make([]accountWithLoad, 0)
+	for i := range candidates {
+		candidate := &candidates[i]
+		acc := candidate.item.account
+		if acc == nil || !acc.IsAnthropicCacheBoostUpstreamHitPriorityEnabled() {
+			continue
+		}
+		if bestScore >= 0 && candidate.score < bestScore-accountHealthCacheAffinityMaxGap {
+			continue
+		}
+		if affinityAccountID > 0 && acc.ID == affinityAccountID {
+			return &candidate.item
+		}
+		allowed = append(allowed, candidate.item)
+	}
+	return selectByLoadAndLRU(allowed, preferOAuth)
+}
+
+func selectHealthAwareAccountWithLoad(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, affinityAccountID int64, affinityActive bool, allowExploration bool) *accountWithLoad {
+	if len(accounts) == 0 {
+		return nil
+	}
+	candidates := buildAccountHealthCandidates(accounts, healthStats)
+	bestScore := bestAccountHealthScore(candidates)
+	if affinityActive {
+		if selected := selectAnthropicCacheAffinityHealthCandidate(candidates, affinityAccountID, bestScore, preferOAuth); selected != nil {
+			return selected
+		}
+	}
+	if allowExploration {
+		if selected := selectUnknownExplorationCandidate(candidates, healthStats, now, preferOAuth); selected != nil {
+			return selected
+		}
+		if selected := selectDegradedRecoveryCandidate(candidates, healthStats, now, bestScore, preferOAuth); selected != nil {
+			return selected
+		}
+	}
+	healthBand := filterAccountHealthBandCandidates(candidates, bestScore)
+	if cfg.PreferSoonestReset {
+		healthBand = filterBySoonestReset(healthBand, now)
+	}
+	return selectByLoadAndLRU(healthBand, preferOAuth)
 }
 
 func selectLayeredAccountWithLoad(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time) *accountWithLoad {
@@ -3173,11 +3370,7 @@ func selectLayeredAccountWithLoad(accounts []accountWithLoad, healthStats *accou
 	}
 	candidates := filterByMinPriority(accounts)
 	candidates = filterByNonPoolModeIfPresent(candidates)
-	candidates = filterByAccountHealthBand(candidates, healthStats)
-	if cfg.PreferSoonestReset {
-		candidates = filterBySoonestReset(candidates, now)
-	}
-	return selectByLRU(candidates, preferOAuth)
+	return selectHealthAwareAccountWithLoad(candidates, healthStats, cfg, preferOAuth, now, 0, false, true)
 }
 
 func accountPointersToNeutralLoads(accounts []*Account) []accountWithLoad {
@@ -3199,6 +3392,20 @@ func accountPointersToNeutralLoads(accounts []*Account) []accountWithLoad {
 
 func selectLayeredAccount(accounts []*Account, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time) *Account {
 	selected := selectLayeredAccountWithLoad(accountPointersToNeutralLoads(accounts), healthStats, cfg, preferOAuth, now)
+	if selected == nil {
+		return nil
+	}
+	return selected.account
+}
+
+func selectLayeredAccountForFallbackOrder(accounts []*Account, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time) *Account {
+	items := accountPointersToNeutralLoads(accounts)
+	if len(items) == 0 {
+		return nil
+	}
+	candidates := filterByMinPriority(items)
+	candidates = filterByNonPoolModeIfPresent(candidates)
+	selected := selectHealthAwareAccountWithLoad(candidates, healthStats, cfg, preferOAuth, now, 0, false, false)
 	if selected == nil {
 		return nil
 	}
@@ -3460,7 +3667,7 @@ func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, healthSt
 		ordered := make([]*Account, 0, len(accounts))
 		remaining := append([]*Account(nil), accounts...)
 		for len(remaining) > 0 {
-			selected := selectLayeredAccount(remaining, healthStats, cfg, preferOAuth, time.Now())
+			selected := selectLayeredAccountForFallbackOrder(remaining, healthStats, cfg, preferOAuth, time.Now())
 			if selected == nil {
 				break
 			}

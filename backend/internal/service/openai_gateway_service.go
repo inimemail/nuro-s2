@@ -2481,13 +2481,15 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		var available []accountWithLoad
 		for _, acc := range candidates {
 			loadInfo := loadMap[acc.ID]
+			loadInfoMissing := loadInfo == nil
 			if loadInfo == nil {
 				loadInfo = &AccountLoadInfo{AccountID: acc.ID}
 			}
 			if loadInfo.LoadRate < 100 {
 				available = append(available, accountWithLoad{
-					account:  acc,
-					loadInfo: loadInfo,
+					account:         acc,
+					loadInfo:        loadInfo,
+					loadInfoMissing: loadInfoMissing,
 				})
 			}
 		}
@@ -2497,11 +2499,17 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		}
 
 		preferSoonestReset := cfg.PreferSoonestReset
-		now := time.Time{}
-		if preferSoonestReset {
-			now = time.Now()
+		now := time.Now()
+		healthCandidates := s.openAIAccountWithLoadHealthCandidates(available, requestedModel)
+		healthScores := buildOpenAIAccountCandidateHealthScores(healthCandidates)
+		healthByID := make(map[int64]openAIAccountCandidateScore, len(healthCandidates))
+		for i := range healthCandidates {
+			if healthCandidates[i].account != nil {
+				healthCandidates[i].healthScore = healthScores[healthCandidates[i].account.ID]
+				healthCandidates[i].hasHealthScore = true
+				healthByID[healthCandidates[i].account.ID] = healthCandidates[i]
+			}
 		}
-		healthScores := s.openAIAccountWithLoadHealthScores(available, requestedModel)
 		for i := range available {
 			if available[i].account == nil {
 				continue
@@ -2525,6 +2533,15 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					return less
 				}
 			}
+			if a.loadInfoMissing != b.loadInfoMissing {
+				return !a.loadInfoMissing
+			}
+			if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+				return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+			}
+			if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+				return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+			}
 			switch {
 			case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
 				return true
@@ -2536,6 +2553,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 			}
 		})
+		if !IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) {
+			available = s.prioritizeOpenAIHealthProbeLoadedAccounts(available, healthByID, now)
+		}
 		shuffleOpenAIAccountLoadTiesWithReset(available, preferSoonestReset)
 		prioritizeOpenAIPromptCacheUpstreamLoadTies(available, sessionHash, preferSoonestReset)
 		available = s.orderOpenAIPoolCoolingLoadedAccountsLast(available, requestedModel)
@@ -2756,6 +2776,10 @@ func (s *OpenAIGatewayService) orderOpenAIWaitCandidates(candidates []*Account, 
 }
 
 func (s *OpenAIGatewayService) openAIAccountWithLoadHealthScores(accounts []accountWithLoad, requestedModel string) map[int64]float64 {
+	return buildOpenAIAccountCandidateHealthScores(s.openAIAccountWithLoadHealthCandidates(accounts, requestedModel))
+}
+
+func (s *OpenAIGatewayService) openAIAccountWithLoadHealthCandidates(accounts []accountWithLoad, requestedModel string) []openAIAccountCandidateScore {
 	if len(accounts) == 0 {
 		return nil
 	}
@@ -2765,21 +2789,66 @@ func (s *OpenAIGatewayService) openAIAccountWithLoadHealthScores(accounts []acco
 			continue
 		}
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
+		sampleCount, lastUpdated := int64(0), time.Time{}
 		if s != nil {
 			transport := s.getOpenAIWSProtocolResolver().Resolve(item.account).Transport
 			if stats := s.getOpenAIAccountRuntimeStats(); stats != nil {
-				errorRate, ttft, hasTTFT = stats.snapshotForRoute(item.account.ID, requestedModel, transport)
+				errorRate, ttft, hasTTFT, sampleCount, lastUpdated = stats.snapshotForRouteWithMeta(item.account.ID, requestedModel, transport)
 			}
 		}
 		candidates = append(candidates, openAIAccountCandidateScore{
-			account:   item.account,
-			loadInfo:  item.loadInfo,
-			errorRate: errorRate,
-			ttft:      ttft,
-			hasTTFT:   hasTTFT,
+			account:         item.account,
+			loadInfo:        item.loadInfo,
+			loadInfoMissing: item.loadInfoMissing,
+			errorRate:       errorRate,
+			ttft:            ttft,
+			hasTTFT:         hasTTFT,
+			sampleCount:     sampleCount,
+			lastUpdated:     lastUpdated,
 		})
 	}
-	return buildOpenAIAccountCandidateHealthScores(candidates)
+	return candidates
+}
+
+func (s *OpenAIGatewayService) prioritizeOpenAIHealthProbeLoadedAccounts(accounts []accountWithLoad, healthByID map[int64]openAIAccountCandidateScore, now time.Time) []accountWithLoad {
+	if len(accounts) <= 1 || s == nil {
+		return accounts
+	}
+	stats := s.getOpenAIAccountRuntimeStats()
+	if stats == nil {
+		return accounts
+	}
+	candidates := make([]openAIAccountCandidateScore, 0, len(accounts))
+	for _, item := range accounts {
+		if item.account == nil {
+			continue
+		}
+		candidate := healthByID[item.account.ID]
+		candidate.account = item.account
+		candidate.loadInfo = item.loadInfo
+		candidate.loadInfoMissing = item.loadInfoMissing
+		candidates = append(candidates, candidate)
+	}
+	prioritized := prioritizeOpenAIHealthProbeCandidate(candidates, stats, now)
+	if len(prioritized) == 0 || len(prioritized) != len(candidates) || prioritized[0].account == nil || candidates[0].account == nil || prioritized[0].account.ID == candidates[0].account.ID {
+		return accounts
+	}
+	selectedID := prioritized[0].account.ID
+	selectedIdx := -1
+	for i, item := range accounts {
+		if item.account != nil && item.account.ID == selectedID {
+			selectedIdx = i
+			break
+		}
+	}
+	if selectedIdx <= 0 {
+		return accounts
+	}
+	ordered := append([]accountWithLoad(nil), accounts...)
+	selected := ordered[selectedIdx]
+	copy(ordered[1:selectedIdx+1], ordered[0:selectedIdx])
+	ordered[0] = selected
+	return ordered
 }
 
 func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {

@@ -285,6 +285,44 @@ func TestAnthropicCacheBoostUpstreamAffinityIgnoresLoadLayerAndRespectsToggle(t 
 	require.Equal(t, int64(1), selected.account.ID, "accounts without the toggle must not receive affinity preference")
 }
 
+func TestAnthropicCacheBoostUpstreamAffinitySkipsUnknownExploration(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 120
+	reportHealthSamples(stats, 1, true, &fast, 3)
+	stats.selectionCounter.Store(accountHealthUnknownExploreEvery - 1)
+	now := time.Now()
+	affinityTarget := anthropicAffinityTestAccount(1, 1, nil, true)
+	unknown := anthropicAffinityTestAccount(2, 1, nil, true)
+
+	selected := selectLayeredAccountWithLoadAndAnthropicAffinity([]accountWithLoad{
+		{account: affinityTarget, loadInfo: &AccountLoadInfo{AccountID: 1, LoadRate: 40}},
+		{account: unknown, loadInfo: &AccountLoadInfo{AccountID: 2, LoadRate: 0}},
+	}, stats, config.GatewaySchedulingConfig{}, false, now, 1, true)
+
+	require.NotNil(t, selected)
+	require.Equal(t, int64(1), selected.account.ID)
+	require.Equal(t, accountHealthUnknownExploreEvery-1, stats.selectionCounter.Load())
+}
+
+func TestAnthropicCacheBoostUpstreamAffinityYieldsToClearlyHealthierAccount(t *testing.T) {
+	stats := newAccountRuntimeHealthStats()
+	fast := 120
+	slow := 2500
+	reportHealthSamples(stats, 1, false, &slow, 3)
+	reportHealthSamples(stats, 2, true, &fast, 3)
+	now := time.Now()
+	degradedAffinityTarget := anthropicAffinityTestAccount(1, 1, nil, true)
+	healthy := anthropicAffinityTestAccount(2, 1, nil, true)
+
+	selected := selectLayeredAccountWithLoadAndAnthropicAffinity([]accountWithLoad{
+		{account: degradedAffinityTarget, loadInfo: &AccountLoadInfo{AccountID: 1, LoadRate: 0}},
+		{account: healthy, loadInfo: &AccountLoadInfo{AccountID: 2, LoadRate: 50}},
+	}, stats, config.GatewaySchedulingConfig{}, false, now, 1, true)
+
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2), selected.account.ID)
+}
+
 func anthropicAffinityTestAccount(id int64, priority int, lastUsedAt *time.Time, upstreamPriority bool) *Account {
 	return &Account{
 		ID:          id,
