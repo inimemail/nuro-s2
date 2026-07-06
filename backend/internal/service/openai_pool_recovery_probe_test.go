@@ -19,10 +19,11 @@ import (
 )
 
 type openAIPoolProbeHTTPUpstreamRecorder struct {
-	path       string
-	body       string
-	statusCode int
-	err        error
+	path         string
+	body         string
+	responseBody string
+	statusCode   int
+	err          error
 }
 
 func (r *openAIPoolProbeHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
@@ -44,10 +45,14 @@ func (r *openAIPoolProbeHTTPUpstreamRecorder) DoWithTLS(req *http.Request, _ str
 	if statusCode == 0 {
 		statusCode = http.StatusOK
 	}
+	responseBody := r.responseBody
+	if responseBody == "" {
+		responseBody = "data: {\"type\":\"response.completed\"}\n\ndata: [DONE]\n\n"
+	}
 	return &http.Response{
 		StatusCode: statusCode,
 		Header:     http.Header{},
-		Body:       io.NopCloser(strings.NewReader(`{}`)),
+		Body:       io.NopCloser(strings.NewReader(responseBody)),
 	}, nil
 }
 
@@ -260,6 +265,8 @@ func TestOpenAIPoolRecoveryProbe_RegularPoolAlwaysUsesDefaultTestModel(t *testin
 	require.True(t, result.success)
 	require.Equal(t, "responses", result.endpoint)
 	require.Contains(t, upstream.body, `"model":"`+openaiPkg.DefaultTestModel+`"`)
+	require.Contains(t, upstream.body, `"stream":true`)
+	require.NotContains(t, upstream.body, "max_output_tokens")
 	require.NotContains(t, upstream.body, `"model":"user-typed-wrong-model"`)
 	require.NotContains(t, upstream.body, `"model":"bad-probe-model"`)
 	require.NotContains(t, upstream.body, `"model":"gpt-4o"`)
@@ -295,8 +302,152 @@ func TestOpenAIPoolRecoveryProbe_RegularPoolUsesConfiguredProbeModel(t *testing.
 	require.True(t, result.success)
 	require.Equal(t, "responses", result.endpoint)
 	require.Contains(t, upstream.body, `"model":"gpt-5-probe"`)
+	require.Contains(t, upstream.body, `"stream":true`)
+	require.NotContains(t, upstream.body, "max_output_tokens")
 	require.NotContains(t, upstream.body, `"model":"user-typed-wrong-model"`)
 	require.NotContains(t, upstream.body, `"model":"bad-probe-model"`)
+}
+
+func TestOpenAIPoolRecoveryProbe_ResponsesStreamCompletedClearsCooldown(t *testing.T) {
+	upstream := &openAIPoolProbeHTTPUpstreamRecorder{
+		responseBody: "data: {\"type\":\"response.completed\"}\n\ndata: [DONE]\n\n",
+	}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:       230,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+			"api_key":   "sk-test",
+			"base_url":  "https://upstream.example",
+		},
+	}
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, cooldownUntil)
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{ProbeKind: "openai"})
+
+	svc.runOpenAIPoolRecoveryProbe(context.Background(), account, "gpt-5.5", cooldownUntil)
+
+	_, cooling := svc.openAIPoolAccountSoftCooldownUntil(account)
+	require.False(t, cooling)
+	require.Equal(t, "/v1/responses", upstream.path)
+	require.Contains(t, upstream.body, `"stream":true`)
+}
+
+func TestOpenAIPoolRecoveryProbe_ResponsesStreamFailedKeepsCooldown(t *testing.T) {
+	upstream := &openAIPoolProbeHTTPUpstreamRecorder{
+		responseBody: "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"probe failed\"}}}\n\n",
+	}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:       231,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+			"api_key":   "sk-test",
+			"base_url":  "https://upstream.example",
+		},
+	}
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, cooldownUntil)
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{ProbeKind: "openai"})
+
+	svc.runOpenAIPoolRecoveryProbe(context.Background(), account, "gpt-5.5", cooldownUntil)
+
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.Equal(t, "probe_backoff", state.CooldownSource)
+	require.Equal(t, http.StatusOK, state.LastProbeStatus)
+	require.Contains(t, state.LastProbeReason, "probe failed")
+}
+
+func TestOpenAIPoolRecoveryProbe_ChatCompletionsStreamDoneClearsCooldown(t *testing.T) {
+	upstream := &openAIPoolProbeHTTPUpstreamRecorder{
+		responseBody: "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n",
+	}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:       232,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Extra: map[string]any{
+			"openai_responses_mode": "force_chat_completions",
+		},
+		Credentials: map[string]any{
+			"pool_mode": true,
+			"api_key":   "sk-test",
+			"base_url":  "https://upstream.example",
+		},
+	}
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, cooldownUntil)
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{ProbeKind: "openai"})
+
+	svc.runOpenAIPoolRecoveryProbe(context.Background(), account, "gpt-5.5", cooldownUntil)
+
+	_, cooling := svc.openAIPoolAccountSoftCooldownUntil(account)
+	require.False(t, cooling)
+	require.Equal(t, "/v1/chat/completions", upstream.path)
+	require.Contains(t, upstream.body, `"stream":true`)
+	require.NotContains(t, upstream.body, "max_tokens")
+}
+
+func TestOpenAIPoolRecoveryProbe_ChatCompletionsStreamErrorKeepsCooldown(t *testing.T) {
+	upstream := &openAIPoolProbeHTTPUpstreamRecorder{
+		responseBody: "data: {\"error\":{\"message\":\"chat probe failed\"}}\n\n",
+	}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:       233,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Extra: map[string]any{
+			"openai_responses_mode": "force_chat_completions",
+		},
+		Credentials: map[string]any{
+			"pool_mode": true,
+			"api_key":   "sk-test",
+			"base_url":  "https://upstream.example",
+		},
+	}
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, cooldownUntil)
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{ProbeKind: "openai"})
+
+	svc.runOpenAIPoolRecoveryProbe(context.Background(), account, "gpt-5.5", cooldownUntil)
+
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.Equal(t, "probe_backoff", state.CooldownSource)
+	require.Equal(t, http.StatusOK, state.LastProbeStatus)
+	require.Contains(t, state.LastProbeReason, "chat probe failed")
+}
+
+func TestOpenAIPoolRecoveryProbe_PayloadsUseManualTestStreamShape(t *testing.T) {
+	responsesPayload := string(openAIRecoveryResponsesPayload("gpt-5.5", true))
+	require.Contains(t, responsesPayload, `"model":"gpt-5.5"`)
+	require.Contains(t, responsesPayload, `"stream":true`)
+	require.Contains(t, responsesPayload, `"store":false`)
+	require.NotContains(t, responsesPayload, "max_output_tokens")
+
+	chatPayload := string(openAIRecoveryChatCompletionsPayload("gpt-5.5"))
+	require.Contains(t, chatPayload, `"model":"gpt-5.5"`)
+	require.Contains(t, chatPayload, `"stream":true`)
+	require.NotContains(t, chatPayload, "max_tokens")
 }
 
 func TestOpenAIPoolRecoveryProbe_ImagePoolUsesConfiguredDefaultProbeModel(t *testing.T) {

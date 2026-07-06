@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -22,7 +23,6 @@ const (
 	openAIPoolRecoveryProbeDefaultBackoff    = 5 * time.Second
 	openAIPoolRecoveryProbeAdminKickEvery    = 5 * time.Second
 	openAIPoolRecoveryProbeReadLimit         = 1 << 20
-	openAIPoolRecoveryProbeMaxOutputTokens   = 8
 )
 
 type openAIPoolRecoveryProbeResult struct {
@@ -391,7 +391,7 @@ func (s *OpenAIGatewayService) doOpenAIPoolRecoveryProbe(req *http.Request, acco
 		return openAIPoolRecoveryProbeResult{retryable: true, endpoint: endpoint, err: err}
 	}
 	defer resp.Body.Close()
-	_, readErr := io.ReadAll(io.LimitReader(resp.Body, openAIPoolRecoveryProbeReadLimit))
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, openAIPoolRecoveryProbeReadLimit))
 	if readErr != nil {
 		return openAIPoolRecoveryProbeResult{
 			retryable:      true,
@@ -400,6 +400,9 @@ func (s *OpenAIGatewayService) doOpenAIPoolRecoveryProbe(req *http.Request, acco
 			responseHeader: resp.Header,
 			err:            readErr,
 		}
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && openAIPoolRecoveryProbeEndpointIsStreaming(endpoint) {
+		return classifyOpenAIPoolRecoveryProbeStream(respBody, endpoint, resp.StatusCode, resp.Header)
 	}
 	return openAIPoolRecoveryProbeResult{
 		success:        resp.StatusCode >= 200 && resp.StatusCode < 300,
@@ -451,23 +454,7 @@ func openAIRecoveryResponsesPayload(model string, oauth bool) []byte {
 	if strings.TrimSpace(model) == "" {
 		model = openai.DefaultTestModel
 	}
-	body := map[string]any{
-		"model": model,
-		"input": []map[string]any{
-			{
-				"role": "user",
-				"content": []map[string]any{
-					{"type": "input_text", "text": "hi"},
-				},
-			},
-		},
-		"instructions":      openai.DefaultInstructions,
-		"stream":            false,
-		"max_output_tokens": openAIPoolRecoveryProbeMaxOutputTokens,
-	}
-	if oauth {
-		body["store"] = false
-	}
+	body := createOpenAITestPayload(model, oauth)
 	payload, _ := json.Marshal(body)
 	return payload
 }
@@ -476,13 +463,98 @@ func openAIRecoveryChatCompletionsPayload(model string) []byte {
 	if strings.TrimSpace(model) == "" {
 		model = openai.DefaultTestModel
 	}
-	payload, _ := json.Marshal(map[string]any{
-		"model":      model,
-		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
-		"stream":     false,
-		"max_tokens": openAIPoolRecoveryProbeMaxOutputTokens,
-	})
+	body := createOpenAIChatCompletionsTestPayload(model, "hi")
+	payload, _ := json.Marshal(body)
 	return payload
+}
+
+func openAIPoolRecoveryProbeEndpointIsStreaming(endpoint string) bool {
+	return endpoint == "responses" || endpoint == "chat_completions"
+}
+
+func classifyOpenAIPoolRecoveryProbeStream(body []byte, endpoint string, statusCode int, header http.Header) openAIPoolRecoveryProbeResult {
+	result := openAIPoolRecoveryProbeResult{
+		retryable:      true,
+		statusCode:     statusCode,
+		endpoint:       endpoint,
+		responseHeader: header,
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Buffer(make([]byte, 1024), openAIPoolRecoveryProbeReadLimit)
+	seenSSE := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || !sseDataPrefix.MatchString(line) {
+			continue
+		}
+		seenSSE = true
+		data := strings.TrimSpace(sseDataPrefix.ReplaceAllString(line, ""))
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			if endpoint == "chat_completions" {
+				result.success = true
+				return result
+			}
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+		eventType, _ := event["type"].(string)
+		switch eventType {
+		case "response.completed", "response.done":
+			if endpoint == "responses" {
+				result.success = true
+				return result
+			}
+		case "response.failed", "error":
+			result.err = fmt.Errorf("%s: %s", firstNonEmptyString(eventType, "stream_error"), openAIPoolRecoveryProbeStreamErrorMessage(event))
+			return result
+		}
+		if message := openAIPoolRecoveryProbeStreamTopLevelErrorMessage(event); message != "" {
+			result.err = fmt.Errorf("stream_error: %s", message)
+			return result
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		result.err = err
+		return result
+	}
+	if !seenSSE {
+		result.err = fmt.Errorf("stream returned no SSE data")
+		return result
+	}
+	result.err = fmt.Errorf("stream ended before completion")
+	return result
+}
+
+func openAIPoolRecoveryProbeStreamErrorMessage(event map[string]any) string {
+	if message := openAIPoolRecoveryProbeStreamTopLevelErrorMessage(event); message != "" {
+		return message
+	}
+	if response, ok := event["response"].(map[string]any); ok {
+		if errObj, ok := response["error"].(map[string]any); ok {
+			if message, _ := errObj["message"].(string); strings.TrimSpace(message) != "" {
+				return strings.TrimSpace(message)
+			}
+		}
+	}
+	return "unknown stream error"
+}
+
+func openAIPoolRecoveryProbeStreamTopLevelErrorMessage(event map[string]any) string {
+	if message, _ := event["message"].(string); strings.TrimSpace(message) != "" {
+		return strings.TrimSpace(message)
+	}
+	if errObj, ok := event["error"].(map[string]any); ok {
+		if message, _ := errObj["message"].(string); strings.TrimSpace(message) != "" {
+			return strings.TrimSpace(message)
+		}
+	}
+	return ""
 }
 
 func openAIRecoveryImagesPayload(model string, capability OpenAIImagesCapability) []byte {
