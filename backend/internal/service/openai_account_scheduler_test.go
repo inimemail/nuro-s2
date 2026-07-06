@@ -3024,7 +3024,7 @@ func TestBuildOpenAISelectionOrder_StrictPriorityBeatsLowerTTFT(t *testing.T) {
 	require.Equal(t, int64(5214), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_SamePriorityUsesLowerLoadBeforeLRU(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePriorityUsesLRUBeforeLoad(t *testing.T) {
 	now := time.Now()
 	oldest := now.Add(-30 * time.Minute)
 	newest := now.Add(-5 * time.Minute)
@@ -3044,11 +3044,11 @@ func TestBuildOpenAISelectionOrder_SamePriorityUsesLowerLoadBeforeLRU(t *testing
 	})
 
 	require.Len(t, order, 2)
-	require.Equal(t, int64(5222), order[0].account.ID)
-	require.Equal(t, int64(5221), order[1].account.ID)
+	require.Equal(t, int64(5221), order[0].account.ID)
+	require.Equal(t, int64(5222), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_SamePriorityUsesLowerWaitingBeforeLRU(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePriorityUsesLRUBeforeWaiting(t *testing.T) {
 	now := time.Now()
 	oldest := now.Add(-30 * time.Minute)
 	newest := now.Add(-5 * time.Minute)
@@ -3068,8 +3068,8 @@ func TestBuildOpenAISelectionOrder_SamePriorityUsesLowerWaitingBeforeLRU(t *test
 	})
 
 	require.Len(t, order, 2)
-	require.Equal(t, int64(5232), order[0].account.ID)
-	require.Equal(t, int64(5231), order[1].account.ID)
+	require.Equal(t, int64(5231), order[0].account.ID)
+	require.Equal(t, int64(5232), order[1].account.ID)
 }
 
 func TestBuildOpenAISelectionOrder_SamePriorityPrefersHealthyBeforeLoad(t *testing.T) {
@@ -3125,7 +3125,7 @@ func TestBuildOpenAISelectionOrder_SamePriorityPrefersHealthBeforeLRU(t *testing
 	require.Equal(t, int64(5241), order[1].account.ID)
 }
 
-func TestBuildOpenAISelectionOrder_SamePrioritySimilarHealthUsesLoad(t *testing.T) {
+func TestBuildOpenAISelectionOrder_SamePrioritySimilarHealthUsesLRU(t *testing.T) {
 	now := time.Now()
 	oldest := now.Add(-30 * time.Minute)
 	newest := now.Add(-5 * time.Minute)
@@ -3149,8 +3149,8 @@ func TestBuildOpenAISelectionOrder_SamePrioritySimilarHealthUsesLoad(t *testing.
 	})
 
 	require.Len(t, order, 2)
-	require.Equal(t, int64(5244), order[0].account.ID)
-	require.Equal(t, int64(5243), order[1].account.ID)
+	require.Equal(t, int64(5243), order[0].account.ID)
+	require.Equal(t, int64(5244), order[1].account.ID)
 }
 
 func TestBuildOpenAISelectionOrder_SamePriorityHealthBeatsHugeConcurrencyLowLoad(t *testing.T) {

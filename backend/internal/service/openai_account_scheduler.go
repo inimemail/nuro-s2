@@ -743,12 +743,6 @@ func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right open
 	if left.loadInfoMissing != right.loadInfoMissing {
 		return !left.loadInfoMissing
 	}
-	if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
-		return left.loadInfo.LoadRate < right.loadInfo.LoadRate
-	}
-	if left.loadInfo.WaitingCount != right.loadInfo.WaitingCount {
-		return left.loadInfo.WaitingCount < right.loadInfo.WaitingCount
-	}
 	return left.account.ID < right.account.ID
 }
 
@@ -1193,10 +1187,7 @@ func (s *defaultOpenAIAccountScheduler) sortOpenAIStrictPriorityCandidatesForSes
 		preferSoonestReset = weights.Reset > 0 || s.service.schedulingConfig().PreferSoonestReset
 	}
 	ordered := sortOpenAIStrictPriorityCandidatesWithResetAndSession(pool, preferSoonestReset, sessionHash)
-	if s == nil || s.stats == nil || IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) {
-		return ordered
-	}
-	return prioritizeOpenAIHealthProbeCandidate(ordered, s.stats, time.Now())
+	return ordered
 }
 
 func hasKnownOpenAIHealthSample(candidates []openAIAccountCandidateScore) bool {
@@ -1332,15 +1323,6 @@ func sortOpenAIStrictPriorityCandidatesWithResetAndSession(pool []openAIAccountC
 			if less, ok := accountSoonestResetLess(a.account, b.account, now); ok {
 				return less
 			}
-		}
-		if a.loadInfoMissing != b.loadInfoMissing {
-			return !a.loadInfoMissing
-		}
-		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-		}
-		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
-			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
 		}
 		if a.errorRate != b.errorRate {
 			return a.errorRate < b.errorRate

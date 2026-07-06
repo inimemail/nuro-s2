@@ -2502,14 +2502,6 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		now := time.Now()
 		healthCandidates := s.openAIAccountWithLoadHealthCandidates(available, requestedModel)
 		healthScores := buildOpenAIAccountCandidateHealthScores(healthCandidates)
-		healthByID := make(map[int64]openAIAccountCandidateScore, len(healthCandidates))
-		for i := range healthCandidates {
-			if healthCandidates[i].account != nil {
-				healthCandidates[i].healthScore = healthScores[healthCandidates[i].account.ID]
-				healthCandidates[i].hasHealthScore = true
-				healthByID[healthCandidates[i].account.ID] = healthCandidates[i]
-			}
-		}
 		for i := range available {
 			if available[i].account == nil {
 				continue
@@ -2533,15 +2525,6 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					return less
 				}
 			}
-			if a.loadInfoMissing != b.loadInfoMissing {
-				return !a.loadInfoMissing
-			}
-			if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-				return a.loadInfo.LoadRate < b.loadInfo.LoadRate
-			}
-			if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
-				return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
-			}
 			switch {
 			case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
 				return true
@@ -2553,9 +2536,6 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 			}
 		})
-		if !IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) {
-			available = s.prioritizeOpenAIHealthProbeLoadedAccounts(available, healthByID, now)
-		}
 		shuffleOpenAIAccountLoadTiesWithReset(available, preferSoonestReset)
 		prioritizeOpenAIPromptCacheUpstreamLoadTies(available, sessionHash, preferSoonestReset)
 		available = s.orderOpenAIPoolCoolingLoadedAccountsLast(available, requestedModel)

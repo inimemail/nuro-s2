@@ -3263,7 +3263,7 @@ func selectUnknownExplorationCandidate(candidates []accountHealthCandidate, stat
 		}
 		due = append(due, candidate.item)
 	}
-	selected := selectByLoadAndLRU(due, preferOAuth)
+	selected := selectByLRU(due, preferOAuth)
 	if selected != nil && selected.account != nil {
 		stats.markUnknownExploration(selected.account.ID, now)
 	}
@@ -3290,7 +3290,7 @@ func selectDegradedRecoveryCandidate(candidates []accountHealthCandidate, stats 
 		}
 		due = append(due, candidate.item)
 	}
-	selected := selectByLoadAndLRU(due, preferOAuth)
+	selected := selectByLRU(due, preferOAuth)
 	if selected != nil && selected.account != nil {
 		stats.markDegradedRecovery(selected.account.ID, now)
 	}
@@ -3335,7 +3335,7 @@ func selectAnthropicCacheAffinityHealthCandidate(candidates []accountHealthCandi
 		}
 		allowed = append(allowed, candidate.item)
 	}
-	return selectByLoadAndLRU(allowed, preferOAuth)
+	return selectByLRU(allowed, preferOAuth)
 }
 
 func selectHealthAwareAccountWithLoad(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time, affinityAccountID int64, affinityActive bool, allowExploration bool) *accountWithLoad {
@@ -3361,7 +3361,7 @@ func selectHealthAwareAccountWithLoad(accounts []accountWithLoad, healthStats *a
 	if cfg.PreferSoonestReset {
 		healthBand = filterBySoonestReset(healthBand, now)
 	}
-	return selectByLoadAndLRU(healthBand, preferOAuth)
+	return selectByLRU(healthBand, preferOAuth)
 }
 
 func selectLayeredAccountWithLoad(accounts []accountWithLoad, healthStats *accountRuntimeHealthStats, cfg config.GatewaySchedulingConfig, preferOAuth bool, now time.Time) *accountWithLoad {
@@ -3370,7 +3370,11 @@ func selectLayeredAccountWithLoad(accounts []accountWithLoad, healthStats *accou
 	}
 	candidates := filterByMinPriority(accounts)
 	candidates = filterByNonPoolModeIfPresent(candidates)
-	return selectHealthAwareAccountWithLoad(candidates, healthStats, cfg, preferOAuth, now, 0, false, true)
+	candidates = filterByAccountHealthBand(candidates, healthStats)
+	if cfg.PreferSoonestReset {
+		candidates = filterBySoonestReset(candidates, now)
+	}
+	return selectByLRU(candidates, preferOAuth)
 }
 
 func accountPointersToNeutralLoads(accounts []*Account) []accountWithLoad {
@@ -3405,7 +3409,11 @@ func selectLayeredAccountForFallbackOrder(accounts []*Account, healthStats *acco
 	}
 	candidates := filterByMinPriority(items)
 	candidates = filterByNonPoolModeIfPresent(candidates)
-	selected := selectHealthAwareAccountWithLoad(candidates, healthStats, cfg, preferOAuth, now, 0, false, false)
+	candidates = filterByAccountHealthBand(candidates, healthStats)
+	if cfg.PreferSoonestReset {
+		candidates = filterBySoonestReset(candidates, now)
+	}
+	selected := selectByLRU(candidates, preferOAuth)
 	if selected == nil {
 		return nil
 	}

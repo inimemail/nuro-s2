@@ -60,9 +60,6 @@ func sameOpenAIAccountLoadTie(a, b accountWithLoad, includeReset bool) bool {
 	}
 	return a.account.Priority == b.account.Priority &&
 		a.account.IsPoolMode() == b.account.IsPoolMode() &&
-		a.loadInfoMissing == b.loadInfoMissing &&
-		a.loadInfo.LoadRate == b.loadInfo.LoadRate &&
-		a.loadInfo.WaitingCount == b.loadInfo.WaitingCount &&
 		sameOpenAIAccountLastUsedTie(a.account, b.account)
 }
 
@@ -77,8 +74,7 @@ func sameOpenAIAccountCacheAffinityTie(a, b accountWithLoad, includeReset bool) 
 		return false
 	}
 	return a.account.Priority == b.account.Priority &&
-		a.account.IsPoolMode() == b.account.IsPoolMode() &&
-		sameOpenAIAccountLastUsedTie(a.account, b.account)
+		a.account.IsPoolMode() == b.account.IsPoolMode()
 }
 
 func shuffleOpenAIStrictPriorityTies(accounts []openAIAccountCandidateScore) {
@@ -133,9 +129,6 @@ func sameOpenAIStrictPriorityTie(a, b openAIAccountCandidateScore, includeReset 
 	}
 	return a.account.Priority == b.account.Priority &&
 		a.account.IsPoolMode() == b.account.IsPoolMode() &&
-		a.loadInfoMissing == b.loadInfoMissing &&
-		a.loadInfo.LoadRate == b.loadInfo.LoadRate &&
-		a.loadInfo.WaitingCount == b.loadInfo.WaitingCount &&
 		sameOpenAIAccountLastUsedTie(a.account, b.account)
 }
 
@@ -150,8 +143,7 @@ func sameOpenAIStrictPriorityCacheAffinityTie(a, b openAIAccountCandidateScore, 
 		return false
 	}
 	return a.account.Priority == b.account.Priority &&
-		a.account.IsPoolMode() == b.account.IsPoolMode() &&
-		sameOpenAIAccountLastUsedTie(a.account, b.account)
+		a.account.IsPoolMode() == b.account.IsPoolMode()
 }
 
 func sameOpenAIHealthScoreTie(aScore float64, aOK bool, bScore float64, bOK bool) bool {

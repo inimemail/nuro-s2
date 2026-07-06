@@ -11,8 +11,8 @@ const (
 	// accountHealthScoreBandThreshold 是"健康相近视为同带"的容差。带越窄，
 	// 速度/错误率差距越容易把更优账号排到前面；带越宽越偏向负载均衡。
 	// 健康分满分 1.0，TTFT 维度权重见 accountHealthTTFTWeight，因此约 2x 的
-	// 首 token 速度差即可跨带胜出，秒级账号之间约 20%~35% 的抖动仍判为同带走均衡。
-	accountHealthScoreBandThreshold           = 0.10
+	// 首 token 速度差即可跨带胜出，10%~30% 的抖动仍判为同带走均衡。
+	accountHealthScoreBandThreshold           = 0.12
 	accountHealthCacheAffinityMaxGap          = 0.10
 	accountHealthUnknownScore                 = 0.82
 	accountHealthUnknownTTFTScore             = 0.78
