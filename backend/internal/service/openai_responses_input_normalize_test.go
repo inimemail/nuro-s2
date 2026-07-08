@@ -88,3 +88,59 @@ func TestNormalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeOpenAIResponsesInputArgumentsBody(t *testing.T) {
+	t.Run("json_object_string_arguments", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"cmd\":\"ls\",\"limit\":2}"},{"type":"message","role":"user","content":"hi"}]}`)
+		normalized, changed, err := normalizeOpenAIResponsesInputArgumentsBody(body)
+		if err != nil {
+			t.Fatalf("normalize input arguments: %v", err)
+		}
+		if !changed {
+			t.Fatal("expected arguments to be normalized")
+		}
+		if !gjson.GetBytes(normalized, "input.0.arguments").IsObject() {
+			t.Fatalf("expected arguments object, got %s", string(normalized))
+		}
+		if got := gjson.GetBytes(normalized, "input.0.arguments.cmd").String(); got != "ls" {
+			t.Fatalf("unexpected cmd: %q body=%s", got, string(normalized))
+		}
+		if got := gjson.GetBytes(normalized, "input.0.arguments.limit").Int(); got != 2 {
+			t.Fatalf("unexpected limit: %d body=%s", got, string(normalized))
+		}
+	})
+
+	t.Run("blank_arguments_becomes_empty_object", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"   "}]}`)
+		normalized, changed, err := normalizeOpenAIResponsesInputArgumentsBody(body)
+		if err != nil {
+			t.Fatalf("normalize blank arguments: %v", err)
+		}
+		if !changed {
+			t.Fatal("expected blank arguments to be normalized")
+		}
+		if !gjson.GetBytes(normalized, "input.0.arguments").IsObject() {
+			t.Fatalf("expected empty arguments object, got %s", string(normalized))
+		}
+	})
+
+	t.Run("invalid_or_non_object_arguments_unchanged", func(t *testing.T) {
+		for _, body := range [][]byte{
+			[]byte(`{"model":"gpt-5","input":[{"type":"function_call","arguments":"not-json"}]}`),
+			[]byte(`{"model":"gpt-5","input":[{"type":"function_call","arguments":"[1,2]"}]}`),
+			[]byte(`{"model":"gpt-5","input":[{"type":"function_call","arguments":"null"}]}`),
+			[]byte(`{"model":"gpt-5","input":[{"type":"function_call","arguments":{"cmd":"ls"}}]}`),
+		} {
+			normalized, changed, err := normalizeOpenAIResponsesInputArgumentsBody(body)
+			if err != nil {
+				t.Fatalf("normalize unchanged arguments: %v", err)
+			}
+			if changed {
+				t.Fatalf("expected arguments to stay unchanged, got %s", string(normalized))
+			}
+			if string(normalized) != string(body) {
+				t.Fatalf("expected original body, got %s", string(normalized))
+			}
+		}
+	})
+}

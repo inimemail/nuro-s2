@@ -246,6 +246,12 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 			return nil, err
 		}
 	}
+	if account.IsOpenAIResponsesArgumentsObjectCompatEnabled() {
+		upstreamBody, _, err = normalizeOpenAIResponsesInputArgumentsBody(upstreamBody)
+		if err != nil {
+			return nil, err
+		}
+	}
 	policyModel := strings.TrimSpace(gjson.GetBytes(upstreamBody, "model").String())
 	if policyModel == "" {
 		policyModel = originalModel

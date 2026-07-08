@@ -1861,6 +1861,16 @@ func (a *Account) IsOpenAIResponsesPassthroughCompatEnabled() bool {
 	return a.getExtraBool("openai_responses_passthrough_compat")
 }
 
+// IsOpenAIResponsesArgumentsObjectCompatEnabled returns whether an OpenAI APIKey
+// account should convert Responses input[].arguments JSON strings to objects
+// for non-standard upstreams.
+func (a *Account) IsOpenAIResponsesArgumentsObjectCompatEnabled() bool {
+	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
+		return false
+	}
+	return a.getExtraBool("openai_responses_arguments_object_compat")
+}
+
 // IsOpenAIResponsesWebSocketV2Enabled 返回 OpenAI 账号是否开启 Responses WebSocket v2。
 //
 // 分类型新字段：

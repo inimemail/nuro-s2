@@ -4546,6 +4546,15 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			body = normalizedParamsBody
 		}
 	}
+	if account != nil && account.IsOpenAIResponsesArgumentsObjectCompatEnabled() && isOpenAIResponsesRequestPath(c) {
+		normalizedArgsBody, normalizedArgs, err := normalizeOpenAIResponsesInputArgumentsBody(body)
+		if err != nil {
+			return nil, err
+		}
+		if normalizedArgs {
+			body = normalizedArgsBody
+		}
+	}
 
 	sanitizedBody, sanitized, err := sanitizeEmptyBase64InputImagesInOpenAIBody(body)
 	if err != nil {

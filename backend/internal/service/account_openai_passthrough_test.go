@@ -104,6 +104,38 @@ func TestAccount_IsOpenAIResponsesPassthroughCompatEnabled(t *testing.T) {
 	})
 }
 
+func TestAccount_IsOpenAIResponsesArgumentsObjectCompatEnabled(t *testing.T) {
+	t.Run("OpenAI APIKey explicit enabled", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				"openai_responses_arguments_object_compat": true,
+			},
+		}
+		require.True(t, account.IsOpenAIResponsesArgumentsObjectCompatEnabled())
+	})
+
+	t.Run("default disabled", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+		}
+		require.False(t, account.IsOpenAIResponsesArgumentsObjectCompatEnabled())
+	})
+
+	t.Run("OAuth ignored", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_responses_arguments_object_compat": true,
+			},
+		}
+		require.False(t, account.IsOpenAIResponsesArgumentsObjectCompatEnabled())
+	})
+}
+
 func TestAccount_GetOpenAIFirstTokenTimeoutPlaceholderMs(t *testing.T) {
 	t.Run("disabled returns zero", func(t *testing.T) {
 		account := &Account{

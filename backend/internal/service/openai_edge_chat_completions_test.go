@@ -102,6 +102,87 @@ func TestBuildRawResponsesEdgePlanNormalizesStringInput(t *testing.T) {
 	}
 }
 
+func TestBuildRawResponsesEdgePlanNormalizesInputArguments(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+
+	account := &Account{
+		ID:          460,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-api-key", "base_url": "https://api.openai.com"},
+		Extra: map[string]any{
+			"openai_passthrough":                       true,
+			"openai_responses_arguments_object_compat": true,
+			openai_compat.ExtraKeyResponsesSupported:   true,
+		},
+	}
+	body := []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"cmd\":\"ls\"}"},{"type":"message","role":"user","content":"hi"}]}`)
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+			},
+		},
+	}
+
+	plan, err := svc.BuildRawResponsesEdgePlan(context.Background(), c, account, body)
+	if err != nil {
+		t.Fatalf("build raw responses edge plan: %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
+	if err != nil {
+		t.Fatalf("decode body_raw_base64: %v", err)
+	}
+	if !gjson.GetBytes(decoded, "input.0.arguments").IsObject() {
+		t.Fatalf("expected arguments object in edge body, got %s", string(decoded))
+	}
+	if got := gjson.GetBytes(decoded, "input.0.arguments.cmd").String(); got != "ls" {
+		t.Fatalf("unexpected normalized arguments cmd: %q body=%s", got, string(decoded))
+	}
+}
+
+func TestBuildRawResponsesEdgePlanKeepsInputArgumentsStringWhenObjectCompatDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+
+	account := &Account{
+		ID:          461,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-api-key", "base_url": "https://api.openai.com"},
+		Extra: map[string]any{
+			"openai_passthrough":                     true,
+			"openai_responses_passthrough_compat":    true,
+			openai_compat.ExtraKeyResponsesSupported: true,
+		},
+	}
+	body := []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"cmd\":\"ls\"}"}]}`)
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+			},
+		},
+	}
+
+	plan, err := svc.BuildRawResponsesEdgePlan(context.Background(), c, account, body)
+	if err != nil {
+		t.Fatalf("build raw responses edge plan: %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
+	if err != nil {
+		t.Fatalf("decode body_raw_base64: %v", err)
+	}
+	if got := gjson.GetBytes(decoded, "input.0.arguments").String(); got != `{"cmd":"ls"}` {
+		t.Fatalf("expected arguments to remain string, got %q body=%s", got, string(decoded))
+	}
+}
+
 func TestBuildRawResponsesEdgePlanKeepsResponsesBodyUntouchedWhenCompatDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

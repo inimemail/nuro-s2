@@ -159,6 +159,7 @@ var allowedBulkExtraRemoveKeys = map[string]struct{}{
 	"codex_image_generation_bridge_enabled":                              {},
 	"codex_image_generation_explicit_tool_policy":                        {},
 	"openai_responses_passthrough_compat":                                {},
+	"openai_responses_arguments_object_compat":                           {},
 	"openai_apikey_first_token_timeout_placeholder_ms":                   {},
 	"openai_apikey_first_token_timeout_placeholder_guard_enabled":        {},
 	"openai_apikey_first_token_timeout_placeholder_guard_max_ms":         {},
