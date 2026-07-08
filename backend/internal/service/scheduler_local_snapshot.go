@@ -220,6 +220,12 @@ func cloneSchedulerAccount(account Account) Account {
 	cloned.modelMappingCacheRawPtr = 0
 	cloned.modelMappingCacheRawLen = 0
 	cloned.modelMappingCacheRawSig = 0
+	cloned.headerOverrideCache = nil
+	cloned.headerOverrideCacheReady = false
+	cloned.headerOverrideCacheCredentialsPtr = 0
+	cloned.headerOverrideCacheRawPtr = 0
+	cloned.headerOverrideCacheRawLen = 0
+	cloned.headerOverrideCacheRawSig = 0
 	return cloned
 }
 

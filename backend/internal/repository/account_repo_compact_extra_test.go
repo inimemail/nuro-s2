@@ -23,3 +23,15 @@ func TestShouldEnqueueSchedulerOutboxForExtraUpdates_OpenAIResponsesCapabilityKe
 		t.Fatalf("expected responses capability updates to enqueue scheduler outbox")
 	}
 }
+
+func TestShouldEnqueueSchedulerOutboxForExtraUpdates_AntigravityForceRefreshKeysAreNeutral(t *testing.T) {
+	updates := map[string]any{
+		"antigravity_force_token_refresh":        true,
+		"antigravity_force_token_refresh_at":     "2026-07-08T00:00:00Z",
+		"antigravity_force_token_refresh_reason": "401_invalid",
+	}
+
+	if shouldEnqueueSchedulerOutboxForExtraUpdates(updates) {
+		t.Fatalf("expected antigravity force refresh markers to skip scheduler outbox")
+	}
+}

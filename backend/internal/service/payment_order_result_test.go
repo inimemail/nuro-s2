@@ -138,6 +138,21 @@ func TestCalculateCreateOrderPayAmountRejectsFractionalZeroDecimal(t *testing.T)
 	}
 }
 
+func TestSanitizeCreatePaymentResponseDetailsRemovesNUL(t *testing.T) {
+	t.Parallel()
+
+	resp := &payment.CreatePaymentResponse{
+		TradeNo: "trade\x00no",
+		PayURL:  "https://pay.example/\x00order",
+		QRCode:  "qr\x00code",
+	}
+	sanitizeCreatePaymentResponseDetails(resp)
+
+	if resp.TradeNo != "tradeno" || resp.PayURL != "https://pay.example/order" || resp.QRCode != "qrcode" {
+		t.Fatalf("unexpected sanitized response: %#v", resp)
+	}
+}
+
 func TestBuildPaymentSubjectAppliesAffixToSubscriptionPlanProductName(t *testing.T) {
 	t.Parallel()
 

@@ -246,6 +246,20 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 				shouldDisable = true
 				break
 			}
+			if account.Platform == PlatformAntigravity {
+				extraUpdates := antigravityForceTokenRefreshExtra("401_invalid")
+				if err := s.accountRepo.UpdateExtra(ctx, account.ID, extraUpdates); err != nil {
+					slog.Warn("antigravity_401_force_refresh_mark_failed", "account_id", account.ID, "error", err)
+				} else {
+					if account.Extra == nil {
+						account.Extra = make(map[string]any, len(extraUpdates))
+					}
+					for k, v := range extraUpdates {
+						account.Extra[k] = v
+					}
+					slog.Info("antigravity_401_force_refresh_marked", "account_id", account.ID)
+				}
+			}
 			// 2. 临时不可调度，替代 SetError（保持 status=active 让刷新服务能拾取）
 			// 注意：此处不再写回 account.Credentials/expires_at。
 			// 原实现使用请求开始时的 account 快照整列覆盖 credentials JSONB（见

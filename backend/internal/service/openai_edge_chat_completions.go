@@ -110,6 +110,7 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
 		headers["user-agent"] = customUA
 	}
+	applyOpenAIEdgeHeaderOverrides(account, headers)
 
 	proxyURL := ""
 	if account.Proxy != nil {
@@ -310,6 +311,7 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		scrubOpenAIEdgeStrongIsolationHeaders(headers)
 	}
+	applyOpenAIEdgeHeaderOverrides(account, headers)
 
 	proxyURL := ""
 	if account.Proxy != nil {
@@ -635,6 +637,28 @@ func scrubOpenAIEdgeStrongIsolationHeaders(headers map[string]string) {
 				delete(headers, key)
 				break
 			}
+		}
+	}
+}
+
+func applyOpenAIEdgeHeaderOverrides(account *Account, headers map[string]string) {
+	if account == nil || len(headers) == 0 {
+		return
+	}
+	if len(account.GetHeaderOverrides()) == 0 {
+		return
+	}
+	httpHeaders := http.Header{}
+	for key, value := range headers {
+		httpHeaders[key] = []string{value}
+	}
+	account.ApplyHeaderOverrides(httpHeaders)
+	for key := range headers {
+		delete(headers, key)
+	}
+	for key, values := range httpHeaders {
+		if len(values) > 0 {
+			headers[key] = values[0]
 		}
 	}
 }

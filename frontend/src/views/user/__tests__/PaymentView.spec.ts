@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, shallowMount } from '@vue/test-utils'
+import { flushPromises, mount, shallowMount } from '@vue/test-utils'
 import PaymentView from '../PaymentView.vue'
 import { PAYMENT_RECOVERY_STORAGE_KEY } from '@/components/payment/paymentFlow'
 
@@ -103,6 +103,7 @@ function checkoutInfoFixture() {
       plans: [],
       balance_disabled: false,
       balance_recharge_multiplier: 1,
+      subscription_usd_to_cny_rate: 0,
       recharge_fee_rate: 0,
       help_text: '',
       help_image_url: '',
@@ -414,5 +415,76 @@ describe('PaymentView WeChat JSAPI flow', () => {
     expect(showWarning).toHaveBeenCalledWith('payment.errors.mobilePaymentFallbackToQr')
     expect(showError).not.toHaveBeenCalled()
     expect(window.localStorage.getItem(PAYMENT_RECOVERY_STORAGE_KEY)).toContain('weixin://wxpay/bizpayurl?pr=fallback-native')
+  })
+})
+
+describe('PaymentView subscription CNY conversion', () => {
+  beforeEach(() => {
+    routeState.path = '/purchase'
+    routeState.query = { tab: 'subscription' }
+    routerReplace.mockReset().mockResolvedValue(undefined)
+    routerPush.mockReset().mockResolvedValue(undefined)
+    routerResolve.mockClear()
+    createOrder.mockReset().mockResolvedValue({
+      order_id: 789,
+      amount: 128,
+      pay_amount: 955.84,
+      fee_rate: 3,
+      expires_at: '2099-01-01T00:10:00.000Z',
+      payment_type: 'wxpay',
+      qr_code: 'weixin://wxpay/bizpayurl?pr=subscription',
+      out_trade_no: 'sub2_subscription_789',
+    })
+    refreshUser.mockReset()
+    fetchActiveSubscriptions.mockReset().mockResolvedValue(undefined)
+    showError.mockReset()
+    showInfo.mockReset()
+    showWarning.mockReset()
+    getCheckoutInfo.mockReset().mockResolvedValue({
+      data: {
+        ...checkoutInfoWithPlansFixture().data,
+        subscription_usd_to_cny_rate: 7.25,
+        recharge_fee_rate: 3,
+      },
+    })
+    window.localStorage.clear()
+  })
+
+  it('shows converted CNY total while submitting the original plan price', async () => {
+    const wrapper = mount(PaymentView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          AmountInput: true,
+          Icon: true,
+          PaymentMethodSelector: true,
+          PaymentStatusPanel: true,
+          SubscriptionPlanCard: true,
+          Teleport: true,
+          Transition: false,
+        },
+      },
+    })
+    await flushPromises()
+    await flushPromises()
+
+    ;(wrapper.vm as unknown as { activeTab: string; selectPlan: (plan: unknown) => void }).activeTab = 'subscription'
+    ;(wrapper.vm as unknown as { selectPlan: (plan: unknown) => void }).selectPlan(checkoutInfoWithPlansFixture().data.plans[0])
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('928.00')
+    expect(wrapper.text()).toContain('955.84')
+
+    const submitButton = wrapper.findAll('button').find(button => button.text().includes('payment.createOrder'))
+    expect(submitButton).toBeTruthy()
+    await submitButton!.trigger('click')
+    await flushPromises()
+
+    expect(createOrder).toHaveBeenCalledWith(expect.objectContaining({
+      amount: 128,
+      order_type: 'subscription',
+      plan_id: 7,
+      payment_type: 'wxpay',
+    }))
   })
 })

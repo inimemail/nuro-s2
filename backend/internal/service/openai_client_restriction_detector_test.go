@@ -301,6 +301,9 @@ func TestOpenAICodexClientRestrictionDetector_DetectWithPolicy(t *testing.T) {
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
 		require.Equal(t, CodexClientRestrictionReasonVersionTooLow, result.Reason)
+		require.Equal(t, "0.119.0", result.DetectedVersion)
+		require.Equal(t, "0.120.0", result.MinCodexVersion)
+		require.Contains(t, CodexClientRestrictionMessage(result), "minimum required version (0.120.0)")
 	})
 
 	t.Run("版本策略阻断过高官方客户端", func(t *testing.T) {
@@ -314,6 +317,9 @@ func TestOpenAICodexClientRestrictionDetector_DetectWithPolicy(t *testing.T) {
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
 		require.Equal(t, CodexClientRestrictionReasonVersionTooHigh, result.Reason)
+		require.Equal(t, "0.131.0", result.DetectedVersion)
+		require.Equal(t, "0.130.0", result.MaxCodexVersion)
+		require.Contains(t, CodexClientRestrictionMessage(result), "maximum allowed version (0.130.0)")
 	})
 
 	t.Run("版本策略阻断无法解析版本的官方客户端", func(t *testing.T) {
@@ -327,6 +333,7 @@ func TestOpenAICodexClientRestrictionDetector_DetectWithPolicy(t *testing.T) {
 		require.True(t, result.Enabled)
 		require.False(t, result.Matched)
 		require.Equal(t, CodexClientRestrictionReasonVersionUndetectable, result.Reason)
+		require.Equal(t, CodexOfficialClientsOnlyMessage, CodexClientRestrictionMessage(result))
 	})
 
 	t.Run("黑名单优先阻断官方客户端", func(t *testing.T) {

@@ -29,6 +29,15 @@ func TestBuildV1ModelsURL(t *testing.T) {
 	require.Equal(t, "https://gateway.example.com/antigravity/v1/models", buildV1ModelsURL("https://gateway.example.com/antigravity/"))
 }
 
+func TestBuildOpenAIModelsURL(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "https://api.openai.com/v1/models", buildOpenAIModelsURL("https://api.openai.com"))
+	require.Equal(t, "https://api.openai.com/v1/models", buildOpenAIModelsURL("https://api.openai.com/v1"))
+	require.Equal(t, "https://api.openai.com/v1/models", buildOpenAIModelsURL("https://api.openai.com/v1/models"))
+	require.Equal(t, "https://gateway.example.com/openai/v1beta/models", buildOpenAIModelsURL("https://gateway.example.com/openai/v1beta"))
+}
+
 func TestBuildGeminiModelsURL(t *testing.T) {
 	t.Parallel()
 

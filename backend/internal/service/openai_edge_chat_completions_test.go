@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -11,6 +12,15 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
+
+func edgePlanHeaderValue(headers map[string]string, name string) string {
+	for key, value := range headers {
+		if strings.EqualFold(key, name) {
+			return value
+		}
+	}
+	return ""
+}
 
 func TestOpenAIEdgeRawRelayEligibleForInboundEndpoint(t *testing.T) {
 	rawChatAccount := &Account{
@@ -131,6 +141,88 @@ func TestBuildRawResponsesEdgePlanKeepsResponsesBodyUntouchedWhenCompatDisabled(
 	if got := gjson.GetBytes(decoded, "max_output_tokens").Int(); got != 128 {
 		t.Fatalf("expected max_output_tokens to stay untouched when compat disabled, got %d body=%s", got, string(decoded))
 	}
+}
+
+func TestOpenAIEdgeAPIKeyPlansApplyHeaderOverrides(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+			},
+		},
+	}
+	credentials := map[string]any{
+		"api_key":                    "sk-api-key",
+		"base_url":                   "https://api.openai.com",
+		credKeyHeaderOverrideEnabled: true,
+		credKeyHeaderOverrides:       map[string]any{"user-agent": "edge-override/1.0", "openai-beta": "edge-beta", "authorization": "Bearer evil"},
+	}
+
+	t.Run("raw chat", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+		c.Request.Header.Set("User-Agent", "client-agent")
+
+		account := &Account{
+			ID:          458,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: credentials,
+			Extra: map[string]any{
+				openai_compat.ExtraKeyResponsesSupported: false,
+			},
+		}
+		body := []byte(`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+		plan, err := svc.BuildRawChatCompletionsEdgePlan(context.Background(), c, account, body, "")
+		if err != nil {
+			t.Fatalf("build raw chat edge plan: %v", err)
+		}
+		if got := edgePlanHeaderValue(plan.Plan.Headers, "user-agent"); got != "edge-override/1.0" {
+			t.Fatalf("expected user-agent override, got %q", got)
+		}
+		if got := edgePlanHeaderValue(plan.Plan.Headers, "openai-beta"); got != "edge-beta" {
+			t.Fatalf("expected openai-beta override, got %q", got)
+		}
+		if got := edgePlanHeaderValue(plan.Plan.Headers, "authorization"); got != "Bearer sk-api-key" {
+			t.Fatalf("authorization must stay account API key, got %q", got)
+		}
+	})
+
+	t.Run("raw responses", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+		c.Request.Header.Set("User-Agent", "client-agent")
+
+		account := &Account{
+			ID:          459,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: credentials,
+			Extra: map[string]any{
+				"openai_passthrough":                     true,
+				openai_compat.ExtraKeyResponsesSupported: true,
+			},
+		}
+		body := []byte(`{"model":"gpt-5","stream":true,"input":"hi"}`)
+
+		plan, err := svc.BuildRawResponsesEdgePlan(context.Background(), c, account, body)
+		if err != nil {
+			t.Fatalf("build raw responses edge plan: %v", err)
+		}
+		if got := edgePlanHeaderValue(plan.Plan.Headers, "user-agent"); got != "edge-override/1.0" {
+			t.Fatalf("expected user-agent override, got %q", got)
+		}
+		if got := edgePlanHeaderValue(plan.Plan.Headers, "openai-beta"); got != "edge-beta" {
+			t.Fatalf("expected openai-beta override, got %q", got)
+		}
+		if got := edgePlanHeaderValue(plan.Plan.Headers, "authorization"); got != "Bearer sk-api-key" {
+			t.Fatalf("authorization must stay account API key, got %q", got)
+		}
+	})
 }
 
 func TestOpenAIEdgeStrongIsolationBodyHelpers(t *testing.T) {

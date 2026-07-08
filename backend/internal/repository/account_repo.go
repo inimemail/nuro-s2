@@ -60,8 +60,11 @@ var schedulerNeutralExtraKeyPrefixes = []string{
 }
 
 var schedulerNeutralExtraKeys = map[string]struct{}{
-	"codex_usage_updated_at":     {},
-	"session_window_utilization": {},
+	"antigravity_force_token_refresh":        {},
+	"antigravity_force_token_refresh_at":     {},
+	"antigravity_force_token_refresh_reason": {},
+	"codex_usage_updated_at":                 {},
+	"session_window_utilization":             {},
 }
 
 // NewAccountRepository 创建账户仓储实例。

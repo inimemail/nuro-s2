@@ -81,6 +81,8 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
 		upstreamReq.Header.Set("user-agent", customUA)
 	}
+	// 账号级请求头覆写（仅 openai api_key 账号启用时生效）
+	account.ApplyHeaderOverrides(upstreamReq.Header)
 
 	proxyURL := ""
 	if account.Proxy != nil {

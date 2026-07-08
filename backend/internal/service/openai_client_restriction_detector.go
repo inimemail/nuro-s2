@@ -1,12 +1,15 @@
 package service
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/gin-gonic/gin"
 )
+
+const CodexOfficialClientsOnlyMessage = "This account only allows Codex official clients"
 
 const (
 	// CodexClientRestrictionReasonDisabled 表示账号未开启 codex_cli_only。
@@ -42,9 +45,12 @@ type CodexCLIOnlyPolicy struct {
 
 // CodexClientRestrictionDetectionResult 是 codex_cli_only 统一检测入口结果。
 type CodexClientRestrictionDetectionResult struct {
-	Enabled bool
-	Matched bool
-	Reason  string
+	Enabled         bool
+	Matched         bool
+	Reason          string
+	DetectedVersion string
+	MinCodexVersion string
+	MaxCodexVersion string
 }
 
 // CodexClientRestrictionDetector 定义 codex_cli_only 统一检测入口。
@@ -171,19 +177,38 @@ func applyCodexVersionPolicy(userAgent string, policy CodexCLIOnlyPolicy, result
 	}
 	if policy.MinCodexVersion != "" && CompareVersions(version, policy.MinCodexVersion) < 0 {
 		return CodexClientRestrictionDetectionResult{
-			Enabled: true,
-			Matched: false,
-			Reason:  CodexClientRestrictionReasonVersionTooLow,
+			Enabled:         true,
+			Matched:         false,
+			Reason:          CodexClientRestrictionReasonVersionTooLow,
+			DetectedVersion: version,
+			MinCodexVersion: policy.MinCodexVersion,
 		}
 	}
 	if policy.MaxCodexVersion != "" && CompareVersions(version, policy.MaxCodexVersion) > 0 {
 		return CodexClientRestrictionDetectionResult{
-			Enabled: true,
-			Matched: false,
-			Reason:  CodexClientRestrictionReasonVersionTooHigh,
+			Enabled:         true,
+			Matched:         false,
+			Reason:          CodexClientRestrictionReasonVersionTooHigh,
+			DetectedVersion: version,
+			MaxCodexVersion: policy.MaxCodexVersion,
 		}
 	}
 	return CodexClientRestrictionDetectionResult{}
+}
+
+func CodexClientRestrictionMessage(r CodexClientRestrictionDetectionResult) string {
+	switch r.Reason {
+	case CodexClientRestrictionReasonVersionTooLow:
+		return fmt.Sprintf(
+			"Your Codex version (%s) is below the minimum required version (%s). Please update Codex.",
+			r.DetectedVersion, r.MinCodexVersion)
+	case CodexClientRestrictionReasonVersionTooHigh:
+		return fmt.Sprintf(
+			"Your Codex version (%s) exceeds the maximum allowed version (%s). Please downgrade Codex to %s or lower.",
+			r.DetectedVersion, r.MaxCodexVersion, r.MaxCodexVersion)
+	default:
+		return CodexOfficialClientsOnlyMessage
+	}
 }
 
 func applyCodexEngineFingerprintPolicy(c *gin.Context, body []byte, policy CodexCLIOnlyPolicy, result CodexClientRestrictionDetectionResult, skip bool) CodexClientRestrictionDetectionResult {

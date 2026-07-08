@@ -30,6 +30,10 @@ func (s *userHandlerRepoStub) GetByID(context.Context, int64) (*service.User, er
 	cloned := *s.user
 	return &cloned, nil
 }
+func (s *userHandlerRepoStub) GetByIDIncludeDeleted(context.Context, int64) (*service.User, error) {
+	cloned := *s.user
+	return &cloned, nil
+}
 func (s *userHandlerRepoStub) GetByEmail(context.Context, string) (*service.User, error) {
 	cloned := *s.user
 	return &cloned, nil

@@ -13,11 +13,21 @@ func TestCalculateGatewayPaymentAmountAppliesRechargeMultiplier(t *testing.T) {
 }
 
 func TestCalculateCreateOrderPayAmountForOrderBalanceUsesGatewayAmount(t *testing.T) {
-	_, payAmount, err := calculateCreateOrderPayAmountForOrder(payment.OrderTypeBalance, 100, 0, 2, payment.DefaultPaymentCurrency)
+	_, payAmount, err := calculateCreateOrderPayAmountForOrder(payment.OrderTypeBalance, 100, 0, 2, 7.2, payment.DefaultPaymentCurrency)
 	require.NoError(t, err)
 	require.InDelta(t, 50.00, payAmount, 0.0001)
 
-	_, subscriptionPayAmount, err := calculateCreateOrderPayAmountForOrder(payment.OrderTypeSubscription, 100, 0, 2, payment.DefaultPaymentCurrency)
+	_, subscriptionPayAmount, err := calculateCreateOrderPayAmountForOrder(payment.OrderTypeSubscription, 100, 0, 2, 0, payment.DefaultPaymentCurrency)
 	require.NoError(t, err)
 	require.InDelta(t, 100.00, subscriptionPayAmount, 0.0001)
+}
+
+func TestCalculateCreateOrderPayAmountForOrderSubscriptionUsesCNYRate(t *testing.T) {
+	_, payAmount, err := calculateCreateOrderPayAmountForOrder(payment.OrderTypeSubscription, 10, 0, 2, 7.25, payment.DefaultPaymentCurrency)
+	require.NoError(t, err)
+	require.InDelta(t, 72.50, payAmount, 0.0001)
+
+	_, usdPayAmount, err := calculateCreateOrderPayAmountForOrder(payment.OrderTypeSubscription, 10, 0, 2, 7.25, "USD")
+	require.NoError(t, err)
+	require.InDelta(t, 10.00, usdPayAmount, 0.0001)
 }

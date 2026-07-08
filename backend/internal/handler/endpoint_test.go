@@ -26,6 +26,7 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
 		{"/v1/chat/completions", EndpointChatCompletions},
 		{"/v1/embeddings", EndpointEmbeddings},
 		{"/v1/responses", EndpointResponses},
+		{"/v1/responses/compact", EndpointResponsesCompact},
 		{"/v1/images/generations", EndpointImagesGenerations},
 		{"/v1/images/edits", EndpointImagesEdits},
 		{"/v1beta/models", EndpointGeminiModels},
@@ -33,7 +34,11 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
 		// Prefixed paths (antigravity, openai).
 		{"/antigravity/v1/messages", EndpointMessages},
 		{"/openai/v1/responses", EndpointResponses},
-		{"/openai/v1/responses/compact", EndpointResponses},
+		{"/openai/v1/responses/compact", EndpointResponsesCompact},
+		{"/responses/compact", EndpointResponsesCompact},
+		{"/backend-api/codex/responses/compact", EndpointResponsesCompact},
+		{"/responses", EndpointResponses},
+		{"/backend-api/codex/responses", EndpointResponses},
 		{"/openai/v1/images/generations", EndpointImagesGenerations},
 		{"/openai/v1/images/edits", EndpointImagesEdits},
 		{"/antigravity/v1beta/models/gemini:generateContent", EndpointGeminiModels},
@@ -74,8 +79,9 @@ func TestDeriveUpstreamEndpoint(t *testing.T) {
 
 		// OpenAI — always /v1/responses.
 		{"openai responses root", EndpointResponses, "/v1/responses", service.PlatformOpenAI, EndpointResponses},
-		{"openai responses compact", EndpointResponses, "/openai/v1/responses/compact", service.PlatformOpenAI, "/v1/responses/compact"},
-		{"openai responses nested", EndpointResponses, "/openai/v1/responses/compact/detail", service.PlatformOpenAI, "/v1/responses/compact/detail"},
+		{"openai responses compact", EndpointResponsesCompact, "/openai/v1/responses/compact", service.PlatformOpenAI, "/v1/responses/compact"},
+		{"openai responses compact fallback", EndpointResponsesCompact, "", service.PlatformOpenAI, EndpointResponsesCompact},
+		{"openai responses nested", EndpointResponsesCompact, "/openai/v1/responses/compact/detail", service.PlatformOpenAI, "/v1/responses/compact/detail"},
 		{"openai from messages", EndpointMessages, "/v1/messages", service.PlatformOpenAI, EndpointResponses},
 		{"openai from completions", EndpointChatCompletions, "/v1/chat/completions", service.PlatformOpenAI, EndpointResponses},
 		{"openai embeddings", EndpointEmbeddings, "/v1/embeddings", service.PlatformOpenAI, EndpointEmbeddings},
@@ -148,6 +154,16 @@ func TestGetInboundEndpoint_FallbackWithoutMiddleware(t *testing.T) {
 	// Middleware did not run — fallback to normalizing c.Request.URL.Path.
 	got := GetInboundEndpoint(c)
 	require.Equal(t, EndpointMessages, got)
+}
+
+func TestGetInboundEndpoint_FallbackPrefersConcreteURLPath(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+	c.Params = gin.Params{{Key: "subpath", Value: "/compact"}}
+
+	got := GetInboundEndpoint(c)
+	require.Equal(t, EndpointResponsesCompact, got)
 }
 
 func TestGetUpstreamEndpoint_FullFlow(t *testing.T) {

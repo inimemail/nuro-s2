@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { applyInterceptWarmup } from '../credentialsBuilder'
+import {
+  applyHeaderOverride,
+  applyInterceptWarmup,
+  buildHeaderOverridesObject,
+  getHeaderOverrideTemplate,
+  isHeaderOverridePlatform,
+  splitHeaderOverridesObject,
+  validateHeaderOverrideRows
+} from '../credentialsBuilder'
 
 describe('applyInterceptWarmup', () => {
   it('create + enabled=true: should set intercept_warmup_requests to true', () => {
@@ -42,5 +50,73 @@ describe('applyInterceptWarmup', () => {
     expect(creds.api_key).toBe('sk')
     expect(creds.base_url).toBe('url')
     expect('intercept_warmup_requests' in creds).toBe(false)
+  })
+})
+
+describe('header override credentials helpers', () => {
+  it('detects supported platforms only', () => {
+    expect(isHeaderOverridePlatform('anthropic')).toBe(true)
+    expect(isHeaderOverridePlatform('openai')).toBe(true)
+    expect(isHeaderOverridePlatform('gemini')).toBe(false)
+  })
+
+  it('builds normalized header override objects', () => {
+    expect(
+      buildHeaderOverridesObject([
+        { name: ' User-Agent ', value: ' codex-cli ' },
+        { name: '', value: 'ignored' },
+        { name: 'Anthropic-Beta', value: 'context-management-2025-06-27' }
+      ])
+    ).toEqual({
+      'user-agent': 'codex-cli',
+      'anthropic-beta': 'context-management-2025-06-27'
+    })
+  })
+
+  it('splits stored objects into sorted rows and ignores non-string values', () => {
+    expect(splitHeaderOverridesObject({
+      'x-app': 'cli',
+      'user-agent': 'codex',
+      invalid: 123
+    })).toEqual([
+      { name: 'user-agent', value: 'codex' },
+      { name: 'x-app', value: 'cli' }
+    ])
+  })
+
+  it('validates blocked, duplicate, invalid name and invalid value cases', () => {
+    expect(validateHeaderOverrideRows([{ name: 'authorization', value: 'Bearer x' }])).toBe('blockedName')
+    expect(validateHeaderOverrideRows([
+      { name: 'User-Agent', value: 'a' },
+      { name: 'user-agent', value: 'b' }
+    ])).toBe('duplicateName')
+    expect(validateHeaderOverrideRows([{ name: 'bad header', value: 'x' }])).toBe('invalidName')
+    expect(validateHeaderOverrideRows([{ name: 'x-app', value: 'bad\nvalue' }])).toBe('invalidValue')
+  })
+
+  it('applies header override create/edit semantics', () => {
+    const createCreds: Record<string, unknown> = {}
+    applyHeaderOverride(createCreds, true, [{ name: 'User-Agent', value: 'codex' }], 'create')
+    expect(createCreds).toEqual({
+      header_override_enabled: true,
+      header_overrides: { 'user-agent': 'codex' }
+    })
+
+    const disabledCreate: Record<string, unknown> = {}
+    applyHeaderOverride(disabledCreate, false, [], 'create')
+    expect(disabledCreate).toEqual({})
+
+    const editCreds: Record<string, unknown> = {
+      header_override_enabled: true,
+      header_overrides: { 'user-agent': 'old' },
+      api_key: 'sk'
+    }
+    applyHeaderOverride(editCreds, false, [], 'edit')
+    expect(editCreds).toEqual({ api_key: 'sk' })
+  })
+
+  it('provides platform-specific templates', () => {
+    expect(getHeaderOverrideTemplate('openai').map((row) => row.name)).toContain('openai-beta')
+    expect(getHeaderOverrideTemplate('anthropic').map((row) => row.name)).toContain('anthropic-beta')
   })
 })

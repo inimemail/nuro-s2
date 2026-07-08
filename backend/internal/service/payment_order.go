@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/payment/provider"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/shopspring/decimal"
 )
 
 // --- Order Creation ---
@@ -67,7 +68,7 @@ func (s *PaymentService) CreateOrder(ctx context.Context, req CreateOrderRequest
 			return nil, err
 		}
 	}
-	payAmountStr, payAmount, err := calculateCreateOrderPayAmountForOrder(req.OrderType, limitAmount, feeRate, cfg.BalanceRechargeMultiplier, methodCurrency)
+	payAmountStr, payAmount, err := calculateCreateOrderPayAmountForOrder(req.OrderType, limitAmount, feeRate, cfg.BalanceRechargeMultiplier, cfg.SubscriptionUSDToCNYRate, methodCurrency)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +84,7 @@ func (s *PaymentService) CreateOrder(ctx context.Context, req CreateOrderRequest
 		selectedCurrency = paymentProviderConfigCurrency(sel.ProviderKey, sel.Config)
 	}
 	if selectedCurrency != methodCurrency {
-		payAmountStr, payAmount, err = calculateCreateOrderPayAmountForOrder(req.OrderType, limitAmount, feeRate, cfg.BalanceRechargeMultiplier, selectedCurrency)
+		payAmountStr, payAmount, err = calculateCreateOrderPayAmountForOrder(req.OrderType, limitAmount, feeRate, cfg.BalanceRechargeMultiplier, cfg.SubscriptionUSDToCNYRate, selectedCurrency)
 		if err != nil {
 			return nil, err
 		}
@@ -452,6 +453,7 @@ func (s *PaymentService) invokeProvider(ctx context.Context, order *dbent.Paymen
 		}
 		return nil, classifyCreatePaymentError(req, sel.ProviderKey, err)
 	}
+	sanitizeCreatePaymentResponseDetails(pr)
 	_, err = s.entClient.PaymentOrder.UpdateOneID(order.ID).
 		SetNillablePaymentTradeNo(psNilIfEmpty(pr.TradeNo)).
 		SetNillablePayURL(psNilIfEmpty(pr.PayURL)).
@@ -477,6 +479,22 @@ func (s *PaymentService) invokeProvider(ctx context.Context, order *dbent.Paymen
 	resp := buildCreateOrderResponse(order, req, payAmount, sel, pr, resultType)
 	resp.ResumeToken = resumeToken
 	return resp, nil
+}
+
+func sanitizeCreatePaymentResponseDetails(pr *payment.CreatePaymentResponse) {
+	if pr == nil {
+		return
+	}
+	pr.TradeNo = removePostgresTextNUL(pr.TradeNo)
+	pr.PayURL = removePostgresTextNUL(pr.PayURL)
+	pr.QRCode = removePostgresTextNUL(pr.QRCode)
+}
+
+func removePostgresTextNUL(value string) string {
+	if !strings.ContainsRune(value, 0) {
+		return value
+	}
+	return strings.ReplaceAll(value, "\x00", "")
 }
 
 func buildProviderCreatePaymentRequest(req CreateOrderRequest, sel *payment.InstanceSelection, orderID, amount, subject string) payment.CreatePaymentRequest {
@@ -612,12 +630,25 @@ func calculateCreateOrderPayAmount(limitAmount, feeRate float64, currency string
 	return payAmountStr, payAmount, nil
 }
 
-func calculateCreateOrderPayAmountForOrder(orderType string, limitAmount, feeRate, balanceRechargeMultiplier float64, currency string) (string, float64, error) {
+func calculateCreateOrderPayAmountForOrder(orderType string, limitAmount, feeRate, balanceRechargeMultiplier, subscriptionUSDToCNYRate float64, currency string) (string, float64, error) {
 	paymentAmount := limitAmount
 	if orderType == payment.OrderTypeBalance {
 		paymentAmount = calculateGatewayPaymentAmount(limitAmount, balanceRechargeMultiplier, currency)
+	} else if orderType == payment.OrderTypeSubscription {
+		paymentAmount = calculateSubscriptionGatewayBaseAmount(limitAmount, subscriptionUSDToCNYRate, currency)
 	}
 	return calculateCreateOrderPayAmount(paymentAmount, feeRate, currency)
+}
+
+func calculateSubscriptionGatewayBaseAmount(amount, usdToCnyRate float64, currency string) float64 {
+	rate := normalizeSubscriptionUSDToCNYRate(usdToCnyRate)
+	if rate <= 0 || currency != payment.DefaultPaymentCurrency {
+		return amount
+	}
+	return decimal.NewFromFloat(amount).
+		Mul(decimal.NewFromFloat(rate)).
+		Round(int32(payment.CurrencyMaxFractionDigits(currency))).
+		InexactFloat64()
 }
 
 func validateCreateOrderAmountCurrency(amount float64, currency string) error {
