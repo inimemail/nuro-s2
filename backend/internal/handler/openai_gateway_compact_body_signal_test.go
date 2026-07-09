@@ -54,6 +54,10 @@ func TestNormalizeOpenAIResponsesCompactRequest_BodySignalPromoted(t *testing.T)
 	seed, exists := c.Get(service.OpenAICompactSessionSeedKeyForTest())
 	require.True(t, exists)
 	require.Equal(t, "pck-signal-1", seed)
+
+	clientStream, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
+	require.True(t, exists)
+	require.Equal(t, true, clientStream)
 }
 
 func TestNormalizeOpenAIResponsesCompactRequest_BodySignalTrailingSlash(t *testing.T) {
@@ -64,6 +68,34 @@ func TestNormalizeOpenAIResponsesCompactRequest_BodySignalTrailingSlash(t *testi
 	_, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
 	require.True(t, ok)
 	require.Equal(t, "/v1/responses/compact", c.Request.URL.Path)
+}
+
+func TestNormalizeOpenAIResponsesCompactRequest_BodySignalMarksOnlyStreamTrue(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	for name, body := range map[string][]byte{
+		"stream_false":  []byte(`{"model":"gpt-5.5","stream":false,"input":[{"type":"compaction_trigger"}]}`),
+		"stream_absent": []byte(`{"model":"gpt-5.5","input":[{"type":"compaction_trigger"}]}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newCompactBodySignalTestContext(t, "/v1/responses", body)
+			_, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
+			require.True(t, ok)
+			require.Equal(t, "/v1/responses/compact", c.Request.URL.Path)
+			_, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
+			require.False(t, exists)
+		})
+	}
+}
+
+func TestNormalizeOpenAIResponsesCompactRequest_PathBasedCompactDoesNotMarkClientStream(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	body := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction_trigger"}]}`)
+	c := newCompactBodySignalTestContext(t, "/v1/responses/compact", body)
+
+	_, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
+	require.True(t, ok)
+	_, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
+	require.False(t, exists)
 }
 
 func TestNormalizeOpenAIResponsesCompactRequest_NoTriggerUntouched(t *testing.T) {

@@ -898,6 +898,9 @@ export default {
     cost: 'Cost',
     firstToken: 'First Token',
     duration: 'Duration',
+    latency: 'Latency',
+    latencyFirstToken: 'First token',
+    latencyDuration: 'Total',
     time: 'Time',
     ws: 'WS',
     stream: 'Stream',
@@ -966,7 +969,8 @@ export default {
     imageOutputCost: 'Image output cost',
     tabs: {
       usage: 'Usage',
-      errors: 'Failed Requests'
+      errors: 'Failed Requests',
+      ranking: 'User Ranking'
     },
     errors: {
       time: 'Time',
@@ -1858,6 +1862,7 @@ export default {
       creating: 'Creating...',
       updating: 'Updating...',
       form: {
+        roleLabel: 'Role',
         rpmLimit: 'Requests Per Minute (RPM)',
         rpmLimitPlaceholder: '0 = unlimited',
         rpmLimitHint: 'Max requests per minute for this user; 0 = unlimited. Acts as a fallback only when the group has no rpm_limit set.'
@@ -4824,6 +4829,20 @@ export default {
       ipAddress: 'IP',
       clickToViewBalance: 'Click to view balance history',
       failedToLoadUser: 'Failed to load user info',
+      tokenRanking: {
+        subtitle: 'Rank users by tokens and cost within the current filters',
+        userCount: '{count} users',
+        rowHint: 'Click to view user balance history',
+        columns: {
+          user: 'User',
+          requests: 'Requests',
+          inputTokens: 'Input',
+          outputTokens: 'Output',
+          cacheTokens: 'Cache',
+          totalTokens: 'Total Tokens',
+          cost: 'Charged'
+        }
+      },
       cleanup: {
         button: 'Cleanup',
         title: 'Cleanup Usage Records',

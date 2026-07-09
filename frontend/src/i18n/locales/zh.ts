@@ -902,6 +902,9 @@ export default {
     cost: '费用',
     firstToken: '首 Token',
     duration: '耗时',
+    latency: '延迟',
+    latencyFirstToken: '首 Token',
+    latencyDuration: '总耗时',
     time: '时间',
     ws: 'WS',
     stream: '流式',
@@ -970,7 +973,8 @@ export default {
     imageOutputCost: '图片输出成本',
     tabs: {
       usage: '用量记录',
-      errors: '失败请求'
+      errors: '失败请求',
+      ranking: '用户排行'
     },
     errors: {
       time: '时间',
@@ -4970,6 +4974,20 @@ export default {
       ipAddress: 'IP',
       clickToViewBalance: '点击查看充值记录',
       failedToLoadUser: '加载用户信息失败',
+      tokenRanking: {
+        subtitle: '按当前筛选统计用户 Token 与费用排行',
+        userCount: '{count} 个用户',
+        rowHint: '点击查看用户充值记录',
+        columns: {
+          user: '用户',
+          requests: '请求数',
+          inputTokens: '输入',
+          outputTokens: '输出',
+          cacheTokens: '缓存',
+          totalTokens: '总 Token',
+          cost: '扣费'
+        }
+      },
       cleanup: {
         button: '清理',
         title: '清理使用记录',

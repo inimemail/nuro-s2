@@ -143,7 +143,7 @@ const (
 // CheckErrorPolicy 检查池模式、自定义错误码和临时不可调度规则。
 // 池模式错误只参与 failover/软冷却；非池模式下自定义错误码开启时覆盖后续逻辑。
 func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Account, statusCode int, responseBody []byte) ErrorPolicyResult {
-	if account.IsPoolMode() {
+	if account.IsPoolMode() && account.Platform == PlatformAnthropic {
 		return ErrorPolicySkipped
 	}
 	if account.IsCustomErrorCodesEnabled() {
@@ -151,6 +151,9 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 			return ErrorPolicyMatched
 		}
 		slog.Info("account_error_code_skipped", "account_id", account.ID, "status_code", statusCode)
+		return ErrorPolicySkipped
+	}
+	if account.IsPoolMode() {
 		return ErrorPolicySkipped
 	}
 	if s.tryTempUnschedulable(ctx, account, statusCode, responseBody) {
@@ -162,14 +165,15 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 // HandleUpstreamError 处理上游错误响应，标记账号状态
 // 返回是否应该停止该账号的调度
 func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) (shouldDisable bool) {
+	customErrorCodesEnabled := account.IsCustomErrorCodesEnabled()
+
 	// 池模式不标记本地账号状态。上游池的余额/权限/限流错误只参与
 	// failover 与池软冷却，不能把本地池账号 SetError/RateLimited/Overloaded。
-	if account.IsPoolMode() {
+	// 但如果 OpenAI 池账号显式开启了自定义错误码，则以自定义错误策略为准。
+	if account.IsPoolMode() && (!customErrorCodesEnabled || account.Platform == PlatformAnthropic) {
 		slog.Info("pool_mode_error_skipped", "account_id", account.ID, "status_code", statusCode)
 		return false
 	}
-
-	customErrorCodesEnabled := account.IsCustomErrorCodesEnabled()
 
 	// apikey 类型账号：检查自定义错误码配置
 	// 如果启用且错误码不在列表中，则不处理（不停止调度、不标记限流/过载）

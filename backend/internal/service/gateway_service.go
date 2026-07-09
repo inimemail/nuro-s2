@@ -9902,8 +9902,11 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 	if writer, ok := repo.(usageLogBestEffortWriter); ok {
 		if err := writer.CreateBestEffort(usageCtx, usageLog); err != nil {
 			logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
-			// 计费已在此前完成，日志必须落库：dropped（批处理队列超时/满载）同样走同步兜底，
-			// 否则会出现“已扣费但无 usage_log”的对账缺口。重复写入由 request_id 幂等防护。
+			// dropped 表示 best-effort 队列主动限流，不能同步兜底绕过队列保护。
+			if IsUsageLogCreateDropped(err) {
+				return
+			}
+			// 非 dropped 错误仍同步兜底，避免已扣费但无 usage_log 的对账缺口。
 			fallbackCtx := usageCtx
 			if usageCtx.Err() != nil {
 				var fallbackCancel context.CancelFunc

@@ -117,6 +117,14 @@
         >
           {{ t('usage.tabs.errors') }}
         </button>
+        <button
+          type="button"
+          class="btn btn-sm"
+          :class="activeTab === 'ranking' ? 'btn-primary' : 'btn-secondary'"
+          @click="activeTab = 'ranking'"
+        >
+          {{ t('usage.tabs.ranking') }}
+        </button>
       </div>
       <UsageTable
         v-if="activeTab === 'usage'"
@@ -131,7 +139,7 @@
         @ipGeoBatchFailed="handleIpGeoBatchFailed"
       />
       <UsageErrorsTable
-        v-else
+        v-else-if="activeTab === 'errors'"
         :data="errorLogs"
         :loading="errorsLoading"
         :total="errorsPagination.total"
@@ -139,6 +147,14 @@
         :page-size="errorsPagination.page_size"
         @update:page="handleErrorPageChange"
         @update:pageSize="handleErrorPageSizeChange"
+      />
+      <UserTokenRanking
+        v-else
+        :start-date="startDate"
+        :end-date="endDate"
+        :filters="breakdownFilters"
+        :model="filters.model"
+        @select-user="handleRankingSelectUser"
       />
       <Pagination v-if="activeTab === 'usage' && pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" />
     </div>
@@ -175,6 +191,7 @@ import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'; impo
 import UsageTable from '@/components/admin/usage/UsageTable.vue'; import UsageExportProgress from '@/components/admin/usage/UsageExportProgress.vue'
 import UsageCleanupDialog from '@/components/admin/usage/UsageCleanupDialog.vue'
 import UsageErrorsTable from '@/components/admin/usage/UsageErrorsTable.vue'
+import UserTokenRanking from '@/components/admin/usage/UserTokenRanking.vue'
 import UserBalanceHistoryModal from '@/components/admin/user/UserBalanceHistoryModal.vue'
 import ModelDistributionChart from '@/components/charts/ModelDistributionChart.vue'; import GroupDistributionChart from '@/components/charts/GroupDistributionChart.vue'; import TokenUsageTrend from '@/components/charts/TokenUsageTrend.vue'
 import EndpointDistributionChart from '@/components/charts/EndpointDistributionChart.vue'
@@ -188,7 +205,7 @@ type EndpointSource = 'inbound' | 'upstream' | 'path'
 type ModelDistributionSource = 'requested' | 'upstream' | 'mapping'
 const route = useRoute()
 const usageStats = ref<AdminUsageStatsResponse | null>(null); const usageLogs = ref<AdminUsageLog[]>([]); const loading = ref(false); const exporting = ref(false)
-const activeTab = ref<'usage' | 'errors'>('usage')
+const activeTab = ref<'usage' | 'errors' | 'ranking'>('usage')
 const errorLogs = ref<OpsErrorLog[]>([])
 const errorsLoading = ref(false)
 const errorsPagination = reactive({ page: 1, page_size: getPersistedPageSize(), total: 0 })
@@ -236,6 +253,10 @@ const handleUserClick = async (userId: number) => {
   } catch {
     appStore.showError(t('admin.usage.failedToLoadUser'))
   }
+}
+
+const handleRankingSelectUser = (userId: number) => {
+  void handleUserClick(userId)
 }
 
 const granularityOptions = computed(() => [{ value: 'day', label: t('admin.dashboard.day') }, { value: 'hour', label: t('admin.dashboard.hour') }])
@@ -624,8 +645,7 @@ const allColumns = computed(() => [
   { key: 'billing_mode', label: t('admin.usage.billingMode'), sortable: false },
   { key: 'tokens', label: t('usage.tokens'), sortable: false },
   { key: 'cost', label: t('usage.cost'), sortable: false },
-  { key: 'first_token', label: t('usage.firstToken'), sortable: false },
-  { key: 'duration', label: t('usage.duration'), sortable: false },
+  { key: 'latency', label: t('usage.latency'), sortable: false },
   { key: 'created_at', label: t('usage.time'), sortable: true },
   { key: 'user_agent', label: t('usage.userAgent'), sortable: false },
   { key: 'ip_address', label: t('admin.usage.ipAddress'), sortable: false }

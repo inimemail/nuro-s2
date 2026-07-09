@@ -166,6 +166,7 @@ export interface UserBreakdownParams {
   model_source?: 'requested' | 'upstream' | 'mapping'
   endpoint?: string
   endpoint_type?: 'inbound' | 'upstream' | 'path'
+  sort_by?: 'total_tokens' | 'input_tokens' | 'output_tokens' | 'cache_tokens' | 'requests' | 'cost' | 'actual_cost'
   limit?: number
   // Additional filter conditions
   user_id?: number

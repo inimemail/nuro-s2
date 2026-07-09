@@ -25,6 +25,9 @@ type userRepoStub struct {
 	deletedIDs    []int64
 	usersByEmail  map[string]*User
 	getByEmailErr error
+	listUsers     []User
+	listErr       error
+	listFilters   []UserListFilters
 }
 
 func (s *userRepoStub) Create(ctx context.Context, user *User) error {
@@ -108,7 +111,32 @@ func (s *userRepoStub) List(ctx context.Context, params pagination.PaginationPar
 }
 
 func (s *userRepoStub) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters UserListFilters) ([]User, *pagination.PaginationResult, error) {
-	panic("unexpected ListWithFilters call")
+	if s.listErr != nil {
+		return nil, nil, s.listErr
+	}
+	s.listFilters = append(s.listFilters, filters)
+	users := s.listUsers
+	if users == nil && s.user != nil {
+		users = []User{*s.user}
+	}
+	filtered := make([]User, 0, len(users))
+	for _, user := range users {
+		if filters.Role != "" && user.Role != filters.Role {
+			continue
+		}
+		filtered = append(filtered, user)
+	}
+	total := int64(len(filtered))
+	limit := params.Limit()
+	if limit > len(filtered) {
+		limit = len(filtered)
+	}
+	return filtered[:limit], &pagination.PaginationResult{
+		Total:    total,
+		Page:     params.Page,
+		PageSize: params.PageSize,
+		Pages:    1,
+	}, nil
 }
 
 func (s *userRepoStub) GetLatestUsedAtByUserIDs(ctx context.Context, userIDs []int64) (map[int64]*time.Time, error) {

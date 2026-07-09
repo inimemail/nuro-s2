@@ -777,14 +777,14 @@ func (s *APIKeyService) Delete(ctx context.Context, id int64, userID int64) erro
 		return ErrInsufficientPerms
 	}
 
-	if err := s.apiKeyRepo.DeleteWithAudit(ctx, id); err != nil {
-		return fmt.Errorf("delete api key: %w", err)
-	}
-
 	if s.cache != nil {
 		_ = s.cache.DeleteCreateAttemptCount(ctx, userID)
 	}
 	s.InvalidateAuthCacheByKey(ctx, key)
+
+	if err := s.apiKeyRepo.DeleteWithAudit(ctx, id); err != nil {
+		return fmt.Errorf("delete api key: %w", err)
+	}
 	s.lastUsedTouchL1.Delete(id)
 
 	return nil

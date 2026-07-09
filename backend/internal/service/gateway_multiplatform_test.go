@@ -2687,13 +2687,15 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.Equal(t, int64(2), cache.sessionBindings[sessionHash])
 	})
 
-	t.Run("模型路由-按负载选择账号", func(t *testing.T) {
+	t.Run("模型路由-按分层调度选择账号", func(t *testing.T) {
 		groupID := int64(21)
+		recentlyUsed := time.Now()
+		leastRecentlyUsed := recentlyUsed.Add(-time.Hour)
 
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
-				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, LastUsedAt: &recentlyUsed},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, LastUsedAt: &leastRecentlyUsed},
 			},
 			accountsByID: map[int64]*Account{},
 		}
@@ -2746,11 +2748,13 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 
 	t.Run("模型路由-路由账号全满返回等待计划", func(t *testing.T) {
 		groupID := int64(23)
+		leastRecentlyUsed := time.Now().Add(-time.Hour)
+		recentlyUsed := time.Now()
 
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
-				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
-				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
+				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, LastUsedAt: &leastRecentlyUsed},
+				{ID: 2, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5, LastUsedAt: &recentlyUsed},
 			},
 			accountsByID: map[int64]*Account{},
 		}
