@@ -91,7 +91,7 @@ func TestNormalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(t *testing.T) {
 
 func TestNormalizeOpenAIResponsesInputArgumentsBody(t *testing.T) {
 	t.Run("json_object_string_arguments", func(t *testing.T) {
-		body := []byte(`{"model":"gpt-5","input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"cmd\":\"ls\",\"limit\":2}"},{"type":"message","role":"user","content":"hi"}]}`)
+		body := []byte(`{"model":"gpt-5","input":[{"type":"tool_search_call","call_id":"call_1","name":"search","arguments":"{\"query\":\"golang\",\"limit\":2}"},{"type":"message","role":"user","content":"hi"}]}`)
 		normalized, changed, err := normalizeOpenAIResponsesInputArgumentsBody(body)
 		if err != nil {
 			t.Fatalf("normalize input arguments: %v", err)
@@ -102,34 +102,35 @@ func TestNormalizeOpenAIResponsesInputArgumentsBody(t *testing.T) {
 		if !gjson.GetBytes(normalized, "input.0.arguments").IsObject() {
 			t.Fatalf("expected arguments object, got %s", string(normalized))
 		}
-		if got := gjson.GetBytes(normalized, "input.0.arguments.cmd").String(); got != "ls" {
-			t.Fatalf("unexpected cmd: %q body=%s", got, string(normalized))
+		if got := gjson.GetBytes(normalized, "input.0.arguments.query").String(); got != "golang" {
+			t.Fatalf("unexpected query: %q body=%s", got, string(normalized))
 		}
 		if got := gjson.GetBytes(normalized, "input.0.arguments.limit").Int(); got != 2 {
 			t.Fatalf("unexpected limit: %d body=%s", got, string(normalized))
 		}
 	})
 
-	t.Run("blank_arguments_becomes_empty_object", func(t *testing.T) {
-		body := []byte(`{"model":"gpt-5","input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"   "}]}`)
+	t.Run("blank_arguments_unchanged", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","input":[{"type":"tool_search_call","call_id":"call_1","name":"search","arguments":"   "}]}`)
 		normalized, changed, err := normalizeOpenAIResponsesInputArgumentsBody(body)
 		if err != nil {
 			t.Fatalf("normalize blank arguments: %v", err)
 		}
-		if !changed {
-			t.Fatal("expected blank arguments to be normalized")
+		if changed {
+			t.Fatalf("expected blank arguments to stay unchanged, got %s", string(normalized))
 		}
-		if !gjson.GetBytes(normalized, "input.0.arguments").IsObject() {
-			t.Fatalf("expected empty arguments object, got %s", string(normalized))
+		if string(normalized) != string(body) {
+			t.Fatalf("expected original body, got %s", string(normalized))
 		}
 	})
 
 	t.Run("invalid_or_non_object_arguments_unchanged", func(t *testing.T) {
 		for _, body := range [][]byte{
-			[]byte(`{"model":"gpt-5","input":[{"type":"function_call","arguments":"not-json"}]}`),
-			[]byte(`{"model":"gpt-5","input":[{"type":"function_call","arguments":"[1,2]"}]}`),
-			[]byte(`{"model":"gpt-5","input":[{"type":"function_call","arguments":"null"}]}`),
-			[]byte(`{"model":"gpt-5","input":[{"type":"function_call","arguments":{"cmd":"ls"}}]}`),
+			[]byte(`{"model":"gpt-5","input":[{"type":"tool_search_call","arguments":"not-json"}]}`),
+			[]byte(`{"model":"gpt-5","input":[{"type":"tool_search_call","arguments":"[1,2]"}]}`),
+			[]byte(`{"model":"gpt-5","input":[{"type":"tool_search_call","arguments":"null"}]}`),
+			[]byte(`{"model":"gpt-5","input":[{"type":"tool_search_call","arguments":{"query":"golang"}}]}`),
+			[]byte(`{"model":"gpt-5","input":[{"type":"function_call","arguments":"{\"cmd\":\"ls\"}"}]}`),
 		} {
 			normalized, changed, err := normalizeOpenAIResponsesInputArgumentsBody(body)
 			if err != nil {
@@ -150,16 +151,16 @@ func TestNormalizeOpenAIResponsesInputArgumentsMap(t *testing.T) {
 		"model": "gpt-5",
 		"input": []any{
 			map[string]any{
-				"type":      "function_call",
+				"type":      "tool_search_call",
 				"call_id":   "call_1",
-				"name":      "exec",
-				"arguments": `{"cmd":"ls","limit":2}`,
+				"name":      "search",
+				"arguments": `{"query":"golang","limit":2}`,
 			},
 			map[string]any{
 				"type":      "function_call",
 				"call_id":   "call_2",
 				"name":      "noop",
-				"arguments": "[1,2]",
+				"arguments": `{"cmd":"ls"}`,
 			},
 		},
 	}
@@ -173,14 +174,14 @@ func TestNormalizeOpenAIResponsesInputArgumentsMap(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected first arguments to become object, got %#v", first["arguments"])
 	}
-	if got := args["cmd"]; got != "ls" {
-		t.Fatalf("unexpected cmd: %#v", got)
+	if got := args["query"]; got != "golang" {
+		t.Fatalf("unexpected query: %#v", got)
 	}
 	if got := args["limit"]; got != float64(2) {
 		t.Fatalf("unexpected limit: %#v", got)
 	}
 	second := input[1].(map[string]any)
-	if got := second["arguments"]; got != "[1,2]" {
-		t.Fatalf("expected non-object arguments to stay string, got %#v", got)
+	if got := second["arguments"]; got != `{"cmd":"ls"}` {
+		t.Fatalf("expected function_call arguments to stay string, got %#v", got)
 	}
 }

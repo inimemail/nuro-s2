@@ -68,6 +68,9 @@ func normalizeOpenAIResponsesInputArgumentsBody(body []byte) ([]byte, bool, erro
 	normalized := body
 	changed := false
 	for i, item := range input.Array() {
+		if !openAIResponsesInputItemNeedsObjectArguments(item.Get("type").String()) {
+			continue
+		}
 		args := item.Get("arguments")
 		if args.Type != gjson.String {
 			continue
@@ -103,6 +106,10 @@ func normalizeOpenAIResponsesInputArgumentsMap(reqBody map[string]any) bool {
 		if !ok {
 			continue
 		}
+		itemType, _ := itemMap["type"].(string)
+		if !openAIResponsesInputItemNeedsObjectArguments(itemType) {
+			continue
+		}
 		args, ok := itemMap["arguments"].(string)
 		if !ok {
 			continue
@@ -117,12 +124,12 @@ func normalizeOpenAIResponsesInputArgumentsMap(reqBody map[string]any) bool {
 	return changed
 }
 
+func openAIResponsesInputItemNeedsObjectArguments(itemType string) bool {
+	return strings.TrimSpace(itemType) == "tool_search_call"
+}
+
 func openAIResponsesArgumentsObjectFromString(arguments string) (map[string]any, bool) {
 	trimmed := strings.TrimSpace(arguments)
-	if trimmed == "" {
-		return map[string]any{}, true
-	}
-
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
 		return nil, false

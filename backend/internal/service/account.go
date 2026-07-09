@@ -1862,8 +1862,8 @@ func (a *Account) IsOpenAIResponsesPassthroughCompatEnabled() bool {
 }
 
 // IsOpenAIResponsesArgumentsObjectCompatEnabled returns whether an OpenAI
-// passthrough account should convert Responses input[].arguments JSON strings
-// to objects for non-standard upstreams.
+// passthrough account should convert Responses tool_search_call.arguments JSON
+// strings to objects for non-standard upstreams.
 func (a *Account) IsOpenAIResponsesArgumentsObjectCompatEnabled() bool {
 	if a == nil || !a.IsOpenAI() || !(a.IsOpenAIOAuth() || a.IsOpenAIApiKey()) || a.Extra == nil || !a.IsOpenAIPassthroughEnabled() {
 		return false

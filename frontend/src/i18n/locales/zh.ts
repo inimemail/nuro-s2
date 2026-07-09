@@ -3588,7 +3588,7 @@ export default {
           '仅对当前 OpenAI OAuth/APIKey 账号生效。开启后会兼容 input 字符串探针，并过滤部分兼容上游不支持的 token 参数；默认关闭以保持严格透传。',
         responsesArgumentsObjectCompat: 'Responses 参数对象兼容',
         responsesArgumentsObjectCompatDesc:
-          '仅对当前 OpenAI OAuth/APIKey 账号生效。开启后会把 input[].arguments 中可解析为 JSON 对象的字符串转为对象，用于兼容部分非标准 Responses 上游；默认关闭。',
+          '仅对当前 OpenAI OAuth/APIKey 账号生效。开启后只会把 tool_search_call.arguments 中可解析为 JSON 对象的字符串转为对象，用于兼容部分非标准 Responses 上游；默认关闭。',
         responsesWebsocketsV2: 'Responses WebSocket v2',
         responsesWebsocketsV2Desc:
           '默认关闭。开启后可启用 responses_websockets_v2 协议能力（受网关全局开关与账号类型开关约束）。',

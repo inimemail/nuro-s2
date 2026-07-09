@@ -432,13 +432,13 @@ func TestOpenAIGatewayService_OAuthPassthrough_ResponsesCompatNormalizesStringIn
 func TestOpenAIGatewayService_OAuthPassthrough_ResponsesArgumentsObjectCompat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	t.Run("enabled converts JSON object string arguments", func(t *testing.T) {
+	t.Run("enabled converts tool search JSON object string arguments", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rec)
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
 		c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
 
-		originalBody := []byte(`{"model":"gpt-5.2","stream":false,"store":true,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"cmd\":\"ls\",\"limit\":2}"}]}`)
+		originalBody := []byte(`{"model":"gpt-5.2","stream":false,"store":true,"input":[{"type":"tool_search_call","call_id":"call_1","name":"search","arguments":"{\"query\":\"golang\",\"limit\":2}"},{"type":"function_call","call_id":"call_2","name":"exec","arguments":"{\"cmd\":\"ls\"}"}]}`)
 		resp := &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
@@ -473,8 +473,10 @@ func TestOpenAIGatewayService_OAuthPassthrough_ResponsesArgumentsObjectCompat(t 
 		require.NotNil(t, result)
 		require.NotNil(t, upstream.lastReq)
 		require.True(t, gjson.GetBytes(upstream.lastBody, "input.0.arguments").IsObject())
-		require.Equal(t, "ls", gjson.GetBytes(upstream.lastBody, "input.0.arguments.cmd").String())
+		require.Equal(t, "golang", gjson.GetBytes(upstream.lastBody, "input.0.arguments.query").String())
 		require.Equal(t, int64(2), gjson.GetBytes(upstream.lastBody, "input.0.arguments.limit").Int())
+		require.Equal(t, gjson.String, gjson.GetBytes(upstream.lastBody, "input.1.arguments").Type)
+		require.Equal(t, `{"cmd":"ls"}`, gjson.GetBytes(upstream.lastBody, "input.1.arguments").String())
 	})
 
 	t.Run("passthrough compat alone keeps string arguments", func(t *testing.T) {

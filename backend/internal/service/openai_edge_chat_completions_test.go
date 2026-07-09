@@ -119,7 +119,7 @@ func TestBuildRawResponsesEdgePlanNormalizesInputArguments(t *testing.T) {
 			openai_compat.ExtraKeyResponsesSupported:   true,
 		},
 	}
-	body := []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"cmd\":\"ls\"}"},{"type":"message","role":"user","content":"hi"}]}`)
+	body := []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"tool_search_call","call_id":"call_1","name":"search","arguments":"{\"query\":\"golang\"}"},{"type":"function_call","call_id":"call_2","name":"exec","arguments":"{\"cmd\":\"ls\"}"},{"type":"message","role":"user","content":"hi"}]}`)
 	svc := &OpenAIGatewayService{
 		cfg: &config.Config{
 			Security: config.SecurityConfig{
@@ -139,8 +139,11 @@ func TestBuildRawResponsesEdgePlanNormalizesInputArguments(t *testing.T) {
 	if !gjson.GetBytes(decoded, "input.0.arguments").IsObject() {
 		t.Fatalf("expected arguments object in edge body, got %s", string(decoded))
 	}
-	if got := gjson.GetBytes(decoded, "input.0.arguments.cmd").String(); got != "ls" {
-		t.Fatalf("unexpected normalized arguments cmd: %q body=%s", got, string(decoded))
+	if got := gjson.GetBytes(decoded, "input.0.arguments.query").String(); got != "golang" {
+		t.Fatalf("unexpected normalized arguments query: %q body=%s", got, string(decoded))
+	}
+	if got := gjson.GetBytes(decoded, "input.1.arguments").String(); got != `{"cmd":"ls"}` {
+		t.Fatalf("expected function_call arguments to remain string, got %q body=%s", got, string(decoded))
 	}
 }
 
@@ -460,7 +463,7 @@ func TestBuildChatGPTOAuthResponsesEdgePlanNormalizesInputArgumentsWhenCompatEna
 			"openai_responses_arguments_object_compat": true,
 		},
 	}
-	body := []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"cmd\":\"ls\",\"limit\":2}"}]}`)
+	body := []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"tool_search_call","call_id":"call_1","name":"search","arguments":"{\"query\":\"golang\",\"limit\":2}"},{"type":"function_call","call_id":"call_2","name":"exec","arguments":"{\"cmd\":\"ls\"}"}]}`)
 
 	plan, err := (&OpenAIGatewayService{}).BuildChatGPTOAuthResponsesEdgePlan(context.Background(), c, account, body)
 	if err != nil {
@@ -473,11 +476,14 @@ func TestBuildChatGPTOAuthResponsesEdgePlanNormalizesInputArgumentsWhenCompatEna
 	if !gjson.GetBytes(decoded, "input.0.arguments").IsObject() {
 		t.Fatalf("expected oauth edge arguments object, got %s", string(decoded))
 	}
-	if got := gjson.GetBytes(decoded, "input.0.arguments.cmd").String(); got != "ls" {
-		t.Fatalf("unexpected normalized arguments cmd: %q body=%s", got, string(decoded))
+	if got := gjson.GetBytes(decoded, "input.0.arguments.query").String(); got != "golang" {
+		t.Fatalf("unexpected normalized arguments query: %q body=%s", got, string(decoded))
 	}
 	if got := gjson.GetBytes(decoded, "input.0.arguments.limit").Int(); got != 2 {
 		t.Fatalf("unexpected normalized arguments limit: %d body=%s", got, string(decoded))
+	}
+	if got := gjson.GetBytes(decoded, "input.1.arguments").String(); got != `{"cmd":"ls"}` {
+		t.Fatalf("expected function_call arguments to remain string, got %q body=%s", got, string(decoded))
 	}
 }
 
