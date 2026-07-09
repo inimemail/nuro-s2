@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -137,6 +138,45 @@ func TestOpsErrorLoggerMiddleware_DoesNotBreakOuterMiddlewares(t *testing.T) {
 		r.ServeHTTP(rec, req)
 	})
 	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestOpsErrorLoggerMiddleware_RecordsStreamErrorOnSolidified200(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	gin.SetMode(gin.TestMode)
+
+	opsErrorLogOnce.Do(func() {})
+	opsErrorLogMu.Lock()
+	opsErrorLogQueue = make(chan opsErrorLogJob, 1)
+	opsErrorLogMu.Unlock()
+
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	r := gin.New()
+	r.Use(OpsErrorLoggerMiddleware(ops))
+	r.GET("/v1/responses", func(c *gin.Context) {
+		setOpsRequestContext(c, "gpt-5.4", true)
+		setOpsSelectedAccount(c, 123, service.PlatformOpenAI)
+		c.Status(http.StatusOK)
+		service.MarkOpsStreamError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later")
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	r.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	select {
+	case job := <-opsErrorLogQueue:
+		require.NotNil(t, job.entry)
+		require.Equal(t, http.StatusOK, job.entry.StatusCode)
+		require.Equal(t, "rate_limit_error", job.entry.ErrorType)
+		require.Equal(t, "Too many pending requests, please retry later", job.entry.ErrorMessage)
+		require.True(t, job.entry.Stream)
+		require.Equal(t, "gpt-5.4", job.entry.Model)
+		require.NotNil(t, job.entry.AccountID)
+		require.Equal(t, int64(123), *job.entry.AccountID)
+	case <-time.After(time.Second):
+		t.Fatal("expected stream error log to be enqueued")
+	}
 }
 
 func TestIsKnownOpsErrorType(t *testing.T) {

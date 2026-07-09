@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -134,7 +135,7 @@ func ParseGatewayRequest(body []byte, protocol string) (*ParsedRequest, error) {
 	// 保持与旧实现一致：请求体必须是合法 JSON。
 	// 注意：gjson.GetBytes 对非法 JSON 不会报错，因此需要显式校验。
 	if !gjson.ValidBytes(body) {
-		return nil, fmt.Errorf("invalid json")
+		return nil, DescribeInvalidJSON(body)
 	}
 
 	// 性能：
@@ -241,6 +242,20 @@ func ParseGatewayRequest(body []byte, protocol string) (*ParsedRequest, error) {
 	}
 
 	return parsed, nil
+}
+
+// DescribeInvalidJSON returns a diagnostic error for a request body that
+// failed JSON validation. It avoids including body content in the error.
+func DescribeInvalidJSON(body []byte) error {
+	var raw json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		var syntaxErr *json.SyntaxError
+		if errors.As(err, &syntaxErr) {
+			return fmt.Errorf("invalid json (len=%d, offset=%d): %s", len(body), syntaxErr.Offset, syntaxErr.Error())
+		}
+		return fmt.Errorf("invalid json (len=%d): %w", len(body), err)
+	}
+	return fmt.Errorf("invalid json (len=%d)", len(body))
 }
 
 // sliceRawFromBody 返回 Result.Raw 对应的原始字节切片。

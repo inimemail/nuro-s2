@@ -33,3 +33,10 @@ func optionalInt64Ptr(v int64) *int64 {
 	}
 	return &v
 }
+
+func optionalPositiveIntPtr(v int) *int {
+	if v <= 0 {
+		return nil
+	}
+	return &v
+}

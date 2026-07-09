@@ -5595,6 +5595,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		account.ID, account.Name, account.Platform, account.Type, tlsProfile, proxyURL)
 	// Pre-filter: strip empty text blocks (including nested in tool_result) to prevent upstream 400.
 	body = StripEmptyTextBlocks(body)
+	// Pre-filter: strip web-search history blocks the selected upstream cannot accept.
+	body = FilterWebSearchHistoryBlocks(body, reqModel)
 
 	// 重试循环
 	var resp *http.Response
@@ -6100,6 +6102,8 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		}
 	}
 	input.Body = enforceCacheControlLimit(input.Body)
+	// Pre-filter: strip web-search history blocks after local cache/body enhancements.
+	input.Body = FilterWebSearchHistoryBlocks(input.Body, input.RequestModel)
 
 	var resp *http.Response
 	retryStart := time.Now()
@@ -10054,7 +10058,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		groupDefault := apiKey.Group.RateMultiplier
 		multiplier = s.getUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, groupDefault)
 	}
-	multiplier, imageMultiplier := computePeakAwareMultipliers(apiKey, multiplier, timezone.Now())
+	multiplier, imageMultiplier, _ := computePeakAwareMultipliers(apiKey, multiplier, timezone.Now())
 
 	// 确定计费模型
 	billingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)

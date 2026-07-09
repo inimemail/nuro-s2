@@ -174,6 +174,30 @@ func TestDefaultPricingIncludesGpt56Series(t *testing.T) {
 	}
 }
 
+func TestDefaultPricingIncludes147ImagePricingUpdates(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
+	require.NoError(t, err)
+
+	svc := &PricingService{}
+	pricingData, err := svc.parsePricingData(data)
+	require.NoError(t, err)
+	svc.pricingData = pricingData
+
+	flash20 := svc.GetModelPricing("gemini-2.0-flash-exp-image-generation")
+	require.NotNil(t, flash20)
+	require.InDelta(t, 0.034, flash20.OutputCostPerImage, 1e-12)
+
+	proImage := svc.GetModelPricing("gemini-3-pro-image")
+	require.NotNil(t, proImage)
+	require.InDelta(t, 0.134, proImage.OutputCostPerImage, 1e-12)
+	require.InDelta(t, 0.00012, proImage.OutputCostPerImageToken, 1e-12)
+
+	liteImage := svc.GetModelPricing("gemini-3.1-flash-lite-image")
+	require.NotNil(t, liteImage)
+	require.InDelta(t, 0.034, liteImage.OutputCostPerImage, 1e-12)
+	require.InDelta(t, 3e-5, liteImage.OutputCostPerImageToken, 1e-12)
+}
+
 func TestDefaultPricingIncludesGpt55Pro(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
 	require.NoError(t, err)

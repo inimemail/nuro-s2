@@ -22,6 +22,44 @@ func TestCalculateImageCost_DefaultPricing(t *testing.T) {
 	require.InDelta(t, 0.603, cost.TotalCost, 0.0001)
 }
 
+func TestCalculateVideoCost_DefaultGrok15PerSecondPricing(t *testing.T) {
+	svc := &BillingService{}
+
+	cost := svc.CalculateVideoCost("grok-imagine-video-1.5", "1080p", 1, 10, nil, 1.0)
+	require.InDelta(t, 2.5, cost.TotalCost, 0.0001)
+	require.InDelta(t, 2.5, cost.ActualCost, 0.0001)
+	require.Equal(t, string(BillingModeVideo), cost.BillingMode)
+}
+
+func TestCalculateVideoCost_GroupCustomPricingAndMultiplier(t *testing.T) {
+	svc := &BillingService{}
+	price720P := 0.20
+
+	cost := svc.CalculateVideoCost(
+		"grok-imagine-video-1.5",
+		"720p",
+		2,
+		5,
+		&VideoPriceConfig{Price720P: &price720P},
+		0.5,
+	)
+	require.InDelta(t, 2.0, cost.TotalCost, 0.0001)
+	require.InDelta(t, 1.0, cost.ActualCost, 0.0001)
+	require.Equal(t, string(BillingModeVideo), cost.BillingMode)
+}
+
+func TestCalculateVideoCost_NormalizesDuration(t *testing.T) {
+	svc := &BillingService{}
+	price480P := 0.10
+	groupConfig := &VideoPriceConfig{Price480P: &price480P}
+
+	cost := svc.CalculateVideoCost("grok-imagine-video", "480p", 1, 0, groupConfig, 1.0)
+	require.InDelta(t, 0.8, cost.TotalCost, 0.0001)
+
+	cost = svc.CalculateVideoCost("grok-imagine-video", "480p", 1, 30, groupConfig, 1.0)
+	require.InDelta(t, 1.5, cost.TotalCost, 0.0001)
+}
+
 // TestCalculateImageCost_GroupCustomPricing 测试分组自定义价格
 func TestCalculateImageCost_GroupCustomPricing(t *testing.T) {
 	svc := &BillingService{}

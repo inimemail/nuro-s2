@@ -62,6 +62,7 @@ const messages: Record<string, string> = {
   'admin.usage.billingModeToken': 'Token',
   'admin.usage.billingModePerRequest': 'Per request',
   'admin.usage.billingModeImage': 'Image',
+  'admin.usage.billingModeVideo': 'Video',
 }
 
 vi.mock('@/api', () => ({

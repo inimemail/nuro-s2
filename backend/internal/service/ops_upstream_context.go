@@ -16,6 +16,7 @@ const (
 	OpsUpstreamErrorMessageKey = "ops_upstream_error_message"
 	OpsUpstreamErrorDetailKey  = "ops_upstream_error_detail"
 	OpsUpstreamErrorsKey       = "ops_upstream_errors"
+	OpsStreamErrorKey          = "ops_stream_error"
 
 	// Optional stage latencies (milliseconds) for troubleshooting and alerting.
 	OpsAuthLatencyMsKey       = "ops_auth_latency_ms"
@@ -51,6 +52,12 @@ const (
 	OpsClientBusinessLimitedReasonLocalFeatureGate       = "local_feature_gate"
 	OpsClientBusinessLimitedReasonLocalPolicyDenied      = "local_policy_denied"
 )
+
+type OpsStreamError struct {
+	IntendedStatus int
+	ErrType        string
+	Message        string
+}
 
 func MarkResponseCommitted(c *gin.Context) {
 	if c != nil {
@@ -141,6 +148,37 @@ func HasOpsClientBusinessLimited(c *gin.Context) bool {
 	}
 	marked, _ := v.(bool)
 	return marked
+}
+
+func MarkOpsStreamError(c *gin.Context, intendedStatus int, errType, message string) {
+	if c == nil {
+		return
+	}
+	errType = strings.TrimSpace(errType)
+	message = strings.TrimSpace(message)
+	if intendedStatus <= 0 && errType == "" && message == "" {
+		return
+	}
+	c.Set(OpsStreamErrorKey, OpsStreamError{
+		IntendedStatus: intendedStatus,
+		ErrType:        errType,
+		Message:        message,
+	})
+}
+
+func GetOpsStreamError(c *gin.Context) (OpsStreamError, bool) {
+	if c == nil {
+		return OpsStreamError{}, false
+	}
+	v, ok := c.Get(OpsStreamErrorKey)
+	if !ok {
+		return OpsStreamError{}, false
+	}
+	streamErr, ok := v.(OpsStreamError)
+	if !ok {
+		return OpsStreamError{}, false
+	}
+	return streamErr, true
 }
 
 // SetOpsUpstreamError is the exported wrapper for setOpsUpstreamError, used by

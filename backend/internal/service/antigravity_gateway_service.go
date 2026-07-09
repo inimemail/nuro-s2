@@ -149,14 +149,16 @@ type antigravityRetryLoopResult struct {
 }
 
 // resolveAntigravityForwardBaseURL 解析转发用 base URL。
-// 默认使用 daily（ForwardBaseURLs 的首个地址）；当环境变量为 prod 时使用第二个地址。
+//
+// 默认使用生产端点，与 OAuth 登录/测试连接保持一致。daily/sandbox 仅供联调，
+// 需要显式设置 GATEWAY_ANTIGRAVITY_FORWARD_BASE_URL=daily 或 sandbox。
 func resolveAntigravityForwardBaseURL() string {
-	baseURLs := antigravity.ForwardBaseURLs()
+	baseURLs := antigravity.BaseURLs
 	if len(baseURLs) == 0 {
 		return ""
 	}
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv(antigravityForwardBaseURLEnv)))
-	if mode == "prod" && len(baseURLs) > 1 {
+	if (mode == "daily" || mode == "sandbox") && len(baseURLs) > 1 {
 		return baseURLs[1]
 	}
 	return baseURLs[0]

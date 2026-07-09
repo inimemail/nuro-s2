@@ -951,13 +951,15 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 			}
 		}
 
-		// Anthropic 平台：没有限流重置时间的 429 可能是非真实限流（如 Extra usage required），
-		// 不标记账号限流状态，直接透传错误给客户端
+		// Anthropic 平台：没有限流重置时间的 429 可能不是 5h/7d 窗口限流，
+		// 不适合长封禁；但完全不标记会导致调度反复撞同一批持续 429 的账号。
+		// 因此走管理端可配置的秒级兜底冷却。
 		if account.Platform == PlatformAnthropic {
-			slog.Warn("rate_limit_429_no_reset_time_skipped",
+			slog.Warn("rate_limit_429_no_reset_time",
 				"account_id", account.ID,
 				"platform", account.Platform,
 				"reason", "no rate limit reset time in headers, likely not a real rate limit")
+			s.apply429FallbackRateLimit(ctx, account, "anthropic_no_reset_time")
 			return
 		}
 

@@ -91,22 +91,30 @@ func TestPeakMultiplier_GatewayBillingSequence(t *testing.T) {
 	approxEq := func(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 	apiKey := &APIKey{Group: newPeakGroup(true, "14:00", "18:00", 3)}
 
-	tokenMultiplier, imageMultiplier := computePeakAwareMultipliers(apiKey, baseMultiplier, peakAt(15, 30))
+	tokenMultiplier, imageMultiplier, videoMultiplier := computePeakAwareMultipliers(apiKey, baseMultiplier, peakAt(15, 30))
 	if !approxEq(tokenMultiplier, baseMultiplier*3) {
 		t.Fatalf("token multiplier = %v, want %v", tokenMultiplier, baseMultiplier*3)
 	}
 	if !approxEq(imageMultiplier, baseMultiplier) {
 		t.Fatalf("image multiplier = %v, want %v", imageMultiplier, baseMultiplier)
 	}
+	if !approxEq(videoMultiplier, baseMultiplier) {
+		t.Fatalf("video multiplier = %v, want %v", videoMultiplier, baseMultiplier)
+	}
 
 	apiKey.Group.ImageRateIndependent = true
 	apiKey.Group.ImageRateMultiplier = 0.5
-	tokenMultiplier, imageMultiplier = computePeakAwareMultipliers(apiKey, baseMultiplier, peakAt(15, 30))
+	apiKey.Group.VideoRateIndependent = true
+	apiKey.Group.VideoRateMultiplier = 0.25
+	tokenMultiplier, imageMultiplier, videoMultiplier = computePeakAwareMultipliers(apiKey, baseMultiplier, peakAt(15, 30))
 	if !approxEq(tokenMultiplier, baseMultiplier*3) {
 		t.Fatalf("token multiplier with independent image = %v, want %v", tokenMultiplier, baseMultiplier*3)
 	}
 	if !approxEq(imageMultiplier, 0.5) {
 		t.Fatalf("independent image multiplier = %v, want 0.5", imageMultiplier)
+	}
+	if !approxEq(videoMultiplier, 0.25) {
+		t.Fatalf("independent video multiplier = %v, want 0.25", videoMultiplier)
 	}
 }
 

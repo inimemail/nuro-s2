@@ -68,6 +68,9 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 			Summary: "auto",
 		}
 	}
+	if format := chatResponseFormatToResponsesTextFormat(req.ResponseFormat); len(format) > 0 {
+		out.Text = &ResponsesText{Format: format}
+	}
 
 	// tools[] and legacy functions[] → ResponsesTool[]
 	if len(req.Tools) > 0 || len(req.Functions) > 0 {

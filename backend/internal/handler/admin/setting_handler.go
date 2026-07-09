@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -3346,6 +3347,7 @@ func (h *SettingHandler) SendTestEmail(c *gin.Context) {
 
 	siteName := h.settingService.GetSiteName(c.Request.Context())
 	subject := "[" + siteName + "] Test Email"
+	safeSiteName := html.EscapeString(siteName)
 	body := `
 <!DOCTYPE html>
 <html>
@@ -3363,7 +3365,7 @@ func (h *SettingHandler) SendTestEmail(c *gin.Context) {
 <body>
     <div class="container">
         <div class="header">
-            <h1>` + siteName + `</h1>
+            <h1>` + safeSiteName + `</h1>
         </div>
         <div class="content">
             <div class="success">✓</div>

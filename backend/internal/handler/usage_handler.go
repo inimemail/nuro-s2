@@ -128,7 +128,7 @@ func (h *UsageHandler) parseUserDashboardFilters(c *gin.Context, subjectUserID i
 		filters.BillingType = &bt
 	}
 	if billingMode := strings.TrimSpace(c.Query("billing_mode")); billingMode != "" {
-		if !service.BillingMode(billingMode).IsValid() {
+		if !service.BillingMode(billingMode).IsValidUsageFilter() {
 			response.BadRequest(c, "Invalid billing_mode")
 			return filters, false
 		}

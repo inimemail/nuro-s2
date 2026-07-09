@@ -108,3 +108,18 @@ func TestResolveImageBillingSize(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyOpenAIImageBillingResolutionSkipsVideoUsage(t *testing.T) {
+	result := &OpenAIForwardResult{
+		ImageCount:           1,
+		VideoCount:           1,
+		VideoResolution:      "1080p",
+		VideoDurationSeconds: 10,
+	}
+
+	ApplyOpenAIImageBillingResolution(result)
+
+	require.Empty(t, result.ImageSize)
+	require.Empty(t, result.ImageSizeSource)
+	require.Nil(t, result.ImageSizeBreakdown)
+}

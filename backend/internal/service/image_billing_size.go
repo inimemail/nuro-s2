@@ -113,7 +113,7 @@ func ResolveImageBillingSize(inputSize string, outputSizes []string) ImageBillin
 }
 
 func ApplyOpenAIImageBillingResolution(result *OpenAIForwardResult) {
-	if result == nil || result.ImageCount <= 0 {
+	if result == nil || result.ImageCount <= 0 || result.VideoCount > 0 {
 		return
 	}
 	inputSize := strings.TrimSpace(result.ImageInputSize)

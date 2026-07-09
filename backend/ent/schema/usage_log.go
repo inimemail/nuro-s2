@@ -161,6 +161,15 @@ func (UsageLog) Fields() []ent.Field {
 		field.JSON("image_size_breakdown", map[string]int{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
+		field.Int("video_count").
+			Default(0),
+		field.String("video_resolution").
+			MaxLen(10).
+			Optional().
+			Nillable(),
+		field.Int("video_duration_seconds").
+			Optional().
+			Nillable(),
 		// Cache TTL Override 标记（管理员强制替换了缓存 TTL 计费）
 		field.Bool("cache_ttl_overridden").
 			Default(false),

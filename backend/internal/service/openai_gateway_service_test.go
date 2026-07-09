@@ -3639,6 +3639,32 @@ func TestHandleNonStreamingResponse_APIKeyFallsBackToSSEBodyWhenContentTypeIsWro
 	require.Equal(t, "hello", gjson.Get(rec.Body.String(), "output.0.content.0.text").String())
 }
 
+func TestHandleNonStreamingResponse_JSONWithDataTextIsNotSSE(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	body := `{"id":"resp_json","object":"response","model":"gpt-5.4","output":[{"type":"message","content":[{"type":"output_text","text":"literal data: marker should stay JSON"}]}],"usage":{"input_tokens":11,"output_tokens":7,"input_tokens_details":{"cached_tokens":5}}}`
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	account := &Account{ID: 1, Type: AccountTypeOAuth}
+
+	result, err := svc.handleNonStreamingResponse(context.Background(), resp, c, account, "gpt-5.4", "gpt-5.4")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 11, result.InputTokens)
+	require.Equal(t, 7, result.OutputTokens)
+	require.Equal(t, 5, result.CacheReadInputTokens)
+	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+	require.Equal(t, "resp_json", gjson.Get(rec.Body.String(), "id").String())
+	require.Equal(t, "literal data: marker should stay JSON", gjson.Get(rec.Body.String(), "output.0.content.0.text").String())
+}
+
 func TestHandleSSEToJSON_ReconstructsImageGenerationOutputItemDone(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

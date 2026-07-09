@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -139,5 +140,57 @@ func TestReadRequestBodyWithPrealloc_RespectsIdentityEncoding(t *testing.T) {
 	}
 	if string(got) != samplePayload {
 		t.Fatalf("body mismatch: got %q", got)
+	}
+}
+
+func TestNormalizeLenientJSONRequestBody_EscapesControlBytesInStrings(t *testing.T) {
+	body := []byte("{\"input\":\"hello\nworld\",\"model\":\"gpt-5.6\"}")
+
+	got, err := NormalizeLenientJSONRequestBody(body, int64(len(body)+16))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := `{"input":"hello\u000aworld","model":"gpt-5.6"}`
+	if string(got) != want {
+		t.Fatalf("body mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestNormalizeLenientJSONRequestBody_LeavesControlBytesOutsideStrings(t *testing.T) {
+	body := []byte("{\"input\":\"ok\"}\n")
+
+	got, err := NormalizeLenientJSONRequestBody(body, int64(len(body)+8))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("body mismatch: got %q want %q", got, body)
+	}
+}
+
+func TestNormalizeLenientJSONRequestBody_RejectsOversizedInput(t *testing.T) {
+	_, err := NormalizeLenientJSONRequestBody([]byte(`{"input":"abcdef"}`), 4)
+	if err == nil {
+		t.Fatal("expected max bytes error, got nil")
+	}
+	var maxErr *http.MaxBytesError
+	if !errors.As(err, &maxErr) {
+		t.Fatalf("expected MaxBytesError, got %T: %v", err, err)
+	}
+	if maxErr.Limit != 4 {
+		t.Fatalf("limit mismatch: got %d", maxErr.Limit)
+	}
+}
+
+func TestNormalizeLenientJSONRequestBody_RejectsOversizedNormalizedOutput(t *testing.T) {
+	body := []byte("{\"input\":\"\n\"}")
+	_, err := NormalizeLenientJSONRequestBody(body, int64(len(body)+3))
+	if err == nil {
+		t.Fatal("expected max bytes error, got nil")
+	}
+	var maxErr *http.MaxBytesError
+	if !errors.As(err, &maxErr) {
+		t.Fatalf("expected MaxBytesError, got %T: %v", err, err)
 	}
 }

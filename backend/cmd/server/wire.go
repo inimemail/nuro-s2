@@ -90,6 +90,7 @@ func provideCleanup(
 	billingCache *service.BillingCacheService,
 	usageRecordWorkerPool *service.UsageRecordWorkerPool,
 	openAIGatewayHandler *handler.OpenAIGatewayHandler,
+	batchImageWorkerRuntime *service.BatchImageWorkerRuntime,
 	subscriptionService *service.SubscriptionService,
 	oauth *service.OAuthService,
 	openaiOAuth *service.OpenAIOAuthService,
@@ -213,6 +214,12 @@ func provideCleanup(
 			{"OpenAIGatewayImageTaskWorkers", func() error {
 				if openAIGatewayHandler != nil {
 					openAIGatewayHandler.StopImageTaskWorkers()
+				}
+				return nil
+			}},
+			{"BatchImageWorkerRuntime", func() error {
+				if batchImageWorkerRuntime != nil {
+					batchImageWorkerRuntime.Stop()
 				}
 				return nil
 			}},

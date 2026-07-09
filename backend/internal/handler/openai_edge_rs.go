@@ -147,6 +147,7 @@ func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 	groupID *int64,
 	userID int64,
 	userConcurrency int,
+	apiKeyID int64,
 	previousResponseID string,
 	sessionHash string,
 	requestedModel string,
@@ -187,7 +188,7 @@ func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 				false,
 			)
 			if err == nil && selection != nil && selection.UserReleaseFunc != nil {
-				userReleaseFunc = selection.UserReleaseFunc
+				userReleaseFunc = h.concurrencyHelper.withAPIKeySlot(ctx, apiKeyID, selection.UserReleaseFunc)
 				userSlotHeld = true
 			}
 			if err != nil || selection == nil || selection.Account == nil {
@@ -197,7 +198,7 @@ func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 					userSlotHeld = false
 				}
 				var acquired bool
-				userReleaseFunc, acquired, err = h.concurrencyHelper.TryAcquireUserSlot(ctx, userID, userConcurrency)
+				userReleaseFunc, acquired, err = h.concurrencyHelper.TryAcquireUserSlotForAPIKey(ctx, userID, userConcurrency, apiKeyID)
 				if err != nil {
 					return nil, "user_slot_acquire_failed", err
 				}
@@ -241,7 +242,11 @@ func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 				selection.ReleaseFunc()
 			}
 			if selection.UserReleaseFunc != nil {
-				selection.UserReleaseFunc()
+				if userReleaseFunc != nil {
+					userReleaseFunc()
+				} else {
+					selection.UserReleaseFunc()
+				}
 				userReleaseFunc = nil
 				userSlotHeld = false
 			}
@@ -257,7 +262,7 @@ func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 		}
 		accountReleaseFunc := selection.ReleaseFunc
 		if selection.UserReleaseFunc != nil && userReleaseFunc == nil {
-			userReleaseFunc = selection.UserReleaseFunc
+			userReleaseFunc = h.concurrencyHelper.withAPIKeySlot(ctx, apiKeyID, selection.UserReleaseFunc)
 			userSlotHeld = true
 		}
 		if !selection.Acquired {
@@ -289,7 +294,7 @@ func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 		}
 		if !userSlotHeld && userID > 0 && userConcurrency > 0 {
 			var acquired bool
-			userReleaseFunc, acquired, err = h.concurrencyHelper.TryAcquireUserSlot(ctx, userID, userConcurrency)
+			userReleaseFunc, acquired, err = h.concurrencyHelper.TryAcquireUserSlotForAPIKey(ctx, userID, userConcurrency, apiKeyID)
 			if err != nil {
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
@@ -605,6 +610,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		apiKey.GroupID,
 		subject.UserID,
 		subject.Concurrency,
+		apiKey.ID,
 		"",
 		sessionHash,
 		reqModel,
@@ -783,6 +789,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		apiKey.GroupID,
 		subject.UserID,
 		subject.Concurrency,
+		apiKey.ID,
 		"",
 		sessionHash,
 		reqModel,
@@ -951,6 +958,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		apiKey.GroupID,
 		subject.UserID,
 		subject.Concurrency,
+		apiKey.ID,
 		"",
 		sessionHash,
 		reqModel,
@@ -1365,6 +1373,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
 		lease.apiKey.GroupID,
+		0,
 		0,
 		0,
 		"",

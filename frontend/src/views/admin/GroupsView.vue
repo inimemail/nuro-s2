@@ -168,20 +168,40 @@
               <!-- Subscription Limits - compact single line -->
               <div
                 v-if="row.subscription_type === 'subscription'"
-                class="text-xs text-gray-500 dark:text-gray-400"
+                class="space-y-0.5 text-xs text-gray-500 dark:text-gray-400"
               >
-                <template
+                <div
                   v-if="
                     row.daily_limit_usd ||
                     row.weekly_limit_usd ||
                     row.monthly_limit_usd
                   "
+                  class="flex flex-wrap items-center gap-x-1 gap-y-0.5"
                 >
-                  <span v-if="row.daily_limit_usd"
-                    >${{ row.daily_limit_usd }}/{{
-                      t("admin.groups.limitDay")
-                    }}</span
-                  >
+                  <span v-if="row.daily_limit_usd" class="whitespace-nowrap">
+                    <span
+                      v-if="usageLoading"
+                      class="font-medium text-gray-400 dark:text-gray-500"
+                      >—</span
+                    >
+                    <span
+                      v-else
+                      :class="
+                        getQuotaUsageClass(
+                          usageMap.get(row.id)?.today_cost ?? 0,
+                          row.daily_limit_usd
+                        )
+                      "
+                      >{{
+                        formatUsd(usageMap.get(row.id)?.today_cost ?? 0)
+                      }}</span
+                    >
+                    <span class="text-gray-400 dark:text-gray-500">
+                      / {{ formatUsd(row.daily_limit_usd) }}/{{
+                        t("admin.groups.limitDay")
+                      }}</span
+                    >
+                  </span>
                   <span
                     v-if="
                       row.daily_limit_usd &&
@@ -190,8 +210,8 @@
                     class="mx-1 text-gray-300 dark:text-gray-600"
                     >·</span
                   >
-                  <span v-if="row.weekly_limit_usd"
-                    >${{ row.weekly_limit_usd }}/{{
+                  <span v-if="row.weekly_limit_usd" class="whitespace-nowrap"
+                    >{{ formatUsd(row.weekly_limit_usd) }}/{{
                       t("admin.groups.limitWeek")
                     }}</span
                   >
@@ -200,15 +220,25 @@
                     class="mx-1 text-gray-300 dark:text-gray-600"
                     >·</span
                   >
-                  <span v-if="row.monthly_limit_usd"
-                    >${{ row.monthly_limit_usd }}/{{
+                  <span v-if="row.monthly_limit_usd" class="whitespace-nowrap"
+                    >{{ formatUsd(row.monthly_limit_usd) }}/{{
                       t("admin.groups.limitMonth")
                     }}</span
                   >
-                </template>
+                </div>
                 <span v-else class="text-gray-400 dark:text-gray-500">{{
                   t("admin.groups.subscription.noLimit")
                 }}</span>
+                <div class="text-gray-400 dark:text-gray-500">
+                  {{ t("admin.groups.usageTotal") }}
+                  <span class="ml-1 font-medium text-gray-600 dark:text-gray-300"
+                    >{{
+                      usageLoading
+                        ? "—"
+                        : formatUsd(usageMap.get(row.id)?.total_cost ?? 0)
+                    }}</span
+                  >
+                </div>
               </div>
             </div>
           </template>
@@ -848,6 +878,14 @@
               />
               {{ t("admin.groups.imagePricing.independentMultiplier") }}
             </label>
+            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+              <input
+                v-model="createForm.video_rate_independent"
+                type="checkbox"
+                class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              {{ t("admin.groups.imagePricing.videoIndependentMultiplier") }}
+            </label>
           </div>
           <div
             v-if="createForm.image_rate_independent"
@@ -858,6 +896,22 @@
             }}</label>
             <input
               v-model.number="createForm.image_rate_multiplier"
+              type="number"
+              step="0.0001"
+              min="0"
+              class="input"
+              placeholder="1"
+            />
+          </div>
+          <div
+            v-if="createForm.video_rate_independent"
+            class="mb-4"
+          >
+            <label class="input-label">{{
+              t("admin.groups.imagePricing.videoMultiplier")
+            }}</label>
+            <input
+              v-model.number="createForm.video_rate_multiplier"
               type="number"
               step="0.0001"
               min="0"
@@ -900,6 +954,41 @@
               />
             </div>
           </div>
+          <div class="mt-4 grid grid-cols-3 gap-3">
+            <div>
+              <label class="input-label">480p ($/s)</label>
+              <input
+                v-model.number="createForm.video_price_480p"
+                type="number"
+                step="0.001"
+                min="0"
+                class="input"
+                placeholder="0.05"
+              />
+            </div>
+            <div>
+              <label class="input-label">720p ($/s)</label>
+              <input
+                v-model.number="createForm.video_price_720p"
+                type="number"
+                step="0.001"
+                min="0"
+                class="input"
+                placeholder="0.14"
+              />
+            </div>
+            <div>
+              <label class="input-label">1080p ($/s)</label>
+              <input
+                v-model.number="createForm.video_price_1080p"
+                type="number"
+                step="0.001"
+                min="0"
+                class="input"
+                placeholder="0.25"
+              />
+            </div>
+          </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
             {{ t("admin.groups.imagePricing.modeHint") }}
           </p>
@@ -914,6 +1003,65 @@
               >
                 {{ item.label }}: {{ item.value }}
               </div>
+            </div>
+            <div class="mt-3 grid grid-cols-3 gap-2">
+              <div
+                v-for="item in createVideoFinalPricePreview"
+                :key="item.label"
+              >
+                {{ item.label }}: {{ item.value }}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 批量生图配置（仅 Gemini 分组） -->
+        <div
+          v-if="createForm.platform === 'gemini'"
+          class="border-t pt-4"
+        >
+          <label
+            class="block mb-2 font-medium text-gray-700 dark:text-gray-300"
+          >
+            {{ t("admin.groups.imagePricing.batchImageTitle") }}
+          </label>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            {{ t("admin.groups.imagePricing.batchImageDescription") }}
+          </p>
+          <label class="mb-4 flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              v-model="createForm.allow_batch_image_generation"
+              type="checkbox"
+              class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            {{ t("admin.groups.imagePricing.allowBatchImageGeneration") }}
+          </label>
+          <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div>
+              <label class="input-label">{{
+                t("admin.groups.imagePricing.batchImageDiscountMultiplier")
+              }}</label>
+              <input
+                v-model.number="createForm.batch_image_discount_multiplier"
+                type="number"
+                step="0.0001"
+                min="0"
+                class="input"
+                placeholder="0.5"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{
+                t("admin.groups.imagePricing.batchImageHoldMultiplier")
+              }}</label>
+              <input
+                v-model.number="createForm.batch_image_hold_multiplier"
+                type="number"
+                step="0.0001"
+                min="0"
+                class="input"
+                placeholder="0.6"
+              />
             </div>
           </div>
         </div>
@@ -2167,6 +2315,14 @@
               />
               {{ t("admin.groups.imagePricing.independentMultiplier") }}
             </label>
+            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+              <input
+                v-model="editForm.video_rate_independent"
+                type="checkbox"
+                class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              {{ t("admin.groups.imagePricing.videoIndependentMultiplier") }}
+            </label>
           </div>
           <div
             v-if="editForm.image_rate_independent"
@@ -2177,6 +2333,22 @@
             }}</label>
             <input
               v-model.number="editForm.image_rate_multiplier"
+              type="number"
+              step="0.0001"
+              min="0"
+              class="input"
+              placeholder="1"
+            />
+          </div>
+          <div
+            v-if="editForm.video_rate_independent"
+            class="mb-4"
+          >
+            <label class="input-label">{{
+              t("admin.groups.imagePricing.videoMultiplier")
+            }}</label>
+            <input
+              v-model.number="editForm.video_rate_multiplier"
               type="number"
               step="0.0001"
               min="0"
@@ -2219,6 +2391,41 @@
               />
             </div>
           </div>
+          <div class="mt-4 grid grid-cols-3 gap-3">
+            <div>
+              <label class="input-label">480p ($/s)</label>
+              <input
+                v-model.number="editForm.video_price_480p"
+                type="number"
+                step="0.001"
+                min="0"
+                class="input"
+                placeholder="0.05"
+              />
+            </div>
+            <div>
+              <label class="input-label">720p ($/s)</label>
+              <input
+                v-model.number="editForm.video_price_720p"
+                type="number"
+                step="0.001"
+                min="0"
+                class="input"
+                placeholder="0.14"
+              />
+            </div>
+            <div>
+              <label class="input-label">1080p ($/s)</label>
+              <input
+                v-model.number="editForm.video_price_1080p"
+                type="number"
+                step="0.001"
+                min="0"
+                class="input"
+                placeholder="0.25"
+              />
+            </div>
+          </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
             {{ t("admin.groups.imagePricing.modeHint") }}
           </p>
@@ -2233,6 +2440,65 @@
               >
                 {{ item.label }}: {{ item.value }}
               </div>
+            </div>
+            <div class="mt-3 grid grid-cols-3 gap-2">
+              <div
+                v-for="item in editVideoFinalPricePreview"
+                :key="item.label"
+              >
+                {{ item.label }}: {{ item.value }}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 批量生图配置（仅 Gemini 分组） -->
+        <div
+          v-if="editForm.platform === 'gemini'"
+          class="border-t pt-4"
+        >
+          <label
+            class="block mb-2 font-medium text-gray-700 dark:text-gray-300"
+          >
+            {{ t("admin.groups.imagePricing.batchImageTitle") }}
+          </label>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            {{ t("admin.groups.imagePricing.batchImageDescription") }}
+          </p>
+          <label class="mb-4 flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              v-model="editForm.allow_batch_image_generation"
+              type="checkbox"
+              class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            {{ t("admin.groups.imagePricing.allowBatchImageGeneration") }}
+          </label>
+          <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div>
+              <label class="input-label">{{
+                t("admin.groups.imagePricing.batchImageDiscountMultiplier")
+              }}</label>
+              <input
+                v-model.number="editForm.batch_image_discount_multiplier"
+                type="number"
+                step="0.0001"
+                min="0"
+                class="input"
+                placeholder="0.5"
+              />
+            </div>
+            <div>
+              <label class="input-label">{{
+                t("admin.groups.imagePricing.batchImageHoldMultiplier")
+              }}</label>
+              <input
+                v-model.number="editForm.batch_image_hold_multiplier"
+                type="number"
+                step="0.0001"
+                min="0"
+                class="input"
+                placeholder="0.6"
+              />
             </div>
           </div>
         </div>
@@ -3260,7 +3526,9 @@ const saveColumnsToStorage = () => {
 };
 
 const isColumnVisible = (key: string) => !hiddenColumns.has(key);
-const hasVisibleUsageColumn = computed(() => isColumnVisible("usage"));
+const hasVisibleUsageSummaryConsumer = computed(
+  () => isColumnVisible("usage") || isColumnVisible("billing_type"),
+);
 const hasVisibleCapacityColumn = computed(() => isColumnVisible("capacity"));
 
 const toggleColumn = (key: string) => {
@@ -3275,7 +3543,7 @@ const toggleColumn = (key: string) => {
   }
   saveColumnsToStorage();
 
-  if (wasHidden && key === "usage") {
+  if (wasHidden && (key === "usage" || key === "billing_type")) {
     loadUsageSummary();
   }
   if (wasHidden && key === "capacity") {
@@ -3519,6 +3787,14 @@ const createForm = reactive({
   image_price_1k: null as number | null,
   image_price_2k: null as number | null,
   image_price_4k: null as number | null,
+  video_rate_independent: false,
+  video_rate_multiplier: 1,
+  video_price_480p: null as number | null,
+  video_price_720p: null as number | null,
+  video_price_1080p: null as number | null,
+  allow_batch_image_generation: false,
+  batch_image_discount_multiplier: 0.5,
+  batch_image_hold_multiplier: 0.6,
   // Claude Code 客户端限制（仅 anthropic 平台使用）
   claude_code_only: false,
   fallback_group_id: null as number | null,
@@ -3854,6 +4130,14 @@ const editForm = reactive({
   image_price_1k: null as number | null,
   image_price_2k: null as number | null,
   image_price_4k: null as number | null,
+  video_rate_independent: false,
+  video_rate_multiplier: 1,
+  video_price_480p: null as number | null,
+  video_price_720p: null as number | null,
+  video_price_1080p: null as number | null,
+  allow_batch_image_generation: false,
+  batch_image_discount_multiplier: 0.5,
+  batch_image_hold_multiplier: 0.6,
   // Claude Code 客户端限制（仅 anthropic 平台使用）
   claude_code_only: false,
   fallback_group_id: null as number | null,
@@ -3887,12 +4171,23 @@ type ImagePricingFormState = {
   image_price_1k: number | string | null;
   image_price_2k: number | string | null;
   image_price_4k: number | string | null;
+  video_rate_independent: boolean;
+  video_rate_multiplier: number;
+  video_price_480p: number | string | null;
+  video_price_720p: number | string | null;
+  video_price_1080p: number | string | null;
 };
 
 const imagePricingTiers = [
   { key: "image_price_1k", label: "1K" },
   { key: "image_price_2k", label: "2K" },
   { key: "image_price_4k", label: "4K" },
+] as const;
+
+const videoPricingTiers = [
+  { key: "video_price_480p", label: "480p" },
+  { key: "video_price_720p", label: "720p" },
+  { key: "video_price_1080p", label: "1080p" },
 ] as const;
 
 const normalizePreviewNumber = (value: number | string | null | undefined, fallback = 0) => {
@@ -3929,11 +4224,32 @@ const buildImageFinalPricePreview = (form: ImagePricingFormState) => {
   });
 };
 
+const buildVideoFinalPricePreview = (form: ImagePricingFormState) => {
+  const multiplier = form.video_rate_independent
+    ? normalizePreviewNumber(form.video_rate_multiplier, 1)
+    : normalizePreviewNumber(form.rate_multiplier, 1);
+  return videoPricingTiers.map((tier) => {
+    const basePrice = normalizePreviewNumber(form[tier.key]);
+    return {
+      label: `${tier.label}/s`,
+      value: basePrice > 0
+        ? formatImagePricePreview(basePrice * multiplier)
+        : t("admin.groups.imagePricing.notConfigured"),
+    };
+  });
+};
+
 const createImageFinalPricePreview = computed(() =>
   buildImageFinalPricePreview(createForm),
 );
 const editImageFinalPricePreview = computed(() =>
   buildImageFinalPricePreview(editForm),
+);
+const createVideoFinalPricePreview = computed(() =>
+  buildVideoFinalPricePreview(createForm),
+);
+const editVideoFinalPricePreview = computed(() =>
+  buildVideoFinalPricePreview(editForm),
 );
 
 // 根据分组类型返回不同的删除确认消息
@@ -3977,7 +4293,7 @@ const loadGroups = async () => {
     groups.value = response.items;
     pagination.total = response.total;
     pagination.pages = response.pages;
-    if (hasVisibleUsageColumn.value) {
+    if (hasVisibleUsageSummaryConsumer.value) {
       loadUsageSummary();
     } else {
       usageLoading.value = false;
@@ -4008,8 +4324,28 @@ const formatCost = (cost: number): string => {
   return cost.toFixed(2);
 };
 
+const formatUsd = (cost: number | null | undefined): string =>
+  `$${formatCost(cost ?? 0)}`;
+
+const getQuotaUsageClass = (
+  used: number,
+  limit: number | null | undefined,
+): string => {
+  if (!limit || limit <= 0) {
+    return "font-medium text-gray-700 dark:text-gray-300";
+  }
+  const ratio = used / limit;
+  if (ratio >= 1) {
+    return "font-semibold text-red-600 dark:text-red-400";
+  }
+  if (ratio >= 0.8) {
+    return "font-semibold text-amber-600 dark:text-amber-400";
+  }
+  return "font-medium text-gray-700 dark:text-gray-300";
+};
+
 const loadUsageSummary = async () => {
-  if (!hasVisibleUsageColumn.value) {
+  if (!hasVisibleUsageSummaryConsumer.value) {
     usageLoading.value = false;
     return;
   }
@@ -4122,6 +4458,14 @@ const closeCreateModal = () => {
   createForm.image_price_1k = null;
   createForm.image_price_2k = null;
   createForm.image_price_4k = null;
+  createForm.video_rate_independent = false;
+  createForm.video_rate_multiplier = 1;
+  createForm.video_price_480p = null;
+  createForm.video_price_720p = null;
+  createForm.video_price_1080p = null;
+  createForm.allow_batch_image_generation = false;
+  createForm.batch_image_discount_multiplier = 0.5;
+  createForm.batch_image_hold_multiplier = 0.6;
   createForm.claude_code_only = false;
   createForm.fallback_group_id = null;
   createForm.fallback_group_id_on_invalid_request = null;
@@ -4157,12 +4501,13 @@ const normalizeOptionalLimit = (
 
 const normalizeImageRateMultiplier = (
   value: number | string | null | undefined,
+  fallback = 1,
 ): number => {
   if (value === null || value === undefined || value === "") {
-    return 1;
+    return fallback;
   }
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 };
 
 const handleCreateGroup = async () => {
@@ -4211,6 +4556,17 @@ const handleCreateGroup = async () => {
     requestData.image_rate_multiplier = normalizeImageRateMultiplier(
       requestData.image_rate_multiplier,
     );
+    requestData.video_rate_multiplier = normalizeImageRateMultiplier(
+      requestData.video_rate_multiplier,
+    );
+    requestData.batch_image_discount_multiplier = normalizeImageRateMultiplier(
+      requestData.batch_image_discount_multiplier,
+      0.5,
+    );
+    requestData.batch_image_hold_multiplier = normalizeImageRateMultiplier(
+      requestData.batch_image_hold_multiplier,
+      0.6,
+    );
     requestData.peak_rate_enabled = createForm.peak_rate_enabled;
     requestData.peak_start = createForm.peak_start;
     requestData.peak_end = createForm.peak_end;
@@ -4254,6 +4610,15 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.image_price_1k = group.image_price_1k;
   editForm.image_price_2k = group.image_price_2k;
   editForm.image_price_4k = group.image_price_4k;
+  editForm.video_rate_independent = group.video_rate_independent ?? false;
+  editForm.video_rate_multiplier = group.video_rate_multiplier ?? 1;
+  editForm.video_price_480p = group.video_price_480p ?? null;
+  editForm.video_price_720p = group.video_price_720p ?? null;
+  editForm.video_price_1080p = group.video_price_1080p ?? null;
+  editForm.allow_batch_image_generation = group.allow_batch_image_generation ?? false;
+  editForm.batch_image_discount_multiplier =
+    group.batch_image_discount_multiplier ?? 0.5;
+  editForm.batch_image_hold_multiplier = group.batch_image_hold_multiplier ?? 0.6;
   editForm.peak_rate_enabled = group.peak_rate_enabled ?? false;
   editForm.peak_start = group.peak_start ?? "";
   editForm.peak_end = group.peak_end ?? "";
@@ -4306,6 +4671,9 @@ const closeEditModal = () => {
   editForm.peak_start = "";
   editForm.peak_end = "";
   editForm.peak_rate_multiplier = 1;
+  editForm.allow_batch_image_generation = false;
+  editForm.batch_image_discount_multiplier = 0.5;
+  editForm.batch_image_hold_multiplier = 0.6;
   resetMessagesDispatchFormState(editForm);
   resetModelsListState(editModelsListState);
 };
@@ -4363,6 +4731,17 @@ const handleUpdateGroup = async () => {
     payload.monthly_limit_usd = emptyToNull(payload.monthly_limit_usd);
     payload.image_rate_multiplier = normalizeImageRateMultiplier(
       payload.image_rate_multiplier,
+    );
+    payload.video_rate_multiplier = normalizeImageRateMultiplier(
+      payload.video_rate_multiplier,
+    );
+    payload.batch_image_discount_multiplier = normalizeImageRateMultiplier(
+      payload.batch_image_discount_multiplier,
+      0.5,
+    );
+    payload.batch_image_hold_multiplier = normalizeImageRateMultiplier(
+      payload.batch_image_hold_multiplier,
+      0.6,
     );
     payload.peak_rate_enabled = editForm.peak_rate_enabled;
     payload.peak_start = editForm.peak_start;

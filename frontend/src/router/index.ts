@@ -253,6 +253,17 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/batch-images',
+    name: 'BatchImages',
+    component: () => import('@/views/user/BatchImageGuideView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Batch Images',
+      titleKey: 'nav.batchImages'
+    }
+  },
+  {
     path: '/profile',
     name: 'Profile',
     component: () => import('@/views/user/ProfileView.vue'),

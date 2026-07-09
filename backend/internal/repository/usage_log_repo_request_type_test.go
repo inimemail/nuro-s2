@@ -89,6 +89,9 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			sqlmock.AnyArg(), // image_output_size
 			sqlmock.AnyArg(), // image_size_source
 			sqlmock.AnyArg(), // image_size_breakdown
+			log.VideoCount,
+			sqlmock.AnyArg(), // video_resolution
+			sqlmock.AnyArg(), // video_duration_seconds
 			sqlmock.AnyArg(), // service_tier
 			sqlmock.AnyArg(), // reasoning_effort
 			sqlmock.AnyArg(), // inbound_endpoint
@@ -181,6 +184,9 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			sqlmock.AnyArg(), // image_output_size
 			sqlmock.AnyArg(), // image_size_source
 			sqlmock.AnyArg(), // image_size_breakdown
+			log.VideoCount,
+			sqlmock.AnyArg(), // video_resolution
+			sqlmock.AnyArg(), // video_duration_seconds
 			serviceTier,
 			sqlmock.AnyArg(),
 			sqlmock.AnyArg(),
@@ -326,12 +332,17 @@ func TestAppendUsageLogBillingModeWhereCondition(t *testing.T) {
 		{
 			name:          "image includes legacy image rows",
 			billingMode:   string(service.BillingModeImage),
-			wantCondition: "(billing_mode = $1 OR COALESCE(image_count, 0) > 0)",
+			wantCondition: "(billing_mode = $1 OR (COALESCE(image_count, 0) > 0 AND COALESCE(video_count, 0) <= 0))",
 		},
 		{
 			name:          "token includes legacy non-image rows",
 			billingMode:   string(service.BillingModeToken),
-			wantCondition: "(billing_mode = $1 OR ((billing_mode IS NULL OR billing_mode = '') AND COALESCE(image_count, 0) <= 0))",
+			wantCondition: "(billing_mode = $1 OR ((billing_mode IS NULL OR billing_mode = '') AND COALESCE(image_count, 0) <= 0 AND COALESCE(video_count, 0) <= 0))",
+		},
+		{
+			name:          "video includes video metadata rows",
+			billingMode:   string(service.BillingModeVideo),
+			wantCondition: "(billing_mode = $1 OR COALESCE(video_count, 0) > 0)",
 		},
 		{
 			name:          "per request remains exact",
@@ -639,7 +650,17 @@ func usageLogScanValuesWithEmptyEdgeMetrics(values ...any) []any {
 	out = append(out, values[:insertAt]...)
 	out = append(out, edgeValues...)
 	out = append(out, values[insertAt:]...)
-	return out
+	const videoInsertAt = 49
+	videoValues := []any{
+		0,                // video_count
+		sql.NullString{}, // video_resolution
+		sql.NullInt64{},  // video_duration_seconds
+	}
+	withVideo := make([]any, 0, len(out)+len(videoValues))
+	withVideo = append(withVideo, out[:videoInsertAt]...)
+	withVideo = append(withVideo, videoValues...)
+	withVideo = append(withVideo, out[videoInsertAt:]...)
+	return withVideo
 }
 
 func (s usageLogScannerStub) Scan(dest ...any) error {

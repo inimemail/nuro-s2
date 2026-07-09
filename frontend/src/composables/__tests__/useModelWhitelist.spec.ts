@@ -39,12 +39,17 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('gemini-3-pro-image')
   })
 
-  it('antigravity / grok 模型候选跟随源码 144', () => {
+  it('antigravity / grok 模型候选跟随源码 147', () => {
     expect(getModelsByPlatform('antigravity')).toContain('gemini-3.1-pro')
+    expect(getModelsByPlatform('grok')).toContain('grok-4.5')
     expect(getModelsByPlatform('grok')).toContain('grok-4.3')
+    expect(getModelsByPlatform('grok')).toContain('grok-composer-2.5-fast')
     expect(getModelsByPlatform('grok')).toContain('grok-imagine-video-1.5')
     expect(getPresetMappingsByPlatform('grok')).toContainEqual(
-      expect.objectContaining({ from: 'grok-latest', to: 'grok-4.3' })
+      expect.objectContaining({ from: 'grok-latest', to: 'grok-4.5' })
+    )
+    expect(getPresetMappingsByPlatform('grok')).toContainEqual(
+      expect.objectContaining({ from: 'grok-composer', to: 'grok-composer-2.5-fast' })
     )
   })
 

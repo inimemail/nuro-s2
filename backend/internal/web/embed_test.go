@@ -31,6 +31,16 @@ func TestInjectSiteTitle(t *testing.T) {
 		assert.NotContains(t, string(result), "Sub2API")
 	})
 
+	t.Run("escapes_site_name", func(t *testing.T) {
+		html := []byte(`<html><head><title>Sub2API - AI API Gateway</title></head><body></body></html>`)
+		settingsJSON := []byte(`{"site_name":"<script>alert(1)</script>"}`)
+
+		result := injectSiteTitle(html, settingsJSON)
+
+		assert.Contains(t, string(result), "<title>&lt;script&gt;alert(1)&lt;/script&gt; - AI API Gateway</title>")
+		assert.NotContains(t, string(result), "<script>alert(1)</script>")
+	})
+
 	t.Run("returns_unchanged_when_site_name_empty", func(t *testing.T) {
 		html := []byte(`<html><head><title>Sub2API - AI API Gateway</title></head><body></body></html>`)
 		settingsJSON := []byte(`{"site_name":""}`)

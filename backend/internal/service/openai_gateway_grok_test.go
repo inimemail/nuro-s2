@@ -16,13 +16,16 @@ import (
 )
 
 func TestPatchGrokResponsesBody(t *testing.T) {
-	body := []byte(`{"model":"grok","input":"hi","prompt_cache_retention":"24h","safety_identifier":"u"}`)
+	body := []byte(`{"model":"grok","input":"hi","prompt_cache_retention":"24h","safety_identifier":"u","presence_penalty":1,"frequencyPenalty":1,"stop":["x"]}`)
 
-	patched, err := patchGrokResponsesBody(body, "grok-4.3")
+	patched, err := patchGrokResponsesBody(body, "grok-4.5")
 	require.NoError(t, err)
-	require.Equal(t, "grok-4.3", gjson.GetBytes(patched, "model").String())
+	require.Equal(t, "grok-4.5", gjson.GetBytes(patched, "model").String())
 	require.False(t, gjson.GetBytes(patched, "prompt_cache_retention").Exists())
 	require.False(t, gjson.GetBytes(patched, "safety_identifier").Exists())
+	require.False(t, gjson.GetBytes(patched, "presence_penalty").Exists())
+	require.False(t, gjson.GetBytes(patched, "frequencyPenalty").Exists())
+	require.False(t, gjson.GetBytes(patched, "stop").Exists())
 }
 
 func TestNormalizeGrokMediaModelForEndpoint(t *testing.T) {
@@ -41,7 +44,7 @@ func TestNormalizeGrokMediaModelForEndpoint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, normalizeGrokMediaModelForEndpoint(tt.endpoint, tt.model))
+			require.Equal(t, tt.want, normalizeGrokMediaModelForEndpoint(tt.endpoint, tt.model, false))
 		})
 	}
 }
@@ -57,6 +60,29 @@ func TestNormalizeGrokMediaForwardBodyRewritesImagineAlias(t *testing.T) {
 	require.Equal(t, "draw a cat", gjson.GetBytes(normalized, "prompt").String())
 }
 
+func TestParseGrokMediaRequestVideoBillingMetadata(t *testing.T) {
+	info := ParseGrokMediaRequest(
+		"application/json",
+		[]byte(`{"model":"grok-imagine-video-1.5","prompt":"clip","resolution":"1080p","duration":10}`),
+	)
+
+	require.Equal(t, "grok-imagine-video-1.5", info.Model)
+	require.Equal(t, VideoBillingResolution1080P, info.Resolution)
+	require.Equal(t, 10, info.DurationSeconds)
+
+	usage := grokMediaUsageFromResponse(
+		GrokMediaEndpointVideosGenerations,
+		info,
+		[]byte(`{"request_id":"video_req_1"}`),
+	)
+	require.Equal(t, "video_req_1", usage.ResponseID)
+	require.Equal(t, 1, usage.VideoCount)
+	require.Equal(t, VideoBillingResolution1080P, usage.VideoResolution)
+	require.Equal(t, 10, usage.VideoDurationSeconds)
+	require.Equal(t, 1, usage.ImageCount)
+	require.Empty(t, usage.ImageSize)
+}
+
 func TestOpenAIGatewayService_ForwardGrokResponses_UsesGrokUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &httpUpstreamRecorder{
@@ -64,7 +90,7 @@ func TestOpenAIGatewayService_ForwardGrokResponses_UsesGrokUpstream(t *testing.T
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"xai_req_1"}},
 			Body: io.NopCloser(bytes.NewBufferString(
-				`{"id":"resp_1","object":"response","model":"grok-4.3","status":"completed","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}`,
+				`{"id":"resp_1","object":"response","model":"grok-4.5","status":"completed","output":[],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}`,
 			)),
 		},
 	}
@@ -87,10 +113,10 @@ func TestOpenAIGatewayService_ForwardGrokResponses_UsesGrokUpstream(t *testing.T
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "grok", result.Model)
-	require.Equal(t, "grok-4.3", result.UpstreamModel)
+	require.Equal(t, "grok-4.5", result.UpstreamModel)
 	require.Equal(t, "Bearer grok-token", upstream.lastReq.Header.Get("Authorization"))
 	require.Equal(t, "https://api.x.ai/v1/responses", upstream.lastReq.URL.String())
-	require.Equal(t, "grok-4.3", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "grok-4.5", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 

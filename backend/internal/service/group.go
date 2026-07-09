@@ -36,12 +36,20 @@ type Group struct {
 	DefaultValidityDays int
 
 	// 图片生成计费配置（antigravity 和 gemini 平台使用）
-	AllowImageGeneration bool
-	ImageRateIndependent bool
-	ImageRateMultiplier  float64
-	ImagePrice1K         *float64
-	ImagePrice2K         *float64
-	ImagePrice4K         *float64
+	AllowImageGeneration         bool
+	AllowBatchImageGeneration    bool
+	ImageRateIndependent         bool
+	ImageRateMultiplier          float64
+	ImagePrice1K                 *float64
+	ImagePrice2K                 *float64
+	ImagePrice4K                 *float64
+	BatchImageDiscountMultiplier float64
+	BatchImageHoldMultiplier     float64
+	VideoRateIndependent         bool
+	VideoRateMultiplier          float64
+	VideoPrice480P               *float64
+	VideoPrice720P               *float64
+	VideoPrice1080P              *float64
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool
@@ -119,6 +127,19 @@ func (g *Group) GetImagePrice(imageSize string) *float64 {
 	default:
 		// 未知尺寸默认按 2K 计费
 		return g.ImagePrice2K
+	}
+}
+
+func (g *Group) GetVideoPrice(resolution string) *float64 {
+	switch NormalizeVideoBillingResolutionOrDefault(resolution) {
+	case VideoBillingResolution480P:
+		return g.VideoPrice480P
+	case VideoBillingResolution720P:
+		return g.VideoPrice720P
+	case VideoBillingResolution1080P:
+		return g.VideoPrice1080P
+	default:
+		return g.VideoPrice480P
 	}
 }
 
@@ -272,9 +293,10 @@ func NormalizePeakRateConfig(subscriptionType string, enabled bool, start, end s
 	return enabled, start, end, multiplier
 }
 
-// computePeakAwareMultipliers 把基础 token 倍率拆分为最终 token 倍率与图片按次倍率。
-func computePeakAwareMultipliers(apiKey *APIKey, base float64, now time.Time) (text, image float64) {
+// computePeakAwareMultipliers 把基础 token 倍率拆分为最终 token 倍率、图片倍率与视频倍率。
+func computePeakAwareMultipliers(apiKey *APIKey, base float64, now time.Time) (text, image, video float64) {
 	image = resolveImageRateMultiplier(apiKey, base)
+	video = resolveVideoRateMultiplier(apiKey, base)
 	peak := 1.0
 	if apiKey != nil && apiKey.Group != nil {
 		peak = apiKey.Group.PeakMultiplierAt(now)
