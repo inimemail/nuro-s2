@@ -380,6 +380,147 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamKeepsToolNameAndBodyNormali
 	require.NotContains(t, body, "\"name\":\"edit\"")
 }
 
+func TestOpenAIGatewayService_OAuthPassthrough_ResponsesCompatNormalizesStringInputAndTokenParams(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+
+	originalBody := []byte(`{"model":"gpt-5.2","stream":false,"store":true,"max_output_tokens":128,"max_completion_tokens":64,"input":"hi"}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
+		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+	}
+	upstream := &httpUpstreamRecorder{resp: resp}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+
+	account := &Account{
+		ID:          123,
+		Name:        "acc",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra: map[string]any{
+			"openai_passthrough":                  true,
+			"openai_responses_passthrough_compat": true,
+		},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, originalBody)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.True(t, gjson.GetBytes(upstream.lastBody, "input").IsArray())
+	require.Equal(t, "hi", gjson.GetBytes(upstream.lastBody, "input.0.content.0.text").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "max_output_tokens").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "max_completion_tokens").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Bool())
+	require.True(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
+}
+
+func TestOpenAIGatewayService_OAuthPassthrough_ResponsesArgumentsObjectCompat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("enabled converts JSON object string arguments", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+		c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+
+		originalBody := []byte(`{"model":"gpt-5.2","stream":false,"store":true,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"cmd\":\"ls\",\"limit\":2}"}]}`)
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
+			Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		}
+		upstream := &httpUpstreamRecorder{resp: resp}
+
+		svc := &OpenAIGatewayService{
+			cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+			httpUpstream: upstream,
+		}
+
+		account := &Account{
+			ID:          123,
+			Name:        "acc",
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+			Extra: map[string]any{
+				"openai_passthrough":                       true,
+				"openai_responses_passthrough_compat":      true,
+				"openai_responses_arguments_object_compat": true,
+			},
+			Status:         StatusActive,
+			Schedulable:    true,
+			RateMultiplier: f64p(1),
+		}
+
+		result, err := svc.Forward(context.Background(), c, account, originalBody)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, upstream.lastReq)
+		require.True(t, gjson.GetBytes(upstream.lastBody, "input.0.arguments").IsObject())
+		require.Equal(t, "ls", gjson.GetBytes(upstream.lastBody, "input.0.arguments.cmd").String())
+		require.Equal(t, int64(2), gjson.GetBytes(upstream.lastBody, "input.0.arguments.limit").Int())
+	})
+
+	t.Run("passthrough compat alone keeps string arguments", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+		c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+
+		originalBody := []byte(`{"model":"gpt-5.2","stream":false,"store":true,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"cmd\":\"ls\"}"}]}`)
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
+			Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		}
+		upstream := &httpUpstreamRecorder{resp: resp}
+
+		svc := &OpenAIGatewayService{
+			cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+			httpUpstream: upstream,
+		}
+
+		account := &Account{
+			ID:          123,
+			Name:        "acc",
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Concurrency: 1,
+			Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+			Extra: map[string]any{
+				"openai_passthrough":                  true,
+				"openai_responses_passthrough_compat": true,
+			},
+			Status:         StatusActive,
+			Schedulable:    true,
+			RateMultiplier: f64p(1),
+		}
+
+		result, err := svc.Forward(context.Background(), c, account, originalBody)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, upstream.lastReq)
+		require.Equal(t, gjson.String, gjson.GetBytes(upstream.lastBody, "input.0.arguments").Type)
+		require.Equal(t, `{"cmd":"ls"}`, gjson.GetBytes(upstream.lastBody, "input.0.arguments").String())
+	})
+}
+
 func TestOpenAIGatewayService_OAuthPassthrough_CompactUsesJSONAndKeepsNonStreaming(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

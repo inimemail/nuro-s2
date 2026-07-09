@@ -78,6 +78,7 @@ func TestAccount_IsOpenAIResponsesPassthroughCompatEnabled(t *testing.T) {
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeAPIKey,
 			Extra: map[string]any{
+				"openai_passthrough":                  true,
 				"openai_responses_passthrough_compat": true,
 			},
 		}
@@ -92,10 +93,33 @@ func TestAccount_IsOpenAIResponsesPassthroughCompatEnabled(t *testing.T) {
 		require.False(t, account.IsOpenAIResponsesPassthroughCompatEnabled())
 	})
 
-	t.Run("OAuth ignored", func(t *testing.T) {
+	t.Run("OpenAI OAuth explicit enabled", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_passthrough":                  true,
+				"openai_responses_passthrough_compat": true,
+			},
+		}
+		require.True(t, account.IsOpenAIResponsesPassthroughCompatEnabled())
+	})
+
+	t.Run("passthrough disabled ignored", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_responses_passthrough_compat": true,
+			},
+		}
+		require.False(t, account.IsOpenAIResponsesPassthroughCompatEnabled())
+	})
+
+	t.Run("non OpenAI ignored", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformAnthropic,
+			Type:     AccountTypeAPIKey,
 			Extra: map[string]any{
 				"openai_responses_passthrough_compat": true,
 			},
@@ -110,6 +134,7 @@ func TestAccount_IsOpenAIResponsesArgumentsObjectCompatEnabled(t *testing.T) {
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeAPIKey,
 			Extra: map[string]any{
+				"openai_passthrough":                       true,
 				"openai_responses_arguments_object_compat": true,
 			},
 		}
@@ -124,10 +149,33 @@ func TestAccount_IsOpenAIResponsesArgumentsObjectCompatEnabled(t *testing.T) {
 		require.False(t, account.IsOpenAIResponsesArgumentsObjectCompatEnabled())
 	})
 
-	t.Run("OAuth ignored", func(t *testing.T) {
+	t.Run("OpenAI OAuth explicit enabled", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_passthrough":                       true,
+				"openai_responses_arguments_object_compat": true,
+			},
+		}
+		require.True(t, account.IsOpenAIResponsesArgumentsObjectCompatEnabled())
+	})
+
+	t.Run("passthrough disabled ignored", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"openai_responses_arguments_object_compat": true,
+			},
+		}
+		require.False(t, account.IsOpenAIResponsesArgumentsObjectCompatEnabled())
+	})
+
+	t.Run("non OpenAI ignored", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformAnthropic,
+			Type:     AccountTypeAPIKey,
 			Extra: map[string]any{
 				"openai_responses_arguments_object_compat": true,
 			},

@@ -88,6 +88,35 @@ func normalizeOpenAIResponsesInputArgumentsBody(body []byte) ([]byte, bool, erro
 	return normalized, changed, nil
 }
 
+func normalizeOpenAIResponsesInputArgumentsMap(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	input, ok := reqBody["input"].([]any)
+	if !ok {
+		return false
+	}
+
+	changed := false
+	for _, item := range input {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		args, ok := itemMap["arguments"].(string)
+		if !ok {
+			continue
+		}
+		argObject, ok := openAIResponsesArgumentsObjectFromString(args)
+		if !ok {
+			continue
+		}
+		itemMap["arguments"] = argObject
+		changed = true
+	}
+	return changed
+}
+
 func openAIResponsesArgumentsObjectFromString(arguments string) (map[string]any, bool) {
 	trimmed := strings.TrimSpace(arguments)
 	if trimmed == "" {

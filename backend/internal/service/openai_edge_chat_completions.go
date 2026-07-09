@@ -456,6 +456,11 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if codexResult.PromptCacheKey != "" {
 		promptCacheKey = codexResult.PromptCacheKey
 	}
+	if account.IsOpenAIResponsesArgumentsObjectCompatEnabled() {
+		if normalizeOpenAIResponsesInputArgumentsMap(reqBody) {
+			bodyModified = true
+		}
+	}
 
 	if s.isOpenAIPromptCacheBoostRuntimeEnabled(account) {
 		if promptCacheKey == "" && s.isOpenAIPromptCacheBoostKeyRuntimeEnabled(account) {

@@ -3436,10 +3436,10 @@ export default {
           'When enabled, this OpenAI account uses automatic passthrough: the gateway forwards request/response as-is and only swaps auth, while keeping billing/concurrency/audit and necessary safety filtering.',
         responsesPassthroughCompat: 'Responses passthrough compatibility',
         responsesPassthroughCompatDesc:
-          'Only applies to this OpenAI APIKey account. When enabled, string input probes are normalized and unsupported token parameters are filtered for compatible upstreams. Disabled by default to keep strict passthrough.',
+          'Only applies to this OpenAI OAuth/APIKey account. When enabled, string input probes are normalized and unsupported token parameters are filtered for compatible upstreams. Disabled by default to keep strict passthrough.',
         responsesArgumentsObjectCompat: 'Responses arguments object compatibility',
         responsesArgumentsObjectCompatDesc:
-          'Only applies to this OpenAI APIKey account. When enabled, input[].arguments strings that parse as JSON objects are converted to objects for non-standard Responses upstreams. Disabled by default.',
+          'Only applies to this OpenAI OAuth/APIKey account. When enabled, input[].arguments strings that parse as JSON objects are converted to objects for non-standard Responses upstreams. Disabled by default.',
         responsesWebsocketsV2: 'Responses WebSocket v2',
         responsesWebsocketsV2Desc:
           'Disabled by default. Enable to allow responses_websockets_v2 capability (still gated by global and account-type switches).',

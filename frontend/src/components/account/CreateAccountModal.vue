@@ -3044,7 +3044,7 @@
         </div>
 
         <div
-          v-if="accountCategory === 'apikey' && openaiPassthroughEnabled"
+          v-if="isOpenAIRequestPathCreate && openaiPassthroughEnabled"
           class="mt-4 border-l-2 border-primary-200 pl-3 dark:border-primary-800"
         >
           <div class="flex items-center justify-between gap-4">
@@ -5796,7 +5796,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     delete extra.openai_oauth_passthrough
   }
   if (
-    isOpenAIAPIKeyCreate.value &&
+    isOpenAIRequestPathCreate.value &&
     openaiPassthroughEnabled.value &&
     openAIResponsesPassthroughCompatEnabled.value
   ) {
@@ -5805,7 +5805,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     delete extra.openai_responses_passthrough_compat
   }
   if (
-    isOpenAIAPIKeyCreate.value &&
+    isOpenAIRequestPathCreate.value &&
     openaiPassthroughEnabled.value &&
     openAIResponsesArgumentsObjectCompatEnabled.value
   ) {

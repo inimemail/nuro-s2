@@ -1852,20 +1852,20 @@ func (a *Account) IsOpenAIPassthroughEnabled() bool {
 	return false
 }
 
-// IsOpenAIResponsesPassthroughCompatEnabled returns whether an OpenAI APIKey
-// account should apply narrow Responses passthrough compatibility fixes.
+// IsOpenAIResponsesPassthroughCompatEnabled returns whether an OpenAI
+// passthrough account should apply narrow Responses compatibility fixes.
 func (a *Account) IsOpenAIResponsesPassthroughCompatEnabled() bool {
-	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
+	if a == nil || !a.IsOpenAI() || !(a.IsOpenAIOAuth() || a.IsOpenAIApiKey()) || a.Extra == nil || !a.IsOpenAIPassthroughEnabled() {
 		return false
 	}
 	return a.getExtraBool("openai_responses_passthrough_compat")
 }
 
-// IsOpenAIResponsesArgumentsObjectCompatEnabled returns whether an OpenAI APIKey
-// account should convert Responses input[].arguments JSON strings to objects
-// for non-standard upstreams.
+// IsOpenAIResponsesArgumentsObjectCompatEnabled returns whether an OpenAI
+// passthrough account should convert Responses input[].arguments JSON strings
+// to objects for non-standard upstreams.
 func (a *Account) IsOpenAIResponsesArgumentsObjectCompatEnabled() bool {
-	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
+	if a == nil || !a.IsOpenAI() || !(a.IsOpenAIOAuth() || a.IsOpenAIApiKey()) || a.Extra == nil || !a.IsOpenAIPassthroughEnabled() {
 		return false
 	}
 	return a.getExtraBool("openai_responses_arguments_object_compat")

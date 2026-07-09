@@ -1854,7 +1854,7 @@
         </div>
 
         <div
-          v-if="account?.type === 'apikey' && openaiPassthroughEnabled"
+          v-if="(account?.type === 'oauth' || account?.type === 'apikey') && openaiPassthroughEnabled"
           class="mt-4 border-l-2 border-primary-200 pl-3 dark:border-primary-800"
         >
           <div class="flex items-center justify-between gap-4">
@@ -4291,11 +4291,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   if (newAccount.platform === 'openai' && (newAccount.type === 'oauth' || newAccount.type === 'setup-token' || newAccount.type === 'apikey')) {
     openaiPassthroughEnabled.value = extra?.openai_passthrough === true || extra?.openai_oauth_passthrough === true
     openAIResponsesPassthroughCompatEnabled.value =
-      newAccount.type === 'apikey' &&
+      (newAccount.type === 'oauth' || newAccount.type === 'apikey') &&
       openaiPassthroughEnabled.value &&
       extra?.openai_responses_passthrough_compat === true
     openAIResponsesArgumentsObjectCompatEnabled.value =
-      newAccount.type === 'apikey' &&
+      (newAccount.type === 'oauth' || newAccount.type === 'apikey') &&
       openaiPassthroughEnabled.value &&
       extra?.openai_responses_arguments_object_compat === true
     openAICompactMode.value = (extra?.openai_compact_mode as OpenAICompactMode) || 'auto'
@@ -5774,12 +5774,12 @@ const handleSubmit = async () => {
         delete newExtra.openai_passthrough
         delete newExtra.openai_oauth_passthrough
       }
-      if (props.account.type === 'apikey' && openaiPassthroughEnabled.value && openAIResponsesPassthroughCompatEnabled.value) {
+      if ((props.account.type === 'oauth' || props.account.type === 'apikey') && openaiPassthroughEnabled.value && openAIResponsesPassthroughCompatEnabled.value) {
         newExtra.openai_responses_passthrough_compat = true
       } else {
         delete newExtra.openai_responses_passthrough_compat
       }
-      if (props.account.type === 'apikey' && openaiPassthroughEnabled.value && openAIResponsesArgumentsObjectCompatEnabled.value) {
+      if ((props.account.type === 'oauth' || props.account.type === 'apikey') && openaiPassthroughEnabled.value && openAIResponsesArgumentsObjectCompatEnabled.value) {
         newExtra.openai_responses_arguments_object_compat = true
       } else {
         delete newExtra.openai_responses_arguments_object_compat

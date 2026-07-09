@@ -144,3 +144,43 @@ func TestNormalizeOpenAIResponsesInputArgumentsBody(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeOpenAIResponsesInputArgumentsMap(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5",
+		"input": []any{
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_1",
+				"name":      "exec",
+				"arguments": `{"cmd":"ls","limit":2}`,
+			},
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_2",
+				"name":      "noop",
+				"arguments": "[1,2]",
+			},
+		},
+	}
+
+	if !normalizeOpenAIResponsesInputArgumentsMap(reqBody) {
+		t.Fatal("expected arguments map normalization")
+	}
+	input := reqBody["input"].([]any)
+	first := input[0].(map[string]any)
+	args, ok := first["arguments"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first arguments to become object, got %#v", first["arguments"])
+	}
+	if got := args["cmd"]; got != "ls" {
+		t.Fatalf("unexpected cmd: %#v", got)
+	}
+	if got := args["limit"]; got != float64(2) {
+		t.Fatalf("unexpected limit: %#v", got)
+	}
+	second := input[1].(map[string]any)
+	if got := second["arguments"]; got != "[1,2]" {
+		t.Fatalf("expected non-object arguments to stay string, got %#v", got)
+	}
+}

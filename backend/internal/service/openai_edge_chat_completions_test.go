@@ -442,6 +442,88 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 	}
 }
 
+func TestBuildChatGPTOAuthResponsesEdgePlanNormalizesInputArgumentsWhenCompatEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+
+	account := &Account{
+		ID:       123,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "oauth-token",
+		},
+		Extra: map[string]any{
+			"openai_passthrough":                       true,
+			"openai_responses_arguments_object_compat": true,
+		},
+	}
+	body := []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"cmd\":\"ls\",\"limit\":2}"}]}`)
+
+	plan, err := (&OpenAIGatewayService{}).BuildChatGPTOAuthResponsesEdgePlan(context.Background(), c, account, body)
+	if err != nil {
+		t.Fatalf("build oauth edge plan: %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
+	if err != nil {
+		t.Fatalf("decode body_raw_base64: %v", err)
+	}
+	if !gjson.GetBytes(decoded, "input.0.arguments").IsObject() {
+		t.Fatalf("expected oauth edge arguments object, got %s", string(decoded))
+	}
+	if got := gjson.GetBytes(decoded, "input.0.arguments.cmd").String(); got != "ls" {
+		t.Fatalf("unexpected normalized arguments cmd: %q body=%s", got, string(decoded))
+	}
+	if got := gjson.GetBytes(decoded, "input.0.arguments.limit").Int(); got != 2 {
+		t.Fatalf("unexpected normalized arguments limit: %d body=%s", got, string(decoded))
+	}
+}
+
+func TestBuildChatGPTOAuthResponsesEdgePlanKeepsInputArgumentsStringWhenCompatDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, tc := range []struct {
+		name  string
+		extra map[string]any
+	}{
+		{name: "no compat extra", extra: nil},
+		{name: "compat extra without passthrough", extra: map[string]any{
+			"openai_responses_arguments_object_compat": true,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+
+			account := &Account{
+				ID:       123,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"access_token": "oauth-token",
+				},
+				Extra: tc.extra,
+			}
+			body := []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"cmd\":\"ls\"}"}]}`)
+
+			plan, err := (&OpenAIGatewayService{}).BuildChatGPTOAuthResponsesEdgePlan(context.Background(), c, account, body)
+			if err != nil {
+				t.Fatalf("build oauth edge plan: %v", err)
+			}
+			decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
+			if err != nil {
+				t.Fatalf("decode body_raw_base64: %v", err)
+			}
+			if got := gjson.GetBytes(decoded, "input.0.arguments").String(); got != `{"cmd":"ls"}` {
+				t.Fatalf("expected oauth edge arguments to remain string, got %q body=%s", got, string(decoded))
+			}
+		})
+	}
+}
+
 func TestBuildChatGPTOAuthResponsesEdgePlanAllowsSelfContainedFunctionCallOutput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
