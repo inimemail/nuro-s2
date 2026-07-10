@@ -464,6 +464,32 @@ func TestChatCompletionsToResponses_ServiceTier(t *testing.T) {
 	assert.Equal(t, "flex", resp.ServiceTier)
 }
 
+func TestChatCompletionsToResponses_ParallelToolCallsPreservesExplicitFalse(t *testing.T) {
+	parallel := false
+	req := &ChatCompletionsRequest{
+		Model:             "gpt-4o",
+		ParallelToolCalls: &parallel,
+		Messages:          []ChatMessage{{Role: "user", Content: json.RawMessage(`"Hi"`)}},
+	}
+	resp, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+	require.NotNil(t, resp.ParallelToolCalls)
+	assert.False(t, *resp.ParallelToolCalls)
+}
+
+func TestResponsesUsageUnmarshal_CacheWriteDetailsFillTopLevel(t *testing.T) {
+	var usage ResponsesUsage
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"input_tokens":100,
+		"output_tokens":5,
+		"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":20}
+	}`), &usage))
+
+	require.Equal(t, 20, usage.CacheCreationInputTokens)
+	require.NotNil(t, usage.InputTokensDetails)
+	require.Equal(t, 20, usage.InputTokensDetails.CacheWriteTokens)
+}
+
 // ---------------------------------------------------------------------------
 // temperature / top_p stripping for reasoning models
 // ---------------------------------------------------------------------------

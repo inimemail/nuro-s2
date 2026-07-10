@@ -220,9 +220,14 @@ func extractOpenAIEmbeddingsUsage(body []byte) OpenAIUsage {
 		usage.Get("cache_read_input_tokens"),
 	)
 	cacheCreationTokens := firstPositiveGJSONInt(
+		usage.Get("input_tokens_details.cache_write_tokens"),
+		usage.Get("prompt_tokens_details.cache_write_tokens"),
+		usage.Get("input_tokens_details.cache_creation_tokens"),
+		usage.Get("prompt_tokens_details.cache_creation_tokens"),
+		usage.Get("cache_write_tokens"),
 		usage.Get("cache_creation_tokens"),
 		usage.Get("cache_creation_input_tokens"),
-		usage.Get("input_tokens_details.cache_creation_tokens"),
+		usage.Get("cache_write_input_tokens"),
 	)
 	return OpenAIUsage{
 		InputTokens:              inputTokens,

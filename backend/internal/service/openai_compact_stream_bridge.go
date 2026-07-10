@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -40,22 +42,74 @@ func openAICompactClientWantsStream(c *gin.Context) bool {
 }
 
 func writeOpenAICompactSSEBridge(c *gin.Context, statusCode int, finalResponse []byte) bool {
-	if c == nil || statusCode < 200 || statusCode >= 300 || !openAICompactClientWantsStream(c) {
+	if c == nil || !openAICompactClientWantsStream(c) {
+		return false
+	}
+	committed := StopOpenAICompactSSEKeepaliveCommitted(c)
+	if statusCode < 200 || statusCode >= 300 {
+		if committed {
+			writeOpenAICompactSSEFailure(c, statusCode, finalResponse)
+			return true
+		}
 		return false
 	}
 	payload, ok := buildOpenAICompactSSEPayload(finalResponse)
 	if !ok {
+		if committed {
+			writeOpenAICompactSSEFailure(c, http.StatusBadGateway, finalResponse)
+			return true
+		}
 		return false
 	}
-	header := c.Writer.Header()
-	header.Set("Content-Type", "text/event-stream")
-	header.Set("Cache-Control", "no-cache")
-	header.Set("Connection", "keep-alive")
-	header.Set("X-Accel-Buffering", "no")
-	c.Writer.WriteHeader(statusCode)
+	if !committed {
+		header := c.Writer.Header()
+		header.Set("Content-Type", "text/event-stream")
+		header.Set("Cache-Control", "no-cache")
+		header.Set("Connection", "keep-alive")
+		header.Set("X-Accel-Buffering", "no")
+		c.Writer.WriteHeader(statusCode)
+	}
 	_, _ = c.Writer.Write(payload)
 	c.Writer.Flush()
 	return true
+}
+
+func writeOpenAICompactSSEFailure(c *gin.Context, statusCode int, errorBody []byte) {
+	message := ""
+	if len(errorBody) > 0 {
+		message = sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(errorBody)))
+	}
+	if message == "" {
+		message = "Upstream compact request failed with HTTP " + strconv.Itoa(statusCode)
+	}
+	writeOpenAICompactSSEFailureMessage(c, statusCode, "upstream_error", message)
+}
+
+func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType, message string) {
+	if c == nil {
+		return
+	}
+	MarkOpsStreamError(c, statusCode, errType, message)
+	payload, err := json.Marshal(map[string]any{
+		"type": "response.failed",
+		"response": map[string]any{
+			"id":     "resp_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
+			"object": "response",
+			"status": "failed",
+			"output": []any{},
+			"error": map[string]any{
+				"code":    errType,
+				"message": message,
+			},
+		},
+	})
+	if err != nil {
+		return
+	}
+	_, _ = c.Writer.Write([]byte("event: response.failed\ndata: "))
+	_, _ = c.Writer.Write(payload)
+	_, _ = c.Writer.Write([]byte("\n\n"))
+	c.Writer.Flush()
 }
 
 func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {

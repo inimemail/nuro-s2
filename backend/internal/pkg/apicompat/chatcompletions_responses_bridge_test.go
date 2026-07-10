@@ -73,6 +73,20 @@ func TestResponsesToChatCompletionsRequest_InstructionsAndInputDeveloperRole(t *
 	assert.JSONEq(t, `"Hello"`, string(out.Messages[2].Content))
 }
 
+func TestResponsesToChatCompletionsRequest_ParallelToolCallsPreservesExplicitFalse(t *testing.T) {
+	parallel := false
+	req := &ResponsesRequest{
+		Model:             "gpt-4o",
+		ParallelToolCalls: &parallel,
+		Input:             json.RawMessage(`[{"role":"user","content":"Hello"}]`),
+	}
+
+	out, err := ResponsesToChatCompletionsRequest(req)
+	require.NoError(t, err)
+	require.NotNil(t, out.ParallelToolCalls)
+	assert.False(t, *out.ParallelToolCalls)
+}
+
 func TestResponsesToChatCompletionsRequest_TextFormatJsonObject(t *testing.T) {
 	req := &ResponsesRequest{
 		Model: "gpt-4o",

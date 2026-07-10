@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestExtractOpenAIRequestMetaFromBody(t *testing.T) {
@@ -73,6 +74,20 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 			wantValue: "xhigh",
 		},
 		{
+			name:      "GPT-5.6 显式 max 保留",
+			body:      []byte(`{"reasoning":{"effort":"max"}}`),
+			model:     "gpt-5.6-luna",
+			wantNil:   false,
+			wantValue: "max",
+		},
+		{
+			name:      "非 GPT-5.6 显式 max 兼容为 xhigh",
+			body:      []byte(`{"reasoning":{"effort":"max"}}`),
+			model:     "gpt-5.4",
+			wantNil:   false,
+			wantValue: "xhigh",
+		},
+		{
 			name:    "minimal 归一化为空",
 			body:    []byte(`{"reasoning":{"effort":"minimal"}}`),
 			model:   "gpt-5-high",
@@ -84,6 +99,20 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 			model:     "gpt-5-high",
 			wantNil:   false,
 			wantValue: "high",
+		},
+		{
+			name:      "GPT-5.6 从 max 后缀推导",
+			body:      []byte(`{"input":"hi"}`),
+			model:     "gpt-5.6-luna-max",
+			wantNil:   false,
+			wantValue: "max",
+		},
+		{
+			name:      "非 GPT-5.6 从 max 后缀推导为 xhigh",
+			body:      []byte(`{"input":"hi"}`),
+			model:     "gpt-5.4-max",
+			wantNil:   false,
+			wantValue: "xhigh",
 		},
 		{
 			name:    "未知后缀不返回",
@@ -104,6 +133,55 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 			require.Equal(t, tt.wantValue, *got)
 		})
 	}
+}
+
+func TestOpenAIUsageFromGJSON_ParsesCacheWriteAliases(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{
+			name: "input details cache_write_tokens",
+			body: `{"usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":20}}}`,
+			want: 20,
+		},
+		{
+			name: "prompt details cache_creation_tokens",
+			body: `{"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":30,"cache_creation_tokens":21}}}`,
+			want: 21,
+		},
+		{
+			name: "top-level cache_creation_input_tokens",
+			body: `{"usage":{"input_tokens":100,"output_tokens":5,"cache_creation_input_tokens":22}}`,
+			want: 22,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usage, ok := openAIUsageFromGJSON(gjson.Get(tt.body, "usage"))
+			require.True(t, ok)
+			require.Equal(t, tt.want, usage.CacheCreationInputTokens)
+		})
+	}
+}
+
+func TestReconstructResponseOutputFromSSE_IncludesReasoningTextDelta(t *testing.T) {
+	output, ok := reconstructResponseOutputFromSSE("data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"private plan\"}\n\n")
+	require.True(t, ok)
+	require.Equal(t, "reasoning", gjson.GetBytes(output, "0.type").String())
+	require.Equal(t, "private plan", gjson.GetBytes(output, "0.summary.0.text").String())
+}
+
+func TestReconstructResponseOutputFromSSE_IncludesCustomToolCallInputDelta(t *testing.T) {
+	output, ok := reconstructResponseOutputFromSSE("data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"custom_tool_call\",\"call_id\":\"call_1\",\"name\":\"shell\"}}\n\n" +
+		"data: {\"type\":\"response.custom_tool_call_input.delta\",\"output_index\":0,\"delta\":\"echo hi\"}\n\n")
+	require.True(t, ok)
+	require.Equal(t, "function_call", gjson.GetBytes(output, "0.type").String())
+	require.Equal(t, "call_1", gjson.GetBytes(output, "0.call_id").String())
+	require.Equal(t, "shell", gjson.GetBytes(output, "0.name").String())
+	require.Equal(t, "echo hi", gjson.GetBytes(output, "0.arguments").String())
 }
 
 func TestGetOpenAIRequestBodyMap_UsesContextCache(t *testing.T) {

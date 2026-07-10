@@ -127,12 +127,13 @@ func TestGetModelPricing_Gpt56UsesStaticFallbackWhenRemoteMissing(t *testing.T) 
 
 	got := svc.GetModelPricing("openai/gpt5.6luna")
 	require.NotNil(t, got)
-	require.InDelta(t, 2.5e-6, got.InputCostPerToken, 1e-12)
-	require.InDelta(t, 1.5e-5, got.OutputCostPerToken, 1e-12)
-	require.InDelta(t, 2.5e-7, got.CacheReadInputTokenCost, 1e-12)
-	require.Equal(t, 272000, got.LongContextInputTokenThreshold)
-	require.InDelta(t, 2.0, got.LongContextInputCostMultiplier, 1e-12)
-	require.InDelta(t, 1.5, got.LongContextOutputCostMultiplier, 1e-12)
+	require.InDelta(t, 1e-6, got.InputCostPerToken, 1e-12)
+	require.InDelta(t, 6e-6, got.OutputCostPerToken, 1e-12)
+	require.InDelta(t, 1.25e-6, got.CacheCreationInputTokenCost, 1e-12)
+	require.InDelta(t, 1e-7, got.CacheReadInputTokenCost, 1e-12)
+	require.Equal(t, 0, got.LongContextInputTokenThreshold)
+	require.Zero(t, got.LongContextInputCostMultiplier)
+	require.Zero(t, got.LongContextOutputCostMultiplier)
 }
 
 func TestDefaultPricingIncludesCodexAutoReview(t *testing.T) {
@@ -160,16 +161,34 @@ func TestDefaultPricingIncludesGpt56Series(t *testing.T) {
 	require.NoError(t, err)
 	svc.pricingData = pricingData
 
-	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
-		t.Run(model, func(t *testing.T) {
-			got := svc.GetModelPricing(model)
+	tests := []struct {
+		model                 string
+		input                 float64
+		output                float64
+		cacheCreation         float64
+		cacheRead             float64
+		inputPriority         float64
+		outputPriority        float64
+		cacheCreationPriority float64
+		cacheReadPriority     float64
+	}{
+		{"gpt-5.6-sol", 5e-6, 3e-5, 6.25e-6, 5e-7, 1e-5, 6e-5, 1.25e-5, 1e-6},
+		{"gpt-5.6-terra", 2.5e-6, 1.5e-5, 3.125e-6, 2.5e-7, 5e-6, 3e-5, 6.25e-6, 5e-7},
+		{"gpt-5.6-luna", 1e-6, 6e-6, 1.25e-6, 1e-7, 2e-6, 1.2e-5, 2.5e-6, 2e-7},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := svc.GetModelPricing(tt.model)
 			require.NotNil(t, got)
-			require.InDelta(t, 5e-6, got.InputCostPerToken, 1e-12)
-			require.InDelta(t, 3e-5, got.OutputCostPerToken, 1e-12)
-			require.InDelta(t, 5e-7, got.CacheReadInputTokenCost, 1e-12)
-			require.InDelta(t, 1e-5, got.InputCostPerTokenPriority, 1e-12)
-			require.InDelta(t, 6e-5, got.OutputCostPerTokenPriority, 1e-12)
-			require.InDelta(t, 1e-6, got.CacheReadInputTokenCostPriority, 1e-12)
+			require.InDelta(t, tt.input, got.InputCostPerToken, 1e-12)
+			require.InDelta(t, tt.output, got.OutputCostPerToken, 1e-12)
+			require.InDelta(t, tt.cacheCreation, got.CacheCreationInputTokenCost, 1e-12)
+			require.InDelta(t, tt.cacheRead, got.CacheReadInputTokenCost, 1e-12)
+			require.InDelta(t, tt.inputPriority, got.InputCostPerTokenPriority, 1e-12)
+			require.InDelta(t, tt.outputPriority, got.OutputCostPerTokenPriority, 1e-12)
+			require.InDelta(t, tt.cacheCreationPriority, got.CacheCreationInputTokenCostPriority, 1e-12)
+			require.InDelta(t, tt.cacheReadPriority, got.CacheReadInputTokenCostPriority, 1e-12)
 		})
 	}
 }
