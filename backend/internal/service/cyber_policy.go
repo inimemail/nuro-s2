@@ -17,6 +17,7 @@ const (
 	CyberPolicyAnchorPromptCacheKey = "prompt_cache_key"
 
 	defaultCyberPolicySessionBlockTTL = 15 * time.Minute
+	opsCyberPolicyKey                 = "ops_cyber_policy"
 )
 
 type CyberPolicyDecision struct {
@@ -44,6 +45,49 @@ func (e *CyberPolicyBlockedError) Error() string {
 		msg = "upstream cyber_policy blocked this session"
 	}
 	return msg
+}
+
+// CyberPolicyMark records one upstream cyber_policy hard block on gin.Context.
+// Handler-side usage recording reads this mark to label the usage row request_type=cyber.
+type CyberPolicyMark struct {
+	Code           string
+	Message        string
+	Body           string
+	UpstreamStatus int
+	UpstreamInTok  int
+	UpstreamOutTok int
+}
+
+func MarkOpsCyberPolicy(c *gin.Context, mark CyberPolicyMark) {
+	if c == nil {
+		return
+	}
+	if GetOpsCyberPolicy(c) != nil {
+		return
+	}
+	mark.Code = "cyber_policy"
+	mark.Message = strings.TrimSpace(mark.Message)
+	mark.Body = strings.TrimSpace(mark.Body)
+	c.Set(opsCyberPolicyKey, &mark)
+}
+
+func GetOpsCyberPolicy(c *gin.Context) *CyberPolicyMark {
+	if c == nil {
+		return nil
+	}
+	if v, ok := c.Get(opsCyberPolicyKey); ok {
+		if mark, ok := v.(*CyberPolicyMark); ok && mark != nil {
+			return mark
+		}
+	}
+	return nil
+}
+
+func ClearOpsCyberPolicy(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(opsCyberPolicyKey, (*CyberPolicyMark)(nil))
 }
 
 func DetectOpenAICyberPolicy(payload []byte) CyberPolicyDecision {
@@ -237,4 +281,13 @@ func markOpenAICyberPolicyOps(c *gin.Context, account *Account, passthrough bool
 		event.UpstreamResponseBody = truncateString(string(payload), 2048)
 	}
 	appendOpsUpstreamError(c, event)
+
+	usage, _ := extractOpenAIUsageFromJSONBytes(payload)
+	MarkOpsCyberPolicy(c, CyberPolicyMark{
+		Message:        msg,
+		Body:           truncateString(string(payload), 2048),
+		UpstreamStatus: statusCode,
+		UpstreamInTok:  usage.InputTokens,
+		UpstreamOutTok: usage.OutputTokens,
+	})
 }

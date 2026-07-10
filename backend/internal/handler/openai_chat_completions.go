@@ -310,6 +310,19 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				if !upstreamErrorAlreadyCommunicated {
 					wroteFallback = h.ensureForwardErrorResponse(c, streamStarted)
 				}
+				h.recordCyberPolicyUsageIfMarked(
+					c.Request.Context(),
+					c,
+					apiKey,
+					account,
+					subscription,
+					reqModel,
+					reqStream,
+					GetInboundEndpoint(c),
+					resolveRawCCUpstreamEndpoint(c, account),
+					service.HashUsageRequestPayload(body),
+					channelMapping.ToUsageFields(reqModel, ""),
+				)
 				reqLog.Warn("openai_chat_completions.forward_failed",
 					zap.Int64("account_id", account.ID),
 					zap.Bool("fallback_error_response_written", wroteFallback),
@@ -330,6 +343,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := resolveRawCCUpstreamEndpoint(c, account)
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+		cyberBlocked := service.GetOpsCyberPolicy(c) != nil
 
 		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
@@ -345,6 +359,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				IPAddress:          clientIP,
 				APIKeyService:      h.apiKeyService,
 				ChannelUsageFields: channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
+				CyberBlocked:       cyberBlocked,
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.chat_completions"),

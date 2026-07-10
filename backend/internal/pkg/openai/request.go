@@ -59,16 +59,57 @@ func IsCodexCLIRequest(userAgent string) bool {
 }
 
 // IsCodexOfficialClientRequest checks if the User-Agent indicates a Codex 官方客户端请求。
-// 与 IsCodexCLIRequest 解耦，避免影响历史兼容逻辑。
+// 与 IsCodexCLIRequest 解耦，避免影响历史兼容逻辑。宽松版：官方 UA 前缀集允许 Contains 子串兜底，
+// 供 passthrough（IsCodexOfficialClientByHeaders）等历史路径使用，行为不变。
 func IsCodexOfficialClientRequest(userAgent string) bool {
+	return isCodexOfficialClientRequest(userAgent, false)
+}
+
+// IsCodexOfficialClientRequestStrict 同 IsCodexOfficialClientRequest，但官方 UA 前缀集只做前缀
+// 匹配（HasPrefix），不退化为 Contains 子串兜底——专供 codex_cli_only 访问门，收窄「浏览器前缀 +
+// 中段 codex token」之类的伪造面。`Codex ` 家族前缀与 UA 尾部兜底保持一致；passthrough 仍用宽松版。
+func IsCodexOfficialClientRequestStrict(userAgent string) bool {
+	return isCodexOfficialClientRequest(userAgent, true)
+}
+
+func isCodexOfficialClientRequest(userAgent string, strict bool) bool {
 	ua := normalizeCodexClientHeader(userAgent)
 	if ua == "" {
 		return false
 	}
-	if matchCodexClientHeaderPrefixes(ua, codexOfficialClientUAPrefixes) {
+	if strict {
+		if matchCodexClientHeaderStrictPrefixes(ua, codexOfficialClientUAPrefixes) {
+			return true
+		}
+	} else if matchCodexClientHeaderPrefixes(ua, codexOfficialClientUAPrefixes) {
 		return true
 	}
-	return strings.HasPrefix(ua, codexOfficialClientFamilyPrefix)
+	if strings.HasPrefix(ua, codexOfficialClientFamilyPrefix) {
+		return true
+	}
+	if name := codexUATrailerName(ua); name != "" {
+		return IsCodexOfficialClientOriginator(name)
+	}
+	return false
+}
+
+// codexUATrailerName extracts the clientInfo.name from the last parenthesized group
+// of a codex-rs formatted User-Agent: `{orig}/{ver} ({os}; {arch}) {term} ({name}; {ver})`.
+func codexUATrailerName(ua string) string {
+	last := strings.LastIndex(ua, "(")
+	if last < 0 {
+		return ""
+	}
+	rest := ua[last+1:]
+	closeIdx := strings.Index(rest, ")")
+	if closeIdx < 0 {
+		return ""
+	}
+	inner := strings.TrimSpace(rest[:closeIdx])
+	if semi := strings.Index(inner, ";"); semi >= 0 {
+		inner = strings.TrimSpace(inner[:semi])
+	}
+	return inner
 }
 
 // IsCodexOfficialClientOriginator checks if originator indicates a Codex 官方客户端请求。
@@ -105,6 +146,60 @@ func matchCodexClientHeaderPrefixes(value string, prefixes []string) bool {
 		}
 	}
 	return false
+}
+
+// matchCodexClientHeaderStrictPrefixes 仅前缀匹配（HasPrefix），不含 matchCodexClientHeaderPrefixes
+// 的 Contains 子串兜底。用于 codex_cli_only 官方门收窄伪造面；passthrough 历史路径仍用宽松版。
+// value 应为已归一化（小写 + 去首尾空格）的值。
+func matchCodexClientHeaderStrictPrefixes(value string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if p := normalizeCodexClientHeader(prefix); p != "" && strings.HasPrefix(value, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// PairCodexClientIdentity 由最终出站 User-Agent 推导与其配套的 originator，必要时归一化
+// UA 首段，保证两者一致。上游 /backend-api/codex 会校验 originator 与 UA 首段是否配套；
+// 错配（如 originator=codex_cli_rs + UA=codex-tui/...）会被拒绝。
+func PairCodexClientIdentity(userAgent string) (originator string, pairedUA string, ok bool) {
+	ua := strings.TrimSpace(userAgent)
+	slash := strings.IndexByte(ua, '/')
+	if slash <= 0 {
+		return "", "", false
+	}
+	if leading := strings.TrimSpace(ua[:slash]); isSaneCodexOriginator(leading) && IsCodexOfficialClientOriginator(leading) {
+		leading = canonicalizeCodexOriginator(leading)
+		return leading, leading + ua[slash:], true
+	}
+	if trailer := codexUATrailerName(ua); trailer != "" && !strings.ContainsRune(trailer, '/') &&
+		isSaneCodexOriginator(trailer) && IsCodexOfficialClientOriginator(trailer) {
+		trailer = canonicalizeCodexOriginator(trailer)
+		return trailer, trailer + ua[slash:], true
+	}
+	return "", "", false
+}
+
+const codexOriginatorMaxLen = 64
+
+func isSaneCodexOriginator(name string) bool {
+	if name == "" || len(name) > codexOriginatorMaxLen {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; c < 0x20 || c > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalizeCodexOriginator(name string) string {
+	if lower := normalizeCodexClientHeader(name); codexOfficialClientOriginators[lower] {
+		return lower
+	}
+	return name
 }
 
 // codexEngineVersionPattern extracts leading X.Y.Z from a UA version segment.

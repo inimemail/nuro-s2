@@ -79,6 +79,20 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
 	})
 
+	t.Run("开启后浏览器复合 UA 不按官方 UA 放行", func(t *testing.T) {
+		detector := NewOpenAICodexClientRestrictionDetector(nil)
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{"codex_cli_only": true},
+		}
+
+		result := detector.Detect(newCodexDetectorTestContext("Mozilla/5.0 codex_cli_rs/0.99.0", ""), account, nil)
+		require.True(t, result.Enabled)
+		require.False(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonNotMatchedUA, result.Reason)
+	})
+
 	t.Run("开启后 originator 命中", func(t *testing.T) {
 		detector := NewOpenAICodexClientRestrictionDetector(nil)
 		account := &Account{

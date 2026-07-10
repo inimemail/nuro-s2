@@ -624,6 +624,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				if !upstreamErrorAlreadyCommunicated {
 					wroteFallback = h.ensureForwardErrorResponse(c, streamStarted)
 				}
+				h.recordCyberPolicyUsageIfMarked(
+					c.Request.Context(),
+					c,
+					apiKey,
+					account,
+					subscription,
+					reqModel,
+					reqStream,
+					GetInboundEndpoint(c),
+					GetUpstreamEndpoint(c, account.Platform),
+					service.HashUsageRequestPayload(body),
+					channelMapping.ToUsageFields(reqModel, ""),
+				)
 				fields := []zap.Field{
 					zap.Int64("account_id", account.ID),
 					zap.Bool("fallback_error_response_written", wroteFallback),
@@ -656,6 +669,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		quotaPlatform := service.QuotaPlatform(requestCtx, apiKey)
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
+		cyberBlocked := service.GetOpsCyberPolicy(c) != nil
 		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,
@@ -671,6 +685,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				RequestPayloadHash: requestPayloadHash,
 				APIKeyService:      h.apiKeyService,
 				ChannelUsageFields: channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
+				CyberBlocked:       cyberBlocked,
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.responses"),
@@ -1113,6 +1128,19 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 				wroteFallback := h.ensureAnthropicErrorResponse(c, streamStarted)
+				h.recordCyberPolicyUsageIfMarked(
+					c.Request.Context(),
+					c,
+					apiKey,
+					account,
+					subscription,
+					reqModel,
+					reqStream,
+					GetInboundEndpoint(c),
+					GetUpstreamEndpoint(c, account.Platform),
+					service.HashUsageRequestPayload(body),
+					channelMappingMsg.ToUsageFields(reqModel, ""),
+				)
 				reqLog.Warn("openai_messages.forward_failed",
 					zap.Int64("account_id", account.ID),
 					zap.Bool("fallback_error_response_written", wroteFallback),
@@ -1134,6 +1162,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 
+		cyberBlocked := service.GetOpsCyberPolicy(c) != nil
 		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,
@@ -1149,6 +1178,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				RequestPayloadHash: requestPayloadHash,
 				APIKeyService:      h.apiKeyService,
 				ChannelUsageFields: channelMappingMsg.ToUsageFields(reqModel, result.UpstreamModel),
+				CyberBlocked:       cyberBlocked,
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.messages"),
@@ -1802,6 +1832,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				inboundEndpoint := GetInboundEndpoint(c)
 				upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
 				quotaPlatform := service.QuotaPlatform(ctx, apiKey)
+				cyberBlocked := service.GetOpsCyberPolicy(c) != nil
 				h.submitOpenAIUsageRecordTask(ctx, result, func(taskCtx context.Context) {
 					if err := h.gatewayService.RecordUsage(taskCtx, &service.OpenAIRecordUsageInput{
 						Result:             result,
@@ -1817,6 +1848,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 						RequestPayloadHash: service.HashUsageRequestPayload(firstMessage),
 						APIKeyService:      h.apiKeyService,
 						ChannelUsageFields: channelMappingWS.ToUsageFields(reqModel, result.UpstreamModel),
+						CyberBlocked:       cyberBlocked,
 					}); err != nil {
 						reqLog.Error("openai.websocket_record_usage_failed",
 							zap.Int64("account_id", account.ID),
@@ -2047,6 +2079,57 @@ func (h *OpenAIGatewayHandler) submitOpenAIUsageRecordTask(parent context.Contex
 		return
 	}
 	h.submitUsageRecordTask(parent, task)
+}
+
+func (h *OpenAIGatewayHandler) recordCyberPolicyUsageIfMarked(
+	parent context.Context,
+	c *gin.Context,
+	apiKey *service.APIKey,
+	account *service.Account,
+	subscription *service.UserSubscription,
+	model string,
+	stream bool,
+	inboundEndpoint string,
+	upstreamEndpoint string,
+	requestPayloadHash string,
+	channelFields service.ChannelUsageFields,
+) {
+	if h == nil || h.gatewayService == nil {
+		return
+	}
+	mark := service.GetOpsCyberPolicy(c)
+	if mark == nil {
+		return
+	}
+	requestID := ""
+	if c != nil && c.Writer != nil {
+		requestID = c.Writer.Header().Get("X-Request-Id")
+	}
+	userAgent := ""
+	clientIP := ""
+	if c != nil {
+		userAgent = c.GetHeader("User-Agent")
+		clientIP = ip.GetClientIP(c)
+	}
+	h.submitOpenAIUsageRecordTask(parent, nil, func(ctx context.Context) {
+		h.gatewayService.RecordCyberPolicyUsageLog(ctx, service.CyberPolicyUsageInput{
+			APIKey:             apiKey,
+			Account:            account,
+			Subscription:       subscription,
+			RequestID:          requestID,
+			Model:              model,
+			Stream:             stream,
+			InputTokens:        mark.UpstreamInTok,
+			OutputTokens:       mark.UpstreamOutTok,
+			InboundEndpoint:    inboundEndpoint,
+			UpstreamEndpoint:   upstreamEndpoint,
+			UserAgent:          userAgent,
+			IPAddress:          clientIP,
+			RequestPayloadHash: requestPayloadHash,
+			APIKeyService:      h.apiKeyService,
+			ChannelUsageFields: channelFields,
+		})
+	})
 }
 
 func (h *OpenAIGatewayHandler) submitMandatoryUsageRecordTask(parent context.Context, task service.UsageRecordTask) {

@@ -131,9 +131,9 @@ func TestGetModelPricing_Gpt56UsesStaticFallbackWhenRemoteMissing(t *testing.T) 
 	require.InDelta(t, 6e-6, got.OutputCostPerToken, 1e-12)
 	require.InDelta(t, 1.25e-6, got.CacheCreationInputTokenCost, 1e-12)
 	require.InDelta(t, 1e-7, got.CacheReadInputTokenCost, 1e-12)
-	require.Equal(t, 0, got.LongContextInputTokenThreshold)
-	require.Zero(t, got.LongContextInputCostMultiplier)
-	require.Zero(t, got.LongContextOutputCostMultiplier)
+	require.Equal(t, 272000, got.LongContextInputTokenThreshold)
+	require.InDelta(t, 2.0, got.LongContextInputCostMultiplier, 1e-12)
+	require.InDelta(t, 1.5, got.LongContextOutputCostMultiplier, 1e-12)
 }
 
 func TestDefaultPricingIncludesCodexAutoReview(t *testing.T) {

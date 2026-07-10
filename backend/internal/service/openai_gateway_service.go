@@ -3500,6 +3500,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	setOpenAICompatMessagesBridgeContext(c, compatMessagesBridge)
 
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	codexImageGenerationExplicitToolPolicy := codexImageGenerationExplicitToolPolicyAllow
+	if isCodexCLI && account != nil {
+		codexImageGenerationExplicitToolPolicy = account.CodexImageGenerationExplicitToolPolicy()
+	}
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
 	clientTransport := GetOpenAIClientTransport(c)
 	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
@@ -3537,6 +3541,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	if passthroughEnabled {
+		if isCodexCLI && codexImageGenerationExplicitToolPolicy == codexImageGenerationExplicitToolPolicyStrip {
+			strippedBody, changed, stripErr := stripOpenAIImageGenerationToolsFromRawPayload(body)
+			if stripErr != nil {
+				return nil, stripErr
+			}
+			if changed {
+				body = strippedBody
+				originalBody = strippedBody
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Stripped /responses image_generation tool for Codex client by account policy")
+			}
+		}
 		// 透传分支只需要轻量提取字段，避免热路径全量 Unmarshal。
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel)
 		return s.forwardOpenAIPassthrough(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
@@ -3615,10 +3630,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	imageGenerationAllowed := GroupAllowsImageGeneration(nil)
 	if apiKey != nil {
 		imageGenerationAllowed = GroupAllowsImageGeneration(apiKey.Group)
-	}
-	codexImageGenerationExplicitToolPolicy := codexImageGenerationExplicitToolPolicyAllow
-	if isCodexCLI && account != nil {
-		codexImageGenerationExplicitToolPolicy = account.CodexImageGenerationExplicitToolPolicy()
 	}
 	codexImageGenerationBridgeEnabled := isCodexCLI &&
 		imageGenerationAllowed &&
@@ -4976,14 +4987,14 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
-	// OAuth 安全透传：对非 Codex UA 统一兜底，降低被上游风控拦截概率。
-	if account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(req.Header.Get("user-agent")) {
-		req.Header.Set("user-agent", codexCLIUserAgent)
-	}
-
 	// 浏览器型 UA 兜底：仅 OAuth（ChatGPT 内部接口）账号生效，若最终 user-agent 仍为浏览器
 	// （Chrome/Firefox/Safari/Edge 等），替换为后台配置的 Codex UA，避免 Cloudflare 触发 JS 质询。
 	s.overrideBrowserUserAgent(ctx, account, req)
+
+	// 终态收口：originator 必须与最终 User-Agent 首段配套且为官方身份，否则上游可能拒绝。
+	if account.Type == AccountTypeOAuth {
+		enforceCodexIdentityHeaders(req.Header)
+	}
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		applyOpenAIUpstreamStrongIsolationHeaders(req)
 	}
@@ -6473,6 +6484,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 浏览器型 UA 兜底：仅 OAuth（ChatGPT 内部接口）账号生效，若最终 user-agent 仍为浏览器
 	// （Chrome/Firefox/Safari/Edge 等），替换为后台配置的 Codex UA，避免 Cloudflare 触发 JS 质询。
 	s.overrideBrowserUserAgent(ctx, account, req)
+
+	// 终态收口：originator 必须与最终 User-Agent 首段配套且为官方身份，否则上游可能拒绝。
+	if account.Type == AccountTypeOAuth {
+		enforceCodexIdentityHeaders(req.Header)
+	}
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		applyOpenAIUpstreamStrongIsolationHeaders(req)
 	}
@@ -7756,9 +7772,15 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 }
 
 func openAICacheReadTokensFromUsage(value gjson.Result) int {
-	return firstPositiveGJSONInt(
+	for _, nested := range []gjson.Result{
 		value.Get("input_tokens_details.cached_tokens"),
 		value.Get("prompt_tokens_details.cached_tokens"),
+	} {
+		if nested.Exists() {
+			return max(int(nested.Int()), 0)
+		}
+	}
+	return firstPositiveGJSONInt(
 		value.Get("cache_read_input_tokens"),
 		value.Get("cache_read_tokens"),
 		value.Get("cached_tokens"),
@@ -7766,11 +7788,17 @@ func openAICacheReadTokensFromUsage(value gjson.Result) int {
 }
 
 func openAICacheCreationTokensFromUsage(value gjson.Result) int {
-	return firstPositiveGJSONInt(
+	for _, nested := range []gjson.Result{
 		value.Get("input_tokens_details.cache_write_tokens"),
 		value.Get("prompt_tokens_details.cache_write_tokens"),
 		value.Get("input_tokens_details.cache_creation_tokens"),
 		value.Get("prompt_tokens_details.cache_creation_tokens"),
+	} {
+		if nested.Exists() {
+			return max(int(nested.Int()), 0)
+		}
+	}
+	return firstPositiveGJSONInt(
 		value.Get("cache_write_tokens"),
 		value.Get("cache_creation_input_tokens"),
 		value.Get("cache_write_input_tokens"),
@@ -8585,7 +8613,59 @@ type OpenAIRecordUsageInput struct {
 	IPAddress          string // 请求的客户端 IP 地址
 	RequestPayloadHash string
 	APIKeyService      APIKeyQuotaUpdater
+	// CyberBlocked 为 true 时把该用量行标记为 cyber（request_type=cyber），计费逻辑不变。
+	CyberBlocked bool
 	ChannelUsageFields
+}
+
+type CyberPolicyUsageInput struct {
+	APIKey             *APIKey
+	Account            *Account
+	Subscription       *UserSubscription
+	RequestID          string
+	Model              string
+	Stream             bool
+	InputTokens        int
+	OutputTokens       int
+	InboundEndpoint    string
+	UpstreamEndpoint   string
+	UserAgent          string
+	IPAddress          string
+	RequestPayloadHash string
+	APIKeyService      APIKeyQuotaUpdater
+	ChannelUsageFields
+}
+
+func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in CyberPolicyUsageInput) {
+	if s == nil || in.APIKey == nil || in.APIKey.User == nil || in.Account == nil || strings.TrimSpace(in.Model) == "" {
+		return
+	}
+	result := &OpenAIForwardResult{
+		RequestID: in.RequestID,
+		Model:     in.Model,
+		Stream:    in.Stream,
+		Usage: OpenAIUsage{
+			InputTokens:  in.InputTokens,
+			OutputTokens: in.OutputTokens,
+		},
+	}
+	if err := s.RecordUsage(ctx, &OpenAIRecordUsageInput{
+		Result:             result,
+		APIKey:             in.APIKey,
+		User:               in.APIKey.User,
+		Account:            in.Account,
+		Subscription:       in.Subscription,
+		InboundEndpoint:    in.InboundEndpoint,
+		UpstreamEndpoint:   in.UpstreamEndpoint,
+		UserAgent:          in.UserAgent,
+		IPAddress:          in.IPAddress,
+		RequestPayloadHash: in.RequestPayloadHash,
+		APIKeyService:      in.APIKeyService,
+		ChannelUsageFields: in.ChannelUsageFields,
+		CyberBlocked:       true,
+	}); err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "cyber usage record failed: request_id=%s err=%v", in.RequestID, err)
+	}
 }
 
 // RecordUsage records usage and deducts balance
@@ -8743,6 +8823,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	usageLog.AccountRateMultiplier = &accountRateMultiplier
 	usageLog.BillingType = billingType
 	usageLog.Stream = result.Stream
+	if input.CyberBlocked {
+		usageLog.RequestType = RequestTypeCyberBlocked
+	}
 	usageLog.OpenAIWSMode = result.OpenAIWSMode
 	usageLog.DurationMs = &durationMs
 	usageLog.FirstTokenMs = result.FirstTokenMs
@@ -9526,9 +9609,11 @@ func (e *OpenAIFastBlockedError) Error() string { return e.Message }
 //
 // Matching rules:
 //   - Scope filters by account type (all / oauth / apikey / bedrock)
+//   - UserIDs, when present, filters by the trusted Sub2API user that owns the API key
 //   - ServiceTier must be empty (= any), "all", or equal the normalized tier
 //   - ModelWhitelist narrows the rule to specific models; FallbackAction
 //     handles the non-matching case (default: pass)
+//   - User-specific rules take precedence over global rules; each group keeps configured order
 //
 // 与 Claude BetaPolicy 的差异（保留首条匹配 short-circuit）：
 //   - BetaPolicy 处理的是 anthropic-beta header 中的 token 集合，不同
@@ -9554,37 +9639,65 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 		}
 		settings = fetched
 	}
-	return evaluateOpenAIFastPolicyWithSettings(settings, account, model, tier)
+	return evaluateOpenAIFastPolicyWithSettings(settings, openAIFastPolicyUserID(ctx), account, model, tier)
 }
 
 // evaluateOpenAIFastPolicyWithSettings is the pure-function core extracted so
 // long-lived sessions (e.g. WS) can prefetch settings once and avoid hitting
 // the settingService on every frame. See WSSession entry and
 // openAIFastPolicySettingsFromContext for the caching glue.
-func evaluateOpenAIFastPolicyWithSettings(settings *OpenAIFastPolicySettings, account *Account, model, tier string) (action, errMsg string) {
+func evaluateOpenAIFastPolicyWithSettings(settings *OpenAIFastPolicySettings, userID int64, account *Account, model, tier string) (action, errMsg string) {
 	if settings == nil {
 		return BetaPolicyActionPass, ""
 	}
 	isOAuth := account != nil && account.IsOAuth()
 	isBedrock := account != nil && account.IsBedrock()
-	for _, rule := range settings.Rules {
-		if !betaPolicyScopeMatches(rule.Scope, isOAuth, isBedrock) {
-			continue
+	for _, userScoped := range []bool{true, false} {
+		for _, rule := range settings.Rules {
+			if (len(rule.UserIDs) > 0) != userScoped || !openAIFastPolicyUserMatches(rule.UserIDs, userID) {
+				continue
+			}
+			if !betaPolicyScopeMatches(rule.Scope, isOAuth, isBedrock) {
+				continue
+			}
+			ruleTier := strings.ToLower(strings.TrimSpace(rule.ServiceTier))
+			if ruleTier != "" && ruleTier != OpenAIFastTierAny && ruleTier != tier {
+				continue
+			}
+			eff := BetaPolicyRule{
+				Action:               rule.Action,
+				ErrorMessage:         rule.ErrorMessage,
+				ModelWhitelist:       rule.ModelWhitelist,
+				FallbackAction:       rule.FallbackAction,
+				FallbackErrorMessage: rule.FallbackErrorMessage,
+			}
+			return resolveRuleAction(eff, model)
 		}
-		ruleTier := strings.ToLower(strings.TrimSpace(rule.ServiceTier))
-		if ruleTier != "" && ruleTier != OpenAIFastTierAny && ruleTier != tier {
-			continue
-		}
-		eff := BetaPolicyRule{
-			Action:               rule.Action,
-			ErrorMessage:         rule.ErrorMessage,
-			ModelWhitelist:       rule.ModelWhitelist,
-			FallbackAction:       rule.FallbackAction,
-			FallbackErrorMessage: rule.FallbackErrorMessage,
-		}
-		return resolveRuleAction(eff, model)
 	}
 	return BetaPolicyActionPass, ""
+}
+
+func openAIFastPolicyUserID(ctx context.Context) int64 {
+	if ctx == nil {
+		return 0
+	}
+	userID, _ := ctx.Value(ctxkey.UserID).(int64)
+	if userID <= 0 {
+		return 0
+	}
+	return userID
+}
+
+func openAIFastPolicyUserMatches(ruleUserIDs []int64, userID int64) bool {
+	if len(ruleUserIDs) == 0 {
+		return true
+	}
+	for _, ruleUserID := range ruleUserIDs {
+		if ruleUserID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // openAIFastPolicyCtxKey 是 context 中预取的 OpenAIFastPolicySettings 缓存

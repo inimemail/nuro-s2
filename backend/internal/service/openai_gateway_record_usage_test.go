@@ -295,6 +295,122 @@ func TestOpenAIGatewayServiceRecordUsage_MissingPricingRecordsZeroCostUsageLog(t
 	require.Zero(t, billingRepo.lastCmd.AccountQuotaCost)
 }
 
+func TestOpenAIGatewayServiceRecordUsage_CyberBlockedPersistsRequestType(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(
+		usageRepo,
+		billingRepo,
+		&openAIRecordUsageUserRepoStub{},
+		&openAIRecordUsageSubRepoStub{},
+		nil,
+	)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_cyber_blocked",
+			Usage: OpenAIUsage{
+				InputTokens:  12,
+				OutputTokens: 3,
+			},
+			Model:    "gpt-5.1",
+			Stream:   true,
+			Duration: time.Second,
+		},
+		APIKey:       &APIKey{ID: 1004, Group: &Group{RateMultiplier: 1}},
+		User:         &User{ID: 2004},
+		Account:      &Account{ID: 3004, Type: AccountTypeAPIKey},
+		CyberBlocked: true,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, billingRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, RequestTypeCyberBlocked, usageRepo.lastLog.RequestType)
+	require.True(t, usageRepo.lastLog.Stream, "cyber rows should keep original stream flag")
+	require.False(t, usageRepo.lastLog.OpenAIWSMode)
+	require.Equal(t, 12, usageRepo.lastLog.InputTokens)
+	require.Equal(t, 3, usageRepo.lastLog.OutputTokens)
+}
+
+func TestOpenAIGatewayServiceRecordCyberPolicyUsageLog_WritesCyberTypeAndBillsTokens(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(
+		usageRepo,
+		billingRepo,
+		&openAIRecordUsageUserRepoStub{},
+		&openAIRecordUsageSubRepoStub{},
+		nil,
+	)
+
+	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
+		APIKey: &APIKey{
+			ID:    1005,
+			User:  &User{ID: 2005},
+			Group: &Group{RateMultiplier: 1},
+		},
+		Account:      &Account{ID: 3005, Type: AccountTypeAPIKey},
+		RequestID:    "resp_cyber_policy",
+		Model:        "gpt-5.1",
+		Stream:       true,
+		InputTokens:  40,
+		OutputTokens: 6,
+	})
+
+	require.Equal(t, 1, billingRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, RequestTypeCyberBlocked, usageRepo.lastLog.RequestType)
+	require.Equal(t, "resp_cyber_policy", usageRepo.lastLog.RequestID)
+	require.Equal(t, 40, usageRepo.lastLog.InputTokens)
+	require.Equal(t, 6, usageRepo.lastLog.OutputTokens)
+	require.Greater(t, usageRepo.lastLog.ActualCost, 0.0)
+	require.NotNil(t, billingRepo.lastCmd)
+	require.Greater(t, billingRepo.lastCmd.BalanceCost, 0.0)
+	require.Equal(t, 40, billingRepo.lastCmd.InputTokens)
+	require.Equal(t, 6, billingRepo.lastCmd.OutputTokens)
+}
+
+func TestOpenAIGatewayServiceRecordCyberPolicyUsageLog_ZeroTokensRemainZeroCost(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(
+		usageRepo,
+		billingRepo,
+		&openAIRecordUsageUserRepoStub{},
+		&openAIRecordUsageSubRepoStub{},
+		nil,
+	)
+
+	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
+		APIKey: &APIKey{
+			ID:    1006,
+			User:  &User{ID: 2006},
+			Group: &Group{RateMultiplier: 1},
+		},
+		Account:   &Account{ID: 3006, Type: AccountTypeAPIKey},
+		RequestID: "resp_cyber_policy_zero",
+		Model:     "gpt-5.1",
+	})
+
+	require.Equal(t, 1, billingRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, RequestTypeCyberBlocked, usageRepo.lastLog.RequestType)
+	require.Zero(t, usageRepo.lastLog.InputTokens)
+	require.Zero(t, usageRepo.lastLog.OutputTokens)
+	require.Zero(t, usageRepo.lastLog.TotalCost)
+	require.Zero(t, usageRepo.lastLog.ActualCost)
+	require.NotNil(t, billingRepo.lastCmd)
+	require.Zero(t, billingRepo.lastCmd.BalanceCost)
+	require.Zero(t, billingRepo.lastCmd.SubscriptionCost)
+	require.Zero(t, billingRepo.lastCmd.APIKeyQuotaCost)
+	require.Zero(t, billingRepo.lastCmd.APIKeyRateLimitCost)
+	require.Zero(t, billingRepo.lastCmd.AccountQuotaCost)
+}
+
 func TestOpenAIGatewayServiceRecordUsage_UsesUserSpecificGroupRate(t *testing.T) {
 	groupID := int64(11)
 	groupRate := 1.4

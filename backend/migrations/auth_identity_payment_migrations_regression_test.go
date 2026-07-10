@@ -155,3 +155,30 @@ func TestMigration135AllowsGitHubAndGoogleAuthProviders(t *testing.T) {
 	require.Contains(t, sql, "'github'")
 	require.Contains(t, sql, "'google'")
 }
+
+func TestMigration175AllowsCyberBlockedUsageRequestType(t *testing.T) {
+	entries, err := FS.ReadDir(".")
+	require.NoError(t, err)
+
+	previousIndex := -1
+	currentIndex := -1
+	for i, entry := range entries {
+		switch entry.Name() {
+		case "174_batch_image_parent_batch.sql":
+			previousIndex = i
+		case "175_allow_cyber_blocked_usage_request_type.sql":
+			currentIndex = i
+		}
+	}
+	require.NotEqual(t, -1, previousIndex)
+	require.NotEqual(t, -1, currentIndex)
+	require.Less(t, previousIndex, currentIndex)
+
+	content, err := FS.ReadFile("175_allow_cyber_blocked_usage_request_type.sql")
+	require.NoError(t, err)
+
+	sql := string(content)
+	require.Contains(t, sql, "DROP CONSTRAINT IF EXISTS usage_logs_request_type_check")
+	require.Contains(t, sql, "ADD CONSTRAINT usage_logs_request_type_check")
+	require.Contains(t, sql, "CHECK (request_type IN (0, 1, 2, 3, 4)) NOT VALID")
+}

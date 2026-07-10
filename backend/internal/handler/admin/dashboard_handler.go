@@ -660,7 +660,7 @@ func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
 	if v := strings.TrimSpace(c.Query("request_type")); v != "" {
 		parsed, err := service.ParseUsageRequestType(v)
 		if err != nil {
-			response.BadRequest(c, "Invalid request_type, use unknown/sync/stream/ws_v2")
+			response.BadRequest(c, "Invalid request_type, use unknown/sync/stream/ws_v2/cyber")
 			return
 		}
 		rtVal := int16(parsed)

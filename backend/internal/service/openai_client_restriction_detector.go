@@ -102,7 +102,7 @@ func (d *OpenAICodexClientRestrictionDetector) DetectWithPolicy(c *gin.Context, 
 			Reason:  CodexClientRestrictionReasonMatchedGlobalBlacklist,
 		}
 	}
-	if openai.IsCodexOfficialClientRequest(userAgent) {
+	if openai.IsCodexOfficialClientRequestStrict(userAgent) {
 		result := CodexClientRestrictionDetectionResult{
 			Enabled: true,
 			Matched: true,
