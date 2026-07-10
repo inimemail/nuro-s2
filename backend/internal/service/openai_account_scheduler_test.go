@@ -857,6 +857,147 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LockedPriorityDoesNotFa
 	require.Zero(t, decision.CandidateCount)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_ModelMismatchDoesNotFallForward(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10115)
+	accounts := []Account{
+		{
+			ID:          37051,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gpt-4o-mini": "gpt-4o-mini"},
+			},
+		},
+		{
+			ID:          37052,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    2,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gpt-5.1": "gpt-5.1"},
+			},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	concurrencyCache := schedulerTestConcurrencyCache{
+		acquireResults: map[int64]bool{
+			37052: true,
+		},
+		loadMap: map[int64]*AccountLoadInfo{
+			37051: {AccountID: 37051, LoadRate: 0, WaitingCount: 0},
+			37052: {AccountID: 37052, LoadRate: 0, WaitingCount: 0},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapabilityOnPlatform(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIEndpointCapabilityChatCompletions,
+		false,
+		PlatformOpenAI,
+	)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no available OpenAI accounts")
+	require.Nil(t, selection)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Zero(t, decision.CandidateCount)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_PoolSoftCooldownFallsForward(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10116)
+	accounts := []Account{
+		{
+			ID:          37061,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{"pool_mode": true},
+		},
+		{
+			ID:          37062,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    2,
+			GroupIDs:    []int64{groupID},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	concurrencyCache := schedulerTestConcurrencyCache{
+		acquireResults: map[int64]bool{
+			37062: true,
+		},
+		loadMap: map[int64]*AccountLoadInfo{
+			37061: {AccountID: 37061, LoadRate: 0, WaitingCount: 0},
+			37062: {AccountID: 37062, LoadRate: 0, WaitingCount: 0},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+	svc.openaiPoolSoftCooldownUntil.Store(int64(37061), time.Now().Add(time.Minute))
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapabilityOnPlatform(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIEndpointCapabilityChatCompletions,
+		false,
+		PlatformOpenAI,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37062), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, 2, decision.CandidateCount)
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesCandidateSlotArbiter(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

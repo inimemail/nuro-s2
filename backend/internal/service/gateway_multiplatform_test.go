@@ -2240,6 +2240,51 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.Equal(t, int64(2), result.Account.ID, "不应选择被排除的账号")
 	})
 
+	t.Run("最低优先级模型不匹配不跨优先级", func(t *testing.T) {
+		repo := &mockAccountRepoForPlatform{
+			accounts: []Account{
+				{
+					ID:          1,
+					Platform:    PlatformAnthropic,
+					Priority:    1,
+					Status:      StatusActive,
+					Schedulable: true,
+					Concurrency: 5,
+					Credentials: map[string]any{"model_mapping": map[string]any{"claude-3-5-haiku-20241022": "claude-3-5-haiku-20241022"}},
+				},
+				{
+					ID:          2,
+					Platform:    PlatformAnthropic,
+					Priority:    2,
+					Status:      StatusActive,
+					Schedulable: true,
+					Concurrency: 5,
+					Credentials: map[string]any{"model_mapping": map[string]any{"claude-3-5-sonnet-20241022": "claude-3-5-sonnet-20241022"}},
+				},
+			},
+			accountsByID: map[int64]*Account{},
+		}
+		for i := range repo.accounts {
+			repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+		}
+
+		cfg := testConfig()
+		cfg.Gateway.Scheduling.LoadBatchEnabled = true
+		svc := &GatewayService{
+			accountRepo: repo,
+			cache:       &mockGatewayCacheForPlatform{},
+			cfg:         cfg,
+			concurrencyService: NewConcurrencyService(&mockConcurrencyCache{
+				loadMap:        map[int64]*AccountLoadInfo{1: {AccountID: 1}, 2: {AccountID: 2}},
+				acquireResults: map[int64]bool{2: true},
+			}),
+		}
+
+		result, err := svc.SelectAccountWithLoadAwareness(ctx, nil, "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		require.ErrorIs(t, err, ErrNoAvailableAccounts)
+		require.Nil(t, result)
+	})
+
 	t.Run("粘性命中-不调用GetByID", func(t *testing.T) {
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{

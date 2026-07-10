@@ -1585,6 +1585,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		schedGroup, _ = s.service.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID)
 	}
 
+	baseFiltered := make([]*Account, 0, len(accounts))
 	filtered := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
 	for i := range accounts {
@@ -1607,10 +1608,22 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				fmt.Sprintf("Privacy not set, required by group [%s]", schedGroup.Name))
 			continue
 		}
-		if !s.isAccountRequestCompatible(ctx, account, req) {
+		if !openAIAccountMatchesLockedPriority(account, req.LockedPriority) {
+			continue
+		}
+		if s != nil && s.service != nil && !parentHealthyForShadow(account, s.service.parentAccountLookup(ctx)) {
+			continue
+		}
+		if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
 			continue
 		}
 		if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+			continue
+		}
+		if s.shouldIncludeOpenAIAccountInPriorityBase(ctx, account, req.RequestedModel) {
+			baseFiltered = append(baseFiltered, account)
+		}
+		if !s.isAccountRequestCompatible(ctx, account, req) {
 			continue
 		}
 		filtered = append(filtered, account)
@@ -1618,6 +1631,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			ID:             account.ID,
 			MaxConcurrency: account.EffectiveLoadFactor(),
 		})
+	}
+	if !openAILowestBasePrioritySupportsRequestedModel(baseFiltered, req.RequestedModel) {
+		filtered = nil
 	}
 	if len(filtered) == 0 {
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false)
@@ -1713,6 +1729,53 @@ func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Ac
 		return false
 	}
 	return s.service.isOpenAIAccountTransportCompatible(account, requiredTransport)
+}
+
+func openAILowestBasePrioritySupportsRequestedModel(baseCandidates []*Account, requestedModel string) bool {
+	if len(baseCandidates) == 0 {
+		return false
+	}
+	if requestedModel == "" {
+		return true
+	}
+	minPriority := 0
+	found := false
+	for _, account := range baseCandidates {
+		if account == nil {
+			continue
+		}
+		if !found || account.Priority < minPriority {
+			minPriority = account.Priority
+			found = true
+		}
+	}
+	if !found {
+		return false
+	}
+	for _, account := range baseCandidates {
+		if account != nil && account.Priority == minPriority && account.IsModelSupported(requestedModel) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *defaultOpenAIAccountScheduler) shouldIncludeOpenAIAccountInPriorityBase(ctx context.Context, account *Account, requestedModel string) bool {
+	if s == nil || s.service == nil || account == nil || !s.service.isOpenAIPoolAccountSoftCooling(account) {
+		return true
+	}
+	if !s.service.isOpenAIPoolAccountSoftCooldownDue(account) {
+		return false
+	}
+	probeModel := requestedModel
+	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
+		probeModel = ""
+	}
+	if s.service.clearOpenAIPoolSoftCooldownIfRecoveryProbeDisabled(ctx, account, probeModel) {
+		return true
+	}
+	s.service.maybeStartOpenAIPoolRecoveryProbe(ctx, account, probeModel)
+	return false
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) bool {

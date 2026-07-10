@@ -1747,6 +1747,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	// ============ Layer 1: 模型路由优先选择（优先级高于粘性会话） ============
 	if len(routingAccountIDs) > 0 && s.concurrencyService != nil {
 		// 1. 过滤出路由列表中可调度的账号
+		var routingBaseCandidates []*Account
 		var routingCandidates []*Account
 		var filteredExcluded, filteredMissing, filteredUnsched, filteredPlatform, filteredModelScope, filteredModelMapping, filteredWindowCost int
 		var modelScopeSkippedIDs []int64 // 记录因模型限流被跳过的账号 ID
@@ -1772,15 +1773,6 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				filteredMissing++
 				continue
 			}
-			if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, requestedModel) {
-				filteredModelMapping++
-				continue
-			}
-			if !s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) {
-				filteredModelScope++
-				modelScopeSkippedIDs = append(modelScopeSkippedIDs, account.ID)
-				continue
-			}
 			// 配额检查
 			if !s.isAccountSchedulableForQuota(account) {
 				continue
@@ -1794,7 +1786,23 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			if !s.isAccountSchedulableForRPM(ctx, account, false) {
 				continue
 			}
+			if !s.shouldIncludeAccountInPriorityBase(ctx, account, requestedModel) {
+				continue
+			}
+			routingBaseCandidates = append(routingBaseCandidates, account)
+			if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, requestedModel) {
+				filteredModelMapping++
+				continue
+			}
+			if !s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) {
+				filteredModelScope++
+				modelScopeSkippedIDs = append(modelScopeSkippedIDs, account.ID)
+				continue
+			}
 			routingCandidates = append(routingCandidates, account)
+		}
+		if !candidateSetContainsLowestBasePriority(routingBaseCandidates, routingCandidates) {
+			routingCandidates = nil
 		}
 
 		if s.debugModelRoutingEnabled() {
@@ -2172,6 +2180,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		"reason", "sticky_not_used_falling_back_to_load_balance",
 		"total_accounts", len(accounts),
 	)
+	baseCandidates := make([]*Account, 0, len(accounts))
 	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
@@ -2190,12 +2199,6 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		if groupID != nil && accountHasGroupMetadata(acc) && !s.isAccountInGroup(acc, groupID) {
 			continue
 		}
-		if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
-			continue
-		}
-		if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
-			continue
-		}
 		// 配额检查
 		if !s.isAccountSchedulableForQuota(acc) {
 			continue
@@ -2208,7 +2211,20 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 			continue
 		}
+		if !s.shouldIncludeAccountInPriorityBase(ctx, acc, requestedModel) {
+			continue
+		}
+		baseCandidates = append(baseCandidates, acc)
+		if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
+			continue
+		}
+		if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
+			continue
+		}
 		candidates = append(candidates, acc)
+	}
+	if !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
+		candidates = nil
 	}
 
 	if len(candidates) == 0 {
@@ -2714,6 +2730,23 @@ func (s *GatewayService) shouldSkipAnthropicPoolCoolingAccount(ctx context.Conte
 	return true
 }
 
+func (s *GatewayService) shouldIncludeAccountInPriorityBase(ctx context.Context, account *Account, requestedModel string) bool {
+	if s == nil || account == nil || !isAnthropicPoolAccount(account) || !s.isAnthropicPoolAccountSoftCooling(account) {
+		return true
+	}
+	probeModel := requestedModel
+	if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, requestedModel) {
+		probeModel = ""
+	}
+	if s.isAnthropicPoolAccountSoftCooldownDue(account) {
+		if s.clearAnthropicPoolSoftCooldownIfRecoveryProbeDisabled(ctx, account, probeModel) {
+			return true
+		}
+		s.maybeStartAnthropicPoolRecoveryProbe(context.Background(), account, probeModel)
+	}
+	return false
+}
+
 // isAccountInGroup checks if the account belongs to the specified group.
 // When groupID is nil, returns true only for ungrouped accounts (no group assignments).
 func (s *GatewayService) isAccountInGroup(account *Account, groupID *int64) bool {
@@ -3130,6 +3163,32 @@ func filterByMinPriority(accounts []accountWithLoad) []accountWithLoad {
 		}
 	}
 	return result
+}
+
+func candidateSetContainsLowestBasePriority(baseCandidates []*Account, candidates []*Account) bool {
+	if len(baseCandidates) == 0 {
+		return len(candidates) > 0
+	}
+	minPriority := 0
+	found := false
+	for _, account := range baseCandidates {
+		if account == nil {
+			continue
+		}
+		if !found || account.Priority < minPriority {
+			minPriority = account.Priority
+			found = true
+		}
+	}
+	if !found {
+		return len(candidates) > 0
+	}
+	for _, candidate := range candidates {
+		if candidate != nil && candidate.Priority == minPriority {
+			return true
+		}
+	}
+	return false
 }
 
 func filterByNonPoolModeIfPresent(accounts []accountWithLoad) []accountWithLoad {
@@ -3815,6 +3874,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			}
 		}
 
+		baseCandidates := make([]*Account, 0, len(accounts))
 		candidates := make([]*Account, 0, len(accounts))
 		for i := range accounts {
 			acc := &accounts[i]
@@ -3838,12 +3898,6 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 					fmt.Sprintf("Privacy not set, required by group [%s]", schedGroup.Name))
 				continue
 			}
-			if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
-				continue
-			}
-			if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
-				continue
-			}
 			if !s.isAccountSchedulableForQuota(acc) {
 				continue
 			}
@@ -3853,7 +3907,20 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 				continue
 			}
+			if !s.shouldIncludeAccountInPriorityBase(ctx, acc, requestedModel) {
+				continue
+			}
+			baseCandidates = append(baseCandidates, acc)
+			if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
+				continue
+			}
+			if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
+				continue
+			}
 			candidates = append(candidates, acc)
+		}
+		if !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
+			candidates = nil
 		}
 
 		selected := selectAccount(candidates)
@@ -3918,6 +3985,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	// needsUpstreamCheck 仅在主选择循环中使用；粘性会话命中时跳过此检查，
 	// 因为粘性会话优先保持连接一致性，且 upstream 计费基准极少使用。
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	baseCandidates := make([]*Account, 0, len(accounts))
 	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
@@ -3938,15 +4006,6 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 				fmt.Sprintf("Privacy not set, required by group [%s]", schedGroup.Name))
 			continue
 		}
-		if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
-			continue
-		}
-		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel) {
-			continue
-		}
-		if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
-			continue
-		}
 		if !s.isAccountSchedulableForQuota(acc) {
 			continue
 		}
@@ -3956,7 +4015,23 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 			continue
 		}
+		if !s.shouldIncludeAccountInPriorityBase(ctx, acc, requestedModel) {
+			continue
+		}
+		baseCandidates = append(baseCandidates, acc)
+		if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
+			continue
+		}
+		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel) {
+			continue
+		}
+		if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
+			continue
+		}
 		candidates = append(candidates, acc)
+	}
+	if !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
+		candidates = nil
 	}
 
 	selected := selectAccount(candidates)
@@ -4062,6 +4137,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			}
 		}
 
+		baseCandidates := make([]*Account, 0, len(accounts))
 		candidates := make([]*Account, 0, len(accounts))
 		for i := range accounts {
 			acc := &accounts[i]
@@ -4089,12 +4165,6 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
 				continue
 			}
-			if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
-				continue
-			}
-			if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
-				continue
-			}
 			if !s.isAccountSchedulableForQuota(acc) {
 				continue
 			}
@@ -4104,7 +4174,20 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 				continue
 			}
+			if !s.shouldIncludeAccountInPriorityBase(ctx, acc, requestedModel) {
+				continue
+			}
+			baseCandidates = append(baseCandidates, acc)
+			if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
+				continue
+			}
+			if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
+				continue
+			}
 			candidates = append(candidates, acc)
+		}
+		if !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
+			candidates = nil
 		}
 
 		selected := selectAccount(candidates)
@@ -4166,6 +4249,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	// 3. 按优先级+最久未用选择（考虑模型支持和混合调度）
 	// needsUpstreamCheck 仅在主选择循环中使用；粘性会话命中时跳过此检查。
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	baseCandidates := make([]*Account, 0, len(accounts))
 	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
@@ -4190,15 +4274,6 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
 			continue
 		}
-		if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
-			continue
-		}
-		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel) {
-			continue
-		}
-		if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
-			continue
-		}
 		if !s.isAccountSchedulableForQuota(acc) {
 			continue
 		}
@@ -4208,7 +4283,23 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 			continue
 		}
+		if !s.shouldIncludeAccountInPriorityBase(ctx, acc, requestedModel) {
+			continue
+		}
+		baseCandidates = append(baseCandidates, acc)
+		if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
+			continue
+		}
+		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel) {
+			continue
+		}
+		if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
+			continue
+		}
 		candidates = append(candidates, acc)
+	}
+	if !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
+		candidates = nil
 	}
 
 	selected := selectAccount(candidates)
