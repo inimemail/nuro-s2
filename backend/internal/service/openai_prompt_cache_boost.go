@@ -47,6 +47,9 @@ func (s *OpenAIGatewayService) isOpenAIPromptCacheBoostAffinityHashUsableForAcco
 	if IsOpenAIPromptCacheBoostUpstreamAffinitySessionHash(sessionHash) {
 		return account.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled()
 	}
+	if IsOpenAIPromptCacheBoostOptimizedAffinitySessionHash(sessionHash) {
+		return account.IsOpenAIPromptCacheKeyOptimizationEnabled()
+	}
 	if IsOpenAIPromptCacheBoostAggressiveAffinitySessionHash(sessionHash) {
 		return account.IsOpenAIPromptCacheBoostAggressive()
 	}

@@ -118,6 +118,13 @@ func deriveOpenAIAnthropicVirtualPromptCacheKey(account *Account, req *apicompat
 		return ""
 	}
 	seed := deriveAnthropicPromptCacheBoostSeed(req, mappedModel)
+	keyPrefix := "nuro-pcache-"
+	strategy := "anthropic"
+	if account.IsOpenAIPromptCacheKeyOptimizationEnabled() {
+		seed = deriveAnthropicPromptCacheBoostOptimizedSeed(req, mappedModel)
+		keyPrefix = "nuro-pcache-v3-"
+		strategy = "anthropic-v3"
+	}
 	if strings.TrimSpace(seed) == "" {
 		return ""
 	}
@@ -128,9 +135,35 @@ func deriveOpenAIAnthropicVirtualPromptCacheKey(account *Account, req *apicompat
 	if model == "" {
 		model = "unknown"
 	}
-	return "nuro-pcache-" + hashSensitiveValueForLog(
-		fmt.Sprintf("account|%d|model|%s|anthropic|%s", account.ID, model, seed),
+	return keyPrefix + hashSensitiveValueForLog(
+		fmt.Sprintf("account|%d|model|%s|%s|%s", account.ID, model, strategy, seed),
 	)
+}
+
+func deriveAnthropicPromptCacheBoostOptimizedSeed(req *apicompat.AnthropicRequest, mappedModel string) string {
+	if req == nil {
+		return ""
+	}
+	normalizedModel := normalizeCodexModel(strings.TrimSpace(mappedModel))
+	if normalizedModel == "" {
+		normalizedModel = normalizeCodexModel(strings.TrimSpace(req.Model))
+	}
+	if normalizedModel == "" {
+		normalizedModel = strings.TrimSpace(req.Model)
+	}
+	seedParts := []string{"model=" + normalizedModel}
+	if len(req.Tools) > 0 {
+		if raw, err := json.Marshal(req.Tools); err == nil {
+			seedParts = append(seedParts, "tools="+normalizeCompatSeedJSON(raw))
+		}
+	}
+	if len(req.System) > 0 {
+		seedParts = append(seedParts, "system="+normalizeCompatSeedJSON(req.System))
+	}
+	if len(seedParts) == 1 {
+		return deriveAnthropicPromptCacheBoostSeed(req, mappedModel)
+	}
+	return compatPromptCacheKeyPrefix + hashSensitiveValueForLog(strings.Join(seedParts, "|"))
 }
 
 func deriveAnthropicPromptCacheBoostSeed(req *apicompat.AnthropicRequest, mappedModel string) string {

@@ -426,6 +426,7 @@ type promptCacheBoostGroupAvailability struct {
 	expiresAt               time.Time
 	aggressiveEnabled       bool
 	upstreamPriorityEnabled bool
+	keyOptimizationEnabled  bool
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -1375,6 +1376,11 @@ func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForGro
 		return DeriveOpenAIPromptCacheBoostAffinityHash(model, body)
 	}
 	if s.openAIPromptCacheBoostUpstreamPriorityAvailableForGroup(ctx, groupID, upstreamModel) {
+		if s.openAIPromptCacheBoostKeyOptimizationAvailableForGroup(ctx, groupID, upstreamModel) {
+			if optimizedHash := DeriveOpenAIPromptCacheBoostOptimizedAffinityHash(upstreamModel, upstreamBody); optimizedHash != "" {
+				return optimizedHash
+			}
+		}
 		if upstreamHash := DeriveOpenAIPromptCacheBoostUpstreamAffinityHash(upstreamModel, upstreamBody); upstreamHash != "" {
 			return upstreamHash
 		}
@@ -1395,6 +1401,10 @@ func (s *OpenAIGatewayService) openAIPromptCacheBoostAggressiveAvailableForGroup
 	return s.openAIPromptCacheBoostAvailabilityForGroup(ctx, groupID, model).aggressiveEnabled
 }
 
+func (s *OpenAIGatewayService) openAIPromptCacheBoostKeyOptimizationAvailableForGroup(ctx context.Context, groupID *int64, model string) bool {
+	return s.openAIPromptCacheBoostAvailabilityForGroup(ctx, groupID, model).keyOptimizationEnabled
+}
+
 func (s *OpenAIGatewayService) openAIPromptCacheBoostAvailabilityForGroup(ctx context.Context, groupID *int64, model string) promptCacheBoostGroupAvailability {
 	if s == nil || s.schedulerSnapshot == nil {
 		return promptCacheBoostGroupAvailability{}
@@ -1410,6 +1420,8 @@ func (s *OpenAIGatewayService) openAIPromptCacheBoostAvailabilityForGroup(ctx co
 	state := promptCacheBoostGroupAvailability{
 		expiresAt: now.Add(openAIPromptCacheBoostAggressiveCacheTTL),
 	}
+	keyOptimizationCompatible := true
+	keyOptimizationSeen := false
 	accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
 	if err == nil {
 		for i := range accounts {
@@ -1424,12 +1436,18 @@ func (s *OpenAIGatewayService) openAIPromptCacheBoostAvailabilityForGroup(ctx co
 			}
 			if account.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() {
 				state.upstreamPriorityEnabled = true
+				if account.IsOpenAIPromptCacheKeyOptimizationEnabled() {
+					keyOptimizationSeen = true
+				} else {
+					keyOptimizationCompatible = false
+				}
 			}
-			if state.aggressiveEnabled && state.upstreamPriorityEnabled {
+			if state.aggressiveEnabled && state.upstreamPriorityEnabled && !keyOptimizationCompatible {
 				break
 			}
 		}
 	}
+	state.keyOptimizationEnabled = keyOptimizationSeen && keyOptimizationCompatible
 	s.openaiPromptCacheBoostGroupAvailabilityCache.Store(cacheKey, state)
 	return state
 }
@@ -1443,7 +1461,8 @@ func (s *OpenAIGatewayService) GeneratePromptCacheBoostAffinitySessionHashForAcc
 
 func (s *OpenAIGatewayService) openAIStickySessionTTLForHash(sessionHash string, fallback time.Duration) time.Duration {
 	if IsOpenAIPromptCacheBoostAggressiveAffinitySessionHash(sessionHash) ||
-		IsOpenAIPromptCacheBoostUpstreamAffinitySessionHash(sessionHash) {
+		IsOpenAIPromptCacheBoostUpstreamAffinitySessionHash(sessionHash) ||
+		IsOpenAIPromptCacheBoostOptimizedAffinitySessionHash(sessionHash) {
 		return openAIPromptCacheBoostAffinityStickyTTL
 	}
 	if fallback > 0 {
@@ -8601,18 +8620,20 @@ func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel
 
 // OpenAIRecordUsageInput input for recording usage
 type OpenAIRecordUsageInput struct {
-	Result             *OpenAIForwardResult
-	APIKey             *APIKey
-	User               *User
-	Account            *Account
-	Subscription       *UserSubscription
-	QuotaPlatform      string
-	InboundEndpoint    string
-	UpstreamEndpoint   string
-	UserAgent          string // 请求的 User-Agent
-	IPAddress          string // 请求的客户端 IP 地址
-	RequestPayloadHash string
-	APIKeyService      APIKeyQuotaUpdater
+	Result                  *OpenAIForwardResult
+	APIKey                  *APIKey
+	User                    *User
+	Account                 *Account
+	Subscription            *UserSubscription
+	QuotaPlatform           string
+	InboundEndpoint         string
+	UpstreamEndpoint        string
+	UserAgent               string // 请求的 User-Agent
+	IPAddress               string // 请求的客户端 IP 地址
+	RequestPayloadHash      string
+	PromptCacheAffinityHash string
+	PromptCacheGroupID      *int64
+	APIKeyService           APIKeyQuotaUpdater
 	// CyberBlocked 为 true 时把该用量行标记为 cyber（request_type=cyber），计费逻辑不变。
 	CyberBlocked bool
 	ChannelUsageFields
@@ -8694,6 +8715,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		actualInputTokens = 0
 	}
 	s.logOpenAIPromptCacheHitRate(ctx, account, result.Usage)
+	s.recordOpenAIPromptCacheWarmResult(ctx, input)
 
 	// Calculate cost
 	tokens := UsageTokens{

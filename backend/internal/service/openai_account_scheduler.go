@@ -1651,6 +1651,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	topK := plan.topK
 	loadSkew := plan.loadSkew
 	selectionOrder := plan.selectionOrder
+	selectionOrder = s.service.prioritizeOpenAIPromptCacheWarmCandidates(ctx, req, selectionOrder)
 	if req.RequireCompact && len(plan.candidates) == 0 && len(plan.staleSnapshotCompactRetry) == 0 {
 		return nil, 0, 0, 0, ErrNoAvailableCompactAccounts
 	}
@@ -1676,7 +1677,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if freshLoadMap, loadErr := s.service.concurrencyService.GetAccountsLoadBatchFresh(ctx, loadReq); loadErr == nil {
 			freshPlan := s.buildOpenAIAccountLoadPlan(req, filtered, freshLoadMap)
 			if len(freshPlan.selectionOrder) > 0 {
-				freshResult, freshCompactBlocked, freshAcquireErr := s.tryAcquireOpenAISelectionOrder(ctx, req, freshPlan.selectionOrder)
+				freshSelectionOrder := s.service.prioritizeOpenAIPromptCacheWarmCandidates(ctx, req, freshPlan.selectionOrder)
+				freshResult, freshCompactBlocked, freshAcquireErr := s.tryAcquireOpenAISelectionOrder(ctx, req, freshSelectionOrder)
 				if freshAcquireErr != nil {
 					return nil, candidateCount, topK, loadSkew, freshAcquireErr
 				}
@@ -1684,7 +1686,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 					return freshResult, freshPlan.candidateCount, freshPlan.topK, freshPlan.loadSkew, nil
 				}
 				compactBlocked = compactBlocked || freshCompactBlocked
-				selectionOrder = freshPlan.selectionOrder
+				selectionOrder = freshSelectionOrder
 				candidateCount = freshPlan.candidateCount
 				topK = freshPlan.topK
 				loadSkew = freshPlan.loadSkew

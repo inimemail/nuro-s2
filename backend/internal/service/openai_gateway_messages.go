@@ -97,7 +97,8 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// OAuth/Plus relies on session_id + x-codex-turn-state; trimming to a
 	// sliding 12-message window makes the cached prefix stall at system/tools.
 	// Keep full replay there so upstream prompt caching can grow turn by turn.
-	keepFullReplayForCacheBoost := cacheBoostEnabled && len(body) >= openAIPromptCacheBoostMinBodyBytes
+	keepFullReplayForCacheBoost := cacheBoostEnabled && (len(body) >= openAIPromptCacheBoostMinBodyBytes ||
+		s.shouldEnhanceOpenAIPromptCacheLongContext(ctx, c, account, upstreamModel, body))
 	if compatReplayGuardEnabled && account.Type != AccountTypeOAuth && previousResponseID == "" && !compatContinuationDisabled && !keepFullReplayForCacheBoost {
 		compatReplayTrimmed = applyAnthropicCompatFullReplayGuard(&anthropicReq)
 	}

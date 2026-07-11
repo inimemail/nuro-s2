@@ -182,6 +182,10 @@ function buildOpenAIOAuthAccount() {
       prompt_cache_boost_enabled: true,
       prompt_cache_boost_level: 'aggressive',
       prompt_cache_boost_upstream_hit_priority_enabled: true,
+      prompt_cache_smart_routing_enabled: true,
+      prompt_cache_account_relay_enabled: true,
+      prompt_cache_key_optimization_enabled: true,
+      prompt_cache_long_context_enhancement_enabled: true,
       upstream_strong_isolation_enabled: true
     },
     extra: {},
@@ -278,6 +282,10 @@ describe('EditAccountModal', () => {
     expect(wrapper.text()).toContain('admin.accounts.promptCacheBoost')
     expect(wrapper.text()).toContain('admin.accounts.promptCacheBoostAggressive')
     expect(wrapper.text()).toContain('admin.accounts.promptCacheBoostUpstreamHitPriority')
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheSmartRouting')
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheAccountRelay')
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheKeyOptimization')
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheLongContextEnhancement')
     expect(wrapper.text()).toContain('admin.accounts.upstreamStrongIsolation')
   })
 
@@ -296,10 +304,82 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_boost_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_boost_level).toBe('aggressive')
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_boost_upstream_hit_priority_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_smart_routing_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_account_relay_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_key_optimization_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_long_context_enhancement_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.upstream_strong_isolation_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('pool_mode')
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('pool_soft_cooldown_enabled')
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('image_pool_mode')
+  })
+
+  it('persists advanced cache enhancements for OpenAI API Key text pools', async () => {
+    const account = buildAccount()
+    account.credentials = {
+      ...account.credentials,
+      pool_mode: true,
+      prompt_cache_boost_enabled: true,
+      prompt_cache_boost_level: 'aggressive',
+      prompt_cache_boost_upstream_hit_priority_enabled: true,
+      prompt_cache_smart_routing_enabled: true,
+      prompt_cache_account_relay_enabled: true,
+      prompt_cache_key_optimization_enabled: true,
+      prompt_cache_long_context_enhancement_enabled: true
+    }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheAdvancedFeatures')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials?.pool_mode).toBe(true)
+    expect(credentials?.prompt_cache_smart_routing_enabled).toBe(true)
+    expect(credentials?.prompt_cache_account_relay_enabled).toBe(true)
+    expect(credentials?.prompt_cache_key_optimization_enabled).toBe(true)
+    expect(credentials?.prompt_cache_long_context_enhancement_enabled).toBe(true)
+  })
+
+  it('keeps advanced cache enhancements absent when all four switches are off', async () => {
+    const oauth = buildOpenAIOAuthAccount()
+    for (const key of [
+      'prompt_cache_smart_routing_enabled',
+      'prompt_cache_account_relay_enabled',
+      'prompt_cache_key_optimization_enabled',
+      'prompt_cache_long_context_enhancement_enabled'
+    ]) {
+      delete oauth.credentials[key]
+    }
+    const apiKey = buildAccount()
+    apiKey.credentials = {
+      ...apiKey.credentials,
+      pool_mode: true,
+      prompt_cache_boost_enabled: true,
+      prompt_cache_boost_level: 'aggressive',
+      prompt_cache_boost_upstream_hit_priority_enabled: true
+    }
+
+    for (const account of [oauth, apiKey]) {
+      updateAccountMock.mockReset()
+      checkMixedChannelRiskMock.mockReset()
+      checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+      updateAccountMock.mockResolvedValue(account)
+      const wrapper = mountModal(account)
+
+      await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+      const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+      expect(credentials).not.toHaveProperty('prompt_cache_smart_routing_enabled')
+      expect(credentials).not.toHaveProperty('prompt_cache_account_relay_enabled')
+      expect(credentials).not.toHaveProperty('prompt_cache_key_optimization_enabled')
+      expect(credentials).not.toHaveProperty('prompt_cache_long_context_enhancement_enabled')
+      expect(credentials?.prompt_cache_boost_upstream_hit_priority_enabled).toBe(true)
+      wrapper.unmount()
+    }
   })
 
   it('submits independent Anthropic cache boost and isolation settings', async () => {

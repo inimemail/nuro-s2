@@ -28,7 +28,7 @@ func shuffleOpenAIAccountLoadTiesWithReset(accounts []accountWithLoad, includeRe
 }
 
 func prioritizeOpenAIPromptCacheUpstreamLoadTies(accounts []accountWithLoad, sessionHash string, includeReset bool) {
-	if len(accounts) <= 1 || !IsOpenAIPromptCacheBoostUpstreamAffinitySessionHash(sessionHash) {
+	if len(accounts) <= 1 || (!IsOpenAIPromptCacheBoostUpstreamAffinitySessionHash(sessionHash) && !IsOpenAIPromptCacheBoostOptimizedAffinitySessionHash(sessionHash)) {
 		return
 	}
 	for i := 0; i < len(accounts); {
@@ -42,7 +42,7 @@ func prioritizeOpenAIPromptCacheUpstreamLoadTies(accounts []accountWithLoad, ses
 			if left == nil || right == nil {
 				return false
 			}
-			return left.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() && !right.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled()
+			return openAIPromptCacheAffinityAccountPreferred(sessionHash, left, right)
 		})
 		i = j
 	}
@@ -97,7 +97,7 @@ func shuffleOpenAIStrictPriorityTiesWithReset(accounts []openAIAccountCandidateS
 }
 
 func prioritizeOpenAIPromptCacheUpstreamStrictTies(accounts []openAIAccountCandidateScore, sessionHash string, includeReset bool) {
-	if len(accounts) <= 1 || !IsOpenAIPromptCacheBoostUpstreamAffinitySessionHash(sessionHash) {
+	if len(accounts) <= 1 || (!IsOpenAIPromptCacheBoostUpstreamAffinitySessionHash(sessionHash) && !IsOpenAIPromptCacheBoostOptimizedAffinitySessionHash(sessionHash)) {
 		return
 	}
 	for i := 0; i < len(accounts); {
@@ -111,10 +111,20 @@ func prioritizeOpenAIPromptCacheUpstreamStrictTies(accounts []openAIAccountCandi
 			if left == nil || right == nil {
 				return false
 			}
-			return left.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() && !right.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled()
+			return openAIPromptCacheAffinityAccountPreferred(sessionHash, left, right)
 		})
 		i = j
 	}
+}
+
+func openAIPromptCacheAffinityAccountPreferred(sessionHash string, left, right *Account) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	if IsOpenAIPromptCacheBoostOptimizedAffinitySessionHash(sessionHash) {
+		return left.IsOpenAIPromptCacheKeyOptimizationEnabled() && !right.IsOpenAIPromptCacheKeyOptimizationEnabled()
+	}
+	return left.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() && !right.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled()
 }
 
 func sameOpenAIStrictPriorityTie(a, b openAIAccountCandidateScore, includeReset bool) bool {

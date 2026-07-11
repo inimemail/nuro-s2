@@ -549,6 +549,41 @@
                 />
               </button>
             </div>
+            <div
+              v-if="showOpenAIPromptCacheAdvancedFeatures"
+              class="mt-3 overflow-hidden rounded-lg border border-emerald-200/80 bg-gradient-to-br from-white via-emerald-50/70 to-teal-50/80 shadow-sm dark:border-emerald-800/60 dark:from-dark-800 dark:via-emerald-950/20 dark:to-teal-950/20"
+            >
+              <div class="flex items-center justify-between border-b border-emerald-100 px-3 py-2.5 dark:border-emerald-900/50">
+                <div class="flex items-center gap-2">
+                  <span class="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.7)]" />
+                  <span class="text-xs font-semibold text-emerald-800 dark:text-emerald-200">{{ t('admin.accounts.promptCacheAdvancedFeatures') }}</span>
+                </div>
+                <span class="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">4</span>
+              </div>
+              <div class="grid gap-2 p-2 sm:grid-cols-2">
+                <button
+                  v-for="option in openAIPromptCacheAdvancedOptions"
+                  :key="option.key"
+                  type="button"
+                  :aria-pressed="option.enabled"
+                  @click="toggleOpenAIPromptCacheAdvancedOption(option.key)"
+                  :class="[
+                    'group rounded-lg border px-3 py-2.5 text-left transition-all duration-200',
+                    option.enabled
+                      ? 'border-emerald-300 bg-white shadow-sm ring-1 ring-emerald-200/70 dark:border-emerald-700 dark:bg-dark-700 dark:ring-emerald-800/70'
+                      : 'border-transparent bg-white/55 hover:border-emerald-200 hover:bg-white dark:bg-dark-800/55 dark:hover:border-emerald-900 dark:hover:bg-dark-800'
+                  ]"
+                >
+                  <div class="flex items-start justify-between gap-3">
+                    <span :class="['text-xs font-semibold', option.enabled ? 'text-emerald-800 dark:text-emerald-200' : 'text-gray-700 dark:text-gray-300']">{{ t(option.label) }}</span>
+                    <span :class="['relative mt-0.5 inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors', option.enabled ? 'bg-emerald-600' : 'bg-gray-300 dark:bg-dark-500']">
+                      <span :class="['mt-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform', option.enabled ? 'translate-x-[18px]' : 'translate-x-0.5']" />
+                    </span>
+                  </div>
+                  <p class="mt-1.5 text-[11px] leading-4 text-gray-500 dark:text-gray-400">{{ t(option.hint) }}</p>
+                </button>
+              </div>
+            </div>
           </div>
           <div v-if="showUpstreamStrongIsolationToggle" class="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
             <div class="flex items-center justify-between gap-4">
@@ -981,6 +1016,41 @@
                 ]"
               />
             </button>
+          </div>
+          <div
+            v-if="showOpenAIPromptCacheAdvancedFeatures"
+            class="mt-3 overflow-hidden rounded-lg border border-emerald-200/80 bg-gradient-to-br from-white via-emerald-50/70 to-teal-50/80 shadow-sm dark:border-emerald-800/60 dark:from-dark-800 dark:via-emerald-950/20 dark:to-teal-950/20"
+          >
+            <div class="flex items-center justify-between border-b border-emerald-100 px-3 py-2.5 dark:border-emerald-900/50">
+              <div class="flex items-center gap-2">
+                <span class="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.7)]" />
+                <span class="text-xs font-semibold text-emerald-800 dark:text-emerald-200">{{ t('admin.accounts.promptCacheAdvancedFeatures') }}</span>
+              </div>
+              <span class="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">4</span>
+            </div>
+            <div class="grid gap-2 p-2 sm:grid-cols-2">
+              <button
+                v-for="option in openAIPromptCacheAdvancedOptions"
+                :key="option.key"
+                type="button"
+                :aria-pressed="option.enabled"
+                @click="toggleOpenAIPromptCacheAdvancedOption(option.key)"
+                :class="[
+                  'group rounded-lg border px-3 py-2.5 text-left transition-all duration-200',
+                  option.enabled
+                    ? 'border-emerald-300 bg-white shadow-sm ring-1 ring-emerald-200/70 dark:border-emerald-700 dark:bg-dark-700 dark:ring-emerald-800/70'
+                    : 'border-transparent bg-white/55 hover:border-emerald-200 hover:bg-white dark:bg-dark-800/55 dark:hover:border-emerald-900 dark:hover:bg-dark-800'
+                ]"
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <span :class="['text-xs font-semibold', option.enabled ? 'text-emerald-800 dark:text-emerald-200' : 'text-gray-700 dark:text-gray-300']">{{ t(option.label) }}</span>
+                  <span :class="['relative mt-0.5 inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors', option.enabled ? 'bg-emerald-600' : 'bg-gray-300 dark:bg-dark-500']">
+                    <span :class="['mt-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform', option.enabled ? 'translate-x-[18px]' : 'translate-x-0.5']" />
+                  </span>
+                </div>
+                <p class="mt-1.5 text-[11px] leading-4 text-gray-500 dark:text-gray-400">{{ t(option.hint) }}</p>
+              </button>
+            </div>
           </div>
         </div>
         <div class="rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
@@ -3468,6 +3538,10 @@ const imagePoolModeEnabled = ref(false)
 const promptCacheBoostEnabled = ref(false)
 const promptCacheBoostAggressiveEnabled = ref(false)
 const promptCacheBoostUpstreamHitPriorityEnabled = ref(false)
+const promptCacheSmartRoutingEnabled = ref(false)
+const promptCacheAccountRelayEnabled = ref(false)
+const promptCacheKeyOptimizationEnabled = ref(false)
+const promptCacheLongContextEnhancementEnabled = ref(false)
 const upstreamStrongIsolationEnabled = ref(false)
 const upstreamConcurrencyRaceEnabled = ref(false)
 const upstreamConcurrencyRaceRetryDelayMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
@@ -3532,6 +3606,32 @@ const showPromptCacheBoostUpstreamHitPriorityToggle = computed(() =>
   promptCacheBoostEnabled.value &&
   promptCacheBoostAggressiveEnabled.value
 )
+const showOpenAIPromptCacheAdvancedFeatures = computed(() =>
+  props.account?.platform === 'openai' &&
+  showPromptCacheBoostUpstreamHitPriorityToggle.value &&
+  promptCacheBoostUpstreamHitPriorityEnabled.value
+)
+const openAIPromptCacheAdvancedOptions = computed(() => [
+  { key: 'smartRouting', label: 'admin.accounts.promptCacheSmartRouting', hint: 'admin.accounts.promptCacheSmartRoutingHint', enabled: promptCacheSmartRoutingEnabled.value },
+  { key: 'accountRelay', label: 'admin.accounts.promptCacheAccountRelay', hint: 'admin.accounts.promptCacheAccountRelayHint', enabled: promptCacheAccountRelayEnabled.value },
+  { key: 'keyOptimization', label: 'admin.accounts.promptCacheKeyOptimization', hint: 'admin.accounts.promptCacheKeyOptimizationHint', enabled: promptCacheKeyOptimizationEnabled.value },
+  { key: 'longContext', label: 'admin.accounts.promptCacheLongContextEnhancement', hint: 'admin.accounts.promptCacheLongContextEnhancementHint', enabled: promptCacheLongContextEnhancementEnabled.value }
+])
+const toggleOpenAIPromptCacheAdvancedOption = (key: string) => {
+  if (key === 'smartRouting') promptCacheSmartRoutingEnabled.value = !promptCacheSmartRoutingEnabled.value
+  if (key === 'accountRelay') {
+    if (!promptCacheAccountRelayEnabled.value) promptCacheSmartRoutingEnabled.value = true
+    promptCacheAccountRelayEnabled.value = !promptCacheAccountRelayEnabled.value
+  }
+  if (key === 'keyOptimization') promptCacheKeyOptimizationEnabled.value = !promptCacheKeyOptimizationEnabled.value
+  if (key === 'longContext') promptCacheLongContextEnhancementEnabled.value = !promptCacheLongContextEnhancementEnabled.value
+}
+const clearOpenAIPromptCacheAdvancedOptions = () => {
+  promptCacheSmartRoutingEnabled.value = false
+  promptCacheAccountRelayEnabled.value = false
+  promptCacheKeyOptimizationEnabled.value = false
+  promptCacheLongContextEnhancementEnabled.value = false
+}
 const upstreamStrongIsolationTitleKey = computed(() =>
   isAnthropicCacheBoostUI.value ? 'admin.accounts.anthropicUpstreamStrongIsolation' : 'admin.accounts.upstreamStrongIsolation'
 )
@@ -3550,6 +3650,14 @@ const loadCacheBoostAndIsolationFromCredentials = (credentials: Record<string, u
   promptCacheBoostEnabled.value = credentials[keys.enabled] === true
   promptCacheBoostAggressiveEnabled.value = credentials[keys.level] === 'aggressive'
   promptCacheBoostUpstreamHitPriorityEnabled.value = credentials[keys.upstreamHitPriority] === true
+  if (!isAnthropicCacheBoostUI.value) {
+    promptCacheSmartRoutingEnabled.value = credentials.prompt_cache_smart_routing_enabled === true
+    promptCacheAccountRelayEnabled.value = credentials.prompt_cache_account_relay_enabled === true
+    promptCacheKeyOptimizationEnabled.value = credentials.prompt_cache_key_optimization_enabled === true
+    promptCacheLongContextEnhancementEnabled.value = credentials.prompt_cache_long_context_enhancement_enabled === true
+  } else {
+    clearOpenAIPromptCacheAdvancedOptions()
+  }
   upstreamStrongIsolationEnabled.value = credentials[keys.isolation] === true
 }
 
@@ -3559,7 +3667,7 @@ const applyCacheBoostAndIsolationCredentials = (credentials: Record<string, unkn
   }
   const keys = cacheBoostCredentialKeys.value
   const staleKeys = isAnthropicCacheBoostUI.value
-    ? ['prompt_cache_boost_enabled', 'prompt_cache_boost_level', 'prompt_cache_boost_upstream_hit_priority_enabled', 'upstream_strong_isolation_enabled']
+    ? ['prompt_cache_boost_enabled', 'prompt_cache_boost_level', 'prompt_cache_boost_upstream_hit_priority_enabled', 'prompt_cache_smart_routing_enabled', 'prompt_cache_account_relay_enabled', 'prompt_cache_key_optimization_enabled', 'prompt_cache_long_context_enhancement_enabled', 'upstream_strong_isolation_enabled']
     : ['anthropic_cache_boost_enabled', 'anthropic_cache_boost_level', 'anthropic_cache_boost_upstream_hit_priority_enabled', 'anthropic_upstream_strong_isolation_enabled']
   staleKeys.forEach((key) => {
     delete credentials[key]
@@ -3581,6 +3689,19 @@ const applyCacheBoostAndIsolationCredentials = (credentials: Record<string, unkn
     delete credentials[keys.enabled]
     delete credentials[keys.level]
     delete credentials[keys.upstreamHitPriority]
+  }
+  const openAICacheFeatureKeys = [
+    'prompt_cache_smart_routing_enabled',
+    'prompt_cache_account_relay_enabled',
+    'prompt_cache_key_optimization_enabled',
+    'prompt_cache_long_context_enhancement_enabled'
+  ]
+  openAICacheFeatureKeys.forEach((key) => delete credentials[key])
+  if (!isAnthropicCacheBoostUI.value && promptCacheBoostEnabled.value && promptCacheBoostAggressiveEnabled.value && promptCacheBoostUpstreamHitPriorityEnabled.value) {
+    if (promptCacheSmartRoutingEnabled.value) credentials.prompt_cache_smart_routing_enabled = true
+    if (promptCacheSmartRoutingEnabled.value && promptCacheAccountRelayEnabled.value) credentials.prompt_cache_account_relay_enabled = true
+    if (promptCacheKeyOptimizationEnabled.value) credentials.prompt_cache_key_optimization_enabled = true
+    if (promptCacheLongContextEnhancementEnabled.value) credentials.prompt_cache_long_context_enhancement_enabled = true
   }
   if (showUpstreamStrongIsolationToggle.value && upstreamStrongIsolationEnabled.value) {
     credentials[keys.isolation] = true
@@ -4574,6 +4695,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       modelMappings.value = []
       allowedModels.value = []
       promptCacheBoostEnabled.value = false
+      clearOpenAIPromptCacheAdvancedOptions()
       promptCacheBoostAggressiveEnabled.value = false
       promptCacheBoostUpstreamHitPriorityEnabled.value = false
       upstreamStrongIsolationEnabled.value = false
@@ -4630,6 +4752,7 @@ watch([poolModeEnabled, () => props.account?.platform], ([enabled, platform]) =>
   }
   if (!showPromptCacheBoostToggle.value) {
     promptCacheBoostEnabled.value = false
+    clearOpenAIPromptCacheAdvancedOptions()
     promptCacheBoostAggressiveEnabled.value = false
     promptCacheBoostUpstreamHitPriorityEnabled.value = false
   }
@@ -4649,6 +4772,7 @@ watch([poolModeEnabled, () => props.account?.platform], ([enabled, platform]) =>
 watch(imagePoolModeEnabled, (enabled) => {
   if (enabled) {
     promptCacheBoostEnabled.value = false
+    clearOpenAIPromptCacheAdvancedOptions()
     promptCacheBoostAggressiveEnabled.value = false
     promptCacheBoostUpstreamHitPriorityEnabled.value = false
     upstreamStrongIsolationEnabled.value = false
@@ -5302,6 +5426,10 @@ const handleSubmit = async () => {
         delete newCredentials.prompt_cache_boost_enabled
         delete newCredentials.prompt_cache_boost_level
         delete newCredentials.prompt_cache_boost_upstream_hit_priority_enabled
+        delete newCredentials.prompt_cache_smart_routing_enabled
+        delete newCredentials.prompt_cache_account_relay_enabled
+        delete newCredentials.prompt_cache_key_optimization_enabled
+        delete newCredentials.prompt_cache_long_context_enhancement_enabled
         delete newCredentials.upstream_strong_isolation_enabled
         delete newCredentials.anthropic_cache_boost_enabled
         delete newCredentials.anthropic_cache_boost_level
@@ -5944,12 +6072,22 @@ watch(promptCacheBoostEnabled, (enabled) => {
   if (!enabled) {
     promptCacheBoostAggressiveEnabled.value = false
     promptCacheBoostUpstreamHitPriorityEnabled.value = false
+    clearOpenAIPromptCacheAdvancedOptions()
   }
 })
 
 watch(promptCacheBoostAggressiveEnabled, (enabled) => {
   if (!enabled) {
     promptCacheBoostUpstreamHitPriorityEnabled.value = false
+    clearOpenAIPromptCacheAdvancedOptions()
   }
+})
+
+watch(promptCacheBoostUpstreamHitPriorityEnabled, (enabled) => {
+  if (!enabled) clearOpenAIPromptCacheAdvancedOptions()
+})
+
+watch(promptCacheSmartRoutingEnabled, (enabled) => {
+  if (!enabled) promptCacheAccountRelayEnabled.value = false
 })
 </script>

@@ -558,6 +558,9 @@ func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
 		decision := s.classifyOpenAIPoolFailover(ctx, account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
 		userRequestError := isOpenAIPoolUserRequestedModelError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody) ||
 			isOpenAIPoolExplicitClientRequestError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+		if !userRequestError {
+			s.avoidOpenAIPromptCacheWarmAccount(ctx, groupID, sessionHash, account, failoverErr)
+		}
 		if !userRequestError && !failoverErr.SkipPoolSoftCooldown && !decision.SkipSoftCooldown && s.shouldStartOpenAIPoolSoftCooldown(account) {
 			probeModel := strings.TrimSpace(failoverErr.ProbeModel)
 			if probeModel == "" && len(requestedModel) > 0 {

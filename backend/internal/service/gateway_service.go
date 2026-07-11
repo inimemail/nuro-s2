@@ -464,6 +464,23 @@ type GatewayCache interface {
 	DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error
 }
 
+type OpenAIPromptCacheWarmAccount struct {
+	AccountID     int64   `json:"account_id"`
+	HitRateEWMA   float64 `json:"hit_rate_ewma"`
+	Samples       int     `json:"samples"`
+	InputTokens   int64   `json:"input_tokens"`
+	CachedTokens  int64   `json:"cached_tokens"`
+	LastSuccessAt int64   `json:"last_success_at"`
+	LastHitAt     int64   `json:"last_hit_at"`
+	AvoidUntil    int64   `json:"avoid_until"`
+}
+
+type OpenAIPromptCacheWarmCache interface {
+	GetOpenAIPromptCacheWarmAccounts(ctx context.Context, groupID int64, affinityHash string) ([]OpenAIPromptCacheWarmAccount, error)
+	RecordOpenAIPromptCacheWarmResult(ctx context.Context, groupID int64, affinityHash string, accountID int64, inputTokens int, cachedTokens int, ttl time.Duration) error
+	AvoidOpenAIPromptCacheWarmAccount(ctx context.Context, groupID int64, affinityHash string, accountID int64, until time.Time, ttl time.Duration) error
+}
+
 // derefGroupID safely dereferences *int64 to int64, returning 0 if nil
 func derefGroupID(groupID *int64) int64 {
 	if groupID == nil {

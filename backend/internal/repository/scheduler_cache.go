@@ -526,10 +526,25 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		"pool_soft_cooldown_error_threshold",
 		"image_pool_mode",
 		"prompt_cache_boost_enabled",
+		"prompt_cache_smart_routing_enabled",
+		"prompt_cache_account_relay_enabled",
+		"prompt_cache_key_optimization_enabled",
+		"prompt_cache_long_context_enhancement_enabled",
 		"upstream_strong_isolation_enabled",
 		"pool_mode_retry_count",
 		"pool_mode_retry_status_codes",
 		"openai_capabilities",
+	}
+	for _, key := range []string{
+		"prompt_cache_smart_routing_enabled",
+		"prompt_cache_account_relay_enabled",
+		"prompt_cache_key_optimization_enabled",
+		"prompt_cache_long_context_enhancement_enabled",
+	} {
+		if enabled, _ := credentials[key].(bool); enabled {
+			keys = append(keys, "prompt_cache_boost_level", "prompt_cache_boost_upstream_hit_priority_enabled")
+			break
+		}
 	}
 	filtered := make(map[string]any)
 	for _, key := range keys {

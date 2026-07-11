@@ -1124,6 +1124,26 @@ func (a *Account) IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() bool {
 		credentialBool(a.Credentials, "prompt_cache_boost_upstream_hit_priority_enabled")
 }
 
+func (a *Account) IsOpenAIPromptCacheSmartRoutingEnabled() bool {
+	return a.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() &&
+		credentialBool(a.Credentials, "prompt_cache_smart_routing_enabled")
+}
+
+func (a *Account) IsOpenAIPromptCacheAccountRelayEnabled() bool {
+	return a.IsOpenAIPromptCacheSmartRoutingEnabled() &&
+		credentialBool(a.Credentials, "prompt_cache_account_relay_enabled")
+}
+
+func (a *Account) IsOpenAIPromptCacheKeyOptimizationEnabled() bool {
+	return a.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() &&
+		credentialBool(a.Credentials, "prompt_cache_key_optimization_enabled")
+}
+
+func (a *Account) IsOpenAIPromptCacheLongContextEnhancementEnabled() bool {
+	return a.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() &&
+		credentialBool(a.Credentials, "prompt_cache_long_context_enhancement_enabled")
+}
+
 func (a *Account) isOpenAIUpstreamStrongIsolationApplicableAccount() bool {
 	if a == nil || !a.IsOpenAI() || a.IsImagePoolMode() || a.Credentials == nil {
 		return false

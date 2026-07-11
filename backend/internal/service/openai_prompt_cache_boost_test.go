@@ -421,6 +421,51 @@ func TestOpenAIPromptCacheBoost_GroupAffinityUsesUpstreamPriorityWhenAvailable(t
 	require.Equal(t, hashA, hashB)
 }
 
+func TestOpenAIPromptCacheBoost_GroupAffinityUsesOptimizedHashWhenAllUpstreamAccountsSupportIt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx := context.Background()
+	groupID := int64(111)
+	first := *promptCacheAdvancedTestAccount(3673, 1)
+	second := *promptCacheAdvancedTestAccount(3674, 1)
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"shared policy"},{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	svc := &OpenAIGatewayService{
+		schedulerSnapshot: NewSchedulerSnapshotService(&openAISnapshotCacheStub{
+			snapshotAccounts: []*Account{&first, &second},
+		}, nil, nil, nil, nil, nil),
+	}
+
+	hash := svc.GeneratePromptCacheBoostAffinitySessionHashForGroup(ctx, c, &groupID, body, "gpt-5.5")
+	require.True(t, IsOpenAIPromptCacheBoostOptimizedAffinitySessionHash(hash))
+}
+
+func TestOpenAIPromptCacheBoost_GroupAffinityKeepsUpstreamHashForMixedKeyOptimizationPool(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx := context.Background()
+	groupID := int64(112)
+	optimized := *promptCacheAdvancedTestAccount(3675, 1)
+	legacy := *promptCacheAdvancedTestAccount(3676, 1)
+	delete(legacy.Credentials, "prompt_cache_key_optimization_enabled")
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"shared policy"},{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	svc := &OpenAIGatewayService{
+		schedulerSnapshot: NewSchedulerSnapshotService(&openAISnapshotCacheStub{
+			snapshotAccounts: []*Account{&optimized, &legacy},
+		}, nil, nil, nil, nil, nil),
+	}
+
+	hash := svc.GeneratePromptCacheBoostAffinitySessionHashForGroup(ctx, c, &groupID, body, "gpt-5.5")
+	require.True(t, IsOpenAIPromptCacheBoostUpstreamAffinitySessionHash(hash))
+	require.False(t, IsOpenAIPromptCacheBoostOptimizedAffinitySessionHash(hash))
+	require.Equal(t, hash, svc.NormalizeOpenAIPromptCacheBoostAffinitySessionHash(hash, &legacy))
+}
+
 func TestOpenAIPromptCacheBoost_GroupAffinityUsesExplicitPromptCacheKeyForUpstreamPriority(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
