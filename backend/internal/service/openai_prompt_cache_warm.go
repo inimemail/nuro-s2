@@ -14,8 +14,6 @@ const (
 	openAIPromptCacheWarmTTL                    = 24 * time.Hour
 	openAIPromptCacheWarmHalfLife               = 12 * time.Hour
 	openAIPromptCacheWarmMinScore               = 0.12
-	openAIPromptCacheWarmLoadSkew               = 10
-	openAIPromptCacheWarmErrorSkew              = 0.05
 	openAIPromptCacheEnhancedReplayMinBodyBytes = 8 * 1024
 	openAIPromptCacheWarmLookupTimeout          = 50 * time.Millisecond
 )
@@ -181,14 +179,8 @@ func openAIPromptCacheWarmCandidateCompatible(
 		return false
 	}
 	return candidate.account.IsOpenAIPromptCacheSmartRoutingEnabled() &&
-		candidate.account.Priority == baseline.account.Priority &&
-		candidate.account.IsPoolMode() == baseline.account.IsPoolMode() &&
-		(!req.RequireCompact || openAICompactSupportTier(candidate.account) == openAICompactSupportTier(baseline.account)) &&
-		sameOpenAIHealthScoreTie(candidate.healthScore, candidate.hasHealthScore, baseline.healthScore, baseline.hasHealthScore) &&
-		(!preferSoonestReset || sameOpenAIAccountResetTie(candidate.account, baseline.account)) &&
-		candidate.loadInfo.LoadRate <= baseline.loadInfo.LoadRate+openAIPromptCacheWarmLoadSkew &&
-		candidate.loadInfo.WaitingCount <= baseline.loadInfo.WaitingCount+1 &&
-		candidate.errorRate <= baseline.errorRate+openAIPromptCacheWarmErrorSkew
+		sameOpenAIStrictPriorityTie(candidate, baseline, preferSoonestReset) &&
+		(!req.RequireCompact || openAICompactSupportTier(candidate.account) == openAICompactSupportTier(baseline.account))
 }
 
 func (s *OpenAIGatewayService) shouldEnhanceOpenAIPromptCacheLongContext(ctx context.Context, c *gin.Context, account *Account, model string, body []byte) bool {

@@ -116,6 +116,28 @@ func TestPrioritizeOpenAIPromptCacheWarmCandidatesPreservesHardPriority(t *testi
 	require.Equal(t, int64(1), ordered[0].account.ID)
 }
 
+func TestPrioritizeOpenAIPromptCacheWarmCandidatesDoesNotOverrideExistingTieBreakers(t *testing.T) {
+	now := time.Now()
+	warmCache := &promptCacheWarmTestCache{entries: []OpenAIPromptCacheWarmAccount{
+		{AccountID: 2, HitRateEWMA: 0.95, Samples: 5, LastSuccessAt: now.Unix(), LastHitAt: now.Unix()},
+	}}
+	svc := &OpenAIGatewayService{cache: warmCache}
+	first := promptCacheAdvancedTestAccount(1, 1)
+	warm := promptCacheAdvancedTestAccount(2, 1)
+	firstUsed := now.Add(-time.Minute)
+	warmUsed := now
+	first.LastUsedAt = &firstUsed
+	warm.LastUsedAt = &warmUsed
+	candidates := []openAIAccountCandidateScore{
+		{account: first, loadInfo: &AccountLoadInfo{}, healthScore: 1, hasHealthScore: true},
+		{account: warm, loadInfo: &AccountLoadInfo{}, healthScore: 1, hasHealthScore: true},
+	}
+	req := OpenAIAccountScheduleRequest{SessionHash: openAIPromptCacheBoostOptimizedAffinitySessionPrefix + "strict-tie"}
+
+	ordered := svc.prioritizeOpenAIPromptCacheWarmCandidates(context.Background(), req, candidates)
+	require.Equal(t, []int64{1, 2}, []int64{ordered[0].account.ID, ordered[1].account.ID})
+}
+
 func TestPrioritizeOpenAIPromptCacheWarmCandidatesDisabledAvoidsCacheLookup(t *testing.T) {
 	warmCache := &promptCacheWarmTestCache{}
 	svc := &OpenAIGatewayService{cache: warmCache}
