@@ -100,6 +100,25 @@ func TestCyberPolicyHandleEventSetsBlockWhenEnabled(t *testing.T) {
 	require.True(t, blocked)
 }
 
+func TestOpenAIHealthProbeCyberPolicyDoesNotSetSessionBlock(t *testing.T) {
+	c, _ := configuredHealthProbeContext(t)
+	c.Request.Header.Set("session_id", "health-probe-session")
+	svc := &OpenAIGatewayService{
+		settingService: NewSettingService(&openAIFastPolicyRepoStub{values: map[string]string{
+			SettingKeyRiskControlEnabled: "true",
+		}}, nil),
+	}
+	account := &Account{ID: 43, Platform: PlatformOpenAI}
+	payload := []byte(`{"error":{"code":"cyber_policy","message":"This request has been flagged for potentially high-risk cyber activity."}}`)
+
+	decision := svc.handleOpenAICyberPolicyEvent(c, account, false, "rid-health-probe", payload, nil)
+
+	require.True(t, decision.Matched)
+	require.False(t, decision.SessionBlocked)
+	_, blocked := svc.checkOpenAICyberPolicySessionBlock(c.Request.Context(), account, decision.AnchorType, decision.AnchorHash)
+	require.False(t, blocked)
+}
+
 type cyberPolicyCountingSettingRepo struct {
 	values        map[string]string
 	getValueCalls atomic.Int64

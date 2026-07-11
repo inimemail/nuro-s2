@@ -18,17 +18,36 @@ const (
 	OpenAIHealthProbeProfileResponsesV1 = "openai-responses-v1"
 	OpenAIHealthProbeMaxAccountSwitches = 2
 	OpenAIHealthProbeTotalTimeout       = 40 * time.Second
+	OpenAIHealthProbeGrabMaxElapsed     = 1500 * time.Millisecond
 
-	openAIHealthProbeContextKey      = "openai_responses_health_probe"
-	openAIHealthProbeSessionPrefix   = "openai-health-probe-"
-	openAIHealthProbeMaxBodyBytes    = 8 * 1024
-	openAIHealthProbeMaxOutputTokens = 512
-	openAIHealthProbeErrorCode       = "monitor_probe_empty_response"
-	openAIHealthProbeUpstreamMessage = "OpenAI health probe returned 2xx without assistant text"
-	openAIHealthProbeClientMessage   = "OpenAI health probe exhausted available accounts without assistant text"
-	openAIHealthProbeInstructions    = "Return exactly MONITOR_OK as plain text."
-	openAIHealthProbeInput           = "Return exactly MONITOR_OK."
+	openAIHealthProbeContextKey               = "openai_responses_health_probe"
+	openAIHealthProbeSessionPrefix            = "openai-health-probe-"
+	openAIHealthProbeMaxBodyBytes             = 8 * 1024
+	openAIHealthProbeMaxOutputTokens          = 512
+	openAIHealthProbeAlternativeLookupTimeout = 500 * time.Millisecond
+	openAIHealthProbeErrorCode                = "monitor_probe_empty_response"
+	openAIHealthProbeUpstreamMessage          = "OpenAI health probe returned 2xx without assistant text"
+	openAIHealthProbeClientMessage            = "OpenAI health probe exhausted available accounts without assistant text"
+	openAIHealthProbeInstructions             = "Return exactly MONITOR_OK as plain text."
+	openAIHealthProbeInput                    = "Return exactly MONITOR_OK."
 )
+
+type openAIHealthProbeRequestContextKey struct{}
+
+func WithOpenAIHealthProbeRequestContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, openAIHealthProbeRequestContextKey{}, true)
+}
+
+func IsOpenAIHealthProbeRequestContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	marked, _ := ctx.Value(openAIHealthProbeRequestContextKey{}).(bool)
+	return marked
+}
 
 func ConfigureOpenAIResponsesHealthProbe(c *gin.Context, body []byte, model string, stream bool) (bool, error) {
 	if c == nil {
@@ -52,6 +71,22 @@ func ConfigureOpenAIResponsesHealthProbe(c *gin.Context, body []byte, model stri
 }
 
 func validateOpenAIResponsesHealthProbeBody(body []byte, model string, stream bool) error {
+	if len(body) == 0 || len(body) > openAIHealthProbeMaxBodyBytes {
+		return fmt.Errorf("health probe body must be between 1 and %d bytes", openAIHealthProbeMaxBodyBytes)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return fmt.Errorf("health probe body must be a JSON object")
+	}
+	allowedFields := map[string]struct{}{
+		"model": {}, "instructions": {}, "input": {}, "max_output_tokens": {},
+		"stream": {}, "store": {}, "reasoning": {},
+	}
+	for field := range fields {
+		if _, allowed := allowedFields[field]; !allowed {
+			return fmt.Errorf("health probe body does not support field %q", field)
+		}
+	}
 	model = strings.TrimSpace(model)
 	bodyModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	if model == "" || bodyModel == "" || model != bodyModel {
@@ -59,9 +94,6 @@ func validateOpenAIResponsesHealthProbeBody(body []byte, model string, stream bo
 	}
 	if stream || gjson.GetBytes(body, "stream").Type != gjson.False {
 		return fmt.Errorf("health probe requires stream=false")
-	}
-	if len(body) == 0 || len(body) > openAIHealthProbeMaxBodyBytes {
-		return fmt.Errorf("health probe body must be between 1 and %d bytes", openAIHealthProbeMaxBodyBytes)
 	}
 	if strings.TrimSpace(gjson.GetBytes(body, "instructions").String()) != openAIHealthProbeInstructions ||
 		strings.TrimSpace(gjson.GetBytes(body, "input").String()) != openAIHealthProbeInput {
@@ -73,8 +105,14 @@ func validateOpenAIResponsesHealthProbeBody(body []byte, model string, stream bo
 	if strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()) != "" {
 		return fmt.Errorf("health probe does not support previous_response_id")
 	}
-	if reasoning := gjson.GetBytes(body, "reasoning"); reasoning.Exists() && reasoning.Get("effort").String() != "none" {
-		return fmt.Errorf("health probe only supports omitted reasoning or reasoning.effort=none")
+	if reasoningRaw, exists := fields["reasoning"]; exists {
+		var reasoning map[string]json.RawMessage
+		if err := json.Unmarshal(reasoningRaw, &reasoning); err != nil || len(reasoning) != 1 || strings.TrimSpace(gjson.GetBytes(reasoningRaw, "effort").String()) != "none" {
+			return fmt.Errorf("health probe only supports omitted reasoning or reasoning.effort=none")
+		}
+		if _, exists := reasoning["effort"]; !exists {
+			return fmt.Errorf("health probe only supports omitted reasoning or reasoning.effort=none")
+		}
 	}
 	if maxTokens := gjson.GetBytes(body, "max_output_tokens"); maxTokens.Type != gjson.Number || maxTokens.Float() != openAIHealthProbeMaxOutputTokens {
 		return fmt.Errorf("health probe requires max_output_tokens=%d", openAIHealthProbeMaxOutputTokens)
@@ -108,6 +146,105 @@ func NewOpenAIHealthProbeSessionHash() string {
 func IsOpenAIHealthProbeSessionHash(sessionHash string) bool {
 	value := strings.TrimSpace(sessionHash)
 	return strings.HasPrefix(value, openAIHealthProbeSessionPrefix) && len(value) > len(openAIHealthProbeSessionPrefix)
+}
+
+func (s *OpenAIGatewayService) HasOpenAIHealthProbeAlternativeAccount(ctx context.Context, current *Account, req OpenAIAccountScheduleRequest) bool {
+	if s == nil || current == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, openAIHealthProbeAlternativeLookupTimeout)
+	defer cancel()
+
+	platform := normalizeOpenAICompatibleRequestPlatform(req.RequestPlatform)
+	accounts, err := s.listSchedulableAccountsForPlatform(lookupCtx, req.GroupID, platform)
+	if err != nil || len(accounts) == 0 {
+		return false
+	}
+
+	var schedGroup *Group
+	if req.GroupID != nil && s.schedulerSnapshot != nil {
+		schedGroup, _ = s.schedulerSnapshot.GetGroupByID(lookupCtx, *req.GroupID)
+	}
+
+	candidates := make([]*Account, 0, len(accounts))
+	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
+	for i := range accounts {
+		account := &accounts[i]
+		if account.ID == current.ID || account.Priority != current.Priority {
+			continue
+		}
+		if _, excluded := req.ExcludedIDs[account.ID]; excluded {
+			continue
+		}
+		if s.schedulerSnapshot != nil {
+			account, err = s.getSchedulableAccount(lookupCtx, account.ID)
+			if err != nil || account == nil || account.Priority != current.Priority {
+				continue
+			}
+		}
+		if !isOpenAIAccountEligibleForRequest(lookupCtx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, platform) {
+			continue
+		}
+		if !parentHealthyForShadow(account, s.parentAccountLookup(lookupCtx)) ||
+			s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIPoolAccountSoftCooling(account) {
+			continue
+		}
+		if schedGroup != nil && schedGroup.RequirePrivacySet && !account.IsPrivacySet() {
+			continue
+		}
+		if req.RequiredTransport != OpenAIUpstreamTransportAny &&
+			req.RequiredTransport != OpenAIUpstreamTransportHTTPSSE &&
+			!s.isOpenAIAccountTransportCompatible(account, req.RequiredTransport) {
+			continue
+		}
+		if !s.latestOpenAIAccountMatchesGroup(lookupCtx, account, req.GroupID) {
+			continue
+		}
+		if req.GroupID != nil && s.needsUpstreamChannelRestrictionCheck(lookupCtx, req.GroupID) &&
+			s.isUpstreamModelRestrictedByChannel(lookupCtx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
+			continue
+		}
+		candidates = append(candidates, account)
+		loadReq = append(loadReq, AccountWithConcurrency{ID: account.ID, MaxConcurrency: account.EffectiveLoadFactor()})
+	}
+	if len(candidates) == 0 {
+		return false
+	}
+	if lookupCtx.Err() != nil {
+		return false
+	}
+	if s.concurrencyService == nil {
+		return true
+	}
+	type loadResult struct {
+		loadMap map[int64]*AccountLoadInfo
+		err     error
+	}
+	loadResultCh := make(chan loadResult, 1)
+	go func() {
+		loadMap, loadErr := s.concurrencyService.GetAccountsLoadBatchFresh(lookupCtx, loadReq)
+		loadResultCh <- loadResult{loadMap: loadMap, err: loadErr}
+	}()
+	var loadMap map[int64]*AccountLoadInfo
+	select {
+	case <-lookupCtx.Done():
+		return false
+	case result := <-loadResultCh:
+		if result.err != nil {
+			return false
+		}
+		loadMap = result.loadMap
+	}
+	for _, candidate := range candidates {
+		loadInfo := loadMap[candidate.ID]
+		if loadInfo == nil || loadInfo.LoadRate < 100 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *OpenAIGatewayService) ReleaseOpenAIHealthProbeSession(ctx context.Context, groupID *int64, sessionHash string) {

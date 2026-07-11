@@ -3242,6 +3242,9 @@ func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, re
 }
 
 func (s *OpenAIGatewayService) tryAutoConsumeOpenAICodexResetCredit(ctx context.Context, account *Account, headers http.Header, responseBody []byte) bool {
+	if IsOpenAIHealthProbeRequestContext(ctx) {
+		return false
+	}
 	if s == nil || account == nil || !account.IsOpenAIOAuth() || account.Platform != PlatformOpenAI {
 		return false
 	}
@@ -3848,7 +3851,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	promptCacheBoostKeyInjected := false
 	promptCacheBoostRetentionInjected := false
-	if s.isOpenAIPromptCacheBoostRuntimeEnabled(account) {
+	if !IsOpenAIResponsesHealthProbe(c) && s.isOpenAIPromptCacheBoostRuntimeEnabled(account) {
 		if promptCacheKey == "" && s.isOpenAIPromptCacheBoostKeyRuntimeEnabled(account) {
 			if generatedKey := deriveOpenAIVirtualPromptCacheKey(account, upstreamModel, body); generatedKey != "" {
 				promptCacheKey = generatedKey
@@ -7762,7 +7765,7 @@ func extractOpenAIResponseIDFromJSONBytes(body []byte) string {
 }
 
 func (s *OpenAIGatewayService) bindHTTPResponseAccount(ctx context.Context, c *gin.Context, account *Account, responseID string) {
-	if s == nil || account == nil || account.ID <= 0 {
+	if s == nil || IsOpenAIResponsesHealthProbe(c) || account == nil || account.ID <= 0 {
 		return
 	}
 	responseID = strings.TrimSpace(responseID)
@@ -8658,6 +8661,7 @@ type OpenAIRecordUsageInput struct {
 	RequestPayloadHash      string
 	PromptCacheAffinityHash string
 	PromptCacheGroupID      *int64
+	HealthProbe             bool
 	APIKeyService           APIKeyQuotaUpdater
 	// CyberBlocked 为 true 时把该用量行标记为 cyber（request_type=cyber），计费逻辑不变。
 	CyberBlocked bool
@@ -8723,7 +8727,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result == nil {
 		return errors.New("openai usage result is nil")
 	}
-	if s.rateLimitService != nil && input.Account != nil && input.Account.Platform == PlatformOpenAI {
+	if !input.HealthProbe && s.rateLimitService != nil && input.Account != nil && input.Account.Platform == PlatformOpenAI {
 		s.rateLimitService.ResetOpenAI403Counter(ctx, input.Account.ID)
 	}
 
@@ -8739,8 +8743,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if actualInputTokens < 0 {
 		actualInputTokens = 0
 	}
-	s.logOpenAIPromptCacheHitRate(ctx, account, result.Usage)
-	s.recordOpenAIPromptCacheWarmResult(ctx, input)
+	if !input.HealthProbe {
+		s.logOpenAIPromptCacheHitRate(ctx, account, result.Usage)
+		s.recordOpenAIPromptCacheWarmResult(ctx, input)
+	}
 
 	// Calculate cost
 	tokens := UsageTokens{
@@ -8955,7 +8961,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
 		logger.LegacyPrintf("service.openai_gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
-		s.deferredService.ScheduleLastUsedUpdate(account.ID)
+		if !input.HealthProbe {
+			s.deferredService.ScheduleLastUsedUpdate(account.ID)
+		}
 		return nil
 	}
 
@@ -8976,6 +8984,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			AccountRateMultiplier: accountRateMultiplier,
 			APIKeyService:         input.APIKeyService,
 			Platform:              quotaPlatform,
+			SkipAccountLastUsed:   input.HealthProbe,
 		}, s.billingDeps(), s.usageBillingRepo)
 		return err
 	}()
@@ -9404,7 +9413,7 @@ func buildCodexUsageExtraUpdates(snapshot *OpenAICodexUsageSnapshot, fallbackNow
 
 // updateCodexUsageSnapshot saves the Codex usage snapshot to account's Extra field
 func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, accountID int64, snapshot *OpenAICodexUsageSnapshot) {
-	if snapshot == nil {
+	if snapshot == nil || IsOpenAIHealthProbeRequestContext(ctx) {
 		return
 	}
 	if s == nil || s.accountRepo == nil {

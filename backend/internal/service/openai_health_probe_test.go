@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
@@ -55,6 +56,9 @@ func TestConfigureOpenAIResponsesHealthProbe(t *testing.T) {
 		{name: "streaming", profile: OpenAIHealthProbeProfileResponsesV1, body: body, model: "gpt-5.5", stream: true},
 		{name: "missing stream", profile: OpenAIHealthProbeProfileResponsesV1, body: []byte(`{"model":"gpt-5.5","instructions":"Return exactly MONITOR_OK as plain text.","input":"Return exactly MONITOR_OK.","reasoning":{"effort":"none"},"max_output_tokens":512,"store":false}`), model: "gpt-5.5"},
 		{name: "tools", profile: OpenAIHealthProbeProfileResponsesV1, body: []byte(`{"model":"gpt-5.5","instructions":"reply","input":"ok","tools":[{"type":"function","name":"x"}],"stream":false}`), model: "gpt-5.5"},
+		{name: "prompt cache key", profile: OpenAIHealthProbeProfileResponsesV1, body: []byte(`{"model":"gpt-5.5","instructions":"Return exactly MONITOR_OK as plain text.","input":"Return exactly MONITOR_OK.","prompt_cache_key":"business-cache","max_output_tokens":512,"stream":false,"store":false}`), model: "gpt-5.5"},
+		{name: "metadata", profile: OpenAIHealthProbeProfileResponsesV1, body: []byte(`{"model":"gpt-5.5","instructions":"Return exactly MONITOR_OK as plain text.","input":"Return exactly MONITOR_OK.","metadata":{"source":"business"},"max_output_tokens":512,"stream":false,"store":false}`), model: "gpt-5.5"},
+		{name: "reasoning extra field", profile: OpenAIHealthProbeProfileResponsesV1, body: []byte(`{"model":"gpt-5.5","instructions":"Return exactly MONITOR_OK as plain text.","input":"Return exactly MONITOR_OK.","reasoning":{"effort":"none","summary":"auto"},"max_output_tokens":512,"stream":false,"store":false}`), model: "gpt-5.5"},
 		{name: "excessive output", profile: OpenAIHealthProbeProfileResponsesV1, body: []byte(`{"model":"gpt-5.5","instructions":"reply","input":"ok","max_output_tokens":2048,"stream":false}`), model: "gpt-5.5"},
 		{name: "fractional output", profile: OpenAIHealthProbeProfileResponsesV1, body: []byte(`{"model":"gpt-5.5","instructions":"Return exactly MONITOR_OK as plain text.","input":"Return exactly MONITOR_OK.","reasoning":{"effort":"none"},"max_output_tokens":512.5,"stream":false,"store":false}`), model: "gpt-5.5"},
 		{name: "unsupported reasoning", profile: OpenAIHealthProbeProfileResponsesV1, body: []byte(`{"model":"gpt-5.5","instructions":"Return exactly MONITOR_OK as plain text.","input":"Return exactly MONITOR_OK.","reasoning":{"effort":"low"},"max_output_tokens":512,"stream":false,"store":false}`), model: "gpt-5.5"},
@@ -154,11 +158,59 @@ func TestOpenAIHealthProbeMarkerIsNotForwardedUpstream(t *testing.T) {
 
 func TestOpenAIHealthProbeUpstreamContextKeepsCancellation(t *testing.T) {
 	c, _ := configuredHealthProbeContext(t)
-	parent, cancel := context.WithCancel(context.Background())
+	parent, cancel := context.WithCancel(WithOpenAIHealthProbeRequestContext(context.Background()))
 	upstream, release := openAIUpstreamRequestContext(parent, c)
 	release()
+	require.True(t, IsOpenAIHealthProbeRequestContext(upstream))
 	cancel()
 	require.ErrorIs(t, upstream.Err(), context.Canceled)
+}
+
+func TestOpenAIHealthProbeUpstreamErrorDoesNotBlockAccountScheduling(t *testing.T) {
+	probeAccount := &Account{ID: 95, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	probeService := &OpenAIGatewayService{}
+	probeService.handleOpenAIAccountUpstreamError(
+		WithOpenAIHealthProbeRequestContext(context.Background()),
+		probeAccount,
+		http.StatusTooManyRequests,
+		nil,
+		nil,
+	)
+	require.False(t, probeService.isOpenAIAccountRuntimeBlocked(probeAccount))
+
+	businessAccount := &Account{ID: 96, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	businessService := &OpenAIGatewayService{}
+	businessService.handleOpenAIAccountUpstreamError(context.Background(), businessAccount, http.StatusTooManyRequests, nil, nil)
+	require.True(t, businessService.isOpenAIAccountRuntimeBlocked(businessAccount))
+}
+
+func TestOpenAIHealthProbeDoesNotPersistCodexUsageSnapshot(t *testing.T) {
+	usedPercent := 25.0
+	repo := &snapshotUpdateAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{},
+		updateExtraCalls:      make(chan map[string]any, 1),
+	}
+	service := &OpenAIGatewayService{accountRepo: repo}
+	service.updateCodexUsageSnapshot(
+		WithOpenAIHealthProbeRequestContext(context.Background()),
+		97,
+		&OpenAICodexUsageSnapshot{PrimaryUsedPercent: &usedPercent},
+	)
+	select {
+	case <-repo.updateExtraCalls:
+		t.Fatal("health probe must not persist Codex usage snapshots")
+	default:
+	}
+}
+
+func TestOpenAIHealthProbeDoesNotBindResponseAccount(t *testing.T) {
+	c, _ := configuredHealthProbeContext(t)
+	service := &OpenAIGatewayService{}
+	service.bindHTTPResponseAccount(context.Background(), c, &Account{ID: 98, Platform: PlatformOpenAI}, "resp_health_probe")
+
+	accountID, err := service.getOpenAIWSStateStore().GetResponseAccount(context.Background(), 0, "resp_health_probe")
+	require.NoError(t, err)
+	require.Zero(t, accountID)
 }
 
 func TestOpenAIHealthProbeSessionIsRequestLocalAndCleaned(t *testing.T) {
@@ -212,6 +264,140 @@ func TestOpenAIHealthProbeDoesNotChangeUnmarkedEmptyResponse(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Contains(t, recorder.Body.String(), `"output":[]`)
+}
+
+func TestHasOpenAIHealthProbeAlternativeAccountFiltersCandidates(t *testing.T) {
+	groupID := int64(901)
+	current := healthProbeAlternativeAccount(201, 3, groupID)
+	alternative := healthProbeAlternativeAccount(202, 3, groupID)
+	differentPriority := healthProbeAlternativeAccount(203, 4, groupID)
+	req := OpenAIAccountScheduleRequest{
+		GroupID:            &groupID,
+		RequestedModel:     "gpt-5.5",
+		RequiredTransport:  OpenAIUpstreamTransportAny,
+		RequiredCapability: OpenAIEndpointCapabilityChatCompletions,
+		RequestPlatform:    PlatformOpenAI,
+	}
+
+	t.Run("same priority untried account is available", func(t *testing.T) {
+		svc := healthProbeAlternativeService([]Account{current, alternative, differentPriority}, nil)
+		require.True(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, req))
+	})
+
+	t.Run("excluded account is not available", func(t *testing.T) {
+		svc := healthProbeAlternativeService([]Account{current, alternative}, nil)
+		excludedReq := req
+		excludedReq.ExcludedIDs = map[int64]struct{}{alternative.ID: {}}
+		require.False(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, excludedReq))
+	})
+
+	t.Run("different priority is not available", func(t *testing.T) {
+		svc := healthProbeAlternativeService([]Account{current, differentPriority}, nil)
+		require.False(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, req))
+	})
+
+	t.Run("different group is not available", func(t *testing.T) {
+		otherGroup := healthProbeAlternativeAccount(204, 3, groupID+1)
+		svc := healthProbeAlternativeService([]Account{current, otherGroup}, nil)
+		require.False(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, req))
+	})
+
+	t.Run("runtime blocked account is not available", func(t *testing.T) {
+		svc := healthProbeAlternativeService([]Account{current, alternative}, nil)
+		svc.openaiAccountRuntimeBlockUntil.Store(alternative.ID, time.Now().Add(time.Minute))
+		require.False(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, req))
+	})
+
+	t.Run("soft cooling pool account is not available", func(t *testing.T) {
+		poolAlternative := alternative
+		poolAlternative.Credentials = map[string]interface{}{"pool_mode": true}
+		svc := healthProbeAlternativeService([]Account{current, poolAlternative}, nil)
+		svc.openaiPoolSoftCooldownUntil.Store(poolAlternative.ID, time.Now().Add(time.Minute))
+		require.False(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, req))
+	})
+}
+
+func TestHasOpenAIHealthProbeAlternativeAccountRequiresReliableCapacity(t *testing.T) {
+	groupID := int64(902)
+	current := healthProbeAlternativeAccount(211, 2, groupID)
+	alternative := healthProbeAlternativeAccount(212, 2, groupID)
+	req := OpenAIAccountScheduleRequest{
+		GroupID:            &groupID,
+		RequestedModel:     "gpt-5.5",
+		RequiredTransport:  OpenAIUpstreamTransportAny,
+		RequiredCapability: OpenAIEndpointCapabilityChatCompletions,
+		RequestPlatform:    PlatformOpenAI,
+	}
+
+	t.Run("fully loaded account is not available", func(t *testing.T) {
+		cache := schedulerTestConcurrencyCache{loadMap: map[int64]*AccountLoadInfo{
+			alternative.ID: {AccountID: alternative.ID, LoadRate: 100},
+		}}
+		svc := healthProbeAlternativeService([]Account{current, alternative}, cache)
+		require.False(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, req))
+	})
+
+	t.Run("load lookup error keeps current account budget", func(t *testing.T) {
+		cache := schedulerTestConcurrencyCache{loadBatchErr: errors.New("load unavailable")}
+		svc := healthProbeAlternativeService([]Account{current, alternative}, cache)
+		require.False(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, req))
+	})
+
+	t.Run("account below capacity is available", func(t *testing.T) {
+		cache := schedulerTestConcurrencyCache{loadMap: map[int64]*AccountLoadInfo{
+			alternative.ID: {AccountID: alternative.ID, LoadRate: 99},
+		}}
+		svc := healthProbeAlternativeService([]Account{current, alternative}, cache)
+		require.True(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, req))
+	})
+}
+
+func TestHasOpenAIHealthProbeAlternativeAccountDoesNotWarmSchedulingLoadCache(t *testing.T) {
+	groupID := int64(903)
+	current := healthProbeAlternativeAccount(221, 2, groupID)
+	alternative := healthProbeAlternativeAccount(222, 2, groupID)
+	loadBatchCalls := 0
+	cache := schedulerTestConcurrencyCache{loadBatchCalls: &loadBatchCalls}
+	svc := healthProbeAlternativeService([]Account{current, alternative}, cache)
+	req := OpenAIAccountScheduleRequest{
+		GroupID:            &groupID,
+		RequestedModel:     "gpt-5.5",
+		RequiredTransport:  OpenAIUpstreamTransportAny,
+		RequiredCapability: OpenAIEndpointCapabilityChatCompletions,
+		RequestPlatform:    PlatformOpenAI,
+	}
+
+	require.True(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, req))
+	require.Equal(t, 1, loadBatchCalls)
+
+	loadReq := []AccountWithConcurrency{{ID: alternative.ID, MaxConcurrency: alternative.EffectiveLoadFactor()}}
+	_, err := svc.concurrencyService.GetAccountsLoadBatch(context.Background(), loadReq)
+	require.NoError(t, err)
+	require.Equal(t, 2, loadBatchCalls)
+	_, err = svc.concurrencyService.GetAccountsLoadBatch(context.Background(), loadReq)
+	require.NoError(t, err)
+	require.Equal(t, 2, loadBatchCalls)
+}
+
+func healthProbeAlternativeAccount(id int64, priority int, groupID int64) Account {
+	return Account{
+		ID:          id,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 10,
+		Priority:    priority,
+		GroupIDs:    []int64{groupID},
+	}
+}
+
+func healthProbeAlternativeService(accounts []Account, concurrencyCache ConcurrencyCache) *OpenAIGatewayService {
+	svc := &OpenAIGatewayService{accountRepo: stubOpenAIAccountRepo{accounts: accounts}}
+	if concurrencyCache != nil {
+		svc.concurrencyService = NewConcurrencyService(concurrencyCache)
+	}
+	return svc
 }
 
 func configuredHealthProbeContext(t *testing.T) (*gin.Context, *httptest.ResponseRecorder) {

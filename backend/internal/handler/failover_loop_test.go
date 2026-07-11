@@ -152,6 +152,78 @@ func TestPlanSameAccountRetryZeroDelayDoesNotReserveElapsedBudget(t *testing.T) 
 	require.Equal(t, time.Duration(0), plan.Delay)
 }
 
+func TestPlanSameAccountRetryWithMaxElapsedOnlyShortensConfiguredBudget(t *testing.T) {
+	account := &service.Account{
+		ID:       101,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Status:   service.StatusActive,
+		Priority: 1,
+		Credentials: map[string]interface{}{
+			"pool_mode":                                true,
+			"pool_mode_retry_count":                    50,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_max_elapsed_ms": 5000,
+		},
+	}
+	startedAt := time.Now().Add(-2 * time.Second)
+
+	legacyCounts := map[int64]int{}
+	legacyPlan, legacyRetry := planSameAccountRetry(account, legacyCounts, map[int64]time.Time{account.ID: startedAt}, 10*time.Millisecond)
+	require.True(t, legacyRetry)
+	require.Equal(t, 5*time.Second, legacyPlan.MaxElapsed)
+
+	probeCounts := map[int64]int{}
+	probePlan, probeRetry := planSameAccountRetryWithMaxElapsed(account, probeCounts, map[int64]time.Time{account.ID: startedAt}, 10*time.Millisecond, service.OpenAIHealthProbeGrabMaxElapsed)
+	require.False(t, probeRetry)
+	require.Equal(t, service.OpenAIHealthProbeGrabMaxElapsed, probePlan.MaxElapsed)
+	require.Zero(t, probeCounts[account.ID])
+}
+
+func TestPlanSameAccountRetryWithMaxElapsedDoesNotExtendSmallerOrUnlimitedBudget(t *testing.T) {
+	limited := &service.Account{
+		ID:       102,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Status:   service.StatusActive,
+		Credentials: map[string]interface{}{
+			"pool_mode":                                true,
+			"pool_mode_retry_count":                    5,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_max_elapsed_ms": 1000,
+		},
+	}
+	plan, retry := planSameAccountRetryWithMaxElapsed(
+		limited,
+		map[int64]int{},
+		map[int64]time.Time{limited.ID: time.Now().Add(-900 * time.Millisecond)},
+		200*time.Millisecond,
+		service.OpenAIHealthProbeGrabMaxElapsed,
+	)
+	require.False(t, retry)
+	require.Equal(t, time.Second, plan.MaxElapsed)
+
+	unlimited := &service.Account{
+		ID:       103,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Status:   service.StatusActive,
+		Credentials: map[string]interface{}{
+			"pool_mode":             true,
+			"pool_mode_retry_count": 5,
+		},
+	}
+	plan, retry = planSameAccountRetryWithMaxElapsed(
+		unlimited,
+		map[int64]int{},
+		map[int64]time.Time{unlimited.ID: time.Now().Add(-time.Hour)},
+		0,
+		service.OpenAIHealthProbeGrabMaxElapsed,
+	)
+	require.True(t, retry)
+	require.Zero(t, plan.MaxElapsed)
+}
+
 // ---------------------------------------------------------------------------
 // HandleFailoverError — 基本切换流程
 // ---------------------------------------------------------------------------

@@ -108,6 +108,35 @@ func TestOpenAIGatewayService_ForwardPromptCacheBoostInjectsFields(t *testing.T)
 	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
 }
 
+func TestOpenAIGatewayService_HealthProbeDoesNotInjectPromptCacheBoostFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := healthProbeRequestBody()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set(OpenAIHealthProbeHeader, OpenAIHealthProbeProfileResponsesV1)
+	enabled, err := ConfigureOpenAIResponsesHealthProbe(c, body, "gpt-5.5", false)
+	require.NoError(t, err)
+	require.True(t, enabled)
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"resp_health_probe_cache","output":[{"type":"message","content":[{"type":"output_text","text":"MONITOR_OK"}]}],"usage":{"input_tokens":5,"output_tokens":2}}`,
+		)),
+	}}
+	svc := &OpenAIGatewayService{cfg: promptCacheBoostTestConfig(), httpUpstream: upstream}
+	result, err := svc.Forward(WithOpenAIHealthProbeRequestContext(context.Background()), c, promptCacheBoostTestAccount(302), body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").Exists())
+}
+
 func TestOpenAIGatewayService_UpstreamStrongIsolationKeepsCacheBoostButDropsContinuation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

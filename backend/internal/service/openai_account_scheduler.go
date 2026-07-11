@@ -443,7 +443,9 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	start := time.Now()
 	defer func() {
 		decision.LatencyMs = time.Since(start).Milliseconds()
-		s.metrics.recordSelect(decision)
+		if !IsOpenAIHealthProbeSessionHash(req.SessionHash) {
+			s.metrics.recordSelect(decision)
+		}
 	}()
 
 	previousResponseID := strings.TrimSpace(req.PreviousResponseID)

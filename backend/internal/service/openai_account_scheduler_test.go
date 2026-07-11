@@ -2461,6 +2461,48 @@ func TestOpenAIGatewayService_OpenAIAccountSchedulerMetrics(t *testing.T) {
 	require.GreaterOrEqual(t, snapshot.RuntimeStatsAccountCount, 1)
 }
 
+func TestOpenAIGatewayService_HealthProbeDoesNotChangeBusinessSchedulerMetrics(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(13)
+	account := Account{
+		ID:          4002,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		GroupIDs:    []int64{groupID},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		NewOpenAIHealthProbeSessionHash(),
+		"gpt-5.5",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	snapshot := svc.SnapshotOpenAIAccountSchedulerMetrics()
+	require.Zero(t, snapshot.SelectTotal)
+	require.Zero(t, snapshot.StickySessionHitTotal)
+	require.Zero(t, snapshot.LoadBalanceSelectTotal)
+}
+
 func intPtrForTest(v int) *int {
 	return &v
 }

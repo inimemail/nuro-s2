@@ -64,6 +64,10 @@ func markSameAccountAttemptStart(starts map[int64]time.Time, account *service.Ac
 }
 
 func planSameAccountRetry(account *service.Account, counts map[int64]int, starts map[int64]time.Time, delay time.Duration) (sameAccountRetryPlan, bool) {
+	return planSameAccountRetryWithMaxElapsed(account, counts, starts, delay, 0)
+}
+
+func planSameAccountRetryWithMaxElapsed(account *service.Account, counts map[int64]int, starts map[int64]time.Time, delay, maxElapsed time.Duration) (sameAccountRetryPlan, bool) {
 	plan := sameAccountRetryPlan{Delay: delay}
 	if account == nil || counts == nil {
 		return plan, false
@@ -74,6 +78,9 @@ func planSameAccountRetry(account *service.Account, counts map[int64]int, starts
 		return plan, false
 	}
 	plan.MaxElapsed = account.GetPoolModeSameAccountRetryMaxElapsed()
+	if maxElapsed > 0 && plan.MaxElapsed > maxElapsed {
+		plan.MaxElapsed = maxElapsed
+	}
 	if plan.MaxElapsed > 0 {
 		now := time.Now()
 		startedAt, ok := starts[accountID]

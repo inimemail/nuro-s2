@@ -240,7 +240,7 @@ func (s *OpenAIGatewayService) handleOpenAICyberPolicyEvent(c *gin.Context, acco
 	if decision.AnchorType == "" || decision.AnchorHash == "" {
 		decision.AnchorType, decision.AnchorHash = OpenAICyberPolicyAnchor(c, requestBody)
 	}
-	if decision.AnchorType != "" && decision.AnchorHash != "" {
+	if !IsOpenAIResponsesHealthProbe(c) && decision.AnchorType != "" && decision.AnchorHash != "" {
 		var ctx context.Context
 		if c != nil && c.Request != nil {
 			ctx = c.Request.Context()

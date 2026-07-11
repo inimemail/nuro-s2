@@ -343,6 +343,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	requestCtx := c.Request.Context()
 	if healthProbe {
 		var cancelHealthProbe context.CancelFunc
+		requestCtx = service.WithOpenAIHealthProbeRequestContext(requestCtx)
 		requestCtx, cancelHealthProbe = context.WithTimeout(requestCtx, service.OpenAIHealthProbeTotalTimeout)
 		c.Request = c.Request.WithContext(requestCtx)
 		defer cancelHealthProbe()
@@ -422,6 +423,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
+	var healthProbeAlternativeByAccount map[int64]bool
+	if healthProbe {
+		healthProbeAlternativeByAccount = make(map[int64]bool)
+	}
 	var lastFailoverErr *service.UpstreamFailoverError
 	modelRoutingLockedPriority := -1
 	userSlotHeld := false
@@ -593,7 +598,31 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
 						retryDelay := sameAccountRetryDelayForAccount(account)
-						if retryPlan, ok := planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay); ok {
+						var retryPlan sameAccountRetryPlan
+						var retry bool
+						if healthProbe && account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+							hasAlternative, checked := healthProbeAlternativeByAccount[account.ID]
+							if !checked {
+								hasAlternative = h.gatewayService.HasOpenAIHealthProbeAlternativeAccount(requestCtx, account, service.OpenAIAccountScheduleRequest{
+									GroupID:            apiKey.GroupID,
+									RequestedModel:     reqModel,
+									RequiredTransport:  service.OpenAIUpstreamTransportAny,
+									RequiredCapability: service.OpenAIEndpointCapabilityChatCompletions,
+									RequireCompact:     requireCompact,
+									RequestPlatform:    requestPlatform,
+									ExcludedIDs:        excludedAccountIDs,
+								})
+								healthProbeAlternativeByAccount[account.ID] = hasAlternative
+							}
+							if hasAlternative {
+								retryPlan, retry = planSameAccountRetryWithMaxElapsed(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay, service.OpenAIHealthProbeGrabMaxElapsed)
+							} else {
+								retryPlan, retry = planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay)
+							}
+						} else {
+							retryPlan, retry = planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay)
+						}
+						if retry {
 							reqLog.Warn("openai.pool_mode_same_account_retry",
 								zap.Int64("account_id", account.ID),
 								zap.Int("upstream_status", failoverErr.StatusCode),
@@ -679,7 +708,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}
 		}
 		if result != nil {
-			if account.Type == service.AccountTypeOAuth {
+			if !healthProbe && account.Type == service.AccountTypeOAuth {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
 			if !healthProbe {
@@ -714,6 +743,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				RequestPayloadHash:      requestPayloadHash,
 				PromptCacheAffinityHash: sessionHash,
 				PromptCacheGroupID:      apiKey.GroupID,
+				HealthProbe:             healthProbe,
 				APIKeyService:           h.apiKeyService,
 				ChannelUsageFields:      channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
 				CyberBlocked:            cyberBlocked,
