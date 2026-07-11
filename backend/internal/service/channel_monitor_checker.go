@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -146,6 +147,69 @@ func pingEndpointOrigin(ctx context.Context, endpoint string) *int {
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, monitorPingDiscardMaxBytes))
 	ms := int(time.Since(start) / time.Millisecond)
 	return &ms
+}
+
+func pingEndpointOriginForMonitor(ctx context.Context, endpoint string, opts *CheckOptions) *int {
+	return pingEndpointOriginForMonitorWithSampler(ctx, endpoint, opts, pingEndpointOrigin)
+}
+
+func pingEndpointOriginForMonitorWithSampler(
+	ctx context.Context,
+	endpoint string,
+	opts *CheckOptions,
+	sample func(context.Context, string) *int,
+) *int {
+	if !isOpenAIResponsesHealthProbeMonitorTemplate(opts) {
+		return sample(ctx, endpoint)
+	}
+
+	results := make(chan *int, 3)
+	for range 3 {
+		go func() {
+			results <- sample(ctx, endpoint)
+		}()
+	}
+
+	latencies := make([]int, 0, 3)
+	for range 3 {
+		if latency := <-results; latency != nil {
+			latencies = append(latencies, *latency)
+		}
+	}
+	if len(latencies) == 0 {
+		return nil
+	}
+	slices.Sort(latencies)
+	middle := len(latencies) / 2
+	median := latencies[middle]
+	if len(latencies)%2 == 0 {
+		median = (latencies[middle-1] + latencies[middle]) / 2
+	}
+	return &median
+}
+
+func isOpenAIResponsesHealthProbeMonitorTemplate(opts *CheckOptions) bool {
+	if opts == nil {
+		return false
+	}
+	profileMatched := false
+	for name, value := range opts.ExtraHeaders {
+		if strings.EqualFold(strings.TrimSpace(name), OpenAIHealthProbeHeader) &&
+			strings.EqualFold(strings.TrimSpace(value), OpenAIHealthProbeProfileResponsesV1) {
+			profileMatched = true
+			break
+		}
+	}
+	if !profileMatched || !strings.EqualFold(strings.TrimSpace(opts.APIMode), MonitorAPIModeResponses) ||
+		bodyOverrideMode(opts) != MonitorBodyOverrideModeReplace || len(opts.BodyOverride) == 0 {
+		return false
+	}
+	body, err := json.Marshal(opts.BodyOverride)
+	if err != nil {
+		return false
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	return validateOpenAIResponsesHealthProbeBody(body, model, false) == nil
 }
 
 // providerAdapter 描述某个 provider 在 challenge 检测中需要的 4 件事：

@@ -110,7 +110,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 	targetURL := buildOpenAIChatCompletionsURL(validatedURL)
 
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	upstreamCtx, releaseUpstreamCtx := openAIUpstreamRequestContext(ctx, c)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(chatBody))
 	releaseUpstreamCtx()
 	if err != nil {
@@ -249,6 +249,15 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 		return nil, fmt.Errorf("parse chat completions response: %w", err)
 	}
 	responsesResp := apicompat.ChatCompletionsResponseToResponses(&ccResp, originalModel)
+	if IsOpenAIResponsesHealthProbe(c) {
+		responsesBody, err := json.Marshal(responsesResp)
+		if err != nil {
+			return nil, fmt.Errorf("marshal responses fallback response: %w", err)
+		}
+		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, responsesBody); failoverErr != nil {
+			return nil, failoverErr
+		}
+	}
 
 	usage := OpenAIUsage{}
 	if parsed, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {

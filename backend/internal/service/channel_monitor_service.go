@@ -297,9 +297,6 @@ func (s *ChannelMonitorService) runChecksConcurrent(ctx context.Context, m *Chan
 	models := append([]string{m.PrimaryModel}, m.ExtraModels...)
 	results := make([]*CheckResult, len(models))
 
-	// ping 共享一次，所有模型记录同一个 ping 延迟。
-	pingMs := pingEndpointOrigin(ctx, m.Endpoint)
-
 	// 所有模型共用同一份 CheckOptions（来自监控的快照字段）。
 	opts := &CheckOptions{
 		APIMode:          m.APIMode,
@@ -307,6 +304,9 @@ func (s *ChannelMonitorService) runChecksConcurrent(ctx context.Context, m *Chan
 		BodyOverrideMode: m.BodyOverrideMode,
 		BodyOverride:     m.BodyOverride,
 	}
+
+	// ping 共享一次，专用 Responses 探针模板用三次采样的中位数抑制偶发抖动。
+	pingMs := pingEndpointOriginForMonitor(ctx, m.Endpoint, opts)
 
 	var eg errgroup.Group
 	var mu sync.Mutex

@@ -594,16 +594,19 @@ type ForwardResult struct {
 
 // UpstreamFailoverError indicates an upstream error that should trigger account failover.
 type UpstreamFailoverError struct {
-	StatusCode             int
-	ResponseBody           []byte      // 上游响应体，用于错误透传规则匹配
-	ResponseHeaders        http.Header // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
-	Message                string
-	ProbeCapability        OpenAIImagesCapability
-	ProbeModel             string
-	ProbeKind              string
-	ForceCacheBilling      bool // Antigravity 粘性会话切换时设为 true
-	RetryableOnSameAccount bool // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
-	SkipPoolSoftCooldown   bool // OpenAI 池下游/客户端配置错误可切换账号，但不应把池账号标记为软冷却
+	StatusCode                int
+	ResponseBody              []byte      // 上游响应体，用于错误透传规则匹配
+	ResponseHeaders           http.Header // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
+	Message                   string
+	ProbeCapability           OpenAIImagesCapability
+	ProbeModel                string
+	ProbeKind                 string
+	ForceCacheBilling         bool // Antigravity 粘性会话切换时设为 true
+	RetryableOnSameAccount    bool // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	SkipPoolSoftCooldown      bool // OpenAI 池下游/客户端配置错误可切换账号，但不应把池账号标记为软冷却
+	SkipPromptCacheAvoidance  bool // request-local 探针切换不应改写正常请求的缓存热账号历史
+	SkipStickySessionEviction bool // request-local 探针切换不应清理正常请求的粘性会话
+	SkipSchedulePenalty       bool // request-local 探针失败不应降低账号健康调度分
 }
 
 func (e *UpstreamFailoverError) Error() string {

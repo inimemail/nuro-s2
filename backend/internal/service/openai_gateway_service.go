@@ -3527,6 +3527,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	clientTransport := GetOpenAIClientTransport(c)
 	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, clientTransport)
+	if IsOpenAIResponsesHealthProbe(c) && wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
+		wsDecision = openAIWSHTTPDecision("health_probe_requires_buffered_http")
+	}
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() && wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
 		wsDecision = openAIWSHTTPDecision("upstream_strong_isolation")
 	}
@@ -4277,7 +4280,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	httpCodexAutoResetRetryTried := false
 	for {
 		// Build upstream request
-		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+		upstreamCtx, releaseUpstreamCtx := openAIUpstreamRequestContext(ctx, c)
 		upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
 		releaseUpstreamCtx()
 		if err != nil {
@@ -4703,7 +4706,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 	httpCodexAutoResetRetryTried := false
 	for {
-		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+		upstreamCtx, releaseUpstreamCtx := openAIUpstreamRequestContext(ctx, c)
 		upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
 		releaseUpstreamCtx()
 		if err != nil {
@@ -6238,7 +6241,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	// stream=false was requested. Without this conversion the client would
 	// receive raw SSE text or a terminal event with empty output.
 	if isEventStreamResponse(resp.Header) {
-		return s.handlePassthroughSSEToJSON(resp, c, body, originalModel, mappedModel)
+		return s.handlePassthroughSSEToJSON(resp, c, account, body, originalModel, mappedModel)
 	}
 
 	usage := &OpenAIUsage{}
@@ -6253,8 +6256,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		// 兜底：尝试从 SSE 文本中解析 usage
 		usage = s.parseSSEUsageFromBody(string(body))
 	}
-
-	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	if !IsOpenAIResponsesHealthProbe(c) {
+		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
 
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
@@ -6262,6 +6266,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	}
 	if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
+	}
+	if IsOpenAIResponsesHealthProbe(c) {
+		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
+			return nil, failoverErr
+		}
+		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
@@ -6279,7 +6289,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 // response for the passthrough path. It mirrors handleSSEToJSON while
 // preserving passthrough payloads, except compact-only model remapping may
 // rewrite model fields back to the original requested model.
-func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c *gin.Context, body []byte, originalModel string, mappedModel string) (*openaiNonStreamingResultPassthrough, error) {
+func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel string, mappedModel string) (*openaiNonStreamingResultPassthrough, error) {
 	bodyText := string(body)
 	finalResponse, ok := extractCodexFinalResponse(bodyText)
 
@@ -6320,6 +6330,11 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		body = []byte(bodyText)
 	}
 
+	if IsOpenAIResponsesHealthProbe(c) {
+		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
+			return nil, failoverErr
+		}
+	}
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := "application/json; charset=utf-8"
@@ -7875,6 +7890,11 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
+	if IsOpenAIResponsesHealthProbe(c) {
+		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
+			return nil, failoverErr
+		}
+	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
@@ -7975,6 +7995,11 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		body = []byte(bodyText)
 	}
 
+	if IsOpenAIResponsesHealthProbe(c) {
+		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
+			return nil, failoverErr
+		}
+	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	contentType := "application/json; charset=utf-8"

@@ -299,7 +299,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", invalidStreamFieldTypeMessage)
 		return
 	}
-	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
+	healthProbe, healthProbeErr := service.ConfigureOpenAIResponsesHealthProbe(c, body, reqModel, reqStream)
+	if healthProbeErr != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", healthProbeErr.Error())
+		return
+	}
+	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream), zap.Bool("health_probe", healthProbe))
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
 	if previousResponseID != "" {
 		previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
@@ -336,6 +341,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	requestCtx := c.Request.Context()
+	if healthProbe {
+		var cancelHealthProbe context.CancelFunc
+		requestCtx, cancelHealthProbe = context.WithTimeout(requestCtx, service.OpenAIHealthProbeTotalTimeout)
+		c.Request = c.Request.WithContext(requestCtx)
+		defer cancelHealthProbe()
+	}
 	if imageIntent {
 		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
 	}
@@ -383,20 +394,29 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	// Generate session hash. Header session signals win; prompt-cache affinity can
-	// use either static prefixes or an explicit prompt_cache_key when enabled.
-	affinityBody := forwardBodyForResponses(channelMapping.Mapped, channelMapping.MappedModel)
-	affinityModel := reqModel
-	if channelMapping.Mapped {
-		affinityModel = channelMapping.MappedModel
-	}
-	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroupWithMapped(requestCtx, c, apiKey.GroupID, body, reqModel, affinityBody, affinityModel)
-	if sessionHash == "" {
-		sessionHash = h.gatewayService.GenerateSessionHash(c, sessionHashBody)
+	var sessionHash string
+	if healthProbe {
+		sessionHash = service.NewOpenAIHealthProbeSessionHash()
+		defer h.gatewayService.ReleaseOpenAIHealthProbeSession(c.Request.Context(), apiKey.GroupID, sessionHash)
+	} else {
+		// Generate session hash. Header session signals win; prompt-cache affinity can
+		// use either static prefixes or an explicit prompt_cache_key when enabled.
+		affinityBody := forwardBodyForResponses(channelMapping.Mapped, channelMapping.MappedModel)
+		affinityModel := reqModel
+		if channelMapping.Mapped {
+			affinityModel = channelMapping.MappedModel
+		}
+		sessionHash = h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroupWithMapped(requestCtx, c, apiKey.GroupID, body, reqModel, affinityBody, affinityModel)
+		if sessionHash == "" {
+			sessionHash = h.gatewayService.GenerateSessionHash(c, sessionHashBody)
+		}
 	}
 	requireCompact := isOpenAIRemoteCompactPath(c)
 
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
+	if healthProbe {
+		maxAccountSwitches = service.OpenAIHealthProbeMaxAccountSwitches
+	}
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	capacitySkippedIDs := make(map[int64]struct{})
@@ -565,6 +585,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					service.IsolateOpenAIHealthProbeFailover(c, failoverErr)
 					if service.OpenAICompactKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward {
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
@@ -590,9 +611,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							continue
 						}
 					}
-					h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
+					if !failoverErr.SkipSchedulePenalty {
+						h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
+					}
 					h.gatewayService.HandleOpenAIAccountFailoverSwitch(requestCtx, apiKey.GroupID, sessionHash, account, failoverErr)
-					h.gatewayService.RecordOpenAIAccountSwitch()
+					if !healthProbe {
+						h.gatewayService.RecordOpenAIAccountSwitch()
+					}
 					modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
 						modelRoutingLockedPriority,
 						account,
@@ -618,7 +643,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					)
 					continue
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
+				if !healthProbe {
+					h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
+				}
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
@@ -655,8 +682,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			if account.Type == service.AccountTypeOAuth {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, result.FirstTokenMs)
-		} else {
+			if !healthProbe {
+				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, result.FirstTokenMs)
+			}
+		} else if !healthProbe {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, nil)
 		}
 
@@ -2194,6 +2223,12 @@ func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error,
 func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
+	if service.IsOpenAIResponsesHealthProbe(c) && service.IsOpenAIHealthProbeEmptyErrorBody(responseBody) {
+		message := service.OpenAIHealthProbeClientMessage()
+		service.SetOpsUpstreamError(c, statusCode, message, "")
+		h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", message, streamStarted)
+		return
+	}
 	if service.IsOpenAISilentRefusalErrorBody(responseBody) {
 		service.SetOpsUpstreamError(c, statusCode, service.OpenAISilentRefusalClientMessage(), "")
 		h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", service.OpenAISilentRefusalClientMessage(), streamStarted)

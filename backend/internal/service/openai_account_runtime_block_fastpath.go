@@ -558,7 +558,7 @@ func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
 		decision := s.classifyOpenAIPoolFailover(ctx, account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
 		userRequestError := isOpenAIPoolUserRequestedModelError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody) ||
 			isOpenAIPoolExplicitClientRequestError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
-		if !userRequestError {
+		if !userRequestError && !failoverErr.SkipPromptCacheAvoidance {
 			s.avoidOpenAIPromptCacheWarmAccount(ctx, groupID, sessionHash, account, failoverErr)
 		}
 		if !userRequestError && !failoverErr.SkipPoolSoftCooldown && !decision.SkipSoftCooldown && s.shouldStartOpenAIPoolSoftCooldown(account) {
@@ -587,6 +587,9 @@ func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
 				Reason:          failoverErr.Message,
 			})
 		}
+	}
+	if failoverErr != nil && failoverErr.SkipStickySessionEviction {
+		return
 	}
 	if strings.TrimSpace(sessionHash) == "" {
 		return
