@@ -108,6 +108,8 @@ const (
 	FieldMessagesDispatchModelConfig = "messages_dispatch_model_config"
 	// FieldModelsListConfig holds the string denoting the models_list_config field in the database.
 	FieldModelsListConfig = "models_list_config"
+	// FieldStrictModelPriorityOnModelMismatch holds the string denoting the strict_model_priority_on_model_mismatch field in the database.
+	FieldStrictModelPriorityOnModelMismatch = "strict_model_priority_on_model_mismatch"
 	// FieldRpmLimit holds the string denoting the rpm_limit field in the database.
 	FieldRpmLimit = "rpm_limit"
 	// EdgeAPIKeys holds the string denoting the api_keys edge name in mutations.
@@ -231,6 +233,7 @@ var Columns = []string{
 	FieldDefaultMappedModel,
 	FieldMessagesDispatchModelConfig,
 	FieldModelsListConfig,
+	FieldStrictModelPriorityOnModelMismatch,
 	FieldRpmLimit,
 }
 
@@ -339,6 +342,8 @@ var (
 	DefaultMessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig
 	// DefaultModelsListConfig holds the default value on creation for the "models_list_config" field.
 	DefaultModelsListConfig domain.GroupModelsListConfig
+	// DefaultStrictModelPriorityOnModelMismatch holds the default value on creation for the "strict_model_priority_on_model_mismatch" field.
+	DefaultStrictModelPriorityOnModelMismatch bool
 	// DefaultRpmLimit holds the default value on creation for the "rpm_limit" field.
 	DefaultRpmLimit int
 )
@@ -559,6 +564,11 @@ func ByRequirePrivacySet(opts ...sql.OrderTermOption) OrderOption {
 // ByDefaultMappedModel orders the results by the default_mapped_model field.
 func ByDefaultMappedModel(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldDefaultMappedModel, opts...).ToFunc()
+}
+
+// ByStrictModelPriorityOnModelMismatch orders the results by the strict_model_priority_on_model_mismatch field.
+func ByStrictModelPriorityOnModelMismatch(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldStrictModelPriorityOnModelMismatch, opts...).ToFunc()
 }
 
 // ByRpmLimit orders the results by the rpm_limit field.

@@ -865,6 +865,20 @@ func (_u *GroupUpdate) SetNillableModelsListConfig(v *domain.GroupModelsListConf
 	return _u
 }
 
+// SetStrictModelPriorityOnModelMismatch sets the "strict_model_priority_on_model_mismatch" field.
+func (_u *GroupUpdate) SetStrictModelPriorityOnModelMismatch(v bool) *GroupUpdate {
+	_u.mutation.SetStrictModelPriorityOnModelMismatch(v)
+	return _u
+}
+
+// SetNillableStrictModelPriorityOnModelMismatch sets the "strict_model_priority_on_model_mismatch" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableStrictModelPriorityOnModelMismatch(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetStrictModelPriorityOnModelMismatch(*v)
+	}
+	return _u
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_u *GroupUpdate) SetRpmLimit(v int) *GroupUpdate {
 	_u.mutation.ResetRpmLimit()
@@ -1439,6 +1453,9 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.ModelsListConfig(); ok {
 		_spec.SetField(group.FieldModelsListConfig, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.StrictModelPriorityOnModelMismatch(); ok {
+		_spec.SetField(group.FieldStrictModelPriorityOnModelMismatch, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)
@@ -2589,6 +2606,20 @@ func (_u *GroupUpdateOne) SetNillableModelsListConfig(v *domain.GroupModelsListC
 	return _u
 }
 
+// SetStrictModelPriorityOnModelMismatch sets the "strict_model_priority_on_model_mismatch" field.
+func (_u *GroupUpdateOne) SetStrictModelPriorityOnModelMismatch(v bool) *GroupUpdateOne {
+	_u.mutation.SetStrictModelPriorityOnModelMismatch(v)
+	return _u
+}
+
+// SetNillableStrictModelPriorityOnModelMismatch sets the "strict_model_priority_on_model_mismatch" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableStrictModelPriorityOnModelMismatch(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetStrictModelPriorityOnModelMismatch(*v)
+	}
+	return _u
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (_u *GroupUpdateOne) SetRpmLimit(v int) *GroupUpdateOne {
 	_u.mutation.ResetRpmLimit()
@@ -3193,6 +3224,9 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.ModelsListConfig(); ok {
 		_spec.SetField(group.FieldModelsListConfig, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.StrictModelPriorityOnModelMismatch(); ok {
+		_spec.SetField(group.FieldStrictModelPriorityOnModelMismatch, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)

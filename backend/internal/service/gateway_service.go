@@ -1801,7 +1801,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 			routingCandidates = append(routingCandidates, account)
 		}
-		if !candidateSetContainsLowestBasePriority(routingBaseCandidates, routingCandidates) {
+		if groupStrictModelPriorityOnMismatch(group) && !candidateSetContainsLowestBasePriority(routingBaseCandidates, routingCandidates) {
 			routingCandidates = nil
 		}
 
@@ -2223,7 +2223,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		}
 		candidates = append(candidates, acc)
 	}
-	if !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
+	if groupStrictModelPriorityOnMismatch(group) && !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
 		candidates = nil
 	}
 
@@ -3191,6 +3191,10 @@ func candidateSetContainsLowestBasePriority(baseCandidates []*Account, candidate
 	return false
 }
 
+func groupStrictModelPriorityOnMismatch(group *Group) bool {
+	return group != nil && group.Platform == PlatformOpenAI && group.StrictModelPriorityOnModelMismatch
+}
+
 func filterByNonPoolModeIfPresent(accounts []accountWithLoad) []accountWithLoad {
 	if len(accounts) == 0 {
 		return accounts
@@ -3919,7 +3923,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			}
 			candidates = append(candidates, acc)
 		}
-		if !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
+		if groupStrictModelPriorityOnMismatch(schedGroup) && !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
 			candidates = nil
 		}
 
@@ -4030,7 +4034,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		}
 		candidates = append(candidates, acc)
 	}
-	if !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
+	if groupStrictModelPriorityOnMismatch(schedGroup) && !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
 		candidates = nil
 	}
 
@@ -4186,7 +4190,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			}
 			candidates = append(candidates, acc)
 		}
-		if !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
+		if groupStrictModelPriorityOnMismatch(schedGroup) && !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
 			candidates = nil
 		}
 
@@ -4298,7 +4302,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		}
 		candidates = append(candidates, acc)
 	}
-	if !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
+	if groupStrictModelPriorityOnMismatch(schedGroup) && !candidateSetContainsLowestBasePriority(baseCandidates, candidates) {
 		candidates = nil
 	}
 

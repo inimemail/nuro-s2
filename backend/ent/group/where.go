@@ -265,6 +265,11 @@ func DefaultMappedModel(v string) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldDefaultMappedModel, v))
 }
 
+// StrictModelPriorityOnModelMismatch applies equality check predicate on the "strict_model_priority_on_model_mismatch" field. It's identical to StrictModelPriorityOnModelMismatchEQ.
+func StrictModelPriorityOnModelMismatch(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldStrictModelPriorityOnModelMismatch, v))
+}
+
 // RpmLimit applies equality check predicate on the "rpm_limit" field. It's identical to RpmLimitEQ.
 func RpmLimit(v int) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldRpmLimit, v))
@@ -1928,6 +1933,16 @@ func DefaultMappedModelEqualFold(v string) predicate.Group {
 // DefaultMappedModelContainsFold applies the ContainsFold predicate on the "default_mapped_model" field.
 func DefaultMappedModelContainsFold(v string) predicate.Group {
 	return predicate.Group(sql.FieldContainsFold(FieldDefaultMappedModel, v))
+}
+
+// StrictModelPriorityOnModelMismatchEQ applies the EQ predicate on the "strict_model_priority_on_model_mismatch" field.
+func StrictModelPriorityOnModelMismatchEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldStrictModelPriorityOnModelMismatch, v))
+}
+
+// StrictModelPriorityOnModelMismatchNEQ applies the NEQ predicate on the "strict_model_priority_on_model_mismatch" field.
+func StrictModelPriorityOnModelMismatchNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldStrictModelPriorityOnModelMismatch, v))
 }
 
 // RpmLimitEQ applies the EQ predicate on the "rpm_limit" field.

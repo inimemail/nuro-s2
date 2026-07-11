@@ -1119,8 +1119,12 @@ func init() {
 	groupDescModelsListConfig := groupFields[42].Descriptor()
 	// group.DefaultModelsListConfig holds the default value on creation for the models_list_config field.
 	group.DefaultModelsListConfig = groupDescModelsListConfig.Default.(domain.GroupModelsListConfig)
+	// groupDescStrictModelPriorityOnModelMismatch is the schema descriptor for strict_model_priority_on_model_mismatch field.
+	groupDescStrictModelPriorityOnModelMismatch := groupFields[43].Descriptor()
+	// group.DefaultStrictModelPriorityOnModelMismatch holds the default value on creation for the strict_model_priority_on_model_mismatch field.
+	group.DefaultStrictModelPriorityOnModelMismatch = groupDescStrictModelPriorityOnModelMismatch.Default.(bool)
 	// groupDescRpmLimit is the schema descriptor for rpm_limit field.
-	groupDescRpmLimit := groupFields[43].Descriptor()
+	groupDescRpmLimit := groupFields[44].Descriptor()
 	// group.DefaultRpmLimit holds the default value on creation for the rpm_limit field.
 	group.DefaultRpmLimit = groupDescRpmLimit.Default.(int)
 	idempotencyrecordMixin := schema.IdempotencyRecord{}.Mixin()

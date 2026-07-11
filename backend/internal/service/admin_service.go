@@ -233,12 +233,13 @@ type CreateGroupInput struct {
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes []string
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	AllowMessagesDispatch       bool
-	DefaultMappedModel          string
-	RequireOAuthOnly            bool
-	RequirePrivacySet           bool
-	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
-	ModelsListConfig            GroupModelsListConfig
+	AllowMessagesDispatch              bool
+	DefaultMappedModel                 string
+	RequireOAuthOnly                   bool
+	RequirePrivacySet                  bool
+	MessagesDispatchModelConfig        OpenAIMessagesDispatchModelConfig
+	ModelsListConfig                   GroupModelsListConfig
+	StrictModelPriorityOnModelMismatch bool
 	// RPMLimit 分组 RPM 上限（0 = 不限制）
 	RPMLimit int
 	// 从指定分组复制账号（创建分组后在同一事务内绑定）
@@ -286,12 +287,13 @@ type UpdateGroupInput struct {
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes *[]string
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	AllowMessagesDispatch       *bool
-	DefaultMappedModel          *string
-	RequireOAuthOnly            *bool
-	RequirePrivacySet           *bool
-	MessagesDispatchModelConfig *OpenAIMessagesDispatchModelConfig
-	ModelsListConfig            *GroupModelsListConfig
+	AllowMessagesDispatch              *bool
+	DefaultMappedModel                 *string
+	RequireOAuthOnly                   *bool
+	RequirePrivacySet                  *bool
+	MessagesDispatchModelConfig        *OpenAIMessagesDispatchModelConfig
+	ModelsListConfig                   *GroupModelsListConfig
+	StrictModelPriorityOnModelMismatch *bool
 	// RPMLimit 分组 RPM 上限（0 = 不限制），nil 表示未提供不改动。
 	RPMLimit *int
 	// 从指定分组复制账号（同步操作：先清空当前分组的账号绑定，再绑定源分组的账号）
@@ -2049,47 +2051,48 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	}
 
 	group := &Group{
-		Name:                            input.Name,
-		Description:                     input.Description,
-		Platform:                        platform,
-		RateMultiplier:                  input.RateMultiplier,
-		IsExclusive:                     input.IsExclusive,
-		Status:                          StatusActive,
-		SubscriptionType:                subscriptionType,
-		DailyLimitUSD:                   dailyLimit,
-		WeeklyLimitUSD:                  weeklyLimit,
-		MonthlyLimitUSD:                 monthlyLimit,
-		AllowImageGeneration:            input.AllowImageGeneration,
-		AllowBatchImageGeneration:       input.AllowBatchImageGeneration,
-		ImageRateIndependent:            input.ImageRateIndependent,
-		ImageRateMultiplier:             imageRateMultiplier,
-		PeakRateEnabled:                 peakRateEnabled,
-		PeakStart:                       peakStart,
-		PeakEnd:                         peakEnd,
-		PeakRateMultiplier:              peakRateMultiplier,
-		ImagePrice1K:                    imagePrice1K,
-		ImagePrice2K:                    imagePrice2K,
-		ImagePrice4K:                    imagePrice4K,
-		BatchImageDiscountMultiplier:    batchImageDiscountMultiplier,
-		BatchImageHoldMultiplier:        batchImageHoldMultiplier,
-		VideoRateIndependent:            input.VideoRateIndependent,
-		VideoRateMultiplier:             videoRateMultiplier,
-		VideoPrice480P:                  videoPrice480P,
-		VideoPrice720P:                  videoPrice720P,
-		VideoPrice1080P:                 videoPrice1080P,
-		ClaudeCodeOnly:                  input.ClaudeCodeOnly,
-		FallbackGroupID:                 input.FallbackGroupID,
-		FallbackGroupIDOnInvalidRequest: fallbackOnInvalidRequest,
-		ModelRouting:                    input.ModelRouting,
-		MCPXMLInject:                    mcpXMLInject,
-		SupportedModelScopes:            input.SupportedModelScopes,
-		AllowMessagesDispatch:           input.AllowMessagesDispatch,
-		RequireOAuthOnly:                input.RequireOAuthOnly,
-		RequirePrivacySet:               input.RequirePrivacySet,
-		DefaultMappedModel:              input.DefaultMappedModel,
-		MessagesDispatchModelConfig:     normalizeOpenAIMessagesDispatchModelConfig(input.MessagesDispatchModelConfig),
-		ModelsListConfig:                normalizeGroupModelsListConfig(input.ModelsListConfig),
-		RPMLimit:                        input.RPMLimit,
+		Name:                               input.Name,
+		Description:                        input.Description,
+		Platform:                           platform,
+		RateMultiplier:                     input.RateMultiplier,
+		IsExclusive:                        input.IsExclusive,
+		Status:                             StatusActive,
+		SubscriptionType:                   subscriptionType,
+		DailyLimitUSD:                      dailyLimit,
+		WeeklyLimitUSD:                     weeklyLimit,
+		MonthlyLimitUSD:                    monthlyLimit,
+		AllowImageGeneration:               input.AllowImageGeneration,
+		AllowBatchImageGeneration:          input.AllowBatchImageGeneration,
+		ImageRateIndependent:               input.ImageRateIndependent,
+		ImageRateMultiplier:                imageRateMultiplier,
+		PeakRateEnabled:                    peakRateEnabled,
+		PeakStart:                          peakStart,
+		PeakEnd:                            peakEnd,
+		PeakRateMultiplier:                 peakRateMultiplier,
+		ImagePrice1K:                       imagePrice1K,
+		ImagePrice2K:                       imagePrice2K,
+		ImagePrice4K:                       imagePrice4K,
+		BatchImageDiscountMultiplier:       batchImageDiscountMultiplier,
+		BatchImageHoldMultiplier:           batchImageHoldMultiplier,
+		VideoRateIndependent:               input.VideoRateIndependent,
+		VideoRateMultiplier:                videoRateMultiplier,
+		VideoPrice480P:                     videoPrice480P,
+		VideoPrice720P:                     videoPrice720P,
+		VideoPrice1080P:                    videoPrice1080P,
+		ClaudeCodeOnly:                     input.ClaudeCodeOnly,
+		FallbackGroupID:                    input.FallbackGroupID,
+		FallbackGroupIDOnInvalidRequest:    fallbackOnInvalidRequest,
+		ModelRouting:                       input.ModelRouting,
+		MCPXMLInject:                       mcpXMLInject,
+		SupportedModelScopes:               input.SupportedModelScopes,
+		AllowMessagesDispatch:              input.AllowMessagesDispatch,
+		RequireOAuthOnly:                   input.RequireOAuthOnly,
+		RequirePrivacySet:                  input.RequirePrivacySet,
+		DefaultMappedModel:                 input.DefaultMappedModel,
+		MessagesDispatchModelConfig:        normalizeOpenAIMessagesDispatchModelConfig(input.MessagesDispatchModelConfig),
+		ModelsListConfig:                   normalizeGroupModelsListConfig(input.ModelsListConfig),
+		StrictModelPriorityOnModelMismatch: input.StrictModelPriorityOnModelMismatch,
+		RPMLimit:                           input.RPMLimit,
 	}
 	sanitizeGroupMessagesDispatchFields(group)
 	if err := s.groupRepo.Create(ctx, group); err != nil {
@@ -2395,6 +2398,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.ModelsListConfig != nil {
 		group.ModelsListConfig = normalizeGroupModelsListConfig(*input.ModelsListConfig)
+	}
+	if input.StrictModelPriorityOnModelMismatch != nil {
+		group.StrictModelPriorityOnModelMismatch = *input.StrictModelPriorityOnModelMismatch
 	}
 	if input.RPMLimit != nil {
 		group.RPMLimit = *input.RPMLimit

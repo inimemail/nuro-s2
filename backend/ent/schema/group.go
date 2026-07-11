@@ -205,6 +205,9 @@ func (Group) Fields() []ent.Field {
 			Default(domain.GroupModelsListConfig{}).
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
 			Comment("自定义 /v1/models 展示列表配置；仅影响模型列表响应，不影响调度"),
+		field.Bool("strict_model_priority_on_model_mismatch").
+			Default(false).
+			Comment("是否严格限制模型不匹配时跨优先级调度；仅影响启用该开关的分组"),
 
 		// 分组级每分钟请求数上限（0 = 不限制）。设置后优先于用户级兜底生效。
 		field.Int("rpm_limit").

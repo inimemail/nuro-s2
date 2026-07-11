@@ -1632,7 +1632,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			MaxConcurrency: account.EffectiveLoadFactor(),
 		})
 	}
-	if !openAILowestBasePrioritySupportsRequestedModel(baseFiltered, req.RequestedModel) {
+	if groupStrictModelPriorityOnMismatch(schedGroup) && !openAILowestBasePrioritySupportsRequestedModel(baseFiltered, req.RequestedModel) {
 		filtered = nil
 	}
 	if len(filtered) == 0 {

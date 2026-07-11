@@ -21542,6 +21542,7 @@ type GroupMutation struct {
 	default_mapped_model                    *string
 	messages_dispatch_model_config          *domain.OpenAIMessagesDispatchModelConfig
 	models_list_config                      *domain.GroupModelsListConfig
+	strict_model_priority_on_model_mismatch *bool
 	rpm_limit                               *int
 	addrpm_limit                            *int
 	clearedFields                           map[string]struct{}
@@ -23910,6 +23911,42 @@ func (m *GroupMutation) ResetModelsListConfig() {
 	m.models_list_config = nil
 }
 
+// SetStrictModelPriorityOnModelMismatch sets the "strict_model_priority_on_model_mismatch" field.
+func (m *GroupMutation) SetStrictModelPriorityOnModelMismatch(b bool) {
+	m.strict_model_priority_on_model_mismatch = &b
+}
+
+// StrictModelPriorityOnModelMismatch returns the value of the "strict_model_priority_on_model_mismatch" field in the mutation.
+func (m *GroupMutation) StrictModelPriorityOnModelMismatch() (r bool, exists bool) {
+	v := m.strict_model_priority_on_model_mismatch
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStrictModelPriorityOnModelMismatch returns the old "strict_model_priority_on_model_mismatch" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldStrictModelPriorityOnModelMismatch(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStrictModelPriorityOnModelMismatch is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStrictModelPriorityOnModelMismatch requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStrictModelPriorityOnModelMismatch: %w", err)
+	}
+	return oldValue.StrictModelPriorityOnModelMismatch, nil
+}
+
+// ResetStrictModelPriorityOnModelMismatch resets all changes to the "strict_model_priority_on_model_mismatch" field.
+func (m *GroupMutation) ResetStrictModelPriorityOnModelMismatch() {
+	m.strict_model_priority_on_model_mismatch = nil
+}
+
 // SetRpmLimit sets the "rpm_limit" field.
 func (m *GroupMutation) SetRpmLimit(i int) {
 	m.rpm_limit = &i
@@ -24324,7 +24361,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 47)
+	fields := make([]string, 0, 48)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -24463,6 +24500,9 @@ func (m *GroupMutation) Fields() []string {
 	if m.models_list_config != nil {
 		fields = append(fields, group.FieldModelsListConfig)
 	}
+	if m.strict_model_priority_on_model_mismatch != nil {
+		fields = append(fields, group.FieldStrictModelPriorityOnModelMismatch)
+	}
 	if m.rpm_limit != nil {
 		fields = append(fields, group.FieldRpmLimit)
 	}
@@ -24566,6 +24606,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.MessagesDispatchModelConfig()
 	case group.FieldModelsListConfig:
 		return m.ModelsListConfig()
+	case group.FieldStrictModelPriorityOnModelMismatch:
+		return m.StrictModelPriorityOnModelMismatch()
 	case group.FieldRpmLimit:
 		return m.RpmLimit()
 	}
@@ -24669,6 +24711,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldMessagesDispatchModelConfig(ctx)
 	case group.FieldModelsListConfig:
 		return m.OldModelsListConfig(ctx)
+	case group.FieldStrictModelPriorityOnModelMismatch:
+		return m.OldStrictModelPriorityOnModelMismatch(ctx)
 	case group.FieldRpmLimit:
 		return m.OldRpmLimit(ctx)
 	}
@@ -25001,6 +25045,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetModelsListConfig(v)
+		return nil
+	case group.FieldStrictModelPriorityOnModelMismatch:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStrictModelPriorityOnModelMismatch(v)
 		return nil
 	case group.FieldRpmLimit:
 		v, ok := value.(int)
@@ -25525,6 +25576,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldModelsListConfig:
 		m.ResetModelsListConfig()
+		return nil
+	case group.FieldStrictModelPriorityOnModelMismatch:
+		m.ResetStrictModelPriorityOnModelMismatch()
 		return nil
 	case group.FieldRpmLimit:
 		m.ResetRpmLimit()

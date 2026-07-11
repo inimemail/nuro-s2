@@ -1586,6 +1586,46 @@
               />
             </button>
           </div>
+
+          <div
+            v-if="createForm.platform === 'openai'"
+            class="flex items-center justify-between"
+          >
+            <div>
+              <label class="text-sm text-gray-600 dark:text-gray-400"
+                >严格限制模型不匹配时跨优先级</label
+              >
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                {{
+                  createForm.strict_model_priority_on_model_mismatch
+                    ? "已启用 — 当前分组最高优先级层不支持模型时，不再调度低优先级账号"
+                    : "未启用 — 高优先级账号不支持模型时仍可调度低优先级支持模型的账号"
+                }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="
+                createForm.strict_model_priority_on_model_mismatch =
+                  !createForm.strict_model_priority_on_model_mismatch
+              "
+              class="relative inline-flex h-6 w-12 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+              :class="
+                createForm.strict_model_priority_on_model_mismatch
+                  ? 'bg-primary-500'
+                  : 'bg-gray-300 dark:bg-dark-600'
+              "
+            >
+              <span
+                class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                :class="
+                  createForm.strict_model_priority_on_model_mismatch
+                    ? 'translate-x-6'
+                    : 'translate-x-1'
+                "
+              />
+            </button>
+          </div>
         </div>
 
         <!-- 无效请求兜底（仅 anthropic/antigravity 平台，且非订阅分组） -->
@@ -3019,6 +3059,46 @@
               />
             </button>
           </div>
+
+          <div
+            v-if="editForm.platform === 'openai'"
+            class="flex items-center justify-between"
+          >
+            <div>
+              <label class="text-sm text-gray-600 dark:text-gray-400"
+                >严格限制模型不匹配时跨优先级</label
+              >
+              <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                {{
+                  editForm.strict_model_priority_on_model_mismatch
+                    ? "已启用 — 当前分组最高优先级层不支持模型时，不再调度低优先级账号"
+                    : "未启用 — 高优先级账号不支持模型时仍可调度低优先级支持模型的账号"
+                }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="
+                editForm.strict_model_priority_on_model_mismatch =
+                  !editForm.strict_model_priority_on_model_mismatch
+              "
+              class="relative inline-flex h-6 w-12 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+              :class="
+                editForm.strict_model_priority_on_model_mismatch
+                  ? 'bg-primary-500'
+                  : 'bg-gray-300 dark:bg-dark-600'
+              "
+            >
+              <span
+                class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                :class="
+                  editForm.strict_model_priority_on_model_mismatch
+                    ? 'translate-x-6'
+                    : 'translate-x-1'
+                "
+              />
+            </button>
+          </div>
         </div>
 
         <!-- 无效请求兜底（仅 anthropic/antigravity 平台，且非订阅分组） -->
@@ -3808,6 +3888,7 @@ const createForm = reactive({
   // 账号过滤控制（OpenAI/Antigravity 平台）
   require_oauth_only: false,
   require_privacy_set: false,
+  strict_model_priority_on_model_mismatch: false,
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -4152,6 +4233,7 @@ const editForm = reactive({
   // 账号过滤控制（OpenAI/Antigravity 平台）
   require_oauth_only: false,
   require_privacy_set: false,
+  strict_model_priority_on_model_mismatch: false,
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -4472,6 +4554,7 @@ const closeCreateModal = () => {
   resetMessagesDispatchFormState(createForm);
   createForm.require_oauth_only = false;
   createForm.require_privacy_set = false;
+  createForm.strict_model_priority_on_model_mismatch = false;
   createForm.supported_model_scopes = ["claude", "gemini_text", "gemini_image"];
   createForm.mcp_xml_inject = true;
   createForm.copy_accounts_from_group_ids = [];
@@ -4640,6 +4723,8 @@ const handleEdit = async (group: AdminGroup) => {
     messagesDispatchFormState.exact_model_mappings;
   editForm.require_oauth_only = group.require_oauth_only ?? false;
   editForm.require_privacy_set = group.require_privacy_set ?? false;
+  editForm.strict_model_priority_on_model_mismatch =
+    group.strict_model_priority_on_model_mismatch ?? false;
   editForm.model_routing_enabled = group.model_routing_enabled || false;
   editForm.supported_model_scopes = group.supported_model_scopes || [
     "claude",
@@ -4675,6 +4760,7 @@ const closeEditModal = () => {
   editForm.batch_image_discount_multiplier = 0.5;
   editForm.batch_image_hold_multiplier = 0.6;
   resetMessagesDispatchFormState(editForm);
+  editForm.strict_model_priority_on_model_mismatch = false;
   resetModelsListState(editModelsListState);
 };
 
@@ -4855,6 +4941,7 @@ watch(
     }
     if (newVal !== "openai") {
       resetMessagesDispatchFormState(createForm);
+      createForm.strict_model_priority_on_model_mismatch = false;
     }
     if (!["openai", "antigravity", "anthropic", "gemini", "grok"].includes(newVal)) {
       createForm.require_oauth_only = false;
@@ -4873,6 +4960,7 @@ watch(
     }
     if (newVal !== "openai") {
       resetMessagesDispatchFormState(editForm);
+      editForm.strict_model_priority_on_model_mismatch = false;
     }
     if (!["openai", "antigravity", "anthropic", "gemini", "grok"].includes(newVal)) {
       editForm.require_oauth_only = false;
@@ -4894,6 +4982,7 @@ watch(
     if (newVal !== 'openai') {
       editForm.allow_messages_dispatch = false
       editForm.default_mapped_model = ''
+      editForm.strict_model_priority_on_model_mismatch = false
     }
   }
 )

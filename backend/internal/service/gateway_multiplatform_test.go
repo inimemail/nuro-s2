@@ -2240,7 +2240,7 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.Equal(t, int64(2), result.Account.ID, "不应选择被排除的账号")
 	})
 
-	t.Run("最低优先级模型不匹配不跨优先级", func(t *testing.T) {
+	t.Run("未开启分组严格模型优先级时允许模型不匹配跨优先级", func(t *testing.T) {
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
 				{
@@ -2281,6 +2281,76 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		}
 
 		result, err := svc.SelectAccountWithLoadAwareness(ctx, nil, "", "claude-3-5-sonnet-20241022", nil, "", int64(0))
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.Account)
+		require.Equal(t, int64(2), result.Account.ID)
+	})
+
+	t.Run("OpenAI分组开启严格模型优先级后阻止模型不匹配跨优先级", func(t *testing.T) {
+		groupID := int64(7001)
+		repo := &mockAccountRepoForPlatform{
+			accounts: []Account{
+				{
+					ID:          11,
+					Platform:    PlatformOpenAI,
+					Type:        AccountTypeAPIKey,
+					Priority:    1,
+					Status:      StatusActive,
+					Schedulable: true,
+					Concurrency: 5,
+					GroupIDs:    []int64{groupID},
+					Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4o-mini": "gpt-4o-mini"}},
+				},
+				{
+					ID:          12,
+					Platform:    PlatformOpenAI,
+					Type:        AccountTypeAPIKey,
+					Priority:    2,
+					Status:      StatusActive,
+					Schedulable: true,
+					Concurrency: 5,
+					GroupIDs:    []int64{groupID},
+					Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.1": "gpt-5.1"}},
+				},
+			},
+			accountsByID: map[int64]*Account{},
+		}
+		for i := range repo.accounts {
+			repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
+		}
+
+		cfg := testConfig()
+		cfg.Gateway.Scheduling.LoadBatchEnabled = true
+
+		newService := func(strict bool) *GatewayService {
+			return &GatewayService{
+				accountRepo: repo,
+				groupRepo: &mockGroupRepoForGateway{groups: map[int64]*Group{
+					groupID: {
+						ID:                                 groupID,
+						Platform:                           PlatformOpenAI,
+						Status:                             StatusActive,
+						Hydrated:                           true,
+						StrictModelPriorityOnModelMismatch: strict,
+					},
+				}},
+				cache: &mockGatewayCacheForPlatform{},
+				cfg:   cfg,
+				concurrencyService: NewConcurrencyService(&mockConcurrencyCache{
+					loadMap:        map[int64]*AccountLoadInfo{11: {AccountID: 11}, 12: {AccountID: 12}},
+					acquireResults: map[int64]bool{12: true},
+				}),
+			}
+		}
+
+		result, err := newService(false).SelectAccountWithLoadAwareness(ctx, &groupID, "", "gpt-5.1", nil, "", int64(0))
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.Account)
+		require.Equal(t, int64(12), result.Account.ID)
+
+		result, err = newService(true).SelectAccountWithLoadAwareness(ctx, &groupID, "", "gpt-5.1", nil, "", int64(0))
 		require.ErrorIs(t, err, ErrNoAvailableAccounts)
 		require.Nil(t, result)
 	})

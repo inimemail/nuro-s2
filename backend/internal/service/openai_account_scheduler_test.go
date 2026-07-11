@@ -25,6 +25,22 @@ type schedulerTestOpenAIAccountRepo struct {
 	accounts []Account
 }
 
+type schedulerTestGroupRepo struct {
+	GroupRepository
+	groups map[int64]*Group
+}
+
+func (r *schedulerTestGroupRepo) GetByID(ctx context.Context, id int64) (*Group, error) {
+	if group, ok := r.groups[id]; ok {
+		return group, nil
+	}
+	return nil, ErrGroupNotFound
+}
+
+func (r *schedulerTestGroupRepo) GetByIDLite(ctx context.Context, id int64) (*Group, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r schedulerTestOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
 	for i := range r.accounts {
 		if r.accounts[i].ID == id {
@@ -857,7 +873,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LockedPriorityDoesNotFa
 	require.Zero(t, decision.CandidateCount)
 }
 
-func TestOpenAIGatewayService_SelectAccountWithScheduler_ModelMismatchDoesNotFallForward(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountWithScheduler_ModelMismatchPriorityFallbackUsesGroupSwitch(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
 	ctx := context.Background()
@@ -901,15 +917,65 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_ModelMismatchDoesNotFal
 			37052: {AccountID: 37052, LoadRate: 0, WaitingCount: 0},
 		},
 	}
-	svc := &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cache:              &schedulerTestGatewayCache{},
-		cfg:                cfg,
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
-		concurrencyService: NewConcurrencyService(concurrencyCache),
+	newService := func(strict bool) *OpenAIGatewayService {
+		snapshotCopies := append([]Account(nil), accounts...)
+		freshCopies := append([]Account(nil), accounts...)
+		snapshotAccounts := make([]*Account, 0, len(snapshotCopies))
+		accountsByID := make(map[int64]*Account, len(accounts))
+		for i := range snapshotCopies {
+			snapshotAccounts = append(snapshotAccounts, &snapshotCopies[i])
+		}
+		for i := range freshCopies {
+			accountsByID[freshCopies[i].ID] = &freshCopies[i]
+		}
+		snapshotService := &SchedulerSnapshotService{
+			cache: &openAISnapshotCacheStub{
+				snapshotAccounts: snapshotAccounts,
+				accountsByID:     accountsByID,
+			},
+			groupRepo: &schedulerTestGroupRepo{groups: map[int64]*Group{
+				groupID: {
+					ID:                                 groupID,
+					Platform:                           PlatformOpenAI,
+					Status:                             StatusActive,
+					Hydrated:                           true,
+					StrictModelPriorityOnModelMismatch: strict,
+				},
+			}},
+		}
+		return &OpenAIGatewayService{
+			accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+			cache:              &schedulerTestGatewayCache{},
+			cfg:                cfg,
+			rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+			schedulerSnapshot:  snapshotService,
+			concurrencyService: NewConcurrencyService(concurrencyCache),
+		}
 	}
 
-	selection, decision, err := svc.SelectAccountWithSchedulerForCapabilityOnPlatform(
+	selection, decision, err := newService(false).SelectAccountWithSchedulerForCapabilityOnPlatform(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIEndpointCapabilityChatCompletions,
+		false,
+		PlatformOpenAI,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37052), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	selection, decision, err = newService(true).SelectAccountWithSchedulerForCapabilityOnPlatform(
 		ctx,
 		&groupID,
 		"",
