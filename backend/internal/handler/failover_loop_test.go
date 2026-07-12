@@ -224,6 +224,36 @@ func TestPlanSameAccountRetryWithMaxElapsedDoesNotExtendSmallerOrUnlimitedBudget
 	require.Zero(t, plan.MaxElapsed)
 }
 
+func TestPlanSameAccountRetryUsesConfiguredFiftyAttempts(t *testing.T) {
+	account := &service.Account{
+		ID:       104,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Status:   service.StatusActive,
+		Credentials: map[string]interface{}{
+			"pool_mode":                                true,
+			"pool_mode_retry_count":                    50,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_max_elapsed_ms": 5000,
+		},
+	}
+	counts := map[int64]int{}
+	starts := map[int64]time.Time{account.ID: time.Now()}
+
+	for retryNumber := 1; retryNumber <= 50; retryNumber++ {
+		plan, retry := planSameAccountRetry(account, counts, starts, 10*time.Millisecond)
+		require.True(t, retry)
+		require.Equal(t, 50, plan.RetryLimit)
+		require.Equal(t, retryNumber, plan.RetryCount)
+		require.Equal(t, 5*time.Second, plan.MaxElapsed)
+	}
+
+	plan, retry := planSameAccountRetry(account, counts, starts, 10*time.Millisecond)
+	require.False(t, retry)
+	require.Equal(t, 50, plan.RetryLimit)
+	require.Equal(t, 50, counts[account.ID])
+}
+
 // ---------------------------------------------------------------------------
 // HandleFailoverError — 基本切换流程
 // ---------------------------------------------------------------------------

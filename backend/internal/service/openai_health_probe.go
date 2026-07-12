@@ -311,6 +311,7 @@ func newOpenAIHealthProbeEmptyFailoverError(c *gin.Context, account *Account, re
 		ResponseHeaders:           resp.Header.Clone(),
 		Message:                   openAIHealthProbeUpstreamMessage,
 		ProbeModel:                probeModel,
+		RetryableOnSameAccount:    true,
 		SkipPoolSoftCooldown:      true,
 		SkipPromptCacheAvoidance:  true,
 		SkipStickySessionEviction: true,

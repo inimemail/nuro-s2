@@ -100,7 +100,7 @@ func TestOpenAIHealthProbeEmptyJSONTriggersRequestLocalFailover(t *testing.T) {
 	var failoverErr *UpstreamFailoverError
 	require.True(t, errors.As(err, &failoverErr))
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
-	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.True(t, failoverErr.RetryableOnSameAccount)
 	require.True(t, failoverErr.SkipPoolSoftCooldown)
 	require.True(t, failoverErr.SkipPromptCacheAvoidance)
 	require.True(t, failoverErr.SkipStickySessionEviction)
@@ -130,6 +130,7 @@ func TestOpenAIHealthProbeEmptySSEResponseTriggersFailover(t *testing.T) {
 	require.Empty(t, recorder.Body.String())
 	var failoverErr *UpstreamFailoverError
 	require.True(t, errors.As(err, &failoverErr))
+	require.True(t, failoverErr.RetryableOnSameAccount)
 	require.True(t, IsOpenAIHealthProbeEmptyErrorBody(failoverErr.ResponseBody))
 }
 
