@@ -249,6 +249,93 @@ func TestIsolateOpenAIHealthProbeFailoverOnlyChangesMarkedRequests(t *testing.T)
 	require.False(t, unmarkedErr.SkipSchedulePenalty)
 }
 
+func TestApplyOpenAIHealthProbeRetryPolicyUsesPoolConditionsPlusEmptyResponse(t *testing.T) {
+	marked, _ := configuredHealthProbeContext(t)
+	account := &Account{
+		ID:       96,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                    true,
+			"pool_mode_retry_status_codes": []any{float64(http.StatusTeapot)},
+		},
+	}
+
+	tests := []struct {
+		name       string
+		statusCode int
+		body       []byte
+		message    string
+		expected   bool
+	}{
+		{
+			name:       "pool built-in server error",
+			statusCode: http.StatusBadGateway,
+			expected:   true,
+		},
+		{
+			name:       "account configured status",
+			statusCode: http.StatusTeapot,
+			expected:   true,
+		},
+		{
+			name:       "status outside pool retry conditions",
+			statusCode: http.StatusConflict,
+			expected:   false,
+		},
+		{
+			name:       "explicit client error remains non-retryable",
+			statusCode: http.StatusBadRequest,
+			body:       []byte(`{"error":{"message":"maximum context length exceeded","type":"invalid_request_error"}}`),
+			message:    "maximum context length exceeded",
+			expected:   false,
+		},
+		{
+			name:       "probe-only upstream 2xx empty marker",
+			statusCode: http.StatusBadGateway,
+			body:       openAIHealthProbeErrorBody(),
+			expected:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			failoverErr := &UpstreamFailoverError{
+				StatusCode:             tt.statusCode,
+				ResponseBody:           tt.body,
+				Message:                tt.message,
+				RetryableOnSameAccount: !tt.expected,
+			}
+
+			ApplyOpenAIHealthProbeRetryPolicy(marked, account, failoverErr)
+
+			require.Equal(t, tt.expected, failoverErr.RetryableOnSameAccount)
+		})
+	}
+}
+
+func TestApplyOpenAIHealthProbeRetryPolicyDoesNotChangeNormalRequests(t *testing.T) {
+	unmarked, _ := healthProbeTestContext(healthProbeRequestBody(), "")
+	failoverErr := &UpstreamFailoverError{StatusCode: http.StatusConflict, RetryableOnSameAccount: true}
+
+	ApplyOpenAIHealthProbeRetryPolicy(unmarked, &Account{}, failoverErr)
+
+	require.True(t, failoverErr.RetryableOnSameAccount)
+}
+
+func TestApplyOpenAIHealthProbeRetryPolicyPreservesNonPoolDecision(t *testing.T) {
+	marked, _ := configuredHealthProbeContext(t)
+	account := &Account{ID: 97, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	retryableErr := &UpstreamFailoverError{StatusCode: http.StatusConflict, RetryableOnSameAccount: true}
+	ApplyOpenAIHealthProbeRetryPolicy(marked, account, retryableErr)
+	require.True(t, retryableErr.RetryableOnSameAccount)
+
+	nonRetryableErr := &UpstreamFailoverError{StatusCode: http.StatusConflict}
+	ApplyOpenAIHealthProbeRetryPolicy(marked, account, nonRetryableErr)
+	require.False(t, nonRetryableErr.RetryableOnSameAccount)
+}
+
 func TestOpenAIHealthProbeDoesNotChangeUnmarkedEmptyResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := healthProbeRequestBody()

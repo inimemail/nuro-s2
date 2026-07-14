@@ -271,6 +271,21 @@ func IsolateOpenAIHealthProbeFailover(c *gin.Context, failoverErr *UpstreamFailo
 	failoverErr.SkipSchedulePenalty = true
 }
 
+// ApplyOpenAIHealthProbeRetryPolicy aligns pool accounts with the pool's
+// same-account retry classifier. Non-pool accounts keep their existing retry
+// decision. Both gain one probe-only condition: an upstream 2xx response whose
+// assistant text is empty is retryable.
+func ApplyOpenAIHealthProbeRetryPolicy(c *gin.Context, account *Account, failoverErr *UpstreamFailoverError) {
+	if !IsOpenAIResponsesHealthProbe(c) || failoverErr == nil {
+		return
+	}
+	retryable := failoverErr.RetryableOnSameAccount
+	if account != nil && account.IsPoolMode() {
+		retryable = openAIPoolFailoverRetryableOnSameAccount(account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+	}
+	failoverErr.RetryableOnSameAccount = IsOpenAIHealthProbeEmptyErrorBody(failoverErr.ResponseBody) || retryable
+}
+
 func openAIUpstreamRequestContext(ctx context.Context, c *gin.Context) (context.Context, context.CancelFunc) {
 	if IsOpenAIResponsesHealthProbe(c) {
 		if ctx == nil {
@@ -311,12 +326,12 @@ func newOpenAIHealthProbeEmptyFailoverError(c *gin.Context, account *Account, re
 		ResponseHeaders:           resp.Header.Clone(),
 		Message:                   openAIHealthProbeUpstreamMessage,
 		ProbeModel:                probeModel,
-		RetryableOnSameAccount:    true,
 		SkipPoolSoftCooldown:      true,
 		SkipPromptCacheAvoidance:  true,
 		SkipStickySessionEviction: true,
 		SkipSchedulePenalty:       true,
 	}
+	ApplyOpenAIHealthProbeRetryPolicy(c, account, failoverErr)
 	IsolateOpenAIHealthProbeFailover(c, failoverErr)
 	return failoverErr
 }

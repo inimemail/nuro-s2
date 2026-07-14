@@ -593,6 +593,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					service.ApplyOpenAIHealthProbeRetryPolicy(c, account, failoverErr)
 					service.IsolateOpenAIHealthProbeFailover(c, failoverErr)
 					if service.OpenAICompactKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward {
 						h.handleFailoverExhausted(c, failoverErr, true)
