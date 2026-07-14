@@ -357,3 +357,13 @@ func IsOpenAIHealthProbeEmptyErrorBody(body []byte) bool {
 func OpenAIHealthProbeClientMessage() string {
 	return openAIHealthProbeClientMessage
 }
+
+func ShouldStartOpenAIHealthProbeDefaultFallback(c *gin.Context, failoverErr *UpstreamFailoverError, alreadyStarted bool) bool {
+	return !alreadyStarted && IsOpenAIResponsesHealthProbe(c) && failoverErr != nil &&
+		IsOpenAIHealthProbeEmptyErrorBody(failoverErr.ResponseBody)
+}
+
+func BuildOpenAIHealthProbeDefaultFallbackBody(model string) ([]byte, error) {
+	challenge := generateChallenge()
+	return providerOpenAIResponsesAdapter.buildBody(strings.TrimSpace(model), challenge.Prompt)
+}

@@ -60,7 +60,6 @@ func setupFakeAnthropic(t *testing.T, handler *captureHandler) string {
 }
 
 type openAICaptureHandler struct {
-	calls                     int
 	lastBody                  map[string]any
 	lastHeaders               http.Header
 	lastPath                  string
@@ -68,43 +67,25 @@ type openAICaptureHandler struct {
 	responsesLeadingReasoning bool
 }
 
-type openAIHealthProbeFallbackHandler struct {
-	calls   int
-	bodies  []map[string]any
-	headers []http.Header
+type openAIHealthProbeErrorHandler struct {
+	calls  int
+	header http.Header
 }
 
-func (h *openAIHealthProbeFallbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	defer func() { _ = r.Body.Close() }()
-	var body map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&body)
+func (h *openAIHealthProbeErrorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.calls++
-	h.bodies = append(h.bodies, body)
-	h.headers = append(h.headers, r.Header.Clone())
+	h.header = r.Header.Clone()
 	w.Header().Set("Content-Type", "application/json")
-	if h.calls == 1 {
-		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"type":    "upstream_error",
-				"message": OpenAIHealthProbeClientMessage(),
-			},
-		})
-		return
-	}
+	w.WriteHeader(http.StatusBadGateway)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"output": []map[string]any{{
-			"type": "message",
-			"content": []map[string]any{{
-				"type": "output_text",
-				"text": answerFromOpenAIRequest(body),
-			}},
-		}},
+		"error": map[string]any{
+			"type":    "upstream_error",
+			"message": OpenAIHealthProbeClientMessage(),
+		},
 	})
 }
 
 func (h *openAICaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.calls++
 	h.lastHeaders = r.Header.Clone()
 	h.lastPath = r.URL.Path
 	defer func() { _ = r.Body.Close() }()
@@ -279,58 +260,25 @@ func TestRunCheckForModel_OpenAIResponses_SkipsLeadingReasoningItem(t *testing.T
 	}
 }
 
-func TestRunCheckForModel_OpenAIHealthProbeFallsBackToDefaultResponsesChallenge(t *testing.T) {
+func TestRunCheckForModel_OpenAIHealthProbeKeepsDedicatedHeaderOnEmptyResponse502(t *testing.T) {
 	swapMonitorHTTPClient(t)
-	h := &openAIHealthProbeFallbackHandler{}
+	h := &openAIHealthProbeErrorHandler{}
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	opts := dedicatedHealthProbeCheckOptions(map[string]string{
 		OpenAIHealthProbeHeader: OpenAIHealthProbeProfileResponsesV1,
-		"X-Custom-Probe":        "preserved",
 	})
 
 	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, srv.URL, "sk-openai", "gpt-5.5", opts)
 
-	if res.Status != MonitorStatusOperational {
-		t.Fatalf("default Responses fallback should pass challenge, got status=%s message=%q", res.Status, res.Message)
-	}
-	if h.calls != 2 {
-		t.Fatalf("expected dedicated request plus one fallback, got %d requests", h.calls)
-	}
-	if h.headers[0].Get(OpenAIHealthProbeHeader) != OpenAIHealthProbeProfileResponsesV1 {
-		t.Fatalf("first request must use dedicated health header, got %q", h.headers[0].Get(OpenAIHealthProbeHeader))
-	}
-	if h.headers[1].Get(OpenAIHealthProbeHeader) != "" {
-		t.Fatalf("fallback must remove dedicated health header, got %q", h.headers[1].Get(OpenAIHealthProbeHeader))
-	}
-	if h.headers[1].Get("X-Custom-Probe") != "preserved" {
-		t.Fatalf("fallback must preserve custom headers, got %q", h.headers[1].Get("X-Custom-Probe"))
-	}
-	if h.bodies[1]["model"] != "gpt-5.5" {
-		t.Fatalf("fallback must keep the dedicated model, got %v", h.bodies[1]["model"])
-	}
-	if h.bodies[1]["input"] == openAIHealthProbeInput {
-		t.Fatal("fallback must use the dynamic default challenge body")
-	}
-}
-
-func TestRunCheckForModel_OpenAIHealthProbeDoesNotFallbackForUnrelated502(t *testing.T) {
-	h := &openAICaptureHandler{status: http.StatusBadGateway}
-	endpoint := setupFakeOpenAI(t, h)
-	opts := dedicatedHealthProbeCheckOptions(map[string]string{
-		OpenAIHealthProbeHeader: OpenAIHealthProbeProfileResponsesV1,
-	})
-
-	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, endpoint, "sk-openai", "gpt-5.5", opts)
-
 	if res.Status != MonitorStatusError {
-		t.Fatalf("unrelated 502 must remain an error, got status=%s message=%q", res.Status, res.Message)
-	}
-	if !strings.Contains(res.Message, "upstream HTTP 502") {
-		t.Fatalf("expected original 502 details, got %q", res.Message)
+		t.Fatalf("exhausted dedicated probe must remain an error, got status=%s message=%q", res.Status, res.Message)
 	}
 	if h.calls != 1 {
-		t.Fatalf("unrelated 502 must not trigger fallback, got %d requests", h.calls)
+		t.Fatalf("monitor caller must not retry without the dedicated header, got %d requests", h.calls)
+	}
+	if got := h.header.Get(OpenAIHealthProbeHeader); got != OpenAIHealthProbeProfileResponsesV1 {
+		t.Fatalf("dedicated health header changed during the request: got %q", got)
 	}
 }
 

@@ -430,6 +430,30 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	var lastFailoverErr *service.UpstreamFailoverError
 	modelRoutingLockedPriority := -1
 	userSlotHeld := false
+	healthProbeDefaultFallbackStarted := false
+	startHealthProbeDefaultFallback := func(failoverErr *service.UpstreamFailoverError) bool {
+		if !service.ShouldStartOpenAIHealthProbeDefaultFallback(c, failoverErr, healthProbeDefaultFallbackStarted) {
+			return false
+		}
+		fallbackBody, buildErr := service.BuildOpenAIHealthProbeDefaultFallbackBody(reqModel)
+		if buildErr != nil {
+			reqLog.Warn("openai.health_probe_default_fallback_build_failed", zap.Error(buildErr))
+			return false
+		}
+		// Keep the inbound probe header/context intact; only change the body sent upstream.
+		forwardBodyForResponses = newOpenAIModelMappedBodyCache(fallbackBody, h.gatewayService.ReplaceModelInBody)
+		healthProbeDefaultFallbackStarted = true
+		switchCount = 0
+		failedAccountIDs = make(map[int64]struct{})
+		capacitySkippedIDs = make(map[int64]struct{})
+		sameAccountRetryCount = make(map[int64]int)
+		sameAccountRetryStartedAt = make(map[int64]time.Time)
+		healthProbeAlternativeByAccount = make(map[int64]bool)
+		lastFailoverErr = nil
+		modelRoutingLockedPriority = -1
+		reqLog.Warn("openai.health_probe_default_fallback_started", zap.String("model", reqModel))
+		return true
+	}
 
 	for {
 		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
@@ -508,6 +532,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				return
 			}
 			if lastFailoverErr != nil {
+				if startHealthProbeDefaultFallback(lastFailoverErr) {
+					continue
+				}
 				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
 			} else {
 				h.handleFailoverExhaustedSimple(c, 502, streamStarted)
@@ -660,6 +687,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
+						if startHealthProbeDefaultFallback(failoverErr) {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
