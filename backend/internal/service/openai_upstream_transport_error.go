@@ -54,7 +54,7 @@ func classifyOpenAITransportError(err error) openAITransportErrorClass {
 }
 
 func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Context, c *gin.Context, account *Account, err error, passthrough bool) error {
-	safeErr := sanitizeUpstreamErrorMessage(err.Error())
+	safeErr := sanitizeUpstreamErrorMessageForOps(err.Error())
 	if account == nil {
 		return &UpstreamFailoverError{
 			StatusCode:   http.StatusBadGateway,

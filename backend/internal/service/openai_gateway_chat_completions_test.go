@@ -33,6 +33,10 @@ func (w *openAIChatFailingWriter) Write(p []byte) (int, error) {
 	return w.ResponseWriter.Write(p)
 }
 
+func (w *openAIChatFailingWriter) WriteString(s string) (int, error) {
+	return w.Write([]byte(s))
+}
+
 func TestNormalizeResponsesRequestServiceTier(t *testing.T) {
 	t.Parallel()
 
@@ -180,6 +184,41 @@ func TestForwardAsChatCompletions_ClientDisconnectDrainsUpstreamUsage(t *testing
 	require.Equal(t, 11, result.Usage.InputTokens)
 	require.Equal(t, 5, result.Usage.OutputTokens)
 	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
+	require.Equal(t, "response.completed", result.TerminalEventType)
+	require.True(t, result.ClientDisconnect)
+}
+
+func TestHandleChatBufferedStreamingResponsePreservesIncompleteTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"response.incomplete","response":{"id":"resp_incomplete","object":"response","model":"gpt-5.4","status":"incomplete","output":[],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n"))),
+	}
+
+	svc := &OpenAIGatewayService{}
+	result, err := svc.handleChatBufferedStreamingResponse(
+		resp,
+		c,
+		&Account{ID: 1, Platform: PlatformOpenAI},
+		"gpt-5.4",
+		"gpt-5.4",
+		"gpt-5.4",
+		time.Now(),
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "response.incomplete", result.TerminalEventType)
+	require.Equal(t, 5, result.Usage.InputTokens)
+	require.Equal(t, 2, result.Usage.OutputTokens)
 }
 
 func TestForwardAsChatCompletions_APIKeyPropagatesPromptCacheKey(t *testing.T) {

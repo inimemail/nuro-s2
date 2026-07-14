@@ -234,6 +234,7 @@ func TestAPIKeyService_GetByKey_UsesL2Cache(t *testing.T) {
 func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t *testing.T) {
 	svc := NewAPIKeyService(nil, nil, nil, nil, nil, nil, &config.Config{})
 	groupID := int64(9)
+	webSearchPricePerCall := 0.025
 	apiKey := &APIKey{
 		ID:      1,
 		UserID:  2,
@@ -255,6 +256,7 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 			Status:                StatusActive,
 			SubscriptionType:      SubscriptionTypeStandard,
 			RateMultiplier:        1,
+			WebSearchPricePerCall: &webSearchPricePerCall,
 			AllowMessagesDispatch: true,
 			DefaultMappedModel:    "gpt-5.4",
 			MessagesDispatchModelConfig: OpenAIMessagesDispatchModelConfig{
@@ -275,6 +277,7 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 	require.Equal(t, apiKey.Name, roundTrip.Name)
 	require.NotNil(t, roundTrip.Group)
 	require.Equal(t, apiKey.Group.MessagesDispatchModelConfig, roundTrip.Group.MessagesDispatchModelConfig)
+	require.Equal(t, apiKey.Group.WebSearchPricePerCall, roundTrip.Group.WebSearchPricePerCall)
 }
 
 func TestAPIKeyService_GetByKey_IgnoresLegacyAuthCacheSnapshotWithoutMessagesDispatchConfig(t *testing.T) {

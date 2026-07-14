@@ -51,6 +51,93 @@ func TestBuildOpenAIChatCompletionsURL(t *testing.T) {
 	}
 }
 
+func TestSanitizeOpenAIRawChatSSELine(t *testing.T) {
+	normal := `data: {"id":"chatcmpl_1","choices":[{"delta":{"content":"ok"}}],"error":null}`
+	require.Equal(t, normal, sanitizeOpenAIRawChatSSELine(normal))
+	require.False(t, rawChatSSELineIsUnsafe(normal))
+
+	html := `<!DOCTYPE html><title>private.example | 502</title>`
+	sanitized := sanitizeOpenAIRawChatSSELine(html)
+	require.Contains(t, sanitized, safeUpstreamErrorMessage)
+	require.NotContains(t, sanitized, "private.example")
+	require.True(t, rawChatSSELineIsUnsafe(html))
+
+	diagnostic := `data: {"message":"private-provider.example failed"}`
+	sanitized = sanitizeOpenAIRawChatSSELine(diagnostic)
+	require.Contains(t, sanitized, safeUpstreamErrorMessage)
+	require.NotContains(t, sanitized, "private-provider.example")
+	require.True(t, rawChatSSELineIsUnsafe(diagnostic))
+}
+
+func TestIsOpenAIChatCompletionsSuccessPayload(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, isOpenAIChatCompletionsSuccessPayload([]byte(`{"choices":[{"message":{"content":"ok"}}]}`)))
+	require.True(t, isOpenAIChatCompletionsSuccessPayload([]byte(`{"choices":[],"usage":{"prompt_tokens":1}}`)))
+	require.False(t, isOpenAIChatCompletionsSuccessPayload([]byte(`{"message":"private-provider.example failed"}`)))
+	require.False(t, isOpenAIChatCompletionsSuccessPayload([]byte(`{"choices":[],"detail":"private-provider.example failed"}`)))
+}
+
+func TestForwardAsRawChatCompletionsRejectsDiagnosticSuccessBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"message":"private-provider.example failed"}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Body.String(), safeUpstreamErrorMessage)
+	require.NotContains(t, rec.Body.String(), "private-provider.example")
+}
+
+func TestForwardAsRawChatCompletionsGrokRecordsNonFailoverErrorOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"grok","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"invalid request"}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := &Account{
+		ID:       102,
+		Name:     "raw-grok-apikey",
+		Platform: PlatformGrok,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "xai-test",
+			"base_url": "http://upstream.example",
+		},
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.Equal(t, "http_error", events[0].Kind)
+}
+
 // TestBuildOpenAIResponsesURL_ProbeURL 锁定 probe/测试端点使用的 URL 构建逻辑，
 // 确保 buildOpenAIResponsesURL 对标准 OpenAI base_url 格式均拼出 `/v1/responses`。
 func TestBuildOpenAIResponsesURL_ProbeURL(t *testing.T) {
@@ -453,7 +540,52 @@ func TestForwardAsRawChatCompletions_ClientDisconnectDrainsUsage(t *testing.T) {
 	require.Equal(t, 17, result.Usage.InputTokens)
 	require.Equal(t, 8, result.Usage.OutputTokens)
 	require.Equal(t, 6, result.Usage.CacheReadInputTokens)
+	require.Equal(t, "[DONE]", result.TerminalEventType)
+	require.True(t, result.ClientDisconnect)
 	require.True(t, gjson.GetBytes(upstream.lastBody, "stream_options.include_usage").Bool())
+}
+
+func TestForwardAsRawChatCompletions_FailedStreamPreservesUsageWithoutSuccessfulTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl_failed","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"partial"}}]}`,
+		"",
+		`data: {"id":"chatcmpl_failed","object":"chat.completion.chunk","model":"gpt-5.4","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":4}}}`,
+		"",
+		`data: {"error":{"message":"private-upstream.example Cloudflare 502"}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_raw_failed_usage"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, rawChatCompletionsTestAccount(), body, "")
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.NotNil(t, result)
+	require.Equal(t, 11, result.Usage.InputTokens)
+	require.Equal(t, 3, result.Usage.OutputTokens)
+	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
+	require.Equal(t, "error", result.TerminalEventType)
+	require.NotContains(t, rec.Body.String(), "private-upstream.example")
+	require.NotContains(t, rec.Body.String(), "Cloudflare")
+	require.Contains(t, rec.Body.String(), safeUpstreamErrorMessage)
 }
 
 func TestForwardAsRawChatCompletions_UpstreamRequestIgnoresClientCancel(t *testing.T) {

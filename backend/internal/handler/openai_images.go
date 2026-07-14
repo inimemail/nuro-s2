@@ -232,11 +232,8 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			responseLatencyMs = forwardDurationMs - upstreamLatencyMs
 		}
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
-		if result != nil && result.FirstTokenMs != nil {
-			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
-		}
 		if err != nil {
-			if result != nil && result.ImageCount > 0 {
+			if result != nil && (result.ImageCount > 0 || openAIEdgeUsageIsBillable(result.Usage)) {
 				reqLog.Warn("openai.images.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),
 					zap.Int("image_count", result.ImageCount),
@@ -253,7 +250,6 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						}
 						err = imageUpstreamErr.ToFailoverErrorWithModelLimitProtection(account, protectionEnabled)
 					} else {
-						h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, true, nil, parsed.RequiredCapability)
 						reqLog.Warn("openai.images.upstream_user_error",
 							zap.Int64("account_id", account.ID),
 							zap.Int("status_code", imageUpstreamErr.StatusCode),
@@ -342,13 +338,30 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				return
 			}
 		}
-		if result != nil {
-			if account.Type == service.AccountTypeOAuth {
-				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
+		if result == nil {
+			return
+		}
+		if account.Type == service.AccountTypeOAuth {
+			h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
+		}
+		successfulOutcome, neutralOutcome := classifyOpenAIImageForwardResult(result, err)
+		if !successfulOutcome {
+			result.FirstTokenMs = nil
+		}
+		switch {
+		case successfulOutcome:
+			if result.FirstTokenMs != nil {
+				service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 			}
 			h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, true, result.FirstTokenMs, parsed.RequiredCapability)
-		} else {
-			h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, true, nil, parsed.RequiredCapability)
+		case neutralOutcome:
+			// Client disconnect, cyber policy, and incomplete/cancelled image
+			// turns remain billable but are not account-health samples.
+		default:
+			h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, false, nil, parsed.RequiredCapability)
+		}
+		if !successfulOutcome && result.ImageCount == 0 && !openAIEdgeUsageIsBillable(result.Usage) {
+			return
 		}
 
 		userAgent := c.GetHeader("User-Agent")
@@ -367,19 +380,21 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		}
 		h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-				Result:             result,
-				APIKey:             apiKey,
-				User:               apiKey.User,
-				Account:            account,
-				Subscription:       subscription,
-				QuotaPlatform:      quotaPlatform,
-				InboundEndpoint:    inboundEndpoint,
-				UpstreamEndpoint:   upstreamEndpoint,
-				UserAgent:          userAgent,
-				IPAddress:          clientIP,
-				RequestPayloadHash: requestPayloadHash,
-				APIKeyService:      h.apiKeyService,
-				ChannelUsageFields: channelMapping.ToUsageFields(parsed.Model, upstreamModel),
+				Result:                 result,
+				APIKey:                 apiKey,
+				User:                   apiKey.User,
+				Account:                account,
+				Subscription:           subscription,
+				QuotaPlatform:          quotaPlatform,
+				InboundEndpoint:        inboundEndpoint,
+				UpstreamEndpoint:       upstreamEndpoint,
+				UserAgent:              userAgent,
+				IPAddress:              clientIP,
+				RequestPayloadHash:     requestPayloadHash,
+				SkipSuccessSideEffects: !successfulOutcome,
+				APIKeyService:          h.apiKeyService,
+				ChannelUsageFields:     channelMapping.ToUsageFields(parsed.Model, upstreamModel),
+				CyberBlocked:           result.CyberBlocked,
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.images"),
@@ -398,6 +413,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		)
 		return
 	}
+}
+
+func classifyOpenAIImageForwardResult(result *service.OpenAIForwardResult, forwardErr error) (successful, neutral bool) {
+	return classifyOpenAIResponsesForwardResultWithError(result, forwardErr)
 }
 
 func isMultipartImagesContentType(contentType string) bool {

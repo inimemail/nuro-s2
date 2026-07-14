@@ -196,7 +196,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		if err != nil {
 			if len(fs.FailedAccountIDs) == 0 {
 				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-				h.chatCompletionsErrorResponse(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error())
+				h.chatCompletionsErrorResponse(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
 				return
 			}
 			action := fs.HandleSelectionExhausted(c.Request.Context())
@@ -258,7 +258,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		var result *service.ForwardResult
 		if account.Platform == service.PlatformGemini {
 			if h.geminiCompatService == nil {
-				h.chatCompletionsErrorResponse(c, http.StatusBadGateway, "upstream_error", "Gemini compatibility service is not configured")
+				h.chatCompletionsErrorResponse(c, http.StatusBadGateway, "upstream_error", "Service temporarily unavailable")
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
 				}

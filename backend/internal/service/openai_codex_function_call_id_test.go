@@ -76,7 +76,7 @@ func TestFilterCodexInput_StripsItemIDFromToolCallInputTypes(t *testing.T) {
 	}
 }
 
-func TestFilterCodexInput_OutputAndMessageIDsRemainPreserved(t *testing.T) {
+func TestFilterCodexInput_StripsInvalidMessageIDAndPreservesOutputID(t *testing.T) {
 	input := []any{
 		map[string]any{
 			"type":    "function_call_output",
@@ -101,5 +101,18 @@ func TestFilterCodexInput_OutputAndMessageIDsRemainPreserved(t *testing.T) {
 	require.Equal(t, "o1", out["id"])
 	msg, ok := filtered[1].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "item_msg_001", msg["id"])
+	require.NotContains(t, msg, "id")
+}
+
+func TestFilterCodexInput_PreservesValidMessageID(t *testing.T) {
+	filtered := filterCodexInputWithOptions([]any{map[string]any{
+		"type": "message",
+		"id":   "msg_001",
+		"role": "assistant",
+	}}, codexInputFilterOptions{PreserveReferences: true})
+
+	require.Len(t, filtered, 1)
+	message, ok := filtered[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "msg_001", message["id"])
 }

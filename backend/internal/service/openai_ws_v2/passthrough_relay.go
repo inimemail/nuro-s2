@@ -2,9 +2,11 @@ package openai_ws_v2
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -13,6 +15,8 @@ import (
 	coderws "github.com/coder/websocket"
 	"github.com/tidwall/gjson"
 )
+
+var relayUpstreamEndpointPattern = regexp.MustCompile(`(?i)(?:https?|wss?)://|(?:[a-z0-9-]+\.)+[a-z]{2,24}(?::\d+)?`)
 
 type FrameConn interface {
 	ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error)
@@ -38,15 +42,19 @@ type RelayResult struct {
 	ClientToUpstreamFrames  int64
 	UpstreamToClientFrames  int64
 	DroppedDownstreamFrames int64
+	ClientDisconnected      bool
+	CyberBlocked            bool
 }
 
 type RelayTurnResult struct {
-	RequestModel      string
-	Usage             Usage
-	RequestID         string
-	TerminalEventType string
-	Duration          time.Duration
-	FirstTokenMs      *int
+	RequestModel       string
+	Usage              Usage
+	RequestID          string
+	TerminalEventType  string
+	Duration           time.Duration
+	FirstTokenMs       *int
+	ClientDisconnected bool
+	CyberBlocked       bool
 }
 
 type RelayExit struct {
@@ -88,6 +96,10 @@ type relayState struct {
 	firstTokenMs      *int
 	turnTimingByID    map[string]*relayTurnTiming
 	activeTurn        *relayTurnTiming
+	cyberBlocked      bool
+	turnFailed        bool
+	turnCyberBlocked  bool
+	terminalByID      map[string]string
 }
 
 type relayExitSignal struct {
@@ -98,12 +110,14 @@ type relayExitSignal struct {
 }
 
 type observedUpstreamEvent struct {
-	terminal   bool
-	eventType  string
-	responseID string
-	usage      Usage
-	duration   time.Duration
-	firstToken *int
+	terminal     bool
+	eventType    string
+	responseID   string
+	usage        Usage
+	duration     time.Duration
+	firstToken   *int
+	cyberBlocked bool
+	dropClient   bool
 }
 
 type relayTurnTiming struct {
@@ -281,6 +295,9 @@ func Relay(
 	result.ClientToUpstreamFrames = clientToUpstreamFrames.Load()
 	result.UpstreamToClientFrames = upstreamToClientFrames.Load()
 	result.DroppedDownstreamFrames = droppedDownstreamFrames.Load()
+	if firstExit.stage == "read_client" && firstExit.graceful {
+		result.ClientDisconnected = true
+	}
 	if options.FirstMessageSent && firstExit.stage == "read_client" && firstExit.graceful {
 		emitRelayTrace(onTrace, RelayTraceEvent{
 			Stage:           "relay_client_closed",
@@ -470,13 +487,22 @@ func runUpstreamToClient(
 		}
 		observedEvent := observedUpstreamEvent{}
 		switch msgType {
-		case coderws.MessageText:
+		case coderws.MessageText, coderws.MessageBinary:
 			observedEvent = observeUpstreamMessage(state, payload, startAt, nowFn, onUsageParseFailure)
-		case coderws.MessageBinary:
-			// binary frame 直接透传，不进入 JSON 观测路径（避免无效解析开销）。
 		}
-		emitTurnComplete(onTurnComplete, state, observedEvent)
+		if observedEvent.dropClient {
+			emitRelayTrace(onTrace, RelayTraceEvent{
+				Stage:           "drop_duplicate_terminal",
+				Direction:       "upstream_to_client",
+				MessageType:     relayMessageTypeString(msgType),
+				PayloadBytes:    len(payload),
+				WroteDownstream: wroteDownstream,
+			})
+			markActivity()
+			continue
+		}
 		if dropDownstreamWrites != nil && dropDownstreamWrites.Load() {
+			emitTurnComplete(onTurnComplete, state, observedEvent, true)
 			if droppedFrames != nil {
 				droppedFrames.Add(1)
 			}
@@ -498,18 +524,32 @@ func runUpstreamToClient(
 			markActivity()
 			continue
 		}
-		if err := writeClient(msgType, payload); err != nil {
+		clientPayload := payload
+		if msgType == coderws.MessageText || msgType == coderws.MessageBinary {
+			clientPayload = sanitizeUpstreamErrorEventForClient(payload)
+			// Once an unsafe frame has failed the current turn, a later nominal
+			// terminal frame must not tell the client (or accounting hooks) that
+			// the same turn completed successfully.
+			if observedEvent.eventType == "error" && isTerminalEvent(strings.TrimSpace(gjson.GetBytes(payload, "type").String())) {
+				clientPayload = []byte(`{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`)
+			}
+		}
+		if err := writeClient(msgType, clientPayload); err != nil {
+			// Preserve terminal usage for billing, but keep the turn health-neutral
+			// when the client did not receive the terminal frame.
+			emitTurnComplete(onTurnComplete, state, observedEvent, true)
 			emitRelayTrace(onTrace, RelayTraceEvent{
 				Stage:           "write_client_failed",
 				Direction:       "upstream_to_client",
 				MessageType:     relayMessageTypeString(msgType),
-				PayloadBytes:    len(payload),
+				PayloadBytes:    len(clientPayload),
 				WroteDownstream: wroteDownstream,
 				Error:           err.Error(),
 			})
 			exitCh <- relayExitSignal{stage: "write_client", err: err, wroteDownstream: wroteDownstream}
 			return
 		}
+		emitTurnComplete(onTurnComplete, state, observedEvent, false)
 		wroteDownstream = true
 		if afterWriteClient != nil {
 			afterWriteClient()
@@ -519,6 +559,161 @@ func runUpstreamToClient(
 		}
 		markActivity()
 	}
+}
+
+func sanitizeUpstreamErrorEventForClient(payload []byte) []byte {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return []byte(`{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`)
+	}
+	eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	safeError := map[string]any{
+		"type":    "upstream_error",
+		"message": "Upstream request failed",
+	}
+	switch eventType {
+	case "error":
+		updated, err := json.Marshal(map[string]any{
+			"type":  "error",
+			"error": safeError,
+		})
+		if err == nil {
+			return updated
+		}
+	case "response.failed":
+		event := map[string]any{"type": "response.failed"}
+		if sequenceNumber := gjson.GetBytes(payload, "sequence_number"); sequenceNumber.Exists() && sequenceNumber.Type == gjson.Number {
+			event["sequence_number"] = sequenceNumber.Value()
+		}
+		response := map[string]any{
+			"status": "failed",
+			"error":  safeError,
+		}
+		if responseResult := gjson.GetBytes(payload, "response"); responseResult.Exists() && responseResult.IsObject() {
+			if value := gjson.Get(responseResult.Raw, "id"); value.Type == gjson.String && relayErrorIDIsSafe(value.String()) {
+				response["id"] = value.String()
+			}
+			if value := gjson.Get(responseResult.Raw, "object"); value.Type == gjson.String && value.String() == "response" {
+				response["object"] = "response"
+			}
+			if value := gjson.Get(responseResult.Raw, "created_at"); value.Exists() && value.Type == gjson.Number {
+				response["created_at"] = value.Value()
+			}
+			if value := gjson.Get(responseResult.Raw, "model"); value.Type == gjson.String && relayErrorMetadataIsSafe(value.String()) {
+				response["model"] = value.String()
+			}
+		}
+		event["response"] = response
+		updated, err := json.Marshal(event)
+		if err == nil {
+			return updated
+		}
+	default:
+		if relayUpstreamPayloadIsUnsafe(payload) {
+			return []byte(`{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`)
+		}
+		return payload
+	}
+	return []byte(`{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`)
+}
+
+func relayUpstreamPayloadIsUnsafe(payload []byte) bool {
+	trimmed := strings.TrimSpace(string(payload))
+	if trimmed == "" || !gjson.Valid(trimmed) || !gjson.Parse(trimmed).IsObject() {
+		return true
+	}
+	eventType := strings.ToLower(strings.TrimSpace(gjson.Get(trimmed, "type").String()))
+	if eventType == "error" || eventType == "response.failed" {
+		return true
+	}
+	for _, path := range []string{"error", "response.error"} {
+		value := gjson.Get(trimmed, path)
+		if value.Exists() && value.Type != gjson.Null {
+			return true
+		}
+	}
+	for _, path := range []string{"message", "detail", "reason", "response.message", "response.detail", "response.reason"} {
+		value := gjson.Get(trimmed, path)
+		if value.Type == gjson.String && strings.TrimSpace(value.String()) != "" {
+			return true
+		}
+	}
+	for _, path := range []string{
+		"provider", "upstream", "upstream_url", "base_url", "host", "hostname", "server", "traceback", "stack",
+		"response.provider", "response.upstream", "response.upstream_url", "response.base_url", "response.host",
+		"response.hostname", "response.server", "response.traceback", "response.stack",
+	} {
+		value := gjson.Get(trimmed, path)
+		if value.Exists() && value.Type != gjson.Null && strings.TrimSpace(value.String()) != "" {
+			return true
+		}
+	}
+	for _, path := range []string{"status", "response.status"} {
+		switch strings.ToLower(strings.TrimSpace(gjson.Get(trimmed, path).String())) {
+		case "error", "failed", "failure":
+			return true
+		}
+	}
+	for _, path := range []string{"success", "response.success"} {
+		if success := gjson.Get(trimmed, path); success.Exists() && success.Type == gjson.False {
+			return true
+		}
+	}
+	for _, prefix := range []string{"data", "result"} {
+		envelope := gjson.Get(trimmed, prefix)
+		if !envelope.IsObject() {
+			continue
+		}
+		for _, field := range []string{"error", "response.error"} {
+			value := gjson.Get(trimmed, prefix+"."+field)
+			if value.Exists() && value.Type != gjson.Null {
+				return true
+			}
+		}
+		for _, field := range []string{"message", "detail", "reason"} {
+			value := gjson.Get(trimmed, prefix+"."+field)
+			if value.Type == gjson.String && strings.TrimSpace(value.String()) != "" {
+				return true
+			}
+		}
+		for _, field := range []string{
+			"provider", "upstream", "upstream_url", "base_url", "host", "hostname", "server", "traceback", "stack",
+		} {
+			value := gjson.Get(trimmed, prefix+"."+field)
+			if value.Exists() && value.Type != gjson.Null && strings.TrimSpace(value.String()) != "" {
+				return true
+			}
+		}
+		switch strings.ToLower(strings.TrimSpace(gjson.Get(trimmed, prefix+".status").String())) {
+		case "error", "failed", "failure":
+			return true
+		}
+		if success := gjson.Get(trimmed, prefix+".success"); success.Exists() && success.Type == gjson.False {
+			return true
+		}
+	}
+	return false
+}
+
+func relayErrorMetadataIsSafe(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, "<>\r\n") {
+		return false
+	}
+	lower := strings.ToLower(value)
+	return !strings.Contains(lower, "cloudflare") && !strings.Contains(lower, "cf-ray") && !relayUpstreamEndpointPattern.MatchString(value)
+}
+
+func relayErrorIDIsSafe(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 256 {
+		return false
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func runIdleWatchdog(
@@ -607,9 +802,17 @@ func observeUpstreamMessage(
 	if state == nil || len(message) == 0 {
 		return observedUpstreamEvent{}
 	}
+	unsafePayload := relayUpstreamPayloadIsUnsafe(message)
+	if unsafePayload {
+		state.turnFailed = true
+		state.terminalEventType = "error"
+	}
 	values := gjson.GetManyBytes(message, "type", "response.id", "response_id", "id")
 	eventType := strings.TrimSpace(values[0].String())
 	if eventType == "" {
+		if unsafePayload {
+			return observedUpstreamEvent{eventType: "error"}
+		}
 		return observedUpstreamEvent{}
 	}
 	responseID := strings.TrimSpace(values[1].String())
@@ -621,6 +824,15 @@ func observeUpstreamMessage(
 		responseID = strings.TrimSpace(values[3].String())
 	}
 	now := nowFn()
+	if isTerminalEvent(eventType) && responseID != "" {
+		if previousTerminal, exists := state.terminalByID[responseID]; exists {
+			return observedUpstreamEvent{
+				eventType:  previousTerminal,
+				responseID: responseID,
+				dropClient: true,
+			}
+		}
+	}
 
 	if state.firstTokenMs == nil && isTokenEvent(eventType) {
 		ms := int(now.Sub(startAt).Milliseconds())
@@ -635,10 +847,16 @@ func observeUpstreamMessage(
 		}
 	}
 	parsedUsage := parseUsageAndAccumulate(state, message, eventType, onUsageParseFailure)
+	cyberBlocked := isOpenAIWSCyberPolicyPayload(message)
+	if cyberBlocked {
+		state.turnCyberBlocked = true
+		state.cyberBlocked = true
+	}
 	observed := observedUpstreamEvent{
-		eventType:  eventType,
-		responseID: responseID,
-		usage:      parsedUsage,
+		eventType:    eventType,
+		responseID:   responseID,
+		usage:        parsedUsage,
+		cyberBlocked: cyberBlocked,
 	}
 	if responseID != "" {
 		turnTiming := openAIWSRelayGetOrInitTurnTiming(state, responseID, now)
@@ -650,10 +868,28 @@ func observeUpstreamMessage(
 		}
 	}
 	if !isTerminalEvent(eventType) {
+		if unsafePayload {
+			observed.eventType = "error"
+		}
 		return observed
 	}
 	observed.terminal = true
-	state.terminalEventType = eventType
+	observed.cyberBlocked = observed.cyberBlocked || state.turnCyberBlocked
+	if state.turnFailed && (eventType == "response.completed" || eventType == "response.done") {
+		observed.eventType = "error"
+	}
+	if responseID != "" {
+		if state.terminalByID == nil {
+			state.terminalByID = make(map[string]string, 8)
+		} else if len(state.terminalByID) >= 256 {
+			clear(state.terminalByID)
+		}
+		state.terminalByID[responseID] = observed.eventType
+	}
+	state.terminalEventType = observed.eventType
+	state.cyberBlocked = observed.cyberBlocked
+	state.turnFailed = false
+	state.turnCyberBlocked = false
 	if responseID != "" {
 		state.lastResponseID = responseID
 		if turnTiming, ok := openAIWSRelayDeleteTurnTiming(state, responseID); ok {
@@ -672,6 +908,7 @@ func emitTurnComplete(
 	onTurnComplete func(turn RelayTurnResult),
 	state *relayState,
 	observed observedUpstreamEvent,
+	clientDisconnected bool,
 ) {
 	if onTurnComplete == nil || !observed.terminal {
 		return
@@ -685,12 +922,14 @@ func emitTurnComplete(
 		requestModel = state.requestModel
 	}
 	onTurnComplete(RelayTurnResult{
-		RequestModel:      requestModel,
-		Usage:             observed.usage,
-		RequestID:         responseID,
-		TerminalEventType: observed.eventType,
-		Duration:          observed.duration,
-		FirstTokenMs:      openAIWSRelayCloneIntPtr(observed.firstToken),
+		RequestModel:       requestModel,
+		Usage:              observed.usage,
+		RequestID:          responseID,
+		TerminalEventType:  observed.eventType,
+		Duration:           observed.duration,
+		FirstTokenMs:       openAIWSRelayCloneIntPtr(observed.firstToken),
+		ClientDisconnected: clientDisconnected,
+		CyberBlocked:       observed.cyberBlocked,
 	})
 }
 
@@ -848,6 +1087,34 @@ func enrichResult(result *RelayResult, state *relayState, duration time.Duration
 	result.RequestID = state.lastResponseID
 	result.TerminalEventType = state.terminalEventType
 	result.FirstTokenMs = state.firstTokenMs
+	result.CyberBlocked = state.cyberBlocked
+}
+
+func isOpenAIWSCyberPolicyPayload(payload []byte) bool {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return false
+	}
+	for _, path := range []string{"error.code", "error.type", "response.error.code", "response.error.type"} {
+		if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(payload, path).String()), "cyber_policy") {
+			return true
+		}
+	}
+	message := strings.ToLower(strings.TrimSpace(firstNonEmptyRelayString(
+		gjson.GetBytes(payload, "error.message").String(),
+		gjson.GetBytes(payload, "response.error.message").String(),
+	)))
+	return strings.Contains(message, "high-risk cyber activity") ||
+		strings.Contains(message, "high risk cyber activity") ||
+		strings.Contains(message, "cyber_policy")
+}
+
+func firstNonEmptyRelayString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func isDisconnectError(err error) bool {
@@ -907,7 +1174,7 @@ func isTokenEvent(eventType string) bool {
 	if strings.HasPrefix(eventType, "response.output") {
 		return true
 	}
-	return eventType == "response.completed" || eventType == "response.done"
+	return false
 }
 
 func minDuration(a, b time.Duration) time.Duration {

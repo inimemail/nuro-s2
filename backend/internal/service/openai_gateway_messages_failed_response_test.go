@@ -60,7 +60,7 @@ func TestForwardAsAnthropic_StreamingResponseFailed_ReturnsError(t *testing.T) {
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       io.NopCloser(strings.NewReader(buildResponsesFailedSSEStream("invalid_request_error", "Content policy violation"))),
+		Body:       io.NopCloser(strings.NewReader(buildResponsesFailedSSEStream("invalid_request_error", "private-provider.example failed"))),
 	}}
 	svc := &OpenAIGatewayService{
 		cfg:          rawChatCompletionsTestConfig(),
@@ -71,6 +71,8 @@ func TestForwardAsAnthropic_StreamingResponseFailed_ReturnsError(t *testing.T) {
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "upstream response failed")
+	require.Contains(t, rec.Body.String(), safeUpstreamErrorMessage)
+	require.NotContains(t, rec.Body.String(), "private-provider.example")
 }
 
 func TestForwardAsAnthropic_BufferedResponseFailed_Failover(t *testing.T) {

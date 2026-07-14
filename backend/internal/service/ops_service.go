@@ -243,7 +243,7 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 	}
 	if entry.UpstreamErrorMessage != nil {
 		msg := strings.TrimSpace(*entry.UpstreamErrorMessage)
-		msg = sanitizeUpstreamErrorMessage(msg)
+		msg = sanitizeUpstreamErrorMessageForOps(msg)
 		msg = truncateString(msg, 2048)
 		if strings.TrimSpace(msg) == "" {
 			entry.UpstreamErrorMessage = nil
@@ -304,7 +304,7 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 			out.AtUnixMs = 0
 		}
 
-		msg := sanitizeUpstreamErrorMessage(strings.TrimSpace(out.Message))
+		msg := sanitizeUpstreamErrorMessageForOps(strings.TrimSpace(out.Message))
 		msg = truncateString(msg, 2048)
 		out.Message = msg
 

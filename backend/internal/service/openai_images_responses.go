@@ -915,11 +915,9 @@ func openAIImagesStreamPrefix(parsed *OpenAIImagesRequest) string {
 }
 
 func buildOpenAIImagesStreamErrorBody(message string) []byte {
+	_ = message
 	body := []byte(`{"type":"error","error":{"type":"upstream_error","message":""}}`)
-	if strings.TrimSpace(message) == "" {
-		message = "upstream request failed"
-	}
-	body, _ = sjson.SetBytes(body, "error.message", message)
+	body, _ = sjson.SetBytes(body, "error.message", safeUpstreamErrorMessage)
 	return body
 }
 
@@ -927,15 +925,43 @@ func buildOpenAIImagesStreamErrorBodyFromUpstream(err *OpenAIImagesUpstreamError
 	if err == nil {
 		return buildOpenAIImagesStreamErrorBody("")
 	}
-	body := buildOpenAIImagesStreamErrorBody(err.clientMessage())
-	body, _ = sjson.SetBytes(body, "error.type", err.clientErrorType())
-	if code := strings.TrimSpace(err.Code); code != "" {
-		body, _ = sjson.SetBytes(body, "error.code", code)
-	}
-	if param := strings.TrimSpace(err.Param); param != "" {
-		body, _ = sjson.SetBytes(body, "error.param", param)
+	body := buildOpenAIImagesStreamErrorBody("")
+	body, _ = sjson.SetBytes(body, "error.type", publicOpenAIImagesErrorType(err))
+	if isPublicOpenAIImagesPolicyError(err) {
+		body, _ = sjson.SetBytes(body, "error.code", publicOpenAIImagesPolicyCode(err))
+		body, _ = sjson.SetBytes(body, "error.message", "Image generation request was rejected by the safety system")
 	}
 	return body
+}
+
+func publicOpenAIImagesErrorType(err *OpenAIImagesUpstreamError) string {
+	if isPublicOpenAIImagesPolicyError(err) {
+		return "image_generation_user_error"
+	}
+	if err != nil && isSafeOpenAIClientErrorType(err.ErrorType) {
+		return strings.ToLower(strings.TrimSpace(err.ErrorType))
+	}
+	if err != nil && err.clientStatusCode() >= http.StatusBadRequest && err.clientStatusCode() < http.StatusInternalServerError {
+		return "invalid_request_error"
+	}
+	return "upstream_error"
+}
+
+func isPublicOpenAIImagesPolicyError(err *OpenAIImagesUpstreamError) bool {
+	if err == nil || err.clientStatusCode() < http.StatusBadRequest || err.clientStatusCode() >= http.StatusInternalServerError {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(err.Code))
+	errType := strings.ToLower(strings.TrimSpace(err.ErrorType))
+	return code == "moderation_blocked" || code == "content_policy_violation" ||
+		(code == "response_incomplete" && errType == "image_generation_user_error")
+}
+
+func publicOpenAIImagesPolicyCode(err *OpenAIImagesUpstreamError) string {
+	if err != nil && strings.EqualFold(strings.TrimSpace(err.Code), "moderation_blocked") {
+		return "moderation_blocked"
+	}
+	return "content_policy_violation"
 }
 
 func writeOpenAIImagesUpstreamErrorResponse(c *gin.Context, err *OpenAIImagesUpstreamError) bool {
@@ -943,14 +969,12 @@ func writeOpenAIImagesUpstreamErrorResponse(c *gin.Context, err *OpenAIImagesUps
 		return false
 	}
 	errorObj := gin.H{
-		"type":    err.clientErrorType(),
-		"message": err.clientMessage(),
+		"type":    publicOpenAIImagesErrorType(err),
+		"message": safeUpstreamErrorMessage,
 	}
-	if code := strings.TrimSpace(err.Code); code != "" {
-		errorObj["code"] = code
-	}
-	if param := strings.TrimSpace(err.Param); param != "" {
-		errorObj["param"] = param
+	if isPublicOpenAIImagesPolicyError(err) {
+		errorObj["code"] = publicOpenAIImagesPolicyCode(err)
+		errorObj["message"] = "Image generation request was rejected by the safety system"
 	}
 	c.JSON(err.clientStatusCode(), gin.H{
 		"error": errorObj,

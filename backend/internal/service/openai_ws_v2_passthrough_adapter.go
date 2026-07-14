@@ -409,7 +409,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if msgType != coderws.MessageText {
 				return payload, nil, nil
 			}
-			if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" && hooks != nil && hooks.BeforeRequest != nil {
+			if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" && hooks != nil {
 				turnNo := int(completedTurns.Load()) + 1
 				if turnNo < 2 {
 					turnNo = 2
@@ -418,8 +418,15 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if requestModel == "" {
 					requestModel = capturedSessionModel
 				}
-				if err := hooks.BeforeRequest(turnNo, payload, requestModel); err != nil {
-					return payload, nil, err
+				if hooks.BeforeRequest != nil {
+					if err := hooks.BeforeRequest(turnNo, payload, requestModel); err != nil {
+						return payload, nil, err
+					}
+				}
+				if hooks.BeforeTurn != nil {
+					if err := hooks.BeforeTurn(turnNo); err != nil {
+						return payload, nil, err
+					}
 				}
 			}
 			// 在评估策略前先刷新 capturedSessionModel：客户端可能通过
@@ -545,14 +552,17 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
 						ImageOutputTokens:        turn.Usage.ImageOutputTokens,
 					},
-					Model:           turn.RequestModel,
-					ServiceTier:     usageMeta.serviceTier.Load(),
-					ReasoningEffort: usageMeta.reasoningEffort.Load(),
-					Stream:          true,
-					OpenAIWSMode:    true,
-					ResponseHeaders: cloneHeader(handshakeHeaders),
-					Duration:        turn.Duration,
-					FirstTokenMs:    turn.FirstTokenMs,
+					Model:             turn.RequestModel,
+					ServiceTier:       usageMeta.serviceTier.Load(),
+					ReasoningEffort:   usageMeta.reasoningEffort.Load(),
+					Stream:            true,
+					OpenAIWSMode:      true,
+					TerminalEventType: turn.TerminalEventType,
+					ResponseHeaders:   cloneHeader(handshakeHeaders),
+					Duration:          turn.Duration,
+					FirstTokenMs:      turn.FirstTokenMs,
+					ClientDisconnect:  turn.ClientDisconnected,
+					CyberBlocked:      turn.CyberBlocked,
 				}
 				logOpenAIWSV2Passthrough(
 					"relay_turn_completed account_id=%d turn=%d request_id=%s terminal_event=%s duration_ms=%d first_token_ms=%d input_tokens=%d output_tokens=%d cache_read_tokens=%d",
@@ -571,10 +581,14 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 			},
 			BeforeWriteClient: func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error {
-				if msgType != coderws.MessageText || wroteDownstream {
+				if msgType != coderws.MessageText {
 					return nil
 				}
-				if eventType, _, _ := parseOpenAIWSEventEnvelope(payload); eventType != "error" {
+				eventType, _, _ := parseOpenAIWSEventEnvelope(payload)
+				if eventType == "error" || eventType == "response.failed" {
+					s.handleOpenAICyberPolicyEvent(c, account, false, handshakeHeaders.Get("x-request-id"), payload, firstClientMessage)
+				}
+				if wroteDownstream || eventType != "error" {
 					return nil
 				}
 				errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(payload)
@@ -620,14 +634,17 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			CacheReadInputTokens:     relayResult.Usage.CacheReadInputTokens,
 			ImageOutputTokens:        relayResult.Usage.ImageOutputTokens,
 		},
-		Model:           relayResult.RequestModel,
-		ServiceTier:     usageMeta.serviceTier.Load(),
-		ReasoningEffort: usageMeta.reasoningEffort.Load(),
-		Stream:          true,
-		OpenAIWSMode:    true,
-		ResponseHeaders: cloneHeader(handshakeHeaders),
-		Duration:        relayResult.Duration,
-		FirstTokenMs:    relayResult.FirstTokenMs,
+		Model:             relayResult.RequestModel,
+		ServiceTier:       usageMeta.serviceTier.Load(),
+		ReasoningEffort:   usageMeta.reasoningEffort.Load(),
+		Stream:            true,
+		OpenAIWSMode:      true,
+		TerminalEventType: relayResult.TerminalEventType,
+		ResponseHeaders:   cloneHeader(handshakeHeaders),
+		Duration:          relayResult.Duration,
+		FirstTokenMs:      relayResult.FirstTokenMs,
+		ClientDisconnect:  relayResult.ClientDisconnected,
+		CyberBlocked:      relayResult.CyberBlocked,
 	}
 
 	turnCount := int(completedTurns.Load())

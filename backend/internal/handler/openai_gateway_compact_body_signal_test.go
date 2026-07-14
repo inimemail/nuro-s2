@@ -23,6 +23,97 @@ func newCompactBodySignalTestContext(t *testing.T, path string, body []byte) *gi
 	return c
 }
 
+func TestNormalizeOpenAIResponsesCompactRequest_RemoteV2StaysOnResponses(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	body := []byte(`{
+		"model":"gpt-5.6-sol",
+		"stream":true,
+		"store":true,
+		"prompt_cache_key":"pck-signal-1",
+		"reasoning":{"effort":"max","context":"all_turns"},
+		"input":[
+			{"type":"message","role":"user","content":"hello"},
+			{"type":"compaction_trigger"}
+		]
+	}`)
+	c := newCompactBodySignalTestContext(t, "/v1/responses", body)
+	c.Request.Header.Set("x-codex-beta-features", "responses_websockets_v2, remote_compaction_v2, another_feature")
+
+	normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
+	require.True(t, ok)
+	require.Equal(t, "/v1/responses", c.Request.URL.Path)
+	require.False(t, isOpenAIRemoteCompactPath(c))
+	require.Equal(t, body, normalized)
+	require.True(t, gjson.GetBytes(normalized, "stream").Bool())
+	require.True(t, gjson.GetBytes(normalized, "store").Bool())
+	require.Equal(t, "pck-signal-1", gjson.GetBytes(normalized, "prompt_cache_key").String())
+	require.Equal(t, "max", gjson.GetBytes(normalized, "reasoning.effort").String())
+	require.Equal(t, "all_turns", gjson.GetBytes(normalized, "reasoning.context").String())
+
+	reqStream, streamOK := parseOpenAICompatibleStream(normalized)
+	require.True(t, streamOK)
+	require.True(t, reqStream)
+	_, seedExists := c.Get(service.OpenAICompactSessionSeedKeyForTest())
+	require.False(t, seedExists)
+	_, streamMarkerExists := c.Get(service.OpenAICompactClientStreamKeyForTest())
+	require.False(t, streamMarkerExists)
+}
+
+func TestNormalizeOpenAIResponsesCompactRequest_RemoteV2CompatibilityMatrix(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	tests := []struct {
+		name       string
+		path       string
+		body       []byte
+		betaHeader string
+		wantPath   string
+	}{
+		{
+			name:       "trailing_slash_native",
+			path:       "/v1/responses/",
+			body:       []byte(`{"model":"gpt-5.6-sol","stream":true,"input":[{"type":"compaction_trigger"}]}`),
+			betaHeader: "remote_compaction_v2",
+			wantPath:   "/v1/responses/",
+		},
+		{
+			name:       "codex_alias_native",
+			path:       "/backend-api/codex/responses",
+			body:       []byte(`{"model":"gpt-5.6-sol","stream":true,"input":[{"type":"compaction_trigger"}]}`),
+			betaHeader: "remote_compaction_v2",
+			wantPath:   "/backend-api/codex/responses",
+		},
+		{
+			name:       "wrong_case_uses_legacy_bridge",
+			path:       "/v1/responses",
+			body:       []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction_trigger"}]}`),
+			betaHeader: "REMOTE_COMPACTION_V2",
+			wantPath:   "/v1/responses/compact",
+		},
+		{
+			name:       "stream_false_uses_legacy_bridge",
+			path:       "/v1/responses",
+			body:       []byte(`{"model":"gpt-5.5","stream":false,"input":[{"type":"compaction_trigger"}]}`),
+			betaHeader: "remote_compaction_v2",
+			wantPath:   "/v1/responses/compact",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newCompactBodySignalTestContext(t, tt.path, tt.body)
+			c.Request.Header.Set("x-codex-beta-features", tt.betaHeader)
+			normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), tt.body)
+			require.True(t, ok)
+			require.Equal(t, tt.wantPath, c.Request.URL.Path)
+			if tt.wantPath == tt.path {
+				require.Equal(t, tt.body, normalized)
+			} else {
+				require.False(t, gjson.GetBytes(normalized, "stream").Exists())
+			}
+		})
+	}
+}
+
 func TestNormalizeOpenAIResponsesCompactRequest_BodySignalPromoted(t *testing.T) {
 	h := &OpenAIGatewayHandler{}
 	body := []byte(`{

@@ -17,6 +17,52 @@ vi.mock('@/composables/useClipboard', () => ({
 import UseKeyModal from '../UseKeyModal.vue'
 
 describe('UseKeyModal', () => {
+  it('renders Grok CLI and OpenCode Responses setup for Grok groups', async () => {
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKey: 'xai-test-key',
+        baseUrl: 'https://example.com/v1',
+        platform: 'grok'
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    const grokConfig = wrapper.findAll('pre code')
+      .map((code) => code.text())
+      .find((content) => content.includes('[model."sub2api-grok"]'))
+    expect(grokConfig).toBeDefined()
+    expect(grokConfig).toContain('model = "grok-4.5"')
+    expect(grokConfig).toContain('base_url = "https://example.com/v1"')
+    expect(grokConfig).toContain('api_key = "xai-test-key"')
+    expect(grokConfig).toContain('api_backend = "responses"')
+
+    const opencodeTab = wrapper.findAll('button').find((button) =>
+      button.text().includes('keys.useKeyModal.cliTabs.opencode')
+    )
+    expect(opencodeTab).toBeDefined()
+    await opencodeTab!.trigger('click')
+    await nextTick()
+
+    const parsed = JSON.parse(wrapper.find('pre code').text())
+    expect(parsed.provider.grok.npm).toBe('@ai-sdk/openai')
+    expect(parsed.provider.grok.options).toEqual({
+      baseURL: 'https://example.com/v1',
+      apiKey: 'xai-test-key'
+    })
+    expect(parsed.provider.grok.models['grok-4.5']).toBeDefined()
+    expect(parsed.provider.grok.models['grok-composer-2.5-fast']).toBeDefined()
+  })
+
   it('renders GPT-5.5 and goals feature in OpenAI Codex config', () => {
     const wrapper = mount(UseKeyModal, {
       props: {

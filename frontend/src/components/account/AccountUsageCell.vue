@@ -559,6 +559,7 @@
           label="req"
           :utilization="grokRequestQuotaBar.utilization"
           :resets-at="grokRequestQuotaBar.resetsAt"
+          :remaining-capacity="true"
           color="indigo"
         />
         <UsageProgressBar
@@ -566,6 +567,7 @@
           label="tok"
           :utilization="grokTokenQuotaBar.utilization"
           :resets-at="grokTokenQuotaBar.resetsAt"
+          :remaining-capacity="true"
           color="emerald"
         />
 
@@ -1724,8 +1726,9 @@ const makeGrokQuotaBar = (
   const limit = typeof quota.limit === 'number' && Number.isFinite(quota.limit) ? quota.limit : 0
   const remaining = typeof quota.remaining === 'number' && Number.isFinite(quota.remaining) ? quota.remaining : null
   if (limit <= 0 || remaining === null) return null
+  const normalizedRemaining = Math.min(limit, Math.max(0, remaining))
   return {
-    utilization: Math.max(0, Math.min(999, ((limit - remaining) / limit) * 100)),
+    utilization: (normalizedRemaining / limit) * 100,
     resetsAt: quota.reset_at || null
   }
 }

@@ -73,13 +73,13 @@ type OpenAIEdgeRetryRequest struct {
 }
 
 type OpenAIEdgeRetryDecision struct {
-	Action        string          `json:"action"`
-	Reason        string          `json:"reason,omitempty"`
-	Plan          *OpenAIEdgePlan `json:"plan,omitempty"`
-	RetryMaxDepth int             `json:"retry_max_depth,omitempty"`
-	StatusCode    int             `json:"status_code,omitempty"`
-	ErrorType     string          `json:"error_type,omitempty"`
-	ErrorMessage  string          `json:"error_message,omitempty"`
+	Action          string          `json:"action"`
+	Reason          string          `json:"reason,omitempty"`
+	Plan            *OpenAIEdgePlan `json:"plan,omitempty"`
+	FailureRecorded bool            `json:"failure_recorded,omitempty"`
+	StatusCode      int             `json:"status_code,omitempty"`
+	ErrorType       string          `json:"error_type,omitempty"`
+	ErrorMessage    string          `json:"error_message,omitempty"`
 }
 
 type OpenAIEdgeCompleteRequest struct {
@@ -107,6 +107,8 @@ type OpenAIEdgeCompleteRequest struct {
 	ErrorType           string      `json:"error_type,omitempty"`
 	ErrorMessage        string      `json:"error_message,omitempty"`
 	UpstreamStatusCode  int         `json:"upstream_status_code,omitempty"`
+	TerminalEventType   string      `json:"terminal_event_type,omitempty"`
+	CyberBlocked        bool        `json:"cyber_blocked,omitempty"`
 }
 
 type OpenAIEdgeAbortRequest struct {

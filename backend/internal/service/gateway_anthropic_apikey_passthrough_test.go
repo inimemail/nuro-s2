@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -964,6 +965,51 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_MissingTerminalEventReturnsEr
 	require.NotNil(t, result)
 }
 
+func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardPreservesUsageOnMissingTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+			"x-request-id": []string{"rid-truncated"},
+		},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"message_start","message":{"usage":{"input_tokens":11}}}`,
+			"",
+			`data: {"type":"message_delta","usage":{"output_tokens":5}}`,
+			"",
+		}, "\n"))),
+	}}
+	svc := &GatewayService{
+		cfg:              &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		httpUpstream:     upstream,
+		rateLimitService: &RateLimitService{},
+	}
+
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(
+		context.Background(),
+		c,
+		newAnthropicAPIKeyAccountForTest(),
+		[]byte(`{"model":"claude-test","stream":true,"messages":[]}`),
+		"claude-test",
+		"claude-test",
+		true,
+		time.Now(),
+	)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "missing terminal event")
+	require.NotNil(t, result)
+	require.Equal(t, 11, result.Usage.InputTokens)
+	require.Equal(t, 5, result.Usage.OutputTokens)
+	require.True(t, result.FailedOutcome)
+	require.False(t, result.NeutralOutcome)
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_NonStreamingSuccess(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -996,6 +1042,45 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_NonStreamingSuc
 	require.Equal(t, 5, result.Usage.CacheCreationInputTokens)
 	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
 	require.Equal(t, upstreamJSON, rec.Body.String())
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_RejectsSuccessfulHTMLResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/html"}},
+		Body:       io.NopCloser(strings.NewReader(`<!DOCTYPE html><title>xiaobaishu.org</title>`)),
+	}}
+	svc := &GatewayService{cfg: &config.Config{}, httpUpstream: upstream, rateLimitService: &RateLimitService{}}
+
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(context.Background(), c, newAnthropicAPIKeyAccountForTest(), []byte(`{"model":"claude-test","messages":[]}`), "claude-test", "claude-test", false, time.Now())
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Empty(t, rec.Body.String())
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_SanitizesSuccessfulHTMLStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	svc := &GatewayService{cfg: &config.Config{}, rateLimitService: &RateLimitService{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("<!DOCTYPE html><title>xiaobaishu.org</title>\n")),
+	}
+
+	result, err := svc.handleStreamingResponseAnthropicAPIKeyPassthrough(context.Background(), resp, c, newAnthropicAPIKeyAccountForTest(), time.Now(), "claude-test")
+	require.NotNil(t, result)
+	require.Error(t, err)
+	require.Contains(t, rec.Body.String(), safeUpstreamErrorMessage)
+	require.NotContains(t, rec.Body.String(), "xiaobaishu.org")
+	require.NotContains(t, rec.Body.String(), "DOCTYPE")
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_InvalidTokenType(t *testing.T) {
@@ -1597,7 +1682,7 @@ func TestGatewayService_AnthropicKiro_DisabledPassthroughDoesNotInjectKiroGuards
 	responseBody := rec.Body.String()
 	require.Contains(t, responseBody, "I am Kiro via Kiro gateway")
 	require.NotContains(t, responseBody, "Claude Opus 4.8")
-	require.Equal(t, "rid-plain-anthropic", rec.Header().Get("x-request-id"))
+	require.Equal(t, responseheaders.PublicRequestID("rid-plain-anthropic"), rec.Header().Get("x-request-id"))
 }
 
 func TestGatewayService_AnthropicKiro_CountTokensUsesPassthroughWithoutPassthroughFlag(t *testing.T) {

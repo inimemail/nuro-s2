@@ -757,7 +757,14 @@ export default {
         geminiCli: 'Gemini CLI',
         codexCli: 'Codex CLI',
         codexCliWs: 'Codex CLI (WebSocket)',
+        grokCli: 'Grok CLI',
         opencode: 'OpenCode'
+      },
+      grok: {
+        description: '将以下配置文件添加到 Grok CLI 配置目录中。',
+        configTomlHint: '请将以下内容保存为 config.toml。',
+        note: '请确保配置目录存在。macOS/Linux 用户可运行 mkdir -p ~/.grok 创建目录。',
+        noteWindows: '按 Win+R，输入 %userprofile%\\.grok 打开配置目录。如目录不存在，请先手动创建。'
       },
       antigravity: {
         description: '为 Antigravity 分组配置 API 访问。请根据您使用的客户端选择对应的配置方式。',
@@ -2174,6 +2181,7 @@ export default {
       sortOrderHint: '拖拽分组调整显示顺序，排在前面的分组会优先显示',
       sortOrderUpdated: '排序已更新',
       failedToUpdateSortOrder: '更新排序失败',
+      columnSettings: '列设置',
       deleteConfirm: "确定要删除分组 '{name}' 吗？所有关联的 API 密钥将不再属于任何分组。",
       deleteConfirmSubscription:
         "确定要删除订阅分组 '{name}' 吗？此操作会让所有绑定此订阅的用户的 API Key 失效，并删除所有相关的订阅记录。此操作无法撤销。",
@@ -2352,6 +2360,11 @@ export default {
         modeHint: '默认关闭独立倍率时，媒体费用使用当前分组有效倍率；开启独立倍率后，图片/视频分别使用自己的独立倍率。视频价格按秒计费。',
         finalPricePreview: '最终价格预览',
         notConfigured: '未配置'
+      },
+      webSearchPricing: {
+        pricePerCall: '网页搜索单次价格（USD/次）',
+        pricePerCallHint: '留空使用默认 $0.01/次；填写 0 表示免费。实际费用还会乘以分组倍率。',
+        finalPricePreview: '当前最终单价：{price}'
       },
       modelsList: {
         title: '自定义 /v1/models 模型列表',
@@ -3356,6 +3369,7 @@ export default {
         oauth: 'OAuth',
         chatgptOauth: 'ChatGPT OAuth',
         responsesApi: 'Responses API',
+        grokOauth: 'Grok OAuth',
         googleOauth: 'Google OAuth',
         codeAssist: 'Code Assist',
         antigravityOauth: 'Antigravity OAuth',
@@ -6820,6 +6834,13 @@ export default {
         scopeOAuth: '仅 OAuth 账号',
         scopeAPIKey: '仅 API Key 账号',
         scopeBedrock: '仅 Bedrock 账号',
+        userIds: '指定用户',
+        userIdsHint: '留空表示全局生效。可按邮箱搜索并选择多个用户。',
+        userSearchPlaceholder: '按邮箱搜索用户',
+        userSearchEmpty: '没有匹配的用户',
+        userDeleted: '已删除',
+        userIdFallback: '用户 #{id}',
+        removeUser: '移除用户',
         errorMessage: '错误消息',
         errorMessagePlaceholder: '拦截时返回的自定义错误消息',
         errorMessageHint: '留空则使用默认错误消息。',

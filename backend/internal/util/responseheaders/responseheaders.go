@@ -1,7 +1,11 @@
 package responseheaders
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"mime"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -30,8 +34,6 @@ var defaultAllowed = map[string]struct{}{
 	"x-ratelimit-reset-requests":     {},
 	"x-ratelimit-reset-tokens":       {},
 	"retry-after":                    {},
-	"location":                       {},
-	"www-authenticate":               {},
 }
 
 // hopByHopHeaders 是跳过的 hop-by-hop 头部，这些头部由 HTTP 库自动处理
@@ -39,6 +41,104 @@ var hopByHopHeaders = map[string]struct{}{
 	"content-length":    {},
 	"transfer-encoding": {},
 	"connection":        {},
+}
+
+// These headers can embed the upstream host or authentication realm. They are
+// never public, even when an administrator adds them to AdditionalAllowed.
+var sensitiveUpstreamHeaders = map[string]struct{}{
+	"location":                      {},
+	"www-authenticate":              {},
+	"server":                        {},
+	"via":                           {},
+	"x-powered-by":                  {},
+	"x-served-by":                   {},
+	"x-cache":                       {},
+	"x-cache-hits":                  {},
+	"cf-ray":                        {},
+	"cf-cache-status":               {},
+	"x-amz-cf-id":                   {},
+	"x-amz-cf-pop":                  {},
+	"x-envoy-upstream-service-time": {},
+}
+
+var (
+	sensitiveUpstreamHeaderPrefixes = []string{
+		"openai-", "x-openai-", "anthropic-", "x-anthropic-", "x-claude-",
+		"x-grok-", "x-xai-", "x-groq-", "x-openrouter-", "x-google-", "x-goog-",
+		"x-amz-", "x-amzn-", "x-aws-", "x-ms-", "cf-", "x-envoy-",
+	}
+	sensitiveUpstreamHeaderNames = map[string]struct{}{
+		"server-timing": {},
+		"x-backend":     {},
+		"x-origin":      {},
+		"x-provider":    {},
+		"x-upstream":    {},
+	}
+	upstreamHeaderEndpointPattern = regexp.MustCompile(`(?i)(?:https?|wss?)://|(?:[a-z0-9-]+\.)+[a-z]{2,24}(?::\d+)?`)
+	upstreamHeaderIdentityPattern = regexp.MustCompile(`(?i)(^|[^a-z0-9])(openai|chatgpt|anthropic|claude|gemini|vertex|grok|xai|x\.ai|groq|openrouter|cloudflare|cloudfront|fastly|akamai|envoy|nginx|bedrock|aws|amazon|azure)([^a-z0-9]|$)`)
+)
+
+func isSensitiveUpstreamHeader(name string) bool {
+	if _, sensitive := sensitiveUpstreamHeaders[name]; sensitive {
+		return true
+	}
+	if _, sensitive := sensitiveUpstreamHeaderNames[name]; sensitive {
+		return true
+	}
+	for _, prefix := range sensitiveUpstreamHeaderPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func upstreamHeaderValueIsSensitive(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && (upstreamHeaderEndpointPattern.MatchString(value) || upstreamHeaderIdentityPattern.MatchString(value))
+}
+
+// SafeContentType returns a protocol-safe Content-Type without forwarding
+// provider-controlled extension parameters. Charset and multipart boundary are
+// the only parameters required to preserve response decoding semantics.
+func SafeContentType(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	fallback = strings.TrimSpace(fallback)
+	if value == "" || upstreamHeaderValueIsSensitive(value) {
+		return fallback
+	}
+
+	mediaType, params, err := mime.ParseMediaType(value)
+	if err != nil || strings.TrimSpace(mediaType) == "" || upstreamHeaderValueIsSensitive(mediaType) {
+		return fallback
+	}
+	safeParams := make(map[string]string, 2)
+	for _, name := range []string{"charset", "boundary"} {
+		param := strings.TrimSpace(params[name])
+		if param == "" {
+			continue
+		}
+		if upstreamHeaderValueIsSensitive(param) {
+			return fallback
+		}
+		safeParams[name] = param
+	}
+	formatted := mime.FormatMediaType(mediaType, safeParams)
+	if formatted == "" {
+		return fallback
+	}
+	return formatted
+}
+
+// PublicRequestID keeps downstream correlation possible without exposing a
+// provider-controlled request ID prefix, hostname, or account identifier.
+func PublicRequestID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(value))
+	return "req_" + hex.EncodeToString(digest[:12])
 }
 
 type CompiledHeaderFilter struct {
@@ -90,6 +190,9 @@ func FilterHeaders(src http.Header, filter *CompiledHeaderFilter) http.Header {
 	filtered := make(http.Header, len(src))
 	for key, values := range src {
 		lower := strings.ToLower(key)
+		if isSensitiveUpstreamHeader(lower) {
+			continue
+		}
 		if _, blocked := filter.forceRemove[lower]; blocked {
 			continue
 		}
@@ -101,6 +204,21 @@ func FilterHeaders(src http.Header, filter *CompiledHeaderFilter) http.Header {
 			continue
 		}
 		for _, value := range values {
+			if lower == "x-request-id" || lower == "request-id" || lower == "x-correlation-id" || lower == "correlation-id" {
+				if publicID := PublicRequestID(value); publicID != "" {
+					filtered.Add(key, publicID)
+				}
+				continue
+			}
+			if lower == "content-type" {
+				if safe := SafeContentType(value, ""); safe != "" {
+					filtered.Add(key, safe)
+				}
+				continue
+			}
+			if upstreamHeaderValueIsSensitive(value) {
+				continue
+			}
 			filtered.Add(key, value)
 		}
 	}

@@ -83,6 +83,29 @@ func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_APIKeyUsesResponsesI
 	require.False(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
 }
 
+func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_GrokNeverSendsCredentialsUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hello"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewReader(body))
+
+	upstream := &httpUpstreamRecorder{}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID: 404, Platform: PlatformGrok, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "xai-secret", "base_url": "https://api.x.ai/v1"},
+		Status:      StatusActive, Schedulable: true,
+	}
+
+	err := svc.ForwardCountTokensAsAnthropic(context.Background(), c, account, body, "grok-4.5")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.GreaterOrEqual(t, int(gjson.Get(rec.Body.String(), "input_tokens").Int()), 1)
+	require.Nil(t, upstream.lastReq, "Grok credentials must never be sent to an OpenAI input_tokens endpoint")
+}
+
 func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_OAuthFallsBackWhenPlatformEndpointUnsupported(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

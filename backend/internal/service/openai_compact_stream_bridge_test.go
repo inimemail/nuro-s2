@@ -153,6 +153,21 @@ func TestWriteOpenAICompactSSEBridge_RequiresMarkAndSuccessStatus(t *testing.T) 
 	require.Contains(t, rec.Body.String(), "event: response.completed")
 }
 
+func TestWriteOpenAICompactSSEFailure_DoesNotExposeUpstreamIdentity(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, true)
+
+	writeOpenAICompactSSEFailure(c, http.StatusBadGateway, []byte(`{
+		"error":{"message":"xAI proxy https://private-provider.example failed"}
+	}`))
+
+	events := parseCompactBridgeSSE(t, rec.Body.String())
+	require.Len(t, events, 1)
+	require.Equal(t, "response.failed", events[0][0])
+	require.Equal(t, safeUpstreamErrorMessage, gjson.Get(events[0][1], "response.error.message").String())
+	require.NotContains(t, rec.Body.String(), "xAI")
+	require.NotContains(t, rec.Body.String(), "private-provider.example")
+}
+
 func TestHandleNonStreamingResponse_CompactClientStreamBridgesToSSE(t *testing.T) {
 	svc := newCompactBridgeTestService()
 	c, rec := newCompactBridgeTestContext(t, true)

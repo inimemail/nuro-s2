@@ -143,7 +143,7 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}
-		writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter)
+		writeOpenAIEmbeddingsError(c, resp.StatusCode, "upstream_error", safeUpstreamErrorMessage)
 		return nil, fmt.Errorf("upstream returned status %d", resp.StatusCode)
 	}
 
@@ -156,6 +156,13 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	}
 	if failoverErr := s.newOpenAIPoolEmbeddedFailoverError(ctx, c, account, resp, respBody, upstreamModel, false); failoverErr != nil {
 		return nil, failoverErr
+	}
+	if openAIPassthroughResponseIsUnsafe(respBody) || !gjson.GetBytes(respBody, "data").IsArray() {
+		return nil, &UpstreamFailoverError{
+			StatusCode:   http.StatusBadGateway,
+			ResponseBody: append([]byte(nil), respBody...),
+			Message:      safeUpstreamErrorMessage,
+		}
 	}
 
 	writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter)
@@ -181,11 +188,7 @@ func writeOpenAIEmbeddingsUpstreamResponse(c *gin.Context, resp *http.Response, 
 	if resp.Header != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, filter)
 	}
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		c.Writer.Header().Set("Content-Type", ct)
-	} else {
-		c.Writer.Header().Set("Content-Type", "application/json")
-	}
+	c.Writer.Header().Set("Content-Type", responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "application/json"))
 	c.Writer.WriteHeader(resp.StatusCode)
 	_, _ = c.Writer.Write(body)
 }

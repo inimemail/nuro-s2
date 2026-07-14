@@ -47,6 +47,47 @@ func TestOpenAIEdgePrepareRequiresEnabledInternalAPIAndSecret(t *testing.T) {
 	}
 }
 
+func TestTakeOpenAIEdgeLeaseRejectsStaleCompletionWithoutRemovingCurrentLease(t *testing.T) {
+	h := &OpenAIGatewayHandler{openAIEdgeLeases: make(map[string]*openAIEdgeLease)}
+	lease := &openAIEdgeLease{
+		edgeRequestID: "edge-1",
+		leaseID:       "lease-1",
+		account:       &service.Account{ID: 22},
+	}
+	h.openAIEdgeLeases[lease.leaseID] = lease
+
+	got, reason := h.takeOpenAIEdgeLeaseForRequest("lease-1", "edge-1", 11, true)
+	if got != nil || reason != "account_mismatch" {
+		t.Fatalf("stale completion result = (%v, %q), want account_mismatch", got, reason)
+	}
+	if h.openAIEdgeLeases[lease.leaseID] != lease || lease.settled {
+		t.Fatal("stale completion removed or settled the current lease")
+	}
+
+	got, reason = h.takeOpenAIEdgeLeaseForRequest("lease-1", "edge-1", 22, true)
+	if got != lease || reason != "" {
+		t.Fatalf("current completion result = (%v, %q), want lease", got, reason)
+	}
+	if h.openAIEdgeLeases[lease.leaseID] != nil || !lease.settled {
+		t.Fatal("current completion did not atomically settle the lease")
+	}
+}
+
+func TestTakeOpenAIEdgeLeaseAbortTracksRequestAcrossAccountSwitch(t *testing.T) {
+	h := &OpenAIGatewayHandler{openAIEdgeLeases: make(map[string]*openAIEdgeLease)}
+	lease := &openAIEdgeLease{
+		edgeRequestID: "edge-2",
+		leaseID:       "lease-2",
+		account:       &service.Account{ID: 202},
+	}
+	h.openAIEdgeLeases[lease.leaseID] = lease
+
+	got, reason := h.takeOpenAIEdgeLeaseForRequest("lease-2", "edge-2", 101, false)
+	if got != lease || reason != "" {
+		t.Fatalf("abort after account switch result = (%v, %q), want lease", got, reason)
+	}
+}
+
 func TestOpenAIEdgePrepareFallsBackUntilControlPlaneExtractionExists(t *testing.T) {
 	h := &OpenAIGatewayHandler{cfg: &config.Config{}}
 	h.cfg.Gateway.StreamLowLatencyMode = config.StreamLowLatencyModeAggressive
@@ -128,7 +169,7 @@ func TestOpenAIEdgePrepareResponsesFallsBackUntilEligible(t *testing.T) {
 	}
 }
 
-func TestOpenAIEdgePrepareResponsesWSDisabledFallsBack(t *testing.T) {
+func TestOpenAIEdgePrepareResponsesWSFallsBackForPerTurnGovernance(t *testing.T) {
 	h := &OpenAIGatewayHandler{cfg: &config.Config{}}
 	h.cfg.Gateway.OpenAIEdgeRS = config.GatewayOpenAIEdgeRSConfig{
 		Enabled:                 true,
@@ -159,8 +200,8 @@ func TestOpenAIEdgePrepareResponsesWSDisabledFallsBack(t *testing.T) {
 	if plan.Action != service.OpenAIEdgeActionFallbackGo {
 		t.Fatalf("expected fallback action, got %q", plan.Action)
 	}
-	if plan.Reason != "edge_responses_ws_relay_disabled" {
-		t.Fatalf("expected ws disabled fallback reason, got %q", plan.Reason)
+	if plan.Reason != "edge_ws_requires_go_per_turn_governance" {
+		t.Fatalf("expected per-turn governance fallback reason, got %q", plan.Reason)
 	}
 }
 
@@ -295,8 +336,9 @@ func TestOpenAIEdgeRetryFallbackBoundaries(t *testing.T) {
 	h := &OpenAIGatewayHandler{
 		openAIEdgeLeases: map[string]*openAIEdgeLease{
 			"lease-1": {
-				leaseID: "lease-1",
-				account: &service.Account{ID: 1001},
+				edgeRequestID: "edge-1",
+				leaseID:       "lease-1",
+				account:       &service.Account{ID: 1001},
 			},
 		},
 	}
@@ -424,8 +466,9 @@ func TestOpenAIEdgeCompleteRejectsAccountMismatch(t *testing.T) {
 		cfg: &config.Config{},
 		openAIEdgeLeases: map[string]*openAIEdgeLease{
 			"lease-1": {
-				leaseID: "lease-1",
-				account: &service.Account{ID: 1001},
+				edgeRequestID: "edge-1",
+				leaseID:       "lease-1",
+				account:       &service.Account{ID: 1001},
 			},
 		},
 	}
@@ -449,6 +492,9 @@ func TestOpenAIEdgeCompleteRejectsAccountMismatch(t *testing.T) {
 	if !ack.OK || ack.Reason != "account_mismatch" {
 		t.Fatalf("expected account mismatch ack, got %#v", ack)
 	}
+	if h.openAIEdgeLeases["lease-1"] == nil {
+		t.Fatal("account mismatch must not remove the active lease")
+	}
 }
 
 func TestOpenAIEdgeRetryResponseBodyUnwrapsJSONString(t *testing.T) {
@@ -464,6 +510,60 @@ func TestOpenAIEdgeRetryResponseBodyUnwrapsJSONString(t *testing.T) {
 	})
 	if string(raw) != `{"error":{"message":"nope"}}` {
 		t.Fatalf("expected raw object body to be preserved, got %q", string(raw))
+	}
+}
+
+func TestOpenAIEdgeSuccessfulTerminalRequiresMatchingDialect(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		terminal string
+		want     bool
+	}{
+		{name: "responses completed", endpoint: "/v1/responses", terminal: "response.completed", want: true},
+		{name: "responses incomplete", endpoint: "/v1/responses", terminal: "response.incomplete", want: false},
+		{name: "responses done marker", endpoint: "/v1/responses", terminal: "[DONE]", want: false},
+		{name: "chat done marker", endpoint: "/v1/chat/completions", terminal: "[DONE]", want: true},
+		{name: "chat finish reason", endpoint: "/v1/chat/completions", terminal: "chat.finish_reason", want: true},
+		{name: "chat responses terminal", endpoint: "/v1/chat/completions", terminal: "response.completed", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := openAIEdgeSuccessfulTerminal(tt.endpoint, tt.terminal); got != tt.want {
+				t.Fatalf("openAIEdgeSuccessfulTerminal() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOpenAIEdgeCompletionSuccessRejectsCyberAndDisconnect(t *testing.T) {
+	base := service.OpenAIEdgeCompleteRequest{
+		Success:           true,
+		TerminalEventType: "response.completed",
+	}
+	if !openAIEdgeCompletionIsSuccessful("/v1/responses", base) {
+		t.Fatal("completed response should be successful")
+	}
+
+	cyber := base
+	cyber.CyberBlocked = true
+	if openAIEdgeCompletionIsSuccessful("/v1/responses", cyber) {
+		t.Fatal("cyber-blocked completion must not be successful")
+	}
+
+	disconnected := base
+	disconnected.ClientDisconnected = true
+	if openAIEdgeCompletionIsSuccessful("/v1/responses", disconnected) {
+		t.Fatal("client-disconnected completion must not be successful")
+	}
+}
+
+func TestOpenAIEdgeAbortReasonAlreadyRecordedDoesNotReportAnotherFailure(t *testing.T) {
+	if !openAIEdgeAbortReasonIsLocalQueuePressure("retry_failure_already_recorded: max_account_switches_exhausted") {
+		t.Fatal("failure-recorded retry abort must not add a second health failure")
+	}
+	if openAIEdgeAbortReasonIsLocalQueuePressure("ordinary_upstream_failure") {
+		t.Fatal("ordinary upstream failure must remain a health failure")
 	}
 }
 

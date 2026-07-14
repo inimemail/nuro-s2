@@ -49,7 +49,7 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 	defaultMappedModel string,
 ) error {
 	if account == nil {
-		writeAnthropicCountTokensError(c, http.StatusServiceUnavailable, "api_error", "No available OpenAI accounts")
+		writeAnthropicCountTokensError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
 		return fmt.Errorf("count_tokens: missing account")
 	}
 
@@ -57,6 +57,10 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 	if err != nil {
 		writeAnthropicCountTokensError(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return err
+	}
+	if account.Platform == PlatformGrok {
+		writeOpenAIInputTokensLocalFallback(c, account, prepared, "grok_local_only", 0)
+		return nil
 	}
 
 	upstreamBody, err := json.Marshal(prepared.Request)
@@ -255,20 +259,26 @@ func isOpenAIInputTokensUnsupported(statusCode int, body []byte) bool {
 }
 
 func writeOpenAIOAuthInputTokensFallback(c *gin.Context, account *Account, prepared *openAIInputTokensCountPrepared, statusCode int) {
+	writeOpenAIInputTokensLocalFallback(c, account, prepared, "oauth_upstream_unsupported", statusCode)
+}
+
+func writeOpenAIInputTokensLocalFallback(c *gin.Context, account *Account, prepared *openAIInputTokensCountPrepared, reason string, statusCode int) {
 	estimated := openAIInputTokensFallbackMinimum
 	if got, err := estimateOpenAIInputTokens(prepared.Request); err == nil {
 		if got > 0 {
 			estimated = got
 		}
-		logger.L().Info("openai count_tokens: oauth fallback to local tiktoken estimate",
+		logger.L().Info("openai count_tokens: local tiktoken estimate",
 			zap.Int64("account_id", account.ID),
+			zap.String("reason", reason),
 			zap.Int("upstream_status", statusCode),
 			zap.Int("estimated_input_tokens", estimated),
 			zap.String("upstream_model", prepared.UpstreamModel),
 		)
 	} else {
-		logger.L().Warn("openai count_tokens: oauth local tiktoken fallback failed, using minimum estimate",
+		logger.L().Warn("openai count_tokens: local tiktoken estimate failed, using minimum estimate",
 			zap.Int64("account_id", account.ID),
+			zap.String("reason", reason),
 			zap.Int("upstream_status", statusCode),
 			zap.Int("estimated_input_tokens", estimated),
 			zap.String("upstream_model", prepared.UpstreamModel),

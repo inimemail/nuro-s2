@@ -37,6 +37,10 @@ func isOpenAIAccount(account *Account) bool {
 	return account != nil && account.Platform == PlatformOpenAI
 }
 
+func isOpenAICompatibleSchedulingAccount(account *Account) bool {
+	return account != nil && (account.Platform == PlatformOpenAI || account.Platform == PlatformGrok)
+}
+
 func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) bool {
 	if IsOpenAIHealthProbeRequestContext(ctx) {
 		return false
@@ -71,6 +75,20 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	return shouldDisable
 }
 
+// HandleOpenAIAccountUpstreamErrorAfterCommittedResponse keeps internal relay
+// transports (such as edge-rs) on the same account-state path as the native Go
+// streaming transport after the public response has already started.
+func (s *OpenAIGatewayService) HandleOpenAIAccountUpstreamErrorAfterCommittedResponse(
+	ctx context.Context,
+	account *Account,
+	statusCode int,
+	headers http.Header,
+	responseBody []byte,
+	requestedModel string,
+) bool {
+	return s.handleOpenAIAccountUpstreamError(ctx, account, statusCode, headers, responseBody, requestedModel)
+}
+
 func (s *OpenAIGatewayService) markOpenAIOAuth429RateLimited(ctx context.Context, account *Account, headers http.Header, responseBody []byte) {
 	if s == nil || !isOpenAIOAuthAccount(account) {
 		return
@@ -93,7 +111,7 @@ func (s *OpenAIGatewayService) markOpenAIOAuth429RateLimited(ctx context.Context
 }
 
 func (s *OpenAIGatewayService) BlockAccountScheduling(account *Account, until time.Time, reason string) {
-	if s == nil || !isOpenAIAccount(account) {
+	if s == nil || !isOpenAICompatibleSchedulingAccount(account) {
 		return
 	}
 	now := time.Now()
@@ -171,7 +189,7 @@ func (s *OpenAIGatewayService) clearOpenAIAccountCooldownInRedis(accountID int64
 }
 
 func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) bool {
-	if s == nil || !isOpenAIAccount(account) {
+	if s == nil || !isOpenAICompatibleSchedulingAccount(account) {
 		return false
 	}
 	value, ok := s.openaiAccountRuntimeBlockUntil.Load(account.ID)

@@ -266,6 +266,39 @@ func TestAdminService_UpdateGroup_PartialImagePricing(t *testing.T) {
 	require.Nil(t, repo.updated.ImagePrice4K)
 }
 
+func TestAdminService_UpdateGroup_WebSearchPriceSupportsFreeAndClear(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		input     float64
+		wantPrice *float64
+	}{
+		{name: "free", input: 0, wantPrice: func() *float64 { value := 0.0; return &value }()},
+		{name: "clear_to_default", input: -1, wantPrice: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			existingPrice := 0.025
+			repo := &groupRepoStubForAdmin{getByID: &Group{
+				ID: 1, Name: "openai-group", Platform: PlatformOpenAI, Status: StatusActive,
+				WebSearchPricePerCall: &existingPrice,
+			}}
+			svc := &adminServiceImpl{groupRepo: repo}
+
+			group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+				WebSearchPricePerCall: &tc.input,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, group)
+			require.NotNil(t, repo.updated)
+			if tc.wantPrice == nil {
+				require.Nil(t, repo.updated.WebSearchPricePerCall)
+				return
+			}
+			require.NotNil(t, repo.updated.WebSearchPricePerCall)
+			require.InDelta(t, *tc.wantPrice, *repo.updated.WebSearchPricePerCall, 1e-12)
+		})
+	}
+}
+
 func TestAdminService_UpdateGroup_PreservesImageGenerationControlsWhenOmitted(t *testing.T) {
 	imageMultiplier := 0.5
 	existingGroup := &Group{

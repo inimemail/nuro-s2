@@ -340,14 +340,20 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(ctx context.Context, c *gin.Cont
 	requestIDHeader := firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id"))
 	requestModel := requestInfo.Model
 	if resp.StatusCode >= 400 {
-		s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
 		return s.handleGrokMediaErrorResponse(ctx, resp, c, account, requestIDHeader)
 	}
 
-	s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+	s.updateGrokUsageSnapshot(ctx, account, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err
+	}
+	if !grokMediaSuccessResponseIsValid(endpoint, respBody) {
+		return nil, &UpstreamFailoverError{
+			StatusCode:   http.StatusBadGateway,
+			ResponseBody: respBody,
+			Message:      safeUpstreamErrorMessage,
+		}
 	}
 	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
 	usage := grokMediaUsageFromResponse(endpoint, requestInfo, respBody)
@@ -368,6 +374,28 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(ctx context.Context, c *gin.Cont
 		VideoResolution:      usage.VideoResolution,
 		VideoDurationSeconds: usage.VideoDurationSeconds,
 	}, nil
+}
+
+func grokMediaSuccessResponseIsValid(endpoint GrokMediaEndpoint, body []byte) bool {
+	if openAIPassthroughResponseIsUnsafe(body) {
+		return false
+	}
+	switch endpoint {
+	case GrokMediaEndpointImagesGenerations, GrokMediaEndpointImagesEdits:
+		return countOpenAIResponseImageOutputsFromJSONBytes(body) > 0
+	case GrokMediaEndpointVideosGenerations:
+		return extractGrokMediaVideoRequestID(body) != ""
+	case GrokMediaEndpointVideoStatus:
+		status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "status").String()))
+		switch status {
+		case "pending", "queued", "processing", "in_progress", "completed", "done", "expired":
+			return true
+		default:
+			return extractGrokMediaVideoRequestID(body) != "" && gjson.GetBytes(body, "video").IsObject()
+		}
+	default:
+		return false
+	}
 }
 
 func prepareGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, contentType string) ([]byte, string, error) {
@@ -542,9 +570,10 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(ctx context.Context,
 	if readErr != nil {
 		body = nil
 	}
+	s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
 	if upstreamMsg == "" {
-		upstreamMsg = fmt.Sprintf("xAI upstream returned status %d", resp.StatusCode)
+		upstreamMsg = safeUpstreamErrorMessage
 	}
 	upstreamDetail := ""
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
@@ -577,7 +606,6 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(ctx context.Context,
 		return nil, fmt.Errorf("upstream error: %d (not in custom error codes) message=%s", resp.StatusCode, upstreamMsg)
 	}
 
-	s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 	kind := "http_error"
 	if s.shouldFailoverUpstreamError(resp.StatusCode) {
 		kind = "failover"
@@ -601,7 +629,7 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(ctx context.Context,
 	}
 
 	MarkResponseCommitted(c)
-	writeGrokMediaErrorResponse(c, resp.StatusCode, grokMediaErrorType(resp.StatusCode), upstreamMsg)
+	writeGrokMediaErrorResponse(c, resp.StatusCode, grokMediaErrorType(resp.StatusCode), safeUpstreamErrorMessage)
 	return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 }
 
@@ -635,9 +663,6 @@ func writeGrokMediaResponse(c *gin.Context, resp *http.Response, body []byte, fi
 		return
 	}
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, filter)
-	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
-	if contentType == "" {
-		contentType = "application/json"
-	}
+	contentType := responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "application/json")
 	c.Data(resp.StatusCode, contentType, body)
 }

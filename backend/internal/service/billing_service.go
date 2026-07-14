@@ -1318,6 +1318,29 @@ func (s *BillingService) CalculateVideoCost(model string, resolution string, vid
 	}
 }
 
+const defaultWebSearchPricePerCall = 0.01
+
+// CalculateWebSearchCost calculates the standalone alpha/search per-call cost.
+// A nil override uses the built-in price, while zero explicitly makes it free.
+func (s *BillingService) CalculateWebSearchCost(callCount int, groupPrice *float64, rateMultiplier float64) *CostBreakdown {
+	if callCount <= 0 {
+		return &CostBreakdown{}
+	}
+	unitPrice := defaultWebSearchPricePerCall
+	if groupPrice != nil && *groupPrice >= 0 {
+		unitPrice = *groupPrice
+	}
+	if rateMultiplier < 0 {
+		rateMultiplier = 0
+	}
+	totalCost := unitPrice * float64(callCount)
+	return &CostBreakdown{
+		TotalCost:   totalCost,
+		ActualCost:  totalCost * rateMultiplier,
+		BillingMode: string(BillingModePerRequest),
+	}
+}
+
 // getImageUnitPrice 获取图片单价
 func (s *BillingService) getImageUnitPrice(model string, imageSize string, groupConfig *ImagePriceConfig) float64 {
 	// 优先使用分组配置的价格

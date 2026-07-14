@@ -79,6 +79,16 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if account.Platform == PlatformGrok {
+		if account.IsGrokOAuth() {
+			if eligible, reason := grokChatResponsesBridgeEligibility(body); eligible {
+				return s.forwardGrokChatCompletionsViaResponses(ctx, c, account, body, promptCacheKey, defaultMappedModel)
+			} else {
+				logger.L().Debug("grok chat_completions: using raw fallback", zap.Int64("account_id", account.ID), zap.String("reason", reason))
+			}
+		}
+		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+	}
 	// APIKey auto/unknown goes raw chat completions so a real user request does
 	// not pay an extra /responses 404/405 RTT before fallback.
 	if account.Type == AccountTypeAPIKey && !shouldForwardAPIKeyChatViaResponses(account) {
@@ -375,7 +385,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 				Kind:               "http_error",
 				Message:            upstreamMsg,
 			})
-			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", firstNonEmptyString(upstreamMsg, "Upstream request failed"))
+			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", safeUpstreamErrorMessage)
 			return &OpenAIForwardResult{
 				RequestID:     resp.Header.Get("x-request-id"),
 				Usage:         OpenAIUsage{},
@@ -533,6 +543,15 @@ func (s *OpenAIGatewayService) handleChatCompletionsErrorResponse(
 	return s.handleCompatErrorResponse(resp, c, account, writeChatCompletionsError, requestedModel...)
 }
 
+func (s *OpenAIGatewayService) handleChatCompletionsErrorResponseWithoutAccountState(
+	resp *http.Response,
+	c *gin.Context,
+	account *Account,
+	requestedModel ...string,
+) (*OpenAIForwardResult, error) {
+	return s.handleCompatErrorResponseInternal(resp, c, account, writeChatCompletionsError, false, requestedModel...)
+}
+
 // handleChatBufferedStreamingResponse reads all Responses SSE events from the
 // upstream, finds the terminal event, converts to a Chat Completions JSON
 // response, and writes it to the client.
@@ -559,7 +578,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	if strings.TrimSpace(finalResponse.Status) == "failed" {
 		payload, _ := json.Marshal(gin.H{"type": "response.failed", "response": finalResponse})
 		if decision := s.handleOpenAICyberPolicyEvent(c, account, false, requestID, payload, nil); decision.Matched {
-			clientMsg := firstNonEmptyString(decision.Message, "Request blocked by upstream cyber-security policy")
+			clientMsg := safeOpenAICyberPolicyClientMessage
 			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", clientMsg)
 			return nil, fmt.Errorf("openai cyber_policy: %s", clientMsg)
 		}
@@ -578,7 +597,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 			writeChatCompletionsError(c, status, errType, errMsg)
 			return nil, fmt.Errorf("upstream response failed (passthrough): %s", errMsg)
 		}
-		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", message)
+		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", safeUpstreamErrorMessage)
 		return nil, fmt.Errorf("upstream response failed: %s", message)
 	}
 
@@ -594,13 +613,14 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	c.JSON(http.StatusOK, chatResp)
 
 	return &OpenAIForwardResult{
-		RequestID:     requestID,
-		Usage:         usage,
-		Model:         originalModel,
-		BillingModel:  billingModel,
-		UpstreamModel: upstreamModel,
-		Stream:        false,
-		Duration:      time.Since(startTime),
+		RequestID:         requestID,
+		Usage:             usage,
+		Model:             originalModel,
+		BillingModel:      billingModel,
+		UpstreamModel:     upstreamModel,
+		Stream:            false,
+		TerminalEventType: openAIResponseStatusTerminalEventType(finalResponse.Status),
+		Duration:          time.Since(startTime),
 	}, nil
 }
 
@@ -670,7 +690,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	safeTokenPlaceholderSent := requestFirstTokenPlaceholder.Sent
 	firstTokenTimeoutPlaceholderSent := requestFirstTokenPlaceholder.Sent
 	firstTokenTimeoutPlaceholderID := requestFirstTokenPlaceholder.ChatID
-	firstTokenTimeoutGuardSampleRecorded := false
+	var firstTokenTimeoutGuardSampleMS *int
+	terminalEventType := ""
 	pendingSSE := make([]string, 0, 4)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var streamFailoverErr *UpstreamFailoverError
@@ -705,11 +726,11 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		firstTokenMs = &ms
 	}
 	recordFirstTokenTimeoutGuardSample := func() {
-		if firstTokenTimeoutGuardSampleRecorded {
+		if firstTokenTimeoutGuardSampleMS != nil {
 			return
 		}
-		firstTokenTimeoutGuardSampleRecorded = true
-		s.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, originalModel, int(time.Since(startTime).Milliseconds()))
+		ms := int(time.Since(startTime).Milliseconds())
+		firstTokenTimeoutGuardSampleMS = &ms
 	}
 
 	writeSafeChatPlaceholder := func(createdChunks []apicompat.ChatCompletionsChunk) bool {
@@ -805,14 +826,16 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
-			RequestID:     requestID,
-			Usage:         usage,
-			Model:         originalModel,
-			BillingModel:  billingModel,
-			UpstreamModel: upstreamModel,
-			Stream:        true,
-			Duration:      time.Since(startTime),
-			FirstTokenMs:  firstTokenMs,
+			RequestID:         requestID,
+			Usage:             usage,
+			Model:             originalModel,
+			BillingModel:      billingModel,
+			UpstreamModel:     upstreamModel,
+			Stream:            true,
+			TerminalEventType: terminalEventType,
+			ClientDisconnect:  clientDisconnected,
+			Duration:          time.Since(startTime),
+			FirstTokenMs:      firstTokenMs,
 		}
 	}
 
@@ -829,6 +852,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 		isTerminalEvent := isOpenAICompatResponsesTerminalEvent(event.Type)
 		if isTerminalEvent {
+			terminalEventType = strings.ToLower(strings.TrimSpace(event.Type))
 			if event.Usage != nil {
 				usage = copyOpenAIUsageFromResponsesUsage(event.Usage)
 			}
@@ -842,7 +866,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			if decision := s.handleOpenAICyberPolicyEvent(c, account, false, requestID, payloadBytes, nil); decision.Matched {
 				if !clientDisconnected {
 					writeStreamHeaders()
-					clientMsg := firstNonEmptyString(decision.Message, "Request blocked by upstream cyber-security policy")
+					clientMsg := safeOpenAICyberPolicyClientMessage
 					if _, err := fmt.Fprint(c.Writer, buildChatStreamErrorSSE("invalid_request_error", clientMsg)); err == nil {
 						_, _ = fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 						if fl, ok := c.Writer.(http.Flusher); ok {
@@ -1041,6 +1065,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		if !clientDisconnected {
 			c.Writer.Flush()
+		}
+		if !clientDisconnected && (terminalEventType == "response.completed" || terminalEventType == "response.done") && firstTokenTimeoutGuardSampleMS != nil {
+			s.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, originalModel, *firstTokenTimeoutGuardSampleMS)
 		}
 		return resultWithUsage(), nil
 	}

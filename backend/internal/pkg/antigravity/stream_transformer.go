@@ -175,6 +175,13 @@ func (p *StreamingProcessor) MessageStartSent() bool {
 	return p.messageStartSent
 }
 
+// MessageStopSent reports whether the upstream supplied an explicit terminal
+// finish reason. Finish may synthesize a protocol trailer, so callers that
+// classify account health must inspect this before calling Finish.
+func (p *StreamingProcessor) MessageStopSent() bool {
+	return p.messageStopSent
+}
+
 // emitMessageStart 发送 message_start 事件
 func (p *StreamingProcessor) emitMessageStart(v1Resp *V1InternalResponse) []byte {
 	if p.messageStartSent {

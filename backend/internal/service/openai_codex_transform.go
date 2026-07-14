@@ -1353,6 +1353,13 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 				ensureCopy()
 				delete(newItem, "id")
 			}
+		} else if typ == "message" {
+			// item_* IDs are client-local. Only real msg_* upstream IDs are valid
+			// when a message is replayed as continuation input.
+			if id, ok := m["id"].(string); ok && id != "" && !strings.HasPrefix(id, "msg") {
+				ensureCopy()
+				delete(newItem, "id")
+			}
 		}
 
 		filtered = append(filtered, newItem)

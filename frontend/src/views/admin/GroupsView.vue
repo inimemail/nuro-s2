@@ -989,6 +989,14 @@
               />
             </div>
           </div>
+          <div v-if="createForm.platform === 'openai'" class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-400">
+            <label class="input-label">{{ t("admin.groups.webSearchPricing.pricePerCall") }}</label>
+            <input v-model.number="createForm.web_search_price_per_call" type="number" step="0.001" min="0" placeholder="0.01" class="input" />
+            <p class="input-hint">{{ t("admin.groups.webSearchPricing.pricePerCallHint") }}</p>
+            <p class="mt-2 text-xs text-gray-600 dark:text-gray-300">
+              {{ t("admin.groups.webSearchPricing.finalPricePreview", { price: createWebSearchFinalPricePreview }) }}
+            </p>
+          </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
             {{ t("admin.groups.imagePricing.modeHint") }}
           </p>
@@ -2466,6 +2474,14 @@
               />
             </div>
           </div>
+          <div v-if="editForm.platform === 'openai'" class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-400">
+            <label class="input-label">{{ t("admin.groups.webSearchPricing.pricePerCall") }}</label>
+            <input v-model.number="editForm.web_search_price_per_call" type="number" step="0.001" min="0" placeholder="0.01" class="input" />
+            <p class="input-hint">{{ t("admin.groups.webSearchPricing.pricePerCallHint") }}</p>
+            <p class="mt-2 text-xs text-gray-600 dark:text-gray-300">
+              {{ t("admin.groups.webSearchPricing.finalPricePreview", { price: editWebSearchFinalPricePreview }) }}
+            </p>
+          </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
             {{ t("admin.groups.imagePricing.modeHint") }}
           </p>
@@ -3872,6 +3888,7 @@ const createForm = reactive({
   video_price_480p: null as number | null,
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
+  web_search_price_per_call: null as number | null,
   allow_batch_image_generation: false,
   batch_image_discount_multiplier: 0.5,
   batch_image_hold_multiplier: 0.6,
@@ -4216,6 +4233,7 @@ const editForm = reactive({
   video_price_480p: null as number | null,
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
+  web_search_price_per_call: null as number | null,
   allow_batch_image_generation: false,
   batch_image_discount_multiplier: 0.5,
   batch_image_hold_multiplier: 0.6,
@@ -4258,6 +4276,7 @@ type ImagePricingFormState = {
   video_price_480p: number | string | null;
   video_price_720p: number | string | null;
   video_price_1080p: number | string | null;
+  web_search_price_per_call: number | string | null;
 };
 
 const imagePricingTiers = [
@@ -4333,6 +4352,19 @@ const createVideoFinalPricePreview = computed(() =>
 const editVideoFinalPricePreview = computed(() =>
   buildVideoFinalPricePreview(editForm),
 );
+
+const DEFAULT_WEB_SEARCH_PRICE_PER_CALL = 0.01;
+const buildWebSearchFinalPricePreview = (form: {
+  web_search_price_per_call: number | string | null;
+  rate_multiplier: number | string | null;
+}) => {
+  const configured = form.web_search_price_per_call;
+  const base = configured === null || configured === "" ? DEFAULT_WEB_SEARCH_PRICE_PER_CALL : Number(configured);
+  const multiplier = normalizePreviewNumber(form.rate_multiplier, 1);
+  return formatImagePricePreview((Number.isFinite(base) ? base : DEFAULT_WEB_SEARCH_PRICE_PER_CALL) * multiplier);
+};
+const createWebSearchFinalPricePreview = computed(() => buildWebSearchFinalPricePreview(createForm));
+const editWebSearchFinalPricePreview = computed(() => buildWebSearchFinalPricePreview(editForm));
 
 // 根据分组类型返回不同的删除确认消息
 const deleteConfirmMessage = computed(() => {
@@ -4545,6 +4577,7 @@ const closeCreateModal = () => {
   createForm.video_price_480p = null;
   createForm.video_price_720p = null;
   createForm.video_price_1080p = null;
+  createForm.web_search_price_per_call = null;
   createForm.allow_batch_image_generation = false;
   createForm.batch_image_discount_multiplier = 0.5;
   createForm.batch_image_hold_multiplier = 0.6;
@@ -4636,6 +4669,7 @@ const handleCreateGroup = async () => {
     requestData.daily_limit_usd = emptyToNull(requestData.daily_limit_usd);
     requestData.weekly_limit_usd = emptyToNull(requestData.weekly_limit_usd);
     requestData.monthly_limit_usd = emptyToNull(requestData.monthly_limit_usd);
+    requestData.web_search_price_per_call = emptyToNull(requestData.web_search_price_per_call);
     requestData.image_rate_multiplier = normalizeImageRateMultiplier(
       requestData.image_rate_multiplier,
     );
@@ -4698,6 +4732,7 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.video_price_480p = group.video_price_480p ?? null;
   editForm.video_price_720p = group.video_price_720p ?? null;
   editForm.video_price_1080p = group.video_price_1080p ?? null;
+  editForm.web_search_price_per_call = group.web_search_price_per_call ?? null;
   editForm.allow_batch_image_generation = group.allow_batch_image_generation ?? false;
   editForm.batch_image_discount_multiplier =
     group.batch_image_discount_multiplier ?? 0.5;
@@ -4756,6 +4791,7 @@ const closeEditModal = () => {
   editForm.peak_start = "";
   editForm.peak_end = "";
   editForm.peak_rate_multiplier = 1;
+  editForm.web_search_price_per_call = null;
   editForm.allow_batch_image_generation = false;
   editForm.batch_image_discount_multiplier = 0.5;
   editForm.batch_image_hold_multiplier = 0.6;
@@ -4815,6 +4851,14 @@ const handleUpdateGroup = async () => {
     payload.daily_limit_usd = emptyToNull(payload.daily_limit_usd);
     payload.weekly_limit_usd = emptyToNull(payload.weekly_limit_usd);
     payload.monthly_limit_usd = emptyToNull(payload.monthly_limit_usd);
+    const webSearchPrice = payload.web_search_price_per_call as
+      | number
+      | string
+      | null;
+    payload.web_search_price_per_call =
+      webSearchPrice === "" || webSearchPrice === null
+        ? -1
+        : Number(webSearchPrice);
     payload.image_rate_multiplier = normalizeImageRateMultiplier(
       payload.image_rate_multiplier,
     );

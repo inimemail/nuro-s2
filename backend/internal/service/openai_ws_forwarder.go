@@ -391,6 +391,14 @@ func parseOpenAIWSEventEnvelope(message []byte) (eventType string, responseID st
 	return eventType, responseID, values[3]
 }
 
+func normalizeOpenAIWSUpstreamEventForSafety(message []byte, eventType string) ([]byte, string, bool) {
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "error" || eventType == "response.failed" || !openAIPassthroughResponseIsUnsafe(message) {
+		return message, eventType, false
+	}
+	return safeOpenAIStreamErrorPayload("response.failed"), "response.failed", true
+}
+
 func openAIWSMessageLikelyContainsToolCalls(message []byte) bool {
 	if len(message) == 0 {
 		return false
@@ -872,6 +880,12 @@ func isOpenAIWSClientDisconnectError(err error) bool {
 		strings.Contains(message, "an existing connection was forcibly closed by the remote host")
 }
 
+// IsOpenAIWSClientDisconnectError lets the handler keep downstream disconnects
+// neutral for upstream account health.
+func IsOpenAIWSClientDisconnectError(err error) bool {
+	return isOpenAIWSClientDisconnectError(err)
+}
+
 func classifyOpenAIWSReadFallbackReason(err error) string {
 	if err == nil {
 		return "read_event"
@@ -1133,6 +1147,11 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	if c != nil && c.Request != nil {
 		if v := strings.TrimSpace(c.Request.Header.Get("accept-language")); v != "" {
 			headers.Set("accept-language", v)
+		}
+		for _, value := range c.Request.Header.Values("x-codex-beta-features") {
+			if value = strings.TrimSpace(value); value != "" {
+				headers.Add("x-codex-beta-features", value)
+			}
 		}
 	}
 	// OAuth 账号：将 apiKeyID 混入 session 标识符，防止跨用户会话碰撞。
@@ -2103,6 +2122,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	flushedBufferedEventCount := 0
 	firstEventType := ""
 	lastEventType := ""
+	cyberBlocked := false
 
 	var flusher http.Flusher
 	if reqStream {
@@ -2214,7 +2234,12 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
 		}
 
-		eventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(message)
+		originalMessage := message
+		originalEventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(originalMessage)
+		message, eventType, normalizedUnsafe := normalizeOpenAIWSUpstreamEventForSafety(originalMessage, originalEventType)
+		if normalizedUnsafe {
+			_, _, responseField = parseOpenAIWSEventEnvelope(message)
+		}
 		if eventType == "" {
 			continue
 		}
@@ -2264,10 +2289,21 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				}
 			}
 		}
-		if openAIWSEventShouldParseUsage(eventType) {
-			parseOpenAIWSResponseUsageFromCompletedEvent(message, usage)
+		if openAIWSEventShouldParseUsage(originalEventType) {
+			parseOpenAIWSResponseUsageFromCompletedEvent(originalMessage, usage)
 		}
 		imageCounter.AddSSEData(message)
+		if eventType == "error" || eventType == "response.failed" {
+			decision := s.handleOpenAICyberPolicyEvent(
+				c,
+				account,
+				false,
+				lease.HandshakeHeaders().Get("x-request-id"),
+				originalMessage,
+				payloadAsJSONBytes(payload),
+			)
+			cyberBlocked = decision.Matched
+		}
 
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
@@ -2275,6 +2311,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
 				errMsg = "Upstream websocket error"
+			}
+			clientErrMsg := sanitizeUpstreamErrorMessage(errMsg)
+			if clientErrMsg == "" {
+				clientErrMsg = safeUpstreamErrorMessage
 			}
 			fallbackReason, canFallback := classifyOpenAIWSErrorEventFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
 			errCode, errType, errMessage := summarizeOpenAIWSErrorEventFieldsFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
@@ -2321,29 +2361,30 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				return nil, wrapOpenAIWSFallback(fallbackReason, errors.New(errMsg))
 			}
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
-			setOpsUpstreamError(c, statusCode, errMsg, "")
+			setOpsUpstreamError(c, statusCode, clientErrMsg, "")
 			if reqStream && !clientDisconnected {
 				flushBufferedStreamEvents("error_event")
-				emitStreamMessage(message, true)
+				emitStreamMessage([]byte(`{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`), true)
 			}
 			if !reqStream {
 				c.JSON(statusCode, gin.H{
 					"error": gin.H{
 						"type":    "upstream_error",
-						"message": errMsg,
+						"message": safeUpstreamErrorMessage,
 					},
 				})
 			}
 			return nil, fmt.Errorf("openai ws error event: %s", errMsg)
 		}
 
+		clientMessage := sanitizeOpenAIWSErrorEventForClient(message, eventType, wroteDownstream)
 		if reqStream {
 			// 在首个 token 前先缓冲事件（如 response.created），
 			// 以便上游早期断连时仍可安全回退到 HTTP，不给下游发送半截流。
 			shouldBuffer := firstTokenMs == nil && !isTokenEvent && !isTerminalEvent
 			if shouldBuffer {
-				buffered := make([]byte, len(message))
-				copy(buffered, message)
+				buffered := make([]byte, len(clientMessage))
+				copy(buffered, clientMessage)
 				bufferedStreamEvents = append(bufferedStreamEvents, buffered)
 				bufferedEventCount++
 				if debugEnabled && shouldLogOpenAIWSBufferedEvent(bufferedEventCount) {
@@ -2359,11 +2400,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				}
 			} else {
 				flushBufferedStreamEvents(eventType)
-				emitStreamMessage(message, isTerminalEvent)
+				emitStreamMessage(clientMessage, isTerminalEvent)
 			}
 		} else {
-			if responseField.Exists() && responseField.Type == gjson.JSON {
-				finalResponse = []byte(responseField.Raw)
+			clientResponseField := responseField
+			if eventType == "response.failed" {
+				_, _, clientResponseField = parseOpenAIWSEventEnvelope(clientMessage)
+			}
+			if clientResponseField.Exists() && clientResponseField.Type == gjson.JSON {
+				finalResponse = []byte(clientResponseField.Raw)
 			}
 		}
 
@@ -2436,19 +2481,22 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	)
 
 	return &OpenAIForwardResult{
-		RequestID:        responseID,
-		Usage:            *usage,
-		Model:            originalModel,
-		UpstreamModel:    mappedModel,
-		ImageCount:       imageCounter.Count(),
-		ImageOutputSizes: imageCounter.Sizes(),
-		ServiceTier:      extractOpenAIServiceTier(reqBody),
-		ReasoningEffort:  extractOpenAIReasoningEffort(reqBody, mappedModel, originalModel),
-		Stream:           reqStream,
-		OpenAIWSMode:     true,
-		ResponseHeaders:  lease.HandshakeHeaders(),
-		Duration:         time.Since(startTime),
-		FirstTokenMs:     firstTokenMs,
+		RequestID:         responseID,
+		Usage:             *usage,
+		Model:             originalModel,
+		UpstreamModel:     mappedModel,
+		ImageCount:        imageCounter.Count(),
+		ImageOutputSizes:  imageCounter.Sizes(),
+		ServiceTier:       extractOpenAIServiceTier(reqBody),
+		ReasoningEffort:   extractOpenAIReasoningEffort(reqBody, mappedModel, originalModel),
+		Stream:            reqStream,
+		OpenAIWSMode:      true,
+		TerminalEventType: lastEventType,
+		ResponseHeaders:   lease.HandshakeHeaders(),
+		Duration:          time.Since(startTime),
+		FirstTokenMs:      firstTokenMs,
+		ClientDisconnect:  clientDisconnected,
+		CyberBlocked:      cyberBlocked,
 	}, nil
 }
 
@@ -2492,8 +2540,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
 	modeRouterV2Enabled := s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
 	ingressMode := OpenAIWSIngressModeCtxPool
-	forceHTTPBridge := false
-	if modeRouterV2Enabled {
+	forceHTTPBridge := account.Platform == PlatformGrok
+	if modeRouterV2Enabled && !forceHTTPBridge {
 		ingressMode = account.ResolveOpenAIResponsesWebSocketV2Mode(s.cfg.Gateway.OpenAIWS.IngressModeDefault)
 		if ingressMode == OpenAIWSIngressModeOff {
 			return NewOpenAIWSClientCloseError(
@@ -2543,15 +2591,22 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 	dedicatedMode := modeRouterV2Enabled && ingressMode == OpenAIWSIngressModeDedicated
 
-	wsURL, err := s.buildOpenAIResponsesWSURL(account)
-	if err != nil {
-		return fmt.Errorf("build ws url: %w", err)
-	}
+	wsURL := ""
 	wsHost := "-"
 	wsPath := "-"
-	if parsedURL, parseErr := url.Parse(wsURL); parseErr == nil && parsedURL != nil {
-		wsHost = normalizeOpenAIWSLogValue(parsedURL.Host)
-		wsPath = normalizeOpenAIWSLogValue(parsedURL.Path)
+	if forceHTTPBridge {
+		wsHost = "xai-http-bridge"
+		wsPath = grokChatResponsesEndpoint
+	} else {
+		var err error
+		wsURL, err = s.buildOpenAIResponsesWSURL(account)
+		if err != nil {
+			return fmt.Errorf("build ws url: %w", err)
+		}
+		if parsedURL, parseErr := url.Parse(wsURL); parseErr == nil && parsedURL != nil {
+			wsHost = normalizeOpenAIWSLogValue(parsedURL.Host)
+			wsPath = normalizeOpenAIWSLogValue(parsedURL.Path)
+		}
 	}
 	debugEnabled := isOpenAIWSModeDebugEnabled()
 
@@ -2817,7 +2872,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	refreshIngressRouteState(firstPayload)
 
 	forceHTTPBridgeForStrongIsolation := strongIsolationEnabled
-	if forceHTTPBridge || forceHTTPBridgeForStrongIsolation || s.shouldBridgeOpenAIWSHTTP(firstPayload.payloadBytes, firstPayload.previousResponseID) {
+	if forceHTTPBridge || forceHTTPBridgeForStrongIsolation || s.shouldBridgeOpenAIWSHTTP(account, firstPayload.payloadBytes, firstPayload.previousResponseID) {
 		bridgeReason := "threshold"
 		if forceHTTPBridge {
 			bridgeReason = "account_mode"
@@ -2835,6 +2890,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			storeDisabled,
 		)
 		currentBridgePayload := firstPayload
+		// Keep the first turn as the stable conversation seed. The mapped model
+		// is resolved per turn so a model switch cannot reuse another cache ID.
+		grokCacheSeedPayload := firstPayload.payloadRaw
 		var bridgeReplayInput []json.RawMessage
 		bridgeReplayInputExists := false
 		for turn := 1; ; turn++ {
@@ -2883,6 +2941,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					openAIWSRawPayloadHasToolCallOutput(currentBridgePayload.payloadRaw),
 				)
 			}
+			grokCacheIdentity := ""
+			if account.Platform == PlatformGrok {
+				grokCacheIdentity, err = resolveGrokWSCacheIdentity(c, account, grokCacheSeedPayload, currentBridgePayload.originalModel)
+				if err != nil {
+					return fmt.Errorf("resolve Grok websocket cache identity: %w", err)
+				}
+			}
 			result, bridgeErr := s.proxyOpenAIWSHTTPBridgeTurn(
 				ctx,
 				c,
@@ -2894,6 +2959,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				currentBridgePayload.imageBillingModel,
 				currentBridgePayload.imageSizeTier,
 				currentBridgePayload.imageInputSize,
+				grokCacheIdentity,
 				turn,
 				writeClientMessage,
 			)
@@ -3137,6 +3203,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		lastEventType := ""
 		needModelReplace := false
 		clientDisconnected := false
+		cyberBlocked := false
 		mappedModel := ""
 		var mappedModelBytes []byte
 		if originalModel != "" {
@@ -3157,7 +3224,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				)
 			}
 
-			eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(upstreamMessage)
+			originalUpstreamMessage := upstreamMessage
+			originalEventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(originalUpstreamMessage)
+			upstreamMessage, eventType, _ := normalizeOpenAIWSUpstreamEventForSafety(originalUpstreamMessage, originalEventType)
 			if responseID == "" && eventResponseID != "" {
 				responseID = eventResponseID
 			}
@@ -3236,6 +3305,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						ResponseHeaders: cloneHeader(lease.HandshakeHeaders()),
 					}
 				}
+				// A protocol-level error ends the current turn. Do not wait for a
+				// contradictory completed frame on a connection that has already failed.
+				lease.MarkBroken()
 			}
 			isTokenEvent := isOpenAIWSTokenEvent(eventType)
 			if isTokenEvent {
@@ -3249,10 +3321,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				ms := int(time.Since(turnStart).Milliseconds())
 				firstTokenMs = &ms
 			}
-			if openAIWSEventShouldParseUsage(eventType) {
-				parseOpenAIWSResponseUsageFromCompletedEvent(upstreamMessage, &usage)
+			if openAIWSEventShouldParseUsage(originalEventType) {
+				parseOpenAIWSResponseUsageFromCompletedEvent(originalUpstreamMessage, &usage)
 			}
 			imageCounter.AddSSEData(upstreamMessage)
+			if eventType == "error" || eventType == "response.failed" {
+				decision := s.handleOpenAICyberPolicyEvent(c, account, false, lease.HandshakeHeaders().Get("x-request-id"), originalUpstreamMessage, payload)
+				cyberBlocked = decision.Matched
+			}
 
 			if !clientDisconnected {
 				if needModelReplace && len(mappedModelBytes) > 0 && openAIWSEventMayContainModel(eventType) && bytes.Contains(upstreamMessage, mappedModelBytes) {
@@ -3264,7 +3340,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					}
 				}
 				replayCollector.AddEvent(eventType, upstreamMessage)
-				if err := writeClientMessage(upstreamMessage); err != nil {
+				clientMessage := sanitizeOpenAIWSErrorEventForClient(upstreamMessage, eventType, wroteDownstream)
+				if err := writeClientMessage(clientMessage); err != nil {
 					if isOpenAIWSClientDisconnectError(err) {
 						clientDisconnected = true
 						closeStatus, closeReason := summarizeOpenAIWSReadCloseError(err)
@@ -3315,17 +3392,20 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				imageCount := imageCounter.Count()
 				result := &OpenAIForwardResult{
-					RequestID:       responseID,
-					Usage:           usage,
-					Model:           originalModel,
-					UpstreamModel:   mappedModel,
-					ServiceTier:     extractOpenAIServiceTierFromBody(payload),
-					ReasoningEffort: extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel),
-					Stream:          reqStream,
-					OpenAIWSMode:    true,
-					ResponseHeaders: lease.HandshakeHeaders(),
-					Duration:        time.Since(turnStart),
-					FirstTokenMs:    firstTokenMs,
+					RequestID:         responseID,
+					Usage:             usage,
+					Model:             originalModel,
+					UpstreamModel:     mappedModel,
+					ServiceTier:       extractOpenAIServiceTierFromBody(payload),
+					ReasoningEffort:   extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel),
+					Stream:            reqStream,
+					OpenAIWSMode:      true,
+					TerminalEventType: eventType,
+					ResponseHeaders:   lease.HandshakeHeaders(),
+					Duration:          time.Since(turnStart),
+					FirstTokenMs:      firstTokenMs,
+					ClientDisconnect:  clientDisconnected,
+					CyberBlocked:      cyberBlocked,
 				}
 				if replayInput := replayCollector.Items(); len(replayInput) > 0 {
 					result.wsReplayInput = replayInput
@@ -4074,7 +4154,8 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 			return wrapOpenAIWSFallback("prewarm_"+classifyOpenAIWSReadFallbackReason(readErr), readErr)
 		}
 
-		eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(message)
+		originalEventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(message)
+		message, eventType, _ := normalizeOpenAIWSUpstreamEventForSafety(message, originalEventType)
 		if eventType == "" {
 			continue
 		}
@@ -4122,6 +4203,10 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 
 		if isOpenAIWSTerminalEvent(eventType) {
 			prewarmTerminalCount++
+			if !isOpenAIWSSuccessTerminalEvent(eventType) {
+				lease.MarkBroken()
+				return wrapOpenAIWSFallback("prewarm_unsuccessful_terminal", fmt.Errorf("prewarm ended with %s", eventType))
+			}
 			break
 		}
 	}
@@ -4161,7 +4246,16 @@ func payloadAsJSONBytes(payload map[string]any) []byte {
 
 func isOpenAIWSTerminalEvent(eventType string) bool {
 	switch strings.TrimSpace(eventType) {
-	case "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+	case "error", "response.completed", "response.done", "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+		return true
+	default:
+		return false
+	}
+}
+
+func isOpenAIWSSuccessTerminalEvent(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "response.completed", "response.done":
 		return true
 	default:
 		return false

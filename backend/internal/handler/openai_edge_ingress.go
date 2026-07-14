@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -99,6 +100,17 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 		return false
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		// The edge relay is an internal hop. Never copy an upstream/CDN error
+		// page or its headers to the public client.
+		c.JSON(resp.StatusCode, gin.H{
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": "Upstream request failed",
+			},
+		})
+		return true
+	}
 
 	copyOpenAIEdgeResponseHeaders(c.Writer.Header(), resp.Header)
 	c.Status(resp.StatusCode)
@@ -207,13 +219,9 @@ func addForwardedHeaders(header http.Header, c *gin.Context) {
 }
 
 func copyOpenAIEdgeResponseHeaders(dst, src http.Header) {
-	for name, values := range src {
-		if isOpenAIEdgeHopHeader(name) {
-			continue
-		}
-		for _, value := range values {
-			dst.Add(name, value)
-		}
+	responseheaders.WriteFilteredHeaders(dst, src, nil)
+	if dst.Get("Content-Type") == "" {
+		dst.Set("Content-Type", "text/event-stream")
 	}
 }
 

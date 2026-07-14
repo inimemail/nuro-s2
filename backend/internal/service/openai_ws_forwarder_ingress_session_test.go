@@ -775,6 +775,7 @@ func TestOpenAIGatewayService_OpenAIWSHTTPBridgeFailoverPreservesSoftCooldownPat
 		"",
 		"",
 		"",
+		"",
 		1,
 		func([]byte) error {
 			writeCount++
@@ -790,6 +791,61 @@ func TestOpenAIGatewayService_OpenAIWSHTTPBridgeFailoverPreservesSoftCooldownPat
 	require.True(t, failoverErr.RetryableOnSameAccount)
 	require.False(t, failoverErr.SkipPoolSoftCooldown)
 	require.Equal(t, 0, writeCount, "failover 错误应交给外层换号/软冷却，不应提前写死给下游")
+}
+
+func TestOpenAIGatewayService_OpenAIWSHTTPBridgeSanitizesFailedEventForClient(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamHTTP := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_bridge_failed\",\"object\":\"response\",\"status\":\"failed\",\"error\":{\"type\":\"server_error\",\"message\":\"<!DOCTYPE html><title>xiaobaishu.org | 502</title>\",\"upstream_host\":\"xiaobaishu.org\"},\"usage\":{\"input_tokens\":3,\"output_tokens\":4}}}\n\n",
+		)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:           &config.Config{},
+		httpUpstream:  upstreamHTTP,
+		toolCorrector: NewCodexToolCorrector(),
+	}
+	account := &Account{
+		ID:          456,
+		Name:        "openai-bridge-error-sanitize",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.openai.com/v1",
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	var clientMessages [][]byte
+	result, err := svc.proxyOpenAIWSHTTPBridgeTurn(
+		context.Background(), c, account, "sk-test",
+		[]byte(`{"type":"response.create","model":"gpt-5.1","input":[{"role":"user","content":"hello"}]}`),
+		128, "gpt-5.1", "", "", "", "", 1,
+		func(message []byte) error {
+			clientMessages = append(clientMessages, append([]byte(nil), message...))
+			return nil
+		},
+	)
+
+	require.EqualError(t, err, "upstream response failed")
+	require.NotNil(t, result)
+	require.Equal(t, "response.failed", result.TerminalEventType)
+	require.Equal(t, "resp_bridge_failed", result.RequestID)
+	require.Equal(t, 3, result.Usage.InputTokens)
+	require.Equal(t, 4, result.Usage.OutputTokens)
+	require.Len(t, clientMessages, 1)
+	require.Equal(t, "Upstream request failed", gjson.GetBytes(clientMessages[0], "response.error.message").String())
+	require.NotContains(t, string(clientMessages[0]), "xiaobaishu.org")
+	require.NotContains(t, string(clientMessages[0]), "DOCTYPE")
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughHeadersUsePromptCacheAndTurnState(t *testing.T) {

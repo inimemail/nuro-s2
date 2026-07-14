@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -133,6 +135,17 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 	body, err := io.ReadAll(io.LimitReader(resp.Body, codexModelsManifestBodyLimit))
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CODEX_MODELS_UPSTREAM_FAILED", "read codex models manifest response: %v", err)
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
+		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_INVALID_RESPONSE", "models manifest response is not a JSON object")
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &envelope); err != nil {
+		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_INVALID_RESPONSE", "models manifest response is invalid")
+	}
+	if rawError, ok := envelope["error"]; ok && string(bytes.TrimSpace(rawError)) != "null" {
+		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_INVALID_RESPONSE", "models manifest response contains an error")
 	}
 	return &CodexModelsManifest{Body: body, ETag: resp.Header.Get("ETag")}, nil
 }

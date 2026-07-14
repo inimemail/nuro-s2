@@ -29,6 +29,7 @@ const openAIEdgeSecretHeader = "X-Sub2API-Edge-Secret"
 
 type openAIEdgeLease struct {
 	mu                 sync.Mutex
+	settled            bool
 	edgeRequestID      string
 	leaseID            string
 	createdAt          time.Time
@@ -48,6 +49,7 @@ type openAIEdgeLease struct {
 	sameAccountStarted map[int64]time.Time
 	switchCount        int
 	maxAccountSwitches int
+	lockedPriority     int
 	routingModel       string
 	requestModel       string
 	billingModel       string
@@ -459,17 +461,27 @@ func (h *OpenAIGatewayHandler) storeOpenAIEdgeLease(lease *openAIEdgeLease, ttl 
 	})
 }
 
-func (h *OpenAIGatewayHandler) takeOpenAIEdgeLease(leaseID string) *openAIEdgeLease {
+func (h *OpenAIGatewayHandler) takeOpenAIEdgeLeaseForRequest(leaseID, edgeRequestID string, accountID int64, verifyAccount bool) (*openAIEdgeLease, string) {
 	if h == nil || strings.TrimSpace(leaseID) == "" {
-		return nil
+		return nil, ""
 	}
 	h.openAIEdgeLeaseMu.Lock()
 	defer h.openAIEdgeLeaseMu.Unlock()
 	lease := h.openAIEdgeLeases[leaseID]
-	if lease != nil {
-		delete(h.openAIEdgeLeases, leaseID)
+	if lease == nil {
+		return nil, ""
 	}
-	return lease
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if edgeRequestID != "" && edgeRequestID != lease.edgeRequestID {
+		return nil, "request_mismatch"
+	}
+	if verifyAccount && accountID != 0 && (lease.account == nil || lease.account.ID != accountID) {
+		return nil, "account_mismatch"
+	}
+	delete(h.openAIEdgeLeases, leaseID)
+	lease.settled = true
+	return lease, ""
 }
 
 func (h *OpenAIGatewayHandler) getOpenAIEdgeLease(leaseID string) *openAIEdgeLease {
@@ -685,6 +697,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		sameAccountRetries: make(map[int64]int),
 		sameAccountStarted: map[int64]time.Time{account.ID: createdAt},
 		maxAccountSwitches: h.nonImageStreamBootstrapSwitchLimit(true),
+		lockedPriority:     -1,
 		routingModel:       reqModel,
 		requestModel:       prepared.Model,
 		billingModel:       prepared.BillingModel,
@@ -712,7 +725,10 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		return fallback("edge_route_not_supported")
 	}
 	if openAIEdgeHeader(req.Headers, "Upgrade") != "" {
-		return h.prepareOpenAIEdgeResponsesWSRelay(c, req, cfg)
+		// WS is multi-turn and must reacquire concurrency and settle usage for
+		// every response. Keep it on the Go relay until edge-rs has a per-turn
+		// control-plane contract.
+		return fallback("edge_ws_requires_go_per_turn_governance")
 	}
 	if h == nil || h.gatewayService == nil || h.billingCacheService == nil || h.apiKeyService == nil || h.concurrencyHelper == nil {
 		return fallback("edge_dependencies_missing")
@@ -871,6 +887,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		sameAccountRetries: make(map[int64]int),
 		sameAccountStarted: map[int64]time.Time{account.ID: createdAt},
 		maxAccountSwitches: h.nonImageStreamBootstrapSwitchLimit(true),
+		lockedPriority:     -1,
 		routingModel:       reqModel,
 		requestModel:       prepared.Model,
 		billingModel:       prepared.BillingModel,
@@ -1039,6 +1056,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		sameAccountRetries: make(map[int64]int),
 		sameAccountStarted: map[int64]time.Time{account.ID: createdAt},
 		maxAccountSwitches: h.maxAccountSwitches,
+		lockedPriority:     -1,
 		routingModel:       reqModel,
 		requestModel:       prepared.Model,
 		billingModel:       prepared.BillingModel,
@@ -1245,11 +1263,14 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		return fallback("client_response_already_written")
 	}
 	lease := h.getOpenAIEdgeLease(req.LeaseID)
-	if lease == nil || lease.account == nil {
+	if lease == nil {
 		return fallback("lease_not_found")
 	}
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
+	if lease.settled || lease.account == nil {
+		return fallback("lease_already_settled")
+	}
 	if req.AccountID != 0 && req.AccountID != lease.account.ID {
 		return fallback("account_mismatch")
 	}
@@ -1282,6 +1303,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		SkipPoolSoftCooldown:   modelRoutingError,
 	}
 	if failoverErr.RetryableOnSameAccount {
+		// Edge retries are intentionally immediate. The upstream attempt and the
+		// Rust -> Go control-plane round trip already consume the elapsed budget;
+		// adding the account delay here would directly increase TTFT.
 		if retryPlan, ok := planSameAccountRetry(lease.account, lease.sameAccountRetries, lease.sameAccountStarted, 0); ok {
 			plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, lease.account, lease.accountReleaseFunc)
 			if err != nil {
@@ -1295,10 +1319,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 				zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
 			)
 			return service.OpenAIEdgeRetryDecision{
-				Action:        service.OpenAIEdgeActionRelay,
-				Reason:        "same_account_retry",
-				Plan:          &plan,
-				RetryMaxDepth: retryPlan.RetryLimit,
+				Action: service.OpenAIEdgeActionRelay,
+				Reason: "same_account_retry",
+				Plan:   &plan,
 			}
 		}
 	}
@@ -1309,15 +1332,23 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	lease.failedAccountIDs[lease.account.ID] = struct{}{}
 	if lease.switchCount >= lease.maxAccountSwitches {
 		if modelRoutingError {
-			return openAIEdgeModelRoutingErrorDecision("model_routing_error_exhausted")
+			decision := openAIEdgeModelRoutingErrorDecision("model_routing_error_exhausted")
+			decision.FailureRecorded = true
+			return decision
 		}
-		return fallback("max_account_switches_exhausted")
+		decision := fallback("max_account_switches_exhausted")
+		decision.FailureRecorded = true
+		return decision
 	}
 	lease.switchCount++
 	if h.gatewayService.ShouldStopOpenAIOAuth429Failover(lease.account, status, lease.switchCount) {
-		return fallback("oauth_429_storm_stop")
+		decision := fallback("oauth_429_storm_stop")
+		decision.FailureRecorded = true
+		return decision
 	}
-	return h.openAIEdgeRetrySwitchAccount(c, lease, req, "account_switch")
+	decision := h.openAIEdgeRetrySwitchAccount(c, lease, req, "account_switch")
+	decision.FailureRecorded = true
+	return decision
 }
 
 func (h *OpenAIGatewayHandler) openAIEdgeShouldProtectModelRoutingError(c *gin.Context, account *service.Account, status int, upstreamMsg string, responseBody []byte) bool {
@@ -1355,6 +1386,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 	routingModel := lease.openAIRoutingModel()
 	responseBody := openAIEdgeRetryResponseBody(req)
 	modelRoutingError := h.openAIEdgeShouldProtectModelRoutingError(c, lease.account, req.UpstreamStatusCode, strings.TrimSpace(req.ErrorMessage), responseBody)
+	if modelRoutingError && lease.lockedPriority < 0 {
+		lease.lockedPriority = lease.account.Priority
+	}
 	if successReason == "queue_wait_timeout" {
 		// Queue wait timeout is local edge-rs pressure, not an upstream account
 		// failure. Exclude this account for the immediate retry without feeding a
@@ -1383,7 +1417,8 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 		service.OpenAIUpstreamTransportAny,
 		service.OpenAIEndpointCapabilityChatCompletions,
 		func(account *service.Account) bool {
-			return service.IsOpenAIEdgeRawRelayEligibleForInboundEndpoint(account, lease.inboundEndpoint)
+			return service.IsOpenAIEdgeRawRelayEligibleForInboundEndpoint(account, lease.inboundEndpoint) &&
+				(lease.lockedPriority < 0 || account.Priority == lease.lockedPriority)
 		},
 		true,
 		reqLog,
@@ -1469,22 +1504,26 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid complete request"})
 		return
 	}
-	lease := h.takeOpenAIEdgeLease(req.LeaseID)
+	lease, mismatchReason := h.takeOpenAIEdgeLeaseForRequest(req.LeaseID, req.EdgeRequestID, req.AccountID, true)
+	if mismatchReason != "" {
+		c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: mismatchReason})
+		return
+	}
 	if lease == nil {
 		c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: "lease_not_found_or_already_released"})
 		return
 	}
 	lease.release()
-	if req.AccountID != 0 && lease.account != nil && req.AccountID != lease.account.ID {
-		if h.gatewayService != nil {
-			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
-		}
-		c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: "account_mismatch"})
-		return
-	}
-	if req.Success && h.gatewayService != nil && lease.account != nil {
+	if h.gatewayService != nil && lease.account != nil {
+		terminalType := strings.ToLower(strings.TrimSpace(req.TerminalEventType))
+		successfulTerminal := openAIEdgeCompletionIsSuccessful(lease.inboundEndpoint, req)
+		neutralOutcome := req.ClientDisconnected || req.CyberBlocked || terminalType == "response.incomplete" ||
+			terminalType == "response.cancelled" || terminalType == "response.canceled"
 		firstTokenMs := intPointerFromInt64(req.FirstTokenMS)
-		if realFirstTokenMs := intPointerFromInt64(req.RealFirstTokenMS); realFirstTokenMs != nil {
+		if !successfulTerminal {
+			firstTokenMs = nil
+		}
+		if realFirstTokenMs := intPointerFromInt64(req.RealFirstTokenMS); successfulTerminal && realFirstTokenMs != nil {
 			h.gatewayService.RecordOpenAIFirstTokenTimeoutPlaceholderGuardSample(
 				lease.account,
 				lease.openAIRoutingModel(),
@@ -1492,7 +1531,6 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 			)
 		}
 		edgeFallbackReason := stringPointerFromTrimmed(req.EdgeFallbackReason)
-		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), true, firstTokenMs)
 		result := &service.OpenAIForwardResult{
 			RequestID:           req.RequestID,
 			ResponseID:          req.ResponseID,
@@ -1503,6 +1541,9 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 			ServiceTier:         lease.serviceTier,
 			ReasoningEffort:     lease.reasoningEffort,
 			Stream:              true,
+			TerminalEventType:   terminalType,
+			ClientDisconnect:    req.ClientDisconnected,
+			CyberBlocked:        req.CyberBlocked,
 			Duration:            time.Duration(req.DurationMS) * time.Millisecond,
 			FirstTokenMs:        firstTokenMs,
 			UpstreamHeaderMs:    intPointerFromInt64(req.UpstreamHeaderMS),
@@ -1514,55 +1555,78 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 			EdgeFallbackReason:  edgeFallbackReason,
 			EdgeRetryCount:      intPointerFromInt64(req.EdgeRetryCount),
 		}
-		h.submitOpenAIUsageRecordTask(context.Background(), result, func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-				Result:                  result,
-				APIKey:                  lease.apiKey,
-				User:                    lease.apiKey.User,
-				Account:                 lease.account,
-				Subscription:            lease.subscription,
-				QuotaPlatform:           lease.quotaPlatform,
-				InboundEndpoint:         lease.inboundEndpoint,
-				UpstreamEndpoint:        lease.upstreamEndpoint,
-				UserAgent:               lease.userAgent,
-				IPAddress:               lease.clientIP,
-				RequestPayloadHash:      lease.requestPayloadHash,
-				PromptCacheAffinityHash: lease.sessionHash,
-				PromptCacheGroupID:      lease.apiKey.GroupID,
-				APIKeyService:           h.apiKeyService,
-				ChannelUsageFields:      lease.channelUsageFields,
-			}); err != nil {
-				requestLogger(c, "handler.openai_edge.complete").Error("openai_edge.record_usage_failed",
-					zap.Int64("account_id", lease.account.ID),
-					zap.Error(err),
-				)
+
+		switch {
+		case successfulTerminal:
+			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), true, firstTokenMs)
+		case neutralOutcome:
+			// Client cancellation and protocol-level incomplete/cancelled terminal
+			// states are billable but are not account-health samples.
+		default:
+			statusCode := req.UpstreamStatusCode
+			if statusCode < http.StatusBadRequest {
+				statusCode = http.StatusBadGateway
 			}
-		})
-	} else if h.gatewayService != nil && lease.account != nil {
-		statusCode := req.UpstreamStatusCode
-		if statusCode == 0 {
-			statusCode = http.StatusBadGateway
+			message := strings.TrimSpace(req.ErrorMessage)
+			if message == "" {
+				message = "Upstream request failed"
+			}
+			responseBody := []byte(message)
+			h.gatewayService.HandleOpenAIAccountUpstreamErrorAfterCommittedResponse(
+				c.Request.Context(), lease.account, statusCode, nil, responseBody, lease.openAIRoutingModel(),
+			)
+			h.gatewayService.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(
+				lease.account, statusCode, message, responseBody, true, true,
+			)
+			h.gatewayService.RecordOpenAIPoolFailureAfterCommittedResponse(
+				c.Request.Context(), lease.account, statusCode, responseBody, lease.openAIRoutingModel(), message,
+			)
+			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
 		}
-		message := strings.TrimSpace(req.ErrorMessage)
-		h.gatewayService.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(
-			lease.account,
-			statusCode,
-			message,
-			[]byte(message),
-			true,
-			true,
-		)
-		h.gatewayService.RecordOpenAIPoolFailureAfterCommittedResponse(
-			c.Request.Context(),
-			lease.account,
-			statusCode,
-			[]byte(message),
-			lease.openAIRoutingModel(),
-			message,
-		)
-		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
+
+		if successfulTerminal || openAIEdgeUsageIsBillable(req.Usage) || req.CyberBlocked {
+			h.submitOpenAIUsageRecordTask(context.Background(), result, func(ctx context.Context) {
+				if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+					Result:                  result,
+					APIKey:                  lease.apiKey,
+					User:                    lease.apiKey.User,
+					Account:                 lease.account,
+					Subscription:            lease.subscription,
+					QuotaPlatform:           lease.quotaPlatform,
+					InboundEndpoint:         lease.inboundEndpoint,
+					UpstreamEndpoint:        lease.upstreamEndpoint,
+					UserAgent:               lease.userAgent,
+					IPAddress:               lease.clientIP,
+					RequestPayloadHash:      lease.requestPayloadHash,
+					PromptCacheAffinityHash: lease.sessionHash,
+					PromptCacheGroupID:      lease.apiKey.GroupID,
+					SkipSuccessSideEffects:  !successfulTerminal,
+					APIKeyService:           h.apiKeyService,
+					ChannelUsageFields:      lease.channelUsageFields,
+					CyberBlocked:            req.CyberBlocked,
+				}); err != nil {
+					requestLogger(c, "handler.openai_edge.complete").Error("openai_edge.record_usage_failed",
+						zap.Int64("account_id", lease.account.ID),
+						zap.Error(err),
+					)
+				}
+			})
+		}
 	}
 	c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true})
+}
+
+func openAIEdgeSuccessfulTerminal(inboundEndpoint, terminalType string) bool {
+	terminalType = strings.ToLower(strings.TrimSpace(terminalType))
+	if normalizeOpenAIEdgePath(inboundEndpoint) == "/v1/chat/completions" {
+		return terminalType == "[done]" || terminalType == "chat.finish_reason"
+	}
+	return terminalType == "response.completed" || terminalType == "response.done"
+}
+
+func openAIEdgeCompletionIsSuccessful(inboundEndpoint string, req service.OpenAIEdgeCompleteRequest) bool {
+	return req.Success && !req.ClientDisconnected && !req.CyberBlocked &&
+		openAIEdgeSuccessfulTerminal(inboundEndpoint, req.TerminalEventType)
 }
 
 func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {
@@ -1574,14 +1638,23 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid abort request"})
 		return
 	}
-	lease := h.takeOpenAIEdgeLease(req.LeaseID)
+	lease, mismatchReason := h.takeOpenAIEdgeLeaseForRequest(req.LeaseID, req.EdgeRequestID, req.AccountID, false)
+	if mismatchReason != "" {
+		c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: mismatchReason})
+		return
+	}
 	if lease != nil {
 		lease.release()
-		if h.gatewayService != nil && lease.account != nil && !openAIEdgeAbortReasonIsLocalQueuePressure(req.Reason) {
+		if h.gatewayService != nil && lease.account != nil && !req.ClientDisconnected && !openAIEdgeAbortReasonIsLocalQueuePressure(req.Reason) {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
 		}
 	}
 	c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true})
+}
+
+func openAIEdgeUsageIsBillable(usage service.OpenAIUsage) bool {
+	return usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CacheCreationInputTokens > 0 ||
+		usage.CacheReadInputTokens > 0 || usage.ImageOutputTokens > 0
 }
 
 func openAIEdgeAbortReasonIsLocalQueuePressure(reason string) bool {
@@ -1590,7 +1663,8 @@ func openAIEdgeAbortReasonIsLocalQueuePressure(reason string) bool {
 		strings.Contains(reason, "edge_relay_queue_full") ||
 		strings.Contains(reason, "edge relay queue full") ||
 		strings.Contains(reason, "queue wait budget") ||
-		strings.Contains(reason, "queue_wait_timeout")
+		strings.Contains(reason, "queue_wait_timeout") ||
+		strings.Contains(reason, "retry_failure_already_recorded")
 }
 
 func intPointerFromInt64(v *int64) *int {

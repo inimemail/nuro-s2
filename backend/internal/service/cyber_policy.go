@@ -16,8 +16,9 @@ const (
 	CyberPolicyAnchorConversationID = "conversation_id"
 	CyberPolicyAnchorPromptCacheKey = "prompt_cache_key"
 
-	defaultCyberPolicySessionBlockTTL = 15 * time.Minute
-	opsCyberPolicyKey                 = "ops_cyber_policy"
+	defaultCyberPolicySessionBlockTTL  = 15 * time.Minute
+	opsCyberPolicyKey                  = "ops_cyber_policy"
+	safeOpenAICyberPolicyClientMessage = "This request has been flagged for potentially high-risk cyber activity."
 )
 
 type CyberPolicyDecision struct {

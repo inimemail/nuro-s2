@@ -35,6 +35,64 @@ func TestRunEntry_DelegatesRelay(t *testing.T) {
 	require.Equal(t, "resp_entry", result.RequestID)
 }
 
+func TestSanitizeUpstreamErrorEventForClientAllowsNullError(t *testing.T) {
+	payload := []byte(`{"type":"response.output_text.delta","delta":"ok","error":null,"response":{"error":null}}`)
+	require.Equal(t, payload, sanitizeUpstreamErrorEventForClient(payload))
+}
+
+func TestSanitizeUpstreamErrorEventForClientDropsUnsafeFailedMetadata(t *testing.T) {
+	payload := []byte(`{"type":"response.failed","sequence_number":"https://private.example/seq","response":{"id":"https://private.example/id","object":"xAI response","status":"failed","model":"grok-4","error":{"message":"private.example"}}}`)
+	sanitized := sanitizeUpstreamErrorEventForClient(payload)
+	require.NotContains(t, string(sanitized), "private.example")
+	require.NotContains(t, string(sanitized), "xAI")
+	require.Contains(t, string(sanitized), `"model":"grok-4"`)
+	require.Contains(t, string(sanitized), "Upstream request failed")
+}
+
+func TestSanitizeUpstreamErrorEventForClientRejectsDiagnosticObject(t *testing.T) {
+	payload := []byte(`{"message":"private-provider.example failed","provider":"private-provider"}`)
+	sanitized := sanitizeUpstreamErrorEventForClient(payload)
+	require.JSONEq(t, `{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`, string(sanitized))
+	require.NotContains(t, string(sanitized), "private-provider")
+}
+
+func TestObserveUpstreamMessageMarksCyberFailedTurn(t *testing.T) {
+	state := &relayState{requestModel: "gpt-5"}
+	payload := []byte(`{"type":"response.failed","response":{"id":"resp_cyber","error":{"code":"cyber_policy"},"usage":{"input_tokens":3}}}`)
+	observed := observeUpstreamMessage(state, payload, time.Now(), time.Now, nil)
+	require.True(t, observed.terminal)
+	require.True(t, observed.cyberBlocked)
+	require.True(t, state.cyberBlocked)
+}
+
+func TestObserveUpstreamMessageKeepsCyberAcrossDiagnosticThenCompleted(t *testing.T) {
+	state := &relayState{requestModel: "gpt-5"}
+	start := time.Now()
+
+	diagnostic := observeUpstreamMessage(
+		state,
+		[]byte(`{"type":"error","error":{"code":"cyber_policy","message":"private-provider.example blocked"}}`),
+		start,
+		func() time.Time { return start.Add(time.Millisecond) },
+		nil,
+	)
+	require.False(t, diagnostic.terminal)
+	require.True(t, diagnostic.cyberBlocked)
+
+	completed := observeUpstreamMessage(
+		state,
+		[]byte(`{"type":"response.completed","response":{"id":"resp_cyber_after_error","usage":{"input_tokens":7}}}`),
+		start,
+		func() time.Time { return start.Add(2 * time.Millisecond) },
+		nil,
+	)
+	require.True(t, completed.terminal)
+	require.Equal(t, "error", completed.eventType)
+	require.True(t, completed.cyberBlocked)
+	require.True(t, state.cyberBlocked)
+	require.False(t, state.turnCyberBlocked)
+}
+
 func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 	t.Parallel()
 
@@ -240,7 +298,7 @@ func TestHelperFunctionsCoverage(t *testing.T) {
 
 	require.True(t, isTokenEvent("response.output_text.delta"))
 	require.True(t, isTokenEvent("response.output_audio.delta"))
-	require.True(t, isTokenEvent("response.completed"))
+	require.False(t, isTokenEvent("response.completed"))
 	require.False(t, isTokenEvent(""))
 	require.False(t, isTokenEvent("response.created"))
 
@@ -347,7 +405,7 @@ func TestEmitTurnCompleteCoverage(t *testing.T) {
 		eventType:  "response.output_text.delta",
 		responseID: "resp_ignored",
 		usage:      Usage{InputTokens: 1},
-	})
+	}, false)
 	require.Equal(t, 0, called)
 
 	// 缺少 response_id 时不应触发。
@@ -356,7 +414,7 @@ func TestEmitTurnCompleteCoverage(t *testing.T) {
 	}, &relayState{requestModel: "gpt-5"}, observedUpstreamEvent{
 		terminal:  true,
 		eventType: "response.completed",
-	})
+	}, false)
 	require.Equal(t, 0, called)
 
 	// terminal 且 response_id 存在，应该触发；state=nil 时 model 为空串。
@@ -369,13 +427,14 @@ func TestEmitTurnCompleteCoverage(t *testing.T) {
 		eventType:  "response.completed",
 		responseID: "resp_emit",
 		usage:      Usage{InputTokens: 2, OutputTokens: 3},
-	})
+	}, false)
 	require.Equal(t, 1, called)
 	require.Equal(t, "resp_emit", got.RequestID)
 	require.Equal(t, "response.completed", got.TerminalEventType)
 	require.Equal(t, 2, got.Usage.InputTokens)
 	require.Equal(t, 3, got.Usage.OutputTokens)
 	require.Equal(t, "", got.RequestModel)
+	require.False(t, got.ClientDisconnected)
 }
 
 func TestIsDisconnectErrorCoverage_CloseStatusesAndMessageBranches(t *testing.T) {
@@ -395,7 +454,7 @@ func TestIsTokenEventCoverageBranches(t *testing.T) {
 	require.False(t, isTokenEvent("response.output_item.added"))
 	require.True(t, isTokenEvent("response.output_audio.delta"))
 	require.True(t, isTokenEvent("response.output"))
-	require.True(t, isTokenEvent("response.done"))
+	require.False(t, isTokenEvent("response.done"))
 }
 
 func TestShouldParseUsageTerminalEvents(t *testing.T) {

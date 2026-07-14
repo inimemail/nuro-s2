@@ -98,6 +98,7 @@ export interface User {
   last_active_at?: string | null
   created_at: string
   updated_at: string
+  deleted_at?: string | null
 }
 
 export interface AdminUser extends User {
@@ -526,6 +527,8 @@ export interface Group {
   video_price_480p: number | null
   video_price_720p: number | null
   video_price_1080p: number | null
+  // Codex 网页搜索单次价格（USD/次）；null 表示使用默认价 0.01
+  web_search_price_per_call: number | null
   allow_batch_image_generation: boolean
   batch_image_discount_multiplier: number
   batch_image_hold_multiplier: number
@@ -659,6 +662,7 @@ export interface CreateGroupRequest {
   video_price_480p?: number | null
   video_price_720p?: number | null
   video_price_1080p?: number | null
+  web_search_price_per_call?: number | null
   allow_batch_image_generation?: boolean
   batch_image_discount_multiplier?: number
   batch_image_hold_multiplier?: number
@@ -707,6 +711,7 @@ export interface UpdateGroupRequest {
   video_price_480p?: number | null
   video_price_720p?: number | null
   video_price_1080p?: number | null
+  web_search_price_per_call?: number | null
   allow_batch_image_generation?: boolean
   batch_image_discount_multiplier?: number
   batch_image_hold_multiplier?: number

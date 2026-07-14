@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -75,14 +74,8 @@ func writeOpenAICompactSSEBridge(c *gin.Context, statusCode int, finalResponse [
 }
 
 func writeOpenAICompactSSEFailure(c *gin.Context, statusCode int, errorBody []byte) {
-	message := ""
-	if len(errorBody) > 0 {
-		message = sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(errorBody)))
-	}
-	if message == "" {
-		message = "Upstream compact request failed with HTTP " + strconv.Itoa(statusCode)
-	}
-	writeOpenAICompactSSEFailureMessage(c, statusCode, "upstream_error", message)
+	_ = errorBody
+	writeOpenAICompactSSEFailureMessage(c, statusCode, "upstream_error", safeUpstreamErrorMessage)
 }
 
 func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType, message string) {

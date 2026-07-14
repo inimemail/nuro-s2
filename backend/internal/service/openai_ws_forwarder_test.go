@@ -58,6 +58,7 @@ func TestIsOpenAIWSTokenEvent_TerminalEventsExcluded(t *testing.T) {
 // 若两者再次出现交集，则 issue #2651 描述的 latency 误报会重现。
 func TestIsOpenAIWSTokenEvent_DisjointWithTerminal(t *testing.T) {
 	terminalEvents := []string{
+		"error",
 		"response.completed",
 		"response.done",
 		"response.failed",

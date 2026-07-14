@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -183,7 +184,7 @@ func TestRelay_BasicRelayAndUsage(t *testing.T) {
 	require.Equal(t, 7, result.Usage.InputTokens)
 	require.Equal(t, 3, result.Usage.OutputTokens)
 	require.Equal(t, 2, result.Usage.CacheReadInputTokens)
-	require.NotNil(t, result.FirstTokenMs)
+	require.Nil(t, result.FirstTokenMs)
 	require.Equal(t, int64(1), result.ClientToUpstreamFrames)
 	require.Equal(t, int64(1), result.UpstreamToClientFrames)
 	require.Equal(t, int64(0), result.DroppedDownstreamFrames)
@@ -255,6 +256,7 @@ func TestRelay_ClientDisconnect(t *testing.T) {
 	require.NotNil(t, relayExit, "客户端 EOF 应返回可观测的中断状态")
 	require.Equal(t, "client_disconnected", relayExit.Stage)
 	require.Equal(t, "gpt-4o", result.RequestModel)
+	require.True(t, result.ClientDisconnected)
 }
 
 func TestRelay_ClientDisconnect_DrainCapturesLateUsage(t *testing.T) {
@@ -276,8 +278,12 @@ func TestRelay_ClientDisconnect_DrainCapturesLateUsage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	var completedTurn RelayTurnResult
 	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
 		UpstreamDrainTimeout: 400 * time.Millisecond,
+		OnTurnComplete: func(turn RelayTurnResult) {
+			completedTurn = turn
+		},
 	})
 	require.NotNil(t, relayExit)
 	require.Equal(t, "client_disconnected", relayExit.Stage)
@@ -289,6 +295,8 @@ func TestRelay_ClientDisconnect_DrainCapturesLateUsage(t *testing.T) {
 	require.Equal(t, int64(1), result.ClientToUpstreamFrames)
 	require.Equal(t, int64(0), result.UpstreamToClientFrames)
 	require.Equal(t, int64(1), result.DroppedDownstreamFrames)
+	require.True(t, result.ClientDisconnected)
+	require.True(t, completedTurn.ClientDisconnected)
 }
 
 func TestRelay_IdleTimeout(t *testing.T) {
@@ -499,7 +507,7 @@ func TestRelay_OnTurnComplete_ProvidesTurnMetrics(t *testing.T) {
 func TestRelay_BinaryFramePassthrough(t *testing.T) {
 	t.Parallel()
 
-	// 验证 binary frame 被透传但不进行 usage 解析
+	// 非 JSON binary frame 不能绕过错误脱敏。
 	binaryPayload := []byte{0x00, 0x01, 0x02, 0x03}
 	clientConn := newPassthroughTestFrameConn(nil, false)
 	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
@@ -515,16 +523,15 @@ func TestRelay_BinaryFramePassthrough(t *testing.T) {
 
 	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{})
 	require.Nil(t, relayExit)
-	// binary frame 不解析 usage
 	require.Equal(t, 0, result.Usage.InputTokens)
 
 	clientWrites := clientConn.Writes()
 	require.Len(t, clientWrites, 1)
 	require.Equal(t, coderws.MessageBinary, clientWrites[0].msgType)
-	require.Equal(t, binaryPayload, clientWrites[0].payload)
+	require.JSONEq(t, `{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`, string(clientWrites[0].payload))
 }
 
-func TestRelay_BinaryJSONFrameSkipsObservation(t *testing.T) {
+func TestRelay_BinaryJSONFrameIsObserved(t *testing.T) {
 	t.Parallel()
 
 	clientConn := newPassthroughTestFrameConn(nil, false)
@@ -541,20 +548,21 @@ func TestRelay_BinaryJSONFrameSkipsObservation(t *testing.T) {
 
 	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{})
 	require.Nil(t, relayExit)
-	require.Equal(t, 0, result.Usage.InputTokens)
-	require.Equal(t, "", result.RequestID)
-	require.Equal(t, "", result.TerminalEventType)
+	require.Equal(t, 7, result.Usage.InputTokens)
+	require.Equal(t, 3, result.Usage.OutputTokens)
+	require.Equal(t, "resp_binary", result.RequestID)
+	require.Equal(t, "response.completed", result.TerminalEventType)
 
 	clientWrites := clientConn.Writes()
 	require.Len(t, clientWrites, 1)
 	require.Equal(t, coderws.MessageBinary, clientWrites[0].msgType)
 }
 
-func TestRelay_UpstreamErrorEventPassthroughRaw(t *testing.T) {
+func TestRelay_UpstreamErrorEventIsSanitized(t *testing.T) {
 	t.Parallel()
 
 	clientConn := newPassthroughTestFrameConn(nil, false)
-	errorEvent := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"No tool call found"}}`)
+	errorEvent := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"https://upstream.example.invalid/no-tool-call"}}`)
 	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
 		{
 			msgType: coderws.MessageText,
@@ -572,7 +580,134 @@ func TestRelay_UpstreamErrorEventPassthroughRaw(t *testing.T) {
 	clientWrites := clientConn.Writes()
 	require.Len(t, clientWrites, 1)
 	require.Equal(t, coderws.MessageText, clientWrites[0].msgType)
-	require.Equal(t, errorEvent, clientWrites[0].payload)
+	require.JSONEq(t, `{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`, string(clientWrites[0].payload))
+	require.NotContains(t, string(clientWrites[0].payload), "upstream.example.invalid")
+}
+
+func TestRelay_ResponseFailedEventIsSanitizedWithoutLosingObservation(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	failedEvent := []byte(`{"type":"response.failed","sequence_number":7,"response":{"id":"resp_failed","object":"response","status":"failed","model":"gpt-5.1","error":{"type":"server_error","message":"<!DOCTYPE html><title>private-upstream.example | 502</title>","upstream_host":"private-upstream.example"},"usage":{"input_tokens":3,"output_tokens":4}}}`)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{msgType: coderws.MessageText, payload: failedEvent},
+	}, true)
+
+	firstPayload := []byte(`{"type":"response.create","model":"gpt-5.1","input":[]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{})
+	require.Nil(t, relayExit)
+	require.Equal(t, "resp_failed", result.RequestID)
+	require.Equal(t, "response.failed", result.TerminalEventType)
+	require.Equal(t, 3, result.Usage.InputTokens)
+	require.Equal(t, 4, result.Usage.OutputTokens)
+
+	clientWrites := clientConn.Writes()
+	require.Len(t, clientWrites, 1)
+	require.Equal(t, coderws.MessageText, clientWrites[0].msgType)
+	require.JSONEq(t, `{"type":"response.failed","sequence_number":7,"response":{"id":"resp_failed","object":"response","status":"failed","model":"gpt-5.1","error":{"type":"upstream_error","message":"Upstream request failed"}}}`, string(clientWrites[0].payload))
+	require.NotContains(t, string(clientWrites[0].payload), "private-upstream.example")
+	require.NotContains(t, string(clientWrites[0].payload), "DOCTYPE")
+}
+
+func TestRelay_DiagnosticThenCompletedRemainsFailedAndBillable(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"message":"private-provider.example failed","provider":"private-provider"}`),
+		},
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.completed","response":{"id":"resp_after_error","usage":{"input_tokens":7,"output_tokens":3}}}`),
+		},
+	}, true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var turn RelayTurnResult
+	result, relayExit := Relay(ctx, clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-5.1","input":[]}`), RelayOptions{
+		OnTurnComplete: func(current RelayTurnResult) { turn = current },
+	})
+
+	require.Nil(t, relayExit)
+	require.Equal(t, "error", result.TerminalEventType)
+	require.Equal(t, "error", turn.TerminalEventType)
+	require.Equal(t, 7, result.Usage.InputTokens)
+	require.Equal(t, 3, result.Usage.OutputTokens)
+	require.Nil(t, result.FirstTokenMs)
+
+	clientWrites := clientConn.Writes()
+	require.Len(t, clientWrites, 2)
+	for _, write := range clientWrites {
+		require.Contains(t, string(write.payload), "Upstream request failed")
+		require.NotContains(t, string(write.payload), "private-provider")
+		require.NotContains(t, string(write.payload), "response.completed")
+	}
+}
+
+func TestRelay_NestedDiagnosticEnvelopeIsSanitized(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"data":{"error":{"message":"https://private-provider.example failed"}}}`)
+	sanitized := sanitizeUpstreamErrorEventForClient(payload)
+
+	require.JSONEq(t, `{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`, string(sanitized))
+	require.NotContains(t, string(sanitized), "private-provider.example")
+	require.True(t, relayUpstreamPayloadIsUnsafe(payload))
+	require.False(t, relayUpstreamPayloadIsUnsafe([]byte(`{"data":[{"embedding":[0.1,0.2],"index":0}]}`)))
+}
+
+func TestRelay_DropsContradictoryDuplicateTerminalForSameResponse(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		firstPayload string
+		wantTerminal string
+		wantCyber    bool
+	}{
+		{
+			name:         "failed then completed",
+			firstPayload: `{"type":"response.failed","response":{"id":"resp_duplicate","error":{"code":"cyber_policy"},"usage":{"input_tokens":4,"output_tokens":0}}}`,
+			wantTerminal: "response.failed",
+			wantCyber:    true,
+		},
+		{
+			name:         "incomplete then completed",
+			firstPayload: `{"type":"response.incomplete","response":{"id":"resp_duplicate","usage":{"input_tokens":4,"output_tokens":0}}}`,
+			wantTerminal: "response.incomplete",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clientConn := newPassthroughTestFrameConn(nil, false)
+			upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+				{msgType: coderws.MessageText, payload: []byte(tc.firstPayload)},
+				{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"resp_duplicate","usage":{"input_tokens":7,"output_tokens":3}}}`)},
+			}, true)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			var turns []RelayTurnResult
+			result, relayExit := Relay(ctx, clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-5.1","input":[]}`), RelayOptions{
+				OnTurnComplete: func(turn RelayTurnResult) { turns = append(turns, turn) },
+			})
+
+			require.Nil(t, relayExit)
+			require.Equal(t, tc.wantTerminal, result.TerminalEventType)
+			require.Equal(t, tc.wantCyber, result.CyberBlocked)
+			require.Equal(t, 4, result.Usage.InputTokens)
+			require.Zero(t, result.Usage.OutputTokens)
+			require.Len(t, turns, 1)
+			require.Equal(t, tc.wantTerminal, turns[0].TerminalEventType)
+			require.Len(t, clientConn.Writes(), 1)
+		})
+	}
 }
 
 func TestRelay_PreservesFirstMessageType(t *testing.T) {
@@ -749,6 +884,41 @@ func (c *errorOnWriteFrameConn) WriteFrame(_ context.Context, _ coderws.MessageT
 
 func (c *errorOnWriteFrameConn) Close() error {
 	return nil
+}
+
+type terminalWriteFailFrameConn struct {
+	*passthroughTestFrameConn
+}
+
+func (c *terminalWriteFailFrameConn) WriteFrame(_ context.Context, _ coderws.MessageType, payload []byte) error {
+	if strings.Contains(string(payload), `"type":"response.completed"`) {
+		return errors.New("client disconnected before terminal frame")
+	}
+	return c.passthroughTestFrameConn.WriteFrame(context.Background(), coderws.MessageText, payload)
+}
+
+func TestRelay_TerminalWriteFailureKeepsUsageButMarksTurnDisconnected(t *testing.T) {
+	t.Parallel()
+
+	clientConn := &terminalWriteFailFrameConn{passthroughTestFrameConn: newPassthroughTestFrameConn(nil, false)}
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{{
+		msgType: coderws.MessageText,
+		payload: []byte(`{"type":"response.completed","response":{"id":"resp_write_fail","usage":{"input_tokens":7,"output_tokens":3}}}`),
+	}}, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var turn RelayTurnResult
+	_, relayExit := Relay(ctx, clientConn, upstreamConn, []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`), RelayOptions{
+		OnTurnComplete: func(current RelayTurnResult) { turn = current },
+	})
+
+	require.NotNil(t, relayExit)
+	require.Equal(t, "write_client", relayExit.Stage)
+	require.Equal(t, "response.completed", turn.TerminalEventType)
+	require.Equal(t, 7, turn.Usage.InputTokens)
+	require.Equal(t, 3, turn.Usage.OutputTokens)
+	require.True(t, turn.ClientDisconnected)
 }
 
 func TestRelay_OnTurnComplete_RealOpenAIStream_FirstTokenMs(t *testing.T) {

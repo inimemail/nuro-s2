@@ -15,6 +15,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -2228,6 +2229,8 @@ func TestOpenAIStreamingClientDisconnectDrainsUpstreamUsage(t *testing.T) {
 	if result == nil || result.usage == nil {
 		t.Fatalf("expected usage result")
 	}
+	require.Equal(t, "response.completed", result.terminalEventType)
+	require.True(t, result.clientDisconnected)
 	if result.usage.InputTokens != 3 || result.usage.OutputTokens != 5 || result.usage.CacheReadInputTokens != 1 {
 		t.Fatalf("unexpected usage: %+v", *result.usage)
 	}
@@ -2697,6 +2700,8 @@ func TestOpenAIStreamingPassthroughResponseDoneWithoutDoneMarkerStillSucceeds(t 
 	require.Equal(t, 2, result.usage.InputTokens)
 	require.Equal(t, 3, result.usage.OutputTokens)
 	require.Equal(t, 1, result.usage.CacheReadInputTokens)
+	require.Equal(t, "response.done", result.terminalEventType)
+	require.False(t, result.clientDisconnected)
 }
 
 func TestOpenAIStreamingPassthroughResponseIncompleteWithoutDoneMarkerStillSucceeds(t *testing.T) {
@@ -2732,6 +2737,26 @@ func TestOpenAIStreamingPassthroughResponseIncompleteWithoutDoneMarkerStillSucce
 	require.Equal(t, 2, result.usage.InputTokens)
 	require.Equal(t, 3, result.usage.OutputTokens)
 	require.Equal(t, 1, result.usage.CacheReadInputTokens)
+	require.Equal(t, "response.incomplete", result.terminalEventType)
+	require.False(t, result.clientDisconnected)
+}
+
+func TestOpenAIStreamingPassthroughDoneMarkerIsNotResponsesSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		Header:     http.Header{},
+	}
+
+	result, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "", "")
+	require.EqualError(t, err, "stream usage incomplete: missing terminal event")
+	require.NotNil(t, result)
+	require.Empty(t, result.terminalEventType)
 }
 
 func TestOpenAIStreamingTooLong(t *testing.T) {
@@ -2774,7 +2799,7 @@ func TestOpenAIStreamingTooLong(t *testing.T) {
 	}
 }
 
-func TestOpenAINonStreamingContentTypePassThrough(t *testing.T) {
+func TestOpenAINonStreamingVendorContentTypeDoesNotExposeUpstreamIdentity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Security: config.SecurityConfig{
@@ -2799,9 +2824,7 @@ func TestOpenAINonStreamingContentTypePassThrough(t *testing.T) {
 		t.Fatalf("handleNonStreamingResponse error: %v", err)
 	}
 
-	if !strings.Contains(rec.Header().Get("Content-Type"), "application/vnd.test+json") {
-		t.Fatalf("expected Content-Type passthrough, got %q", rec.Header().Get("Content-Type"))
-	}
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 }
 
 func TestOpenAINonStreamingContentTypeDefault(t *testing.T) {
@@ -2923,7 +2946,7 @@ func TestOpenAIStreamingHeadersOverride(t *testing.T) {
 	if rec.Header().Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("expected Content-Type override, got %q", rec.Header().Get("Content-Type"))
 	}
-	if rec.Header().Get("X-Request-Id") != "req-123" {
+	if rec.Header().Get("X-Request-Id") != responseheaders.PublicRequestID("req-123") {
 		t.Fatalf("expected X-Request-Id passthrough, got %q", rec.Header().Get("X-Request-Id"))
 	}
 }
@@ -2963,6 +2986,8 @@ func TestOpenAIStreamingReuseScannerBufferAndStillWorks(t *testing.T) {
 	require.Equal(t, 1, result.usage.InputTokens)
 	require.Equal(t, 2, result.usage.OutputTokens)
 	require.Equal(t, 3, result.usage.CacheReadInputTokens)
+	require.Equal(t, "response.completed", result.terminalEventType)
+	require.False(t, result.clientDisconnected)
 }
 
 func TestOpenAIInvalidBaseURLWhenAllowlistDisabled(t *testing.T) {
@@ -3703,7 +3728,7 @@ func TestHandleSSEToJSON_ReconstructsImageGenerationOutputItemDone(t *testing.T)
 	require.Equal(t, "draw a cat", gjson.Get(rec.Body.String(), "output.0.revised_prompt").String())
 }
 
-func TestHandleSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
+func TestHandleSSEToJSON_NoTerminalResponseReturnsProtocolError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -3719,12 +3744,35 @@ func TestHandleSSEToJSON_NoFinalResponseKeepsSSEBody(t *testing.T) {
 		`data: [DONE]`,
 	}, "\n"))
 
-	usage, err := svc.handleSSEToJSON(resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, body, "gpt-4o", "gpt-4o")
+	result, err := svc.handleSSEToJSON(resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, body, "gpt-4o", "gpt-4o")
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Body.String(), safeUpstreamErrorMessage)
+	require.NotContains(t, rec.Body.String(), "resp_3")
+}
+
+func TestHandleSSEToJSON_IncompleteReturnsJSONAndNeutralTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}}
+	body := []byte(strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"partial"}`,
+		`data: {"type":"response.incomplete","response":{"id":"resp_incomplete","status":"incomplete","output":[],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+		`data: [DONE]`,
+	}, "\n"))
+
+	result, err := svc.handleSSEToJSON(resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, body, "gpt-4o", "gpt-4o")
 	require.NoError(t, err)
-	require.NotNil(t, usage)
-	require.Equal(t, 0, usage.InputTokens)
-	require.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
-	require.Contains(t, rec.Body.String(), `data: {"type":"response.in_progress"`)
+	require.NotNil(t, result)
+	require.Equal(t, "response.incomplete", result.terminalEventType)
+	require.Equal(t, 5, result.InputTokens)
+	require.Equal(t, 2, result.OutputTokens)
+	require.Equal(t, "resp_incomplete", gjson.Get(rec.Body.String(), "id").String())
+	require.NotContains(t, rec.Body.String(), "data:")
 }
 
 func TestHandleSSEToJSON_ResponseFailedReturnsProtocolError(t *testing.T) {
@@ -3747,7 +3795,8 @@ func TestHandleSSEToJSON_ResponseFailedReturnsProtocolError(t *testing.T) {
 	require.Nil(t, usage)
 	require.Error(t, err)
 	require.Equal(t, http.StatusBadGateway, rec.Code)
-	require.Contains(t, rec.Body.String(), "upstream rejected request")
+	require.Contains(t, rec.Body.String(), "Upstream request failed")
+	require.NotContains(t, rec.Body.String(), "upstream rejected request")
 	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
 }
 
@@ -3775,4 +3824,28 @@ func TestOpenAICompatSSEFrameParserResetsEventTypeAtFrameBoundary(t *testing.T) 
 	require.True(t, ok)
 	require.Empty(t, frame.EventType)
 	require.JSONEq(t, `{"delta":"ok"}`, frame.Data)
+}
+
+func TestOpenAIResponseTerminalAllowsSuccessSideEffects(t *testing.T) {
+	tests := []struct {
+		name         string
+		stream       bool
+		terminalType string
+		want         bool
+	}{
+		{name: "stream completed", stream: true, terminalType: "response.completed", want: true},
+		{name: "stream done", stream: true, terminalType: "response.done", want: true},
+		{name: "stream incomplete", stream: true, terminalType: "response.incomplete", want: false},
+		{name: "non-stream incomplete", terminalType: "response.incomplete", want: false},
+		{name: "stream cancelled", stream: true, terminalType: "response.cancelled", want: false},
+		{name: "failed", terminalType: "response.failed", want: false},
+		{name: "legacy non-stream success", terminalType: "", want: true},
+		{name: "missing stream terminal", stream: true, terminalType: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, openAIResponseTerminalAllowsSuccessSideEffects(tt.stream, tt.terminalType))
+		})
+	}
 }

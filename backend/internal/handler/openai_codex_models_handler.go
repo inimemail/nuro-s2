@@ -16,7 +16,7 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error": gin.H{
 				"type":    "upstream_error",
-				"message": "OpenAI gateway handler is unavailable",
+				"message": "Service temporarily unavailable",
 			},
 		})
 		return
@@ -27,23 +27,27 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 		return
 	}
 	if apiKey.Group.Platform != service.PlatformOpenAI {
-		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Codex models manifest is only available for OpenAI groups")
+		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Models manifest is not available for this group")
 		return
 	}
 	if h.gatewayService == nil {
-		h.errorResponse(c, http.StatusServiceUnavailable, "upstream_error", "OpenAI gateway service is unavailable")
+		h.errorResponse(c, http.StatusServiceUnavailable, "upstream_error", "Service temporarily unavailable")
 		return
 	}
 
 	account, err := h.gatewayService.SelectCodexModelsManifestAccount(c.Request.Context(), apiKey.GroupID)
 	if err != nil {
-		h.errorResponse(c, http.StatusServiceUnavailable, "upstream_error", "No available OpenAI OAuth accounts for Codex models manifest")
+		h.errorResponse(c, http.StatusServiceUnavailable, "upstream_error", "Service temporarily unavailable")
 		return
 	}
 
 	manifest, err := h.gatewayService.FetchCodexModelsManifest(c.Request.Context(), account, c.Query("client_version"), c.GetHeader("If-None-Match"))
 	if err != nil {
-		h.errorResponse(c, infraerrors.Code(err), "upstream_error", infraerrors.Message(err))
+		status := infraerrors.Code(err)
+		if status < http.StatusBadRequest || status > 599 {
+			status = http.StatusBadGateway
+		}
+		h.errorResponse(c, status, "upstream_error", "Service temporarily unavailable")
 		return
 	}
 

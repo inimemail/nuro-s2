@@ -21,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/google/uuid"
 
 	"github.com/gin-gonic/gin"
@@ -62,13 +63,13 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 			return
 		}
 		markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-		googleError(c, http.StatusServiceUnavailable, "No available Gemini accounts: "+err.Error())
+		googleError(c, http.StatusServiceUnavailable, "Service temporarily unavailable")
 		return
 	}
 
 	res, err := h.geminiCompatService.ForwardAIStudioGET(c.Request.Context(), account, "/v1beta/models")
 	if err != nil {
-		googleError(c, http.StatusBadGateway, err.Error())
+		googleError(c, http.StatusBadGateway, "Upstream request failed")
 		return
 	}
 	if shouldFallbackGeminiModels(res) {
@@ -115,13 +116,13 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 			return
 		}
 		markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-		googleError(c, http.StatusServiceUnavailable, "No available Gemini accounts: "+err.Error())
+		googleError(c, http.StatusServiceUnavailable, "Service temporarily unavailable")
 		return
 	}
 
 	res, err := h.geminiCompatService.ForwardAIStudioGET(c.Request.Context(), account, "/v1beta/models/"+modelName)
 	if err != nil {
-		googleError(c, http.StatusBadGateway, err.Error())
+		googleError(c, http.StatusBadGateway, "Upstream request failed")
 		return
 	}
 	if shouldFallbackGeminiModel(modelName, res) {
@@ -233,7 +234,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	userReleaseFunc, err := geminiConcurrency.AcquireUserSlotWithWait(c, authSubject.UserID, authSubject.Concurrency, stream, &streamStarted)
 	if err != nil {
 		reqLog.Warn("gemini.user_slot_acquire_failed", zap.Error(err))
-		googleError(c, http.StatusTooManyRequests, err.Error())
+		status, _, message := concurrencyErrorResponse(err, "user")
+		googleError(c, status, message)
 		return
 	}
 	if waitCounted {
@@ -375,7 +377,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		if err != nil {
 			if len(fs.FailedAccountIDs) == 0 {
 				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-				googleError(c, http.StatusServiceUnavailable, "No available Gemini accounts: "+err.Error())
+				googleError(c, http.StatusServiceUnavailable, "Service temporarily unavailable")
 				return
 			}
 			action := fs.HandleSelectionExhausted(c.Request.Context())
@@ -423,7 +425,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		if !selection.Acquired {
 			if selection.WaitPlan == nil {
 				markOpsRoutingCapacityLimited(c)
-				googleError(c, http.StatusServiceUnavailable, "No available Gemini accounts")
+				googleError(c, http.StatusServiceUnavailable, "Service temporarily unavailable")
 				return
 			}
 			accountWaitCounted := false
@@ -457,7 +459,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			)
 			if err != nil {
 				reqLog.Warn("gemini.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-				googleError(c, http.StatusTooManyRequests, err.Error())
+				status, _, message := concurrencyErrorResponse(err, "account")
+				googleError(c, status, message)
 				return
 			}
 			if accountWaitCounted {
@@ -477,6 +480,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		if fs.SwitchCount > 0 {
 			requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
 		}
+		writerSizeBeforeForward := c.Writer.Size()
 		if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
 			result, err = h.antigravityGatewayService.ForwardGemini(requestCtx, c, account, modelName, action, stream, body, hasBoundSession)
 		} else {
@@ -485,7 +489,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
 		}
-		if err != nil {
+		settleForwardError := err != nil && shouldSettleGatewayForwardResultAfterError(c, writerSizeBeforeForward, result)
+		if err != nil && !settleForwardError {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failoverAction := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
@@ -507,14 +512,33 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			reqLog.Error("gemini.forward_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			return
 		}
-		h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
+		if settleForwardError && !result.ClientDisconnect && !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
+			googleError(c, http.StatusBadGateway, "Upstream request failed")
+		}
+		if result == nil {
+			return
+		}
+		successfulOutcome, neutralOutcome := classifyGatewayForwardResult(result, err)
+		if !successfulOutcome {
+			result.FirstTokenMs = nil
+		}
+		switch {
+		case successfulOutcome:
+			h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
+		case neutralOutcome:
+		default:
+			h.reportAccountScheduleResult(account, false, nil)
+		}
+		if !successfulOutcome && !gatewayForwardResultHasBillableUsage(result) {
+			return
+		}
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
 
 		// 保存 Gemini 内容摘要会话（用于 Fallback 匹配）
-		if useDigestFallback && geminiDigestChain != "" && geminiPrefixHash != "" {
+		if successfulOutcome && useDigestFallback && geminiDigestChain != "" && geminiPrefixHash != "" {
 			if err := h.gatewayService.SaveGeminiSession(
 				c.Request.Context(),
 				derefGroupID(apiKey.GroupID),
@@ -549,6 +573,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				LongContextThreshold:  200000, // Gemini 200K 阈值
 				LongContextMultiplier: 2.0,    // 超出部分双倍计费
 				ForceCacheBilling:     fs.ForceCacheBilling,
+				SkipAccountLastUsed:   !successfulOutcome,
 				APIKeyService:         h.apiKeyService,
 				ChannelUsageFields:    channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
 			}); err != nil {
@@ -608,7 +633,7 @@ func (h *GatewayHandler) handleGeminiFailoverExhausted(c *gin.Context, failoverE
 			}
 
 			// 确定响应消息
-			msg := service.ExtractUpstreamErrorMessage(responseBody)
+			msg := "Upstream request failed"
 			if !rule.PassthroughBody && rule.CustomMessage != nil {
 				msg = *rule.CustomMessage
 			}
@@ -667,19 +692,38 @@ func writeUpstreamResponse(c *gin.Context, res *service.UpstreamHTTPResult) {
 		googleError(c, http.StatusBadGateway, "Empty upstream response")
 		return
 	}
-	for k, vv := range res.Headers {
-		// Avoid overriding content-length and hop-by-hop headers.
-		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") || strings.EqualFold(k, "Connection") {
-			continue
+	if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusMultipleChoices {
+		status := res.StatusCode
+		if status < http.StatusBadRequest || status > 599 {
+			status = http.StatusBadGateway
 		}
-		for _, v := range vv {
-			c.Writer.Header().Add(k, v)
-		}
+		googleError(c, status, "Upstream request failed")
+		return
 	}
-	contentType := res.Headers.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/json"
+	trimmedBody := bytes.TrimSpace(res.Body)
+	if len(trimmedBody) == 0 || !json.Valid(trimmedBody) || trimmedBody[0] != '{' {
+		googleError(c, http.StatusBadGateway, "Upstream request failed")
+		return
 	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(trimmedBody, &envelope); err != nil {
+		googleError(c, http.StatusBadGateway, "Upstream request failed")
+		return
+	}
+	if rawError, ok := envelope["error"]; ok && string(bytes.TrimSpace(rawError)) != "null" {
+		googleError(c, http.StatusBadGateway, "Upstream request failed")
+		return
+	}
+	models, hasModels := envelope["models"]
+	name, hasName := envelope["name"]
+	validModels := hasModels && len(bytes.TrimSpace(models)) > 0 && bytes.TrimSpace(models)[0] == '['
+	validModel := hasName && len(bytes.TrimSpace(name)) > 0 && bytes.TrimSpace(name)[0] == '"'
+	if !validModels && !validModel {
+		googleError(c, http.StatusBadGateway, "Upstream request failed")
+		return
+	}
+	responseheaders.WriteFilteredHeaders(c.Writer.Header(), res.Headers, nil)
+	contentType := responseheaders.SafeContentType(res.Headers.Get("Content-Type"), "application/json")
 	c.Data(res.StatusCode, contentType, res.Body)
 }
 

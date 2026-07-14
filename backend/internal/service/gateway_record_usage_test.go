@@ -142,6 +142,79 @@ func TestGatewayServiceRecordUsage_BillingFingerprintIncludesRequestPayloadHash(
 	require.Equal(t, payloadHash, billingRepo.lastCmd.RequestPayloadHash)
 }
 
+func TestGatewayServiceRecordUsage_SkipAccountLastUsedKeepsBillingAndUsageLog(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+
+	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+		Result: &ForwardResult{
+			RequestID: "gateway_partial_failure_usage",
+			Usage:     ClaudeUsage{InputTokens: 10, OutputTokens: 2},
+			Model:     "claude-sonnet-4",
+		},
+		APIKey:              &APIKey{ID: 501, Group: &Group{RateMultiplier: 1}},
+		User:                &User{ID: 601},
+		Account:             &Account{ID: 711},
+		SkipAccountLastUsed: true,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, billingRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	_, lastUsedScheduled := svc.deferredService.lastUsedUpdates.Load(int64(711))
+	require.False(t, lastUsedScheduled)
+}
+
+func TestGatewayServiceRecordUsageWithLongContext_SkipAccountLastUsedKeepsBillingAndUsageLog(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+
+	err := svc.RecordUsageWithLongContext(context.Background(), &RecordUsageLongContextInput{
+		Result: &ForwardResult{
+			RequestID: "gateway_gemini_partial_failure_usage",
+			Usage:     ClaudeUsage{InputTokens: 12, OutputTokens: 3},
+			Model:     "gemini-2.5-pro",
+		},
+		APIKey:                &APIKey{ID: 502, Group: &Group{RateMultiplier: 1}},
+		User:                  &User{ID: 602},
+		Account:               &Account{ID: 712},
+		LongContextThreshold:  200000,
+		LongContextMultiplier: 2,
+		SkipAccountLastUsed:   true,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, billingRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	_, lastUsedScheduled := svc.deferredService.lastUsedUpdates.Load(int64(712))
+	require.False(t, lastUsedScheduled)
+}
+
+func TestGatewayServiceRecordUsage_SimpleModeSkipAccountLastUsed(t *testing.T) {
+	usageRepo := &openAIRecordUsageBestEffortLogRepoStub{}
+	svc := newGatewayRecordUsageServiceForTest(usageRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+	svc.cfg.RunMode = config.RunModeSimple
+
+	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+		Result: &ForwardResult{
+			RequestID: "gateway_simple_partial_failure_usage",
+			Usage:     ClaudeUsage{InputTokens: 8, OutputTokens: 1},
+			Model:     "claude-sonnet-4",
+		},
+		APIKey:              &APIKey{ID: 503, Group: &Group{RateMultiplier: 1}},
+		User:                &User{ID: 603},
+		Account:             &Account{ID: 713},
+		SkipAccountLastUsed: true,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, usageRepo.bestEffortCalls)
+	_, lastUsedScheduled := svc.deferredService.lastUsedUpdates.Load(int64(713))
+	require.False(t, lastUsedScheduled)
+}
+
 func TestGatewayServiceRecordUsage_BillingFingerprintFallsBackToContextRequestID(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{}
 	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}

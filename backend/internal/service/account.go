@@ -7,6 +7,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"log/slog"
+	"net/url"
 	"reflect"
 	"sort"
 	"strconv"
@@ -108,6 +109,7 @@ type OpenAIEndpointCapability string
 const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
+	OpenAIEndpointCapabilityAlphaSearch     OpenAIEndpointCapability = "alpha_search"
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
@@ -1619,6 +1621,10 @@ func (a *Account) IsGrokOAuth() bool {
 	return a.IsGrok() && a.Type == AccountTypeOAuth
 }
 
+func (a *Account) IsGrokAPIKey() bool {
+	return a.IsGrok() && a.Type == AccountTypeAPIKey
+}
+
 func (a *Account) GetOpenAIBaseURL() string {
 	if !a.IsOpenAI() {
 		return ""
@@ -1664,12 +1670,41 @@ func (a *Account) GetGrokBaseURL() string {
 	if !a.IsGrok() {
 		return ""
 	}
-	return xai.EffectiveBaseURL(a.GetCredential("base_url"))
+	baseURL := strings.TrimSpace(a.GetCredential("base_url"))
+	if a.IsGrokOAuth() && (baseURL == "" || isOfficialGrokAPIBaseURL(baseURL)) {
+		return xai.DefaultCLIBaseURL
+	}
+	if baseURL != "" {
+		return strings.TrimRight(baseURL, "/")
+	}
+	return xai.DefaultBaseURL
+}
+
+func isOfficialGrokAPIBaseURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || parsed.Opaque != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	defaultURL, err := url.Parse(xai.DefaultBaseURL)
+	if err != nil || !strings.EqualFold(parsed.Scheme, defaultURL.Scheme) || !strings.EqualFold(parsed.Hostname(), defaultURL.Hostname()) {
+		return false
+	}
+	if port := parsed.Port(); port != "" {
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber != 443 {
+			return false
+		}
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	return path == "" || path == strings.TrimRight(defaultURL.Path, "/")
 }
 
 func (a *Account) GetGrokAccessToken() string {
-	if !a.IsGrokOAuth() {
+	if !a.IsGrok() {
 		return ""
+	}
+	if a.IsGrokAPIKey() {
+		return a.GetCredential("api_key")
 	}
 	return a.GetCredential("access_token")
 }
@@ -1725,6 +1760,10 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		if !a.IsOpenAI() || a.Type != AccountTypeAPIKey {
 			return false
 		}
+	case OpenAIEndpointCapabilityAlphaSearch:
+		// Alpha Search is not a user-configurable generic endpoint capability.
+		// Restrict it to the official OpenAI endpoints before scheduler acquire.
+		return IsOpenAIAlphaSearchAccountEligible(a)
 	default:
 		return false
 	}

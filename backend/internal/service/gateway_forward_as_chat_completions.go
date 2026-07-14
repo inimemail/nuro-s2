@@ -191,7 +191,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 			}
 		}
 
-		writeGatewayCCError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", upstreamMsg)
+		writeGatewayCCError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", safeUpstreamErrorMessage)
 		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
 	}
 

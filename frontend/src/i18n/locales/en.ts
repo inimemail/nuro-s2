@@ -757,7 +757,14 @@ export default {
         geminiCli: 'Gemini CLI',
         codexCli: 'Codex CLI',
         codexCliWs: 'Codex CLI (WebSocket)',
+        grokCli: 'Grok CLI',
         opencode: 'OpenCode',
+      },
+      grok: {
+        description: 'Add the following configuration file to your Grok CLI config directory.',
+        configTomlHint: 'Save the following content as config.toml.',
+        note: 'Make sure the config directory exists. macOS/Linux users can run mkdir -p ~/.grok to create it.',
+        noteWindows: 'Press Win+R and enter %userprofile%\\.grok to open the config directory. Create it manually if it does not exist.',
       },
       antigravity: {
         description: 'Configure API access for Antigravity group. Select the configuration method based on your client.',
@@ -2122,6 +2129,7 @@ export default {
       sortOrderHint: 'Drag groups to adjust display order, groups at the top will be displayed first',
       sortOrderUpdated: 'Sort order updated',
       failedToUpdateSortOrder: 'Failed to update sort order',
+      columnSettings: 'Column Settings',
       allPlatforms: 'All Platforms',
       allStatus: 'All Status',
       allGroups: 'All Groups',
@@ -2270,6 +2278,11 @@ export default {
         modeHint: 'By default, media billing uses the current effective group multiplier. Independent mode uses separate image/video multipliers. Video prices are per second.',
         finalPricePreview: 'Final price preview',
         notConfigured: 'Not configured'
+      },
+      webSearchPricing: {
+        pricePerCall: 'Web search price per call (USD/call)',
+        pricePerCallHint: 'Leave empty for the default $0.01/call; use 0 for free. The group multiplier is applied.',
+        finalPricePreview: 'Current final price: {price}'
       },
       modelsList: {
         title: 'Custom /v1/models Model List',
@@ -3164,6 +3177,7 @@ export default {
         oauth: 'OAuth',
         chatgptOauth: 'ChatGPT OAuth',
         responsesApi: 'Responses API',
+        grokOauth: 'Grok OAuth',
         googleOauth: 'Google OAuth',
         codeAssist: 'Code Assist',
         antigravityOauth: 'Antigravity OAuth',
@@ -6673,6 +6687,13 @@ export default {
         scopeOAuth: 'OAuth only',
         scopeAPIKey: 'API Key only',
         scopeBedrock: 'Bedrock only',
+        userIds: 'Users',
+        userIdsHint: 'Leave empty to apply globally. Search by email and select one or more users.',
+        userSearchPlaceholder: 'Search users by email',
+        userSearchEmpty: 'No matching users',
+        userDeleted: 'Deleted',
+        userIdFallback: 'User #{id}',
+        removeUser: 'Remove user',
         errorMessage: 'Error message',
         errorMessagePlaceholder: 'Custom error message when blocked',
         errorMessageHint: 'Leave empty for the default message.',

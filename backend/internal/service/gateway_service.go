@@ -211,6 +211,57 @@ func anthropicStreamEventIsTerminal(eventName, data string) bool {
 	return gjson.Get(trimmed, "type").String() == "message_stop"
 }
 
+func anthropicSuccessJSONResponseIsValid(body []byte) bool {
+	return !openAIPassthroughResponseIsUnsafe(body) &&
+		!strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "type").String()), "error")
+}
+
+func sanitizeAnthropicUpstreamSSELine(line string, errorEvent *bool) ([]string, bool) {
+	if errorEvent == nil {
+		return []string{line}, false
+	}
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		*errorEvent = false
+		return []string{line}, false
+	}
+	if strings.HasPrefix(trimmed, ":") {
+		return []string{":"}, false
+	}
+	if strings.HasPrefix(strings.ToLower(trimmed), "event:") {
+		name := strings.TrimSpace(trimmed[len("event:"):])
+		for _, r := range name {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' {
+				*errorEvent = false
+				return []string{"event: error", `data: {"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`, ""}, true
+			}
+		}
+		*errorEvent = strings.EqualFold(name, "error")
+		return []string{line}, false
+	}
+	data, ok := extractAnthropicSSEDataLine(line)
+	if !ok {
+		*errorEvent = false
+		return []string{"event: error", `data: {"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`, ""}, true
+	}
+	trimmedData := strings.TrimSpace(data)
+	if trimmedData == "" || trimmedData == "[DONE]" {
+		return []string{line}, false
+	}
+	if !gjson.Valid(trimmedData) || !gjson.Parse(trimmedData).IsObject() {
+		*errorEvent = false
+		return []string{`data: {"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`, ""}, true
+	}
+	errorValue := gjson.Get(trimmedData, "error")
+	upstreamError := *errorEvent || strings.EqualFold(strings.TrimSpace(gjson.Get(trimmedData, "type").String()), "error") ||
+		(errorValue.Exists() && errorValue.Type != gjson.Null) || openAIPassthroughResponseIsUnsafe([]byte(trimmedData))
+	if !upstreamError {
+		return []string{line}, false
+	}
+	*errorEvent = false
+	return []string{`data: {"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`, ""}, true
+}
+
 func cloneStringSlice(src []string) []string {
 	if len(src) == 0 {
 		return nil
@@ -580,6 +631,8 @@ type ForwardResult struct {
 	Duration         time.Duration
 	FirstTokenMs     *int // 首字时间（流式请求）
 	ClientDisconnect bool // 客户端是否在流式传输过程中断开
+	FailedOutcome    bool // 已返回安全错误终态；usage 仍可结算，但不得写成功副作用
+	NeutralOutcome   bool // incomplete/cancelled/policy/client outcome；不写健康成功或失败样本
 	ReasoningEffort  *string
 
 	// 图片生成计费字段（图片生成模型使用）
@@ -6120,19 +6173,23 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	var usage *ClaudeUsage
 	var firstTokenMs *int
 	var clientDisconnect bool
+	var forwardErr error
 	if reqStream {
-		streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, reqModel, shouldMimicClaudeCode)
-		if err != nil {
-			if err.Error() == "have error in stream" {
+		streamResult, streamErr := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, reqModel, shouldMimicClaudeCode)
+		if streamErr != nil && streamErr.Error() == "have error in stream" {
+			if streamResult == nil || (!c.Writer.Written() && !gatewayClaudeUsageIsBillable(streamResult.usage)) {
 				return nil, &UpstreamFailoverError{
 					StatusCode: 403,
 				}
 			}
-			return nil, err
+		}
+		if streamResult == nil {
+			return nil, streamErr
 		}
 		usage = streamResult.usage
 		firstTokenMs = streamResult.firstTokenMs
 		clientDisconnect = streamResult.clientDisconnect
+		forwardErr = streamErr
 	} else {
 		usage, err = s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, reqModel)
 		if err != nil {
@@ -6140,7 +6197,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 	}
 
-	return &ForwardResult{
+	result := &ForwardResult{
 		RequestID:        resp.Header.Get("x-request-id"),
 		Usage:            *usage,
 		Model:            originalModel, // 使用原始模型用于计费和日志
@@ -6149,7 +6206,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		Duration:         time.Since(startTime),
 		FirstTokenMs:     firstTokenMs,
 		ClientDisconnect: clientDisconnect,
-	}, nil
+	}
+	if forwardErr != nil {
+		result.FailedOutcome = !clientDisconnect
+		result.NeutralOutcome = clientDisconnect
+	}
+	return result, forwardErr
 }
 
 type anthropicPassthroughForwardInput struct {
@@ -6388,14 +6450,16 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	var usage *ClaudeUsage
 	var firstTokenMs *int
 	var clientDisconnect bool
+	var forwardErr error
 	if input.RequestStream {
-		streamResult, err := s.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.StartTime, input.RequestModel)
-		if err != nil {
-			return nil, err
+		streamResult, streamErr := s.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.StartTime, input.RequestModel)
+		if streamResult == nil {
+			return nil, streamErr
 		}
 		usage = streamResult.usage
 		firstTokenMs = streamResult.firstTokenMs
 		clientDisconnect = streamResult.clientDisconnect
+		forwardErr = streamErr
 	} else {
 		usage, err = s.handleNonStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.RequestModel)
 		if err != nil {
@@ -6406,7 +6470,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		usage = &ClaudeUsage{}
 	}
 
-	return &ForwardResult{
+	result := &ForwardResult{
 		RequestID:        resp.Header.Get("x-request-id"),
 		Usage:            *usage,
 		Model:            input.OriginalModel,
@@ -6415,7 +6479,12 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		Duration:         time.Since(input.StartTime),
 		FirstTokenMs:     firstTokenMs,
 		ClientDisconnect: clientDisconnect,
-	}, nil
+	}
+	if forwardErr != nil {
+		result.FailedOutcome = !clientDisconnect
+		result.NeutralOutcome = clientDisconnect
+	}
+	return result, forwardErr
 }
 
 func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
@@ -6528,10 +6597,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 
 	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
-	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
-	if contentType == "" {
-		contentType = "text/event-stream"
-	}
+	contentType := responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "text/event-stream")
 	c.Header("Content-Type", contentType)
 	if c.Writer.Header().Get("Cache-Control") == "" {
 		c.Header("Cache-Control", "no-cache")
@@ -6542,10 +6608,6 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	c.Header("X-Accel-Buffering", "no")
 	if kiroEnabled {
 		c.Header("x-request-id", normalizeAnthropicKiroRequestID(resp.Header.Get("x-request-id")))
-	} else {
-		if v := resp.Header.Get("x-request-id"); v != "" {
-			c.Header("x-request-id", v)
-		}
 	}
 
 	w := c.Writer
@@ -6558,6 +6620,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	var firstTokenMs *int
 	clientDisconnected := false
 	sawTerminalEvent := false
+	errorEvent := false
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -6676,27 +6739,32 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 
+			linesToWrite, upstreamError := sanitizeAnthropicUpstreamSSELine(ev.line, &errorEvent)
 			line := ev.line
-			if data, ok := extractAnthropicSSEDataLine(line); ok {
-				trimmed := strings.TrimSpace(data)
-				if anthropicStreamEventIsTerminal("", trimmed) {
-					sawTerminalEvent = true
-				}
-				if firstTokenMs == nil && trimmed != "" && trimmed != "[DONE]" {
-					ms := int(time.Since(startTime).Milliseconds())
-					firstTokenMs = &ms
-				}
-				s.parseSSEUsagePassthrough(data, usage)
-			} else {
-				trimmed := strings.TrimSpace(line)
-				if strings.HasPrefix(trimmed, "event:") && anthropicStreamEventIsTerminal(strings.TrimSpace(strings.TrimPrefix(trimmed, "event:")), "") {
-					sawTerminalEvent = true
+			if !upstreamError {
+				line = linesToWrite[0]
+			}
+			if !upstreamError {
+				if data, ok := extractAnthropicSSEDataLine(line); ok {
+					trimmed := strings.TrimSpace(data)
+					if anthropicStreamEventIsTerminal("", trimmed) {
+						sawTerminalEvent = true
+					}
+					if firstTokenMs == nil && trimmed != "" && trimmed != "[DONE]" {
+						ms := int(time.Since(startTime).Milliseconds())
+						firstTokenMs = &ms
+					}
+					s.parseSSEUsagePassthrough(data, usage)
+				} else {
+					trimmed := strings.TrimSpace(line)
+					if strings.HasPrefix(trimmed, "event:") && anthropicStreamEventIsTerminal(strings.TrimSpace(strings.TrimPrefix(trimmed, "event:")), "") {
+						sawTerminalEvent = true
+					}
 				}
 			}
 
 			if !clientDisconnected {
-				linesToWrite := []string{line}
-				if kiroSSE != nil {
+				if kiroSSE != nil && !upstreamError {
 					linesToWrite = kiroSSE.normalizeLine(line)
 				}
 				for _, lineToWrite := range linesToWrite {
@@ -6721,6 +6789,11 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 						inPartialEvent = true
 					}
 				}
+			}
+			if upstreamError {
+				MarkResponseCommitted(c)
+				flusher.Flush()
+				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, errors.New(safeUpstreamErrorMessage)
 			}
 
 		case <-intervalCh:
@@ -6895,6 +6968,9 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	if err != nil {
 		return nil, err
 	}
+	if !anthropicSuccessJSONResponseIsValid(body) {
+		return nil, newGatewayUpstreamFailoverError(account, http.StatusBadGateway, body, model)
+	}
 	if account != nil && account.IsAnthropicKiroEnabled() {
 		externalModel := anthropicKiroExternalModelFor(model)
 		body = normalizeAnthropicKiroMessagePayloadWithRequestID(body, externalModel, normalizeAnthropicKiroRequestID(resp.Header.Get("x-request-id")))
@@ -6906,10 +6982,7 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	if account != nil && account.IsAnthropicKiroEnabled() {
 		c.Header("x-request-id", gjson.GetBytes(body, "request_id").String())
 	}
-	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
-	if contentType == "" {
-		contentType = "application/json"
-	}
+	contentType := responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "application/json")
 	body = reverseToolNamesIfPresent(c, body)
 	c.Data(resp.StatusCode, contentType, body)
 	return usage, nil
@@ -6919,16 +6992,7 @@ func writeAnthropicPassthroughResponseHeaders(dst http.Header, src http.Header, 
 	if dst == nil || src == nil {
 		return
 	}
-	if filter != nil {
-		responseheaders.WriteFilteredHeaders(dst, src, filter)
-		return
-	}
-	if v := strings.TrimSpace(src.Get("Content-Type")); v != "" {
-		dst.Set("Content-Type", v)
-	}
-	if v := strings.TrimSpace(src.Get("x-request-id")); v != "" {
-		dst.Set("x-request-id", v)
-	}
+	responseheaders.WriteFilteredHeaders(dst, src, filter)
 }
 
 // ApplyBedrockCCCompat 应用 Bedrock CC 兼容转换（渠道级模型映射后调用）
@@ -7046,14 +7110,16 @@ func (s *GatewayService) forwardBedrock(
 	var usage *ClaudeUsage
 	var firstTokenMs *int
 	var clientDisconnect bool
+	var forwardErr error
 	if reqStream {
-		streamResult, err := s.handleBedrockStreamingResponse(ctx, resp, c, account, startTime, reqModel)
-		if err != nil {
-			return nil, err
+		streamResult, streamErr := s.handleBedrockStreamingResponse(ctx, resp, c, account, startTime, reqModel)
+		if streamResult == nil {
+			return nil, streamErr
 		}
 		usage = streamResult.usage
 		firstTokenMs = streamResult.firstTokenMs
 		clientDisconnect = streamResult.clientDisconnect
+		forwardErr = streamErr
 	} else {
 		usage, err = s.handleBedrockNonStreamingResponse(ctx, resp, c, account)
 		if err != nil {
@@ -7064,7 +7130,7 @@ func (s *GatewayService) forwardBedrock(
 		usage = &ClaudeUsage{}
 	}
 
-	return &ForwardResult{
+	result := &ForwardResult{
 		RequestID:        resp.Header.Get("x-amzn-requestid"),
 		Usage:            *usage,
 		Model:            reqModel,
@@ -7073,7 +7139,21 @@ func (s *GatewayService) forwardBedrock(
 		Duration:         time.Since(startTime),
 		FirstTokenMs:     firstTokenMs,
 		ClientDisconnect: clientDisconnect,
-	}, nil
+	}
+	if forwardErr != nil {
+		result.FailedOutcome = !clientDisconnect
+		result.NeutralOutcome = clientDisconnect
+	}
+	return result, forwardErr
+}
+
+func gatewayClaudeUsageIsBillable(usage *ClaudeUsage) bool {
+	if usage == nil {
+		return false
+	}
+	return usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CacheCreationInputTokens > 0 ||
+		usage.CacheReadInputTokens > 0 || usage.CacheCreation5mTokens > 0 ||
+		usage.CacheCreation1hTokens > 0 || usage.ImageOutputTokens > 0
 }
 
 // executeBedrockUpstream 执行 Bedrock 上游请求（含重试逻辑）
@@ -7307,6 +7387,9 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 	if err != nil {
 		return nil, err
 	}
+	if !anthropicSuccessJSONResponseIsValid(body) {
+		return nil, newGatewayUpstreamFailoverError(account, http.StatusBadGateway, body, "")
+	}
 
 	// 转换 Bedrock 特有的 amazon-bedrock-invocationMetrics 为标准 Anthropic usage 格式
 	// 并移除该字段避免透传给客户端
@@ -7315,7 +7398,7 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 	usage := parseClaudeUsageFromResponseBody(body)
 
 	c.Header("Content-Type", "application/json")
-	if v := resp.Header.Get("x-amzn-requestid"); v != "" {
+	if v := responseheaders.PublicRequestID(resp.Header.Get("x-amzn-requestid")); v != "" {
 		c.Header("x-request-id", v)
 	}
 	c.Data(resp.StatusCode, "application/json", body)
@@ -8351,7 +8434,7 @@ func sanitizeStreamError(err error) string {
 // ExtractUpstreamErrorMessage 从上游响应体中提取错误消息
 // 支持 Claude 风格的错误格式：{"type":"error","error":{"type":"...","message":"..."}}
 func ExtractUpstreamErrorMessage(body []byte) string {
-	return extractUpstreamErrorMessage(body)
+	return sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(body))
 }
 
 func extractUpstreamErrorMessage(body []byte) string {
@@ -8521,10 +8604,16 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	switch resp.StatusCode {
 	case 400:
 		MarkResponseCommitted(c)
-		c.Data(http.StatusBadRequest, "application/json", body)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": safeUpstreamErrorMessage,
+			},
+		})
 		summary := upstreamMsg
 		if summary == "" {
-			summary = truncateForLog(body, 512)
+			summary = safeUpstreamErrorMessage
 		}
 		if summary == "" {
 			return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
@@ -8773,20 +8862,13 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 
-	if s.responseHeaderFilter != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-	}
+	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
 	// 设置SSE响应头
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
-
-	// 透传其他响应头
-	if v := resp.Header.Get("x-request-id"); v != "" {
-		c.Header("x-request-id", v)
-	}
 
 	w := c.Writer
 	flusher, ok := w.(http.Flusher)
@@ -8920,6 +9002,16 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	processSSEEvent := func(lines []string) ([]string, string, *sseUsagePatch, error) {
 		if len(lines) == 0 {
 			return nil, "", nil, nil
+		}
+		// Validate the complete event before any part reaches the client. Some
+		// compatible upstreams emit type:error without an event:error line, or
+		// return an HTML/diagnostic line under HTTP 200. Those payloads can carry
+		// the private upstream hostname or provider identity.
+		lineErrorEvent := false
+		for _, line := range lines {
+			if _, unsafe := sanitizeAnthropicUpstreamSSELine(line, &lineErrorEvent); unsafe {
+				return nil, "", nil, errors.New(safeUpstreamErrorMessage)
+			}
 		}
 
 		eventName := ""
@@ -9457,6 +9549,9 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 	if err != nil {
 		return nil, err
 	}
+	if !anthropicSuccessJSONResponseIsValid(body) {
+		return nil, newGatewayUpstreamFailoverError(account, http.StatusBadGateway, body, mappedModel)
+	}
 
 	// 解析usage
 	var response struct {
@@ -9508,9 +9603,7 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
-		if upstreamType := resp.Header.Get("Content-Type"); upstreamType != "" {
-			contentType = upstreamType
-		}
+		contentType = responseheaders.SafeContentType(resp.Header.Get("Content-Type"), contentType)
 	}
 
 	body = reverseToolNamesIfPresent(c, body)
@@ -9553,20 +9646,21 @@ func (s *GatewayService) getUserGroupRateMultiplier(ctx context.Context, userID,
 
 // RecordUsageInput 记录使用量的输入参数
 type RecordUsageInput struct {
-	Result             *ForwardResult
-	ParsedRequest      *ParsedRequest
-	APIKey             *APIKey
-	User               *User
-	Account            *Account
-	Subscription       *UserSubscription  // 可选：订阅信息
-	InboundEndpoint    string             // 入站端点（客户端请求路径）
-	UpstreamEndpoint   string             // 上游端点（标准化后的上游路径）
-	UserAgent          string             // 请求的 User-Agent
-	IPAddress          string             // 请求的客户端 IP 地址
-	RequestPayloadHash string             // 请求体语义哈希，用于降低 request_id 误复用时的静默误去重风险
-	ForceCacheBilling  bool               // 强制缓存计费：将 input_tokens 转为 cache_read 计费（用于粘性会话切换）
-	APIKeyService      APIKeyQuotaUpdater // 可选：用于更新API Key配额
-	QuotaPlatform      string             // user×platform 配额计量平台：handler 在请求 ctx 内经 QuotaPlatform() 算定后传入（后扣运行在 worker 池 background ctx 上，取不到 ForcePlatform）
+	Result              *ForwardResult
+	ParsedRequest       *ParsedRequest
+	APIKey              *APIKey
+	User                *User
+	Account             *Account
+	Subscription        *UserSubscription  // 可选：订阅信息
+	InboundEndpoint     string             // 入站端点（客户端请求路径）
+	UpstreamEndpoint    string             // 上游端点（标准化后的上游路径）
+	UserAgent           string             // 请求的 User-Agent
+	IPAddress           string             // 请求的客户端 IP 地址
+	RequestPayloadHash  string             // 请求体语义哈希，用于降低 request_id 误复用时的静默误去重风险
+	ForceCacheBilling   bool               // 强制缓存计费：将 input_tokens 转为 cache_read 计费（用于粘性会话切换）
+	SkipAccountLastUsed bool               // 仅跳过账号 last_used 成功副作用；用量日志、扣费和配额仍正常结算
+	APIKeyService       APIKeyQuotaUpdater // 可选：用于更新API Key配额
+	QuotaPlatform       string             // user×platform 配额计量平台：handler 在请求 ctx 内经 QuotaPlatform() 算定后传入（后扣运行在 worker 池 background ctx 上，取不到 ForcePlatform）
 
 	ChannelUsageFields // 渠道映射信息（由 handler 在 Forward 前解析）
 }
@@ -10062,20 +10156,21 @@ type recordUsageOpts struct {
 // RecordUsage 记录使用量并扣费（或更新订阅用量）
 func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInput) error {
 	return s.recordUsageCore(ctx, &recordUsageCoreInput{
-		Result:             input.Result,
-		APIKey:             input.APIKey,
-		User:               input.User,
-		Account:            input.Account,
-		Subscription:       input.Subscription,
-		InboundEndpoint:    input.InboundEndpoint,
-		UpstreamEndpoint:   input.UpstreamEndpoint,
-		UserAgent:          input.UserAgent,
-		IPAddress:          input.IPAddress,
-		RequestPayloadHash: input.RequestPayloadHash,
-		ForceCacheBilling:  input.ForceCacheBilling,
-		APIKeyService:      input.APIKeyService,
-		QuotaPlatform:      input.QuotaPlatform,
-		ChannelUsageFields: input.ChannelUsageFields,
+		Result:              input.Result,
+		APIKey:              input.APIKey,
+		User:                input.User,
+		Account:             input.Account,
+		Subscription:        input.Subscription,
+		InboundEndpoint:     input.InboundEndpoint,
+		UpstreamEndpoint:    input.UpstreamEndpoint,
+		UserAgent:           input.UserAgent,
+		IPAddress:           input.IPAddress,
+		RequestPayloadHash:  input.RequestPayloadHash,
+		ForceCacheBilling:   input.ForceCacheBilling,
+		SkipAccountLastUsed: input.SkipAccountLastUsed,
+		APIKeyService:       input.APIKeyService,
+		QuotaPlatform:       input.QuotaPlatform,
+		ChannelUsageFields:  input.ChannelUsageFields,
 	}, &recordUsageOpts{
 		EnableClaudePath: true,
 	})
@@ -10096,6 +10191,7 @@ type RecordUsageLongContextInput struct {
 	LongContextThreshold  int                // 长上下文阈值（如 200000）
 	LongContextMultiplier float64            // 超出阈值部分的倍率（如 2.0）
 	ForceCacheBilling     bool               // 强制缓存计费：将 input_tokens 转为 cache_read 计费（用于粘性会话切换）
+	SkipAccountLastUsed   bool               // 仅跳过账号 last_used 成功副作用；用量日志、扣费和配额仍正常结算
 	APIKeyService         APIKeyQuotaUpdater // API Key 配额服务（可选）
 	QuotaPlatform         string             // user×platform 配额计量平台：handler 在请求 ctx 内经 QuotaPlatform() 算定后传入（后扣运行在 worker 池 background ctx 上，取不到 ForcePlatform）
 
@@ -10105,20 +10201,21 @@ type RecordUsageLongContextInput struct {
 // RecordUsageWithLongContext 记录使用量并扣费，支持长上下文双倍计费（用于 Gemini）
 func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *RecordUsageLongContextInput) error {
 	return s.recordUsageCore(ctx, &recordUsageCoreInput{
-		Result:             input.Result,
-		APIKey:             input.APIKey,
-		User:               input.User,
-		Account:            input.Account,
-		Subscription:       input.Subscription,
-		InboundEndpoint:    input.InboundEndpoint,
-		UpstreamEndpoint:   input.UpstreamEndpoint,
-		UserAgent:          input.UserAgent,
-		IPAddress:          input.IPAddress,
-		RequestPayloadHash: input.RequestPayloadHash,
-		ForceCacheBilling:  input.ForceCacheBilling,
-		APIKeyService:      input.APIKeyService,
-		QuotaPlatform:      input.QuotaPlatform,
-		ChannelUsageFields: input.ChannelUsageFields,
+		Result:              input.Result,
+		APIKey:              input.APIKey,
+		User:                input.User,
+		Account:             input.Account,
+		Subscription:        input.Subscription,
+		InboundEndpoint:     input.InboundEndpoint,
+		UpstreamEndpoint:    input.UpstreamEndpoint,
+		UserAgent:           input.UserAgent,
+		IPAddress:           input.IPAddress,
+		RequestPayloadHash:  input.RequestPayloadHash,
+		ForceCacheBilling:   input.ForceCacheBilling,
+		SkipAccountLastUsed: input.SkipAccountLastUsed,
+		APIKeyService:       input.APIKeyService,
+		QuotaPlatform:       input.QuotaPlatform,
+		ChannelUsageFields:  input.ChannelUsageFields,
 	}, &recordUsageOpts{
 		LongContextThreshold:  input.LongContextThreshold,
 		LongContextMultiplier: input.LongContextMultiplier,
@@ -10127,19 +10224,20 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 
 // recordUsageCoreInput 是 recordUsageCore 的公共输入字段，从两种输入结构体中提取。
 type recordUsageCoreInput struct {
-	Result             *ForwardResult
-	APIKey             *APIKey
-	User               *User
-	Account            *Account
-	Subscription       *UserSubscription
-	InboundEndpoint    string
-	UpstreamEndpoint   string
-	UserAgent          string
-	IPAddress          string
-	RequestPayloadHash string
-	ForceCacheBilling  bool
-	APIKeyService      APIKeyQuotaUpdater
-	QuotaPlatform      string
+	Result              *ForwardResult
+	APIKey              *APIKey
+	User                *User
+	Account             *Account
+	Subscription        *UserSubscription
+	InboundEndpoint     string
+	UpstreamEndpoint    string
+	UserAgent           string
+	IPAddress           string
+	RequestPayloadHash  string
+	ForceCacheBilling   bool
+	SkipAccountLastUsed bool
+	APIKeyService       APIKeyQuotaUpdater
+	QuotaPlatform       string
 	ChannelUsageFields
 }
 
@@ -10233,7 +10331,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
 		logger.LegacyPrintf("service.gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
-		s.deferredService.ScheduleLastUsedUpdate(account.ID)
+		if !input.SkipAccountLastUsed {
+			s.deferredService.ScheduleLastUsedUpdate(account.ID)
+		}
 		return nil
 	}
 
@@ -10256,6 +10356,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		AccountRateMultiplier: accountRateMultiplier,
 		APIKeyService:         input.APIKeyService,
 		Platform:              quotaPlatform,
+		SkipAccountLastUsed:   input.SkipAccountLastUsed,
 	}, s.billingDeps(), s.usageBillingRepo)
 
 	if billingErr != nil {
@@ -10790,6 +10891,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 	}
 
+	if !anthropicSuccessJSONResponseIsValid(respBody) {
+		s.countTokensError(c, http.StatusBadGateway, "upstream_error", safeUpstreamErrorMessage)
+		return errors.New(safeUpstreamErrorMessage)
+	}
+
 	// 透传成功响应
 	c.Data(resp.StatusCode, "application/json", respBody)
 	return nil
@@ -10903,12 +11009,13 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 		}
 		return fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 	}
+	if !anthropicSuccessJSONResponseIsValid(respBody) {
+		s.countTokensError(c, http.StatusBadGateway, "upstream_error", safeUpstreamErrorMessage)
+		return errors.New(safeUpstreamErrorMessage)
+	}
 
 	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
-	if contentType == "" {
-		contentType = "application/json"
-	}
+	contentType := responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "application/json")
 	c.Data(resp.StatusCode, contentType, respBody)
 	return nil
 }

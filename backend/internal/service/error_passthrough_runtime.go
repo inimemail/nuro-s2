@@ -1,6 +1,10 @@
 package service
 
-import "github.com/gin-gonic/gin"
+import (
+	"strings"
+
+	"github.com/gin-gonic/gin"
+)
 
 const errorPassthroughServiceContextKey = "error_passthrough_service"
 
@@ -56,9 +60,16 @@ func applyErrorPassthroughRule(
 		status = *rule.ResponseCode
 	}
 
-	errMsg = ExtractUpstreamErrorMessage(responseBody)
+	// Matching still uses the original body internally, but public responses
+	// never inherit provider-controlled diagnostics. An explicit admin message
+	// is trusted configuration and remains publishable as written.
 	if !rule.PassthroughBody && rule.CustomMessage != nil {
 		errMsg = *rule.CustomMessage
+	} else {
+		errMsg = sanitizeUpstreamErrorMessage(defaultErrMsg)
+	}
+	if strings.TrimSpace(errMsg) == "" {
+		errMsg = firstNonEmptyString(sanitizeUpstreamErrorMessage(defaultErrMsg), safeUpstreamErrorMessage)
 	}
 
 	// 命中 skip_monitoring 时在 context 中标记，供 ops_error_logger 跳过记录。

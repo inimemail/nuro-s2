@@ -164,11 +164,11 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		)
 		if err != nil {
 			reqLog.Warn("openai_chat_completions.account_select_failed",
-				zap.Error(err),
+				zap.Error(openAICompatibleSelectionErrorForLog(err, requestPlatform)),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
 			if len(failedAccountIDs) == 0 {
-				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, requestPlatform)
+				cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel)
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}
@@ -184,7 +184,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			}
 		}
 		if selection == nil || selection.Account == nil {
-			cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, requestPlatform)
+			cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel)
 			if !cls.ModelNotFound {
 				markOpsRoutingCapacityLimited(c)
 			}
@@ -238,16 +238,19 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			responseLatencyMs = forwardDurationMs - upstreamLatencyMs
 		}
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
-		if err == nil && result != nil && result.FirstTokenMs != nil {
-			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
-		}
+		recordSuccessfulOpenAIOpsTTFT(c, result, err)
 		if err != nil {
-			if result != nil && result.ImageCount > 0 {
-				reqLog.Warn("openai_chat_completions.forward_partial_error_with_image_result",
+			if shouldSettleOpenAIForwardResultAfterError(c, writerSizeBeforeForward, result) {
+				reqLog.Warn("openai_chat_completions.forward_partial_result",
 					zap.Int64("account_id", account.ID),
 					zap.Int("image_count", result.ImageCount),
+					zap.String("terminal_event_type", result.TerminalEventType),
+					zap.Bool("client_disconnected", result.ClientDisconnect),
 					zap.Error(err),
 				)
+				if !result.ClientDisconnect && !openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) {
+					h.ensureForwardErrorResponse(c, streamStarted)
+				}
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
@@ -304,7 +307,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					)
 					continue
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
+				if service.GetOpsCyberPolicy(c) == nil {
+					h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
+				}
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
@@ -332,10 +337,29 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				return
 			}
 		}
+		successfulOutcome := true
 		if result != nil {
-			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, result.FirstTokenMs)
+			var neutralOutcome bool
+			successfulOutcome, neutralOutcome = classifyOpenAIResponsesForwardResultWithError(result, err)
+			if !successfulOutcome && service.GetOpsCyberPolicy(c) != nil {
+				neutralOutcome = true
+			}
+			if !successfulOutcome {
+				result.FirstTokenMs = nil
+			}
+			switch {
+			case successfulOutcome:
+				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, result.FirstTokenMs)
+			case neutralOutcome:
+			default:
+				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
+			}
+			if !successfulOutcome && !openAIEdgeUsageIsBillable(result.Usage) && service.GetOpsCyberPolicy(c) == nil {
+				return
+			}
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, nil)
+			return
 		}
 
 		userAgent := c.GetHeader("User-Agent")
@@ -343,7 +367,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := resolveRawCCUpstreamEndpoint(c, account)
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
-		cyberBlocked := service.GetOpsCyberPolicy(c) != nil
+		cyberBlocked := result.CyberBlocked || service.GetOpsCyberPolicy(c) != nil
 
 		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
@@ -359,6 +383,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				IPAddress:               clientIP,
 				PromptCacheAffinityHash: sessionHash,
 				PromptCacheGroupID:      apiKey.GroupID,
+				SkipSuccessSideEffects:  !successfulOutcome,
 				APIKeyService:           h.apiKeyService,
 				ChannelUsageFields:      channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
 				CyberBlocked:            cyberBlocked,

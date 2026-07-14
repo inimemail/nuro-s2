@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestParseOpenAIWSEventEnvelope(t *testing.T) {
@@ -76,6 +77,82 @@ func TestOpenAIWSErrorEventHelpers_ConsistentWithWrapper(t *testing.T) {
 	require.Equal(t, wrappedCode, rawCode)
 	require.Equal(t, wrappedType, rawType)
 	require.Equal(t, wrappedMsg, rawMsg)
+}
+
+func TestSanitizeOpenAIWSErrorEventForClient(t *testing.T) {
+	t.Parallel()
+
+	t.Run("error event removes endpoint and unknown diagnostics", func(t *testing.T) {
+		payload := []byte(`{"type":"error","error":{"type":"server_error","message":"<!DOCTYPE html><title>xiaobaishu.org | 502</title>","upstream_host":"xiaobaishu.org"},"debug_url":"https://www.cloudflare.com/5xx"}`)
+		sanitized := sanitizeOpenAIWSErrorEventForClient(payload, "error", false)
+		require.JSONEq(t, `{"type":"error","error":{"type":"server_error","message":"Upstream request failed"}}`, string(sanitized))
+		require.NotContains(t, string(sanitized), "xiaobaishu.org")
+		require.NotContains(t, string(sanitized), "cloudflare.com")
+		require.NotContains(t, string(sanitized), "DOCTYPE")
+	})
+
+	t.Run("response failed preserves safe cyber policy fields", func(t *testing.T) {
+		payload := []byte(`{"type":"response.failed","sequence_number":9,"response":{"id":"resp_cyber","object":"response","status":"failed","model":"gpt-5.1","error":{"type":"safety_error","code":"cyber_policy","message":"This request has been flagged for potentially high-risk cyber activity.","upstream_host":"private.example"},"usage":{"input_tokens":10},"output":[{"private_url":"https://private.example/result"}]}}`)
+		sanitized := sanitizeOpenAIWSErrorEventForClient(payload, "response.failed", false)
+		require.Equal(t, "resp_cyber", gjson.GetBytes(sanitized, "response.id").String())
+		require.Equal(t, "failed", gjson.GetBytes(sanitized, "response.status").String())
+		require.Equal(t, "safety_error", gjson.GetBytes(sanitized, "response.error.type").String())
+		require.Equal(t, "cyber_policy", gjson.GetBytes(sanitized, "response.error.code").String())
+		require.Contains(t, gjson.GetBytes(sanitized, "response.error.message").String(), "high-risk cyber activity")
+		require.False(t, gjson.GetBytes(sanitized, "response.usage").Exists())
+		require.False(t, gjson.GetBytes(sanitized, "response.output").Exists())
+		require.NotContains(t, string(sanitized), "private.example")
+	})
+
+	t.Run("success event stays byte for byte unchanged", func(t *testing.T) {
+		payload := []byte(`{"type":"response.completed","response":{"id":"resp_ok","output":[{"type":"message","content":[]}]}}`)
+		require.Equal(t, payload, sanitizeOpenAIWSErrorEventForClient(payload, "response.completed", true))
+	})
+}
+
+func TestNormalizeOpenAIWSUpstreamEventForSafety(t *testing.T) {
+	t.Run("normal completed remains completed", func(t *testing.T) {
+		payload := []byte(`{"type":"response.completed","response":{"id":"resp_ok","status":"completed","output":[]}}`)
+		normalized, eventType, unsafe := normalizeOpenAIWSUpstreamEventForSafety(payload, "response.completed")
+		require.False(t, unsafe)
+		require.Equal(t, "response.completed", eventType)
+		require.Equal(t, payload, normalized)
+	})
+
+	t.Run("diagnostic completed becomes safe failure", func(t *testing.T) {
+		payload := []byte(`{"type":"response.completed","response":{"id":"resp_bad","status":"completed","provider":"private-provider.example"}}`)
+		normalized, eventType, unsafe := normalizeOpenAIWSUpstreamEventForSafety(payload, "response.completed")
+		require.True(t, unsafe)
+		require.Equal(t, "response.failed", eventType)
+		require.Contains(t, string(normalized), safeUpstreamErrorMessage)
+		require.NotContains(t, string(normalized), "private-provider")
+	})
+
+	t.Run("invalid frame becomes safe failure", func(t *testing.T) {
+		normalized, eventType, unsafe := normalizeOpenAIWSUpstreamEventForSafety([]byte(`<!DOCTYPE html><title>private.example</title>`), "")
+		require.True(t, unsafe)
+		require.Equal(t, "response.failed", eventType)
+		require.Contains(t, string(normalized), safeUpstreamErrorMessage)
+		require.NotContains(t, string(normalized), "private.example")
+	})
+
+	require.True(t, isOpenAIWSSuccessTerminalEvent("response.completed"))
+	require.True(t, isOpenAIWSSuccessTerminalEvent("response.done"))
+	require.False(t, isOpenAIWSSuccessTerminalEvent("response.failed"))
+	require.False(t, isOpenAIWSSuccessTerminalEvent("response.incomplete"))
+	require.False(t, isOpenAIWSSuccessTerminalEvent("response.cancelled"))
+}
+
+func TestBuildOpenAIWSHTTPBridgeErrorEventDoesNotExposeUpstreamIdentity(t *testing.T) {
+	payload := buildOpenAIWSHTTPBridgeErrorEvent(
+		http.StatusBadGateway,
+		"xAI proxy https://xiaobaishu.org failed via cloudflare",
+	)
+
+	require.Contains(t, string(payload), safeUpstreamErrorMessage)
+	require.NotContains(t, string(payload), "xAI")
+	require.NotContains(t, string(payload), "xiaobaishu.org")
+	require.NotContains(t, string(payload), "cloudflare")
 }
 
 func TestOpenAIWSMessageLikelyContainsToolCalls(t *testing.T) {

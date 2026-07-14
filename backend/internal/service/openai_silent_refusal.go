@@ -73,7 +73,7 @@ func (d *openAIChatSilentRefusalDetector) ObservePayload(payload []byte) {
 	eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 	d.observeEventType(eventType)
 
-	if gjson.GetBytes(payload, "error").Exists() {
+	if errorValue := gjson.GetBytes(payload, "error"); errorValue.Exists() && errorValue.Type != gjson.Null {
 		d.sawError = true
 	}
 	if usage := gjson.GetBytes(payload, "usage"); usage.Exists() && usage.IsObject() {

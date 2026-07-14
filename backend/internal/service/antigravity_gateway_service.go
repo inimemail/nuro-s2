@@ -22,6 +22,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -1361,7 +1362,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 
 	// 获取 access_token
 	if s.tokenProvider == nil {
-		return nil, s.writeClaudeError(c, http.StatusBadGateway, "api_error", "Antigravity token provider not configured")
+		return nil, s.writeClaudeError(c, http.StatusBadGateway, "api_error", "Service temporarily unavailable")
 	}
 	accessToken, err := s.tokenProvider.GetAccessToken(ctx, account)
 	if err != nil {
@@ -1717,8 +1718,8 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	}
 
 	requestID := resp.Header.Get("x-request-id")
-	if requestID != "" {
-		c.Header("x-request-id", requestID)
+	if publicID := responseheaders.PublicRequestID(requestID); publicID != "" {
+		c.Header("x-request-id", publicID)
 	}
 
 	var usage *ClaudeUsage
@@ -1726,14 +1727,27 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	var clientDisconnect bool
 	if claudeReq.Stream {
 		// 客户端要求流式，直接透传转换
-		streamRes, err := s.handleClaudeStreamingResponse(c, resp, startTime, originalModel)
-		if err != nil {
-			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_error error=%v", prefix, err)
-			return nil, err
+		streamRes, streamErr := s.handleClaudeStreamingResponse(c, resp, startTime, originalModel)
+		if streamRes == nil {
+			if streamErr != nil {
+				logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_error error=%v", prefix, streamErr)
+			}
+			return nil, streamErr
 		}
 		usage = streamRes.usage
 		firstTokenMs = streamRes.firstTokenMs
 		clientDisconnect = streamRes.clientDisconnect
+		if streamErr != nil {
+			if usage == nil {
+				usage = &ClaudeUsage{}
+			}
+			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_error error=%v", prefix, streamErr)
+			return &ForwardResult{
+				RequestID: requestID, Usage: *usage, Model: originalModel, UpstreamModel: billingModel,
+				Stream: true, Duration: time.Since(startTime), FirstTokenMs: firstTokenMs,
+				ClientDisconnect: clientDisconnect,
+			}, streamErr
+		}
 	} else {
 		// 客户端要求非流式，收集流式响应后转换返回
 		streamRes, err := s.handleClaudeStreamToNonStreaming(c, resp, startTime, originalModel)
@@ -2109,7 +2123,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 
 	// 获取 access_token
 	if s.tokenProvider == nil {
-		return nil, s.writeGoogleError(c, http.StatusBadGateway, "Antigravity token provider not configured")
+		return nil, s.writeGoogleError(c, http.StatusBadGateway, "Service temporarily unavailable")
 	}
 	accessToken, err := s.tokenProvider.GetAccessToken(ctx, account)
 	if err != nil {
@@ -2195,7 +2209,6 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	// 处理错误响应
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		contentType := resp.Header.Get("Content-Type")
 		// 尽早关闭原始响应体，释放连接；后续逻辑仍可能需要读取 body，因此用内存副本重新包装。
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -2297,7 +2310,6 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 							Header:     retryResp.Header.Clone(),
 							Body:       io.NopCloser(bytes.NewReader(retryRespBody)),
 						}
-						contentType = resp.Header.Get("Content-Type")
 					}
 				} else {
 					if switchErr, ok := IsAntigravityAccountSwitchError(retryErr); ok {
@@ -2335,8 +2347,8 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		}
 
 		requestID := resp.Header.Get("x-request-id")
-		if requestID != "" {
-			c.Header("x-request-id", requestID)
+		if publicID := responseheaders.PublicRequestID(requestID); publicID != "" {
+			c.Header("x-request-id", publicID)
 		}
 
 		unwrapped, unwrapErr := s.unwrapV1InternalResponse(respBody)
@@ -2381,9 +2393,6 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 			})
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: unwrappedForOps}
 		}
-		if contentType == "" {
-			contentType = "application/json"
-		}
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
@@ -2395,15 +2404,13 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 			Detail:             upstreamDetail,
 		})
 		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] upstream error status=%d body=%s", resp.StatusCode, truncateForLog(unwrappedForOps, 500))
-		MarkResponseCommitted(c)
-		c.Data(resp.StatusCode, contentType, unwrappedForOps)
-		return nil, fmt.Errorf("antigravity upstream error: %d", resp.StatusCode)
+		return nil, s.writeGoogleError(c, resp.StatusCode, safeUpstreamErrorMessage)
 	}
 
 handleSuccess:
 	requestID := resp.Header.Get("x-request-id")
-	if requestID != "" {
-		c.Header("x-request-id", requestID)
+	if publicID := responseheaders.PublicRequestID(requestID); publicID != "" {
+		c.Header("x-request-id", publicID)
 	}
 
 	var usage *ClaudeUsage
@@ -2412,14 +2419,27 @@ handleSuccess:
 
 	if stream {
 		// 客户端要求流式，直接透传
-		streamRes, err := s.handleGeminiStreamingResponse(c, resp, startTime)
-		if err != nil {
-			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_error error=%v", prefix, err)
-			return nil, err
+		streamRes, streamErr := s.handleGeminiStreamingResponse(c, resp, startTime)
+		if streamRes == nil {
+			if streamErr != nil {
+				logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_error error=%v", prefix, streamErr)
+			}
+			return nil, streamErr
 		}
 		usage = streamRes.usage
 		firstTokenMs = streamRes.firstTokenMs
 		clientDisconnect = streamRes.clientDisconnect
+		if streamErr != nil {
+			if usage == nil {
+				usage = &ClaudeUsage{}
+			}
+			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_error error=%v", prefix, streamErr)
+			return &ForwardResult{
+				RequestID: requestID, Usage: *usage, Model: originalModel, UpstreamModel: billingModel,
+				Stream: true, Duration: time.Since(startTime), FirstTokenMs: firstTokenMs,
+				ClientDisconnect: clientDisconnect,
+			}, streamErr
+		}
 	} else {
 		// 客户端要求非流式，收集流式响应后返回
 		streamRes, err := s.handleGeminiStreamToNonStreaming(c, resp, startTime)
@@ -2958,6 +2978,22 @@ type antigravityStreamResult struct {
 	usage            *ClaudeUsage
 	firstTokenMs     *int
 	clientDisconnect bool // 客户端是否在流式传输过程中断开
+	upstreamError    bool
+}
+
+func antigravityGeminiResponseState(body []byte) (terminal bool, valid bool) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || !gjson.ValidBytes(trimmed) || !gjson.ParseBytes(trimmed).IsObject() {
+		return false, false
+	}
+	if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(trimmed, "type").String()), "error") {
+		return false, false
+	}
+	errorValue := gjson.GetBytes(trimmed, "error")
+	if errorValue.Exists() && errorValue.Type != gjson.Null {
+		return false, false
+	}
+	return strings.TrimSpace(gjson.GetBytes(trimmed, "candidates.0.finishReason").String()) != "", true
 }
 
 // antigravityClientWriter 封装流式响应的客户端写入，自动检测断开并标记。
@@ -3026,10 +3062,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "text/event-stream; charset=utf-8"
-	}
+	contentType := responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "text/event-stream; charset=utf-8")
 	c.Header("Content-Type", contentType)
 
 	flusher, ok := c.Writer.(http.Flusher)
@@ -3110,6 +3143,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 		keepaliveCh = keepaliveTicker.C
 	}
 	lastDataAt := time.Now()
+	sawTerminal := false
 
 	cw := newAntigravityClientWriter(c.Writer, flusher, "antigravity gemini")
 
@@ -3128,7 +3162,13 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}, nil
+				result := &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}
+				if !sawTerminal && !result.clientDisconnect {
+					sendErrorEvent("stream_incomplete")
+					result.upstreamError = true
+					return result, errors.New("antigravity gemini stream ended without terminal finish reason")
+				}
+				return result, nil
 			}
 			if ev.err != nil {
 				if disconnect, handled := handleStreamReadError(ev.err, cw.Disconnected(), "antigravity gemini"); handled {
@@ -3140,7 +3180,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, ev.err
 				}
 				sendErrorEvent("stream_read_error")
-				return nil, ev.err
+				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, upstreamError: true}, ev.err
 			}
 
 			lastDataAt = time.Now()
@@ -3149,16 +3189,29 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 			trimmed := strings.TrimRight(line, "\r\n")
 			if strings.HasPrefix(trimmed, "data:") {
 				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-				if payload == "" || payload == "[DONE]" {
+				if payload == "" {
+					cw.Fprintf("%s\n", line)
+					continue
+				}
+				if payload == "[DONE]" {
+					sawTerminal = true
 					cw.Fprintf("%s\n", line)
 					continue
 				}
 
 				// 解包 v1internal 响应
 				inner, parseErr := s.unwrapV1InternalResponse([]byte(payload))
-				if parseErr == nil && inner != nil {
-					payload = string(inner)
+				if parseErr != nil || inner == nil {
+					sendErrorEvent("upstream_error")
+					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, upstreamError: true}, errors.New("invalid antigravity gemini stream payload")
 				}
+				terminal, valid := antigravityGeminiResponseState(inner)
+				if !valid {
+					sendErrorEvent("upstream_error")
+					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, upstreamError: true}, errors.New("antigravity gemini stream returned an error payload")
+				}
+				sawTerminal = sawTerminal || terminal
+				payload = string(inner)
 
 				// 解析 usage
 				if u := extractGeminiUsage(inner); u != nil {
@@ -3190,7 +3243,13 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 				continue
 			}
 
-			cw.Fprintf("%s\n", line)
+			trimmed = strings.TrimSpace(trimmed)
+			if trimmed == "" || strings.HasPrefix(trimmed, ":") || strings.HasPrefix(strings.ToLower(trimmed), "event:") {
+				cw.Fprintf("%s\n", line)
+				continue
+			}
+			sendErrorEvent("upstream_error")
+			return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, upstreamError: true}, errors.New("invalid antigravity gemini SSE line")
 
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
@@ -3203,7 +3262,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity)")
 			sendErrorEvent("stream_timeout")
-			return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
+			return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, upstreamError: true}, fmt.Errorf("stream data interval timeout")
 
 		case <-keepaliveCh:
 			if cw.Disconnected() {
@@ -3404,6 +3463,13 @@ returnResponse:
 	respBody, err := json.Marshal(finalResponse)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal response: %w", err)
+	}
+	if !geminiNativeResponseIsValid(respBody) {
+		return nil, &UpstreamFailoverError{
+			StatusCode:   http.StatusBadGateway,
+			ResponseBody: respBody,
+			Message:      safeUpstreamErrorMessage,
+		}
 	}
 	c.Data(http.StatusOK, "application/json", respBody)
 
@@ -3630,7 +3696,7 @@ func (s *AntigravityGatewayService) writeMappedClaudeError(c *gin.Context, accou
 	case 400:
 		statusCode = http.StatusBadRequest
 		errType = "invalid_request_error"
-		errMsg = getPassthroughOrDefault(upstreamMsg, "Invalid request")
+		errMsg = "Invalid request"
 	case 401:
 		statusCode = http.StatusBadGateway
 		errType = "authentication_error"
@@ -3984,9 +4050,16 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				// 上游完成，发送结束事件
+				// Only an explicit upstream finish reason is a successful terminal.
+				sawTerminal := processor.MessageStopSent()
 				finalEvents, agUsage := processor.Finish()
-				if len(finalEvents) > 0 {
+				if !sawTerminal && processor.MessageStartSent() && !cw.Disconnected() {
+					sendErrorEvent("stream_incomplete")
+					return &antigravityStreamResult{
+						usage: convertUsage(agUsage), firstTokenMs: firstTokenMs, upstreamError: true,
+					}, errors.New("antigravity claude stream ended without terminal finish reason")
+				}
+				if sawTerminal && len(finalEvents) > 0 {
 					cw.Write(finalEvents)
 				} else if !processor.MessageStartSent() && !cw.Disconnected() {
 					// 整个流未收到任何可解析的上游数据（全部 SSE 行均无法被 JSON 解析），
@@ -4007,16 +4080,37 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity): max_size=%d error=%v", maxLineSize, ev.err)
 					sendErrorEvent("response_too_large")
-					return &antigravityStreamResult{usage: convertUsage(nil), firstTokenMs: firstTokenMs}, ev.err
+					return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs, upstreamError: true}, ev.err
 				}
 				sendErrorEvent("stream_read_error")
-				return nil, fmt.Errorf("stream read error: %w", ev.err)
+				return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs, upstreamError: true}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 
 			lastDataAt = time.Now()
 
+			line := strings.TrimRight(ev.line, "\r\n")
+			trimmedLine := strings.TrimSpace(line)
+			if strings.HasPrefix(strings.ToLower(trimmedLine), "data:") {
+				payload := strings.TrimSpace(trimmedLine[len("data:"):])
+				if payload != "" && payload != "[DONE]" {
+					inner, unwrapErr := s.unwrapV1InternalResponse([]byte(payload))
+					_, valid := antigravityGeminiResponseState(inner)
+					if unwrapErr != nil || !valid {
+						if !processor.MessageStartSent() {
+							return nil, &UpstreamFailoverError{
+								StatusCode:             http.StatusBadGateway,
+								ResponseBody:           []byte(`{"error":"invalid stream response from upstream"}`),
+								RetryableOnSameAccount: true,
+							}
+						}
+						sendErrorEvent("upstream_error")
+						return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs, upstreamError: true}, errors.New("antigravity claude stream returned an error payload")
+					}
+				}
+			}
+
 			// 处理 SSE 行，转换为 Claude 格式
-			claudeEvents := processor.ProcessLine(strings.TrimRight(ev.line, "\r\n"))
+			claudeEvents := processor.ProcessLine(line)
 			if len(claudeEvents) > 0 {
 				if firstTokenMs == nil {
 					ms := int(time.Since(startTime).Milliseconds())
@@ -4036,7 +4130,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity)")
 			sendErrorEvent("stream_timeout")
-			return &antigravityStreamResult{usage: convertUsage(nil), firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
+			return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs, upstreamError: true}, fmt.Errorf("stream data interval timeout")
 
 		case <-keepaliveCh:
 			if cw.Disconnected() {
@@ -4268,14 +4362,18 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", false)
 		}
 
-		// 透传上游错误
-		c.Header("Content-Type", resp.Header.Get("Content-Type"))
-		c.Status(resp.StatusCode)
-		_, _ = c.Writer.Write(respBody)
+		// Upstream/CDN error bodies can contain private hosts and diagnostic
+		// URLs. Keep the raw body for internal account state handling only.
+		MarkResponseCommitted(c)
+		c.JSON(resp.StatusCode, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": safeUpstreamErrorMessage,
+			},
+		})
 
-		return &ForwardResult{
-			Model: originalModel,
-		}, nil
+		return nil, fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)
 	}
 
 	// 处理成功响应（流式/非流式）
@@ -4295,6 +4393,16 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		usage = streamRes.usage
 		firstTokenMs = streamRes.firstTokenMs
 		clientDisconnect = streamRes.clientDisconnect
+		if streamRes.upstreamError {
+			MarkResponseCommitted(c)
+			if usage == nil {
+				usage = &ClaudeUsage{}
+			}
+			return &ForwardResult{
+				Model: originalModel, Stream: true, Duration: time.Since(startTime),
+				FirstTokenMs: firstTokenMs, ClientDisconnect: clientDisconnect, Usage: *usage,
+			}, errors.New(safeUpstreamErrorMessage)
+		}
 	} else {
 		// 非流式响应：直接透传
 		respBody, err := io.ReadAll(resp.Body)
@@ -4302,10 +4410,18 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 			return nil, fmt.Errorf("read upstream response: %w", err)
 		}
 
+		if !anthropicSuccessJSONResponseIsValid(respBody) {
+			return nil, &UpstreamFailoverError{
+				StatusCode:   http.StatusBadGateway,
+				ResponseBody: respBody,
+				Message:      safeUpstreamErrorMessage,
+			}
+		}
+
 		// 提取 usage
 		usage = s.extractClaudeUsage(respBody)
 
-		c.Header("Content-Type", resp.Header.Get("Content-Type"))
+		c.Header("Content-Type", responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "application/json"))
 		c.Status(http.StatusOK)
 		_, _ = c.Writer.Write(respBody)
 	}
@@ -4400,39 +4516,70 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 		keepaliveCh = keepaliveTicker.C
 	}
 	lastDataAt := time.Now()
+	errorEvent := false
+	sawTerminal := false
 
 	flusher, _ := c.Writer.(http.Flusher)
 	cw := newAntigravityClientWriter(c.Writer, flusher, "antigravity upstream")
+	safeErrorSent := false
+	sendSafeError := func() {
+		if safeErrorSent || cw.Disconnected() {
+			return
+		}
+		safeErrorSent = true
+		cw.Fprintf("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}\n\n")
+	}
 
 	for {
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}
+				if !sawTerminal && !cw.Disconnected() {
+					sendSafeError()
+				}
+				return &antigravityStreamResult{
+					usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected(),
+					upstreamError: !sawTerminal && !cw.Disconnected(),
+				}
 			}
 			if ev.err != nil {
 				if disconnect, handled := handleStreamReadError(ev.err, cw.Disconnected(), "antigravity upstream"); handled {
-					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: disconnect}
+					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: disconnect, upstreamError: !sawTerminal && !disconnect}
 				}
 				logger.LegacyPrintf("service.antigravity_gateway", "Stream read error (antigravity upstream): %v", ev.err)
-				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}
+				if !sawTerminal {
+					sendSafeError()
+				}
+				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, upstreamError: !sawTerminal}
 			}
 
 			lastDataAt = time.Now()
 
-			line := ev.line
+			line, upstreamError := sanitizeAntigravityUpstreamSSEErrorLine(ev.line, &errorEvent)
 
 			// 记录首 token 时间
-			if firstTokenMs == nil && len(line) > 0 {
+			if !upstreamError && firstTokenMs == nil && len(line) > 0 {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
 
 			// 尝试从 message_delta 或 message_stop 事件提取 usage
-			s.extractSSEUsage(line, usage)
+			if !upstreamError {
+				s.extractSSEUsage(line, usage)
+				if data, ok := extractAnthropicSSEDataLine(line); ok {
+					trimmedData := strings.TrimSpace(data)
+					sawTerminal = sawTerminal || anthropicStreamEventIsTerminal("", trimmedData)
+				} else if eventName := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "event:")); eventName != "" {
+					sawTerminal = sawTerminal || anthropicStreamEventIsTerminal(eventName, "")
+				}
+			}
 
 			// 透传行
 			cw.Fprintf("%s\n", line)
+			if upstreamError {
+				cw.Fprintf("\n")
+				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected(), upstreamError: true}
+			}
 
 		case <-intervalCh:
 			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
@@ -4444,7 +4591,8 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity upstream)")
-			return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}
+			sendSafeError()
+			return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, upstreamError: true}
 
 		case <-keepaliveCh:
 			if cw.Disconnected() {
@@ -4461,6 +4609,50 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 			}
 		}
 	}
+}
+
+// sanitizeAntigravityUpstreamSSEErrorLine keeps successful SSE events opaque,
+// but replaces an upstream error event body before it reaches the client.
+// Error events can contain proxy HTML, private hosts, or diagnostic URLs even
+// when the HTTP response itself is 200.
+func sanitizeAntigravityUpstreamSSEErrorLine(line string, errorEvent *bool) (string, bool) {
+	if errorEvent == nil {
+		return line, false
+	}
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(strings.ToLower(trimmed), "event:") {
+		name := strings.TrimSpace(trimmed[len("event:"):])
+		*errorEvent = strings.EqualFold(name, "error")
+		return line, false
+	}
+	if trimmed == "" {
+		*errorEvent = false
+		return line, false
+	}
+	if !strings.HasPrefix(strings.ToLower(trimmed), "data:") {
+		if strings.HasPrefix(trimmed, ":") {
+			return ":", false
+		}
+		*errorEvent = false
+		return `event: error
+data: {"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`, true
+	}
+	data := strings.TrimSpace(trimmed[len("data:"):])
+	if data == "" {
+		return line, false
+	}
+	if !gjson.Valid(data) || !gjson.Parse(data).IsObject() {
+		*errorEvent = false
+		return `data: {"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`, true
+	}
+	errorValue := gjson.Get(data, "error")
+	forceSanitize := *errorEvent || strings.EqualFold(strings.TrimSpace(gjson.Get(data, "type").String()), "error") ||
+		(errorValue.Exists() && errorValue.Type != gjson.Null) || openAIPassthroughResponseIsUnsafe([]byte(data))
+	if !forceSanitize {
+		return line, false
+	}
+	*errorEvent = false
+	return `data: {"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`, true
 }
 
 // extractSSEUsage 从 SSE data 行中提取 Claude usage（用于流式透传场景）

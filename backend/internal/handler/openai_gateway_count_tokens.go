@@ -92,7 +92,9 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 	}
 
 	requestStart := time.Now()
-	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
+	// Token counting is stateless. Do not read, refresh, or create the sticky
+	// binding used by real generation requests.
+	sessionHash := ""
 	currentRoutingModel := routingModel
 	if preferredMappedModel != "" {
 		currentRoutingModel = preferredMappedModel
@@ -111,8 +113,9 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 	)
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	if err != nil {
-		reqLog.Warn("openai_count_tokens.account_select_failed", zap.Error(err))
-		cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, currentRoutingModel, reqModel, service.PlatformOpenAI)
+		requestPlatform := openAICompatibleRequestPlatform(apiKey)
+		reqLog.Warn("openai_count_tokens.account_select_failed", zap.Error(openAICompatibleSelectionErrorForLog(err, requestPlatform)))
+		cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, currentRoutingModel, reqModel)
 		if !cls.ModelNotFound {
 			markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 		}
@@ -120,7 +123,7 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 	if selection == nil || selection.Account == nil {
-		cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, currentRoutingModel, reqModel, service.PlatformOpenAI)
+		cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, currentRoutingModel, reqModel)
 		if !cls.ModelNotFound {
 			markOpsRoutingCapacityLimited(c)
 		}
@@ -130,12 +133,47 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 
 	account := selection.Account
 	setOpsSelectedAccount(c, account.ID, account.Platform)
-	if selection.Acquired && selection.ReleaseFunc != nil {
-		defer selection.ReleaseFunc()
-	}
 	forwardBody := mappedBodyForMessages(channelMapping.Mapped, channelMapping.MappedModel)
 	defaultMappedModel := preferredMappedModel
-
+	if account.Platform == service.PlatformGrok {
+		// Grok token counting is local-only. Release an optimistic scheduler
+		// acquisition immediately and never contend for an upstream slot.
+		if selection.Acquired && selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+		if err := h.gatewayService.ForwardCountTokensAsAnthropic(c.Request.Context(), c, account, forwardBody, defaultMappedModel); err != nil {
+			reqLog.Error("openai_count_tokens.forward_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+		}
+		return
+	}
+	accountRelease := selection.ReleaseFunc
+	if !selection.Acquired {
+		if selection.WaitPlan == nil {
+			markOpsRoutingCapacityLimited(c)
+			h.anthropicErrorResponse(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
+			return
+		}
+		var acquired bool
+		accountRelease, acquired, err = h.concurrencyHelper.TryAcquireAccountSlot(
+			c.Request.Context(),
+			account.ID,
+			selection.WaitPlan.MaxConcurrency,
+		)
+		if err != nil {
+			reqLog.Warn("openai_count_tokens.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+			h.anthropicErrorResponse(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
+			return
+		}
+		if !acquired {
+			markOpsRoutingCapacityLimited(c)
+			h.anthropicErrorResponse(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
+			return
+		}
+	}
+	accountRelease = wrapReleaseOnDone(c.Request.Context(), accountRelease)
+	if accountRelease != nil {
+		defer accountRelease()
+	}
 	if err := h.gatewayService.ForwardCountTokensAsAnthropic(c.Request.Context(), c, account, forwardBody, defaultMappedModel); err != nil {
 		reqLog.Error("openai_count_tokens.forward_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}

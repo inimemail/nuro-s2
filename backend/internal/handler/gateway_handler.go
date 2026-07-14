@@ -68,6 +68,45 @@ func (h *GatewayHandler) reportAccountScheduleResult(account *service.Account, s
 	}
 }
 
+func gatewayForwardResultHasBillableUsage(result *service.ForwardResult) bool {
+	if result == nil {
+		return false
+	}
+	usage := result.Usage
+	return usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CacheCreationInputTokens > 0 ||
+		usage.CacheReadInputTokens > 0 || usage.CacheCreation5mTokens > 0 ||
+		usage.CacheCreation1hTokens > 0 || usage.ImageOutputTokens > 0 || result.ImageCount > 0
+}
+
+func classifyGatewayForwardResult(result *service.ForwardResult, forwardErr error) (successful, neutral bool) {
+	if result == nil {
+		return false, false
+	}
+	if result.ClientDisconnect {
+		return false, true
+	}
+	if result.NeutralOutcome {
+		return false, true
+	}
+	if result.FailedOutcome {
+		return false, false
+	}
+	if forwardErr != nil {
+		return false, false
+	}
+	return true, false
+}
+
+func shouldSettleGatewayForwardResultAfterError(c *gin.Context, writerSizeBeforeForward int, result *service.ForwardResult) bool {
+	if result == nil {
+		return false
+	}
+	if result.ClientDisconnect || gatewayForwardResultHasBillableUsage(result) || service.IsResponseCommitted(c) {
+		return true
+	}
+	return c != nil && c.Writer != nil && c.Writer.Size() != writerSizeBeforeForward
+}
+
 // NewGatewayHandler creates a new GatewayHandler
 func NewGatewayHandler(
 	gatewayService *service.GatewayService,
@@ -357,7 +396,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.String("platform", platform),
 						zap.Error(err),
 					)
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
 					return
 				}
 				action := fs.HandleSelectionExhausted(c.Request.Context())
@@ -470,7 +509,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
 			}
-			if err != nil {
+			settleForwardError := err != nil && shouldSettleGatewayForwardResultAfterError(c, writerSizeBeforeForward, result)
+			if err != nil && !settleForwardError {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
@@ -520,12 +560,31 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				reqLog.Error("gateway.forward_failed", forwardFailedFields...)
 				return
 			}
-			h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
+			if settleForwardError && !result.ClientDisconnect && !gatewayForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) {
+				h.ensureForwardErrorResponse(c, streamStarted)
+			}
+			if result == nil {
+				return
+			}
+			successfulOutcome, neutralOutcome := classifyGatewayForwardResult(result, err)
+			if !successfulOutcome {
+				result.FirstTokenMs = nil
+			}
+			switch {
+			case successfulOutcome:
+				h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
+			case neutralOutcome:
+			default:
+				h.reportAccountScheduleResult(account, false, nil)
+			}
+			if !successfulOutcome && !gatewayForwardResultHasBillableUsage(result) {
+				return
+			}
 
 			// RPM 计数递增（Forward 成功后）
 			// 注意：TOCTOU 竞态是已知且可接受的设计权衡，与 WindowCost 一致的 soft-limit 模式。
 			// 在高并发下可能短暂超出 RPM 限制，但不会导致请求失败。
-			if account.IsAnthropicOAuthOrSetupToken() && account.GetBaseRPM() > 0 {
+			if successfulOutcome && account.IsAnthropicOAuthOrSetupToken() && account.GetBaseRPM() > 0 {
 				if err := h.gatewayService.IncrementAccountRPM(c.Request.Context(), account.ID); err != nil {
 					reqLog.Warn("gateway.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
@@ -546,21 +605,22 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-					Result:             result,
-					ParsedRequest:      parsedReq,
-					QuotaPlatform:      quotaPlatform,
-					APIKey:             apiKey,
-					User:               apiKey.User,
-					Account:            account,
-					Subscription:       subscription,
-					InboundEndpoint:    inboundEndpoint,
-					UpstreamEndpoint:   upstreamEndpoint,
-					UserAgent:          userAgent,
-					IPAddress:          clientIP,
-					RequestPayloadHash: requestPayloadHash,
-					ForceCacheBilling:  fs.ForceCacheBilling,
-					APIKeyService:      h.apiKeyService,
-					ChannelUsageFields: channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
+					Result:              result,
+					ParsedRequest:       parsedReq,
+					QuotaPlatform:       quotaPlatform,
+					APIKey:              apiKey,
+					User:                apiKey.User,
+					Account:             account,
+					Subscription:        subscription,
+					InboundEndpoint:     inboundEndpoint,
+					UpstreamEndpoint:    upstreamEndpoint,
+					UserAgent:           userAgent,
+					IPAddress:           clientIP,
+					RequestPayloadHash:  requestPayloadHash,
+					ForceCacheBilling:   fs.ForceCacheBilling,
+					SkipAccountLastUsed: !successfulOutcome,
+					APIKeyService:       h.apiKeyService,
+					ChannelUsageFields:  channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
 				}); err != nil {
 					logger.L().With(
 						zap.String("component", "handler.gateway.messages"),
@@ -614,7 +674,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Bool("fallback_used", fallbackUsed),
 						zap.Error(err),
 					)
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
 					return
 				}
 				action := fs.HandleSelectionExhausted(c.Request.Context())
@@ -811,7 +871,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
 			}
-			if err != nil {
+			settleForwardError := err != nil && shouldSettleGatewayForwardResultAfterError(c, writerSizeBeforeForward, result)
+			if err != nil && !settleForwardError {
 				// Beta policy block: return 400 immediately, no failover
 				var betaBlockedErr *service.BetaBlockedError
 				if errors.As(err, &betaBlockedErr) {
@@ -915,12 +976,31 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				reqLog.Error("gateway.forward_failed", forwardFailedFields...)
 				return
 			}
-			h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
+			if settleForwardError && !result.ClientDisconnect && !gatewayForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) {
+				h.ensureForwardErrorResponse(c, streamStarted)
+			}
+			if result == nil {
+				return
+			}
+			successfulOutcome, neutralOutcome := classifyGatewayForwardResult(result, err)
+			if !successfulOutcome {
+				result.FirstTokenMs = nil
+			}
+			switch {
+			case successfulOutcome:
+				h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
+			case neutralOutcome:
+			default:
+				h.reportAccountScheduleResult(account, false, nil)
+			}
+			if !successfulOutcome && !gatewayForwardResultHasBillableUsage(result) {
+				return
+			}
 
 			// RPM 计数递增（Forward 成功后）
 			// 注意：TOCTOU 竞态是已知且可接受的设计权衡，与 WindowCost 一致的 soft-limit 模式。
 			// 在高并发下可能短暂超出 RPM 限制，但不会导致请求失败。
-			if account.IsAnthropicOAuthOrSetupToken() && account.GetBaseRPM() > 0 {
+			if successfulOutcome && account.IsAnthropicOAuthOrSetupToken() && account.GetBaseRPM() > 0 {
 				if err := h.gatewayService.IncrementAccountRPM(c.Request.Context(), account.ID); err != nil {
 					reqLog.Warn("gateway.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
@@ -931,7 +1011,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// - 选中账号与粘性账号一致：刷新 TTL
 			// - 粘性账号因负载/RPM 被跳过、选中了其他账号：不覆盖原绑定，
 			//   下次请求粘性账号恢复后仍可命中
-			if sessionKey != "" && (sessionBoundAccountID == 0 || sessionBoundAccountID == account.ID) {
+			if successfulOutcome && sessionKey != "" && (sessionBoundAccountID == 0 || sessionBoundAccountID == account.ID) {
 				if err := h.gatewayService.BindStickySession(c.Request.Context(), currentAPIKey.GroupID, sessionKey, account.ID); err != nil {
 					reqLog.Warn("gateway.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
@@ -952,21 +1032,22 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			quotaPlatform := service.QuotaPlatform(c.Request.Context(), currentAPIKey)
 			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-					Result:             result,
-					ParsedRequest:      parsedReq,
-					QuotaPlatform:      quotaPlatform,
-					APIKey:             currentAPIKey,
-					User:               currentAPIKey.User,
-					Account:            account,
-					Subscription:       currentSubscription,
-					InboundEndpoint:    inboundEndpoint,
-					UpstreamEndpoint:   upstreamEndpoint,
-					UserAgent:          userAgent,
-					IPAddress:          clientIP,
-					RequestPayloadHash: requestPayloadHash,
-					ForceCacheBilling:  fs.ForceCacheBilling,
-					APIKeyService:      h.apiKeyService,
-					ChannelUsageFields: channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
+					Result:              result,
+					ParsedRequest:       parsedReq,
+					QuotaPlatform:       quotaPlatform,
+					APIKey:              currentAPIKey,
+					User:                currentAPIKey.User,
+					Account:             account,
+					Subscription:        currentSubscription,
+					InboundEndpoint:     inboundEndpoint,
+					UpstreamEndpoint:    upstreamEndpoint,
+					UserAgent:           userAgent,
+					IPAddress:           clientIP,
+					RequestPayloadHash:  requestPayloadHash,
+					ForceCacheBilling:   fs.ForceCacheBilling,
+					SkipAccountLastUsed: !successfulOutcome,
+					APIKeyService:       h.apiKeyService,
+					ChannelUsageFields:  channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
 				}); err != nil {
 					logger.L().With(
 						zap.String("component", "handler.gateway.messages"),
@@ -1550,7 +1631,7 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 			}
 
 			// 确定响应消息
-			msg := service.ExtractUpstreamErrorMessage(responseBody)
+			msg := "Upstream request failed"
 			if !rule.PassthroughBody && rule.CustomMessage != nil {
 				msg = *rule.CustomMessage
 			}
@@ -1791,13 +1872,9 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
-	// 计算粘性会话 hash
-	parsedReq.SessionContext = &service.SessionContext{
-		ClientIP:  ip.GetClientIP(c),
-		UserAgent: c.GetHeader("User-Agent"),
-		APIKeyID:  apiKey.ID,
-	}
-	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
+	// Token counting is stateless. Do not read, refresh, or create the sticky
+	// binding used by real generation requests.
+	sessionHash := ""
 
 	// 选择支持该模型的账号
 	account, err := h.gatewayService.SelectAccountForModel(c.Request.Context(), apiKey.GroupID, sessionHash, parsedReq.Model)

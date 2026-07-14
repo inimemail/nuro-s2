@@ -150,8 +150,23 @@ func TestResolveOpenAIWSFallbackErrorResponse(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, http.StatusForbidden, statusCode)
 		require.Equal(t, "upstream_error", errType)
-		require.Equal(t, "forbidden", clientMessage)
+		require.Equal(t, "Upstream authentication failed", clientMessage)
 		require.Equal(t, "forbidden", upstreamMessage)
+	})
+
+	t.Run("provider_name_is_ops_only", func(t *testing.T) {
+		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
+			wrapOpenAIWSFallback("auth_failed", &openAIWSDialError{
+				StatusCode: http.StatusForbidden,
+				Err:        errors.New("xAI gateway denied this account"),
+			}),
+		)
+		require.True(t, ok)
+		require.Equal(t, http.StatusForbidden, statusCode)
+		require.Equal(t, "upstream_error", errType)
+		require.Equal(t, "Upstream authentication failed", clientMessage)
+		require.NotContains(t, clientMessage, "xAI")
+		require.Contains(t, upstreamMessage, "xAI")
 	})
 
 	t.Run("non_fallback_error_not_resolved", func(t *testing.T) {

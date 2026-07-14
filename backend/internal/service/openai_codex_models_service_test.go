@@ -127,6 +127,24 @@ func TestFetchCodexModelsManifestUpstreamError(t *testing.T) {
 	}
 }
 
+func TestFetchCodexModelsManifestRejectsHTMLSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<!DOCTYPE html><title>private.example | 502</title>`))
+	}))
+	defer server.Close()
+
+	original := chatgptCodexModelsURL
+	chatgptCodexModelsURL = server.URL
+	defer func() { chatgptCodexModelsURL = original }()
+
+	s := &OpenAIGatewayService{}
+	manifest, err := s.FetchCodexModelsManifest(context.Background(), newCodexModelsTestAccount(), "0.137.0", "")
+	if err == nil || manifest != nil {
+		t.Fatalf("expected invalid response error, got manifest=%#v err=%v", manifest, err)
+	}
+}
+
 func TestFetchCodexModelsManifestMissingToken(t *testing.T) {
 	account := newCodexModelsTestAccount()
 	delete(account.Credentials, "access_token")

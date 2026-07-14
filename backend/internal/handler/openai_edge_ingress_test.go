@@ -50,6 +50,22 @@ func TestOpenAIEdgeHopHeadersFiltered(t *testing.T) {
 	require.False(t, isOpenAIEdgeHopHeader("X-Request-Id"))
 }
 
+func TestCopyOpenAIEdgeResponseHeadersSanitizesUpstreamIdentity(t *testing.T) {
+	src := http.Header{
+		"Content-Type": {"text/event-stream; charset=utf-8; provider=private-upstream.example"},
+		"X-Request-Id": {"openai-req-private"},
+		"Server":       {"private-upstream.example"},
+	}
+	dst := make(http.Header)
+
+	copyOpenAIEdgeResponseHeaders(dst, src)
+
+	require.Equal(t, "text/event-stream", dst.Get("Content-Type"))
+	require.Regexp(t, `^req_[0-9a-f]{24}$`, dst.Get("X-Request-Id"))
+	require.NotEqual(t, src.Get("X-Request-Id"), dst.Get("X-Request-Id"))
+	require.Empty(t, dst.Get("Server"))
+}
+
 func TestOpenAIEdgeIngressFallbackHeaderSkipsProxy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &OpenAIGatewayHandler{cfg: &config.Config{}}

@@ -348,10 +348,119 @@ func TestGeminiHandleNativeNonStreamingResponse_DebugDisabledDoesNotEmitHeaderLo
 		Body: io.NopCloser(strings.NewReader(`{"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2}}`)),
 	}
 
-	usage, err := svc.handleNativeNonStreamingResponse(c, resp, false)
+	usage, neutral, err := svc.handleNativeNonStreamingResponse(c, resp, false)
 	require.NoError(t, err)
 	require.NotNil(t, usage)
+	require.True(t, neutral)
 	require.False(t, logSink.ContainsMessage("[GeminiAPI]"), "debug 关闭时不应输出 Gemini 响应头日志")
+}
+
+func TestGeminiHandleNativeNonStreamingResponseRejectsInvalidSuccessBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &GeminiMessagesCompatService{cfg: &config.Config{}}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/test:generateContent", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/html"}},
+		Body:       io.NopCloser(strings.NewReader(`<!DOCTYPE html><title>xiaobaishu.org</title>`)),
+	}
+
+	usage, neutral, err := svc.handleNativeNonStreamingResponse(c, resp, false)
+	require.Nil(t, usage)
+	require.False(t, neutral)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Empty(t, w.Body.String())
+}
+
+func TestGeminiHandleNativeStreamingResponseSanitizesInvalidData(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &GeminiMessagesCompatService{cfg: &config.Config{}}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/test:streamGenerateContent", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader("data: <!DOCTYPE html><title>xiaobaishu.org</title>\n\n")),
+	}
+
+	result, err := svc.handleNativeStreamingResponse(c, resp, time.Now(), false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.failedOutcome)
+	require.False(t, result.neutralOutcome)
+	require.Contains(t, w.Body.String(), safeUpstreamErrorMessage)
+	require.NotContains(t, w.Body.String(), "xiaobaishu.org")
+	require.NotContains(t, w.Body.String(), "DOCTYPE")
+}
+
+func TestGeminiHandleNativeStreamingResponseMissingTerminalIsNeutral(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &GeminiMessagesCompatService{cfg: &config.Config{}}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/test:streamGenerateContent", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":3}}\n\n",
+		)),
+	}
+
+	result, err := svc.handleNativeStreamingResponse(c, resp, time.Now(), false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.neutralOutcome)
+	require.False(t, result.failedOutcome)
+	require.Equal(t, 7, result.usage.InputTokens)
+	require.Equal(t, 3, result.usage.OutputTokens)
+	require.Contains(t, w.Body.String(), safeUpstreamErrorMessage)
+}
+
+func TestGeminiStreamingBridgesDoNotSynthesizeSuccessWithoutTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamBody := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":2}}\n\n"
+
+	t.Run("messages", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(upstreamBody))}
+
+		result, err := (&GeminiMessagesCompatService{}).handleStreamingResponse(c, resp, time.Now(), "claude-test")
+		require.NoError(t, err)
+		require.True(t, result.neutralOutcome)
+		require.Equal(t, 5, result.usage.InputTokens)
+		require.Contains(t, recorder.Body.String(), safeUpstreamErrorMessage)
+		require.NotContains(t, recorder.Body.String(), `"type":"message_stop"`)
+	})
+
+	t.Run("chat completions", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(upstreamBody))}
+
+		result, err := (&GeminiMessagesCompatService{}).handleChatCompletionsStreamingResponseFromGemini(c, resp, time.Now(), "gemini-test", false, false)
+		require.NoError(t, err)
+		require.True(t, result.neutralOutcome)
+		require.Equal(t, 5, result.usage.InputTokens)
+		require.Contains(t, recorder.Body.String(), safeUpstreamErrorMessage)
+		require.NotContains(t, recorder.Body.String(), "data: [DONE]")
+	})
+}
+
+func TestGeminiFinishReasonSuccessClassification(t *testing.T) {
+	for _, reason := range []string{"STOP", "MAX_TOKENS", "TOOL_CALL", "FUNCTION_CALL"} {
+		require.True(t, geminiFinishReasonAllowsSuccessSideEffects(reason), reason)
+	}
+	for _, reason := range []string{"", "SAFETY", "RECITATION", "MALFORMED_FUNCTION_CALL"} {
+		require.False(t, geminiFinishReasonAllowsSuccessSideEffects(reason), reason)
+	}
 }
 
 func TestGeminiMessagesCompatServiceForward_PreservesRequestedModelAndMappedUpstreamModel(t *testing.T) {

@@ -36,6 +36,93 @@ func TestApplyErrorPassthroughRule_NoBoundService(t *testing.T) {
 	assert.Equal(t, "Upstream request failed", errMsg)
 }
 
+func TestApplyErrorPassthroughRule_SanitizesPassthroughBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{{
+		ID:              1,
+		Name:            "sanitize-upstream-body",
+		Enabled:         true,
+		Priority:        1,
+		ErrorCodes:      []int{http.StatusBadGateway},
+		Keywords:        []string{"xiaobaishu.org"},
+		MatchMode:       model.MatchModeAll,
+		PassthroughCode: true,
+		PassthroughBody: true,
+	}})
+	BindErrorPassthroughService(c, ruleSvc)
+
+	status, errType, errMsg, matched := applyErrorPassthroughRule(
+		c,
+		PlatformOpenAI,
+		http.StatusBadGateway,
+		[]byte(`{"error":{"message":"<!DOCTYPE html><title>xiaobaishu.org | 502</title><a href=\"https://www.cloudflare.com/5xx\">cloudflare</a>"}}`),
+		http.StatusBadGateway,
+		"upstream_error",
+		safeUpstreamErrorMessage,
+	)
+
+	require.True(t, matched)
+	require.Equal(t, http.StatusBadGateway, status)
+	require.Equal(t, "upstream_error", errType)
+	require.Equal(t, safeUpstreamErrorMessage, errMsg)
+}
+
+func TestApplyErrorPassthroughRule_PreservesAdminCustomMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	customMessage := "维护通知：https://status.example.internal/provider"
+
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{newNonFailoverPassthroughRule(
+		http.StatusBadGateway,
+		"private-upstream.example",
+		http.StatusServiceUnavailable,
+		customMessage,
+	)})
+	BindErrorPassthroughService(c, ruleSvc)
+
+	status, _, errMsg, matched := applyErrorPassthroughRule(
+		c,
+		PlatformOpenAI,
+		http.StatusBadGateway,
+		[]byte(`{"error":{"message":"private-upstream.example failed"}}`),
+		http.StatusBadGateway,
+		"upstream_error",
+		safeUpstreamErrorMessage,
+	)
+
+	require.True(t, matched)
+	require.Equal(t, http.StatusServiceUnavailable, status)
+	require.Equal(t, customMessage, errMsg)
+}
+
+func TestSanitizeUpstreamErrorMessage_StripsEndpointAddresses(t *testing.T) {
+	for _, message := range []string{
+		"dial tcp 10.0.0.7:8443: connection refused",
+		"connect [fd00::17]:443 failed",
+		"proxy localhost:9000 unavailable",
+	} {
+		require.Equal(t, safeUpstreamErrorMessage, sanitizeUpstreamErrorMessage(message))
+	}
+}
+
+func TestSanitizeUpstreamErrorMessage_StripsUpstreamIdentity(t *testing.T) {
+	for _, message := range []string{
+		"xAI service overloaded",
+		"request rejected by OpenRouter",
+		"Cloudflare edge returned 502",
+		"Anthropic authentication failed",
+	} {
+		require.Equal(t, safeUpstreamErrorMessage, sanitizeUpstreamErrorMessage(message))
+	}
+	require.Equal(t, "model gpt-5.4 is unavailable", sanitizeUpstreamErrorMessage("model gpt-5.4 is unavailable"))
+}
+
 func TestGatewayHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

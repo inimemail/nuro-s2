@@ -22,6 +22,10 @@ import (
 
 func f64p(v float64) *float64 { return &v }
 
+func successfulOpenAIResponsesSSE() string {
+	return "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\ndata: [DONE]\n\n"
+}
+
 type httpUpstreamRecorder struct {
 	lastReq  *http.Request
 	lastBody []byte
@@ -313,6 +317,8 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamKeepsToolNameAndBodyNormali
 	upstreamSSE := strings.Join([]string{
 		`data: {"type":"response.output_item.added","item":{"type":"tool_call","tool_calls":[{"function":{"name":"apply_patch"}}]}}`,
 		"",
+		`data: {"type":"response.completed","response":{"id":"resp_tool","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}`,
+		"",
 		"data: [DONE]",
 		"",
 	}, "\n")
@@ -392,7 +398,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_ResponsesCompatNormalizesStringIn
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
-		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		Body:       io.NopCloser(strings.NewReader(successfulOpenAIResponsesSSE())),
 	}
 	upstream := &httpUpstreamRecorder{resp: resp}
 
@@ -442,7 +448,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_ResponsesArgumentsObjectCompat(t 
 		resp := &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
-			Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+			Body:       io.NopCloser(strings.NewReader(successfulOpenAIResponsesSSE())),
 		}
 		upstream := &httpUpstreamRecorder{resp: resp}
 
@@ -489,7 +495,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_ResponsesArgumentsObjectCompat(t 
 		resp := &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
-			Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+			Body:       io.NopCloser(strings.NewReader(successfulOpenAIResponsesSSE())),
 		}
 		upstream := &httpUpstreamRecorder{resp: resp}
 
@@ -690,7 +696,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_DisabledUsesLegacyTransform(t *te
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
-		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		Body:       io.NopCloser(strings.NewReader(successfulOpenAIResponsesSSE())),
 	}
 	upstream := &httpUpstreamRecorder{resp: resp}
 
@@ -781,7 +787,7 @@ func TestOpenAIGatewayService_OAuthLegacy_CompositeCodexUAUsesCodexOriginator(t 
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
-		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		Body:       io.NopCloser(strings.NewReader(successfulOpenAIResponsesSSE())),
 	}
 	upstream := &httpUpstreamRecorder{resp: resp}
 
@@ -882,8 +888,13 @@ func TestOpenAIGatewayService_OAuthPassthrough_UpstreamErrorIncludesPassthroughF
 
 	resp := &http.Response{
 		StatusCode: http.StatusBadRequest,
-		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid"}},
-		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"bad"}}`)),
+		Header: http.Header{
+			"Content-Type":     []string{"text/html; charset=UTF-8"},
+			"Location":         []string{"https://xiaobaishu.org/error"},
+			"Www-Authenticate": []string{`Bearer realm="xiaobaishu.org"`},
+			"x-request-id":     []string{"rid"},
+		},
+		Body: io.NopCloser(strings.NewReader(`<!DOCTYPE html><html><title>xiaobaishu.org | 502: Bad gateway</title><a href="https://www.cloudflare.com/5xx-error-landing">cloudflare</a></html>`)),
 	}
 	upstream := &httpUpstreamRecorder{resp: resp}
 
@@ -907,8 +918,14 @@ func TestOpenAIGatewayService_OAuthPassthrough_UpstreamErrorIncludesPassthroughF
 
 	_, err := svc.Forward(context.Background(), c, account, originalBody)
 	require.Error(t, err)
-	require.True(t, c.Writer.Written(), "非 429/529 的 passthrough 错误应继续原样写回客户端")
+	require.True(t, c.Writer.Written(), "非 429/529 的 passthrough 错误应继续返回协议错误")
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.NotContains(t, rec.Body.String(), "xiaobaishu.org")
+	require.NotContains(t, rec.Body.String(), "cloudflare.com")
+	require.NotContains(t, rec.Body.String(), "<!DOCTYPE")
+	require.Contains(t, rec.Body.String(), `"message":"Upstream request failed"`)
+	require.Empty(t, rec.Header().Get("Location"))
+	require.Empty(t, rec.Header().Get("Www-Authenticate"))
 
 	// should append an upstream error event with passthrough=true
 	v, ok := c.Get(OpsUpstreamErrorsKey)
@@ -1072,7 +1089,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_NonCodexUAFallbackToCodexUA(t *te
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
-		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		Body:       io.NopCloser(strings.NewReader(successfulOpenAIResponsesSSE())),
 	}
 	upstream := &httpUpstreamRecorder{resp: resp}
 
@@ -1163,7 +1180,7 @@ func TestOpenAIGatewayService_CodexCLIOnly_AllowOfficialClientFamilies(t *testin
 			resp := &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
-				Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+				Body:       io.NopCloser(strings.NewReader(successfulOpenAIResponsesSSE())),
 			}
 			upstream := &httpUpstreamRecorder{resp: resp}
 
@@ -1204,6 +1221,8 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamingSetsFirstTokenMs(t *test
 
 	upstreamSSE := strings.Join([]string{
 		`data: {"type":"response.output_text.delta","delta":"h"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_ttft","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}`,
 		"",
 		"data: [DONE]",
 		"",
@@ -1597,7 +1616,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_WarnOnTimeoutHeadersForStream(t *
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Request-Id": []string{"rid-timeout"}},
-		Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+		Body:       io.NopCloser(strings.NewReader(successfulOpenAIResponsesSSE())),
 	}
 	upstream := &httpUpstreamRecorder{resp: resp}
 	svc := &OpenAIGatewayService{
@@ -1658,8 +1677,11 @@ func TestOpenAIGatewayService_OAuthPassthrough_InfoWhenStreamEndsWithoutDone(t *
 		RateMultiplier: f64p(1),
 	}
 
-	_, err := svc.Forward(context.Background(), c, account, originalBody)
+	result, err := svc.Forward(context.Background(), c, account, originalBody)
 	require.EqualError(t, err, "stream usage incomplete: missing terminal event")
+	require.NotNil(t, result)
+	require.True(t, result.Stream)
+	require.Empty(t, result.TerminalEventType)
 	require.True(t, logSink.ContainsMessage("上游流在未收到 [DONE] 时结束，疑似断流"))
 	require.True(t, logSink.ContainsMessageAtLevel("上游流在未收到 [DONE] 时结束，疑似断流", "info"))
 	require.True(t, logSink.ContainsFieldValue("upstream_request_id", "rid-truncate"))
