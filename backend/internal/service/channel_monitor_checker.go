@@ -68,6 +68,11 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 
 	start := time.Now()
 	respText, rawBody, statusCode, err := callProvider(ctx, provider, endpoint, apiKey, model, challenge.Prompt, opts)
+	if shouldFallbackOpenAIHealthProbe(opts, statusCode, rawBody, err) {
+		model, opts = openAIHealthProbeFallbackRequest(model, opts)
+		mode = bodyOverrideMode(opts)
+		respText, rawBody, statusCode, err = callProvider(ctx, provider, endpoint, apiKey, model, challenge.Prompt, opts)
+	}
 	latency := time.Since(start)
 	latencyMs := int(latency / time.Millisecond)
 	res.LatencyMs = &latencyMs
@@ -210,6 +215,34 @@ func isOpenAIResponsesHealthProbeMonitorTemplate(opts *CheckOptions) bool {
 	}
 	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	return validateOpenAIResponsesHealthProbeBody(body, model, false) == nil
+}
+
+func shouldFallbackOpenAIHealthProbe(opts *CheckOptions, statusCode int, rawBody string, requestErr error) bool {
+	if requestErr != nil || statusCode != http.StatusBadGateway || !isOpenAIResponsesHealthProbeMonitorTemplate(opts) {
+		return false
+	}
+	message := strings.TrimSpace(gjson.Get(rawBody, "error.message").String())
+	return message == OpenAIHealthProbeClientMessage()
+}
+
+func openAIHealthProbeFallbackRequest(model string, opts *CheckOptions) (string, *CheckOptions) {
+	if opts == nil {
+		return model, &CheckOptions{APIMode: MonitorAPIModeResponses}
+	}
+	if bodyModel := strings.TrimSpace(stringFromAny(opts.BodyOverride["model"])); bodyModel != "" {
+		model = bodyModel
+	}
+	headers := make(map[string]string, len(opts.ExtraHeaders))
+	for name, value := range opts.ExtraHeaders {
+		if strings.EqualFold(strings.TrimSpace(name), OpenAIHealthProbeHeader) {
+			continue
+		}
+		headers[name] = value
+	}
+	return model, &CheckOptions{
+		APIMode:      MonitorAPIModeResponses,
+		ExtraHeaders: headers,
+	}
 }
 
 // providerAdapter 描述某个 provider 在 challenge 检测中需要的 4 件事：
