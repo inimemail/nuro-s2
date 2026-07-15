@@ -400,6 +400,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				case FailoverContinue:
 					continue
 				case FailoverCanceled:
+					failoverClientGone(c)
 					return
 				default:
 					h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
@@ -425,6 +426,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					c.Request = c.Request.WithContext(ctx)
 					continue
 				case FailoverCanceled:
+					failoverClientGone(c)
 					return
 				default: // FailoverExhausted
 					if fs.LastFailoverErr != nil {
@@ -560,6 +562,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
 						return
 					case FailoverCanceled:
+						failoverClientGone(c)
 						return
 					}
 				}
@@ -707,6 +710,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				case FailoverContinue:
 					continue
 				case FailoverCanceled:
+					failoverClientGone(c)
 					return
 				default:
 					h.handleFailoverExhausted(c, fs.LastFailoverErr, platform, streamStarted)
@@ -733,6 +737,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					c.Request = c.Request.WithContext(ctx)
 					continue
 				case FailoverCanceled:
+					failoverClientGone(c)
 					return
 				default: // FailoverExhausted
 					if fs.LastFailoverErr != nil {
@@ -1006,6 +1011,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, account.Platform, streamStarted)
 						return
 					case FailoverCanceled:
+						failoverClientGone(c)
 						return
 					}
 				}
@@ -1664,6 +1670,9 @@ func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotT
 }
 
 func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, platform string, streamStarted bool) {
+	if failoverClientGone(c) {
+		return
+	}
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 	if service.IsOpenAISilentRefusalErrorBody(responseBody) {
@@ -1718,6 +1727,9 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 
 // handleFailoverExhaustedSimple 简化版本，用于没有响应体的情况
 func (h *GatewayHandler) handleFailoverExhaustedSimple(c *gin.Context, statusCode int, streamStarted bool) {
+	if failoverClientGone(c) {
+		return
+	}
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
 	service.SetOpsUpstreamError(c, statusCode, errMsg, "")
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
@@ -1742,6 +1754,9 @@ func (h *GatewayHandler) mapUpstreamError(statusCode int) (int, string, string) 
 
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
+	if failoverClientGone(c) {
+		return
+	}
 	if streamStarted {
 		service.MarkOpsStreamError(c, status, errType, message)
 		// /v1/responses 的严格 SDK（Codex CLI）要求终止事件必须属于

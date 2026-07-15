@@ -75,6 +75,41 @@ func TestForwardAsAnthropic_StreamingResponseFailed_ReturnsError(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), "private-provider.example")
 }
 
+func TestForwardAsAnthropicStreamingBareErrorAfterOutputIsSanitized(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_bare_error","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		"",
+		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"partial"}`,
+		"",
+		`event: error`,
+		`data: {"type":"error","error":{"type":"server_error","message":"<!DOCTYPE html><title>private-provider.example | 502</title>"}}`,
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+
+	_, err := svc.ForwardAsAnthropic(context.Background(), c, rawChatCompletionsTestAccount(), body, "", "")
+
+	require.Error(t, err)
+	require.Contains(t, rec.Body.String(), `"text":"partial"`)
+	require.Contains(t, rec.Body.String(), safeUpstreamErrorMessage)
+	require.NotContains(t, rec.Body.String(), "private-provider.example")
+	require.NotContains(t, rec.Body.String(), "DOCTYPE")
+	require.NotContains(t, rec.Body.String(), "event: message_stop")
+}
+
 func TestForwardAsAnthropic_BufferedResponseFailed_Failover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

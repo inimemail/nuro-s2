@@ -27,6 +27,24 @@ func resolveAccountStatsCost(
 	requestCount int,
 	totalCost float64,
 ) *float64 {
+	return resolveAccountStatsCostWithPolicy(
+		ctx, channelService, billingService, accountID, groupID, upstreamModel,
+		tokens, requestCount, totalCost, true,
+	)
+}
+
+func resolveAccountStatsCostWithPolicy(
+	ctx context.Context,
+	channelService *ChannelService,
+	billingService *BillingService,
+	accountID int64,
+	groupID int64,
+	upstreamModel string,
+	tokens UsageTokens,
+	requestCount int,
+	totalCost float64,
+	applyModelFileLongContext bool,
+) *float64 {
 	if channelService == nil || upstreamModel == "" {
 		return nil
 	}
@@ -53,7 +71,7 @@ func resolveAccountStatsCost(
 
 	// 优先级 3：模型定价文件（LiteLLM）默认价格
 	if billingService != nil {
-		return tryModelFilePricing(billingService, upstreamModel, tokens)
+		return tryModelFilePricingWithPolicy(billingService, upstreamModel, tokens, applyModelFileLongContext)
 	}
 
 	return nil
@@ -61,9 +79,25 @@ func resolveAccountStatsCost(
 
 // tryModelFilePricing 使用模型定价文件（LiteLLM/fallback）中的标准价格计算费用。
 func tryModelFilePricing(billingService *BillingService, model string, tokens UsageTokens) *float64 {
+	return tryModelFilePricingWithPolicy(billingService, model, tokens, true)
+}
+
+func tryModelFilePricingWithPolicy(
+	billingService *BillingService,
+	model string,
+	tokens UsageTokens,
+	applyLongContext bool,
+) *float64 {
 	pricing, err := billingService.GetModelPricing(model)
 	if err != nil || pricing == nil {
 		return nil
+	}
+	if applyLongContext && billingService.shouldApplySessionLongContextPricing(tokens, pricing) {
+		breakdown, err := billingService.CalculateCost(model, tokens, 1)
+		if err != nil || breakdown == nil || breakdown.TotalCost <= 0 {
+			return nil
+		}
+		return &breakdown.TotalCost
 	}
 	cost := float64(tokens.InputTokens)*pricing.InputPricePerToken +
 		float64(tokens.OutputTokens)*pricing.OutputPricePerToken +
@@ -226,6 +260,22 @@ func applyAccountStatsCost(
 	tokens UsageTokens,
 	totalCost float64,
 ) {
+	applyAccountStatsCostWithPolicy(
+		ctx, usageLog, cs, bs, accountID, groupID, upstreamModel, requestedModel,
+		tokens, totalCost, true,
+	)
+}
+
+func applyAccountStatsCostWithPolicy(
+	ctx context.Context,
+	usageLog *UsageLog,
+	cs *ChannelService, bs *BillingService,
+	accountID int64, groupID int64,
+	upstreamModel, requestedModel string,
+	tokens UsageTokens,
+	totalCost float64,
+	applyModelFileLongContext bool,
+) {
 	model := upstreamModel
 	if model == "" {
 		model = requestedModel
@@ -234,7 +284,8 @@ func applyAccountStatsCost(
 	if usageLog != nil && usageLog.ImageCount > 0 {
 		requestCount = usageLog.ImageCount
 	}
-	usageLog.AccountStatsCost = resolveAccountStatsCost(
+	usageLog.AccountStatsCost = resolveAccountStatsCostWithPolicy(
 		ctx, cs, bs, accountID, groupID, model, tokens, requestCount, totalCost,
+		applyModelFileLongContext,
 	)
 }

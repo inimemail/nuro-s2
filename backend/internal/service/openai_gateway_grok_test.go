@@ -127,6 +127,12 @@ func TestGrokChatResponsesBridgeEligibilityV152(t *testing.T) {
 		{name: "conflicting token limits", body: `{"model":"grok","messages":[{"role":"user","content":"hi"}],"max_tokens":256,"max_completion_tokens":256}`, reason: "conflicting_max_tokens"},
 		{name: "unsafe message field", body: `{"model":"grok","messages":[{"role":"assistant","content":"hi","tool_calls":[]}]}`, reason: "unsafe_message_field_tool_calls"},
 		{name: "empty message", body: `{"model":"grok","messages":[{"role":"assistant","content":""}]}`, reason: "empty_message_content"},
+		{name: "image content", body: `{"model":"grok","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,QQ=="}}]}]}`, want: true},
+		{name: "text and image content", body: `{"model":"grok","messages":[{"role":"user","content":[{"type":"text","text":"what is this"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QQ=="}}]}]}`, want: true},
+		{name: "responses image part falls back", body: `{"model":"grok","messages":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,QQ=="}]}]}`, reason: "unsupported_content_part_input_image"},
+		{name: "empty image content", body: `{"model":"grok","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,"}}]}]}`, reason: "empty_message_content"},
+		{name: "unknown content part", body: `{"model":"grok","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AA=="}}]}]}`, reason: "unsupported_content_part_input_audio"},
+		{name: "empty content array", body: `{"model":"grok","messages":[{"role":"user","content":[]}]}`, reason: "empty_message_content"},
 	}
 
 	for _, tt := range tests {
@@ -134,6 +140,24 @@ func TestGrokChatResponsesBridgeEligibilityV152(t *testing.T) {
 			got, reason := grokChatResponsesBridgeEligibility([]byte(tt.body))
 			require.Equal(t, tt.want, got)
 			require.Equal(t, tt.reason, reason)
+		})
+	}
+}
+
+func TestIsGrokImageGenerationModelV156(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{model: "grok-imagine", want: true},
+		{model: "grok-imagine-image-quality", want: true},
+		{model: "grok-imagine-edit", want: true},
+		{model: "grok-4.5", want: false},
+		{model: "grok-composer", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			require.Equal(t, tt.want, isGrokImageGenerationModel(tt.model))
 		})
 	}
 }
@@ -478,9 +502,20 @@ type openAIGrokAccountRepoStub struct {
 	AccountRepository
 	rateLimitedAccountID int64
 	rateLimitResetAt     time.Time
+	clearRateLimitCalls  int
+	clearRateLimitResult bool
 	tempUnschedAccountID int64
 	tempUnschedUntil     time.Time
 	tempUnschedReason    string
+}
+
+func (r *openAIGrokAccountRepoStub) ClearRateLimitIfObserved(
+	_ context.Context,
+	_ int64,
+	_, _ time.Time,
+) (bool, error) {
+	r.clearRateLimitCalls++
+	return r.clearRateLimitResult, nil
 }
 
 func (r *openAIGrokAccountRepoStub) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
@@ -498,4 +533,81 @@ func (r *openAIGrokAccountRepoStub) SetTempUnschedulable(_ context.Context, id i
 
 func (r *openAIGrokAccountRepoStub) UpdateExtra(_ context.Context, _ int64, _ map[string]any) error {
 	return nil
+}
+
+func TestGrokSuccessfulResponseClearsObservedRuntimeRateLimit(t *testing.T) {
+	now := time.Now()
+	resetAt := now.Add(10 * time.Minute)
+	repo := &openAIGrokAccountRepoStub{clearRateLimitResult: true}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{
+		ID: 901, Platform: PlatformGrok, Type: AccountTypeOAuth,
+		RateLimitedAt: &now, RateLimitResetAt: &resetAt,
+	}
+	svc.BlockAccountScheduling(account, resetAt, "429")
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+
+	svc.updateGrokUsageFromResponse(context.Background(), account, nil, http.StatusOK)
+
+	require.Equal(t, 1, repo.clearRateLimitCalls)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
+func TestGrokSuccessfulResponseKeepsActiveTemporaryRuntimeBlock(t *testing.T) {
+	now := time.Now()
+	resetAt := now.Add(10 * time.Minute)
+	tempUntil := now.Add(20 * time.Minute)
+	repo := &openAIGrokAccountRepoStub{clearRateLimitResult: true}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{
+		ID: 902, Platform: PlatformGrok, Type: AccountTypeOAuth,
+		RateLimitedAt: &now, RateLimitResetAt: &resetAt,
+		TempUnschedulableUntil: &tempUntil,
+	}
+	svc.BlockAccountScheduling(account, tempUntil, "temporary_error")
+
+	svc.updateGrokUsageFromResponse(context.Background(), account, nil, http.StatusOK)
+
+	require.Equal(t, 1, repo.clearRateLimitCalls)
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
+func TestGrokSuccessfulResponseKeepsNewerConcurrentRateLimitBlock(t *testing.T) {
+	now := time.Now()
+	observedResetAt := now.Add(10 * time.Minute)
+	newResetAt := now.Add(30 * time.Minute)
+	repo := &openAIGrokAccountRepoStub{clearRateLimitResult: true}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{
+		ID: 904, Platform: PlatformGrok, Type: AccountTypeOAuth,
+		RateLimitedAt: &now, RateLimitResetAt: &observedResetAt,
+	}
+	svc.BlockAccountScheduling(account, newResetAt, "newer_429")
+
+	svc.updateGrokUsageFromResponse(context.Background(), account, nil, http.StatusOK)
+
+	require.Equal(t, 1, repo.clearRateLimitCalls)
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	value, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	require.True(t, ok)
+	actualResetAt, ok := value.(time.Time)
+	require.True(t, ok)
+	require.WithinDuration(t, newResetAt, actualResetAt, time.Second)
+}
+
+func TestGrokSuccessfulResponseKeepsRuntimeBlockWhenRateLimitCASLoses(t *testing.T) {
+	now := time.Now()
+	resetAt := now.Add(10 * time.Minute)
+	repo := &openAIGrokAccountRepoStub{clearRateLimitResult: false}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{
+		ID: 903, Platform: PlatformGrok, Type: AccountTypeOAuth,
+		RateLimitedAt: &now, RateLimitResetAt: &resetAt,
+	}
+	svc.BlockAccountScheduling(account, resetAt, "429")
+
+	svc.updateGrokUsageFromResponse(context.Background(), account, nil, http.StatusOK)
+
+	require.Equal(t, 1, repo.clearRateLimitCalls)
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }

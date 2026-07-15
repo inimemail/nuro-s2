@@ -105,6 +105,9 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
+		if failoverClientGone(c) {
+			return false
+		}
 		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
 			modelRoutingLockedPriority,
 			account,
@@ -159,7 +162,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			)
 		}
 		if (err != nil || selection == nil || selection.Account == nil) && sameAccountRetryAccountID > 0 {
-			if c.Request.Context().Err() != nil {
+			if failoverClientGone(c) {
 				return
 			}
 			if sameAccountRetryAccount != nil && sameAccountRetryErr != nil {

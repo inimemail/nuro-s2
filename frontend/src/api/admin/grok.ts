@@ -1,4 +1,5 @@
 import { apiClient } from '../client'
+import type { GrokBillingSummary, WindowStats } from '@/types'
 
 export interface GrokAuthUrlResponse {
   auth_url: string
@@ -57,12 +58,18 @@ export interface GrokQuotaSnapshot {
 }
 
 export interface GrokQuotaProbeResult {
-  source: 'active_probe'
+  source: 'active_probe' | 'billing_probe' | 'hybrid_probe'
+  billing?: GrokBillingSummary | null
   snapshot?: GrokQuotaSnapshot | null
+  local_usage_24h?: WindowStats | null
+  local_usage_7d?: WindowStats | null
+  local_usage_monthly?: WindowStats | null
   status_code?: number
   headers_observed: boolean
   reset_supported: boolean
   fetched_at: number
+  persisted?: boolean
+  probe_error?: string
 }
 
 export interface GrokQuotaResetResult {

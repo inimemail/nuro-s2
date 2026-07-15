@@ -459,6 +459,87 @@ func TestTryModelFilePricing_Success(t *testing.T) {
 	require.InDelta(t, 0.2, *result, 1e-12)
 }
 
+func TestTryModelFilePricing_AppliesLongContextPricing(t *testing.T) {
+	bs := newTestBillingServiceWithPrices(map[string]*ModelPricing{
+		"gpt-5.6-sol": {
+			InputPricePerToken:          0.001,
+			OutputPricePerToken:         0.002,
+			CacheCreationPricePerToken:  0.00125,
+			CacheReadPricePerToken:      0.0001,
+			LongContextInputThreshold:   100,
+			LongContextInputMultiplier:  2,
+			LongContextOutputMultiplier: 1.5,
+		},
+	})
+	tokens := UsageTokens{
+		InputTokens:         101,
+		OutputTokens:        10,
+		CacheCreationTokens: 4,
+		CacheReadTokens:     5,
+	}
+
+	result := tryModelFilePricing(bs, "gpt-5.6-sol", tokens)
+
+	require.NotNil(t, result)
+	// Input, cache creation and cache read use 2x; output uses 1.5x.
+	require.InDelta(t, 0.243, *result, 1e-12)
+}
+
+func TestTryModelFilePricingWithPolicy_CanDisableLongContextPricing(t *testing.T) {
+	bs := newTestBillingServiceWithPrices(map[string]*ModelPricing{
+		"gpt-5.6-sol": {
+			InputPricePerToken:          0.001,
+			OutputPricePerToken:         0.002,
+			CacheCreationPricePerToken:  0.00125,
+			CacheReadPricePerToken:      0.0001,
+			LongContextInputThreshold:   100,
+			LongContextInputMultiplier:  2,
+			LongContextOutputMultiplier: 1.5,
+		},
+	})
+	tokens := UsageTokens{
+		InputTokens: 101, OutputTokens: 10,
+		CacheCreationTokens: 4, CacheReadTokens: 5,
+	}
+
+	result := tryModelFilePricingWithPolicy(bs, "gpt-5.6-sol", tokens, false)
+
+	require.NotNil(t, result)
+	require.InDelta(t, 0.1265, *result, 1e-12)
+}
+
+func TestApplyAccountStatsCostWithPolicy_RespectsOpenAILongContextToggle(t *testing.T) {
+	cs := newTestChannelServiceForStats(t, &Channel{
+		ID: 1, Status: StatusActive, ApplyPricingToAccountStats: false,
+	}, 10, PlatformOpenAI)
+	bs := newTestBillingServiceWithPrices(map[string]*ModelPricing{
+		"gpt-5.6-sol": {
+			InputPricePerToken:          0.001,
+			OutputPricePerToken:         0.002,
+			LongContextInputThreshold:   100,
+			LongContextInputMultiplier:  2,
+			LongContextOutputMultiplier: 1.5,
+		},
+	})
+	tokens := UsageTokens{InputTokens: 101, OutputTokens: 10}
+
+	disabled := &UsageLog{}
+	applyAccountStatsCostWithPolicy(
+		context.Background(), disabled, cs, bs, 1, 10,
+		"gpt-5.6-sol", "gpt-5.6-sol", tokens, 0, false,
+	)
+	enabled := &UsageLog{}
+	applyAccountStatsCostWithPolicy(
+		context.Background(), enabled, cs, bs, 1, 10,
+		"gpt-5.6-sol", "gpt-5.6-sol", tokens, 0, true,
+	)
+
+	require.NotNil(t, disabled.AccountStatsCost)
+	require.NotNil(t, enabled.AccountStatsCost)
+	require.InDelta(t, 0.121, *disabled.AccountStatsCost, 1e-12)
+	require.InDelta(t, 0.232, *enabled.AccountStatsCost, 1e-12)
+}
+
 func TestTryModelFilePricing_PricingNotFound(t *testing.T) {
 	// "nonexistent-model" does not match any fallback pattern
 	bs := newTestBillingServiceWithPrices(map[string]*ModelPricing{})

@@ -6070,6 +6070,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	}
 	scanBuf := getSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
+	passthroughDocumentScanner := newOpenAISSEJSONDocumentScanner(scanner)
 	defer putSSEScannerBuf64K(scanBuf)
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
@@ -6233,14 +6234,14 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		done := make(chan struct{})
 		go func() {
 			defer close(events)
-			for scanner.Scan() {
+			for passthroughDocumentScanner.Scan() {
 				select {
-				case events <- passthroughScanEvent{line: scanner.Text()}:
+				case events <- passthroughScanEvent{line: passthroughDocumentScanner.Text()}:
 				case <-done:
 					return
 				}
 			}
-			if err := scanner.Err(); err != nil {
+			if err := passthroughDocumentScanner.Err(); err != nil {
 				select {
 				case events <- passthroughScanEvent{err: err}:
 				case <-done:
@@ -6295,13 +6296,13 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		}
 	}
 
-	for scanner.Scan() {
-		if _, err := processPassthroughLine(scanner.Text()); err != nil {
+	for passthroughDocumentScanner.Scan() {
+		if _, err := processPassthroughLine(passthroughDocumentScanner.Text()); err != nil {
 			return resultWithUsage(), err
 		}
 	}
 passthroughScanDone:
-	if err := scanner.Err(); err != nil {
+	if err := passthroughDocumentScanner.Err(); err != nil {
 		if terminalEventType != "" && !sawFailedEvent {
 			commitFirstTokenTimeoutGuardSample()
 			return resultWithUsage(), nil
@@ -7326,6 +7327,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	}
 	scanBuf := getSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
+	documentScanner := newOpenAISSEJSONDocumentScanner(scanner)
 
 	streamInterval := time.Duration(0)
 	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
@@ -7727,13 +7729,13 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			streamInterval = lowLatencyPolicy.Barrier
 		} else {
 			defer putSSEScannerBuf64K(scanBuf)
-			for scanner.Scan() {
-				processSSELine(scanner.Text(), true)
+			for documentScanner.Scan() {
+				processSSELine(documentScanner.Text(), true)
 				if streamFailoverErr != nil {
 					return resultWithUsage(), streamFailoverErr
 				}
 			}
-			if result, err, done := handleScanErr(scanner.Err()); done {
+			if result, err, done := handleScanErr(documentScanner.Err()); done {
 				return result, err
 			}
 			return finalizeStream()
@@ -7788,13 +7790,13 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	go func(scanBuf *sseScannerBuf64K) {
 		defer putSSEScannerBuf64K(scanBuf)
 		defer close(events)
-		for scanner.Scan() {
+		for documentScanner.Scan() {
 			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
-			if !sendEvent(scanEvent{line: scanner.Text()}) {
+			if !sendEvent(scanEvent{line: documentScanner.Text()}) {
 				return
 			}
 		}
-		if err := scanner.Err(); err != nil {
+		if err := documentScanner.Err(); err != nil {
 			_ = sendEvent(scanEvent{err: err})
 		}
 	}(scanBuf)
@@ -9546,9 +9548,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）
 	if apiKey.GroupID != nil {
-		applyAccountStatsCost(ctx, usageLog, s.channelService, s.billingService,
+		applyAccountStatsCostWithPolicy(ctx, usageLog, s.channelService, s.billingService,
 			account.ID, *apiKey.GroupID, result.UpstreamModel, result.Model,
-			tokens, cost.TotalCost,
+			tokens, cost.TotalCost, longContextBillingEnabled,
 		)
 	}
 

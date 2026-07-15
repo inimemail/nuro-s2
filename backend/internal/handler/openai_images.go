@@ -155,6 +155,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
+		if failoverClientGone(c) {
+			return false
+		}
 		h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, false, nil, parsed.RequiredCapability)
 		if strings.TrimSpace(failoverErr.ProbeModel) == "" {
 			failoverErr.ProbeModel = strings.TrimSpace(parsed.Model)
@@ -217,7 +220,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			)
 		}
 		if (err != nil || selection == nil || selection.Account == nil) && sameAccountRetryAccountID > 0 {
-			if requestCtx.Err() != nil {
+			if failoverClientGone(c) {
 				return
 			}
 			if sameAccountRetryAccount != nil && sameAccountRetryErr != nil {

@@ -147,7 +147,7 @@ func ProvideGrokTokenProvider(
 	p := NewGrokTokenProvider(accountRepo, tokenCache)
 	executor := NewGrokTokenRefresher(grokOAuthService)
 	p.SetRefreshAPI(refreshAPI, executor)
-	p.SetRefreshPolicy(AntigravityProviderRefreshPolicy())
+	p.SetRefreshPolicy(GrokProviderRefreshPolicy())
 	p.SetTempUnschedCache(tempUnschedCache)
 	return p
 }
@@ -157,8 +157,33 @@ func ProvideGrokQuotaService(
 	proxyRepo ProxyRepository,
 	tokenProvider *GrokTokenProvider,
 	httpUpstream HTTPUpstream,
+	openAIGatewayService *OpenAIGatewayService,
 ) *GrokQuotaService {
-	return NewGrokQuotaService(accountRepo, proxyRepo, tokenProvider, httpUpstream)
+	service := NewGrokQuotaService(accountRepo, proxyRepo, tokenProvider, httpUpstream)
+	service.SetRuntimeRecovery(openAIGatewayService)
+	return service
+}
+
+func ProvideAccountUsageService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageFetcher ClaudeUsageFetcher,
+	geminiQuotaService *GeminiQuotaService,
+	antigravityQuotaFetcher *AntigravityQuotaFetcher,
+	grokQuotaFetcher *GrokQuotaFetcher,
+	grokQuotaService *GrokQuotaService,
+	cache *UsageCache,
+	identityCache IdentityCache,
+	tlsFPProfileService *TLSFingerprintProfileService,
+	openAITokenProvider *OpenAITokenProvider,
+) *AccountUsageService {
+	service := NewAccountUsageService(
+		accountRepo, usageLogRepo, usageFetcher, geminiQuotaService,
+		antigravityQuotaFetcher, grokQuotaFetcher, cache, identityCache,
+		tlsFPProfileService, openAITokenProvider,
+	)
+	service.SetGrokQuotaService(grokQuotaService)
+	return service
 }
 
 func ProvideOpenAIGatewayService(
@@ -611,7 +636,7 @@ var ProviderSet = wire.NewSet(
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,
-	NewAccountUsageService,
+	ProvideAccountUsageService,
 	NewAccountTestService,
 	ProvideSettingService,
 	NewDataManagementService,

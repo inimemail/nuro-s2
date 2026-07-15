@@ -17,7 +17,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -292,14 +291,19 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	responsesBody = updatedBody
 	grokCacheIdentity := ""
 	if account.Platform == PlatformGrok {
-		grokCacheIdentity = resolveGrokCacheIdentity(c, responsesBody, promptCacheKey, upstreamModel)
+		grokIntentBody := responsesBody
+		grokCacheIdentity = resolveGrokCacheIdentity(c, grokIntentBody, promptCacheKey, upstreamModel)
 		patchedBody, patchErr := patchGrokResponsesBody(responsesBody, upstreamModel)
 		if patchErr != nil {
 			return nil, patchErr
 		}
-		responsesBody, patchErr = applyGrokResponsesCacheIdentity(patchedBody, responsesBody, grokCacheIdentity, account.IsGrokOAuth())
+		responsesBody, patchErr = applyGrokResponsesCacheIdentity(patchedBody, grokIntentBody, grokCacheIdentity, account.IsGrokOAuth())
 		if patchErr != nil {
 			return nil, fmt.Errorf("apply grok prompt cache identity: %w", patchErr)
+		}
+		responsesBody, patchErr = applyGrokFreeMessagesFunctionToolCacheRoute(responsesBody, grokIntentBody, account, grokCacheIdentity)
+		if patchErr != nil {
+			return nil, fmt.Errorf("apply grok free function-tool cache route: %w", patchErr)
 		}
 	}
 
@@ -316,7 +320,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	var upstreamReq *http.Request
 	if account.Platform == PlatformGrok {
-		upstreamReq, err = buildGrokResponsesRequest(upstreamCtx, c, account, responsesBody, token, grokCacheIdentity)
+		upstreamReq, err = buildGrokResponsesRequest(upstreamCtx, c, account, responsesBody, token, grokCacheIdentity, s.cfg)
 	} else {
 		upstreamReq, err = s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, isStream, promptCacheKey, false)
 	}
@@ -439,7 +443,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		return s.handleAnthropicErrorResponse(resp, c, account, billingModel)
 	}
 	if account.Platform == PlatformGrok && !account.IsShadow() {
-		s.updateGrokUsageSnapshot(ctx, account, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+		s.updateGrokUsageFromResponse(ctx, account, resp.Header, resp.StatusCode)
 	}
 
 	if account.Type == AccountTypeOAuth && promptCacheKey != "" {
@@ -666,6 +670,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	documentScanner := newOpenAISSEJSONDocumentScanner(scanner)
 
 	streamInterval := time.Duration(0)
 	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
@@ -712,14 +717,14 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 	done := make(chan struct{})
 	go func() {
 		defer close(events)
-		for scanner.Scan() {
+		for documentScanner.Scan() {
 			select {
-			case events <- scanEvent{line: scanner.Text()}:
+			case events <- scanEvent{line: documentScanner.Text()}:
 			case <-done:
 				return
 			}
 		}
-		if err := scanner.Err(); err != nil {
+		if err := documentScanner.Err(); err != nil {
 			select {
 			case events <- scanEvent{err: err}:
 			case <-done:
@@ -859,6 +864,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	documentScanner := newOpenAISSEJSONDocumentScanner(scanner)
 
 	streamInterval := time.Duration(0)
 	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
@@ -908,9 +914,11 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			return false
 		}
 
-		isTerminalEvent := isOpenAICompatResponsesTerminalEvent(event.Type)
+		eventType := strings.TrimSpace(event.Type)
+		isBareErrorEvent := eventType == "error"
+		isTerminalEvent := isOpenAICompatResponsesTerminalEvent(eventType) || isBareErrorEvent
 		if isTerminalEvent {
-			terminalEventType = strings.ToLower(strings.TrimSpace(event.Type))
+			terminalEventType = strings.ToLower(eventType)
 			if event.Response != nil {
 				if id := strings.TrimSpace(event.Response.ID); id != "" {
 					responseID = id
@@ -922,7 +930,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			if event.Usage != nil {
 				usage = copyOpenAIUsageFromResponsesUsage(event.Usage)
 			}
-			if strings.TrimSpace(event.Type) == "response.failed" {
+			if eventType == "response.failed" || isBareErrorEvent {
 				payloadBytes := []byte(payload)
 				if decision := s.handleOpenAICyberPolicyEvent(c, account, false, requestID, payloadBytes, nil); decision.Matched {
 					if !clientDisconnected {
@@ -1062,8 +1070,8 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	// ── No keepalive: fast synchronous path (no goroutine overhead) ──
 	if streamInterval <= 0 && keepaliveInterval <= 0 {
 		var parser openAICompatSSEFrameParser
-		for scanner.Scan() {
-			line := scanner.Text()
+		for documentScanner.Scan() {
+			line := documentScanner.Text()
 			if isOpenAICompatDoneSentinelLine(line) {
 				return missingTerminalErr()
 			}
@@ -1075,7 +1083,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				return finalizeStream()
 			}
 		}
-		if err := scanner.Err(); err != nil {
+		if err := documentScanner.Err(); err != nil {
 			handleScanErr(err)
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete: %w", err)
 		}
@@ -1109,13 +1117,13 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	}
 	go func() {
 		defer close(events)
-		for scanner.Scan() {
+		for documentScanner.Scan() {
 			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
-			if !sendEvent(scanEvent{line: scanner.Text()}) {
+			if !sendEvent(scanEvent{line: documentScanner.Text()}) {
 				return
 			}
 		}
-		if err := scanner.Err(); err != nil {
+		if err := documentScanner.Err(); err != nil {
 			_ = sendEvent(scanEvent{err: err})
 		}
 	}()

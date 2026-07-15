@@ -7057,7 +7057,7 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
           continue
         }
 
-        const credentials = antigravityOAuth.buildCredentials(tokenInfo)
+        const credentials = antigravityOAuth.buildCredentials(tokenInfo, refreshTokens[i])
         
         // Generate account name with index for batch
         const accountName = refreshTokens.length > 1 ? `${form.name} #${i + 1}` : form.name

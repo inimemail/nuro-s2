@@ -2,8 +2,11 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -200,6 +203,9 @@ func (s *FailoverState) handleFailoverErrorWithRetryPlan(
 	retryMaxElapsed time.Duration,
 	failoverErr *service.UpstreamFailoverError,
 ) FailoverAction {
+	if ctx != nil && ctx.Err() != nil {
+		return FailoverCanceled
+	}
 	s.clearPendingSameAccountRetry()
 	s.LastFailoverErr = failoverErr
 
@@ -319,6 +325,9 @@ func (s *FailoverState) sameAccountRetryAllowed(accountID int64, retryLimit int,
 // 返回 FailoverExhausted 时，调用方应返回错误响应。
 // 返回 FailoverCanceled 时，调用方应直接 return。
 func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAction {
+	if ctx != nil && ctx.Err() != nil {
+		return FailoverCanceled
+	}
 	if s.LastFailoverErr != nil &&
 		s.LastFailoverErr.StatusCode == http.StatusServiceUnavailable &&
 		s.SwitchCount <= s.MaxSwitches {
@@ -339,6 +348,19 @@ func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAc
 		return FailoverContinue
 	}
 	return FailoverExhausted
+}
+
+func failoverClientGone(c *gin.Context) bool {
+	if c == nil || c.Request == nil || !errors.Is(c.Request.Context().Err(), context.Canceled) {
+		return false
+	}
+	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
+		return true
+	}
+	if !c.Writer.Written() {
+		c.Status(statusClientClosedRequest)
+	}
+	return true
 }
 
 // needForceCacheBilling 判断 failover 时是否需要强制缓存计费。

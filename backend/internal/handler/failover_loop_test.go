@@ -3,11 +3,13 @@ package handler
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,6 +41,30 @@ func newTestFailoverErr(statusCode int, retryable, forceBilling bool) *service.U
 		RetryableOnSameAccount: retryable,
 		ForceCacheBilling:      forceBilling,
 	}
+}
+
+func TestFailoverClientGone(t *testing.T) {
+	t.Run("client cancellation returns 499", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		writer := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(writer)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+
+		require.True(t, failoverClientGone(c))
+		require.Equal(t, statusClientClosedRequest, c.Writer.Status())
+	})
+
+	t.Run("internal deadline is not a client cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		writer := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(writer)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+
+		require.False(t, failoverClientGone(c))
+		require.False(t, c.Writer.Written())
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -664,8 +690,11 @@ func TestHandleFailoverError_ContextCanceled(t *testing.T) {
 
 		require.Equal(t, FailoverCanceled, action)
 		require.Less(t, elapsed, 100*time.Millisecond, "应立即返回")
-		// 重试计数仍应递增
-		require.Equal(t, 1, fs.SameAccountRetryCount[100])
+		// 调用前已取消，不应污染任何重试或切换状态。
+		require.Zero(t, fs.SameAccountRetryCount[100])
+		require.Zero(t, fs.SwitchCount)
+		require.Empty(t, fs.FailedAccountIDs)
+		require.Nil(t, fs.LastFailoverErr)
 	})
 
 	t.Run("Antigravity延迟期间context取消", func(t *testing.T) {

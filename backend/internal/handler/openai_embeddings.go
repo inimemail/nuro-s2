@@ -116,6 +116,9 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		retryAccountID = 0
 		retryAccount = nil
 		retryFailoverErr = nil
+		if failoverClientGone(c) {
+			return false
+		}
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, "", account, failoverErr)
 		h.gatewayService.RecordOpenAIAccountSwitch()
@@ -161,7 +164,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			)
 		}
 		if (err != nil || selection == nil || selection.Account == nil) && retryAccountID > 0 {
-			if c.Request.Context().Err() != nil {
+			if failoverClientGone(c) {
 				return
 			}
 			if retryAccount != nil && retryFailoverErr != nil {

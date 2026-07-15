@@ -72,6 +72,7 @@ func TestGatewayRoutesCodexModelsManifestPathIsRegistered(t *testing.T) {
 
 	require.True(t, registered["/backend-api/codex/models"], "GET /backend-api/codex/models should be registered")
 	require.True(t, registered["/v1/models"], "GET /v1/models should be registered")
+	require.True(t, registered["/models"], "GET /models should be registered")
 }
 
 func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {

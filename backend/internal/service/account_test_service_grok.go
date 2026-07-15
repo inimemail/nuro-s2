@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/gin-gonic/gin"
 )
 
@@ -33,7 +32,7 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create Grok test payload")
 	}
-	url, err := xai.BuildResponsesURL(account.GetGrokBaseURL())
+	url, err := buildGrokResponsesURL(account, s.cfg)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok base URL: %s", err))
 	}

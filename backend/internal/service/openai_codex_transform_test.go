@@ -43,6 +43,28 @@ func TestApplyCodexOAuthTransform_ToolContinuationPreservesInput(t *testing.T) {
 	require.Equal(t, "fc_1", second["call_id"])
 }
 
+func TestCodexImageGenerationBridgePreservesClientImageFunctionTool(t *testing.T) {
+	for _, tool := range []map[string]any{
+		{"type": "function", "name": codexImageGenerationFunctionToolName},
+		{"type": "function", "function": map[string]any{"name": codexImageGenerationFunctionToolName}},
+	} {
+		reqBody := map[string]any{
+			"model":        "gpt-5.5",
+			"input":        "draw a cat",
+			"instructions": "existing instructions",
+			"tools":        []any{tool},
+		}
+
+		require.True(t, hasCodexImageGenerationFunctionTool(reqBody))
+		require.False(t, ensureOpenAIResponsesImageGenerationTool(reqBody))
+		require.False(t, ensureOpenAIResponsesImageGenerationToolChoiceAuto(reqBody))
+		require.False(t, applyCodexImageGenerationBridgeInstructions(reqBody))
+		require.NotContains(t, reqBody, "tool_choice")
+		require.Equal(t, "existing instructions", reqBody["instructions"])
+		require.Len(t, reqBody["tools"], 1)
+	}
+}
+
 func TestApplyCodexOAuthTransform_MessagesBridgePromptCacheKeyIsHeaderOnly(t *testing.T) {
 	reqBody := map[string]any{
 		"model":            "gpt-5.5",

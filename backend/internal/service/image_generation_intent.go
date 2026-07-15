@@ -148,6 +148,30 @@ func openAIRequestBodyHasImageGenerationDeclaration(body []byte) bool {
 		openAIJSONToolChoiceSelectsImageGeneration(gjson.GetBytes(body, "tool_choice"))
 }
 
+func openAIJSONValueMayContainImageInput(value gjson.Result) bool {
+	if !value.Exists() {
+		return false
+	}
+	if value.IsArray() {
+		found := false
+		value.ForEach(func(_, item gjson.Result) bool {
+			if openAIJSONValueMayContainImageInput(item) {
+				found = true
+				return false
+			}
+			return true
+		})
+		return found
+	}
+	if value.IsObject() {
+		if strings.TrimSpace(value.Get("type").String()) == "input_image" || value.Get("image_url").Exists() {
+			return true
+		}
+		return openAIJSONValueMayContainImageInput(value.Get("content"))
+	}
+	return false
+}
+
 func openAIJSONToolChoiceSelectsImageGeneration(choice gjson.Result) bool {
 	if !choice.Exists() {
 		return false

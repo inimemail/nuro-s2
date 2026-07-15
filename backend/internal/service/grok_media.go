@@ -361,7 +361,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(ctx context.Context, c *gin.Cont
 	if err != nil {
 		return nil, err
 	}
-	targetURL, err := endpoint.upstreamURL(account.GetGrokMediaBaseURL(), requestID)
+	targetURL, err := buildGrokMediaURL(account, s.cfg, endpoint, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -422,7 +422,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(ctx context.Context, c *gin.Cont
 		return s.handleGrokMediaErrorResponse(ctx, resp, c, account, requestIDHeader)
 	}
 
-	s.updateGrokUsageSnapshot(ctx, account, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+	s.updateGrokUsageFromResponse(ctx, account, resp.Header, resp.StatusCode)
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		return nil, err

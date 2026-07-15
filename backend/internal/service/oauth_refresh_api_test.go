@@ -22,6 +22,7 @@ type refreshAPIAccountRepo struct {
 	updateErr              error
 	updateCalls            int
 	updateCredentialsCalls int
+	updateContextErr       error
 }
 
 func (r *refreshAPIAccountRepo) GetByID(_ context.Context, _ int64) (*Account, error) {
@@ -36,9 +37,10 @@ func (r *refreshAPIAccountRepo) Update(_ context.Context, _ *Account) error {
 	return r.updateErr
 }
 
-func (r *refreshAPIAccountRepo) UpdateCredentials(_ context.Context, id int64, credentials map[string]any) error {
+func (r *refreshAPIAccountRepo) UpdateCredentials(ctx context.Context, id int64, credentials map[string]any) error {
 	r.updateCalls++
 	r.updateCredentialsCalls++
+	r.updateContextErr = ctx.Err()
 	if r.updateErr != nil {
 		return r.updateErr
 	}
@@ -149,6 +151,38 @@ func TestRefreshIfNeeded_UpdateCredentialsPreservesRateLimitState(t *testing.T) 
 	require.Equal(t, 1, repo.updateCredentialsCalls)
 	require.NotNil(t, repo.account.RateLimitResetAt)
 	require.WithinDuration(t, resetAt, *repo.account.RateLimitResetAt, time.Second)
+}
+
+func TestRefreshIfNeeded_PersistsSuccessfulRotatedCredentialsAfterCallerCancellation(t *testing.T) {
+	account := &Account{
+		ID: 12, Platform: PlatformGemini, Type: AccountTypeOAuth,
+		Credentials: map[string]any{"refresh_token": "old-refresh"},
+	}
+	repo := &refreshAPIAccountRepo{account: account}
+	ctx, cancel := context.WithCancel(context.Background())
+	executor := &dynamicRefreshExecutor{
+		canRefresh: true,
+		cacheKey:   "test:cancelled-persistence",
+		needsRefreshFunc: func() bool {
+			return true
+		},
+		refreshFunc: func(context.Context, *Account) (map[string]any, error) {
+			cancel()
+			return map[string]any{
+				"access_token":  "new-access",
+				"refresh_token": "rotated-refresh",
+			}, nil
+		},
+	}
+
+	result, err := NewOAuthRefreshAPI(repo, nil).RefreshIfNeeded(ctx, account, executor, time.Minute)
+
+	require.NoError(t, err)
+	require.True(t, result.Refreshed)
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.NoError(t, repo.updateContextErr)
+	require.Equal(t, 1, repo.updateCredentialsCalls)
+	require.Equal(t, "rotated-refresh", repo.account.GetCredential("refresh_token"))
 }
 
 func TestRefreshIfNeeded_LockHeld(t *testing.T) {

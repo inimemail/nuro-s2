@@ -429,6 +429,140 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 	return nil
 }
 
+func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
+	ctx context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	credentials map[string]any,
+) (bool, error) {
+	if r == nil || r.sql == nil {
+		return false, errors.New("account repository SQL executor is not configured")
+	}
+	expectedJSON, err := json.Marshal(normalizeJSONMap(expectedCredentials))
+	if err != nil {
+		return false, err
+	}
+	credentialsJSON, err := json.Marshal(normalizeJSONMap(credentials))
+	if err != nil {
+		return false, err
+	}
+	result, err := r.sql.ExecContext(ctx, `
+		WITH updated AS (
+			UPDATE accounts AS a
+			SET credentials = $1::jsonb, updated_at = NOW()
+			WHERE a.id = $2
+				AND a.deleted_at IS NULL
+				AND a.platform = $3
+				AND a.type = $4
+				AND a.credentials = $5::jsonb
+				AND a.proxy_id IS NOT DISTINCT FROM $6
+			RETURNING a.id
+		)
+		INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)
+		SELECT $7, updated.id, NULL, NULL FROM updated
+	`,
+		string(credentialsJSON), id, service.PlatformGrok, service.AccountTypeOAuth,
+		string(expectedJSON), expectedProxyID, service.SchedulerOutboxEventAccountChanged,
+	)
+	if err != nil {
+		return false, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil || rowsAffected == 0 {
+		return false, err
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return true, nil
+}
+
+func (r *accountRepository) SetGrokOAuthErrorIfCredentialsUnchanged(
+	ctx context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	errorMsg string,
+) (bool, error) {
+	return r.updateGrokOAuthSchedulingStateIfCredentialsUnchanged(
+		ctx, id, expectedCredentials, expectedProxyID, nil, errorMsg, true,
+	)
+}
+
+func (r *accountRepository) SetGrokOAuthTempUnschedulableIfCredentialsUnchanged(
+	ctx context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	until time.Time,
+	reason string,
+) (bool, error) {
+	return r.updateGrokOAuthSchedulingStateIfCredentialsUnchanged(
+		ctx, id, expectedCredentials, expectedProxyID, &until, reason, false,
+	)
+}
+
+func (r *accountRepository) updateGrokOAuthSchedulingStateIfCredentialsUnchanged(
+	ctx context.Context,
+	id int64,
+	expectedCredentials map[string]any,
+	expectedProxyID *int64,
+	until *time.Time,
+	message string,
+	permanent bool,
+) (bool, error) {
+	if r == nil || r.sql == nil {
+		return false, errors.New("account repository SQL executor is not configured")
+	}
+	expectedJSON, err := json.Marshal(normalizeJSONMap(expectedCredentials))
+	if err != nil {
+		return false, err
+	}
+	status := service.StatusActive
+	schedulable := true
+	var tempUntil any
+	if permanent {
+		status = service.StatusError
+		schedulable = false
+	} else if until != nil {
+		tempUntil = *until
+	}
+	result, err := r.sql.ExecContext(ctx, `
+		WITH updated AS (
+			UPDATE accounts AS a
+			SET status = $1,
+				error_message = CASE WHEN $2 THEN $3 ELSE a.error_message END,
+				schedulable = $4,
+				temp_unschedulable_until = CASE WHEN $2 THEN a.temp_unschedulable_until ELSE $5 END,
+				temp_unschedulable_reason = CASE WHEN $2 THEN a.temp_unschedulable_reason ELSE $3 END,
+				updated_at = NOW()
+			WHERE a.id = $6
+				AND a.deleted_at IS NULL
+				AND a.platform = $7
+				AND a.type = $8
+				AND a.status = $9
+				AND a.schedulable IS TRUE
+				AND a.credentials = $10::jsonb
+				AND a.proxy_id IS NOT DISTINCT FROM $11
+			RETURNING a.id
+		)
+		INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)
+		SELECT $12, updated.id, NULL, NULL FROM updated
+	`,
+		status, permanent, message, schedulable, tempUntil, id,
+		service.PlatformGrok, service.AccountTypeOAuth, service.StatusActive,
+		string(expectedJSON), expectedProxyID, service.SchedulerOutboxEventAccountChanged,
+	)
+	if err != nil {
+		return false, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil || rowsAffected == 0 {
+		return false, err
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return true, nil
+}
+
 func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 	groupIDs, err := r.loadAccountGroupIDs(ctx, id)
 	if err != nil {
@@ -1300,6 +1434,36 @@ func (r *accountRepository) SetRateLimitedIfLater(ctx context.Context, id int64,
 	}
 	r.syncSchedulerAccountSnapshot(ctx, id)
 	return nil
+}
+
+func (r *accountRepository) ClearRateLimitIfObserved(
+	ctx context.Context,
+	id int64,
+	observedLimitedAt, observedResetAt time.Time,
+) (bool, error) {
+	updated, err := r.client.Account.Update().
+		Where(
+			dbaccount.IDEQ(id),
+			dbaccount.PlatformEQ(service.PlatformGrok),
+			dbaccount.TypeEQ(service.AccountTypeOAuth),
+			dbaccount.RateLimitedAtEQ(observedLimitedAt),
+			dbaccount.RateLimitResetAtEQ(observedResetAt),
+		).
+		ClearRateLimitedAt().
+		ClearRateLimitResetAt().
+		Save(ctx)
+	if err != nil {
+		return false, err
+	}
+	if updated == 0 {
+		r.syncSchedulerAccountSnapshot(ctx, id)
+		return false, nil
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue observed rate-limit clear failed: account=%d err=%v", id, err)
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return true, nil
 }
 
 func (r *accountRepository) SetModelRateLimit(ctx context.Context, id int64, scope string, resetAt time.Time, reason ...string) error {

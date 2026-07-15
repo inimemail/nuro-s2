@@ -75,6 +75,48 @@ func (r *accountUsageStaticAccountRepo) UpdateExtra(context.Context, int64, map[
 	return nil
 }
 
+type accountUsageGrokErrorRepo struct {
+	accountUsageStaticAccountRepo
+	clearErrorCalls int
+}
+
+func (r *accountUsageGrokErrorRepo) ClearError(context.Context, int64) error {
+	r.clearErrorCalls++
+	return nil
+}
+
+func TestGetGrokUsageDoesNotClearCredentialErrorFromPassiveSnapshot(t *testing.T) {
+	account := &Account{
+		ID: 601, Platform: PlatformGrok, Type: AccountTypeOAuth,
+		Status: StatusError, Schedulable: false,
+		ErrorMessage: "token refresh failed (non-retryable): invalid_grant",
+		Extra: map[string]any{
+			grokQuotaSnapshotExtraKey: map[string]any{"status_code": http.StatusOK},
+		},
+	}
+	repo := &accountUsageGrokErrorRepo{
+		accountUsageStaticAccountRepo: accountUsageStaticAccountRepo{account: account},
+	}
+	svc := &AccountUsageService{
+		accountRepo: repo, grokQuotaFetcher: NewGrokQuotaFetcher(), cache: NewUsageCache(),
+	}
+
+	usage, err := svc.GetUsage(context.Background(), account.ID)
+
+	if err != nil {
+		t.Fatalf("GetUsage returned error: %v", err)
+	}
+	if usage == nil {
+		t.Fatal("GetUsage returned nil usage")
+	}
+	if repo.clearErrorCalls != 0 {
+		t.Fatalf("passive Grok usage cleared credential error %d times", repo.clearErrorCalls)
+	}
+	if account.Status != StatusError || account.Schedulable {
+		t.Fatalf("passive Grok usage changed scheduling state: status=%s schedulable=%v", account.Status, account.Schedulable)
+	}
+}
+
 func TestShouldRefreshOpenAICodexSnapshot(t *testing.T) {
 	t.Parallel()
 

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -139,13 +139,62 @@ func grokChatResponsesBridgeEligibility(body []byte) (bool, string) {
 		default:
 			return false, "unsupported_message_role_" + role
 		}
-		var content string
-		if raw, exists := message["content"]; !exists || json.Unmarshal(raw, &content) != nil {
+		raw, exists := message["content"]
+		if !exists {
 			return false, "non_text_message_content"
 		}
-		if strings.TrimSpace(content) == "" {
-			return false, "empty_message_content"
+		var content string
+		if json.Unmarshal(raw, &content) == nil {
+			if strings.TrimSpace(content) == "" {
+				return false, "empty_message_content"
+			}
+			continue
 		}
+		if ok, reason := grokChatStructuredContentBridgeable(raw); !ok {
+			return false, reason
+		}
+	}
+	return true, ""
+}
+
+func grokChatStructuredContentBridgeable(raw json.RawMessage) (bool, string) {
+	var parts []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return false, "non_text_message_content"
+	}
+	if len(parts) == 0 {
+		return false, "empty_message_content"
+	}
+	hasContent := false
+	for _, part := range parts {
+		var partType string
+		rawType, ok := part["type"]
+		if !ok || json.Unmarshal(rawType, &partType) != nil {
+			return false, "non_text_message_content"
+		}
+		switch strings.TrimSpace(partType) {
+		case "text":
+			var text string
+			if rawText, ok := part["text"]; ok && json.Unmarshal(rawText, &text) == nil && strings.TrimSpace(text) != "" {
+				hasContent = true
+			}
+		case "image_url":
+			var image struct {
+				URL string `json:"url"`
+			}
+			rawImage, ok := part["image_url"]
+			if ok && json.Unmarshal(rawImage, &image) == nil {
+				imageURL := strings.TrimSpace(image.URL)
+				if imageURL != "" && !isEmptyBase64DataURI(imageURL) {
+					hasContent = true
+				}
+			}
+		default:
+			return false, "unsupported_content_part_" + strings.TrimSpace(partType)
+		}
+	}
+	if !hasContent {
+		return false, "empty_message_content"
 	}
 	return true, ""
 }
@@ -192,7 +241,8 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(ctx contex
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 	cacheIdentity := resolveGrokCacheIdentity(c, body, promptCacheKey, upstreamModel)
-	if !grokChatResponsesRuntimeEligible(upstreamModel, cacheIdentity) {
+	hasImageInput := openAIJSONValueMayContainImageInput(gjson.GetBytes(body, "messages"))
+	if !grokChatResponsesRuntimeEligible(upstreamModel, cacheIdentity) && !(hasImageInput && strings.TrimSpace(upstreamModel) == "grok-4.5") {
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 	responsesReq, err := apicompat.ChatCompletionsToResponses(&chatReq)
@@ -234,7 +284,7 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(ctx contex
 		return nil, fmt.Errorf("get grok access token: %w", err)
 	}
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
-	upstreamReq, err := buildGrokResponsesRequest(upstreamCtx, c, account, responsesBody, token, cacheIdentity)
+	upstreamReq, err := buildGrokResponsesRequest(upstreamCtx, c, account, responsesBody, token, cacheIdentity, s.cfg)
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build grok responses bridge request: %w", err)
@@ -278,7 +328,7 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(ctx contex
 		}
 		return s.handleChatCompletionsErrorResponseWithoutAccountState(resp, c, account, billingModel)
 	}
-	s.updateGrokUsageSnapshot(ctx, account, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+	s.updateGrokUsageFromResponse(ctx, account, resp.Header, resp.StatusCode)
 	var result *OpenAIForwardResult
 	if clientStream {
 		result, err = s.handleChatStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime, len(body))

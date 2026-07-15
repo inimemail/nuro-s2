@@ -152,6 +152,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
+		if failoverClientGone(c) {
+			return false
+		}
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, sessionHash, account, failoverErr)
 		h.gatewayService.RecordOpenAIAccountSwitch()
@@ -211,7 +214,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			)
 		}
 		if (err != nil || selection == nil || selection.Account == nil) && sameAccountRetryAccountID > 0 {
-			if c.Request.Context().Err() != nil {
+			if failoverClientGone(c) {
 				return
 			}
 			if sameAccountRetryAccount != nil && sameAccountRetryErr != nil {

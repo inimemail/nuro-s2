@@ -269,6 +269,7 @@ func (s *TokenRefreshService) listActiveAccounts(ctx context.Context) ([]Account
 // refreshWithRetry 带重试的刷新
 func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Account, refresher TokenRefresher, executor OAuthRefreshExecutor, refreshWindow time.Duration) error {
 	var lastErr error
+	failureAccount := account
 
 	for attempt := 1; attempt <= s.cfg.MaxRetries; attempt++ {
 		var newCredentials map[string]any
@@ -277,6 +278,9 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 		// 优先使用统一 API（带分布式锁 + DB 重读保护）
 		if s.refreshAPI != nil && executor != nil {
 			result, refreshErr := s.refreshAPI.RefreshIfNeeded(ctx, account, executor, refreshWindow)
+			if result != nil && result.Account != nil {
+				failureAccount = result.Account
+			}
 			if refreshErr != nil {
 				err = refreshErr
 			} else if result.LockHeld {
@@ -308,13 +312,15 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 		// 不可重试错误（invalid_grant/invalid_client 等）直接标记 error 状态并返回
 		if isNonRetryableRefreshError(err) {
 			errorMsg := "Token refresh failed (non-retryable): " + logredact.RedactText(err.Error())
-			s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
 			s.clearAntigravityForceTokenRefresh(ctx, account, "non_retryable")
-			if setErr := s.accountRepo.SetError(ctx, account.ID, errorMsg); setErr != nil {
+			applied, setErr := s.setRefreshErrorIfCurrent(ctx, failureAccount, errorMsg)
+			if setErr != nil {
 				slog.Error("token_refresh.set_error_status_failed",
 					"account_id", account.ID,
 					"error", setErr,
 				)
+			} else if applied {
+				s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
 			}
 			// 刷新失败但 access_token 可能仍有效，尝试设置隐私
 			s.ensureOpenAIPrivacy(ctx, account)
@@ -356,13 +362,14 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 	if lastErr != nil {
 		reason += ": " + logredact.RedactText(lastErr.Error())
 	}
-	s.notifyAccountSchedulingBlocked(account, until, "token_refresh_retry_exhausted")
-	if setErr := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); setErr != nil {
+	applied, setErr := s.setRefreshTempUnschedulableIfCurrent(ctx, failureAccount, until, reason)
+	if setErr != nil {
 		slog.Warn("token_refresh.set_temp_unschedulable_failed",
 			"account_id", account.ID,
 			"error", setErr,
 		)
-	} else {
+	} else if applied {
+		s.notifyAccountSchedulingBlocked(account, until, "token_refresh_retry_exhausted")
 		slog.Info("token_refresh.temp_unschedulable_set",
 			"account_id", account.ID,
 			"until", until.Format(time.RFC3339),
@@ -370,6 +377,49 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 	}
 
 	return lastErr
+}
+
+func (s *TokenRefreshService) setRefreshErrorIfCurrent(ctx context.Context, account *Account, message string) (bool, error) {
+	if account != nil && account.IsGrokOAuth() {
+		repo, ok := s.accountRepo.(grokOAuthConditionalStateRepository)
+		if !ok {
+			return false, errors.New("grok OAuth conditional state repository is not configured")
+		}
+		return repo.SetGrokOAuthErrorIfCredentialsUnchanged(
+			ctx, account.ID, cloneCredentials(account.Credentials), cloneInt64Pointer(account.ProxyID), message,
+		)
+	}
+	if account == nil {
+		return false, errors.New("refresh account is nil")
+	}
+	if err := s.accountRepo.SetError(ctx, account.ID, message); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *TokenRefreshService) setRefreshTempUnschedulableIfCurrent(
+	ctx context.Context,
+	account *Account,
+	until time.Time,
+	reason string,
+) (bool, error) {
+	if account != nil && account.IsGrokOAuth() {
+		repo, ok := s.accountRepo.(grokOAuthConditionalStateRepository)
+		if !ok {
+			return false, errors.New("grok OAuth conditional state repository is not configured")
+		}
+		return repo.SetGrokOAuthTempUnschedulableIfCredentialsUnchanged(
+			ctx, account.ID, cloneCredentials(account.Credentials), cloneInt64Pointer(account.ProxyID), until, reason,
+		)
+	}
+	if account == nil {
+		return false, errors.New("refresh account is nil")
+	}
+	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // postRefreshActions 刷新成功后的后续动作（清除错误状态、缓存失效、调度器同步等）

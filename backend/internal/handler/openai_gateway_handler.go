@@ -464,6 +464,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
+		if failoverClientGone(c) {
+			return false
+		}
 		if !failoverErr.SkipSchedulePenalty {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 		}
@@ -574,7 +577,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}
 		}
 		if (err != nil || selection == nil || selection.Account == nil) && sameAccountRetryAccountID > 0 {
-			if requestCtx.Err() != nil {
+			if failoverClientGone(c) {
 				return
 			}
 			if sameAccountRetryAccount != nil && sameAccountRetryErr != nil {
@@ -1215,6 +1218,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
+		if failoverClientGone(c) {
+			return false
+		}
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, sessionHash, account, failoverErr)
 		h.gatewayService.RecordOpenAIAccountSwitch()
@@ -1278,7 +1284,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			)
 		}
 		if (err != nil || selection == nil || selection.Account == nil) && sameAccountRetryAccountID > 0 {
-			if c.Request.Context().Err() != nil {
+			if failoverClientGone(c) {
 				return
 			}
 			if sameAccountRetryAccount != nil && sameAccountRetryErr != nil {
@@ -1993,6 +1999,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
+		if failoverClientGone(c) {
+			return false
+		}
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
 		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
 			modelRoutingLockedPriority,
@@ -2052,7 +2061,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			)
 		}
 		if (err != nil || selection == nil || selection.Account == nil) && sameAccountRetryAccountID > 0 {
-			if requestCtx.Err() != nil {
+			if failoverClientGone(c) {
 				return
 			}
 			if sameAccountRetryAccount != nil && sameAccountRetryErr != nil {
@@ -2613,6 +2622,9 @@ func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error,
 }
 
 func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
+	if failoverClientGone(c) {
+		return
+	}
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 	if service.IsOpenAIResponsesHealthProbe(c) && service.IsOpenAIHealthProbeEmptyErrorBody(responseBody) {
@@ -2672,6 +2684,9 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 
 // handleFailoverExhaustedSimple 简化版本，用于没有响应体的情况
 func (h *OpenAIGatewayHandler) handleFailoverExhaustedSimple(c *gin.Context, statusCode int, streamStarted bool) {
+	if failoverClientGone(c) {
+		return
+	}
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
 	service.SetOpsUpstreamError(c, statusCode, errMsg, "")
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
@@ -2696,6 +2711,9 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
+	if failoverClientGone(c) {
+		return
+	}
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
 		streamStarted = true
 	}

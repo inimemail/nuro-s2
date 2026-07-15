@@ -81,6 +81,18 @@ func ProvideSystemHandler(updateService *service.UpdateService, lockService *ser
 	return admin.NewSystemHandler(updateService, lockService)
 }
 
+// ProvideGrokOAuthHandler keeps the reconciliation dependency in Wire's graph.
+func ProvideGrokOAuthHandler(
+	oauthService *service.GrokOAuthService,
+	adminService service.AdminService,
+	quotaService *service.GrokQuotaService,
+	reconciler *service.TokenRefreshService,
+) *admin.GrokOAuthHandler {
+	handler := admin.NewGrokOAuthHandler(oauthService, adminService, quotaService)
+	handler.SetReconciler(reconciler)
+	return handler
+}
+
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
 func ProvideSettingHandler(settingService *service.SettingService, buildInfo BuildInfo, notificationEmailService *service.NotificationEmailService) *SettingHandler {
 	h := NewSettingHandler(settingService, buildInfo.Version)
@@ -170,7 +182,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewOpenAIOAuthHandler,
 	admin.NewGeminiOAuthHandler,
 	admin.NewAntigravityOAuthHandler,
-	admin.NewGrokOAuthHandler,
+	ProvideGrokOAuthHandler,
 	admin.NewProxyHandler,
 	admin.NewRedeemHandler,
 	admin.NewPromoHandler,

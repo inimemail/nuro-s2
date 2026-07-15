@@ -555,7 +555,14 @@
         </div>
 
         <UsageProgressBar
-          v-if="grokRequestQuotaBar"
+          v-if="grokWeeklyBillingBar"
+          label="7d"
+          :utilization="grokWeeklyBillingBar.utilization"
+          :resets-at="grokWeeklyBillingBar.resetsAt"
+          color="indigo"
+        />
+        <UsageProgressBar
+          v-if="!grokWeeklyBillingBar && !grokIsFree && grokRequestQuotaBar"
           label="req"
           :utilization="grokRequestQuotaBar.utilization"
           :resets-at="grokRequestQuotaBar.resetsAt"
@@ -563,16 +570,22 @@
           color="indigo"
         />
         <UsageProgressBar
-          v-if="grokTokenQuotaBar"
+          v-if="!grokWeeklyBillingBar && !grokIsFree && grokTokenQuotaBar"
           label="tok"
           :utilization="grokTokenQuotaBar.utilization"
           :resets-at="grokTokenQuotaBar.resetsAt"
           :remaining-capacity="true"
           color="emerald"
         />
+        <UsageProgressBar
+          v-if="grokFreeTokenBar"
+          label="24h"
+          :utilization="grokFreeTokenBar.utilization"
+          color="emerald"
+        />
 
         <div
-          v-if="usageInfo?.grok_local_usage || todayStats"
+          v-if="grokLocalUsage"
           class="flex items-center gap-1.5 text-[9px] text-gray-500 dark:text-gray-400"
         >
           <span class="rounded bg-gray-100 px-1.5 py-0.5 dark:bg-gray-800">
@@ -619,7 +632,7 @@
         </div>
 
         <div
-          v-if="!grokRequestQuotaBar && !grokTokenQuotaBar && !usageInfo?.grok_local_usage && !todayStats"
+          v-if="!grokWeeklyBillingBar && !grokFreeTokenBar && !grokRequestQuotaBar && !grokTokenQuotaBar && !grokLocalUsage"
           class="text-xs text-gray-400"
         >
           -
@@ -1735,11 +1748,53 @@ const makeGrokQuotaBar = (
 
 const grokRequestQuotaBar = computed(() => makeGrokQuotaBar(usageInfo.value?.grok_request_quota))
 const grokTokenQuotaBar = computed(() => makeGrokQuotaBar(usageInfo.value?.grok_token_quota))
+const grokBilling = computed(() => usageInfo.value?.grok_billing || null)
+const grokWeeklyBillingBar = computed((): QuotaBarInfo | null => {
+  const billing = grokBilling.value
+  if (billing?.period_type?.toLowerCase() !== 'weekly' || billing.usage_percent == null) return null
+  return {
+    utilization: Math.min(100, Math.max(0, billing.usage_percent)),
+    resetsAt: billing.period_end || null
+  }
+})
+const grokIsFree = computed(() => {
+  const billing = grokBilling.value
+  const billingPlan = (billing?.plan || '').trim().toLowerCase()
+  const hasPaidPlan = Boolean(billingPlan) &&
+    !billingPlan.includes('free') &&
+    !billingPlan.includes('basic')
+  const hasPaidBilling = billing && (
+    billing.usage_percent != null ||
+    billing.used_percent != null ||
+    (billing.monthly_limit_cents != null && billing.monthly_limit_cents > 0) ||
+    hasPaidPlan
+  )
+  if (hasPaidBilling) return false
+
+  const tier = (usageInfo.value?.subscription_tier || '').trim().toLowerCase()
+  if (tier) return tier.includes('free') || tier.includes('basic')
+  if (!billing || billing.partial || (billing.failed_windows?.length || 0) > 0) return false
+
+  return Boolean(
+    billing.monthly_updated_at ||
+    (billing.status_code != null && billing.status_code >= 200 && billing.status_code < 300)
+  )
+})
+const grokFreeTokenBar = computed(() => {
+  const stats = usageInfo.value?.grok_local_usage_24h
+  if (!grokIsFree.value || !stats) return null
+  return {
+    utilization: Math.min(100, Math.max(0, (stats.tokens / 2_000_000) * 100)),
+    resetsAt: null
+  }
+})
 
 const grokEntitlementLabel = computed(() => {
   if (props.account.platform !== 'grok') return ''
   const status = (usageInfo.value?.grok_entitlement_status || '').trim()
   if (status) return status
+  const plan = (grokBilling.value?.plan || '').trim()
+  if (plan) return plan
   const extra = props.account.extra as Record<string, unknown> | undefined
   const entitlement = typeof extra?.entitlement_status === 'string' ? extra.entitlement_status : ''
   const tier = typeof extra?.subscription_tier === 'string' ? extra.subscription_tier : ''
@@ -1757,7 +1812,14 @@ const grokEntitlementClass = computed(() => {
   return 'bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-300'
 })
 
-const grokLocalUsage = computed(() => usageInfo.value?.grok_local_usage || props.todayStats || null)
+const grokLocalUsage = computed(() => {
+  if (grokIsFree.value) return usageInfo.value?.grok_local_usage_24h || null
+  return props.todayStats ||
+    usageInfo.value?.grok_local_usage ||
+    usageInfo.value?.grok_local_usage_7d ||
+    usageInfo.value?.grok_local_usage_monthly ||
+    null
+})
 
 const formatGrokLocalRequests = computed(() => {
   const stats = grokLocalUsage.value

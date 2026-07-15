@@ -332,8 +332,20 @@ func TestPlatformTokenRefreshers_CanRefreshRejectShadowAndNil(t *testing.T) {
 		{
 			name:      "grok oauth",
 			refresher: &GrokTokenRefresher{},
+			account: &Account{
+				Platform: PlatformGrok,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"refresh_token": "grok-refresh-token",
+				},
+			},
+			want: true,
+		},
+		{
+			name:      "grok oauth missing refresh token",
+			refresher: &GrokTokenRefresher{},
 			account:   &Account{Platform: PlatformGrok, Type: AccountTypeOAuth},
-			want:      true,
+			want:      false,
 		},
 		{
 			name:      "grok shadow",

@@ -183,6 +183,9 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
 		sameAccountRetryExactVideoStatus = false
+		if failoverClientGone(c) {
+			return false
+		}
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, requestModel, false, nil)
 		// A cache-bound status request must stay on its creating account because
 		// the request ID is account-local.
@@ -247,7 +250,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			}
 		}
 		if (err != nil || selection == nil || selection.Account == nil) && sameAccountRetryAccountID > 0 {
-			if requestCtx.Err() != nil {
+			if failoverClientGone(c) {
 				return
 			}
 			if sameAccountRetryAccount != nil && sameAccountRetryErr != nil {

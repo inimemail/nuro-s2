@@ -42,6 +42,13 @@ func RegisterGatewayRoutes(
 	isOpenAIGatewayPlatform := func(c *gin.Context) bool {
 		return getGroupPlatform(c) == service.PlatformOpenAI
 	}
+	modelsHandler := func(c *gin.Context) {
+		if isOpenAIGatewayPlatform(c) && c.Query("client_version") != "" {
+			h.OpenAIGateway.CodexModels(c)
+			return
+		}
+		h.Gateway.Models(c)
+	}
 	imagesHandler := func(c *gin.Context) {
 		switch getGroupPlatform(c) {
 		case service.PlatformOpenAI:
@@ -137,13 +144,7 @@ func RegisterGatewayRoutes(
 			}
 			h.Gateway.CountTokens(c)
 		})
-		gateway.GET("/models", func(c *gin.Context) {
-			if isOpenAIGatewayPlatform(c) && c.Query("client_version") != "" {
-				h.OpenAIGateway.CodexModels(c)
-				return
-			}
-			h.Gateway.Models(c)
-		})
+		gateway.GET("/models", modelsHandler)
 		gateway.GET("/usage", h.Gateway.Usage)
 		// OpenAI Responses API: auto-route based on group platform
 		gateway.POST("/responses", func(c *gin.Context) {
@@ -267,6 +268,7 @@ func RegisterGatewayRoutes(
 	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
 	r.POST("/alpha/search", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.AlphaSearch)
 	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
+	r.GET("/models", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, modelsHandler)
 	codexDirect := r.Group("/backend-api/codex")
 	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic)
 	{

@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -14,6 +15,28 @@ func NewGrokQuotaFetcher() *GrokQuotaFetcher {
 	return &GrokQuotaFetcher{}
 }
 
+func grokBillingSnapshotFromExtra(extra map[string]any) (*xai.BillingSummary, error) {
+	if extra == nil {
+		return nil, nil
+	}
+	raw, ok := extra[grokBillingExtraKey]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	if snapshot, ok := raw.(*xai.BillingSummary); ok {
+		return snapshot, nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal grok billing snapshot: %w", err)
+	}
+	var out xai.BillingSummary
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (f *GrokQuotaFetcher) BuildUsageInfo(account *Account) *UsageInfo {
 	now := time.Now()
 	usage := &UsageInfo{
@@ -22,14 +45,29 @@ func (f *GrokQuotaFetcher) BuildUsageInfo(account *Account) *UsageInfo {
 	}
 	if account == nil {
 		usage.ErrorCode = "quota_unknown"
-		usage.Error = "Grok quota is unknown until the first upstream response includes xAI rate-limit headers"
+		usage.Error = "Quota is not available yet"
 		return usage
 	}
 
+	billing, _ := grokBillingSnapshotFromExtra(account.Extra)
+	if billing != nil {
+		usage.GrokBilling = billing
+		if billing.Plan != "" {
+			usage.SubscriptionTier = billing.Plan
+			usage.SubscriptionTierRaw = billing.Plan
+		}
+		if parsedAt, parseErr := time.Parse(time.RFC3339, billing.UpdatedAt); parseErr == nil {
+			usage.UpdatedAt = &parsedAt
+		}
+		usage.GrokLastStatusCode = billing.StatusCode
+		usage.GrokQuotaSnapshotState = "billing_observed"
+	}
 	snapshot, err := grokQuotaSnapshotFromExtra(account.Extra)
 	if err != nil || snapshot == nil {
-		usage.ErrorCode = "quota_unknown"
-		usage.Error = "Grok quota is unknown until the first upstream response includes xAI rate-limit headers"
+		if billing == nil {
+			usage.ErrorCode = "quota_unknown"
+			usage.Error = "Quota is not available yet"
+		}
 		return usage
 	}
 
@@ -39,12 +77,16 @@ func (f *GrokQuotaFetcher) BuildUsageInfo(account *Account) *UsageInfo {
 	usage.GrokRequestQuota = snapshot.Requests
 	usage.GrokTokenQuota = snapshot.Tokens
 	usage.GrokRetryAfterSeconds = snapshot.RetryAfterSeconds
-	usage.SubscriptionTier = snapshot.SubscriptionTier
-	usage.SubscriptionTierRaw = snapshot.SubscriptionTier
+	if usage.SubscriptionTier == "" {
+		usage.SubscriptionTier = snapshot.SubscriptionTier
+		usage.SubscriptionTierRaw = snapshot.SubscriptionTier
+	}
 	usage.GrokEntitlementStatus = snapshot.EntitlementStatus
 	usage.GrokLastQuotaProbeAt = snapshot.LastProbeAt
 	usage.GrokLastHeadersSeenAt = snapshot.LastHeadersSeenAt
-	usage.GrokLastStatusCode = snapshot.StatusCode
+	if snapshot.StatusCode >= http.StatusBadRequest || usage.GrokLastStatusCode == 0 {
+		usage.GrokLastStatusCode = snapshot.StatusCode
+	}
 	if snapshot.HasObservedHeaders() {
 		usage.GrokQuotaSnapshotState = "observed"
 	} else {
