@@ -288,6 +288,8 @@ struct Usage {
     input_tokens: i64,
     output_tokens: i64,
     #[serde(skip_serializing_if = "is_zero")]
+    cache_creation_input_tokens: i64,
+    #[serde(skip_serializing_if = "is_zero")]
     cache_read_input_tokens: i64,
 }
 
@@ -3173,15 +3175,52 @@ impl ChatStreamSummary {
         {
             self.usage.output_tokens = completion;
         }
-        if let Some(cached) = usage
-            .get("prompt_tokens_details")
-            .or_else(|| usage.get("input_tokens_details"))
-            .and_then(|v| v.get("cached_tokens"))
-            .and_then(Value::as_i64)
-        {
-            self.usage.cache_read_input_tokens = cached;
-        }
+        self.usage.cache_read_input_tokens = first_positive_json_i64(
+            self.usage.cache_read_input_tokens,
+            usage,
+            &[
+                "input_tokens_details.cached_tokens",
+                "prompt_tokens_details.cached_tokens",
+                "cache_read_input_tokens",
+                "cache_read_tokens",
+                "cached_tokens",
+            ],
+        );
+        self.usage.cache_creation_input_tokens = first_positive_json_i64(
+            self.usage.cache_creation_input_tokens,
+            usage,
+            &[
+                "input_tokens_details.cache_creation_input_tokens",
+                "prompt_tokens_details.cache_creation_input_tokens",
+                "input_tokens_details.cache_write_input_tokens",
+                "prompt_tokens_details.cache_write_input_tokens",
+                "input_tokens_details.cache_write_tokens",
+                "prompt_tokens_details.cache_write_tokens",
+                "input_tokens_details.cache_creation_tokens",
+                "prompt_tokens_details.cache_creation_tokens",
+                "cache_write_tokens",
+                "cache_creation_input_tokens",
+                "cache_write_input_tokens",
+                "cache_creation_tokens",
+            ],
+        );
     }
+}
+
+fn first_positive_json_i64(current: i64, value: &Value, paths: &[&str]) -> i64 {
+    if current > 0 {
+        return current;
+    }
+    paths
+        .iter()
+        .filter_map(|path| value_get_path(value, path).and_then(Value::as_i64))
+        .find(|tokens| *tokens > 0)
+        .unwrap_or(0)
+}
+
+fn value_get_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.')
+        .try_fold(value, |current, key| current.get(key))
 }
 
 fn is_zero(v: &i64) -> bool {
@@ -3497,7 +3536,8 @@ mod tests {
                         "input_tokens": 11,
                         "output_tokens": 7,
                         "input_tokens_details": {
-                            "cached_tokens": 3
+                            "cached_tokens": 3,
+                            "cache_creation_input_tokens": 5
                         }
                     }
                 }
@@ -3510,6 +3550,44 @@ mod tests {
         assert_eq!(summary.usage.input_tokens, 11);
         assert_eq!(summary.usage.output_tokens, 7);
         assert_eq!(summary.usage.cache_read_input_tokens, 3);
+        assert_eq!(summary.usage.cache_creation_input_tokens, 5);
+        let usage_json = serde_json::to_value(&summary.usage).expect("serialize usage");
+        assert_eq!(usage_json["cache_creation_input_tokens"], 5);
+    }
+
+    #[test]
+    fn usage_summary_accepts_cache_creation_aliases_without_zero_overwrite() {
+        let mut nested = ChatStreamSummary::default();
+        nested.observe_ws_message(&TungsteniteMessage::Text(
+            serde_json::json!({
+                "usage": {
+                    "input_tokens_details": {
+                        "cache_creation_input_tokens": 0,
+                        "cache_write_tokens": 9
+                    },
+                    "cache_creation_input_tokens": 24,
+                    "cache_read_input_tokens": 31
+                }
+            })
+            .to_string(),
+        ));
+
+        assert_eq!(nested.usage.cache_creation_input_tokens, 9);
+        assert_eq!(nested.usage.cache_read_input_tokens, 31);
+
+        nested.observe_ws_message(&TungsteniteMessage::Text(
+            serde_json::json!({
+                "usage": {
+                    "input_tokens_details": {
+                        "cache_creation_input_tokens": 0
+                    },
+                    "cache_creation_input_tokens": 0
+                }
+            })
+            .to_string(),
+        ));
+
+        assert_eq!(nested.usage.cache_creation_input_tokens, 9);
     }
 
     #[test]
@@ -3528,6 +3606,7 @@ mod tests {
         request.usage = Usage {
             input_tokens: 11,
             output_tokens: 7,
+            cache_creation_input_tokens: 0,
             cache_read_input_tokens: 3,
         };
         request.first_token_ms = Some(80);
