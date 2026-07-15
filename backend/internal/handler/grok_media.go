@@ -31,6 +31,14 @@ func (h *OpenAIGatewayHandler) GrokVideoGeneration(c *gin.Context) {
 	h.handleGrokMedia(c, service.GrokMediaEndpointVideosGenerations, "")
 }
 
+func (h *OpenAIGatewayHandler) GrokVideoEdit(c *gin.Context) {
+	h.handleGrokMedia(c, service.GrokMediaEndpointVideosEdits, "")
+}
+
+func (h *OpenAIGatewayHandler) GrokVideoExtension(c *gin.Context) {
+	h.handleGrokMedia(c, service.GrokMediaEndpointVideosExtensions, "")
+}
+
 // GrokVideoStatus handles xAI video status retrieval through Grok groups.
 func (h *OpenAIGatewayHandler) GrokVideoStatus(c *gin.Context) {
 	h.handleGrokMedia(c, service.GrokMediaEndpointVideoStatus, c.Param("request_id"))
@@ -163,24 +171,95 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
+	sameAccountRetryAccountID := int64(0)
+	var sameAccountRetryAccount *service.Account
+	var sameAccountRetryErr *service.UpstreamFailoverError
+	sameAccountRetryExactVideoStatus := false
 	var lastFailoverErr *service.UpstreamFailoverError
+	modelRoutingLockedPriority := -1
 	routingStart := time.Now()
+	settleFailover := func(account *service.Account, failoverErr *service.UpstreamFailoverError, exactVideoStatusRoute bool) bool {
+		sameAccountRetryAccountID = 0
+		sameAccountRetryAccount = nil
+		sameAccountRetryErr = nil
+		sameAccountRetryExactVideoStatus = false
+		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, requestModel, false, nil)
+		// A cache-bound status request must stay on its creating account because
+		// the request ID is account-local.
+		if endpoint == service.GrokMediaEndpointVideoStatus && exactVideoStatusRoute {
+			h.handleFailoverExhausted(c, failoverErr, false)
+			return false
+		}
+		h.gatewayService.HandleOpenAIAccountFailoverSwitch(requestCtx, apiKey.GroupID, sessionHash, account, failoverErr, requestModel)
+		h.gatewayService.RecordOpenAIAccountSwitch()
+		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
+			modelRoutingLockedPriority,
+			account,
+			failoverErr,
+			h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+		)
+		failedAccountIDs[account.ID] = struct{}{}
+		lastFailoverErr = failoverErr
+		if switchCount >= maxAccountSwitches {
+			h.handleFailoverExhausted(c, failoverErr, false)
+			return false
+		}
+		switchCount++
+		reqLog.Warn("grok_media.upstream_failover_switching",
+			zap.Int64("account_id", account.ID),
+			zap.Int("upstream_status", failoverErr.StatusCode),
+			zap.Int("switch_count", switchCount),
+			zap.Int("max_switches", maxAccountSwitches),
+		)
+		return true
+	}
 
 	for {
 		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityOnPlatformLockedPriority(
-			requestCtx,
-			apiKey.GroupID,
-			"",
-			sessionHash,
-			requestModel,
-			excludedAccountIDs,
-			service.OpenAIUpstreamTransportHTTPSSE,
-			"",
-			false,
-			service.PlatformGrok,
-			-1,
+		var (
+			selection             *service.AccountSelectionResult
+			scheduleDecision      service.OpenAIAccountScheduleDecision
+			exactVideoStatusRoute bool
 		)
+		if endpoint == service.GrokMediaEndpointVideoStatus {
+			selection, exactVideoStatusRoute, err = h.gatewayService.SelectBoundGrokMediaVideoRequestAccount(requestCtx, apiKey.GroupID, requestID)
+		}
+		if err == nil && !exactVideoStatusRoute {
+			if sameAccountRetryAccountID > 0 {
+				selection, scheduleDecision, err = h.gatewayService.SelectRequiredAccountForCapabilityOnPlatformLockedPriority(
+					requestCtx, apiKey.GroupID, sameAccountRetryAccountID, requestModel, excludedAccountIDs,
+					service.OpenAIUpstreamTransportHTTPSSE, "", false, service.PlatformGrok, modelRoutingLockedPriority,
+				)
+			} else {
+				selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForCapabilityOnPlatformLockedPriority(
+					requestCtx,
+					apiKey.GroupID,
+					"",
+					sessionHash,
+					requestModel,
+					excludedAccountIDs,
+					service.OpenAIUpstreamTransportHTTPSSE,
+					"",
+					false,
+					service.PlatformGrok,
+					modelRoutingLockedPriority,
+				)
+			}
+		}
+		if (err != nil || selection == nil || selection.Account == nil) && sameAccountRetryAccountID > 0 {
+			if requestCtx.Err() != nil {
+				return
+			}
+			if sameAccountRetryAccount != nil && sameAccountRetryErr != nil {
+				if !settleFailover(sameAccountRetryAccount, sameAccountRetryErr, sameAccountRetryExactVideoStatus) {
+					return
+				}
+				continue
+			}
+			capacitySkippedIDs[sameAccountRetryAccountID] = struct{}{}
+			sameAccountRetryAccountID = 0
+			continue
+		}
 		if err != nil {
 			reqLog.Warn("grok_media.account_select_failed",
 				zap.Error(err),
@@ -227,6 +306,17 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
 		if !slotResult.Acquired {
 			if slotResult.CapacityMiss {
+				if sameAccountRetryAccountID > 0 && sameAccountRetryAccount != nil && sameAccountRetryErr != nil {
+					if !settleFailover(sameAccountRetryAccount, sameAccountRetryErr, sameAccountRetryExactVideoStatus) {
+						return
+					}
+					continue
+				}
+				if endpoint == service.GrokMediaEndpointVideoStatus && exactVideoStatusRoute {
+					markOpsRoutingCapacityLimited(c)
+					h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Video status account is busy, please retry later")
+					return
+				}
 				capacitySkippedIDs[account.ID] = struct{}{}
 				reqLog.Info("grok_media.account_capacity_skip",
 					zap.Int64("account_id", account.ID),
@@ -238,6 +328,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			return
 		}
 		accountReleaseFunc := slotResult.ReleaseFunc
+		sameAccountRetryAccountID = 0
+		sameAccountRetryAccount = nil
+		sameAccountRetryErr = nil
+		sameAccountRetryExactVideoStatus = false
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
@@ -270,6 +364,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				if failoverErr.RetryableOnSameAccount {
 					retryDelay := sameAccountRetryDelayForAccount(account)
 					if retryPlan, ok := planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay); ok {
+						sameAccountRetryAccountID = account.ID
+						sameAccountRetryAccount = account
+						sameAccountRetryErr = failoverErr
+						sameAccountRetryExactVideoStatus = exactVideoStatusRoute
 						reqLog.Warn("grok_media.pool_mode_same_account_retry",
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
@@ -287,22 +385,9 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 						continue
 					}
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, requestModel, false, nil)
-				h.gatewayService.HandleOpenAIAccountFailoverSwitch(requestCtx, apiKey.GroupID, sessionHash, account, failoverErr, requestModel)
-				h.gatewayService.RecordOpenAIAccountSwitch()
-				failedAccountIDs[account.ID] = struct{}{}
-				lastFailoverErr = failoverErr
-				if switchCount >= maxAccountSwitches {
-					h.handleFailoverExhausted(c, failoverErr, false)
+				if !settleFailover(account, failoverErr, exactVideoStatusRoute) {
 					return
 				}
-				switchCount++
-				reqLog.Warn("grok_media.upstream_failover_switching",
-					zap.Int64("account_id", account.ID),
-					zap.Int("upstream_status", failoverErr.StatusCode),
-					zap.Int("switch_count", switchCount),
-					zap.Int("max_switches", maxAccountSwitches),
-				)
 				continue
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, requestModel, false, nil)
@@ -320,8 +405,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			return
 		}
 
-		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, requestModel, true, nil)
-		if endpoint == service.GrokMediaEndpointVideosGenerations && result != nil && strings.TrimSpace(result.ResponseID) != "" {
+		if endpoint != service.GrokMediaEndpointVideoStatus {
+			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, requestModel, true, nil)
+		}
+		if endpoint.IsVideoMutationRequest() && result != nil && strings.TrimSpace(result.ResponseID) != "" {
 			if err := h.gatewayService.BindGrokMediaVideoRequestAccount(requestCtx, apiKey.GroupID, result.ResponseID, account.ID); err != nil {
 				reqLog.Warn("grok_media.bind_video_request_account_failed",
 					zap.Int64("account_id", account.ID),

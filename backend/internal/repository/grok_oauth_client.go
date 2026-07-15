@@ -10,7 +10,6 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
-	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/imroc/req/v3"
 )
 
@@ -103,10 +102,8 @@ func grokOAuthStatusError(code, message string, resp *req.Response) error {
 		statusCode = http.StatusForbidden
 		errorCode = "GROK_OAUTH_ENTITLEMENT_DENIED"
 	}
-	body := ""
 	if resp != nil {
 		upstreamStatus = resp.StatusCode
-		body = logredact.RedactText(resp.String())
 	}
-	return infraerrors.Newf(statusCode, errorCode, "%s: status %d, body: %s", message, upstreamStatus, body)
+	return infraerrors.Newf(statusCode, errorCode, "%s: status %d", message, upstreamStatus)
 }

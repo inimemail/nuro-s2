@@ -254,6 +254,21 @@ func ValidateBaseURL(raw string) (string, error) {
 		return urlvalidator.ValidateURLFormat(raw, true)
 	}
 	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
+		AllowPrivate: false,
+	})
+	if err != nil {
+		return "", err
+	}
+	return normalizeKnownBaseURLPath(normalized)
+}
+
+// ValidateTrustedBaseURL is used for OAuth credentials, where an arbitrary
+// account-provided endpoint must not turn into a server-side request forgery.
+func ValidateTrustedBaseURL(raw string) (string, error) {
+	if AllowUnsafeURLOverrides() {
+		return urlvalidator.ValidateURLFormat(raw, true)
+	}
+	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
 		AllowedHosts:     baseURLAllowedHosts,
 		RequireAllowlist: true,
 		AllowPrivate:     false,
@@ -455,6 +470,22 @@ func BuildVideosGenerationsURL(baseURL string) (string, error) {
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
 	return validatedBaseURL + "/videos/generations", nil
+}
+
+func BuildVideosEditsURL(baseURL string) (string, error) {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/videos/edits", nil
+}
+
+func BuildVideosExtensionsURL(baseURL string) (string, error) {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/videos/extensions", nil
 }
 
 func BuildVideoURL(baseURL, requestID string) (string, error) {

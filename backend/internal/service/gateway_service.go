@@ -2386,6 +2386,93 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	return nil, ErrNoAvailableAccounts
 }
 
+// SelectRequiredAccountWithLoadAwareness revalidates and reacquires one exact
+// account after the handler has already planned a same-account retry. Initial
+// selection and account failover continue to use the normal layered scheduler.
+func (s *GatewayService) SelectRequiredAccountWithLoadAwareness(
+	ctx context.Context,
+	groupID *int64,
+	requiredAccountID int64,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+) (*AccountSelectionResult, error) {
+	if s == nil || requiredAccountID <= 0 {
+		return nil, ErrNoAvailableAccounts
+	}
+	if _, excluded := excludedIDs[requiredAccountID]; excluded {
+		return nil, ErrNoAvailableAccounts
+	}
+
+	group, groupID, err := s.checkClaudeCodeRestriction(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	ctx = s.withGroupContext(ctx, group)
+	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
+		return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
+	}
+
+	platform, hasForcePlatform, err := s.resolvePlatform(ctx, groupID, group)
+	if err != nil {
+		return nil, err
+	}
+	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
+
+	account, err := s.getSchedulableAccount(ctx, requiredAccountID)
+	if err != nil || account == nil {
+		return nil, ErrNoAvailableAccounts
+	}
+	if !s.isAccountSchedulableForSelection(account) ||
+		!s.latestAccountInGroup(ctx, account, groupID) ||
+		!s.isAccountAllowedForPlatform(account, platform, useMixed) ||
+		(requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) ||
+		!s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) ||
+		!s.isAccountSchedulableForQuota(account) ||
+		!s.isAccountSchedulableForWindowCost(ctx, account, true) {
+		return nil, ErrNoAvailableAccounts
+	}
+	if s.needsUpstreamChannelRestrictionCheck(ctx, groupID) &&
+		s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel) {
+		return nil, ErrNoAvailableAccounts
+	}
+	result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
+	if err != nil {
+		return nil, err
+	}
+	if result != nil && result.Acquired {
+		// Match the normal load-aware selection order: the concurrency slot is
+		// acquired before registering a new Anthropic session. This prevents a
+		// failed slot acquisition from leaving a phantom session in Redis.
+		if !s.checkAndRegisterSession(ctx, account, sessionHash) {
+			if result.ReleaseFunc != nil {
+				result.ReleaseFunc()
+			}
+			return nil, ErrNoAvailableAccounts
+		}
+		s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, account)
+		selection, selectErr := s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
+		if selectErr != nil && result.ReleaseFunc != nil {
+			result.ReleaseFunc()
+		}
+		return selection, selectErr
+	}
+	// A wait plan reserves the session before returning it, as in the normal
+	// fallback path; the handler will account for the eventual slot wait.
+	if !s.checkAndRegisterSession(ctx, account, sessionHash) {
+		return nil, ErrNoAvailableAccounts
+	}
+	s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, account)
+
+	cfg := s.schedulingConfig()
+	return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+		AccountID:      account.ID,
+		MaxConcurrency: account.Concurrency,
+		Timeout:        cfg.FallbackWaitTimeout,
+		MaxWaiting:     cfg.FallbackMaxWaiting,
+	})
+}
+
 func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool, cfg config.GatewaySchedulingConfig) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
 	anthropicAffinityHash, _ := anthropicCacheAffinitySessionFromContext(ctx)
@@ -10567,6 +10654,7 @@ func (s *GatewayService) buildRecordUsageLog(
 		usageLog.CacheReadCost = cost.CacheReadCost
 		usageLog.TotalCost = cost.TotalCost
 		usageLog.ActualCost = cost.ActualCost
+		usageLog.LongContextBillingApplied = cost.LongContextBillingApplied
 	}
 
 	return usageLog

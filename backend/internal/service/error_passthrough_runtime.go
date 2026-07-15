@@ -60,11 +60,11 @@ func applyErrorPassthroughRule(
 		status = *rule.ResponseCode
 	}
 
-	// Matching still uses the original body internally, but public responses
-	// never inherit provider-controlled diagnostics. An explicit admin message
-	// is trusted configuration and remains publishable as written.
+	// Matching still uses the original body internally. Public responses never
+	// inherit provider-controlled diagnostics or upstream identity, including
+	// identities accidentally included in an administrator-authored message.
 	if !rule.PassthroughBody && rule.CustomMessage != nil {
-		errMsg = *rule.CustomMessage
+		errMsg = sanitizeUpstreamErrorMessage(*rule.CustomMessage)
 	} else {
 		errMsg = sanitizeUpstreamErrorMessage(defaultErrMsg)
 	}

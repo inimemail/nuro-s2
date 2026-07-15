@@ -3,9 +3,12 @@
 package repository
 
 import (
+	"context"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -132,4 +135,158 @@ func TestBuildSchedulerMetadataAccount_KeepsQuotaAutoPauseFields(t *testing.T) {
 	require.Equal(t, 0.96, got.Extra["auto_pause_7d_threshold"])
 	require.Equal(t, true, got.Extra["auto_pause_5h_disabled"])
 	require.Equal(t, false, got.Extra["auto_pause_7d_disabled"])
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsSparkShadowRoutingIdentity(t *testing.T) {
+	parentID := int64(100)
+	account := service.Account{
+		ID:              200,
+		Platform:        service.PlatformOpenAI,
+		Type:            service.AccountTypeOAuth,
+		ParentAccountID: &parentID,
+		QuotaDimension:  service.QuotaDimensionSpark,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
+			},
+			"compact_model_mapping": map[string]any{
+				"gpt-5.4": "gpt-5.4-openai-compact",
+			},
+			"access_token": "drop-me",
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.NotNil(t, got.ParentAccountID)
+	require.Equal(t, parentID, *got.ParentAccountID)
+	require.Equal(t, service.QuotaDimensionSpark, got.QuotaDimension)
+	require.Equal(t, map[string]any{"gpt-5.3-codex-spark": "gpt-5.3-codex-spark"}, got.Credentials["model_mapping"])
+	require.Equal(t, map[string]any{"gpt-5.4": "gpt-5.4-openai-compact"}, got.Credentials["compact_model_mapping"])
+	require.Nil(t, got.Credentials["access_token"])
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsConcurrencyRaceRetryControls(t *testing.T) {
+	account := service.Account{
+		ID:       201,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                                true,
+			"pool_mode_retry_count":                    7,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_retry_delay_ms": 35,
+			"upstream_concurrency_race_max_elapsed_ms": 2500,
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.True(t, got.IsOpenAIUpstreamConcurrencyRaceEnabled())
+	require.Equal(t, 7, got.GetPoolModeRetryCount())
+	require.Equal(t, 35, int(got.GetPoolModeSameAccountRetryDelay().Milliseconds()))
+	require.Equal(t, 2500, int(got.GetPoolModeSameAccountRetryMaxElapsed().Milliseconds()))
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsOpenAILongContextBillingPolicy(t *testing.T) {
+	account := service.Account{
+		ID:       204,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra: map[string]any{
+			"openai_long_context_billing_enabled": true,
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.True(t, got.IsOpenAILongContextBillingEnabled())
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsOpenAICompactCapability(t *testing.T) {
+	account := service.Account{
+		ID:       205,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra: map[string]any{
+			"openai_compact_mode":      service.OpenAICompactModeForceOff,
+			"openai_compact_supported": true,
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.Equal(t, service.OpenAICompactModeForceOff, got.GetOpenAICompactMode())
+	supported, known := got.OpenAICompactSupportKnown()
+	require.True(t, known)
+	require.False(t, supported, "force_off must remain authoritative after snapshot filtering")
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsPromptCacheAffinityModeWithoutChildFeatures(t *testing.T) {
+	account := service.Account{
+		ID:       202,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                                        true,
+			"prompt_cache_boost_enabled":                       true,
+			"prompt_cache_boost_level":                         service.OpenAIPromptCacheBoostLevelAggressive,
+			"prompt_cache_boost_upstream_hit_priority_enabled": true,
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.True(t, got.IsOpenAIPromptCacheBoostEnabled())
+	require.True(t, got.IsOpenAIPromptCacheBoostAggressive())
+	require.True(t, got.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled())
+	require.False(t, got.IsOpenAIPromptCacheSmartRoutingEnabled())
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsAnthropicCacheAffinityMode(t *testing.T) {
+	account := service.Account{
+		ID:       203,
+		Platform: service.PlatformAnthropic,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                                           true,
+			"anthropic_cache_boost_enabled":                       true,
+			"anthropic_cache_boost_level":                         service.AnthropicCacheBoostLevelAggressive,
+			"anthropic_cache_boost_upstream_hit_priority_enabled": true,
+			"anthropic_upstream_strong_isolation_enabled":         true,
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.True(t, got.IsAnthropicCacheBoostEnabled())
+	require.True(t, got.IsAnthropicCacheBoostAggressive())
+	require.True(t, got.IsAnthropicCacheBoostUpstreamHitPriorityEnabled())
+	require.True(t, got.IsAnthropicUpstreamStrongIsolationEnabled())
+}
+
+func TestSchedulerCacheWriteAccountsDeletesStaleUnencodableAccount(t *testing.T) {
+	miniRedis := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: miniRedis.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cache := &schedulerCache{rdb: client, writeChunkSize: 16}
+	accountID := int64(302)
+	accountKey := schedulerAccountKey("302")
+	metaKey := schedulerAccountMetaKey("302")
+	require.NoError(t, client.Set(context.Background(), accountKey, "stale", 0).Err())
+	require.NoError(t, client.Set(context.Background(), metaKey, "stale", 0).Err())
+
+	accounts, err := cache.writeAccounts(context.Background(), []service.Account{{
+		ID: accountID,
+		Extra: map[string]any{
+			"invalid": func() {},
+		},
+	}})
+	require.NoError(t, err)
+	require.Empty(t, accounts)
+	_, err = client.Get(context.Background(), accountKey).Result()
+	require.ErrorIs(t, err, redis.Nil)
+	_, err = client.Get(context.Background(), metaKey).Result()
+	require.ErrorIs(t, err, redis.Nil)
 }

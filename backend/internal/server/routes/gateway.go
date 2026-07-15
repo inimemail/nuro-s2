@@ -84,6 +84,32 @@ func RegisterGatewayRoutes(
 		}
 		h.OpenAIGateway.GrokVideoStatus(c)
 	}
+	grokVideoEditHandler := func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformGrok {
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Video API is not supported for this platform",
+				},
+			})
+			return
+		}
+		h.OpenAIGateway.GrokVideoEdit(c)
+	}
+	grokVideoExtensionHandler := func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformGrok {
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Video API is not supported for this platform",
+				},
+			})
+			return
+		}
+		h.OpenAIGateway.GrokVideoExtension(c)
+	}
 
 	// API网关（Claude API兼容）
 	gateway := r.Group("/v1")
@@ -102,22 +128,11 @@ func RegisterGatewayRoutes(
 			}
 			h.Gateway.Messages(c)
 		})
-		// /v1/messages/count_tokens: OpenAI uses an Anthropic-compat bridge.
-		// Grok remains unsupported here because xAI has no matching count endpoint.
+		// /v1/messages/count_tokens: OpenAI uses the Anthropic-compat bridge;
+		// Grok uses the bridge's local estimator and never forwards Grok credentials.
 		gateway.POST("/messages/count_tokens", func(c *gin.Context) {
-			if isOpenAIGatewayPlatform(c) {
-				h.OpenAIGateway.CountTokens(c)
-				return
-			}
 			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
-				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
-				c.JSON(http.StatusNotFound, gin.H{
-					"type": "error",
-					"error": gin.H{
-						"type":    "not_found_error",
-						"message": "Token counting is not supported for this platform",
-					},
-				})
+				h.OpenAIGateway.CountTokens(c)
 				return
 			}
 			h.Gateway.CountTokens(c)
@@ -181,6 +196,8 @@ func RegisterGatewayRoutes(
 		gateway.DELETE("/images/batches/:id", h.BatchImage.DeleteRecord)
 		gateway.DELETE("/images/batches/:id/outputs", h.BatchImage.DeleteOutputs)
 		gateway.POST("/videos/generations", grokVideoGenerationHandler)
+		gateway.POST("/videos/edits", grokVideoEditHandler)
+		gateway.POST("/videos/extensions", grokVideoExtensionHandler)
 		gateway.GET("/videos/:request_id", grokVideoStatusHandler)
 		gateway.GET("/image-tasks", func(c *gin.Context) {
 			if getGroupPlatform(c) != service.PlatformOpenAI {
@@ -283,6 +300,8 @@ func RegisterGatewayRoutes(
 	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, imagesHandler)
 	r.POST("/images/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, imagesHandler)
 	r.POST("/videos/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, grokVideoGenerationHandler)
+	r.POST("/videos/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, grokVideoEditHandler)
+	r.POST("/videos/extensions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, grokVideoExtensionHandler)
 	r.GET("/videos/:request_id", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, grokVideoStatusHandler)
 	r.GET("/image-tasks", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 		if getGroupPlatform(c) != service.PlatformOpenAI {

@@ -105,6 +105,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			newPassthroughTestFrameConn(nil, true),
 			nil,
 			func(_ coderws.MessageType, _ []byte) error { return nil },
+			nil,
 			func() {},
 			nil,
 			nil,
@@ -126,6 +127,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			}, true),
 			nil,
 			func(_ coderws.MessageType, _ []byte) error { return errors.New("boom") },
+			nil,
 			func() {},
 			nil,
 			nil,
@@ -149,6 +151,7 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 			}, true),
 			nil,
 			func(_ coderws.MessageType, _ []byte) error { return nil },
+			nil,
 			func() {},
 			forwarded,
 			func(event RelayTraceEvent) {
@@ -391,6 +394,31 @@ func TestParseUsageAndAccumulateAcceptsChatUsageAliases(t *testing.T) {
 	require.Equal(t, 4, got.CacheReadInputTokens)
 	require.Equal(t, 2, got.ImageOutputTokens)
 	require.Equal(t, got, state.usage)
+}
+
+func TestParseUsageAndAccumulateCacheAliasesSkipZeroValues(t *testing.T) {
+	t.Parallel()
+
+	state := &relayState{}
+	got := parseUsageAndAccumulate(
+		state,
+		[]byte(`{"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cached_tokens":0,"cache_creation_input_tokens":0},"cache_read_input_tokens":31,"cache_creation_input_tokens":24}}}`),
+		"response.completed",
+		nil,
+	)
+	require.Equal(t, 31, got.CacheReadInputTokens)
+	require.Equal(t, 24, got.CacheCreationInputTokens)
+	require.Equal(t, got, state.usage)
+
+	zeroState := &relayState{}
+	zero := parseUsageAndAccumulate(
+		zeroState,
+		[]byte(`{"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cached_tokens":0,"cache_creation_input_tokens":0},"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`),
+		"response.completed",
+		nil,
+	)
+	require.Zero(t, zero.CacheReadInputTokens)
+	require.Zero(t, zero.CacheCreationInputTokens)
 }
 
 func TestEmitTurnCompleteCoverage(t *testing.T) {

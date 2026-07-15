@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -53,6 +54,8 @@ func TestNewFailoverState(t *testing.T) {
 		require.Empty(t, fs.FailedAccountIDs)
 		require.NotNil(t, fs.SameAccountRetryCount)
 		require.Empty(t, fs.SameAccountRetryCount)
+		require.NotNil(t, fs.SameAccountRetryStart)
+		require.Empty(t, fs.SameAccountRetryStart)
 		require.Nil(t, fs.LastFailoverErr)
 		require.False(t, fs.ForceCacheBilling)
 		require.True(t, fs.hasBoundSession)
@@ -68,6 +71,97 @@ func TestNewFailoverState(t *testing.T) {
 		fs := NewFailoverState(0, false)
 		require.Equal(t, 0, fs.MaxSwitches)
 	})
+}
+
+func TestHandleFailoverErrorForAccountUsesRaceRetryTiming(t *testing.T) {
+	account := &service.Account{
+		ID:       42,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                                true,
+			"pool_mode_retry_count":                    2,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_retry_delay_ms": 10,
+			"upstream_concurrency_race_max_elapsed_ms": 500,
+		},
+	}
+	fs := NewFailoverState(3, false)
+	mock := &mockTempUnscheduler{}
+	err := newTestFailoverErr(http.StatusBadGateway, true, false)
+
+	startedAt := time.Now()
+	action := fs.HandleFailoverErrorForAccount(context.Background(), mock, account, err)
+
+	require.Equal(t, FailoverContinue, action)
+	require.Equal(t, 1, fs.SameAccountRetryCount[account.ID])
+	require.GreaterOrEqual(t, time.Since(startedAt), 10*time.Millisecond)
+	require.Less(t, time.Since(startedAt), 200*time.Millisecond)
+	require.Empty(t, mock.calls)
+}
+
+func TestHandleFailoverErrorForAccountHonorsRaceElapsedBudget(t *testing.T) {
+	account := &service.Account{
+		ID:       43,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                                true,
+			"pool_mode_retry_count":                    20,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_retry_delay_ms": 10,
+			"upstream_concurrency_race_max_elapsed_ms": 500,
+		},
+	}
+	fs := NewFailoverState(3, false)
+	fs.SameAccountRetryStart[account.ID] = time.Now().Add(-time.Second)
+	mock := &mockTempUnscheduler{}
+	err := newTestFailoverErr(http.StatusBadGateway, true, false)
+
+	action := fs.HandleFailoverErrorForAccount(context.Background(), mock, account, err)
+
+	require.Equal(t, FailoverContinue, action)
+	require.Zero(t, fs.SameAccountRetryCount[account.ID])
+	require.Contains(t, fs.FailedAccountIDs, account.ID)
+	require.Len(t, mock.calls, 1)
+}
+
+func TestHandleFailoverErrorForAccountTracksExactRetryAccount(t *testing.T) {
+	account := &service.Account{
+		ID:       45,
+		Platform: service.PlatformAnthropic,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                                true,
+			"pool_mode_retry_count":                    2,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_retry_delay_ms": 1,
+		},
+	}
+	fs := NewFailoverState(3, false)
+	mock := &mockTempUnscheduler{}
+	failoverErr := newTestFailoverErr(http.StatusBadGateway, true, false)
+
+	action := fs.HandleFailoverErrorForAccount(context.Background(), mock, account, failoverErr)
+
+	require.Equal(t, FailoverContinue, action)
+	require.Equal(t, account.ID, fs.pendingSameAccountRetryID())
+	require.NotContains(t, fs.FailedAccountIDs, account.ID)
+
+	action = fs.settleUnavailableSameAccountRetry(context.Background(), mock)
+	require.Equal(t, FailoverContinue, action)
+	require.Zero(t, fs.pendingSameAccountRetryID())
+	require.Contains(t, fs.FailedAccountIDs, account.ID)
+	require.Equal(t, 1, fs.SwitchCount)
+	require.Len(t, mock.calls, 1)
+	require.Same(t, failoverErr, mock.calls[0].failoverErr)
+}
+
+func TestFailoverStateRejectsDelayEqualToElapsedBudget(t *testing.T) {
+	fs := NewFailoverState(3, false)
+
+	require.False(t, fs.sameAccountRetryAllowed(44, 1, 500*time.Millisecond, 500*time.Millisecond))
+	require.Zero(t, fs.SameAccountRetryCount[44])
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +244,30 @@ func TestPlanSameAccountRetryZeroDelayDoesNotReserveElapsedBudget(t *testing.T) 
 	require.Equal(t, 1, plan.RetryCount)
 	require.Equal(t, 5, plan.RetryLimit)
 	require.Equal(t, time.Duration(0), plan.Delay)
+}
+
+func TestPlanSameAccountRetryRejectsDelayEqualToElapsedBudget(t *testing.T) {
+	account := &service.Account{
+		ID:       105,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Status:   service.StatusActive,
+		Credentials: map[string]interface{}{
+			"pool_mode":                                true,
+			"pool_mode_retry_count":                    5,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_max_elapsed_ms": 500,
+		},
+	}
+	counts := map[int64]int{}
+	starts := map[int64]time.Time{}
+
+	_, retry := planSameAccountRetry(account, counts, starts, 500*time.Millisecond)
+
+	require.False(t, retry)
+	require.Zero(t, counts[account.ID])
+	_, started := starts[account.ID]
+	require.True(t, started)
 }
 
 func TestPlanSameAccountRetryWithMaxElapsedOnlyShortensConfiguredBudget(t *testing.T) {

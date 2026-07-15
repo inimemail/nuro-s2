@@ -280,6 +280,35 @@ func TestRunCheckForModel_OpenAIHealthProbeKeepsDedicatedHeaderOnEmptyResponse50
 	if got := h.header.Get(OpenAIHealthProbeHeader); got != OpenAIHealthProbeProfileResponsesV1 {
 		t.Fatalf("dedicated health header changed during the request: got %q", got)
 	}
+	if res.Message != "Monitor request failed (HTTP 502)" {
+		t.Fatalf("monitor must not expose upstream error body, got %q", res.Message)
+	}
+}
+
+func TestRunCheckForModelDoesNotExposeChallengeResponse(t *testing.T) {
+	h := &captureHandler{respondText: "xAI private-provider.example returned 502"}
+	endpoint := setupFakeAnthropic(t, h)
+
+	res := runCheckForModel(context.Background(), MonitorProviderAnthropic, endpoint, "sk-fake", "claude-x", nil)
+
+	if res.Status != MonitorStatusFailed {
+		t.Fatalf("challenge mismatch should fail, got %s", res.Status)
+	}
+	if res.Message != "Health check response did not match expected result" {
+		t.Fatalf("monitor must not expose challenge response, got %q", res.Message)
+	}
+}
+
+func TestRunCheckForModelDoesNotExposeRequestURL(t *testing.T) {
+	swapMonitorHTTPClient(t)
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, "://private-provider.example", "sk-openai", "gpt-test", nil)
+
+	if res.Status != MonitorStatusError {
+		t.Fatalf("request failure should be an error, got %s", res.Status)
+	}
+	if res.Message != "Monitor request failed" {
+		t.Fatalf("monitor must not expose request URL, got %q", res.Message)
+	}
 }
 
 func TestRunCheckForModel_OpenAIResponsesReplaceMissingInstructionsFailsLocally(t *testing.T) {

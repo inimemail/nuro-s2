@@ -75,7 +75,7 @@ func TestApplyErrorPassthroughRule_PreservesAdminCustomMessage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	customMessage := "维护通知：https://status.example.internal/provider"
+	customMessage := "系统维护中，请稍后重试"
 
 	ruleSvc := &ErrorPassthroughService{}
 	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{newNonFailoverPassthroughRule(
@@ -253,7 +253,7 @@ func TestOpenAIHandleErrorResponse_AppliesRuleFor422(t *testing.T) {
 	errField, ok := payload["error"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "upstream_error", errField["type"])
-	assert.Equal(t, "OpenAI上游失败", errField["message"])
+	assert.Equal(t, safeUpstreamErrorMessage, errField["message"])
 }
 
 func TestGeminiWriteGeminiMappedError_AppliesRuleFor422(t *testing.T) {
@@ -278,7 +278,7 @@ func TestGeminiWriteGeminiMappedError_AppliesRuleFor422(t *testing.T) {
 	errField, ok := payload["error"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "upstream_error", errField["type"])
-	assert.Equal(t, "Gemini上游失败", errField["message"])
+	assert.Equal(t, safeUpstreamErrorMessage, errField["message"])
 }
 
 func TestApplyErrorPassthroughRule_SkipMonitoringSetsContextKey(t *testing.T) {

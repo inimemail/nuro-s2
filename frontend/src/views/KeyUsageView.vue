@@ -416,6 +416,8 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { buildGatewayUrl } from '@/api/client'
+import { formatDateLocalInput } from '@/utils/format'
 import { sanitizeUrl } from '@/utils/url'
 
 const { t, locale } = useI18n()
@@ -485,7 +487,6 @@ function setDateRange(key: DateRangeKey) {
 
 function getDateParams(): string {
   const now = new Date()
-  const fmt = (d: Date) => d.toISOString().split('T')[0]
   const params = new URLSearchParams()
 
   if (currentRange.value === 'custom') {
@@ -494,13 +495,13 @@ function getDateParams(): string {
       params.set('end_date', customEndDate.value)
     }
   } else {
-    const end = fmt(now)
+    const end = formatDateLocalInput(now)
     let start: string
     switch (currentRange.value) {
       case 'today': start = end; break
-      case '7d': start = fmt(new Date(now.getTime() - 7 * 86400000)); break
-      case '30d': start = fmt(new Date(now.getTime() - 30 * 86400000)); break
-      default: start = fmt(new Date(now.getTime() - 30 * 86400000))
+      case '7d': start = formatDateLocalInput(new Date(now.getTime() - 7 * 86400000)); break
+      case '30d': start = formatDateLocalInput(new Date(now.getTime() - 30 * 86400000)); break
+      default: start = formatDateLocalInput(new Date(now.getTime() - 30 * 86400000))
     }
     params.set('start_date', start)
     params.set('end_date', end)
@@ -853,7 +854,7 @@ function getBrowserTimezone(): string {
 
 async function fetchUsage(key: string) {
   const dateParams = getDateParams()
-  const url = '/v1/usage' + (dateParams ? '?' + dateParams : '')
+  const url = buildGatewayUrl('/v1/usage') + (dateParams ? '?' + dateParams : '')
   const res = await fetch(url, {
     headers: { 'Authorization': 'Bearer ' + key },
   })

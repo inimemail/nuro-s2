@@ -1281,13 +1281,17 @@
           </div>
         </div>
 
-        <!-- OpenAI Messages 调度配置（仅 openai 平台） -->
+        <!-- Messages dispatch for OpenAI-compatible platforms -->
         <div
-          v-if="createForm.platform === 'openai'"
+          v-if="['openai', 'grok'].includes(createForm.platform)"
           class="border-t border-gray-200 dark:border-dark-400 pt-4 mt-4"
         >
           <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-            {{ t("admin.groups.openaiMessages.title") }}
+            {{
+              createForm.platform === "grok"
+                ? t("admin.groups.openaiMessages.grokTitle")
+                : t("admin.groups.openaiMessages.title")
+            }}
           </h4>
 
           <!-- 允许 Messages 调度开关 -->
@@ -1319,10 +1323,20 @@
             </button>
           </div>
           <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            {{ t("admin.groups.openaiMessages.allowDispatchHint") }}
+            {{
+              createForm.platform === "grok"
+                ? t("admin.groups.openaiMessages.grokAllowDispatchHint")
+                : t("admin.groups.openaiMessages.allowDispatchHint")
+            }}
           </p>
 
-          <div v-if="createForm.allow_messages_dispatch" class="mt-3">
+          <div
+            v-if="
+              createForm.allow_messages_dispatch &&
+              createForm.platform === 'openai'
+            "
+            class="mt-3"
+          >
             <div
               class="relative overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-dark-600 dark:bg-dark-800"
             >
@@ -2762,13 +2776,17 @@
           </div>
         </div>
 
-        <!-- OpenAI Messages 调度配置（仅 openai 平台） -->
+        <!-- Messages dispatch for OpenAI-compatible platforms -->
         <div
-          v-if="editForm.platform === 'openai'"
+          v-if="['openai', 'grok'].includes(editForm.platform)"
           class="border-t border-gray-200 dark:border-dark-400 pt-4 mt-4"
         >
           <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-            {{ t("admin.groups.openaiMessages.title") }}
+            {{
+              editForm.platform === "grok"
+                ? t("admin.groups.openaiMessages.grokTitle")
+                : t("admin.groups.openaiMessages.title")
+            }}
           </h4>
 
           <!-- 允许 Messages 调度开关 -->
@@ -2800,10 +2818,19 @@
             </button>
           </div>
           <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            {{ t("admin.groups.openaiMessages.allowDispatchHint") }}
+            {{
+              editForm.platform === "grok"
+                ? t("admin.groups.openaiMessages.grokAllowDispatchHint")
+                : t("admin.groups.openaiMessages.allowDispatchHint")
+            }}
           </p>
 
-          <div v-if="editForm.allow_messages_dispatch" class="mt-3">
+          <div
+            v-if="
+              editForm.allow_messages_dispatch && editForm.platform === 'openai'
+            "
+            class="mt-3"
+          >
             <div
               class="relative overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-dark-600 dark:bg-dark-800"
             >
@@ -3896,7 +3923,7 @@ const createForm = reactive({
   claude_code_only: false,
   fallback_group_id: null as number | null,
   fallback_group_id_on_invalid_request: null as number | null,
-  // OpenAI Messages 调度配置（仅 openai 平台使用）
+  // Messages dispatch is available to OpenAI-compatible platforms.
   allow_messages_dispatch: false,
   opus_mapped_model: createMessagesDispatchDefaults.opus_mapped_model,
   sonnet_mapped_model: createMessagesDispatchDefaults.sonnet_mapped_model,
@@ -4241,7 +4268,7 @@ const editForm = reactive({
   claude_code_only: false,
   fallback_group_id: null as number | null,
   fallback_group_id_on_invalid_request: null as number | null,
-  // OpenAI Messages 调度配置（仅 openai 平台使用）
+  // Messages dispatch is available to OpenAI-compatible platforms.
   allow_messages_dispatch: false,
   default_mapped_model: '',
   opus_mapped_model: editMessagesDispatchDefaults.opus_mapped_model,
@@ -4983,8 +5010,13 @@ watch(
     if (!["anthropic", "antigravity"].includes(newVal)) {
       createForm.fallback_group_id_on_invalid_request = null;
     }
-    if (newVal !== "openai") {
+    if (!["openai", "grok"].includes(newVal)) {
       resetMessagesDispatchFormState(createForm);
+      createForm.strict_model_priority_on_model_mismatch = false;
+    } else if (newVal === "grok") {
+      const allowMessagesDispatch = createForm.allow_messages_dispatch;
+      resetMessagesDispatchFormState(createForm);
+      createForm.allow_messages_dispatch = allowMessagesDispatch;
       createForm.strict_model_priority_on_model_mismatch = false;
     }
     if (!["openai", "antigravity", "anthropic", "gemini", "grok"].includes(newVal)) {
@@ -5002,8 +5034,13 @@ watch(
     if (!["anthropic", "antigravity"].includes(newVal)) {
       editForm.fallback_group_id_on_invalid_request = null;
     }
-    if (newVal !== "openai") {
+    if (!["openai", "grok"].includes(newVal)) {
       resetMessagesDispatchFormState(editForm);
+      editForm.strict_model_priority_on_model_mismatch = false;
+    } else if (newVal === "grok") {
+      const allowMessagesDispatch = editForm.allow_messages_dispatch;
+      resetMessagesDispatchFormState(editForm);
+      editForm.allow_messages_dispatch = allowMessagesDispatch;
       editForm.strict_model_priority_on_model_mismatch = false;
     }
     if (!["openai", "antigravity", "anthropic", "gemini", "grok"].includes(newVal)) {
@@ -5016,20 +5053,6 @@ watch(
     }
   },
 );
-
-watch(
-  () => editForm.platform,
-  (newVal) => {
-    if (!['anthropic', 'antigravity'].includes(newVal)) {
-      editForm.fallback_group_id_on_invalid_request = null
-    }
-    if (newVal !== 'openai') {
-      editForm.allow_messages_dispatch = false
-      editForm.default_mapped_model = ''
-      editForm.strict_model_priority_on_model_mismatch = false
-    }
-  }
-)
 
 // 点击外部关闭账号搜索下拉框
 const handleClickOutside = (event: MouseEvent) => {

@@ -1794,6 +1794,12 @@ var (
 
 const safeUpstreamErrorMessage = "Upstream request failed"
 
+// SanitizeUpstreamErrorMessageForClient applies the gateway's common client
+// error policy to messages supplied by configurable failover rules.
+func SanitizeUpstreamErrorMessageForClient(msg string) string {
+	return sanitizeUpstreamErrorMessage(msg)
+}
+
 func sanitizeUpstreamErrorMessage(msg string) string {
 	msg = strings.TrimSpace(msg)
 	if msg == "" {

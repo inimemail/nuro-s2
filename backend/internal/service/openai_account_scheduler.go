@@ -2002,6 +2002,37 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityOnPlatform
 	return s.selectAccountWithScheduler(ctx, groupID, 0, 0, previousResponseID, sessionHash, 0, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, requestPlatform, lockedPriority)
 }
 
+// SelectRequiredAccountForCapabilityOnPlatformLockedPriority revalidates and
+// reacquires one exact account. It is used only after a same-account retry has
+// already been planned, so the normal priority and health scheduler remains in
+// charge of initial selection and account failover.
+func (s *OpenAIGatewayService) SelectRequiredAccountForCapabilityOnPlatformLockedPriority(
+	ctx context.Context,
+	groupID *int64,
+	requiredAccountID int64,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requireCompact bool,
+	requestPlatform string,
+	lockedPriority int,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	return s.selectRequiredOpenAIAccount(
+		ctx,
+		groupID,
+		requiredAccountID,
+		requestedModel,
+		excludedIDs,
+		requiredTransport,
+		requiredCapability,
+		"",
+		requireCompact,
+		requestPlatform,
+		lockedPriority,
+	)
+}
+
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityAndUserSlot(
 	ctx context.Context,
 	groupID *int64,
@@ -2099,6 +2130,114 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImagesLockedPriority
 		return s.selectAccountWithScheduler(ctx, groupID, 0, 0, "", sessionHash, 0, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, lockedPriority)
 	}
 	return selection, decision, err
+}
+
+func (s *OpenAIGatewayService) SelectRequiredAccountForImagesLockedPriority(
+	ctx context.Context,
+	groupID *int64,
+	requiredAccountID int64,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredCapability OpenAIImagesCapability,
+	lockedPriority int,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	return s.selectRequiredOpenAIAccount(
+		ctx,
+		groupID,
+		requiredAccountID,
+		requestedModel,
+		excludedIDs,
+		OpenAIUpstreamTransportHTTPSSE,
+		"",
+		requiredCapability,
+		false,
+		PlatformOpenAI,
+		lockedPriority,
+	)
+}
+
+func (s *OpenAIGatewayService) selectRequiredOpenAIAccount(
+	ctx context.Context,
+	groupID *int64,
+	requiredAccountID int64,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requiredImageCapability OpenAIImagesCapability,
+	requireCompact bool,
+	requestPlatform string,
+	lockedPriority int,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	decision := OpenAIAccountScheduleDecision{Layer: openAIAccountScheduleLayerSessionSticky}
+	if s == nil || requiredAccountID <= 0 {
+		return nil, decision, ErrNoAvailableAccounts
+	}
+	if _, excluded := excludedIDs[requiredAccountID]; excluded {
+		return nil, decision, ErrNoAvailableAccounts
+	}
+
+	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
+	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
+		return nil, decision, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
+	}
+
+	account, err := s.getSchedulableAccount(ctx, requiredAccountID)
+	if err != nil || account == nil {
+		return nil, decision, ErrNoAvailableAccounts
+	}
+	if !isOpenAICompatibleRequestPlatformAccount(account, requestPlatform) ||
+		!account.IsSchedulable() ||
+		!openAIAccountMatchesLockedPriority(account, lockedPriority) ||
+		!s.isOpenAIAccountTransportCompatible(account, requiredTransport) ||
+		!accountSupportsOpenAICapabilities(ctx, account, requestedModel, requiredCapability, requiredImageCapability) ||
+		s.isOpenAIAccountRuntimeBlocked(account) ||
+		!s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
+		return nil, decision, ErrNoAvailableAccounts
+	}
+	if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
+		return nil, decision, ErrNoAvailableAccounts
+	}
+	if s.needsUpstreamChannelRestrictionCheck(ctx, groupID) &&
+		s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact) {
+		return nil, decision, ErrNoAvailableAccounts
+	}
+
+	account = s.recheckSelectedOpenAIAccountFromDB(
+		ctx,
+		account,
+		requestedModel,
+		requireCompact,
+		requiredCapability,
+		requiredImageCapability,
+		requestPlatform,
+	)
+	if account == nil || !s.isOpenAIAccountTransportCompatible(account, requiredTransport) ||
+		!openAIAccountMatchesLockedPriority(account, lockedPriority) ||
+		!s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
+		return nil, decision, ErrNoAvailableAccounts
+	}
+
+	result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
+	if err != nil {
+		return nil, decision, err
+	}
+	decision.StickySessionHit = true
+	decision.SelectedAccountID = account.ID
+	decision.SelectedAccountType = account.Type
+	if result != nil && result.Acquired {
+		selection, selectErr := s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
+		return selection, decision, selectErr
+	}
+
+	cfg := s.schedulingConfig()
+	selection, selectErr := s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+		AccountID:      account.ID,
+		MaxConcurrency: account.Concurrency,
+		Timeout:        cfg.FallbackWaitTimeout,
+		MaxWaiting:     cfg.FallbackMaxWaiting,
+	})
+	return selection, decision, selectErr
 }
 
 func (s *OpenAIGatewayService) selectAccountWithScheduler(

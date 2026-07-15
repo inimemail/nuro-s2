@@ -490,13 +490,13 @@ func TestResponsesUsageUnmarshal_CacheWriteDetailsFillTopLevel(t *testing.T) {
 	require.Equal(t, 20, usage.InputTokensDetails.CacheWriteTokens)
 }
 
-func TestResponsesUsageNestedCacheWritePresenceOverridesTopLevelAlias(t *testing.T) {
+func TestResponsesUsageNestedCacheWriteUsesFirstPositiveAlias(t *testing.T) {
 	tests := []struct {
 		name       string
 		nestedJSON string
 		want       int
 	}{
-		{name: "explicit zero", nestedJSON: `{"cache_write_tokens":0}`, want: 0},
+		{name: "nested zero falls back to top level", nestedJSON: `{"cache_write_tokens":0}`, want: 19},
 		{name: "nonzero", nestedJSON: `{"cache_write_tokens":7}`, want: 7},
 	}
 
@@ -508,6 +508,35 @@ func TestResponsesUsageNestedCacheWritePresenceOverridesTopLevelAlias(t *testing
 			require.Equal(t, tt.want, usage.CacheCreationInputTokens)
 		})
 	}
+}
+
+func TestResponsesUsageZeroNestedCacheAliasesFallBackToPositiveTopLevel(t *testing.T) {
+	var usage ResponsesUsage
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"input_tokens":100,
+		"output_tokens":5,
+		"input_tokens_details":{"cached_tokens":0,"cache_creation_input_tokens":0},
+		"cache_read_input_tokens":31,
+		"cache_creation_input_tokens":24
+	}`), &usage))
+
+	require.NotNil(t, usage.InputTokensDetails)
+	require.Equal(t, 31, usage.InputTokensDetails.CachedTokens)
+	require.Equal(t, 24, usage.CacheCreationInputTokens)
+}
+
+func TestResponsesUsageNestedCacheCreationInputAlias(t *testing.T) {
+	var usage ResponsesUsage
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"input_tokens":100,
+		"output_tokens":5,
+		"cache_creation_input_tokens":19,
+		"input_tokens_details":{"cache_creation_input_tokens":23}
+	}`), &usage))
+
+	require.Equal(t, 23, usage.CacheCreationInputTokens)
+	require.NotNil(t, usage.InputTokensDetails)
+	require.Equal(t, 23, usage.InputTokensDetails.CacheCreationInputTokens)
 }
 
 // ---------------------------------------------------------------------------

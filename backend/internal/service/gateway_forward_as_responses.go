@@ -260,6 +260,8 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	// Accumulate the final Anthropic response from streaming events
 	var finalResp *apicompat.AnthropicResponse
 	var usage ClaudeUsage
+	sawMessageStop := false
+	invalidStream := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -270,10 +272,12 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 
 		// Read the data line
 		if !scanner.Scan() {
+			invalidStream = true
 			break
 		}
 		dataLine := scanner.Text()
 		if !strings.HasPrefix(dataLine, "data: ") {
+			invalidStream = true
 			continue
 		}
 		payload := dataLine[6:]
@@ -285,7 +289,11 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 				zap.String("request_id", requestID),
 				zap.String("event_type", eventType),
 			)
+			invalidStream = true
 			continue
+		}
+		if event.Type == "message_stop" {
+			sawMessageStop = true
 		}
 
 		// message_start carries the initial response structure
@@ -330,11 +338,11 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 		}
+		return nil, fmt.Errorf("read upstream stream: %w", err)
 	}
 
-	if finalResp == nil {
-		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
-		return nil, fmt.Errorf("upstream stream ended without response")
+	if finalResp == nil || invalidStream || !sawMessageStop {
+		return nil, fmt.Errorf("upstream stream ended without a valid message_stop")
 	}
 
 	// Update usage from accumulated delta
@@ -399,6 +407,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	var usage ClaudeUsage
 	var firstTokenMs *int
 	firstChunk := true
+	clientDisconnected := false
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -409,14 +418,15 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
-			RequestID:       requestID,
-			Usage:           usage,
-			Model:           originalModel,
-			UpstreamModel:   mappedModel,
-			ReasoningEffort: reasoningEffort,
-			Stream:          true,
-			Duration:        time.Since(startTime),
-			FirstTokenMs:    firstTokenMs,
+			RequestID:        requestID,
+			Usage:            usage,
+			Model:            originalModel,
+			UpstreamModel:    mappedModel,
+			ReasoningEffort:  reasoningEffort,
+			Stream:           true,
+			Duration:         time.Since(startTime),
+			FirstTokenMs:     firstTokenMs,
+			ClientDisconnect: clientDisconnected,
 		}
 	}
 
@@ -453,7 +463,8 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				logger.L().Info("forward_as_responses stream: client disconnected",
 					zap.String("request_id", requestID),
 				)
-				return true // client disconnected
+				clientDisconnected = true
+				return true
 			}
 		}
 		if len(events) > 0 {
@@ -462,22 +473,8 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		return false
 	}
 
-	finalizeStream := func() (*ForwardResult, error) {
-		if finalEvents := apicompat.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 {
-			for _, evt := range finalEvents {
-				sse, err := apicompat.ResponsesEventToSSE(evt)
-				if err != nil {
-					continue
-				}
-				out := string(reverseToolNamesIfPresent(c, []byte(sse)))
-				fmt.Fprint(c.Writer, out) //nolint:errcheck
-			}
-			c.Writer.Flush()
-		}
-		return resultWithUsage(), nil
-	}
-
 	// Read Anthropic SSE events
+	invalidStream := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "event: ") {
@@ -487,10 +484,12 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 		// Read data line
 		if !scanner.Scan() {
+			invalidStream = true
 			break
 		}
 		dataLine := scanner.Text()
 		if !strings.HasPrefix(dataLine, "data: ") {
+			invalidStream = true
 			continue
 		}
 		payload := dataLine[6:]
@@ -502,6 +501,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				zap.String("request_id", requestID),
 				zap.String("event_type", eventType),
 			)
+			invalidStream = true
 			continue
 		}
 
@@ -517,9 +517,33 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 		}
+		writeSafeGatewayStreamFailure(c, true)
+		result := resultWithUsage()
+		result.FailedOutcome = true
+		return result, fmt.Errorf("read upstream stream: %w", err)
 	}
 
-	return finalizeStream()
+	if invalidStream || !state.CompletedSent {
+		writeSafeGatewayStreamFailure(c, true)
+		result := resultWithUsage()
+		result.FailedOutcome = true
+		return result, errors.New("upstream stream ended without a valid message_stop")
+	}
+	return resultWithUsage(), nil
+}
+
+func writeSafeGatewayStreamFailure(c *gin.Context, responses bool) {
+	if c == nil || c.Writer == nil {
+		return
+	}
+	payload := `data: {"error":{"type":"upstream_error","message":"Upstream request failed"}}` + "\n\n"
+	if responses {
+		payload = `data: {"type":"response.failed","response":{"status":"failed","error":{"type":"upstream_error","message":"Upstream request failed"}}}` + "\n\n"
+	}
+	if _, err := fmt.Fprint(c.Writer, payload); err == nil {
+		c.Writer.Flush()
+	}
+	MarkResponseCommitted(c)
 }
 
 // appendRawJSON appends a JSON fragment string to existing raw JSON.

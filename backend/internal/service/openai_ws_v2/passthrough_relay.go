@@ -37,6 +37,7 @@ type RelayResult struct {
 	Usage                   Usage
 	RequestID               string
 	TerminalEventType       string
+	TerminalObserved        bool
 	FirstTokenMs            *int
 	Duration                time.Duration
 	ClientToUpstreamFrames  int64
@@ -93,6 +94,7 @@ type relayState struct {
 	requestModel      string
 	lastResponseID    string
 	terminalEventType string
+	terminalObserved  atomic.Bool
 	firstTokenMs      *int
 	turnTimingByID    map[string]*relayTurnTiming
 	activeTurn        *relayTurnTiming
@@ -225,7 +227,17 @@ func Relay(
 		if !clientReaderStarted.CompareAndSwap(false, true) {
 			return
 		}
-		go runClientToUpstream(relayCtx, clientConn, options.ReadClientFrame, writeUpstream, markActivity, clientToUpstreamFrames, onTrace, exitCh)
+		go runClientToUpstream(
+			relayCtx,
+			clientConn,
+			options.ReadClientFrame,
+			writeUpstream,
+			func() { state.terminalObserved.Store(false) },
+			markActivity,
+			clientToUpstreamFrames,
+			onTrace,
+			exitCh,
+		)
 	}
 	if !options.StartClientAfterFirstDownstream {
 		startClientReader()
@@ -298,7 +310,7 @@ func Relay(
 	if firstExit.stage == "read_client" && firstExit.graceful {
 		result.ClientDisconnected = true
 	}
-	if options.FirstMessageSent && firstExit.stage == "read_client" && firstExit.graceful {
+	if options.FirstMessageSent && firstExit.stage == "read_client" && firstExit.graceful && result.TerminalObserved {
 		emitRelayTrace(onTrace, RelayTraceEvent{
 			Stage:           "relay_client_closed",
 			Graceful:        true,
@@ -330,6 +342,24 @@ func Relay(
 		}
 	}
 	if firstExit.graceful && (!hasSecondExit || secondExit.graceful) {
+		if !result.TerminalObserved {
+			exitErr := firstExit.err
+			if exitErr == nil {
+				exitErr = io.EOF
+			}
+			emitRelayTrace(onTrace, RelayTraceEvent{
+				Stage:           "relay_incomplete",
+				Direction:       relayDirectionFromStage(firstExit.stage),
+				Graceful:        false,
+				WroteDownstream: combinedWroteDownstream,
+				Error:           relayErrorString(exitErr),
+			})
+			return result, &RelayExit{
+				Stage:           firstExit.stage,
+				Err:             exitErr,
+				WroteDownstream: combinedWroteDownstream,
+			}
+		}
 		emitRelayTrace(onTrace, RelayTraceEvent{
 			Stage:           "relay_complete",
 			Graceful:        true,
@@ -388,6 +418,7 @@ func runClientToUpstream(
 	clientConn FrameConn,
 	readClientFrame func(context.Context, FrameConn) (coderws.MessageType, []byte, error),
 	writeUpstream func(msgType coderws.MessageType, payload []byte) error,
+	beginTurn func(),
 	markActivity func(),
 	forwardedFrames *atomic.Int64,
 	onTrace func(event RelayTraceEvent),
@@ -409,6 +440,14 @@ func runClientToUpstream(
 			})
 			exitCh <- relayExitSignal{stage: "read_client", err: err, graceful: isDisconnectError(err)}
 			return
+		}
+		if msgType == coderws.MessageText && strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
+			// A persistent WS connection can carry multiple response.create turns.
+			// The terminal marker is per turn; never let a previous completed turn
+			// make an incomplete next turn look successful.
+			if beginTurn != nil {
+				beginTurn()
+			}
 		}
 		markActivity()
 		if err := writeUpstream(msgType, payload); err != nil {
@@ -874,6 +913,7 @@ func observeUpstreamMessage(
 		return observed
 	}
 	observed.terminal = true
+	state.terminalObserved.Store(true)
 	observed.cyberBlocked = observed.cyberBlocked || state.turnCyberBlocked
 	if state.turnFailed && (eventType == "response.completed" || eventType == "response.done") {
 		observed.eventType = "error"
@@ -1003,10 +1043,6 @@ func parseUsageAndAccumulate(
 	if !outputResult.Exists() {
 		outputResult = gjson.GetBytes(message, "response.usage.completion_tokens")
 	}
-	cachedResult := gjson.GetBytes(message, "response.usage.input_tokens_details.cached_tokens")
-	if !cachedResult.Exists() {
-		cachedResult = gjson.GetBytes(message, "response.usage.prompt_tokens_details.cached_tokens")
-	}
 	imageTokens := usageResult.Get("output_tokens_details.image_tokens").Int()
 	if imageTokens == 0 {
 		imageTokens = usageResult.Get("completion_tokens_details.image_tokens").Int()
@@ -1014,8 +1050,7 @@ func parseUsageAndAccumulate(
 
 	inputTokens, inputOK := parseUsageIntField(inputResult, true)
 	outputTokens, outputOK := parseUsageIntField(outputResult, true)
-	cachedTokens, cachedOK := parseUsageIntField(cachedResult, false)
-	if !inputOK || !outputOK || !cachedOK {
+	if !inputOK || !outputOK {
 		recordUsageParseFailure()
 		if onParseFailure != nil {
 			onParseFailure(eventType, usageRaw)
@@ -1027,7 +1062,7 @@ func parseUsageAndAccumulate(
 		InputTokens:              inputTokens,
 		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: openAICacheCreationTokensFromUsage(usageResult),
-		CacheReadInputTokens:     cachedTokens,
+		CacheReadInputTokens:     openAICacheReadTokensFromUsage(usageResult),
 		ImageOutputTokens:        int(imageTokens),
 	}
 
@@ -1050,23 +1085,34 @@ func parseUsageIntField(value gjson.Result, required bool) (int, bool) {
 }
 
 func openAICacheCreationTokensFromUsage(value gjson.Result) int {
-	for _, field := range []string{
+	return firstPositiveUsageInt(value,
+		"input_tokens_details.cache_creation_input_tokens",
+		"prompt_tokens_details.cache_creation_input_tokens",
+		"input_tokens_details.cache_write_input_tokens",
+		"prompt_tokens_details.cache_write_input_tokens",
 		"input_tokens_details.cache_write_tokens",
 		"prompt_tokens_details.cache_write_tokens",
 		"input_tokens_details.cache_creation_tokens",
 		"prompt_tokens_details.cache_creation_tokens",
-	} {
-		result := value.Get(field)
-		if result.Exists() {
-			return max(int(result.Int()), 0)
-		}
-	}
-	for _, field := range []string{
 		"cache_write_tokens",
 		"cache_creation_input_tokens",
 		"cache_write_input_tokens",
 		"cache_creation_tokens",
-	} {
+	)
+}
+
+func openAICacheReadTokensFromUsage(value gjson.Result) int {
+	return firstPositiveUsageInt(value,
+		"input_tokens_details.cached_tokens",
+		"prompt_tokens_details.cached_tokens",
+		"cache_read_input_tokens",
+		"cache_read_tokens",
+		"cached_tokens",
+	)
+}
+
+func firstPositiveUsageInt(value gjson.Result, fields ...string) int {
+	for _, field := range fields {
 		if tokens := int(value.Get(field).Int()); tokens > 0 {
 			return tokens
 		}
@@ -1086,6 +1132,7 @@ func enrichResult(result *RelayResult, state *relayState, duration time.Duration
 	result.Usage = state.usage
 	result.RequestID = state.lastResponseID
 	result.TerminalEventType = state.terminalEventType
+	result.TerminalObserved = state.terminalObserved.Load()
 	result.FirstTokenMs = state.firstTokenMs
 	result.CyberBlocked = state.cyberBlocked
 }

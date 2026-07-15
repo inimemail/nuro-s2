@@ -364,6 +364,141 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabledUsesLega
 	require.False(t, decision.StickyPreviousHit)
 }
 
+func TestOpenAIGatewayService_SelectRequiredAccountDoesNotDrift(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10107)
+	accounts := []Account{
+		{
+			ID:          36101,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 2,
+			Priority:    5,
+			GroupIDs:    []int64{groupID},
+		},
+		{
+			ID:          36102,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 2,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+		},
+	}
+
+	newService := func(targetAvailable bool) *OpenAIGatewayService {
+		cfg := &config.Config{}
+		cfg.Gateway.Scheduling.FallbackWaitTimeout = 250 * time.Millisecond
+		cfg.Gateway.Scheduling.FallbackMaxWaiting = 3
+		return &OpenAIGatewayService{
+			accountRepo: schedulerTestOpenAIAccountRepo{accounts: accounts},
+			cfg:         cfg,
+			concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{
+				acquireResults: map[int64]bool{36101: targetAvailable, 36102: true},
+			}),
+		}
+	}
+
+	t.Run("acquires the required account even when a higher-priority account is free", func(t *testing.T) {
+		selection, decision, err := newService(true).SelectRequiredAccountForCapabilityOnPlatformLockedPriority(
+			ctx, &groupID, 36101, "gpt-5.1", nil, OpenAIUpstreamTransportAny,
+			OpenAIEndpointCapabilityChatCompletions, false, PlatformOpenAI, 5,
+		)
+
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.True(t, selection.Acquired)
+		require.Equal(t, int64(36101), selection.Account.ID)
+		require.True(t, decision.StickySessionHit)
+	})
+
+	t.Run("waits only for the required account when its local slot is busy", func(t *testing.T) {
+		selection, _, err := newService(false).SelectRequiredAccountForCapabilityOnPlatformLockedPriority(
+			ctx, &groupID, 36101, "gpt-5.1", nil, OpenAIUpstreamTransportAny,
+			OpenAIEndpointCapabilityChatCompletions, false, PlatformOpenAI, 5,
+		)
+
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.False(t, selection.Acquired)
+		require.Equal(t, int64(36101), selection.Account.ID)
+		require.NotNil(t, selection.WaitPlan)
+		require.Equal(t, int64(36101), selection.WaitPlan.AccountID)
+		require.Equal(t, 2, selection.WaitPlan.MaxConcurrency)
+	})
+}
+
+func TestGatewayService_SelectRequiredAccountDoesNotDrift(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10109)
+	accounts := []Account{
+		{
+			ID:          36111,
+			Platform:    PlatformAnthropic,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 2,
+			Priority:    5,
+			GroupIDs:    []int64{groupID},
+		},
+		{
+			ID:          36112,
+			Platform:    PlatformAnthropic,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 2,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+		},
+	}
+
+	newService := func(targetAvailable bool) *GatewayService {
+		cfg := &config.Config{RunMode: config.RunModeStandard}
+		cfg.Gateway.Scheduling.FallbackWaitTimeout = 250 * time.Millisecond
+		cfg.Gateway.Scheduling.FallbackMaxWaiting = 3
+		return &GatewayService{
+			accountRepo: schedulerTestOpenAIAccountRepo{accounts: accounts},
+			groupRepo: &schedulerTestGroupRepo{groups: map[int64]*Group{
+				groupID: {ID: groupID, Platform: PlatformAnthropic},
+			}},
+			cfg: cfg,
+			concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{
+				acquireResults: map[int64]bool{36111: targetAvailable, 36112: true},
+			}),
+		}
+	}
+
+	t.Run("acquires only the required account", func(t *testing.T) {
+		selection, err := newService(true).SelectRequiredAccountWithLoadAwareness(
+			ctx, &groupID, 36111, "retry-session", "", nil,
+		)
+
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.True(t, selection.Acquired)
+		require.Equal(t, int64(36111), selection.Account.ID)
+	})
+
+	t.Run("waits only for the required account", func(t *testing.T) {
+		selection, err := newService(false).SelectRequiredAccountWithLoadAwareness(
+			ctx, &groupID, 36111, "retry-session", "", nil,
+		)
+
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.False(t, selection.Acquired)
+		require.Equal(t, int64(36111), selection.Account.ID)
+		require.NotNil(t, selection.WaitPlan)
+		require.Equal(t, int64(36111), selection.WaitPlan.AccountID)
+	})
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_RequiredWSV2_SkipsHTTPOnlyAccount(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

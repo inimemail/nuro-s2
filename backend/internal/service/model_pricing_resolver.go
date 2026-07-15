@@ -34,6 +34,8 @@ type ResolvedPricing struct {
 
 	// 是否支持缓存细分
 	SupportsCacheBreakdown bool
+
+	channelPricing *ChannelModelPricing
 }
 
 // ModelPricingResolver 统一模型定价解析器。
@@ -71,8 +73,9 @@ func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) 
 			}
 			if mode == BillingModePerRequest || mode == BillingModeImage {
 				resolved := &ResolvedPricing{
-					Mode:   mode,
-					Source: PricingSourceChannel,
+					Mode:           mode,
+					Source:         PricingSourceChannel,
+					channelPricing: chPricing,
 				}
 				r.applyRequestTierOverrides(chPricing, resolved)
 				return resolved
@@ -93,6 +96,7 @@ func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) 
 	// 2. 如果有 GroupID，尝试渠道覆盖
 	if chPricing != nil {
 		resolved.Source = PricingSourceChannel
+		resolved.channelPricing = chPricing
 		r.applyTokenOverrides(chPricing, resolved)
 	} else if input.GroupID != nil {
 		r.applyChannelOverrides(ctx, *input.GroupID, input.Model, resolved)
@@ -120,6 +124,7 @@ func (r *ModelPricingResolver) applyChannelOverrides(ctx context.Context, groupI
 	}
 
 	resolved.Source = PricingSourceChannel
+	resolved.channelPricing = chPricing
 	resolved.Mode = chPricing.BillingMode
 	if resolved.Mode == "" {
 		resolved.Mode = BillingModeToken
@@ -141,6 +146,16 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
 	// 如果有有效的区间定价，使用区间
 	if len(validIntervals) > 0 {
 		resolved.Intervals = validIntervals
+		if resolved.BasePricing == nil {
+			resolved.BasePricing = &ModelPricing{}
+		} else {
+			cloned := *resolved.BasePricing
+			resolved.BasePricing = &cloned
+		}
+		if chPricing.ImageOutputPrice != nil {
+			resolved.BasePricing.ImageOutputPricePerToken = *chPricing.ImageOutputPrice
+			resolved.BasePricing.ImageOutputPriceExplicit = true
+		}
 		return
 	}
 
@@ -173,6 +188,7 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
 	}
 	if chPricing.ImageOutputPrice != nil {
 		resolved.BasePricing.ImageOutputPricePerToken = *chPricing.ImageOutputPrice
+		resolved.BasePricing.ImageOutputPriceExplicit = true
 	}
 }
 
@@ -210,11 +226,11 @@ func (r *ModelPricingResolver) GetIntervalPricing(resolved *ResolvedPricing, tot
 		return resolved.BasePricing
 	}
 
-	return intervalToModelPricing(iv, resolved.SupportsCacheBreakdown)
+	return intervalToModelPricing(iv, resolved.SupportsCacheBreakdown, resolved.channelPricing)
 }
 
 // intervalToModelPricing 将区间定价转换为 ModelPricing
-func intervalToModelPricing(iv *PricingInterval, supportsCacheBreakdown bool) *ModelPricing {
+func intervalToModelPricing(iv *PricingInterval, supportsCacheBreakdown bool, chPricing *ChannelModelPricing) *ModelPricing {
 	pricing := &ModelPricing{
 		SupportsCacheBreakdown: supportsCacheBreakdown,
 	}
@@ -236,6 +252,12 @@ func intervalToModelPricing(iv *PricingInterval, supportsCacheBreakdown bool) *M
 	if iv.CacheReadPrice != nil {
 		pricing.CacheReadPricePerToken = *iv.CacheReadPrice
 		pricing.CacheReadPricePerTokenPriority = *iv.CacheReadPrice
+	}
+	if chPricing != nil {
+		if chPricing.ImageOutputPrice != nil {
+			pricing.ImageOutputPricePerToken = *chPricing.ImageOutputPrice
+			pricing.ImageOutputPriceExplicit = true
+		}
 	}
 	return pricing
 }

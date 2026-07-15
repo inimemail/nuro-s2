@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -373,7 +374,26 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	}
 
 	for {
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, modelName, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
+		retryAccountID := fs.pendingSameAccountRetryID()
+		var selection *service.AccountSelectionResult
+		if retryAccountID > 0 {
+			selection, err = h.gatewayService.SelectRequiredAccountWithLoadAwareness(
+				c.Request.Context(), apiKey.GroupID, retryAccountID, sessionKey, modelName, fs.FailedAccountIDs,
+			)
+		} else {
+			selection, err = h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, modelName, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
+		}
+		if (err != nil || selection == nil || selection.Account == nil) && retryAccountID > 0 {
+			switch fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService) {
+			case FailoverContinue:
+				continue
+			case FailoverCanceled:
+				return
+			default:
+				h.handleGeminiFailoverExhausted(c, fs.LastFailoverErr)
+				return
+			}
+		}
 		if err != nil {
 			if len(fs.FailedAccountIDs) == 0 {
 				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
@@ -424,6 +444,9 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		accountReleaseFunc := selection.ReleaseFunc
 		if !selection.Acquired {
 			if selection.WaitPlan == nil {
+				if retryAccountID > 0 {
+					_ = fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService)
+				}
 				markOpsRoutingCapacityLimited(c)
 				googleError(c, http.StatusServiceUnavailable, "Service temporarily unavailable")
 				return
@@ -433,6 +456,9 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			if err != nil {
 				reqLog.Warn("gemini.account_wait_counter_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			} else if !canWait {
+				if retryAccountID > 0 {
+					_ = fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService)
+				}
 				reqLog.Info("gemini.account_wait_queue_full",
 					zap.Int64("account_id", account.ID),
 					zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
@@ -458,6 +484,9 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				&streamStarted,
 			)
 			if err != nil {
+				if retryAccountID > 0 {
+					_ = fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService)
+				}
 				reqLog.Warn("gemini.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				status, _, message := concurrencyErrorResponse(err, "account")
 				googleError(c, status, message)
@@ -473,6 +502,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		}
 		// 账号槽位/等待计数需要在超时或断开时安全回收
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
+		fs.clearPendingSameAccountRetry()
 
 		// 5) forward (根据平台分流)
 		var result *service.ForwardResult
@@ -481,6 +511,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
 		}
 		writerSizeBeforeForward := c.Writer.Size()
+		markSameAccountAttemptStart(fs.SameAccountRetryStart, account, time.Now())
 		if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
 			result, err = h.antigravityGatewayService.ForwardGemini(requestCtx, c, account, modelName, action, stream, body, hasBoundSession)
 		} else {
@@ -493,7 +524,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		if err != nil && !settleForwardError {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
-				failoverAction := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+				failoverAction := fs.HandleFailoverErrorForAccount(c.Request.Context(), h.gatewayService, account, failoverErr)
 				if _, failed := fs.FailedAccountIDs[account.ID]; failed {
 					h.reportAccountScheduleResult(account, false, nil)
 				}
@@ -635,7 +666,10 @@ func (h *GatewayHandler) handleGeminiFailoverExhausted(c *gin.Context, failoverE
 			// 确定响应消息
 			msg := "Upstream request failed"
 			if !rule.PassthroughBody && rule.CustomMessage != nil {
-				msg = *rule.CustomMessage
+				msg = service.SanitizeUpstreamErrorMessageForClient(*rule.CustomMessage)
+				if msg == "" {
+					msg = "Upstream request failed"
+				}
 			}
 
 			if rule.SkipMonitoring {

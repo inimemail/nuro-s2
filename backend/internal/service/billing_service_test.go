@@ -34,6 +34,24 @@ func TestCalculateCost_BasicComputation(t *testing.T) {
 	require.InDelta(t, expectedInput+expectedOutput, cost.ActualCost, 1e-10)
 }
 
+func TestCalculateCost_GPT56IncludesCacheCreation(t *testing.T) {
+	svc := newTestBillingService()
+
+	cost, err := svc.CalculateCost("gpt-5.6-sol", UsageTokens{
+		InputTokens:         100,
+		OutputTokens:        50,
+		CacheCreationTokens: 200,
+		CacheReadTokens:     25,
+	}, 1.0)
+	require.NoError(t, err)
+	require.InDelta(t, 200*6.25e-6, cost.CacheCreationCost, 1e-12)
+	require.InDelta(t,
+		100*5e-6+50*30e-6+200*6.25e-6+25*0.5e-6,
+		cost.TotalCost,
+		1e-12,
+	)
+}
+
 func TestCalculateCost_WithCacheTokens(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -907,6 +925,18 @@ func TestGetModelPricingWithChannel_OverrideInputPriceOnly(t *testing.T) {
 
 	// OutputPrice unchanged (claude-sonnet-4 fallback = 15e-6)
 	require.InDelta(t, 15e-6, pricing.OutputPricePerToken, 1e-12)
+}
+
+func TestGetModelPricingWithChannel_UnsetImageOutputPriceKeepsBasePricing(t *testing.T) {
+	svc := newTestBillingService()
+
+	pricing, err := svc.GetModelPricingWithChannel("claude-sonnet-4", &ChannelModelPricing{
+		InputPrice: testPtrFloat64(99e-6),
+	})
+	require.NoError(t, err)
+
+	require.False(t, pricing.ImageOutputPriceExplicit)
+	require.NotZero(t, pricing.ImageOutputPricePerToken)
 }
 
 func TestGetModelPricingWithChannel_OverrideOutputPriceOnly(t *testing.T) {

@@ -386,7 +386,26 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		}
 
 		for {
-			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
+			retryAccountID := fs.pendingSameAccountRetryID()
+			var selection *service.AccountSelectionResult
+			if retryAccountID > 0 {
+				selection, err = h.gatewayService.SelectRequiredAccountWithLoadAwareness(
+					c.Request.Context(), apiKey.GroupID, retryAccountID, sessionKey, reqModel, fs.FailedAccountIDs,
+				)
+			} else {
+				selection, err = h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
+			}
+			if (err != nil || selection == nil || selection.Account == nil) && retryAccountID > 0 {
+				switch fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService) {
+				case FailoverContinue:
+					continue
+				case FailoverCanceled:
+					return
+				default:
+					h.handleFailoverExhausted(c, fs.LastFailoverErr, service.PlatformGemini, streamStarted)
+					return
+				}
+			}
 			if err != nil {
 				if len(fs.FailedAccountIDs) == 0 {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
@@ -439,6 +458,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			accountReleaseFunc := selection.ReleaseFunc
 			if !selection.Acquired {
 				if selection.WaitPlan == nil {
+					if retryAccountID > 0 {
+						_ = fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService)
+					}
 					markOpsRoutingCapacityLimited(c)
 					reqLog.Warn("gateway.select_account_no_slot_no_wait_plan",
 						zap.Int64("account_id", account.ID),
@@ -453,6 +475,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if err != nil {
 					reqLog.Warn("gateway.account_wait_counter_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				} else if !canWait {
+					if retryAccountID > 0 {
+						_ = fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService)
+					}
 					reqLog.Info("gateway.account_wait_queue_full",
 						zap.Int64("account_id", account.ID),
 						zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
@@ -479,6 +504,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					&streamStarted,
 				)
 				if err != nil {
+					if retryAccountID > 0 {
+						_ = fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService)
+					}
 					reqLog.Warn("gateway.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					releaseWait()
 					h.handleConcurrencyError(c, err, "account", streamStarted)
@@ -492,6 +520,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			// 账号槽位/等待计数需要在超时或断开时安全回收
 			accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
+			fs.clearPendingSameAccountRetry()
 
 			// 转发请求 - 根据账号平台分流
 			var result *service.ForwardResult
@@ -501,6 +530,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
 			writerSizeBeforeForward := c.Writer.Size()
+			markSameAccountAttemptStart(fs.SameAccountRetryStart, account, time.Now())
 			if account.Platform == service.PlatformAntigravity {
 				result, err = h.antigravityGatewayService.ForwardGemini(requestCtx, c, account, reqModel, "generateContent", reqStream, body, hasBoundSession)
 			} else {
@@ -519,7 +549,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						h.handleFailoverExhausted(c, failoverErr, service.PlatformGemini, true)
 						return
 					}
-					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+					action := fs.HandleFailoverErrorForAccount(c.Request.Context(), h.gatewayService, account, failoverErr)
 					if _, failed := fs.FailedAccountIDs[account.ID]; failed {
 						h.reportAccountScheduleResult(account, false, nil)
 					}
@@ -663,7 +693,26 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				zap.Bool("has_bound_session", hasBoundSession),
 				zap.Int("failed_account_count", len(fs.FailedAccountIDs)),
 			)
-			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			retryAccountID := fs.pendingSameAccountRetryID()
+			var selection *service.AccountSelectionResult
+			if retryAccountID > 0 {
+				selection, err = h.gatewayService.SelectRequiredAccountWithLoadAwareness(
+					c.Request.Context(), currentAPIKey.GroupID, retryAccountID, sessionKey, reqModel, fs.FailedAccountIDs,
+				)
+			} else {
+				selection, err = h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
+			}
+			if (err != nil || selection == nil || selection.Account == nil) && retryAccountID > 0 {
+				switch fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService) {
+				case FailoverContinue:
+					continue
+				case FailoverCanceled:
+					return
+				default:
+					h.handleFailoverExhausted(c, fs.LastFailoverErr, platform, streamStarted)
+					return
+				}
+			}
 			if err != nil {
 				if len(fs.FailedAccountIDs) == 0 {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
@@ -727,6 +776,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			accountReleaseFunc := selection.ReleaseFunc
 			if !selection.Acquired {
 				if selection.WaitPlan == nil {
+					if retryAccountID > 0 {
+						_ = fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService)
+					}
 					markOpsRoutingCapacityLimited(c)
 					reqLog.Warn("gateway.select_account_no_slot_no_wait_plan",
 						zap.Int64("account_id", account.ID),
@@ -741,6 +793,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if err != nil {
 					reqLog.Warn("gateway.account_wait_counter_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				} else if !canWait {
+					if retryAccountID > 0 {
+						_ = fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService)
+					}
 					reqLog.Info("gateway.account_wait_queue_full",
 						zap.Int64("account_id", account.ID),
 						zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
@@ -767,6 +822,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					&streamStarted,
 				)
 				if err != nil {
+					if retryAccountID > 0 {
+						_ = fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService)
+					}
 					reqLog.Warn("gateway.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 					releaseWait()
 					h.handleConcurrencyError(c, err, "account", streamStarted)
@@ -784,6 +842,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			// 账号槽位/等待计数需要在超时或断开时安全回收
 			accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
+			fs.clearPendingSameAccountRetry()
 
 			// ===== 用户消息串行队列 START =====
 			var queueRelease func()
@@ -855,6 +914,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
 			writerSizeBeforeForward := c.Writer.Size()
+			markSameAccountAttemptStart(fs.SameAccountRetryStart, account, time.Now())
 			if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
 				result, err = h.antigravityGatewayService.Forward(requestCtx, c, account, body, hasBoundSession)
 			} else {
@@ -935,7 +995,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
 						return
 					}
-					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+					action := fs.HandleFailoverErrorForAccount(c.Request.Context(), h.gatewayService, account, failoverErr)
 					if _, failed := fs.FailedAccountIDs[account.ID]; failed {
 						h.reportAccountScheduleResult(account, false, nil)
 					}
@@ -1633,7 +1693,10 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 			// 确定响应消息
 			msg := "Upstream request failed"
 			if !rule.PassthroughBody && rule.CustomMessage != nil {
-				msg = *rule.CustomMessage
+				msg = service.SanitizeUpstreamErrorMessageForClient(*rule.CustomMessage)
+				if msg == "" {
+					msg = "Upstream request failed"
+				}
 			}
 
 			if rule.SkipMonitoring {

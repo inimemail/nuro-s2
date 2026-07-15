@@ -1026,7 +1026,8 @@ export default {
     providers: {
       openai: 'OpenAI',
       anthropic: 'Anthropic',
-      gemini: 'Gemini'
+      gemini: 'Gemini',
+      grok: 'Grok'
     },
     extraModelsHeader: 'Extra Models',
     extraModelsEmpty: 'No extra models',
@@ -2301,8 +2302,10 @@ export default {
       },
       openaiMessages: {
         title: 'OpenAI Messages Dispatch',
+        grokTitle: 'Grok Messages Dispatch',
         allowDispatch: 'Allow /v1/messages dispatch',
         allowDispatchHint: 'When enabled, API keys in this OpenAI group can dispatch requests through /v1/messages endpoint',
+        grokAllowDispatchHint: 'When enabled, API keys in this Grok group can dispatch Claude-family requests through /v1/messages using grok-4.5',
         familyMappingTitle: 'Family Default Mapping',
         familyMappingHint: 'Requests that match the Opus, Sonnet, or Haiku families will prefer the target model configured here.',
         opusModel: 'Opus Target Model',
@@ -3466,6 +3469,9 @@ export default {
         oauthPassthrough: 'Auto passthrough (auth only)',
         oauthPassthroughDesc:
           'When enabled, this OpenAI account uses automatic passthrough: the gateway forwards request/response as-is and only swaps auth, while keeping billing/concurrency/audit and necessary safety filtering.',
+        longContextBilling: 'API long-context pricing',
+        longContextBillingDesc:
+          'Disabled by default. Enable only when this account upstream charges the OpenAI API long-context rate above the model threshold.',
         responsesPassthroughCompat: 'Responses passthrough compatibility',
         responsesPassthroughCompatDesc:
           'Only applies to this OpenAI OAuth/APIKey account. When enabled, string input probes are normalized and unsupported token parameters are filtered for compatible upstreams. Disabled by default to keep strict passthrough.',

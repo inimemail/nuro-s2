@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -27,6 +29,34 @@ func TestPatchGrokResponsesBody(t *testing.T) {
 	require.False(t, gjson.GetBytes(patched, "presence_penalty").Exists())
 	require.False(t, gjson.GetBytes(patched, "frequencyPenalty").Exists())
 	require.False(t, gjson.GetBytes(patched, "stop").Exists())
+}
+
+type grokMediaCacheErrorStub struct {
+	stubGatewayCache
+	err error
+}
+
+func (c *grokMediaCacheErrorStub) GetSessionAccountID(context.Context, int64, string) (int64, error) {
+	return 0, c.err
+}
+
+func TestSelectBoundGrokMediaVideoRequestAccount_DoesNotFallbackOnCacheFailure(t *testing.T) {
+	cacheErr := errors.New("redis unavailable")
+	svc := &OpenAIGatewayService{cache: &grokMediaCacheErrorStub{err: cacheErr}}
+
+	selection, exact, err := svc.SelectBoundGrokMediaVideoRequestAccount(context.Background(), nil, "video-request-1")
+	require.Nil(t, selection)
+	require.True(t, exact)
+	require.ErrorIs(t, err, cacheErr)
+}
+
+func TestSelectBoundGrokMediaVideoRequestAccount_AllowsLegacyFallbackOnCacheMiss(t *testing.T) {
+	svc := &OpenAIGatewayService{cache: &grokMediaCacheErrorStub{err: redis.Nil}}
+
+	selection, exact, err := svc.SelectBoundGrokMediaVideoRequestAccount(context.Background(), nil, "video-request-2")
+	require.NoError(t, err)
+	require.Nil(t, selection)
+	require.False(t, exact)
 }
 
 func TestPatchGrokResponsesBodySanitizesComposerCapabilitiesAndPrivateInput(t *testing.T) {
@@ -58,6 +88,18 @@ func TestPatchGrokResponsesBodyOnlyRemovesTopLevelExternalWebAccess(t *testing.T
 	require.False(t, gjson.GetBytes(patched, "external_web_access").Exists())
 	assert.Equal(t, "business-data", gjson.GetBytes(patched, "input.0.content.external_web_access").String())
 	assert.True(t, gjson.GetBytes(patched, "tools.0.parameters.properties.external_web_access").Exists())
+}
+
+func TestSanitizeGrokReasoningNullContent(t *testing.T) {
+	body := []byte(`{"input":[{"type":"reasoning","content":null,"encrypted_content":"keep"},{"type":"reasoning","content":"real content"},{"type":"message","content":null}]}`)
+
+	got, err := sanitizeGrokReasoningNullContent(body)
+
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(got, "input.0.content").Exists())
+	require.Equal(t, "keep", gjson.GetBytes(got, "input.0.encrypted_content").String())
+	require.Equal(t, "real content", gjson.GetBytes(got, "input.1.content").String())
+	require.True(t, gjson.GetBytes(got, "input.2.content").Exists())
 }
 
 func TestGrokRuntimeBlockUsesOpenAICompatibleSchedulerFastPath(t *testing.T) {
@@ -131,6 +173,27 @@ func TestNormalizeGrokMediaModelForEndpoint(t *testing.T) {
 	}
 }
 
+func TestGrokMediaEndpointIsVideoMutationRequest(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint GrokMediaEndpoint
+		want     bool
+	}{
+		{name: "image generation", endpoint: GrokMediaEndpointImagesGenerations},
+		{name: "image edit", endpoint: GrokMediaEndpointImagesEdits},
+		{name: "video generation", endpoint: GrokMediaEndpointVideosGenerations, want: true},
+		{name: "video edit", endpoint: GrokMediaEndpointVideosEdits, want: true},
+		{name: "video extension", endpoint: GrokMediaEndpointVideosExtensions, want: true},
+		{name: "video status", endpoint: GrokMediaEndpointVideoStatus},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.endpoint.IsVideoMutationRequest())
+		})
+	}
+}
+
 func TestNormalizeGrokMediaForwardBodyRewritesImagineAlias(t *testing.T) {
 	body := []byte(`{"model":"grok-imagine","prompt":"draw a cat"}`)
 
@@ -156,13 +219,50 @@ func TestGrokMediaSuccessResponseIsValid(t *testing.T) {
 		{name: "video request missing ID", endpoint: GrokMediaEndpointVideosGenerations, body: `{"status":"pending"}`},
 		{name: "video status pending", endpoint: GrokMediaEndpointVideoStatus, body: `{"status":"pending"}`, want: true},
 		{name: "video status done", endpoint: GrokMediaEndpointVideoStatus, body: `{"status":"done","video":{"url":"https://cdn.example/video.mp4"}}`, want: true},
+		{name: "video status failed", endpoint: GrokMediaEndpointVideoStatus, body: `{"request_id":"video_req_1","status":"failed","error":{"message":"private-provider.example failed"}}`, want: true},
+		{name: "video status cancelled", endpoint: GrokMediaEndpointVideoStatus, body: `{"request_id":"video_req_1","status":"cancelled","reason":"private-provider"}`, want: true},
 		{name: "diagnostic envelope", endpoint: GrokMediaEndpointVideoStatus, body: `{"message":"private-provider failed"}`},
+		{name: "HTML error page", endpoint: GrokMediaEndpointVideoStatus, body: `<!DOCTYPE html><title>private.example | 502</title>`},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, grokMediaSuccessResponseIsValid(tt.endpoint, []byte(tt.body)))
 		})
+	}
+}
+
+func TestSanitizeGrokMediaUnsuccessfulTerminalResponse(t *testing.T) {
+	body := []byte(`{"request_id":"video_req_1","id":"https://private-provider.example/id","status":"failed","created_at":123,"updated_at":"https://private-provider.example/time","error":{"message":"x.ai failed"},"provider":"xai","url":"https://private-provider.example/error"}`)
+
+	got := sanitizeGrokMediaUnsuccessfulTerminalResponse(body, "failed")
+
+	require.JSONEq(t, `{"request_id":"video_req_1","status":"failed","created_at":123}`, string(got))
+	require.NotContains(t, string(got), "x.ai")
+	require.NotContains(t, string(got), "private-provider")
+}
+
+func TestSelectBoundGrokMediaVideoRequestAccountKeepsOriginalAccount(t *testing.T) {
+	groupID := int64(12)
+	original := Account{ID: 71, Platform: PlatformGrok, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 2, Priority: 9}
+	higherPriority := Account{ID: 72, Platform: PlatformGrok, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 2, Priority: 0}
+	cache := &stubGatewayCache{}
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{original, higherPriority}},
+		cache:              cache,
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+	require.NoError(t, svc.BindGrokMediaVideoRequestAccount(context.Background(), &groupID, "video_req_bound", original.ID))
+
+	selection, bound, err := svc.SelectBoundGrokMediaVideoRequestAccount(context.Background(), &groupID, "video_req_bound")
+
+	require.NoError(t, err)
+	require.True(t, bound)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, original.ID, selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
 	}
 }
 
@@ -187,6 +287,86 @@ func TestParseGrokMediaRequestVideoBillingMetadata(t *testing.T) {
 	require.Equal(t, 10, usage.VideoDurationSeconds)
 	require.Equal(t, 1, usage.ImageCount)
 	require.Empty(t, usage.ImageSize)
+}
+
+func TestOpenAIGatewayService_ForwardGrokMediaOAuthUsesImagineEndpointAndCLIHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"data":[{"url":"https://cdn.example/image.png"}]}`)),
+		},
+	}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          76,
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"access_token": "grok-token"},
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+	result, err := svc.ForwardGrokMedia(
+		context.Background(),
+		c,
+		account,
+		GrokMediaEndpointImagesGenerations,
+		"",
+		[]byte(`{"model":"grok-imagine","prompt":"draw"}`),
+		"application/json",
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "https://api.x.ai/v1/images/generations", upstream.lastReq.URL.String())
+	require.Equal(t, "Bearer grok-token", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, grokCLIVersion, upstream.lastReq.Header.Get("X-Grok-Client-Version"))
+}
+
+func TestOpenAIGatewayService_ForwardGrokVideoMutationEndpoints(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name     string
+		endpoint GrokMediaEndpoint
+		path     string
+	}{
+		{name: "edit", endpoint: GrokMediaEndpointVideosEdits, path: "/v1/videos/edits"},
+		{name: "extension", endpoint: GrokMediaEndpointVideosExtensions, path: "/v1/videos/extensions"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"model":"grok-imagine-video","prompt":"continue","video":{"url":"https://example.com/in.mp4"},"duration":6}`)
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(bytes.NewBufferString(`{"request_id":"video-mutation-123"}`)),
+			}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			account := &Account{
+				ID: 71, Platform: PlatformGrok, Type: AccountTypeAPIKey, Concurrency: 1,
+				Credentials: map[string]any{"api_key": "api-key"},
+			}
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader(body))
+
+			result, err := svc.ForwardGrokMedia(context.Background(), c, account, tt.endpoint, "", body, "application/json")
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, "https://api.x.ai"+tt.path, upstream.lastReq.URL.String())
+			require.JSONEq(t, string(body), string(upstream.lastBody))
+			require.Equal(t, "video-mutation-123", result.ResponseID)
+			require.Equal(t, 1, result.VideoCount)
+			require.Equal(t, 6, result.VideoDurationSeconds)
+		})
+	}
 }
 
 func TestOpenAIGatewayService_ForwardGrokResponses_UsesGrokUpstream(t *testing.T) {

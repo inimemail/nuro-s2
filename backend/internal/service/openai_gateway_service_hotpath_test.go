@@ -137,24 +137,42 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 
 func TestOpenAIUsageFromGJSON_ParsesCacheWriteAliases(t *testing.T) {
 	tests := []struct {
-		name string
-		body string
-		want int
+		name         string
+		body         string
+		wantCreation int
+		wantRead     int
 	}{
 		{
-			name: "input details cache_write_tokens",
-			body: `{"usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":20}}}`,
-			want: 20,
+			name:         "input details cache_write_tokens",
+			body:         `{"usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cached_tokens":30,"cache_write_tokens":20}}}`,
+			wantCreation: 20,
+			wantRead:     30,
 		},
 		{
-			name: "prompt details cache_creation_tokens",
-			body: `{"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":30,"cache_creation_tokens":21}}}`,
-			want: 21,
+			name:         "prompt details cache_creation_tokens",
+			body:         `{"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":30,"cache_creation_tokens":21}}}`,
+			wantCreation: 21,
+			wantRead:     30,
 		},
 		{
-			name: "top-level cache_creation_input_tokens",
-			body: `{"usage":{"input_tokens":100,"output_tokens":5,"cache_creation_input_tokens":22}}`,
-			want: 22,
+			name:         "top-level cache_creation_input_tokens",
+			body:         `{"usage":{"input_tokens":100,"output_tokens":5,"cache_creation_input_tokens":22}}`,
+			wantCreation: 22,
+		},
+		{
+			name:         "nested cache_creation_input_tokens",
+			body:         `{"usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cache_creation_input_tokens":23}}}`,
+			wantCreation: 23,
+		},
+		{
+			name:         "zero nested aliases do not hide top-level values",
+			body:         `{"usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cached_tokens":0,"cache_creation_input_tokens":0},"cache_read_input_tokens":31,"cache_creation_input_tokens":24}}`,
+			wantCreation: 24,
+			wantRead:     31,
+		},
+		{
+			name: "all cache aliases zero",
+			body: `{"usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cached_tokens":0,"cache_creation_input_tokens":0},"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`,
 		},
 	}
 
@@ -162,7 +180,8 @@ func TestOpenAIUsageFromGJSON_ParsesCacheWriteAliases(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			usage, ok := openAIUsageFromGJSON(gjson.Get(tt.body, "usage"))
 			require.True(t, ok)
-			require.Equal(t, tt.want, usage.CacheCreationInputTokens)
+			require.Equal(t, tt.wantCreation, usage.CacheCreationInputTokens)
+			require.Equal(t, tt.wantRead, usage.CacheReadInputTokens)
 		})
 	}
 }

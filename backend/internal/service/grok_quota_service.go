@@ -66,18 +66,18 @@ func (s *GrokQuotaService) ProbeUsage(ctx context.Context, accountID int64) (*Gr
 	probeModel := grokQuotaProbeModel()
 	body, err := buildGrokQuotaProbeBody(probeModel)
 	if err != nil {
-		return nil, infraerrors.Newf(http.StatusBadRequest, "GROK_QUOTA_PROBE_BODY_ERROR", "failed to build probe body: %v", err)
+		return nil, infraerrors.New(http.StatusBadRequest, "GROK_QUOTA_PROBE_BODY_ERROR", "failed to build quota probe")
 	}
 	targetURL, err := xai.BuildResponsesURL(account.GetGrokBaseURL())
 	if err != nil {
-		return nil, infraerrors.Newf(http.StatusBadRequest, "GROK_QUOTA_BASE_URL_INVALID", "invalid Grok base_url: %v", err)
+		return nil, infraerrors.New(http.StatusBadRequest, "GROK_QUOTA_BASE_URL_INVALID", "invalid quota endpoint configuration")
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, grokQuotaUpstreamTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
-		return nil, infraerrors.Newf(http.StatusInternalServerError, "GROK_QUOTA_PROBE_REQUEST_BUILD_FAILED", "failed to build upstream request: %v", err)
+		return nil, infraerrors.New(http.StatusInternalServerError, "GROK_QUOTA_PROBE_REQUEST_BUILD_FAILED", "failed to build quota probe request")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -86,7 +86,7 @@ func (s *GrokQuotaService) ProbeUsage(ctx context.Context, accountID int64) (*Gr
 
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, maxGrokProbeConcurrency(account.Concurrency, 1))
 	if err != nil {
-		return nil, infraerrors.Newf(http.StatusBadGateway, "GROK_QUOTA_PROBE_REQUEST_FAILED", "upstream probe failed: %v", err)
+		return nil, infraerrors.New(http.StatusBadGateway, "GROK_QUOTA_PROBE_REQUEST_FAILED", "quota probe request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -118,7 +118,7 @@ func (s *GrokQuotaService) ProbeUsage(ctx context.Context, accountID int64) (*Gr
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 240))
 		bodyText := truncate(strings.TrimSpace(string(bodyBytes)), 240)
 		slog.Warn("grok_quota_probe_failed", "account_id", account.ID, "model", probeModel, "status", resp.StatusCode, "body", bodyText)
-		return nil, infraerrors.Newf(mapUpstreamStatusCode(resp.StatusCode), "GROK_QUOTA_PROBE_UPSTREAM_ERROR", "upstream returned %d for probe model %q: %s", resp.StatusCode, probeModel, bodyText)
+		return nil, infraerrors.Newf(mapUpstreamStatusCode(resp.StatusCode), "GROK_QUOTA_PROBE_UPSTREAM_ERROR", "quota probe failed (HTTP %d)", resp.StatusCode)
 	}
 	return result, nil
 }
@@ -127,7 +127,7 @@ func (s *GrokQuotaService) ResetQuota(ctx context.Context, accountID int64) (*Gr
 	if _, err := s.loadGrokOAuthAccount(ctx, accountID); err != nil {
 		return nil, err
 	}
-	return nil, infraerrors.New(http.StatusNotImplemented, "GROK_QUOTA_RESET_UNSUPPORTED", "xAI does not expose a Grok subscription quota reset endpoint for OAuth accounts")
+	return nil, infraerrors.New(http.StatusNotImplemented, "GROK_QUOTA_RESET_UNSUPPORTED", "quota reset is not supported for OAuth accounts")
 }
 
 func (s *GrokQuotaService) prepareProbe(ctx context.Context, accountID int64) (*Account, string, string, error) {
@@ -141,7 +141,7 @@ func (s *GrokQuotaService) prepareProbe(ctx context.Context, accountID int64) (*
 
 	token, err := s.tokenProvider.GetAccessToken(ctx, account)
 	if err != nil {
-		return nil, "", "", infraerrors.Newf(http.StatusBadGateway, "GROK_QUOTA_TOKEN_UNAVAILABLE", "failed to acquire access token: %v", err)
+		return nil, "", "", infraerrors.New(http.StatusBadGateway, "GROK_QUOTA_TOKEN_UNAVAILABLE", "failed to acquire access token")
 	}
 	if strings.TrimSpace(token) == "" {
 		return nil, "", "", infraerrors.New(http.StatusBadGateway, "GROK_QUOTA_TOKEN_UNAVAILABLE", "access token is empty")
@@ -171,7 +171,7 @@ func (s *GrokQuotaService) loadGrokOAuthAccount(ctx context.Context, accountID i
 	}
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
-		return nil, infraerrors.Newf(http.StatusNotFound, "GROK_QUOTA_ACCOUNT_NOT_FOUND", "account not found: %v", err)
+		return nil, infraerrors.New(http.StatusNotFound, "GROK_QUOTA_ACCOUNT_NOT_FOUND", "account not found")
 	}
 	if account == nil {
 		return nil, infraerrors.New(http.StatusNotFound, "GROK_QUOTA_ACCOUNT_NOT_FOUND", "account not found")

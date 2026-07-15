@@ -356,18 +356,18 @@ func (r *proxyRepository) SweepExpiredProxies(ctx context.Context, now time.Time
 		exec = tx.Client()
 	}
 
-	var changed int64
+	changedAccountIDs := make([]int64, 0)
 	for _, entProxy := range expired {
 		p := proxyEntityToService(entProxy)
 		if p == nil {
 			continue
 		}
 		targetProxyID, hasFallback := service.ResolveProxyFallbackTarget(*p, proxiesByID, now)
-		rows, err := r.sweepOneExpiredProxyOnExec(ctx, exec, p.ID, targetProxyID, hasFallback)
+		accountIDs, err := r.sweepOneExpiredProxyOnExec(ctx, exec, p.ID, targetProxyID, hasFallback)
 		if err != nil {
 			return 0, err
 		}
-		changed += rows
+		changedAccountIDs = append(changedAccountIDs, accountIDs...)
 	}
 
 	if tx != nil {
@@ -375,12 +375,30 @@ func (r *proxyRepository) SweepExpiredProxies(ctx context.Context, now time.Time
 			return 0, err
 		}
 	}
-	if changed > 0 {
-		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventFullRebuild, nil, nil, nil); err != nil {
-			logger.LegacyPrintf("repository.proxy", "[SchedulerOutbox] enqueue proxy expiry rebuild failed: err=%v", err)
+	changedAccountIDs = sortedUniqueAccountIDs(changedAccountIDs)
+	if len(changedAccountIDs) > 0 {
+		payload := map[string]any{"account_ids": changedAccountIDs}
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountBulkChanged, nil, nil, payload); err != nil {
+			logger.LegacyPrintf("repository.proxy", "[SchedulerOutbox] enqueue proxy expiry account changes failed: err=%v", err)
 		}
 	}
-	return changed, nil
+	return int64(len(changedAccountIDs)), nil
+}
+
+func sortedUniqueAccountIDs(accountIDs []int64) []int64 {
+	if len(accountIDs) < 2 {
+		return accountIDs
+	}
+	sort.Slice(accountIDs, func(i, j int) bool { return accountIDs[i] < accountIDs[j] })
+	write := 1
+	for _, accountID := range accountIDs[1:] {
+		if accountID == accountIDs[write-1] {
+			continue
+		}
+		accountIDs[write] = accountID
+		write++
+	}
+	return accountIDs[:write]
 }
 
 func (r *proxyRepository) sweepOneExpiredProxyOnExec(
@@ -389,8 +407,8 @@ func (r *proxyRepository) sweepOneExpiredProxyOnExec(
 	proxyID int64,
 	targetProxyID *int64,
 	hasFallback bool,
-) (int64, error) {
-	result, err := exec.ExecContext(ctx, `
+) ([]int64, error) {
+	_, err := exec.ExecContext(ctx, `
 		UPDATE proxies
 		SET status = $2,
 			updated_at = NOW()
@@ -398,45 +416,68 @@ func (r *proxyRepository) sweepOneExpiredProxyOnExec(
 			AND status <> $2
 	`, proxyID, service.StatusExpired)
 	if err != nil {
-		return 0, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	if !hasFallback {
-		return changed, nil
+		rows, err := exec.QueryContext(ctx, `
+			SELECT id
+			FROM accounts
+			WHERE deleted_at IS NULL
+				AND proxy_id = $1
+		`, proxyID)
+		if err != nil {
+			return nil, err
+		}
+		return scanAccountIDs(rows)
 	}
 
-	var accountResult sql.Result
+	var rows *sql.Rows
 	if targetProxyID != nil {
-		accountResult, err = exec.ExecContext(ctx, `
+		rows, err = exec.QueryContext(ctx, `
 			UPDATE accounts
 			SET proxy_fallback_origin_id = COALESCE(proxy_fallback_origin_id, proxy_id),
 				proxy_id = $2,
 				updated_at = NOW()
 			WHERE deleted_at IS NULL
 				AND proxy_id = $1
+			RETURNING id
 		`, proxyID, *targetProxyID)
 	} else {
-		accountResult, err = exec.ExecContext(ctx, `
+		rows, err = exec.QueryContext(ctx, `
 			UPDATE accounts
 			SET proxy_fallback_origin_id = COALESCE(proxy_fallback_origin_id, proxy_id),
 				proxy_id = NULL,
 				updated_at = NOW()
 			WHERE deleted_at IS NULL
 				AND proxy_id = $1
+			RETURNING id
 		`, proxyID)
 	}
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	accountChanged, err := accountResult.RowsAffected()
-	if err != nil {
-		return 0, err
+	return scanAccountIDs(rows)
+}
+
+func scanAccountIDs(rows *sql.Rows) ([]int64, error) {
+	if rows == nil {
+		return nil, errors.New("nil account rows")
 	}
-	return changed + accountChanged, nil
+	defer rows.Close()
+
+	accountIDs := make([]int64, 0)
+	for rows.Next() {
+		var accountID int64
+		if err := rows.Scan(&accountID); err != nil {
+			return nil, err
+		}
+		accountIDs = append(accountIDs, accountID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return accountIDs, nil
 }
 
 func (r *proxyRepository) CountExpired(ctx context.Context) (int64, error) {

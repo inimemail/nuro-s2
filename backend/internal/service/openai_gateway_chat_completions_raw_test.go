@@ -78,6 +78,17 @@ func TestIsOpenAIChatCompletionsSuccessPayload(t *testing.T) {
 	require.False(t, isOpenAIChatCompletionsSuccessPayload([]byte(`{"choices":[],"detail":"private-provider.example failed"}`)))
 }
 
+func TestExtractCCStreamUsageIncludesCacheCreationTokens(t *testing.T) {
+	t.Parallel()
+
+	usage := extractCCStreamUsage(`{"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":30,"cache_creation_input_tokens":20}}}`)
+	require.NotNil(t, usage)
+	require.Equal(t, 100, usage.InputTokens)
+	require.Equal(t, 5, usage.OutputTokens)
+	require.Equal(t, 30, usage.CacheReadInputTokens)
+	require.Equal(t, 20, usage.CacheCreationInputTokens)
+}
+
 func TestForwardAsRawChatCompletionsRejectsDiagnosticSuccessBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

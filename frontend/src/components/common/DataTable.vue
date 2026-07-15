@@ -149,7 +149,7 @@
           </td>
         </tr>
 
-        <!-- Data rows (virtual scroll) -->
+        <!-- Data rows: virtualized only for large desktop lists -->
         <template v-else>
           <tr v-if="virtualPaddingTop > 0" aria-hidden="true">
             <td :colspan="columns.length"
@@ -157,11 +157,11 @@
             </td>
           </tr>
           <tr
-            v-for="virtualRow in virtualItems"
-            :key="resolveRowKey(sortedData[virtualRow.index], virtualRow.index)"
-            :data-row-id="resolveRowKey(sortedData[virtualRow.index], virtualRow.index)"
-            :data-index="virtualRow.index"
-            :ref="measureElement"
+            v-for="item in renderRows"
+            :key="resolveRowKey(item.row, item.index)"
+            :data-row-id="resolveRowKey(item.row, item.index)"
+            :data-index="item.index"
+            :ref="item.measure ? measureElement : undefined"
             class="hover:bg-gray-50 dark:hover:bg-dark-800"
           >
             <td
@@ -175,12 +175,12 @@
               ]"
             >
               <slot :name="`cell-${column.key}`"
-                    :row="sortedData[virtualRow.index]"
-                    :value="sortedData[virtualRow.index][column.key]"
+                    :row="item.row"
+                    :value="item.row[column.key]"
                     :expanded="actionsExpanded">
                 {{ column.formatter
-                   ? column.formatter(sortedData[virtualRow.index][column.key], sortedData[virtualRow.index])
-                   : sortedData[virtualRow.index][column.key] }}
+                   ? column.formatter(item.row[column.key], item.row)
+                   : item.row[column.key] }}
               </slot>
             </td>
           </tr>
@@ -197,7 +197,7 @@
 
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { useVirtualizer } from '@tanstack/vue-virtual'
+import { useVirtualizer, observeElementRect as observeElementRectDefault } from '@tanstack/vue-virtual'
 import { useI18n } from 'vue-i18n'
 import type { Column } from './types'
 import Icon from '@/components/icons/Icon.vue'
@@ -218,6 +218,19 @@ const tableWrapperRef = ref<HTMLElement | null>(null)
 const isScrollable = ref(false)
 const actionsColumnNeedsExpanding = ref(false)
 
+const estimatedViewportHeight = () => {
+  if (typeof window === 'undefined') return 600
+  return Math.max(window.innerHeight - 320, 400)
+}
+
+// Ignore transient zero-height measurements so the virtualizer cannot render an empty window.
+const observeElementRectNonZero = (
+  instance: any,
+  cb: (rect: { width: number; height: number }) => void
+) => observeElementRectDefault(instance, (rect) => {
+  if (rect.height > 0) cb(rect)
+})
+
 // 检查是否可滚动
 const checkScrollable = () => {
   if (tableWrapperRef.value) {
@@ -227,6 +240,11 @@ const checkScrollable = () => {
 
 // 检查操作列是否需要展开
 const checkActionsColumnWidth = () => {
+  if (!props.expandableActions) {
+    actionsColumnNeedsExpanding.value = false
+    actionsExpanded.value = false
+    return
+  }
   if (!tableWrapperRef.value) return
 
   // 查找第一行的操作列单元格
@@ -361,6 +379,8 @@ interface Props {
   estimateRowHeight?: number
   /** Number of rows to render beyond the visible area (default 5) */
   overscan?: number
+  /** Only virtualize when the row count exceeds this threshold (default 100) */
+  virtualizeThreshold?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -573,21 +593,34 @@ const sortedData = computed(() => {
 })
 
 // --- Virtual scrolling ---
+const shouldVirtualize = computed(() =>
+  isDesktopViewport.value && (sortedData.value?.length ?? 0) > (props.virtualizeThreshold ?? 100)
+)
+
 const rowVirtualizer = useVirtualizer(computed(() => ({
-  count: isDesktopViewport.value ? (sortedData.value?.length ?? 0) : 0,
+  count: shouldVirtualize.value ? (sortedData.value?.length ?? 0) : 0,
   getScrollElement: () => tableWrapperRef.value,
+  getItemKey: (index: number) => {
+    const row = sortedData.value?.[index]
+    return row != null ? resolveRowKey(row, index) : index
+  },
   estimateSize: () => props.estimateRowHeight ?? 56,
   overscan: props.overscan ?? 5,
+  initialRect: { width: 0, height: estimatedViewportHeight() },
+  observeElementRect: observeElementRectNonZero,
+  useAnimationFrameWithResizeObserver: true,
 })))
 
 const virtualItems = computed(() => rowVirtualizer.value.getVirtualItems())
 
 const virtualPaddingTop = computed(() => {
+  if (!shouldVirtualize.value) return 0
   const items = virtualItems.value
   return items.length > 0 ? items[0].start : 0
 })
 
 const virtualPaddingBottom = computed(() => {
+  if (!shouldVirtualize.value) return 0
   const items = virtualItems.value
   if (items.length === 0) return 0
   return rowVirtualizer.value.getTotalSize() - items[items.length - 1].end
@@ -598,6 +631,14 @@ const measureElement = (el: any) => {
     rowVirtualizer.value.measureElement(el as Element)
   }
 }
+
+const renderRows = computed<Array<{ index: number; row: any; measure: boolean }>>(() => {
+  const rows = sortedData.value ?? []
+  if (shouldVirtualize.value) {
+    return virtualItems.value.map(item => ({ index: item.index, row: rows[item.index], measure: true }))
+  }
+  return rows.map((row, index) => ({ index, row, measure: false }))
+})
 
 const hasActionsColumn = computed(() => {
   return props.columns.some(column => column.key === 'actions')
@@ -698,6 +739,7 @@ watch(
 
 defineExpose({
   virtualizer: rowVirtualizer,
+  shouldVirtualize,
   sortedData,
   resolveRowKey,
   tableWrapperEl: tableWrapperRef,

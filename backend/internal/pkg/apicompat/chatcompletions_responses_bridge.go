@@ -36,8 +36,12 @@ func ResponsesToChatCompletionsRequest(req *ResponsesRequest) (*ChatCompletionsR
 	if req.Reasoning != nil {
 		out.ReasoningEffort = req.Reasoning.Effort
 	}
-	if len(req.Tools) > 0 {
-		tools, err := responsesToolsToChatTools(req.Tools)
+	effectiveTools, err := EffectiveResponsesTools(req)
+	if err != nil {
+		return nil, err
+	}
+	if len(effectiveTools) > 0 {
+		tools, err := responsesToolsToChatTools(effectiveTools)
 		if err != nil {
 			return nil, err
 		}
@@ -57,6 +61,72 @@ func ResponsesToChatCompletionsRequest(req *ResponsesRequest) (*ChatCompletionsR
 	}
 
 	return out, nil
+}
+
+// EffectiveResponsesTools returns tools declared either at the top level or
+// in a Codex additional_tools input item. The latter is a client-side carrier
+// and must not become a chat message when falling back to Chat Completions.
+func EffectiveResponsesTools(req *ResponsesRequest) ([]ResponsesTool, error) {
+	if req == nil {
+		return nil, nil
+	}
+
+	tools := make([]ResponsesTool, 0, len(req.Tools))
+	seen := make(map[string]struct{}, len(req.Tools))
+	appendTool := func(tool ResponsesTool) error {
+		encoded, err := json.Marshal(tool)
+		if err != nil {
+			return fmt.Errorf("encode responses tool: %w", err)
+		}
+		key := string(encoded)
+		if _, exists := seen[key]; exists {
+			return nil
+		}
+		seen[key] = struct{}{}
+		tools = append(tools, tool)
+		return nil
+	}
+	for _, tool := range req.Tools {
+		if err := appendTool(tool); err != nil {
+			return nil, err
+		}
+	}
+	inputRaw := bytesTrimSpace(req.Input)
+	if len(inputRaw) == 0 || string(inputRaw) == "null" || inputRaw[0] != '[' {
+		return tools, nil
+	}
+
+	var items []json.RawMessage
+	if err := json.Unmarshal(inputRaw, &items); err != nil {
+		return nil, fmt.Errorf("parse responses input for additional tools: %w", err)
+	}
+	for _, raw := range items {
+		raw = bytesTrimSpace(raw)
+		if len(raw) == 0 || raw[0] != '{' {
+			continue
+		}
+		var item struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return nil, fmt.Errorf("parse responses additional tools item: %w", err)
+		}
+		if item.Type != "additional_tools" {
+			continue
+		}
+		var additional struct {
+			Tools []ResponsesTool `json:"tools"`
+		}
+		if err := json.Unmarshal(raw, &additional); err != nil {
+			return nil, fmt.Errorf("parse responses additional tools item: %w", err)
+		}
+		for _, tool := range additional.Tools {
+			if err := appendTool(tool); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return tools, nil
 }
 
 func CustomToolNames(tools []ResponsesTool) map[string]bool {

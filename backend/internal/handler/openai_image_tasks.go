@@ -146,11 +146,11 @@ func (s *openAIImageTaskStore) markSuccess(ownerID, taskID string, statusCode in
 }
 
 func (s *openAIImageTaskStore) markError(ownerID, taskID string, statusCode int, message string, response []byte) {
-	message = strings.TrimSpace(message)
-	if message == "" {
-		message = "image task failed"
-	}
-	body := bytes.TrimSpace(response)
+	message = sanitizeOpenAIImageTaskErrorMessage(message)
+	// Error task responses are exposed by the polling API. Never persist the
+	// upstream body here: CDN pages and provider diagnostics can disclose the
+	// configured upstream host even when the immediate gateway response was safe.
+	body := safeOpenAIImageTaskErrorResponse(statusCode, message)
 	s.update(ownerID, taskID, func(task *openAIImageTask) {
 		task.Status = openAIImageTaskStatusError
 		task.StatusCode = statusCode
@@ -280,11 +280,19 @@ func publicOpenAIImageTask(task *openAIImageTask) openAIImageTaskPublic {
 		Error:      task.Error,
 	}
 	if len(task.Response) > 0 {
-		item.Response = append(json.RawMessage(nil), task.Response...)
-		if data := gjson.GetBytes(task.Response, "data"); data.Exists() {
+		response := task.Response
+		if task.Status == openAIImageTaskStatusError {
+			message := openAIImageTaskSafeErrorMessage
+			if task.Error != nil {
+				message = task.Error.Message
+			}
+			response = safeOpenAIImageTaskErrorResponse(task.StatusCode, message)
+		}
+		item.Response = append(json.RawMessage(nil), response...)
+		if data := gjson.GetBytes(response, "data"); data.Exists() {
 			item.Data = json.RawMessage(data.Raw)
 		}
-		if usage := gjson.GetBytes(task.Response, "usage"); usage.Exists() {
+		if usage := gjson.GetBytes(response, "usage"); usage.Exists() {
 			item.Usage = json.RawMessage(usage.Raw)
 		}
 	}
@@ -297,7 +305,7 @@ func publicPersistentOpenAIImageTask(task *service.OpenAIImageTask) openAIImageT
 	}
 	errObj := (*openAIImageTaskError)(nil)
 	if strings.TrimSpace(task.ErrorMessage) != "" {
-		errObj = &openAIImageTaskError{Message: task.ErrorMessage, StatusCode: task.StatusCode}
+		errObj = &openAIImageTaskError{Message: sanitizeOpenAIImageTaskErrorMessage(task.ErrorMessage), StatusCode: task.StatusCode}
 	}
 	item := openAIImageTaskPublic{
 		ID:         task.ID,
@@ -310,11 +318,19 @@ func publicPersistentOpenAIImageTask(task *service.OpenAIImageTask) openAIImageT
 		Error:      errObj,
 	}
 	if len(task.Response) > 0 {
-		item.Response = append(json.RawMessage(nil), task.Response...)
-		if data := gjson.GetBytes(task.Response, "data"); data.Exists() {
+		response := task.Response
+		if task.Status == openAIImageTaskStatusError {
+			message := openAIImageTaskSafeErrorMessage
+			if errObj != nil {
+				message = errObj.Message
+			}
+			response = safeOpenAIImageTaskErrorResponse(task.StatusCode, message)
+		}
+		item.Response = append(json.RawMessage(nil), response...)
+		if data := gjson.GetBytes(response, "data"); data.Exists() {
 			item.Data = json.RawMessage(data.Raw)
 		}
-		if usage := gjson.GetBytes(task.Response, "usage"); usage.Exists() {
+		if usage := gjson.GetBytes(response, "usage"); usage.Exists() {
 			item.Usage = json.RawMessage(usage.Raw)
 		}
 	}
@@ -590,15 +606,11 @@ func (h *OpenAIGatewayHandler) writeImageTaskFinalResponse(c *gin.Context, task 
 		if status <= 0 {
 			status = http.StatusBadGateway
 		}
-		if len(bytes.TrimSpace(task.Response)) > 0 {
-			c.Data(status, "application/json; charset=utf-8", task.Response)
-			return true
-		}
-		message := "image task failed"
+		message := openAIImageTaskSafeErrorMessage
 		if task.Error != nil && strings.TrimSpace(task.Error.Message) != "" {
 			message = task.Error.Message
 		}
-		h.errorResponse(c, status, "api_error", message)
+		c.Data(status, "application/json; charset=utf-8", safeOpenAIImageTaskErrorResponse(status, message))
 		return true
 	default:
 		return false
@@ -777,7 +789,7 @@ func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIIm
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			_ = h.imageTaskRepo.MarkError(context.Background(), task.DBID, http.StatusInternalServerError, fmt.Sprintf("image task panic: %v", r), nil)
+			_ = h.imageTaskRepo.MarkError(context.Background(), task.DBID, http.StatusInternalServerError, sanitizeOpenAIImageTaskErrorMessage(fmt.Sprintf("image task panic: %v", r)), nil)
 		}
 	}()
 	ctx, cancel := context.WithTimeout(cloneImageTaskContext(context.Background(), nil, task.ID), h.imageTaskTimeout())
@@ -785,7 +797,7 @@ func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIIm
 
 	apiKey, err := h.apiKeyService.GetByID(ctx, task.APIKeyID)
 	if err != nil {
-		_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusUnauthorized, err.Error(), nil)
+		_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusUnauthorized, sanitizeOpenAIImageTaskErrorMessage(err.Error()), nil)
 		return
 	}
 	subject := middleware2.AuthSubject{UserID: task.UserID, Concurrency: task.UserConcurrency}
@@ -795,7 +807,7 @@ func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIIm
 	}
 	subscription, err := h.apiKeyService.GetActiveSubscriptionForAPIKey(ctx, apiKey)
 	if err != nil {
-		_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusForbidden, err.Error(), nil)
+		_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusForbidden, sanitizeOpenAIImageTaskErrorMessage(err.Error()), nil)
 		return
 	}
 	statusCode, responseBody := h.runImageTaskRequest(ctx, task.Endpoint, http.Header(task.RequestHeaders), task.RequestBody, apiKey, subject, subscription)
@@ -803,7 +815,7 @@ func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIIm
 		_ = h.imageTaskRepo.MarkSuccess(ctx, task.DBID, statusCode, responseBody)
 		return
 	}
-	_ = h.imageTaskRepo.MarkError(ctx, task.DBID, statusCode, imageTaskErrorMessage(responseBody), responseBody)
+	_ = h.imageTaskRepo.MarkError(ctx, task.DBID, statusCode, imageTaskErrorMessage(responseBody), safeOpenAIImageTaskErrorResponse(statusCode, imageTaskErrorMessage(responseBody)))
 }
 
 func (h *OpenAIGatewayHandler) startImageTaskWorker(
@@ -821,7 +833,7 @@ func (h *OpenAIGatewayHandler) startImageTaskWorker(
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				h.ensureImageTaskStore().markError(ownerID, taskID, http.StatusInternalServerError, fmt.Sprintf("image task panic: %v", r), nil)
+				h.ensureImageTaskStore().markError(ownerID, taskID, http.StatusInternalServerError, sanitizeOpenAIImageTaskErrorMessage(fmt.Sprintf("image task panic: %v", r)), nil)
 			}
 		}()
 		h.ensureImageTaskStore().markRunning(ownerID, taskID)
@@ -833,7 +845,7 @@ func (h *OpenAIGatewayHandler) startImageTaskWorker(
 			h.ensureImageTaskStore().markSuccess(ownerID, taskID, statusCode, responseBody)
 			return
 		}
-		h.ensureImageTaskStore().markError(ownerID, taskID, statusCode, imageTaskErrorMessage(responseBody), responseBody)
+		h.ensureImageTaskStore().markError(ownerID, taskID, statusCode, imageTaskErrorMessage(responseBody), nil)
 	}()
 }
 
@@ -1076,15 +1088,32 @@ func parseOpenAIImageTaskIDs(value string) []string {
 	return ids
 }
 
-func imageTaskErrorMessage(body []byte) string {
-	if len(body) == 0 {
-		return "image task failed"
+func imageTaskErrorMessage(_ []byte) string {
+	// The message is persisted and returned by the task polling API. Do not
+	// preserve provider-controlled text: an unknown provider name can be just
+	// as identifying as a hostname, and cannot be reliably detected by a list.
+	return openAIImageTaskSafeErrorMessage
+}
+
+const openAIImageTaskSafeErrorMessage = "Upstream request failed"
+
+func sanitizeOpenAIImageTaskErrorMessage(_ string) string {
+	return openAIImageTaskSafeErrorMessage
+}
+
+func safeOpenAIImageTaskErrorResponse(statusCode int, message string) []byte {
+	payload := map[string]any{
+		"error": map[string]any{
+			"type":    "upstream_error",
+			"message": sanitizeOpenAIImageTaskErrorMessage(message),
+		},
 	}
-	if message := strings.TrimSpace(gjson.GetBytes(body, "error.message").String()); message != "" {
-		return message
+	if statusCode > 0 {
+		payload["error"].(map[string]any)["status_code"] = statusCode
 	}
-	if message := strings.TrimSpace(gjson.GetBytes(body, "message").String()); message != "" {
-		return message
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return []byte(`{"error":{"type":"upstream_error","message":"Upstream request failed"}}`)
 	}
-	return strings.TrimSpace(string(body))
+	return body
 }

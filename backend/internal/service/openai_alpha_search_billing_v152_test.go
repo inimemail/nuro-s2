@@ -19,7 +19,7 @@ func TestV152WebSearchBillingUsesBaseMultiplier(t *testing.T) {
 
 	cost, err := svc.calculateOpenAIRecordUsageCost(
 		context.Background(), result, apiKey, []string{"search-model"},
-		3.0, 1.0, 1.0, 2.0, UsageTokens{}, "",
+		3.0, 1.0, 1.0, 2.0, UsageTokens{}, "", false,
 	)
 	require.NoError(t, err)
 	require.InDelta(t, 0.01, cost.TotalCost, 1e-12)
@@ -29,7 +29,7 @@ func TestV152WebSearchBillingUsesBaseMultiplier(t *testing.T) {
 	apiKey.Group.WebSearchPricePerCall = &free
 	cost, err = svc.calculateOpenAIRecordUsageCost(
 		context.Background(), result, apiKey, []string{"search-model"},
-		3.0, 1.0, 1.0, 2.0, UsageTokens{}, "",
+		3.0, 1.0, 1.0, 2.0, UsageTokens{}, "", false,
 	)
 	require.NoError(t, err)
 	require.Zero(t, cost.TotalCost)

@@ -95,7 +95,7 @@ func planSameAccountRetryWithMaxElapsed(account *service.Account, counts map[int
 			plan.Elapsed = 0
 		}
 		remaining := plan.MaxElapsed - plan.Elapsed
-		if remaining <= 0 || delay > remaining {
+		if remaining <= 0 || delay >= remaining {
 			return plan, false
 		}
 	}
@@ -110,9 +110,13 @@ type FailoverState struct {
 	MaxSwitches           int
 	FailedAccountIDs      map[int64]struct{}
 	SameAccountRetryCount map[int64]int
+	SameAccountRetryStart map[int64]time.Time
 	LastFailoverErr       *service.UpstreamFailoverError
 	ForceCacheBilling     bool
 	hasBoundSession       bool
+	pendingRetryAccountID int64
+	pendingRetryPlatform  string
+	pendingRetryErr       *service.UpstreamFailoverError
 }
 
 // NewFailoverState 创建 failover 状态
@@ -121,6 +125,7 @@ func NewFailoverState(maxSwitches int, hasBoundSession bool) *FailoverState {
 		MaxSwitches:           maxSwitches,
 		FailedAccountIDs:      make(map[int64]struct{}),
 		SameAccountRetryCount: make(map[int64]int),
+		SameAccountRetryStart: make(map[int64]time.Time),
 		hasBoundSession:       hasBoundSession,
 	}
 }
@@ -134,6 +139,68 @@ func (s *FailoverState) HandleFailoverError(
 	platform string,
 	failoverErr *service.UpstreamFailoverError,
 ) FailoverAction {
+	return s.HandleFailoverErrorWithRetryLimit(ctx, gatewayService, accountID, platform, maxSameAccountRetries, failoverErr)
+}
+
+func (s *FailoverState) HandleFailoverErrorWithRetryLimit(
+	ctx context.Context,
+	gatewayService TempUnscheduler,
+	accountID int64,
+	platform string,
+	retryLimit int,
+	failoverErr *service.UpstreamFailoverError,
+) FailoverAction {
+	return s.handleFailoverErrorWithRetryPlan(ctx, gatewayService, accountID, platform, retryLimit, sameAccountRetryDelay, 0, failoverErr)
+}
+
+// HandleFailoverErrorForAccount applies the account-level retry count, delay,
+// and elapsed-time budget used by the custom pool/race scheduler. Keep the
+// legacy wrappers above for callers and tests that intentionally use the
+// historical fixed 500ms policy.
+func (s *FailoverState) HandleFailoverErrorForAccount(
+	ctx context.Context,
+	gatewayService TempUnscheduler,
+	account *service.Account,
+	failoverErr *service.UpstreamFailoverError,
+) FailoverAction {
+	if account == nil {
+		return s.HandleFailoverError(ctx, gatewayService, 0, "", failoverErr)
+	}
+	// The account-level retry settings are pool-mode controls. Keep the
+	// historical three-attempt behavior for non-pool accounts, whose current
+	// GetPoolModeRetryCount fallback is intentionally one for the custom pool
+	// scheduler.
+	retryLimit := maxSameAccountRetries
+	retryDelay := sameAccountRetryDelay
+	maxElapsed := time.Duration(0)
+	if account.IsPoolMode() {
+		retryLimit = account.GetPoolModeRetryCount()
+		retryDelay = sameAccountRetryDelayForAccount(account)
+		maxElapsed = account.GetPoolModeSameAccountRetryMaxElapsed()
+	}
+	return s.handleFailoverErrorWithRetryPlan(
+		ctx,
+		gatewayService,
+		account.ID,
+		account.Platform,
+		retryLimit,
+		retryDelay,
+		maxElapsed,
+		failoverErr,
+	)
+}
+
+func (s *FailoverState) handleFailoverErrorWithRetryPlan(
+	ctx context.Context,
+	gatewayService TempUnscheduler,
+	accountID int64,
+	platform string,
+	retryLimit int,
+	retryDelay time.Duration,
+	retryMaxElapsed time.Duration,
+	failoverErr *service.UpstreamFailoverError,
+) FailoverAction {
+	s.clearPendingSameAccountRetry()
 	s.LastFailoverErr = failoverErr
 
 	// 缓存计费判断
@@ -142,15 +209,18 @@ func (s *FailoverState) HandleFailoverError(
 	}
 
 	// 同账号重试：对 RetryableOnSameAccount 的临时性错误，先在同一账号上重试
-	if failoverErr.RetryableOnSameAccount && s.SameAccountRetryCount[accountID] < maxSameAccountRetries {
+	if failoverErr.RetryableOnSameAccount && s.sameAccountRetryAllowed(accountID, retryLimit, retryDelay, retryMaxElapsed) {
 		s.SameAccountRetryCount[accountID]++
+		s.pendingRetryAccountID = accountID
+		s.pendingRetryPlatform = platform
+		s.pendingRetryErr = failoverErr
 		logger.FromContext(ctx).Warn("gateway.failover_same_account_retry",
 			zap.Int64("account_id", accountID),
 			zap.Int("upstream_status", failoverErr.StatusCode),
 			zap.Int("same_account_retry_count", s.SameAccountRetryCount[accountID]),
-			zap.Int("same_account_retry_max", maxSameAccountRetries),
+			zap.Int("same_account_retry_max", retryLimit),
 		)
-		if !sleepWithContext(ctx, sameAccountRetryDelay) {
+		if !sleepWithContext(ctx, retryDelay) {
 			return FailoverCanceled
 		}
 		return FailoverContinue
@@ -187,6 +257,58 @@ func (s *FailoverState) HandleFailoverError(
 	}
 
 	return FailoverContinue
+}
+
+func (s *FailoverState) pendingSameAccountRetryID() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.pendingRetryAccountID
+}
+
+func (s *FailoverState) clearPendingSameAccountRetry() {
+	if s == nil {
+		return
+	}
+	s.pendingRetryAccountID = 0
+	s.pendingRetryPlatform = ""
+	s.pendingRetryErr = nil
+}
+
+// settleUnavailableSameAccountRetry records the original upstream failure when
+// the exact account becomes unavailable before the planned retry can start.
+func (s *FailoverState) settleUnavailableSameAccountRetry(ctx context.Context, gatewayService TempUnscheduler) FailoverAction {
+	if s == nil || s.pendingRetryAccountID <= 0 || s.pendingRetryErr == nil {
+		return FailoverContinue
+	}
+	accountID := s.pendingRetryAccountID
+	platform := s.pendingRetryPlatform
+	failoverErr := s.pendingRetryErr
+	s.clearPendingSameAccountRetry()
+	return s.handleFailoverErrorWithRetryPlan(ctx, gatewayService, accountID, platform, 0, 0, 0, failoverErr)
+}
+
+func (s *FailoverState) sameAccountRetryAllowed(accountID int64, retryLimit int, retryDelay, maxElapsed time.Duration) bool {
+	if retryLimit <= 0 || s.SameAccountRetryCount[accountID] >= retryLimit {
+		return false
+	}
+	if maxElapsed <= 0 {
+		return true
+	}
+	if s.SameAccountRetryStart == nil {
+		s.SameAccountRetryStart = make(map[int64]time.Time)
+	}
+	now := time.Now()
+	startedAt := s.SameAccountRetryStart[accountID]
+	if startedAt.IsZero() {
+		startedAt = now
+		s.SameAccountRetryStart[accountID] = startedAt
+	}
+	elapsed := now.Sub(startedAt)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return elapsed < maxElapsed && retryDelay < maxElapsed-elapsed
 }
 
 // HandleSelectionExhausted 处理选号失败（所有候选账号都在排除列表中）时的退避重试决策。

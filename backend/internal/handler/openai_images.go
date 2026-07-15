@@ -146,21 +146,90 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
+	sameAccountRetryAccountID := int64(0)
+	var sameAccountRetryAccount *service.Account
+	var sameAccountRetryErr *service.UpstreamFailoverError
 	var lastFailoverErr *service.UpstreamFailoverError
 	modelRoutingLockedPriority := -1
+	settleFailover := func(account *service.Account, failoverErr *service.UpstreamFailoverError) bool {
+		sameAccountRetryAccountID = 0
+		sameAccountRetryAccount = nil
+		sameAccountRetryErr = nil
+		h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, false, nil, parsed.RequiredCapability)
+		if strings.TrimSpace(failoverErr.ProbeModel) == "" {
+			failoverErr.ProbeModel = strings.TrimSpace(parsed.Model)
+		}
+		failoverErr.ProbeKind = "images"
+		failoverErr.ProbeCapability = parsed.RequiredCapability
+		if failoverErr.StatusCode == http.StatusGatewayTimeout {
+			failoverErr.SkipPoolSoftCooldown = true
+		}
+		h.gatewayService.HandleOpenAIAccountFailoverSwitch(requestCtx, apiKey.GroupID, sessionHash, account, failoverErr, parsed.Model)
+		h.gatewayService.RecordOpenAIAccountSwitch()
+		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
+			modelRoutingLockedPriority,
+			account,
+			failoverErr,
+			h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+		)
+		failedAccountIDs[account.ID] = struct{}{}
+		lastFailoverErr = failoverErr
+		if switchCount >= maxAccountSwitches {
+			h.handleFailoverExhausted(c, failoverErr, streamStarted)
+			return false
+		}
+		switchCount++
+		if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
+			h.handleFailoverExhausted(c, failoverErr, streamStarted)
+			return false
+		}
+		reqLog.Warn("openai.images.upstream_failover_switching",
+			zap.Int64("account_id", account.ID),
+			zap.Int("upstream_status", failoverErr.StatusCode),
+			zap.Int("switch_count", switchCount),
+			zap.Int("max_switches", maxAccountSwitches),
+		)
+		return true
+	}
 
 	for {
 		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(excludedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImagesLockedPriority(
-			requestCtx,
-			apiKey.GroupID,
-			sessionHash,
-			parsed.Model,
-			excludedAccountIDs,
-			parsed.RequiredCapability,
-			modelRoutingLockedPriority,
+		var (
+			selection        *service.AccountSelectionResult
+			scheduleDecision service.OpenAIAccountScheduleDecision
+			err              error
 		)
+		if sameAccountRetryAccountID > 0 {
+			selection, scheduleDecision, err = h.gatewayService.SelectRequiredAccountForImagesLockedPriority(
+				requestCtx, apiKey.GroupID, sameAccountRetryAccountID, parsed.Model,
+				excludedAccountIDs, parsed.RequiredCapability, modelRoutingLockedPriority,
+			)
+		} else {
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForImagesLockedPriority(
+				requestCtx,
+				apiKey.GroupID,
+				sessionHash,
+				parsed.Model,
+				excludedAccountIDs,
+				parsed.RequiredCapability,
+				modelRoutingLockedPriority,
+			)
+		}
+		if (err != nil || selection == nil || selection.Account == nil) && sameAccountRetryAccountID > 0 {
+			if requestCtx.Err() != nil {
+				return
+			}
+			if sameAccountRetryAccount != nil && sameAccountRetryErr != nil {
+				if !settleFailover(sameAccountRetryAccount, sameAccountRetryErr) {
+					return
+				}
+				continue
+			}
+			capacitySkippedIDs[sameAccountRetryAccountID] = struct{}{}
+			sameAccountRetryAccountID = 0
+			continue
+		}
 		if err != nil {
 			reqLog.Warn("openai.images.account_select_failed",
 				zap.Error(err),
@@ -201,6 +270,13 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, parsed.Stream, &streamStarted, reqLog)
 		if !slotResult.Acquired {
 			if slotResult.CapacityMiss {
+				if sameAccountRetryAccountID > 0 && sameAccountRetryAccount != nil && sameAccountRetryErr != nil {
+					if !settleFailover(sameAccountRetryAccount, sameAccountRetryErr) {
+						return
+					}
+					continue
+				}
+				sameAccountRetryAccountID = 0
 				capacitySkippedIDs[account.ID] = struct{}{}
 				reqLog.Info("openai.images.account_capacity_skip",
 					zap.Int64("account_id", account.ID),
@@ -212,6 +288,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			return
 		}
 		accountReleaseFunc := slotResult.ReleaseFunc
+		sameAccountRetryAccountID = 0
+		sameAccountRetryAccount = nil
+		sameAccountRetryErr = nil
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
@@ -265,6 +344,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					if failoverErr.RetryableOnSameAccount {
 						retryDelay := sameAccountRetryDelayForAccount(account)
 						if retryPlan, ok := planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay); ok {
+							sameAccountRetryAccountID = account.ID
+							sameAccountRetryAccount = account
+							sameAccountRetryErr = failoverErr
 							reqLog.Warn("openai.images.pool_mode_same_account_retry",
 								zap.Int64("account_id", account.ID),
 								zap.Int("upstream_status", failoverErr.StatusCode),
@@ -282,40 +364,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 							continue
 						}
 					}
-					h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, false, nil, parsed.RequiredCapability)
-					if strings.TrimSpace(failoverErr.ProbeModel) == "" {
-						failoverErr.ProbeModel = strings.TrimSpace(parsed.Model)
-					}
-					failoverErr.ProbeKind = "images"
-					failoverErr.ProbeCapability = parsed.RequiredCapability
-					if failoverErr.StatusCode == http.StatusGatewayTimeout {
-						failoverErr.SkipPoolSoftCooldown = true
-					}
-					h.gatewayService.HandleOpenAIAccountFailoverSwitch(requestCtx, apiKey.GroupID, sessionHash, account, failoverErr, parsed.Model)
-					h.gatewayService.RecordOpenAIAccountSwitch()
-					modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
-						modelRoutingLockedPriority,
-						account,
-						failoverErr,
-						h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
-					)
-					failedAccountIDs[account.ID] = struct{}{}
-					lastFailoverErr = failoverErr
-					if switchCount >= maxAccountSwitches {
-						h.handleFailoverExhausted(c, failoverErr, streamStarted)
+					if !settleFailover(account, failoverErr) {
 						return
 					}
-					switchCount++
-					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
-						h.handleFailoverExhausted(c, failoverErr, streamStarted)
-						return
-					}
-					reqLog.Warn("openai.images.upstream_failover_switching",
-						zap.Int64("account_id", account.ID),
-						zap.Int("upstream_status", failoverErr.StatusCode),
-						zap.Int("switch_count", switchCount),
-						zap.Int("max_switches", maxAccountSwitches),
-					)
 					continue
 				}
 				h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, false, nil, parsed.RequiredCapability)

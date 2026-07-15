@@ -94,25 +94,84 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 	ineligibleAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
+	sameAccountRetryAccountID := int64(0)
+	var sameAccountRetryAccount *service.Account
+	var sameAccountRetryErr *service.UpstreamFailoverError
 	var lastFailoverErr *service.UpstreamFailoverError
 	switchCount := 0
 	modelRoutingLockedPriority := -1
 	routingStart := time.Now()
+	settleFailover := func(account *service.Account, failoverErr *service.UpstreamFailoverError) bool {
+		sameAccountRetryAccountID = 0
+		sameAccountRetryAccount = nil
+		sameAccountRetryErr = nil
+		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
+			modelRoutingLockedPriority,
+			account,
+			failoverErr,
+			h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+		)
+		// Alpha Search remains request-local: do not alter shared health,
+		// cooldown, prompt-cache, or sticky-session state.
+		failedAccountIDs[account.ID] = struct{}{}
+		lastFailoverErr = failoverErr
+		if switchCount >= h.maxAccountSwitches {
+			h.handleFailoverExhausted(c, failoverErr, false)
+			return false
+		}
+		switchCount++
+		if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
+			h.handleFailoverExhausted(c, failoverErr, false)
+			return false
+		}
+		reqLog.Warn("openai_alpha_search.upstream_failover_switching",
+			zap.Int64("account_id", account.ID),
+			zap.Int("upstream_status", failoverErr.StatusCode),
+			zap.Int("switch_count", switchCount),
+		)
+		return true
+	}
 	for {
 		excluded := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs, ineligibleAccountIDs)
-		selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityOnPlatformLockedPriority(
-			c.Request.Context(),
-			apiKey.GroupID,
-			"",
-			sessionHash,
-			requestedModel,
-			excluded,
-			service.OpenAIUpstreamTransportHTTPSSE,
-			service.OpenAIEndpointCapabilityAlphaSearch,
-			false,
-			service.PlatformOpenAI,
-			modelRoutingLockedPriority,
+		var (
+			selection *service.AccountSelectionResult
+			err       error
 		)
+		if sameAccountRetryAccountID > 0 {
+			selection, _, err = h.gatewayService.SelectRequiredAccountForCapabilityOnPlatformLockedPriority(
+				c.Request.Context(), apiKey.GroupID, sameAccountRetryAccountID, requestedModel, excluded,
+				service.OpenAIUpstreamTransportHTTPSSE, service.OpenAIEndpointCapabilityAlphaSearch,
+				false, service.PlatformOpenAI, modelRoutingLockedPriority,
+			)
+		} else {
+			selection, _, err = h.gatewayService.SelectAccountWithSchedulerForCapabilityOnPlatformLockedPriority(
+				c.Request.Context(),
+				apiKey.GroupID,
+				"",
+				sessionHash,
+				requestedModel,
+				excluded,
+				service.OpenAIUpstreamTransportHTTPSSE,
+				service.OpenAIEndpointCapabilityAlphaSearch,
+				false,
+				service.PlatformOpenAI,
+				modelRoutingLockedPriority,
+			)
+		}
+		if (err != nil || selection == nil || selection.Account == nil) && sameAccountRetryAccountID > 0 {
+			if c.Request.Context().Err() != nil {
+				return
+			}
+			if sameAccountRetryAccount != nil && sameAccountRetryErr != nil {
+				if !settleFailover(sameAccountRetryAccount, sameAccountRetryErr) {
+					return
+				}
+				continue
+			}
+			capacitySkippedIDs[sameAccountRetryAccountID] = struct{}{}
+			sameAccountRetryAccountID = 0
+			continue
+		}
 		if err != nil || selection == nil || selection.Account == nil {
 			if len(failedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, requestedModel, requestedModel, service.PlatformOpenAI)
@@ -142,11 +201,21 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		slot := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
 		if !slot.Acquired {
 			if slot.CapacityMiss {
+				if sameAccountRetryAccountID > 0 && sameAccountRetryAccount != nil && sameAccountRetryErr != nil {
+					if !settleFailover(sameAccountRetryAccount, sameAccountRetryErr) {
+						return
+					}
+					continue
+				}
+				sameAccountRetryAccountID = 0
 				capacitySkippedIDs[account.ID] = struct{}{}
 				continue
 			}
 			return
 		}
+		sameAccountRetryAccountID = 0
+		sameAccountRetryAccount = nil
+		sameAccountRetryErr = nil
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		writerSize := c.Writer.Size()
 		forwardStart := time.Now()
@@ -179,6 +248,9 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		if failoverErr.RetryableOnSameAccount {
 			retryDelay := sameAccountRetryDelayForAccount(account)
 			if retryPlan, retry := planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay); retry {
+				sameAccountRetryAccountID = account.ID
+				sameAccountRetryAccount = account
+				sameAccountRetryErr = failoverErr
 				reqLog.Warn("openai_alpha_search.pool_mode_same_account_retry",
 					zap.Int64("account_id", account.ID),
 					zap.Int("upstream_status", failoverErr.StatusCode),
@@ -194,31 +266,9 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 				continue
 			}
 		}
-		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
-			modelRoutingLockedPriority,
-			account,
-			failoverErr,
-			h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
-		)
-		// Alpha Search is request-local and must not alter the shared health,
-		// soft-cooldown, prompt-cache, or sticky-session state used by normal
-		// Responses/Chat traffic.
-		failedAccountIDs[account.ID] = struct{}{}
-		lastFailoverErr = failoverErr
-		if switchCount >= h.maxAccountSwitches {
-			h.handleFailoverExhausted(c, failoverErr, false)
+		if !settleFailover(account, failoverErr) {
 			return
 		}
-		switchCount++
-		if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
-			h.handleFailoverExhausted(c, failoverErr, false)
-			return
-		}
-		reqLog.Warn("openai_alpha_search.upstream_failover_switching",
-			zap.Int64("account_id", account.ID),
-			zap.Int("upstream_status", failoverErr.StatusCode),
-			zap.Int("switch_count", switchCount),
-		)
 	}
 }
 

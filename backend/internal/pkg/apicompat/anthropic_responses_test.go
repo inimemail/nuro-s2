@@ -718,7 +718,7 @@ func TestStreamingToolCallDoneWithoutDeltaEmitsArguments(t *testing.T) {
 	assert.Equal(t, "content_block_stop", events[1].Type)
 }
 
-func TestStreamingReadToolDropsEmptyPages(t *testing.T) {
+func TestStreamingReadToolStreamsDeltas(t *testing.T) {
 	state := NewResponsesEventToAnthropicState()
 
 	ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
@@ -739,18 +739,36 @@ func TestStreamingReadToolDropsEmptyPages(t *testing.T) {
 		OutputIndex: 0,
 		Delta:       `{"file_path":"/tmp/demo.py","limit":2000,"offset":0,"pages":""}`,
 	}, state)
-	assert.Len(t, events, 0)
+	require.Len(t, events, 1)
+	assert.Equal(t, "content_block_delta", events[0].Type)
+	assert.Equal(t, "input_json_delta", events[0].Delta.Type)
 
 	events = ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{
 		Type:        "response.function_call_arguments.done",
 		OutputIndex: 0,
 		Arguments:   `{"file_path":"/tmp/demo.py","limit":2000,"offset":0,"pages":""}`,
 	}, state)
-	require.Len(t, events, 2)
-	assert.Equal(t, "content_block_delta", events[0].Type)
-	assert.Equal(t, "input_json_delta", events[0].Delta.Type)
-	assert.JSONEq(t, `{"file_path":"/tmp/demo.py","limit":2000,"offset":0}`, events[0].Delta.PartialJSON)
-	assert.Equal(t, "content_block_stop", events[1].Type)
+	require.Len(t, events, 1)
+	assert.Equal(t, "content_block_stop", events[0].Type)
+}
+
+func TestAnthropicStreamingMaxTokensMapsToIncomplete(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+	AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type:    "message_start",
+		Message: &AnthropicResponse{ID: "msg_test", Model: "claude-opus-4-6", Role: "assistant"},
+	}, state)
+	AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type:  "message_delta",
+		Delta: &AnthropicDelta{StopReason: "max_tokens"},
+		Usage: &AnthropicUsage{OutputTokens: 4096},
+	}, state)
+	events := AnthropicEventToResponsesEvents(&AnthropicStreamEvent{Type: "message_stop"}, state)
+	require.Len(t, events, 1)
+	assert.Equal(t, "response.incomplete", events[0].Type)
+	require.NotNil(t, events[0].Response)
+	require.NotNil(t, events[0].Response.IncompleteDetails)
+	assert.Equal(t, "max_output_tokens", events[0].Response.IncompleteDetails.Reason)
 }
 
 func TestStreamingReasoning(t *testing.T) {

@@ -54,6 +54,9 @@ func TestHandleCCBufferedFromAnthropic_PreservesMessageStartCacheUsageAndReasoni
 			`event: message_delta`,
 			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
 			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+			``,
 		}, "\n"))),
 	}
 
@@ -106,4 +109,48 @@ func TestHandleCCStreamingFromAnthropic_PreservesMessageStartCacheUsageAndReason
 	require.NotNil(t, result.ReasoningEffort)
 	require.Equal(t, "medium", *result.ReasoningEffort)
 	require.Contains(t, rec.Body.String(), `[DONE]`)
+}
+
+func TestHandleCCBufferedFromAnthropic_RejectsMissingMessageStop(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_cut","role":"assistant","content":[],"usage":{"input_tokens":2}}}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+	}, "\n")))}
+
+	result, err := (&GatewayService{}).handleCCBufferedFromAnthropic(resp, c, "gpt-test", "claude-test", nil, time.Now())
+	require.ErrorContains(t, err, "valid message_stop")
+	require.Nil(t, result)
+	require.Empty(t, rec.Body.String())
+}
+
+func TestHandleCCStreamingFromAnthropic_WritesSafeFailureForTruncatedStream(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg_cut","role":"assistant","content":[],"usage":{"input_tokens":2}}}`,
+		``,
+		`event: error`,
+		`data: {"type":"error","error":{"message":"Anthropic https://private-upstream.example failed"}}`,
+	}, "\n")))}
+
+	result, err := (&GatewayService{}).handleCCStreamingFromAnthropic(resp, c, "gpt-test", "claude-test", nil, time.Now(), true)
+	require.ErrorContains(t, err, "valid message_stop")
+	require.NotNil(t, result)
+	require.True(t, result.FailedOutcome)
+	require.Contains(t, rec.Body.String(), safeUpstreamErrorMessage)
+	require.NotContains(t, rec.Body.String(), "Anthropic")
+	require.NotContains(t, rec.Body.String(), "private-upstream.example")
+	require.NotContains(t, rec.Body.String(), `[DONE]`)
 }

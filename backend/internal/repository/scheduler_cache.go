@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -163,14 +164,15 @@ func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.Schedul
 	versionStr := strconv.FormatInt(version, 10)
 	snapshotKey := schedulerSnapshotKey(bucket, versionStr)
 
-	if err := c.writeAccounts(ctx, accounts); err != nil {
+	cacheableAccounts, err := c.writeAccounts(ctx, accounts)
+	if err != nil {
 		return err
 	}
 
-	if len(accounts) > 0 {
+	if len(cacheableAccounts) > 0 {
 		// 使用序号作为 score，保持数据库返回的排序语义。
-		members := make([]redis.Z, 0, len(accounts))
-		for idx, account := range accounts {
+		members := make([]redis.Z, 0, len(cacheableAccounts))
+		for idx, account := range cacheableAccounts {
 			members = append(members, redis.Z{
 				Score:  float64(idx),
 				Member: strconv.FormatInt(account.ID, 10),
@@ -224,7 +226,14 @@ func (c *schedulerCache) SetAccount(ctx context.Context, account *service.Accoun
 	if account == nil || account.ID <= 0 {
 		return nil
 	}
-	return c.writeAccounts(ctx, []service.Account{*account})
+	cacheableAccounts, err := c.writeAccounts(ctx, []service.Account{*account})
+	if err != nil {
+		return err
+	}
+	if len(cacheableAccounts) == 0 {
+		return c.DeleteAccount(ctx, account.ID)
+	}
+	return nil
 }
 
 func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) error {
@@ -262,13 +271,14 @@ func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]t
 			return err
 		}
 		account.LastUsedAt = ptrTime(updates[ids[i]])
-		updated, err := json.Marshal(account)
+		updated, metaPayload, err := marshalSchedulerCacheAccount(*account)
 		if err != nil {
-			return err
-		}
-		metaPayload, err := json.Marshal(buildSchedulerMetadataAccount(*account))
-		if err != nil {
-			return err
+			slog.Warn("scheduler cache removes account with unencodable payload",
+				"account_id", ids[i],
+				"error", err,
+			)
+			pipe.Del(ctx, keys[i], schedulerAccountMetaKey(strconv.FormatInt(ids[i], 10)))
+			continue
 		}
 		pipe.Set(ctx, keys[i], updated, 0)
 		pipe.Set(ctx, schedulerAccountMetaKey(strconv.FormatInt(ids[i], 10)), metaPayload, 0)
@@ -359,12 +369,13 @@ func decodeCachedAccount(val any) (*service.Account, error) {
 	return &account, nil
 }
 
-func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.Account) error {
+func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.Account) ([]service.Account, error) {
 	if len(accounts) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	pipe := c.rdb.Pipeline()
+	cacheableAccounts := make([]service.Account, 0, len(accounts))
 	pending := 0
 	flush := func() error {
 		if pending == 0 {
@@ -379,27 +390,54 @@ func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.A
 	}
 
 	for _, account := range accounts {
-		fullPayload, err := json.Marshal(account)
+		fullPayload, metaPayload, err := marshalSchedulerCacheAccount(account)
 		if err != nil {
-			return err
-		}
-		metaPayload, err := json.Marshal(buildSchedulerMetadataAccount(account))
-		if err != nil {
-			return err
+			slog.Warn("scheduler cache skips account with unencodable payload",
+				"account_id", account.ID,
+				"error", err,
+			)
+			// Remove any previous entry. Otherwise a sticky lookup can still
+			// resolve the stale payload even though the account was excluded
+			// from the rebuilt snapshot.
+			id := strconv.FormatInt(account.ID, 10)
+			pipe.Del(ctx, schedulerAccountKey(id), schedulerAccountMetaKey(id))
+			pending++
+			if pending >= c.writeChunkSize {
+				if err := flush(); err != nil {
+					return nil, err
+				}
+			}
+			continue
 		}
 
 		id := strconv.FormatInt(account.ID, 10)
 		pipe.Set(ctx, schedulerAccountKey(id), fullPayload, 0)
 		pipe.Set(ctx, schedulerAccountMetaKey(id), metaPayload, 0)
+		cacheableAccounts = append(cacheableAccounts, account)
 		pending++
 		if pending >= c.writeChunkSize {
 			if err := flush(); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
 
-	return flush()
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	return cacheableAccounts, nil
+}
+
+func marshalSchedulerCacheAccount(account service.Account) ([]byte, []byte, error) {
+	fullPayload, err := json.Marshal(account)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal account: %w", err)
+	}
+	metaPayload, err := json.Marshal(buildSchedulerMetadataAccount(account))
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal account metadata: %w", err)
+	}
+	return fullPayload, metaPayload, nil
 }
 
 func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any, error) {
@@ -449,6 +487,8 @@ func buildSchedulerMetadataAccount(account service.Account) service.Account {
 		SessionWindowStart:      account.SessionWindowStart,
 		SessionWindowEnd:        account.SessionWindowEnd,
 		SessionWindowStatus:     account.SessionWindowStatus,
+		ParentAccountID:         account.ParentAccountID,
+		QuotaDimension:          account.QuotaDimension,
 		AccountGroups:           filterSchedulerAccountGroups(account.AccountGroups),
 		GroupIDs:                filterSchedulerGroupIDs(account.GroupIDs, account.AccountGroups),
 		Credentials:             filterSchedulerCredentials(account.Credentials),
@@ -518,6 +558,8 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	}
 	keys := []string{
 		"model_mapping",
+		"compact_model_mapping",
+		"base_url",
 		"api_key",
 		"project_id",
 		"oauth_type",
@@ -526,25 +568,23 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		"pool_soft_cooldown_error_threshold",
 		"image_pool_mode",
 		"prompt_cache_boost_enabled",
+		"prompt_cache_boost_level",
+		"prompt_cache_boost_upstream_hit_priority_enabled",
 		"prompt_cache_smart_routing_enabled",
 		"prompt_cache_account_relay_enabled",
 		"prompt_cache_key_optimization_enabled",
 		"prompt_cache_long_context_enhancement_enabled",
 		"upstream_strong_isolation_enabled",
+		"anthropic_cache_boost_enabled",
+		"anthropic_cache_boost_level",
+		"anthropic_cache_boost_upstream_hit_priority_enabled",
+		"anthropic_upstream_strong_isolation_enabled",
 		"pool_mode_retry_count",
 		"pool_mode_retry_status_codes",
+		"upstream_concurrency_race_enabled",
+		"upstream_concurrency_race_retry_delay_ms",
+		"upstream_concurrency_race_max_elapsed_ms",
 		"openai_capabilities",
-	}
-	for _, key := range []string{
-		"prompt_cache_smart_routing_enabled",
-		"prompt_cache_account_relay_enabled",
-		"prompt_cache_key_optimization_enabled",
-		"prompt_cache_long_context_enhancement_enabled",
-	} {
-		if enabled, _ := credentials[key].(bool); enabled {
-			keys = append(keys, "prompt_cache_boost_level", "prompt_cache_boost_upstream_hit_priority_enabled")
-			break
-		}
 	}
 	filtered := make(map[string]any)
 	for _, key := range keys {
@@ -564,13 +604,34 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 	}
 	keys := []string{
 		"mixed_scheduling",
+		"allow_overages",
+		"privacy_mode",
 		"window_cost_limit",
 		"window_cost_sticky_reserve",
 		"max_sessions",
 		"session_idle_timeout_minutes",
+		"base_rpm",
+		"rpm_strategy",
+		"rpm_sticky_buffer",
+		"quota_limit",
+		"quota_used",
+		"quota_daily_limit",
+		"quota_daily_used",
+		"quota_daily_start",
+		"quota_daily_reset_mode",
+		"quota_daily_reset_hour",
+		"quota_weekly_limit",
+		"quota_weekly_used",
+		"quota_weekly_start",
+		"quota_weekly_reset_mode",
+		"quota_weekly_reset_day",
+		"quota_weekly_reset_hour",
+		"quota_reset_timezone",
 		"anthropic_kiro",
 		"anthropic_passthrough",
 		"web_search_emulation",
+		"openai_passthrough",
+		"openai_oauth_passthrough",
 		"openai_oauth_responses_websockets_v2_enabled",
 		"openai_oauth_responses_websockets_v2_mode",
 		"openai_apikey_responses_websockets_v2_enabled",
@@ -580,6 +641,9 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"openai_ws_force_http",
 		"openai_responses_mode",
 		"openai_responses_supported",
+		"openai_compact_mode",
+		"openai_compact_supported",
+		"openai_long_context_billing_enabled",
 		"codex_5h_used_percent",
 		"codex_7d_used_percent",
 		"codex_5h_reset_at",
@@ -587,6 +651,7 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"codex_5h_reset_after_seconds",
 		"codex_7d_reset_after_seconds",
 		"codex_usage_updated_at",
+		"model_rate_limits",
 		"auto_pause_5h_threshold",
 		"auto_pause_7d_threshold",
 		"auto_pause_5h_disabled",

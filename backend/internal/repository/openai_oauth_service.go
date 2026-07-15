@@ -53,7 +53,7 @@ func (s *openaiOAuthService) StartDeviceAuth(ctx context.Context, proxyURL strin
 		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_DEVICE_AUTH_REQUEST_FAILED", "request failed: %v", err)
 	}
 	if !resp.IsSuccessState() {
-		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_DEVICE_AUTH_START_FAILED", "device auth start failed: status %d, body: %s", resp.StatusCode, resp.String())
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_DEVICE_AUTH_START_FAILED", "device auth start failed: status %d", resp.StatusCode)
 	}
 
 	if strings.TrimSpace(startResp.UserCode) == "" {
@@ -149,7 +149,7 @@ func (s *openaiOAuthService) ExchangeCode(ctx context.Context, code, codeVerifie
 	}
 
 	if !resp.IsSuccessState() {
-		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED", "token exchange failed: status %d, body: %s", resp.StatusCode, resp.String())
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED", "token exchange failed: status %d", resp.StatusCode)
 	}
 
 	return &tokenResp, nil
@@ -196,7 +196,7 @@ func (s *openaiOAuthService) refreshTokenWithClientID(ctx context.Context, refre
 	}
 
 	if !resp.IsSuccessState() {
-		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_OAUTH_TOKEN_REFRESH_FAILED", "token refresh failed: status %d, body: %s", resp.StatusCode, resp.String())
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_OAUTH_TOKEN_REFRESH_FAILED", "token refresh failed: status %d", resp.StatusCode)
 	}
 
 	return &tokenResp, nil
@@ -239,6 +239,6 @@ func openAIDeviceAuthPollError(status int, body string) error {
 	case status == http.StatusUnauthorized && strings.Contains(lowerBody, "access_denied"):
 		return infraerrors.New(http.StatusBadRequest, "OPENAI_DEVICE_AUTH_DENIED", "device authorization was denied")
 	default:
-		return infraerrors.Newf(http.StatusBadGateway, "OPENAI_DEVICE_AUTH_POLL_FAILED", "device auth poll failed: status %d, body: %s", status, body)
+		return infraerrors.Newf(http.StatusBadGateway, "OPENAI_DEVICE_AUTH_POLL_FAILED", "device auth poll failed: status %d", status)
 	}
 }

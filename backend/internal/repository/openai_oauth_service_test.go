@@ -184,7 +184,7 @@ func (s *OpenAIOAuthServiceSuite) TestRefreshToken_UseProvidedClientID() {
 	require.Equal(s.T(), []string{customClientID}, seenClientIDs)
 }
 
-func (s *OpenAIOAuthServiceSuite) TestNonSuccessStatus_IncludesBody() {
+func (s *OpenAIOAuthServiceSuite) TestNonSuccessStatus_RedactsBody() {
 	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, "bad")
@@ -193,7 +193,7 @@ func (s *OpenAIOAuthServiceSuite) TestNonSuccessStatus_IncludesBody() {
 	_, err := s.svc.ExchangeCode(s.ctx, "code", "ver", openai.DefaultRedirectURI, "", "")
 	require.Error(s.T(), err)
 	require.ErrorContains(s.T(), err, "status 400")
-	require.ErrorContains(s.T(), err, "bad")
+	require.NotContains(s.T(), err.Error(), "bad")
 }
 
 func (s *OpenAIOAuthServiceSuite) TestRequestError_ClosedServer() {

@@ -1030,7 +1030,8 @@ export default {
     providers: {
       openai: 'OpenAI',
       anthropic: 'Anthropic',
-      gemini: 'Gemini'
+      gemini: 'Gemini',
+      grok: 'Grok'
     },
     extraModelsHeader: '附加模型',
     extraModelsEmpty: '无附加模型',
@@ -2384,8 +2385,10 @@ export default {
       },
       openaiMessages: {
         title: 'OpenAI Messages 调度配置',
+        grokTitle: 'Grok Messages 调度',
         allowDispatch: '允许 /v1/messages 调度',
         allowDispatchHint: '启用后，此 OpenAI 分组的 API Key 可以通过 /v1/messages 端点调度请求',
+        grokAllowDispatchHint: '启用后，此 Grok 分组的 API Key 可通过 /v1/messages 将 Claude 系列请求固定映射到 grok-4.5',
         familyMappingTitle: '系列默认映射',
         familyMappingHint: '当请求命中 Opus、Sonnet、Haiku 系列时，会优先使用这里配置的目标模型。',
         opusModel: 'Opus 映射模型',
@@ -3614,6 +3617,8 @@ export default {
         oauthPassthrough: '自动透传（仅替换认证）',
         oauthPassthroughDesc:
           '开启后，该 OpenAI 账号将自动透传请求与响应，仅替换认证并保留计费/并发/审计及必要安全过滤；如遇兼容性问题可随时关闭回滚。',
+        longContextBilling: 'API 长上下文计费',
+        longContextBillingDesc: '默认关闭。仅当该账号的上游会按模型阈值收取 OpenAI API 长上下文费率时开启。',
         responsesPassthroughCompat: 'Responses 透传兼容',
         responsesPassthroughCompatDesc:
           '仅对当前 OpenAI OAuth/APIKey 账号生效。开启后会兼容 input 字符串探针，并过滤部分兼容上游不支持的 token 参数；默认关闭以保持严格透传。',

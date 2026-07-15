@@ -410,13 +410,18 @@ type ResponsesUsage struct {
 func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 	type responsesUsageAlias ResponsesUsage
 	type cacheTokenPresence struct {
-		CacheCreationTokens *int `json:"cache_creation_tokens"`
-		CacheWriteTokens    *int `json:"cache_write_tokens"`
+		CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
+		CacheCreationTokens      *int `json:"cache_creation_tokens"`
+		CacheWriteInputTokens    *int `json:"cache_write_input_tokens"`
+		CacheWriteTokens         *int `json:"cache_write_tokens"`
 	}
 	var aux struct {
 		responsesUsageAlias
 		PromptTokens            int                           `json:"prompt_tokens"`
 		CompletionTokens        int                           `json:"completion_tokens"`
+		CacheReadInputTokens    int                           `json:"cache_read_input_tokens"`
+		CacheReadTokens         int                           `json:"cache_read_tokens"`
+		CachedTokens            int                           `json:"cached_tokens"`
 		CacheCreationTokens     int                           `json:"cache_creation_tokens"`
 		CacheWriteInputTokens   int                           `json:"cache_write_input_tokens"`
 		CacheWriteTokens        int                           `json:"cache_write_tokens"`
@@ -443,45 +448,77 @@ func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 	if u.InputTokensDetails == nil && aux.PromptTokensDetails != nil {
 		u.InputTokensDetails = aux.PromptTokensDetails
 	}
-	if u.CacheCreationInputTokens == 0 {
-		switch {
-		case aux.CacheWriteInputTokens > 0:
-			u.CacheCreationInputTokens = aux.CacheWriteInputTokens
-		case aux.CacheCreationTokens > 0:
-			u.CacheCreationInputTokens = aux.CacheCreationTokens
-		case aux.CacheWriteTokens > 0:
-			u.CacheCreationInputTokens = aux.CacheWriteTokens
-		}
-	}
 	if u.OutputTokensDetails == nil && aux.CompletionTokensDetails != nil {
 		u.OutputTokensDetails = aux.CompletionTokensDetails
 	}
-	var canonicalCacheCreationTokens *int
-	switch {
-	case nestedPresence.InputTokensDetails != nil && nestedPresence.InputTokensDetails.CacheWriteTokens != nil:
-		canonicalCacheCreationTokens = nestedPresence.InputTokensDetails.CacheWriteTokens
-	case nestedPresence.PromptTokensDetails != nil && nestedPresence.PromptTokensDetails.CacheWriteTokens != nil:
-		canonicalCacheCreationTokens = nestedPresence.PromptTokensDetails.CacheWriteTokens
-	case nestedPresence.InputTokensDetails != nil && nestedPresence.InputTokensDetails.CacheCreationTokens != nil:
-		canonicalCacheCreationTokens = nestedPresence.InputTokensDetails.CacheCreationTokens
-	case nestedPresence.PromptTokensDetails != nil && nestedPresence.PromptTokensDetails.CacheCreationTokens != nil:
-		canonicalCacheCreationTokens = nestedPresence.PromptTokensDetails.CacheCreationTokens
+	cacheReadTokens := firstPositiveResponsesUsageInt(
+		responsesUsageCachedTokens(aux.InputTokensDetails),
+		responsesUsageCachedTokens(aux.PromptTokensDetails),
+		aux.CacheReadInputTokens,
+		aux.CacheReadTokens,
+		aux.CachedTokens,
+	)
+	if cacheReadTokens > 0 {
+		if u.InputTokensDetails == nil {
+			u.InputTokensDetails = &ResponsesInputTokensDetails{}
+		}
+		u.InputTokensDetails.CachedTokens = cacheReadTokens
 	}
-	if canonicalCacheCreationTokens != nil {
-		u.CacheCreationInputTokens = max(*canonicalCacheCreationTokens, 0)
-	}
+	u.CacheCreationInputTokens = firstPositiveResponsesUsageInt(
+		responsesUsagePresenceInt(nestedPresence.InputTokensDetails, func(v *cacheTokenPresence) *int { return v.CacheCreationInputTokens }),
+		responsesUsagePresenceInt(nestedPresence.PromptTokensDetails, func(v *cacheTokenPresence) *int { return v.CacheCreationInputTokens }),
+		responsesUsagePresenceInt(nestedPresence.InputTokensDetails, func(v *cacheTokenPresence) *int { return v.CacheWriteInputTokens }),
+		responsesUsagePresenceInt(nestedPresence.PromptTokensDetails, func(v *cacheTokenPresence) *int { return v.CacheWriteInputTokens }),
+		responsesUsagePresenceInt(nestedPresence.InputTokensDetails, func(v *cacheTokenPresence) *int { return v.CacheWriteTokens }),
+		responsesUsagePresenceInt(nestedPresence.PromptTokensDetails, func(v *cacheTokenPresence) *int { return v.CacheWriteTokens }),
+		responsesUsagePresenceInt(nestedPresence.InputTokensDetails, func(v *cacheTokenPresence) *int { return v.CacheCreationTokens }),
+		responsesUsagePresenceInt(nestedPresence.PromptTokensDetails, func(v *cacheTokenPresence) *int { return v.CacheCreationTokens }),
+		u.CacheCreationInputTokens,
+		aux.CacheWriteInputTokens,
+		aux.CacheCreationTokens,
+		aux.CacheWriteTokens,
+	)
 	if u.TotalTokens == 0 && (u.InputTokens != 0 || u.OutputTokens != 0) {
 		u.TotalTokens = u.InputTokens + u.OutputTokens
 	}
 	return nil
 }
 
+func responsesUsageCachedTokens(details *ResponsesInputTokensDetails) int {
+	if details == nil {
+		return 0
+	}
+	return details.CachedTokens
+}
+
+func responsesUsagePresenceInt[T any](value *T, field func(*T) *int) int {
+	if value == nil {
+		return 0
+	}
+	result := field(value)
+	if result == nil {
+		return 0
+	}
+	return *result
+}
+
+func firstPositiveResponsesUsageInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
 // ResponsesInputTokensDetails breaks down input token usage.
 type ResponsesInputTokensDetails struct {
-	CachedTokens        int `json:"cached_tokens,omitempty"`
-	AudioTokens         int `json:"audio_tokens,omitempty"`
-	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
-	CacheWriteTokens    int `json:"cache_write_tokens,omitempty"`
+	CachedTokens             int `json:"cached_tokens,omitempty"`
+	AudioTokens              int `json:"audio_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheCreationTokens      int `json:"cache_creation_tokens,omitempty"`
+	CacheWriteInputTokens    int `json:"cache_write_input_tokens,omitempty"`
+	CacheWriteTokens         int `json:"cache_write_tokens,omitempty"`
 }
 
 // ResponsesOutputTokensDetails breaks down output token usage.

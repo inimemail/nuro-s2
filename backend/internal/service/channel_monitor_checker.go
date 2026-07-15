@@ -67,22 +67,24 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 	mode := bodyOverrideMode(opts)
 
 	start := time.Now()
-	respText, rawBody, statusCode, err := callProvider(ctx, provider, endpoint, apiKey, model, challenge.Prompt, opts)
+	respText, statusCode, err := callProvider(ctx, provider, endpoint, apiKey, model, challenge.Prompt, opts)
 	latency := time.Since(start)
 	latencyMs := int(latency / time.Millisecond)
 	res.LatencyMs = &latencyMs
 
 	if err != nil {
 		res.Status = MonitorStatusError
-		res.Message = truncateMessage(sanitizeErrorMessage(err.Error()))
+		var requestErr *monitorRequestError
+		if errors.As(err, &requestErr) {
+			res.Message = "Monitor request failed"
+		} else {
+			res.Message = truncateMessage(sanitizeErrorMessage(err.Error()))
+		}
 		return res
 	}
 	if statusCode < 200 || statusCode >= 300 {
-		// 错误路径：用 rawBody 而非 respText（gjson textPath 抽取在错误响应里通常为空，
-		// 会丢掉真正的上游错误信息，例如 `{"error":{"message":"No available accounts ..."}}`）。
 		res.Status = MonitorStatusError
-		bodySnippet := truncateForErrorBody(rawBody)
-		res.Message = truncateMessage(sanitizeErrorMessage(fmt.Sprintf("upstream HTTP %d: %s", statusCode, bodySnippet)))
+		res.Message = fmt.Sprintf("Monitor request failed (HTTP %d)", statusCode)
 		return res
 	}
 
@@ -100,11 +102,26 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 
 	if !validateChallenge(respText, challenge.Expected) {
 		res.Status = MonitorStatusFailed
-		res.Message = truncateMessage(sanitizeErrorMessage(fmt.Sprintf("challenge mismatch (expected %s, got %q)", challenge.Expected, respText)))
+		res.Message = "Health check response did not match expected result"
 		return res
 	}
 
 	return finalizeOperationalOrDegraded(res, latency, latencyMs)
+}
+
+type monitorRequestError struct {
+	cause error
+}
+
+func (e *monitorRequestError) Error() string {
+	return "monitor request failed"
+}
+
+func (e *monitorRequestError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 // finalizeOperationalOrDegraded 负责走到最后一步的 operational/degraded 判定。
@@ -231,6 +248,7 @@ type providerAdapter struct {
 //nolint:gochecknoglobals // 适配器表是只读静态数据，初始化后不变更。
 var providerAdapters = map[string]providerAdapter{
 	MonitorProviderOpenAI: providerOpenAIChatAdapter,
+	MonitorProviderGrok:   providerGrokChatAdapter,
 	MonitorProviderAnthropic: {
 		buildPath: func(string) string { return providerAnthropicPath },
 		buildBody: func(model, prompt string) ([]byte, error) {
@@ -268,20 +286,27 @@ var providerAdapters = map[string]providerAdapter{
 }
 
 //nolint:gochecknoglobals // 适配器表是只读静态数据，初始化后不变更。
-var providerOpenAIChatAdapter = providerAdapter{
-	buildPath: func(string) string { return providerOpenAIPath },
-	buildBody: func(model, prompt string) ([]byte, error) {
-		return json.Marshal(map[string]any{
-			"model":      model,
-			"messages":   []map[string]string{{"role": "user", "content": prompt}},
-			"max_tokens": monitorChallengeMaxTokens,
-			"stream":     false,
-		})
-	},
-	buildHeaders: func(apiKey string) map[string]string {
-		return map[string]string{"Authorization": "Bearer " + apiKey}
-	},
-	textPath: "choices.0.message.content",
+var providerOpenAIChatAdapter = newOpenAICompatibleChatAdapter(providerOpenAIPath)
+
+//nolint:gochecknoglobals // 适配器表是只读静态数据，初始化后不变更。
+var providerGrokChatAdapter = newOpenAICompatibleChatAdapter(providerGrokPath)
+
+func newOpenAICompatibleChatAdapter(path string) providerAdapter {
+	return providerAdapter{
+		buildPath: func(string) string { return path },
+		buildBody: func(model, prompt string) ([]byte, error) {
+			return json.Marshal(map[string]any{
+				"model":      model,
+				"messages":   []map[string]string{{"role": "user", "content": prompt}},
+				"max_tokens": monitorChallengeMaxTokens,
+				"stream":     false,
+			})
+		},
+		buildHeaders: func(apiKey string) map[string]string {
+			return map[string]string{"Authorization": "Bearer " + apiKey}
+		},
+		textPath: "choices.0.message.content",
+	}
 }
 
 //nolint:gochecknoglobals // 适配器表是只读静态数据，初始化后不变更。
@@ -323,32 +348,31 @@ func isSupportedProvider(p string) bool {
 //
 // 返回值：
 //   - extractedText: 按 textPath 抽出的成功文本，仅在 status 2xx 时有意义；非 2xx 时通常为空串
-//   - rawBody: 完整响应体的字符串形式（已被 monitorResponseMaxBytes 截断），用于错误路径保留上游真实回包
 //   - status: HTTP 状态码
 //   - err: 网络 / 序列化错误
-func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt string, opts *CheckOptions) (extractedText, rawBody string, status int, err error) {
+func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt string, opts *CheckOptions) (extractedText string, status int, err error) {
 	requestedAPIMode := checkAPIMode(opts)
 	if err := validateAPIMode(provider, requestedAPIMode); err != nil {
-		return "", "", 0, err
+		return "", 0, err
 	}
 	adapter, apiMode, ok := providerAdapterFor(provider, requestedAPIMode)
 	if !ok {
-		return "", "", 0, fmt.Errorf("unsupported provider %q", provider)
+		return "", 0, fmt.Errorf("unsupported provider %q", provider)
 	}
 	body, err := buildRequestBody(adapter, provider, apiMode, model, prompt, opts)
 	if err != nil {
-		return "", "", 0, err
+		return "", 0, err
 	}
 	headers := mergeHeaders(adapter.buildHeaders(apiKey), opts)
 	full := joinURL(endpoint, adapter.buildPath(model))
 	respBytes, status, err := postRawJSON(ctx, full, body, headers)
 	if err != nil {
-		return "", "", status, err
+		return "", status, &monitorRequestError{cause: err}
 	}
 	if provider == MonitorProviderOpenAI && apiMode == MonitorAPIModeResponses {
-		return extractOpenAIResponsesText(respBytes), string(respBytes), status, nil
+		return extractOpenAIResponsesText(respBytes), status, nil
 	}
-	return gjson.GetBytes(respBytes, adapter.textPath).String(), string(respBytes), status, nil
+	return gjson.GetBytes(respBytes, adapter.textPath).String(), status, nil
 }
 
 // extractOpenAIResponsesText 聚合 Responses API 的最终 assistant 文本。
@@ -471,8 +495,9 @@ func buildRequestBody(adapter providerAdapter, provider, apiMode, model, prompt 
 var bodyMergeKeyDenyList = map[string]map[string]bool{
 	MonitorProviderOpenAI + ":" + MonitorAPIModeChatCompletions: {"model": true, "messages": true, "stream": true},
 	MonitorProviderOpenAI + ":" + MonitorAPIModeResponses:       {"model": true, "instructions": true, "input": true, "stream": true},
-	MonitorProviderAnthropic:                                    {"model": true, "messages": true},
-	MonitorProviderGemini:                                       {"contents": true},
+	MonitorProviderGrok:      {"model": true, "messages": true, "stream": true},
+	MonitorProviderAnthropic: {"model": true, "messages": true},
+	MonitorProviderGemini:    {"contents": true},
 }
 
 func checkAPIMode(opts *CheckOptions) string {
@@ -490,7 +515,7 @@ func bodyMergeDenyKey(provider, apiMode string) string {
 }
 
 func validateReplaceRequestBody(provider, apiMode string, body map[string]any) error {
-	if provider != MonitorProviderOpenAI {
+	if provider != MonitorProviderOpenAI && provider != MonitorProviderGrok {
 		return nil
 	}
 	switch defaultAPIMode(apiMode) {
@@ -591,6 +616,7 @@ var monitorAPIKeyPatterns = []struct {
 	{regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}`), "sk-ant-***REDACTED***"},
 	// OpenAI / Anthropic 通用 sk-: sk-xxxxxxx
 	{regexp.MustCompile(`sk-[A-Za-z0-9-]{20,}`), "sk-***REDACTED***"},
+	{regexp.MustCompile(`xai-[A-Za-z0-9_-]{6,}`), "xai-***REDACTED***"},
 	// Gemini / Google API Key：固定前缀 + 35 位
 	{regexp.MustCompile(`AIza[A-Za-z0-9_-]{35}`), "AIza***REDACTED***"},
 	// JWT 三段式（Bearer 后常出现）：eyJxxx.eyJxxx.signature
@@ -626,20 +652,4 @@ func truncateMessage(msg string) string {
 		cutoff = 0
 	}
 	return msg[:cutoff] + ellipsis
-}
-
-// truncateForErrorBody 把上游错误响应 body 压到 monitorErrorBodySnippetMaxBytes 以内，
-// 并顺手把连续空白折成一个空格：上游 HTML 错误页常含大量缩进/换行，保留会浪费预算。
-// 被 truncateMessage 做最终总截断兜底，所以这里只负责 body 自身的精简。
-func truncateForErrorBody(body string) string {
-	body = strings.Join(strings.Fields(body), " ")
-	if len(body) <= monitorErrorBodySnippetMaxBytes {
-		return body
-	}
-	const ellipsis = "...(body truncated)"
-	cutoff := monitorErrorBodySnippetMaxBytes - len(ellipsis)
-	if cutoff < 0 {
-		cutoff = 0
-	}
-	return body[:cutoff] + ellipsis
 }

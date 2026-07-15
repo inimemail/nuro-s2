@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,20 @@ func TestAPIKeyRepository_UpdateLastUsedDBError(t *testing.T) {
 	require.NoError(t, client.Close())
 	err := repo.UpdateLastUsed(ctx, key.ID, time.Now().UTC())
 	require.Error(t, err)
+}
+
+func TestLatestUsageLogIPsQueryPostgresUsesPerKeyLateralLookup(t *testing.T) {
+	query, args := latestUsageLogIPsQuery([]int64{11, 22}, dialect.Postgres)
+	normalizedQuery := strings.Join(strings.Fields(query), " ")
+
+	require.Contains(t, normalizedQuery, "FROM unnest($1::bigint[]) AS requested(api_key_id)")
+	require.Contains(t, normalizedQuery, "CROSS JOIN LATERAL")
+	require.Contains(t, normalizedQuery, "WHERE ul.api_key_id = requested.api_key_id")
+	require.Contains(t, normalizedQuery, "AND ul.ip_address IS NOT NULL")
+	require.Contains(t, normalizedQuery, "AND ul.ip_address <> ''")
+	require.Contains(t, normalizedQuery, "ORDER BY ul.created_at DESC, ul.id DESC LIMIT 1")
+	require.NotContains(t, normalizedQuery, "ROW_NUMBER")
+	require.Len(t, args, 1)
 }
 
 func TestAPIKeyRepository_CreateDuplicateKey(t *testing.T) {

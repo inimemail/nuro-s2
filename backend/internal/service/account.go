@@ -106,6 +106,8 @@ type Account struct {
 
 type OpenAIEndpointCapability string
 
+const openAILongContextBillingEnabledKey = "openai_long_context_billing_enabled"
+
 const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
@@ -1601,6 +1603,14 @@ func (a *Account) IsOpenAI() bool {
 	return a.Platform == PlatformOpenAI
 }
 
+func (a *Account) IsOpenAILongContextBillingEnabled() bool {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra[openAILongContextBillingEnabledKey].(bool)
+	return ok && enabled
+}
+
 func (a *Account) IsAnthropic() bool {
 	return a.Platform == PlatformAnthropic
 }
@@ -1671,7 +1681,13 @@ func (a *Account) GetGrokBaseURL() string {
 		return ""
 	}
 	baseURL := strings.TrimSpace(a.GetCredential("base_url"))
-	if a.IsGrokOAuth() && (baseURL == "" || isOfficialGrokAPIBaseURL(baseURL)) {
+	if a.IsGrokOAuth() {
+		if baseURL == "" || isOfficialGrokAPIBaseURL(baseURL) || isOfficialGrokCLIBaseURL(baseURL) {
+			return xai.DefaultCLIBaseURL
+		}
+		if _, err := xai.ValidateTrustedBaseURL(baseURL); err == nil {
+			return strings.TrimRight(baseURL, "/")
+		}
 		return xai.DefaultCLIBaseURL
 	}
 	if baseURL != "" {
@@ -1680,12 +1696,40 @@ func (a *Account) GetGrokBaseURL() string {
 	return xai.DefaultBaseURL
 }
 
+// GetGrokMediaBaseURL keeps OAuth text traffic on the CLI proxy while sending
+// media requests to the official Imagine API, which supports large image
+// inputs. API-key accounts keep their configured public HTTPS endpoint.
+func (a *Account) GetGrokMediaBaseURL() string {
+	if !a.IsGrok() {
+		return ""
+	}
+	if !a.IsGrokOAuth() {
+		return a.GetGrokBaseURL()
+	}
+	baseURL := strings.TrimSpace(a.GetCredential("base_url"))
+	if baseURL == "" || isOfficialGrokAPIBaseURL(baseURL) || isOfficialGrokCLIBaseURL(baseURL) {
+		return xai.DefaultBaseURL
+	}
+	if _, err := xai.ValidateTrustedBaseURL(baseURL); err == nil {
+		return strings.TrimRight(baseURL, "/")
+	}
+	return xai.DefaultBaseURL
+}
+
 func isOfficialGrokAPIBaseURL(raw string) bool {
+	return isOfficialGrokBaseURL(raw, xai.DefaultBaseURL)
+}
+
+func isOfficialGrokCLIBaseURL(raw string) bool {
+	return isOfficialGrokBaseURL(raw, xai.DefaultCLIBaseURL)
+}
+
+func isOfficialGrokBaseURL(raw, expected string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed == nil || parsed.Opaque != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return false
 	}
-	defaultURL, err := url.Parse(xai.DefaultBaseURL)
+	defaultURL, err := url.Parse(expected)
 	if err != nil || !strings.EqualFold(parsed.Scheme, defaultURL.Scheme) || !strings.EqualFold(parsed.Hostname(), defaultURL.Hostname()) {
 		return false
 	}

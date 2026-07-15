@@ -192,7 +192,26 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	for {
-		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, selectionSessionHash, reqModel, fs.FailedAccountIDs, "", int64(0))
+		retryAccountID := fs.pendingSameAccountRetryID()
+		var selection *service.AccountSelectionResult
+		if retryAccountID > 0 {
+			selection, err = h.gatewayService.SelectRequiredAccountWithLoadAwareness(
+				c.Request.Context(), apiKey.GroupID, retryAccountID, selectionSessionHash, reqModel, fs.FailedAccountIDs,
+			)
+		} else {
+			selection, err = h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, selectionSessionHash, reqModel, fs.FailedAccountIDs, "", int64(0))
+		}
+		if (err != nil || selection == nil || selection.Account == nil) && retryAccountID > 0 {
+			switch fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService) {
+			case FailoverContinue:
+				continue
+			case FailoverCanceled:
+				return
+			default:
+				h.handleCCFailoverExhausted(c, fs.LastFailoverErr, streamStarted)
+				return
+			}
+		}
 		if err != nil {
 			if len(fs.FailedAccountIDs) == 0 {
 				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
@@ -221,6 +240,9 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		accountReleaseFunc := selection.ReleaseFunc
 		if !selection.Acquired {
 			if selection.WaitPlan == nil {
+				if retryAccountID > 0 {
+					_ = fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService)
+				}
 				markOpsRoutingCapacityLimited(c)
 				h.chatCompletionsErrorResponse(c, http.StatusServiceUnavailable, "api_error", "No available accounts")
 				return
@@ -234,12 +256,16 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				&streamStarted,
 			)
 			if err != nil {
+				if retryAccountID > 0 {
+					_ = fs.settleUnavailableSameAccountRetry(c.Request.Context(), h.gatewayService)
+				}
 				reqLog.Warn("gateway.cc.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				h.handleConcurrencyError(c, err, "account", streamStarted)
 				return
 			}
 		}
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
+		fs.clearPendingSameAccountRetry()
 
 		if groupPlatform == service.PlatformGemini && account.Platform != service.PlatformGemini {
 			if accountReleaseFunc != nil {
@@ -256,6 +282,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
 		var result *service.ForwardResult
+		markSameAccountAttemptStart(fs.SameAccountRetryStart, account, time.Now())
 		if account.Platform == service.PlatformGemini {
 			if h.geminiCompatService == nil {
 				h.chatCompletionsErrorResponse(c, http.StatusBadGateway, "upstream_error", "Service temporarily unavailable")
@@ -273,7 +300,8 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			accountReleaseFunc()
 		}
 
-		if err != nil {
+		settleForwardError := err != nil && shouldSettleGatewayForwardResultAfterError(c, writerSizeBeforeForward, result)
+		if err != nil && !settleForwardError {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if c.Writer.Size() != writerSizeBeforeForward {
@@ -281,7 +309,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 					h.handleCCFailoverExhausted(c, failoverErr, true)
 					return
 				}
-				action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
+				action := fs.HandleFailoverErrorForAccount(c.Request.Context(), h.gatewayService, account, failoverErr)
 				if _, failed := fs.FailedAccountIDs[account.ID]; failed {
 					h.reportAccountScheduleResult(account, false, nil)
 				}
@@ -309,7 +337,26 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			h.reportAccountScheduleResult(account, false, nil)
 			return
 		}
-		h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
+		if settleForwardError && !result.ClientDisconnect && !gatewayForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err) {
+			h.ensureForwardErrorResponse(c, streamStarted)
+		}
+		if result == nil {
+			return
+		}
+		successfulOutcome, neutralOutcome := classifyGatewayForwardResult(result, err)
+		if !successfulOutcome {
+			result.FirstTokenMs = nil
+		}
+		switch {
+		case successfulOutcome:
+			h.reportAccountScheduleResult(account, true, result.FirstTokenMs)
+		case neutralOutcome:
+		default:
+			h.reportAccountScheduleResult(account, false, nil)
+		}
+		if !successfulOutcome && !gatewayForwardResultHasBillableUsage(result) {
+			return
+		}
 
 		// 6. Record usage
 		userAgent := c.GetHeader("User-Agent")
@@ -321,19 +368,20 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-				Result:             result,
-				QuotaPlatform:      quotaPlatform,
-				APIKey:             apiKey,
-				User:               apiKey.User,
-				Account:            account,
-				Subscription:       subscription,
-				InboundEndpoint:    inboundEndpoint,
-				UpstreamEndpoint:   upstreamEndpoint,
-				UserAgent:          userAgent,
-				IPAddress:          clientIP,
-				RequestPayloadHash: requestPayloadHash,
-				APIKeyService:      h.apiKeyService,
-				ChannelUsageFields: channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
+				Result:              result,
+				QuotaPlatform:       quotaPlatform,
+				APIKey:              apiKey,
+				User:                apiKey.User,
+				Account:             account,
+				Subscription:        subscription,
+				InboundEndpoint:     inboundEndpoint,
+				UpstreamEndpoint:    upstreamEndpoint,
+				UserAgent:           userAgent,
+				IPAddress:           clientIP,
+				RequestPayloadHash:  requestPayloadHash,
+				SkipAccountLastUsed: !successfulOutcome,
+				APIKeyService:       h.apiKeyService,
+				ChannelUsageFields:  channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
 			}); err != nil {
 				reqLog.Error("gateway.cc.record_usage_failed",
 					zap.Int64("account_id", account.ID),

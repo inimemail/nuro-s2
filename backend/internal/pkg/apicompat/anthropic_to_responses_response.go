@@ -164,6 +164,8 @@ type AnthropicEventToResponsesState struct {
 	OutputTokens             int
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int
+
+	StopReason string
 }
 
 // NewAnthropicEventToResponsesState returns an initialised stream state.
@@ -418,6 +420,9 @@ func anthToResHandleMessageDelta(evt *AnthropicStreamEvent, state *AnthropicEven
 			state.CacheCreationInputTokens = evt.Usage.CacheCreationInputTokens
 		}
 	}
+	if evt.Delta != nil && evt.Delta.StopReason != "" {
+		state.StopReason = evt.Delta.StopReason
+	}
 
 	return nil
 }
@@ -435,8 +440,13 @@ func anthToResHandleMessageStop(state *AnthropicEventToResponsesState) []Respons
 	// Determine status
 	status := "completed"
 	var incompleteDetails *ResponsesIncompleteDetails
+	if state.StopReason == "max_tokens" {
+		status = "incomplete"
+		incompleteDetails = &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
+	}
 
-	// Emit response.completed
+	// Emit the protocol-specific terminal event. Responses clients use the
+	// event type, not only response.status, to classify an incomplete turn.
 	events = append(events, makeResponsesCompletedEvent(state, status, incompleteDetails))
 	state.CompletedSent = true
 	return events
@@ -509,8 +519,12 @@ func makeResponsesCompletedEvent(
 		}
 	}
 
+	eventType := "response.completed"
+	if status == "incomplete" {
+		eventType = "response.incomplete"
+	}
 	return ResponsesStreamEvent{
-		Type:           "response.completed",
+		Type:           eventType,
 		SequenceNumber: seq,
 		Response: &ResponsesResponse{
 			ID:                state.ResponseID,

@@ -3619,6 +3619,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		// 透传分支只需要轻量提取字段，避免热路径全量 Unmarshal。
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel)
+		if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, true) {
+			if flattenedBody, flattenErr := flattenOpenAIResponsesNamespaces(c, originalBody); flattenErr != nil {
+				return nil, flattenErr
+			} else {
+				originalBody = flattenedBody
+			}
+		}
 		return s.forwardOpenAIPassthrough(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
 	}
 
@@ -4069,7 +4076,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageSizeTier = imageCfg.SizeTier
 		imageInputSize = imageCfg.InputSize
 	}
-
 	// Re-serialize body only if modified
 	if bodyModified {
 		serializedByPatch := false
@@ -4091,6 +4097,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				return nil, fmt.Errorf("serialize request body: %w", marshalErr)
 			}
 		}
+	}
+	if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, false) {
+		flattenedBody, flattenErr := flattenOpenAIResponsesNamespaces(c, body)
+		if flattenErr != nil {
+			return nil, fmt.Errorf("flatten OpenAI namespace request: %w", flattenErr)
+		}
+		body = flattenedBody
 	}
 
 	// Get access token
@@ -6131,6 +6144,16 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				forceFlushFailedEvent = true
 				sawFailedEvent = true
 			}
+			if normalizedData, normalized := normalizeCompletedImageGenerationStatus(dataBytes); normalized {
+				dataBytes = normalizedData
+				trimmedData = string(normalizedData)
+				line = "data: " + trimmedData
+			}
+			if restoredData, restoreErr := restoreOpenAIResponsesNamespacePayload(c, dataBytes); restoreErr == nil && !bytes.Equal(restoredData, dataBytes) {
+				dataBytes = restoredData
+				trimmedData = string(restoredData)
+				line = "data: " + trimmedData
+			}
 			if terminalType := openAIResponsesTerminalEventType(eventType); terminalType != "" {
 				terminalEventType = terminalType
 				if terminalType == "response.incomplete" || terminalType == "response.cancelled" || terminalType == "response.canceled" {
@@ -6392,8 +6415,15 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	}
 
 	contentType := responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "application/json")
+	if normalizedBody, normalized := normalizeCompletedImageGenerationStatus(body); normalized {
+		body = normalizedBody
+	}
 	if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
+	}
+	body, err = restoreOpenAIResponsesNamespacePayload(c, body)
+	if err != nil {
+		return nil, fmt.Errorf("restore OpenAI passthrough namespace response: %w", err)
 	}
 	if IsOpenAIResponsesHealthProbe(c) {
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
@@ -6502,6 +6532,9 @@ func openAIPassthroughResponseIsUnsafe(body []byte) bool {
 func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel string, mappedModel string) (*openaiNonStreamingResultPassthrough, error) {
 	bodyText := string(body)
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
+	if normalizedPayload, normalized := normalizeCompletedImageGenerationStatus(terminalPayload); normalized {
+		terminalPayload = normalizedPayload
+	}
 	usage := &OpenAIUsage{}
 	if !terminalOK {
 		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream stream ended without a terminal response event")
@@ -6549,12 +6582,20 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 			}
 		}
 	}
+	if normalizedResponse, normalized := normalizeCompletedImageGenerationStatus(finalResponse); normalized {
+		finalResponse = normalizedResponse
+	}
 	finalResponse = supplementCompactionItemFromSSE(c, finalResponse, bodyText)
 	body = finalResponse
 	if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
 	body = s.correctToolCallsInResponseBody(body)
+	restoredBody, restoreErr := restoreOpenAIResponsesNamespacePayload(c, body)
+	if restoreErr != nil {
+		return nil, fmt.Errorf("restore OpenAI namespace response: %w", restoreErr)
+	}
+	body = restoredBody
 
 	if IsOpenAIResponsesHealthProbe(c) {
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
@@ -7597,6 +7638,16 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				line = "data: " + data
 				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
 			}
+			if normalizedData, normalized := normalizeCompletedImageGenerationStatus(dataBytes); normalized {
+				dataBytes = normalizedData
+				data = string(normalizedData)
+				line = "data: " + data
+			}
+			if restoredData, restoreErr := restoreOpenAIResponsesNamespacePayload(c, dataBytes); restoreErr == nil && !bytes.Equal(restoredData, dataBytes) {
+				dataBytes = restoredData
+				data = string(restoredData)
+				line = "data: " + data
+			}
 			startsFirstToken := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
 			startsRealOutput := openAIStreamDataStartsRealOutput(data, eventType)
 			startsClientOutput := startsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType, flushPreamble)
@@ -8159,15 +8210,9 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 }
 
 func openAICacheReadTokensFromUsage(value gjson.Result) int {
-	for _, nested := range []gjson.Result{
+	return firstPositiveGJSONInt(
 		value.Get("input_tokens_details.cached_tokens"),
 		value.Get("prompt_tokens_details.cached_tokens"),
-	} {
-		if nested.Exists() {
-			return max(int(nested.Int()), 0)
-		}
-	}
-	return firstPositiveGJSONInt(
 		value.Get("cache_read_input_tokens"),
 		value.Get("cache_read_tokens"),
 		value.Get("cached_tokens"),
@@ -8175,17 +8220,15 @@ func openAICacheReadTokensFromUsage(value gjson.Result) int {
 }
 
 func openAICacheCreationTokensFromUsage(value gjson.Result) int {
-	for _, nested := range []gjson.Result{
+	return firstPositiveGJSONInt(
+		value.Get("input_tokens_details.cache_creation_input_tokens"),
+		value.Get("prompt_tokens_details.cache_creation_input_tokens"),
+		value.Get("input_tokens_details.cache_write_input_tokens"),
+		value.Get("prompt_tokens_details.cache_write_input_tokens"),
 		value.Get("input_tokens_details.cache_write_tokens"),
 		value.Get("prompt_tokens_details.cache_write_tokens"),
 		value.Get("input_tokens_details.cache_creation_tokens"),
 		value.Get("prompt_tokens_details.cache_creation_tokens"),
-	} {
-		if nested.Exists() {
-			return max(int(nested.Int()), 0)
-		}
-	}
-	return firstPositiveGJSONInt(
 		value.Get("cache_write_tokens"),
 		value.Get("cache_creation_input_tokens"),
 		value.Get("cache_write_input_tokens"),
@@ -8256,10 +8299,17 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		}
 	}
 	usage := &usageValue
+	if normalizedBody, normalized := normalizeCompletedImageGenerationStatus(body); normalized {
+		body = normalizedBody
+	}
 
 	// Replace model in response if needed
 	if originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
+	}
+	body, err = restoreOpenAIResponsesNamespacePayload(c, body)
+	if err != nil {
+		return nil, fmt.Errorf("restore OpenAI namespace response: %w", err)
 	}
 	if IsOpenAIResponsesHealthProbe(c) {
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
@@ -8306,6 +8356,9 @@ func bodyHasSSEFraming(body []byte) bool {
 func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
 	bodyText := string(body)
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
+	if normalizedPayload, normalized := normalizeCompletedImageGenerationStatus(terminalPayload); normalized {
+		terminalPayload = normalizedPayload
+	}
 	usage := &OpenAIUsage{}
 	if !terminalOK {
 		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream stream ended without a terminal response event")
@@ -8354,12 +8407,20 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 			}
 		}
 	}
+	if normalizedResponse, normalized := normalizeCompletedImageGenerationStatus(finalResponse); normalized {
+		finalResponse = normalizedResponse
+	}
 	finalResponse = supplementCompactionItemFromSSE(c, finalResponse, bodyText)
 	body = finalResponse
 	if originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
 	body = s.correctToolCallsInResponseBody(body)
+	restoredBody, restoreErr := restoreOpenAIResponsesNamespacePayload(c, body)
+	if restoreErr != nil {
+		return nil, fmt.Errorf("restore OpenAI namespace response: %w", restoreErr)
+	}
+	body = restoredBody
 
 	if IsOpenAIResponsesHealthProbe(c) {
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
@@ -9305,7 +9366,27 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result.ServiceTier != nil {
 		serviceTier = strings.TrimSpace(*result.ServiceTier)
 	}
-	cost, err = s.calculateOpenAIRecordUsageCost(ctx, result, apiKey, billingModels, multiplier, imageMultiplier, videoMultiplier, baseMultiplier, tokens, serviceTier)
+	billingAccount := account
+	if account.IsShadow() {
+		billingAccount, err = resolveCredentialAccount(ctx, s.accountRepo, account)
+		if err != nil {
+			return err
+		}
+	}
+	longContextBillingEnabled := billingAccount.IsOpenAILongContextBillingEnabled()
+	cost, err = s.calculateOpenAIRecordUsageCost(
+		ctx,
+		result,
+		apiKey,
+		billingModels,
+		multiplier,
+		imageMultiplier,
+		videoMultiplier,
+		baseMultiplier,
+		tokens,
+		serviceTier,
+		longContextBillingEnabled,
+	)
 	if err != nil {
 		if !isUsagePricingUnavailableError(err) {
 			return err
@@ -9375,6 +9456,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		usageLog.CacheReadCost = cost.CacheReadCost
 		usageLog.TotalCost = cost.TotalCost
 		usageLog.ActualCost = cost.ActualCost
+		usageLog.LongContextBillingApplied = cost.LongContextBillingApplied
 	}
 	if result.WebSearchCalls > 0 {
 		usageLog.RateMultiplier = baseMultiplier
@@ -9545,6 +9627,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	webSearchMultiplier float64,
 	tokens UsageTokens,
 	serviceTier string,
+	longContextBillingEnabled bool,
 ) (*CostBreakdown, error) {
 	if result != nil && result.WebSearchCalls > 0 {
 		var groupPrice *float64
@@ -9573,7 +9656,15 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 		if candidate == "" {
 			continue
 		}
-		cost, err := s.calculateOpenAIRecordUsageTokenCost(ctx, apiKey, candidate, multiplier, tokens, serviceTier)
+		cost, err := s.calculateOpenAIRecordUsageTokenCost(
+			ctx,
+			apiKey,
+			candidate,
+			multiplier,
+			tokens,
+			serviceTier,
+			longContextBillingEnabled,
+		)
 		if err == nil {
 			return cost, nil
 		}
@@ -9627,21 +9718,29 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 	multiplier float64,
 	tokens UsageTokens,
 	serviceTier string,
+	longContextBillingEnabled bool,
 ) (*CostBreakdown, error) {
 	if s.resolver != nil && apiKey.Group != nil {
 		gid := apiKey.Group.ID
 		return s.billingService.CalculateCostUnified(CostInput{
-			Ctx:            ctx,
-			Model:          billingModel,
-			GroupID:        &gid,
-			Tokens:         tokens,
-			RequestCount:   1,
-			RateMultiplier: multiplier,
-			ServiceTier:    serviceTier,
-			Resolver:       s.resolver,
+			Ctx:                       ctx,
+			Model:                     billingModel,
+			GroupID:                   &gid,
+			Tokens:                    tokens,
+			RequestCount:              1,
+			RateMultiplier:            multiplier,
+			ServiceTier:               serviceTier,
+			Resolver:                  s.resolver,
+			LongContextBillingEnabled: &longContextBillingEnabled,
 		})
 	}
-	return s.billingService.CalculateCostWithServiceTier(billingModel, tokens, multiplier, serviceTier)
+	return s.billingService.calculateCostWithServiceTierPolicy(
+		billingModel,
+		tokens,
+		multiplier,
+		serviceTier,
+		longContextBillingEnabled,
+	)
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIImageCost(

@@ -236,8 +236,10 @@ func TestRelay_UpstreamDisconnect(t *testing.T) {
 	defer cancel()
 
 	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{})
-	// 上游 EOF 属于 disconnect，标记为 graceful
-	require.Nil(t, relayExit, "上游 EOF 应被视为 graceful disconnect")
+	// 上游没有发送终态事件时不能被当成正常完成，否则调用方会把
+	// 未完成请求当作健康调度成功样本。
+	require.NotNil(t, relayExit, "没有终态事件的上游 EOF 应被视为不完整请求")
+	require.Equal(t, "read_upstream", relayExit.Stage)
 	require.Equal(t, "gpt-4o", result.RequestModel)
 }
 
@@ -257,6 +259,64 @@ func TestRelay_ClientDisconnect(t *testing.T) {
 	require.Equal(t, "client_disconnected", relayExit.Stage)
 	require.Equal(t, "gpt-4o", result.RequestModel)
 	require.True(t, result.ClientDisconnected)
+}
+
+func TestRelay_FirstMessageAlreadySentStillRequiresTerminal(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, true)
+	upstreamConn := newPassthroughTestFrameConn(nil, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	result, relayExit := Relay(
+		ctx,
+		clientConn,
+		upstreamConn,
+		[]byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`),
+		RelayOptions{FirstMessageSent: true, UpstreamDrainTimeout: 20 * time.Millisecond},
+	)
+
+	require.NotNil(t, relayExit, "a pre-sent request without an upstream terminal must not complete successfully")
+	require.Equal(t, "client_disconnected", relayExit.Stage)
+	require.False(t, result.TerminalObserved)
+}
+
+func TestRelay_MultiTurnPreviousTerminalDoesNotCompleteNextTurn(t *testing.T) {
+	t.Parallel()
+
+	clientBase := newPassthroughTestFrameConn([]passthroughTestFrame{{
+		msgType: coderws.MessageText,
+		payload: []byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[{"role":"user","content":"second"}]}`),
+	}}, true)
+	clientConn := &delayedReadFrameConn{base: clientBase, firstDelay: 80 * time.Millisecond}
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{{
+		msgType: coderws.MessageText,
+		payload: []byte(`{"type":"response.completed","response":{"id":"resp_first","usage":{"input_tokens":2,"output_tokens":1}}}`),
+	}}, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var turns []RelayTurnResult
+	result, relayExit := Relay(
+		ctx,
+		clientConn,
+		upstreamConn,
+		[]byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`),
+		RelayOptions{
+			FirstMessageSent:     true,
+			UpstreamDrainTimeout: 20 * time.Millisecond,
+			OnTurnComplete: func(turn RelayTurnResult) {
+				turns = append(turns, turn)
+			},
+		},
+	)
+
+	require.Len(t, turns, 1)
+	require.Equal(t, "response.completed", turns[0].TerminalEventType)
+	require.NotNil(t, relayExit, "the first turn terminal must not satisfy the second turn")
+	require.Equal(t, "client_disconnected", relayExit.Stage)
+	require.False(t, result.TerminalObserved)
 }
 
 func TestRelay_ClientDisconnect_DrainCapturesLateUsage(t *testing.T) {
@@ -522,7 +582,8 @@ func TestRelay_BinaryFramePassthrough(t *testing.T) {
 	defer cancel()
 
 	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{})
-	require.Nil(t, relayExit)
+	require.NotNil(t, relayExit)
+	require.Equal(t, "read_upstream", relayExit.Stage)
 	require.Equal(t, 0, result.Usage.InputTokens)
 
 	clientWrites := clientConn.Writes()
@@ -574,8 +635,10 @@ func TestRelay_UpstreamErrorEventIsSanitized(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{})
-	require.Nil(t, relayExit)
+	result, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{})
+	require.NotNil(t, relayExit)
+	require.Equal(t, "read_upstream", relayExit.Stage)
+	require.Equal(t, "error", result.TerminalEventType)
 
 	clientWrites := clientConn.Writes()
 	require.Len(t, clientWrites, 1)
@@ -723,7 +786,8 @@ func TestRelay_PreservesFirstMessageType(t *testing.T) {
 	_, relayExit := Relay(ctx, clientConn, upstreamConn, firstPayload, RelayOptions{
 		FirstMessageType: coderws.MessageBinary,
 	})
-	require.Nil(t, relayExit)
+	require.NotNil(t, relayExit)
+	require.Equal(t, "read_upstream", relayExit.Stage)
 
 	upstreamWrites := upstreamConn.Writes()
 	require.Len(t, upstreamWrites, 1)

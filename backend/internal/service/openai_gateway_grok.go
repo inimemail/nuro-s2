@@ -80,7 +80,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(respBody))
 		if upstreamMsg == "" {
-			upstreamMsg = fmt.Sprintf("xAI upstream returned status %d", resp.StatusCode)
+			upstreamMsg = safeUpstreamErrorMessage
 		}
 		s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
@@ -206,11 +206,38 @@ func patchGrokResponsesBody(body []byte, upstreamModel string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	out, err = sanitizeGrokReasoningNullContent(out)
+	if err != nil {
+		return nil, err
+	}
 	out, err = sanitizeGrokResponsesTools(out)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// sanitizeGrokReasoningNullContent removes the null content field that xAI's
+// Responses decoder rejects for reasoning input items.
+func sanitizeGrokReasoningNullContent(body []byte) ([]byte, error) {
+	input := gjson.GetBytes(body, "input")
+	if !input.Exists() || !input.IsArray() {
+		return body, nil
+	}
+	items := input.Array()
+	for i := len(items) - 1; i >= 0; i-- {
+		item := items[i]
+		content := item.Get("content")
+		if strings.TrimSpace(item.Get("type").String()) != "reasoning" || !content.Exists() || content.Type != gjson.Null {
+			continue
+		}
+		updated, err := sjson.DeleteBytes(body, fmt.Sprintf("input.%d.content", i))
+		if err != nil {
+			return nil, err
+		}
+		body = updated
+	}
+	return body, nil
 }
 
 func sanitizeGrokResponsesModelCapabilities(body []byte, upstreamModel string) ([]byte, error) {
