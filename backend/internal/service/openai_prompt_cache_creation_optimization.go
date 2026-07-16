@@ -9,6 +9,7 @@ import (
 )
 
 const openAIPromptCacheExplicitMinStaticBytes = 4 * 1024
+const openAIPromptCacheCreationOptimizationTTL = "24h"
 
 type openAIPromptCacheCreationOptimizationResult struct {
 	Applied                     bool
@@ -78,7 +79,7 @@ func applyOpenAIPromptCacheCreationOptimizationMap(
 	removeOpenAIPromptCacheBreakpoints(request)
 	request["prompt_cache_options"] = map[string]any{
 		"mode": "explicit",
-		"ttl":  "30m",
+		"ttl":  openAIPromptCacheCreationOptimizationTTL,
 	}
 	if account.OpenAIPromptCacheCreationOptimizationMode() == OpenAIPromptCacheCreationOptimizationModeReduce {
 		if messages, ok := request["messages"].([]any); ok {

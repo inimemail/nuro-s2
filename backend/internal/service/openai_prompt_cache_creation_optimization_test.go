@@ -70,7 +70,7 @@ func TestOpenAIPromptCacheCreationOptimization_DefaultModeAReducesCacheCreation(
 	require.False(t, result.BreakpointInserted)
 	require.False(t, gjson.GetBytes(updated, "prompt_cache_retention").Exists())
 	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
-	require.Equal(t, "30m", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
+	require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
 }
 
 func TestOpenAIPromptCacheCreationOptimization_NonGPT56IsNoOp(t *testing.T) {
@@ -125,7 +125,7 @@ func TestOpenAIPromptCacheCreationOptimization_ExplicitResponsesKeepsKeyAndMarks
 	require.Equal(t, "keep-this-key", got["prompt_cache_key"])
 	require.NotContains(t, got, "prompt_cache_retention")
 	require.Equal(t, "explicit", got["prompt_cache_options"].(map[string]any)["mode"])
-	require.Equal(t, "30m", got["prompt_cache_options"].(map[string]any)["ttl"])
+	require.Equal(t, "24h", got["prompt_cache_options"].(map[string]any)["ttl"])
 	input := got["input"].([]any)
 	developerParts := input[0].(map[string]any)["content"].([]any)
 	require.Equal(t, "explicit", developerParts[0].(map[string]any)["prompt_cache_breakpoint"].(map[string]any)["mode"])
@@ -144,7 +144,7 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressNeverAddsStablePrefixBrea
 	require.True(t, result.Applied)
 	require.False(t, result.BreakpointInserted)
 	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
-	require.Equal(t, "30m", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
+	require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
 	require.False(t, gjson.GetBytes(updated, "prompt_cache_retention").Exists())
 	require.False(t, gjson.GetBytes(updated, "input.0.prompt_cache_breakpoint").Exists())
 	require.False(t, gjson.GetBytes(updated, "input.1.prompt_cache_breakpoint").Exists())
@@ -420,7 +420,7 @@ func TestOpenAIPromptCacheCreationOptimization_ForwardRetriesOnceWithoutExplicit
 	require.NotNil(t, result)
 	require.Len(t, upstream.bodies, 2)
 	require.Equal(t, "explicit", gjson.GetBytes(upstream.bodies[0], "prompt_cache_options.mode").String())
-	require.Equal(t, "30m", gjson.GetBytes(upstream.bodies[0], "prompt_cache_options.ttl").String())
+	require.Equal(t, "24h", gjson.GetBytes(upstream.bodies[0], "prompt_cache_options.ttl").String())
 	require.False(t, gjson.GetBytes(upstream.bodies[0], "prompt_cache_retention").Exists())
 	require.Equal(t, "explicit", gjson.GetBytes(upstream.bodies[0], "input.0.content.0.prompt_cache_breakpoint.mode").String())
 	require.False(t, gjson.GetBytes(upstream.bodies[1], "prompt_cache_options").Exists())

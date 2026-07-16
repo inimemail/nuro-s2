@@ -1322,6 +1322,7 @@ fn edge_plan_ws_first_message(
 }
 
 const OPENAI_PROMPT_CACHE_EXPLICIT_MIN_STATIC_BYTES: usize = 4 * 1024;
+const OPENAI_PROMPT_CACHE_CREATION_OPTIMIZATION_TTL: &str = "24h";
 
 #[cfg(test)]
 fn apply_openai_prompt_cache_creation_optimization_ws_message(
@@ -1422,7 +1423,7 @@ fn apply_openai_prompt_cache_creation_optimization_value(value: &mut Value, mode
     request.remove("prompt_cache_retention");
     request.insert(
         "prompt_cache_options".to_string(),
-        serde_json::json!({"mode": "explicit", "ttl": "30m"}),
+        serde_json::json!({"mode": "explicit", "ttl": OPENAI_PROMPT_CACHE_CREATION_OPTIMIZATION_TTL}),
     );
     if mode == "reduce" {
         insert_openai_responses_stable_prefix_breakpoint(request);
@@ -4530,7 +4531,7 @@ data: {"type":"response.output_text.delta","delta":"ok"}
             output
                 .pointer("/prompt_cache_options/ttl")
                 .and_then(Value::as_str),
-            Some("30m")
+            Some("24h")
         );
         assert!(output.get("prompt_cache_retention").is_none());
         assert_eq!(
@@ -4612,6 +4613,12 @@ data: {"type":"response.output_text.delta","delta":"ok"}
                 .pointer("/prompt_cache_options/mode")
                 .and_then(Value::as_str),
             Some("explicit")
+        );
+        assert_eq!(
+            output
+                .pointer("/prompt_cache_options/ttl")
+                .and_then(Value::as_str),
+            Some("24h")
         );
     }
 
