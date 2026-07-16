@@ -585,6 +585,12 @@
               </div>
             </div>
           </div>
+          <PromptCacheCreationOptimizationControl
+            v-if="showPromptCacheCreationOptimizationToggle"
+            class="mt-3"
+            v-model:enabled="promptCacheCreationOptimizationEnabled"
+            v-model:mode="promptCacheCreationOptimizationMode"
+          />
           <div v-if="showUpstreamStrongIsolationToggle" class="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
             <div class="flex items-center justify-between gap-4">
               <div>
@@ -1053,6 +1059,11 @@
             </div>
           </div>
         </div>
+        <PromptCacheCreationOptimizationControl
+          v-if="showPromptCacheCreationOptimizationToggle"
+          v-model:enabled="promptCacheCreationOptimizationEnabled"
+          v-model:mode="promptCacheCreationOptimizationMode"
+        />
         <div class="rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
           <div class="flex items-center justify-between gap-4">
             <div>
@@ -3449,6 +3460,7 @@ import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
+import PromptCacheCreationOptimizationControl from '@/components/account/PromptCacheCreationOptimizationControl.vue'
 import {
   applyHeaderOverride,
   applyInterceptWarmup,
@@ -3568,6 +3580,9 @@ const poolSoftCooldownEnabled = ref(true)
 const poolSoftCooldownErrorThreshold = ref(DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD)
 const imagePoolModeEnabled = ref(false)
 const promptCacheBoostEnabled = ref(false)
+type PromptCacheCreationOptimizationMode = 'reduce' | 'suppress'
+const promptCacheCreationOptimizationEnabled = ref(false)
+const promptCacheCreationOptimizationMode = ref<PromptCacheCreationOptimizationMode>('reduce')
 const promptCacheBoostAggressiveEnabled = ref(false)
 const promptCacheBoostUpstreamHitPriorityEnabled = ref(false)
 const promptCacheSmartRoutingEnabled = ref(false)
@@ -3601,6 +3616,12 @@ const showPromptCacheBoostToggle = computed(() =>
       props.account?.type === 'setup-token' ||
       (props.account?.type === 'apikey' && poolModeEnabled.value)
     ))
+)
+const showPromptCacheCreationOptimizationToggle = computed(() =>
+  !isSparkShadowAccount.value &&
+  props.account?.platform === 'openai' &&
+  (props.account?.type === 'oauth' || props.account?.type === 'apikey') &&
+  !imagePoolModeEnabled.value
 )
 const showUpstreamStrongIsolationToggle = computed(() =>
   !isSparkShadowAccount.value &&
@@ -3691,6 +3712,33 @@ const loadCacheBoostAndIsolationFromCredentials = (credentials: Record<string, u
     clearOpenAIPromptCacheAdvancedOptions()
   }
   upstreamStrongIsolationEnabled.value = credentials[keys.isolation] === true
+}
+
+const loadPromptCacheCreationOptimizationFromCredentials = (
+  credentials: Record<string, unknown>,
+  account: Account
+) => {
+  const applicable =
+    account.parent_account_id == null &&
+    account.platform === 'openai' &&
+    (account.type === 'oauth' || account.type === 'apikey') &&
+    credentials.image_pool_mode !== true
+  promptCacheCreationOptimizationEnabled.value =
+    applicable &&
+    credentials.openai_prompt_cache_creation_optimization_enabled === true
+  const rawMode = credentials.openai_prompt_cache_creation_optimization_mode
+  promptCacheCreationOptimizationMode.value =
+    rawMode === 'suppress' || rawMode === 'explicit_suppress' ? 'suppress' : 'reduce'
+}
+
+const applyPromptCacheCreationOptimizationCredentials = (credentials: Record<string, unknown>) => {
+  delete credentials.openai_prompt_cache_creation_optimization_enabled
+  delete credentials.openai_prompt_cache_creation_optimization_mode
+  if (!showPromptCacheCreationOptimizationToggle.value || !promptCacheCreationOptimizationEnabled.value) {
+    return
+  }
+  credentials.openai_prompt_cache_creation_optimization_enabled = true
+  credentials.openai_prompt_cache_creation_optimization_mode = promptCacheCreationOptimizationMode.value
 }
 
 const applyCacheBoostAndIsolationCredentials = (credentials: Record<string, unknown>) => {
@@ -4388,6 +4436,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
+  loadPromptCacheCreationOptimizationFromCredentials(credentials || {}, newAccount)
   interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
   const canUseHeaderOverride =
     newAccount.parent_account_id == null &&
@@ -4806,6 +4855,8 @@ watch([poolModeEnabled, () => props.account?.platform], ([enabled, platform]) =>
 
 watch(imagePoolModeEnabled, (enabled) => {
   if (enabled) {
+    promptCacheCreationOptimizationEnabled.value = false
+    promptCacheCreationOptimizationMode.value = 'reduce'
     promptCacheBoostEnabled.value = false
     clearOpenAIPromptCacheAdvancedOptions()
     promptCacheBoostAggressiveEnabled.value = false
@@ -4822,6 +4873,13 @@ watch(imagePoolModeEnabled, (enabled) => {
     openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
     resetOpenAIFirstTokenTimeoutPlaceholderMs('apikey')
     resetOpenAIFirstTokenTimeoutPlaceholderGuard('apikey')
+  }
+})
+
+watch(showPromptCacheCreationOptimizationToggle, (visible) => {
+  if (!visible) {
+    promptCacheCreationOptimizationEnabled.value = false
+    promptCacheCreationOptimizationMode.value = 'reduce'
   }
 })
 
@@ -5478,6 +5536,7 @@ const handleSubmit = async () => {
         delete newCredentials.pool_mode_retry_status_codes
       }
       applyCacheBoostAndIsolationCredentials(newCredentials)
+      applyPromptCacheCreationOptimizationCredentials(newCredentials)
       // Add custom error codes if enabled
       if (customErrorCodesEnabled.value) {
         newCredentials.custom_error_codes_enabled = true
@@ -5671,6 +5730,7 @@ const handleSubmit = async () => {
         }
       }
       applyCacheBoostAndIsolationCredentials(newCredentials)
+      applyPromptCacheCreationOptimizationCredentials(newCredentials)
 
       updatePayload.credentials = newCredentials
     }

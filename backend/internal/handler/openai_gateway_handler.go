@@ -907,6 +907,9 @@ func classifyOpenAIResponsesForwardResult(result *service.OpenAIForwardResult) (
 	if result.CyberBlocked {
 		return false, true
 	}
+	if result.AccountHealthNeutral {
+		return false, true
+	}
 	switch terminalType {
 	case "response.completed", "response.done", "[done]", "chat.finish_reason":
 		return true, false
@@ -2380,7 +2383,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 }
 
 func shouldReportOpenAIWSProxyFailure(c *gin.Context, err error) bool {
-	return err != nil && !service.IsOpenAIWSClientDisconnectError(err) && service.GetOpsCyberPolicy(c) == nil
+	return err != nil &&
+		!service.IsOpenAIWSClientDisconnectError(err) &&
+		!service.IsOpenAIWSAccountHealthNeutralError(err) &&
+		service.GetOpsCyberPolicy(c) == nil
 }
 
 func (h *OpenAIGatewayHandler) recoverResponsesPanic(c *gin.Context, streamStarted *bool) {

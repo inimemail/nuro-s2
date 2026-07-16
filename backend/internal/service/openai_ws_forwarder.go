@@ -108,6 +108,39 @@ type openAIWSIngressTurnError struct {
 	wroteDownstream bool
 }
 
+type openAIWSAccountHealthNeutralError struct {
+	cause error
+}
+
+func (e *openAIWSAccountHealthNeutralError) Error() string {
+	if e == nil || e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e *openAIWSAccountHealthNeutralError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+// MarkOpenAIWSAccountHealthNeutralError preserves the original WS error for
+// connection handling while telling the outer handler not to add an account
+// failure sample for an optional gateway-policy compatibility error.
+func MarkOpenAIWSAccountHealthNeutralError(err error) error {
+	if err == nil || IsOpenAIWSAccountHealthNeutralError(err) {
+		return err
+	}
+	return &openAIWSAccountHealthNeutralError{cause: err}
+}
+
+func IsOpenAIWSAccountHealthNeutralError(err error) bool {
+	var neutralErr *openAIWSAccountHealthNeutralError
+	return errors.As(err, &neutralErr) && neutralErr != nil
+}
+
 func (e *openAIWSIngressTurnError) Error() string {
 	if e == nil {
 		return ""
@@ -2640,15 +2673,16 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	debugEnabled := isOpenAIWSModeDebugEnabled()
 
 	type openAIWSClientPayload struct {
-		payloadRaw         []byte
-		rawForHash         []byte
-		promptCacheKey     string
-		previousResponseID string
-		originalModel      string
-		imageBillingModel  string
-		imageSizeTier      string
-		imageInputSize     string
-		payloadBytes       int
+		payloadRaw                       []byte
+		rawForHash                       []byte
+		promptCacheKey                   string
+		previousResponseID               string
+		originalModel                    string
+		imageBillingModel                string
+		imageSizeTier                    string
+		imageInputSize                   string
+		payloadBytes                     int
+		cacheCreationOptimizationApplied bool
 	}
 	ingressSessionOriginalModel := ""
 
@@ -2819,18 +2853,25 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			promptCacheKey = strings.TrimSpace(gjson.GetBytes(normalized, "prompt_cache_key").String())
 			previousResponseID = ""
 		}
+		optimized, optimizationResult, optimizationErr := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, normalized)
+		if optimizationErr != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", optimizationErr)
+		}
+		normalized = optimized
+		promptCacheKey = strings.TrimSpace(gjson.GetBytes(normalized, "prompt_cache_key").String())
 		ingressSessionOriginalModel = originalModel
 
 		return openAIWSClientPayload{
-			payloadRaw:         normalized,
-			rawForHash:         trimmed,
-			promptCacheKey:     promptCacheKey,
-			previousResponseID: previousResponseID,
-			originalModel:      originalModel,
-			imageBillingModel:  imageBillingModel,
-			imageSizeTier:      imageSizeTier,
-			imageInputSize:     imageInputSize,
-			payloadBytes:       len(normalized),
+			payloadRaw:                       normalized,
+			rawForHash:                       trimmed,
+			promptCacheKey:                   promptCacheKey,
+			previousResponseID:               previousResponseID,
+			originalModel:                    originalModel,
+			imageBillingModel:                imageBillingModel,
+			imageSizeTier:                    imageSizeTier,
+			imageInputSize:                   imageInputSize,
+			payloadBytes:                     len(normalized),
+			cacheCreationOptimizationApplied: optimizationResult.Applied,
 		}, nil
 	}
 
@@ -3191,7 +3232,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return lease, nil
 	}
 
-	sendAndRelay := func(turn int, lease *openAIWSConnLease, payload []byte, payloadBytes int, originalModel string, imageBillingModel string, imageSizeTier string, imageInputSize string) (*OpenAIForwardResult, error) {
+	sendAndRelay := func(turn int, lease *openAIWSConnLease, payload []byte, payloadBytes int, originalModel string, imageBillingModel string, imageSizeTier string, imageInputSize string, cacheCreationOptimizationApplied bool) (*OpenAIForwardResult, error) {
 		if lease == nil {
 			return nil, errors.New("upstream websocket lease is nil")
 		}
@@ -3233,6 +3274,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		needModelReplace := false
 		clientDisconnected := false
 		cyberBlocked := false
+		cachePolicyCompatibilityFailure := false
 		mappedModel := ""
 		var mappedModelBytes []byte
 		if originalModel != "" {
@@ -3357,6 +3399,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if eventType == "error" || eventType == "response.failed" {
 				decision := s.handleOpenAICyberPolicyEvent(c, account, false, lease.HandshakeHeaders().Get("x-request-id"), originalUpstreamMessage, payload)
 				cyberBlocked = decision.Matched
+				cachePolicyCompatibilityFailure = cacheCreationOptimizationApplied &&
+					isOpenAIPromptCacheCreationOptimizationUnsupportedError(http.StatusBadRequest, "", originalUpstreamMessage)
 			}
 
 			if !clientDisconnected {
@@ -3421,20 +3465,21 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				imageCount := imageCounter.Count()
 				result := &OpenAIForwardResult{
-					RequestID:         responseID,
-					Usage:             usage,
-					Model:             originalModel,
-					UpstreamModel:     mappedModel,
-					ServiceTier:       extractOpenAIServiceTierFromBody(payload),
-					ReasoningEffort:   extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel),
-					Stream:            reqStream,
-					OpenAIWSMode:      true,
-					TerminalEventType: eventType,
-					ResponseHeaders:   lease.HandshakeHeaders(),
-					Duration:          time.Since(turnStart),
-					FirstTokenMs:      firstTokenMs,
-					ClientDisconnect:  clientDisconnected,
-					CyberBlocked:      cyberBlocked,
+					RequestID:            responseID,
+					Usage:                usage,
+					Model:                originalModel,
+					UpstreamModel:        mappedModel,
+					ServiceTier:          extractOpenAIServiceTierFromBody(payload),
+					ReasoningEffort:      extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel),
+					Stream:               reqStream,
+					OpenAIWSMode:         true,
+					TerminalEventType:    eventType,
+					ResponseHeaders:      lease.HandshakeHeaders(),
+					Duration:             time.Since(turnStart),
+					FirstTokenMs:         firstTokenMs,
+					ClientDisconnect:     clientDisconnected,
+					CyberBlocked:         cyberBlocked,
+					AccountHealthNeutral: cachePolicyCompatibilityFailure,
 				}
 				if replayInput := replayCollector.Items(); len(replayInput) > 0 {
 					result.wsReplayInput = replayInput
@@ -3458,6 +3503,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	currentImageSizeTier := firstPayload.imageSizeTier
 	currentImageInputSize := firstPayload.imageInputSize
 	currentPayloadBytes := firstPayload.payloadBytes
+	currentCacheCreationOptimizationApplied := firstPayload.cacheCreationOptimizationApplied
 	isStrictAffinityTurn := func(payload []byte) bool {
 		if !storeDisabled {
 			return false
@@ -3945,7 +3991,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 
-		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize)
+		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize, currentCacheCreationOptimizationApplied)
 		if relayErr != nil {
 			lastTurnClean = false
 			if recoverIngressPrevResponseNotFound(relayErr, turn, connID) {
@@ -4079,6 +4125,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		currentImageSizeTier = nextPayload.imageSizeTier
 		currentImageInputSize = nextPayload.imageInputSize
 		currentPayloadBytes = nextPayload.payloadBytes
+		currentCacheCreationOptimizationApplied = nextPayload.cacheCreationOptimizationApplied
 		storeDisabled = s.isOpenAIWSStoreDisabledInRequestRaw(currentPayload, account)
 		if !storeDisabled {
 			unpinSessionConn(sessionConnID)

@@ -138,8 +138,12 @@ const openAIFirstTokenTimeoutPlaceholderGuardMinMs = 1
 const openAIFirstTokenTimeoutPlaceholderGuardMaxMs = 30000
 
 const (
-	OpenAIPromptCacheBoostLevelNormal     = "normal"
-	OpenAIPromptCacheBoostLevelAggressive = "aggressive"
+	OpenAIPromptCacheBoostLevelNormal                   = "normal"
+	OpenAIPromptCacheBoostLevelAggressive               = "aggressive"
+	OpenAIPromptCacheCreationOptimizationModeReduce     = "reduce"
+	OpenAIPromptCacheCreationOptimizationModeSuppress   = "suppress"
+	openAIPromptCacheCreationOptimizationLegacyReduce   = "retention_first"
+	openAIPromptCacheCreationOptimizationLegacySuppress = "explicit_suppress"
 )
 
 const (
@@ -1146,6 +1150,42 @@ func (a *Account) IsOpenAIPromptCacheKeyOptimizationEnabled() bool {
 func (a *Account) IsOpenAIPromptCacheLongContextEnhancementEnabled() bool {
 	return a.IsOpenAIPromptCacheBoostUpstreamHitPriorityEnabled() &&
 		credentialBool(a.Credentials, "prompt_cache_long_context_enhancement_enabled")
+}
+
+// IsOpenAIPromptCacheCreationOptimizationEnabled controls the account-level
+// cache-write policy independently from prompt-cache boost. It is available to
+// OpenAI OAuth and API-key text accounts, including non-pool API-key accounts.
+// Image pools and non-OpenAI platforms are intentionally excluded.
+func (a *Account) IsOpenAIPromptCacheCreationOptimizationEnabled() bool {
+	if a == nil || !a.IsOpenAI() || a.IsShadow() || a.IsImagePoolMode() || a.Credentials == nil {
+		return false
+	}
+	if a.Type != AccountTypeOAuth && a.Type != AccountTypeAPIKey {
+		return false
+	}
+	return credentialBool(a.Credentials, "openai_prompt_cache_creation_optimization_enabled")
+}
+
+func (a *Account) OpenAIPromptCacheCreationOptimizationMode() string {
+	if !a.IsOpenAIPromptCacheCreationOptimizationEnabled() {
+		return OpenAIPromptCacheCreationOptimizationModeReduce
+	}
+	if raw, ok := a.Credentials["openai_prompt_cache_creation_optimization_mode"].(string); ok {
+		switch strings.TrimSpace(strings.ToLower(raw)) {
+		case OpenAIPromptCacheCreationOptimizationModeSuppress,
+			openAIPromptCacheCreationOptimizationLegacySuppress:
+			return OpenAIPromptCacheCreationOptimizationModeSuppress
+		case OpenAIPromptCacheCreationOptimizationModeReduce,
+			openAIPromptCacheCreationOptimizationLegacyReduce:
+			return OpenAIPromptCacheCreationOptimizationModeReduce
+		}
+	}
+	return OpenAIPromptCacheCreationOptimizationModeReduce
+}
+
+func (a *Account) IsOpenAIPromptCacheCreationSuppressEnabled() bool {
+	return a.IsOpenAIPromptCacheCreationOptimizationEnabled() &&
+		a.OpenAIPromptCacheCreationOptimizationMode() == OpenAIPromptCacheCreationOptimizationModeSuppress
 }
 
 func (a *Account) isOpenAIUpstreamStrongIsolationApplicableAccount() bool {

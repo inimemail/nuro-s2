@@ -283,6 +283,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, policyErr
 	}
 	responsesBody = updatedBody
+	optimizedBody, cacheCreationOptimization, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, responsesBody)
+	if optimizeErr != nil {
+		return nil, optimizeErr
+	}
+	responsesBody = optimizedBody
+	if cacheCreationOptimization.RemovedPromptCacheRetention {
+		promptCacheBoostRetentionInjected = false
+	}
 
 	// 5. Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
@@ -369,13 +377,17 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		if requestFirstTokenPlaceholder.Sent {
+			cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
+				isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
 			s.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(account, resp.StatusCode, upstreamMsg, respBody, promptCacheBoostKeyInjected, promptCacheBoostRetentionInjected)
 			if resp.StatusCode == http.StatusTooManyRequests {
 				_ = s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody)
 			}
 			setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, "")
-			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
-			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, upstreamModel, upstreamMsg)
+			if !cachePolicyCompatibilityFailure {
+				s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+				s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, upstreamModel, upstreamMsg)
+			}
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -387,17 +399,25 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			})
 			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", safeUpstreamErrorMessage)
 			return &OpenAIForwardResult{
-				RequestID:     resp.Header.Get("x-request-id"),
-				Usage:         OpenAIUsage{},
-				Model:         originalModel,
-				BillingModel:  billingModel,
-				UpstreamModel: upstreamModel,
-				Stream:        true,
-				Duration:      time.Since(startTime),
+				RequestID:            resp.Header.Get("x-request-id"),
+				Usage:                OpenAIUsage{},
+				Model:                originalModel,
+				BillingModel:         billingModel,
+				UpstreamModel:        upstreamModel,
+				Stream:               true,
+				Duration:             time.Since(startTime),
+				AccountHealthNeutral: cachePolicyCompatibilityFailure,
 			}, fmt.Errorf("chat_completions upstream error after first token placeholder: %d message=%s", resp.StatusCode, upstreamMsg)
 		}
 		if refreshedAccount, _, ok := s.tryRecoverOpenAIOAuth401(ctx, c, account, resp.StatusCode, respBody); ok {
 			return s.ForwardAsChatCompletions(ctx, c, refreshedAccount, body, incomingPromptCacheKey, defaultMappedModel)
+		}
+		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+			logger.L().Info("openai chat_completions: cache creation optimization unsupported, retrying with the account default request policy",
+				zap.Int64("account_id", account.ID),
+				zap.Int("upstream_status", resp.StatusCode),
+			)
+			return s.ForwardAsChatCompletions(ctx, c, openAIPromptCacheCreationOptimizationFallbackAccount(account), body, incomingPromptCacheKey, defaultMappedModel)
 		}
 		if (promptCacheBoostKeyInjected || promptCacheBoostRetentionInjected) && isOpenAIPromptCacheBoostUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
 			keyUnsupported, retentionUnsupported := openAIPromptCacheBoostUnsupportedFields(resp.StatusCode, upstreamMsg, respBody)

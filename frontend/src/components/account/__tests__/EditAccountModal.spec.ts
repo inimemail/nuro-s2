@@ -186,6 +186,8 @@ function buildOpenAIOAuthAccount() {
       prompt_cache_account_relay_enabled: true,
       prompt_cache_key_optimization_enabled: true,
       prompt_cache_long_context_enhancement_enabled: true,
+      openai_prompt_cache_creation_optimization_enabled: true,
+      openai_prompt_cache_creation_optimization_mode: 'suppress',
       upstream_strong_isolation_enabled: true
     },
     extra: {},
@@ -286,6 +288,7 @@ describe('EditAccountModal', () => {
     expect(wrapper.text()).toContain('admin.accounts.promptCacheAccountRelay')
     expect(wrapper.text()).toContain('admin.accounts.promptCacheKeyOptimization')
     expect(wrapper.text()).toContain('admin.accounts.promptCacheLongContextEnhancement')
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheCreationOptimization')
     expect(wrapper.text()).toContain('admin.accounts.upstreamStrongIsolation')
   })
 
@@ -308,10 +311,77 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_account_relay_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_key_optimization_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.prompt_cache_long_context_enhancement_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.openai_prompt_cache_creation_optimization_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.openai_prompt_cache_creation_optimization_mode).toBe('suppress')
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.upstream_strong_isolation_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('pool_mode')
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('pool_soft_cooldown_enabled')
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('image_pool_mode')
+  })
+
+  it('shows and submits cache creation optimization for a non-pool OpenAI API Key account', async () => {
+    const account = buildAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheCreationOptimization')
+    expect(wrapper.text()).not.toContain('admin.accounts.promptCacheBoostHint')
+
+    await wrapper.get('[data-testid="prompt-cache-creation-optimization-toggle"]').trigger('click')
+    expect(wrapper.get('[data-testid="prompt-cache-creation-mode-reduce"]').attributes('aria-pressed')).toBe('true')
+    await wrapper.get('[data-testid="prompt-cache-creation-mode-suppress"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials?.openai_prompt_cache_creation_optimization_enabled).toBe(true)
+    expect(credentials?.openai_prompt_cache_creation_optimization_mode).toBe('suppress')
+    expect(credentials).not.toHaveProperty('pool_mode')
+  })
+
+  it('removes both cache creation optimization credentials when the switch is turned off', async () => {
+    const account = buildAccount()
+    account.credentials.openai_prompt_cache_creation_optimization_enabled = true
+    account.credentials.openai_prompt_cache_creation_optimization_mode = 'suppress'
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    expect(wrapper.get('[data-testid="prompt-cache-creation-optimization-toggle"]').attributes('aria-pressed')).toBe('true')
+    await wrapper.get('[data-testid="prompt-cache-creation-optimization-toggle"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials).not.toHaveProperty('openai_prompt_cache_creation_optimization_enabled')
+    expect(credentials).not.toHaveProperty('openai_prompt_cache_creation_optimization_mode')
+  })
+
+  it('resets cache creation optimization when switching from an enabled account to a disabled account', async () => {
+    const enabledAccount = buildOpenAIOAuthAccount()
+    const disabledAccount = buildAccount()
+    disabledAccount.id = 6
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(disabledAccount)
+
+    const wrapper = mountModal(enabledAccount)
+    expect(wrapper.get('[data-testid="prompt-cache-creation-optimization-toggle"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-testid="prompt-cache-creation-mode-suppress"]').attributes('aria-pressed')).toBe('true')
+
+    await wrapper.setProps({ account: disabledAccount })
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="prompt-cache-creation-optimization-toggle"]').attributes('aria-pressed')).toBe('false')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials).not.toHaveProperty('openai_prompt_cache_creation_optimization_enabled')
+    expect(credentials).not.toHaveProperty('openai_prompt_cache_creation_optimization_mode')
   })
 
   it('persists advanced cache enhancements for OpenAI API Key text pools', async () => {

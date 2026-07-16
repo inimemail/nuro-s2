@@ -305,6 +305,14 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 		firstClientMessage = isolatedFirst
 	}
+	optimizedFirst, firstOptimizationResult, optimizationErr := applyOpenAIPromptCacheCreationOptimizationBody(account, capturedSessionModel, firstClientMessage)
+	if optimizationErr != nil {
+		return fmt.Errorf("apply prompt cache creation optimization on first ws frame: %w", optimizationErr)
+	}
+	firstClientMessage = optimizedFirst
+	cacheCreationOptimizationApplied := atomic.Bool{}
+	cacheCreationOptimizationApplied.Store(firstOptimizationResult.Applied)
+	cachePolicyCompatibilityFailure := atomic.Bool{}
 
 	// 在 policy filter 之后再提取 service_tier / reasoning_effort 用于
 	// usage 上报：filter
@@ -406,6 +414,31 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		// capturedSessionModel 的读写都发生在该 goroutine 内，因此无需
 		// 加锁/原子化。
 		filter: func(msgType coderws.MessageType, payload []byte) ([]byte, *OpenAIFastBlockedError, error) {
+			if msgType == coderws.MessageBinary {
+				// Preserve the historical binary-frame passthrough for accounts
+				// without this optional policy. Enabled accounts still need the
+				// same per-turn cache policy as text JSON frames.
+				if !account.IsOpenAIPromptCacheCreationOptimizationEnabled() {
+					return payload, nil, nil
+				}
+				if updated := openAIWSPassthroughPolicyModelFromSessionFrame(account, payload); updated != "" {
+					capturedSessionModel = updated
+				}
+				if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.create" {
+					return payload, nil, nil
+				}
+				model := openAIWSPassthroughPolicyModelForFrame(account, payload)
+				if model == "" {
+					model = capturedSessionModel
+				}
+				out, optimizationResult, optimizationErr := applyOpenAIPromptCacheCreationOptimizationBody(account, model, payload)
+				if optimizationErr != nil {
+					return payload, nil, optimizationErr
+				}
+				cacheCreationOptimizationApplied.Store(optimizationResult.Applied)
+				cachePolicyCompatibilityFailure.Store(false)
+				return out, nil, nil
+			}
 			if msgType != coderws.MessageText {
 				return payload, nil, nil
 			}
@@ -459,6 +492,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if isolationErr != nil {
 					return payload, nil, isolationErr
 				}
+			}
+			if policyErr == nil && blocked == nil && (eventType == "" || eventType == "response.create") {
+				var optimizationResult openAIPromptCacheCreationOptimizationResult
+				var optimizationErr error
+				out, optimizationResult, optimizationErr = applyOpenAIPromptCacheCreationOptimizationBody(account, model, out)
+				if optimizationErr != nil {
+					return payload, nil, optimizationErr
+				}
+				cacheCreationOptimizationApplied.Store(optimizationResult.Applied)
+				cachePolicyCompatibilityFailure.Store(false)
 			}
 			// 多轮 passthrough usage：仅在成功（non-block / non-err）
 			// 的 response.create 帧上更新 usageMeta，使用
@@ -552,17 +595,18 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
 						ImageOutputTokens:        turn.Usage.ImageOutputTokens,
 					},
-					Model:             turn.RequestModel,
-					ServiceTier:       usageMeta.serviceTier.Load(),
-					ReasoningEffort:   usageMeta.reasoningEffort.Load(),
-					Stream:            true,
-					OpenAIWSMode:      true,
-					TerminalEventType: turn.TerminalEventType,
-					ResponseHeaders:   cloneHeader(handshakeHeaders),
-					Duration:          turn.Duration,
-					FirstTokenMs:      turn.FirstTokenMs,
-					ClientDisconnect:  turn.ClientDisconnected,
-					CyberBlocked:      turn.CyberBlocked,
+					Model:                turn.RequestModel,
+					ServiceTier:          usageMeta.serviceTier.Load(),
+					ReasoningEffort:      usageMeta.reasoningEffort.Load(),
+					Stream:               true,
+					OpenAIWSMode:         true,
+					TerminalEventType:    turn.TerminalEventType,
+					ResponseHeaders:      cloneHeader(handshakeHeaders),
+					Duration:             turn.Duration,
+					FirstTokenMs:         turn.FirstTokenMs,
+					ClientDisconnect:     turn.ClientDisconnected,
+					CyberBlocked:         turn.CyberBlocked,
+					AccountHealthNeutral: cachePolicyCompatibilityFailure.Load(),
 				}
 				logOpenAIWSV2Passthrough(
 					"relay_turn_completed account_id=%d turn=%d request_id=%s terminal_event=%s duration_ms=%d first_token_ms=%d input_tokens=%d output_tokens=%d cache_read_tokens=%d",
@@ -581,12 +625,21 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 			},
 			BeforeWriteClient: func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error {
-				if msgType != coderws.MessageText {
+				if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
 					return nil
 				}
 				eventType, _, _ := parseOpenAIWSEventEnvelope(payload)
 				if eventType == "error" || eventType == "response.failed" {
-					s.handleOpenAICyberPolicyEvent(c, account, false, handshakeHeaders.Get("x-request-id"), payload, firstClientMessage)
+					if msgType == coderws.MessageText {
+						s.handleOpenAICyberPolicyEvent(c, account, false, handshakeHeaders.Get("x-request-id"), payload, firstClientMessage)
+					}
+					cachePolicyCompatibilityFailure.Store(
+						cacheCreationOptimizationApplied.Load() &&
+							isOpenAIPromptCacheCreationOptimizationUnsupportedError(http.StatusBadRequest, "", payload),
+					)
+				}
+				if msgType != coderws.MessageText {
+					return nil
 				}
 				if wroteDownstream || eventType != "error" {
 					return nil
@@ -634,17 +687,18 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			CacheReadInputTokens:     relayResult.Usage.CacheReadInputTokens,
 			ImageOutputTokens:        relayResult.Usage.ImageOutputTokens,
 		},
-		Model:             relayResult.RequestModel,
-		ServiceTier:       usageMeta.serviceTier.Load(),
-		ReasoningEffort:   usageMeta.reasoningEffort.Load(),
-		Stream:            true,
-		OpenAIWSMode:      true,
-		TerminalEventType: relayResult.TerminalEventType,
-		ResponseHeaders:   cloneHeader(handshakeHeaders),
-		Duration:          relayResult.Duration,
-		FirstTokenMs:      relayResult.FirstTokenMs,
-		ClientDisconnect:  relayResult.ClientDisconnected,
-		CyberBlocked:      relayResult.CyberBlocked,
+		Model:                relayResult.RequestModel,
+		ServiceTier:          usageMeta.serviceTier.Load(),
+		ReasoningEffort:      usageMeta.reasoningEffort.Load(),
+		Stream:               true,
+		OpenAIWSMode:         true,
+		TerminalEventType:    relayResult.TerminalEventType,
+		ResponseHeaders:      cloneHeader(handshakeHeaders),
+		Duration:             relayResult.Duration,
+		FirstTokenMs:         relayResult.FirstTokenMs,
+		ClientDisconnect:     relayResult.ClientDisconnected,
+		CyberBlocked:         relayResult.CyberBlocked,
+		AccountHealthNeutral: cachePolicyCompatibilityFailure.Load(),
 	}
 
 	turnCount := int(completedTurns.Load())
@@ -692,7 +746,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		relayErr,
 		relayExit.WroteDownstream,
 	)
+	if result.AccountHealthNeutral {
+		turnErr = MarkOpenAIWSAccountHealthNeutralError(turnErr)
+	}
 	if hooks != nil && hooks.AfterTurn != nil {
+		// Terminal turns have already delivered their result through
+		// OnTurnComplete. This final callback only releases any outstanding
+		// slots; forwarding result again could duplicate usage accounting.
 		hooks.AfterTurn(turnCount+1, nil, turnErr)
 	}
 	return turnErr

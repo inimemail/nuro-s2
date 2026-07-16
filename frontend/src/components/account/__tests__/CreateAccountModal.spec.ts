@@ -202,4 +202,50 @@ describe('CreateAccountModal', () => {
     expect(createAccountMock).toHaveBeenCalledTimes(1)
     expect(createAccountMock.mock.calls[0]?.[0]?.extra).not.toHaveProperty('anthropic_apikey_auth_scheme')
   })
+
+  it('submits cache creation optimization for a non-pool OpenAI API Key account', async () => {
+    const wrapper = mountModal()
+
+    await wrapper.findAll('button').find((button) => button.text().trim() === 'OpenAI')!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('API Key'))!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.accounts.promptCacheCreationOptimization')
+    await wrapper.get('input[data-tour="account-form-name"]').setValue('OpenAI Key')
+    await wrapper.get('input[placeholder="sk-proj-..."]').setValue('sk-test')
+    await wrapper.get('[data-testid="prompt-cache-creation-optimization-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="prompt-cache-creation-mode-suppress"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]).toMatchObject({
+      platform: 'openai',
+      type: 'apikey',
+      credentials: {
+        openai_prompt_cache_creation_optimization_enabled: true,
+        openai_prompt_cache_creation_optimization_mode: 'suppress'
+      }
+    })
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).not.toHaveProperty('pool_mode')
+  })
+
+  it('does not write cache creation optimization credentials while the switch stays off', async () => {
+    const wrapper = mountModal()
+
+    await wrapper.findAll('button').find((button) => button.text().trim() === 'OpenAI')!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('API Key'))!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="prompt-cache-creation-optimization-toggle"]').attributes('aria-pressed')).toBe('false')
+    await wrapper.get('input[data-tour="account-form-name"]').setValue('OpenAI Default Key')
+    await wrapper.get('input[placeholder="sk-proj-..."]').setValue('sk-test')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const credentials = createAccountMock.mock.calls[0]?.[0]?.credentials
+    expect(credentials).not.toHaveProperty('openai_prompt_cache_creation_optimization_enabled')
+    expect(credentials).not.toHaveProperty('openai_prompt_cache_creation_optimization_mode')
+  })
 })

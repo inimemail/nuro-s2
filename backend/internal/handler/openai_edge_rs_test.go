@@ -7,11 +7,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 func newOpenAIEdgeTestContext(method, path, body, secret string) (*gin.Context, *httptest.ResponseRecorder) {
@@ -420,6 +424,77 @@ func TestOpenAIEdgeRetryFallbackBoundaries(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeRetryCacheCreationCompatibilityStaysOnEdgeRS(t *testing.T) {
+	cfg := &config.Config{}
+	gatewaySvc := service.NewOpenAIGatewayService(
+		nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	stable := strings.Repeat("stable system policy ", 260)
+	forwardBody := []byte(`{"model":"gpt-5.6-sol","stream":true,"messages":[{"role":"system","content":"` + stable + `"},{"role":"user","content":"hello"}]}`)
+	account := &service.Account{
+		ID:          1001,
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.openai.com",
+			"openai_prompt_cache_creation_optimization_enabled": true,
+			"openai_prompt_cache_creation_optimization_mode":    service.OpenAIPromptCacheCreationOptimizationModeSuppress,
+		},
+		Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: false},
+	}
+	h := &OpenAIGatewayHandler{
+		gatewayService: gatewaySvc,
+		openAIEdgeLeases: map[string]*openAIEdgeLease{
+			"lease-1": {
+				edgeRequestID:      "edge-1",
+				leaseID:            "lease-1",
+				expiresAt:          time.Now().Add(time.Minute),
+				account:            account,
+				cachePolicyApplied: true,
+				forwardBody:        forwardBody,
+				inboundEndpoint:    "/v1/chat/completions",
+			},
+		},
+	}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+	errorBody := `{"error":{"message":"Unsupported parameter: prompt_cache_options"}}`
+
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:            "lease-1",
+		AccountID:          account.ID,
+		UpstreamStatusCode: http.StatusBadRequest,
+		ErrorMessage:       errorBody,
+		ResponseBody:       json.RawMessage(strconv.Quote(errorBody)),
+	})
+
+	if decision.Action != service.OpenAIEdgeActionRelay || decision.Plan == nil {
+		t.Fatalf("expected edge-rs relay retry, got action=%q reason=%q", decision.Action, decision.Reason)
+	}
+	if decision.Reason != "cache_creation_optimization_unsupported" {
+		t.Fatalf("unexpected retry reason: %q", decision.Reason)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(decision.Plan.BodyRawBase64)
+	if err != nil {
+		t.Fatalf("decode retry body: %v", err)
+	}
+	if gjson.GetBytes(decoded, "prompt_cache_options").Exists() {
+		t.Fatalf("fallback edge plan must use the account default request policy: %s", decoded)
+	}
+	if decision.Plan.PromptCacheCreationOptimizationMode != "" {
+		t.Fatalf("fallback edge plan must clear optimization mode, got %q", decision.Plan.PromptCacheCreationOptimizationMode)
+	}
+	lease := h.openAIEdgeLeases["lease-1"]
+	if lease == nil || lease.cachePolicyEnabled || lease.cachePolicyApplied {
+		t.Fatal("fallback edge retry must clear the lease policy marker to prevent a retry loop")
+	}
+	if !account.IsOpenAIPromptCacheCreationSuppressEnabled() {
+		t.Fatal("fallback edge retry must not mutate the scheduler account credentials")
+	}
+}
+
 func TestOpenAIEdgeRetryProtectsPoolModelRouting404(t *testing.T) {
 	h := &OpenAIGatewayHandler{
 		openAIEdgeLeases: map[string]*openAIEdgeLease{
@@ -555,6 +630,19 @@ func TestOpenAIEdgeCompletionSuccessRejectsCyberAndDisconnect(t *testing.T) {
 	disconnected.ClientDisconnected = true
 	if openAIEdgeCompletionIsSuccessful("/v1/responses", disconnected) {
 		t.Fatal("client-disconnected completion must not be successful")
+	}
+}
+
+func TestOpenAIEdgeCachePolicyCompatibilityFailureIsLeaseScoped(t *testing.T) {
+	req := service.OpenAIEdgeCompleteRequest{ErrorType: "cache_creation_optimization_unsupported"}
+	if !openAIEdgeCachePolicyCompatibilityFailure(&openAIEdgeLease{cachePolicyEnabled: true}, req) {
+		t.Fatal("an applied policy compatibility failure should be health-neutral")
+	}
+	if openAIEdgeCachePolicyCompatibilityFailure(&openAIEdgeLease{}, req) {
+		t.Fatal("a disabled account lease must not inherit compatibility handling")
+	}
+	if openAIEdgeCachePolicyCompatibilityFailure(&openAIEdgeLease{cachePolicyEnabled: true}, service.OpenAIEdgeCompleteRequest{ErrorType: "upstream_error"}) {
+		t.Fatal("ordinary upstream failures must remain health samples")
 	}
 }
 

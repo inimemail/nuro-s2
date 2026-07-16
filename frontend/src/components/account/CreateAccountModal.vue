@@ -1642,6 +1642,12 @@
               </div>
             </div>
           </div>
+          <PromptCacheCreationOptimizationControl
+            v-if="showPromptCacheCreationOptimizationToggle"
+            class="mt-3"
+            v-model:enabled="promptCacheCreationOptimizationEnabled"
+            v-model:mode="promptCacheCreationOptimizationMode"
+          />
           <div v-if="showUpstreamStrongIsolationToggle" class="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
             <div class="flex items-center justify-between gap-4">
               <div>
@@ -2516,6 +2522,11 @@
             </div>
           </div>
         </div>
+        <PromptCacheCreationOptimizationControl
+          v-if="showPromptCacheCreationOptimizationToggle"
+          v-model:enabled="promptCacheCreationOptimizationEnabled"
+          v-model:mode="promptCacheCreationOptimizationMode"
+        />
         <div class="rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
           <div class="flex items-center justify-between gap-4">
             <div>
@@ -4367,6 +4378,7 @@ import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
+import PromptCacheCreationOptimizationControl from '@/components/account/PromptCacheCreationOptimizationControl.vue'
 import {
   applyHeaderOverride,
   applyInterceptWarmup,
@@ -4555,6 +4567,9 @@ const poolSoftCooldownEnabled = ref(true)
 const poolSoftCooldownErrorThreshold = ref(DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD)
 const imagePoolModeEnabled = ref(false)
 const promptCacheBoostEnabled = ref(false)
+type PromptCacheCreationOptimizationMode = 'reduce' | 'suppress'
+const promptCacheCreationOptimizationEnabled = ref(false)
+const promptCacheCreationOptimizationMode = ref<PromptCacheCreationOptimizationMode>('reduce')
 const promptCacheBoostAggressiveEnabled = ref(false)
 const promptCacheBoostUpstreamHitPriorityEnabled = ref(false)
 const promptCacheSmartRoutingEnabled = ref(false)
@@ -4600,6 +4615,9 @@ const showPromptCacheBoostToggle = computed(() =>
       accountCategory.value === 'oauth-based' ||
       (accountCategory.value === 'apikey' && poolModeEnabled.value)
     ))
+)
+const showPromptCacheCreationOptimizationToggle = computed(() =>
+  isOpenAIRequestPathCreate.value && !imagePoolModeEnabled.value
 )
 const showUpstreamStrongIsolationToggle = computed(() =>
   (isOpenAIRequestPathCreate.value &&
@@ -5337,6 +5355,13 @@ watch(showPromptCacheBoostToggle, (visible) => {
   }
 })
 
+watch(showPromptCacheCreationOptimizationToggle, (visible) => {
+  if (!visible) {
+    promptCacheCreationOptimizationEnabled.value = false
+    promptCacheCreationOptimizationMode.value = 'reduce'
+  }
+})
+
 watch([promptCacheBoostEnabled, promptCacheBoostAggressiveEnabled], ([enabled, aggressive]) => {
   if (!enabled || !aggressive) {
     promptCacheBoostUpstreamHitPriorityEnabled.value = false
@@ -5785,6 +5810,8 @@ const resetForm = () => {
   poolSoftCooldownErrorThreshold.value = DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD
   imagePoolModeEnabled.value = false
   promptCacheBoostEnabled.value = false
+  promptCacheCreationOptimizationEnabled.value = false
+  promptCacheCreationOptimizationMode.value = 'reduce'
   clearOpenAIPromptCacheAdvancedOptions()
   promptCacheBoostAggressiveEnabled.value = false
   promptCacheBoostUpstreamHitPriorityEnabled.value = false
@@ -6124,11 +6151,22 @@ const applyPlatformCacheBoostAndIsolationCredentials = (credentials: Record<stri
   }
 }
 
+const applyPromptCacheCreationOptimizationCredentials = (credentials: Record<string, unknown>) => {
+  delete credentials.openai_prompt_cache_creation_optimization_enabled
+  delete credentials.openai_prompt_cache_creation_optimization_mode
+  if (!showPromptCacheCreationOptimizationToggle.value || !promptCacheCreationOptimizationEnabled.value) {
+    return
+  }
+  credentials.openai_prompt_cache_creation_optimization_enabled = true
+  credentials.openai_prompt_cache_creation_optimization_mode = promptCacheCreationOptimizationMode.value
+}
+
 const applyOpenAIOAuthPromptCacheAndIsolationCredentials = (credentials: Record<string, unknown>) => {
   if (!isOpenAIOAuthCreate.value && !isAnthropicOAuthBasedCreate.value) {
     return
   }
   applyPlatformCacheBoostAndIsolationCredentials(credentials)
+  applyPromptCacheCreationOptimizationCredentials(credentials)
 }
 
 const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unknown> | undefined => {
@@ -6542,6 +6580,7 @@ const handleSubmit = async () => {
     }
   }
   applyPlatformCacheBoostAndIsolationCredentials(credentials)
+  applyPromptCacheCreationOptimizationCredentials(credentials)
 
   // Add custom error codes if enabled
   if (customErrorCodesEnabled.value) {
@@ -6676,6 +6715,7 @@ const createAccountAndFinish = async (
     (platform === 'anthropic' && (type === 'oauth' || type === 'setup-token'))
   ) {
     applyPlatformCacheBoostAndIsolationCredentials(credentials)
+    applyPromptCacheCreationOptimizationCredentials(credentials)
   }
   if (!applyHeaderOverrideCredentials(credentials, platform, type, 'create')) {
     return

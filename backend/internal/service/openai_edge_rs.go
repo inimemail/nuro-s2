@@ -58,6 +58,11 @@ type OpenAIEdgePlan struct {
 	// configured timeout when upstream has not produced a real first token.
 	// It must not be reported as first_token_ms.
 	FirstTokenTimeoutPlaceholderMS int `json:"first_token_timeout_placeholder_ms,omitempty"`
+	// PromptCacheCreationOptimizationMode carries the account policy for edge-rs
+	// WS turns. Applied reports whether the current outgoing body was rewritten.
+	PromptCacheCreationOptimizationMode    string `json:"prompt_cache_creation_optimization_mode,omitempty"`
+	PromptCacheCreationOptimizationModel   string `json:"prompt_cache_creation_optimization_model,omitempty"`
+	PromptCacheCreationOptimizationApplied bool   `json:"prompt_cache_creation_optimization_applied,omitempty"`
 }
 
 type OpenAIEdgeRetryRequest struct {

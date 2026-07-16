@@ -241,23 +241,26 @@ type OpenAIForwardResult struct {
 	ServiceTier *string
 	// ReasoningEffort is extracted from request body (reasoning.effort) or derived from model suffix.
 	// Stored for usage records display; nil means not provided / not applicable.
-	ReasoningEffort      *string
-	Stream               bool
-	OpenAIWSMode         bool
-	TerminalEventType    string
-	ResponseHeaders      http.Header
-	Duration             time.Duration
-	FirstTokenMs         *int
-	UpstreamHeaderMs     *int
-	UpstreamFirstByteMs  *int
-	FirstClientFlushMs   *int
-	EdgePrepareMs        *int
-	EdgeQueueWaitMs      *int
-	EdgeRelayStartMs     *int
-	EdgeFallbackReason   *string
-	EdgeRetryCount       *int
-	ClientDisconnect     bool
-	CyberBlocked         bool
+	ReasoningEffort     *string
+	Stream              bool
+	OpenAIWSMode        bool
+	TerminalEventType   string
+	ResponseHeaders     http.Header
+	Duration            time.Duration
+	FirstTokenMs        *int
+	UpstreamHeaderMs    *int
+	UpstreamFirstByteMs *int
+	FirstClientFlushMs  *int
+	EdgePrepareMs       *int
+	EdgeQueueWaitMs     *int
+	EdgeRelayStartMs    *int
+	EdgeFallbackReason  *string
+	EdgeRetryCount      *int
+	ClientDisconnect    bool
+	CyberBlocked        bool
+	// AccountHealthNeutral marks failures caused by optional gateway policy
+	// compatibility after the response has already been committed.
+	AccountHealthNeutral bool
 	ImageCount           int
 	ImageSize            string
 	ImageInputSize       string
@@ -4045,6 +4048,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
+	var cacheCreationOptimization openAIPromptCacheCreationOptimizationResult
+
 	if IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody) && !imageGenerationAllowed {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		c.JSON(http.StatusForbidden, gin.H{
@@ -4096,6 +4101,22 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if marshalErr != nil {
 				return nil, fmt.Errorf("serialize request body: %w", marshalErr)
 			}
+		}
+	}
+	// Apply the optional cache-creation policy after all existing request-map
+	// transforms have been serialized. The raw-body transformer uses
+	// json.Decoder.UseNumber, so enabling this account-level policy cannot
+	// round large integer seed/metadata values that the normal one-field patch
+	// fast path would otherwise preserve.
+	if !isOpenAIResponsesCompactPath(c) {
+		optimizedBody, optimizationResult, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, body)
+		if optimizeErr != nil {
+			return nil, optimizeErr
+		}
+		body = optimizedBody
+		cacheCreationOptimization = optimizationResult
+		if cacheCreationOptimization.RemovedPromptCacheRetention {
+			promptCacheBoostRetentionInjected = false
 		}
 	}
 	if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, false) {
@@ -4401,13 +4422,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)
 			if requestFirstTokenPlaceholder.Sent {
+				cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
+					isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
 				s.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(account, resp.StatusCode, upstreamMsg, respBody, promptCacheBoostKeyInjected, promptCacheBoostRetentionInjected)
 				if resp.StatusCode == http.StatusTooManyRequests {
 					_ = s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody)
 				}
 				setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, "")
-				_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
-				s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, upstreamModel, upstreamMsg)
+				if !cachePolicyCompatibilityFailure {
+					_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+					s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, upstreamModel, upstreamMsg)
+				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
 					AccountID:          account.ID,
@@ -4419,19 +4444,28 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				})
 				writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectResponses, originalModel, "upstream_error", safeUpstreamErrorMessage)
 				return &OpenAIForwardResult{
-					RequestID:     resp.Header.Get("x-request-id"),
-					Usage:         OpenAIUsage{},
-					Model:         originalModel,
-					UpstreamModel: upstreamModel,
-					Stream:        true,
-					OpenAIWSMode:  false,
-					Duration:      time.Since(startTime),
+					RequestID:            resp.Header.Get("x-request-id"),
+					Usage:                OpenAIUsage{},
+					Model:                originalModel,
+					UpstreamModel:        upstreamModel,
+					Stream:               true,
+					OpenAIWSMode:         false,
+					Duration:             time.Since(startTime),
+					AccountHealthNeutral: cachePolicyCompatibilityFailure,
 				}, fmt.Errorf("upstream error after first token placeholder: %d message=%s", resp.StatusCode, upstreamMsg)
 			}
 			if refreshedAccount, refreshedToken, ok := s.tryRecoverOpenAIOAuth401(ctx, c, account, resp.StatusCode, respBody); ok {
 				account = refreshedAccount
 				token = refreshedToken
 				continue
+			}
+			if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+				releaseOpenAIParsedRequestBody(c)
+				logger.L().Info("openai responses: cache creation optimization unsupported, retrying with the account default request policy",
+					zap.Int64("account_id", account.ID),
+					zap.Int("upstream_status", resp.StatusCode),
+				)
+				return s.Forward(ctx, c, openAIPromptCacheCreationOptimizationFallbackAccount(account), originalBody)
 			}
 			if !httpPromptCacheBoostRetryTried && (promptCacheBoostKeyInjected || promptCacheBoostRetentionInjected) && isOpenAIPromptCacheBoostUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
 				keyUnsupported, retentionUnsupported := openAIPromptCacheBoostUnsupportedFields(resp.StatusCode, upstreamMsg, respBody)
@@ -4607,6 +4641,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	reqStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	originalBody := body
 	upstreamPassthroughModel := ""
 	if isOpenAIResponsesCompactPath(c) {
 		compactMappedModel := s.resolveOpenAICompactForwardModel(account, reqModel)
@@ -4705,6 +4740,15 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		if isolated {
 			body = isolatedBody
 		}
+	}
+	var cacheCreationOptimization openAIPromptCacheCreationOptimizationResult
+	if !isOpenAIResponsesCompactPath(c) {
+		optimizedBody, optimizationResult, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBody(account, policyModel, body)
+		if optimizeErr != nil {
+			return nil, optimizeErr
+		}
+		body = optimizedBody
+		cacheCreationOptimization = optimizationResult
 	}
 
 	apiKey := getAPIKeyFromContext(c)
@@ -4836,12 +4880,16 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 
 			if requestFirstTokenPlaceholder.Sent {
+				cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
+					isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
 				if resp.StatusCode == http.StatusTooManyRequests {
 					_ = s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody)
 				}
 				setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, "")
-				_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, reqModel)
-				s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, reqModel, upstreamMsg)
+				if !cachePolicyCompatibilityFailure {
+					_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, reqModel)
+					s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, reqModel, upstreamMsg)
+				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
 					AccountID:          account.ID,
@@ -4854,14 +4902,31 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				})
 				writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectResponses, reqModel, "upstream_error", safeUpstreamErrorMessage)
 				return &OpenAIForwardResult{
-					RequestID:     resp.Header.Get("x-request-id"),
-					Usage:         OpenAIUsage{},
-					Model:         reqModel,
-					UpstreamModel: upstreamPassthroughModel,
-					Stream:        true,
-					OpenAIWSMode:  false,
-					Duration:      time.Since(startTime),
+					RequestID:            resp.Header.Get("x-request-id"),
+					Usage:                OpenAIUsage{},
+					Model:                reqModel,
+					UpstreamModel:        upstreamPassthroughModel,
+					Stream:               true,
+					OpenAIWSMode:         false,
+					Duration:             time.Since(startTime),
+					AccountHealthNeutral: cachePolicyCompatibilityFailure,
 				}, fmt.Errorf("passthrough upstream error after first token placeholder: %d message=%s", resp.StatusCode, upstreamMsg)
+			}
+			if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+				logger.L().Info("openai passthrough: cache creation optimization unsupported, retrying with the account default request policy",
+					zap.Int64("account_id", account.ID),
+					zap.Int("upstream_status", resp.StatusCode),
+				)
+				return s.forwardOpenAIPassthrough(
+					ctx,
+					c,
+					openAIPromptCacheCreationOptimizationFallbackAccount(account),
+					originalBody,
+					reqModel,
+					reasoningEffort,
+					reqStream,
+					startTime,
+				)
 			}
 
 			if shouldFailoverOpenAIPassthroughResponse(resp.StatusCode) {

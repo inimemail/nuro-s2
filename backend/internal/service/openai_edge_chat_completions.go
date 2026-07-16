@@ -81,6 +81,11 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 	if err != nil {
 		return nil, fmt.Errorf("enable stream usage: %w", err)
 	}
+	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, upstreamBody)
+	if err != nil {
+		return nil, err
+	}
+	cacheCreationMode, cacheCreationModel := openAIEdgePromptCacheCreationOptimizationFields(account, upstreamModel, cacheCreationOptimization)
 
 	apiKey := account.GetOpenAIApiKey()
 	if apiKey == "" {
@@ -131,6 +136,9 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 				account,
 				originalModel,
 			),
+			PromptCacheCreationOptimizationMode:    cacheCreationMode,
+			PromptCacheCreationOptimizationModel:   cacheCreationModel,
+			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
 		},
 		Model:           originalModel,
 		BillingModel:    billingModel,
@@ -269,6 +277,11 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 			upstreamBody = isolatedBody
 		}
 	}
+	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, policyModel, upstreamBody)
+	if err != nil {
+		return nil, err
+	}
+	cacheCreationMode, cacheCreationModel := openAIEdgePromptCacheCreationOptimizationFields(account, policyModel, cacheCreationOptimization)
 
 	apiKey := account.GetOpenAIApiKey()
 	if apiKey == "" {
@@ -342,6 +355,9 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 				account,
 				originalModel,
 			),
+			PromptCacheCreationOptimizationMode:    cacheCreationMode,
+			PromptCacheCreationOptimizationModel:   cacheCreationModel,
+			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
 		},
 		Model:           originalModel,
 		BillingModel:    originalModel,
@@ -509,6 +525,11 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if err != nil {
 		return nil, err
 	}
+	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, upstreamBody)
+	if err != nil {
+		return nil, err
+	}
+	cacheCreationMode, cacheCreationModel := openAIEdgePromptCacheCreationOptimizationFields(account, upstreamModel, cacheCreationOptimization)
 
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -541,6 +562,9 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 				account,
 				originalModel,
 			),
+			PromptCacheCreationOptimizationMode:    cacheCreationMode,
+			PromptCacheCreationOptimizationModel:   cacheCreationModel,
+			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
 		},
 		Model:           originalModel,
 		BillingModel:    billingModel,
@@ -741,6 +765,19 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 			firstMessage = isolatedFirst
 		}
 	}
+	optimizedFirst, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, policyModel, firstMessage)
+	if err != nil {
+		return nil, err
+	}
+	firstMessage = optimizedFirst
+	cacheCreationMode, cacheCreationModel := openAIEdgePromptCacheCreationOptimizationFields(account, policyModel, cacheCreationOptimization)
+	// An edge WS session may change models after the first response.create via
+	// session.update. Keep the account policy available to edge-rs even when the
+	// initial model is not GPT-5.6 so later eligible turns are handled correctly.
+	if cacheCreationMode == "" && account.IsOpenAIPromptCacheCreationOptimizationEnabled() {
+		cacheCreationMode = account.OpenAIPromptCacheCreationOptimizationMode()
+		cacheCreationModel = policyModel
+	}
 
 	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstMessage, "prompt_cache_key").String())
 	isCodexCLI := false
@@ -772,16 +809,19 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 	serviceTier := extractOpenAIServiceTierFromBody(firstMessage)
 	return &OpenAIEdgePreparedChatCompletions{
 		Plan: OpenAIEdgePlan{
-			Action:          OpenAIEdgeActionRelay,
-			AccountID:       account.ID,
-			AccountType:     account.Type,
-			Transport:       OpenAIEdgeTransportWSV2,
-			ResponseDialect: OpenAIEdgeDialectResponses,
-			UpstreamURL:     wsURL,
-			Headers:         headerMap,
-			Body:            json.RawMessage(firstMessage),
-			BodyRawBase64:   EncodeOpenAIEdgeRawBody(firstMessage),
-			ProxyURL:        proxyURL,
+			Action:                                 OpenAIEdgeActionRelay,
+			AccountID:                              account.ID,
+			AccountType:                            account.Type,
+			Transport:                              OpenAIEdgeTransportWSV2,
+			ResponseDialect:                        OpenAIEdgeDialectResponses,
+			UpstreamURL:                            wsURL,
+			Headers:                                headerMap,
+			Body:                                   json.RawMessage(firstMessage),
+			BodyRawBase64:                          EncodeOpenAIEdgeRawBody(firstMessage),
+			ProxyURL:                               proxyURL,
+			PromptCacheCreationOptimizationMode:    cacheCreationMode,
+			PromptCacheCreationOptimizationModel:   cacheCreationModel,
+			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
 		},
 		Model:           model,
 		BillingModel:    model,
@@ -789,6 +829,17 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 		ReasoningEffort: reasoningEffort,
 		ServiceTier:     serviceTier,
 	}, nil
+}
+
+func openAIEdgePromptCacheCreationOptimizationFields(
+	account *Account,
+	model string,
+	result openAIPromptCacheCreationOptimizationResult,
+) (string, string) {
+	if !result.Applied || account == nil {
+		return "", ""
+	}
+	return account.OpenAIPromptCacheCreationOptimizationMode(), model
 }
 
 func (s *OpenAIGatewayService) checkOpenAIEdgeLocalAccountPolicy(ctx context.Context, c *gin.Context, account *Account, body []byte) error {

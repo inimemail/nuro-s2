@@ -114,6 +114,10 @@ struct EdgePlan {
     #[serde(default)]
     safe_token_placeholder: bool,
     first_token_timeout_placeholder_ms: Option<u64>,
+    prompt_cache_creation_optimization_mode: Option<String>,
+    prompt_cache_creation_optimization_model: Option<String>,
+    #[serde(default)]
+    prompt_cache_creation_optimization_applied: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1022,11 +1026,7 @@ async fn relay_ws_session(
     };
     state.ensure_ws_idle(plan.clone()).await;
     let (mut upstream_write, mut upstream_read) = upstream_socket.split();
-    let first_upstream_msg = if let Some(body) = plan.body.clone() {
-        TungsteniteMessage::Text(body.to_string())
-    } else {
-        axum_to_tungstenite_message(first_msg)?
-    };
+    let first_upstream_msg = edge_plan_ws_first_message(&plan, first_msg)?;
     upstream_write.send(first_upstream_msg).await?;
 
     let lease_id = plan.lease_id.clone();
@@ -1037,6 +1037,11 @@ async fn relay_ws_session(
     let mut error_message: Option<String> = None;
     let mut summary = ChatStreamSummary::default();
     summary.request_id = upstream_request_id;
+    let mut prompt_cache_creation_optimization_model =
+        plan.prompt_cache_creation_optimization_model.clone();
+    let mut cache_creation_policy_applied_for_turn =
+        plan.prompt_cache_creation_optimization_applied;
+    let mut failure_state = OpenAIWSFailureState::default();
 
     loop {
         tokio::select! {
@@ -1058,8 +1063,17 @@ async fn relay_ws_session(
                                 break;
                             }
                         };
+                        let (upstream_msg, turn_policy_applied) = apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
+                            upstream_msg,
+                            plan.prompt_cache_creation_optimization_mode.as_deref(),
+                            &mut prompt_cache_creation_optimization_model,
+                        );
+                        if let Some(applied) = turn_policy_applied {
+                            cache_creation_policy_applied_for_turn = applied;
+                        }
                         if let Err(err) = upstream_write.send(upstream_msg).await {
                             success = false;
+                            failure_state.mark_other_failure();
                             error_message = Some(err.to_string());
                             break;
                         }
@@ -1084,7 +1098,16 @@ async fn relay_ws_session(
                             let _ = client_socket.send(AxumWsMessage::Close(None)).await;
                             break;
                         }
+                        let message_failed = failure_state.observe_upstream_message(
+                            &msg,
+                            cache_creation_policy_applied_for_turn,
+                        );
                         summary.observe_ws_message(&msg);
+                        if message_failed && !summary.failed {
+                            summary.failed = true;
+                            summary.failed_terminal_event_type = Some("error".to_string());
+                            summary.terminal_event_type = Some("error".to_string());
+                        }
                         if summary.failed {
                             success = false;
                             error_message = Some("Upstream request failed".to_string());
@@ -1106,6 +1129,7 @@ async fn relay_ws_session(
                     }
                     Some(Err(err)) => {
                         success = false;
+                        failure_state.mark_other_failure();
                         error_message = Some(err.to_string());
                         break;
                     }
@@ -1153,6 +1177,8 @@ async fn relay_ws_session(
             edge_retry_count: 0,
             error_type: if success {
                 None
+            } else if failure_state.is_cache_policy_only() {
+                Some("cache_creation_optimization_unsupported".to_string())
             } else {
                 Some("ws_error".to_string())
             },
@@ -1273,6 +1299,612 @@ fn tungstenite_to_axum_message(msg: TungsteniteMessage) -> anyhow::Result<AxumWs
     })
 }
 
+fn edge_plan_ws_first_message(
+    plan: &EdgePlan,
+    original: AxumWsMessage,
+) -> anyhow::Result<TungsteniteMessage> {
+    if plan.prompt_cache_creation_optimization_mode.is_some() {
+        if let Some(raw) = plan
+            .body_raw_base64
+            .as_deref()
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty())
+        {
+            return Ok(TungsteniteMessage::Text(String::from_utf8(b64_decode(
+                raw,
+            )?)?));
+        }
+    }
+    if let Some(body) = plan.body.clone() {
+        return Ok(TungsteniteMessage::Text(body.to_string()));
+    }
+    axum_to_tungstenite_message(original)
+}
+
+const OPENAI_PROMPT_CACHE_EXPLICIT_MIN_STATIC_BYTES: usize = 4 * 1024;
+
+#[cfg(test)]
+fn apply_openai_prompt_cache_creation_optimization_ws_message(
+    msg: TungsteniteMessage,
+    mode: Option<&str>,
+    session_model: &mut Option<String>,
+) -> TungsteniteMessage {
+    apply_openai_prompt_cache_creation_optimization_ws_message_tracked(msg, mode, session_model).0
+}
+
+// The optional bool is present only for response.create frames and reports
+// whether this exact turn was rewritten. This keeps account enablement separate
+// from per-turn application when a WS session changes models.
+fn apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
+    msg: TungsteniteMessage,
+    mode: Option<&str>,
+    session_model: &mut Option<String>,
+) -> (TungsteniteMessage, Option<bool>) {
+    let normalized_mode = mode.unwrap_or_default().trim().to_ascii_lowercase();
+    if normalized_mode != "reduce" && normalized_mode != "suppress" {
+        return (msg, None);
+    }
+    let (mut value, original) = match msg {
+        TungsteniteMessage::Text(text) => {
+            let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                return (TungsteniteMessage::Text(text), None);
+            };
+            (value, OpenAIWSJSONFrame::Text(text))
+        }
+        TungsteniteMessage::Binary(bytes) => {
+            let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+                return (TungsteniteMessage::Binary(bytes), None);
+            };
+            (value, OpenAIWSJSONFrame::Binary(bytes))
+        }
+        other => return (other, None),
+    };
+    let event_type = value.get("type").and_then(Value::as_str);
+    if event_type == Some("session.update") {
+        if let Some(model) = value
+            .pointer("/session/model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            *session_model = Some(model.to_string());
+        }
+        return (original.into_message(), None);
+    }
+    if event_type != Some("response.create") {
+        return (original.into_message(), None);
+    }
+    let model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .or(session_model.as_deref())
+        .unwrap_or_default();
+    if !is_openai_gpt56_model(model) || is_openai_ws_image_generation_intent(&value) {
+        return (original.into_message(), Some(false));
+    }
+
+    apply_openai_prompt_cache_creation_optimization_value(&mut value, &normalized_mode);
+    original.with_updated_value(&value)
+}
+
+enum OpenAIWSJSONFrame {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
+impl OpenAIWSJSONFrame {
+    fn into_message(self) -> TungsteniteMessage {
+        match self {
+            Self::Text(text) => TungsteniteMessage::Text(text),
+            Self::Binary(bytes) => TungsteniteMessage::Binary(bytes),
+        }
+    }
+
+    fn with_updated_value(self, value: &Value) -> (TungsteniteMessage, Option<bool>) {
+        match self {
+            Self::Text(text) => match serde_json::to_string(value) {
+                Ok(updated) => (TungsteniteMessage::Text(updated), Some(true)),
+                Err(_) => (TungsteniteMessage::Text(text), Some(false)),
+            },
+            Self::Binary(bytes) => match serde_json::to_vec(value) {
+                Ok(updated) => (TungsteniteMessage::Binary(updated), Some(true)),
+                Err(_) => (TungsteniteMessage::Binary(bytes), Some(false)),
+            },
+        }
+    }
+}
+
+fn apply_openai_prompt_cache_creation_optimization_value(value: &mut Value, mode: &str) {
+    let Some(request) = value.as_object_mut() else {
+        return;
+    };
+    remove_openai_prompt_cache_breakpoints(request);
+    request.remove("prompt_cache_retention");
+    request.insert(
+        "prompt_cache_options".to_string(),
+        serde_json::json!({"mode": "explicit", "ttl": "30m"}),
+    );
+    if mode == "reduce" {
+        insert_openai_responses_stable_prefix_breakpoint(request);
+    }
+}
+
+fn remove_openai_prompt_cache_breakpoints(request: &mut serde_json::Map<String, Value>) {
+    request.remove("prompt_cache_breakpoint");
+    for field in ["input", "messages", "instructions"] {
+        let Some(items) = request.get_mut(field).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for raw_item in items {
+            let Some(item) = raw_item.as_object_mut() else {
+                continue;
+            };
+            item.remove("prompt_cache_breakpoint");
+            match item.get_mut("content") {
+                Some(Value::Object(content)) => {
+                    content.remove("prompt_cache_breakpoint");
+                }
+                Some(Value::Array(content)) => {
+                    for raw_part in content {
+                        if let Some(part) = raw_part.as_object_mut() {
+                            part.remove("prompt_cache_breakpoint");
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn insert_openai_responses_stable_prefix_breakpoint(request: &mut serde_json::Map<String, Value>) {
+    let mut stable_bytes = openai_prompt_cache_top_level_static_bytes(request);
+    let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let mut target: Option<(usize, OpenAIPromptCacheStableTarget)> = None;
+    for (item_index, raw_item) in input.iter().enumerate() {
+        let Some(item) = raw_item.as_object() else {
+            break;
+        };
+        let role = item
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        if role != "system" && role != "developer" {
+            break;
+        }
+        let (content_target, size, safe) = openai_responses_stable_content_target(item);
+        stable_bytes = stable_bytes.saturating_add(size);
+        if let Some(content_target) = content_target {
+            target = Some((item_index, content_target));
+        }
+        if !safe {
+            break;
+        }
+    }
+    if stable_bytes < OPENAI_PROMPT_CACHE_EXPLICIT_MIN_STATIC_BYTES {
+        return;
+    }
+    let Some((item_index, content_target)) = target else {
+        return;
+    };
+    let Some(item) = input.get_mut(item_index).and_then(Value::as_object_mut) else {
+        return;
+    };
+    let part = match content_target {
+        OpenAIPromptCacheStableTarget::Existing(content_index) => item
+            .get_mut("content")
+            .and_then(Value::as_array_mut)
+            .and_then(|content| content.get_mut(content_index))
+            .and_then(Value::as_object_mut),
+        OpenAIPromptCacheStableTarget::String(text) => {
+            item.insert(
+                "content".to_string(),
+                serde_json::json!([{"type": "input_text", "text": text}]),
+            );
+            item.get_mut("content")
+                .and_then(Value::as_array_mut)
+                .and_then(|content| content.first_mut())
+                .and_then(Value::as_object_mut)
+        }
+    };
+    let Some(part) = part else {
+        return;
+    };
+    part.insert(
+        "prompt_cache_breakpoint".to_string(),
+        serde_json::json!({"mode": "explicit"}),
+    );
+}
+
+enum OpenAIPromptCacheStableTarget {
+    Existing(usize),
+    String(String),
+}
+
+fn openai_responses_stable_content_target(
+    item: &serde_json::Map<String, Value>,
+) -> (Option<OpenAIPromptCacheStableTarget>, usize, bool) {
+    let Some(content) = item.get("content") else {
+        return (None, 0, false);
+    };
+    if let Some(text) = content.as_str() {
+        if text.trim().is_empty() {
+            return (None, 0, true);
+        }
+        let size = text.len();
+        return (
+            Some(OpenAIPromptCacheStableTarget::String(text.to_string())),
+            size,
+            true,
+        );
+    }
+    let Some(parts) = content.as_array() else {
+        return (None, 0, false);
+    };
+    let mut target = None;
+    let mut size = 0usize;
+    for (index, part) in parts.iter().enumerate() {
+        let Some(part_type) = part.get("type").and_then(Value::as_str) else {
+            return (target, size, false);
+        };
+        if !["input_text", "input_image", "input_file"]
+            .iter()
+            .any(|supported| part_type.eq_ignore_ascii_case(supported))
+        {
+            return (target, size, false);
+        }
+        size = size.saturating_add(serde_json::to_vec(part).map(|v| v.len()).unwrap_or(0));
+        target = Some(OpenAIPromptCacheStableTarget::Existing(index));
+    }
+    (target, size, true)
+}
+
+fn openai_prompt_cache_top_level_static_bytes(request: &serde_json::Map<String, Value>) -> usize {
+    let mut total = request
+        .get("instructions")
+        .and_then(Value::as_str)
+        .map(str::len)
+        .unwrap_or(0);
+    for field in ["tools", "functions", "response_format", "text"] {
+        if let Some(value) = request.get(field) {
+            total = total.saturating_add(
+                serde_json::to_vec(value)
+                    .map(|encoded| encoded.len())
+                    .unwrap_or(0),
+            );
+        }
+    }
+    total
+}
+
+fn is_openai_ws_image_generation_intent(value: &Value) -> bool {
+    openai_json_tools_contain_image_generation(value.get("tools"))
+        || value
+            .get("input")
+            .and_then(Value::as_array)
+            .is_some_and(|input| {
+                input.iter().any(|item| {
+                    item.get("type").and_then(Value::as_str) == Some("additional_tools")
+                        && openai_json_tools_contain_image_generation(item.get("tools"))
+                })
+            })
+        || openai_json_tool_choice_selects_image_generation(value.get("tool_choice"))
+}
+
+fn openai_json_tools_contain_image_generation(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_array)
+        .is_some_and(|tools| tools.iter().any(openai_json_is_image_generation_tool))
+}
+
+fn openai_json_is_image_generation_tool(tool: &Value) -> bool {
+    let kind = tool
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    kind.eq_ignore_ascii_case("image_generation")
+        || (kind.eq_ignore_ascii_case("namespace")
+            && tool
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.trim().eq_ignore_ascii_case("image_gen")))
+}
+
+fn openai_json_tool_choice_selects_image_generation(value: Option<&Value>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    if let Some(choice) = value.as_str() {
+        return choice.trim().eq_ignore_ascii_case("image_generation");
+    }
+    let Some(choice) = value.as_object() else {
+        return false;
+    };
+    let kind = choice
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if kind.eq_ignore_ascii_case("image_generation") {
+        return true;
+    }
+    if kind.eq_ignore_ascii_case("namespace")
+        && ["name", "namespace"].iter().any(|field| {
+            choice
+                .get(*field)
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.trim().eq_ignore_ascii_case("image_gen"))
+        })
+    {
+        return true;
+    }
+    if openai_json_tool_choice_selects_image_generation(choice.get("tool")) {
+        return true;
+    }
+    choice
+        .get("function")
+        .and_then(Value::as_object)
+        .and_then(|function| function.get("name"))
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.trim().eq_ignore_ascii_case("image_generation"))
+}
+
+fn is_openai_gpt56_model(model: &str) -> bool {
+    let mut normalized = model
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .replace('_', "-")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-")
+        .to_ascii_lowercase();
+    while normalized.contains("--") {
+        normalized = normalized.replace("--", "-");
+    }
+    if let Some(suffix) = normalized.strip_prefix("gpt5") {
+        normalized = format!("gpt-5{suffix}");
+    }
+    for (from, to) in [
+        ("gpt-5.6sol", "gpt-5.6-sol"),
+        ("gpt-5.6terra", "gpt-5.6-terra"),
+        ("gpt-5.6luna", "gpt-5.6-luna"),
+    ] {
+        normalized = normalized.replace(from, to);
+    }
+    if normalized == "gpt-5.6" {
+        return true;
+    }
+    for prefix in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+        if normalized == prefix || normalized.starts_with(&format!("{prefix}-")) {
+            return true;
+        }
+    }
+    let Some(suffix) = normalized.strip_prefix("gpt-5.6-") else {
+        return false;
+    };
+    matches!(
+        suffix,
+        "max" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+    ) || is_openai_codex_date_suffix(suffix)
+}
+
+fn is_openai_codex_date_suffix(suffix: &str) -> bool {
+    let parts = suffix.split('-').collect::<Vec<_>>();
+    parts.len() == 3
+        && parts[0].len() == 4
+        && parts[1].len() == 2
+        && parts[2].len() == 2
+        && parts
+            .iter()
+            .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn openai_cache_creation_policy_unsupported(status: StatusCode, error_body: &str) -> bool {
+    status.is_client_error() && openai_cache_creation_policy_error_text(error_body)
+}
+
+fn openai_ws_cache_creation_policy_unsupported(message: &TungsteniteMessage) -> bool {
+    let bytes = match message {
+        TungsteniteMessage::Text(text) => text.as_bytes(),
+        TungsteniteMessage::Binary(bytes) => bytes.as_slice(),
+        _ => return false,
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        return false;
+    };
+    let event_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let is_error_event = event_type == "error"
+        || event_type == "response.failed"
+        || value.get("error").is_some_and(|error| !error.is_null())
+        || value
+            .pointer("/response/error")
+            .is_some_and(|error| !error.is_null());
+    is_error_event
+        && std::str::from_utf8(bytes)
+            .ok()
+            .is_some_and(openai_cache_creation_policy_error_text)
+}
+
+#[derive(Default)]
+struct OpenAIWSFailureState {
+    cache_policy_compatibility_failure: bool,
+    other_failure: bool,
+}
+
+impl OpenAIWSFailureState {
+    fn observe_upstream_message(
+        &mut self,
+        message: &TungsteniteMessage,
+        cache_policy_applied: bool,
+    ) -> bool {
+        if !openai_ws_message_is_failure(message) {
+            return false;
+        }
+        if cache_policy_applied && openai_ws_cache_creation_policy_unsupported(message) {
+            self.cache_policy_compatibility_failure = true;
+        } else {
+            self.other_failure = true;
+        }
+        true
+    }
+
+    fn mark_other_failure(&mut self) {
+        self.other_failure = true;
+    }
+
+    fn is_cache_policy_only(&self) -> bool {
+        self.cache_policy_compatibility_failure && !self.other_failure
+    }
+}
+
+fn openai_ws_message_is_failure(message: &TungsteniteMessage) -> bool {
+    let value = match message {
+        TungsteniteMessage::Text(text) => serde_json::from_str::<Value>(text).ok(),
+        // Binary frames are never passed through by the sanitizer, so they
+        // must not leave the session eligible for a successful completion.
+        TungsteniteMessage::Binary(_) => return true,
+        _ => return false,
+    };
+    let Some(value) = value else {
+        return true;
+    };
+    matches!(json_event_type(&value), Some("error" | "response.failed"))
+        || json_is_unsafe_upstream_diagnostic(&value)
+}
+
+fn openai_cache_creation_policy_error_text(error_body: &str) -> bool {
+    openai_cache_creation_policy_error_candidates(error_body)
+        .iter()
+        .any(|candidate| openai_cache_creation_policy_error_candidate_unsupported(candidate))
+}
+
+fn openai_cache_creation_policy_error_candidates(error_body: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<Value>(error_body) else {
+        return if error_body.len() <= 4 * 1024 {
+            vec![error_body.to_string()]
+        } else {
+            Vec::new()
+        };
+    };
+    let Some(root) = value.as_object() else {
+        return value
+            .as_str()
+            .map(|message| vec![message.to_string()])
+            .unwrap_or_default();
+    };
+
+    let mut candidates = Vec::with_capacity(5);
+    append_openai_cache_creation_policy_error_object(&mut candidates, root);
+    match root.get("detail") {
+        Some(Value::String(detail)) => candidates.push(detail.clone()),
+        Some(Value::Array(details)) => {
+            append_openai_cache_creation_policy_error_list(&mut candidates, details)
+        }
+        _ => {}
+    }
+    if let Some(errors) = root.get("errors").and_then(Value::as_array) {
+        append_openai_cache_creation_policy_error_list(&mut candidates, errors);
+    }
+    match root.get("error") {
+        Some(Value::String(message)) => candidates.push(message.clone()),
+        Some(Value::Object(error)) => {
+            append_openai_cache_creation_policy_error_object(&mut candidates, error)
+        }
+        _ => {}
+    }
+    if let Some(response) = root.get("response").and_then(Value::as_object) {
+        match response.get("error") {
+            Some(Value::String(message)) => candidates.push(message.clone()),
+            Some(Value::Object(error)) => {
+                append_openai_cache_creation_policy_error_object(&mut candidates, error)
+            }
+            _ => {}
+        }
+    }
+    candidates
+}
+
+fn append_openai_cache_creation_policy_error_object(
+    candidates: &mut Vec<String>,
+    object: &serde_json::Map<String, Value>,
+) {
+    let mut parts = ["message", "msg", "detail", "type", "code", "param"]
+        .iter()
+        .filter_map(|field| object.get(*field).and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>();
+    if let Some(location) = object.get("loc").and_then(Value::as_array) {
+        parts.extend(
+            location
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|value| !value.trim().is_empty()),
+        );
+    }
+    if !parts.is_empty() {
+        candidates.push(parts.join(" "));
+    }
+}
+
+fn append_openai_cache_creation_policy_error_list(candidates: &mut Vec<String>, list: &[Value]) {
+    for item in list {
+        if let Some(object) = item.as_object() {
+            append_openai_cache_creation_policy_error_object(candidates, object);
+        }
+    }
+}
+
+fn openai_cache_creation_policy_error_candidate_unsupported(candidate: &str) -> bool {
+    const CONTEXT_BYTES: usize = 512;
+    let text = candidate.to_ascii_lowercase().replace(['_', '-'], " ");
+    let bytes = text.as_bytes();
+    for field in ["prompt cache options", "prompt cache breakpoint"] {
+        for (field_start, _) in text.match_indices(field) {
+            let window_start = field_start.saturating_sub(CONTEXT_BYTES);
+            let window_end = bytes.len().min(field_start + field.len() + CONTEXT_BYTES);
+            let window = &bytes[window_start..window_end];
+            if [
+                "unsupported parameter",
+                "unknown parameter",
+                "unrecognized parameter",
+                "invalid parameter",
+                "unknown field",
+                "unrecognized field",
+                "unexpected field",
+                "extra inputs are not permitted",
+                "additional properties are not allowed",
+                "not permitted",
+                "not allowed",
+                "not supported",
+                "unsupported",
+                "invalid value",
+                "invalid field",
+                "must be",
+            ]
+            .iter()
+            .any(|marker| {
+                let marker = marker.as_bytes();
+                window.windows(marker.len()).any(|part| part == marker)
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 async fn relay_upstream(
     state: AppState,
     mut plan: EdgePlan,
@@ -1367,6 +1999,7 @@ async fn relay_upstream_direct(
     let edge_retry_count = timing.retry_count;
     let complete_state = state.clone();
     let safe_token_placeholder = plan.safe_token_placeholder;
+    let cache_creation_policy_applied = plan.prompt_cache_creation_optimization_applied;
     let first_token_timeout_placeholder =
         normalize_first_token_timeout_placeholder_ms(plan.first_token_timeout_placeholder_ms);
     let response_dialect = plan.response_dialect.clone();
@@ -1484,6 +2117,13 @@ async fn relay_upstream_direct(
                         let cyber_blocked = json_text_is_cyber_policy(&error_body);
                         let message = "Upstream request failed";
                         error_message = Some(message.to_string());
+                        let error_type = if cache_creation_policy_applied
+                            && openai_cache_creation_policy_unsupported(status, &error_body)
+                        {
+                            "cache_creation_optimization_unsupported"
+                        } else {
+                            "upstream_error"
+                        };
                         summary.cyber_blocked = cyber_blocked;
                         guard.update_stream_snapshot(
                             &summary,
@@ -1526,7 +2166,7 @@ async fn relay_upstream_direct(
                             edge_relay_start_ms,
                             edge_fallback_reason: edge_fallback_reason.clone(),
                             edge_retry_count,
-                            error_type: Some("upstream_error".to_string()),
+                            error_type: Some(error_type.to_string()),
                             error_message,
                             upstream_status_code,
                             terminal_event_type: None,
@@ -3855,6 +4495,396 @@ data: {"type":"response.output_text.delta","delta":"ok"}
     }
 
     #[test]
+    fn ws_cache_creation_reduce_marks_only_long_stable_prefix() {
+        let stable = "stable developer policy ".repeat(260);
+        let mut session_model = Some("gpt-5.6-sol".to_string());
+        let input = serde_json::json!({
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "prompt_cache_retention": "24h",
+            "input": [
+                {"role": "developer", "content": stable},
+                {"role": "user", "content": [{
+                    "type": "input_text",
+                    "text": "dynamic",
+                    "prompt_cache_breakpoint": {"mode": "explicit"}
+                }]}
+            ]
+        });
+        let output = apply_openai_prompt_cache_creation_optimization_ws_message(
+            TungsteniteMessage::Text(input.to_string()),
+            Some("reduce"),
+            &mut session_model,
+        );
+        let TungsteniteMessage::Text(output) = output else {
+            panic!("expected text frame");
+        };
+        let output: Value = serde_json::from_str(&output).expect("optimized response.create");
+        assert_eq!(
+            output
+                .pointer("/prompt_cache_options/mode")
+                .and_then(Value::as_str),
+            Some("explicit")
+        );
+        assert_eq!(
+            output
+                .pointer("/prompt_cache_options/ttl")
+                .and_then(Value::as_str),
+            Some("30m")
+        );
+        assert!(output.get("prompt_cache_retention").is_none());
+        assert_eq!(
+            output
+                .pointer("/input/0/content/0/prompt_cache_breakpoint/mode")
+                .and_then(Value::as_str),
+            Some("explicit")
+        );
+        assert!(output
+            .pointer("/input/1/content/0/prompt_cache_breakpoint")
+            .is_none());
+    }
+
+    #[test]
+    fn ws_cache_creation_reduce_keeps_short_string_content_shape() {
+        let mut session_model = Some("gpt-5.6-sol".to_string());
+        let input = serde_json::json!({
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "input": [{"role": "developer", "content": "short stable policy"}]
+        });
+        let output = apply_openai_prompt_cache_creation_optimization_ws_message(
+            TungsteniteMessage::Text(input.to_string()),
+            Some("reduce"),
+            &mut session_model,
+        );
+        let TungsteniteMessage::Text(output) = output else {
+            panic!("expected text frame");
+        };
+        let output: Value = serde_json::from_str(&output).expect("optimized response.create");
+        assert!(output
+            .pointer("/input/0/content")
+            .is_some_and(Value::is_string));
+        assert!(output
+            .pointer("/input/0/content/prompt_cache_breakpoint")
+            .is_none());
+    }
+
+    #[test]
+    fn ws_cache_creation_suppress_never_adds_breakpoint() {
+        let stable = "stable developer policy ".repeat(260);
+        let mut session_model = Some("gpt-5.6-terra".to_string());
+        let input = serde_json::json!({
+            "type": "response.create",
+            "model": "gpt-5.6-terra",
+            "prompt_cache_retention": "24h",
+            "input": [{
+                "role": "developer",
+                "content": stable,
+                "prompt_cache_breakpoint": {"mode": "explicit"}
+            }, {
+                "type": "function_call",
+                "arguments": {"prompt_cache_breakpoint": "business-value"},
+                "prompt_cache_breakpoint": {"mode": "explicit"}
+            }]
+        });
+        let output = apply_openai_prompt_cache_creation_optimization_ws_message(
+            TungsteniteMessage::Text(input.to_string()),
+            Some("suppress"),
+            &mut session_model,
+        );
+        let TungsteniteMessage::Text(output) = output else {
+            panic!("expected text frame");
+        };
+        let output: Value = serde_json::from_str(&output).expect("optimized response.create");
+        assert!(output
+            .pointer("/input/0/content")
+            .is_some_and(Value::is_string));
+        assert!(output.pointer("/input/0/prompt_cache_breakpoint").is_none());
+        assert!(output.pointer("/input/1/prompt_cache_breakpoint").is_none());
+        assert_eq!(
+            output
+                .pointer("/input/1/arguments/prompt_cache_breakpoint")
+                .and_then(Value::as_str),
+            Some("business-value")
+        );
+        assert_eq!(
+            output
+                .pointer("/prompt_cache_options/mode")
+                .and_then(Value::as_str),
+            Some("explicit")
+        );
+    }
+
+    #[test]
+    fn ws_cache_creation_disabled_and_other_models_are_exact_noops() {
+        let input =
+            r#"{"type":"response.create","model":"gpt-5.5","prompt_cache_retention":"24h"}"#;
+        let mut disabled_session_model = Some("gpt-5.6-sol".to_string());
+        let disabled = apply_openai_prompt_cache_creation_optimization_ws_message(
+            TungsteniteMessage::Text(input.to_string()),
+            None,
+            &mut disabled_session_model,
+        );
+        assert!(matches!(disabled, TungsteniteMessage::Text(text) if text == input));
+
+        let mut other_session_model = Some("gpt-5.6-sol".to_string());
+        let other_model = apply_openai_prompt_cache_creation_optimization_ws_message(
+            TungsteniteMessage::Text(input.to_string()),
+            Some("suppress"),
+            &mut other_session_model,
+        );
+        assert!(matches!(other_model, TungsteniteMessage::Text(text) if text == input));
+
+        let image = r#"{"type":"response.create","model":"gpt-5.6-sol","tool_choice":{"type":"namespace","name":"image_gen"},"input":[{"type":"additional_tools","tools":[{"type":"image_generation"}]}]}"#;
+        let mut image_session_model = Some("gpt-5.6-sol".to_string());
+        let image_output = apply_openai_prompt_cache_creation_optimization_ws_message(
+            TungsteniteMessage::Text(image.to_string()),
+            Some("reduce"),
+            &mut image_session_model,
+        );
+        assert!(matches!(image_output, TungsteniteMessage::Text(text) if text == image));
+    }
+
+    #[test]
+    fn ws_cache_creation_applies_to_binary_json_without_changing_frame_type() {
+        let input = br#"{"type":"response.create","model":"gpt-5.6-sol","prompt_cache_retention":"24h","input":[{"role":"user","content":"hello"}]}"#;
+        let mut session_model = Some("gpt-5.6-sol".to_string());
+        let (output, applied) = apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
+            TungsteniteMessage::Binary(input.to_vec()),
+            Some("suppress"),
+            &mut session_model,
+        );
+
+        assert_eq!(applied, Some(true));
+        let TungsteniteMessage::Binary(output) = output else {
+            panic!("expected binary frame");
+        };
+        let output: Value =
+            serde_json::from_slice(&output).expect("optimized binary response.create");
+        assert_eq!(
+            output
+                .pointer("/prompt_cache_options/mode")
+                .and_then(Value::as_str),
+            Some("explicit")
+        );
+        assert!(output.get("prompt_cache_retention").is_none());
+
+        let mut disabled_model = Some("gpt-5.6-sol".to_string());
+        let disabled = apply_openai_prompt_cache_creation_optimization_ws_message(
+            TungsteniteMessage::Binary(input.to_vec()),
+            None,
+            &mut disabled_model,
+        );
+        assert!(matches!(disabled, TungsteniteMessage::Binary(bytes) if bytes == input));
+    }
+
+    #[test]
+    fn ws_cache_creation_tracks_session_model_changes() {
+        let mut session_model = Some("gpt-5.5".to_string());
+        let update = r#"{"type":"session.update","session":{"model":"gpt-5.6-sol"}}"#;
+        let update_output = apply_openai_prompt_cache_creation_optimization_ws_message(
+            TungsteniteMessage::Text(update.to_string()),
+            Some("suppress"),
+            &mut session_model,
+        );
+        assert!(matches!(update_output, TungsteniteMessage::Text(text) if text == update));
+        assert_eq!(session_model.as_deref(), Some("gpt-5.6-sol"));
+
+        let create = r#"{"type":"response.create","prompt_cache_retention":"24h","input":[{"role":"user","content":"hello"}]}"#;
+        let create_output = apply_openai_prompt_cache_creation_optimization_ws_message(
+            TungsteniteMessage::Text(create.to_string()),
+            Some("suppress"),
+            &mut session_model,
+        );
+        let TungsteniteMessage::Text(create_output) = create_output else {
+            panic!("expected text frame");
+        };
+        let create_output: Value =
+            serde_json::from_str(&create_output).expect("optimized response.create");
+        assert_eq!(
+            create_output
+                .pointer("/prompt_cache_options/mode")
+                .and_then(Value::as_str),
+            Some("explicit")
+        );
+        assert!(create_output.get("prompt_cache_retention").is_none());
+
+        let update = r#"{"type":"session.update","session":{"model":"gpt-5.5"}}"#;
+        let _ = apply_openai_prompt_cache_creation_optimization_ws_message(
+            TungsteniteMessage::Text(update.to_string()),
+            Some("suppress"),
+            &mut session_model,
+        );
+        let non_target = r#"{"type":"response.create","prompt_cache_retention":"24h"}"#;
+        let non_target_output = apply_openai_prompt_cache_creation_optimization_ws_message(
+            TungsteniteMessage::Text(non_target.to_string()),
+            Some("suppress"),
+            &mut session_model,
+        );
+        assert!(matches!(non_target_output, TungsteniteMessage::Text(text) if text == non_target));
+    }
+
+    #[test]
+    fn ws_cache_creation_model_aliases_match_go_normalization() {
+        for model in [
+            "gpt5.6",
+            "gpt-5.6_sol",
+            "gpt5.6terra",
+            "provider/gpt-5.6terra-high",
+            "openai/gpt 5.6 luna",
+            "gpt--5.6--luna",
+        ] {
+            assert!(is_openai_gpt56_model(model), "model={model}");
+        }
+        assert!(!is_openai_gpt56_model("gpt-5.60"));
+    }
+
+    #[test]
+    fn cache_creation_policy_unsupported_classifier_is_narrow() {
+        assert!(openai_cache_creation_policy_unsupported(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"Unsupported parameter: prompt_cache_options"}}"#,
+        ));
+        assert!(openai_cache_creation_policy_unsupported(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"Unsupported parameter","param":"prompt_cache_options"}}"#,
+        ));
+        assert!(openai_cache_creation_policy_unsupported(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            r#"{"detail":[{"type":"extra_forbidden","loc":["body","prompt_cache_options"],"msg":"Extra inputs are not permitted","input":{"mode":"explicit"}}]}"#,
+        ));
+        assert!(!openai_cache_creation_policy_unsupported(
+            StatusCode::BAD_GATEWAY,
+            r#"{"error":{"message":"Unsupported parameter: prompt_cache_options"}}"#,
+        ));
+        assert!(!openai_cache_creation_policy_unsupported(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"model is not allowed"}}"#,
+        ));
+        assert!(!openai_cache_creation_policy_unsupported(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"Unsupported model name","param":"model"},"request":{"prompt_cache_options":{"mode":"explicit"}}}"#,
+        ));
+        assert!(!openai_cache_creation_policy_unsupported(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"Invalid schema: property prompt_cache_breakpoint is malformed","param":"tools.0.parameters"}}"#,
+        ));
+        assert!(openai_ws_cache_creation_policy_unsupported(
+            &TungsteniteMessage::Text(
+                r#"{"type":"error","error":{"message":"Unknown field prompt_cache_breakpoint"}}"#
+                    .to_string(),
+            ),
+        ));
+        assert!(!openai_ws_cache_creation_policy_unsupported(
+            &TungsteniteMessage::Text(
+                r#"{"type":"response.output_text.delta","delta":"Unsupported parameter: prompt_cache_options"}"#
+                    .to_string(),
+            ),
+        ));
+    }
+
+    #[test]
+    fn ws_failure_state_keeps_policy_failure_without_hiding_later_real_errors() {
+        let policy_error = TungsteniteMessage::Text(
+            r#"{"type":"error","error":{"message":"Unsupported parameter","param":"prompt_cache_options"}}"#
+                .to_string(),
+        );
+        let normal_delta = TungsteniteMessage::Text(
+            r#"{"type":"response.output_text.delta","delta":"ok"}"#.to_string(),
+        );
+        let real_error = TungsteniteMessage::Text(
+            r#"{"type":"error","error":{"message":"Invalid model","param":"model"}}"#.to_string(),
+        );
+
+        let mut state = OpenAIWSFailureState::default();
+        assert!(state.observe_upstream_message(&policy_error, true));
+        assert!(state.is_cache_policy_only());
+        assert!(!state.observe_upstream_message(&normal_delta, false));
+        assert!(
+            state.is_cache_policy_only(),
+            "a later turn must not erase the earlier policy compatibility failure"
+        );
+        assert!(state.observe_upstream_message(&real_error, false));
+        assert!(
+            !state.is_cache_policy_only(),
+            "a genuine later upstream failure must not become health-neutral"
+        );
+    }
+
+    #[test]
+    fn ws_binary_and_malformed_text_are_failure_samples() {
+        let mut state = OpenAIWSFailureState::default();
+        assert!(state.observe_upstream_message(&TungsteniteMessage::Binary(vec![0xff]), false));
+        assert!(!state.is_cache_policy_only());
+
+        let mut malformed = OpenAIWSFailureState::default();
+        assert!(malformed
+            .observe_upstream_message(&TungsteniteMessage::Text("not-json".to_string()), false,));
+        assert!(!malformed.is_cache_policy_only());
+    }
+
+    #[test]
+    fn ws_cache_creation_tracks_application_per_response_create() {
+        let mut session_model = Some("gpt-5.6-sol".to_string());
+        let (_, applied) = apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
+            TungsteniteMessage::Text(
+                r#"{"type":"response.create","input":[{"role":"user","content":"hello"}]}"#
+                    .to_string(),
+            ),
+            Some("suppress"),
+            &mut session_model,
+        );
+        assert_eq!(applied, Some(true));
+
+        let (_, applied) = apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
+            TungsteniteMessage::Text(
+                r#"{"type":"response.create","model":"gpt-5.5","input":[]}"#.to_string(),
+            ),
+            Some("suppress"),
+            &mut session_model,
+        );
+        assert_eq!(applied, Some(false));
+
+        let (_, applied) = apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
+            TungsteniteMessage::Text(
+                r#"{"type":"session.update","session":{"model":"gpt-5.6-terra"}}"#.to_string(),
+            ),
+            Some("suppress"),
+            &mut session_model,
+        );
+        assert_eq!(applied, None);
+    }
+
+    #[test]
+    fn ws_first_message_uses_raw_body_only_for_cache_optimization() {
+        let raw = br#"{"source":"raw"}"#;
+        let base_plan = serde_json::json!({
+            "action": "relay",
+            "edge_request_id": "edge-cache-test",
+            "body": {"source": "body"},
+            "body_raw_base64": b64_encode(raw)
+        });
+        let disabled: EdgePlan = serde_json::from_value(base_plan.clone()).expect("disabled plan");
+        let disabled_message =
+            edge_plan_ws_first_message(&disabled, AxumWsMessage::Text("client".to_string()))
+                .expect("disabled first message");
+        assert!(
+            matches!(disabled_message, TungsteniteMessage::Text(text) if text == r#"{"source":"body"}"#)
+        );
+
+        let mut enabled_value = base_plan;
+        enabled_value["prompt_cache_creation_optimization_mode"] =
+            Value::String("reduce".to_string());
+        let enabled: EdgePlan = serde_json::from_value(enabled_value).expect("enabled plan");
+        let enabled_message =
+            edge_plan_ws_first_message(&enabled, AxumWsMessage::Text("client".to_string()))
+                .expect("enabled first message");
+        assert!(
+            matches!(enabled_message, TungsteniteMessage::Text(text) if text == r#"{"source":"raw"}"#)
+        );
+    }
+
+    #[test]
     fn stream_summary_marks_failed_events() {
         let mut summary = ChatStreamSummary::default();
         summary.observe(b"data: {\"type\":\"response.failed\"}\n\n");
@@ -4061,7 +5091,19 @@ data: {"type":"response.output_text.delta","delta":"ok"}
             lane: None,
             safe_token_placeholder: false,
             first_token_timeout_placeholder_ms: None,
+            prompt_cache_creation_optimization_mode: None,
+            prompt_cache_creation_optimization_model: None,
+            prompt_cache_creation_optimization_applied: false,
         };
+
+        let first = edge_plan_ws_first_message(
+            &plan,
+            AxumWsMessage::Text(r#"{"rewritten":"original"}"#.to_string()),
+        )
+        .expect("ws first message");
+        assert!(
+            matches!(first, TungsteniteMessage::Text(text) if text == r#"{"rewritten":false}"#)
+        );
 
         let body = take_request_body_bytes(&mut plan).expect("request body");
         assert_eq!(body, br#"{"rewritten":true}"#);
@@ -4133,6 +5175,9 @@ data: {"type":"response.output_text.delta","delta":"ok"}
             lane: Some("priority".to_string()),
             safe_token_placeholder: false,
             first_token_timeout_placeholder_ms: None,
+            prompt_cache_creation_optimization_mode: None,
+            prompt_cache_creation_optimization_model: None,
+            prompt_cache_creation_optimization_applied: false,
         };
 
         assert_eq!(

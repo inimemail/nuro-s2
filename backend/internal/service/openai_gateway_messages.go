@@ -289,6 +289,14 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		return nil, policyErr
 	}
 	responsesBody = updatedBody
+	optimizedBody, cacheCreationOptimization, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, responsesBody)
+	if optimizeErr != nil {
+		return nil, optimizeErr
+	}
+	responsesBody = optimizedBody
+	if cacheCreationOptimization.RemovedPromptCacheRetention {
+		promptCacheBoostRetentionInjected = false
+	}
 	grokCacheIdentity := ""
 	if account.Platform == PlatformGrok {
 		grokIntentBody := responsesBody
@@ -376,6 +384,13 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		}
 		if refreshedAccount, _, ok := s.tryRecoverOpenAIOAuth401(ctx, c, account, resp.StatusCode, respBody); ok {
 			return s.ForwardAsAnthropic(ctx, c, refreshedAccount, body, incomingPromptCacheKey, defaultMappedModel)
+		}
+		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+			logger.L().Info("openai messages: cache creation optimization unsupported, retrying with the account default request policy",
+				zap.Int64("account_id", account.ID),
+				zap.Int("upstream_status", resp.StatusCode),
+			)
+			return s.ForwardAsAnthropic(ctx, c, openAIPromptCacheCreationOptimizationFallbackAccount(account), body, incomingPromptCacheKey, defaultMappedModel)
 		}
 		if (promptCacheBoostKeyInjected || promptCacheBoostRetentionInjected) && isOpenAIPromptCacheBoostUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
 			keyUnsupported, retentionUnsupported := openAIPromptCacheBoostUnsupportedFields(resp.StatusCode, upstreamMsg, respBody)

@@ -574,6 +574,8 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		"prompt_cache_account_relay_enabled",
 		"prompt_cache_key_optimization_enabled",
 		"prompt_cache_long_context_enhancement_enabled",
+		"openai_prompt_cache_creation_optimization_enabled",
+		"openai_prompt_cache_creation_optimization_mode",
 		"upstream_strong_isolation_enabled",
 		"anthropic_cache_boost_enabled",
 		"anthropic_cache_boost_level",

@@ -120,6 +120,11 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			return nil, fmt.Errorf("enable stream usage: %w", usageErr)
 		}
 	}
+	optimizedBody, cacheCreationOptimization, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, upstreamBody)
+	if optimizeErr != nil {
+		return nil, optimizeErr
+	}
+	upstreamBody = optimizedBody
 	if account.Platform == PlatformGrok {
 		var stripErr error
 		upstreamBody, stripErr = stripGrokChatPromptCacheKey(upstreamBody)
@@ -240,6 +245,13 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 				}
 			}
 			return s.handleChatCompletionsErrorResponseWithoutAccountState(resp, c, account, billingModel)
+		}
+		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+			logger.L().Info("openai raw chat_completions: cache creation optimization unsupported, retrying with the account default request policy",
+				zap.Int64("account_id", account.ID),
+				zap.Int("upstream_status", resp.StatusCode),
+			)
+			return s.forwardAsRawChatCompletions(ctx, c, openAIPromptCacheCreationOptimizationFallbackAccount(account), body, defaultMappedModel)
 		}
 		if s.shouldFailoverOpenAIAccountResponse(ctx, account, resp.StatusCode, upstreamMsg, respBody) {
 			decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)

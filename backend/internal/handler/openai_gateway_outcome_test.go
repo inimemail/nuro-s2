@@ -30,6 +30,7 @@ func TestClassifyOpenAIResponsesForwardResult(t *testing.T) {
 		{name: "client disconnect after complete", result: &service.OpenAIForwardResult{Stream: true, TerminalEventType: "response.completed", ClientDisconnect: true}, neutral: true},
 		{name: "cyber failed", result: &service.OpenAIForwardResult{Stream: true, TerminalEventType: "response.failed", CyberBlocked: true}, neutral: true},
 		{name: "cyber completed", result: &service.OpenAIForwardResult{Stream: true, TerminalEventType: "response.completed", CyberBlocked: true}, neutral: true},
+		{name: "optional account policy incompatibility", result: &service.OpenAIForwardResult{Stream: true, AccountHealthNeutral: true}, neutral: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -38,6 +39,17 @@ func TestClassifyOpenAIResponsesForwardResult(t *testing.T) {
 			require.Equal(t, tt.neutral, neutral)
 		})
 	}
+}
+
+func TestShouldReportOpenAIWSProxyFailureSkipsAccountHealthNeutralError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	baseErr := errors.New("cache policy compatibility failure")
+
+	require.True(t, shouldReportOpenAIWSProxyFailure(c, baseErr))
+	neutralErr := service.MarkOpenAIWSAccountHealthNeutralError(baseErr)
+	require.False(t, shouldReportOpenAIWSProxyFailure(c, neutralErr))
+	require.True(t, errors.Is(neutralErr, baseErr))
 }
 
 func TestClassifyGatewayForwardResult(t *testing.T) {

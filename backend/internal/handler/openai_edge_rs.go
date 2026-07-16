@@ -42,6 +42,8 @@ type openAIEdgeLease struct {
 	subscription       *service.UserSubscription
 	quotaPlatform      string
 	account            *service.Account
+	cachePolicyEnabled bool
+	cachePolicyApplied bool
 	forwardBody        []byte
 	sessionHash        string
 	failedAccountIDs   map[int64]struct{}
@@ -691,6 +693,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		subscription:       subscription,
 		quotaPlatform:      service.QuotaPlatform(c.Request.Context(), apiKey),
 		account:            account,
+		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
+		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
 		forwardBody:        append([]byte(nil), forwardBody...),
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
@@ -881,6 +885,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		subscription:       subscription,
 		quotaPlatform:      service.QuotaPlatform(c.Request.Context(), apiKey),
 		account:            account,
+		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
+		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
 		forwardBody:        append([]byte(nil), forwardBody...),
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
@@ -1050,6 +1056,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		subscription:       subscription,
 		quotaPlatform:      service.QuotaPlatform(c.Request.Context(), apiKey),
 		account:            account,
+		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
+		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
 		forwardBody:        append([]byte(nil), forwardBody...),
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
@@ -1280,6 +1288,22 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	status := req.UpstreamStatusCode
 	responseBody := openAIEdgeRetryResponseBody(req)
 	upstreamMsg := strings.TrimSpace(req.ErrorMessage)
+	if lease.cachePolicyApplied &&
+		service.IsOpenAIPromptCacheCreationOptimizationUnsupportedError(status, upstreamMsg, responseBody) {
+		if h == nil || h.gatewayService == nil {
+			return fallback("cache_creation_optimization_retry_dependencies_missing")
+		}
+		fallbackAccount := service.OpenAIPromptCacheCreationOptimizationFallbackAccount(lease.account)
+		plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, fallbackAccount, lease.accountReleaseFunc)
+		if err != nil {
+			return fallback("cache_creation_optimization_retry_plan_failed")
+		}
+		return service.OpenAIEdgeRetryDecision{
+			Action: service.OpenAIEdgeActionRelay,
+			Reason: "cache_creation_optimization_unsupported",
+			Plan:   &plan,
+		}
+	}
 	modelRoutingError := h.openAIEdgeShouldProtectModelRoutingError(c, lease.account, status, upstreamMsg, responseBody)
 	if !service.OpenAIEdgeHTTPStatusRetryable(status) && !modelRoutingError {
 		return fallback("upstream_status_not_retryable")
@@ -1481,6 +1505,8 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 	lease.reasoningEffort = prepared.ReasoningEffort
 	lease.serviceTier = prepared.ServiceTier
 	lease.upstreamEndpoint = service.OpenAIEdgeRawUpstreamEndpointForInbound(account, lease.inboundEndpoint)
+	lease.cachePolicyEnabled = plan.PromptCacheCreationOptimizationMode != ""
+	lease.cachePolicyApplied = plan.PromptCacheCreationOptimizationApplied
 	return plan, nil
 }
 
@@ -1519,6 +1545,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		successfulTerminal := openAIEdgeCompletionIsSuccessful(lease.inboundEndpoint, req)
 		neutralOutcome := req.ClientDisconnected || req.CyberBlocked || terminalType == "response.incomplete" ||
 			terminalType == "response.cancelled" || terminalType == "response.canceled"
+		cachePolicyCompatibilityFailure := openAIEdgeCachePolicyCompatibilityFailure(lease, req)
 		firstTokenMs := intPointerFromInt64(req.FirstTokenMS)
 		if !successfulTerminal {
 			firstTokenMs = nil
@@ -1559,9 +1586,10 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		switch {
 		case successfulTerminal:
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), true, firstTokenMs)
-		case neutralOutcome:
+		case neutralOutcome || cachePolicyCompatibilityFailure:
 			// Client cancellation and protocol-level incomplete/cancelled terminal
-			// states are billable but are not account-health samples.
+			// states are billable but are not account-health samples. Optional cache
+			// policy incompatibility after an early client flush is also neutral.
 		default:
 			statusCode := req.UpstreamStatusCode
 			if statusCode < http.StatusBadRequest {
@@ -1627,6 +1655,11 @@ func openAIEdgeSuccessfulTerminal(inboundEndpoint, terminalType string) bool {
 func openAIEdgeCompletionIsSuccessful(inboundEndpoint string, req service.OpenAIEdgeCompleteRequest) bool {
 	return req.Success && !req.ClientDisconnected && !req.CyberBlocked &&
 		openAIEdgeSuccessfulTerminal(inboundEndpoint, req.TerminalEventType)
+}
+
+func openAIEdgeCachePolicyCompatibilityFailure(lease *openAIEdgeLease, req service.OpenAIEdgeCompleteRequest) bool {
+	return lease != nil && lease.cachePolicyEnabled &&
+		strings.EqualFold(strings.TrimSpace(req.ErrorType), "cache_creation_optimization_unsupported")
 }
 
 func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {

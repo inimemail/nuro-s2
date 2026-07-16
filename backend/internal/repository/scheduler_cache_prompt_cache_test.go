@@ -10,14 +10,16 @@ import (
 
 func TestFilterSchedulerCredentialsKeepsPromptCacheAdvancedFlags(t *testing.T) {
 	credentials := map[string]any{
-		"prompt_cache_boost_enabled":                       true,
-		"prompt_cache_boost_level":                         "aggressive",
-		"prompt_cache_boost_upstream_hit_priority_enabled": true,
-		"prompt_cache_smart_routing_enabled":               true,
-		"prompt_cache_account_relay_enabled":               true,
-		"prompt_cache_key_optimization_enabled":            true,
-		"prompt_cache_long_context_enhancement_enabled":    true,
-		"unrelated_secret":                                 "drop-me",
+		"prompt_cache_boost_enabled":                        true,
+		"prompt_cache_boost_level":                          "aggressive",
+		"prompt_cache_boost_upstream_hit_priority_enabled":  true,
+		"prompt_cache_smart_routing_enabled":                true,
+		"prompt_cache_account_relay_enabled":                true,
+		"prompt_cache_key_optimization_enabled":             true,
+		"prompt_cache_long_context_enhancement_enabled":     true,
+		"openai_prompt_cache_creation_optimization_enabled": true,
+		"openai_prompt_cache_creation_optimization_mode":    service.OpenAIPromptCacheCreationOptimizationModeSuppress,
+		"unrelated_secret":                                  "drop-me",
 	}
 
 	filtered := filterSchedulerCredentials(credentials)
@@ -28,6 +30,22 @@ func TestFilterSchedulerCredentialsKeepsPromptCacheAdvancedFlags(t *testing.T) {
 		}
 		require.Equal(t, value, filtered[key], key)
 	}
+}
+
+func TestBuildSchedulerMetadataAccountKeepsPromptCacheCreationOptimization(t *testing.T) {
+	account := service.Account{
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"openai_prompt_cache_creation_optimization_enabled": true,
+			"openai_prompt_cache_creation_optimization_mode":    service.OpenAIPromptCacheCreationOptimizationModeSuppress,
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.True(t, got.IsOpenAIPromptCacheCreationOptimizationEnabled())
+	require.True(t, got.IsOpenAIPromptCacheCreationSuppressEnabled())
 }
 
 func TestFilterSchedulerCredentialsKeepsCacheAffinityModeWithoutChildFeatures(t *testing.T) {
