@@ -125,7 +125,43 @@ func (s *ConcurrencyService) CleanupStaleProcessSlots(ctx context.Context) error
 	if s == nil || s.cache == nil {
 		return nil
 	}
-	return s.cache.CleanupStaleProcessSlots(ctx, RequestIDPrefix())
+	if s.staleProcessCleanupDone.Load() {
+		return nil
+	}
+	s.staleProcessCleanupMu.Lock()
+	defer s.staleProcessCleanupMu.Unlock()
+	if s.staleProcessCleanupDone.Load() {
+		return nil
+	}
+	if err := s.cache.CleanupStaleProcessSlots(ctx, RequestIDPrefix()); err != nil {
+		return err
+	}
+	s.staleProcessCleanupDone.Store(true)
+	return nil
+}
+
+// StartStaleProcessSlotCleanupRetry retries startup cleanup until Redis becomes
+// ready. The periodic slot worker can complete the same latch sooner.
+func (s *ConcurrencyService) StartStaleProcessSlotCleanupRetry() {
+	if s == nil || s.cache == nil || !s.staleProcessRetryStarted.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer s.staleProcessRetryStarted.Store(false)
+		backoff := time.Second
+		for {
+			time.Sleep(backoff)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := s.CleanupStaleProcessSlots(cleanupCtx)
+			cancel()
+			if err == nil {
+				logger.LegacyPrintf("service.concurrency", "Startup stale process slot cleanup recovered")
+				return
+			}
+			logger.LegacyPrintf("service.concurrency", "Warning: retry cleanup stale process slots failed: %v", err)
+			backoff = min(backoff*2, 30*time.Second)
+		}
+	}()
 }
 
 const (
@@ -137,7 +173,60 @@ const (
 	maxAccountLoadBatchCacheEntries = 256
 	apiKeyConcurrencyFetchTimeout   = 3 * time.Second
 	apiKeySlotTrackTimeout          = 2 * time.Second
+	slotReleaseMaxAttempts          = 3
+	slotReleaseInitialTimeout       = 5 * time.Second
+	slotReleaseRetryTimeout         = 2 * time.Second
+	slotReleaseInitialBackoff       = 50 * time.Millisecond
+	slotReleaseBackgroundBackoff    = 5 * time.Second
+	slotReleaseBackgroundMaxBackoff = 30 * time.Second
+	slotReleaseBackgroundMaxElapsed = 30 * time.Minute
 )
+
+func retryConcurrencySlotReleaseInBackground(kind string, entityID int64, requestID string, release func(context.Context) error) {
+	go func() {
+		deadline := time.Now().Add(slotReleaseBackgroundMaxElapsed)
+		backoff := slotReleaseBackgroundBackoff
+		var lastErr error
+		for time.Now().Before(deadline) {
+			time.Sleep(backoff)
+			attemptCtx, cancel := context.WithTimeout(context.Background(), slotReleaseInitialTimeout)
+			lastErr = release(attemptCtx)
+			cancel()
+			if lastErr == nil {
+				logger.LegacyPrintf("service.concurrency", "Background release recovered for %s slot %d (req=%s)", kind, entityID, requestID)
+				return
+			}
+			backoff = min(backoff*2, slotReleaseBackgroundMaxBackoff)
+		}
+		logger.LegacyPrintf("service.concurrency", "Warning: background release expired for %s slot %d (req=%s): %v", kind, entityID, requestID, lastErr)
+	}()
+}
+
+func retryConcurrencySlotRelease(kind string, entityID int64, requestID string, release func(context.Context) error) {
+	if release == nil {
+		return
+	}
+	backoff := slotReleaseInitialBackoff
+	var lastErr error
+	for attempt := 1; attempt <= slotReleaseMaxAttempts; attempt++ {
+		attemptTimeout := slotReleaseRetryTimeout
+		if attempt == 1 {
+			attemptTimeout = slotReleaseInitialTimeout
+		}
+		attemptCtx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
+		lastErr = release(attemptCtx)
+		cancel()
+		if lastErr == nil {
+			return
+		}
+		if attempt < slotReleaseMaxAttempts {
+			time.Sleep(backoff)
+			backoff *= 2
+		}
+	}
+	logger.LegacyPrintf("service.concurrency", "Warning: failed to release %s slot for %d (req=%s) after %d attempts, continuing in background: %v", kind, entityID, requestID, slotReleaseMaxAttempts, lastErr)
+	retryConcurrencySlotReleaseInBackground(kind, entityID, requestID, release)
+}
 
 // ConcurrencyService 管理账号和用户的并发限制。
 type ConcurrencyService struct {
@@ -147,6 +236,10 @@ type ConcurrencyService struct {
 	accountLoadCacheMu  sync.RWMutex
 	accountLoadCache    map[string]cachedAccountLoadBatch
 	accountLoadGroup    singleflight.Group
+
+	staleProcessCleanupMu    sync.Mutex
+	staleProcessCleanupDone  atomic.Bool
+	staleProcessRetryStarted atomic.Bool
 }
 
 type cachedAccountLoadBatch struct {
@@ -231,11 +324,9 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 		return &AcquireResult{
 			Acquired: true,
 			ReleaseFunc: func() {
-				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, requestID); err != nil {
-					logger.LegacyPrintf("service.concurrency", "Warning: failed to release account slot for %d (req=%s): %v", accountID, requestID, err)
-				}
+				retryConcurrencySlotRelease("account", accountID, requestID, func(ctx context.Context) error {
+					return s.cache.ReleaseAccountSlot(ctx, accountID, requestID)
+				})
 			},
 		}, nil
 	}
@@ -293,11 +384,9 @@ func (s *ConcurrencyService) AcquireFirstAvailableAccountSlot(ctx context.Contex
 		AccountID: accountID,
 		RequestID: requestID,
 		ReleaseFunc: func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, requestID); err != nil {
-				logger.LegacyPrintf("service.concurrency", "Warning: failed to release arbitrated account slot for %d (req=%s): %v", accountID, requestID, err)
-			}
+			retryConcurrencySlotRelease("arbitrated account", accountID, requestID, func(ctx context.Context) error {
+				return s.cache.ReleaseAccountSlot(ctx, accountID, requestID)
+			})
 		},
 	}, nil
 }
@@ -352,18 +441,14 @@ func (s *ConcurrencyService) AcquireFirstAvailableUserAccountSlots(
 		return &UserAccountSlotArbitrationResult{Acquired: false}, nil
 	}
 	releaseUser := func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.cache.ReleaseUserSlot(bgCtx, userID, userRequestID); err != nil {
-			logger.LegacyPrintf("service.concurrency", "Warning: failed to release arbitrated user slot for %d (req=%s): %v", userID, userRequestID, err)
-		}
+		retryConcurrencySlotRelease("arbitrated user", userID, userRequestID, func(ctx context.Context) error {
+			return s.cache.ReleaseUserSlot(ctx, userID, userRequestID)
+		})
 	}
 	releaseAccount := func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, accountRequestID); err != nil {
-			logger.LegacyPrintf("service.concurrency", "Warning: failed to release arbitrated account slot for %d (req=%s): %v", accountID, accountRequestID, err)
-		}
+		retryConcurrencySlotRelease("arbitrated account", accountID, accountRequestID, func(ctx context.Context) error {
+			return s.cache.ReleaseAccountSlot(ctx, accountID, accountRequestID)
+		})
 	}
 	return &UserAccountSlotArbitrationResult{
 		Acquired:         true,
@@ -425,11 +510,9 @@ func (s *ConcurrencyService) AcquireUserSlot(ctx context.Context, userID int64, 
 		return &AcquireResult{
 			Acquired: true,
 			ReleaseFunc: func() {
-				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := s.cache.ReleaseUserSlot(bgCtx, userID, requestID); err != nil {
-					logger.LegacyPrintf("service.concurrency", "Warning: failed to release user slot for %d (req=%s): %v", userID, requestID, err)
-				}
+				retryConcurrencySlotRelease("user", userID, requestID, func(ctx context.Context) error {
+					return s.cache.ReleaseUserSlot(ctx, userID, requestID)
+				})
 			},
 		}, nil
 	}
@@ -466,11 +549,9 @@ func (s *ConcurrencyService) TrackAPIKeySlot(ctx context.Context, apiKeyID int64
 	}
 
 	return func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := cache.ReleaseAPIKeySlot(bgCtx, apiKeyID, requestID); err != nil {
-			logger.LegacyPrintf("service.concurrency", "Warning: failed to release api key slot for %d (req=%s): %v", apiKeyID, requestID, err)
-		}
+		retryConcurrencySlotRelease("api key", apiKeyID, requestID, func(ctx context.Context) error {
+			return cache.ReleaseAPIKeySlot(ctx, apiKeyID, requestID)
+		})
 	}
 }
 
@@ -753,6 +834,14 @@ func (s *ConcurrencyService) StartSlotCleanupWorker(_ AccountRepository, interva
 	}
 
 	runCleanup := func() {
+		if !s.staleProcessCleanupDone.Load() {
+			staleCtx, staleCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			staleErr := s.CleanupStaleProcessSlots(staleCtx)
+			staleCancel()
+			if staleErr != nil {
+				logger.LegacyPrintf("service.concurrency", "Warning: periodic cleanup stale process slots failed: %v", staleErr)
+			}
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := s.cache.CleanupExpiredAccountSlotKeys(cleanupCtx)
 		cancel()

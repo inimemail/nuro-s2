@@ -15,6 +15,10 @@ $env:SUB2API_EDGE_GO_BASE_URL = "http://127.0.0.1:8080"
 # Optional. Defaults to SUB2API_EDGE_GO_BASE_URL.
 $env:SUB2API_EDGE_CONTROL_BASE_URL = "http://127.0.0.1:8080"
 $env:SUB2API_EDGE_INTERNAL_SECRET = "change-me"
+# Stable and unique per edge node; enables old-instance lease recovery.
+$env:SUB2API_EDGE_NODE_ID = "edge-node-1"
+$env:SUB2API_EDGE_PREPARE_TIMEOUT_MS = "1500"
+$env:SUB2API_EDGE_COMPLETE_TIMEOUT_MS = "1500"
 $env:SUB2API_EDGE_INITIAL_POOL_SIZE = "10000"
 $env:SUB2API_EDGE_QUEUE_BUFFER_SIZE = "2000"
 $env:SUB2API_EDGE_PER_ACCOUNT_WORKERS = "32"
@@ -31,6 +35,9 @@ $env:SUB2API_EDGE_UPSTREAM_DYNAMIC_WARM_ACTIVE_SECS = "300"
 $env:RUST_LOG = "warn"
 cargo run --manifest-path edge-rs/Cargo.toml
 ```
+
+Failed complete/abort callbacks retry in the background for approximately the
+30-minute Go lease TTL. They do not add a request-path round trip.
 
 The Go config must also enable the internal control API:
 

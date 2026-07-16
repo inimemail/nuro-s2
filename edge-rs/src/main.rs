@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     env,
-    future::pending,
+    future::{pending, Future},
     net::SocketAddr,
     pin::Pin,
     sync::{
@@ -27,7 +27,7 @@ use reqwest::{Client, ClientBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio_tungstenite::{
     connect_async_tls_with_config,
     tungstenite::{
@@ -49,16 +49,26 @@ const EDGE_RETRY_COUNT_HEADER: &str = "x-sub2api-edge-retry-count";
 const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 const SSE_STRING_INITIAL_CAPACITY: usize = 8192;
 const SSE_STRING_IDLE_MAX_CAPACITY: usize = 64 * 1024;
+const SETTLEMENT_RETRY_CONCURRENCY: usize = 32;
+// Keep settlement delivery alive for roughly the same 30-minute window as the
+// Go lease TTL, so a longer control-plane interruption does not leave slots to
+// expire solely through Redis TTL cleanup.
+const SETTLEMENT_RETRY_MAX_ATTEMPTS: usize = 70;
+const SETTLEMENT_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(50);
+const SETTLEMENT_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+const EDGE_RECOVERY_MAX_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 struct AppState {
     cfg: Arc<EdgeConfig>,
+    edge_instance_id: Arc<String>,
     client: Client,
     clients_by_proxy: Arc<Mutex<HashMap<String, Client>>>,
     relay_queues: Arc<Mutex<HashMap<String, mpsc::Sender<RelayJob>>>>,
     warm_keys: Arc<Mutex<HashMap<String, WarmKeyState>>>,
     ws_idle: Arc<tokio::sync::Mutex<HashMap<String, Vec<WsIdleConn>>>>,
     pools: Arc<BufferPools>,
+    settlement_retry_tx: mpsc::Sender<SettlementRetryJob>,
 }
 
 #[derive(Clone, Debug)]
@@ -67,6 +77,7 @@ struct EdgeConfig {
     go_base_url: String,
     control_base_url: String,
     internal_secret: String,
+    edge_node_id: Option<String>,
     prepare_timeout_ms: u64,
     complete_timeout_ms: u64,
     initial_pool_size: usize,
@@ -85,6 +96,9 @@ struct EdgeConfig {
 #[derive(Debug, Serialize)]
 struct PrepareRequest {
     edge_request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edge_node_id: Option<String>,
+    edge_instance_id: String,
     method: String,
     path: String,
     raw_query: Option<String>,
@@ -339,13 +353,48 @@ struct LowLatencyPolicy {
     barrier: Option<Duration>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct AbortRequest {
     edge_request_id: String,
     lease_id: Option<String>,
     account_id: Option<i64>,
     reason: String,
     client_disconnected: bool,
+}
+
+#[derive(Clone, Debug)]
+enum SettlementRetryJob {
+    Complete(Box<CompleteRequest>),
+    Abort(AbortRequest),
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RecoverRequest {
+    edge_node_id: String,
+    edge_instance_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecoverAck {
+    ok: bool,
+    #[serde(default)]
+    released: usize,
+}
+
+impl SettlementRetryJob {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Complete(_) => "complete",
+            Self::Abort(_) => "abort",
+        }
+    }
+
+    fn edge_request_id(&self) -> &str {
+        match self {
+            Self::Complete(request) => &request.edge_request_id,
+            Self::Abort(request) => &request.edge_request_id,
+        }
+    }
 }
 
 struct LeaseAbortGuard {
@@ -498,7 +547,9 @@ impl Drop for ClientDisconnectCompleteGuard {
         }
         let state = self.state.clone();
         tokio::spawn(async move {
-            let _ = call_complete(&state, request).await;
+            if let Err(err) = call_complete(&state, request).await {
+                error!("complete callback could not be delivered or queued: {err}");
+            }
         });
     }
 }
@@ -542,7 +593,9 @@ impl Drop for LeaseAbortGuard {
             client_disconnected: self.client_disconnected,
         };
         tokio::spawn(async move {
-            let _ = call_abort(&state, req).await;
+            if let Err(err) = call_abort(&state, req).await {
+                error!("abort callback could not be delivered or queued: {err}");
+            }
         });
     }
 }
@@ -555,15 +608,23 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = Arc::new(EdgeConfig::from_env()?);
     let client = edge_http_client_builder(&cfg).build()?;
+    let (settlement_retry_tx, settlement_retry_rx) = mpsc::channel(cfg.queue_buffer_size.max(1024));
     let state = AppState {
         cfg: cfg.clone(),
+        edge_instance_id: Arc::new(Uuid::new_v4().to_string()),
         client,
         clients_by_proxy: Arc::new(Mutex::new(HashMap::new())),
         relay_queues: Arc::new(Mutex::new(HashMap::new())),
         warm_keys: Arc::new(Mutex::new(HashMap::new())),
         ws_idle: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         pools: Arc::new(BufferPools::prewarmed(cfg.initial_pool_size)),
+        settlement_retry_tx,
     };
+    tokio::spawn(run_settlement_retry_queue(
+        state.clone(),
+        settlement_retry_rx,
+    ));
+    tokio::spawn(recover_previous_edge_leases(state.clone()));
     let warm_client = state.client.clone();
     let dynamic_warm_state = state.clone();
     let app = Router::new()
@@ -743,6 +804,8 @@ async fn handle_openai_edge(
 
     let prepare = PrepareRequest {
         edge_request_id: edge_request_id.clone(),
+        edge_node_id: state.cfg.edge_node_id.clone(),
+        edge_instance_id: state.edge_instance_id.as_ref().clone(),
         method: method.to_string(),
         path: uri.path().to_string(),
         raw_query: uri.query().map(ToOwned::to_owned),
@@ -758,6 +821,18 @@ async fn handle_openai_edge(
         Ok(plan) => (plan, prepare_started_at.elapsed().as_millis() as i64),
         Err(err) => {
             warn!("prepare failed; falling back to Go: {err}");
+            if let Err(queue_err) = enqueue_settlement_retry(
+                &state,
+                SettlementRetryJob::Abort(AbortRequest {
+                    edge_request_id: edge_request_id.clone(),
+                    lease_id: None,
+                    account_id: None,
+                    reason: "prepare_failed".to_string(),
+                    client_disconnected: false,
+                }),
+            ) {
+                error!("prepare cancellation could not be queued: {queue_err}");
+            }
             let mut timing = EdgeTiming {
                 prepare_ms: Some(prepare_started_at.elapsed().as_millis() as i64),
                 ..EdgeTiming::default()
@@ -813,7 +888,7 @@ async fn handle_openai_edge(
         Err(err) => {
             error!("relay failed before response commit: {err}");
             let reason = relay_error_fallback_reason(&err);
-            let _ = call_abort(
+            if let Err(callback_err) = call_abort(
                 &state,
                 AbortRequest {
                     edge_request_id,
@@ -823,7 +898,10 @@ async fn handle_openai_edge(
                     client_disconnected: false,
                 },
             )
-            .await;
+            .await
+            {
+                error!("relay failure abort could not be delivered or queued: {callback_err}");
+            }
             let mut fallback_timing = edge_timing_snapshot(&timing_shared);
             fallback_timing.fallback_reason = Some(reason.to_string());
             fallback_to_go(
@@ -954,6 +1032,8 @@ async fn relay_ws_session(
     let first_json: Value = serde_json::from_str(&first_text)?;
     let prepare = PrepareRequest {
         edge_request_id: edge_request_id.clone(),
+        edge_node_id: state.cfg.edge_node_id.clone(),
+        edge_instance_id: state.edge_instance_id.as_ref().clone(),
         method: method.to_string(),
         path: uri.path().to_string(),
         raw_query: uri.query().map(ToOwned::to_owned),
@@ -968,6 +1048,18 @@ async fn relay_ws_session(
         Ok(plan) => plan,
         Err(err) => {
             warn!("ws prepare failed; proxying to Go: {err}");
+            if let Err(queue_err) = enqueue_settlement_retry(
+                &state,
+                SettlementRetryJob::Abort(AbortRequest {
+                    edge_request_id: edge_request_id.clone(),
+                    lease_id: None,
+                    account_id: None,
+                    reason: "ws_prepare_failed".to_string(),
+                    client_disconnected: false,
+                }),
+            ) {
+                error!("ws prepare cancellation could not be queued: {queue_err}");
+            }
             return proxy_ws_to_go(state, client_socket, method, uri, headers, first_msg).await;
         }
     };
@@ -986,7 +1078,7 @@ async fn relay_ws_session(
         true,
     );
     if plan.transport.as_deref() != Some("ws_v2") {
-        let _ = call_abort(
+        if let Err(callback_err) = call_abort(
             &state,
             AbortRequest {
                 edge_request_id,
@@ -996,7 +1088,12 @@ async fn relay_ws_session(
                 client_disconnected: false,
             },
         )
-        .await;
+        .await
+        {
+            error!(
+                "unsupported ws transport abort could not be delivered or queued: {callback_err}"
+            );
+        }
         anyhow::bail!("unsupported ws transport");
     }
     if plan
@@ -1004,7 +1101,7 @@ async fn relay_ws_session(
         .as_deref()
         .is_some_and(|v| !v.trim().is_empty())
     {
-        let _ = call_abort(
+        if let Err(callback_err) = call_abort(
             &state,
             AbortRequest {
                 edge_request_id,
@@ -1014,7 +1111,10 @@ async fn relay_ws_session(
                 client_disconnected: false,
             },
         )
-        .await;
+        .await
+        {
+            error!("invalid ws plan abort could not be delivered or queued: {callback_err}");
+        }
         anyhow::bail!("ws proxy is not supported by edge yet");
     }
 
@@ -2325,7 +2425,7 @@ async fn relay_upstream_direct(
             .map(|b| String::from_utf8_lossy(&b).into_owned())
             .unwrap_or_default();
         if json_text_is_cyber_policy(&error_body) {
-            let _ = call_complete(
+            if let Err(callback_err) = call_complete(
                 &state,
                 CompleteRequest {
                     edge_request_id: plan.edge_request_id.clone(),
@@ -2356,7 +2456,10 @@ async fn relay_upstream_direct(
                     cyber_blocked: true,
                 },
             )
-            .await;
+            .await
+            {
+                error!("cyber completion could not be delivered or queued: {callback_err}");
+            }
             return Ok(openai_error_response(
                 StatusCode::FORBIDDEN,
                 "safety_error",
@@ -2407,7 +2510,7 @@ async fn relay_upstream_direct(
             if decision.failure_recorded {
                 reason = format!("retry_failure_already_recorded:{reason}");
             }
-            let _ = call_abort(
+            if let Err(callback_err) = call_abort(
                 &state,
                 AbortRequest {
                     edge_request_id: plan.edge_request_id.clone(),
@@ -2417,7 +2520,10 @@ async fn relay_upstream_direct(
                     client_disconnected: false,
                 },
             )
-            .await;
+            .await
+            {
+                error!("retry abort could not be delivered or queued: {callback_err}");
+            }
             return Ok(openai_error_response(
                 StatusCode::from_u16(decision.status_code.unwrap_or(400))
                     .unwrap_or(StatusCode::BAD_REQUEST),
@@ -3254,43 +3360,199 @@ async fn call_retry(state: &AppState, req: RetryRequest) -> anyhow::Result<Retry
     Ok(resp.json::<RetryDecision>().await?)
 }
 
-async fn call_complete(state: &AppState, req: CompleteRequest) -> anyhow::Result<()> {
+async fn send_settlement_once<T: Serialize + ?Sized>(
+    state: &AppState,
+    path: &str,
+    req: &T,
+) -> anyhow::Result<()> {
+    let url = format!("{}{}", state.cfg.control_base_url, path);
+    let resp = state
+        .client
+        .post(url)
+        .header(EDGE_SECRET_HEADER, &state.cfg.internal_secret)
+        .timeout(std::time::Duration::from_millis(
+            state.cfg.complete_timeout_ms,
+        ))
+        .json(&req)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("settlement status {}", resp.status());
+    }
+    Ok(())
+}
+
+async fn send_recover_once(state: &AppState, req: &RecoverRequest) -> anyhow::Result<RecoverAck> {
     let url = format!(
-        "{}/internal/edge/openai/complete",
+        "{}/internal/edge/openai/recover",
         state.cfg.control_base_url
     );
     let resp = state
         .client
         .post(url)
         .header(EDGE_SECRET_HEADER, &state.cfg.internal_secret)
-        .timeout(std::time::Duration::from_millis(
-            state.cfg.complete_timeout_ms,
-        ))
-        .json(&req)
+        .timeout(Duration::from_millis(state.cfg.complete_timeout_ms))
+        .json(req)
         .send()
         .await?;
     if !resp.status().is_success() {
-        anyhow::bail!("complete status {}", resp.status());
+        anyhow::bail!("recover status {}", resp.status());
     }
-    Ok(())
+    let ack = resp.json::<RecoverAck>().await?;
+    if !ack.ok {
+        anyhow::bail!("recover was not acknowledged");
+    }
+    Ok(ack)
+}
+
+async fn retry_with_backoff<F, Fut>(
+    max_attempts: usize,
+    initial_delay: Duration,
+    max_delay: Duration,
+    mut operation: F,
+) -> anyhow::Result<usize>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<()>>,
+{
+    let max_attempts = max_attempts.max(1);
+    let mut delay = initial_delay;
+    let mut last_error = None;
+    for attempt in 1..=max_attempts {
+        match operation().await {
+            Ok(()) => return Ok(attempt),
+            Err(err) => last_error = Some(err),
+        }
+        if attempt < max_attempts {
+            tokio::time::sleep(delay).await;
+            delay = delay.saturating_mul(2).min(max_delay);
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("settlement retry failed")))
+}
+
+async fn send_settlement_job_once(
+    state: &AppState,
+    job: &SettlementRetryJob,
+) -> anyhow::Result<()> {
+    match job {
+        SettlementRetryJob::Complete(request) => {
+            send_settlement_once(state, "/internal/edge/openai/complete", request).await
+        }
+        SettlementRetryJob::Abort(request) => {
+            send_settlement_once(state, "/internal/edge/openai/abort", request).await
+        }
+    }
+}
+
+fn enqueue_settlement_retry(state: &AppState, job: SettlementRetryJob) -> anyhow::Result<()> {
+    state
+        .settlement_retry_tx
+        .try_send(job)
+        .map_err(|err| anyhow::anyhow!("settlement retry queue unavailable: {err}"))
+}
+
+async fn run_settlement_retry_job(state: AppState, job: SettlementRetryJob) {
+    let kind = job.kind();
+    let edge_request_id = job.edge_request_id().to_string();
+    let retry_state = state.clone();
+    let retry_job = job.clone();
+    match retry_with_backoff(
+        SETTLEMENT_RETRY_MAX_ATTEMPTS,
+        SETTLEMENT_RETRY_INITIAL_DELAY,
+        SETTLEMENT_RETRY_MAX_DELAY,
+        move || {
+            let state = retry_state.clone();
+            let job = retry_job.clone();
+            async move { send_settlement_job_once(&state, &job).await }
+        },
+    )
+    .await
+    {
+        Ok(attempts) => warn!(
+            "{kind} callback recovered after {attempts} retry attempts edge_request_id={edge_request_id}"
+        ),
+        Err(err) => error!(
+            "{kind} callback retries exhausted edge_request_id={edge_request_id}: {err}"
+        ),
+    }
+}
+
+async fn run_settlement_retry_queue(
+    state: AppState,
+    mut receiver: mpsc::Receiver<SettlementRetryJob>,
+) {
+    let semaphore = Arc::new(Semaphore::new(SETTLEMENT_RETRY_CONCURRENCY));
+    while let Some(job) = receiver.recv().await {
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => return,
+        };
+        let retry_state = state.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            run_settlement_retry_job(retry_state, job).await;
+        });
+    }
+}
+
+async fn recover_previous_edge_leases(state: AppState) {
+    let Some(edge_node_id) = state.cfg.edge_node_id.clone() else {
+        return;
+    };
+    let request = RecoverRequest {
+        edge_node_id,
+        edge_instance_id: state.edge_instance_id.as_ref().clone(),
+    };
+    let mut attempts = 0usize;
+    let mut delay = SETTLEMENT_RETRY_INITIAL_DELAY;
+    loop {
+        attempts = attempts.saturating_add(1);
+        match send_recover_once(&state, &request).await {
+            Ok(ack) => {
+                info!(
+                    "edge lease recovery completed released={} attempts={attempts}",
+                    ack.released
+                );
+                return;
+            }
+            Err(err) => {
+                if attempts == 1 || attempts.is_multiple_of(10) {
+                    warn!(
+                        "edge lease recovery waiting for control plane attempts={attempts}: {err}"
+                    );
+                }
+            }
+        }
+        tokio::time::sleep(delay).await;
+        delay = delay.saturating_mul(2).min(EDGE_RECOVERY_MAX_DELAY);
+    }
+}
+
+async fn call_complete(state: &AppState, req: CompleteRequest) -> anyhow::Result<()> {
+    match send_settlement_once(state, "/internal/edge/openai/complete", &req).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            warn!(
+                "complete callback failed; queued for retry edge_request_id={}: {err}",
+                req.edge_request_id
+            );
+            enqueue_settlement_retry(state, SettlementRetryJob::Complete(Box::new(req)))
+        }
+    }
 }
 
 async fn call_abort(state: &AppState, req: AbortRequest) -> anyhow::Result<()> {
-    let url = format!("{}/internal/edge/openai/abort", state.cfg.control_base_url);
-    let resp = state
-        .client
-        .post(url)
-        .header(EDGE_SECRET_HEADER, &state.cfg.internal_secret)
-        .timeout(std::time::Duration::from_millis(
-            state.cfg.complete_timeout_ms,
-        ))
-        .json(&req)
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        anyhow::bail!("abort status {}", resp.status());
+    match send_settlement_once(state, "/internal/edge/openai/abort", &req).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            warn!(
+                "abort callback failed; queued for retry edge_request_id={}: {err}",
+                req.edge_request_id
+            );
+            enqueue_settlement_retry(state, SettlementRetryJob::Abort(req))
+        }
     }
-    Ok(())
 }
 
 async fn fallback_to_go(
@@ -4048,6 +4310,10 @@ impl EdgeConfig {
             go_base_url,
             control_base_url,
             internal_secret,
+            edge_node_id: env::var("SUB2API_EDGE_NODE_ID")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             prepare_timeout_ms: env_u64("SUB2API_EDGE_PREPARE_TIMEOUT_MS", 1500),
             complete_timeout_ms: env_u64("SUB2API_EDGE_COMPLETE_TIMEOUT_MS", 1500),
             initial_pool_size: env_usize("SUB2API_EDGE_INITIAL_POOL_SIZE", 10000),
@@ -4163,6 +4429,32 @@ fn b64_value(byte: u8) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn settlement_retry_recovers_after_transient_failures() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let operation_attempts = attempts.clone();
+        let completed_attempt = retry_with_backoff(
+            4,
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+            move || {
+                let attempts = operation_attempts.clone();
+                async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                    if attempt < 3 {
+                        anyhow::bail!("temporary control-plane failure");
+                    }
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .expect("retry should recover");
+
+        assert_eq!(completed_attempt, 3);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
 
     #[test]
     fn ws_completed_event_updates_usage_summary() {

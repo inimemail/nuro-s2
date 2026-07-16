@@ -22,15 +22,17 @@ const (
 // auth, billing, scheduling, soft cooling, pool mode, sticky routing, and
 // request transformation.
 type OpenAIEdgePrepareRequest struct {
-	EdgeRequestID string            `json:"edge_request_id"`
-	Method        string            `json:"method"`
-	Path          string            `json:"path"`
-	RawQuery      string            `json:"raw_query,omitempty"`
-	Headers       map[string]string `json:"headers,omitempty"`
-	Body          json.RawMessage   `json:"body,omitempty"`
-	BodyRawBase64 string            `json:"body_raw_base64,omitempty"`
-	ClientIP      string            `json:"client_ip,omitempty"`
-	Stream        *bool             `json:"stream,omitempty"`
+	EdgeRequestID  string            `json:"edge_request_id"`
+	EdgeNodeID     string            `json:"edge_node_id,omitempty"`
+	EdgeInstanceID string            `json:"edge_instance_id,omitempty"`
+	Method         string            `json:"method"`
+	Path           string            `json:"path"`
+	RawQuery       string            `json:"raw_query,omitempty"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	Body           json.RawMessage   `json:"body,omitempty"`
+	BodyRawBase64  string            `json:"body_raw_base64,omitempty"`
+	ClientIP       string            `json:"client_ip,omitempty"`
+	Stream         *bool             `json:"stream,omitempty"`
 }
 
 type OpenAIEdgePlan struct {
@@ -124,9 +126,15 @@ type OpenAIEdgeAbortRequest struct {
 	ClientDisconnected bool   `json:"client_disconnected,omitempty"`
 }
 
+type OpenAIEdgeRecoverRequest struct {
+	EdgeNodeID     string `json:"edge_node_id"`
+	EdgeInstanceID string `json:"edge_instance_id"`
+}
+
 type OpenAIEdgeAck struct {
-	OK     bool   `json:"ok"`
-	Reason string `json:"reason,omitempty"`
+	OK       bool   `json:"ok"`
+	Reason   string `json:"reason,omitempty"`
+	Released int    `json:"released,omitempty"`
 }
 
 func EncodeOpenAIEdgeRawBody(body []byte) string {

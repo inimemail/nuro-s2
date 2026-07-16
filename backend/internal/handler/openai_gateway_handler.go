@@ -44,6 +44,9 @@ type OpenAIGatewayHandler struct {
 	imageTaskWorkerStopOnce  sync.Once
 	openAIEdgeLeaseMu        sync.Mutex
 	openAIEdgeLeases         map[string]*openAIEdgeLease
+	openAIEdgeLeaseByRequest map[string]string
+	openAIEdgeCancelled      map[string]time.Time
+	openAIEdgeCancelledNext  time.Time
 	openAIEdgePrepareCache   *openAIEdgePrepareCache
 	maxAccountSwitches       int
 	cfg                      *config.Config
@@ -208,6 +211,9 @@ func NewOpenAIGatewayHandler(
 		imageTaskStore:           newOpenAIImageTaskStore(defaultOpenAIImageTaskRetention),
 		imageTaskWorkerStop:      make(chan struct{}),
 		imageTaskWorkerDone:      make(chan struct{}),
+		openAIEdgeLeases:         make(map[string]*openAIEdgeLease),
+		openAIEdgeLeaseByRequest: make(map[string]string),
+		openAIEdgeCancelled:      make(map[string]time.Time),
 		openAIEdgePrepareCache:   newOpenAIEdgePrepareCache(2*time.Second, openAIEdgePrepareCacheMaxEntries),
 		maxAccountSwitches:       maxAccountSwitches,
 		cfg:                      cfg,

@@ -283,6 +283,8 @@ upgrade_env_default_value() {
 ensure_edge_env_values() {
     local env_file="$1"
     local secret
+    local prepare_timeout
+    local complete_timeout
 
     touch "$env_file"
     ensure_env_value "$env_file" NURO_EDGE_ENABLED "$NURO_EDGE_ENABLED"
@@ -325,6 +327,10 @@ ensure_edge_env_values() {
     ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES true
     ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES_WEBSOCKET true
     ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_ROLLOUT_PERCENT 100
+    prepare_timeout="$(read_env_value "$env_file" SUB2API_EDGE_PREPARE_TIMEOUT_MS)"
+    complete_timeout="$(read_env_value "$env_file" SUB2API_EDGE_COMPLETE_TIMEOUT_MS)"
+    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_PREPARE_TIMEOUT_MS "${prepare_timeout:-1500}"
+    ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_COMPLETE_TIMEOUT_MS "${complete_timeout:-1500}"
     ensure_env_value "$env_file" GATEWAY_STREAM_LOW_LATENCY_MODE smart
     ensure_env_value "$env_file" GATEWAY_LOW_LATENCY_STREAM_HEADERS true
 
@@ -332,6 +338,9 @@ ensure_edge_env_values() {
     set_env_value "$env_file" SUB2API_EDGE_GO_BASE_URL http://app:8080
     set_env_value "$env_file" SUB2API_EDGE_CONTROL_BASE_URL http://app:8080
     set_env_value "$env_file" SUB2API_EDGE_INTERNAL_SECRET "$secret"
+    ensure_env_value "$env_file" SUB2API_EDGE_NODE_ID nuro-edge-rs
+    set_env_value "$env_file" SUB2API_EDGE_PREPARE_TIMEOUT_MS "$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_PREPARE_TIMEOUT_MS)"
+    set_env_value "$env_file" SUB2API_EDGE_COMPLETE_TIMEOUT_MS "$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_COMPLETE_TIMEOUT_MS)"
     ensure_env_value "$env_file" SUB2API_EDGE_INITIAL_POOL_SIZE 10000
     upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 20000 2000
     upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 4 32
@@ -456,12 +465,17 @@ GATEWAY_OPENAI_EDGE_RS_RELAY_CHAT_COMPLETIONS=true
 GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES=true
 GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES_WEBSOCKET=true
 GATEWAY_OPENAI_EDGE_RS_ROLLOUT_PERCENT=100
+GATEWAY_OPENAI_EDGE_RS_PREPARE_TIMEOUT_MS=1500
+GATEWAY_OPENAI_EDGE_RS_COMPLETE_TIMEOUT_MS=1500
 GATEWAY_STREAM_LOW_LATENCY_MODE=smart
 GATEWAY_LOW_LATENCY_STREAM_HEADERS=true
 SUB2API_EDGE_LISTEN_ADDR=0.0.0.0:18080
 SUB2API_EDGE_GO_BASE_URL=http://app:8080
 SUB2API_EDGE_CONTROL_BASE_URL=http://app:8080
 SUB2API_EDGE_INTERNAL_SECRET=
+SUB2API_EDGE_NODE_ID=nuro-edge-rs
+SUB2API_EDGE_PREPARE_TIMEOUT_MS=1500
+SUB2API_EDGE_COMPLETE_TIMEOUT_MS=1500
 SUB2API_EDGE_INITIAL_POOL_SIZE=10000
 SUB2API_EDGE_QUEUE_BUFFER_SIZE=2000
 SUB2API_EDGE_PER_ACCOUNT_WORKERS=32
@@ -535,6 +549,9 @@ create_compose_file() {
       - SUB2API_EDGE_GO_BASE_URL=\${SUB2API_EDGE_GO_BASE_URL:-http://app:8080}
       - SUB2API_EDGE_CONTROL_BASE_URL=\${SUB2API_EDGE_CONTROL_BASE_URL:-http://app:8080}
       - SUB2API_EDGE_INTERNAL_SECRET=\${SUB2API_EDGE_INTERNAL_SECRET:?SUB2API_EDGE_INTERNAL_SECRET is required}
+      - SUB2API_EDGE_NODE_ID=\${SUB2API_EDGE_NODE_ID:-nuro-edge-rs}
+      - SUB2API_EDGE_PREPARE_TIMEOUT_MS=\${SUB2API_EDGE_PREPARE_TIMEOUT_MS:-1500}
+      - SUB2API_EDGE_COMPLETE_TIMEOUT_MS=\${SUB2API_EDGE_COMPLETE_TIMEOUT_MS:-1500}
       - SUB2API_EDGE_INITIAL_POOL_SIZE=\${SUB2API_EDGE_INITIAL_POOL_SIZE:-10000}
       - SUB2API_EDGE_QUEUE_BUFFER_SIZE=\${SUB2API_EDGE_QUEUE_BUFFER_SIZE:-2000}
       - SUB2API_EDGE_PER_ACCOUNT_WORKERS=\${SUB2API_EDGE_PER_ACCOUNT_WORKERS:-32}

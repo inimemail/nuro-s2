@@ -110,9 +110,11 @@ func (c *stubConcurrencyCacheForTest) CleanupStaleProcessSlots(_ context.Context
 type trackingConcurrencyCache struct {
 	stubConcurrencyCacheForTest
 	cleanupPrefix string
+	cleanupCalls  int
 }
 
 func (c *trackingConcurrencyCache) CleanupStaleProcessSlots(_ context.Context, prefix string) error {
+	c.cleanupCalls++
 	c.cleanupPrefix = prefix
 	return c.cleanupErr
 }
@@ -159,6 +161,17 @@ func TestCleanupStaleProcessSlots_DelegatesPrefix(t *testing.T) {
 	svc := NewConcurrencyService(cache)
 	require.NoError(t, svc.CleanupStaleProcessSlots(context.Background()))
 	require.Equal(t, RequestIDPrefix(), cache.cleanupPrefix)
+	require.NoError(t, svc.CleanupStaleProcessSlots(context.Background()))
+	require.Equal(t, 1, cache.cleanupCalls, "successful startup cleanup should latch")
+}
+
+func TestCleanupStaleProcessSlots_FailureCanRetry(t *testing.T) {
+	cache := &trackingConcurrencyCache{stubConcurrencyCacheForTest: stubConcurrencyCacheForTest{cleanupErr: errors.New("redis unavailable")}}
+	svc := NewConcurrencyService(cache)
+	require.Error(t, svc.CleanupStaleProcessSlots(context.Background()))
+	cache.cleanupErr = nil
+	require.NoError(t, svc.CleanupStaleProcessSlots(context.Background()))
+	require.Equal(t, 2, cache.cleanupCalls)
 }
 
 func TestAcquireAccountSlot_Success(t *testing.T) {
@@ -169,6 +182,18 @@ func TestAcquireAccountSlot_Success(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Acquired)
 	require.NotNil(t, result.ReleaseFunc)
+}
+
+func TestRetryConcurrencySlotReleaseRetriesTransientFailure(t *testing.T) {
+	attempts := 0
+	retryConcurrencySlotRelease("test", 1, "req-1", func(context.Context) error {
+		attempts++
+		if attempts < slotReleaseMaxAttempts {
+			return errors.New("temporary redis failure")
+		}
+		return nil
+	})
+	require.Equal(t, slotReleaseMaxAttempts, attempts)
 }
 
 func TestAcquireFirstAvailableAccountSlot_UsesOptionalCacheAndReleasesSelectedAccount(t *testing.T) {

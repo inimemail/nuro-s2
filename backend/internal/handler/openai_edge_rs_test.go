@@ -92,6 +92,138 @@ func TestTakeOpenAIEdgeLeaseAbortTracksRequestAcrossAccountSwitch(t *testing.T) 
 	}
 }
 
+func TestCancelOpenAIEdgeLeaseByRequestIDReleasesStoredLease(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	accountReleaseCalls := 0
+	userReleaseCalls := 0
+	lease := &openAIEdgeLease{
+		edgeRequestID:      "edge-cancel-1",
+		leaseID:            "lease-cancel-1",
+		account:            &service.Account{ID: 202},
+		accountReleaseFunc: func() { accountReleaseCalls++ },
+		userReleaseFunc:    func() { userReleaseCalls++ },
+	}
+	if !h.storeOpenAIEdgeLease(lease, time.Minute) {
+		t.Fatal("expected lease to be stored")
+	}
+
+	got, reason := h.cancelOpenAIEdgeLeaseForRequest("", "edge-cancel-1", 0, time.Minute)
+	if reason != "" || got != lease {
+		t.Fatalf("cancel result = (%v, %q), want stored lease", got, reason)
+	}
+	got.release()
+
+	if accountReleaseCalls != 1 || userReleaseCalls != 1 {
+		t.Fatalf("expected both slots to be released once, got account=%d user=%d", accountReleaseCalls, userReleaseCalls)
+	}
+	if h.openAIEdgeLeases[lease.leaseID] != nil || h.openAIEdgeLeaseByRequest[lease.edgeRequestID] != "" {
+		t.Fatal("cancel did not remove both lease indexes")
+	}
+}
+
+func TestStoreOpenAIEdgeLeaseRejectsLatePrepareAfterCancellation(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	if lease, reason := h.cancelOpenAIEdgeLeaseForRequest("", "edge-late-1", 0, time.Minute); lease != nil || reason != "" {
+		t.Fatalf("pre-cancel result = (%v, %q), want empty success", lease, reason)
+	}
+	lease := &openAIEdgeLease{
+		edgeRequestID: "edge-late-1",
+		leaseID:       "lease-late-1",
+	}
+	if h.storeOpenAIEdgeLease(lease, time.Minute) {
+		t.Fatal("late prepare lease must be rejected after request cancellation")
+	}
+	if h.openAIEdgeLeases[lease.leaseID] != nil {
+		t.Fatal("rejected late prepare lease was retained")
+	}
+}
+
+func TestOpenAIEdgeLeaseExpiryMarksSettledAndReleases(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	released := make(chan struct{}, 1)
+	lease := &openAIEdgeLease{
+		edgeRequestID: "edge-expiry-1",
+		leaseID:       "lease-expiry-1",
+		accountReleaseFunc: func() {
+			released <- struct{}{}
+		},
+	}
+	if !h.storeOpenAIEdgeLease(lease, time.Millisecond) {
+		t.Fatal("expected lease to be stored")
+	}
+
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for lease expiry release")
+	}
+
+	lease.mu.Lock()
+	settled := lease.settled
+	lease.mu.Unlock()
+	if !settled {
+		t.Fatal("expired lease must be marked settled before its slot is released")
+	}
+	if h.getOpenAIEdgeLease(lease.leaseID) != nil || h.openAIEdgeLeaseByRequest[lease.edgeRequestID] != "" {
+		t.Fatal("expired lease was retained in an index")
+	}
+}
+
+func TestRecoverOpenAIEdgeLeasesOnlyReleasesPreviousInstanceOnSameNode(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	oldReleaseCalls := 0
+	currentReleaseCalls := 0
+	otherNodeReleaseCalls := 0
+	leases := []*openAIEdgeLease{
+		{
+			edgeRequestID:      "edge-old",
+			edgeNodeID:         "node-1",
+			edgeInstanceID:     "instance-old",
+			leaseID:            "lease-old",
+			accountReleaseFunc: func() { oldReleaseCalls++ },
+		},
+		{
+			edgeRequestID:      "edge-current",
+			edgeNodeID:         "node-1",
+			edgeInstanceID:     "instance-current",
+			leaseID:            "lease-current",
+			accountReleaseFunc: func() { currentReleaseCalls++ },
+		},
+		{
+			edgeRequestID:      "edge-other",
+			edgeNodeID:         "node-2",
+			edgeInstanceID:     "instance-old",
+			leaseID:            "lease-other",
+			accountReleaseFunc: func() { otherNodeReleaseCalls++ },
+		},
+	}
+	for _, lease := range leases {
+		if !h.storeOpenAIEdgeLease(lease, time.Minute) {
+			t.Fatalf("store %s failed", lease.leaseID)
+		}
+	}
+
+	if released := h.recoverOpenAIEdgeLeases("node-1", "instance-current"); released != 1 {
+		t.Fatalf("released=%d, want 1", released)
+	}
+	if oldReleaseCalls != 1 || currentReleaseCalls != 0 || otherNodeReleaseCalls != 0 {
+		t.Fatalf("unexpected release counts old=%d current=%d other=%d", oldReleaseCalls, currentReleaseCalls, otherNodeReleaseCalls)
+	}
+	if h.openAIEdgeLeases["lease-old"] != nil || h.openAIEdgeLeases["lease-current"] == nil || h.openAIEdgeLeases["lease-other"] == nil {
+		t.Fatal("recovery removed the wrong lease set")
+	}
+	if expiresAt := h.openAIEdgeCancelled["edge-old"]; !expiresAt.After(time.Now()) {
+		t.Fatal("recovery must tombstone old request IDs against delayed prepare delivery")
+	}
+
+	for _, leaseID := range []string{"lease-current", "lease-other"} {
+		lease, _ := h.takeOpenAIEdgeLeaseForRequest(leaseID, "", 0, false)
+		if lease != nil {
+			lease.release()
+		}
+	}
+}
+
 func TestOpenAIEdgePrepareFallsBackUntilControlPlaneExtractionExists(t *testing.T) {
 	h := &OpenAIGatewayHandler{cfg: &config.Config{}}
 	h.cfg.Gateway.StreamLowLatencyMode = config.StreamLowLatencyModeAggressive
@@ -320,6 +452,7 @@ func TestOpenAIEdgeCallbacksRequireSecretAndAck(t *testing.T) {
 	}{
 		{name: "complete", call: h.OpenAIEdgeComplete, body: `{"edge_request_id":"edge-1","success":true}`},
 		{name: "abort", call: h.OpenAIEdgeAbort, body: `{"edge_request_id":"edge-1","reason":"client_disconnect"}`},
+		{name: "recover", call: h.OpenAIEdgeRecover, body: `{"edge_node_id":"node-1","edge_instance_id":"instance-1"}`},
 	} {
 		c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/"+tc.name, tc.body, "edge-secret")
 		tc.call(c)
@@ -647,10 +780,15 @@ func TestOpenAIEdgeCachePolicyCompatibilityFailureIsLeaseScoped(t *testing.T) {
 }
 
 func TestOpenAIEdgeAbortReasonAlreadyRecordedDoesNotReportAnotherFailure(t *testing.T) {
-	if !openAIEdgeAbortReasonIsLocalQueuePressure("retry_failure_already_recorded: max_account_switches_exhausted") {
+	if !openAIEdgeAbortReasonIsNeutral("retry_failure_already_recorded: max_account_switches_exhausted") {
 		t.Fatal("failure-recorded retry abort must not add a second health failure")
 	}
-	if openAIEdgeAbortReasonIsLocalQueuePressure("ordinary_upstream_failure") {
+	for _, reason := range []string{"prepare_failed", "ws_prepare_failed", "unsupported_ws_transport", "ws_proxy_not_supported"} {
+		if !openAIEdgeAbortReasonIsNeutral(reason) {
+			t.Fatalf("local edge abort %q must not penalize account health", reason)
+		}
+	}
+	if openAIEdgeAbortReasonIsNeutral("ordinary_upstream_failure") {
 		t.Fatal("ordinary upstream failure must remain a health failure")
 	}
 }

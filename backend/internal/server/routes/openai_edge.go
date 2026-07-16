@@ -22,5 +22,6 @@ func RegisterOpenAIEdgeRoutes(r *gin.Engine, h *handler.Handlers, cfg *config.Co
 		edge.POST("/retry", h.OpenAIGateway.OpenAIEdgeRetry)
 		edge.POST("/complete", h.OpenAIGateway.OpenAIEdgeComplete)
 		edge.POST("/abort", h.OpenAIGateway.OpenAIEdgeAbort)
+		edge.POST("/recover", h.OpenAIGateway.OpenAIEdgeRecover)
 	}
 }

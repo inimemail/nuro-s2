@@ -1743,7 +1743,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					localExcluded[account.ID] = struct{}{} // 排除此账号
 					continue                               // 重新选择
 				} else {
-					return s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
+					return s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
 				}
 			}
 
@@ -1943,12 +1943,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 										logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), stickyAccountID)
 									}
 									s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, stickyAccount)
-									selection, err := s.newSelectionResult(ctx, stickyAccount, true, result.ReleaseFunc, nil)
-									if err != nil {
-										result.ReleaseFunc()
-										return nil, err
-									}
-									return selection, nil
+									return s.newAcquiredSelectionResult(ctx, stickyAccount, result.ReleaseFunc)
 								}
 							}
 
@@ -2044,7 +2039,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							if s.debugModelRoutingEnabled() {
 								logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routed select: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), selected.account.ID)
 							}
-							return s.newSelectionResult(ctx, selected.account, true, result.ReleaseFunc, nil)
+							return s.newAcquiredSelectionResult(ctx, selected.account, result.ReleaseFunc)
 						}
 					}
 
@@ -2181,12 +2176,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 								_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), sessionHash, stickySessionTTL)
 							}
 							s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, account)
-							selection, err := s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
-							if err != nil {
-								result.ReleaseFunc()
-								return nil, err
-							}
-							return selection, nil
+							return s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
 						}
 					} else {
 						slog.Debug("sticky.layer1_5_no_routing_slot_busy",
@@ -2353,7 +2343,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 						_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.account.ID, stickySessionTTL)
 					}
 					s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected.account)
-					return s.newSelectionResult(ctx, selected.account, true, result.ReleaseFunc, nil)
+					return s.newAcquiredSelectionResult(ctx, selected.account, result.ReleaseFunc)
 				}
 			}
 
@@ -2451,11 +2441,7 @@ func (s *GatewayService) SelectRequiredAccountWithLoadAwareness(
 			return nil, ErrNoAvailableAccounts
 		}
 		s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, account)
-		selection, selectErr := s.newSelectionResult(ctx, account, true, result.ReleaseFunc, nil)
-		if selectErr != nil && result.ReleaseFunc != nil {
-			result.ReleaseFunc()
-		}
-		return selection, selectErr
+		return s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
 	}
 	// A wait plan reserves the session before returning it, as in the normal
 	// fallback path; the handler will account for the eventual slot wait.
@@ -2494,7 +2480,7 @@ func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates
 				result.ReleaseFunc() // 释放槽位，继续尝试下一个账号
 				continue
 			}
-			selection, err := s.newSelectionResult(ctx, acc, true, result.ReleaseFunc, nil)
+			selection, err := s.newAcquiredSelectionResult(ctx, acc, result.ReleaseFunc)
 			if err != nil {
 				return nil, false, err
 			}
@@ -3303,6 +3289,14 @@ func (s *GatewayService) newSelectionResult(ctx context.Context, account *Accoun
 		ReleaseFunc: release,
 		WaitPlan:    waitPlan,
 	}, nil
+}
+
+func (s *GatewayService) newAcquiredSelectionResult(ctx context.Context, account *Account, release func()) (*AccountSelectionResult, error) {
+	selection, err := s.newSelectionResult(ctx, account, true, release, nil)
+	if err != nil && release != nil {
+		release()
+	}
+	return selection, err
 }
 
 // filterByMinPriority 过滤出优先级最小的账号集合
