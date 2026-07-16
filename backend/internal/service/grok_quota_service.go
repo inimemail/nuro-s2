@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"golang.org/x/sync/singleflight"
@@ -48,6 +49,7 @@ type GrokQuotaService struct {
 	proxyRepo     ProxyRepository
 	tokenProvider *GrokTokenProvider
 	httpUpstream  HTTPUpstream
+	cfg           *config.Config
 	runtimeState  grokRateLimitRuntimeRecovery
 	probeFlight   singleflight.Group
 }
@@ -73,6 +75,14 @@ func NewGrokQuotaService(
 func (s *GrokQuotaService) SetRuntimeRecovery(runtimeState grokRateLimitRuntimeRecovery) {
 	if s != nil {
 		s.runtimeState = runtimeState
+	}
+}
+
+// SetConfig supplies the runtime URL security policy used by quota probes.
+// Keeping this as a setter preserves the lightweight constructor used by unit tests.
+func (s *GrokQuotaService) SetConfig(cfg *config.Config) {
+	if s != nil {
+		s.cfg = cfg
 	}
 }
 
@@ -124,7 +134,7 @@ func (s *GrokQuotaService) probeUsage(ctx context.Context, accountID int64) (*Gr
 	if err != nil {
 		return nil, infraerrors.New(http.StatusBadRequest, "GROK_QUOTA_PROBE_BODY_ERROR", "failed to build quota probe")
 	}
-	targetURL, err := buildGrokResponsesURL(account, nil)
+	targetURL, err := buildGrokResponsesURL(account, s.cfg)
 	if err != nil {
 		return nil, infraerrors.New(http.StatusBadRequest, "GROK_QUOTA_BASE_URL_INVALID", "invalid quota endpoint configuration")
 	}
@@ -270,7 +280,11 @@ func (s *GrokQuotaService) fetchBilling(
 	token, proxyURL string,
 	weekly bool,
 ) (*xai.BillingSummary, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, xai.BuildBillingURL(weekly), nil)
+	targetURL, err := buildGrokBillingURL(account, s.cfg, weekly)
+	if err != nil {
+		return nil, 0, infraerrors.New(http.StatusBadRequest, "GROK_QUOTA_BASE_URL_INVALID", "invalid billing endpoint configuration")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return nil, 0, infraerrors.New(http.StatusInternalServerError, "GROK_QUOTA_PROBE_REQUEST_BUILD_FAILED", "failed to build billing request")
 	}

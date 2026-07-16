@@ -158,9 +158,11 @@ func ProvideGrokQuotaService(
 	tokenProvider *GrokTokenProvider,
 	httpUpstream HTTPUpstream,
 	openAIGatewayService *OpenAIGatewayService,
+	cfg *config.Config,
 ) *GrokQuotaService {
 	service := NewGrokQuotaService(accountRepo, proxyRepo, tokenProvider, httpUpstream)
 	service.SetRuntimeRecovery(openAIGatewayService)
+	service.SetConfig(cfg)
 	return service
 }
 
@@ -176,6 +178,7 @@ func ProvideAccountUsageService(
 	identityCache IdentityCache,
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAITokenProvider *OpenAITokenProvider,
+	openAIGatewayService *OpenAIGatewayService,
 ) *AccountUsageService {
 	service := NewAccountUsageService(
 		accountRepo, usageLogRepo, usageFetcher, geminiQuotaService,
@@ -183,6 +186,7 @@ func ProvideAccountUsageService(
 		tlsFPProfileService, openAITokenProvider,
 	)
 	service.SetGrokQuotaService(grokQuotaService)
+	service.agentIdentityWS = openAIGatewayService
 	return service
 }
 
@@ -639,6 +643,8 @@ var ProviderSet = wire.NewSet(
 	ProvideRateLimitService,
 	ProvideAccountUsageService,
 	NewAccountTestService,
+	ProvideUpstreamBillingProbeService,
+	ProvideAuditLogService,
 	ProvideSettingService,
 	NewDataManagementService,
 	ProvideBackupService,

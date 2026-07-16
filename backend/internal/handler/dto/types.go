@@ -492,8 +492,12 @@ type UsageLog struct {
 
 	CacheCreation5mTokens int `json:"cache_creation_5m_tokens"`
 	CacheCreation1hTokens int `json:"cache_creation_1h_tokens"`
+	ImageInputTokens      int `json:"image_input_tokens"`
+	ImageOutputTokens     int `json:"image_output_tokens"`
 
 	InputCost                 float64 `json:"input_cost"`
+	ImageInputCost            float64 `json:"image_input_cost"`
+	ImageOutputCost           float64 `json:"image_output_cost"`
 	OutputCost                float64 `json:"output_cost"`
 	CacheCreationCost         float64 `json:"cache_creation_cost"`
 	CacheReadCost             float64 `json:"cache_read_cost"`

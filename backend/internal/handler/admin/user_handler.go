@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/handler/quotaview"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,21 @@ type UserHandler struct {
 	concurrencyService    *service.ConcurrencyService
 	userPlatformQuotaRepo service.UserPlatformQuotaRepository // T13 admin quota view
 	billingCache          service.BillingCache                // T17/T18 缓存失效（PUT/POST 路径）
+	totpService           *service.TotpService
+	userService           *service.UserService
+}
+
+func (h *UserHandler) SetStepUpServices(totpService *service.TotpService, userService *service.UserService) {
+	h.totpService = totpService
+	h.userService = userService
+}
+
+func (h *UserHandler) enforceStepUp(c *gin.Context) bool {
+	if h.totpService == nil || h.userService == nil {
+		response.InternalError(c, "Step-up verification is unavailable")
+		return false
+	}
+	return middleware.EnforceStepUp(c, h.totpService, h.userService)
 }
 
 // NewUserHandler creates a new admin user handler
@@ -265,6 +281,9 @@ func (h *UserHandler) Create(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	if req.Role == service.RoleAdmin && !h.enforceStepUp(c) {
+		return
+	}
 
 	user, err := h.adminService.CreateUser(c.Request.Context(), &service.CreateUserInput{
 		Email:         req.Email,
@@ -304,6 +323,16 @@ func (h *UserHandler) Update(c *gin.Context) {
 	if req.Role == service.RoleUser && userID == getAdminIDFromContext(c) {
 		response.BadRequest(c, "cannot demote yourself from admin")
 		return
+	}
+	if req.Role == service.RoleAdmin {
+		target, err := h.adminService.GetUser(c.Request.Context(), userID)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		if target.Role != service.RoleAdmin && !h.enforceStepUp(c) {
+			return
+		}
 	}
 
 	// 使用指针类型直接传递，nil 表示未提供该字段

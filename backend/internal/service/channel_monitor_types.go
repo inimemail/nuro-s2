@@ -53,6 +53,10 @@ type ChannelMonitor struct {
 	// APIKeyDecryptFailed 表示 APIKey 字段无法解密（密钥不一致或损坏）。
 	// 此时 APIKey 为空字符串，runner / RunCheck 必须跳过该监控并提示重填。
 	APIKeyDecryptFailed bool
+
+	// DuplicateOperationID is internal persistence metadata used only for
+	// idempotent recovery after an ambiguous duplicate request.
+	DuplicateOperationID string
 }
 
 // ChannelMonitorListParams 列表查询过滤参数。

@@ -403,6 +403,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(ctx context.Context, c *gin.Cont
 		}
 		upstreamReq.Header.Set("Content-Type", contentType)
 	}
+	account.ApplyHeaderOverrides(upstreamReq.Header)
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {

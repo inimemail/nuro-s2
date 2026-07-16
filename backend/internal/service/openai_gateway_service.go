@@ -80,6 +80,7 @@ var openaiAllowedHeaders = map[string]bool{
 	"x-codex-beta-features": true,
 	"x-codex-turn-state":    true,
 	"x-codex-turn-metadata": true,
+	responsesLiteHeaderKey:  true,
 }
 
 // OpenAI passthrough allowed headers whitelist.
@@ -96,6 +97,7 @@ var openaiPassthroughAllowedHeaders = map[string]bool{
 	"x-codex-beta-features": true,
 	"x-codex-turn-state":    true,
 	"x-codex-turn-metadata": true,
+	responsesLiteHeaderKey:  true,
 }
 
 // codex_cli_only 拒绝时记录的请求头白名单（仅用于诊断日志，不参与上游透传）
@@ -215,6 +217,7 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
 	InputTokens              int `json:"input_tokens"`
+	ImageInputTokens         int `json:"image_input_tokens,omitempty"`
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
@@ -429,6 +432,7 @@ type OpenAIGatewayService struct {
 	openaiCompatAnthropicDigestSessions          sync.Map
 	openaiCyberPolicySessionBlocks               sync.Map // key: platform:accountID:anchorType:anchorHash, value: cyberPolicySessionBlock
 	openaiFirstTokenTimeoutPlaceholderGuard      openAIFirstTokenTimeoutPlaceholderGuard
+	agentIdentityTaskMu                          sync.Mutex
 }
 
 type promptCacheBoostGroupAvailability struct {
@@ -622,6 +626,18 @@ func (s *OpenAIGatewayService) billingDeps() *billingDeps {
 func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
 	if s != nil && s.openaiWSPool != nil {
 		s.openaiWSPool.Close()
+	}
+}
+
+// InvalidateAgentIdentityWSConnections drops pooled connections after an
+// Agent Identity task is re-registered. It only affects the recovered
+// account; ordinary OAuth/API-key connections are untouched.
+func (s *OpenAIGatewayService) InvalidateAgentIdentityWSConnections(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	if pool := s.getOpenAIWSConnPool(); pool != nil {
+		pool.ClearAccount(accountID)
 	}
 }
 
@@ -1308,6 +1324,40 @@ func isOpenAIContextWindowError(upstreamMsg string, upstreamBody []byte) bool {
 		}
 	}
 	return match(string(upstreamBody))
+}
+
+const OpenAIRequestBodyTooLargeClientMessage = "Request payload is too large"
+
+const openAIRequestBodyTooLargeReason = GatewayFailureReason("openai_request_body_too_large")
+
+func isOpenAIRequestBodyTooLargeError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	return statusCode == http.StatusRequestEntityTooLarge && !isOpenAIContextWindowError(upstreamMsg, upstreamBody)
+}
+
+func newOpenAIUpstreamFailoverError(statusCode int, headers http.Header, body []byte, upstreamMsg string, retryableOnSameAccount bool) *UpstreamFailoverError {
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:             statusCode,
+		ResponseBody:           body,
+		ResponseHeaders:        headers.Clone(),
+		RetryableOnSameAccount: retryableOnSameAccount,
+	}
+	if isOpenAIRequestBodyTooLargeError(statusCode, upstreamMsg, body) {
+		failoverErr.RetryableOnSameAccount = false
+		failoverErr.Scope = GatewayFailureScopeAccount
+		failoverErr.Reason = openAIRequestBodyTooLargeReason
+		failoverErr.NextAccountAction = NextAccountRetry
+		failoverErr.ClientStatusCode = http.StatusRequestEntityTooLarge
+		failoverErr.ClientMessage = OpenAIRequestBodyTooLargeClientMessage
+		failoverErr.SkipPoolSoftCooldown = true
+		failoverErr.SkipPromptCacheAvoidance = true
+		failoverErr.SkipStickySessionEviction = true
+		failoverErr.SkipSchedulePenalty = true
+	}
+	return failoverErr
+}
+
+func (e *UpstreamFailoverError) IsOpenAIRequestBodyTooLarge() bool {
+	return e != nil && e.Reason == openAIRequestBodyTooLargeReason
 }
 
 // ExtractSessionID extracts the raw session ID from headers or body without hashing.
@@ -3130,6 +3180,11 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 	}
 	switch account.Type {
 	case AccountTypeOAuth:
+		// Agent Identity authenticates each outbound request with a short-lived
+		// Ed25519 assertion and intentionally has no bearer access token.
+		if account.IsOpenAIAgentIdentity() {
+			return "", "agent_identity", nil
+		}
 		// 使用 TokenProvider 获取缓存的 token
 		if s.openAITokenProvider != nil {
 			accessToken, err := s.openAITokenProvider.GetAccessToken(ctx, account)
@@ -3244,6 +3299,9 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 	if isOpenAIContextWindowError(upstreamMsg, upstreamBody) {
 		return false
 	}
+	if isOpenAIRequestBodyTooLargeError(statusCode, upstreamMsg, upstreamBody) {
+		return true
+	}
 	if statusCode == http.StatusBadRequest {
 		return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
 	}
@@ -3269,6 +3327,9 @@ func (s *OpenAIGatewayService) classifyOpenAIPoolFailover(ctx context.Context, a
 }
 
 func (s *OpenAIGatewayService) shouldFailoverOpenAIAccountResponse(ctx context.Context, account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if isOpenAIRequestBodyTooLargeError(statusCode, upstreamMsg, upstreamBody) {
+		return true
+	}
 	if account != nil && account.IsOpenAI() && account.IsPoolMode() {
 		return s.classifyOpenAIPoolFailover(ctx, account, statusCode, upstreamMsg, upstreamBody).Failover
 	}
@@ -3496,7 +3557,15 @@ func (s *OpenAIGatewayService) doOpenAIWhamRequest(ctx context.Context, account 
 		return nil, fmt.Errorf("create openai wham request: %w", err)
 	}
 	req.Host = "chatgpt.com"
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	authHeaders, authErr := s.buildOpenAIAuthenticationHeaders(ctx, account, accessToken)
+	if authErr != nil {
+		return nil, fmt.Errorf("build openai authentication headers: %w", authErr)
+	}
+	for key, values := range authHeaders {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Originator", openAIWhamOriginator)
 	req.Header.Set("OAI-Language", "zh-CN")
@@ -3547,6 +3616,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			},
 		})
 		return nil, errors.New("codex_cli_only restriction: only codex official clients are allowed")
+	}
+	if account != nil && account.IsOpenAIOAuth() && c != nil && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) {
+		liteBody, changed, liteErr := normalizeOpenAIResponsesLiteToolsPayload(body)
+		if liteErr != nil {
+			setOpsUpstreamError(c, http.StatusBadRequest, liteErr.Error(), "")
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": liteErr.Error(), "param": "tools"}})
+			return nil, liteErr
+		}
+		if changed {
+			body = liteBody
+		}
 	}
 
 	originalBody := body
@@ -3923,18 +4003,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
-	// Handle max_output_tokens based on platform and account type
+	// Handle output token limits based on platform and account type.
 	if !isCodexCLI {
 		if maxOutputTokens, hasMaxOutputTokens := reqBody["max_output_tokens"]; hasMaxOutputTokens {
 			switch account.Platform {
 			case PlatformOpenAI:
-				// For OpenAI API Key, remove max_output_tokens (not supported)
-				// For OpenAI OAuth (Responses API), keep it (supported)
-				if account.Type == AccountTypeAPIKey {
-					delete(reqBody, "max_output_tokens")
-					bodyModified = true
-					markPatchDelete("max_output_tokens")
-				}
+				// Responses-native OpenAI endpoints accept max_output_tokens. If a
+				// compatible upstream rejects it, the bounded 400 retry below removes
+				// the field for this request only.
 			case PlatformAnthropic:
 				// For Anthropic (Claude), convert to max_tokens
 				delete(reqBody, "max_output_tokens")
@@ -3954,6 +4030,16 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				delete(reqBody, "max_output_tokens")
 				bodyModified = true
 				markPatchDelete("max_output_tokens")
+			}
+		}
+		if account.Platform == PlatformOpenAI {
+			if maxTokens, hasMaxTokens := reqBody["max_tokens"]; hasMaxTokens {
+				if _, hasMaxOutputTokens := reqBody["max_output_tokens"]; !hasMaxOutputTokens {
+					reqBody["max_output_tokens"] = maxTokens
+				}
+				delete(reqBody, "max_tokens")
+				bodyModified = true
+				disablePatch()
 			}
 		}
 
@@ -4223,11 +4309,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		retryBudget := s.openAIWSRetryTotalBudget()
 		retryStartedAt := time.Now()
+		wsForwardCtx := ctx
 	wsRetryLoop:
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			wsAttempts = attempt
 			wsResult, wsErr = s.forwardOpenAIWSV2(
-				ctx,
+				wsForwardCtx,
 				c,
 				account,
 				wsReqBody,
@@ -4258,6 +4345,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				continue
 			}
 			if reason == "invalid_encrypted_content" && recoverInvalidEncryptedContent(attempt) {
+				continue
+			}
+			if reason == "agent_identity_task_recovered" && !agentIdentityTaskRecoveryWasTried(wsForwardCtx) {
+				wsForwardCtx = markAgentIdentityTaskRecoveryTried(wsForwardCtx)
 				continue
 			}
 			if retryable && attempt < maxAttempts {
@@ -4355,6 +4446,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	httpInvalidEncryptedContentRetryTried := false
 	httpPromptCacheBoostRetryTried := false
 	httpCodexAutoResetRetryTried := false
+	agentIdentityTaskRecoveryTried := false
+	rejectedFieldRetryState := &openAIResponsesRejectedFieldRetryState{}
 	for {
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := openAIUpstreamRequestContext(ctx, c)
@@ -4418,6 +4511,16 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
+			if !requestFirstTokenPlaceholder.Sent && !agentIdentityTaskRecoveryTried && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+				agentIdentityTaskRecoveryTried = true
+				expectedTaskID := account.GetCredential("task_id")
+				if recoveryErr := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); recoveryErr != nil {
+					return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
+				}
+				continue
+			}
+			respBody = s.redactAgentIdentitySensitiveBody(ctx, account, respBody)
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)
@@ -4506,6 +4609,25 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				}
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Skip non-WSv2 invalid_encrypted_content retry because encrypted reasoning items are missing (account: %s)", account.Name)
 			}
+			if retryBody, field, changed, retryErr := normalizeOpenAIResponsesRejectedFieldRetryBody(resp.StatusCode, body, respBody); retryErr != nil {
+				return nil, fmt.Errorf("normalize rejected Responses field retry: %w", retryErr)
+			} else if changed && rejectedFieldRetryState.Allow(body, retryBody) {
+				body = retryBody
+				if reqBody != nil {
+					if field == "max_output_tokens" {
+						delete(reqBody, "max_output_tokens")
+					}
+					if index, ok := openAIResponsesRejectedNamespaceIndex(field); ok {
+						if input, ok := reqBody["input"].([]any); ok && index < len(input) {
+							if item, ok := input[index].(map[string]any); ok {
+								delete(item, "namespace")
+							}
+						}
+					}
+				}
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying Responses request after explicit field rejection: %s (account: %s)", field, account.Name)
+				continue
+			}
 			if !httpCodexAutoResetRetryTried && resp.StatusCode == http.StatusTooManyRequests {
 				if s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody) {
 					httpCodexAutoResetRetryTried = true
@@ -4534,12 +4656,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 				s.handleFailoverSideEffects(ctx, resp, account, upstreamModel)
 				decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)
-				return nil, &UpstreamFailoverError{
-					StatusCode:             resp.StatusCode,
-					ResponseBody:           respBody,
-					RetryableOnSameAccount: decision.RetryableOnSameAccount,
-					SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-				}
+				failoverErr := newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, respBody, upstreamMsg, decision.RetryableOnSameAccount)
+				failoverErr.SkipPoolSoftCooldown = failoverErr.SkipPoolSoftCooldown || decision.SkipSoftCooldown
+				return nil, failoverErr
 			}
 			return s.handleErrorResponse(ctx, resp, c, account, body, billingModel)
 		}
@@ -4642,6 +4761,15 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	originalBody := body
+	if account != nil && account.IsOpenAIOAuth() && c != nil && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) {
+		liteBody, changed, liteErr := normalizeOpenAIResponsesLiteToolsPayload(body)
+		if liteErr != nil {
+			return nil, liteErr
+		}
+		if changed {
+			body = liteBody
+		}
+	}
 	upstreamPassthroughModel := ""
 	if isOpenAIResponsesCompactPath(c) {
 		compactMappedModel := s.resolveOpenAICompactForwardModel(account, reqModel)
@@ -4823,6 +4951,11 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	httpCodexAutoResetRetryTried := false
+	agentIdentityTaskRecoveryTried := false
+	var rejectedFieldRetryState *openAIResponsesRejectedFieldRetryState
+	if account != nil && account.IsOpenAIResponsesPassthroughCompatEnabled() && isOpenAIResponsesRequestPath(c) {
+		rejectedFieldRetryState = &openAIResponsesRejectedFieldRetryState{}
+	}
 	for {
 		upstreamCtx, releaseUpstreamCtx := openAIUpstreamRequestContext(ctx, c)
 		upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
@@ -4876,6 +5009,16 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			if !requestFirstTokenPlaceholder.Sent && !agentIdentityTaskRecoveryTried && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+				agentIdentityTaskRecoveryTried = true
+				expectedTaskID := account.GetCredential("task_id")
+				if recoveryErr := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); recoveryErr != nil {
+					return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
+				}
+				continue
+			}
+			respBody = s.redactAgentIdentitySensitiveBody(ctx, account, respBody)
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 
@@ -4928,8 +5071,17 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 					startTime,
 				)
 			}
+			if rejectedFieldRetryState != nil {
+				if retryBody, field, changed, retryErr := normalizeOpenAIResponsesRejectedFieldRetryBody(resp.StatusCode, body, respBody); retryErr != nil {
+					return nil, fmt.Errorf("normalize passthrough rejected Responses field retry: %w", retryErr)
+				} else if changed && rejectedFieldRetryState.Allow(body, retryBody) {
+					body = retryBody
+					logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying passthrough Responses request after explicit field rejection: %s (account: %s)", field, account.Name)
+					continue
+				}
+			}
 
-			if shouldFailoverOpenAIPassthroughResponse(resp.StatusCode) {
+			if isOpenAIRequestBodyTooLargeError(resp.StatusCode, upstreamMsg, respBody) || shouldFailoverOpenAIPassthroughResponse(resp.StatusCode) {
 				if !httpCodexAutoResetRetryTried && resp.StatusCode == http.StatusTooManyRequests {
 					if s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody) {
 						httpCodexAutoResetRetryTried = true
@@ -5101,11 +5253,20 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		}
 	}
 
-	// 覆盖入站鉴权残留，并注入上游认证
+	// 覆盖入站鉴权残留，并注入上游认证。Agent Identity 在这里生成
+	// 短期 assertion；其他账号仍保持原 Bearer 行为。
 	req.Header.Del("authorization")
 	req.Header.Del("x-api-key")
 	req.Header.Del("x-goog-api-key")
-	req.Header.Set("authorization", "Bearer "+token)
+	authHeaders, err := s.buildOpenAIAuthenticationHeaders(ctx, account, token)
+	if err != nil {
+		return nil, fmt.Errorf("build openai authentication headers: %w", err)
+	}
+	for key, values := range authHeaders {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 
 	// OAuth 透传到 ChatGPT internal API 时补齐必要头。
 	if account.Type == AccountTypeOAuth {
@@ -5236,13 +5397,9 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 		UpstreamResponseBody: upstreamDetail,
 	})
 	decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, body)
-	return &UpstreamFailoverError{
-		StatusCode:             resp.StatusCode,
-		ResponseBody:           body,
-		ResponseHeaders:        resp.Header.Clone(),
-		RetryableOnSameAccount: decision.RetryableOnSameAccount,
-		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-	}
+	failoverErr := newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, body, upstreamMsg, decision.RetryableOnSameAccount)
+	failoverErr.SkipPoolSoftCooldown = failoverErr.SkipPoolSoftCooldown || decision.SkipSoftCooldown
+	return failoverErr
 }
 
 func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
@@ -6766,8 +6923,17 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 
-	// Set authentication header
-	req.Header.Set("authorization", "Bearer "+token)
+	// Set authentication header. This is a pure Bearer replacement for normal
+	// OAuth/API-key accounts and an assertion only for Agent Identity.
+	authHeaders, err := s.buildOpenAIAuthenticationHeaders(ctx, account, token)
+	if err != nil {
+		return nil, fmt.Errorf("build openai authentication headers: %w", err)
+	}
+	for key, values := range authHeaders {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 
 	// Set headers specific to OAuth accounts (ChatGPT internal API)
 	if account.Type == AccountTypeOAuth {
@@ -6958,6 +7124,14 @@ func (s *OpenAIGatewayService) handleErrorResponseInternal(
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
+	if isOpenAIRequestBodyTooLargeError(resp.StatusCode, upstreamMsg, body) {
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+			UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
+			Kind: "failover", Message: upstreamMsg, Detail: upstreamDetail,
+		})
+		return nil, newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, body, upstreamMsg, false)
+	}
 	if decision := s.handleOpenAICyberPolicyEvent(c, account, false, resp.Header.Get("x-request-id"), body, requestBody); decision.Matched {
 		statusCode := resp.StatusCode
 		if statusCode < 400 {
@@ -8267,8 +8441,13 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 	if imageOutputTokens == 0 {
 		imageOutputTokens = value.Get("completion_tokens_details.image_tokens").Int()
 	}
+	imageInputTokens := firstPositiveGJSONInt(
+		value.Get("input_tokens_details.image_tokens"),
+		value.Get("prompt_tokens_details.image_tokens"),
+	)
 	return OpenAIUsage{
 		InputTokens:              int(inputTokens),
+		ImageInputTokens:         imageInputTokens,
 		OutputTokens:             int(outputTokens),
 		CacheCreationInputTokens: cacheCreationTokens,
 		CacheReadInputTokens:     cacheReadTokens,
@@ -9388,6 +9567,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// Calculate cost
 	tokens := UsageTokens{
 		InputTokens:         actualInputTokens,
+		ImageInputTokens:    result.Usage.ImageInputTokens,
 		OutputTokens:        result.Usage.OutputTokens,
 		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
 		CacheReadTokens:     result.Usage.CacheReadInputTokens,
@@ -9501,6 +9681,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		InboundEndpoint:      optionalTrimmedStringPtr(input.InboundEndpoint),
 		UpstreamEndpoint:     optionalTrimmedStringPtr(input.UpstreamEndpoint),
 		InputTokens:          actualInputTokens,
+		ImageInputTokens:     result.Usage.ImageInputTokens,
 		OutputTokens:         result.Usage.OutputTokens,
 		CacheCreationTokens:  result.Usage.CacheCreationInputTokens,
 		CacheReadTokens:      result.Usage.CacheReadInputTokens,
@@ -9517,6 +9698,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 	if cost != nil {
 		usageLog.InputCost = cost.InputCost
+		usageLog.ImageInputCost = cost.ImageInputCost
 		usageLog.OutputCost = cost.OutputCost
 		usageLog.ImageOutputCost = cost.ImageOutputCost
 		usageLog.CacheCreationCost = cost.CacheCreationCost

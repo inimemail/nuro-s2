@@ -129,6 +129,47 @@
                       <span class="flex-1 text-left">{{ t('admin.tlsFingerprintProfiles.title') }}</span>
                     </button>
 
+                    <div class="mt-2 border-t border-gray-100 px-3 py-3 dark:border-gray-700">
+                      <div class="mb-2 flex items-center justify-between gap-3">
+                        <span class="text-xs font-semibold text-gray-600 dark:text-gray-300">
+                          {{ t('admin.accounts.upstreamBilling.autoProbeSettings') }}
+                        </span>
+                        <button
+                          type="button"
+                          class="relative inline-flex h-5 w-9 rounded-full transition-colors"
+                          :class="upstreamBillingProbeSettings.enabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'"
+                          :aria-label="t('admin.accounts.upstreamBilling.autoProbeSettings')"
+                          @click="upstreamBillingProbeSettings.enabled = !upstreamBillingProbeSettings.enabled"
+                        >
+                          <span
+                            class="inline-block h-4 w-4 translate-y-0.5 rounded-full bg-white shadow transition-transform"
+                            :class="upstreamBillingProbeSettings.enabled ? 'translate-x-4' : 'translate-x-0.5'"
+                          />
+                        </button>
+                      </div>
+                      <div class="flex items-end gap-2">
+                        <label class="min-w-0 flex-1 text-[11px] text-gray-500 dark:text-gray-400">
+                          {{ t('admin.accounts.upstreamBilling.intervalMinutes') }}
+                          <input
+                            v-model.number="upstreamBillingProbeSettings.interval_minutes"
+                            type="number"
+                            min="5"
+                            max="1440"
+                            class="input mt-1 h-8 w-full px-2 text-xs"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          class="btn btn-secondary h-8 px-2"
+                          :disabled="upstreamBillingSettingsSaving"
+                          :title="t('common.save')"
+                          @click="saveUpstreamBillingProbeSettings"
+                        >
+                          <Icon name="check" size="xs" />
+                        </button>
+                      </div>
+                    </div>
+
                     <div class="my-2 border-t border-gray-100 dark:border-gray-700"></div>
                     <div class="px-2 py-2">
                       <div class="flex items-center justify-between gap-3">
@@ -314,6 +355,14 @@
               {{ (row.rate_multiplier ?? 1).toFixed(2) }}x
             </span>
           </template>
+          <template #cell-upstream_billing_rate="{ row }">
+            <UpstreamBillingRateCell
+              :account="row"
+              :now="uiNowMs"
+              :probing="probingUpstreamBillingIDs.has(row.id)"
+              @probe="handleProbeUpstreamBilling(row)"
+            />
+          </template>
           <template #cell-priority="{ value }">
             <span class="text-sm text-gray-700 dark:text-gray-300">{{ value }}</span>
           </template>
@@ -396,6 +445,7 @@
     </ConfirmDialog>
     <ErrorPassthroughRulesModal v-if="showErrorPassthrough" :show="showErrorPassthrough" @close="showErrorPassthrough = false" />
     <TLSFingerprintProfilesModal v-if="showTLSFingerprintProfiles" :show="showTLSFingerprintProfiles" @close="showTLSFingerprintProfiles = false" />
+    <TotpStepUpDialog :controller="exportStepUp" />
   </AppLayout>
 </template>
 
@@ -409,6 +459,8 @@ import { adminAPI } from '@/api/admin'
 import { useTableLoader } from '@/composables/useTableLoader'
 import { useSwipeSelect, type SwipeSelectVirtualContext } from '@/composables/useSwipeSelect'
 import { useTableSelection } from '@/composables/useTableSelection'
+import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
+import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
@@ -424,6 +476,7 @@ import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
+import UpstreamBillingRateCell from '@/components/account/UpstreamBillingRateCell.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
@@ -447,6 +500,7 @@ const TLSFingerprintProfilesModal = defineAsyncComponent(() => import('@/compone
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const exportStepUp = useStepUp()
 
 const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
@@ -538,6 +592,9 @@ const showSchedulePanel = ref(false)
 const scheduleAcc = ref<Account | null>(null)
 const scheduleModelOptions = ref<SelectOption[]>([])
 const togglingSchedulable = ref<number | null>(null)
+const probingUpstreamBillingIDs = ref(new Set<number>())
+const upstreamBillingProbeSettings = reactive({ enabled: false, interval_minutes: 60 })
+const upstreamBillingSettingsSaving = ref(false)
 const menu = reactive<{show:boolean, acc:Account|null, pos:{top:number, left:number}|null}>({ show: false, acc: null, pos: null })
 const exportingData = ref(false)
 const showCreateShadowDialog = ref(false)
@@ -1422,6 +1479,7 @@ const allColumns = computed(() => {
     { key: 'proxy', label: t('admin.accounts.columns.proxy'), sortable: false },
     { key: 'priority', label: t('admin.accounts.columns.priority'), sortable: true },
     { key: 'rate_multiplier', label: t('admin.accounts.columns.billingRateMultiplier'), sortable: true },
+    { key: 'upstream_billing_rate', label: t('admin.accounts.columns.upstreamBillingRate'), sortable: false },
     { key: 'last_used_at', label: t('admin.accounts.columns.lastUsed'), sortable: true },
     { key: 'created_at', label: t('admin.accounts.columns.createdAt'), sortable: true },
     { key: 'expires_at', label: t('admin.accounts.columns.expiresAt'), sortable: true },
@@ -1946,6 +2004,52 @@ const handleAccountUpdated = (updatedAccount: Account) => {
   patchAccountInList(updatedAccount)
   enterAutoRefreshSilentWindow()
 }
+const handleProbeUpstreamBilling = async (account: Account) => {
+  if (probingUpstreamBillingIDs.value.has(account.id)) return
+  probingUpstreamBillingIDs.value = new Set(probingUpstreamBillingIDs.value).add(account.id)
+  try {
+    const result = await adminAPI.accounts.probeUpstreamBilling(account.id)
+    if (!result.snapshot) {
+      throw new Error(result.error || t('admin.accounts.upstreamBilling.probeFailed'))
+    }
+    patchAccountInList({
+      ...account,
+      extra: {
+        ...(account.extra || {}),
+        upstream_billing_probe: result.snapshot
+      }
+    })
+  } catch (error: any) {
+    appStore.showError(error?.response?.data?.message || error?.message || t('admin.accounts.upstreamBilling.probeFailed'))
+  } finally {
+    const next = new Set(probingUpstreamBillingIDs.value)
+    next.delete(account.id)
+    probingUpstreamBillingIDs.value = next
+  }
+}
+const loadUpstreamBillingProbeSettings = async () => {
+  try {
+    Object.assign(upstreamBillingProbeSettings, await adminAPI.accounts.getUpstreamBillingProbeSettings())
+  } catch (error) {
+    console.error('Failed to load upstream billing probe settings:', error)
+  }
+}
+const saveUpstreamBillingProbeSettings = async () => {
+  if (upstreamBillingSettingsSaving.value) return
+  upstreamBillingSettingsSaving.value = true
+  try {
+    const saved = await adminAPI.accounts.updateUpstreamBillingProbeSettings({
+      enabled: upstreamBillingProbeSettings.enabled,
+      interval_minutes: Math.min(1440, Math.max(5, Math.trunc(Number(upstreamBillingProbeSettings.interval_minutes) || 60)))
+    })
+    Object.assign(upstreamBillingProbeSettings, saved)
+    appStore.showSuccess(t('admin.accounts.upstreamBilling.settingsSaved'))
+  } catch (error: any) {
+    appStore.showError(error?.response?.data?.message || t('admin.accounts.upstreamBilling.settingsFailed'))
+  } finally {
+    upstreamBillingSettingsSaving.value = false
+  }
+}
 const formatExportTimestamp = () => {
   const now = new Date()
   const pad2 = (value: number) => String(value).padStart(2, '0')
@@ -1959,14 +2063,14 @@ const handleExportData = async () => {
   if (exportingData.value) return
   exportingData.value = true
   try {
-    const dataPayload = await adminAPI.accounts.exportData(
+    const dataPayload = await exportStepUp.run(() => adminAPI.accounts.exportData(
       selIds.value.length > 0
         ? { ids: selIds.value, includeProxies: includeProxyOnExport.value }
         : {
             includeProxies: includeProxyOnExport.value,
             filters: buildAccountQueryFilters()
           }
-    )
+    ))
     const timestamp = formatExportTimestamp()
     const filename = `sub2api-account-${timestamp}.json`
     const blob = new Blob([JSON.stringify(dataPayload, null, 2)], { type: 'application/json' })
@@ -1978,7 +2082,12 @@ const handleExportData = async () => {
     URL.revokeObjectURL(url)
     appStore.showSuccess(t('admin.accounts.dataExported'))
   } catch (error: any) {
-    appStore.showError(error?.message || t('admin.accounts.dataExportFailed'))
+    if (isStepUpCancelled(error)) return
+    if (isStepUpBlocked(error)) {
+	  appStore.showError(stepUpBlockReason(error) === 'STEP_UP_ADMIN_API_KEY_FORBIDDEN' ? t('stepUp.adminApiKeyForbidden') : t('stepUp.notEnabled'))
+	  return
+	}
+	appStore.showError(error?.message || t('admin.accounts.dataExportFailed'))
   } finally {
     exportingData.value = false
     showExportDataDialog.value = false
@@ -2140,7 +2249,7 @@ const handleClickOutside = (event: MouseEvent) => {
 }
 
 onMounted(async () => {
-  await loadPoolSoftCooldownSettings()
+  await Promise.all([loadPoolSoftCooldownSettings(), loadUpstreamBillingProbeSettings()])
   load()
   resumeUiTicker()
   resumeOpenAIPoolRecoveryRefresh()

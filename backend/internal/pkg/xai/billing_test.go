@@ -2,6 +2,7 @@ package xai
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -86,4 +87,20 @@ func TestStampBillingSummaryAddsMetadata(t *testing.T) {
 	require.Equal(t, "billing_probe", summary.Source)
 	require.NotEmpty(t, summary.FetchedAt)
 	require.Equal(t, summary.FetchedAt, summary.UpdatedAt)
+}
+
+func TestBuildBillingURLWithValidatorUsesValidatedBaseURL(t *testing.T) {
+	got, err := BuildBillingURLWithValidator("https://relay.example/v1", true, func(raw string) (string, error) {
+		require.Equal(t, "https://relay.example/v1", raw)
+		return raw, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, "https://relay.example/v1"+BillingWeeklyPath, got)
+}
+
+func TestBuildBillingURLWithValidatorRejectsInvalidBaseURL(t *testing.T) {
+	_, err := BuildBillingURLWithValidator("https://relay.example/v1", false, func(string) (string, error) {
+		return "", fmt.Errorf("rejected")
+	})
+	require.Error(t, err)
 }

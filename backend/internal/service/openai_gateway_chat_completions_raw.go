@@ -169,7 +169,15 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileOpenAI))
 	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Authorization", "Bearer "+token)
+	authHeaders, authErr := s.buildOpenAIAuthenticationHeaders(upstreamCtx, account, token)
+	if authErr != nil {
+		return nil, fmt.Errorf("build openai authentication headers: %w", authErr)
+	}
+	for key, values := range authHeaders {
+		for _, value := range values {
+			upstreamReq.Header.Add(key, value)
+		}
+	}
 	if clientStream {
 		upstreamReq.Header.Set("Accept", "text/event-stream")
 	} else {

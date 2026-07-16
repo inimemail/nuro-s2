@@ -16,6 +16,7 @@ const (
 	totpLoginKeyPrefix    = "totp:login:"
 	totpAttemptsKeyPrefix = "totp:attempts:"
 	totpAttemptsTTL       = 15 * time.Minute
+	totpStepUpKeyPrefix   = "totp:stepup:"
 )
 
 // TotpCache implements service.TotpCache using Redis
@@ -146,4 +147,15 @@ func (c *TotpCache) GetVerifyAttempts(ctx context.Context, userID int64) (int, e
 func (c *TotpCache) ClearVerifyAttempts(ctx context.Context, userID int64) error {
 	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 	return c.rdb.Del(ctx, key).Err()
+}
+
+func (c *TotpCache) SetStepUpGrant(ctx context.Context, userID int64, sessionKey string, ttl time.Duration) error {
+	key := fmt.Sprintf("%s%d:%s", totpStepUpKeyPrefix, userID, sessionKey)
+	return c.rdb.Set(ctx, key, "1", ttl).Err()
+}
+
+func (c *TotpCache) HasStepUpGrant(ctx context.Context, userID int64, sessionKey string) (bool, error) {
+	key := fmt.Sprintf("%s%d:%s", totpStepUpKeyPrefix, userID, sessionKey)
+	count, err := c.rdb.Exists(ctx, key).Result()
+	return count > 0, err
 }

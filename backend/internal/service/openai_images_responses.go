@@ -1524,6 +1524,15 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if !agentIdentityTaskRecoveryWasTried(upstreamCtx) && s.isAgentIdentityAccount(upstreamCtx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+			expectedTaskID := account.GetCredential("task_id")
+			if recoveryErr := s.recoverAgentIdentityTask(upstreamCtx, account, expectedTaskID); recoveryErr != nil {
+				return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
+			}
+			return s.forwardOpenAIImagesOAuth(markAgentIdentityTaskRecoveryTried(ctx), c, account, parsed, channelMappedModel)
+		}
+		respBody = s.redactAgentIdentitySensitiveBody(upstreamCtx, account, respBody)
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		if refreshedAccount, _, ok := s.tryRecoverOpenAIOAuth401(upstreamCtx, c, account, resp.StatusCode, respBody); ok {
 			return s.forwardOpenAIImagesOAuth(ctx, c, refreshedAccount, parsed, channelMappedModel)
 		}

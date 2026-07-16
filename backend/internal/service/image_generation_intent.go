@@ -10,8 +10,22 @@ import (
 const (
 	openAIResponsesEndpoint          = "/v1/responses"
 	openAIResponsesCompactEndpoint   = "/v1/responses/compact"
+	responsesLiteHeader              = "X-OpenAI-Internal-Codex-Responses-Lite"
+	responsesLiteHeaderKey           = "x-openai-internal-codex-responses-lite"
+	responsesLiteWSMetadataKey       = "ws_request_header_x_openai_internal_codex_responses_lite"
 	imageGenerationPermissionMessage = "Image generation is not enabled for this group"
 )
+
+func isOpenAIResponsesLiteHeader(value string) bool {
+	return strings.EqualFold(strings.TrimSpace(value), "true")
+}
+
+func isOpenAIResponsesLiteWebSocketPayload(body []byte) bool {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	return isOpenAIResponsesLiteHeader(gjson.GetBytes(body, "client_metadata."+responsesLiteWSMetadataKey).String())
+}
 
 // ImageGenerationPermissionMessage returns the stable end-user error text for disabled groups.
 func ImageGenerationPermissionMessage() string {
@@ -44,6 +58,75 @@ func IsImageGenerationIntent(endpoint string, requestedModel string, body []byte
 		return true
 	}
 	return openAIJSONToolChoiceSelectsImageGeneration(gjson.GetBytes(body, "tool_choice"))
+}
+
+// IsImageGenerationIntentForPlatform applies platform-specific intent rules.
+// Grok advertises an image_gen namespace on ordinary Responses requests. That
+// catalog is passive; only native image_generation declarations or explicit
+// image tool choices are image intent. Other platforms keep legacy semantics.
+func IsImageGenerationIntentForPlatform(endpoint, requestedModel string, body []byte, platform string) bool {
+	if !strings.EqualFold(strings.TrimSpace(platform), PlatformGrok) {
+		return IsImageGenerationIntent(endpoint, requestedModel, body)
+	}
+	if IsImageGenerationEndpoint(endpoint) || isOpenAIImageGenerationModel(requestedModel) {
+		return true
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	if isOpenAIImageGenerationModel(strings.TrimSpace(gjson.GetBytes(body, "model").String())) {
+		return true
+	}
+	if openAIJSONToolsContainNativeImageGeneration(gjson.GetBytes(body, "tools")) {
+		return true
+	}
+	return openAIJSONToolChoiceSelectsExplicitImageGeneration(gjson.GetBytes(body, "tool_choice"))
+}
+
+func openAIJSONToolsContainNativeImageGeneration(tools gjson.Result) bool {
+	if !tools.IsArray() {
+		return false
+	}
+	found := false
+	tools.ForEach(func(_, item gjson.Result) bool {
+		found = isOpenAIImageGenerationType(openAIJSONString(item.Get("type")))
+		return !found
+	})
+	return found
+}
+
+func openAIJSONToolChoiceSelectsExplicitImageGeneration(choice gjson.Result) bool {
+	if !choice.Exists() {
+		return false
+	}
+	if choice.Type == gjson.String {
+		return isOpenAIImageGenerationType(choice.String())
+	}
+	if !choice.IsObject() {
+		return false
+	}
+	if openAIJSONToolsContainNativeImageGeneration(gjson.ParseBytes([]byte("[" + choice.Raw + "]"))) {
+		return true
+	}
+	if isOpenAIImageGenFunctionReference(openAIJSONString(choice.Get("namespace")), openAIJSONString(choice.Get("name"))) {
+		return true
+	}
+	if isOpenAIImageGenFunctionReference("", openAIJSONString(choice.Get("function.name"))) {
+		return true
+	}
+	if tool := choice.Get("tool"); tool.IsObject() {
+		return openAIJSONToolChoiceSelectsExplicitImageGeneration(tool)
+	}
+	if fn := choice.Get("function"); fn.IsObject() {
+		return isOpenAIImageGenFunctionReference(openAIJSONString(fn.Get("namespace")), openAIJSONString(fn.Get("name")))
+	}
+	return false
+}
+
+func isOpenAIImageGenFunctionReference(namespace, name string) bool {
+	namespace = strings.TrimSpace(namespace)
+	name = strings.TrimSpace(name)
+	return (namespace == "image_gen" && name == "imagegen") || name == "image_gen.imagegen" || name == "image_gen__imagegen"
 }
 
 // IsImageGenerationIntentMap is the map-backed variant used after service-side request mutation.

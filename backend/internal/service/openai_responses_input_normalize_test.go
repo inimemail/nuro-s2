@@ -54,7 +54,7 @@ func TestNormalizeOpenAIResponsesStringInputBody(t *testing.T) {
 }
 
 func TestNormalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(t *testing.T) {
-	t.Run("strips_token_params", func(t *testing.T) {
+	t.Run("preserves_responses_limit_and_strips_completion_limit", func(t *testing.T) {
 		body := []byte(`{"model":"gpt-5","max_output_tokens":128,"max_completion_tokens":64,"input":[{"type":"message","role":"user","content":"hi"}]}`)
 		normalized, changed, err := normalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(body)
 		if err != nil {
@@ -63,14 +63,42 @@ func TestNormalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(t *testing.T) {
 		if !changed {
 			t.Fatal("expected unsupported params to be stripped")
 		}
-		if gjson.GetBytes(normalized, "max_output_tokens").Exists() {
-			t.Fatalf("expected max_output_tokens to be stripped: %s", string(normalized))
+		if got := gjson.GetBytes(normalized, "max_output_tokens").Int(); got != 128 {
+			t.Fatalf("expected max_output_tokens to be preserved: %s", string(normalized))
 		}
 		if gjson.GetBytes(normalized, "max_completion_tokens").Exists() {
 			t.Fatalf("expected max_completion_tokens to be stripped: %s", string(normalized))
 		}
 		if !gjson.GetBytes(normalized, "input").IsArray() {
 			t.Fatalf("expected input to remain: %s", string(normalized))
+		}
+	})
+
+	t.Run("maps_legacy_max_tokens", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","max_tokens":256,"input":"hi"}`)
+		normalized, changed, err := normalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(body)
+		if err != nil {
+			t.Fatalf("normalize max_tokens: %v", err)
+		}
+		if !changed || gjson.GetBytes(normalized, "max_tokens").Exists() {
+			t.Fatalf("expected max_tokens to be removed: %s", string(normalized))
+		}
+		if got := gjson.GetBytes(normalized, "max_output_tokens").Int(); got != 256 {
+			t.Fatalf("expected mapped max_output_tokens, got %d body=%s", got, string(normalized))
+		}
+	})
+
+	t.Run("canonical_limit_wins", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-5","max_tokens":256,"max_output_tokens":512,"input":"hi"}`)
+		normalized, changed, err := normalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(body)
+		if err != nil {
+			t.Fatalf("normalize conflicting limits: %v", err)
+		}
+		if !changed || gjson.GetBytes(normalized, "max_tokens").Exists() {
+			t.Fatalf("expected max_tokens to be removed: %s", string(normalized))
+		}
+		if got := gjson.GetBytes(normalized, "max_output_tokens").Int(); got != 512 {
+			t.Fatalf("expected canonical max_output_tokens to win, got %d", got)
 		}
 	})
 

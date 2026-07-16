@@ -67,6 +67,7 @@
       </div>
     </template>
   </BaseDialog>
+  <TotpStepUpDialog :controller="stepUp" />
 </template>
 
 <script setup lang="ts">
@@ -79,12 +80,15 @@ import type { AdminUser, UserAttributeValuesMap } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import UserAttributeForm from '@/components/user/UserAttributeForm.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
+import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 
 const props = defineProps<{ show: boolean, user: AdminUser | null }>()
 const emit = defineEmits(['close', 'success'])
 const { t } = useI18n(); const appStore = useAppStore(); const { copyToClipboard } = useClipboard()
 
 const submitting = ref(false); const passwordCopied = ref(false)
+const stepUp = useStepUp()
 const form = reactive({ email: '', password: '', username: '', notes: '', role: 'user' as 'user' | 'admin', concurrency: 1, rpm_limit: 0, customAttributes: {} as UserAttributeValuesMap })
 
 watch(() => props.user, (u) => {
@@ -118,12 +122,17 @@ const handleUpdateUser = async () => {
   try {
     const data: any = { email: form.email, username: form.username, notes: form.notes, role: form.role, concurrency: form.concurrency, rpm_limit: form.rpm_limit }
     if (form.password.trim()) data.password = form.password.trim()
-    await adminAPI.users.update(props.user.id, data)
+    await stepUp.run(() => adminAPI.users.update(props.user!.id, data))
     if (Object.keys(form.customAttributes).length > 0) await adminAPI.userAttributes.updateUserAttributeValues(props.user.id, form.customAttributes)
     appStore.showSuccess(t('admin.users.userUpdated'))
     emit('success'); emit('close')
   } catch (e: any) {
-    appStore.showError(e.response?.data?.detail || t('admin.users.failedToUpdate'))
+    if (isStepUpCancelled(e)) return
+    if (isStepUpBlocked(e)) {
+      appStore.showError(stepUpBlockReason(e) === 'STEP_UP_ADMIN_API_KEY_FORBIDDEN' ? t('stepUp.adminApiKeyForbidden') : t('stepUp.notEnabled'))
+      return
+    }
+    appStore.showError(e?.message || t('admin.users.failedToUpdate'))
   } finally { submitting.value = false }
 }
 </script>

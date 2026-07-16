@@ -59,6 +59,7 @@ var headerOverrideBlockedNames = map[string]struct{}{
 	"chatgpt-account-id":       {},
 	"x-claude-code-session-id": {},
 	"x-client-request-id":      {},
+	"x-grok-conv-id":           {},
 }
 
 func isHeaderOverrideBlockedName(lowerName string) bool {
@@ -67,12 +68,19 @@ func isHeaderOverrideBlockedName(lowerName string) bool {
 }
 
 // IsHeaderOverrideEligible 报告账号类型是否支持请求头覆写。
-// 目前仅开放 Anthropic / OpenAI 两个平台的 api_key 账号。
+// OpenAI-compatible API key accounts and Grok OAuth accounts may opt in.
 func (a *Account) IsHeaderOverrideEligible() bool {
-	if a == nil || a.Type != AccountTypeAPIKey {
+	if a == nil {
 		return false
 	}
-	return a.Platform == PlatformAnthropic || a.Platform == PlatformOpenAI
+	switch a.Platform {
+	case PlatformAnthropic, PlatformOpenAI:
+		return a.Type == AccountTypeAPIKey
+	case PlatformGrok:
+		return a.Type == AccountTypeAPIKey || a.Type == AccountTypeOAuth
+	default:
+		return false
+	}
 }
 
 // IsHeaderOverrideEnabled 报告账号是否启用了请求头覆写。

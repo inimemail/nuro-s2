@@ -292,7 +292,7 @@
                   <div class="inline-flex items-center gap-1">
                     <Icon name="arrowDown" size="sm" class="text-emerald-500" />
                     <span class="font-medium text-gray-900 dark:text-white">{{
-                      (row.input_tokens ?? 0).toLocaleString()
+                      textInputTokens(row).toLocaleString()
                     }}</span>
                   </div>
                   <!-- Output -->
@@ -309,6 +309,10 @@
                 >
                   <Icon name="cube" size="sm" />
                   <span>{{ formatCacheTokens(row.image_output_tokens) }}</span>
+                </div>
+                <div v-if="hasImageInputTokens(row)" class="inline-flex items-center gap-1 text-fuchsia-600 dark:text-fuchsia-300">
+                  <Icon name="cube" size="sm" />
+                  <span>{{ t('usage.imageInputTokens') }}: {{ row.image_input_tokens.toLocaleString() }}</span>
                 </div>
                 <!-- Cache Tokens (Read + Write) -->
                 <div
@@ -452,9 +456,13 @@
           <!-- Token Breakdown -->
           <div>
             <div class="text-xs font-semibold text-gray-300 mb-1">{{ t('usage.tokenDetails') }}</div>
-            <div v-if="tokenTooltipData && tokenTooltipData.input_tokens > 0" class="flex items-center justify-between gap-4">
+            <div v-if="tokenTooltipData && textInputTokens(tokenTooltipData) > 0" class="flex items-center justify-between gap-4">
               <span class="text-gray-400">{{ t('admin.usage.inputTokens') }}</span>
-              <span class="font-medium text-white">{{ tokenTooltipData.input_tokens.toLocaleString() }}</span>
+              <span class="font-medium text-white">{{ textInputTokens(tokenTooltipData).toLocaleString() }}</span>
+            </div>
+            <div v-if="tokenTooltipData && hasImageInputTokens(tokenTooltipData)" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.imageInputTokens') }}</span>
+              <span class="font-medium text-fuchsia-300">{{ tokenTooltipData.image_input_tokens.toLocaleString() }}</span>
             </div>
             <div v-if="tokenTooltipData && textOutputTokens(tokenTooltipData) > 0" class="flex items-center justify-between gap-4">
               <span class="text-gray-400">{{ t('admin.usage.outputTokens') }}</span>
@@ -535,6 +543,10 @@
               <span class="text-gray-400">{{ t('admin.usage.inputCost') }}</span>
               <span class="font-medium text-white">${{ tooltipData.input_cost.toFixed(6) }}</span>
             </div>
+            <div v-if="tooltipData && hasImageInputCost(tooltipData)" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.imageInputCost') }}</span>
+              <span class="font-medium text-fuchsia-300">${{ tooltipData.image_input_cost.toFixed(6) }}</span>
+            </div>
             <div v-if="tooltipData && tooltipData.output_cost > 0" class="flex items-center justify-between gap-4">
               <span class="text-gray-400">{{ t('admin.usage.outputCost') }}</span>
               <span class="font-medium text-white">${{ tooltipData.output_cost.toFixed(6) }}</span>
@@ -580,9 +592,13 @@
             </template>
             <!-- Token billing: show unit prices per 1M tokens -->
             <template v-else-if="!getDisplayBillingMode(tooltipData) || getDisplayBillingMode(tooltipData) === BILLING_MODE_TOKEN">
-              <div v-if="tooltipData && tooltipData.input_tokens > 0" class="flex items-center justify-between gap-4">
+              <div v-if="tooltipData && textInputTokens(tooltipData) > 0" class="flex items-center justify-between gap-4">
                 <span class="text-gray-400">{{ t('usage.inputTokenPrice') }}</span>
-                <span class="font-medium text-sky-300">{{ formatTokenPricePerMillion(tooltipData.input_cost, tooltipData.input_tokens) }} {{ t('usage.perMillionTokens') }}</span>
+                <span class="font-medium text-sky-300">{{ formatTokenPricePerMillion(tooltipData.input_cost, textInputTokens(tooltipData)) }} {{ t('usage.perMillionTokens') }}</span>
+              </div>
+              <div v-if="tooltipData && hasImageInputTokens(tooltipData)" class="flex items-center justify-between gap-4">
+                <span class="text-gray-400">{{ t('usage.imageInputTokenPrice') }}</span>
+                <span class="font-medium text-fuchsia-300">{{ formatTokenPricePerMillion(tooltipData.image_input_cost ?? 0, tooltipData.image_input_tokens) }} {{ t('usage.perMillionTokens') }}</span>
               </div>
               <div v-if="tooltipData && textOutputTokens(tooltipData) > 0" class="flex items-center justify-between gap-4">
                 <span class="text-gray-400">{{ t('usage.outputTokenPrice') }}</span>
@@ -685,6 +701,9 @@ import {
   formatImageSizeSource,
   hasImageOutputCost,
   hasImageOutputTokens,
+  hasImageInputCost,
+  hasImageInputTokens,
+  textInputTokens,
   textOutputTokens,
 } from '@/utils/imageUsage'
 
@@ -1166,6 +1185,7 @@ const exportToCSV = async () => {
       'Type',
       'Billing Mode',
       'Input Tokens',
+      'Image Input Tokens',
       'Output Tokens',
       'Image Output Tokens',
       'Cache Read Tokens',
@@ -1173,6 +1193,7 @@ const exportToCSV = async () => {
       'Rate Multiplier',
       'Billed Cost',
       'Original Cost',
+      'Image Input Cost',
       'Image Output Cost',
       'First Token (ms)',
       'Duration (ms)'
@@ -1186,7 +1207,8 @@ const exportToCSV = async () => {
         log.inbound_endpoint || '',
         getRequestTypeExportText(log),
         getBillingModeLabel(getDisplayBillingMode(log), t),
-        log.input_tokens,
+        textInputTokens(log),
+        log.image_input_tokens ?? 0,
         textOutputTokens(log),
         log.image_output_tokens ?? 0,
         log.cache_read_tokens,
@@ -1194,6 +1216,7 @@ const exportToCSV = async () => {
         log.rate_multiplier,
         log.actual_cost.toFixed(8),
         log.total_cost.toFixed(8),
+        (log.image_input_cost ?? 0).toFixed(8),
         (log.image_output_cost ?? 0).toFixed(8),
         log.first_token_ms ?? '',
         log.duration_ms

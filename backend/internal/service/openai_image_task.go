@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -11,6 +12,8 @@ const (
 	OpenAIImageTaskStatusSuccess = "success"
 	OpenAIImageTaskStatusError   = "error"
 )
+
+var ErrOpenAIImageTaskQueueFull = errors.New("image task queue is full")
 
 type OpenAIImageTask struct {
 	DBID            int64
@@ -37,11 +40,10 @@ type OpenAIImageTask struct {
 }
 
 type OpenAIImageTaskRepository interface {
-	Submit(ctx context.Context, task *OpenAIImageTask) (*OpenAIImageTask, bool, error)
+	SubmitWithinLimit(ctx context.Context, task *OpenAIImageTask, maxUnfinished int) (*OpenAIImageTask, bool, error)
 	List(ctx context.Context, ownerID string, ids []string, limit int) ([]*OpenAIImageTask, []string, error)
 	ClaimNext(ctx context.Context, workerID string, lockFor time.Duration) (*OpenAIImageTask, error)
 	MarkSuccess(ctx context.Context, dbID int64, statusCode int, response []byte) error
 	MarkError(ctx context.Context, dbID int64, statusCode int, message string, response []byte) error
-	CountUnfinished(ctx context.Context) (int64, error)
 	CleanupFinished(ctx context.Context, olderThan time.Time, limit int) (int64, error)
 }

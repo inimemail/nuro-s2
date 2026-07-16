@@ -179,3 +179,26 @@ func (h *TotpHandler) SendVerifyCode(c *gin.Context) {
 
 	response.Success(c, gin.H{"success": true})
 }
+
+type TotpStepUpRequest struct {
+	Code string `json:"code" binding:"required"`
+}
+
+func (h *TotpHandler) StepUp(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	var req TotpStepUpRequest
+	if c.ShouldBindJSON(&req) != nil {
+		response.BadRequest(c, "TOTP code is required")
+		return
+	}
+	ttl, err := h.totpService.VerifyStepUp(c.Request.Context(), subject.UserID, middleware2.StepUpSessionKey(c, subject.UserID), req.Code)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"verified": true, "expires_in": int64(ttl.Seconds())})
+}

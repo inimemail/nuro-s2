@@ -436,7 +436,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_ResponsesCompatNormalizesStringIn
 	require.NotNil(t, upstream.lastReq)
 	require.True(t, gjson.GetBytes(upstream.lastBody, "input").IsArray())
 	require.Equal(t, "hi", gjson.GetBytes(upstream.lastBody, "input.0.content.0.text").String())
-	require.False(t, gjson.GetBytes(upstream.lastBody, "max_output_tokens").Exists())
+	require.Equal(t, int64(128), gjson.GetBytes(upstream.lastBody, "max_output_tokens").Int())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "max_completion_tokens").Exists())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Bool())
 	require.True(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
@@ -1436,7 +1436,7 @@ func TestOpenAIGatewayService_APIKeyPassthrough_PreservesBodyAndUsesResponsesEnd
 	require.Empty(t, upstream.lastReq.Header.Get("X-Test"))
 }
 
-func TestOpenAIGatewayService_APIKeyPassthrough_StripsUnsupportedResponsesTokenParams(t *testing.T) {
+func TestOpenAIGatewayService_APIKeyPassthrough_PreservesResponsesTokenLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -1476,7 +1476,7 @@ func TestOpenAIGatewayService_APIKeyPassthrough_StripsUnsupportedResponsesTokenP
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, upstream.lastReq)
-	require.False(t, gjson.GetBytes(upstream.lastBody, "max_output_tokens").Exists())
+	require.Equal(t, int64(128), gjson.GetBytes(upstream.lastBody, "max_output_tokens").Int())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "max_completion_tokens").Exists())
 	require.True(t, gjson.GetBytes(upstream.lastBody, "input").IsArray())
 }

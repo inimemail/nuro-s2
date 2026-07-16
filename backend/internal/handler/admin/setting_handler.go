@@ -161,6 +161,8 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		FrontendURL:                                     settings.FrontendURL,
 		InvitationCodeEnabled:                           settings.InvitationCodeEnabled,
 		TotpEnabled:                                     settings.TotpEnabled,
+		AuditLogRetentionDays:                           settings.AuditLogRetentionDays,
+		SessionBindingEnabled:                           settings.SessionBindingEnabled,
 		TotpEncryptionKeyConfigured:                     h.settingService.IsTotpEncryptionKeyConfigured(),
 		LoginAgreementEnabled:                           settings.LoginAgreementEnabled,
 		LoginAgreementMode:                              settings.LoginAgreementMode,
@@ -266,6 +268,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		AffiliateRebateFreezeHours:                      settings.AffiliateRebateFreezeHours,
 		AffiliateRebateDurationDays:                     settings.AffiliateRebateDurationDays,
 		AffiliateRebatePerInviteeCap:                    settings.AffiliateRebatePerInviteeCap,
+		AdminRechargeRebateEnabled:                      settings.AdminRechargeRebateEnabled,
 		DefaultUserRPMLimit:                             settings.DefaultUserRPMLimit,
 		DefaultSubscriptions:                            defaultSubscriptions,
 		EnableModelFallback:                             settings.EnableModelFallback,
@@ -449,6 +452,8 @@ type UpdateSettingsRequest struct {
 	FrontendURL                      string                       `json:"frontend_url"`
 	InvitationCodeEnabled            bool                         `json:"invitation_code_enabled"`
 	TotpEnabled                      bool                         `json:"totp_enabled"` // TOTP 双因素认证
+	AuditLogRetentionDays            *int                         `json:"audit_log_retention_days"`
+	SessionBindingEnabled            *bool                        `json:"session_binding_enabled"`
 	LoginAgreementEnabled            bool                         `json:"login_agreement_enabled"`
 	LoginAgreementMode               string                       `json:"login_agreement_mode"`
 	LoginAgreementUpdatedAt          string                       `json:"login_agreement_updated_at"`
@@ -571,6 +576,7 @@ type UpdateSettingsRequest struct {
 	AffiliateRebateFreezeHours                *int                              `json:"affiliate_rebate_freeze_hours"`
 	AffiliateRebateDurationDays               *int                              `json:"affiliate_rebate_duration_days"`
 	AffiliateRebatePerInviteeCap              *float64                          `json:"affiliate_rebate_per_invitee_cap"`
+	AdminRechargeRebateEnabled                *bool                             `json:"affiliate_admin_recharge_enabled"`
 	DefaultUserRPMLimit                       int                               `json:"default_user_rpm_limit"`
 	DefaultSubscriptions                      []dto.DefaultSubscriptionSetting  `json:"default_subscriptions"`
 	AuthSourceDefaultEmailBalance             *float64                          `json:"auth_source_default_email_balance"`
@@ -759,6 +765,14 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	auditLogRetentionDays := previousSettings.AuditLogRetentionDays
+	if req.AuditLogRetentionDays != nil {
+		auditLogRetentionDays = *req.AuditLogRetentionDays
+	}
+	sessionBindingEnabled := previousSettings.SessionBindingEnabled
+	if req.SessionBindingEnabled != nil {
+		sessionBindingEnabled = *req.SessionBindingEnabled
+	}
 	previousAuthSourceDefaults, err := h.settingService.GetAuthSourceDefaultSettings(c.Request.Context())
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -808,6 +822,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 	if affiliateRebatePerInviteeCap < 0 {
 		affiliateRebatePerInviteeCap = service.AffiliateRebatePerInviteeCapDefault
+	}
+	adminRechargeRebateEnabled := previousSettings.AdminRechargeRebateEnabled
+	if req.AdminRechargeRebateEnabled != nil {
+		adminRechargeRebateEnabled = *req.AdminRechargeRebateEnabled
 	}
 	// 通用表格配置：兼容旧客户端未传字段时保留当前值。
 	if req.TableDefaultPageSize <= 0 {
@@ -1615,6 +1633,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		FrontendURL:                      req.FrontendURL,
 		InvitationCodeEnabled:            req.InvitationCodeEnabled,
 		TotpEnabled:                      req.TotpEnabled,
+		AuditLogRetentionDays:            auditLogRetentionDays,
+		SessionBindingEnabled:            sessionBindingEnabled,
 		LoginAgreementEnabled:            req.LoginAgreementEnabled,
 		LoginAgreementMode:               loginAgreementMode,
 		LoginAgreementUpdatedAt:          loginAgreementUpdatedAt,
@@ -1723,6 +1743,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AffiliateRebateFreezeHours:             affiliateRebateFreezeHours,
 		AffiliateRebateDurationDays:            affiliateRebateDurationDays,
 		AffiliateRebatePerInviteeCap:           affiliateRebatePerInviteeCap,
+		AdminRechargeRebateEnabled:             adminRechargeRebateEnabled,
 		DefaultUserRPMLimit:                    req.DefaultUserRPMLimit,
 		DefaultSubscriptions:                   defaultSubscriptions,
 		EnableModelFallback:                    req.EnableModelFallback,
@@ -2216,6 +2237,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		FrontendURL:                                     updatedSettings.FrontendURL,
 		InvitationCodeEnabled:                           updatedSettings.InvitationCodeEnabled,
 		TotpEnabled:                                     updatedSettings.TotpEnabled,
+		AuditLogRetentionDays:                           updatedSettings.AuditLogRetentionDays,
+		SessionBindingEnabled:                           updatedSettings.SessionBindingEnabled,
 		TotpEncryptionKeyConfigured:                     h.settingService.IsTotpEncryptionKeyConfigured(),
 		LoginAgreementEnabled:                           updatedSettings.LoginAgreementEnabled,
 		LoginAgreementMode:                              updatedSettings.LoginAgreementMode,
@@ -2320,6 +2343,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AffiliateRebateFreezeHours:                      updatedSettings.AffiliateRebateFreezeHours,
 		AffiliateRebateDurationDays:                     updatedSettings.AffiliateRebateDurationDays,
 		AffiliateRebatePerInviteeCap:                    updatedSettings.AffiliateRebatePerInviteeCap,
+		AdminRechargeRebateEnabled:                      updatedSettings.AdminRechargeRebateEnabled,
 		DefaultUserRPMLimit:                             updatedSettings.DefaultUserRPMLimit,
 		DefaultSubscriptions:                            updatedDefaultSubscriptions,
 		EnableModelFallback:                             updatedSettings.EnableModelFallback,
@@ -2501,6 +2525,12 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.TotpEnabled != after.TotpEnabled {
 		changed = append(changed, "totp_enabled")
+	}
+	if before.AuditLogRetentionDays != after.AuditLogRetentionDays {
+		changed = append(changed, "audit_log_retention_days")
+	}
+	if before.SessionBindingEnabled != after.SessionBindingEnabled {
+		changed = append(changed, "session_binding_enabled")
 	}
 	if before.LoginAgreementEnabled != after.LoginAgreementEnabled {
 		changed = append(changed, "login_agreement_enabled")
@@ -2753,6 +2783,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.AffiliateRebatePerInviteeCap != after.AffiliateRebatePerInviteeCap {
 		changed = append(changed, "affiliate_rebate_per_invitee_cap")
+	}
+	if before.AdminRechargeRebateEnabled != after.AdminRechargeRebateEnabled {
+		changed = append(changed, "affiliate_admin_recharge_enabled")
 	}
 	if !equalDefaultSubscriptions(before.DefaultSubscriptions, after.DefaultSubscriptions) {
 		changed = append(changed, "default_subscriptions")

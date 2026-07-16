@@ -42,7 +42,23 @@ func normalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(body []byte) ([]byte, b
 	}
 	normalized := body
 	changed := false
-	for _, field := range []string{"max_output_tokens", "max_completion_tokens"} {
+	maxTokens := gjson.GetBytes(normalized, "max_tokens")
+	if maxTokens.Exists() {
+		if !gjson.GetBytes(normalized, "max_output_tokens").Exists() {
+			next, err := sjson.SetBytes(normalized, "max_output_tokens", maxTokens.Value())
+			if err != nil {
+				return body, false, err
+			}
+			normalized = next
+		}
+		next, err := sjson.DeleteBytes(normalized, "max_tokens")
+		if err != nil {
+			return body, false, err
+		}
+		normalized = next
+		changed = true
+	}
+	for _, field := range []string{"max_completion_tokens"} {
 		if !gjson.GetBytes(normalized, field).Exists() {
 			continue
 		}

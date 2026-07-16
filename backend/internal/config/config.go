@@ -94,6 +94,7 @@ type Config struct {
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
+	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
 }
 
 type LogConfig struct {
@@ -222,6 +223,28 @@ type BatchImageConfig struct {
 	VertexOutputRetentionHours        int    `mapstructure:"vertex_output_retention_hours"`
 	VertexBatchPredictionBaseURL      string `mapstructure:"vertex_batch_prediction_base_url"`
 	VertexGCSBaseURL                  string `mapstructure:"vertex_gcs_base_url"`
+}
+
+type ImageStorageConfig struct {
+	Enabled         bool   `mapstructure:"enabled"`
+	Endpoint        string `mapstructure:"endpoint"`
+	Region          string `mapstructure:"region"`
+	Bucket          string `mapstructure:"bucket"`
+	AccessKeyID     string `mapstructure:"access_key_id"`
+	SecretAccessKey string `mapstructure:"secret_access_key"`
+	Prefix          string `mapstructure:"prefix"`
+	ForcePathStyle  bool   `mapstructure:"force_path_style"`
+	PublicBaseURL   string `mapstructure:"public_base_url"`
+	PresignExpiry   int    `mapstructure:"presign_expiry_hours"`
+	MaxImageBytes   int64  `mapstructure:"max_image_bytes"`
+}
+
+func (c *ImageStorageConfig) IsConfigured() bool {
+	return c != nil && c.Bucket != "" && c.AccessKeyID != "" && c.SecretAccessKey != ""
+}
+
+func (c *ImageStorageConfig) Active() bool {
+	return c != nil && c.Enabled && c.IsConfigured()
 }
 
 type LinuxDoConnectConfig struct {
@@ -1081,6 +1104,9 @@ type GatewayOpenAIWSConfig struct {
 	ModeRouterV2Enabled bool `mapstructure:"mode_router_v2_enabled"`
 	// IngressModeDefault: ingress 默认模式（off/ctx_pool/passthrough/http_bridge）
 	IngressModeDefault string `mapstructure:"ingress_mode_default"`
+	// IngressInterTurnIdleTimeoutSeconds bounds client idle time between
+	// completed turns. Zero disables the timeout.
+	IngressInterTurnIdleTimeoutSeconds int `mapstructure:"ingress_inter_turn_idle_timeout_seconds"`
 	// Enabled: 全局总开关（默认 true）
 	Enabled bool `mapstructure:"enabled"`
 	// OAuthEnabled: 是否允许 OpenAI OAuth 账号使用 WS
@@ -2079,6 +2105,13 @@ func setDefaults() {
 	viper.SetDefault("batch_image.vertex_batch_prediction_base_url", "")
 	viper.SetDefault("batch_image.vertex_gcs_base_url", "")
 
+	viper.SetDefault("image_storage.enabled", false)
+	viper.SetDefault("image_storage.region", "auto")
+	viper.SetDefault("image_storage.prefix", "images/")
+	viper.SetDefault("image_storage.force_path_style", false)
+	viper.SetDefault("image_storage.presign_expiry_hours", 24)
+	viper.SetDefault("image_storage.max_image_bytes", 33554432)
+
 	// Gateway
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
@@ -2096,6 +2129,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)
 	viper.SetDefault("gateway.openai_ws.ingress_mode_default", "ctx_pool")
+	viper.SetDefault("gateway.openai_ws.ingress_inter_turn_idle_timeout_seconds", 300)
 	viper.SetDefault("gateway.openai_ws.oauth_enabled", true)
 	viper.SetDefault("gateway.openai_ws.apikey_enabled", true)
 	viper.SetDefault("gateway.openai_ws.force_http", false)
@@ -2940,6 +2974,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIWS.MaxConnsPerAccount <= 0 {
 		return fmt.Errorf("gateway.openai_ws.max_conns_per_account must be positive")
+	}
+	if c.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.openai_ws.ingress_inter_turn_idle_timeout_seconds must be non-negative")
 	}
 	if c.Gateway.OpenAIWS.MinIdlePerAccount < 0 {
 		return fmt.Errorf("gateway.openai_ws.min_idle_per_account must be non-negative")

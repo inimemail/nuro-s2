@@ -43,6 +43,11 @@ type TotpCache interface {
 	ClearVerifyAttempts(ctx context.Context, userID int64) error
 }
 
+type stepUpGrantCache interface {
+	SetStepUpGrant(ctx context.Context, userID int64, sessionKey string, ttl time.Duration) error
+	HasStepUpGrant(ctx context.Context, userID int64, sessionKey string) (bool, error)
+}
+
 // SecretEncryptor defines encryption operations for TOTP secrets
 type SecretEncryptor interface {
 	Encrypt(plaintext string) (string, error)
@@ -235,15 +240,6 @@ func (s *TotpService) CompleteSetup(ctx context.Context, userID int64, totpCode,
 		return ErrTotpInvalidCode
 	}
 
-	setupSecretPrefix := "N/A"
-	if len(session.Secret) >= 4 {
-		setupSecretPrefix = session.Secret[:4]
-	}
-	slog.Debug("totp_complete_setup_before_encrypt",
-		"user_id", userID,
-		"secret_len", len(session.Secret),
-		"secret_prefix", setupSecretPrefix)
-
 	// Encrypt the secret
 	encryptedSecret, err := s.encryptor.Encrypt(session.Secret)
 	if err != nil {
@@ -261,16 +257,11 @@ func (s *TotpService) CompleteSetup(ctx context.Context, userID int64, totpCode,
 			"user_id", userID,
 			"error", decErr)
 	} else {
-		decryptedPrefix := "N/A"
-		if len(decrypted) >= 4 {
-			decryptedPrefix = decrypted[:4]
-		}
 		slog.Debug("totp_complete_setup_verified",
 			"user_id", userID,
 			"original_len", len(session.Secret),
 			"decrypted_len", len(decrypted),
-			"match", session.Secret == decrypted,
-			"decrypted_prefix", decryptedPrefix)
+			"match", session.Secret == decrypted)
 	}
 
 	// Update user with encrypted TOTP secret
@@ -371,14 +362,9 @@ func (s *TotpService) VerifyCode(ctx context.Context, userID int64, code string)
 		return infraerrors.InternalServer("TOTP_VERIFY_ERROR", "failed to verify totp code")
 	}
 
-	secretPrefix := "N/A"
-	if len(secret) >= 4 {
-		secretPrefix = secret[:4]
-	}
 	slog.Debug("totp_verify_decrypted",
 		"user_id", userID,
-		"secret_len", len(secret),
-		"secret_prefix", secretPrefix)
+		"secret_len", len(secret))
 
 	// Verify the code
 	valid := totp.Validate(code, secret)
@@ -386,7 +372,6 @@ func (s *TotpService) VerifyCode(ctx context.Context, userID int64, code string)
 		"user_id", userID,
 		"valid", valid,
 		"secret_len", len(secret),
-		"secret_prefix", secretPrefix,
 		"server_time", time.Now().UTC().Format(time.RFC3339))
 
 	if !valid {
@@ -399,6 +384,30 @@ func (s *TotpService) VerifyCode(ctx context.Context, userID int64, code string)
 	_ = s.cache.ClearVerifyAttempts(ctx, userID)
 
 	return nil
+}
+
+const StepUpGrantTTL = 15 * time.Minute
+
+func (s *TotpService) VerifyStepUp(ctx context.Context, userID int64, sessionKey, code string) (time.Duration, error) {
+	if err := s.VerifyCode(ctx, userID, code); err != nil {
+		return 0, err
+	}
+	cache, ok := s.cache.(stepUpGrantCache)
+	if !ok {
+		return 0, fmt.Errorf("step-up grant cache unavailable")
+	}
+	if err := cache.SetStepUpGrant(ctx, userID, sessionKey, StepUpGrantTTL); err != nil {
+		return 0, fmt.Errorf("store step-up grant: %w", err)
+	}
+	return StepUpGrantTTL, nil
+}
+
+func (s *TotpService) HasStepUpGrant(ctx context.Context, userID int64, sessionKey string) (bool, error) {
+	cache, ok := s.cache.(stepUpGrantCache)
+	if !ok {
+		return false, fmt.Errorf("step-up grant cache unavailable")
+	}
+	return cache.HasStepUpGrant(ctx, userID, sessionKey)
 }
 
 // CreateLoginSession creates a temporary login session for 2FA

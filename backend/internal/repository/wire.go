@@ -106,6 +106,7 @@ var ProviderSet = wire.NewSet(
 	NewChannelMonitorRequestTemplateRepository,
 	NewContentModerationRepository,
 	NewAffiliateRepository,
+	NewAuditLogRepository,
 	NewUserPlatformQuotaRepository,     // T14: user × platform quota
 	NewUserPlatformQuotaServiceAdapter, // T14: adapter → service.UserPlatformQuotaRepository
 
@@ -146,6 +147,7 @@ var ProviderSet = wire.NewSet(
 	// Backup infrastructure
 	NewPgDumper,
 	NewS3BackupStoreFactory,
+	ProvideImageStorage,
 
 	// HTTP service ports (DI Strategy A: return interface directly)
 	NewTurnstileVerifier,

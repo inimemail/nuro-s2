@@ -109,6 +109,14 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 	}
 
 	if resp.StatusCode >= 400 {
+		if !agentIdentityTaskRecoveryWasTried(ctx) && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+			expectedTaskID := account.GetCredential("task_id")
+			if recoveryErr := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); recoveryErr != nil {
+				return fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
+			}
+			return s.ForwardCountTokensAsAnthropic(markAgentIdentityTaskRecoveryTried(ctx), c, account, body, defaultMappedModel)
+		}
+		respBody = s.redactAgentIdentitySensitiveBody(ctx, account, respBody)
 		upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
 		if account.Type == AccountTypeOAuth && isOpenAIOAuthInputTokensUnsupported(resp.StatusCode, respBody) {
 			writeOpenAIOAuthInputTokensFallback(c, account, prepared, resp.StatusCode)
@@ -219,7 +227,15 @@ func (s *OpenAIGatewayService) buildInputTokensUpstreamRequest(
 		return nil, err
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-	req.Header.Set("authorization", "Bearer "+token)
+	authHeaders, err := s.buildOpenAIAuthenticationHeaders(ctx, account, token)
+	if err != nil {
+		return nil, fmt.Errorf("build openai authentication headers: %w", err)
+	}
+	for key, values := range authHeaders {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("accept", "application/json")
 

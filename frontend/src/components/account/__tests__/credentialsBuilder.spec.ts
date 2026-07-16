@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
+	applyGrokOAuthBaseURL,
   applyHeaderOverride,
   applyInterceptWarmup,
   buildHeaderOverridesObject,
   getHeaderOverrideTemplate,
+	isHeaderOverrideCapable,
   isHeaderOverridePlatform,
+	isValidHTTPBaseURL,
   splitHeaderOverridesObject,
   validateHeaderOverrideRows
 } from '../credentialsBuilder'
@@ -57,8 +60,36 @@ describe('header override credentials helpers', () => {
   it('detects supported platforms only', () => {
     expect(isHeaderOverridePlatform('anthropic')).toBe(true)
     expect(isHeaderOverridePlatform('openai')).toBe(true)
+    expect(isHeaderOverridePlatform('grok')).toBe(true)
     expect(isHeaderOverridePlatform('gemini')).toBe(false)
   })
+
+	it('matches backend eligibility for platform and account type', () => {
+		expect(isHeaderOverrideCapable('anthropic', 'apikey')).toBe(true)
+		expect(isHeaderOverrideCapable('anthropic', 'oauth')).toBe(false)
+		expect(isHeaderOverrideCapable('openai', 'apikey')).toBe(true)
+		expect(isHeaderOverrideCapable('openai', 'oauth')).toBe(false)
+		expect(isHeaderOverrideCapable('grok', 'apikey')).toBe(true)
+		expect(isHeaderOverrideCapable('grok', 'oauth')).toBe(true)
+		expect(isHeaderOverrideCapable('gemini', 'apikey')).toBe(false)
+	})
+
+	it('validates and applies Grok OAuth base URLs with exact off semantics', () => {
+		expect(isValidHTTPBaseURL('https://relay.example.com/v1')).toBe(true)
+		expect(isValidHTTPBaseURL('http://127.0.0.1:8080')).toBe(true)
+		expect(isValidHTTPBaseURL('relay.example.com/v1')).toBe(false)
+		expect(isValidHTTPBaseURL('ftp://relay.example.com')).toBe(false)
+
+		const created: Record<string, unknown> = {}
+		applyGrokOAuthBaseURL(created, false, '', 'create')
+		expect(created).toEqual({})
+		applyGrokOAuthBaseURL(created, true, ' https://relay.example.com/v1 ', 'create')
+		expect(created.base_url).toBe('https://relay.example.com/v1')
+
+		const edited: Record<string, unknown> = { base_url: 'https://old.example.com/v1', access_token: 'token' }
+		applyGrokOAuthBaseURL(edited, false, '', 'edit')
+		expect(edited).toEqual({ access_token: 'token' })
+	})
 
   it('builds normalized header override objects', () => {
     expect(
@@ -84,7 +115,7 @@ describe('header override credentials helpers', () => {
     ])
   })
 
-  it('validates blocked, duplicate, invalid name and invalid value cases', () => {
+	it('validates blocked, duplicate, invalid name and invalid value cases', () => {
     expect(validateHeaderOverrideRows([{ name: 'authorization', value: 'Bearer x' }])).toBe('blockedName')
     expect(validateHeaderOverrideRows([
       { name: 'User-Agent', value: 'a' },
@@ -92,6 +123,7 @@ describe('header override credentials helpers', () => {
     ])).toBe('duplicateName')
     expect(validateHeaderOverrideRows([{ name: 'bad header', value: 'x' }])).toBe('invalidName')
     expect(validateHeaderOverrideRows([{ name: 'x-app', value: 'bad\nvalue' }])).toBe('invalidValue')
+		expect(validateHeaderOverrideRows([{ name: 'x-grok-conv-id', value: 'static-session' }])).toBe('blockedName')
   })
 
   it('applies header override create/edit semantics', () => {
@@ -118,5 +150,7 @@ describe('header override credentials helpers', () => {
   it('provides platform-specific templates', () => {
     expect(getHeaderOverrideTemplate('openai').map((row) => row.name)).toContain('openai-beta')
     expect(getHeaderOverrideTemplate('anthropic').map((row) => row.name)).toContain('anthropic-beta')
+    expect(getHeaderOverrideTemplate('grok').map((row) => row.name)).toContain('x-stainless-package-version')
+    expect(getHeaderOverrideTemplate('grok').map((row) => row.name)).not.toContain('anthropic-beta')
   })
 })

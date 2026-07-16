@@ -33,6 +33,7 @@ const (
 	AffiliateRebateDurationDaysDefault  = 0     // 0 = 永久有效
 	AffiliateRebateDurationDaysMax      = 3650  // ~10 年
 	AffiliateRebatePerInviteeCapDefault = 0.0   // 0 = 无上限
+	AdminRechargeRebateEnabledDefault   = false // 管理员充值默认不参与邀请返利
 )
 
 // Platform constants
@@ -137,6 +138,7 @@ const (
 	SettingKeyAffiliateRebateFreezeHours       = "affiliate_rebate_freeze_hours"       // 返利冻结期（小时，0=不冻结）
 	SettingKeyAffiliateRebateDurationDays      = "affiliate_rebate_duration_days"      // 返利有效期（天，0=永久）
 	SettingKeyAffiliateRebatePerInviteeCap     = "affiliate_rebate_per_invitee_cap"    // 单人返利上限（0=无上限）
+	SettingKeyAffiliateAdminRechargeEnabled    = "affiliate_admin_recharge_enabled"    // 管理员充值是否产生返利
 	SettingKeyRiskControlEnabled               = "risk_control_enabled"                // 是否启用风控中心入口与审计链路
 	SettingKeyContentModerationConfig          = "content_moderation_config"           // 内容审计配置（JSON）
 	SettingKeyLoginAgreementEnabled            = "login_agreement_enabled"             // 登录前是否要求同意条款
@@ -162,7 +164,11 @@ const (
 	SettingKeyAPIKeyACLTrustForwardedIP = "api_key_acl_trust_forwarded_ip" // API Key IP 白/黑名单是否信任转发 IP
 
 	// TOTP 双因素认证设置
-	SettingKeyTotpEnabled = "totp_enabled" // 是否启用 TOTP 2FA 功能
+	SettingKeyTotpEnabled           = "totp_enabled"             // 是否启用 TOTP 2FA 功能
+	SettingKeyAuditLogRetentionDays = "audit_log_retention_days" // 审计日志保留天数，0 表示永久
+	SettingKeySessionBindingEnabled = "session_binding_enabled"  // 登录会话 IP/UA 绑定，默认关闭
+	// SettingKeyUpstreamBillingProbeSettings stores the observation-only upstream billing probe runner config.
+	SettingKeyUpstreamBillingProbeSettings = "upstream_billing_probe_settings"
 
 	// LinuxDo Connect OAuth 登录设置
 	SettingKeyLinuxDoConnectEnabled      = "linuxdo_connect_enabled"

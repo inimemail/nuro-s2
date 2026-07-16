@@ -201,7 +201,7 @@ func TestAirwallexRequestsUseConfiguredAccountID(t *testing.T) {
 	require.Equal(t, 4, paRequestCount)
 }
 
-func TestAirwallexRefundRejectsUnsettledStatus(t *testing.T) {
+func TestAirwallexRefundMapsAsynchronousStatuses(t *testing.T) {
 	t.Parallel()
 
 	for _, status := range []string{"RECEIVED", "ACCEPTED", "FAILED"} {
@@ -227,7 +227,7 @@ func TestAirwallexRefundRejectsUnsettledStatus(t *testing.T) {
 				Reason:  "test refund",
 			})
 
-			require.ErrorContains(t, err, "airwallex refund not settled")
+			require.NoError(t, err)
 			require.NotNil(t, resp)
 			require.Equal(t, "ref_123", resp.RefundID)
 			if status == airwallexRefundStatusFailed {

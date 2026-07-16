@@ -60,12 +60,14 @@ var schedulerNeutralExtraKeyPrefixes = []string{
 }
 
 var schedulerNeutralExtraKeys = map[string]struct{}{
-	"antigravity_force_token_refresh":        {},
-	"antigravity_force_token_refresh_at":     {},
-	"antigravity_force_token_refresh_reason": {},
-	"codex_usage_updated_at":                 {},
-	"grok_billing_snapshot":                  {},
-	"session_window_utilization":             {},
+	"antigravity_force_token_refresh":           {},
+	"antigravity_force_token_refresh_at":        {},
+	"antigravity_force_token_refresh_reason":    {},
+	"codex_usage_updated_at":                    {},
+	"grok_billing_snapshot":                     {},
+	"session_window_utilization":                {},
+	service.UpstreamBillingProbeExtraKey:        {},
+	service.UpstreamBillingProbeEnabledExtraKey: {},
 }
 
 // NewAccountRepository 创建账户仓储实例。
@@ -1792,6 +1794,83 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		// 同时避免缓存局部 patch 覆盖掉并发写入的其它账号字段。
 		r.syncSchedulerAccountSnapshot(ctx, id)
 	}
+	return nil
+}
+
+// UpdateUpstreamBillingProbeSnapshot persists observation data only if the
+// account credentials, proxy selection, previous snapshot, and enable switch
+// still match the identity used for the network request.
+func (r *accountRepository) UpdateUpstreamBillingProbeSnapshot(ctx context.Context, account *service.Account, snapshot *service.UpstreamBillingProbeSnapshot) error {
+	if account == nil || snapshot == nil {
+		return service.ErrAccountNilInput
+	}
+	payload, err := json.Marshal(map[string]any{service.UpstreamBillingProbeExtraKey: snapshot})
+	if err != nil {
+		return err
+	}
+	credentials, err := json.Marshal(account.Credentials)
+	if err != nil {
+		return err
+	}
+	var previous, enabled any
+	if account.Extra != nil {
+		previous = account.Extra[service.UpstreamBillingProbeExtraKey]
+		enabled = account.Extra[service.UpstreamBillingProbeEnabledExtraKey]
+	}
+	previousJSON, err := json.Marshal(previous)
+	if err != nil {
+		return err
+	}
+	enabledJSON, err := json.Marshal(enabled)
+	if err != nil {
+		return err
+	}
+	var proxyID any
+	proxyProtocol, proxyHost, proxyUsername, proxyPassword, proxyStatus := "", "", "", "", ""
+	proxyPort := 0
+	if account.ProxyID != nil {
+		proxyID = *account.ProxyID
+		if account.Proxy == nil || account.Proxy.ID != *account.ProxyID {
+			return service.ErrUpstreamBillingProbeIdentityChanged
+		}
+		proxyProtocol, proxyHost, proxyPort = account.Proxy.Protocol, account.Proxy.Host, account.Proxy.Port
+		proxyUsername, proxyPassword, proxyStatus = account.Proxy.Username, account.Proxy.Password, account.Proxy.Status
+	}
+	result, err := r.sql.ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb, updated_at = NOW()
+		WHERE id = $2
+			AND platform = $3
+			AND type = $4
+			AND credentials = $5::jsonb
+			AND proxy_id IS NOT DISTINCT FROM $6
+			AND COALESCE(extra -> 'upstream_billing_probe', 'null'::jsonb) = $7::jsonb
+			AND COALESCE(extra -> 'upstream_billing_probe_enabled', 'null'::jsonb) = $8::jsonb
+			AND ($6::bigint IS NULL OR EXISTS (
+				SELECT 1 FROM proxies
+				WHERE proxies.id = $6
+					AND proxies.protocol = $9
+					AND proxies.host = $10
+					AND proxies.port = $11
+					AND COALESCE(proxies.username, '') = $12
+					AND COALESCE(proxies.password, '') = $13
+					AND proxies.status = $14
+					AND proxies.deleted_at IS NULL
+			))
+			AND deleted_at IS NULL
+	`, string(payload), account.ID, account.Platform, account.Type, string(credentials), proxyID, string(previousJSON), string(enabledJSON),
+		proxyProtocol, proxyHost, proxyPort, proxyUsername, proxyPassword, proxyStatus)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrUpstreamBillingProbeIdentityChanged
+	}
+	r.syncSchedulerAccountSnapshot(ctx, account.ID)
 	return nil
 }
 

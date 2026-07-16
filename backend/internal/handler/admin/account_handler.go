@@ -59,6 +59,7 @@ type AccountHandler struct {
 	sessionLimitCache       service.SessionLimitCache
 	rpmCache                service.RPMCache
 	tokenCacheInvalidator   service.TokenCacheInvalidator
+	upstreamBillingProbe    *service.UpstreamBillingProbeService
 }
 
 // NewAccountHandler creates a new admin account handler

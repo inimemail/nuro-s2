@@ -443,6 +443,7 @@ func buildGrokResponsesRequest(ctx context.Context, c *gin.Context, account *Acc
 			req.Header.Set("OpenAI-Beta", v)
 		}
 	}
+	account.ApplyHeaderOverrides(req.Header)
 	return req, nil
 }
 

@@ -10,7 +10,7 @@ export function applyInterceptWarmup(
   }
 }
 
-// ========== 请求头覆写（仅 anthropic/openai 平台的 api_key 账号） ==========
+// ========== 请求头覆写（仅支持的平台 api_key 账号） ==========
 
 export const HEADER_OVERRIDE_ENABLED_CREDENTIAL_KEY = 'header_override_enabled'
 export const HEADER_OVERRIDES_CREDENTIAL_KEY = 'header_overrides'
@@ -21,7 +21,35 @@ export interface HeaderOverrideRow {
 }
 
 export function isHeaderOverridePlatform(platform: string): boolean {
-  return platform === 'anthropic' || platform === 'openai'
+  return platform === 'anthropic' || platform === 'openai' || platform === 'grok'
+}
+
+export function isHeaderOverrideCapable(platform: string, type: string): boolean {
+  if (platform === 'anthropic' || platform === 'openai') return type === 'apikey'
+  if (platform === 'grok') return type === 'apikey' || type === 'oauth'
+  return false
+}
+
+export function isValidHTTPBaseURL(value: string): boolean {
+  try {
+    const parsed = new URL(value.trim())
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && Boolean(parsed.host)
+  } catch {
+    return false
+  }
+}
+
+export function applyGrokOAuthBaseURL(
+  credentials: Record<string, unknown>,
+  enabled: boolean,
+  baseURL: string,
+  mode: 'create' | 'edit'
+): void {
+  if (enabled) {
+    credentials.base_url = baseURL.trim()
+  } else if (mode === 'edit') {
+    delete credentials.base_url
+  }
 }
 
 const HEADER_OVERRIDE_BLOCKED_NAMES = new Set([
@@ -53,7 +81,8 @@ const HEADER_OVERRIDE_BLOCKED_NAMES = new Set([
   'x-codex-turn-metadata',
   'chatgpt-account-id',
   'x-claude-code-session-id',
-  'x-client-request-id'
+  'x-client-request-id',
+  'x-grok-conv-id'
 ])
 
 const HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
@@ -97,9 +126,24 @@ const OPENAI_HEADER_OVERRIDE_TEMPLATE = [
   'accept-language'
 ]
 
+const GROK_HEADER_OVERRIDE_TEMPLATE = [
+  'user-agent',
+  'accept',
+  'accept-language',
+  'x-stainless-lang',
+  'x-stainless-package-version',
+  'x-stainless-os',
+  'x-stainless-arch',
+  'x-stainless-runtime',
+  'x-stainless-runtime-version'
+]
+
 export function getHeaderOverrideTemplate(platform: string): HeaderOverrideRow[] {
-  const names =
-    platform === 'openai' ? OPENAI_HEADER_OVERRIDE_TEMPLATE : ANTHROPIC_HEADER_OVERRIDE_TEMPLATE
+  const names = platform === 'openai'
+    ? OPENAI_HEADER_OVERRIDE_TEMPLATE
+    : platform === 'grok'
+      ? GROK_HEADER_OVERRIDE_TEMPLATE
+      : ANTHROPIC_HEADER_OVERRIDE_TEMPLATE
   return names.map((name) => ({ name, value: '' }))
 }
 

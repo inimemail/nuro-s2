@@ -90,6 +90,31 @@ type defaultSubGroupReaderStub struct {
 	calls []int64
 }
 
+func TestSettingService_AffiliateAdminRechargeSetting(t *testing.T) {
+	t.Run("missing value defaults to disabled", func(t *testing.T) {
+		svc := NewSettingService(&settingAntigravityUARepoStub{values: map[string]string{}}, &config.Config{})
+		require.False(t, svc.IsAffiliateAdminRechargeEnabled(context.Background()))
+	})
+
+	t.Run("explicit value is parsed", func(t *testing.T) {
+		svc := NewSettingService(&settingAntigravityUARepoStub{values: map[string]string{
+			SettingKeyAffiliateAdminRechargeEnabled: "true",
+		}}, &config.Config{})
+		require.True(t, svc.IsAffiliateAdminRechargeEnabled(context.Background()))
+	})
+
+	t.Run("value is persisted", func(t *testing.T) {
+		repo := &settingUpdateRepoStub{}
+		svc := NewSettingService(repo, &config.Config{})
+
+		err := svc.UpdateSettings(context.Background(), &SystemSettings{
+			AdminRechargeRebateEnabled: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "true", repo.updates[SettingKeyAffiliateAdminRechargeEnabled])
+	})
+}
+
 func (s *defaultSubGroupReaderStub) GetByID(ctx context.Context, id int64) (*Group, error) {
 	s.calls = append(s.calls, id)
 	if err, ok := s.errBy[id]; ok {

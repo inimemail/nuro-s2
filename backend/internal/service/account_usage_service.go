@@ -436,6 +436,8 @@ type AccountUsageService struct {
 	identityCache           IdentityCache
 	tlsFPProfileService     *TLSFingerprintProfileService
 	openAITokenProvider     *OpenAITokenProvider
+	agentIdentityTaskMu     sync.Mutex
+	agentIdentityWS         agentIdentityWSConnectionInvalidator
 }
 
 type sessionWindowEndUpdater interface {
@@ -924,7 +926,7 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 		return nil, nil
 	}
 	accessToken := account.GetOpenAIAccessToken()
-	if accessToken == "" {
+	if accessToken == "" && !account.IsOpenAIAgentIdentity() {
 		return nil, fmt.Errorf("no access token available")
 	}
 	modelID := openaipkg.DefaultTestModel
@@ -942,7 +944,19 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	}
 	req.Host = "chatgpt.com"
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if account.IsOpenAIAgentIdentity() {
+		authHeaders, authErr := buildAgentIdentityAuthenticationHeaders(reqCtx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account)
+		if authErr != nil {
+			return nil, fmt.Errorf("build Agent Identity authentication: %w", authErr)
+		}
+		for key, values := range authHeaders {
+			for _, value := range values {
+				req.Header.Add(key, value)
+			}
+		}
+	} else {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
 	req.Header.Set("Originator", "codex_cli_rs")
@@ -973,6 +987,18 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("openai codex probe request failed: %w", err)
+	}
+	if account.IsOpenAIAgentIdentity() && !agentIdentityTaskRecoveryWasTried(ctx) && resp.StatusCode == http.StatusUnauthorized {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		_ = resp.Body.Close()
+		if isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+			expectedTaskID := account.GetCredential("task_id")
+			if recoveryErr := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account, expectedTaskID); recoveryErr != nil {
+				return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
+			}
+			return s.probeOpenAICodexSnapshot(markAgentIdentityTaskRecoveryTried(ctx), account)
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, account, respBody)))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1478,7 +1504,7 @@ func (s *AccountUsageService) doOpenAIWhamRequest(ctx context.Context, account *
 	if err != nil {
 		return nil, err
 	}
-	if accessToken == "" {
+	if accessToken == "" && !account.IsOpenAIAgentIdentity() {
 		return nil, fmt.Errorf("no access token available")
 	}
 	chatgptAccountID, err := openAIWhamChatGPTAccountID(account)
@@ -1491,7 +1517,19 @@ func (s *AccountUsageService) doOpenAIWhamRequest(ctx context.Context, account *
 		return nil, fmt.Errorf("create openai wham request: %w", err)
 	}
 	req.Host = "chatgpt.com"
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if account.IsOpenAIAgentIdentity() {
+		authHeaders, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account)
+		if authErr != nil {
+			return nil, fmt.Errorf("build Agent Identity authentication: %w", authErr)
+		}
+		for key, values := range authHeaders {
+			for _, value := range values {
+				req.Header.Add(key, value)
+			}
+		}
+	} else {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("OpenAI-Beta", "codex-1")
 	req.Header.Set("Originator", openAIWhamOriginator)
@@ -1527,12 +1565,31 @@ func (s *AccountUsageService) doOpenAIWhamRequest(ctx context.Context, account *
 	if err != nil {
 		return nil, fmt.Errorf("openai wham request failed: %w", err)
 	}
+	if account.IsOpenAIAgentIdentity() && !agentIdentityTaskRecoveryWasTried(ctx) && resp.StatusCode == http.StatusUnauthorized {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		_ = resp.Body.Close()
+		if isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+			expectedTaskID := account.GetCredential("task_id")
+			if recoveryErr := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account, expectedTaskID); recoveryErr != nil {
+				return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
+			}
+			var retryBody io.Reader
+			if req.GetBody != nil {
+				retryBody, _ = req.GetBody()
+			}
+			return s.doOpenAIWhamRequest(markAgentIdentityTaskRecoveryTried(ctx), account, method, url, retryBody)
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, account, respBody)))
+	}
 	return resp, nil
 }
 
 func (s *AccountUsageService) openAIWhamAccessToken(ctx context.Context, account *Account) (string, error) {
 	if account == nil || !account.IsOpenAIOAuth() {
 		return "", fmt.Errorf("account does not support OpenAI Codex reset credits")
+	}
+	if account.IsOpenAIAgentIdentity() {
+		return "", nil
 	}
 	if s != nil && s.openAITokenProvider != nil {
 		return s.openAITokenProvider.GetAccessToken(ctx, account)
@@ -1550,7 +1607,7 @@ func (s *AccountUsageService) sendOpenAICodexInviteToUpstream(ctx context.Contex
 	if err != nil {
 		return err
 	}
-	if accessToken == "" {
+	if accessToken == "" && !account.IsOpenAIAgentIdentity() {
 		return infraerrors.BadRequest("OPENAI_CODEX_INVITE_MISSING_ACCESS_TOKEN", "no access token available")
 	}
 
@@ -1575,7 +1632,19 @@ func (s *AccountUsageService) sendOpenAICodexInviteToUpstream(ctx context.Contex
 	if err != nil {
 		return fmt.Errorf("create openai codex invite request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if account.IsOpenAIAgentIdentity() {
+		authHeaders, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account)
+		if authErr != nil {
+			return authErr
+		}
+		for key, values := range authHeaders {
+			for _, value := range values {
+				req.Header.Add(key, value)
+			}
+		}
+	} else {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Originator", openAIWhamOriginator)

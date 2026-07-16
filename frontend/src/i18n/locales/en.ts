@@ -346,6 +346,14 @@ export default {
   },
 
   // Navigation
+  stepUp: {
+    title: 'Two-Factor Verification Required',
+    hint: 'Enter the 6-digit code from your authenticator app to continue this sensitive operation.',
+    verifyFailed: 'Verification failed. Try again.',
+    notEnabled: 'Enable TOTP in your profile before performing this operation.',
+    adminApiKeyForbidden: 'Admin API keys cannot perform this operation. Use an administrator login session.'
+  },
+
   nav: {
     dashboard: 'Dashboard',
     announcements: 'Announcements',
@@ -390,6 +398,7 @@ export default {
     channelMonitor: 'Channel Monitor',
     channelStatus: 'Channel Status',
     riskControl: 'Risk Control',
+    auditLogs: 'Audit Logs',
   },
 
   // Auth
@@ -972,6 +981,9 @@ export default {
       detailAccuracy: 'Accuracy',
       detailCoordinates: 'Coordinates'
     },
+    imageInputTokens: 'Image input tokens',
+    imageInputTokenPrice: 'Image input token price',
+    imageInputCost: 'Image input cost',
     imageOutputTokens: 'Image output tokens',
     imageOutputTokenPrice: 'Image output token price',
     imageOutputCost: 'Image output cost',
@@ -2482,6 +2494,7 @@ export default {
         outputPrice: 'Output',
         cacheWritePrice: 'Cache Write',
         cacheReadPrice: 'Cache Read',
+        imageInputPrice: 'Image Input',
         imageTokenPrice: 'Image Output',
         imageOutputPrice: 'Image Output Price',
         pricePlaceholder: 'Default',
@@ -2836,6 +2849,11 @@ export default {
       runNow: 'Run Now',
       runSuccess: 'Check completed',
       runFailed: 'Check failed',
+      duplicate: 'Duplicate',
+      duplicating: 'Duplicating',
+      duplicateSuccess: 'Monitor duplicated as "{name}" and disabled. Review its configuration before enabling it.',
+      duplicateFailed: 'Failed to duplicate monitor',
+      duplicateKeyUnavailable: 'The API key cannot be decrypted. Re-enter it before duplicating this monitor.',
       apiKeyDecryptFailed: 'API Key decryption failed. Please re-edit this monitor with a fresh key.',
       createSuccess: 'Monitor created',
       updateSuccess: 'Monitor updated',
@@ -3228,6 +3246,7 @@ export default {
         notes: 'Notes',
         priority: 'Priority',
         billingRateMultiplier: 'Billing Rate',
+        upstreamBillingRate: 'Upstream Declared Rate',
         weight: 'Weight',
         status: 'Status',
         schedulable: 'Schedulable',
@@ -3239,6 +3258,21 @@ export default {
         createdAt: 'Created',
         expiresAt: 'Expires At',
         actions: 'Actions'
+      },
+      upstreamBilling: {
+        autoProbeSettings: 'Upstream rate auto probe',
+        intervalMinutes: 'Probe interval (minutes)',
+        autoProbe: 'Auto probe',
+        autoProbeHint: 'Probe this account on the global interval when global probing is enabled.',
+        manualProbe: 'Probe upstream rate now',
+        stale: 'Stale',
+        unsupported: 'Unsupported',
+        failed: 'Failed',
+        notProbed: 'Not probed',
+        observed: 'Observed only',
+        settingsSaved: 'Upstream rate probe settings saved',
+        settingsFailed: 'Failed to save upstream rate probe settings',
+        probeFailed: 'Failed to probe upstream rate'
       },
       allPoolModes: 'All Pool Modes',
       poolModeFilter: {
@@ -4017,6 +4051,12 @@ export default {
           codexSessionImportFailed: 'Failed to import Codex account',
           codexSessionImportSuccess: 'Import completed: created {created}, updated {updated}, skipped {skipped}',
           codexSessionImportPartial: 'Partial success: created {created}, updated {updated}, skipped {skipped}, failed {failed}',
+          agentIdentityAuth: 'Agent Identity auth.json',
+          agentIdentityDesc: 'Import a Codex Agent Identity auth.json. No OAuth access or refresh token is stored.',
+          agentIdentityInputLabel: 'Agent Identity auth.json',
+          agentIdentityPlaceholder: 'Paste one Agent Identity auth.json object',
+          agentIdentityHint: 'The file must use auth_mode=agentIdentity. Upstream requests are signed dynamically.',
+          agentIdentityInvalid: 'Use a Codex auth.json with auth_mode=agentIdentity.',
           sessionTokenAuth: 'Manual ST Input',
           sessionTokenDesc: 'Enter your existing Session Token(s). Supports batch input (one per line). The system will automatically validate and create accounts.',
           sessionTokenPlaceholder: 'Paste your Session Token...\nSupports multiple, one per line',
@@ -5659,6 +5699,34 @@ export default {
       }
     },
 
+    audit: {
+      title: 'Audit Logs',
+      description: 'Review authenticated management-plane changes and sensitive reads.',
+      searchPlaceholder: 'Search path, action, or administrator',
+      actionPlaceholder: 'Action, for example admin.accounts.update',
+      allResults: 'All results',
+      success: 'Success',
+      failed: 'Failed',
+      clearAll: 'Clear logs',
+      clearHint: 'This permanently clears all audit logs. Enter the current administrator TOTP code. A clear record is written after completion.',
+      totpPlaceholder: '6-digit TOTP code',
+      time: 'Time',
+      actor: 'Actor',
+      action: 'Action',
+      request: 'Request',
+      client: 'Client',
+      result: 'Result',
+      empty: 'No audit logs match these filters.',
+      details: 'Audit detail',
+      requestId: 'Request ID',
+      credential: 'Masked credential',
+      body: 'Redacted request body',
+      extra: 'Context',
+      loadFailed: 'Failed to load audit logs',
+      clearFailed: 'Failed to clear audit logs',
+      cleared: 'Cleared {count} audit logs'
+    },
+
     // Settings
     settings: {
       title: 'System Settings',
@@ -5709,6 +5777,8 @@ export default {
           description: 'Existing users invite new ones; the inviter earns a percentage rebate on the invitee’s recharges. Disabled by default.',
           enabled: 'Enable Affiliate',
           enabledHint: 'When off, the affiliate menu is hidden, the aff parameter is ignored at signup, and new recharges generate no rebate. Existing rebate balances can still be transferred.',
+          adminRechargeRebate: 'Rebate Admin Balance Additions',
+          adminRechargeRebateHint: 'When enabled, only positive admin “add balance” operations generate invite rebates. Set, subtract, and disabled mode remain unchanged.',
           rebateRate: 'Global Rebate Rate',
           rebateRateHint: 'Default percentage given back to the inviter on recharges (0-100, e.g. 10 = 10%).',
           freezeHours: 'Rebate Freeze Period (hours)',
@@ -5787,6 +5857,12 @@ export default {
         totpHint: 'Allow users to use authenticator apps like Google Authenticator',
         totpKeyNotConfigured:
           'Please configure TOTP_ENCRYPTION_KEY in environment variables first. Generate a key with: openssl rand -hex 32'
+      },
+      security: {
+        sessionBinding: 'Session IP/UA Binding',
+        sessionBindingHint: 'Disabled by default. When enabled, a session is revoked if its trusted client IP or User-Agent changes.',
+        auditRetention: 'Audit Log Retention (days)',
+        auditRetentionHint: 'Logs older than this are cleaned automatically. Set 0 to retain them until a manual clear.'
       },
       turnstile: {
         title: 'Cloudflare Turnstile',
@@ -7453,6 +7529,9 @@ export default {
       originalPrice: 'Original Price',
       price: 'Price',
       subscriptionCnyPayPreview: 'CNY gateway charge: {amount}',
+      currency: 'Currency Label',
+      currencyPlaceholder: 'e.g. USD / NZD / CNY',
+      currencyHint: 'Display-only 3-letter ISO code; it does not change billing.',
       subscriptionCnyPayPreviewWithFee: ', {total} after {feeRate}% fee',
       validityDays: 'Validity (days)',
       validityUnit: 'Validity Unit',

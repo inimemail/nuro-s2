@@ -379,6 +379,36 @@
           </div>
         </div>
 
+        <div
+          v-if="showUpstreamBillingProbeConfig"
+          class="border-t border-gray-200 pt-4 dark:border-dark-600"
+        >
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.autoProbe') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.upstreamBilling.autoProbeHint') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              :aria-label="t('admin.accounts.upstreamBilling.autoProbe')"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                upstreamBillingAutoProbeEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+              @click="upstreamBillingAutoProbeEnabled = !upstreamBillingAutoProbeEnabled"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition',
+                  upstreamBillingAutoProbeEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+        </div>
+
         <!-- Pool Mode Section -->
         <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
           <div class="mb-3 flex items-center justify-between">
@@ -811,6 +841,57 @@
           </div>
         </div>
 
+      </div>
+
+      <div
+        v-if="account.platform === 'grok' && account.type === 'oauth'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="mb-3 flex items-center justify-between gap-4">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.grokCustomBaseUrl.title') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.grokCustomBaseUrl.hint') }}</p>
+          </div>
+          <button
+            type="button"
+            data-testid="grok-custom-base-url-toggle"
+            :aria-label="t('admin.accounts.grokCustomBaseUrl.title')"
+            :class="['relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors', grokOAuthCustomBaseUrlEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']"
+            @click="grokOAuthCustomBaseUrlEnabled = !grokOAuthCustomBaseUrlEnabled"
+          >
+            <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition', grokOAuthCustomBaseUrlEnabled ? 'translate-x-5' : 'translate-x-0']" />
+          </button>
+        </div>
+        <input
+          v-if="grokOAuthCustomBaseUrlEnabled"
+          v-model="grokOAuthBaseUrl"
+          type="url"
+          class="input"
+          data-testid="grok-custom-base-url-input"
+          :placeholder="t('admin.accounts.grokCustomBaseUrl.placeholder')"
+        />
+        <div class="mt-4 flex items-center justify-between gap-4">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.headerOverride.title') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.headerOverride.hint') }}</p>
+          </div>
+          <button
+            type="button"
+            :aria-label="t('admin.accounts.headerOverride.title')"
+            :class="['relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors', headerOverrideEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']"
+            @click="headerOverrideEnabled = !headerOverrideEnabled"
+          >
+            <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition', headerOverrideEnabled ? 'translate-x-5' : 'translate-x-0']" />
+          </button>
+        </div>
+        <div v-if="headerOverrideEnabled" class="mt-4 space-y-3">
+          <p class="rounded-lg bg-blue-50 p-3 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-400">{{ t('admin.accounts.headerOverride.info') }}</p>
+          <HeaderOverrideEditor
+            :rows="headerOverrideRows"
+            :platform="account.platform"
+            @update:rows="headerOverrideRows = $event"
+          />
+        </div>
       </div>
 
       <!-- OpenAI OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
@@ -3461,11 +3542,14 @@ import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import PromptCacheCreationOptimizationControl from '@/components/account/PromptCacheCreationOptimizationControl.vue'
+import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import {
-  applyHeaderOverride,
-  applyInterceptWarmup,
+	applyHeaderOverride,
+	applyGrokOAuthBaseURL,
+	applyInterceptWarmup,
   getHeaderOverrideTemplate,
-  isHeaderOverridePlatform,
+	isHeaderOverrideCapable,
+	isValidHTTPBaseURL,
   splitHeaderOverridesObject,
   validateHeaderOverrideRows,
   type HeaderOverrideRow
@@ -3796,8 +3880,12 @@ const showOpenAIAPIKeyTextStreamToggles = computed(() =>
 )
 const showHeaderOverrideConfig = computed(() =>
   !isSparkShadowAccount.value &&
-  props.account?.type === 'apikey' &&
-  isHeaderOverridePlatform(props.account?.platform || '')
+  isHeaderOverrideCapable(props.account?.platform || '', props.account?.type || '')
+)
+const showUpstreamBillingProbeConfig = computed(() =>
+  !isSparkShadowAccount.value &&
+  props.account?.platform === 'openai' &&
+  props.account?.type === 'apikey'
 )
 const showUpstreamConcurrencyRaceToggle = computed(() =>
   !isSparkShadowAccount.value && showOpenAIAPIKeyTextStreamToggles.value && poolModeEnabled.value
@@ -3839,6 +3927,9 @@ const selectedErrorCodes = ref<number[]>([])
 const customErrorCodeInput = ref<number | null>(null)
 const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
+const grokOAuthCustomBaseUrlEnabled = ref(false)
+const grokOAuthBaseUrl = ref('')
+const upstreamBillingAutoProbeEnabled = ref(false)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(false)
 const autoPause5hThreshold = ref<number | null>(null)
@@ -4440,12 +4531,13 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
   const canUseHeaderOverride =
     newAccount.parent_account_id == null &&
-    newAccount.type === 'apikey' &&
-    isHeaderOverridePlatform(newAccount.platform)
+    isHeaderOverrideCapable(newAccount.platform, newAccount.type)
   headerOverrideEnabled.value = canUseHeaderOverride && credentials?.header_override_enabled === true
   headerOverrideRows.value = canUseHeaderOverride
     ? splitHeaderOverridesObject(credentials?.header_overrides)
     : []
+  grokOAuthCustomBaseUrlEnabled.value = newAccount.platform === 'grok' && newAccount.type === 'oauth' && typeof credentials?.base_url === 'string' && credentials.base_url.trim() !== ''
+  grokOAuthBaseUrl.value = grokOAuthCustomBaseUrlEnabled.value ? String(credentials?.base_url || '') : ''
   autoPauseOnExpired.value = newAccount.auto_pause_on_expired === true
   editVertexProjectId.value = ''
   editVertexClientEmail.value = ''
@@ -4455,6 +4547,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   mixedScheduling.value = false
   allowOverages.value = false
 	const extra = newAccount.extra as Record<string, unknown> | undefined
+	upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
 	mixedScheduling.value = extra?.mixed_scheduling === true
 	allowOverages.value = extra?.allow_overages === true
 	autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
@@ -4659,7 +4752,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Initialize API Key fields for apikey type
   if (newAccount.type === 'apikey' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
-    const platformDefaultUrl =
+	const platformDefaultUrl =
       newAccount.platform === 'openai'
         ? 'https://api.openai.com'
         : newAccount.platform === 'gemini'
@@ -4763,18 +4856,26 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       newAccount.platform === 'openai'
         ? 'https://api.openai.com'
         : newAccount.platform === 'gemini'
-          ? 'https://generativelanguage.googleapis.com'
-          : 'https://api.anthropic.com'
+		  ? 'https://generativelanguage.googleapis.com'
+		  : newAccount.platform === 'grok'
+		    ? 'https://api.x.ai/v1'
+		  : 'https://api.anthropic.com'
     editBaseUrl.value = platformDefaultUrl
 
     // Load model mappings for OpenAI OAuth accounts and platform-specific cache controls.
-    if ((newAccount.platform === 'openai' || newAccount.platform === 'anthropic') && newAccount.credentials) {
-      const oauthCredentials = newAccount.credentials as Record<string, unknown>
+	if ((newAccount.platform === 'openai' || newAccount.platform === 'anthropic') && newAccount.credentials) {
+	      const oauthCredentials = newAccount.credentials as Record<string, unknown>
       if (newAccount.platform === 'openai') {
         loadModelRestrictionFromMapping(oauthCredentials.model_mapping as Record<string, unknown> | undefined)
-      }
-      loadCacheBoostAndIsolationFromCredentials(oauthCredentials)
-    } else {
+	      }
+	      loadCacheBoostAndIsolationFromCredentials(oauthCredentials)
+	    } else if (newAccount.platform === 'grok' && newAccount.type === 'oauth' && newAccount.credentials) {
+	      const grokCredentials = newAccount.credentials as Record<string, unknown>
+	      if (typeof grokCredentials.base_url === 'string' && grokCredentials.base_url.trim() !== '') {
+	        grokOAuthCustomBaseUrlEnabled.value = true
+	        grokOAuthBaseUrl.value = grokCredentials.base_url.trim()
+	      }
+	    } else {
       modelRestrictionMode.value = 'whitelist'
       modelMappings.value = []
       allowedModels.value = []
@@ -4946,6 +5047,21 @@ const applyHeaderOverrideCredentials = (credentials: Record<string, unknown>): b
   }
   applyHeaderOverride(credentials, headerOverrideEnabled.value, headerOverrideRows.value, 'edit')
   return true
+}
+
+const applyGrokOAuthUpstreamConfig = (credentials: Record<string, unknown>): boolean => {
+	if (!grokOAuthCustomBaseUrlEnabled.value) {
+		delete credentials.base_url
+	} else {
+		const baseURL = grokOAuthBaseUrl.value.trim()
+		if (!isValidHTTPBaseURL(baseURL)) {
+			appStore.showError(t(baseURL ? 'admin.accounts.grokCustomBaseUrl.invalid' : 'admin.accounts.grokCustomBaseUrl.required'))
+			return false
+		}
+		applyGrokOAuthBaseURL(credentials, true, baseURL, 'edit')
+	}
+	if (!applyHeaderOverrideCredentials(credentials)) return false
+	return true
 }
 
 const addPresetMapping = (from: string, to: string) => {
@@ -5620,7 +5736,6 @@ const handleSubmit = async () => {
       if (!applyTempUnschedConfig(newCredentials)) {
         return
       }
-
       updatePayload.credentials = newCredentials
     } else if (props.account.type === 'bedrock') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
@@ -5685,7 +5800,6 @@ const handleSubmit = async () => {
       if (!applyTempUnschedConfig(newCredentials)) {
         return
       }
-
       updatePayload.credentials = newCredentials
     } else {
       // For oauth/setup-token types, only update intercept_warmup_requests if changed
@@ -5696,6 +5810,9 @@ const handleSubmit = async () => {
       if (!applyTempUnschedConfig(newCredentials)) {
         return
       }
+		if (props.account.platform === 'grok' && props.account.type === 'oauth' && !applyGrokOAuthUpstreamConfig(newCredentials)) {
+			return
+		}
 
       updatePayload.credentials = newCredentials
     }
@@ -6023,6 +6140,11 @@ const handleSubmit = async () => {
         } else {
           newExtra.openai_responses_mode = openAIResponsesMode.value
         }
+			if (upstreamBillingAutoProbeEnabled.value) {
+				newExtra.upstream_billing_probe_enabled = true
+			} else {
+				delete newExtra.upstream_billing_probe_enabled
+			}
 		}
 		if (autoPause5hThreshold.value != null && autoPause5hThreshold.value > 0) {
 			newExtra.auto_pause_5h_threshold = autoPause5hThreshold.value / 100

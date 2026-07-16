@@ -37,6 +37,7 @@ type OpenAIGatewayHandler struct {
 	concurrencyHelper        *ConcurrencyHelper
 	imageLimiter             *imageConcurrencyLimiter
 	imageTaskRepo            service.OpenAIImageTaskRepository
+	imageResultUploader      *service.ImageResultUploader
 	imageTaskStore           *openAIImageTaskStore
 	imageTaskWorkerStop      chan struct{}
 	imageTaskWorkerDone      chan struct{}
@@ -188,6 +189,7 @@ func NewOpenAIGatewayHandler(
 	errorPassthroughService *service.ErrorPassthroughService,
 	contentModerationService *service.ContentModerationService,
 	imageTaskRepo service.OpenAIImageTaskRepository,
+	imageStorage service.ImageStorage,
 	cfg *config.Config,
 ) *OpenAIGatewayHandler {
 	pingInterval := time.Duration(0)
@@ -217,6 +219,9 @@ func NewOpenAIGatewayHandler(
 		openAIEdgePrepareCache:   newOpenAIEdgePrepareCache(2*time.Second, openAIEdgePrepareCacheMaxEntries),
 		maxAccountSwitches:       maxAccountSwitches,
 		cfg:                      cfg,
+	}
+	if cfg != nil && cfg.ImageStorage.Active() && imageStorage != nil {
+		h.imageResultUploader = service.NewImageResultUploader(imageStorage, cfg.ImageStorage.Prefix, cfg.ImageStorage.MaxImageBytes)
 	}
 	h.startPersistentImageTaskWorkers()
 	return h
@@ -341,7 +346,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	imageIntent := service.IsImageGenerationIntent("/v1/responses", reqModel, body)
+	requestPlatform := openAICompatibleRequestPlatform(apiKey)
+	imageIntent := service.IsImageGenerationIntentForPlatform("/v1/responses", reqModel, body, requestPlatform)
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
@@ -385,8 +391,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Get subscription info (may be nil)
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
-	requestPlatform := openAICompatibleRequestPlatform(apiKey)
-
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
 
@@ -509,6 +513,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return true
 	}
 
+	requiredCapability := service.OpenAIEndpointCapabilityChatCompletions
+	if imageIntent && requestPlatform == service.PlatformOpenAI {
+		requiredCapability = service.OpenAIEndpointCapabilityResponses
+	}
+
 	for {
 		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
 		// Select account supporting the requested model
@@ -529,7 +538,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				reqModel,
 				excludedAccountIDs,
 				service.OpenAIUpstreamTransportAny,
-				service.OpenAIEndpointCapabilityChatCompletions,
+				requiredCapability,
 				requireCompact,
 				requestPlatform,
 			)
@@ -561,7 +570,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					reqModel,
 					excludedAccountIDs,
 					service.OpenAIUpstreamTransportAny,
-					service.OpenAIEndpointCapabilityChatCompletions,
+					requiredCapability,
 					requireCompact,
 					requestPlatform,
 					modelRoutingLockedPriority,
@@ -575,7 +584,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					reqModel,
 					excludedAccountIDs,
 					service.OpenAIUpstreamTransportAny,
-					service.OpenAIEndpointCapabilityChatCompletions,
+					requiredCapability,
 					requireCompact,
 					requestPlatform,
 					modelRoutingLockedPriority,
@@ -1871,9 +1880,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	wsConn.SetReadLimit(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg))
 
 	ctx := c.Request.Context()
-	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	msgType, firstMessage, err := wsConn.Read(readCtx)
-	cancel()
+	msgType, firstMessage, err := service.ReadOpenAIWSClientMessage(
+		ctx,
+		wsConn,
+		30*time.Second,
+		coderws.StatusPolicyViolation,
+		"missing first response.create message",
+	)
 	if err != nil {
 		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
 		reqLog.Warn("openai.websocket_read_first_message_failed",
@@ -1921,7 +1934,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	imageIntent := service.IsImageGenerationIntent("/v1/responses", reqModel, firstMessage)
+	imageIntent := service.IsImageGenerationIntentForPlatform("/v1/responses", reqModel, firstMessage, openAICompatibleRequestPlatform(apiKey))
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
@@ -2635,6 +2648,11 @@ func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error,
 
 func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
 	if failoverClientGone(c) {
+		return
+	}
+	if failoverErr.IsOpenAIRequestBodyTooLarge() {
+		service.SetOpsUpstreamError(c, http.StatusRequestEntityTooLarge, service.OpenAIRequestBodyTooLargeClientMessage, "")
+		h.handleStreamingAwareError(c, http.StatusRequestEntityTooLarge, "invalid_request_error", service.OpenAIRequestBodyTooLargeClientMessage, streamStarted)
 		return
 	}
 	statusCode := failoverErr.StatusCode

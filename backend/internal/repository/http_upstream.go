@@ -183,7 +183,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 
 	// 执行请求
 	upstreamStart := time.Now()
-	resp, err := entry.client.Do(req)
+	resp, err := httpClientForUpstreamRequest(entry.client, req).Do(req)
 	service.RecordOpsLatency(req.Context(), service.OpsUpstreamHeaderMsKey, time.Since(upstreamStart))
 	if err != nil {
 		s.recordOpenAIHTTP2Failure(profile, entry.protocolMode, entry.proxyKey, err)
@@ -217,6 +217,9 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	if profile == nil {
 		return s.Do(req, proxyURL, accountID, accountConcurrency)
 	}
+	if req != nil && req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
+		return s.Do(req, proxyURL, accountID, accountConcurrency)
+	}
 	applyGrokCLIProxyHeaders(req)
 	upstreamProfile := service.HTTPUpstreamProfileDefault
 	if req != nil {
@@ -244,7 +247,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	}
 
 	upstreamStart := time.Now()
-	resp, err := entry.client.Do(req)
+	resp, err := httpClientForUpstreamRequest(entry.client, req).Do(req)
 	service.RecordOpsLatency(req.Context(), service.OpsUpstreamHeaderMsKey, time.Since(upstreamStart))
 	if err != nil {
 		atomic.AddInt64(&entry.inFlight, -1)
@@ -263,6 +266,15 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	})
 
 	return resp, nil
+}
+
+func httpClientForUpstreamRequest(client *http.Client, req *http.Request) *http.Client {
+	if client == nil || req == nil || !service.HTTPUpstreamRedirectsDisabled(req.Context()) {
+		return client
+	}
+	clone := *client
+	clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &clone
 }
 
 func applyGrokCLIProxyHeaders(req *http.Request) {

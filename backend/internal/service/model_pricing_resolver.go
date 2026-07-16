@@ -156,6 +156,7 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
 			resolved.BasePricing.ImageOutputPricePerToken = *chPricing.ImageOutputPrice
 			resolved.BasePricing.ImageOutputPriceExplicit = true
 		}
+		applyChannelImageInputPrice(chPricing, resolved.BasePricing)
 		return
 	}
 
@@ -189,6 +190,13 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
 	if chPricing.ImageOutputPrice != nil {
 		resolved.BasePricing.ImageOutputPricePerToken = *chPricing.ImageOutputPrice
 		resolved.BasePricing.ImageOutputPriceExplicit = true
+	}
+	applyChannelImageInputPrice(chPricing, resolved.BasePricing)
+}
+
+func applyChannelImageInputPrice(chPricing *ChannelModelPricing, pricing *ModelPricing) {
+	if chPricing != nil && chPricing.ImageInputPrice != nil {
+		pricing.ImageInputPricePerToken = *chPricing.ImageInputPrice
 	}
 }
 
@@ -258,6 +266,7 @@ func intervalToModelPricing(iv *PricingInterval, supportsCacheBreakdown bool, ch
 			pricing.ImageOutputPricePerToken = *chPricing.ImageOutputPrice
 			pricing.ImageOutputPriceExplicit = true
 		}
+		applyChannelImageInputPrice(chPricing, pricing)
 	}
 	return pricing
 }

@@ -645,6 +645,24 @@ type ForwardResult struct {
 	ImageSizeBreakdown map[string]int
 }
 
+type GatewayFailureScope string
+
+const (
+	GatewayFailureScopeAccount  GatewayFailureScope = "account"
+	GatewayFailureScopeProvider GatewayFailureScope = "provider"
+	GatewayFailureScopeRequest  GatewayFailureScope = "request"
+)
+
+type NextAccountAction uint8
+
+const (
+	NextAccountLegacyRetry NextAccountAction = iota
+	NextAccountRetry
+	NextAccountStop
+)
+
+type GatewayFailureReason string
+
 // UpstreamFailoverError indicates an upstream error that should trigger account failover.
 type UpstreamFailoverError struct {
 	StatusCode                int
@@ -660,6 +678,15 @@ type UpstreamFailoverError struct {
 	SkipPromptCacheAvoidance  bool // request-local 探针切换不应改写正常请求的缓存热账号历史
 	SkipStickySessionEviction bool // request-local 探针切换不应清理正常请求的粘性会话
 	SkipSchedulePenalty       bool // request-local 探针失败不应降低账号健康调度分
+	Scope                     GatewayFailureScope
+	Reason                    GatewayFailureReason
+	NextAccountAction         NextAccountAction
+	ClientStatusCode          int
+	ClientMessage             string
+}
+
+func (e *UpstreamFailoverError) ShouldRetryNextAccount() bool {
+	return e != nil && e.NextAccountAction != NextAccountStop
 }
 
 func (e *UpstreamFailoverError) Error() string {
@@ -1441,14 +1468,12 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 
 	systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
 	systemRewritten := false
-	if !strings.Contains(strings.ToLower(model), "haiku") {
-		if systemPromptInjectionEnabled {
-			body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, systemRaw, systemPrompt, systemPromptBlocks)
-		} else {
-			body = rewriteSystemForNonClaudeCode(body, systemRaw)
-		}
-		systemRewritten = true
+	if systemPromptInjectionEnabled {
+		body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, systemRaw, systemPrompt, systemPromptBlocks)
+	} else {
+		body = rewriteSystemForNonClaudeCode(body, systemRaw)
 	}
+	systemRewritten = true
 
 	normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: !systemRewritten}
 
@@ -5725,17 +5750,15 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		// Parrot 的 transform_request 从不检查客户端 system 内容，直接覆盖。
 		systemPromptInjectionEnabled, systemPrompt, systemPromptBlocks := s.claudeOAuthSystemPromptInjectionSettings(ctx)
 		systemRewritten := false
-		if !strings.Contains(strings.ToLower(reqModel), "haiku") {
-			if systemPromptInjectionEnabled {
-				body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, parsed.System, systemPrompt, systemPromptBlocks)
-			} else {
-				body = rewriteSystemForNonClaudeCode(body, parsed.System)
-			}
-			systemRewritten = true
+		if systemPromptInjectionEnabled {
+			body = rewriteSystemForNonClaudeCodeWithPromptBlocks(body, parsed.System, systemPrompt, systemPromptBlocks)
+		} else {
+			body = rewriteSystemForNonClaudeCode(body, parsed.System)
 		}
+		systemRewritten = true
 
 		// system 被重写时保留 CC prompt 的 cache_control: ephemeral（匹配真实 Claude Code 行为）；
-		// 未重写时（haiku / 已含 CC 前缀）剥离客户端 cache_control，与原有行为一致。
+		// 未重写时剥离客户端 cache_control，与原有行为一致。
 		// 两种情况下 enforceCacheControlLimit 都会兜底处理上限。
 		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: !systemRewritten}
 		if s.identityService != nil {
@@ -7940,13 +7963,9 @@ func (s *GatewayService) computeFinalAnthropicBeta(
 
 	if tokenType == "oauth" {
 		if mimicClaudeCode {
-			// mimic 路径：原代码跳过白名单透传，incomingBeta 总是空字符串。
-			// 这里传空 string 以严格对齐原行为。
-			requiredBetas := []string{claude.BetaOAuth, claude.BetaInterleavedThinking}
-			if !strings.Contains(strings.ToLower(modelID), "haiku") {
-				requiredBetas = claude.FullClaudeCodeMimicryBetas()
-			}
-			return mergeAnthropicBetaDropping(requiredBetas, "", effectiveDropSet), true
+			// Mimic requests ignore client beta and use the complete Claude Code
+			// feature set for every model, including Haiku.
+			return mergeAnthropicBetaDropping(claude.FullClaudeCodeMimicryBetas(), "", effectiveDropSet), true
 		}
 		// 真 Claude Code 客户端透传路径
 		return stripBetaTokensWithSet(s.getBetaHeader(modelID, clientBeta), effectiveDropSet), true
@@ -9723,6 +9742,10 @@ func (s *GatewayService) getUserGroupRateMultiplier(ctx context.Context, userID,
 		)
 	}
 	return resolver.Resolve(ctx, userID, groupID, groupDefaultMultiplier)
+}
+
+func (s *GatewayService) ResolveUserGroupRateMultiplier(ctx context.Context, userID, groupID int64, groupDefaultMultiplier float64) float64 {
+	return s.getUserGroupRateMultiplier(ctx, userID, groupID, groupDefaultMultiplier)
 }
 
 // RecordUsageInput 记录使用量的输入参数

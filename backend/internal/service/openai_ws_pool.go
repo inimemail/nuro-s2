@@ -39,6 +39,7 @@ var (
 type openAIWSDialError struct {
 	StatusCode      int
 	ResponseHeaders http.Header
+	ResponseBody    []byte
 	Err             error
 }
 
@@ -532,6 +533,7 @@ type openAIWSAccountPool struct {
 	prewarmUntil  time.Time
 	prewarmFails  int
 	prewarmFailAt time.Time
+	generation    uint64
 }
 
 func (ap *openAIWSAccountPool) changeChannelLocked() chan struct{} {
@@ -660,6 +662,31 @@ func (p *openAIWSConnPool) Close() {
 			return true
 		})
 	})
+}
+
+// ClearAccount closes pooled connections for one account and resets its
+// prewarm state. Credential recovery uses this to prevent a connection that
+// carries the old Agent Identity task from being reused.
+func (p *openAIWSConnPool) ClearAccount(accountID int64) {
+	if p == nil || accountID <= 0 {
+		return
+	}
+	ap, ok := p.getAccountPool(accountID)
+	if !ok || ap == nil {
+		return
+	}
+	ap.mu.Lock()
+	conns := make([]*openAIWSConn, 0, len(ap.conns))
+	for _, conn := range ap.conns {
+		conns = append(conns, conn)
+	}
+	ap.conns = make(map[string]*openAIWSConn)
+	ap.pinnedConns = make(map[string]int)
+	ap.prewarmActive = false
+	ap.generation++
+	ap.signalChangedLocked()
+	ap.mu.Unlock()
+	closeOpenAIWSConns(conns)
 }
 
 func (p *openAIWSConnPool) startBackgroundWorkers() {
@@ -1036,6 +1063,7 @@ retryAcquire:
 		connPick := time.Since(pickStartedAt)
 		p.recordConnPickDuration(connPick)
 		ap.creating++
+		generation := ap.generation
 		ap.mu.Unlock()
 		closeOpenAIWSConns(evicted)
 
@@ -1044,6 +1072,14 @@ retryAcquire:
 		ap = p.getOrCreateAccountPool(accountID)
 		ap.mu.Lock()
 		ap.creating--
+		if ap.generation != generation {
+			ap.signalChangedLocked()
+			ap.mu.Unlock()
+			if conn != nil {
+				conn.close()
+			}
+			return nil, errOpenAIWSConnClosed
+		}
 		if dialErr != nil {
 			ap.prewarmFails++
 			ap.prewarmFailAt = time.Now()
@@ -1415,7 +1451,8 @@ func (p *openAIWSConnPool) ensureTargetIdleAsync(accountID int64) {
 	ap.creating += need
 	p.metrics.scaleUpTotal.Add(int64(need))
 
-	go p.prewarmConns(accountID, req, need)
+	generation := ap.generation
+	go p.prewarmConnsForGeneration(accountID, req, need, generation)
 }
 
 func (p *openAIWSConnPool) targetConnCountLocked(ap *openAIWSAccountPool, maxConns int) int {
@@ -1459,10 +1496,23 @@ func (p *openAIWSConnPool) targetConnCountLocked(ap *openAIWSAccountPool, maxCon
 }
 
 func (p *openAIWSConnPool) prewarmConns(accountID int64, req openAIWSAcquireRequest, total int) {
+	ap, ok := p.getAccountPool(accountID)
+	if !ok || ap == nil {
+		return
+	}
+	ap.mu.Lock()
+	generation := ap.generation
+	ap.mu.Unlock()
+	p.prewarmConnsForGeneration(accountID, req, total, generation)
+}
+
+func (p *openAIWSConnPool) prewarmConnsForGeneration(accountID int64, req openAIWSAcquireRequest, total int, generation uint64) {
 	defer func() {
 		if ap, ok := p.getAccountPool(accountID); ok && ap != nil {
 			ap.mu.Lock()
-			ap.prewarmActive = false
+			if ap.generation == generation {
+				ap.prewarmActive = false
+			}
 			ap.signalChangedLocked()
 			ap.mu.Unlock()
 		}
@@ -1483,6 +1533,14 @@ func (p *openAIWSConnPool) prewarmConns(accountID int64, req openAIWSAcquireRequ
 		ap.mu.Lock()
 		if ap.creating > 0 {
 			ap.creating--
+		}
+		if ap.generation != generation {
+			ap.signalChangedLocked()
+			ap.mu.Unlock()
+			if conn != nil {
+				conn.close()
+			}
+			return
 		}
 		if err != nil {
 			ap.prewarmFails++
@@ -1585,9 +1643,15 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	}
 	conn, status, handshakeHeaders, err := p.clientDialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL)
 	if err != nil {
+		var handshakeErr *openAIWSHandshakeError
+		var responseBody []byte
+		if errors.As(err, &handshakeErr) && handshakeErr != nil {
+			responseBody = append([]byte(nil), handshakeErr.Body...)
+		}
 		return nil, &openAIWSDialError{
 			StatusCode:      status,
 			ResponseHeaders: cloneHeader(handshakeHeaders),
+			ResponseBody:    responseBody,
 			Err:             err,
 		}
 	}

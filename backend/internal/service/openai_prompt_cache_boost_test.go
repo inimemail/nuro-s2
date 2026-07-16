@@ -229,7 +229,7 @@ func TestOpenAIUpstreamStrongIsolationWSKeepsPromptCacheKeyButDropsContinuation(
 	account.Credentials["upstream_strong_isolation_enabled"] = true
 	svc := &OpenAIGatewayService{}
 
-	headers, resolution := svc.buildOpenAIWSHeaders(
+	headers, resolution, err := svc.buildOpenAIWSHeaders(
 		c,
 		account,
 		"sk-test",
@@ -239,6 +239,7 @@ func TestOpenAIUpstreamStrongIsolationWSKeepsPromptCacheKeyButDropsContinuation(
 		"stored-turn-metadata",
 		"nuro-pcache-client",
 	)
+	require.NoError(t, err)
 	require.Equal(t, "Bearer sk-test", headers.Get("authorization"))
 	require.Equal(t, openAIWSBetaV2Value, headers.Get("OpenAI-Beta"))
 	require.Equal(t, "zh-CN", headers.Get("accept-language"))

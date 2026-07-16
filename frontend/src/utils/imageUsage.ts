@@ -15,6 +15,8 @@ type ImageUsageRow = Pick<
   | 'image_count'
   | 'image_output_tokens'
   | 'image_output_cost'
+  | 'image_input_tokens'
+  | 'image_input_cost'
   | 'output_tokens'
 >
 
@@ -68,6 +70,15 @@ export const hasImageOutputTokens = (row: ImageUsageRow | null | undefined): boo
 
 export const hasImageOutputCost = (row: ImageUsageRow | null | undefined): boolean =>
   (row?.image_output_cost ?? 0) > 0
+
+export const hasImageInputTokens = (row: Pick<UsageLog, 'image_input_tokens'> | null | undefined): boolean =>
+  (row?.image_input_tokens ?? 0) > 0
+
+export const textInputTokens = (row: Pick<UsageLog, 'input_tokens' | 'image_input_tokens'> | null | undefined): number =>
+  Math.max(0, (row?.input_tokens ?? 0) - (row?.image_input_tokens ?? 0))
+
+export const hasImageInputCost = (row: Pick<UsageLog, 'image_input_cost'> | null | undefined): boolean =>
+  (row?.image_input_cost ?? 0) > 0
 
 export const textOutputTokens = (row: ImageUsageRow | null | undefined): number => {
   const total = row?.output_tokens ?? 0

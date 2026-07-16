@@ -87,11 +87,23 @@ type BillingSummary struct {
 
 // BuildBillingURL builds weekly or monthly billing URL against the CLI chat proxy.
 func BuildBillingURL(formatCredits bool) string {
-	base := strings.TrimRight(DefaultCLIBaseURL, "/")
-	if formatCredits {
-		return base + BillingWeeklyPath
+	base, _ := BuildBillingURLWithValidator(DefaultCLIBaseURL, formatCredits, nil)
+	return base
+}
+
+// BuildBillingURLWithValidator builds a billing URL after applying the same
+// outbound base-URL policy used by the regular xAI endpoints.  The validator
+// is intentionally optional so the legacy official-CLI helper remains a
+// no-error API.
+func BuildBillingURLWithValidator(baseURL string, formatCredits bool, validator BaseURLValidator) (string, error) {
+	base, err := validatedBaseURLWithValidator(baseURL, validator)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
 	}
-	return base + BillingMonthlyPath
+	if formatCredits {
+		return base + BillingWeeklyPath, nil
+	}
+	return base + BillingMonthlyPath, nil
 }
 
 // ApplyCLIBillingHeaders sets Authorization + CLI identity headers for billing GETs.

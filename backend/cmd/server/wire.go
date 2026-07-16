@@ -103,6 +103,8 @@ func provideCleanup(
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
+	upstreamBillingProbe *service.UpstreamBillingProbeService,
+	auditLog *service.AuditLogService,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -115,6 +117,12 @@ func provideCleanup(
 
 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
 		parallelSteps := []cleanupStep{
+			{"AuditLogService", func() error {
+				if auditLog != nil {
+					auditLog.Stop()
+				}
+				return nil
+			}},
 			{"OpsScheduledReportService", func() error {
 				if opsScheduledReport != nil {
 					opsScheduledReport.Stop()
@@ -278,6 +286,12 @@ func provideCleanup(
 			{"UserPlatformQuotaUsageFlusher", func() error {
 				if quotaFlusher != nil {
 					quotaFlusher.Stop()
+				}
+				return nil
+			}},
+			{"UpstreamBillingProbeService", func() error {
+				if upstreamBillingProbe != nil {
+					upstreamBillingProbe.Stop()
 				}
 				return nil
 			}},

@@ -366,6 +366,8 @@ export interface SystemSettings {
   invitation_code_enabled: boolean;
   totp_enabled: boolean; // TOTP 双因素认证
   totp_encryption_key_configured: boolean; // TOTP 加密密钥是否已配置
+  audit_log_retention_days: number;
+  session_binding_enabled: boolean;
   login_agreement_enabled: boolean;
   login_agreement_mode: "modal" | "checkbox" | string;
   login_agreement_updated_at: string;
@@ -376,6 +378,7 @@ export interface SystemSettings {
   affiliate_rebate_freeze_hours: number;
   affiliate_rebate_duration_days: number;
   affiliate_rebate_per_invitee_cap: number;
+  affiliate_admin_recharge_enabled: boolean;
   default_concurrency: number;
   default_user_rpm_limit: number;
   default_subscriptions: DefaultSubscriptionSetting[];
@@ -650,6 +653,8 @@ export interface UpdateSettingsRequest {
   frontend_url?: string;
   invitation_code_enabled?: boolean;
   totp_enabled?: boolean; // TOTP 双因素认证
+  audit_log_retention_days?: number;
+  session_binding_enabled?: boolean;
   login_agreement_enabled?: boolean;
   login_agreement_mode?: "modal" | "checkbox" | string;
   login_agreement_updated_at?: string;
@@ -659,6 +664,7 @@ export interface UpdateSettingsRequest {
   affiliate_rebate_freeze_hours?: number;
   affiliate_rebate_duration_days?: number;
   affiliate_rebate_per_invitee_cap?: number;
+  affiliate_admin_recharge_enabled?: boolean;
   default_concurrency?: number;
   default_user_rpm_limit?: number;
   default_subscriptions?: DefaultSubscriptionSetting[];

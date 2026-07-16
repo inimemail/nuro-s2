@@ -4,6 +4,8 @@ package service
 
 import (
 	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
 func TestGetBaseURL(t *testing.T) {
@@ -156,5 +158,26 @@ func TestGetGeminiBaseURL(t *testing.T) {
 				t.Errorf("GetGeminiBaseURL() = %q, want %q", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestGetGrokBaseURLKeepsConfiguredOAuthForwardingHost(t *testing.T) {
+	account := Account{
+		Type:        AccountTypeOAuth,
+		Platform:    PlatformGrok,
+		Credentials: map[string]any{"base_url": "https://relay.example.com/v1/"},
+	}
+	if got := account.GetGrokBaseURL(); got != "https://relay.example.com/v1" {
+		t.Fatalf("GetGrokBaseURL() = %q, want configured forwarding host", got)
+	}
+	if got := account.GetGrokMediaBaseURL(); got != "https://relay.example.com/v1" {
+		t.Fatalf("GetGrokMediaBaseURL() = %q, want configured forwarding host", got)
+	}
+}
+
+func TestGetGrokBaseURLDefaultsOfficialWhenUnset(t *testing.T) {
+	account := Account{Type: AccountTypeOAuth, Platform: PlatformGrok, Credentials: map[string]any{}}
+	if got := account.GetGrokBaseURL(); got != xai.DefaultCLIBaseURL {
+		t.Fatalf("GetGrokBaseURL() = %q, want %q", got, xai.DefaultCLIBaseURL)
 	}
 }

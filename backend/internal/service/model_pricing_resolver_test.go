@@ -480,6 +480,63 @@ func TestGetIntervalPricing_WithChannelIntervals(t *testing.T) {
 	require.InDelta(t, 10e-6, pricing2.OutputPricePerToken, 1e-12)
 }
 
+func TestGetIntervalPricing_AppliesChannelImageTokenOverrides(t *testing.T) {
+	input := 1.5e-6
+	output := 6e-6
+	imageInput := 2.25e-6
+	imageOutput := 9e-6
+	resolved := &ResolvedPricing{
+		Intervals: []PricingInterval{{MinTokens: 0, MaxTokens: testPtrInt(100000), InputPrice: &input, OutputPrice: &output}},
+		channelPricing: &ChannelModelPricing{
+			ImageInputPrice:  &imageInput,
+			ImageOutputPrice: &imageOutput,
+		},
+	}
+
+	pricing := (&ModelPricingResolver{}).GetIntervalPricing(resolved, 50000)
+	require.NotNil(t, pricing)
+	require.InDelta(t, imageInput, pricing.ImageInputPricePerToken, 1e-12)
+	require.InDelta(t, imageOutput, pricing.ImageOutputPricePerToken, 1e-12)
+	require.True(t, pricing.ImageOutputPriceExplicit)
+}
+
+func TestGetIntervalPricing_MissingChannelImagePricesDoNotInheritDefaults(t *testing.T) {
+	input := 1.5e-6
+	output := 6e-6
+	resolved := &ResolvedPricing{
+		Intervals:      []PricingInterval{{MinTokens: 0, MaxTokens: testPtrInt(100000), InputPrice: &input, OutputPrice: &output}},
+		channelPricing: &ChannelModelPricing{},
+	}
+
+	pricing := (&ModelPricingResolver{}).GetIntervalPricing(resolved, 50000)
+	require.NotNil(t, pricing)
+	// Missing image input price falls back to the interval input price at billing time.
+	require.Zero(t, pricing.ImageInputPricePerToken)
+	require.Zero(t, pricing.ImageOutputPricePerToken)
+	require.False(t, pricing.ImageOutputPriceExplicit)
+}
+
+func TestResolve_ChannelWithoutImagePricesPreservesBaseImagePricing(t *testing.T) {
+	r := newResolverWithChannel(t, []ChannelModelPricing{{
+		Platform: "anthropic", Models: []string{"claude-sonnet-4"}, BillingMode: BillingModeToken,
+		InputPrice: testPtrFloat64(10e-6), OutputPrice: testPtrFloat64(20e-6),
+	}})
+	resolved := r.Resolve(context.Background(), PricingInput{Model: "claude-sonnet-4", GroupID: groupIDPtr()})
+	require.NotNil(t, resolved.BasePricing)
+	require.False(t, resolved.BasePricing.ImageOutputPriceExplicit)
+}
+
+func TestResolve_ChannelWithoutImageInputPricePreservesBaseImageInputPricing(t *testing.T) {
+	base := newTestBillingServiceForResolver()
+	base.fallbackPrices["claude-sonnet-4"].ImageInputPricePerToken = 7e-6
+	r := NewModelPricingResolver(newResolverWithChannel(t, []ChannelModelPricing{{
+		Platform: "anthropic", Models: []string{"claude-sonnet-4"}, BillingMode: BillingModeToken,
+		InputPrice: testPtrFloat64(10e-6),
+	}}).channelService, base)
+	resolved := r.Resolve(context.Background(), PricingInput{Model: "claude-sonnet-4", GroupID: groupIDPtr()})
+	require.InDelta(t, 7e-6, resolved.BasePricing.ImageInputPricePerToken, 1e-12)
+}
+
 func TestGetIntervalPricing_ChannelIntervalsNoMatch(t *testing.T) {
 	// Channel intervals don't match token count → falls back to BasePricing.
 	r := newResolverWithChannel(t, []ChannelModelPricing{{

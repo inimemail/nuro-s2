@@ -13,21 +13,24 @@ func RegisterAdminRoutes(
 	v1 *gin.RouterGroup,
 	h *handler.Handlers,
 	adminAuth middleware.AdminAuthMiddleware,
+	auditLog middleware.AuditLogMiddleware,
+	stepUp middleware.StepUpAuthMiddleware,
 ) {
 	admin := v1.Group("/admin")
 	admin.Use(gin.HandlerFunc(adminAuth))
+	admin.Use(gin.HandlerFunc(auditLog))
 	{
 		// 仪表盘
 		registerDashboardRoutes(admin, h)
 
 		// 用户管理
-		registerUserManagementRoutes(admin, h)
+		registerUserManagementRoutes(admin, h, stepUp)
 
 		// 分组管理
-		registerGroupRoutes(admin, h)
+		registerGroupRoutes(admin, h, stepUp)
 
 		// 账号管理
-		registerAccountRoutes(admin, h)
+		registerAccountRoutes(admin, h, stepUp)
 
 		// 公告管理
 		registerAnnouncementRoutes(admin, h)
@@ -45,22 +48,22 @@ func RegisterAdminRoutes(
 		registerGrokOAuthRoutes(admin, h)
 
 		// 代理管理
-		registerProxyRoutes(admin, h)
+		registerProxyRoutes(admin, h, stepUp)
 
 		// 卡密管理
-		registerRedeemCodeRoutes(admin, h)
+		registerRedeemCodeRoutes(admin, h, stepUp)
 
 		// 优惠码管理
 		registerPromoCodeRoutes(admin, h)
 
 		// 系统设置
-		registerSettingsRoutes(admin, h)
+		registerSettingsRoutes(admin, h, stepUp)
 
 		// 数据管理
-		registerDataManagementRoutes(admin, h)
+		registerDataManagementRoutes(admin, h, stepUp)
 
 		// 数据库备份恢复
-		registerBackupRoutes(admin, h)
+		registerBackupRoutes(admin, h, stepUp)
 
 		// 运维监控（Ops）
 		registerOpsRoutes(admin, h)
@@ -100,7 +103,16 @@ func RegisterAdminRoutes(
 
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
+
+		registerAuditLogRoutes(admin, h)
 	}
+}
+
+func registerAuditLogRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	logs := admin.Group("/audit-logs")
+	logs.GET("", h.Admin.AuditLog.List)
+	logs.GET("/:id", h.Admin.AuditLog.Get)
+	logs.POST("/clear", h.Admin.AuditLog.Clear)
 }
 
 func registerContentModerationRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
@@ -228,7 +240,7 @@ func registerDashboardRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
-func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp middleware.StepUpAuthMiddleware) {
 	users := admin.Group("/users")
 	{
 		users.GET("", h.Admin.User.List)
@@ -238,7 +250,7 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		users.PUT("/:id", h.Admin.User.Update)
 		users.DELETE("/:id", h.Admin.User.Delete)
 		users.POST("/:id/balance", h.Admin.User.UpdateBalance)
-		users.GET("/:id/api-keys", h.Admin.User.GetUserAPIKeys)
+		users.GET("/:id/api-keys", gin.HandlerFunc(stepUp), h.Admin.User.GetUserAPIKeys)
 		users.GET("/:id/usage", h.Admin.User.GetUserUsage)
 		users.GET("/:id/balance-history", h.Admin.User.GetBalanceHistory)
 		users.POST("/:id/replace-group", h.Admin.User.ReplaceGroup)
@@ -254,7 +266,7 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
-func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp middleware.StepUpAuthMiddleware) {
 	groups := admin.Group("/groups")
 	{
 		groups.GET("", h.Admin.Group.List)
@@ -273,18 +285,18 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.DELETE("/:id/rate-multipliers", h.Admin.Group.ClearGroupRateMultipliers)
 		groups.PUT("/:id/rpm-overrides", h.Admin.Group.BatchSetGroupRPMOverrides)
 		groups.DELETE("/:id/rpm-overrides", h.Admin.Group.ClearGroupRPMOverrides)
-		groups.GET("/:id/api-keys", h.Admin.Group.GetGroupAPIKeys)
+		groups.GET("/:id/api-keys", gin.HandlerFunc(stepUp), h.Admin.Group.GetGroupAPIKeys)
 	}
 }
 
-func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp middleware.StepUpAuthMiddleware) {
 	accounts := admin.Group("/accounts")
 	{
 		accounts.GET("", h.Admin.Account.List)
 		accounts.GET("/:id", h.Admin.Account.GetByID)
 		accounts.POST("", h.Admin.Account.Create)
 		accounts.POST("/check-mixed-channel", h.Admin.Account.CheckMixedChannel)
-		accounts.POST("/import/codex-session", h.Admin.Account.ImportCodexSession)
+		accounts.POST("/import/codex-session", gin.HandlerFunc(stepUp), h.Admin.Account.ImportCodexSession)
 		accounts.POST("/sync/crs", h.Admin.Account.SyncFromCRS)
 		accounts.POST("/sync/crs/preview", h.Admin.Account.PreviewFromCRS)
 		accounts.PUT("/:id", h.Admin.Account.Update)
@@ -292,7 +304,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		accounts.POST("/:id/test", h.Admin.Account.Test)
 		accounts.POST("/:id/recover-state", h.Admin.Account.RecoverState)
 		accounts.POST("/:id/refresh", h.Admin.Account.Refresh)
-		accounts.POST("/:id/apply-oauth-credentials", h.Admin.Account.ApplyOAuthCredentials)
+		accounts.POST("/:id/apply-oauth-credentials", gin.HandlerFunc(stepUp), h.Admin.Account.ApplyOAuthCredentials)
 		accounts.POST("/:id/set-privacy", h.Admin.Account.SetPrivacy)
 		accounts.POST("/:id/refresh-tier", h.Admin.Account.RefreshTier)
 		accounts.GET("/:id/stats", h.Admin.Account.GetStats)
@@ -313,13 +325,18 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		accounts.GET("/:id/models", h.Admin.Account.GetAvailableModels)
 		accounts.POST("/:id/models/sync-upstream", h.Admin.Account.SyncUpstreamModels)
 		accounts.POST("/batch", h.Admin.Account.BatchCreate)
-		accounts.GET("/data", h.Admin.Account.ExportData)
-		accounts.POST("/data", h.Admin.Account.ImportData)
-		accounts.POST("/batch-update-credentials", h.Admin.Account.BatchUpdateCredentials)
+		accounts.GET("/data", gin.HandlerFunc(stepUp), h.Admin.Account.ExportData)
+		accounts.POST("/data", gin.HandlerFunc(stepUp), h.Admin.Account.ImportData)
+		accounts.POST("/batch-update-credentials", gin.HandlerFunc(stepUp), h.Admin.Account.BatchUpdateCredentials)
 		accounts.POST("/batch-refresh-tier", h.Admin.Account.BatchRefreshTier)
 		accounts.POST("/bulk-update", h.Admin.Account.BulkUpdate)
 		accounts.POST("/batch-clear-error", h.Admin.Account.BatchClearError)
 		accounts.POST("/batch-refresh", h.Admin.Account.BatchRefresh)
+		accounts.GET("/upstream-billing-probe/settings", h.Admin.Account.GetUpstreamBillingProbeSettings)
+		accounts.PUT("/upstream-billing-probe/settings", h.Admin.Account.UpdateUpstreamBillingProbeSettings)
+		accounts.POST("/upstream-billing-probe/batch", h.Admin.Account.ProbeUpstreamBillingBatch)
+		accounts.PUT("/:id/upstream-billing-probe", h.Admin.Account.SetUpstreamBillingProbeEnabled)
+		accounts.POST("/:id/upstream-billing-probe", h.Admin.Account.ProbeUpstreamBilling)
 
 		// Antigravity 默认模型映射
 		accounts.GET("/antigravity/default-model-mapping", h.Admin.Account.GetAntigravityDefaultModelMapping)
@@ -401,13 +418,13 @@ func registerGrokOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
-func registerProxyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerProxyRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp middleware.StepUpAuthMiddleware) {
 	proxies := admin.Group("/proxies")
 	{
 		proxies.GET("", h.Admin.Proxy.List)
 		proxies.GET("/all", h.Admin.Proxy.GetAll)
-		proxies.GET("/data", h.Admin.Proxy.ExportData)
-		proxies.POST("/data", h.Admin.Proxy.ImportData)
+		proxies.GET("/data", gin.HandlerFunc(stepUp), h.Admin.Proxy.ExportData)
+		proxies.POST("/data", gin.HandlerFunc(stepUp), h.Admin.Proxy.ImportData)
 		proxies.GET("/:id", h.Admin.Proxy.GetByID)
 		proxies.POST("", h.Admin.Proxy.Create)
 		proxies.PUT("/:id", h.Admin.Proxy.Update)
@@ -421,12 +438,12 @@ func registerProxyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
-func registerRedeemCodeRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerRedeemCodeRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp middleware.StepUpAuthMiddleware) {
 	codes := admin.Group("/redeem-codes")
 	{
 		codes.GET("", h.Admin.Redeem.List)
 		codes.GET("/stats", h.Admin.Redeem.GetStats)
-		codes.GET("/export", h.Admin.Redeem.Export)
+		codes.GET("/export", gin.HandlerFunc(stepUp), h.Admin.Redeem.Export)
 		codes.GET("/:id", h.Admin.Redeem.GetByID)
 		codes.POST("/create-and-redeem", h.Admin.Redeem.CreateAndRedeem)
 		codes.POST("/generate", h.Admin.Redeem.Generate)
@@ -449,7 +466,7 @@ func registerPromoCodeRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
-func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp middleware.StepUpAuthMiddleware) {
 	adminSettings := admin.Group("/settings")
 	{
 		adminSettings.GET("", h.Admin.Setting.GetSettings)
@@ -463,8 +480,8 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		adminSettings.POST("/email-templates/:event/:locale/restore-official", h.Admin.Setting.RestoreOfficialEmailTemplate)
 		// Admin API Key 管理
 		adminSettings.GET("/admin-api-key", h.Admin.Setting.GetAdminAPIKey)
-		adminSettings.POST("/admin-api-key/regenerate", h.Admin.Setting.RegenerateAdminAPIKey)
-		adminSettings.DELETE("/admin-api-key", h.Admin.Setting.DeleteAdminAPIKey)
+		adminSettings.POST("/admin-api-key/regenerate", gin.HandlerFunc(stepUp), h.Admin.Setting.RegenerateAdminAPIKey)
+		adminSettings.DELETE("/admin-api-key", gin.HandlerFunc(stepUp), h.Admin.Setting.DeleteAdminAPIKey)
 		// 529过载冷却配置
 		adminSettings.GET("/overload-cooldown", h.Admin.Setting.GetOverloadCooldownSettings)
 		adminSettings.PUT("/overload-cooldown", h.Admin.Setting.UpdateOverloadCooldownSettings)
@@ -488,7 +505,7 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
-func registerDataManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerDataManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp middleware.StepUpAuthMiddleware) {
 	dataManagement := admin.Group("/data-management")
 	{
 		dataManagement.GET("/agent/health", h.Admin.DataManagement.GetAgentHealth)
@@ -501,22 +518,22 @@ func registerDataManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		dataManagement.POST("/sources/:source_type/profiles/:profile_id/activate", h.Admin.DataManagement.SetActiveSourceProfile)
 		dataManagement.POST("/s3/test", h.Admin.DataManagement.TestS3)
 		dataManagement.GET("/s3/profiles", h.Admin.DataManagement.ListS3Profiles)
-		dataManagement.POST("/s3/profiles", h.Admin.DataManagement.CreateS3Profile)
-		dataManagement.PUT("/s3/profiles/:profile_id", h.Admin.DataManagement.UpdateS3Profile)
-		dataManagement.DELETE("/s3/profiles/:profile_id", h.Admin.DataManagement.DeleteS3Profile)
-		dataManagement.POST("/s3/profiles/:profile_id/activate", h.Admin.DataManagement.SetActiveS3Profile)
-		dataManagement.POST("/backups", h.Admin.DataManagement.CreateBackupJob)
+		dataManagement.POST("/s3/profiles", gin.HandlerFunc(stepUp), h.Admin.DataManagement.CreateS3Profile)
+		dataManagement.PUT("/s3/profiles/:profile_id", gin.HandlerFunc(stepUp), h.Admin.DataManagement.UpdateS3Profile)
+		dataManagement.DELETE("/s3/profiles/:profile_id", gin.HandlerFunc(stepUp), h.Admin.DataManagement.DeleteS3Profile)
+		dataManagement.POST("/s3/profiles/:profile_id/activate", gin.HandlerFunc(stepUp), h.Admin.DataManagement.SetActiveS3Profile)
+		dataManagement.POST("/backups", gin.HandlerFunc(stepUp), h.Admin.DataManagement.CreateBackupJob)
 		dataManagement.GET("/backups", h.Admin.DataManagement.ListBackupJobs)
 		dataManagement.GET("/backups/:job_id", h.Admin.DataManagement.GetBackupJob)
 	}
 }
 
-func registerBackupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerBackupRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp middleware.StepUpAuthMiddleware) {
 	backup := admin.Group("/backups")
 	{
 		// S3 存储配置
 		backup.GET("/s3-config", h.Admin.Backup.GetS3Config)
-		backup.PUT("/s3-config", h.Admin.Backup.UpdateS3Config)
+		backup.PUT("/s3-config", gin.HandlerFunc(stepUp), h.Admin.Backup.UpdateS3Config)
 		backup.POST("/s3-config/test", h.Admin.Backup.TestS3Connection)
 
 		// 定时备份配置
@@ -524,14 +541,14 @@ func registerBackupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		backup.PUT("/schedule", h.Admin.Backup.UpdateSchedule)
 
 		// 备份操作
-		backup.POST("", h.Admin.Backup.CreateBackup)
+		backup.POST("", gin.HandlerFunc(stepUp), h.Admin.Backup.CreateBackup)
 		backup.GET("", h.Admin.Backup.ListBackups)
 		backup.GET("/:id", h.Admin.Backup.GetBackup)
 		backup.DELETE("/:id", h.Admin.Backup.DeleteBackup)
-		backup.GET("/:id/download-url", h.Admin.Backup.GetDownloadURL)
+		backup.GET("/:id/download-url", gin.HandlerFunc(stepUp), h.Admin.Backup.GetDownloadURL)
 
 		// 恢复操作
-		backup.POST("/:id/restore", h.Admin.Backup.RestoreBackup)
+		backup.POST("/:id/restore", gin.HandlerFunc(stepUp), h.Admin.Backup.RestoreBackup)
 	}
 }
 
@@ -646,6 +663,7 @@ func registerChannelMonitorRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		monitors.GET("", h.Admin.ChannelMonitor.List)
 		monitors.POST("", h.Admin.ChannelMonitor.Create)
 		monitors.GET("/:id", h.Admin.ChannelMonitor.Get)
+		monitors.POST("/:id/duplicate", h.Admin.ChannelMonitor.Duplicate)
 		monitors.PUT("/:id", h.Admin.ChannelMonitor.Update)
 		monitors.DELETE("/:id", h.Admin.ChannelMonitor.Delete)
 		monitors.POST("/:id/run", h.Admin.ChannelMonitor.Run)

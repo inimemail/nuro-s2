@@ -64,6 +64,7 @@
       </div>
     </template>
   </BaseDialog>
+  <TotpStepUpDialog :controller="stepUp" />
 </template>
 
 <script setup lang="ts">
@@ -72,16 +73,19 @@ import { useI18n } from 'vue-i18n'; import { adminAPI } from '@/api/admin'
 import { useForm } from '@/composables/useForm'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
+import { useStepUp } from '@/composables/useStepUp'
+import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits(['close', 'success']); const { t } = useI18n()
 
 const form = reactive({ email: '', password: '', username: '', notes: '', role: 'user' as 'user' | 'admin', balance: 0, concurrency: 1, rpm_limit: 0 })
+const stepUp = useStepUp()
 
 const { loading, submit } = useForm({
   form,
   submitFn: async (data) => {
-    await adminAPI.users.create(data)
+    await stepUp.run(() => adminAPI.users.create(data))
     emit('success'); emit('close')
   },
   successMsg: t('admin.users.userCreated')

@@ -535,7 +535,10 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if err != nil {
 		return nil, err
 	}
-	headers := s.buildChatGPTOAuthEdgeHeaders(ctx, c, account, upstreamBody, token, promptCacheKey, isCodexCLI)
+	headers, headerErr := s.buildChatGPTOAuthEdgeHeaders(ctx, c, account, upstreamBody, token, promptCacheKey, isCodexCLI)
+	if headerErr != nil {
+		return nil, fmt.Errorf("build chatgpt oauth edge headers: %w", headerErr)
+	}
 
 	proxyURL := ""
 	if account.Proxy != nil {
@@ -582,9 +585,17 @@ func (s *OpenAIGatewayService) buildChatGPTOAuthEdgeHeaders(
 	token string,
 	promptCacheKey string,
 	isCodexCLI bool,
-) map[string]string {
+) (map[string]string, error) {
 	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+token)
+	authHeaders, authErr := s.buildOpenAIAuthenticationHeaders(ctx, account, token)
+	if authErr != nil {
+		return nil, authErr
+	}
+	for key, values := range authHeaders {
+		for _, value := range values {
+			headers.Add(key, value)
+		}
+	}
 	if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 		headers.Set("chatgpt-account-id", chatgptAccountID)
 	}
@@ -651,7 +662,7 @@ func (s *OpenAIGatewayService) buildChatGPTOAuthEdgeHeaders(
 			result[key] = values[0]
 		}
 	}
-	return result
+	return result, nil
 }
 
 func IsOpenAIEdgeRawResponsesRelayEligible(account *Account) bool {
@@ -787,7 +798,10 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		isCodexCLI = true
 	}
-	headers, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, "", "", promptCacheKey)
+	headers, _, headerErr := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, "", "", promptCacheKey)
+	if headerErr != nil {
+		return nil, headerErr
+	}
 	headerMap := make(map[string]string, len(headers))
 	for key, values := range headers {
 		if len(values) > 0 {

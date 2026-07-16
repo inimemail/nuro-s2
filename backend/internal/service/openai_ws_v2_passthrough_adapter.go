@@ -17,6 +17,8 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+type openAIWSRejectedFieldRetryContextKey struct{}
+
 type openAIWSClientFrameConn struct {
 	conn *coderws.Conn
 }
@@ -243,8 +245,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if account == nil {
 		return errors.New("account is nil")
 	}
-	if strings.TrimSpace(token) == "" {
+	if strings.TrimSpace(token) == "" && !s.isAgentIdentityAccount(ctx, account) {
 		return errors.New("token is empty")
+	}
+	rejectedFieldRetry, _ := ctx.Value(openAIWSRejectedFieldRetryContextKey{}).(*OpenAIResponsesRejectedFieldRetryState)
+	if rejectedFieldRetry == nil {
+		rejectedFieldRetry = &OpenAIResponsesRejectedFieldRetryState{}
+		ctx = context.WithValue(ctx, openAIWSRejectedFieldRetryContextKey{}, rejectedFieldRetry)
 	}
 	strongIsolationEnabled := account.IsOpenAIUpstreamStrongIsolationEnabled()
 	requestModel := strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String())
@@ -313,6 +320,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	cacheCreationOptimizationApplied := atomic.Bool{}
 	cacheCreationOptimizationApplied.Store(firstOptimizationResult.Applied)
 	cachePolicyCompatibilityFailure := atomic.Bool{}
+	lastUpstreamRequest := atomic.Value{}
+	lastUpstreamRequest.Store(append([]byte(nil), firstClientMessage...))
 
 	// 在 policy filter 之后再提取 service_tier / reasoning_effort 用于
 	// usage 上报：filter
@@ -361,7 +370,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		turnState = strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
 		turnMetadata = strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader))
 	}
-	headers, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
+	headers, _, headerErr := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
+	if headerErr != nil {
+		return fmt.Errorf("build openai websocket authentication headers: %w", headerErr)
+	}
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
@@ -372,9 +384,23 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		return errors.New("openai ws passthrough dialer is nil")
 	}
 
-	dialCtx, cancelDial := context.WithTimeout(ctx, s.openAIWSDialTimeout())
-	defer cancelDial()
-	upstreamConn, statusCode, handshakeHeaders, err := dialer.Dial(dialCtx, wsURL, headers, proxyURL)
+	dialUpstream := func() (openAIWSClientConn, int, http.Header, error) {
+		dialCtx, cancelDial := context.WithTimeout(ctx, s.openAIWSDialTimeout())
+		defer cancelDial()
+		return dialer.Dial(dialCtx, wsURL, headers, proxyURL)
+	}
+	upstreamConn, statusCode, handshakeHeaders, err := dialUpstream()
+	if err != nil && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidWSDialResult(statusCode, err) {
+		expectedTaskID := strings.TrimSpace(account.GetCredential("task_id"))
+		if recoveryErr := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); recoveryErr != nil {
+			return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "upstream websocket authentication failed", recoveryErr)
+		}
+		headers, _, headerErr = s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
+		if headerErr != nil {
+			return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "upstream websocket authentication failed", headerErr)
+		}
+		upstreamConn, statusCode, handshakeHeaders, err = dialUpstream()
+	}
 	if err != nil {
 		logOpenAIWSV2Passthrough(
 			"relay_dial_failed account_id=%d status_code=%d err=%s",
@@ -437,6 +463,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 				cacheCreationOptimizationApplied.Store(optimizationResult.Applied)
 				cachePolicyCompatibilityFailure.Store(false)
+				lastUpstreamRequest.Store(append([]byte(nil), out...))
 				return out, nil, nil
 			}
 			if msgType != coderws.MessageText {
@@ -520,6 +547,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if policyErr == nil && blocked == nil &&
 				strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
 				usageMeta.updateFromResponseCreate(out, requestModelForThisFrame)
+				lastUpstreamRequest.Store(append([]byte(nil), out...))
 			}
 			return out, blocked, policyErr
 		},
@@ -638,6 +666,20 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 							isOpenAIPromptCacheCreationOptimizationUnsupportedError(http.StatusBadRequest, "", payload),
 					)
 				}
+				if !wroteDownstream && (eventType == "error" || eventType == "response.failed") {
+					currentBody, _ := lastUpstreamRequest.Load().([]byte)
+					_, _, rejected, rejectedErr := normalizeOpenAIResponsesRejectedFieldRetryBody(
+						http.StatusBadRequest,
+						currentBody,
+						payload,
+					)
+					if rejectedErr == nil && rejected {
+						return &openAIWSRejectedFieldError{
+							responseBody: append([]byte(nil), payload...),
+							requestBody:  append([]byte(nil), currentBody...),
+						}
+					}
+				}
 				if msgType != coderws.MessageText {
 					return nil
 				}
@@ -734,6 +776,34 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	)
 
 	relayErr := relayExit.Err
+	if !relayExit.WroteDownstream {
+		var rejectedErr *openAIWSRejectedFieldError
+		if errors.As(relayErr, &rejectedErr) && rejectedErr != nil {
+			nextBody, field, changed, rewriteErr := rejectedFieldRetry.Rewrite(
+				http.StatusBadRequest,
+				rejectedErr.requestBody,
+				rejectedErr.responseBody,
+			)
+			if rewriteErr == nil && changed {
+				logOpenAIWSV2Passthrough(
+					"relay_rejected_field_retry account_id=%d field=%s",
+					account.ID,
+					truncateOpenAIWSLogValue(field, openAIWSLogValueMaxLen),
+				)
+				_ = upstreamConn.Close()
+				return s.proxyResponsesWebSocketV2Passthrough(
+					ctx,
+					c,
+					clientConn,
+					account,
+					token,
+					nextBody,
+					hooks,
+					wsDecision,
+				)
+			}
+		}
+	}
 	if relayExit.Stage == "idle_timeout" {
 		relayErr = NewOpenAIWSClientCloseError(
 			coderws.StatusPolicyViolation,

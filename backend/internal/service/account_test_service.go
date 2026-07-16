@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -72,6 +73,8 @@ type AccountTestService struct {
 	cfg                       *config.Config
 	settingService            *SettingService
 	tlsFPProfileService       *TLSFingerprintProfileService
+	agentIdentityTaskMu       sync.Mutex
+	agentIdentityWS           agentIdentityWSConnectionInvalidator
 }
 
 // NewAccountTestService creates a new AccountTestService
@@ -541,7 +544,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		isOAuth = true
 		// OAuth - use Bearer token with ChatGPT internal API
 		authToken = account.GetOpenAIAccessToken()
-		if authToken == "" {
+		if authToken == "" && !account.IsOpenAIAgentIdentity() {
 			return s.sendErrorAndEnd(c, "No access token available")
 		}
 
@@ -593,7 +596,19 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 
 	// Set common headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+authToken)
+	if account.IsOpenAIAgentIdentity() {
+		authHeaders, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account)
+		if authErr != nil {
+			return s.sendErrorAndEnd(c, "Failed to build Agent Identity authentication")
+		}
+		for key, values := range authHeaders {
+			for _, value := range values {
+				req.Header.Add(key, value)
+			}
+		}
+	} else {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
 
 	// Set OAuth-specific headers for ChatGPT internal API
 	if isOAuth {
@@ -635,6 +650,15 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, account, body)
+		if !agentIdentityTaskRecoveryWasTried(ctx) && account.IsOpenAIAgentIdentity() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body) {
+			expectedTaskID := account.GetCredential("task_id")
+			if recoveryErr := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account, expectedTaskID); recoveryErr != nil {
+				return s.sendErrorAndEnd(c, "Agent Identity task recovery failed")
+			}
+			c.Request = c.Request.WithContext(markAgentIdentityTaskRecoveryTried(ctx))
+			return s.testOpenAIAccountConnection(c, account, modelID, prompt, mode)
+		}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
 		}
@@ -724,7 +748,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	case account.IsOAuth():
 		isOAuth = true
 		authToken = account.GetOpenAIAccessToken()
-		if authToken == "" {
+		if authToken == "" && !account.IsOpenAIAgentIdentity() {
 			return s.sendErrorAndEnd(c, "No access token available")
 		}
 		apiURL = chatgptCodexAPIURL + "/compact"
@@ -764,7 +788,17 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+authToken)
+	if account.IsOpenAIAgentIdentity() {
+		authHeaders, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account)
+		if authErr != nil {
+			return s.sendErrorAndEnd(c, "Failed to build Agent Identity authentication")
+		}
+		req.Header = authHeaders
+	} else {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
 	req.Header.Set("Originator", "codex_cli_rs")
 	req.Header.Set("User-Agent", codexCLIUserAgent)
@@ -817,6 +851,15 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, account, body)
+		if !agentIdentityTaskRecoveryWasTried(ctx) && account.IsOpenAIAgentIdentity() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body) {
+			expectedTaskID := account.GetCredential("task_id")
+			if recoveryErr := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account, expectedTaskID); recoveryErr != nil {
+				return s.sendErrorAndEnd(c, "Agent Identity task recovery failed")
+			}
+			c.Request = c.Request.WithContext(markAgentIdentityTaskRecoveryTried(ctx))
+			return s.testOpenAICompactConnection(c, account, testModelID)
+		}
 		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
 			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
@@ -1591,7 +1634,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 // testOpenAIImageOAuth tests OpenAI image generation using an OAuth account via Codex /responses API.
 func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string) error {
 	authToken := account.GetOpenAIAccessToken()
-	if authToken == "" {
+	if authToken == "" && !account.IsOpenAIAgentIdentity() {
 		return s.sendErrorAndEnd(c, "No access token available")
 	}
 
@@ -1623,7 +1666,15 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 	req.Host = "chatgpt.com"
-	req.Header.Set("Authorization", "Bearer "+authToken)
+	if account.IsOpenAIAgentIdentity() {
+		authHeaders, authErr := buildAgentIdentityAuthenticationHeaders(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account)
+		if authErr != nil {
+			return s.sendErrorAndEnd(c, "Failed to build Agent Identity authentication")
+		}
+		req.Header = authHeaders
+	} else {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
@@ -1655,6 +1706,16 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	}()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, account, body)
+		if !agentIdentityTaskRecoveryWasTried(ctx) && account.IsOpenAIAgentIdentity() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body) {
+			expectedTaskID := account.GetCredential("task_id")
+			if recoveryErr := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, account, expectedTaskID); recoveryErr != nil {
+				return s.sendErrorAndEnd(c, "Agent Identity task recovery failed")
+			}
+			retryCtx := markAgentIdentityTaskRecoveryTried(ctx)
+			c.Request = c.Request.WithContext(retryCtx)
+			return s.testOpenAIImageOAuth(c, retryCtx, account, modelID, prompt)
+		}
 		if msg := s.openAIAccountTestModelRoutingError(c, account, resp.StatusCode, body); msg != "" {
 			return s.sendErrorAndEnd(c, msg)
 		}

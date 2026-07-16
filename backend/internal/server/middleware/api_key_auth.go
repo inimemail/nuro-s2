@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -140,8 +141,9 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 
 		// ── 5. 加载订阅（订阅模式时始终加载） ───────────────────────
 
-		// skipBilling: /v1/usage 只需鉴权，跳过所有计费执行
-		skipBilling := c.Request.URL.Path == "/v1/usage"
+		// Usage, billing observation, and async image task reads only require
+		// authentication; they do not initiate new billable upstream work.
+		skipBilling := c.Request.URL.Path == "/v1/usage" || c.Request.URL.Path == "/v1/sub2api/billing" || isAsyncImageTaskRead(c.Request.Method, c.Request.URL.Path)
 
 		var subscription *service.UserSubscription
 		isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
@@ -232,6 +234,13 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 
 		c.Next()
 	}
+}
+
+func isAsyncImageTaskRead(method, path string) bool {
+	if method != http.MethodGet {
+		return false
+	}
+	return strings.HasPrefix(path, "/v1/images/tasks/") || strings.HasPrefix(path, "/images/tasks/")
 }
 
 // GetAPIKeyFromContext 从上下文中获取API key

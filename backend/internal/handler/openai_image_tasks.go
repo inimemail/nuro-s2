@@ -3,13 +3,17 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -20,6 +24,7 @@ import (
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 )
 
@@ -42,6 +47,11 @@ const (
 	defaultOpenAIImageTaskLock      = 35 * time.Minute
 	defaultOpenAIImageTaskMaxQueue  = 100000
 	defaultOpenAIImageTaskCleanSize = 1000
+)
+
+var (
+	errOpenAIImageTaskQueueFull           = service.ErrOpenAIImageTaskQueueFull
+	errOpenAIImageTaskIdempotencyConflict = errors.New("idempotency key was already used with a different image request")
 )
 
 type openAIImageTask struct {
@@ -74,6 +84,23 @@ type openAIImageTaskPublic struct {
 	Data       json.RawMessage       `json:"data,omitempty"`
 	Usage      json.RawMessage       `json:"usage,omitempty"`
 	Error      *openAIImageTaskError `json:"error,omitempty"`
+}
+
+type standardOpenAIImageTaskPublic struct {
+	ID          string                `json:"id"`
+	TaskID      string                `json:"task_id"`
+	Object      string                `json:"object"`
+	Status      string                `json:"status"`
+	HTTPStatus  int                   `json:"http_status,omitempty"`
+	Model       string                `json:"model,omitempty"`
+	CreatedAt   int64                 `json:"created_at"`
+	UpdatedAt   int64                 `json:"updated_at"`
+	CompletedAt int64                 `json:"completed_at,omitempty"`
+	ExpiresAt   int64                 `json:"expires_at"`
+	PollURL     string                `json:"poll_url,omitempty"`
+	ImageURL    string                `json:"image_url,omitempty"`
+	Result      json.RawMessage       `json:"result,omitempty"`
+	Error       *openAIImageTaskError `json:"error,omitempty"`
 }
 
 type openAIImageTaskStore struct {
@@ -354,6 +381,200 @@ func (h *OpenAIGatewayHandler) CreateImageEditTask(c *gin.Context) {
 	h.createImageTask(c, openAIImageTaskEditsEndpoint)
 }
 
+// CreateAsyncImageGenerationTask accepts the ordinary Images request schema;
+// callers do not need taskrun/taskid compatibility fields.
+func (h *OpenAIGatewayHandler) CreateAsyncImageGenerationTask(c *gin.Context) {
+	h.createStandardAsyncImageTask(c, openAIImageTaskGenerationsEndpoint)
+}
+
+// CreateAsyncImageEditTask is the multipart/JSON edit counterpart.
+func (h *OpenAIGatewayHandler) CreateAsyncImageEditTask(c *gin.Context) {
+	h.createStandardAsyncImageTask(c, openAIImageTaskEditsEndpoint)
+}
+
+// GetAsyncImageTask returns one task using the standard async status model.
+func (h *OpenAIGatewayHandler) GetAsyncImageTask(c *gin.Context) {
+	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	if !ok || apiKey == nil {
+		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		return
+	}
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	if taskID == "" {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "task_id is required")
+		return
+	}
+	ownerID := openAIImageTaskOwnerID(apiKey)
+	pollURL := standardOpenAIImageTaskPollURL(c.Request.URL.Path, taskID)
+	c.Header("Cache-Control", "no-store")
+	if h.imageTaskRepo != nil {
+		items, _, err := h.imageTaskRepo.List(c.Request.Context(), ownerID, []string{taskID}, 1)
+		if err != nil {
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to load image task")
+			return
+		}
+		if len(items) == 0 || items[0] == nil {
+			h.errorResponse(c, http.StatusNotFound, "not_found_error", "Image task not found")
+			return
+		}
+		public := standardPersistentOpenAIImageTaskWithRetention(items[0], pollURL, h.imageTaskRetention())
+		if public.Status == "processing" {
+			c.Header("Retry-After", "2")
+		}
+		c.JSON(http.StatusOK, public)
+		return
+	}
+	h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Image task storage is unavailable")
+}
+
+func (h *OpenAIGatewayHandler) createStandardAsyncImageTask(c *gin.Context, endpoint string) {
+	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	if !ok || apiKey == nil {
+		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		return
+	}
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
+		return
+	}
+	if !h.ensureResponsesDependencies(c, requestLogger(c, "handler.openai_gateway.image_tasks.async")) {
+		return
+	}
+	if h.imageTaskRepo == nil || h.imageResultUploader == nil || !h.imageResultUploader.Enabled() {
+		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Asynchronous image tasks require configured object storage")
+		return
+	}
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	if err != nil {
+		if maxErr, ok := extractMaxBytesError(err); ok {
+			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
+			return
+		}
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		return
+	}
+	if len(body) == 0 {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
+		return
+	}
+	parsed, err := h.parseImageTaskRequestForValidation(c, endpoint, body)
+	if err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if parsed.Stream {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "stream=true is not supported for image tasks")
+		return
+	}
+	ownerID := openAIImageTaskOwnerID(apiKey)
+	taskID := standardOpenAIImageTaskID(ownerID, endpoint, c.GetHeader("Idempotency-Key"))
+	pollURL := standardOpenAIImageTaskPollURL(c.Request.URL.Path, taskID)
+	c.Header("Cache-Control", "no-store")
+	c.Header("Location", pollURL)
+	c.Header("Retry-After", "2")
+	task, created, submitErr := h.submitPersistentImageTask(c, ownerID, taskID, endpoint, parsed.Model, body, apiKey, subject)
+	if submitErr != nil {
+		h.writeImageTaskSubmitError(c, submitErr)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusAccepted
+	}
+	c.JSON(status, standardPersistentOpenAIImageTaskWithRetention(task, pollURL, h.imageTaskRetention()))
+}
+
+func standardOpenAIImageTaskID(ownerID, endpoint, idempotencyKey string) string {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return "imgtask_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	}
+	digest := sha256.Sum256([]byte(ownerID + "\x00" + endpoint + "\x00" + idempotencyKey))
+	return "imgtask_" + hex.EncodeToString(digest[:16])
+}
+
+func standardOpenAIImageTaskPollURL(path, taskID string) string {
+	if strings.HasPrefix(path, "/v1/") {
+		return "/v1/images/tasks/" + taskID
+	}
+	return "/images/tasks/" + taskID
+}
+
+func standardOpenAIImageTaskStatus(status string) string {
+	switch status {
+	case openAIImageTaskStatusSuccess:
+		return "completed"
+	case openAIImageTaskStatusError:
+		return "failed"
+	default:
+		return "processing"
+	}
+}
+
+func standardPersistentOpenAIImageTask(task *service.OpenAIImageTask, pollURL string) standardOpenAIImageTaskPublic {
+	return standardPersistentOpenAIImageTaskWithRetention(task, pollURL, defaultOpenAIImageTaskRetention)
+}
+
+func standardPersistentOpenAIImageTaskWithRetention(task *service.OpenAIImageTask, pollURL string, retention time.Duration) standardOpenAIImageTaskPublic {
+	if task == nil {
+		return standardOpenAIImageTaskPublic{}
+	}
+	if retention <= 0 {
+		retention = defaultOpenAIImageTaskRetention
+	}
+	updatedAt := task.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = task.CreatedAt
+	}
+	result := standardOpenAIImageTaskPublic{
+		ID: task.ID, TaskID: task.ID, Object: "image.generation.task",
+		Status: standardOpenAIImageTaskStatus(task.Status), HTTPStatus: task.StatusCode,
+		Model: task.Model, CreatedAt: task.CreatedAt.Unix(), UpdatedAt: updatedAt.Unix(),
+		ExpiresAt: updatedAt.Add(retention).Unix(), PollURL: pollURL,
+	}
+	if task.FinishedAt != nil {
+		result.CompletedAt = task.FinishedAt.Unix()
+	}
+	if result.Status == "completed" && len(task.Response) > 0 && json.Valid(task.Response) {
+		result.Result = append(json.RawMessage(nil), task.Response...)
+		result.ImageURL = strings.TrimSpace(gjson.GetBytes(task.Response, "data.0.url").String())
+	}
+	if result.Status == "failed" {
+		result.Error = &openAIImageTaskError{Message: openAIImageTaskSafeErrorMessage, StatusCode: task.StatusCode}
+	}
+	return result
+}
+
+func standardMemoryOpenAIImageTask(task *openAIImageTask, pollURL string) standardOpenAIImageTaskPublic {
+	return standardMemoryOpenAIImageTaskWithRetention(task, pollURL, defaultOpenAIImageTaskRetention)
+}
+
+func standardMemoryOpenAIImageTaskWithRetention(task *openAIImageTask, pollURL string, retention time.Duration) standardOpenAIImageTaskPublic {
+	if task == nil {
+		return standardOpenAIImageTaskPublic{}
+	}
+	if retention <= 0 {
+		retention = defaultOpenAIImageTaskRetention
+	}
+	result := standardOpenAIImageTaskPublic{
+		ID: task.ID, TaskID: task.ID, Object: "image.generation.task",
+		Status: standardOpenAIImageTaskStatus(task.Status), HTTPStatus: task.StatusCode,
+		Model: task.Model, CreatedAt: task.CreatedAt.Unix(), UpdatedAt: task.UpdatedAt.Unix(),
+		ExpiresAt: task.UpdatedAt.Add(retention).Unix(), PollURL: pollURL,
+	}
+	if result.Status == "completed" && len(task.Response) > 0 && json.Valid(task.Response) {
+		result.CompletedAt = task.UpdatedAt.Unix()
+		result.Result = append(json.RawMessage(nil), task.Response...)
+		result.ImageURL = strings.TrimSpace(gjson.GetBytes(task.Response, "data.0.url").String())
+	}
+	if result.Status == "failed" {
+		result.CompletedAt = task.UpdatedAt.Unix()
+		result.Error = &openAIImageTaskError{Message: openAIImageTaskSafeErrorMessage, StatusCode: task.StatusCode}
+	}
+	return result
+}
+
 // ListImageTasks returns image task status and completed results for the current API key.
 func (h *OpenAIGatewayHandler) ListImageTasks(c *gin.Context) {
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
@@ -447,7 +668,7 @@ func (h *OpenAIGatewayHandler) createImageTask(c *gin.Context, endpoint string) 
 	if h.imageTaskRepo != nil {
 		task, created, err := h.submitPersistentImageTask(c, ownerID, taskID, endpoint, parsed.Model, taskBody, apiKey, subject)
 		if err != nil {
-			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to submit image task")
+			h.writeImageTaskSubmitError(c, err)
 			return
 		}
 		status := http.StatusOK
@@ -508,7 +729,7 @@ func (h *OpenAIGatewayHandler) maybeHandleImagesAsTask(
 	if h.imageTaskRepo != nil {
 		task, created, err := h.submitPersistentImageTask(c, ownerID, taskID, endpoint, parsed.Model, taskBody, apiKey, subject)
 		if err != nil {
-			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to submit image task")
+			h.writeImageTaskSubmitError(c, err)
 			return true
 		}
 		c.Header("Retry-After", "2")
@@ -640,16 +861,8 @@ func (h *OpenAIGatewayHandler) submitPersistentImageTask(
 	if h == nil || h.imageTaskRepo == nil {
 		return nil, false, fmt.Errorf("image task repository is not configured")
 	}
+	requestHeaders := sanitizeImageTaskHeaders(c.Request.Header)
 	maxQueue := h.imageTaskMaxQueue()
-	if maxQueue > 0 {
-		count, err := h.imageTaskRepo.CountUnfinished(c.Request.Context())
-		if err != nil {
-			return nil, false, err
-		}
-		if count >= int64(maxQueue) {
-			return nil, false, fmt.Errorf("image task queue is full")
-		}
-	}
 	task := &service.OpenAIImageTask{
 		ID:              taskID,
 		OwnerID:         ownerID,
@@ -659,9 +872,36 @@ func (h *OpenAIGatewayHandler) submitPersistentImageTask(
 		Endpoint:        endpoint,
 		Model:           model,
 		RequestBody:     append([]byte(nil), body...),
-		RequestHeaders:  sanitizeImageTaskHeaders(c.Request.Header),
+		RequestHeaders:  requestHeaders,
 	}
-	return h.imageTaskRepo.Submit(c.Request.Context(), task)
+	stored, created, err := h.imageTaskRepo.SubmitWithinLimit(c.Request.Context(), task, maxQueue)
+	if err != nil {
+		return nil, false, err
+	}
+	if !created {
+		if err := validatePersistentImageTaskReplay(stored, endpoint, body, requestHeaders); err != nil {
+			return nil, false, err
+		}
+	}
+	return stored, created, nil
+}
+
+func validatePersistentImageTaskReplay(task *service.OpenAIImageTask, endpoint string, body []byte, headers map[string][]string) error {
+	if task == nil || task.Endpoint != endpoint || !bytes.Equal(task.RequestBody, body) || !reflect.DeepEqual(task.RequestHeaders, headers) {
+		return errOpenAIImageTaskIdempotencyConflict
+	}
+	return nil
+}
+
+func (h *OpenAIGatewayHandler) writeImageTaskSubmitError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, errOpenAIImageTaskIdempotencyConflict):
+		h.errorResponse(c, http.StatusConflict, "idempotency_error", "Idempotency-Key was already used with a different image request")
+	case errors.Is(err, errOpenAIImageTaskQueueFull):
+		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Image task queue is full")
+	default:
+		h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to submit image task")
+	}
 }
 
 func sanitizeImageTaskHeaders(headers http.Header) map[string][]string {
@@ -800,6 +1040,10 @@ func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIIm
 		_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusUnauthorized, sanitizeOpenAIImageTaskErrorMessage(err.Error()), nil)
 		return
 	}
+	if err := validatePersistentImageTaskAPIKey(apiKey); err != nil {
+		_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusForbidden, err.Error(), nil)
+		return
+	}
 	subject := middleware2.AuthSubject{UserID: task.UserID, Concurrency: task.UserConcurrency}
 	if apiKey.User != nil {
 		subject.UserID = apiKey.User.ID
@@ -812,10 +1056,41 @@ func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIIm
 	}
 	statusCode, responseBody := h.runImageTaskRequest(ctx, task.Endpoint, http.Header(task.RequestHeaders), task.RequestBody, apiKey, subject, subscription)
 	if statusCode >= 200 && statusCode < 300 {
+		if h.imageResultUploader != nil && h.imageResultUploader.Enabled() {
+			rewritten, rewriteErr := h.imageResultUploader.Rewrite(ctx, task.ID, responseBody)
+			if rewriteErr != nil {
+				_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusBadGateway, "failed to store generated image", nil)
+				return
+			}
+			responseBody = rewritten
+		} else if strings.HasPrefix(task.ID, "imgtask_") && gjson.GetBytes(responseBody, "data.#(b64_json!=\"\").b64_json").Exists() {
+			_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusServiceUnavailable, "image object storage is unavailable", nil)
+			return
+		}
 		_ = h.imageTaskRepo.MarkSuccess(ctx, task.DBID, statusCode, responseBody)
 		return
 	}
 	_ = h.imageTaskRepo.MarkError(ctx, task.DBID, statusCode, imageTaskErrorMessage(responseBody), safeOpenAIImageTaskErrorResponse(statusCode, imageTaskErrorMessage(responseBody)))
+}
+
+func validatePersistentImageTaskAPIKey(apiKey *service.APIKey) error {
+	const unavailable = "API key is no longer authorized for this task"
+	if apiKey == nil || !apiKey.IsActive() || apiKey.IsExpired() || apiKey.IsQuotaExhausted() {
+		return errors.New(unavailable)
+	}
+	if apiKey.User == nil || apiKey.User.ID != apiKey.UserID || !apiKey.User.IsActive() {
+		return errors.New(unavailable)
+	}
+	if apiKey.GroupID == nil {
+		return nil
+	}
+	if apiKey.Group == nil || apiKey.Group.ID != *apiKey.GroupID || !apiKey.Group.IsActive() {
+		return errors.New(unavailable)
+	}
+	if !apiKey.Group.IsSubscriptionType() && !apiKey.User.CanBindGroup(apiKey.Group.ID, apiKey.Group.IsExclusive) {
+		return errors.New(unavailable)
+	}
+	return nil
 }
 
 func (h *OpenAIGatewayHandler) startImageTaskWorker(

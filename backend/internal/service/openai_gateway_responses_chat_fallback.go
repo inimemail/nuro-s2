@@ -29,6 +29,16 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 ) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 
+	// Keep the legacy Responses alias compatible with the native Responses
+	// path before decoding into the typed bridge request. Otherwise
+	// `max_tokens` is silently discarded by json.Unmarshal and the fallback
+	// request loses the caller's output limit.
+	if normalizedBody, changed, normalizeErr := normalizeOpenAIAPIKeyResponsesUnsupportedParamsBody(body); normalizeErr != nil {
+		return nil, fmt.Errorf("normalize responses fallback parameters: %w", normalizeErr)
+	} else if changed {
+		body = normalizedBody
+	}
+
 	var responsesReq apicompat.ResponsesRequest
 	if err := json.Unmarshal(body, &responsesReq); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{

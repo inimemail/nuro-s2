@@ -40,7 +40,10 @@ func ProvideAdminHandlers(
 	contentModerationHandler *admin.ContentModerationHandler,
 	paymentHandler *admin.PaymentHandler,
 	affiliateHandler *admin.AffiliateHandler,
+	auditLogHandler *admin.AuditLogHandler,
+	upstreamBillingProbe *service.UpstreamBillingProbeService,
 ) *AdminHandlers {
+	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
 		User:                   userHandler,
@@ -73,6 +76,7 @@ func ProvideAdminHandlers(
 		ContentModeration:      contentModerationHandler,
 		Payment:                paymentHandler,
 		Affiliate:              affiliateHandler,
+		AuditLog:               auditLogHandler,
 	}
 }
 
@@ -202,6 +206,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewContentModerationHandler,
 	admin.NewPaymentHandler,
 	admin.NewAffiliateHandler,
+	admin.NewAuditLogHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

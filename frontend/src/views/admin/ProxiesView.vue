@@ -777,6 +777,7 @@
       @confirm="confirmDelete"
       @cancel="showDeleteDialog = false"
     />
+    <TotpStepUpDialog :controller="exportStepUp" />
 
     <!-- Batch Delete Confirmation Dialog -->
     <ConfirmDialog
@@ -933,6 +934,8 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
+import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
+import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 import type { Proxy, ProxyAccountSummary, ProxyProtocol, ProxyQualityCheckResult, ProxyFallbackMode, ProxyStatus } from '@/types'
 import type { Column } from '@/components/common/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -954,6 +957,7 @@ import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const exportStepUp = useStepUp()
 const { copyToClipboard } = useClipboard()
 
 const columns = computed<Column[]>(() => [
@@ -1863,13 +1867,13 @@ const handleExportData = async () => {
   if (exportingData.value) return
   exportingData.value = true
   try {
-    const dataPayload = await adminAPI.proxies.exportData(
+    const dataPayload = await exportStepUp.run(() => adminAPI.proxies.exportData(
       selectedCount.value > 0
         ? { ids: Array.from(selectedProxyIds.value) }
         : {
             filters: buildProxyQueryFilters()
           }
-    )
+    ))
     const timestamp = formatExportTimestamp()
     const filename = `sub2api-proxy-${timestamp}.json`
     const blob = new Blob([JSON.stringify(dataPayload, null, 2)], { type: 'application/json' })
@@ -1881,6 +1885,11 @@ const handleExportData = async () => {
     URL.revokeObjectURL(url)
     appStore.showSuccess(t('admin.proxies.dataExported'))
   } catch (error: any) {
+	if (isStepUpCancelled(error)) return
+	if (isStepUpBlocked(error)) {
+	  appStore.showError(stepUpBlockReason(error) === 'STEP_UP_ADMIN_API_KEY_FORBIDDEN' ? t('stepUp.adminApiKeyForbidden') : t('stepUp.notEnabled'))
+	  return
+	}
     appStore.showError(error?.message || t('admin.proxies.dataExportFailed'))
   } finally {
     exportingData.value = false

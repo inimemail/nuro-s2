@@ -628,6 +628,86 @@ func TestOpenAIEdgeRetryCacheCreationCompatibilityStaysOnEdgeRS(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeRetryExplicitRejectedResponsesFieldsStayOnSameLease(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6","stream":true,"max_output_tokens":2048,"input":[{"type":"custom_tool_call","namespace":"tools","input":"{}"}]}`)
+	account := &service.Account{ID: 1001, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	lease := &openAIEdgeLease{
+		edgeRequestID:      "edge-1",
+		leaseID:            "lease-1",
+		expiresAt:          time.Now().Add(time.Minute),
+		account:            account,
+		inboundEndpoint:    "/v1/responses",
+		lastPlan:           service.OpenAIEdgePlan{EdgeRequestID: "edge-1", LeaseID: "lease-1", AccountID: account.ID, Headers: map[string]string{"Authorization": "Bearer stable"}, BodyRawBase64: service.EncodeOpenAIEdgeRawBody(body)},
+		sameAccountRetries: map[int64]int{},
+		failedAccountIDs:   map[int64]struct{}{},
+	}
+	h := &OpenAIGatewayHandler{openAIEdgeLeases: map[string]*openAIEdgeLease{"lease-1": lease}}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+
+	first := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:            lease.leaseID,
+		AccountID:          account.ID,
+		UpstreamStatusCode: http.StatusBadRequest,
+		ResponseBody:       json.RawMessage(`{"error":{"code":"unknown_parameter","param":"input[0].namespace","message":"Unknown parameter: input[0].namespace"}}`),
+	})
+	if first.Action != service.OpenAIEdgeActionRelay || first.Plan == nil {
+		t.Fatalf("expected same-lease field retry, got action=%q reason=%q", first.Action, first.Reason)
+	}
+	firstBody, err := base64.StdEncoding.DecodeString(first.Plan.BodyRawBase64)
+	if err != nil {
+		t.Fatalf("decode first retry body: %v", err)
+	}
+	if gjson.GetBytes(firstBody, "input.0.namespace").Exists() || !gjson.GetBytes(firstBody, "max_output_tokens").Exists() {
+		t.Fatalf("first retry removed the wrong field: %s", firstBody)
+	}
+
+	second := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:            lease.leaseID,
+		AccountID:          account.ID,
+		UpstreamStatusCode: http.StatusBadRequest,
+		ResponseBody:       json.RawMessage(`{"error":{"code":"unsupported_parameter","param":"max_output_tokens","message":"Unsupported parameter: max_output_tokens"}}`),
+	})
+	if second.Action != service.OpenAIEdgeActionRelay || second.Plan == nil {
+		t.Fatalf("expected second same-lease field retry, got action=%q reason=%q", second.Action, second.Reason)
+	}
+	secondBody, err := base64.StdEncoding.DecodeString(second.Plan.BodyRawBase64)
+	if err != nil {
+		t.Fatalf("decode second retry body: %v", err)
+	}
+	if gjson.GetBytes(secondBody, "input.0.namespace").Exists() || gjson.GetBytes(secondBody, "max_output_tokens").Exists() {
+		t.Fatalf("second retry did not preserve both removals: %s", secondBody)
+	}
+	if second.Plan.AccountID != account.ID || second.Plan.LeaseID != lease.leaseID || second.Plan.Headers["Authorization"] != "Bearer stable" {
+		t.Fatal("compatibility retry changed account, lease, or authentication headers")
+	}
+	if lease.switchCount != 0 || len(lease.sameAccountRetries) != 0 || len(lease.failedAccountIDs) != 0 {
+		t.Fatal("compatibility retry polluted ordinary retry or failover state")
+	}
+}
+
+func TestOpenAIEdgeRetryAmbiguousResponses400DoesNotReplay(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6","stream":true,"max_output_tokens":2048}`)
+	account := &service.Account{ID: 1001}
+	h := &OpenAIGatewayHandler{openAIEdgeLeases: map[string]*openAIEdgeLease{
+		"lease-1": {
+			leaseID:         "lease-1",
+			account:         account,
+			inboundEndpoint: "/v1/responses",
+			lastPlan:        service.OpenAIEdgePlan{BodyRawBase64: service.EncodeOpenAIEdgeRawBody(body)},
+		},
+	}}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:            "lease-1",
+		AccountID:          account.ID,
+		UpstreamStatusCode: http.StatusBadRequest,
+		ResponseBody:       json.RawMessage(`{"error":{"code":"invalid_request_error","param":"max_output_tokens","message":"max_output_tokens must be positive"}}`),
+	})
+	if decision.Action == service.OpenAIEdgeActionRelay {
+		t.Fatalf("ambiguous validation error must not replay: %+v", decision)
+	}
+}
+
 func TestOpenAIEdgeRetryProtectsPoolModelRouting404(t *testing.T) {
 	h := &OpenAIGatewayHandler{
 		openAIEdgeLeases: map[string]*openAIEdgeLease{

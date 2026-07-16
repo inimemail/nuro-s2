@@ -112,6 +112,9 @@ const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
 	OpenAIEndpointCapabilityAlphaSearch     OpenAIEndpointCapability = "alpha_search"
+	// Responses is used only for image-intent routing. It prevents a known
+	// Responses-incompatible API-key account from silently falling back to Chat.
+	OpenAIEndpointCapabilityResponses OpenAIEndpointCapability = "responses"
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
@@ -1725,10 +1728,11 @@ func (a *Account) GetGrokBaseURL() string {
 		if baseURL == "" || isOfficialGrokAPIBaseURL(baseURL) || isOfficialGrokCLIBaseURL(baseURL) {
 			return xai.DefaultCLIBaseURL
 		}
-		if _, err := xai.ValidateTrustedBaseURL(baseURL); err == nil {
-			return strings.TrimRight(baseURL, "/")
-		}
-		return xai.DefaultCLIBaseURL
+		// Custom OAuth forwarding hosts are validated at the outbound URL
+		// builder, where the runtime URL allowlist policy is available. Keep the
+		// configured value here so custom Grok OAuth accounts do not silently
+		// fall back to the official CLI endpoint.
+		return strings.TrimRight(baseURL, "/")
 	}
 	if baseURL != "" {
 		return strings.TrimRight(baseURL, "/")
@@ -1750,10 +1754,7 @@ func (a *Account) GetGrokMediaBaseURL() string {
 	if baseURL == "" || isOfficialGrokAPIBaseURL(baseURL) || isOfficialGrokCLIBaseURL(baseURL) {
 		return xai.DefaultBaseURL
 	}
-	if _, err := xai.ValidateTrustedBaseURL(baseURL); err == nil {
-		return strings.TrimRight(baseURL, "/")
-	}
-	return xai.DefaultBaseURL
+	return strings.TrimRight(baseURL, "/")
 }
 
 func isOfficialGrokAPIBaseURL(raw string) bool {
@@ -1840,6 +1841,18 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		if !a.IsOpenAI() && !a.IsGrok() {
 			return false
 		}
+	case OpenAIEndpointCapabilityResponses:
+		if !a.IsOpenAI() {
+			return false
+		}
+		// OAuth and unprobed API-key accounts preserve legacy eligibility. A
+		// negatively probed API-key account is excluded from Responses intent.
+		if a.Type == AccountTypeAPIKey {
+			if supported, ok := a.Extra["openai_responses_supported"].(bool); ok && !supported {
+				return false
+			}
+		}
+		capability = OpenAIEndpointCapabilityChatCompletions
 	case OpenAIEndpointCapabilityEmbeddings:
 		if !a.IsOpenAI() || a.Type != AccountTypeAPIKey {
 			return false

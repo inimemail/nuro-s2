@@ -20,6 +20,8 @@ type SystemSettings struct {
 	FrontendURL                      string
 	InvitationCodeEnabled            bool
 	TotpEnabled                      bool // TOTP 双因素认证
+	AuditLogRetentionDays            int
+	SessionBindingEnabled            bool
 	LoginAgreementEnabled            bool
 	LoginAgreementMode               string
 	LoginAgreementUpdatedAt          string
@@ -150,6 +152,7 @@ type SystemSettings struct {
 	AffiliateRebateFreezeHours   int
 	AffiliateRebateDurationDays  int
 	AffiliateRebatePerInviteeCap float64
+	AdminRechargeRebateEnabled   bool
 	DefaultUserRPMLimit          int
 	DefaultSubscriptions         []DefaultSubscriptionSetting
 

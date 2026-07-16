@@ -191,7 +191,9 @@ func TestCalculateCost_ImageInputTokens(t *testing.T) {
 	}
 	cost, err := svc.CalculateCost("doubao-embedding-vision", tokens, 1.0)
 	require.NoError(t, err)
-	require.InDelta(t, 800*0.098e-6+200*0.252e-6, cost.InputCost, 1e-12)
+	require.InDelta(t, 800*0.098e-6, cost.InputCost, 1e-12)
+	require.InDelta(t, 200*0.252e-6, cost.ImageInputCost, 1e-12)
+	require.InDelta(t, cost.InputCost+cost.ImageInputCost, cost.TotalCost, 1e-12)
 }
 
 func TestGetModelPricing_OpenAICompactAliasesFallback(t *testing.T) {
@@ -491,6 +493,39 @@ func TestCalculateCostWithLongContext_AboveThreshold_CacheBelowThreshold(t *test
 	// 正常费用不含长上下文
 	normalCost, _ := svc.CalculateCost("claude-sonnet-4", tokens, 1.0)
 	require.True(t, cost.ActualCost > normalCost.ActualCost, "长上下文费用应高于正常费用")
+}
+
+func TestCalculateCostWithLongContext_PreservesImageInputTokens(t *testing.T) {
+	svc := newTestBillingService()
+	pricing := &ModelPricing{
+		InputPricePerToken:          1e-6,
+		ImageInputPricePerToken:     4e-6,
+		OutputPricePerToken:         2e-6,
+		CacheReadPricePerToken:      0.5e-6,
+		LongContextInputThreshold:   100,
+		LongContextInputMultiplier:  2,
+		LongContextOutputMultiplier: 1,
+	}
+	// Use the service-local fallback map so the test exercises the public
+	// long-context path without depending on an external pricing source.
+	model := "doubao-embedding-vision"
+	original := svc.fallbackPrices[model]
+	svc.fallbackPrices[model] = pricing
+	t.Cleanup(func() {
+		if original == nil {
+			delete(svc.fallbackPrices, model)
+		} else {
+			svc.fallbackPrices[model] = original
+		}
+	})
+
+	cost, err := svc.CalculateCostWithLongContext(model, UsageTokens{
+		InputTokens:      150,
+		ImageInputTokens: 50,
+	}, 1, 100, 2)
+	require.NoError(t, err)
+	require.InDelta(t, 50*4e-6, cost.ImageInputCost, 1e-12)
+	require.InDelta(t, cost.InputCost+cost.ImageInputCost, cost.TotalCost, 1e-12)
 }
 
 func TestCalculateCostWithLongContext_DisabledThreshold(t *testing.T) {
@@ -936,7 +971,31 @@ func TestGetModelPricingWithChannel_UnsetImageOutputPriceKeepsBasePricing(t *tes
 	require.NoError(t, err)
 
 	require.False(t, pricing.ImageOutputPriceExplicit)
-	require.NotZero(t, pricing.ImageOutputPricePerToken)
+}
+
+func TestGetModelPricingWithChannel_UnsetImageInputPriceKeepsBasePricing(t *testing.T) {
+	svc := newTestBillingService()
+
+	pricing, err := svc.GetModelPricingWithChannel("doubao-embedding-vision", &ChannelModelPricing{
+		InputPrice: testPtrFloat64(99e-6),
+	})
+	require.NoError(t, err)
+
+	require.InDelta(t, 0.252e-6, pricing.ImageInputPricePerToken, 1e-12)
+}
+
+func TestGetModelPricingWithChannel_OverridesExplicitImagePrices(t *testing.T) {
+	svc := newTestBillingService()
+
+	pricing, err := svc.GetModelPricingWithChannel("claude-sonnet-4", &ChannelModelPricing{
+		ImageInputPrice:  testPtrFloat64(41e-6),
+		ImageOutputPrice: testPtrFloat64(42e-6),
+	})
+	require.NoError(t, err)
+
+	require.InDelta(t, 41e-6, pricing.ImageInputPricePerToken, 1e-12)
+	require.InDelta(t, 42e-6, pricing.ImageOutputPricePerToken, 1e-12)
+	require.True(t, pricing.ImageOutputPriceExplicit)
 }
 
 func TestGetModelPricingWithChannel_OverrideOutputPriceOnly(t *testing.T) {

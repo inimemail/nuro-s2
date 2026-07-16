@@ -160,6 +160,37 @@ func TestOpenAIWSConnPool_EnsureTargetIdleAsync(t *testing.T) {
 	require.GreaterOrEqual(t, metrics.ScaleUpTotal, int64(2))
 }
 
+func TestOpenAIWSConnPool_ClearAccountRejectsInFlightPrewarmGeneration(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 1
+	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 2
+	pool := newOpenAIWSConnPool(cfg)
+	t.Cleanup(pool.Close)
+	dialer := &openAIWSGenerationBlockingDialer{started: make(chan struct{}), release: make(chan struct{})}
+	pool.setClientDialerForTest(dialer)
+
+	account := &Account{ID: 7701, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	ap := pool.getOrCreateAccountPool(account.ID)
+	ap.mu.Lock()
+	ap.lastAcquire = &openAIWSAcquireRequest{Account: account, WSURL: "wss://example.com/v1/responses"}
+	ap.mu.Unlock()
+	pool.ensureTargetIdleAsync(account.ID)
+	select {
+	case <-dialer.started:
+	case <-time.After(time.Second):
+		t.Fatal("prewarm dial did not start")
+	}
+	pool.ClearAccount(account.ID)
+	close(dialer.release)
+	require.Eventually(t, func() bool {
+		ap.mu.Lock()
+		defer ap.mu.Unlock()
+		return ap.creating == 0 && len(ap.conns) == 0 && !ap.prewarmActive
+	}, time.Second, 10*time.Millisecond)
+	require.True(t, dialer.conn.closed.Load())
+}
+
 func TestOpenAIWSConnPool_EnsureTargetIdleAsyncCooldown(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 4
@@ -1580,6 +1611,35 @@ func TestOpenAIWSConnPool_Acquire_ErrorBranches(t *testing.T) {
 }
 
 type openAIWSFakeDialer struct{}
+
+type openAIWSGenerationBlockingDialer struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	conn    openAIWSGenerationBlockingConn
+}
+
+func (d *openAIWSGenerationBlockingDialer) Dial(ctx context.Context, _ string, _ http.Header, _ string) (openAIWSClientConn, int, http.Header, error) {
+	d.once.Do(func() { close(d.started) })
+	select {
+	case <-ctx.Done():
+		return nil, 0, nil, ctx.Err()
+	case <-d.release:
+		return &d.conn, http.StatusSwitchingProtocols, nil, nil
+	}
+}
+
+type openAIWSGenerationBlockingConn struct{ closed atomic.Bool }
+
+func (c *openAIWSGenerationBlockingConn) WriteJSON(context.Context, any) error { return nil }
+func (c *openAIWSGenerationBlockingConn) ReadMessage(context.Context) ([]byte, error) {
+	return nil, errors.New("not used")
+}
+func (c *openAIWSGenerationBlockingConn) Ping(context.Context) error { return nil }
+func (c *openAIWSGenerationBlockingConn) Close() error {
+	c.closed.Store(true)
+	return nil
+}
 
 func (d *openAIWSFakeDialer) Dial(
 	ctx context.Context,

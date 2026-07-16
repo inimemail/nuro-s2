@@ -460,6 +460,14 @@ func isOpenAIImageGenerationModel(model string) bool {
 	return strings.HasPrefix(model, "gpt-image-") || isGrokImageGenerationModel(model)
 }
 
+// IsGPTImageGenerationModel identifies the native OpenAI image model family.
+// Chat Completions must reject these models before account selection; the
+// dedicated Images endpoints remain the supported transport.
+func IsGPTImageGenerationModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "gpt-image-")
+}
+
 func isGrokImageGenerationModel(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	return model == "grok-imagine" ||
@@ -758,7 +766,15 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 		return nil, err
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-	req.Header.Set("Authorization", "Bearer "+token)
+	authHeaders, err := s.buildOpenAIAuthenticationHeaders(ctx, account, token)
+	if err != nil {
+		return nil, fmt.Errorf("build openai authentication headers: %w", err)
+	}
+	for key, values := range authHeaders {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 	for key, values := range c.Request.Header {
 		if !openaiPassthroughAllowedHeaders[strings.ToLower(key)] {
 			continue

@@ -75,6 +75,10 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	if service.IsGPTImageGenerationModel(reqModel) {
+		h.chatCompletionsErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "GPT image models are only supported through the Images API, not Chat Completions")
+		return
+	}
 	reqStream, ok := parseOpenAICompatibleStream(body)
 	if !ok {
 		h.chatCompletionsErrorResponse(c, http.StatusBadRequest, "invalid_request_error", invalidStreamFieldTypeMessage)

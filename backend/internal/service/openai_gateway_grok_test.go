@@ -31,6 +31,47 @@ func TestPatchGrokResponsesBody(t *testing.T) {
 	require.False(t, gjson.GetBytes(patched, "stop").Exists())
 }
 
+func TestBuildGrokResponsesRequestAppliesEligibleOverridesWithoutChangingAuthOrSession(t *testing.T) {
+	account := &Account{
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":               "grok-token",
+			credKeyHeaderOverrideEnabled: true,
+			credKeyHeaderOverrides: map[string]any{
+				"user-agent":     "custom-grok-client",
+				"x-custom-route": "route-a",
+				"authorization":  "Bearer forged",
+				"x-grok-conv-id": "static-session",
+			},
+		},
+	}
+
+	req, err := buildGrokResponsesRequest(context.Background(), nil, account, []byte(`{"input":"hi"}`), "grok-token", "server-session", &config.Config{})
+	require.NoError(t, err)
+	require.Equal(t, "custom-grok-client", req.Header.Get("User-Agent"))
+	require.Equal(t, "route-a", getHeaderRaw(req.Header, "x-custom-route"))
+	require.Equal(t, "Bearer grok-token", req.Header.Get("Authorization"))
+	require.Equal(t, "server-session", req.Header.Get("X-Grok-Conv-Id"))
+}
+
+func TestBuildGrokResponsesRequestHeaderOverrideDisabledIsNoOp(t *testing.T) {
+	account := &Account{
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":         "grok-token",
+			credKeyHeaderOverrides: map[string]any{"user-agent": "custom-grok-client"},
+		},
+	}
+
+	req, err := buildGrokResponsesRequest(context.Background(), nil, account, []byte(`{"input":"hi"}`), "grok-token", "server-session", &config.Config{})
+	require.NoError(t, err)
+	require.NotEqual(t, "custom-grok-client", req.Header.Get("User-Agent"))
+	require.Equal(t, "Bearer grok-token", req.Header.Get("Authorization"))
+	require.Equal(t, "server-session", req.Header.Get("X-Grok-Conv-Id"))
+}
+
 type grokMediaCacheErrorStub struct {
 	stubGatewayCache
 	err error
@@ -327,10 +368,18 @@ func TestOpenAIGatewayService_ForwardGrokMediaOAuthUsesImagineEndpointAndCLIHead
 		httpUpstream: upstream,
 	}
 	account := &Account{
-		ID:          76,
-		Platform:    PlatformGrok,
-		Type:        AccountTypeOAuth,
-		Credentials: map[string]any{"access_token": "grok-token"},
+		ID:       76,
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":               "grok-token",
+			credKeyHeaderOverrideEnabled: true,
+			credKeyHeaderOverrides: map[string]any{
+				"user-agent":    "custom-grok-media",
+				"x-media-route": "route-b",
+				"authorization": "Bearer forged",
+			},
+		},
 	}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -351,6 +400,8 @@ func TestOpenAIGatewayService_ForwardGrokMediaOAuthUsesImagineEndpointAndCLIHead
 	require.Equal(t, "https://api.x.ai/v1/images/generations", upstream.lastReq.URL.String())
 	require.Equal(t, "Bearer grok-token", upstream.lastReq.Header.Get("Authorization"))
 	require.Equal(t, grokCLIVersion, upstream.lastReq.Header.Get("X-Grok-Client-Version"))
+	require.Equal(t, "custom-grok-media", upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, "route-b", getHeaderRaw(upstream.lastReq.Header, "x-media-route"))
 }
 
 func TestOpenAIGatewayService_ForwardGrokVideoMutationEndpoints(t *testing.T) {

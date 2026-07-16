@@ -1577,6 +1577,22 @@
                   :disabled="!form.totp_encryption_key_configured"
                 />
               </div>
+
+              <div class="flex items-center justify-between gap-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">{{ t('admin.settings.security.auditRetention') }}</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('admin.settings.security.auditRetentionHint') }}</p>
+                </div>
+                <input v-model.number="form.audit_log_retention_days" type="number" min="0" class="input w-28 text-right" />
+              </div>
+
+              <div class="flex items-center justify-between gap-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">{{ t('admin.settings.security.sessionBinding') }}</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('admin.settings.security.sessionBindingHint') }}</p>
+                </div>
+                <Toggle v-model="form.session_binding_enabled" />
+              </div>
             </div>
           </div>
 
@@ -6084,6 +6100,18 @@
             </div>
 
             <div v-if="form.affiliate_enabled" class="space-y-6">
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.features.affiliate.adminRechargeRebate') }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.features.affiliate.adminRechargeRebateHint') }}
+                  </p>
+                </div>
+                <Toggle v-model="form.affiliate_admin_recharge_enabled" />
+              </div>
+
               <div>
                 <label class="input-label">
                   {{ t('admin.settings.features.affiliate.rebateRate') }}
@@ -8066,6 +8094,8 @@ const form = reactive<SettingsForm>({
   invitation_code_enabled: false,
   password_reset_enabled: false,
   totp_enabled: false,
+  audit_log_retention_days: 180,
+  session_binding_enabled: false,
   totp_encryption_key_configured: false,
   login_agreement_enabled: false,
   login_agreement_mode: "modal",
@@ -8077,6 +8107,7 @@ const form = reactive<SettingsForm>({
   affiliate_rebate_freeze_hours: 0,
   affiliate_rebate_duration_days: 0,
   affiliate_rebate_per_invitee_cap: 0,
+  affiliate_admin_recharge_enabled: false,
   default_concurrency: 1,
   default_subscriptions: [],
   force_email_on_third_party_signup: false,
@@ -9351,6 +9382,8 @@ async function saveSettings() {
       invitation_code_enabled: form.invitation_code_enabled,
       password_reset_enabled: form.password_reset_enabled,
       totp_enabled: form.totp_enabled,
+      audit_log_retention_days: Number.isFinite(form.audit_log_retention_days) ? form.audit_log_retention_days : 180,
+      session_binding_enabled: form.session_binding_enabled,
       login_agreement_enabled: form.login_agreement_enabled,
       login_agreement_mode: form.login_agreement_mode,
       login_agreement_updated_at: form.login_agreement_updated_at,
@@ -9363,6 +9396,7 @@ async function saveSettings() {
       affiliate_rebate_freeze_hours: Math.max(0, Math.min(720, Number(form.affiliate_rebate_freeze_hours) || 0)),
       affiliate_rebate_duration_days: Math.max(0, Math.min(3650, Math.floor(Number(form.affiliate_rebate_duration_days) || 0))),
       affiliate_rebate_per_invitee_cap: Math.max(0, Number(form.affiliate_rebate_per_invitee_cap) || 0),
+      affiliate_admin_recharge_enabled: form.affiliate_admin_recharge_enabled,
       default_concurrency: form.default_concurrency,
       default_subscriptions: normalizedDefaultSubscriptions,
       force_email_on_third_party_signup: form.force_email_on_third_party_signup,

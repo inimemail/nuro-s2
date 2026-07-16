@@ -59,7 +59,7 @@ func (s *OpenAIGatewayService) codexModelsManifestAccountUsable(ctx context.Cont
 	if err != nil || credAccount == nil || !credAccount.IsOpenAIOAuth() {
 		return false
 	}
-	return strings.TrimSpace(credAccount.GetOpenAIAccessToken()) != ""
+	return credAccount.IsOpenAIAgentIdentity() || strings.TrimSpace(credAccount.GetOpenAIAccessToken()) != ""
 }
 
 // FetchCodexModelsManifest fetches the live Codex models manifest with OAuth credentials.
@@ -75,7 +75,7 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_ACCOUNT_TYPE_UNSUPPORTED", "Codex models manifest requires an OpenAI OAuth account")
 	}
 	accessToken := credAccount.GetOpenAIAccessToken()
-	if accessToken == "" {
+	if accessToken == "" && !credAccount.IsOpenAIAgentIdentity() {
 		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_TOKEN_MISSING", "account has no Codex backend access token")
 	}
 
@@ -91,7 +91,15 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_CODEX_MODELS_REQUEST_FAILED", "create codex models request: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	authHeaders, authErr := s.buildOpenAIAuthenticationHeaders(reqCtx, credAccount, accessToken)
+	if authErr != nil {
+		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_AUTH_FAILED", "failed to build Codex models authentication")
+	}
+	for key, values := range authHeaders {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Originator", "codex_cli_rs")
 	req.Header.Set("Version", clientVersion)
@@ -124,12 +132,16 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 		return &CodexModelsManifest{ETag: resp.Header.Get("ETag"), NotModified: true}, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		message := strings.TrimSpace(string(body))
-		if message == "" {
-			message = resp.Status
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		if credAccount.IsOpenAIAgentIdentity() && !agentIdentityTaskRecoveryWasTried(ctx) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body) {
+			expectedTaskID := credAccount.GetCredential("task_id")
+			if recoveryErr := s.recoverAgentIdentityTask(ctx, credAccount, expectedTaskID); recoveryErr != nil {
+				return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_AUTH_FAILED", "Agent Identity task recovery failed")
+			}
+			return s.FetchCodexModelsManifest(markAgentIdentityTaskRecoveryTried(ctx), account, clientVersion, ifNoneMatch)
 		}
-		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CODEX_MODELS_UPSTREAM_FAILED", "codex models manifest upstream error %d: %s", resp.StatusCode, message)
+		_ = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, credAccount, body)
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CODEX_MODELS_UPSTREAM_FAILED", "codex models manifest upstream returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, codexModelsManifestBodyLimit))

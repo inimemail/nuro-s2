@@ -1080,6 +1080,57 @@
         </div>
       </div>
 
+      <div v-if="form.platform === 'grok' && isOAuthFlow" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between gap-4">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.grokCustomBaseUrl.title') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.grokCustomBaseUrl.hint') }}</p>
+          </div>
+          <button
+            type="button"
+            data-testid="grok-custom-base-url-toggle"
+            :aria-label="t('admin.accounts.grokCustomBaseUrl.title')"
+            :class="['relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors', grokOAuthCustomBaseUrlEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']"
+            @click="grokOAuthCustomBaseUrlEnabled = !grokOAuthCustomBaseUrlEnabled"
+          >
+            <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition', grokOAuthCustomBaseUrlEnabled ? 'translate-x-5' : 'translate-x-0']" />
+          </button>
+        </div>
+        <input
+          v-if="grokOAuthCustomBaseUrlEnabled"
+          v-model="grokOAuthBaseUrl"
+          type="url"
+          class="input"
+          data-testid="grok-custom-base-url-input"
+          :placeholder="t('admin.accounts.grokCustomBaseUrl.placeholder')"
+        />
+      </div>
+
+      <div v-if="form.platform === 'grok' && isOAuthFlow" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div class="mb-3 flex items-center justify-between gap-4">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.headerOverride.title') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.headerOverride.hint') }}</p>
+          </div>
+          <button
+            type="button"
+            :aria-label="t('admin.accounts.headerOverride.title')"
+            :class="['relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors', headerOverrideEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']"
+            @click="headerOverrideEnabled = !headerOverrideEnabled"
+          >
+            <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition', headerOverrideEnabled ? 'translate-x-5' : 'translate-x-0']" />
+          </button>
+        </div>
+        <div v-if="headerOverrideEnabled" class="space-y-3">
+          <p class="rounded-lg bg-blue-50 p-3 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-400">{{ t('admin.accounts.headerOverride.info') }}</p>
+          <HeaderOverrideEditor
+            :rows="headerOverrideRows"
+            :platform="form.platform"
+            @update:rows="headerOverrideRows = $event"
+          />
+        </div>
+      </div>
+
       <!-- API Key input (only for apikey type, excluding Antigravity which has its own fields) -->
       <div v-if="form.type === 'apikey' && form.platform !== 'antigravity'" class="space-y-4">
         <div>
@@ -4004,6 +4055,7 @@
         :show-session-token-option="false"
         :show-access-token-option="false"
         :show-codex-session-import-option="form.platform === 'openai'"
+        :show-agent-identity-option="form.platform === 'openai'"
         :device-user-code="openaiOAuth.deviceUserCode.value"
         :device-verification-url="openaiOAuth.deviceVerificationUrl.value"
         :device-expires-in="openaiOAuth.deviceExpiresIn.value"
@@ -4379,12 +4431,15 @@ import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import PromptCacheCreationOptimizationControl from '@/components/account/PromptCacheCreationOptimizationControl.vue'
+import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import {
-  applyHeaderOverride,
-  applyInterceptWarmup,
-  getHeaderOverrideTemplate,
-  isHeaderOverridePlatform,
-  validateHeaderOverrideRows,
+	applyGrokOAuthBaseURL,
+	applyHeaderOverride,
+	applyInterceptWarmup,
+	getHeaderOverrideTemplate,
+	isHeaderOverrideCapable,
+	isValidHTTPBaseURL,
+	validateHeaderOverrideRows,
   type HeaderOverrideRow
 } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
@@ -4686,8 +4741,7 @@ const showOpenAIAPIKeyTextStreamToggles = computed(() =>
   !imagePoolModeEnabled.value
 )
 const showHeaderOverrideConfig = computed(() =>
-  isHeaderOverridePlatform(form.platform) &&
-  accountCategory.value === 'apikey'
+	isHeaderOverrideCapable(form.platform, form.type) && !(form.platform === 'grok' && form.type === 'oauth')
 )
 const showUpstreamConcurrencyRaceToggle = computed(() =>
   showOpenAIAPIKeyTextStreamToggles.value && poolModeEnabled.value
@@ -4714,6 +4768,35 @@ const selectedErrorCodes = ref<number[]>([])
 const customErrorCodeInput = ref<number | null>(null)
 const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
+const grokOAuthCustomBaseUrlEnabled = ref(false)
+const grokOAuthBaseUrl = ref('')
+
+const validateGrokOAuthUpstreamConfig = (): boolean => {
+	if (grokOAuthCustomBaseUrlEnabled.value) {
+		const baseURL = grokOAuthBaseUrl.value.trim()
+		if (!baseURL) {
+			appStore.showError(t('admin.accounts.grokCustomBaseUrl.required'))
+			return false
+		}
+		if (!isValidHTTPBaseURL(baseURL)) {
+			appStore.showError(t('admin.accounts.grokCustomBaseUrl.invalid'))
+			return false
+		}
+	}
+	if (headerOverrideEnabled.value) {
+		const validationError = validateHeaderOverrideRows(headerOverrideRows.value)
+		if (validationError) {
+			appStore.showError(t(`admin.accounts.headerOverride.${validationError}`))
+			return false
+		}
+	}
+	return true
+}
+
+const applyGrokOAuthUpstreamConfig = (credentials: Record<string, unknown>) => {
+	applyGrokOAuthBaseURL(credentials, grokOAuthCustomBaseUrlEnabled.value, grokOAuthBaseUrl.value, 'create')
+	applyHeaderOverride(credentials, headerOverrideEnabled.value, headerOverrideRows.value, 'create')
+}
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
 const openaiPassthroughEnabled = ref(false)
@@ -5494,7 +5577,7 @@ const applyHeaderOverrideCredentials = (
   type: AccountType,
   mode: 'create' | 'edit'
 ): boolean => {
-  if (!isHeaderOverridePlatform(platform) || type !== 'apikey') {
+	if (!isHeaderOverrideCapable(platform, type)) {
     return true
   }
   if (headerOverrideEnabled.value) {
@@ -6361,6 +6444,7 @@ const handleSubmit = async () => {
       appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
       return
     }
+    if (form.platform === 'grok' && !validateGrokOAuthUpstreamConfig()) return
     const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
       step.value = 2
     })
@@ -6862,11 +6946,39 @@ const formatCodexImportMessages = (messages?: CodexSessionImportMessage[]) => {
     .join('\n')
 }
 
+const isAgentIdentityImportContent = (content: string) => {
+  const isAgentIdentityValue = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.length > 0 && value.every(isAgentIdentityValue)
+    if (!value || typeof value !== 'object') return false
+    const record = value as Record<string, unknown>
+    const authMode = record.auth_mode ?? record.authMode
+    const agentIdentity = record.agent_identity ?? record.agentIdentity
+    return (typeof authMode === 'string' && authMode.toLowerCase() === 'agentidentity')
+      || (!!agentIdentity && typeof agentIdentity === 'object')
+  }
+
+  try {
+    return isAgentIdentityValue(JSON.parse(content))
+  } catch {
+    const lines = content.split('\n').map((line) => line.trim()).filter(Boolean)
+    if (lines.length === 0) return false
+    try {
+      return lines.every((line) => isAgentIdentityValue(JSON.parse(line)))
+    } catch {
+      return false
+    }
+  }
+}
+
 const handleOpenAIImportCodexSession = async (content: string) => {
   const oauthClient = openaiOAuth
   const trimmed = content.trim()
   if (!trimmed) {
     oauthClient.error.value = t('admin.accounts.oauth.openai.codexSessionEmpty')
+    return
+  }
+  if (oauthFlowRef.value?.inputMethod === 'agent_identity' && !isAgentIdentityImportContent(trimmed)) {
+    oauthClient.error.value = t('admin.accounts.oauth.openai.agentIdentityInvalid')
     return
   }
 
@@ -7155,6 +7267,7 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
 // Grok 手动 RT 批量验证和创建
 const handleGrokValidateRT = async (refreshTokenInput: string) => {
   if (!refreshTokenInput.trim()) return
+  if (!validateGrokOAuthUpstreamConfig()) return
 
   const refreshTokens = refreshTokenInput
     .split('\n')
@@ -7185,6 +7298,7 @@ const handleGrokValidateRT = async (refreshTokenInput: string) => {
         }
 
         const credentials = grokOAuth.buildCredentials(tokenInfo)
+        applyGrokOAuthUpstreamConfig(credentials)
         applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
         const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
         if (modelMapping) {
@@ -7326,6 +7440,7 @@ const handleAntigravityExchange = async (authCode: string) => {
 // Grok OAuth 授权码兑换
 const handleGrokExchange = async (authCode: string) => {
   if (!authCode.trim() || !grokOAuth.sessionId.value) return
+  if (!validateGrokOAuthUpstreamConfig()) return
 
   grokOAuth.loading.value = true
   grokOAuth.error.value = ''
@@ -7340,6 +7455,7 @@ const handleGrokExchange = async (authCode: string) => {
     if (!tokenInfo) return
 
     const credentials = grokOAuth.buildCredentials(tokenInfo)
+    applyGrokOAuthUpstreamConfig(credentials)
     applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
     const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
     if (modelMapping) {

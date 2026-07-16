@@ -3349,7 +3349,7 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.Equal(t, int64(2), result.Account.ID, "兜底排队默认模式也应复用健康分层选择")
 	})
 
-	t.Run("负载信息缺失-使用默认负载", func(t *testing.T) {
+	t.Run("负载信息缺失-优先已知负载", func(t *testing.T) {
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
 				{ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5},
@@ -3384,7 +3384,7 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Account)
-		require.Equal(t, int64(2), result.Account.ID)
+		require.Equal(t, int64(1), result.Account.ID, "存在已知负载时不应把缺失负载误判为空闲账号")
 	})
 }
 

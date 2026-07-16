@@ -75,6 +75,7 @@ type OpenAIEdgeRetryRequest struct {
 	UpstreamRequestID   string          `json:"upstream_request_id,omitempty"`
 	ErrorType           string          `json:"error_type,omitempty"`
 	ErrorMessage        string          `json:"error_message,omitempty"`
+	RequestBody         json.RawMessage `json:"request_body,omitempty"`
 	ResponseBody        json.RawMessage `json:"response_body,omitempty"`
 	WroteClientResponse bool            `json:"wrote_client_response"`
 }

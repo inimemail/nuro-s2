@@ -249,6 +249,8 @@ gateway:
     # ingress 默认模式：off|ctx_pool|passthrough（仅 mode_router_v2_enabled=true 生效）
     # 兼容旧值：shared/dedicated 会按 ctx_pool 处理。
     ingress_mode_default: ctx_pool
+    # 两个已完成 turn 之间允许的最大空闲秒数；0 表示关闭
+    ingress_inter_turn_idle_timeout_seconds: 300
     # 全局总开关，默认 true；关闭时所有请求保持原有 HTTP/SSE 路由
     enabled: true
     # 按账号类型细分开关
@@ -435,8 +437,8 @@ gateway:
     # Max image requests waiting in this process when overflow_mode=wait, 0=unlimited
     # wait 模式当前进程允许排队等待的图片请求数，0=不限制
     max_waiting_requests: 100
-  # OpenAI image async task queue (taskrun=true + taskid)
-  # OpenAI 图片异步任务队列（taskrun=true + taskid）
+  # OpenAI image async task queue (/v1/images/*/async; legacy taskrun/taskid also supported)
+  # OpenAI 图片异步任务队列（推荐 /v1/images/*/async；同时兼容旧 taskrun/taskid）
   image_tasks:
     # Worker count in this process; increase together with account capacity
     # 当前进程的图片任务 worker 数量；可随账号容量增加
@@ -1092,6 +1094,23 @@ pricing:
   # Hash check interval in minutes
   # 哈希检查间隔（分钟）
   hash_check_interval_minutes: 10
+
+# =============================================================================
+# Async image result storage (S3 compatible)
+# 异步生图结果存储（S3 兼容）
+# =============================================================================
+image_storage:
+  enabled: false
+  endpoint: ""
+  region: "auto"
+  bucket: ""
+  access_key_id: ""
+  secret_access_key: ""
+  prefix: "images/"
+  force_path_style: false
+  public_base_url: ""
+  presign_expiry_hours: 24
+  max_image_bytes: 33554432
 
 # =============================================================================
 # Billing Configuration

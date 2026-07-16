@@ -13,15 +13,18 @@ import (
 )
 
 type openAIImageTaskRepository struct {
+	db  *sql.DB
 	sql sqlExecutor
 }
 
 func NewOpenAIImageTaskRepository(sqlDB *sql.DB) service.OpenAIImageTaskRepository {
-	return &openAIImageTaskRepository{sql: sqlDB}
+	return &openAIImageTaskRepository{db: sqlDB, sql: sqlDB}
 }
 
-func (r *openAIImageTaskRepository) Submit(ctx context.Context, task *service.OpenAIImageTask) (*service.OpenAIImageTask, bool, error) {
-	if r == nil || r.sql == nil {
+const openAIImageTaskSubmitAdvisoryLockID int64 = 0x494D475441534B
+
+func (r *openAIImageTaskRepository) SubmitWithinLimit(ctx context.Context, task *service.OpenAIImageTask, maxUnfinished int) (_ *service.OpenAIImageTask, _ bool, retErr error) {
+	if r == nil || r.db == nil {
 		return nil, false, errors.New("nil openai image task repository")
 	}
 	if task == nil {
@@ -30,6 +33,41 @@ func (r *openAIImageTaskRepository) Submit(ctx context.Context, task *service.Op
 	headersJSON, err := json.Marshal(task.RequestHeaders)
 	if err != nil {
 		return nil, false, fmt.Errorf("marshal image task headers: %w", err)
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin image task submission: %w", err)
+	}
+	defer func() {
+		if retErr != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, openAIImageTaskSubmitAdvisoryLockID); err != nil {
+		return nil, false, fmt.Errorf("lock image task submission: %w", err)
+	}
+	existing, err := scanOpenAIImageTaskByOwnerAndTaskID(ctx, tx, task.OwnerID, task.ID)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return nil, false, fmt.Errorf("commit existing image task submission: %w", err)
+		}
+		return existing, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, err
+	}
+	if maxUnfinished > 0 {
+		var count int64
+		if err := scanSingleRow(ctx, tx, `
+			SELECT COUNT(*)
+			FROM openai_image_tasks
+			WHERE status IN ($1, $2)
+		`, []any{service.OpenAIImageTaskStatusQueued, service.OpenAIImageTaskStatusRunning}, &count); err != nil {
+			return nil, false, err
+		}
+		if count >= int64(maxUnfinished) {
+			return nil, false, service.ErrOpenAIImageTaskQueueFull
+		}
 	}
 	query := `
 		INSERT INTO openai_image_tasks (
@@ -43,7 +81,7 @@ func (r *openAIImageTaskRepository) Submit(ctx context.Context, task *service.Op
 			response_body, status_code, error_message, locked_by, locked_until,
 			attempts, created_at, updated_at, started_at, finished_at
 	`
-	created, scanErr := r.scanTask(ctx, query, []any{
+	created, scanErr := scanOpenAIImageTaskWithArgs(ctx, tx, query, []any{
 		task.OwnerID,
 		task.ID,
 		task.APIKeyID,
@@ -55,14 +93,13 @@ func (r *openAIImageTaskRepository) Submit(ctx context.Context, task *service.Op
 		task.RequestBody,
 		string(headersJSON),
 	})
-	if scanErr == nil {
-		return created, true, nil
-	}
-	if !errors.Is(scanErr, sql.ErrNoRows) {
+	if scanErr != nil {
 		return nil, false, scanErr
 	}
-	existing, err := r.getByOwnerAndTaskID(ctx, task.OwnerID, task.ID)
-	return existing, false, err
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("commit image task submission: %w", err)
+	}
+	return created, true, nil
 }
 
 func (r *openAIImageTaskRepository) List(ctx context.Context, ownerID string, ids []string, limit int) ([]*service.OpenAIImageTask, []string, error) {
@@ -228,7 +265,11 @@ func (r *openAIImageTaskRepository) CleanupFinished(ctx context.Context, olderTh
 }
 
 func (r *openAIImageTaskRepository) getByOwnerAndTaskID(ctx context.Context, ownerID, taskID string) (*service.OpenAIImageTask, error) {
-	return r.scanTask(ctx, `
+	return scanOpenAIImageTaskByOwnerAndTaskID(ctx, r.sql, ownerID, taskID)
+}
+
+func scanOpenAIImageTaskByOwnerAndTaskID(ctx context.Context, q sqlQueryer, ownerID, taskID string) (*service.OpenAIImageTask, error) {
+	return scanOpenAIImageTaskWithArgs(ctx, q, `
 		SELECT id, owner_id, task_id, api_key_id, user_id, user_concurrency,
 			endpoint, model, status, request_body, request_headers,
 			response_body, status_code, error_message, locked_by, locked_until,
@@ -239,8 +280,12 @@ func (r *openAIImageTaskRepository) getByOwnerAndTaskID(ctx context.Context, own
 }
 
 func (r *openAIImageTaskRepository) scanTask(ctx context.Context, query string, args []any) (*service.OpenAIImageTask, error) {
+	return scanOpenAIImageTaskWithArgs(ctx, r.sql, query, args)
+}
+
+func scanOpenAIImageTaskWithArgs(ctx context.Context, q sqlQueryer, query string, args []any) (*service.OpenAIImageTask, error) {
 	var task service.OpenAIImageTask
-	if err := scanOpenAIImageTask(ctx, r.sql, query, args, &task); err != nil {
+	if err := scanOpenAIImageTask(ctx, q, query, args, &task); err != nil {
 		return nil, err
 	}
 	return &task, nil

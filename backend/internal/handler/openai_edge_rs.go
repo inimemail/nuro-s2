@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"net/http"
 	"strconv"
@@ -47,6 +48,8 @@ type openAIEdgeLease struct {
 	cachePolicyEnabled bool
 	cachePolicyApplied bool
 	forwardBody        []byte
+	lastPlan           service.OpenAIEdgePlan
+	rejectedFieldRetry service.OpenAIResponsesRejectedFieldRetryState
 	sessionHash        string
 	failedAccountIDs   map[int64]struct{}
 	sameAccountRetries map[int64]int
@@ -875,6 +878,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
 		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
 		forwardBody:        append([]byte(nil), forwardBody...),
+		lastPlan:           plan,
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
 		sameAccountRetries: make(map[int64]int),
@@ -1072,6 +1076,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
 		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
 		forwardBody:        append([]byte(nil), forwardBody...),
+		lastPlan:           plan,
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
 		sameAccountRetries: make(map[int64]int),
@@ -1248,6 +1253,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
 		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
 		forwardBody:        append([]byte(nil), forwardBody...),
+		lastPlan:           plan,
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
 		sameAccountRetries: make(map[int64]int),
@@ -1480,6 +1486,27 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	status := req.UpstreamStatusCode
 	responseBody := openAIEdgeRetryResponseBody(req)
 	upstreamMsg := strings.TrimSpace(req.ErrorMessage)
+	if (lease.inboundEndpoint == "/v1/responses" || lease.inboundEndpoint == "/v1/responses:ws") && status == http.StatusBadRequest {
+		currentBody := append([]byte(nil), req.RequestBody...)
+		var bodyErr error
+		if len(currentBody) == 0 {
+			currentBody, bodyErr = openAIEdgePlanBody(lease.lastPlan)
+		}
+		if bodyErr == nil {
+			nextBody, field, changed, rewriteErr := lease.rejectedFieldRetry.Rewrite(status, currentBody, responseBody)
+			if rewriteErr == nil && changed {
+				plan := lease.lastPlan
+				plan.Body = nil
+				plan.BodyRawBase64 = service.EncodeOpenAIEdgeRawBody(nextBody)
+				lease.lastPlan = plan
+				return service.OpenAIEdgeRetryDecision{
+					Action: service.OpenAIEdgeActionRelay,
+					Reason: "responses_rejected_field_" + strings.ReplaceAll(field, ".", "_"),
+					Plan:   &plan,
+				}
+			}
+		}
+	}
 	if lease.cachePolicyApplied &&
 		service.IsOpenAIPromptCacheCreationOptimizationUnsupportedError(status, upstreamMsg, responseBody) {
 		if h == nil || h.gatewayService == nil {
@@ -1672,7 +1699,11 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 		err      error
 	)
 	if lease.inboundEndpoint == "/v1/responses" {
-		prepared, err = h.gatewayService.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, lease.forwardBody)
+		if account.Type == service.AccountTypeOAuth {
+			prepared, err = h.gatewayService.BuildChatGPTOAuthResponsesEdgePlan(c.Request.Context(), c, account, lease.forwardBody)
+		} else {
+			prepared, err = h.gatewayService.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, lease.forwardBody)
+		}
 	} else {
 		prepared, err = h.gatewayService.BuildRawChatCompletionsEdgePlan(c.Request.Context(), c, account, lease.forwardBody, "")
 	}
@@ -1699,7 +1730,22 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 	lease.upstreamEndpoint = service.OpenAIEdgeRawUpstreamEndpointForInbound(account, lease.inboundEndpoint)
 	lease.cachePolicyEnabled = plan.PromptCacheCreationOptimizationMode != ""
 	lease.cachePolicyApplied = plan.PromptCacheCreationOptimizationApplied
+	lease.lastPlan = plan
 	return plan, nil
+}
+
+func openAIEdgePlanBody(plan service.OpenAIEdgePlan) ([]byte, error) {
+	if encoded := strings.TrimSpace(plan.BodyRawBase64); encoded != "" {
+		body, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("decode edge plan body: %w", err)
+		}
+		return body, nil
+	}
+	if len(plan.Body) == 0 {
+		return nil, errors.New("edge plan body is empty")
+	}
+	return append([]byte(nil), plan.Body...), nil
 }
 
 func openAIEdgeRetryResponseBody(req service.OpenAIEdgeRetryRequest) []byte {

@@ -97,8 +97,8 @@ func TestBuildRawResponsesEdgePlanNormalizesStringInput(t *testing.T) {
 	if got := gjson.GetBytes(decoded, "input.0.content.0.text").String(); got != "hi" {
 		t.Fatalf("unexpected normalized input text: %q body=%s", got, string(decoded))
 	}
-	if gjson.GetBytes(decoded, "max_output_tokens").Exists() {
-		t.Fatalf("expected max_output_tokens to be stripped from edge body: %s", string(decoded))
+	if got := gjson.GetBytes(decoded, "max_output_tokens").Int(); got != 128 {
+		t.Fatalf("expected max_output_tokens to be preserved in edge body: %s", string(decoded))
 	}
 }
 

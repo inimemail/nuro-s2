@@ -30,7 +30,8 @@ func TestIsHeaderOverrideEligible(t *testing.T) {
 		{"anthropic oauth", PlatformAnthropic, AccountTypeOAuth, false},
 		{"openai oauth", PlatformOpenAI, AccountTypeOAuth, false},
 		{"gemini apikey", PlatformGemini, AccountTypeAPIKey, false},
-		{"grok apikey", PlatformGrok, AccountTypeAPIKey, false},
+		{"grok apikey", PlatformGrok, AccountTypeAPIKey, true},
+		{"grok oauth", PlatformGrok, AccountTypeOAuth, true},
 		{"antigravity apikey", PlatformAntigravity, AccountTypeAPIKey, false},
 		{"anthropic bedrock", PlatformAnthropic, AccountTypeBedrock, false},
 	}
@@ -221,6 +222,28 @@ func TestApplyHeaderOverridesNoOpPaths(t *testing.T) {
 
 	// nil header 不 panic
 	blocked.ApplyHeaderOverrides(nil)
+
+	// Grok OAuth 支持显式开启；关闭时保持请求头完全不变。
+	grokOAuth := headerOverrideTestAccount(PlatformGrok, AccountTypeOAuth, map[string]any{
+		credKeyHeaderOverrideEnabled: true,
+		credKeyHeaderOverrides: map[string]any{
+			"user-agent":     "custom-grok-client",
+			"authorization":  "Bearer forged",
+			"x-grok-conv-id": "static-session",
+		},
+	})
+	h = http.Header{"Authorization": {"Bearer real"}, "X-Grok-Conv-Id": {"server-session"}}
+	grokOAuth.ApplyHeaderOverrides(h)
+	require.Equal(t, "custom-grok-client", h.Get("User-Agent"))
+	require.Equal(t, "Bearer real", h.Get("Authorization"))
+	require.Equal(t, "server-session", h.Get("X-Grok-Conv-Id"))
+
+	disabledGrok := headerOverrideTestAccount(PlatformGrok, AccountTypeOAuth, map[string]any{
+		credKeyHeaderOverrides: map[string]any{"user-agent": "custom-grok-client"},
+	})
+	h = baseline()
+	disabledGrok.ApplyHeaderOverrides(h)
+	require.Equal(t, "orig", h.Get("User-Agent"))
 }
 
 func TestNormalizeHeaderOverrideCredentials(t *testing.T) {
@@ -302,7 +325,7 @@ func TestNormalizeHeaderOverrideCredentials(t *testing.T) {
 			"connection", "accept-encoding", "Sec-WebSocket-Key", "session_id",
 			"conversation_id", "x-codex-turn-state", "chatgpt-account-id",
 			"Content-Type", "Cookie", "x-goog-api-key",
-			"X-Claude-Code-Session-Id", "x-client-request-id",
+			"X-Claude-Code-Session-Id", "x-client-request-id", "x-grok-conv-id",
 		} {
 			err := NormalizeHeaderOverrideCredentials(map[string]any{
 				credKeyHeaderOverrides: map[string]any{name: "v"},

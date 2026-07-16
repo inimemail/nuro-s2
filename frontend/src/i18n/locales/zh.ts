@@ -346,6 +346,14 @@ export default {
   },
 
   // Navigation
+  stepUp: {
+    title: '需要二次验证',
+    hint: '请输入身份验证器应用中的 6 位验证码以继续该敏感操作。',
+    verifyFailed: '验证失败，请重试。',
+    notEnabled: '请先在个人资料中启用 TOTP，再执行该操作。',
+    adminApiKeyForbidden: '管理 API Key 无法执行该操作，请使用管理员登录会话。'
+  },
+
   nav: {
     dashboard: '仪表盘',
     announcements: '公告',
@@ -390,6 +398,7 @@ export default {
     channelMonitor: '渠道监控',
     channelStatus: '渠道状态',
     riskControl: '风控中心',
+    auditLogs: '操作日志',
   },
 
   // Auth
@@ -976,6 +985,9 @@ export default {
       detailAccuracy: '精度',
       detailCoordinates: '坐标'
     },
+    imageInputTokens: '图片输入 Token',
+    imageInputTokenPrice: '图片输入 Token 单价',
+    imageInputCost: '图片输入成本',
     imageOutputTokens: '图片输出 Token',
     imageOutputTokenPrice: '图片输出 Token 单价',
     imageOutputCost: '图片输出成本',
@@ -2558,6 +2570,7 @@ export default {
         outputPrice: '输出',
         cacheWritePrice: '缓存写入',
         cacheReadPrice: '缓存读取',
+        imageInputPrice: '图片输入',
         imageTokenPrice: '图片输出',
         imageOutputPrice: '图片输出价格',
         pricePlaceholder: '默认',
@@ -2912,6 +2925,11 @@ export default {
       runNow: '立即检测',
       runSuccess: '检测完成',
       runFailed: '检测失败',
+      duplicate: '复制',
+      duplicating: '复制中',
+      duplicateSuccess: '监控已复制为「{name}」，已默认停用，请确认配置后再启用',
+      duplicateFailed: '复制监控失败',
+      duplicateKeyUnavailable: 'API Key 无法解密，请先编辑并重新填写 Key 后再复制',
       apiKeyDecryptFailed: 'API Key 解密失败，请重新编辑该监控并填入新的 Key',
       createSuccess: '监控创建成功',
       updateSuccess: '监控更新成功',
@@ -3253,6 +3271,7 @@ export default {
         notes: '备注',
         priority: '优先级',
         billingRateMultiplier: '账号倍率',
+        upstreamBillingRate: '上游声明倍率',
         weight: '权重',
         status: '状态',
         schedulable: '调度',
@@ -3264,6 +3283,21 @@ export default {
         createdAt: '创建时间',
         expiresAt: '过期时间',
         actions: '操作'
+      },
+      upstreamBilling: {
+        autoProbeSettings: '上游倍率自动探测',
+        intervalMinutes: '探测周期（分钟）',
+        autoProbe: '自动探测',
+        autoProbeHint: '启用后按全局周期探测此账号；全局探测关闭时不会执行。',
+        manualProbe: '立即探测上游倍率',
+        stale: '已过期',
+        unsupported: '不支持',
+        failed: '失败',
+        notProbed: '未探测',
+        observed: '仅观测',
+        settingsSaved: '上游倍率探测设置已保存',
+        settingsFailed: '保存上游倍率探测设置失败',
+        probeFailed: '探测上游倍率失败'
       },
       allPoolModes: '全部池模式',
       poolModeFilter: {
@@ -4144,6 +4178,12 @@ export default {
           codexSessionImportFailed: 'Codex 账号导入失败',
           codexSessionImportSuccess: '导入完成：新增 {created}，更新 {updated}，跳过 {skipped}',
           codexSessionImportPartial: '部分成功：新增 {created}，更新 {updated}，跳过 {skipped}，失败 {failed}',
+          agentIdentityAuth: 'Agent Identity auth.json',
+          agentIdentityDesc: '导入 Codex Agent Identity auth.json，不保存 OAuth access token 或 refresh token。',
+          agentIdentityInputLabel: 'Agent Identity auth.json',
+          agentIdentityPlaceholder: '粘贴一个 Agent Identity auth.json 对象',
+          agentIdentityHint: '文件必须使用 auth_mode=agentIdentity；每次上游请求都会动态签名。',
+          agentIdentityInvalid: '请选择 auth_mode=agentIdentity 的 Codex auth.json。',
           sessionTokenAuth: '手动输入 ST',
           sessionTokenDesc: '输入您已有的 Session Token，支持批量输入（每行一个），系统将自动验证并创建账号。',
           sessionTokenPlaceholder: '粘贴您的 Session Token...\n支持多个，每行一个',
@@ -5810,6 +5850,34 @@ export default {
       }
     },
 
+    audit: {
+      title: '操作日志',
+      description: '查看已认证管理操作的变更、敏感读取及执行结果。',
+      searchPlaceholder: '搜索路径、操作或管理员',
+      actionPlaceholder: '操作名，例如 admin.accounts.update',
+      allResults: '全部结果',
+      success: '成功',
+      failed: '失败',
+      clearAll: '清空日志',
+      clearHint: '该操作会永久清空全部操作日志。请输入当前管理员的 TOTP 验证码，完成后系统会写入一条清空留痕。',
+      totpPlaceholder: '6 位 TOTP 验证码',
+      time: '时间',
+      actor: '操作者',
+      action: '操作',
+      request: '请求',
+      client: '客户端',
+      result: '结果',
+      empty: '没有符合筛选条件的操作日志。',
+      details: '日志详情',
+      requestId: '请求 ID',
+      credential: '凭证掩码',
+      body: '已脱敏请求体',
+      extra: '上下文',
+      loadFailed: '加载操作日志失败',
+      clearFailed: '清空操作日志失败',
+      cleared: '已清空 {count} 条操作日志'
+    },
+
     // Settings
     settings: {
       title: '系统设置',
@@ -5860,6 +5928,8 @@ export default {
           description: '老用户邀请新用户注册，新用户充值后老用户按比例获得返利额度。默认关闭。',
           enabled: '启用邀请返利',
           enabledHint: '关闭后用户菜单中的邀请页面入口隐藏、注册时忽略邀请码、新充值不再产生返利。已有返利额度仍可转入余额。',
+          adminRechargeRebate: '管理员充值参与返利',
+          adminRechargeRebateHint: '开启后，仅管理员“增加余额”的正数金额产生邀请返利；设置余额、扣减余额和关闭状态均保持原行为。',
           rebateRate: '全局返利比例',
           rebateRateHint: '充值后返给邀请人的默认比例（0-100%，例如填写 10 表示返利 10%）。',
           freezeHours: '返利冻结期（小时）',
@@ -5938,6 +6008,12 @@ export default {
         totpHint: '允许用户使用 Google Authenticator 等应用进行二次验证',
         totpKeyNotConfigured:
           '请先在环境变量中配置 TOTP_ENCRYPTION_KEY。使用命令 openssl rand -hex 32 生成密钥。'
+      },
+      security: {
+        sessionBinding: '会话 IP/UA 绑定',
+        sessionBindingHint: '默认关闭。开启后，可信客户端 IP 或 User-Agent 任一变化都会撤销当前会话。',
+        auditRetention: '操作日志保留天数',
+        auditRetentionHint: '超过该天数的日志会自动清理；填 0 表示保留到管理员手动清空。'
       },
       turnstile: {
         title: 'Cloudflare Turnstile',
@@ -7623,6 +7699,9 @@ export default {
       originalPrice: '原价',
       price: '价格',
       subscriptionCnyPayPreview: 'CNY 通道扣款：{amount}',
+      currency: '币种标注',
+      currencyPlaceholder: '如 USD / NZD / CNY',
+      currencyHint: '仅用于展示的 ISO 三字母币种码，不改变实际扣款。',
       subscriptionCnyPayPreviewWithFee: '，含 {feeRate}% 手续费后 {total}',
       validityDays: '有效期（天）',
       validityUnit: '有效期单位',

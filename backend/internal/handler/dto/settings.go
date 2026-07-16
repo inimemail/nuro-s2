@@ -36,6 +36,8 @@ type SystemSettings struct {
 	InvitationCodeEnabled            bool                     `json:"invitation_code_enabled"`
 	TotpEnabled                      bool                     `json:"totp_enabled"`                   // TOTP 双因素认证
 	TotpEncryptionKeyConfigured      bool                     `json:"totp_encryption_key_configured"` // TOTP 加密密钥是否已配置
+	AuditLogRetentionDays            int                      `json:"audit_log_retention_days"`
+	SessionBindingEnabled            bool                     `json:"session_binding_enabled"`
 	LoginAgreementEnabled            bool                     `json:"login_agreement_enabled"`
 	LoginAgreementMode               string                   `json:"login_agreement_mode"`
 	LoginAgreementUpdatedAt          string                   `json:"login_agreement_updated_at"`
@@ -148,6 +150,7 @@ type SystemSettings struct {
 	AffiliateRebateFreezeHours   int                          `json:"affiliate_rebate_freeze_hours"`
 	AffiliateRebateDurationDays  int                          `json:"affiliate_rebate_duration_days"`
 	AffiliateRebatePerInviteeCap float64                      `json:"affiliate_rebate_per_invitee_cap"`
+	AdminRechargeRebateEnabled   bool                         `json:"affiliate_admin_recharge_enabled"`
 	DefaultUserRPMLimit          int                          `json:"default_user_rpm_limit"`
 	DefaultSubscriptions         []DefaultSubscriptionSetting `json:"default_subscriptions"`
 

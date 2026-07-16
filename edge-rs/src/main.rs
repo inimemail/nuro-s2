@@ -267,6 +267,7 @@ struct RetryRequest {
     upstream_request_id: Option<String>,
     error_type: Option<String>,
     error_message: Option<String>,
+    request_body: Option<Value>,
     response_body: Option<Value>,
     wrote_client_response: bool,
 }
@@ -1044,7 +1045,7 @@ async fn relay_ws_session(
         client_ip: client_ip_from_headers(&headers),
     };
 
-    let plan = match call_prepare(&state, &prepare).await {
+    let mut plan = match call_prepare(&state, &prepare).await {
         Ok(plan) => plan,
         Err(err) => {
             warn!("ws prepare failed; proxying to Go: {err}");
@@ -1127,6 +1128,8 @@ async fn relay_ws_session(
     state.ensure_ws_idle(plan.clone()).await;
     let (mut upstream_write, mut upstream_read) = upstream_socket.split();
     let first_upstream_msg = edge_plan_ws_first_message(&plan, first_msg)?;
+    let mut last_request_body = tungstenite_message_json(&first_upstream_msg);
+    let mut wrote_client_response_for_turn = false;
     upstream_write.send(first_upstream_msg).await?;
 
     let lease_id = plan.lease_id.clone();
@@ -1171,6 +1174,10 @@ async fn relay_ws_session(
                         if let Some(applied) = turn_policy_applied {
                             cache_creation_policy_applied_for_turn = applied;
                         }
+                        if tungstenite_message_is_response_create(&upstream_msg) {
+                            last_request_body = tungstenite_message_json(&upstream_msg);
+                            wrote_client_response_for_turn = false;
+                        }
                         if let Err(err) = upstream_write.send(upstream_msg).await {
                             success = false;
                             failure_state.mark_other_failure();
@@ -1198,6 +1205,69 @@ async fn relay_ws_session(
                             let _ = client_socket.send(AxumWsMessage::Close(None)).await;
                             break;
                         }
+                        if !wrote_client_response_for_turn {
+                            if let (Some(rejected_body), Some(request_body)) = (
+                                openai_ws_explicit_rejected_field_error(&msg),
+                                last_request_body.clone(),
+                            ) {
+                                let retry_decision = call_retry(
+                                    &state,
+                                    RetryRequest {
+                                        edge_request_id: plan.edge_request_id.clone(),
+                                        lease_id: plan.lease_id.clone(),
+                                        account_id: plan.account_id,
+                                        upstream_status_code: Some(StatusCode::BAD_REQUEST.as_u16()),
+                                        upstream_request_id: None,
+                                        error_type: Some("responses_rejected_field".to_string()),
+                                        error_message: Some("Upstream rejected a supported request field".to_string()),
+                                        request_body: Some(request_body.clone()),
+                                        response_body: Some(rejected_body),
+                                        wrote_client_response: false,
+                                    },
+                                )
+                                .await;
+                                if let Ok(decision) = retry_decision {
+                                    if decision.action == "relay" {
+                                        if let Some(next_plan) = decision.plan {
+                                            let same_lease = next_plan.lease_id == plan.lease_id;
+                                            let same_account = next_plan.account_id == plan.account_id;
+                                            let supported_transport = next_plan.transport.as_deref() == Some("ws_v2");
+                                            let proxy_free = !next_plan
+                                                .proxy_url
+                                                .as_deref()
+                                                .is_some_and(|value| !value.trim().is_empty());
+                                            if same_lease && same_account && supported_transport && proxy_free {
+                                                let next_original = AxumWsMessage::Text(request_body.to_string());
+                                                if let Ok(next_message) = edge_plan_ws_first_message(&next_plan, next_original) {
+                                                    let next_idle = state.take_ws_idle(&next_plan).await;
+                                                    let next_connection = if let Some(conn) = next_idle {
+                                                        Ok((conn.socket, conn.request_id))
+                                                    } else {
+                                                        connect_ws_for_plan(&next_plan).await
+                                                    };
+                                                    if let Ok((next_socket, _)) = next_connection {
+                                                        let (mut next_write, next_read) = next_socket.split();
+                                                        if next_write.send(next_message.clone()).await.is_ok() {
+                                                            state.ensure_ws_idle(next_plan.clone()).await;
+                                                            upstream_write = next_write;
+                                                            upstream_read = next_read;
+                                                            last_request_body = tungstenite_message_json(&next_message);
+                                                            prompt_cache_creation_optimization_model =
+                                                                next_plan.prompt_cache_creation_optimization_model.clone();
+                                                            cache_creation_policy_applied_for_turn =
+                                                                next_plan.prompt_cache_creation_optimization_applied;
+                                                            failure_state = OpenAIWSFailureState::default();
+                                                            plan = next_plan;
+                                                            continue;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         let message_failed = failure_state.observe_upstream_message(
                             &msg,
                             cache_creation_policy_applied_for_turn,
@@ -1220,11 +1290,15 @@ async fn relay_ws_session(
                                 break;
                             }
                         };
+                        let is_client_payload = matches!(client_msg, AxumWsMessage::Text(_) | AxumWsMessage::Binary(_));
                         if let Err(err) = client_socket.send(client_msg).await {
                             success = false;
                             client_disconnected = true;
                             error_message = Some(err.to_string());
                             break;
+                        }
+                        if is_client_payload {
+                            wrote_client_response_for_turn = true;
                         }
                     }
                     Some(Err(err)) => {
@@ -1403,17 +1477,15 @@ fn edge_plan_ws_first_message(
     plan: &EdgePlan,
     original: AxumWsMessage,
 ) -> anyhow::Result<TungsteniteMessage> {
-    if plan.prompt_cache_creation_optimization_mode.is_some() {
-        if let Some(raw) = plan
-            .body_raw_base64
-            .as_deref()
-            .map(str::trim)
-            .filter(|raw| !raw.is_empty())
-        {
-            return Ok(TungsteniteMessage::Text(String::from_utf8(b64_decode(
-                raw,
-            )?)?));
-        }
+    if let Some(raw) = plan
+        .body_raw_base64
+        .as_deref()
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+    {
+        return Ok(TungsteniteMessage::Text(String::from_utf8(b64_decode(
+            raw,
+        )?)?));
     }
     if let Some(body) = plan.body.clone() {
         return Ok(TungsteniteMessage::Text(body.to_string()));
@@ -1883,6 +1955,91 @@ fn openai_ws_message_is_failure(message: &TungsteniteMessage) -> bool {
     };
     matches!(json_event_type(&value), Some("error" | "response.failed"))
         || json_is_unsafe_upstream_diagnostic(&value)
+}
+
+fn tungstenite_message_json(message: &TungsteniteMessage) -> Option<Value> {
+    match message {
+        TungsteniteMessage::Text(text) => serde_json::from_str::<Value>(text).ok(),
+        TungsteniteMessage::Binary(bytes) => serde_json::from_slice::<Value>(bytes).ok(),
+        _ => None,
+    }
+}
+
+fn tungstenite_message_is_response_create(message: &TungsteniteMessage) -> bool {
+    tungstenite_message_json(message)
+        .as_ref()
+        .and_then(json_event_type)
+        == Some("response.create")
+}
+
+fn openai_ws_explicit_rejected_field_error(message: &TungsteniteMessage) -> Option<Value> {
+    let value = tungstenite_message_json(message)?;
+    if !matches!(json_event_type(&value), Some("error" | "response.failed")) {
+        return None;
+    }
+    let error = value
+        .get("error")
+        .filter(|candidate| candidate.is_object())
+        .or_else(|| value.pointer("/response/error"))?;
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let error_message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let explicit = matches!(code.as_str(), "unknown_parameter" | "unsupported_parameter")
+        || error_message.contains("unknown parameter")
+        || error_message.contains("unsupported parameter");
+    if !explicit {
+        return None;
+    }
+    let param = error
+        .get("param")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|param| !param.is_empty())
+        .map(str::to_ascii_lowercase)
+        .or_else(|| openai_rejected_field_from_message(&error_message))?;
+    if openai_rejected_field_supported(&param) {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn openai_rejected_field_from_message(message: &str) -> Option<String> {
+    if message.contains("max_output_tokens") {
+        return Some("max_output_tokens".to_string());
+    }
+    let start = message.find("input[")?;
+    let suffix = &message[start + "input[".len()..];
+    let end = suffix.find(']')?;
+    if end == 0 || !suffix[..end].bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let candidate = format!("input[{}].namespace", &suffix[..end]);
+    suffix[end + 1..]
+        .starts_with(".namespace")
+        .then_some(candidate)
+}
+
+fn openai_rejected_field_supported(param: &str) -> bool {
+    if param == "max_output_tokens" {
+        return true;
+    }
+    let Some(index) = param
+        .strip_prefix("input[")
+        .and_then(|suffix| suffix.strip_suffix("].namespace"))
+    else {
+        return false;
+    };
+    !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn openai_cache_creation_policy_error_text(error_body: &str) -> bool {
@@ -2476,6 +2633,7 @@ async fn relay_upstream_direct(
                 upstream_request_id,
                 error_type: Some("upstream_error".to_string()),
                 error_message: Some(error_body.clone()),
+                request_body: None,
                 response_body: if error_body.is_empty() {
                     None
                 } else {
@@ -2900,6 +3058,7 @@ async fn retry_after_queue_wait_budget(
             error_message: Some(format!(
                 "edge relay queue wait exceeded budget: {queue_wait_ms}ms"
             )),
+            request_body: None,
             response_body: None,
             wrote_client_response: false,
         },
@@ -5123,6 +5282,29 @@ data: {"type":"response.output_text.delta","delta":"ok"}
     }
 
     #[test]
+    fn ws_explicit_rejected_field_detection_is_narrow() {
+        let max_tokens = TungsteniteMessage::Text(
+            r#"{"type":"error","error":{"code":"unsupported_parameter","param":"max_output_tokens","message":"Unsupported parameter: max_output_tokens"}}"#.to_string(),
+        );
+        assert!(openai_ws_explicit_rejected_field_error(&max_tokens).is_some());
+
+        let namespace = TungsteniteMessage::Text(
+            r#"{"type":"response.failed","response":{"error":{"code":"unknown_parameter","param":"input[12].namespace","message":"Unknown parameter: input[12].namespace"}}}"#.to_string(),
+        );
+        assert!(openai_ws_explicit_rejected_field_error(&namespace).is_some());
+
+        let ambiguous = TungsteniteMessage::Text(
+            r#"{"type":"error","error":{"code":"invalid_request_error","param":"max_output_tokens","message":"max_output_tokens must be positive"}}"#.to_string(),
+        );
+        assert!(openai_ws_explicit_rejected_field_error(&ambiguous).is_none());
+
+        let other_field = TungsteniteMessage::Text(
+            r#"{"type":"error","error":{"code":"unknown_parameter","param":"metadata.secret","message":"Unknown parameter: metadata.secret"}}"#.to_string(),
+        );
+        assert!(openai_ws_explicit_rejected_field_error(&other_field).is_none());
+    }
+
+    #[test]
     fn ws_cache_creation_tracks_application_per_response_create() {
         let mut session_model = Some("gpt-5.6-sol".to_string());
         let (_, applied) = apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
@@ -5155,7 +5337,7 @@ data: {"type":"response.output_text.delta","delta":"ok"}
     }
 
     #[test]
-    fn ws_first_message_uses_raw_body_only_for_cache_optimization() {
+    fn ws_first_message_always_prefers_control_plane_raw_body() {
         let raw = br#"{"source":"raw"}"#;
         let base_plan = serde_json::json!({
             "action": "relay",
@@ -5168,7 +5350,7 @@ data: {"type":"response.output_text.delta","delta":"ok"}
             edge_plan_ws_first_message(&disabled, AxumWsMessage::Text("client".to_string()))
                 .expect("disabled first message");
         assert!(
-            matches!(disabled_message, TungsteniteMessage::Text(text) if text == r#"{"source":"body"}"#)
+            matches!(disabled_message, TungsteniteMessage::Text(text) if text == r#"{"source":"raw"}"#)
         );
 
         let mut enabled_value = base_plan;
@@ -5400,9 +5582,7 @@ data: {"type":"response.output_text.delta","delta":"ok"}
             AxumWsMessage::Text(r#"{"rewritten":"original"}"#.to_string()),
         )
         .expect("ws first message");
-        assert!(
-            matches!(first, TungsteniteMessage::Text(text) if text == r#"{"rewritten":false}"#)
-        );
+        assert!(matches!(first, TungsteniteMessage::Text(text) if text == r#"{"rewritten":true}"#));
 
         let body = take_request_body_bytes(&mut plan).expect("request body");
         assert_eq!(body, br#"{"rewritten":true}"#);

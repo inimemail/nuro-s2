@@ -1807,6 +1807,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyFrontendURL] = settings.FrontendURL
 	updates[SettingKeyInvitationCodeEnabled] = strconv.FormatBool(settings.InvitationCodeEnabled)
 	updates[SettingKeyTotpEnabled] = strconv.FormatBool(settings.TotpEnabled)
+	updates[SettingKeyAuditLogRetentionDays] = strconv.Itoa(settings.AuditLogRetentionDays)
+	updates[SettingKeySessionBindingEnabled] = strconv.FormatBool(settings.SessionBindingEnabled)
 	settings.LoginAgreementMode = normalizeLoginAgreementMode(settings.LoginAgreementMode)
 	settings.LoginAgreementUpdatedAt = strings.TrimSpace(settings.LoginAgreementUpdatedAt)
 	if settings.LoginAgreementUpdatedAt == "" {
@@ -1983,6 +1985,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 		settings.AffiliateRebatePerInviteeCap = AffiliateRebatePerInviteeCapDefault
 	}
 	updates[SettingKeyAffiliateRebatePerInviteeCap] = strconv.FormatFloat(settings.AffiliateRebatePerInviteeCap, 'f', 8, 64)
+	updates[SettingKeyAffiliateAdminRechargeEnabled] = strconv.FormatBool(settings.AdminRechargeRebateEnabled)
 	updates[SettingKeyDefaultUserRPMLimit] = strconv.Itoa(settings.DefaultUserRPMLimit)
 	defaultSubsJSON, err := json.Marshal(settings.DefaultSubscriptions)
 	if err != nil {
@@ -2768,6 +2771,33 @@ func (s *SettingService) IsAffiliateEnabled(ctx context.Context) bool {
 	return value == "true"
 }
 
+// IsAffiliateAdminRechargeEnabled reports whether positive admin balance additions
+// participate in the affiliate rebate program. Missing settings remain disabled.
+func (s *SettingService) IsAffiliateAdminRechargeEnabled(ctx context.Context) bool {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyAffiliateAdminRechargeEnabled)
+	if err != nil {
+		return AdminRechargeRebateEnabledDefault
+	}
+	return value == "true"
+}
+
+func (s *SettingService) GetAuditLogRetentionDays(ctx context.Context) int {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyAuditLogRetentionDays)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return 180
+	}
+	days, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 180
+	}
+	return days
+}
+
+func (s *SettingService) IsSessionBindingEnabled(ctx context.Context) bool {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeySessionBindingEnabled)
+	return err == nil && value == "true"
+}
+
 // GetAffiliateRebateRatePercent 读取并 clamp 全局返利比例。
 // 解析失败、缺失或越界都回退到 AffiliateRebateRateDefault — 该比例从不抛错，
 // 调用方只关心一个可用的数值。
@@ -3121,6 +3151,9 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyAffiliateRebateFreezeHours:                strconv.Itoa(AffiliateRebateFreezeHoursDefault),
 		SettingKeyAffiliateRebateDurationDays:               strconv.Itoa(AffiliateRebateDurationDaysDefault),
 		SettingKeyAffiliateRebatePerInviteeCap:              strconv.FormatFloat(AffiliateRebatePerInviteeCapDefault, 'f', 2, 64),
+		SettingKeyAffiliateAdminRechargeEnabled:             strconv.FormatBool(AdminRechargeRebateEnabledDefault),
+		SettingKeyAuditLogRetentionDays:                     "180",
+		SettingKeySessionBindingEnabled:                     "false",
 		SettingKeyDefaultUserRPMLimit:                       "0",
 		SettingKeyDefaultSubscriptions:                      "[]",
 		SettingKeyAuthSourceDefaultEmailBalance:             "0",
@@ -3256,6 +3289,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		FrontendURL:                      settings[SettingKeyFrontendURL],
 		InvitationCodeEnabled:            settings[SettingKeyInvitationCodeEnabled] == "true",
 		TotpEnabled:                      settings[SettingKeyTotpEnabled] == "true",
+		AuditLogRetentionDays:            parseAuditLogRetentionDays(settings[SettingKeyAuditLogRetentionDays]),
+		SessionBindingEnabled:            settings[SettingKeySessionBindingEnabled] == "true",
 		LoginAgreementEnabled:            settings[SettingKeyLoginAgreementEnabled] == "true",
 		LoginAgreementMode:               normalizeLoginAgreementMode(settings[SettingKeyLoginAgreementMode]),
 		LoginAgreementUpdatedAt:          loginAgreementUpdatedAt,
@@ -3332,6 +3367,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	if perInviteeCap, err := strconv.ParseFloat(settings[SettingKeyAffiliateRebatePerInviteeCap], 64); err == nil && perInviteeCap >= 0 {
 		result.AffiliateRebatePerInviteeCap = perInviteeCap
 	}
+	result.AdminRechargeRebateEnabled = settings[SettingKeyAffiliateAdminRechargeEnabled] == "true"
 	result.DefaultSubscriptions = parseDefaultSubscriptions(settings[SettingKeyDefaultSubscriptions])
 
 	// 敏感信息直接返回，方便测试连接时使用

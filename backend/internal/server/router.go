@@ -26,6 +26,8 @@ func SetupRouter(
 	jwtAuth middleware2.JWTAuthMiddleware,
 	adminAuth middleware2.AdminAuthMiddleware,
 	apiKeyAuth middleware2.APIKeyAuthMiddleware,
+	auditLog middleware2.AuditLogMiddleware,
+	stepUp middleware2.StepUpAuthMiddleware,
 	apiKeyService *service.APIKeyService,
 	subscriptionService *service.SubscriptionService,
 	opsService *service.OpsService,
@@ -54,6 +56,7 @@ func SetupRouter(
 	r.Use(middleware2.RequestLogger())
 	r.Use(middleware2.Logger())
 	r.Use(middleware2.CORS(cfg.CORS))
+	r.Use(middleware2.SessionBindingContext())
 	r.Use(middleware2.SecurityHeaders(cfg.Security.CSP, func() []string {
 		if p := cachedFrameOrigins.Load(); p != nil {
 			return *p
@@ -81,7 +84,7 @@ func SetupRouter(
 	}
 
 	// 注册路由
-	registerRoutes(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
+	registerRoutes(r, handlers, jwtAuth, adminAuth, apiKeyAuth, auditLog, stepUp, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
 
 	return r
 }
@@ -93,6 +96,8 @@ func registerRoutes(
 	jwtAuth middleware2.JWTAuthMiddleware,
 	adminAuth middleware2.AdminAuthMiddleware,
 	apiKeyAuth middleware2.APIKeyAuthMiddleware,
+	auditLog middleware2.AuditLogMiddleware,
+	stepUp middleware2.StepUpAuthMiddleware,
 	apiKeyService *service.APIKeyService,
 	subscriptionService *service.SubscriptionService,
 	opsService *service.OpsService,
@@ -109,8 +114,8 @@ func registerRoutes(
 
 	// 注册各模块路由
 	routes.RegisterAuthRoutes(v1, h, jwtAuth, redisClient, settingService)
-	routes.RegisterUserRoutes(v1, h, jwtAuth, settingService)
-	routes.RegisterAdminRoutes(v1, h, adminAuth)
+	routes.RegisterUserRoutes(v1, h, jwtAuth, auditLog, settingService)
+	routes.RegisterAdminRoutes(v1, h, adminAuth, auditLog, stepUp)
 	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg)
 	routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, settingService)
 
