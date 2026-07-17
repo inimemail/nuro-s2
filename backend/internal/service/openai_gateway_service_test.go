@@ -152,6 +152,30 @@ func TestRecheckSelectedOpenAIAccountFallsBackToDBWhenSnapshotMisses(t *testing.
 	require.Equal(t, 1, repo.getByIDCalls)
 }
 
+func TestRecheckSelectedOpenAIAccountForGroupRejectsLatestBindingGuard(t *testing.T) {
+	groupID := int64(10)
+	limit := 1.0
+	observed := 1.1
+	account := Account{
+		ID:          91003,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra:       map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		AccountGroups: []AccountGroup{{
+			GroupID:                           groupID,
+			UpstreamBillingGuardMaxMultiplier: &limit,
+		}},
+		UpstreamBillingGuardObservedMultiplier: &observed,
+	}
+	svc := &OpenAIGatewayService{accountRepo: stubOpenAIAccountRepo{accounts: []Account{account}}}
+
+	got := svc.recheckSelectedOpenAIAccountForGroup(context.Background(), &account, &groupID, "", false, "", "")
+
+	require.Nil(t, got)
+}
+
 type stubConcurrencyCache struct {
 	ConcurrencyCache
 	loadBatchErr    error

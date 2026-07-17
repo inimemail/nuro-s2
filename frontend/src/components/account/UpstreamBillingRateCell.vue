@@ -1,11 +1,49 @@
 <template>
-  <div v-if="eligible" class="flex min-w-[7rem] items-center gap-1.5">
-    <div class="min-w-0">
-      <div class="font-mono text-sm font-medium text-gray-800 dark:text-gray-200">
-        {{ displayedRate }}<span v-if="thresholdLabel" class="ml-1 text-[10px] text-gray-500">{{ thresholdLabel }}</span>
-      </div>
-      <div :class="statusClass" class="truncate text-[10px]" :title="statusTitle">
-        {{ statusLabel }}
+  <div v-if="eligible" class="flex min-w-[10rem] max-w-[15rem] items-start gap-1.5">
+    <div class="min-w-0 flex-1">
+      <div data-testid="upstream-billing-rate" class="font-mono text-sm font-semibold text-gray-800 dark:text-gray-100">{{ displayedRate }}</div>
+      <div data-testid="upstream-billing-status" :class="statusClass" class="mt-0.5 truncate text-[10px]" :title="statusTitle">{{ statusLabel }}</div>
+      <div v-if="protectedGroups.length" class="mt-1.5 flex flex-wrap gap-1">
+        <div
+          v-for="item in visibleProtectedGroups"
+          :key="item.groupId"
+          class="group/guard relative"
+        >
+          <span
+            :class="item.badgeClass"
+            :data-guard-state="item.state"
+            :data-testid="`upstream-billing-guard-group-${item.groupId}`"
+            class="inline-flex max-w-[7rem] items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium leading-4"
+          >
+            <span :class="item.dotClass" class="h-1.5 w-1.5 flex-none rounded-full" />
+            <span class="truncate">{{ item.name }}</span>
+          </span>
+          <div :data-testid="`upstream-billing-guard-group-${item.groupId}-details`" class="pointer-events-none absolute bottom-full left-0 z-[120] mb-1.5 w-64 rounded bg-gray-900 px-3 py-2 text-xs leading-5 text-white opacity-0 shadow-lg transition-opacity group-hover/guard:opacity-100 dark:bg-gray-700">
+            <div class="font-medium">{{ item.name }}</div>
+            <div class="mt-1 text-gray-300">{{ t('admin.accounts.upstreamBilling.currentRateDetail', { rate: displayedRate }) }}</div>
+            <div class="text-gray-300">{{ t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${item.limit}x` }) }}</div>
+            <div class="text-gray-400">{{ statusTitle }}</div>
+            <div :class="item.detailClass">{{ item.detail }}</div>
+            <div class="absolute left-3 top-full border-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
+          </div>
+        </div>
+        <div v-if="hiddenProtectedGroupCount" class="group/guard-more relative">
+          <span class="inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[10px] leading-4 text-gray-500 dark:bg-dark-600 dark:text-gray-400">
+            +{{ hiddenProtectedGroupCount }}
+          </span>
+          <div data-testid="upstream-billing-hidden-group-details" class="pointer-events-none absolute bottom-full right-0 z-[120] mb-1.5 w-64 rounded bg-gray-900 px-3 py-2 text-xs leading-5 text-white opacity-0 shadow-lg transition-opacity group-hover/guard-more:opacity-100 dark:bg-gray-700">
+            <div class="text-gray-300">{{ t('admin.accounts.upstreamBilling.currentRateDetail', { rate: displayedRate }) }}</div>
+            <div class="mb-1 text-gray-400">{{ statusTitle }}</div>
+            <div v-for="item in hiddenProtectedGroups" :key="item.groupId" class="border-t border-gray-700 py-1 first:border-t-0 dark:border-gray-600">
+              <div class="flex items-center justify-between gap-3">
+                <span class="truncate">{{ item.name }}</span>
+                <span class="flex-none text-gray-300">{{ item.limit }}x</span>
+              </div>
+              <div :class="item.detailClass" class="truncate">{{ item.detail }}</div>
+            </div>
+            <div class="absolute right-3 top-full border-4 border-transparent border-t-gray-900 dark:border-t-gray-700" />
+          </div>
+        </div>
       </div>
     </div>
     <button
@@ -52,24 +90,72 @@ const stale = computed(() => {
   return !Number.isFinite(freshUntil.value) || props.now >= freshUntil.value
 })
 const displayedRate = computed(() => {
-  if (snapshot.value?.status !== 'ok') return '-'
-  const value = snapshot.value.data?.effective_rate_multiplier
+  const value = snapshot.value?.data?.effective_rate_multiplier
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? `${Number(value.toPrecision(12))}x`
     : '-'
 })
-const thresholdLabel = computed(() => {
-  const value = props.account.upstream_billing_guard_max_multiplier
-  return props.account.upstream_billing_guard_enabled && typeof value === 'number' && Number.isFinite(value)
-    ? `/ ${Number(value.toPrecision(8))}x`
-    : ''
+const observedRate = computed(() => {
+  const value = snapshot.value?.data?.effective_rate_multiplier
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+})
+const guardObservedRate = computed(() => {
+  const value = props.account.upstream_billing_guard_observed_multiplier
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+})
+const autoProbeEnabled = computed(() => props.account.extra?.upstream_billing_probe_enabled === true)
+const protectedGroups = computed(() => {
+  const groupNames = new Map((props.account.groups || []).map((group) => [group.id, group.name]))
+  return (props.account.account_groups || [])
+    .filter((binding) => typeof binding.upstream_billing_guard_max_multiplier === 'number')
+    .map((binding) => {
+      const limit = binding.upstream_billing_guard_max_multiplier as number
+      const blocked = !autoProbeEnabled.value || (guardObservedRate.value != null && guardObservedRate.value > limit)
+      const pending = autoProbeEnabled.value && guardObservedRate.value == null
+      const state = blocked ? 'blocked' : pending ? 'pending' : 'available'
+      return {
+        groupId: binding.group_id,
+        name: binding.group?.name || groupNames.get(binding.group_id) || `#${binding.group_id}`,
+        limit: Number(limit.toPrecision(8)),
+        blocked,
+        state,
+        badgeClass: blocked
+          ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+          : pending
+            ? 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
+            : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+        dotClass: blocked ? 'bg-amber-500' : pending ? 'bg-gray-400' : 'bg-emerald-500',
+        detailClass: blocked ? 'text-amber-300' : pending ? 'text-gray-300' : 'text-emerald-300',
+        detail: !autoProbeEnabled.value
+          ? t('admin.accounts.upstreamBilling.guardProbeDisabled')
+          : pending
+            ? t('admin.accounts.upstreamBilling.guardWaitingFirstProbe')
+            : blocked
+              ? t('admin.accounts.upstreamBilling.guardPaused')
+              : t('admin.accounts.upstreamBilling.guardAvailable')
+      }
+    })
+})
+const visibleProtectedGroups = computed(() => protectedGroups.value.slice(0, 3))
+const hiddenProtectedGroups = computed(() => protectedGroups.value.slice(3))
+const hiddenProtectedGroupCount = computed(() => Math.max(0, protectedGroups.value.length - visibleProtectedGroups.value.length))
+const receivedAgeSeconds = computed(() => {
+  const value = snapshot.value?.received_at
+  if (!value) return null
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? Math.max(0, Math.floor((props.now - timestamp) / 1000)) : null
 })
 const statusLabel = computed(() => {
   if (!snapshot.value) return t('admin.accounts.upstreamBilling.notProbed')
   if (snapshot.value.status === 'unsupported') return t('admin.accounts.upstreamBilling.unsupported')
-  if (snapshot.value.status === 'failed') return t('admin.accounts.upstreamBilling.failed')
-  if (stale.value) return t('admin.accounts.upstreamBilling.stale')
-  return t('admin.accounts.upstreamBilling.observed')
+  if (snapshot.value.status === 'failed') {
+    return observedRate.value == null
+      ? t('admin.accounts.upstreamBilling.failed')
+      : t('admin.accounts.upstreamBilling.failedWithLast')
+  }
+  return receivedAgeSeconds.value == null
+    ? t('admin.accounts.upstreamBilling.observed')
+    : t('admin.accounts.upstreamBilling.updatedAgo', { seconds: receivedAgeSeconds.value })
 })
 const statusClass = computed(() => {
   if (snapshot.value?.status === 'failed') return 'text-red-600 dark:text-red-400'

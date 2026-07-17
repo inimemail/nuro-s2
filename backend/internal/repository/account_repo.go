@@ -15,6 +15,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -327,24 +330,40 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 	if account == nil {
 		return nil
 	}
+	preserveProbeSnapshot := account.Platform == service.PlatformOpenAI && account.Type == service.AccountTypeAPIKey
+	client := clientFromContext(ctx, r.client)
+	var ownedTx *dbent.Tx
+	if preserveProbeSnapshot && dbent.TxFromContext(ctx) == nil {
+		tx, err := r.client.Tx(ctx)
+		if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+			return err
+		}
+		if err == nil {
+			ownedTx = tx
+			client = tx.Client()
+			defer func() { _ = tx.Rollback() }()
+		}
+	}
 	schedulable := account.Schedulable
 	if account.Status == service.StatusError {
 		schedulable = false
 	}
 
-	builder := r.client.Account.UpdateOneID(account.ID).
+	builder := client.Account.UpdateOneID(account.ID).
 		SetName(account.Name).
 		SetNillableNotes(account.Notes).
 		SetPlatform(account.Platform).
 		SetType(account.Type).
 		SetCredentials(normalizeJSONMap(account.Credentials)).
-		SetExtra(normalizeJSONMap(account.Extra)).
 		SetConcurrency(account.Concurrency).
 		SetPriority(account.Priority).
 		SetStatus(account.Status).
 		SetErrorMessage(account.ErrorMessage).
 		SetSchedulable(schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
+	if !preserveProbeSnapshot {
+		builder.SetExtra(normalizeJSONMap(account.Extra))
+	}
 	autoProbeEnabled, _ := account.Extra[service.UpstreamBillingProbeEnabledExtraKey].(bool)
 	guardRequiresAutoProbePredicate := account.Platform == service.PlatformOpenAI &&
 		account.Type == service.AccountTypeAPIKey && !autoProbeEnabled
@@ -434,6 +453,16 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 		}
 		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
 	}
+	if preserveProbeSnapshot {
+		if err := updateAccountExtraPreservingUpstreamBillingProbeSnapshot(ctx, client, account.ID, account.Extra); err != nil {
+			return err
+		}
+	}
+	if ownedTx != nil {
+		if err := ownedTx.Commit(); err != nil {
+			return err
+		}
+	}
 	account.UpdatedAt = updated.UpdatedAt
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &account.ID, nil, buildSchedulerGroupPayload(account.GroupIDs)); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account update failed: account=%d err=%v", account.ID, err)
@@ -441,6 +470,36 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 	// 普通账号编辑（如 model_mapping / credentials）也需要立即刷新单账号快照，
 	// 否则网关在 outbox worker 延迟或异常时仍可能读到旧配置。
 	r.syncSchedulerAccountSnapshot(ctx, account.ID)
+	return nil
+}
+
+func updateAccountExtraPreservingUpstreamBillingProbeSnapshot(ctx context.Context, exec sqlExecutor, accountID int64, extra map[string]any) error {
+	payload := copyJSONMap(normalizeJSONMap(extra))
+	delete(payload, service.UpstreamBillingProbeExtraKey)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	result, err := exec.ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = $1::jsonb || CASE
+			WHEN COALESCE(extra, '{}'::jsonb) ? ($2::text)
+				THEN jsonb_build_object($2::text, extra -> ($2::text))
+			ELSE '{}'::jsonb
+		END
+		WHERE id = $3
+			AND deleted_at IS NULL
+	`, string(raw), service.UpstreamBillingProbeExtraKey, accountID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
 	return nil
 }
 
@@ -650,7 +709,6 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 			q = q.Where(
 				dbaccount.StatusEQ(status),
 				dbaccount.SchedulableEQ(true),
-				dbaccount.UpstreamBillingGuardBlockedEQ(false),
 				dbaccount.Or(
 					dbaccount.RateLimitResetAtIsNil(),
 					dbaccount.RateLimitResetAtLTE(time.Now()),
@@ -1146,9 +1204,20 @@ func (r *accountRepository) GetGroups(ctx context.Context, accountID int64) ([]s
 }
 
 func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, groupIDs []int64) error {
-	existingGroupIDs, err := r.loadAccountGroupIDs(ctx, accountID)
+	existingBindings, err := r.client.AccountGroup.Query().
+		Where(dbaccountgroup.AccountIDEQ(accountID)).
+		All(ctx)
 	if err != nil {
 		return err
+	}
+	existingGroupIDs := make([]int64, 0, len(existingBindings))
+	existingLimits := make(map[int64]*float64, len(existingBindings))
+	for _, binding := range existingBindings {
+		existingGroupIDs = append(existingGroupIDs, binding.GroupID)
+		if binding.UpstreamBillingGuardMaxMultiplier != nil {
+			value := *binding.UpstreamBillingGuardMaxMultiplier
+			existingLimits[binding.GroupID] = &value
+		}
 	}
 	// 使用事务保证删除旧绑定与创建新绑定的原子性
 	tx, err := r.client.Tx(ctx)
@@ -1172,11 +1241,14 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 	if len(groupIDs) > 0 {
 		builders := make([]*dbent.AccountGroupCreate, 0, len(groupIDs))
 		for i, groupID := range groupIDs {
-			builders = append(builders, txClient.AccountGroup.Create().
+			builder := txClient.AccountGroup.Create().
 				SetAccountID(accountID).
 				SetGroupID(groupID).
-				SetPriority(i+1),
-			)
+				SetPriority(i + 1)
+			if limit := existingLimits[groupID]; limit != nil {
+				builder = builder.SetUpstreamBillingGuardMaxMultiplier(*limit)
+			}
+			builders = append(builders, builder)
 		}
 
 		if _, err := txClient.AccountGroup.CreateBulk(builders...).Save(ctx); err != nil {
@@ -1197,13 +1269,97 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 	return nil
 }
 
+func (r *accountRepository) UpdateUpstreamBillingGuardGroupLimits(ctx context.Context, accountID int64, limits map[int64]float64) error {
+	client := r.sql
+	if client == nil {
+		return errors.New("account group billing guard SQL executor is unavailable")
+	}
+	args := []any{accountID}
+	limitGroupIDs := make([]int64, 0, len(limits))
+	for groupID, limit := range limits {
+		if groupID <= 0 || limit < 0 || math.IsNaN(limit) || math.IsInf(limit, 0) {
+			return errors.New("account group billing guard limits must use positive group IDs and finite values >= 0")
+		}
+		limitGroupIDs = append(limitGroupIDs, groupID)
+	}
+	sort.Slice(limitGroupIDs, func(i, j int) bool { return limitGroupIDs[i] < limitGroupIDs[j] })
+	assignmentExpr := "NULL::double precision"
+	if len(limitGroupIDs) > 0 {
+		var caseExpr strings.Builder
+		caseExpr.WriteString("CASE group_id")
+		for _, groupID := range limitGroupIDs {
+			limit := limits[groupID]
+			groupArg := len(args) + 1
+			limitArg := groupArg + 1
+			caseExpr.WriteString(fmt.Sprintf(" WHEN $%d THEN $%d", groupArg, limitArg))
+			args = append(args, groupID, limit)
+		}
+		caseExpr.WriteString(" ELSE NULL END")
+		assignmentExpr = caseExpr.String()
+	}
+	requestedGroupsArg := len(args) + 1
+	args = append(args, pq.Array(limitGroupIDs))
+	rows, err := client.QueryContext(ctx, `
+		WITH requested(group_id) AS (
+			SELECT unnest($`+strconv.Itoa(requestedGroupsArg)+`::bigint[])
+		), missing AS (
+			SELECT requested.group_id
+			FROM requested
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM account_groups
+				WHERE account_id = $1
+					AND group_id = requested.group_id
+			)
+		), updated AS (
+			UPDATE account_groups
+			SET upstream_billing_guard_max_multiplier = `+assignmentExpr+`
+			WHERE account_id = $1
+				AND NOT EXISTS (SELECT 1 FROM missing)
+				AND upstream_billing_guard_max_multiplier IS DISTINCT FROM (`+assignmentExpr+`)
+			RETURNING group_id
+		)
+		SELECT group_id, FALSE AS is_missing FROM updated
+		UNION ALL
+		SELECT group_id, TRUE AS is_missing FROM missing
+		ORDER BY group_id
+	`, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	changedGroupIDs := make([]int64, 0)
+	for rows.Next() {
+		var groupID int64
+		var missing bool
+		if err := rows.Scan(&groupID, &missing); err != nil {
+			return err
+		}
+		if missing {
+			return fmt.Errorf("account %d is not bound to group %d", accountID, groupID)
+		}
+		changedGroupIDs = append(changedGroupIDs, groupID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(changedGroupIDs) == 0 {
+		return nil
+	}
+	payload := buildSchedulerGroupPayload(changedGroupIDs)
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &accountID, nil, payload); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account group billing guard update failed: account=%d err=%v", accountID, err)
+	}
+	r.syncSchedulerAccountSnapshot(ctx, accountID)
+	return nil
+}
+
 func (r *accountRepository) ListSchedulable(ctx context.Context) ([]service.Account, error) {
 	now := time.Now()
 	accounts, err := r.client.Account.Query().
 		Where(
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
-			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
@@ -1268,13 +1424,21 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 			AND a.deleted_at IS NULL
 			AND a.status = $2
 			AND a.schedulable = TRUE
-			AND a.upstream_billing_guard_blocked = FALSE
+			AND NOT (
+				a.platform = $4
+				AND a.type = $5
+				AND ag.upstream_billing_guard_max_multiplier IS NOT NULL
+				AND (
+					COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
+					OR COALESCE(a.upstream_billing_guard_observed_multiplier > ag.upstream_billing_guard_max_multiplier, FALSE)
+				)
+			)
 			AND (a.temp_unschedulable_until IS NULL OR a.temp_unschedulable_until <= $3)
 			AND (a.expires_at IS NULL OR a.expires_at > $3 OR a.auto_pause_on_expired = FALSE)
 			AND (a.overload_until IS NULL OR a.overload_until <= $3)
 			AND (a.rate_limit_reset_at IS NULL OR a.rate_limit_reset_at <= $3)
 		ORDER BY ag.group_id ASC, ag.priority ASC, a.priority ASC, a.id ASC
-	`, pq.Array(groupIDs), service.StatusActive, now)
+	`, pq.Array(groupIDs), service.StatusActive, now, service.PlatformOpenAI, service.AccountTypeAPIKey)
 	if err != nil {
 		return nil, err
 	}
@@ -1317,7 +1481,6 @@ func (r *accountRepository) ListSchedulableByPlatform(ctx context.Context, platf
 			dbaccount.PlatformEQ(platform),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
-			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
@@ -1352,7 +1515,6 @@ func (r *accountRepository) ListSchedulableByPlatforms(ctx context.Context, plat
 			dbaccount.PlatformIn(platforms...),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
-			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
@@ -1373,7 +1535,6 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatform(ctx context.Conte
 			dbaccount.PlatformEQ(platform),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
-			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			dbaccount.Not(dbaccount.HasAccountGroups()),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
@@ -1398,7 +1559,6 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatforms(ctx context.Cont
 			dbaccount.PlatformIn(platforms...),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
-			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			dbaccount.Not(dbaccount.HasAccountGroups()),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
@@ -1939,10 +2099,11 @@ func (r *accountRepository) UpdateUpstreamBillingProbeSnapshot(ctx context.Conte
 	if affected == 0 {
 		return false, service.ErrUpstreamBillingProbeIdentityChanged
 	}
-	changed := desiredBlocked != account.UpstreamBillingGuardBlocked
+	observationChanged := observedMultiplier != nil && (account.UpstreamBillingGuardObservedMultiplier == nil || *account.UpstreamBillingGuardObservedMultiplier != *observedMultiplier)
+	changed := desiredBlocked != account.UpstreamBillingGuardBlocked || observationChanged
 	if changed {
 		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &account.ID, nil, nil); err != nil {
-			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue billing guard transition failed: account=%d err=%v", account.ID, err)
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue upstream billing observation transition failed: account=%d err=%v", account.ID, err)
 		}
 		r.syncSchedulerAccountSnapshot(ctx, account.ID)
 	}
@@ -1987,6 +2148,10 @@ func (r *accountRepository) UpdateUpstreamBillingProbeEnabled(ctx context.Contex
 		}
 		return service.ErrUpstreamBillingProbeIdentityChanged
 	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue upstream billing probe toggle failed: account=%d err=%v", id, err)
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
 	return nil
 }
 
@@ -2275,7 +2440,6 @@ func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID in
 		now := time.Now()
 		preds = append(preds,
 			dbaccount.SchedulableEQ(true),
-			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
@@ -2318,7 +2482,15 @@ func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID in
 		}
 	}
 
-	return r.accountsToService(ctx, accounts)
+	out, err := r.accountsToService(ctx, accounts)
+	if err != nil {
+		return nil, err
+	}
+	groupIDCopy := groupID
+	for i := range out {
+		out[i].UpstreamBillingGuardGroupBlocked = out[i].IsUpstreamBillingGuardBlockedForGroup(&groupIDCopy)
+	}
+	return out, nil
 }
 
 func (r *accountRepository) accountsToService(ctx context.Context, accounts []*dbent.Account) ([]service.Account, error) {
@@ -2436,11 +2608,12 @@ func (r *accountRepository) loadAccountGroups(ctx context.Context, accountIDs []
 	for _, ag := range entries {
 		groupSvc := groupEntityToService(ag.Edges.Group)
 		agSvc := service.AccountGroup{
-			AccountID: ag.AccountID,
-			GroupID:   ag.GroupID,
-			Priority:  ag.Priority,
-			CreatedAt: ag.CreatedAt,
-			Group:     groupSvc,
+			AccountID:                         ag.AccountID,
+			GroupID:                           ag.GroupID,
+			Priority:                          ag.Priority,
+			UpstreamBillingGuardMaxMultiplier: ag.UpstreamBillingGuardMaxMultiplier,
+			CreatedAt:                         ag.CreatedAt,
+			Group:                             groupSvc,
 		}
 		accountGroupsByAccount[ag.AccountID] = append(accountGroupsByAccount[ag.AccountID], agSvc)
 		groupIDsByAccount[ag.AccountID] = append(groupIDsByAccount[ag.AccountID], ag.GroupID)

@@ -161,8 +161,8 @@ func (r *groupRepository) CreateFromSource(ctx context.Context, groupIn *service
 		return err
 	}
 	result, err := txClient.ExecContext(ctx, `
-		INSERT INTO account_groups (account_id, group_id, priority, created_at)
-		SELECT ag.account_id, $2, ag.priority, NOW()
+		INSERT INTO account_groups (account_id, group_id, priority, upstream_billing_guard_max_multiplier, created_at)
+		SELECT ag.account_id, $2, ag.priority, ag.upstream_billing_guard_max_multiplier, NOW()
 		FROM account_groups ag
 		JOIN accounts a ON a.id = ag.account_id
 		WHERE ag.group_id = $1
@@ -852,7 +852,15 @@ const (
 	groupAccountAvailableSQL = `a.deleted_at IS NULL
 				AND a.status = 'active'
 				AND a.schedulable = true
-				AND a.upstream_billing_guard_blocked = false
+				AND NOT (
+					a.platform = 'openai'
+					AND a.type = 'apikey'
+					AND ag.upstream_billing_guard_max_multiplier IS NOT NULL
+					AND (
+						COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
+						OR COALESCE(a.upstream_billing_guard_observed_multiplier > ag.upstream_billing_guard_max_multiplier, FALSE)
+					)
+				)
 				AND (a.expires_at IS NULL OR a.expires_at > NOW() OR a.auto_pause_on_expired = FALSE)
 				AND (a.rate_limit_reset_at IS NULL OR a.rate_limit_reset_at <= NOW())
 				AND (a.overload_until IS NULL OR a.overload_until <= NOW())

@@ -32,7 +32,7 @@ const (
 	upstreamBillingProbeMaxIntervalSeconds     = 36000
 	upstreamBillingProbeRequestTimeout         = 10 * time.Second
 	upstreamBillingProbeMaxBodyBytes           = 64 * 1024
-	upstreamBillingProbeConcurrency            = 4
+	upstreamBillingProbeConcurrency            = 16
 	upstreamBillingProbeMaxBackoff             = 24 * time.Hour
 	upstreamBillingProbeMinFailureBackoff      = 5 * time.Second
 	upstreamBillingProbeSettingsPollInterval   = 5 * time.Second
@@ -596,7 +596,11 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 		return s.persistFailure(ctx, account, intervalSeconds, now, resp.StatusCode, "invalid_response")
 	}
 	receivedAt := now
-	freshUntil := now.Add(2 * time.Duration(intervalSeconds) * time.Second)
+	freshWindow := 3 * time.Duration(intervalSeconds) * time.Second
+	if freshWindow < time.Minute {
+		freshWindow = time.Minute
+	}
+	freshUntil := now.Add(freshWindow)
 	snapshot := &UpstreamBillingProbeSnapshot{
 		Status: "ok", Data: data, ReceivedAt: &receivedAt, FreshUntil: &freshUntil,
 		LastAttemptAt: now, NextProbeAt: now.Add(time.Duration(intervalSeconds) * time.Second), HTTPStatus: resp.StatusCode,

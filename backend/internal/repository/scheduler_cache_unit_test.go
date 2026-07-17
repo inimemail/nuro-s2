@@ -66,17 +66,19 @@ func TestBuildSchedulerMetadataAccount_KeepsAnthropicAPIKeyBehaviorFlags(t *test
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
+	limit := 1.25
 	account := service.Account{
 		ID:       42,
 		Platform: service.PlatformAnthropic,
 		GroupIDs: []int64{7, 9, 7, 0},
 		AccountGroups: []service.AccountGroup{
 			{
-				AccountID: 42,
-				GroupID:   7,
-				Priority:  2,
-				Account:   &service.Account{ID: 42, Name: "drop-from-metadata"},
-				Group:     &service.Group{ID: 7, Name: "drop-from-metadata"},
+				AccountID:                         42,
+				GroupID:                           7,
+				Priority:                          2,
+				UpstreamBillingGuardMaxMultiplier: &limit,
+				Account:                           &service.Account{ID: 42, Name: "drop-from-metadata"},
+				Group:                             &service.Group{ID: 7, Name: "drop-from-metadata"},
 			},
 			{
 				AccountID: 42,
@@ -99,10 +101,21 @@ func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
 	require.Equal(t, int64(42), got.AccountGroups[0].AccountID)
 	require.Equal(t, int64(7), got.AccountGroups[0].GroupID)
 	require.Equal(t, 2, got.AccountGroups[0].Priority)
+	require.NotNil(t, got.AccountGroups[0].UpstreamBillingGuardMaxMultiplier)
+	require.Equal(t, 1.25, *got.AccountGroups[0].UpstreamBillingGuardMaxMultiplier)
 	require.Nil(t, got.AccountGroups[0].Account)
 	require.Nil(t, got.AccountGroups[0].Group)
 	require.Equal(t, int64(11), got.AccountGroups[1].GroupID)
 	require.Nil(t, got.Groups)
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsBillingProbeToggle(t *testing.T) {
+	got := buildSchedulerMetadataAccount(service.Account{Extra: map[string]any{
+		service.UpstreamBillingProbeEnabledExtraKey: true,
+		service.UpstreamBillingProbeExtraKey:        map[string]any{"large": "drop"},
+	}})
+	require.Equal(t, true, got.Extra[service.UpstreamBillingProbeEnabledExtraKey])
+	require.NotContains(t, got.Extra, service.UpstreamBillingProbeExtraKey)
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsQuotaAutoPauseFields(t *testing.T) {
@@ -204,7 +217,7 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAILongContextBillingPolicy(t *te
 	require.True(t, got.IsOpenAILongContextBillingEnabled())
 }
 
-func TestBuildSchedulerMetadataAccount_KeepsUpstreamBillingGuardDecision(t *testing.T) {
+func TestBuildSchedulerMetadataAccount_KeepsOnlyBindingGuardObservation(t *testing.T) {
 	observed := 2.5
 	evaluatedAt := time.Now().UTC()
 	account := service.Account{
@@ -218,12 +231,12 @@ func TestBuildSchedulerMetadataAccount_KeepsUpstreamBillingGuardDecision(t *test
 
 	got := buildSchedulerMetadataAccount(account)
 
-	require.True(t, got.UpstreamBillingGuardEnabled)
-	require.Equal(t, 2.0, got.UpstreamBillingGuardMaxMultiplier)
-	require.True(t, got.UpstreamBillingGuardBlocked)
+	require.False(t, got.UpstreamBillingGuardEnabled)
+	require.Zero(t, got.UpstreamBillingGuardMaxMultiplier)
+	require.False(t, got.UpstreamBillingGuardBlocked)
 	require.NotNil(t, got.UpstreamBillingGuardObservedMultiplier)
 	require.Equal(t, observed, *got.UpstreamBillingGuardObservedMultiplier)
-	require.Equal(t, evaluatedAt, *got.UpstreamBillingGuardEvaluatedAt)
+	require.Nil(t, got.UpstreamBillingGuardEvaluatedAt)
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsOpenAICompactCapability(t *testing.T) {

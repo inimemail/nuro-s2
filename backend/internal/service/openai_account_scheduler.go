@@ -583,7 +583,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}
 		return nil, false, nil
 	}
-	if account.UpstreamBillingGuardBlocked {
+	if account.IsUpstreamBillingGuardBlockedForGroup(req.GroupID) {
 		return nil, false, nil
 	}
 	if IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) &&
@@ -611,6 +611,9 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+	if account != nil && account.IsUpstreamBillingGuardBlockedForGroup(req.GroupID) {
+		return nil, false, nil
+	}
 	if account == nil || !s.service.latestOpenAIAccountMatchesGroup(ctx, account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 		if sessionHash != "" {
 			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
@@ -1444,7 +1447,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+		fresh = s.service.recheckSelectedOpenAIAccountForGroup(ctx, fresh, req.GroupID, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
@@ -1492,7 +1495,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithArbite
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+		fresh = s.service.recheckSelectedOpenAIAccountForGroup(ctx, fresh, req.GroupID, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
@@ -1706,7 +1709,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+		fresh = s.service.recheckSelectedOpenAIAccountForGroup(ctx, fresh, req.GroupID, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
@@ -2189,6 +2192,9 @@ func (s *OpenAIGatewayService) selectRequiredOpenAIAccount(
 	if err != nil || account == nil {
 		return nil, decision, ErrNoAvailableAccounts
 	}
+	if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
+		return nil, decision, ErrNoAvailableAccounts
+	}
 	if !isOpenAICompatibleRequestPlatformAccount(account, requestPlatform) ||
 		!account.IsSchedulable() ||
 		!openAIAccountMatchesLockedPriority(account, lockedPriority) ||
@@ -2206,9 +2212,10 @@ func (s *OpenAIGatewayService) selectRequiredOpenAIAccount(
 		return nil, decision, ErrNoAvailableAccounts
 	}
 
-	account = s.recheckSelectedOpenAIAccountFromDB(
+	account = s.recheckSelectedOpenAIAccountForGroup(
 		ctx,
 		account,
+		groupID,
 		requestedModel,
 		requireCompact,
 		requiredCapability,

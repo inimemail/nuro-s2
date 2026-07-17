@@ -264,6 +264,8 @@ func filterSnapshotAccountsForBucket(accounts []Account, bucket SchedulerBucket,
 		if useMixed && account.Platform == PlatformAntigravity && !account.IsMixedSchedulingEnabled() {
 			continue
 		}
+		groupID := bucket.GroupID
+		account.UpstreamBillingGuardGroupBlocked = account.IsUpstreamBillingGuardBlockedForGroup(&groupID)
 		filtered = append(filtered, account)
 	}
 	return filtered

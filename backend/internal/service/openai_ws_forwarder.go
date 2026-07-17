@@ -4604,7 +4604,7 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	if s.getOpenAIWSProtocolResolver().Resolve(account).Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 		return nil, nil
 	}
-	if account.UpstreamBillingGuardBlocked {
+	if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
 		return nil, nil
 	}
 	if shouldClearStickySession(account, requestedModel) || !account.IsOpenAI() || !account.IsSchedulable() || !s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
@@ -4630,7 +4630,7 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 			return nil, nil
 		}
-		if latest.UpstreamBillingGuardBlocked {
+		if latest.IsUpstreamBillingGuardBlockedForGroup(groupID) {
 			return nil, nil
 		}
 		if shouldClearStickySession(latest, requestedModel) || !latest.IsOpenAI() || !latest.IsSchedulable() || !s.latestOpenAIAccountMatchesGroup(ctx, latest, groupID) {

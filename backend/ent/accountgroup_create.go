@@ -50,6 +50,20 @@ func (_c *AccountGroupCreate) SetNillablePriority(v *int) *AccountGroupCreate {
 	return _c
 }
 
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (_c *AccountGroupCreate) SetUpstreamBillingGuardMaxMultiplier(v float64) *AccountGroupCreate {
+	_c.mutation.SetUpstreamBillingGuardMaxMultiplier(v)
+	return _c
+}
+
+// SetNillableUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field if the given value is not nil.
+func (_c *AccountGroupCreate) SetNillableUpstreamBillingGuardMaxMultiplier(v *float64) *AccountGroupCreate {
+	if v != nil {
+		_c.SetUpstreamBillingGuardMaxMultiplier(*v)
+	}
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *AccountGroupCreate) SetCreatedAt(v time.Time) *AccountGroupCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -165,6 +179,10 @@ func (_c *AccountGroupCreate) createSpec() (*AccountGroup, *sqlgraph.CreateSpec)
 	if value, ok := _c.mutation.Priority(); ok {
 		_spec.SetField(accountgroup.FieldPriority, field.TypeInt, value)
 		_node.Priority = value
+	}
+	if value, ok := _c.mutation.UpstreamBillingGuardMaxMultiplier(); ok {
+		_spec.SetField(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
+		_node.UpstreamBillingGuardMaxMultiplier = &value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(accountgroup.FieldCreatedAt, field.TypeTime, value)
@@ -298,6 +316,30 @@ func (u *AccountGroupUpsert) AddPriority(v int) *AccountGroupUpsert {
 	return u
 }
 
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (u *AccountGroupUpsert) SetUpstreamBillingGuardMaxMultiplier(v float64) *AccountGroupUpsert {
+	u.Set(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, v)
+	return u
+}
+
+// UpdateUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field to the value that was provided on create.
+func (u *AccountGroupUpsert) UpdateUpstreamBillingGuardMaxMultiplier() *AccountGroupUpsert {
+	u.SetExcluded(accountgroup.FieldUpstreamBillingGuardMaxMultiplier)
+	return u
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds v to the "upstream_billing_guard_max_multiplier" field.
+func (u *AccountGroupUpsert) AddUpstreamBillingGuardMaxMultiplier(v float64) *AccountGroupUpsert {
+	u.Add(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, v)
+	return u
+}
+
+// ClearUpstreamBillingGuardMaxMultiplier clears the value of the "upstream_billing_guard_max_multiplier" field.
+func (u *AccountGroupUpsert) ClearUpstreamBillingGuardMaxMultiplier() *AccountGroupUpsert {
+	u.SetNull(accountgroup.FieldUpstreamBillingGuardMaxMultiplier)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -389,6 +431,34 @@ func (u *AccountGroupUpsertOne) AddPriority(v int) *AccountGroupUpsertOne {
 func (u *AccountGroupUpsertOne) UpdatePriority() *AccountGroupUpsertOne {
 	return u.Update(func(s *AccountGroupUpsert) {
 		s.UpdatePriority()
+	})
+}
+
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (u *AccountGroupUpsertOne) SetUpstreamBillingGuardMaxMultiplier(v float64) *AccountGroupUpsertOne {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.SetUpstreamBillingGuardMaxMultiplier(v)
+	})
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds v to the "upstream_billing_guard_max_multiplier" field.
+func (u *AccountGroupUpsertOne) AddUpstreamBillingGuardMaxMultiplier(v float64) *AccountGroupUpsertOne {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.AddUpstreamBillingGuardMaxMultiplier(v)
+	})
+}
+
+// UpdateUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field to the value that was provided on create.
+func (u *AccountGroupUpsertOne) UpdateUpstreamBillingGuardMaxMultiplier() *AccountGroupUpsertOne {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.UpdateUpstreamBillingGuardMaxMultiplier()
+	})
+}
+
+// ClearUpstreamBillingGuardMaxMultiplier clears the value of the "upstream_billing_guard_max_multiplier" field.
+func (u *AccountGroupUpsertOne) ClearUpstreamBillingGuardMaxMultiplier() *AccountGroupUpsertOne {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.ClearUpstreamBillingGuardMaxMultiplier()
 	})
 }
 
@@ -626,6 +696,34 @@ func (u *AccountGroupUpsertBulk) AddPriority(v int) *AccountGroupUpsertBulk {
 func (u *AccountGroupUpsertBulk) UpdatePriority() *AccountGroupUpsertBulk {
 	return u.Update(func(s *AccountGroupUpsert) {
 		s.UpdatePriority()
+	})
+}
+
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (u *AccountGroupUpsertBulk) SetUpstreamBillingGuardMaxMultiplier(v float64) *AccountGroupUpsertBulk {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.SetUpstreamBillingGuardMaxMultiplier(v)
+	})
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds v to the "upstream_billing_guard_max_multiplier" field.
+func (u *AccountGroupUpsertBulk) AddUpstreamBillingGuardMaxMultiplier(v float64) *AccountGroupUpsertBulk {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.AddUpstreamBillingGuardMaxMultiplier(v)
+	})
+}
+
+// UpdateUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field to the value that was provided on create.
+func (u *AccountGroupUpsertBulk) UpdateUpstreamBillingGuardMaxMultiplier() *AccountGroupUpsertBulk {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.UpdateUpstreamBillingGuardMaxMultiplier()
+	})
+}
+
+// ClearUpstreamBillingGuardMaxMultiplier clears the value of the "upstream_billing_guard_max_multiplier" field.
+func (u *AccountGroupUpsertBulk) ClearUpstreamBillingGuardMaxMultiplier() *AccountGroupUpsertBulk {
+	return u.Update(func(s *AccountGroupUpsert) {
+		s.ClearUpstreamBillingGuardMaxMultiplier()
 	})
 }
 

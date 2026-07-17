@@ -261,6 +261,38 @@ func TestSchedulerSnapshotListSchedulableAccounts_FiltersStaleGroupMembership(t 
 	}
 }
 
+func TestSchedulerSnapshotListSchedulableAccounts_AppliesBindingScopedBillingGuard(t *testing.T) {
+	observed := 2.0
+	lowLimit := 1.0
+	highLimit := 3.0
+	cache := &snapshotHydrationCache{snapshot: []*Account{{
+		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true,
+		Extra:                                  map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		UpstreamBillingGuardObservedMultiplier: &observed,
+		GroupIDs:                               []int64{10, 20},
+		AccountGroups: []AccountGroup{
+			{GroupID: 10, UpstreamBillingGuardMaxMultiplier: &lowLimit},
+			{GroupID: 20, UpstreamBillingGuardMaxMultiplier: &highLimit},
+		},
+	}}}
+	schedulerSnapshot := NewSchedulerSnapshotService(cache, nil, nil, nil, nil, nil)
+
+	group10 := int64(10)
+	accounts, _, err := schedulerSnapshot.ListSchedulableAccounts(context.Background(), &group10, PlatformOpenAI, false)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1, "guarded accounts stay in the bucket so sticky affinity is preserved")
+	require.True(t, accounts[0].UpstreamBillingGuardGroupBlocked)
+	require.False(t, accounts[0].IsSchedulable())
+
+	group20 := int64(20)
+	accounts, _, err = schedulerSnapshot.ListSchedulableAccounts(context.Background(), &group20, PlatformOpenAI, false)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.False(t, accounts[0].UpstreamBillingGuardGroupBlocked)
+	require.True(t, accounts[0].IsSchedulable())
+}
+
 func TestOpenAINewAcquiredSelectionResult_ReleasesSlotWhenHydrationFails(t *testing.T) {
 	cache := &snapshotHydrationCache{
 		accounts: map[int64]*Account{},

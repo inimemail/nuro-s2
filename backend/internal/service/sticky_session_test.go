@@ -144,9 +144,9 @@ func TestShouldClearStickySession(t *testing.T) {
 		{
 			name: "billing guard keeps sticky binding",
 			account: &Account{
-				Status:                      StatusActive,
-				Schedulable:                 true,
-				UpstreamBillingGuardBlocked: true,
+				Status:                           StatusActive,
+				Schedulable:                      true,
+				UpstreamBillingGuardGroupBlocked: true,
 			},
 			requestedModel: "",
 			want:           false,

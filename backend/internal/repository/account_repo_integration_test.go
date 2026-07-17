@@ -137,6 +137,34 @@ func (s *AccountRepoSuite) TestUpdate() {
 	s.Require().Equal("updated", got.Name)
 }
 
+func (s *AccountRepoSuite) TestUpdatePreservesConcurrentUpstreamBillingProbeSnapshot() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:     "probe-snapshot-update-race",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra: map[string]any{
+			service.UpstreamBillingProbeEnabledExtraKey: true,
+			service.UpstreamBillingProbeExtraKey:        map[string]any{"status": "old"},
+		},
+	})
+	stale, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	_, err = s.repo.sql.ExecContext(s.ctx, `
+		UPDATE accounts
+		SET extra = jsonb_set(extra, '{upstream_billing_probe}', '{"status":"new"}'::jsonb)
+		WHERE id = $1
+	`, account.ID)
+	s.Require().NoError(err)
+
+	stale.Name = "updated-with-current-probe"
+	s.Require().NoError(s.repo.Update(s.ctx, stale))
+	updated, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	snapshot, ok := updated.Extra[service.UpstreamBillingProbeExtraKey].(map[string]any)
+	s.Require().True(ok)
+	s.Require().Equal("new", snapshot["status"])
+}
+
 func (s *AccountRepoSuite) TestUpdate_ClearsBillingGuardWhenAccountIdentityLeavesAPIKey() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{
 		Name:     "guard-identity-transition",
@@ -686,6 +714,38 @@ func (s *AccountRepoSuite) TestListSchedulable() {
 	ids := idsOfAccounts(sched)
 	s.Require().Contains(ids, okAcc.ID)
 	s.Require().NotContains(ids, overloaded.ID)
+}
+
+func (s *AccountRepoSuite) TestListSchedulableCapacityUsesBindingGuardAndAllowsPendingProbe() {
+	lowGroup := mustCreateGroup(s.T(), s.client, &service.Group{Name: "guard-low"})
+	highGroup := mustCreateGroup(s.T(), s.client, &service.Group{Name: "guard-high"})
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:     "group-guard-capacity",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra:    map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true},
+	})
+	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{lowGroup.ID, highGroup.ID}))
+	s.Require().NoError(s.repo.UpdateUpstreamBillingGuardGroupLimits(s.ctx, account.ID, map[int64]float64{
+		lowGroup.ID:  1,
+		highGroup.ID: 3,
+	}))
+
+	rows, err := s.repo.ListSchedulableCapacityByGroupIDs(s.ctx, []int64{lowGroup.ID, highGroup.ID})
+	s.Require().NoError(err)
+	s.Require().Len(rows, 2, "an enabled guard without a first successful probe remains temporarily available")
+
+	_, err = s.repo.sql.ExecContext(s.ctx, `
+		UPDATE accounts
+		SET upstream_billing_guard_observed_multiplier = 2
+		WHERE id = $1
+	`, account.ID)
+	s.Require().NoError(err)
+
+	rows, err = s.repo.ListSchedulableCapacityByGroupIDs(s.ctx, []int64{lowGroup.ID, highGroup.ID})
+	s.Require().NoError(err)
+	s.Require().Len(rows, 1)
+	s.Require().Equal(highGroup.ID, rows[0].GroupID)
 }
 
 func (s *AccountRepoSuite) TestListSchedulableByGroupID_TimeBoundaries_And_StatusUpdates() {

@@ -78,6 +78,33 @@ func (_u *AccountGroupUpdate) AddPriority(v int) *AccountGroupUpdate {
 	return _u
 }
 
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (_u *AccountGroupUpdate) SetUpstreamBillingGuardMaxMultiplier(v float64) *AccountGroupUpdate {
+	_u.mutation.ResetUpstreamBillingGuardMaxMultiplier()
+	_u.mutation.SetUpstreamBillingGuardMaxMultiplier(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field if the given value is not nil.
+func (_u *AccountGroupUpdate) SetNillableUpstreamBillingGuardMaxMultiplier(v *float64) *AccountGroupUpdate {
+	if v != nil {
+		_u.SetUpstreamBillingGuardMaxMultiplier(*v)
+	}
+	return _u
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds value to the "upstream_billing_guard_max_multiplier" field.
+func (_u *AccountGroupUpdate) AddUpstreamBillingGuardMaxMultiplier(v float64) *AccountGroupUpdate {
+	_u.mutation.AddUpstreamBillingGuardMaxMultiplier(v)
+	return _u
+}
+
+// ClearUpstreamBillingGuardMaxMultiplier clears the value of the "upstream_billing_guard_max_multiplier" field.
+func (_u *AccountGroupUpdate) ClearUpstreamBillingGuardMaxMultiplier() *AccountGroupUpdate {
+	_u.mutation.ClearUpstreamBillingGuardMaxMultiplier()
+	return _u
+}
+
 // SetAccount sets the "account" edge to the Account entity.
 func (_u *AccountGroupUpdate) SetAccount(v *Account) *AccountGroupUpdate {
 	return _u.SetAccountID(v.ID)
@@ -160,6 +187,15 @@ func (_u *AccountGroupUpdate) sqlSave(ctx context.Context) (_node int, err error
 	}
 	if value, ok := _u.mutation.AddedPriority(); ok {
 		_spec.AddField(accountgroup.FieldPriority, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardMaxMultiplier(); ok {
+		_spec.SetField(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamBillingGuardMaxMultiplier(); ok {
+		_spec.AddField(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.UpstreamBillingGuardMaxMultiplierCleared() {
+		_spec.ClearField(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64)
 	}
 	if _u.mutation.AccountCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -288,6 +324,33 @@ func (_u *AccountGroupUpdateOne) AddPriority(v int) *AccountGroupUpdateOne {
 	return _u
 }
 
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (_u *AccountGroupUpdateOne) SetUpstreamBillingGuardMaxMultiplier(v float64) *AccountGroupUpdateOne {
+	_u.mutation.ResetUpstreamBillingGuardMaxMultiplier()
+	_u.mutation.SetUpstreamBillingGuardMaxMultiplier(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field if the given value is not nil.
+func (_u *AccountGroupUpdateOne) SetNillableUpstreamBillingGuardMaxMultiplier(v *float64) *AccountGroupUpdateOne {
+	if v != nil {
+		_u.SetUpstreamBillingGuardMaxMultiplier(*v)
+	}
+	return _u
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds value to the "upstream_billing_guard_max_multiplier" field.
+func (_u *AccountGroupUpdateOne) AddUpstreamBillingGuardMaxMultiplier(v float64) *AccountGroupUpdateOne {
+	_u.mutation.AddUpstreamBillingGuardMaxMultiplier(v)
+	return _u
+}
+
+// ClearUpstreamBillingGuardMaxMultiplier clears the value of the "upstream_billing_guard_max_multiplier" field.
+func (_u *AccountGroupUpdateOne) ClearUpstreamBillingGuardMaxMultiplier() *AccountGroupUpdateOne {
+	_u.mutation.ClearUpstreamBillingGuardMaxMultiplier()
+	return _u
+}
+
 // SetAccount sets the "account" edge to the Account entity.
 func (_u *AccountGroupUpdateOne) SetAccount(v *Account) *AccountGroupUpdateOne {
 	return _u.SetAccountID(v.ID)
@@ -402,6 +465,15 @@ func (_u *AccountGroupUpdateOne) sqlSave(ctx context.Context) (_node *AccountGro
 	}
 	if value, ok := _u.mutation.AddedPriority(); ok {
 		_spec.AddField(accountgroup.FieldPriority, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardMaxMultiplier(); ok {
+		_spec.SetField(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamBillingGuardMaxMultiplier(); ok {
+		_spec.AddField(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.UpstreamBillingGuardMaxMultiplierCleared() {
+		_spec.ClearField(accountgroup.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64)
 	}
 	if _u.mutation.AccountCleared() {
 		edge := &sqlgraph.EdgeSpec{

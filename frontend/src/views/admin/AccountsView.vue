@@ -238,7 +238,6 @@
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
           :estimate-row-height="72"
           :overscan="5"
-          :row-class="accountRowClass"
         >
           <template #header-select>
             <input
@@ -1923,8 +1922,7 @@ const accountMatchesCurrentFilters = (account: Account) => {
         account.status !== 'active' ||
         isRateLimited ||
         isTempUnschedulable ||
-        !account.schedulable ||
-        account.upstream_billing_guard_blocked
+        !account.schedulable
       ) return false
     } else if (filters.status === 'rate_limited') {
       if (account.status !== 'active' || !isRateLimited || isTempUnschedulable) return false
@@ -2014,9 +2012,6 @@ const handleAccountUpdated = (updatedAccount: Account) => {
   patchAccountInList(updatedAccount)
   enterAutoRefreshSilentWindow()
 }
-const accountRowClass = (account: Account) => account.upstream_billing_guard_blocked
-  ? 'account-billing-guard-blocked bg-red-50/80 hover:bg-red-100/80 dark:bg-red-950/20 dark:hover:bg-red-950/30'
-  : ''
 const handleProbeUpstreamBilling = async (account: Account) => {
   if (probingUpstreamBillingIDs.value.has(account.id)) return
   probingUpstreamBillingIDs.value = new Set(probingUpstreamBillingIDs.value).add(account.id)
@@ -2308,19 +2303,4 @@ onUnmounted(() => {
   @apply inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md;
 }
 
-:deep(tbody tr.account-billing-guard-blocked > .sticky-col) {
-  background-color: rgb(254 242 242 / 0.8);
-}
-
-:deep(tbody tr.account-billing-guard-blocked:hover > .sticky-col) {
-  background-color: rgb(254 226 226 / 0.8);
-}
-
-:global(.dark) :deep(tbody tr.account-billing-guard-blocked > .sticky-col) {
-  background-color: rgb(69 10 10 / 0.2);
-}
-
-:global(.dark) :deep(tbody tr.account-billing-guard-blocked:hover > .sticky-col) {
-  background-color: rgb(69 10 10 / 0.3);
-}
 </style>

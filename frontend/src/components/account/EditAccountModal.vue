@@ -403,7 +403,7 @@
                 'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
                 upstreamBillingAutoProbeEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
               ]"
-              @click="upstreamBillingAutoProbeEnabled = !upstreamBillingAutoProbeEnabled"
+              @click="toggleUpstreamBillingAutoProbe"
             >
               <span
                 :class="[
@@ -418,30 +418,46 @@
               <div>
                 <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.guard') }}</label>
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  {{ t('admin.accounts.upstreamBilling.guardHint') }}
+                  {{ t('admin.accounts.upstreamBilling.groupGuardHint') }}
                 </p>
               </div>
               <button
                 type="button"
                 data-testid="upstream-billing-guard-toggle"
-                :disabled="!upstreamBillingAutoProbeEnabled && !upstreamBillingGuardEnabled"
                 :aria-label="t('admin.accounts.upstreamBilling.guard')"
                 :class="[
-                  'relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50',
-                  upstreamBillingGuardEnabled ? 'bg-red-600' : 'bg-gray-200 dark:bg-dark-600'
+                  'relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500',
+                  upstreamBillingGuardEnabled ? 'bg-amber-500' : 'bg-gray-200 dark:bg-dark-600'
                 ]"
-                @click="upstreamBillingGuardEnabled = !upstreamBillingGuardEnabled"
+                @click="toggleUpstreamBillingGuard"
               >
                 <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition', upstreamBillingGuardEnabled ? 'translate-x-5' : 'translate-x-0']" />
               </button>
             </div>
-            <label v-if="upstreamBillingGuardEnabled" class="mt-3 block">
-              <span class="input-label">{{ t('admin.accounts.upstreamBilling.guardMaxMultiplier') }}</span>
-              <input v-model.number="upstreamBillingGuardMaxMultiplier" data-testid="upstream-billing-guard-max-multiplier" type="number" min="0" step="0.01" class="input w-full" />
-              <span v-if="account?.upstream_billing_guard_observed_multiplier != null" class="mt-1 block text-xs text-gray-500 dark:text-gray-400">
-                {{ t('admin.accounts.upstreamBilling.guardObserved', { rate: account.upstream_billing_guard_observed_multiplier }) }}
-              </span>
-            </label>
+            <div v-if="upstreamBillingGuardEnabled" class="mt-3 space-y-2">
+              <div
+                v-for="group in selectedUpstreamBillingGuardGroups"
+                :key="group.id"
+                class="grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-3"
+              >
+                <div class="min-w-0">
+                  <div class="truncate text-sm font-medium text-gray-700 dark:text-gray-300" :title="group.name">{{ group.name }}</div>
+                  <div class="text-xs text-gray-400">{{ t('admin.accounts.upstreamBilling.blankMeansUnlimited') }}</div>
+                </div>
+                <input
+                  v-model="upstreamBillingGuardGroupLimits[group.id]"
+                  :data-testid="`upstream-billing-guard-group-${group.id}`"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  class="input h-9"
+                  :placeholder="t('admin.accounts.upstreamBilling.unlimited')"
+                />
+              </div>
+              <p v-if="selectedUpstreamBillingGuardGroups.length === 0" class="text-xs text-amber-600 dark:text-amber-400">
+                {{ t('admin.accounts.upstreamBilling.selectGroupFirst') }}
+              </p>
+            </div>
           </div>
         </div>
 
@@ -3971,7 +3987,8 @@ const grokOAuthCustomBaseUrlEnabled = ref(false)
 const grokOAuthBaseUrl = ref('')
 const upstreamBillingAutoProbeEnabled = ref(false)
 const upstreamBillingGuardEnabled = ref(false)
-const upstreamBillingGuardMaxMultiplier = ref(1)
+const upstreamBillingGuardGroupLimits = reactive<Record<number, number | string | null>>({})
+const initialUpstreamBillingGuardGroupLimits = reactive<Record<number, number>>({})
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(false)
 const autoPause5hThreshold = ref<number | null>(null)
@@ -4433,6 +4450,59 @@ const form = reactive({
   expires_at: null as number | null
 })
 
+const selectedUpstreamBillingGuardGroups = computed(() => {
+  const selected = new Set(form.group_ids)
+  return props.groups.filter((group) => selected.has(group.id))
+})
+
+const clearUpstreamBillingGuardGroupLimits = () => {
+  for (const key of Object.keys(upstreamBillingGuardGroupLimits)) {
+    delete upstreamBillingGuardGroupLimits[Number(key)]
+  }
+}
+
+const clearInitialUpstreamBillingGuardGroupLimits = () => {
+  for (const key of Object.keys(initialUpstreamBillingGuardGroupLimits)) {
+    delete initialUpstreamBillingGuardGroupLimits[Number(key)]
+  }
+}
+
+const upstreamBillingGuardLimitsEqual = (left: Record<number, number>, right: Record<number, number>) => {
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  if (leftKeys.length !== rightKeys.length) return false
+  return leftKeys.every((key) => right[Number(key)] === left[Number(key)])
+}
+
+const toggleUpstreamBillingGuard = () => {
+  upstreamBillingGuardEnabled.value = !upstreamBillingGuardEnabled.value
+  if (upstreamBillingGuardEnabled.value) {
+    upstreamBillingAutoProbeEnabled.value = true
+  } else {
+    clearUpstreamBillingGuardGroupLimits()
+  }
+}
+
+const toggleUpstreamBillingAutoProbe = () => {
+  upstreamBillingAutoProbeEnabled.value = !upstreamBillingAutoProbeEnabled.value
+  if (!upstreamBillingAutoProbeEnabled.value) {
+    upstreamBillingGuardEnabled.value = false
+    clearUpstreamBillingGuardGroupLimits()
+  }
+}
+
+watch(
+  () => [...form.group_ids],
+  (current, previous) => {
+    const currentIDs = new Set(current)
+    for (const removedID of previous || []) {
+      if (!currentIDs.has(removedID)) {
+        delete upstreamBillingGuardGroupLimits[removedID]
+      }
+    }
+  }
+)
+
 const statusOptions = computed(() => {
   const options = [
     { value: 'active', label: t('common.active') },
@@ -4590,10 +4660,16 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   allowOverages.value = false
   const extra = newAccount.extra as Record<string, unknown> | undefined
   upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
-  upstreamBillingGuardEnabled.value = newAccount.upstream_billing_guard_enabled === true
-  upstreamBillingGuardMaxMultiplier.value = typeof newAccount.upstream_billing_guard_max_multiplier === 'number'
-    ? newAccount.upstream_billing_guard_max_multiplier
-    : 1
+  clearUpstreamBillingGuardGroupLimits()
+  clearInitialUpstreamBillingGuardGroupLimits()
+  for (const binding of newAccount.account_groups || []) {
+    const limit = binding.upstream_billing_guard_max_multiplier
+    if (typeof limit === 'number' && Number.isFinite(limit) && limit >= 0) {
+      upstreamBillingGuardGroupLimits[binding.group_id] = limit
+      initialUpstreamBillingGuardGroupLimits[binding.group_id] = limit
+    }
+  }
+  upstreamBillingGuardEnabled.value = Object.keys(upstreamBillingGuardGroupLimits).length > 0
   mixedScheduling.value = extra?.mixed_scheduling === true
   allowOverages.value = extra?.allow_overages === true
   autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
@@ -5527,41 +5603,7 @@ const handleClose = () => {
 const submitUpdateAccount = async (accountID: number, updatePayload: Record<string, unknown>) => {
   submitting.value = true
   try {
-    const managesBillingGuard = props.account?.platform === 'openai' && props.account?.type === 'apikey'
-    const disablingBillingGuard =
-      managesBillingGuard && props.account?.upstream_billing_guard_enabled === true && !upstreamBillingGuardEnabled.value
-    const disablingRequiredAutoProbe = disablingBillingGuard && !upstreamBillingAutoProbeEnabled.value
-
-    // A guarded account cannot persist auto-probe=false while the guard is
-    // enabled. Keep the probe enabled for the ordinary account update, then
-    // disable the guard and only afterward turn probing off. This preserves
-    // the safety invariant when the ordinary update fails or needs a retry.
-    let accountUpdatePayload = updatePayload
-    if (disablingRequiredAutoProbe) {
-      const extra = { ...((updatePayload.extra as Record<string, unknown> | undefined) || {}) }
-      extra.upstream_billing_probe_enabled = true
-      accountUpdatePayload = { ...updatePayload, extra }
-    }
-    let updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag(accountUpdatePayload))
-    if (disablingBillingGuard) {
-      const guardResult = await adminAPI.accounts.updateUpstreamBillingGuard(accountID, {
-        enabled: false,
-        max_multiplier: Math.max(0, Number(upstreamBillingGuardMaxMultiplier.value) || 0)
-      })
-      updatedAccount = guardResult.account
-    }
-    if (disablingRequiredAutoProbe) {
-      updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag({
-        extra: { upstream_billing_probe_enabled: false }
-      }))
-    }
-    if (managesBillingGuard && upstreamBillingGuardEnabled.value) {
-      const guardResult = await adminAPI.accounts.updateUpstreamBillingGuard(accountID, {
-        enabled: true,
-        max_multiplier: Math.max(0, Number(upstreamBillingGuardMaxMultiplier.value) || 0)
-      })
-      updatedAccount = guardResult.account
-    }
+    const updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag(updatePayload))
     appStore.showSuccess(t('admin.accounts.accountUpdated'))
     emit('updated', updatedAccount)
     handleClose()
@@ -5585,10 +5627,6 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
 const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
-  if (upstreamBillingGuardEnabled.value && !upstreamBillingAutoProbeEnabled.value) {
-    appStore.showError(t('admin.accounts.upstreamBilling.guardRequiresAutoProbe'))
-    return
-  }
 
   if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error') {
     appStore.showError(t('admin.accounts.pleaseSelectStatus'))
@@ -6339,6 +6377,25 @@ const handleSubmit = async () => {
       // Quota notify config
       writeQuotaNotifyToExtra(newExtra, 'update')
       updatePayload.extra = newExtra
+    }
+
+    if (showUpstreamBillingProbeConfig.value) {
+      const limits: Record<number, number> = {}
+      if (upstreamBillingGuardEnabled.value) {
+        for (const groupID of form.group_ids) {
+          const raw = upstreamBillingGuardGroupLimits[groupID]
+          if (raw === '' || raw === null || raw === undefined) continue
+          const value = Number(raw)
+          if (!Number.isFinite(value) || value < 0) {
+            appStore.showError(t('admin.accounts.upstreamBilling.invalidGuardLimit'))
+            return
+          }
+          limits[groupID] = value
+        }
+      }
+      if (!upstreamBillingGuardLimitsEqual(limits, initialUpstreamBillingGuardGroupLimits)) {
+        updatePayload.upstream_billing_guard_group_limits = limits
+      }
     }
 
     const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {

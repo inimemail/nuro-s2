@@ -125,6 +125,6 @@ func TestAccountIsSchedulable_QuotaExceeded(t *testing.T) {
 func TestAccountIsSchedulable_BillingGuard(t *testing.T) {
 	account := &Account{Status: StatusActive, Schedulable: true}
 	require.True(t, account.IsSchedulable())
-	account.UpstreamBillingGuardBlocked = true
+	account.UpstreamBillingGuardGroupBlocked = true
 	require.False(t, account.IsSchedulable())
 }

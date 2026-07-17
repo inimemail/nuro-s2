@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 
-const { updateAccountMock, checkMixedChannelRiskMock, updateUpstreamBillingGuardMock } = vi.hoisted(() => ({
+const { updateAccountMock, checkMixedChannelRiskMock, authStoreMock } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
-  updateUpstreamBillingGuardMock: vi.fn()
+  authStoreMock: { isSimpleMode: true }
 }))
 
 vi.mock('@/stores/app', () => ({
@@ -17,17 +17,14 @@ vi.mock('@/stores/app', () => ({
 }))
 
 vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({
-    isSimpleMode: true
-  })
+  useAuthStore: () => authStoreMock
 }))
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
-      checkMixedChannelRisk: checkMixedChannelRiskMock,
-      updateUpstreamBillingGuard: updateUpstreamBillingGuardMock
+      checkMixedChannelRisk: checkMixedChannelRiskMock
     },
     settings: {
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
@@ -116,6 +113,30 @@ const SelectStub = defineComponent({
     </select>
   `
 })
+
+const GroupSelectorStub = defineComponent({
+  name: 'GroupSelector',
+  props: {
+    modelValue: {
+      type: Array,
+      default: () => []
+    }
+  },
+  emits: ['update:modelValue'],
+  template: `
+    <button
+      type="button"
+      data-testid="remove-last-group"
+      @click="$emit('update:modelValue', modelValue.slice(0, -1))"
+    >
+      remove
+    </button>
+  `
+})
+
+function buildGroup(id: number, name: string) {
+  return { id, name, platform: 'openai', status: 'active' } as any
+}
 
 function buildAccount() {
   return {
@@ -258,13 +279,14 @@ function buildAnthropicAPIKeyAccount(poolMode = false) {
   } as any
 }
 
-function mountModal(account = buildAccount()) {
+function mountModal(account = buildAccount(), groups: any[] = [], simpleMode = true) {
+  authStoreMock.isSimpleMode = simpleMode
   return mount(EditAccountModal, {
     props: {
       show: true,
       account,
       proxies: [],
-      groups: []
+      groups
     },
     global: {
       stubs: {
@@ -272,7 +294,7 @@ function mountModal(account = buildAccount()) {
         Select: SelectStub,
         Icon: true,
         ProxySelector: true,
-        GroupSelector: true,
+        GroupSelector: GroupSelectorStub,
         ModelWhitelistSelector: ModelWhitelistSelectorStub
       }
     }
@@ -343,116 +365,160 @@ describe('EditAccountModal', () => {
     expect(credentials).not.toHaveProperty('pool_mode')
   })
 
-  it('updates an enabled billing guard after saving auto-probe state and immediately reevaluates its threshold', async () => {
+  it('loads and submits protection limits from account-group bindings', async () => {
     const account = buildAccount()
+    const groups = [buildGroup(10, 'Primary'), buildGroup(20, 'Backup')]
+    account.group_ids = [10, 20]
+    account.account_groups = [
+      { account_id: account.id, group_id: 10, priority: 1, upstream_billing_guard_max_multiplier: 1 },
+      { account_id: account.id, group_id: 20, priority: 2, upstream_billing_guard_max_multiplier: null }
+    ]
     account.extra = { upstream_billing_probe_enabled: true }
-    account.upstream_billing_guard_enabled = true
-    account.upstream_billing_guard_max_multiplier = 1
-    account.upstream_billing_guard_observed_multiplier = 2
-    account.upstream_billing_guard_blocked = true
     updateAccountMock.mockReset()
-    updateUpstreamBillingGuardMock.mockReset()
     checkMixedChannelRiskMock.mockReset()
     checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
     updateAccountMock.mockResolvedValue(account)
-    updateUpstreamBillingGuardMock.mockResolvedValue({
-      account: { ...account, upstream_billing_guard_max_multiplier: 3, upstream_billing_guard_blocked: false }
-    })
 
-    const wrapper = mountModal(account)
-    await wrapper.get('[data-testid="upstream-billing-guard-max-multiplier"]').setValue('3')
+    const wrapper = mountModal(account, groups)
+    expect((wrapper.get('[data-testid="upstream-billing-guard-group-10"]').element as HTMLInputElement).value).toBe('1')
+    expect((wrapper.get('[data-testid="upstream-billing-guard-group-20"]').element as HTMLInputElement).value).toBe('')
+    await wrapper.get('[data-testid="upstream-billing-guard-group-10"]').setValue('3')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.upstream_billing_probe_enabled).toBe(true)
-    expect(updateUpstreamBillingGuardMock).toHaveBeenCalledWith(account.id, {
-      enabled: true,
-      max_multiplier: 3
-    })
-    expect(updateAccountMock.mock.invocationCallOrder[0]).toBeLessThan(
-      updateUpstreamBillingGuardMock.mock.invocationCallOrder[0]
-    )
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_group_limits).toEqual({ 10: 3 })
   })
 
-  it('disables the billing guard before disabling its required auto probe', async () => {
+  it('does not submit unchanged group protection during an unrelated account edit', async () => {
     const account = buildAccount()
-    account.extra = { upstream_billing_probe_enabled: true }
-    account.upstream_billing_guard_enabled = true
-    account.upstream_billing_guard_max_multiplier = 1
+    const groups = [buildGroup(10, 'Primary')]
+    account.group_ids = [10]
+    account.account_groups = [
+      { account_id: account.id, group_id: 10, priority: 1, upstream_billing_guard_max_multiplier: 1 }
+    ]
+    account.extra = { upstream_billing_probe_enabled: false }
     updateAccountMock.mockReset()
-    updateUpstreamBillingGuardMock.mockReset()
     checkMixedChannelRiskMock.mockReset()
     checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
     updateAccountMock.mockResolvedValue(account)
-    updateUpstreamBillingGuardMock.mockResolvedValue({ account: { ...account, upstream_billing_guard_enabled: false } })
 
-    const wrapper = mountModal(account)
-    await wrapper.get('[data-testid="upstream-billing-guard-toggle"]').trigger('click')
-    await wrapper.get('[data-testid="upstream-billing-auto-probe-toggle"]').trigger('click')
+    const wrapper = mountModal(account, groups)
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(updateUpstreamBillingGuardMock).toHaveBeenCalledWith(account.id, {
-      enabled: false,
-      max_multiplier: 1
-    })
-    expect(updateAccountMock).toHaveBeenCalledTimes(2)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toHaveProperty('upstream_billing_probe_enabled', true)
-    expect(updateAccountMock.mock.calls[1]?.[1]?.extra).toHaveProperty('upstream_billing_probe_enabled', false)
-    expect(updateAccountMock.mock.invocationCallOrder[0]).toBeLessThan(
-      updateUpstreamBillingGuardMock.mock.invocationCallOrder[0]
-    )
-    expect(updateUpstreamBillingGuardMock.mock.invocationCallOrder[0]).toBeLessThan(
-      updateAccountMock.mock.invocationCallOrder[1]
-    )
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('upstream_billing_guard_group_limits')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.upstream_billing_probe_enabled).toBe(false)
   })
 
-  it('allows disabling an active billing guard after auto probe is toggled off first', async () => {
+  it('omits blank group limits so blank means unrestricted', async () => {
     const account = buildAccount()
+    const groups = [buildGroup(10, 'Primary')]
+    account.group_ids = [10]
+    account.account_groups = [
+      { account_id: account.id, group_id: 10, priority: 1, upstream_billing_guard_max_multiplier: 1 }
+    ]
     account.extra = { upstream_billing_probe_enabled: true }
-    account.upstream_billing_guard_enabled = true
-    account.upstream_billing_guard_max_multiplier = 1
     updateAccountMock.mockReset()
-    updateUpstreamBillingGuardMock.mockReset()
     checkMixedChannelRiskMock.mockReset()
     checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
     updateAccountMock.mockResolvedValue(account)
-    updateUpstreamBillingGuardMock.mockResolvedValue({ account: { ...account, upstream_billing_guard_enabled: false } })
 
-    const wrapper = mountModal(account)
-    await wrapper.get('[data-testid="upstream-billing-auto-probe-toggle"]').trigger('click')
-    const guardToggle = wrapper.get('[data-testid="upstream-billing-guard-toggle"]')
-    expect(guardToggle.attributes('disabled')).toBeUndefined()
-    await guardToggle.trigger('click')
+    const wrapper = mountModal(account, groups)
+    await wrapper.get('[data-testid="upstream-billing-guard-group-10"]').setValue('')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(updateUpstreamBillingGuardMock).toHaveBeenCalledWith(account.id, {
-      enabled: false,
-      max_multiplier: 1
-    })
-    expect(updateAccountMock).toHaveBeenCalledTimes(2)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toHaveProperty('upstream_billing_probe_enabled', true)
-    expect(updateAccountMock.mock.calls[1]?.[1]?.extra).toHaveProperty('upstream_billing_probe_enabled', false)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_group_limits).toEqual({})
   })
 
-  it('does not disable a billing guard when the ordinary account update fails', async () => {
+  it('removes a group protection value when the account group is removed', async () => {
     const account = buildAccount()
+    const groups = [buildGroup(10, 'Primary'), buildGroup(20, 'Backup')]
+    account.group_ids = [10, 20]
+    account.account_groups = [
+      { account_id: account.id, group_id: 10, priority: 1, upstream_billing_guard_max_multiplier: 1 },
+      { account_id: account.id, group_id: 20, priority: 2, upstream_billing_guard_max_multiplier: 2 }
+    ]
     account.extra = { upstream_billing_probe_enabled: true }
-    account.upstream_billing_guard_enabled = true
     updateAccountMock.mockReset()
-    updateUpstreamBillingGuardMock.mockReset()
     checkMixedChannelRiskMock.mockReset()
     checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
-    updateAccountMock.mockRejectedValue(new Error('update failed'))
+    updateAccountMock.mockResolvedValue(account)
 
-    const wrapper = mountModal(account)
+    const wrapper = mountModal(account, groups, false)
+    await wrapper.get('[data-testid="remove-last-group"]').trigger('click')
+    expect(wrapper.find('[data-testid="upstream-billing-guard-group-20"]').exists()).toBe(false)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.group_ids).toEqual([10])
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_group_limits).toEqual({ 10: 1 })
+  })
+
+  it('clears all group limits when protection is disabled', async () => {
+    const account = buildAccount()
+    const groups = [buildGroup(10, 'Primary')]
+    account.group_ids = [10]
+    account.account_groups = [
+      { account_id: account.id, group_id: 10, priority: 1, upstream_billing_guard_max_multiplier: 1 }
+    ]
+    account.extra = { upstream_billing_probe_enabled: true }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account, groups)
     await wrapper.get('[data-testid="upstream-billing-guard-toggle"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.upstream_billing_probe_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_group_limits).toEqual({})
+  })
+
+  it('enables automatic probing when group protection is enabled', async () => {
+    const account = buildAccount()
+    const groups = [buildGroup(10, 'Primary')]
+    account.group_ids = [10]
+    account.account_groups = []
+    account.extra = { upstream_billing_probe_enabled: false }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account, groups)
+    await wrapper.get('[data-testid="upstream-billing-guard-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="upstream-billing-guard-group-10"]').setValue('1.5')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.upstream_billing_probe_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_group_limits).toEqual({ 10: 1.5 })
+  })
+
+  it('clears group protection when its required automatic probe is disabled', async () => {
+    const account = buildAccount()
+    const groups = [buildGroup(10, 'Primary')]
+    account.group_ids = [10]
+    account.account_groups = [
+      { account_id: account.id, group_id: 10, priority: 1, upstream_billing_guard_max_multiplier: 1 }
+    ]
+    account.extra = { upstream_billing_probe_enabled: true }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account, groups)
     await wrapper.get('[data-testid="upstream-billing-auto-probe-toggle"]').trigger('click')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(updateUpstreamBillingGuardMock).not.toHaveBeenCalled()
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.upstream_billing_probe_enabled).toBe(false)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_group_limits).toEqual({})
   })
 
   it('removes both cache creation optimization credentials when the switch is turned off', async () => {

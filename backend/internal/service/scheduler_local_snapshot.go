@@ -179,7 +179,7 @@ func cloneSchedulerAccount(account Account) Account {
 	cloned.Credentials = cloneStringAnyMap(account.Credentials)
 	cloned.Extra = cloneStringAnyMap(account.Extra)
 	cloned.GroupIDs = append([]int64(nil), account.GroupIDs...)
-	cloned.AccountGroups = append([]AccountGroup(nil), account.AccountGroups...)
+	cloned.AccountGroups = cloneSchedulerAccountGroups(account.AccountGroups)
 	cloned.Groups = append([]*Group(nil), account.Groups...)
 	cloned.LastUsedAt = cloneTimePtr(account.LastUsedAt)
 	cloned.ExpiresAt = cloneTimePtr(account.ExpiresAt)
@@ -229,6 +229,21 @@ func cloneSchedulerAccount(account Account) Account {
 	cloned.headerOverrideCacheRawLen = 0
 	cloned.headerOverrideCacheRawSig = 0
 	return cloned
+}
+
+func cloneSchedulerAccountGroups(in []AccountGroup) []AccountGroup {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]AccountGroup, len(in))
+	for i := range in {
+		out[i] = in[i]
+		if in[i].UpstreamBillingGuardMaxMultiplier != nil {
+			value := *in[i].UpstreamBillingGuardMaxMultiplier
+			out[i].UpstreamBillingGuardMaxMultiplier = &value
+		}
+	}
+	return out
 }
 
 func cloneFloatPtr(value *float64) *float64 {

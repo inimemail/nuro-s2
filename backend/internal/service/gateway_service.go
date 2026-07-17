@@ -586,7 +586,7 @@ func shouldClearStickySession(account *Account, requestedModel string) bool {
 	}
 	// Billing-rate protection is a reversible scheduling guard. Keep affinity
 	// bindings so cache-warm sessions return to the same account after recovery.
-	if account.UpstreamBillingGuardBlocked {
+	if account.UpstreamBillingGuardGroupBlocked {
 		return false
 	}
 	if !account.IsSchedulable() {

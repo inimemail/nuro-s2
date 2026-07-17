@@ -51,6 +51,9 @@ type Account struct {
 	UpstreamBillingGuardBlocked            bool
 	UpstreamBillingGuardObservedMultiplier *float64
 	UpstreamBillingGuardEvaluatedAt        *time.Time
+	// Runtime-only, per scheduler bucket. It is derived from the matching
+	// AccountGroup binding and never persisted on accounts.
+	UpstreamBillingGuardGroupBlocked bool
 
 	RateLimitedAt    *time.Time
 	RateLimitResetAt *time.Time
@@ -199,7 +202,7 @@ func (a *Account) EffectiveLoadFactor() int {
 }
 
 func (a *Account) IsSchedulable() bool {
-	if !a.IsActive() || !a.Schedulable || a.UpstreamBillingGuardBlocked {
+	if !a.IsActive() || !a.Schedulable || a.UpstreamBillingGuardGroupBlocked {
 		return false
 	}
 	now := time.Now()
@@ -219,6 +222,42 @@ func (a *Account) IsSchedulable() bool {
 		return false
 	}
 	return true
+}
+
+func (a *Account) IsUpstreamBillingProbeEnabled() bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra[UpstreamBillingProbeEnabledExtraKey].(bool)
+	return ok && enabled
+}
+
+func (a *Account) UpstreamBillingGuardLimitForGroup(groupID *int64) (*float64, bool) {
+	if a == nil || groupID == nil || *groupID <= 0 || a.Platform != PlatformOpenAI || a.Type != AccountTypeAPIKey {
+		return nil, false
+	}
+	for i := range a.AccountGroups {
+		binding := &a.AccountGroups[i]
+		if binding.GroupID == *groupID && binding.UpstreamBillingGuardMaxMultiplier != nil {
+			return binding.UpstreamBillingGuardMaxMultiplier, true
+		}
+	}
+	return nil, false
+}
+
+// IsUpstreamBillingGuardBlockedForGroup makes an account x group decision.
+// Missing limit means unrestricted. A configured guard requires automatic
+// probing; an enabled probe with no first successful observation is allowed
+// while waiting. A successful value <= the limit restores scheduling.
+func (a *Account) IsUpstreamBillingGuardBlockedForGroup(groupID *int64) bool {
+	limit, configured := a.UpstreamBillingGuardLimitForGroup(groupID)
+	if !configured || limit == nil {
+		return false
+	}
+	if !a.IsUpstreamBillingProbeEnabled() {
+		return true
+	}
+	return a.UpstreamBillingGuardObservedMultiplier != nil && *a.UpstreamBillingGuardObservedMultiplier > *limit
 }
 
 // IsCredentialUsableForShadow reports whether this parent account can provide

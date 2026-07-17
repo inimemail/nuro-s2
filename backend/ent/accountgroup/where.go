@@ -25,6 +25,11 @@ func Priority(v int) predicate.AccountGroup {
 	return predicate.AccountGroup(sql.FieldEQ(FieldPriority, v))
 }
 
+// UpstreamBillingGuardMaxMultiplier applies equality check predicate on the "upstream_billing_guard_max_multiplier" field. It's identical to UpstreamBillingGuardMaxMultiplierEQ.
+func UpstreamBillingGuardMaxMultiplier(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldEQ(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
 // CreatedAt applies equality check predicate on the "created_at" field. It's identical to CreatedAtEQ.
 func CreatedAt(v time.Time) predicate.AccountGroup {
 	return predicate.AccountGroup(sql.FieldEQ(FieldCreatedAt, v))
@@ -108,6 +113,56 @@ func PriorityLT(v int) predicate.AccountGroup {
 // PriorityLTE applies the LTE predicate on the "priority" field.
 func PriorityLTE(v int) predicate.AccountGroup {
 	return predicate.AccountGroup(sql.FieldLTE(FieldPriority, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierEQ applies the EQ predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierEQ(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldEQ(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierNEQ applies the NEQ predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierNEQ(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldNEQ(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierIn applies the In predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierIn(vs ...float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldIn(FieldUpstreamBillingGuardMaxMultiplier, vs...))
+}
+
+// UpstreamBillingGuardMaxMultiplierNotIn applies the NotIn predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierNotIn(vs ...float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldNotIn(FieldUpstreamBillingGuardMaxMultiplier, vs...))
+}
+
+// UpstreamBillingGuardMaxMultiplierGT applies the GT predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierGT(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldGT(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierGTE applies the GTE predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierGTE(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldGTE(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierLT applies the LT predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierLT(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldLT(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierLTE applies the LTE predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierLTE(v float64) predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldLTE(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierIsNil applies the IsNil predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierIsNil() predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldIsNull(FieldUpstreamBillingGuardMaxMultiplier))
+}
+
+// UpstreamBillingGuardMaxMultiplierNotNil applies the NotNil predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierNotNil() predicate.AccountGroup {
+	return predicate.AccountGroup(sql.FieldNotNull(FieldUpstreamBillingGuardMaxMultiplier))
 }
 
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -340,21 +341,22 @@ type ShadowOptions struct {
 }
 
 type UpdateAccountInput struct {
-	Name                  string
-	Notes                 *string
-	Type                  string // Account type: oauth, setup-token, apikey
-	Credentials           map[string]any
-	Extra                 map[string]any
-	ProxyID               *int64
-	Concurrency           *int     // 使用指针区分"未提供"和"设置为0"
-	Priority              *int     // 使用指针区分"未提供"和"设置为0"
-	RateMultiplier        *float64 // 账号计费倍率（>=0，允许 0）
-	LoadFactor            *int
-	Status                string
-	GroupIDs              *[]int64
-	ExpiresAt             *int64
-	AutoPauseOnExpired    *bool
-	SkipMixedChannelCheck bool // 跳过混合渠道检查（用户已确认风险）
+	Name                            string
+	Notes                           *string
+	Type                            string // Account type: oauth, setup-token, apikey
+	Credentials                     map[string]any
+	Extra                           map[string]any
+	ProxyID                         *int64
+	Concurrency                     *int     // 使用指针区分"未提供"和"设置为0"
+	Priority                        *int     // 使用指针区分"未提供"和"设置为0"
+	RateMultiplier                  *float64 // 账号计费倍率（>=0，允许 0）
+	LoadFactor                      *int
+	Status                          string
+	GroupIDs                        *[]int64
+	UpstreamBillingGuardGroupLimits *map[int64]float64
+	ExpiresAt                       *int64
+	AutoPauseOnExpired              *bool
+	SkipMixedChannelCheck           bool // 跳过混合渠道检查（用户已确认风险）
 }
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.
@@ -3185,17 +3187,28 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if err != nil {
 		return nil, err
 	}
+	if input.UpstreamBillingGuardGroupLimits != nil && len(*input.UpstreamBillingGuardGroupLimits) > 0 {
+		if account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
+			return nil, ErrUpstreamBillingProbeAccountInvalid
+		}
+		for groupID, limit := range *input.UpstreamBillingGuardGroupLimits {
+			if groupID <= 0 || limit < 0 || math.IsNaN(limit) || math.IsInf(limit, 0) {
+				return nil, errors.New("upstream billing guard group limits must use positive group IDs and finite values >= 0")
+			}
+		}
+		if input.Extra == nil {
+			input.Extra = maps.Clone(account.Extra)
+		}
+		if input.Extra == nil {
+			input.Extra = make(map[string]any)
+		}
+		input.Extra[UpstreamBillingProbeEnabledExtraKey] = true
+	}
 	var normalizedExtra map[string]any
 	if input.Extra != nil {
 		normalizedExtra, err = normalizeOpenAILongContextBillingUpdateExtra(account, input)
 		if err != nil {
 			return nil, err
-		}
-		if account.UpstreamBillingGuardEnabled {
-			autoProbeEnabled, _ := normalizedExtra[UpstreamBillingProbeEnabledExtraKey].(bool)
-			if !autoProbeEnabled {
-				return nil, ErrUpstreamBillingProbeRequiredByGuard
-			}
 		}
 	}
 	wasOveragesEnabled := account.IsOveragesEnabled()
@@ -3324,6 +3337,21 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			}
 		}
 	}
+	effectiveGroupIDs := account.GroupIDs
+	if input.GroupIDs != nil {
+		effectiveGroupIDs = *input.GroupIDs
+	}
+	if input.UpstreamBillingGuardGroupLimits != nil {
+		allowed := make(map[int64]struct{}, len(effectiveGroupIDs))
+		for _, groupID := range effectiveGroupIDs {
+			allowed[groupID] = struct{}{}
+		}
+		for groupID := range *input.UpstreamBillingGuardGroupLimits {
+			if _, ok := allowed[groupID]; !ok {
+				return nil, fmt.Errorf("upstream billing guard group %d is not bound to this account", groupID)
+			}
+		}
+	}
 
 	if err := s.accountRepo.Update(ctx, account); err != nil {
 		return nil, err
@@ -3337,6 +3365,17 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	// 绑定分组
 	if input.GroupIDs != nil {
 		if err := s.accountRepo.BindGroups(ctx, account.ID, *input.GroupIDs); err != nil {
+			return nil, err
+		}
+	}
+	if input.UpstreamBillingGuardGroupLimits != nil {
+		updater, ok := s.accountRepo.(interface {
+			UpdateUpstreamBillingGuardGroupLimits(context.Context, int64, map[int64]float64) error
+		})
+		if !ok {
+			return nil, errors.New("account group billing guard repository is unavailable")
+		}
+		if err := updater.UpdateUpstreamBillingGuardGroupLimits(ctx, account.ID, *input.UpstreamBillingGuardGroupLimits); err != nil {
 			return nil, err
 		}
 	}

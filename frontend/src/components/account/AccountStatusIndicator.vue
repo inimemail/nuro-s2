@@ -460,9 +460,6 @@ const statusClass = computed(() => {
   if (hasError.value) {
     return 'badge-danger'
   }
-  if (props.account.upstream_billing_guard_blocked) {
-    return 'badge-danger'
-  }
   if (isTempUnschedulable.value) {
     return 'badge-warning'
   }
@@ -482,9 +479,6 @@ const statusClass = computed(() => {
 const statusText = computed(() => {
   if (hasError.value) {
     return t('admin.accounts.status.error')
-  }
-  if (props.account.upstream_billing_guard_blocked) {
-    return t('admin.accounts.status.billingGuardBlocked')
   }
   if (isTempUnschedulable.value) {
     return t('admin.accounts.status.tempUnschedulable')

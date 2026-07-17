@@ -32,6 +32,11 @@ func (AccountGroup) Fields() []ent.Field {
 		field.Int64("group_id"),
 		field.Int("priority").
 			Default(50),
+		field.Float("upstream_billing_guard_max_multiplier").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "double precision"}).
+			Comment("上游倍率保护上限；NULL 表示此账号在该分组不限制"),
 		field.Time("created_at").
 			Immutable().
 			Default(time.Now).

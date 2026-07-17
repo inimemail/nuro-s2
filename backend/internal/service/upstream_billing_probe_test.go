@@ -3,11 +3,22 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"regexp"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 )
+
+const upstreamBillingProbeSuccessBody = `{"object":"sub2api.key_billing","schema_version":1,"billing_scope":"token","group_rate_multiplier":1.2,"resolved_rate_multiplier":1.2,"peak_rate_enabled":false,"effective_rate_multiplier":1.2,"observed_at":"2026-07-16T04:00:00Z"}`
 
 type upstreamBillingProbeAccountRepoStub struct {
 	AccountRepository
@@ -16,6 +27,123 @@ type upstreamBillingProbeAccountRepoStub struct {
 	lastSnapshot *UpstreamBillingProbeSnapshot
 	lastObserved *float64
 	guardUpdates []UpstreamBillingGuardSettings
+}
+
+type upstreamBillingProbeConcurrentRepo struct {
+	AccountRepository
+	accounts map[int64]*Account
+}
+
+func cloneUpstreamBillingProbeTestMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func (r *upstreamBillingProbeConcurrentRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	account := r.accounts[id]
+	if account == nil {
+		return nil, ErrAccountNotFound
+	}
+	copy := *account
+	copy.Extra = cloneUpstreamBillingProbeTestMap(account.Extra)
+	copy.Credentials = cloneUpstreamBillingProbeTestMap(account.Credentials)
+	return &copy, nil
+}
+
+func (r *upstreamBillingProbeConcurrentRepo) FindByExtraField(ctx context.Context, _ string, _ any) ([]Account, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	accounts := make([]Account, 0, len(r.accounts))
+	for _, account := range r.accounts {
+		copy := *account
+		copy.Extra = cloneUpstreamBillingProbeTestMap(account.Extra)
+		copy.Credentials = cloneUpstreamBillingProbeTestMap(account.Credentials)
+		accounts = append(accounts, copy)
+	}
+	return accounts, nil
+}
+
+func (r *upstreamBillingProbeConcurrentRepo) UpdateUpstreamBillingProbeSnapshot(ctx context.Context, _ *Account, _ *UpstreamBillingProbeSnapshot, _ *float64) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+type upstreamBillingProbeBlockingUpstream struct {
+	started chan struct{}
+	release chan struct{}
+	err     error
+	calls   atomic.Int32
+	active  atomic.Int32
+	max     atomic.Int32
+}
+
+func newUpstreamBillingProbeBlockingUpstream() *upstreamBillingProbeBlockingUpstream {
+	return &upstreamBillingProbeBlockingUpstream{
+		started: make(chan struct{}, UpstreamBillingProbeMaxBatchSize),
+		release: make(chan struct{}),
+	}
+}
+
+func (u *upstreamBillingProbeBlockingUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	u.calls.Add(1)
+	active := u.active.Add(1)
+	for {
+		maximum := u.max.Load()
+		if active <= maximum || u.max.CompareAndSwap(maximum, active) {
+			break
+		}
+	}
+	u.started <- struct{}{}
+	select {
+	case <-u.release:
+	case <-req.Context().Done():
+		u.active.Add(-1)
+		return nil, req.Context().Err()
+	}
+	u.active.Add(-1)
+	if u.err != nil {
+		return nil, u.err
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(upstreamBillingProbeSuccessBody)),
+	}, nil
+}
+
+func (u *upstreamBillingProbeBlockingUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+func upstreamBillingProbeTestAccounts(count int) map[int64]*Account {
+	accounts := make(map[int64]*Account, count)
+	for i := 1; i <= count; i++ {
+		id := int64(i)
+		accounts[id] = &Account{
+			ID: id, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+			Credentials: map[string]any{"api_key": "test-key"},
+			Extra:       map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		}
+	}
+	return accounts
+}
+
+func newConcurrentUpstreamBillingProbeService(repo AccountRepository, upstream HTTPUpstream) *UpstreamBillingProbeService {
+	return NewUpstreamBillingProbeService(repo, &AccountTestService{
+		httpUpstream: upstream,
+		cfg:          &config.Config{},
+	}, nil)
 }
 
 func (r *upstreamBillingProbeAccountRepoStub) GetByID(context.Context, int64) (*Account, error) {
@@ -114,6 +242,131 @@ func TestUpstreamBillingProbeSettingsDefaultDisabledAndPersisted(t *testing.T) {
 	legacy, err := svc.GetUpstreamBillingProbeSettings(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, 1800, legacy.IntervalSeconds)
+}
+
+func TestUpstreamBillingProbeConstructorUsesConfiguredConcurrency(t *testing.T) {
+	svc := NewUpstreamBillingProbeService(nil, nil, nil)
+	require.Equal(t, 16, upstreamBillingProbeConcurrency)
+	require.Equal(t, upstreamBillingProbeConcurrency, cap(svc.probeSlots))
+}
+
+func TestUpstreamBillingProbeRunDueRespectsConcurrencyLimit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT pg_try_advisory_lock($1)")).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"pg_try_advisory_lock"}).AddRow(true))
+	mock.ExpectExec(regexp.QuoteMeta("SELECT pg_advisory_unlock($1)")).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	repo := &upstreamBillingProbeConcurrentRepo{accounts: upstreamBillingProbeTestAccounts(UpstreamBillingProbeMaxBatchSize)}
+	upstream := newUpstreamBillingProbeBlockingUpstream()
+	settingsRepo := &upstreamBillingSettingRepo{values: map[string]string{
+		SettingKeyUpstreamBillingProbeSettings: `{"enabled":true,"interval_seconds":5}`,
+	}}
+	svc := newConcurrentUpstreamBillingProbeService(repo, upstream)
+	svc.settingService = &SettingService{settingRepo: settingsRepo}
+	svc.db = db
+
+	done := make(chan error, 1)
+	go func() { done <- svc.RunDue(context.Background()) }()
+	for i := 0; i < upstreamBillingProbeConcurrency; i++ {
+		select {
+		case <-upstream.started:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for scheduled probe %d", i+1)
+		}
+	}
+	select {
+	case <-upstream.started:
+		t.Fatal("scheduled probes exceeded the configured concurrency")
+	case <-time.After(50 * time.Millisecond):
+	}
+	require.Equal(t, int32(upstreamBillingProbeConcurrency), upstream.active.Load())
+	require.Equal(t, int32(upstreamBillingProbeConcurrency), upstream.max.Load())
+
+	close(upstream.release)
+	require.NoError(t, <-done)
+	require.LessOrEqual(t, upstream.max.Load(), int32(upstreamBillingProbeConcurrency))
+	require.Equal(t, 0, len(svc.probeSlots))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpstreamBillingProbeManualAndScheduledDeduplicateSameAccount(t *testing.T) {
+	repo := &upstreamBillingProbeConcurrentRepo{accounts: upstreamBillingProbeTestAccounts(1)}
+	upstream := newUpstreamBillingProbeBlockingUpstream()
+	svc := newConcurrentUpstreamBillingProbeService(repo, upstream)
+
+	manualDone := make(chan error, 1)
+	go func() {
+		_, err := svc.ProbeAccount(context.Background(), 1)
+		manualDone <- err
+	}()
+	select {
+	case <-upstream.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for manual probe")
+	}
+
+	scheduledDone := make(chan error, 1)
+	go func() {
+		_, err := svc.probeScheduledAccount(context.Background(), 1, 5)
+		scheduledDone <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(upstream.release)
+
+	require.NoError(t, <-manualDone)
+	require.NoError(t, <-scheduledDone)
+	require.Equal(t, int32(1), upstream.calls.Load())
+	require.Equal(t, 0, len(svc.probeSlots))
+}
+
+func TestUpstreamBillingProbeCancellationReleasesSlot(t *testing.T) {
+	repo := &upstreamBillingProbeConcurrentRepo{accounts: upstreamBillingProbeTestAccounts(1)}
+	upstream := newUpstreamBillingProbeBlockingUpstream()
+	svc := newConcurrentUpstreamBillingProbeService(repo, upstream)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.ProbeAccount(ctx, 1)
+		done <- err
+	}()
+	select {
+	case <-upstream.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for cancellable probe")
+	}
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.Equal(t, int32(0), upstream.active.Load())
+	require.Equal(t, 0, len(svc.probeSlots))
+}
+
+func TestUpstreamBillingProbeFailureReleasesSlot(t *testing.T) {
+	repo := &upstreamBillingProbeConcurrentRepo{accounts: upstreamBillingProbeTestAccounts(1)}
+	upstream := newUpstreamBillingProbeBlockingUpstream()
+	upstream.err = errors.New("upstream unavailable")
+	svc := newConcurrentUpstreamBillingProbeService(repo, upstream)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.ProbeAccount(context.Background(), 1)
+		done <- err
+	}()
+	select {
+	case <-upstream.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for failing probe")
+	}
+	close(upstream.release)
+	require.NoError(t, <-done)
+	require.Equal(t, int32(0), upstream.active.Load())
+	require.Equal(t, 0, len(svc.probeSlots))
 }
 
 func TestParseUpstreamBillingProbeResponseSanitizesAndValidates(t *testing.T) {

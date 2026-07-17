@@ -944,6 +944,7 @@ export interface Account {
   proxy?: Proxy
   group_ids?: number[] // Groups this account belongs to
   groups?: Group[] // Preloaded group objects
+  account_groups?: AccountGroupBinding[]
 
   // Rate limit & scheduling fields
   schedulable: boolean
@@ -1037,6 +1038,15 @@ export interface Account {
   current_rpm?: number | null // 当前分钟 RPM 计数
   parent_account_id?: number | null
   quota_dimension?: string
+}
+
+export interface AccountGroupBinding {
+  account_id: number
+  group_id: number
+  priority: number
+  upstream_billing_guard_max_multiplier: number | null
+  created_at: string
+  group?: Group
 }
 
 // Account Usage types
@@ -1243,6 +1253,7 @@ export interface UpdateAccountRequest {
   schedulable?: boolean
   status?: 'active' | 'inactive' | 'error'
   group_ids?: number[]
+  upstream_billing_guard_group_limits?: Record<number, number>
   expires_at?: number | null
   auto_pause_on_expired?: boolean
   confirm_mixed_channel_risk?: boolean

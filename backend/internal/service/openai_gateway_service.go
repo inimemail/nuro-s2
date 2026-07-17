@@ -2193,6 +2193,9 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if err != nil {
 		return nil
 	}
+	if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
+		return nil
+	}
 
 	// 检查账号是否需要清理粘性会话
 	// Check if sticky session should be cleared
@@ -2213,6 +2216,9 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
 	if account == nil {
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		return nil
+	}
+	if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
 		return nil
 	}
 	if !s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
@@ -2272,7 +2278,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		if fresh == nil {
 			continue
 		}
-		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform...)
+		fresh = s.recheckSelectedOpenAIAccountForGroup(ctx, fresh, groupID, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform...)
 		if fresh == nil {
 			continue
 		}
@@ -2469,6 +2475,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
 			if err == nil {
+				if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
+					stickyBusyPreserve = true
+					goto openAIGroupGuardFallback
+				}
 				isPromptCacheAffinity := IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash)
 				clearSticky := shouldClearStickySession(account, requestedModel)
 				if clearSticky {
@@ -2488,6 +2498,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						if sessionHash != "" {
 							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						}
+					} else if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
+						stickyBusyPreserve = true
 					} else if !s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
 						if sessionHash != "" {
 							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
@@ -2532,6 +2544,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	// ============ Layer 2: Load-aware selection ============
+openAIGroupGuardFallback:
+	;
 	baseCandidateCount := 0
 	candidates := make([]*Account, 0, len(accounts))
 	parentCacheL2 := make(map[int64]*Account)
@@ -2673,7 +2687,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			if fresh == nil {
 				continue
 			}
-			fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
+			fresh = s.recheckSelectedOpenAIAccountForGroup(ctx, fresh, groupID, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
 			if fresh == nil {
 				continue
 			}
@@ -2712,7 +2726,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			if fresh == nil {
 				continue
 			}
-			fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
+			fresh = s.recheckSelectedOpenAIAccountForGroup(ctx, fresh, groupID, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
 			if fresh == nil {
 				continue
 			}
@@ -2757,7 +2771,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if fresh == nil {
 			continue
 		}
-		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
+		fresh = s.recheckSelectedOpenAIAccountForGroup(ctx, fresh, groupID, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
 		if fresh == nil {
 			continue
 		}
@@ -3044,6 +3058,14 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		return nil
 	}
 	if s.isOpenAIAccountRuntimeBlocked(latest) {
+		return nil
+	}
+	return latest
+}
+
+func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountForGroup(ctx context.Context, account *Account, groupID *int64, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requestPlatform ...string) *Account {
+	latest := s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...)
+	if latest == nil || latest.IsUpstreamBillingGuardBlockedForGroup(groupID) {
 		return nil
 	}
 	return latest

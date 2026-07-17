@@ -429,6 +429,7 @@ func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.A
 }
 
 func marshalSchedulerCacheAccount(account service.Account) ([]byte, []byte, error) {
+	account.UpstreamBillingGuardGroupBlocked = false
 	fullPayload, err := json.Marshal(account)
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal account: %w", err)
@@ -479,15 +480,11 @@ func buildSchedulerMetadataAccount(account service.Account) service.Account {
 		ExpiresAt:          account.ExpiresAt,
 		AutoPauseOnExpired: account.AutoPauseOnExpired,
 		Schedulable:        account.Schedulable,
-		// Keep the billing guard decision in the slim payload. Snapshot reads
-		// intentionally avoid the full account payload, so omitting this field
-		// would allow a just-blocked account to pass IsSchedulable until the
-		// next bucket rebuild completes.
-		UpstreamBillingGuardEnabled:            account.UpstreamBillingGuardEnabled,
-		UpstreamBillingGuardMaxMultiplier:      account.UpstreamBillingGuardMaxMultiplier,
-		UpstreamBillingGuardBlocked:            account.UpstreamBillingGuardBlocked,
+		// Binding-scoped protection only needs the last successful observation;
+		// limits and the account probe toggle are carried below with their own
+		// scheduler metadata. Legacy account-global guard fields stay out of the
+		// hot snapshot payload because they no longer affect scheduling.
 		UpstreamBillingGuardObservedMultiplier: account.UpstreamBillingGuardObservedMultiplier,
-		UpstreamBillingGuardEvaluatedAt:        account.UpstreamBillingGuardEvaluatedAt,
 		RateLimitedAt:                          account.RateLimitedAt,
 		RateLimitResetAt:                       account.RateLimitResetAt,
 		OverloadUntil:                          account.OverloadUntil,
@@ -516,10 +513,11 @@ func filterSchedulerAccountGroups(accountGroups []service.AccountGroup) []servic
 			continue
 		}
 		filtered = append(filtered, service.AccountGroup{
-			AccountID: ag.AccountID,
-			GroupID:   ag.GroupID,
-			Priority:  ag.Priority,
-			CreatedAt: ag.CreatedAt,
+			AccountID:                         ag.AccountID,
+			GroupID:                           ag.GroupID,
+			Priority:                          ag.Priority,
+			UpstreamBillingGuardMaxMultiplier: cloneFloat64Ptr(ag.UpstreamBillingGuardMaxMultiplier),
+			CreatedAt:                         ag.CreatedAt,
 		})
 	}
 	if len(filtered) == 0 {
@@ -614,6 +612,7 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		return nil
 	}
 	keys := []string{
+		service.UpstreamBillingProbeEnabledExtraKey,
 		"mixed_scheduling",
 		"allow_overages",
 		"privacy_mode",
@@ -678,4 +677,12 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		return nil
 	}
 	return filtered
+}
+
+func cloneFloat64Ptr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
