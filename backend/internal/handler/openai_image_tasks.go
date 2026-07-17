@@ -467,6 +467,9 @@ func (h *OpenAIGatewayHandler) createStandardAsyncImageTask(c *gin.Context, endp
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "stream=true is not supported for image tasks")
 		return
 	}
+	if hasPromptAuditCollector(c) {
+		capturePromptAuditRequest(c, apiKey, subject, service.ContentModerationProtocolOpenAIImages, parsed.Model, parsed.ModerationBody())
+	}
 	ownerID := openAIImageTaskOwnerID(apiKey)
 	taskID := standardOpenAIImageTaskID(ownerID, endpoint, c.GetHeader("Idempotency-Key"))
 	pollURL := standardOpenAIImageTaskPollURL(c.Request.URL.Path, taskID)
@@ -657,6 +660,9 @@ func (h *OpenAIGatewayHandler) createImageTask(c *gin.Context, endpoint string) 
 	if parsed.Stream {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "stream=true is not supported for image tasks")
 		return
+	}
+	if hasPromptAuditCollector(c) {
+		capturePromptAuditRequest(c, apiKey, subject, service.ContentModerationProtocolOpenAIImages, parsed.Model, parsed.ModerationBody())
 	}
 
 	taskBody, err := stripOpenAIImageTaskFields(body, c.GetHeader("Content-Type"))

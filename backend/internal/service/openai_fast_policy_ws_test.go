@@ -1061,6 +1061,24 @@ func TestPassthroughUsageMeta_TracksReasoningEffortAcrossTurns(t *testing.T) {
 	require.Nil(t, meta.reasoningEffort.Load(), "新的 response.create 无 effort 且无可推导后缀时必须清空旧值")
 }
 
+func TestPassthroughUsageMeta_BinarySessionUpdateUsesCommonStatePath(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	meta := newOpenAIWSPassthroughUsageMeta("gpt-4o", nil)
+	capturedModel := "gpt-4o"
+	sessionUpdate := []byte(`{"type":"session.update","session":{"model":"gpt-5-high"}}`)
+
+	require.True(t, applyOpenAIWSPassthroughFrameSessionState(
+		coderws.MessageBinary, sessionUpdate, account, &capturedModel, meta,
+	))
+	require.Equal(t, "gpt-5-high", capturedModel)
+	require.Equal(t, "gpt-5-high", meta.requestModelForFrame([]byte(`{"type":"response.create"}`)))
+
+	require.False(t, applyOpenAIWSPassthroughFrameSessionState(
+		coderws.MessageBinary, []byte{0xff, 0x00}, account, &capturedModel, meta,
+	))
+	require.Equal(t, "gpt-5-high", capturedModel)
+}
+
 // TestPassthroughBilling_BlockedFrameDoesNotMutateServiceTier locks in the
 // "block keeps previous" semantic: when policy returns block on a
 // response.create frame, that frame is never sent upstream, so billing tier

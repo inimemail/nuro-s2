@@ -1280,11 +1280,11 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	if account != nil && account.Type == AccountTypeOAuth {
 		enforceCodexIdentityHeaders(headers)
 	}
+	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）。
+	account.ApplyHeaderOverrides(headers)
 	if strongIsolationEnabled {
 		applyOpenAIUpstreamStrongIsolationHeaderMap(headers)
 	}
-	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）。
-	account.ApplyHeaderOverrides(headers)
 
 	return headers, sessionResolution, nil
 }
@@ -2839,7 +2839,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			normalized = next
 		}
-		imageIntent := IsImageGenerationIntent(openAIResponsesEndpoint, originalModel, normalized)
+		imageIntent := IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, normalized)
 		if imageIntent && !GroupAllowsImageGeneration(apiKeyGroup(getAPIKeyFromContext(c))) {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, ImageGenerationPermissionMessage(), nil)
 		}
@@ -2903,7 +2903,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			promptCacheKey = strings.TrimSpace(gjson.GetBytes(normalized, "prompt_cache_key").String())
 			previousResponseID = ""
 		}
-		optimized, optimizationResult, optimizationErr := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, normalized)
+		optimized, optimizationResult, optimizationErr := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, upstreamModel, normalized, imageIntent)
 		if optimizationErr != nil {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", optimizationErr)
 		}

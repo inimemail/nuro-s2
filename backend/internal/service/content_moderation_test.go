@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,12 @@ import (
 
 type contentModerationTestSettingRepo struct {
 	values map[string]string
+}
+
+type contentModerationRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f contentModerationRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func (r *contentModerationTestSettingRepo) Get(ctx context.Context, key string) (*Setting, error) {
@@ -1425,6 +1432,32 @@ func TestContentModerationCheck_PreHashUsesRedisHashCache(t *testing.T) {
 	require.Zero(t, logs[0].ViolationCount)
 	require.False(t, logs[0].AutoBanned)
 	require.Empty(t, userRepo.updated)
+}
+
+func TestContentModerationUpstreamErrorDoesNotExposeBodyOrEndpoint(t *testing.T) {
+	const canary = "https://moderation-private.example Authorization=secret <html>provider diagnostics</html>"
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil)
+	svc.httpClient = &http.Client{Transport: contentModerationRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(canary)),
+			Request:    req,
+		}, nil
+	})}
+	status := 0
+	_, err := svc.callModerationOnceWithInput(context.Background(), &ContentModerationConfig{
+		BaseURL:   "https://moderation-private.example",
+		Model:     "moderation-test",
+		TimeoutMS: 1000,
+	}, "sk-test", "hello", &status)
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadGateway, status)
+	require.Equal(t, "moderation service returned HTTP 502", err.Error())
+	require.NotContains(t, err.Error(), "moderation-private.example")
+	require.NotContains(t, err.Error(), "Authorization")
+	require.NotContains(t, err.Error(), "provider diagnostics")
 }
 
 func TestContentModerationCheck_HashBlockLogsDoNotIncreaseNextViolationCount(t *testing.T) {

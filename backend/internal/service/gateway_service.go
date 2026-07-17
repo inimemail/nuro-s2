@@ -5796,15 +5796,6 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 	body = s.applyAnthropicCacheBoostBody(ctx, account, body)
 	body = s.normalizeClientDatelineIfEnabled(ctx, account, body)
-	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
-		isolatedBody, isolated, isolationErr := applyAnthropicUpstreamStrongIsolationBody(body)
-		if isolationErr != nil {
-			return nil, fmt.Errorf("apply anthropic upstream strong isolation: %w", isolationErr)
-		}
-		if isolated {
-			body = isolatedBody
-		}
-	}
 
 	// 强制执行 cache_control 块数量限制（最多 4 个）
 	body = enforceCacheControlLimit(body)
@@ -6378,15 +6369,6 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	// Pre-filter: strip empty text blocks (including nested in tool_result) to prevent upstream 400.
 	input.Body = StripEmptyTextBlocks(input.Body)
 	input.Body = s.applyAnthropicCacheBoostBody(ctx, account, input.Body)
-	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
-		isolatedBody, isolated, isolationErr := applyAnthropicUpstreamStrongIsolationBody(input.Body)
-		if isolationErr != nil {
-			return nil, fmt.Errorf("apply anthropic upstream strong isolation: %w", isolationErr)
-		}
-		if isolated {
-			input.Body = isolatedBody
-		}
-	}
 	input.Body = enforceCacheControlLimit(input.Body)
 	// Pre-filter: strip web-search history blocks after local cache/body enhancements.
 	input.Body = FilterWebSearchHistoryBlocks(input.Body, input.RequestModel)
@@ -6631,6 +6613,15 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 		profile := resolveAnthropicKiroModelProfile(gjson.GetBytes(body, "model").String())
 		body = prepareAnthropicKiroRequestBody(body, true, profile, s.anthropicKiroKnowledgeFacts(ctx, profile))
 	}
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyAnthropicUpstreamStrongIsolationBody(body)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply anthropic upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			body = isolatedBody
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -6671,6 +6662,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	}
 	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
 	account.ApplyHeaderOverrides(req.Header)
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		applyAnthropicUpstreamStrongIsolationHeaders(req)
+	}
 
 	return req, nil
 }
@@ -7609,6 +7603,15 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, finalBetaHeader); changed {
 		body = sanitized
 	}
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyAnthropicUpstreamStrongIsolationBody(body)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply anthropic upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			body = isolatedBody
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -7677,11 +7680,11 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			}
 		}
 	}
+	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
+	account.ApplyHeaderOverrides(req.Header)
 	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
 		applyAnthropicUpstreamStrongIsolationHeaders(req)
 	}
-	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
-	account.ApplyHeaderOverrides(req.Header)
 
 	// === DEBUG: 打印上游转发请求（headers + body 摘要），与 CLIENT_ORIGINAL 对比 ===
 	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
@@ -11164,6 +11167,15 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		profile := resolveAnthropicKiroModelProfile(gjson.GetBytes(body, "model").String())
 		body = prepareAnthropicKiroRequestBody(body, true, profile, s.anthropicKiroKnowledgeFacts(ctx, profile))
 	}
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyAnthropicUpstreamStrongIsolationBody(body)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply anthropic upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			body = isolatedBody
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -11197,6 +11209,9 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	}
 	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
 	account.ApplyHeaderOverrides(req.Header)
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		applyAnthropicUpstreamStrongIsolationHeaders(req)
+	}
 
 	return req, nil
 }
@@ -11229,6 +11244,10 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	clientHeaders := http.Header{}
 	if c != nil && c.Request != nil {
 		clientHeaders = c.Request.Header
+	}
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		clientHeaders = clientHeaders.Clone()
+		applyAnthropicUpstreamStrongIsolationHeaderMap(clientHeaders)
 	}
 
 	// OAuth 账号：应用统一指纹和重写 userID（受设置开关控制）
@@ -11274,6 +11293,15 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	}
 
 	body = sanitizeCountTokensRequestBody(body)
+	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyAnthropicUpstreamStrongIsolationBody(body)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply anthropic upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			body = isolatedBody
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -11333,11 +11361,11 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 			}
 		}
 	}
+	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
+	account.ApplyHeaderOverrides(req.Header)
 	if account.IsAnthropicUpstreamStrongIsolationEnabled() {
 		applyAnthropicUpstreamStrongIsolationHeaders(req)
 	}
-	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
-	account.ApplyHeaderOverrides(req.Header)
 
 	if c != nil && tokenType == "oauth" {
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))

@@ -40,7 +40,11 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 	}
 	req, err := s.buildOpenAIAlphaSearchRequest(ctx, c, account, body, token)
 	if err != nil {
-		return nil, err
+		// A custom account can be syntactically schedulable while the runtime URL
+		// trust policy rejects its host. Treat that as request-local ineligibility
+		// so one bad account cannot terminate a mixed-pool search request, and do
+		// not expose the rejected URL or validator diagnostics downstream.
+		return nil, newOpenAIAlphaSearchFailoverError(http.StatusBadGateway, nil, safeUpstreamErrorMessage, false)
 	}
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -150,7 +154,7 @@ func (s *OpenAIGatewayService) openAIAlphaSearchURL(account *Account) (string, e
 		return "", fmt.Errorf("account is required")
 	}
 	if !IsOpenAIAlphaSearchAccountEligible(account) {
-		return "", fmt.Errorf("alpha search is not enabled for custom OpenAI upstreams")
+		return "", fmt.Errorf("alpha search account configuration is invalid")
 	}
 	switch account.Type {
 	case AccountTypeOAuth:
@@ -188,5 +192,8 @@ func IsOpenAIAlphaSearchAccountEligible(account *Account) bool {
 	if err != nil || parsed == nil || parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return false
 	}
-	return strings.EqualFold(parsed.Scheme, "https") && strings.EqualFold(parsed.Hostname(), "api.openai.com") && parsed.Port() == ""
+	// Outbound host/IP/DNS policy is enforced immediately before request build by
+	// validateUpstreamBaseURL. Keep the scheduler check side-effect free while
+	// allowing configured OpenAI-compatible API-key upstreams to participate.
+	return (strings.EqualFold(parsed.Scheme, "https") || strings.EqualFold(parsed.Scheme, "http")) && strings.TrimSpace(parsed.Hostname()) != ""
 }

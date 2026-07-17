@@ -480,13 +480,14 @@ async function saveS3Config() {
 async function testS3() {
   testingS3.value = true
   try {
-    const result = await adminAPI.backup.testS3Connection(s3Form.value)
+    const result = await backupStepUp.run(() => adminAPI.backup.testS3Connection(s3Form.value))
     if (result.ok) {
       appStore.showSuccess(result.message || t('admin.backup.s3.testSuccess'))
     } else {
       appStore.showError(result.message || t('admin.backup.s3.testFailed'))
     }
   } catch (error) {
+    if (isStepUpCancelled(error) || reportStepUpBlocked(error)) return
     appStore.showError((error as { message?: string })?.message || t('errors.networkError'))
   } finally {
     testingS3.value = false

@@ -74,7 +74,17 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_KeepLeaseAcrossT
 
 	serverErrCh := make(chan error, 1)
 	turnWSModeCh := make(chan bool, 2)
+	beforeRequestTurns := make(chan int, 2)
+	beforeTurnCalls := make(chan int, 2)
 	hooks := &OpenAIWSIngressHooks{
+		BeforeRequest: func(turn int, _ []byte, _ string) error {
+			beforeRequestTurns <- turn
+			return nil
+		},
+		BeforeTurn: func(turn int) error {
+			beforeTurnCalls <- turn
+			return nil
+		},
 		AfterTurn: func(_ int, result *OpenAIForwardResult, turnErr error) {
 			if turnErr == nil && result != nil {
 				turnWSModeCh <- result.OpenAIWSMode
@@ -124,10 +134,10 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_KeepLeaseAcrossT
 		_ = clientConn.CloseNow()
 	}()
 
-	writeMessage := func(payload string) {
+	writeMessage := func(msgType coderws.MessageType, payload string) {
 		writeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(payload)))
+		require.NoError(t, clientConn.Write(writeCtx, msgType, []byte(payload)))
 	}
 	readMessage := func() []byte {
 		readCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -138,7 +148,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_KeepLeaseAcrossT
 		return message
 	}
 
-	writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":false}`)
+	writeMessage(coderws.MessageText, `{"type":"response.create","model":"gpt-5.1","stream":false}`)
 	firstTurnImageEvent := readMessage()
 	require.Equal(t, "response.output_item.done", gjson.GetBytes(firstTurnImageEvent, "type").String())
 	require.Equal(t, "completed", gjson.GetBytes(firstTurnImageEvent, "item.status").String())
@@ -147,7 +157,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_KeepLeaseAcrossT
 	require.Equal(t, "response.completed", gjson.GetBytes(firstTurnEvent, "type").String())
 	require.Equal(t, "resp_ingress_turn_1", gjson.GetBytes(firstTurnEvent, "response.id").String())
 
-	writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":false,"previous_response_id":"resp_ingress_turn_1"}`)
+	writeMessage(coderws.MessageBinary, `{"type":"response.create","model":"gpt-5.1","stream":false,"previous_response_id":"resp_ingress_turn_1"}`)
 	secondTurnEvent := readMessage()
 	require.Equal(t, "response.completed", gjson.GetBytes(secondTurnEvent, "type").String())
 	require.Equal(t, "resp_ingress_turn_2", gjson.GetBytes(secondTurnEvent, "response.id").String())
@@ -167,6 +177,13 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_KeepLeaseAcrossT
 	require.Equal(t, int64(1), metrics.AcquireTotal, "同一 ingress 会话多 turn 应只获取一次上游 lease")
 	require.Equal(t, 1, captureDialer.DialCount(), "同一 ingress 会话应保持同一上游连接")
 	require.Len(t, captureConn.writes, 2, "应向同一上游连接发送两轮 response.create")
+	// The initial request is validated by the handler before entering this
+	// service; BeforeRequest governs follow-up frames only.
+	require.Equal(t, 1, len(beforeRequestTurns), "binary JSON response.create 必须执行逐 turn 请求治理")
+	require.Equal(t, 2, <-beforeRequestTurns)
+	require.Equal(t, 2, len(beforeTurnCalls), "binary JSON response.create 必须重新获取逐 turn 并发槽")
+	require.Equal(t, 1, <-beforeTurnCalls)
+	require.Equal(t, 2, <-beforeTurnCalls)
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_FollowupCreateCanOmitModel(t *testing.T) {
@@ -486,7 +503,18 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeR
 
 	serverErrCh := make(chan error, 1)
 	resultCh := make(chan *OpenAIForwardResult, 1)
+	var hooksMu sync.Mutex
+	beforeTurnCalls := 0
+	beforeTurnNumber := 0
 	hooks := &OpenAIWSIngressHooks{
+		InitialRequestModel: "gpt-5.1",
+		BeforeTurn: func(turn int) error {
+			hooksMu.Lock()
+			defer hooksMu.Unlock()
+			beforeTurnCalls++
+			beforeTurnNumber = turn
+			return nil
+		},
 		AfterTurn: func(_ int, result *OpenAIForwardResult, turnErr error) {
 			if turnErr == nil && result != nil {
 				resultCh <- result
@@ -579,6 +607,10 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeR
 
 	require.Equal(t, 1, captureDialer.DialCount(), "passthrough 模式应直接建立上游 websocket")
 	require.Len(t, upstreamConn.writes, 1, "passthrough 模式应透传首条 response.create")
+	hooksMu.Lock()
+	require.Equal(t, 1, beforeTurnCalls, "passthrough 首轮必须执行一次并发槽治理")
+	require.Equal(t, 1, beforeTurnNumber)
+	hooksMu.Unlock()
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_StrongIsolationBypassesUpstreamWS(t *testing.T) {

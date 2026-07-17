@@ -1,10 +1,26 @@
 package service
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestOpenAIExplicitImageGenerationIntentContextPreservesKnownFalse(t *testing.T) {
+	_, known := OpenAIExplicitImageGenerationIntentFromContext(context.Background())
+	require.False(t, known)
+
+	ctx := WithOpenAIExplicitImageGenerationIntent(context.Background(), false)
+	intent, known := OpenAIExplicitImageGenerationIntentFromContext(ctx)
+	require.True(t, known)
+	require.False(t, intent)
+
+	ctx = WithOpenAIExplicitImageGenerationIntent(ctx, true)
+	intent, known = OpenAIExplicitImageGenerationIntentFromContext(ctx)
+	require.True(t, known)
+	require.True(t, intent)
+}
 
 func TestIsImageGenerationIntent(t *testing.T) {
 	tests := []struct {

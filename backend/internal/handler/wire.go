@@ -2,6 +2,7 @@ package handler
 
 import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/google/wire"
@@ -41,9 +42,13 @@ func ProvideAdminHandlers(
 	paymentHandler *admin.PaymentHandler,
 	affiliateHandler *admin.AffiliateHandler,
 	auditLogHandler *admin.AuditLogHandler,
+	promptAuditHandler *securityaudit.PromptAdminHandler,
+	totpService *service.TotpService,
+	userService *service.UserService,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 ) *AdminHandlers {
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
+	userHandler.SetStepUpServices(totpService, userService)
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
 		User:                   userHandler,
@@ -77,6 +82,7 @@ func ProvideAdminHandlers(
 		Payment:                paymentHandler,
 		Affiliate:              affiliateHandler,
 		AuditLog:               auditLogHandler,
+		PromptAudit:            promptAuditHandler,
 	}
 }
 

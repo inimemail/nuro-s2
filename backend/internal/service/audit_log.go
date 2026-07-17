@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
@@ -18,8 +19,13 @@ const (
 	AuditAuthMethodAdminAPIKey        = "admin_api_key"
 	AuditRequestBodyCaptureLimit      = 256 * 1024
 	auditRequestBodyMaxBytes          = 16 * 1024
+	AuditActionLogin                  = "auth.login"
+	AuditActionLogin2FA               = "auth.login.2fa"
+	AuditActionRegister               = "auth.register"
+	AuditActionTokenRefresh           = "auth.token.refresh"
 	AuditActionAuditLogClear          = "admin.audit_log.clear"
 	AuditActionSessionBindingMismatch = "auth.session_binding.mismatch"
+	AuditActionStepUpVerify           = "auth.step_up.verify"
 )
 
 type AuditLog struct {
@@ -75,14 +81,38 @@ func auditNormalizeBodyKey(key string) string {
 	return b.String()
 }
 
-func isAuditSensitiveBodyKey(key string) bool {
-	normalized := auditNormalizeBodyKey(key)
-	for _, exact := range []string{"code", "codes", "pin", "cvv", "authorization", "cookie", "xapikey", "key", "proxykey", "customkey"} {
-		if normalized == exact {
-			return true
+var auditBodySensitiveExactKeys = func() map[string]struct{} {
+	builtin := []string{
+		"code", "codes", "pin", "cvv", "authorization", "cookie", "x-api-key", "key",
+		"proxy_key", "custom_key", "state", "nonce",
+	}
+	set := make(map[string]struct{}, len(builtin)+len(SensitiveCredentialKeys)+16)
+	for _, key := range builtin {
+		set[auditNormalizeBodyKey(key)] = struct{}{}
+	}
+	for _, key := range SensitiveCredentialKeys {
+		set[auditNormalizeBodyKey(key)] = struct{}{}
+	}
+	for _, fields := range providerSensitiveConfigFields {
+		for key := range fields {
+			set[auditNormalizeBodyKey(key)] = struct{}{}
 		}
 	}
-	for _, part := range []string{"password", "passwd", "secret", "token", "apikey", "accesskey", "privatekey", "otp", "credentialvalue", "sessionkey", "serviceaccount"} {
+	return set
+}()
+
+var auditBodySensitiveSubstrings = []string{
+	"password", "passwd", "secret", "token", "apikey", "accesskey", "privatekey",
+	"otp", "credentialvalue", "sessionkey", "serviceaccount", "verifycode",
+	"verificationcode", "recoverycode", "invitationcode", "promocode", "affcode",
+}
+
+func isAuditSensitiveBodyKey(key string) bool {
+	normalized := auditNormalizeBodyKey(key)
+	if _, ok := auditBodySensitiveExactKeys[normalized]; ok {
+		return true
+	}
+	for _, part := range auditBodySensitiveSubstrings {
 		if strings.Contains(normalized, part) {
 			return true
 		}
@@ -109,7 +139,11 @@ func RedactAuditBody(raw []byte, contentType string) string {
 		return "<redacted>"
 	}
 	if len(encoded) > auditRequestBodyMaxBytes {
-		return string(encoded[:auditRequestBodyMaxBytes]) + "...<truncated>"
+		cutoff := auditRequestBodyMaxBytes
+		for cutoff > 0 && !utf8.Valid(encoded[:cutoff]) {
+			cutoff--
+		}
+		return string(encoded[:cutoff]) + "...<truncated>"
 	}
 	return string(encoded)
 }

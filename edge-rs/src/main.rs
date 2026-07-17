@@ -361,6 +361,8 @@ struct AbortRequest {
     account_id: Option<i64>,
     reason: String,
     client_disconnected: bool,
+    relay_attempted: bool,
+    fallback_to_go: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -405,6 +407,7 @@ struct LeaseAbortGuard {
     account_id: Option<i64>,
     reason: &'static str,
     client_disconnected: bool,
+    relay_attempted: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
 }
 
@@ -571,12 +574,36 @@ impl LeaseAbortGuard {
             account_id,
             reason,
             client_disconnected,
+            relay_attempted: Arc::new(AtomicBool::new(false)),
             done: Arc::new(AtomicBool::new(false)),
         }
     }
 
+    fn mark_relay_attempted(&self) {
+        self.relay_attempted.store(true, Ordering::SeqCst);
+    }
+
     fn mark_done(&self) {
         self.done.store(true, Ordering::SeqCst);
+    }
+}
+
+fn lease_abort_request(
+    edge_request_id: &str,
+    lease_id: Option<&str>,
+    account_id: Option<i64>,
+    reason: &str,
+    client_disconnected: bool,
+    relay_attempted: bool,
+) -> AbortRequest {
+    AbortRequest {
+        edge_request_id: edge_request_id.to_string(),
+        lease_id: lease_id.map(str::to_string),
+        account_id,
+        reason: reason.to_string(),
+        client_disconnected,
+        relay_attempted,
+        fallback_to_go: false,
     }
 }
 
@@ -586,13 +613,14 @@ impl Drop for LeaseAbortGuard {
             return;
         }
         let state = self.state.clone();
-        let req = AbortRequest {
-            edge_request_id: self.edge_request_id.clone(),
-            lease_id: self.lease_id.clone(),
-            account_id: self.account_id,
-            reason: self.reason.to_string(),
-            client_disconnected: self.client_disconnected,
-        };
+        let req = lease_abort_request(
+            &self.edge_request_id,
+            self.lease_id.as_deref(),
+            self.account_id,
+            self.reason,
+            self.client_disconnected,
+            self.relay_attempted.load(Ordering::SeqCst),
+        );
         tokio::spawn(async move {
             if let Err(err) = call_abort(&state, req).await {
                 error!("abort callback could not be delivered or queued: {err}");
@@ -830,6 +858,8 @@ async fn handle_openai_edge(
                     account_id: None,
                     reason: "prepare_failed".to_string(),
                     client_disconnected: false,
+                    relay_attempted: false,
+                    fallback_to_go: true,
                 }),
             ) {
                 error!("prepare cancellation could not be queued: {queue_err}");
@@ -897,6 +927,8 @@ async fn handle_openai_edge(
                     account_id: relay_account_id,
                     reason: format!("{reason}: {err}"),
                     client_disconnected: false,
+                    relay_attempted: true,
+                    fallback_to_go: true,
                 },
             )
             .await
@@ -1057,6 +1089,8 @@ async fn relay_ws_session(
                     account_id: None,
                     reason: "ws_prepare_failed".to_string(),
                     client_disconnected: false,
+                    relay_attempted: false,
+                    fallback_to_go: true,
                 }),
             ) {
                 error!("ws prepare cancellation could not be queued: {queue_err}");
@@ -1087,6 +1121,8 @@ async fn relay_ws_session(
                 account_id: plan.account_id,
                 reason: "unsupported_ws_transport".to_string(),
                 client_disconnected: false,
+                relay_attempted: false,
+                fallback_to_go: false,
             },
         )
         .await
@@ -1110,6 +1146,8 @@ async fn relay_ws_session(
                 account_id: plan.account_id,
                 reason: "ws_proxy_not_supported".to_string(),
                 client_disconnected: false,
+                relay_attempted: false,
+                fallback_to_go: false,
             },
         )
         .await
@@ -1131,6 +1169,7 @@ async fn relay_ws_session(
     let mut last_request_body = tungstenite_message_json(&first_upstream_msg);
     let mut wrote_client_response_for_turn = false;
     upstream_write.send(first_upstream_msg).await?;
+    guard.mark_relay_attempted();
 
     let lease_id = plan.lease_id.clone();
     let account_id = plan.account_id;
@@ -1761,12 +1800,7 @@ fn is_openai_ws_image_generation_intent(value: &Value) -> bool {
         || value
             .get("input")
             .and_then(Value::as_array)
-            .is_some_and(|input| {
-                input.iter().any(|item| {
-                    item.get("type").and_then(Value::as_str) == Some("additional_tools")
-                        && openai_json_tools_contain_image_generation(item.get("tools"))
-                })
-            })
+            .is_some_and(|input| input.iter().any(openai_json_is_explicit_image_tool_call))
         || openai_json_tool_choice_selects_image_generation(value.get("tool_choice"))
 }
 
@@ -1783,11 +1817,38 @@ fn openai_json_is_image_generation_tool(tool: &Value) -> bool {
         .unwrap_or_default()
         .trim();
     kind.eq_ignore_ascii_case("image_generation")
-        || (kind.eq_ignore_ascii_case("namespace")
-            && tool
-                .get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|name| name.trim().eq_ignore_ascii_case("image_gen")))
+}
+
+fn openai_json_is_explicit_image_tool_call(item: &Value) -> bool {
+    let kind = item
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if !["function_call", "custom_tool_call", "tool_call"]
+        .iter()
+        .any(|candidate| kind.eq_ignore_ascii_case(candidate))
+    {
+        return false;
+    }
+    let namespace = item
+        .get("namespace")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| item.pointer("/function/name").and_then(Value::as_str))
+        .unwrap_or_default();
+    openai_json_is_image_function_reference(namespace, name)
+}
+
+fn openai_json_is_image_function_reference(namespace: &str, name: &str) -> bool {
+    let namespace = namespace.trim();
+    let name = name.trim();
+    (namespace.eq_ignore_ascii_case("image_gen") && name.eq_ignore_ascii_case("imagegen"))
+        || name.eq_ignore_ascii_case("image_gen.imagegen")
+        || name.eq_ignore_ascii_case("image_gen__imagegen")
 }
 
 fn openai_json_tool_choice_selects_image_generation(value: Option<&Value>) -> bool {
@@ -1818,15 +1879,35 @@ fn openai_json_tool_choice_selects_image_generation(value: Option<&Value>) -> bo
     {
         return true;
     }
+    let namespace = choice
+        .get("namespace")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let name = choice
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if openai_json_is_image_function_reference(namespace, name) {
+        return true;
+    }
     if openai_json_tool_choice_selects_image_generation(choice.get("tool")) {
         return true;
     }
     choice
         .get("function")
         .and_then(Value::as_object)
-        .and_then(|function| function.get("name"))
-        .and_then(Value::as_str)
-        .is_some_and(|name| name.trim().eq_ignore_ascii_case("image_generation"))
+        .is_some_and(|function| {
+            let namespace = function
+                .get("namespace")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let name = function
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            name.trim().eq_ignore_ascii_case("image_generation")
+                || openai_json_is_image_function_reference(namespace, name)
+        })
 }
 
 fn is_openai_gpt56_model(model: &str) -> bool {
@@ -2678,6 +2759,8 @@ async fn relay_upstream_direct(
                     account_id: plan.account_id,
                     reason,
                     client_disconnected: false,
+                    relay_attempted: true,
+                    fallback_to_go: false,
                 },
             )
             .await
@@ -5254,6 +5337,85 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             &mut image_session_model,
         );
         assert!(matches!(image_output, TungsteniteMessage::Text(text) if text == image));
+    }
+
+    #[test]
+    fn ws_cache_creation_passive_image_namespace_is_not_image_intent() {
+        let input = r#"{"type":"response.create","model":"gpt-5.6-sol","tools":[{"type":"namespace","name":"image_gen"}],"input":[{"type":"additional_tools","tools":[{"type":"image_generation"}]},{"role":"user","content":"write code"}],"tool_choice":"auto","prompt_cache_retention":"24h"}"#;
+        let mut session_model = Some("gpt-5.6-sol".to_string());
+        let (output, applied) = apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
+            TungsteniteMessage::Text(input.to_string()),
+            Some("suppress"),
+            &mut session_model,
+        );
+        assert_eq!(applied, Some(true));
+        let TungsteniteMessage::Text(output) = output else {
+            panic!("expected text frame");
+        };
+        let output: Value = serde_json::from_str(&output).unwrap();
+        assert!(output.get("prompt_cache_retention").is_none());
+        assert_eq!(
+            output
+                .pointer("/prompt_cache_options/ttl")
+                .and_then(Value::as_str),
+            Some("24h")
+        );
+    }
+
+    #[test]
+    fn ws_cache_creation_explicit_image_function_call_remains_noop() {
+        let input = r#"{"type":"response.create","model":"gpt-5.6-sol","input":[{"type":"function_call","name":"image_gen.imagegen"}],"prompt_cache_retention":"24h"}"#;
+        let mut session_model = Some("gpt-5.6-sol".to_string());
+        let (output, applied) = apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
+            TungsteniteMessage::Text(input.to_string()),
+            Some("suppress"),
+            &mut session_model,
+        );
+        assert_eq!(applied, Some(false));
+        assert!(matches!(output, TungsteniteMessage::Text(text) if text == input));
+    }
+
+    #[test]
+    fn ws_cache_creation_explicit_top_level_image_tool_choice_remains_noop() {
+        for input in [
+            r#"{"type":"response.create","model":"gpt-5.6-sol","tool_choice":{"type":"function","name":"image_gen.imagegen"},"prompt_cache_retention":"24h"}"#,
+            r#"{"type":"response.create","model":"gpt-5.6-sol","tool_choice":{"namespace":"image_gen","name":"imagegen"},"prompt_cache_retention":"24h"}"#,
+        ] {
+            let mut session_model = Some("gpt-5.6-sol".to_string());
+            let (output, applied) =
+                apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
+                    TungsteniteMessage::Text(input.to_string()),
+                    Some("suppress"),
+                    &mut session_model,
+                );
+            assert_eq!(applied, Some(false));
+            assert!(matches!(output, TungsteniteMessage::Text(text) if text == input));
+        }
+    }
+
+    #[test]
+    fn lease_abort_request_tracks_relay_attempt_state() {
+        let before = lease_abort_request(
+            "edge-1",
+            Some("lease-1"),
+            Some(42),
+            "ws_session_dropped",
+            true,
+            false,
+        );
+        assert!(!before.relay_attempted);
+        assert!(!before.fallback_to_go);
+
+        let after = lease_abort_request(
+            "edge-1",
+            Some("lease-1"),
+            Some(42),
+            "ws_session_dropped",
+            true,
+            true,
+        );
+        assert!(after.relay_attempted);
+        assert!(!after.fallback_to_go);
     }
 
     #[test]

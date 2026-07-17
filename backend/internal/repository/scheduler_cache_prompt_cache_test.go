@@ -85,7 +85,7 @@ func TestBuildSchedulerMetadataAccountPreservesSelectionSemantics(t *testing.T) 
 		require.Equal(t, account.GetCredential("base_url"), got.GetCredential("base_url"))
 	})
 
-	t.Run("openai alpha search custom base url remains ineligible", func(t *testing.T) {
+	t.Run("openai alpha search custom base url remains eligible", func(t *testing.T) {
 		account := service.Account{
 			ID:          502,
 			Platform:    service.PlatformOpenAI,
@@ -99,8 +99,8 @@ func TestBuildSchedulerMetadataAccountPreservesSelectionSemantics(t *testing.T) 
 
 		got := buildSchedulerMetadataAccount(account)
 
-		require.False(t, service.IsOpenAIAlphaSearchAccountEligible(&account))
-		require.False(t, service.IsOpenAIAlphaSearchAccountEligible(&got))
+		require.True(t, service.IsOpenAIAlphaSearchAccountEligible(&account))
+		require.True(t, service.IsOpenAIAlphaSearchAccountEligible(&got))
 	})
 
 	t.Run("api key quota exclusion", func(t *testing.T) {

@@ -1535,7 +1535,7 @@ func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Conte
 	base := strings.TrimRight(cfg.BaseURL, "/")
 	endpoint, err := url.JoinPath(base, "/v1/moderations")
 	if err != nil {
-		return nil, err
+		return nil, errors.New("invalid moderation service configuration")
 	}
 	payload := moderationAPIRequest{
 		Model: cfg.Model,
@@ -1543,7 +1543,7 @@ func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Conte
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("failed to encode moderation request")
 	}
 	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -1551,7 +1551,7 @@ func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Conte
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
-		return nil, err
+		return nil, errors.New("invalid moderation service configuration")
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -1562,7 +1562,13 @@ func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Conte
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(reqCtx.Err(), context.DeadlineExceeded) {
+			return nil, errors.New("moderation service request timed out")
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(reqCtx.Err(), context.Canceled) {
+			return nil, errors.New("moderation service request canceled")
+		}
+		return nil, errors.New("moderation service request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if httpStatus != nil {
@@ -1570,15 +1576,17 @@ func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Conte
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("moderation api status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		// Keep the old bounded drain behavior for connection reuse, but never
+		// retain or format the response body into an operator/downstream error.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("moderation service returned HTTP %d", resp.StatusCode)
 	}
 	var out moderationAPIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+		return nil, errors.New("moderation service returned an invalid response")
 	}
 	if len(out.Results) == 0 {
-		return nil, errors.New("moderation api returned empty results")
+		return nil, errors.New("moderation service returned no results")
 	}
 	return &out.Results[0], nil
 }

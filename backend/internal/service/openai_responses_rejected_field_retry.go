@@ -81,13 +81,39 @@ func normalizeOpenAIResponsesRejectedFieldRetryBody(statusCode int, body, respon
 		return removeOpenAIResponsesRejectedNamespaceAtIndex(body, index)
 	}
 	if param == "max_output_tokens" && gjson.GetBytes(body, "max_output_tokens").Exists() {
-		retryBody, err := sjson.DeleteBytes(body, "max_output_tokens")
-		if err != nil {
-			return nil, "", false, fmt.Errorf("delete rejected max_output_tokens: %w", err)
-		}
-		return retryBody, "max_output_tokens", true, nil
+		retryBody, changed, err := RemoveOpenAIResponsesRejectedField(body, param)
+		return retryBody, param, changed, err
 	}
 	return nil, "", false, nil
+}
+
+// RemoveOpenAIResponsesRejectedField removes a previously confirmed
+// compatibility field from a Responses body without consuming retry budget.
+// max_tokens is the local compatibility source for max_output_tokens, so both
+// aliases must be removed before a plan is rebuilt for another account.
+func RemoveOpenAIResponsesRejectedField(body []byte, field string) ([]byte, bool, error) {
+	field = strings.ToLower(strings.TrimSpace(field))
+	if field == "max_output_tokens" {
+		updated := body
+		changed := false
+		for _, alias := range []string{"max_output_tokens", "max_tokens"} {
+			if !gjson.GetBytes(updated, alias).Exists() {
+				continue
+			}
+			next, err := sjson.DeleteBytes(updated, alias)
+			if err != nil {
+				return nil, false, fmt.Errorf("delete rejected %s: %w", alias, err)
+			}
+			updated = next
+			changed = true
+		}
+		return updated, changed, nil
+	}
+	if index, ok := openAIResponsesRejectedNamespaceIndex(field); ok {
+		updated, _, changed, err := removeOpenAIResponsesRejectedNamespaceAtIndex(body, index)
+		return updated, changed, err
+	}
+	return body, false, nil
 }
 
 func openAIResponsesRejectedErrorField(responseBody []byte, field string) string {

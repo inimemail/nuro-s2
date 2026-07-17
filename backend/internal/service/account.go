@@ -7,6 +7,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"reflect"
 	"sort"
@@ -121,12 +122,21 @@ const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
 	OpenAIEndpointCapabilityAlphaSearch     OpenAIEndpointCapability = "alpha_search"
+	// GrokMediaGeneration filters only new image/video generation requests.
+	// Video status lookups intentionally do not require this capability because
+	// request IDs are account-local and must remain queryable on their owner.
+	OpenAIEndpointCapabilityGrokMediaGeneration OpenAIEndpointCapability = "grok_media_generation"
 	// Responses is used only for image-intent routing. It prevents a known
 	// Responses-incompatible API-key account from silently falling back to Chat.
 	OpenAIEndpointCapabilityResponses OpenAIEndpointCapability = "responses"
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
+
+// GrokMediaEligibleExtraKey is an optional per-account override. A missing
+// value uses billing observations; true/false explicitly enables/disables
+// media generation routing without changing the account's global status.
+const GrokMediaEligibleExtraKey = "grok_media_eligible"
 const openAIOAuthChatGPTPreambleFlushExtraKey = "openai_oauth_chatgpt_preamble_flush_enabled"
 const openAIAPIKeyPreambleFlushExtraKey = "openai_apikey_preamble_flush_enabled"
 const openAIOAuthChatGPTSSECommentPreflushExtraKey = "openai_oauth_chatgpt_sse_comment_preflush_enabled"
@@ -1881,6 +1891,17 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if capability == "" {
 		return true
 	}
+	if a.IsGrok() {
+		switch capability {
+		case OpenAIEndpointCapabilityChatCompletions:
+			return true
+		case OpenAIEndpointCapabilityGrokMediaGeneration:
+			eligible, _ := a.GrokMediaGenerationEligibility()
+			return eligible
+		default:
+			return false
+		}
+	}
 	switch capability {
 	case OpenAIEndpointCapabilityChatCompletions:
 		if !a.IsOpenAI() && !a.IsGrok() {
@@ -1915,6 +1936,51 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		return true
 	}
 	return configured[string(capability)]
+}
+
+// GrokMediaGenerationEligibility reports whether a Grok account may receive a
+// new media-generation request. Missing or partial observations preserve the
+// existing routing behavior; only an explicit override or authoritative 403
+// billing observation disables an account.
+func (a *Account) GrokMediaGenerationEligibility() (bool, string) {
+	if a == nil || !a.IsGrok() {
+		return false, "not_grok"
+	}
+	if override, ok := grokMediaEligibilityOverride(a.Extra); ok {
+		if override {
+			return true, "override_enabled"
+		}
+		return false, "override_disabled"
+	}
+	if a.Type != AccountTypeOAuth {
+		return true, "non_oauth"
+	}
+	// A custom OAuth relay may use 403 for its own ACL or unsupported billing
+	// endpoint. Only the official CLI billing origin is authoritative enough to
+	// quarantine media generation automatically.
+	if !isOfficialGrokCLIBaseURL(a.GetGrokBaseURL()) {
+		return true, "custom_billing_unobserved"
+	}
+	billing, err := grokBillingSnapshotFromExtra(a.Extra)
+	if err != nil || billing == nil {
+		return true, "billing_unobserved"
+	}
+	if billing.StatusCode == http.StatusForbidden || billing.WeeklyStatusCode == http.StatusForbidden || billing.MonthlyStatusCode == http.StatusForbidden {
+		return false, "billing_forbidden"
+	}
+	return true, "eligible"
+}
+
+func grokMediaEligibilityOverride(extra map[string]any) (bool, bool) {
+	if extra == nil {
+		return false, false
+	}
+	raw, ok := extra[GrokMediaEligibleExtraKey]
+	if !ok || raw == nil {
+		return false, false
+	}
+	value, ok := raw.(bool)
+	return value, ok
 }
 
 func (a *Account) openAIEndpointCapabilitySet() (map[string]bool, bool) {

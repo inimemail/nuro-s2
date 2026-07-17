@@ -153,6 +153,12 @@ func runMainServer() {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
 	defer app.Cleanup()
+	// Prompt Audit is intentionally asynchronous. Start its workers only after
+	// the application (and database migrations) is ready so request handlers
+	// never perform startup I/O on the first-token path.
+	if app.PromptAudit != nil {
+		app.PromptAudit.Start(context.Background())
+	}
 
 	// 启动服务器
 	go func() {

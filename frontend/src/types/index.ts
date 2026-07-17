@@ -925,6 +925,8 @@ export interface Account {
     antigravity_credits_overages?: Record<string, { activated_at: string; active_until: string }>
     upstream_billing_probe_enabled?: boolean
     upstream_billing_probe?: UpstreamBillingProbeSnapshot
+    grok_media_eligible?: boolean | null
+    grok_billing_snapshot?: GrokBillingSummary | null
   } & Record<string, unknown>)
   proxy_id: number | null
   proxy_fallback_origin_id?: number | null
@@ -953,6 +955,8 @@ export interface Account {
   upstream_billing_guard_blocked?: boolean
   upstream_billing_guard_observed_multiplier?: number | null
   upstream_billing_guard_evaluated_at?: string | null
+  grok_media_eligible?: boolean | null
+  grok_media_eligibility_reason?: string | null
   rate_limited_at: string | null
   rate_limit_reset_at: string | null
   overload_until: string | null
@@ -1100,6 +1104,8 @@ export interface GrokBillingSummary {
   used_percent?: number | null
   plan?: string
   status_code?: number
+  weekly_status_code?: number
+  monthly_status_code?: number
   source?: string
   fetched_at?: string
   updated_at?: string

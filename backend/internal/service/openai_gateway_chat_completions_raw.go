@@ -104,15 +104,6 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		return nil, policyErr
 	}
 	upstreamBody = updatedBody
-	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
-		isolatedBody, isolated, err := applyOpenAIUpstreamStrongIsolationBody(upstreamBody, false)
-		if err != nil {
-			return nil, fmt.Errorf("apply upstream strong isolation: %w", err)
-		}
-		if isolated {
-			upstreamBody = isolatedBody
-		}
-	}
 	if clientStream {
 		var usageErr error
 		upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)
@@ -130,6 +121,15 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		upstreamBody, stripErr = stripGrokChatPromptCacheKey(upstreamBody)
 		if stripErr != nil {
 			return nil, fmt.Errorf("remove Responses-only Grok prompt cache key: %w", stripErr)
+		}
+	}
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyOpenAIUpstreamStrongIsolationBody(upstreamBody, false)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			upstreamBody = isolatedBody
 		}
 	}
 
@@ -205,6 +205,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	applyGrokCacheHeaders(upstreamReq.Header, grokCacheIdentity)
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效）
 	account.ApplyHeaderOverrides(upstreamReq.Header)
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		applyOpenAIUpstreamStrongIsolationHeaders(upstreamReq)
+	}
 
 	// 6. Send request
 	proxyURL := ""

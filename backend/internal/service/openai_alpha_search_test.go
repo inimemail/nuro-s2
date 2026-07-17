@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestForwardAlphaSearchOAuthPreservesWire(t *testing.T) {
@@ -69,7 +70,7 @@ func TestForwardAlphaSearchOAuthPreservesWire(t *testing.T) {
 	require.JSONEq(t, string(body), string(upstream.lastBody))
 }
 
-func TestForwardAlphaSearchRejectsCustomAPIKeyUpstream(t *testing.T) {
+func TestForwardAlphaSearchUsesCustomAPIKeyUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"id":"search-session","model":"gpt-5.6-sol","commands":{"search_query":[{"q":"news"}]}}`)
 	recorder := httptest.NewRecorder()
@@ -80,7 +81,7 @@ func TestForwardAlphaSearchRejectsCustomAPIKeyUpstream(t *testing.T) {
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusBadRequest,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"must not be reached"}}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"endpoint unsupported"}}`)),
 	}}
 	service := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
 	account := &Account{
@@ -98,10 +99,12 @@ func TestForwardAlphaSearchRejectsCustomAPIKeyUpstream(t *testing.T) {
 
 	result, err := service.ForwardAlphaSearch(context.Background(), c, account, body)
 
-	require.Error(t, err)
 	require.Nil(t, result)
-	require.Contains(t, err.Error(), "not enabled for custom OpenAI upstreams")
-	require.Nil(t, upstream.lastReq)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadRequest, failoverErr.StatusCode)
+	require.Equal(t, "https://compat.example/v4/alpha/search", upstream.lastReq.URL.String())
+	require.Equal(t, "upstream-5.6", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.False(t, c.Writer.Written())
 	require.Empty(t, recorder.Body.String())
 }
@@ -117,10 +120,10 @@ func TestIsOpenAIAlphaSearchAccountEligibleAllowsOfficialDefaultAPIKeyURL(t *tes
 	account.Credentials["base_url"] = "https://api.openai.com/v1"
 	require.True(t, IsOpenAIAlphaSearchAccountEligible(account))
 	account.Credentials["base_url"] = "https://compat.example/v1"
-	require.False(t, IsOpenAIAlphaSearchAccountEligible(account))
+	require.True(t, IsOpenAIAlphaSearchAccountEligible(account))
 }
 
-func TestAlphaSearchCapabilityRejectsCustomUpstreamBeforeSchedulerAcquire(t *testing.T) {
+func TestAlphaSearchCapabilityAllowsCustomUpstreamBeforeSchedulerAcquire(t *testing.T) {
 	official := &Account{
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
@@ -137,7 +140,29 @@ func TestAlphaSearchCapabilityRejectsCustomUpstreamBeforeSchedulerAcquire(t *tes
 	}
 
 	require.True(t, official.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityAlphaSearch))
-	require.False(t, custom.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityAlphaSearch))
+	require.True(t, custom.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityAlphaSearch))
+}
+
+func TestForwardAlphaSearchUnsafeCustomURLFailsOverWithoutLeakingURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-5.6-sol","commands":{}}`)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/alpha/search", bytes.NewReader(body))
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = true
+	cfg.Security.URLAllowlist.UpstreamHosts = []string{"approved.example"}
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: &httpUpstreamRecorder{}}
+	account := &Account{
+		ID: 71, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://private.invalid/v1"},
+	}
+
+	result, err := svc.ForwardAlphaSearch(context.Background(), c, account, body)
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Empty(t, failoverErr.ResponseBody)
+	require.NotContains(t, err.Error(), "private.invalid")
 }
 
 func TestForwardAlphaSearchReturnsFailoverBeforeWriting(t *testing.T) {

@@ -1653,9 +1653,21 @@ func noAvailableOpenAISelectionError(requestedModel string, compactBlocked bool)
 		return ErrNoAvailableCompactAccounts
 	}
 	if requestedModel != "" {
-		return fmt.Errorf("no available OpenAI accounts supporting model: %s", requestedModel)
+		return openAINoAvailableSelectionError{message: fmt.Sprintf("no available OpenAI accounts supporting model: %s", requestedModel)}
 	}
-	return errors.New("no available OpenAI accounts")
+	return openAINoAvailableSelectionError{message: "no available OpenAI accounts"}
+}
+
+type openAINoAvailableSelectionError struct {
+	message string
+}
+
+func (e openAINoAvailableSelectionError) Error() string {
+	return e.message
+}
+
+func (e openAINoAvailableSelectionError) Unwrap() error {
+	return ErrNoAvailableAccounts
 }
 
 // openAICompactSupportTier classifies an OpenAI account by compact capability.
@@ -3655,6 +3667,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	originalBody := body
 	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
 	originalModel := reqModel
+	explicitImageIntent, explicitImageIntentKnown := OpenAIExplicitImageGenerationIntentFromContext(ctx)
 
 	if account != nil && account.Platform == PlatformGrok {
 		return s.forwardGrokResponses(ctx, c, account, body, originalModel, reqStream, startTime)
@@ -3820,7 +3833,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Stripped /responses image_generation tool for Codex client by account policy")
 		}
 	}
-	if IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody) && !imageGenerationAllowed {
+	if IsExplicitImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody) && !imageGenerationAllowed {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": gin.H{
@@ -4159,7 +4172,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	var cacheCreationOptimization openAIPromptCacheCreationOptimizationResult
 
-	if IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody) && !imageGenerationAllowed {
+	if IsExplicitImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody) && !imageGenerationAllowed {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": gin.H{
@@ -4172,7 +4185,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	imageBillingModel := ""
 	imageSizeTier := ""
 	imageInputSize := ""
-	if IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody) {
+	if IsExplicitImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody) {
 		var imageCfgErr error
 		imageCfg, imageCfgErr := resolveOpenAIResponsesImageBillingConfigDetailed(reqBody, billingModel)
 		if imageCfgErr != nil {
@@ -4218,7 +4231,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// round large integer seed/metadata values that the normal one-field patch
 	// fast path would otherwise preserve.
 	if !isOpenAIResponsesCompactPath(c) {
-		optimizedBody, optimizationResult, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, body)
+		if !explicitImageIntentKnown && account != nil && account.IsOpenAIPromptCacheCreationOptimizationEnabled() && isOpenAIGPT56Model(upstreamModel) {
+			explicitImageIntent = IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, originalBody)
+		}
+		optimizedBody, optimizationResult, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, upstreamModel, body, explicitImageIntent)
 		if optimizeErr != nil {
 			return nil, optimizeErr
 		}
@@ -4883,15 +4899,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, policyErr
 	}
 	body = updatedBody
-	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
-		isolatedBody, isolated, err := applyOpenAIUpstreamStrongIsolationBody(body, true)
-		if err != nil {
-			return nil, fmt.Errorf("apply upstream strong isolation: %w", err)
-		}
-		if isolated {
-			body = isolatedBody
-		}
-	}
 	var cacheCreationOptimization openAIPromptCacheCreationOptimizationResult
 	if !isOpenAIResponsesCompactPath(c) {
 		optimizedBody, optimizationResult, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBody(account, policyModel, body)
@@ -4901,9 +4908,18 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		body = optimizedBody
 		cacheCreationOptimization = optimizationResult
 	}
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyOpenAIUpstreamStrongIsolationBody(body, true)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			body = isolatedBody
+		}
+	}
 
 	apiKey := getAPIKeyFromContext(c)
-	if IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body) && !GroupAllowsImageGeneration(apiKeyGroup(apiKey)) {
+	if IsExplicitImageGenerationIntent(openAIResponsesEndpoint, reqModel, body) && !GroupAllowsImageGeneration(apiKeyGroup(apiKey)) {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": gin.H{
@@ -4916,7 +4932,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	imageBillingModel := ""
 	imageSizeTier := ""
 	imageInputSize := ""
-	if IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body) {
+	if IsExplicitImageGenerationIntent(openAIResponsesEndpoint, reqModel, body) {
 		var imageCfgErr error
 		imageCfg, imageCfgErr := resolveOpenAIResponsesImageBillingConfigDetailedFromBody(body, reqModel)
 		if imageCfgErr != nil {
@@ -5358,12 +5374,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if account.Type == AccountTypeOAuth {
 		enforceCodexIdentityHeaders(req.Header)
 	}
+	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
+	account.ApplyHeaderOverrides(req.Header)
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		applyOpenAIUpstreamStrongIsolationHeaders(req)
 	}
-
-	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
-	account.ApplyHeaderOverrides(req.Header)
 	if isOpenAIResponsesCompactPath(c) {
 		req.Header.Set("accept", "application/json")
 	}
@@ -7040,12 +7055,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if account.Type == AccountTypeOAuth {
 		enforceCodexIdentityHeaders(req.Header)
 	}
+	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
+	account.ApplyHeaderOverrides(req.Header)
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		applyOpenAIUpstreamStrongIsolationHeaders(req)
 	}
-
-	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
-	account.ApplyHeaderOverrides(req.Header)
 	if isOpenAIResponsesCompactPath(c) {
 		req.Header.Set("accept", "application/json")
 	}

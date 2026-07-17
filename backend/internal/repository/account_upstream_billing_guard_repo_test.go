@@ -172,3 +172,22 @@ func TestUpdateAccountExtraPreservesDatabaseProbeSnapshot(t *testing.T) {
 	require.Contains(t, extra, service.UpstreamBillingProbeExtraKey, "normalization must not mutate the caller's map")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestUpdateAccountExtraPreservesDatabaseGrokRuntimeSnapshots(t *testing.T) {
+	db, mock := newSQLMock(t)
+	mock.ExpectExec(`(?s)UPDATE accounts.*jsonb_build_object\(\$2::text, extra -> \(\$2::text\)\).*jsonb_build_object\(\$3::text, extra -> \(\$3::text\)\)`).
+		WithArgs(`{"feature":true,"grok_media_eligible":false}`, service.GrokBillingSnapshotExtraKey, service.GrokQuotaSnapshotExtraKey, int64(8)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	extra := map[string]any{
+		"feature":                           true,
+		service.GrokMediaEligibleExtraKey:   false,
+		service.GrokBillingSnapshotExtraKey: map[string]any{"status_code": 200},
+		service.GrokQuotaSnapshotExtraKey:   map[string]any{"status_code": 200},
+	}
+
+	err := updateAccountExtraPreservingGrokRuntimeSnapshots(context.Background(), db, 8, extra)
+	require.NoError(t, err)
+	require.Contains(t, extra, service.GrokBillingSnapshotExtraKey, "normalization must not mutate the caller's map")
+	require.Contains(t, extra, service.GrokQuotaSnapshotExtraKey, "normalization must not mutate the caller's map")
+	require.NoError(t, mock.ExpectationsWereMet())
+}

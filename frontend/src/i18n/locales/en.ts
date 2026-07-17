@@ -399,6 +399,7 @@ export default {
     channelStatus: 'Channel Status',
     riskControl: 'Risk Control',
     auditLogs: 'Audit Logs',
+    promptAudit: 'Prompt Audit',
   },
 
   // Auth
@@ -3848,6 +3849,21 @@ export default {
           official: 'Official API'
         }
       },
+      grokMediaEligibility: {
+        title: 'Grok Media Eligibility',
+        hint: 'Controls new image/video generation only; chat and existing video task lookups are unaffected. Automatic mode follows authoritative probes, while missing or transient failures preserve existing routing.',
+        auto: 'Automatic probe',
+        enabled: 'Force allow',
+        disabled: 'Force disable',
+        badgeAutomatic: 'Media auto',
+        badgeForcedEnabled: 'Media forced on',
+        badgeForcedDisabled: 'Media disabled',
+        badgeObservedForbidden: 'Media restricted',
+        automaticHint: 'Media routing follows upstream entitlement probes; unknown or transient failures do not quarantine the account.',
+        forcedEnabledHint: 'This account is explicitly allowed for new media generation, overriding older probe results.',
+        forcedDisabledHint: 'This account is excluded from new media generation; chat and task lookups remain available.',
+        observedForbiddenHint: 'An authoritative upstream entitlement probe returned 403, so new media generation is paused for this account.'
+      },
       autoPauseOnExpired: 'Auto Pause On Expired',
       autoPauseOnExpiredDesc: 'When enabled, the account will auto pause scheduling after it expires',
 	  autoPause5hThreshold: '5h Usage Threshold (%)',
@@ -4090,6 +4106,8 @@ export default {
           refreshTokenAuth: 'Manual RT Input',
           refreshTokenDesc: 'Enter your existing OpenAI Refresh Token(s). Supports batch input (one per line). The system will automatically validate and create accounts.',
           refreshTokenPlaceholder: 'Paste your OpenAI Refresh Token...\nSupports multiple, one per line',
+          mobileRefreshTokenAuth: 'Manual Mobile RT Input',
+          accessTokenAuth: 'Manual AT Input',
           deviceCodeAuth: 'Device Code Auth',
           deviceCodeDesc: 'Generate a Codex device code, open the verification URL in your browser, and enter the code. After approval, click Complete Authorization below.',
           deviceCodeStart: 'Generate Device Code',
@@ -4918,6 +4936,11 @@ export default {
       failedToUpdate: 'Failed to update promo code',
       failedToDelete: 'Failed to delete promo code',
       failedToLoadUsages: 'Failed to load usage records'
+    },
+
+    promptAudit: {
+      title: 'Prompt Audit',
+      description: 'Review asynchronous prompt safety audit results without exposing full prompts.'
     },
 
     // Usage Records
@@ -5935,10 +5958,11 @@ export default {
       },
       apiKeyAcl: {
         title: 'API Key IP Access Control',
-        description: 'Choose which client IP is used by API Key allowlists and denylists',
+        description:
+          'Choose which client IP is used by API Key allowlists/denylists, admin audit logs, and session IP/UA binding',
         trustForwardedIp: 'Trust forwarded client IP',
         trustForwardedIpHint:
-          'Disabled by default. Enable only when the origin is reachable only through Cloudflare or Nginx reverse proxy. When enabled, API Key IP allowlists and denylists use CF-Connecting-IP, X-Real-IP, or X-Forwarded-For, matching the request IP shown in usage records.'
+          'Disabled by default. Enable only when the origin is reachable only through Cloudflare or Nginx reverse proxy. When enabled, API Key IP allowlists/denylists, admin audit logs, and session IP/UA binding use CF-Connecting-IP, X-Real-IP, or X-Forwarded-For, matching the request IP shown in usage records. Toggling this switch changes the IP fingerprint of existing sessions; with session binding enabled they must sign in again.'
       },
       linuxdo: {
         title: 'LinuxDo Connect Login',

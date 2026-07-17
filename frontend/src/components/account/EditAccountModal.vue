@@ -948,6 +948,30 @@
         </div>
       </div>
 
+      <div
+        v-if="showGrokMediaEligibilityConfig"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+        data-testid="grok-media-eligibility-config"
+      >
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+          <div class="min-w-0">
+            <label class="input-label mb-0">{{ t('admin.accounts.grokMediaEligibility.title') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.grokMediaEligibility.hint') }}
+            </p>
+          </div>
+          <select
+            v-model="grokMediaEligibilityMode"
+            data-testid="grok-media-eligibility-select"
+            class="input w-full text-sm sm:w-48"
+          >
+            <option value="auto">{{ t('admin.accounts.grokMediaEligibility.auto') }}</option>
+            <option value="enabled">{{ t('admin.accounts.grokMediaEligibility.enabled') }}</option>
+            <option value="disabled">{{ t('admin.accounts.grokMediaEligibility.disabled') }}</option>
+          </select>
+        </div>
+      </div>
+
       <!-- OpenAI OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
       <div
         v-if="account.platform === 'openai' && account.type === 'oauth'"
@@ -3943,6 +3967,9 @@ const showUpstreamBillingProbeConfig = computed(() =>
   props.account?.platform === 'openai' &&
   props.account?.type === 'apikey'
 )
+const showGrokMediaEligibilityConfig = computed(() =>
+  !isSparkShadowAccount.value && props.account?.platform === 'grok'
+)
 const showUpstreamConcurrencyRaceToggle = computed(() =>
   !isSparkShadowAccount.value && showOpenAIAPIKeyTextStreamToggles.value && poolModeEnabled.value
 )
@@ -3985,6 +4012,14 @@ const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 const grokOAuthCustomBaseUrlEnabled = ref(false)
 const grokOAuthBaseUrl = ref('')
+type GrokMediaEligibilityMode = 'auto' | 'enabled' | 'disabled'
+const grokMediaEligibilityMode = ref<GrokMediaEligibilityMode>('auto')
+const initialGrokMediaEligibilityMode = ref<GrokMediaEligibilityMode>('auto')
+const normalizeGrokMediaEligibilityMode = (value: unknown): GrokMediaEligibilityMode => {
+  if (value === true) return 'enabled'
+  if (value === false) return 'disabled'
+  return 'auto'
+}
 const upstreamBillingAutoProbeEnabled = ref(false)
 const upstreamBillingGuardEnabled = ref(false)
 const upstreamBillingGuardGroupLimits = reactive<Record<number, number | string | null>>({})
@@ -4659,6 +4694,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   mixedScheduling.value = false
   allowOverages.value = false
   const extra = newAccount.extra as Record<string, unknown> | undefined
+  const mediaEligibilityMode = normalizeGrokMediaEligibilityMode(extra?.grok_media_eligible)
+  grokMediaEligibilityMode.value = mediaEligibilityMode
+  initialGrokMediaEligibilityMode.value = mediaEligibilityMode
   upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
   clearUpstreamBillingGuardGroupLimits()
   clearInitialUpstreamBillingGuardGroupLimits()
@@ -6322,6 +6360,26 @@ const handleSubmit = async () => {
         }
       }
 
+      updatePayload.extra = newExtra
+    }
+
+    // Grok media eligibility is an optional three-state override. Preserve the
+    // existing value when untouched; send null only when the operator changes
+    // an explicit override back to automatic provider-observation mode.
+    if (
+      showGrokMediaEligibilityConfig.value &&
+      grokMediaEligibilityMode.value !== initialGrokMediaEligibilityMode.value
+    ) {
+      const currentExtra = (updatePayload.extra as Record<string, unknown>) ||
+        (props.account.extra as Record<string, unknown>) || {}
+      const newExtra: Record<string, unknown> = { ...currentExtra }
+      delete newExtra.grok_billing_snapshot
+      delete newExtra.grok_quota_snapshot
+      if (grokMediaEligibilityMode.value === 'auto') {
+        newExtra.grok_media_eligible = null
+      } else {
+        newExtra.grok_media_eligible = grokMediaEligibilityMode.value === 'enabled'
+      }
       updatePayload.extra = newExtra
     }
 

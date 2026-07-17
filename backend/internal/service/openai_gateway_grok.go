@@ -20,7 +20,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-const grokQuotaSnapshotExtraKey = "grok_quota_snapshot"
+const grokQuotaSnapshotExtraKey = GrokQuotaSnapshotExtraKey
 
 func (s *OpenAIGatewayService) forwardGrokResponses(
 	ctx context.Context,
@@ -50,6 +50,14 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	patchedBody, err = applyGrokResponsesCacheIdentity(patchedBody, body, cacheIdentity, account.IsGrokOAuth())
 	if err != nil {
 		return nil, fmt.Errorf("apply grok prompt cache identity: %w", err)
+	}
+	// Free OAuth function tools must use the same mixed-tools cache route as
+	// the Messages bridge. This is deliberately gated by account tier and the
+	// already-derived tenant-isolated identity, so paid/API-key/unknown
+	// accounts remain byte-for-byte on the existing path.
+	patchedBody, err = applyGrokFreeMessagesFunctionToolCacheRoute(patchedBody, body, account, cacheIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("apply grok Free function-tool cache route: %w", err)
 	}
 
 	token, _, err := s.GetAccessToken(ctx, account)

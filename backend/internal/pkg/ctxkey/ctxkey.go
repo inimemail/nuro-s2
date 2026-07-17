@@ -38,6 +38,10 @@ const (
 	// OpenAIImageGenerationIntent 标识 OpenAI 请求会触发生图能力（用于图片能力维度限流）
 	OpenAIImageGenerationIntent Key = "ctx_openai_image_generation_intent"
 
+	// OpenAIExplicitImageGenerationIntent 保留入口请求的显式生图判定。
+	// bool false 也是已知值，用于避免 service 端在请求变换后重复或误判。
+	OpenAIExplicitImageGenerationIntent Key = "ctx_openai_explicit_image_generation_intent"
+
 	// Group 认证后的分组信息，由 API Key 认证中间件设置
 	Group Key = "ctx_group"
 

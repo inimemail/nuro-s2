@@ -279,6 +279,31 @@ function buildAnthropicAPIKeyAccount(poolMode = false) {
   } as any
 }
 
+function buildGrokOAuthAccount(mediaEligible?: boolean) {
+  return {
+    id: 6,
+    name: 'Grok OAuth',
+    notes: '',
+    platform: 'grok',
+    type: 'oauth',
+    credentials: { access_token: 'grok-token' },
+    extra: {
+      ...(typeof mediaEligible === 'boolean' ? { grok_media_eligible: mediaEligible } : {}),
+      grok_billing_snapshot: { weekly_status_code: 200, monthly_status_code: 200 },
+      grok_quota_snapshot: { status_code: 200 },
+      custom_grok_setting: 'keep'
+    },
+    proxy_id: null,
+    concurrency: 1,
+    priority: 1,
+    rate_multiplier: 1,
+    status: 'active',
+    group_ids: [],
+    expires_at: null,
+    auto_pause_on_expired: false
+  } as any
+}
+
 function mountModal(account = buildAccount(), groups: any[] = [], simpleMode = true) {
   authStoreMock.isSimpleMode = simpleMode
   return mount(EditAccountModal, {
@@ -302,6 +327,48 @@ function mountModal(account = buildAccount(), groups: any[] = [], simpleMode = t
 }
 
 describe('EditAccountModal', () => {
+  it('omits an unchanged Grok media eligibility override', async () => {
+    const account = buildGrokOAuthAccount(false)
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    expect(wrapper.get<HTMLSelectElement>('[data-testid="grok-media-eligibility-select"]').element.value).toBe('disabled')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('extra')
+  })
+
+  it('sends only null when returning a Grok media override to automatic mode', async () => {
+    const account = buildGrokOAuthAccount(false)
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    await wrapper.get('[data-testid="grok-media-eligibility-select"]').setValue('auto')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.grok_media_eligible).toBeNull()
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('grok_billing_snapshot')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('grok_quota_snapshot')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.custom_grok_setting).toBe('keep')
+  })
+
+  it('submits an explicit Grok media allow override without unrelated scheduler fields', async () => {
+    const account = buildGrokOAuthAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    await wrapper.get('[data-testid="grok-media-eligibility-select"]').setValue('enabled')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload?.extra?.grok_media_eligible).toBe(true)
+    expect(payload).not.toHaveProperty('upstream_billing_guard_group_limits')
+  })
+
   it('renders prompt cache boost and upstream isolation controls for OpenAI OAuth accounts', async () => {
     const wrapper = mountModal(buildOpenAIOAuthAccount())
 

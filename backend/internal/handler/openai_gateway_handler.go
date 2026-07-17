@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -34,6 +35,7 @@ type OpenAIGatewayHandler struct {
 	usageRecordWorkerPool    *service.UsageRecordWorkerPool
 	errorPassthroughService  *service.ErrorPassthroughService
 	contentModerationService *service.ContentModerationService
+	promptAuditService       *securityaudit.Service
 	concurrencyHelper        *ConcurrencyHelper
 	imageLimiter             *imageConcurrencyLimiter
 	imageTaskRepo            service.OpenAIImageTaskRepository
@@ -188,6 +190,7 @@ func NewOpenAIGatewayHandler(
 	usageRecordWorkerPool *service.UsageRecordWorkerPool,
 	errorPassthroughService *service.ErrorPassthroughService,
 	contentModerationService *service.ContentModerationService,
+	promptAuditService *securityaudit.Service,
 	imageTaskRepo service.OpenAIImageTaskRepository,
 	imageStorage service.ImageStorage,
 	cfg *config.Config,
@@ -207,6 +210,7 @@ func NewOpenAIGatewayHandler(
 		usageRecordWorkerPool:    usageRecordWorkerPool,
 		errorPassthroughService:  errorPassthroughService,
 		contentModerationService: contentModerationService,
+		promptAuditService:       promptAuditService,
 		concurrencyHelper:        NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
 		imageLimiter:             &imageConcurrencyLimiter{},
 		imageTaskRepo:            imageTaskRepo,
@@ -347,12 +351,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	requestPlatform := openAICompatibleRequestPlatform(apiKey)
-	imageIntent := service.IsImageGenerationIntentForPlatform("/v1/responses", reqModel, body, requestPlatform)
+	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, body)
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
-	requestCtx := c.Request.Context()
+	requestCtx := service.WithOpenAIExplicitImageGenerationIntent(c.Request.Context(), imageIntent)
 	if healthProbe {
 		var cancelHealthProbe context.CancelFunc
 		requestCtx = service.WithOpenAIHealthProbeRequestContext(requestCtx)
@@ -1934,12 +1938,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	imageIntent := service.IsImageGenerationIntentForPlatform("/v1/responses", reqModel, firstMessage, openAICompatibleRequestPlatform(apiKey))
+	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
 	}
-	requestCtx := ctx
+	requestCtx := service.WithOpenAIExplicitImageGenerationIntent(ctx, imageIntent)
 	if imageIntent {
 		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
 	}
@@ -1949,6 +1953,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 
 	var currentUserRelease func()
 	var currentAccountRelease func()
+	var currentImageRelease func()
+	currentTurnImageIntent := imageIntent
 	releaseAccountSlot := func() {
 		if currentAccountRelease != nil {
 			currentAccountRelease()
@@ -1960,6 +1966,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		if currentUserRelease != nil {
 			currentUserRelease()
 			currentUserRelease = nil
+		}
+		if currentImageRelease != nil {
+			currentImageRelease()
+			currentImageRelease = nil
 		}
 	}
 	// 必须尽早注册，确保任何 early return 都能释放已获取的并发槽位。
@@ -2053,6 +2063,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return ensureUserSlotHeld()
 	}
 
+	requiredCapability := service.OpenAIEndpointCapabilityChatCompletions
+	if imageIntent {
+		requiredCapability = service.OpenAIEndpointCapabilityResponses
+	}
 	for {
 		excludedAccountIDs := mergeOpenAIAccountExclusions(failedAccountIDs, capacitySkippedIDs)
 		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(excludedAccountIDs)))
@@ -2065,7 +2079,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			selection, scheduleDecision, err = h.gatewayService.SelectRequiredAccountForCapabilityOnPlatformLockedPriority(
 				requestCtx, apiKey.GroupID, sameAccountRetryAccountID, reqModel, excludedAccountIDs,
 				service.OpenAIUpstreamTransportResponsesWebsocketV2Ingress,
-				service.OpenAIEndpointCapabilityChatCompletions, false, service.PlatformOpenAI, modelRoutingLockedPriority,
+				requiredCapability, false, service.PlatformOpenAI, modelRoutingLockedPriority,
 			)
 		} else {
 			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForCapabilityOnPlatformLockedPriority(
@@ -2076,7 +2090,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				reqModel,
 				excludedAccountIDs,
 				service.OpenAIUpstreamTransportResponsesWebsocketV2Ingress,
-				service.OpenAIEndpointCapabilityChatCompletions,
+				requiredCapability,
 				false,
 				service.PlatformOpenAI,
 				modelRoutingLockedPriority,
@@ -2202,9 +2216,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		hooks := &service.OpenAIWSIngressHooks{
 			InitialRequestModel: reqModel,
 			BeforeRequest: func(turn int, payload []byte, originalModel string) error {
-				if turn == 1 {
-					return nil
-				}
 				if !gjson.ValidBytes(payload) {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", errors.New("invalid json"))
 				}
@@ -2215,6 +2226,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if model == "" {
 					model = reqModel
 				}
+				currentTurnImageIntent = service.IsExplicitImageGenerationIntent("/v1/responses", model, payload)
+				if currentTurnImageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
+					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage(), nil)
+				}
+				if turn == 1 {
+					return nil
+				}
 				if decision := h.checkContentModeration(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, model, payload); decision != nil && decision.Blocked {
 					writeContentModerationWSError(ctx, wsConn, decision)
 					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, decision.Message, nil)
@@ -2223,16 +2241,38 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			},
 			BeforeTurn: func(turn int) error {
 				if turn == 1 {
+					if currentTurnImageIntent {
+						release, acquired := h.acquireImageGenerationSlotForWS(ctx)
+						if !acquired {
+							return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "image generation concurrency limit exceeded", nil)
+						}
+						currentImageRelease = release
+					}
 					return nil
 				}
 				// 防御式清理：避免异常路径下旧槽位覆盖导致泄漏。
 				releaseTurnSlots()
+				if currentTurnImageIntent {
+					release, acquired := h.acquireImageGenerationSlotForWS(ctx)
+					if !acquired {
+						return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "image generation concurrency limit exceeded", nil)
+					}
+					currentImageRelease = release
+				}
 				// 非首轮 turn 需要重新抢占并发槽位，避免长连接空闲占槽。
 				userReleaseFunc, userAcquired, err := h.concurrencyHelper.TryAcquireUserSlotForAPIKey(ctx, subject.UserID, subject.Concurrency, apiKey.ID)
 				if err != nil {
+					if currentImageRelease != nil {
+						currentImageRelease()
+						currentImageRelease = nil
+					}
 					return service.NewOpenAIWSClientCloseError(coderws.StatusInternalError, "failed to acquire user concurrency slot", err)
 				}
 				if !userAcquired {
+					if currentImageRelease != nil {
+						currentImageRelease()
+						currentImageRelease = nil
+					}
 					return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "too many concurrent requests, please retry later", nil)
 				}
 				accountReleaseFunc, accountAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(ctx, account.ID, accountMaxConcurrency)
@@ -2240,11 +2280,19 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					if userReleaseFunc != nil {
 						userReleaseFunc()
 					}
+					if currentImageRelease != nil {
+						currentImageRelease()
+						currentImageRelease = nil
+					}
 					return service.NewOpenAIWSClientCloseError(coderws.StatusInternalError, "failed to acquire account concurrency slot", err)
 				}
 				if !accountAcquired {
 					if userReleaseFunc != nil {
 						userReleaseFunc()
+					}
+					if currentImageRelease != nil {
+						currentImageRelease()
+						currentImageRelease = nil
 					}
 					return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "account is busy, please retry later", nil)
 				}
@@ -2253,6 +2301,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				return nil
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
+				flushPromptAuditWSTurn(c)
 				releaseTurnSlots()
 				if turnErr != nil && result != nil && result.ImageCount > 0 {
 					reqLog.Warn("openai.websocket_partial_error_with_image_result",
@@ -2338,7 +2387,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			wsFirstMessage = h.gatewayService.ReplaceModelInBody(firstMessage, channelMappingWS.MappedModel)
 		}
 
-		if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks); err != nil {
+		if err := h.gatewayService.ProxyResponsesWebSocketFromClient(requestCtx, c, wsConn, account, token, wsFirstMessage, hooks); err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				releaseAccountSlot()
@@ -2638,6 +2687,22 @@ func (h *OpenAIGatewayHandler) acquireImageGenerationSlot(c *gin.Context, stream
 	}
 	h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Image generation concurrency limit exceeded, please retry later", streamStarted)
 	return nil, false
+}
+
+func (h *OpenAIGatewayHandler) acquireImageGenerationSlotForWS(ctx context.Context) (func(), bool) {
+	if h == nil || h.cfg == nil || h.imageLimiter == nil {
+		return nil, true
+	}
+	imageConcurrency := h.cfg.Gateway.ImageConcurrency
+	wait := strings.TrimSpace(imageConcurrency.OverflowMode) == config.ImageConcurrencyOverflowModeWait
+	return h.imageLimiter.Acquire(
+		ctx,
+		imageConcurrency.Enabled,
+		imageConcurrency.MaxConcurrentRequests,
+		wait,
+		time.Duration(imageConcurrency.WaitTimeoutSeconds)*time.Second,
+		imageConcurrency.MaxWaitingRequests,
+	)
 }
 
 // handleConcurrencyError handles concurrency-related acquire errors.

@@ -19,10 +19,12 @@ import (
 )
 
 const (
-	grokQuotaUpstreamTimeout = 20 * time.Second
-	grokQuotaProbeInput      = "."
-	grokQuotaDefaultModel    = grokDefaultResponsesModel
-	grokBillingExtraKey      = "grok_billing_snapshot"
+	grokQuotaUpstreamTimeout    = 20 * time.Second
+	grokQuotaProbeInput         = "."
+	grokQuotaDefaultModel       = grokDefaultResponsesModel
+	GrokQuotaSnapshotExtraKey   = "grok_quota_snapshot"
+	GrokBillingSnapshotExtraKey = "grok_billing_snapshot"
+	grokBillingExtraKey         = GrokBillingSnapshotExtraKey
 )
 
 type GrokQuotaProbeResult struct {
@@ -231,13 +233,37 @@ func (s *GrokQuotaService) probeBilling(ctx context.Context, accountID int64) (*
 
 	weeklyOK, monthlyOK := weekly.summary != nil, monthly.summary != nil
 	if !weeklyOK && !monthlyOK {
-		return nil, mergeGrokBillingProbeErrors(weekly.status, monthly.status, weekly.err, monthly.err)
+		probeErr := mergeGrokBillingProbeErrors(weekly.status, monthly.status, weekly.err, monthly.err)
+		// Retain a machine-readable forbidden/failed observation even when both
+		// windows failed. This lets media scheduling fail closed for an explicit
+		// 403 without treating transient network errors as account ineligibility.
+		previous, _ := grokBillingSnapshotFromExtra(account.Extra)
+		billing := xai.MergeBillingProbeResult(previous, nil, nil, false, false)
+		if billing == nil {
+			billing = &xai.BillingSummary{Partial: true, FailedWindows: []string{"weekly", "monthly"}}
+		}
+		billing.WeeklyStatusCode = mergeGrokBillingWindowStatus(previousStatus(previous, true), weekly.status, weeklyOK)
+		billing.MonthlyStatusCode = mergeGrokBillingWindowStatus(previousStatus(previous, false), monthly.status, monthlyOK)
+		statusCode := mergeGrokBillingOverallStatus(previous, billing.WeeklyStatusCode, billing.MonthlyStatusCode, weeklyOK, monthlyOK)
+		billing = xai.StampBillingSummary(billing, statusCode, "billing_probe")
+		if s.accountRepo != nil {
+			if persistErr := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{grokBillingExtraKey: billing}); persistErr != nil {
+				slog.Warn("grok_billing_failure_persist_failed", "account_id", account.ID, "error", persistErr)
+			}
+		}
+		return nil, probeErr
 	}
 	statusCode := preferSuccessfulBillingStatus(weekly.status, monthly.status, weeklyOK, monthlyOK)
 	previous, _ := grokBillingSnapshotFromExtra(account.Extra)
 	billing := xai.MergeBillingProbeResult(previous, weekly.summary, monthly.summary, weeklyOK, monthlyOK)
+	billing.WeeklyStatusCode = mergeGrokBillingWindowStatus(previousStatus(previous, true), weekly.status, weeklyOK)
+	billing.MonthlyStatusCode = mergeGrokBillingWindowStatus(previousStatus(previous, false), monthly.status, monthlyOK)
+	statusCode = mergeGrokBillingOverallStatus(previous, billing.WeeklyStatusCode, billing.MonthlyStatusCode, weeklyOK, monthlyOK)
 	billing = xai.StampBillingSummary(billing, statusCode, "billing_probe")
-	persistErr := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{grokBillingExtraKey: billing})
+	var persistErr error
+	if s.accountRepo != nil {
+		persistErr = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{grokBillingExtraKey: billing})
+	}
 	if persistErr != nil {
 		slog.Warn("grok_billing_persist_failed", "account_id", account.ID, "error", persistErr)
 	}
@@ -248,6 +274,52 @@ func (s *GrokQuotaService) probeBilling(ctx context.Context, accountID int64) (*
 		FetchedAt:  time.Now().Unix(),
 		Persisted:  persistErr == nil,
 	}, nil
+}
+
+func preferBillingObservationStatus(weeklyStatus, monthlyStatus int) int {
+	if weeklyStatus == http.StatusForbidden || monthlyStatus == http.StatusForbidden {
+		return http.StatusForbidden
+	}
+	if weeklyStatus != 0 {
+		return weeklyStatus
+	}
+	return monthlyStatus
+}
+
+func previousStatus(previous *xai.BillingSummary, weekly bool) int {
+	if previous == nil {
+		return 0
+	}
+	if weekly {
+		return previous.WeeklyStatusCode
+	}
+	return previous.MonthlyStatusCode
+}
+
+func mergeGrokBillingWindowStatus(previous, observed int, succeeded bool) int {
+	if succeeded || observed == http.StatusForbidden {
+		return observed
+	}
+	// Transient/ambiguous failures are not affirmative entitlement recovery.
+	// Preserve a prior 403 until that exact window succeeds again.
+	if previous == http.StatusForbidden {
+		return previous
+	}
+	return observed
+}
+
+func mergeGrokBillingOverallStatus(previous *xai.BillingSummary, weeklyStatus, monthlyStatus int, weeklyOK, monthlyOK bool) int {
+	status := preferBillingObservationStatus(weeklyStatus, monthlyStatus)
+	// New snapshots retain 403 per window, so a successful refresh of that
+	// exact window must be allowed to clear the aggregate block even when the
+	// other window has a transient failure. Legacy snapshots only have the
+	// aggregate status; keep those fail-closed until both windows succeed.
+	if previous != nil && previous.StatusCode == http.StatusForbidden &&
+		previous.WeeklyStatusCode == 0 && previous.MonthlyStatusCode == 0 &&
+		!(weeklyOK && monthlyOK) && status != http.StatusForbidden {
+		return http.StatusForbidden
+	}
+	return status
 }
 
 func (s *GrokQuotaService) runProbeFlight(

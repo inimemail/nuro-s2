@@ -18,6 +18,7 @@ import (
 )
 
 type openAIWSRejectedFieldRetryContextKey struct{}
+type openAIWSPassthroughInitialHooksDoneContextKey struct{}
 
 type openAIWSClientFrameConn struct {
 	conn *coderws.Conn
@@ -179,6 +180,28 @@ func (m *openAIWSPassthroughUsageMeta) updateFromResponseCreate(policyOutput []b
 	m.reasoningEffort.Store(extractOpenAIReasoningEffortFromBody(policyOutput, requestModelForFrame))
 }
 
+func applyOpenAIWSPassthroughFrameSessionState(
+	msgType coderws.MessageType,
+	payload []byte,
+	account *Account,
+	capturedSessionModel *string,
+	usageMeta *openAIWSPassthroughUsageMeta,
+) bool {
+	if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
+		return false
+	}
+	if msgType == coderws.MessageBinary && !gjson.ValidBytes(payload) {
+		return false
+	}
+	if capturedSessionModel != nil {
+		if updated := openAIWSPassthroughPolicyModelFromSessionFrame(account, payload); updated != "" {
+			*capturedSessionModel = updated
+		}
+	}
+	usageMeta.updateSessionRequestModel(payload)
+	return true
+}
+
 func openAIWSPassthroughRequestModelForFrame(payload []byte) string {
 	if len(payload) == 0 || strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.create" {
 		return ""
@@ -253,6 +276,22 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if strings.TrimSpace(token) == "" && !s.isAgentIdentityAccount(ctx, account) {
 		return errors.New("token is empty")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if hooks != nil {
+		initialHooksDone, _ := ctx.Value(openAIWSPassthroughInitialHooksDoneContextKey{}).(bool)
+		if !initialHooksDone {
+			if hooks.BeforeTurn != nil {
+				if err := hooks.BeforeTurn(1); err != nil {
+					return err
+				}
+			}
+			// Rejected-field compatibility retries recurse through this adapter.
+			// Keep the same turn slots instead of acquiring them a second time.
+			ctx = context.WithValue(ctx, openAIWSPassthroughInitialHooksDoneContextKey{}, true)
+		}
+	}
 	rejectedFieldRetry, _ := ctx.Value(openAIWSRejectedFieldRetryContextKey{}).(*OpenAIResponsesRejectedFieldRetryState)
 	if rejectedFieldRetry == nil {
 		rejectedFieldRetry = &OpenAIResponsesRejectedFieldRetryState{}
@@ -283,6 +322,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	// model would miss any admin-configured model whitelist and be silently
 	// passed through, defeating that policy on every frame after the first.
 	capturedSessionModel := openAIWSPassthroughPolicyModelForFrame(account, firstClientMessage)
+	firstExplicitImageIntent, firstExplicitImageIntentKnown := OpenAIExplicitImageGenerationIntentFromContext(ctx)
+	if !firstExplicitImageIntentKnown && account.IsOpenAIPromptCacheCreationOptimizationEnabled() && isOpenAIGPT56Model(capturedSessionModel) {
+		firstExplicitImageIntent = IsExplicitImageGenerationIntent(openAIResponsesEndpoint, capturedSessionModel, firstClientMessage)
+	}
 	initialRequestModel := ""
 	if hooks != nil {
 		initialRequestModel = hooks.InitialRequestModel
@@ -317,7 +360,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 		firstClientMessage = isolatedFirst
 	}
-	optimizedFirst, firstOptimizationResult, optimizationErr := applyOpenAIPromptCacheCreationOptimizationBody(account, capturedSessionModel, firstClientMessage)
+	optimizedFirst, firstOptimizationResult, optimizationErr := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, capturedSessionModel, firstClientMessage, firstExplicitImageIntent)
 	if optimizationErr != nil {
 		return fmt.Errorf("apply prompt cache creation optimization on first ws frame: %w", optimizationErr)
 	}
@@ -445,33 +488,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		// capturedSessionModel 的读写都发生在该 goroutine 内，因此无需
 		// 加锁/原子化。
 		filter: func(msgType coderws.MessageType, payload []byte) ([]byte, *OpenAIFastBlockedError, error) {
-			if msgType == coderws.MessageBinary {
-				// Preserve the historical binary-frame passthrough for accounts
-				// without this optional policy. Enabled accounts still need the
-				// same per-turn cache policy as text JSON frames.
-				if !account.IsOpenAIPromptCacheCreationOptimizationEnabled() {
-					return payload, nil, nil
-				}
-				if updated := openAIWSPassthroughPolicyModelFromSessionFrame(account, payload); updated != "" {
-					capturedSessionModel = updated
-				}
-				if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.create" {
-					return payload, nil, nil
-				}
-				model := openAIWSPassthroughPolicyModelForFrame(account, payload)
-				if model == "" {
-					model = capturedSessionModel
-				}
-				out, optimizationResult, optimizationErr := applyOpenAIPromptCacheCreationOptimizationBody(account, model, payload)
-				if optimizationErr != nil {
-					return payload, nil, optimizationErr
-				}
-				cacheCreationOptimizationApplied.Store(optimizationResult.Applied)
-				cachePolicyCompatibilityFailure.Store(false)
-				lastUpstreamRequest.Store(append([]byte(nil), out...))
-				return out, nil, nil
-			}
-			if msgType != coderws.MessageText {
+			// Responses WS accepts JSON in binary frames. Parseable binary
+			// frames must use the same session metadata, hooks and policy path
+			// as text frames; opaque binary data remains byte-for-byte passthrough.
+			if !applyOpenAIWSPassthroughFrameSessionState(msgType, payload, account, &capturedSessionModel, usageMeta) {
 				return payload, nil, nil
 			}
 			if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" && hooks != nil {
@@ -501,10 +521,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			// → 不带 model 的 response.create fallback 到 gpt-4o" 的
 			// 绕过路径。这里只看 session.update 事件中的 session.model
 			// 字段，response.create 自己的 model 仍然由其本帧字段决定。
-			if updated := openAIWSPassthroughPolicyModelFromSessionFrame(account, payload); updated != "" {
-				capturedSessionModel = updated
-			}
-			usageMeta.updateSessionRequestModel(payload)
 			requestModelForThisFrame := usageMeta.requestModelForFrame(payload)
 			// Per-frame model first; if the client omits "model" on a
 			// follow-up frame (legal in Realtime), fall back to the
@@ -514,6 +530,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			model := openAIWSPassthroughPolicyModelForFrame(account, payload)
 			if model == "" {
 				model = capturedSessionModel
+			}
+			explicitImageIntent := false
+			if account.IsOpenAIPromptCacheCreationOptimizationEnabled() && isOpenAIGPT56Model(model) {
+				explicitImageIntent = IsExplicitImageGenerationIntent(openAIResponsesEndpoint, model, payload)
 			}
 			out, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, payload)
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
@@ -528,7 +548,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if policyErr == nil && blocked == nil && (eventType == "" || eventType == "response.create") {
 				var optimizationResult openAIPromptCacheCreationOptimizationResult
 				var optimizationErr error
-				out, optimizationResult, optimizationErr = applyOpenAIPromptCacheCreationOptimizationBody(account, model, out)
+				out, optimizationResult, optimizationErr = applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, model, out, explicitImageIntent)
 				if optimizationErr != nil {
 					return payload, nil, optimizationErr
 				}
@@ -589,7 +609,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if readErr != nil {
 				return msgType, payload, readErr
 			}
-			if msgType == coderws.MessageText && strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
+			if (msgType == coderws.MessageText || msgType == coderws.MessageBinary) && strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
 				return msgType, payload, nil
 			}
 			if writeErr := upstreamFrameConn.WriteFrame(readCtx, msgType, payload); writeErr != nil {

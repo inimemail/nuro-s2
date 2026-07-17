@@ -125,6 +125,8 @@ type OpenAIEdgeAbortRequest struct {
 	AccountID          int64  `json:"account_id,omitempty"`
 	Reason             string `json:"reason,omitempty"`
 	ClientDisconnected bool   `json:"client_disconnected,omitempty"`
+	RelayAttempted     bool   `json:"relay_attempted,omitempty"`
+	FallbackToGo       bool   `json:"fallback_to_go,omitempty"`
 }
 
 type OpenAIEdgeRecoverRequest struct {

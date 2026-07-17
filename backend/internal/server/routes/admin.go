@@ -105,6 +105,27 @@ func RegisterAdminRoutes(
 		registerAffiliateRoutes(admin, h)
 
 		registerAuditLogRoutes(admin, h)
+
+		registerPromptAuditRoutes(admin, h, stepUp)
+	}
+}
+
+func registerPromptAuditRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp middleware.StepUpAuthMiddleware) {
+	audit := admin.Group("/prompt-audit")
+	{
+		audit.GET("/config", h.Admin.PromptAudit.GetConfig)
+		audit.PUT("/config", gin.HandlerFunc(stepUp), h.Admin.PromptAudit.UpdateConfig)
+		audit.POST("/probe", gin.HandlerFunc(stepUp), h.Admin.PromptAudit.ProbeEndpoint)
+		// Keep the custom short route and accept the upstream endpoint-scoped
+		// spelling so clients can upgrade without changing their request shape.
+		audit.POST("/endpoints/probe", gin.HandlerFunc(stepUp), h.Admin.PromptAudit.ProbeEndpoint)
+		audit.GET("/runtime", h.Admin.PromptAudit.GetRuntime)
+		audit.GET("/events", h.Admin.PromptAudit.ListEvents)
+		audit.GET("/events/:id", h.Admin.PromptAudit.GetEvent)
+		audit.DELETE("/events/:id", gin.HandlerFunc(stepUp), h.Admin.PromptAudit.DeleteEvent)
+		audit.POST("/events/batch-delete", gin.HandlerFunc(stepUp), h.Admin.PromptAudit.BatchDelete)
+		audit.POST("/events/delete-preview", gin.HandlerFunc(stepUp), h.Admin.PromptAudit.DeletePreview)
+		audit.POST("/events/delete-by-filter", gin.HandlerFunc(stepUp), h.Admin.PromptAudit.DeleteByFilter)
 	}
 }
 
@@ -519,7 +540,7 @@ func registerDataManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers, s
 		dataManagement.PUT("/sources/:source_type/profiles/:profile_id", h.Admin.DataManagement.UpdateSourceProfile)
 		dataManagement.DELETE("/sources/:source_type/profiles/:profile_id", h.Admin.DataManagement.DeleteSourceProfile)
 		dataManagement.POST("/sources/:source_type/profiles/:profile_id/activate", h.Admin.DataManagement.SetActiveSourceProfile)
-		dataManagement.POST("/s3/test", h.Admin.DataManagement.TestS3)
+		dataManagement.POST("/s3/test", gin.HandlerFunc(stepUp), h.Admin.DataManagement.TestS3)
 		dataManagement.GET("/s3/profiles", h.Admin.DataManagement.ListS3Profiles)
 		dataManagement.POST("/s3/profiles", gin.HandlerFunc(stepUp), h.Admin.DataManagement.CreateS3Profile)
 		dataManagement.PUT("/s3/profiles/:profile_id", gin.HandlerFunc(stepUp), h.Admin.DataManagement.UpdateS3Profile)
@@ -537,7 +558,7 @@ func registerBackupRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp mi
 		// S3 存储配置
 		backup.GET("/s3-config", h.Admin.Backup.GetS3Config)
 		backup.PUT("/s3-config", gin.HandlerFunc(stepUp), h.Admin.Backup.UpdateS3Config)
-		backup.POST("/s3-config/test", h.Admin.Backup.TestS3Connection)
+		backup.POST("/s3-config/test", gin.HandlerFunc(stepUp), h.Admin.Backup.TestS3Connection)
 
 		// 定时备份配置
 		backup.GET("/schedule", h.Admin.Backup.GetSchedule)

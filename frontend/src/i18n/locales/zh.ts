@@ -399,6 +399,7 @@ export default {
     channelStatus: '渠道状态',
     riskControl: '风控中心',
     auditLogs: '操作日志',
+    promptAudit: 'Prompt 审计',
   },
 
   // Auth
@@ -3981,6 +3982,21 @@ export default {
           official: '官方 API'
         }
       },
+      grokMediaEligibility: {
+        title: 'Grok 媒体调度资格',
+        hint: '仅控制新图片/视频生成请求；对话和已有视频任务查询不受影响。自动模式按权威探测结果判断，未探测或临时失败保持现有调度。',
+        auto: '自动探测',
+        enabled: '强制允许',
+        disabled: '强制禁用',
+        badgeAutomatic: '媒体自动',
+        badgeForcedEnabled: '媒体强制开',
+        badgeForcedDisabled: '媒体已禁用',
+        badgeObservedForbidden: '媒体资格受限',
+        automaticHint: '按上游资格探测结果自动决定媒体调度；未知或临时失败不会隔离账号。',
+        forcedEnabledHint: '已强制允许此账号承接新媒体生成请求，覆盖旧的探测结果。',
+        forcedDisabledHint: '已手动禁止此账号承接新媒体生成请求；对话和任务查询仍可使用。',
+        observedForbiddenHint: '权威上游资格探测返回 403，已暂停此账号的新媒体生成调度。'
+      },
       autoPauseOnExpired: '过期自动暂停调度',
       autoPauseOnExpiredDesc: '启用后，账号过期将自动暂停调度',
 	  autoPause5hThreshold: '5h 用量阈值(%)',
@@ -4217,6 +4233,8 @@ export default {
           refreshTokenAuth: '手动输入 RT',
           refreshTokenDesc: '输入您已有的 OpenAI Refresh Token，支持批量输入（每行一个），系统将自动验证并创建账号。',
           refreshTokenPlaceholder: '粘贴您的 OpenAI Refresh Token...\n支持多个，每行一个',
+          mobileRefreshTokenAuth: '手动输入 Mobile RT',
+          accessTokenAuth: '手动输入 AT',
           deviceCodeAuth: '设备码授权',
           deviceCodeDesc: '生成 Codex 设备码后，在浏览器打开验证地址并输入代码。授权完成后点击底部“完成授权”。',
           deviceCodeStart: '生成设备码',
@@ -5062,6 +5080,11 @@ export default {
       failedToUpdate: '更新优惠码失败',
       failedToDelete: '删除优惠码失败',
       failedToLoadUsages: '加载使用记录失败'
+    },
+
+    promptAudit: {
+      title: 'Prompt 异步审计',
+      description: '查看异步 Prompt 安全审计结果，不展示完整 Prompt。'
     },
 
     // Usage Records
@@ -6086,10 +6109,10 @@ export default {
       },
       apiKeyAcl: {
         title: 'API Key IP 访问控制',
-        description: '控制 API Key 白名单和黑名单使用哪个客户端 IP 判断',
+        description: '控制 API Key 白/黑名单、操作审计日志与会话 IP/UA 绑定使用哪个客户端 IP 判断',
         trustForwardedIp: '信任反代传递的客户端 IP',
         trustForwardedIpHint:
-          '默认关闭。仅在源站只允许 Cloudflare 或 Nginx 反代访问时开启；开启后 API Key IP 白/黑名单会使用 CF-Connecting-IP、X-Real-IP 或 X-Forwarded-For，与使用记录中的请求 IP 保持一致。'
+          '默认关闭。仅在源站只允许 Cloudflare 或 Nginx 反代访问时开启；开启后 API Key IP 白/黑名单、操作审计日志与会话 IP/UA 绑定会使用 CF-Connecting-IP、X-Real-IP 或 X-Forwarded-For，与使用记录中的请求 IP 保持一致。切换本开关会改变已登录会话的 IP 指纹，开启会话绑定时现有会话需重新登录。'
       },
       linuxdo: {
         title: 'LinuxDo Connect 登录',

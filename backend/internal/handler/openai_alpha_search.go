@@ -65,6 +65,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 	requestedModel := strings.TrimSpace(modelResult.String())
 	setOpsRequestContext(c, requestedModel, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeSync))
+	capturePromptAuditRequest(c, apiKey, subject, "openai_alpha_search", requestedModel, body)
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, requestedModel)
 	forwardBody := openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)

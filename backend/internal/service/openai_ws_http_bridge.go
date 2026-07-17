@@ -182,6 +182,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			body, err = applyGrokResponsesCacheIdentity(body, grokIntentSourceBody, grokCacheIdentity, account.IsGrokOAuth())
 		}
 		if err == nil {
+			body, err = applyGrokFreeMessagesFunctionToolCacheRoute(body, grokIntentSourceBody, account, grokCacheIdentity)
+		}
+		if err == nil {
 			upstreamReq, err = buildGrokResponsesRequest(upstreamCtx, c, account, body, token, grokCacheIdentity, s.cfg)
 		}
 	} else {

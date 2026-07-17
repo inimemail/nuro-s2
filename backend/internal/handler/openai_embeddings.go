@@ -73,6 +73,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 	reqLog = reqLog.With(zap.String("model", reqModel))
 	setOpsRequestContext(c, reqModel, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeSync))
+	capturePromptAuditRequest(c, apiKey, subject, "openai_embeddings", reqModel, body)
 
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
 

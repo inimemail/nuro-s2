@@ -102,6 +102,7 @@ func (h *AuthHandler) respondWithTokenPair(c *gin.Context, user *service.User) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	middleware2.SetAuditActor(c, user.ID, user.Email)
 
 	tokenPair, err := h.authService.GenerateTokenPair(c.Request.Context(), user, "")
 	if err != nil {

@@ -138,6 +138,29 @@ func TestRunClientToUpstream_ErrorPaths(t *testing.T) {
 		require.False(t, sig.graceful)
 	})
 
+	t.Run("binary response create starts a new turn", func(t *testing.T) {
+		t.Parallel()
+
+		exitCh := make(chan relayExitSignal, 1)
+		var turns atomic.Int64
+		runClientToUpstream(
+			context.Background(),
+			newPassthroughTestFrameConn([]passthroughTestFrame{
+				{msgType: coderws.MessageBinary, payload: []byte(`{"type":"response.create","model":"gpt-5.6"}`)},
+			}, true),
+			nil,
+			func(_ coderws.MessageType, _ []byte) error { return nil },
+			func() { turns.Add(1) },
+			func() {},
+			nil,
+			nil,
+			exitCh,
+		)
+		sig := <-exitCh
+		require.Equal(t, "read_client", sig.stage)
+		require.Equal(t, int64(1), turns.Load())
+	})
+
 	t.Run("forwarded counter and trace callback", func(t *testing.T) {
 		t.Parallel()
 

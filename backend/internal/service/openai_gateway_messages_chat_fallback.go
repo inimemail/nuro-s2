@@ -76,6 +76,15 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	if normalizedBody, normalized := NormalizeGLMOpenAIReasoningEffort(chatBody, upstreamModel); normalized {
 		chatBody = normalizedBody
 	}
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyOpenAIUpstreamStrongIsolationBody(chatBody, false)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			chatBody = isolatedBody
+		}
+	}
 
 	logger.L().Debug("openai messages: forwarding via raw chat completions",
 		zap.Int64("account_id", account.ID),
@@ -127,6 +136,9 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 		upstreamReq.Header.Set("user-agent", customUA)
 	}
 	account.ApplyHeaderOverrides(upstreamReq.Header)
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		applyOpenAIUpstreamStrongIsolationHeaders(upstreamReq)
+	}
 
 	proxyURL := ""
 	if account.Proxy != nil {

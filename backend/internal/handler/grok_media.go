@@ -178,6 +178,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	var lastFailoverErr *service.UpstreamFailoverError
 	modelRoutingLockedPriority := -1
 	routingStart := time.Now()
+	requiredCapability := grokMediaRequiredCapability(endpoint)
 	settleFailover := func(account *service.Account, failoverErr *service.UpstreamFailoverError, exactVideoStatusRoute bool) bool {
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
@@ -231,7 +232,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			if sameAccountRetryAccountID > 0 {
 				selection, scheduleDecision, err = h.gatewayService.SelectRequiredAccountForCapabilityOnPlatformLockedPriority(
 					requestCtx, apiKey.GroupID, sameAccountRetryAccountID, requestModel, excludedAccountIDs,
-					service.OpenAIUpstreamTransportHTTPSSE, "", false, service.PlatformGrok, modelRoutingLockedPriority,
+					service.OpenAIUpstreamTransportHTTPSSE, requiredCapability, false, service.PlatformGrok, modelRoutingLockedPriority,
 				)
 			} else {
 				selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForCapabilityOnPlatformLockedPriority(
@@ -242,7 +243,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 					requestModel,
 					excludedAccountIDs,
 					service.OpenAIUpstreamTransportHTTPSSE,
-					"",
+					requiredCapability,
 					false,
 					service.PlatformGrok,
 					modelRoutingLockedPriority,
@@ -268,6 +269,11 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(excludedAccountIDs)),
 			)
+			if endpoint.IsGenerationRequest() && len(failedAccountIDs) == 0 && errors.Is(err, service.ErrNoAvailableAccounts) {
+				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+				h.errorResponse(c, http.StatusServiceUnavailable, "grok_media_no_eligible_account", "No eligible Grok media accounts")
+				return
+			}
 			if len(failedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, requestModel, requestModel, service.PlatformGrok)
 				if !cls.ModelNotFound {
@@ -284,6 +290,11 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			return
 		}
 		if selection == nil || selection.Account == nil {
+			if endpoint.IsGenerationRequest() {
+				markOpsRoutingCapacityLimited(c)
+				h.errorResponse(c, http.StatusServiceUnavailable, "grok_media_no_eligible_account", "No eligible Grok media accounts")
+				return
+			}
 			cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, requestModel, requestModel, service.PlatformGrok)
 			if !cls.ModelNotFound {
 				markOpsRoutingCapacityLimited(c)
@@ -429,6 +440,13 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		)
 		return
 	}
+}
+
+func grokMediaRequiredCapability(endpoint service.GrokMediaEndpoint) service.OpenAIEndpointCapability {
+	if endpoint.IsGenerationRequest() {
+		return service.OpenAIEndpointCapabilityGrokMediaGeneration
+	}
+	return ""
 }
 
 func shouldRecordGrokMediaUsage(endpoint service.GrokMediaEndpoint, requestModel string) bool {

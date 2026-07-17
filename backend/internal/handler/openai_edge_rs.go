@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -50,6 +51,7 @@ type openAIEdgeLease struct {
 	forwardBody        []byte
 	lastPlan           service.OpenAIEdgePlan
 	rejectedFieldRetry service.OpenAIResponsesRejectedFieldRetryState
+	rejectedFields     []string
 	sessionHash        string
 	failedAccountIDs   map[int64]struct{}
 	sameAccountRetries map[int64]int
@@ -69,7 +71,37 @@ type openAIEdgeLease struct {
 	upstreamEndpoint   string
 	requestPayloadHash string
 	channelUsageFields service.ChannelUsageFields
+	promptAudit        *securityaudit.Collector
 	timer              *time.Timer
+}
+
+func (h *OpenAIGatewayHandler) newOpenAIEdgePromptAuditCollector(
+	c *gin.Context,
+	apiKey *service.APIKey,
+	subject middleware2.AuthSubject,
+	protocol, model string,
+	body []byte,
+	edgeRequestID, inboundEndpoint string,
+) *securityaudit.Collector {
+	if h == nil || h.promptAuditService == nil {
+		return nil
+	}
+	collector := h.promptAuditService.NewCollector()
+	if collector == nil {
+		return nil
+	}
+	input := buildContentModerationInput(c, apiKey, subject, protocol, model, body)
+	input.RequestID = strings.TrimSpace(edgeRequestID)
+	input.Endpoint = normalizeOpenAIEdgePath(inboundEndpoint)
+	collector.Add(securityaudit.RequestFromContentInput(input, "http"))
+	return collector
+}
+
+func (h *OpenAIGatewayHandler) flushOpenAIEdgePromptAudit(lease *openAIEdgeLease) {
+	if h == nil || h.promptAuditService == nil || lease == nil || lease.promptAudit == nil {
+		return
+	}
+	h.promptAuditService.FlushCollector(lease.promptAudit)
 }
 
 type openAIEdgeAccountSelection struct {
@@ -745,6 +777,12 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	if !strings.EqualFold(strings.TrimSpace(req.Method), http.MethodPost) || normalizeOpenAIEdgePath(req.Path) != "/v1/chat/completions" {
 		return fallback("edge_route_not_supported")
 	}
+	if openAIEdgeHeader(req.Headers, "Upgrade") != "" {
+		// Chat WebSocket sessions are multi-turn. Keep them on the Go relay so
+		// each turn retains the existing concurrency, usage, isolation, and
+		// post-turn audit governance.
+		return fallback("edge_ws_requires_go_per_turn_governance")
+	}
 	if req.Stream == nil || !*req.Stream || !gjson.GetBytes(req.Body, "stream").Bool() {
 		return fallback("edge_only_stream_chat_supported")
 	}
@@ -861,6 +899,10 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
 	plan.Lane = openAIEdgeLaneFromServiceTier(prepared.ServiceTier)
 	createdAt := time.Now()
+	promptAudit := h.newOpenAIEdgePromptAuditCollector(
+		c, apiKey, subject, service.ContentModerationProtocolOpenAIChat, reqModel, req.Body,
+		edgeRequestID, "/v1/chat/completions",
+	)
 	lease := &openAIEdgeLease{
 		edgeRequestID:      edgeRequestID,
 		edgeNodeID:         strings.TrimSpace(req.EdgeNodeID),
@@ -897,6 +939,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		upstreamEndpoint:   service.OpenAIEdgeRawChatUpstreamEndpoint(account),
 		requestPayloadHash: service.HashUsageRequestPayload(req.Body),
 		channelUsageFields: channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
+		promptAudit:        promptAudit,
 	}
 	if !h.storeOpenAIEdgeLease(lease, ttl) {
 		return fallback("edge_prepare_cancelled")
@@ -942,7 +985,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	if reason := openAIEdgeToolOutputFallbackReason(req.Body); reason != "" {
 		return fallback(reason)
 	}
-	if service.IsImageGenerationIntent("/v1/responses", reqModel, req.Body) {
+	if service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, req.Body) {
 		return fallback("image_responses_require_go")
 	}
 	applyOpenAIEdgeClientHeaders(c, req.Headers)
@@ -1059,6 +1102,10 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
 	plan.Lane = openAIEdgeLaneFromServiceTier(prepared.ServiceTier)
 	createdAt := time.Now()
+	promptAudit := h.newOpenAIEdgePromptAuditCollector(
+		c, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, req.Body,
+		edgeRequestID, "/v1/responses",
+	)
 	lease := &openAIEdgeLease{
 		edgeRequestID:      edgeRequestID,
 		edgeNodeID:         strings.TrimSpace(req.EdgeNodeID),
@@ -1095,6 +1142,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		upstreamEndpoint:   "/v1/responses",
 		requestPayloadHash: service.HashUsageRequestPayload(req.Body),
 		channelUsageFields: channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
+		promptAudit:        promptAudit,
 	}
 	if !h.storeOpenAIEdgeLease(lease, ttl) {
 		return fallback("edge_prepare_cancelled")
@@ -1131,7 +1179,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	if bytes.Contains(req.Body, []byte("function_call_output")) {
 		return fallback("function_call_output_requires_go_ws")
 	}
-	if service.IsImageGenerationIntent("/v1/responses", reqModel, req.Body) {
+	if service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, req.Body) {
 		return fallback("image_ws_requires_go")
 	}
 	applyOpenAIEdgeClientHeaders(c, req.Headers)
@@ -1207,6 +1255,9 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 			accountReleaseFunc()
 		}
 	}()
+	if reason := openAIEdgeResponsesWSAccountFallbackReason(account); reason != "" {
+		return fallback(reason)
+	}
 	if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai_edge.responses_ws_bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
@@ -1236,6 +1287,10 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
 	plan.Lane = openAIEdgeLaneFromServiceTier(prepared.ServiceTier)
 	createdAt := time.Now()
+	promptAudit := h.newOpenAIEdgePromptAuditCollector(
+		c, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, req.Body,
+		edgeRequestID, "/v1/responses",
+	)
 	lease := &openAIEdgeLease{
 		edgeRequestID:      edgeRequestID,
 		edgeNodeID:         strings.TrimSpace(req.EdgeNodeID),
@@ -1272,6 +1327,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		upstreamEndpoint:   "wss:/v1/responses",
 		requestPayloadHash: service.HashUsageRequestPayload(req.Body),
 		channelUsageFields: channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
+		promptAudit:        promptAudit,
 	}
 	if !h.storeOpenAIEdgeLease(lease, ttl) {
 		return fallback("edge_prepare_cancelled")
@@ -1279,6 +1335,13 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	releaseUserOnFailure = false
 	releaseAccountOnFailure = false
 	return plan, true
+}
+
+func openAIEdgeResponsesWSAccountFallbackReason(account *service.Account) string {
+	if account != nil && account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		return "edge_ws_strong_isolation_requires_go"
+	}
+	return ""
 }
 
 func openAIEdgeRolloutRejectReason(cfg config.GatewayOpenAIEdgeRSConfig, apiKey *service.APIKey, requestedModel string, edgeRequestID string) string {
@@ -1495,6 +1558,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		if bodyErr == nil {
 			nextBody, field, changed, rewriteErr := lease.rejectedFieldRetry.Rewrite(status, currentBody, responseBody)
 			if rewriteErr == nil && changed {
+				if err := recordOpenAIEdgeRejectedField(lease, field); err != nil {
+					return fallback("responses_rejected_field_state_failed")
+				}
 				plan := lease.lastPlan
 				plan.Body = nil
 				plan.BodyRawBase64 = service.EncodeOpenAIEdgeRawBody(nextBody)
@@ -1614,6 +1680,22 @@ func openAIEdgeModelRoutingErrorDecision(reason string) service.OpenAIEdgeRetryD
 	}
 }
 
+func openAIEdgeRetryRequiredTransport(inboundEndpoint string) service.OpenAIUpstreamTransport {
+	if strings.TrimSpace(inboundEndpoint) == "/v1/responses:ws" {
+		return service.OpenAIUpstreamTransportResponsesWebsocketV2
+	}
+	return service.OpenAIUpstreamTransportAny
+}
+
+func openAIEdgeRetryAccountEligible(account *service.Account, inboundEndpoint string) bool {
+	if strings.TrimSpace(inboundEndpoint) == "/v1/responses:ws" {
+		// Strong-isolation WS sessions are intentionally owned by the Go HTTP
+		// bridge, including after an upstream failure.
+		return account != nil && !account.IsOpenAIUpstreamStrongIsolationEnabled()
+	}
+	return service.IsOpenAIEdgeRawRelayEligibleForInboundEndpoint(account, inboundEndpoint)
+}
+
 func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, lease *openAIEdgeLease, req service.OpenAIEdgeRetryRequest, successReason string) service.OpenAIEdgeRetryDecision {
 	fallback := func(reason string) service.OpenAIEdgeRetryDecision {
 		return service.OpenAIEdgeRetryDecision{Action: service.OpenAIEdgeActionFallbackGo, Reason: reason}
@@ -1647,6 +1729,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 	if accountReleaseFuncToCall != nil {
 		accountReleaseFuncToCall()
 	}
+	requiredTransport := openAIEdgeRetryRequiredTransport(lease.inboundEndpoint)
 	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
 		lease.apiKey.GroupID,
@@ -1657,10 +1740,10 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 		lease.sessionHash,
 		routingModel,
 		lease.failedAccountIDs,
-		service.OpenAIUpstreamTransportAny,
+		requiredTransport,
 		service.OpenAIEndpointCapabilityChatCompletions,
 		func(account *service.Account) bool {
-			return service.IsOpenAIEdgeRawRelayEligibleForInboundEndpoint(account, lease.inboundEndpoint) &&
+			return openAIEdgeRetryAccountEligible(account, lease.inboundEndpoint) &&
 				(lease.lockedPriority < 0 || account.Priority == lease.lockedPriority)
 		},
 		true,
@@ -1698,7 +1781,13 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 		prepared *service.OpenAIEdgePreparedChatCompletions
 		err      error
 	)
-	if lease.inboundEndpoint == "/v1/responses" {
+	if lease.inboundEndpoint == "/v1/responses:ws" {
+		token, _, tokenErr := h.gatewayService.GetAccessToken(c.Request.Context(), account)
+		if tokenErr != nil {
+			return service.OpenAIEdgePlan{}, tokenErr
+		}
+		prepared, err = h.gatewayService.BuildResponsesWSEdgePlan(c.Request.Context(), c, account, lease.forwardBody, token)
+	} else if lease.inboundEndpoint == "/v1/responses" {
 		if account.Type == service.AccountTypeOAuth {
 			prepared, err = h.gatewayService.BuildChatGPTOAuthResponsesEdgePlan(c.Request.Context(), c, account, lease.forwardBody)
 		} else {
@@ -1711,6 +1800,10 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 		return service.OpenAIEdgePlan{}, err
 	}
 	plan := prepared.Plan
+	plan, err = applyOpenAIEdgeRejectedFields(plan, lease.rejectedFields)
+	if err != nil {
+		return service.OpenAIEdgePlan{}, err
+	}
 	plan.EdgeRequestID = lease.edgeRequestID
 	plan.LeaseID = lease.leaseID
 	plan.LeaseTTLMS = int(time.Until(lease.expiresAt) / time.Millisecond)
@@ -1731,6 +1824,58 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 	lease.cachePolicyEnabled = plan.PromptCacheCreationOptimizationMode != ""
 	lease.cachePolicyApplied = plan.PromptCacheCreationOptimizationApplied
 	lease.lastPlan = plan
+	return plan, nil
+}
+
+func recordOpenAIEdgeRejectedField(lease *openAIEdgeLease, field string) error {
+	if lease == nil {
+		return errors.New("edge lease is nil")
+	}
+	field = strings.ToLower(strings.TrimSpace(field))
+	if field == "" {
+		return errors.New("rejected field is empty")
+	}
+	for _, existing := range lease.rejectedFields {
+		if existing == field {
+			return nil
+		}
+	}
+	if len(lease.forwardBody) > 0 {
+		canonical, changed, err := service.RemoveOpenAIResponsesRejectedField(lease.forwardBody, field)
+		if err != nil {
+			return err
+		}
+		if changed {
+			lease.forwardBody = append([]byte(nil), canonical...)
+		}
+	}
+	lease.rejectedFields = append(lease.rejectedFields, field)
+	return nil
+}
+
+func applyOpenAIEdgeRejectedFields(plan service.OpenAIEdgePlan, fields []string) (service.OpenAIEdgePlan, error) {
+	if len(fields) == 0 {
+		return plan, nil
+	}
+	body, err := openAIEdgePlanBody(plan)
+	if err != nil {
+		return service.OpenAIEdgePlan{}, err
+	}
+	changed := false
+	for _, field := range fields {
+		next, removed, removeErr := service.RemoveOpenAIResponsesRejectedField(body, field)
+		if removeErr != nil {
+			return service.OpenAIEdgePlan{}, removeErr
+		}
+		if removed {
+			body = next
+			changed = true
+		}
+	}
+	if changed {
+		plan.Body = nil
+		plan.BodyRawBase64 = service.EncodeOpenAIEdgeRawBody(body)
+	}
 	return plan, nil
 }
 
@@ -1778,6 +1923,10 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		return
 	}
 	lease.release()
+	// Complete is sent only after the downstream stream terminates. Flush after
+	// this control response is written so body cloning and queue admission stay
+	// outside both prepare and client first-token paths.
+	defer h.flushOpenAIEdgePromptAudit(lease)
 	if h.gatewayService != nil && lease.account != nil {
 		terminalType := strings.ToLower(strings.TrimSpace(req.TerminalEventType))
 		successfulTerminal := openAIEdgeCompletionIsSuccessful(lease.inboundEndpoint, req)
@@ -1900,6 +2049,10 @@ func openAIEdgeCachePolicyCompatibilityFailure(lease *openAIEdgeLease, req servi
 		strings.EqualFold(strings.TrimSpace(req.ErrorType), "cache_creation_optimization_unsupported")
 }
 
+func openAIEdgeAbortShouldFlushPromptAudit(req service.OpenAIEdgeAbortRequest) bool {
+	return req.RelayAttempted && !req.FallbackToGo && !req.ClientDisconnected && !openAIEdgeAbortReasonIsNeutral(req.Reason)
+}
+
 func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {
 	if !h.requireOpenAIEdgeSecret(c) {
 		return
@@ -1917,6 +2070,9 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {
 	}
 	if lease != nil {
 		lease.release()
+		if openAIEdgeAbortShouldFlushPromptAudit(req) {
+			defer h.flushOpenAIEdgePromptAudit(lease)
+		}
 		if h.gatewayService != nil && lease.account != nil && !req.ClientDisconnected && !openAIEdgeAbortReasonIsNeutral(req.Reason) {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
 		}

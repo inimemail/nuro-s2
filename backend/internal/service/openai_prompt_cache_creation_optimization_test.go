@@ -96,6 +96,77 @@ func TestOpenAIPromptCacheCreationOptimization_DoesNotTouchImageRequests(t *test
 	require.Equal(t, &body[0], &updated[0])
 }
 
+func TestOpenAIPromptCacheCreationOptimization_PassiveImageNamespaceStillApplies(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-sol","prompt_cache_retention":"24h","tools":[{"type":"namespace","name":"image_gen"}],"input":[{"type":"additional_tools","tools":[{"type":"image_generation"}]},{"role":"user","content":"write code"}],"tool_choice":"auto"}`)
+	account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeSuppress)
+
+	updated, result, err := applyOpenAIPromptCacheCreationOptimizationBody(account, "gpt-5.6-sol", body)
+
+	require.NoError(t, err)
+	require.True(t, result.Applied)
+	require.False(t, gjson.GetBytes(updated, "prompt_cache_retention").Exists())
+	require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
+}
+
+func TestOpenAIPromptCacheCreationOptimization_UsesIngressIntentBeforeServerToolInjection(t *testing.T) {
+	account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeSuppress)
+	injectedBody := []byte(`{"model":"gpt-5.6-sol","input":"write code","tools":[{"type":"image_generation"}]}`)
+
+	updated, result, err := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(
+		account,
+		"gpt-5.6-sol",
+		injectedBody,
+		false,
+	)
+
+	require.NoError(t, err)
+	require.True(t, result.Applied)
+	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
+	require.True(t, gjson.GetBytes(updated, `tools.#(type=="image_generation")`).Exists())
+
+	textBody := []byte(`{"model":"gpt-5.6-sol","input":"draw it"}`)
+	unchanged, result, err := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(
+		account,
+		"gpt-5.6-sol",
+		textBody,
+		true,
+	)
+	require.NoError(t, err)
+	require.False(t, result.Applied)
+	require.Equal(t, textBody, unchanged)
+
+	mappedImageBody := []byte(`{"model":"gpt-image-2","input":"draw it","tools":[{"type":"image_generation"}]}`)
+	unchanged, result, err = applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(
+		account,
+		"gpt-image-2",
+		mappedImageBody,
+		false,
+	)
+	require.NoError(t, err)
+	require.False(t, result.Applied)
+	require.Equal(t, mappedImageBody, unchanged)
+}
+
+func TestOpenAIPromptCacheCreationOptimization_ForwardCodexBridgeKeepsPassiveRequestEligible(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &httpUpstreamRecorder{resp: promptCacheBoostJSONResponse("resp_cache_creation_bridge")}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	svc.cfg.Gateway.CodexImageGenerationBridgeEnabled = true
+	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
+	account := newOpenAIImageGenerationControlTestAccount()
+	account.Credentials["openai_prompt_cache_creation_optimization_enabled"] = true
+	account.Credentials["openai_prompt_cache_creation_optimization_mode"] = OpenAIPromptCacheCreationOptimizationModeSuppress
+	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"input":"write code","tool_choice":"auto"}`)
+	ctx := WithOpenAIExplicitImageGenerationIntent(context.Background(), false)
+
+	result, err := svc.Forward(ctx, c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.mode").String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists(), "bridge tool must still be forwarded")
+}
+
 func TestOpenAIPromptCacheCreationOptimization_ExplicitResponsesKeepsKeyAndMarksStablePrefix(t *testing.T) {
 	stable := strings.Repeat("stable developer policy ", 260)
 	bodyValue := map[string]any{

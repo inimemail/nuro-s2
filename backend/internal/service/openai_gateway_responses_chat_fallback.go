@@ -110,6 +110,15 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	if serviceTier == nil {
 		serviceTier = extractOpenAIServiceTierFromBody(chatBody)
 	}
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyOpenAIUpstreamStrongIsolationBody(chatBody, false)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			chatBody = isolatedBody
+		}
+	}
 
 	logger.L().Debug("openai responses: forwarding via raw chat completions",
 		zap.Int64("account_id", account.ID),
@@ -160,6 +169,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效）
 	account.ApplyHeaderOverrides(upstreamReq.Header)
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		applyOpenAIUpstreamStrongIsolationHeaders(upstreamReq)
+	}
 
 	proxyURL := ""
 	if account.Proxy != nil {

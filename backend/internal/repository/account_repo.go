@@ -68,7 +68,8 @@ var schedulerNeutralExtraKeys = map[string]struct{}{
 	"antigravity_force_token_refresh_at":        {},
 	"antigravity_force_token_refresh_reason":    {},
 	"codex_usage_updated_at":                    {},
-	"grok_billing_snapshot":                     {},
+	service.GrokBillingSnapshotExtraKey:         {},
+	service.GrokQuotaSnapshotExtraKey:           {},
 	"session_window_utilization":                {},
 	service.UpstreamBillingProbeExtraKey:        {},
 	service.UpstreamBillingProbeEnabledExtraKey: {},
@@ -332,9 +333,11 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 		return nil
 	}
 	preserveProbeSnapshot := account.Platform == service.PlatformOpenAI && account.Type == service.AccountTypeAPIKey
+	preserveGrokRuntimeSnapshots := account.Platform == service.PlatformGrok
+	preserveRuntimeSnapshot := preserveProbeSnapshot || preserveGrokRuntimeSnapshots
 	client := clientFromContext(ctx, r.client)
 	var ownedTx *dbent.Tx
-	if preserveProbeSnapshot && dbent.TxFromContext(ctx) == nil {
+	if preserveRuntimeSnapshot && dbent.TxFromContext(ctx) == nil {
 		tx, err := r.client.Tx(ctx)
 		if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
 			return err
@@ -362,7 +365,7 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 		SetErrorMessage(account.ErrorMessage).
 		SetSchedulable(schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
-	if !preserveProbeSnapshot {
+	if !preserveRuntimeSnapshot {
 		builder.SetExtra(normalizeJSONMap(account.Extra))
 	}
 	autoProbeEnabled, _ := account.Extra[service.UpstreamBillingProbeEnabledExtraKey].(bool)
@@ -459,6 +462,11 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 			return err
 		}
 	}
+	if preserveGrokRuntimeSnapshots {
+		if err := updateAccountExtraPreservingGrokRuntimeSnapshots(ctx, client, account.ID, account.Extra); err != nil {
+			return err
+		}
+	}
 	if ownedTx != nil {
 		if err := ownedTx.Commit(); err != nil {
 			return err
@@ -491,6 +499,41 @@ func updateAccountExtraPreservingUpstreamBillingProbeSnapshot(ctx context.Contex
 		WHERE id = $3
 			AND deleted_at IS NULL
 	`, string(raw), service.UpstreamBillingProbeExtraKey, accountID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
+	return nil
+}
+
+func updateAccountExtraPreservingGrokRuntimeSnapshots(ctx context.Context, exec sqlExecutor, accountID int64, extra map[string]any) error {
+	payload := copyJSONMap(normalizeJSONMap(extra))
+	delete(payload, service.GrokBillingSnapshotExtraKey)
+	delete(payload, service.GrokQuotaSnapshotExtraKey)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	result, err := exec.ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = $1::jsonb || CASE
+			WHEN COALESCE(extra, '{}'::jsonb) ? ($2::text)
+				THEN jsonb_build_object($2::text, extra -> ($2::text))
+			ELSE '{}'::jsonb
+		END || CASE
+			WHEN COALESCE(extra, '{}'::jsonb) ? ($3::text)
+				THEN jsonb_build_object($3::text, extra -> ($3::text))
+			ELSE '{}'::jsonb
+		END
+		WHERE id = $4
+			AND deleted_at IS NULL
+	`, string(raw), service.GrokBillingSnapshotExtraKey, service.GrokQuotaSnapshotExtraKey, accountID)
 	if err != nil {
 		return err
 	}

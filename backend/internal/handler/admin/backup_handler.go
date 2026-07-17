@@ -52,10 +52,24 @@ func (h *BackupHandler) TestS3Connection(c *gin.Context) {
 	}
 	err := h.backupService.TestS3Connection(c.Request.Context(), req)
 	if err != nil {
-		response.Success(c, gin.H{"ok": false, "message": err.Error()})
+		respondS3ConnectionTest(c, false)
 		return
 	}
-	response.Success(c, gin.H{"ok": true, "message": "connection successful"})
+	respondS3ConnectionTest(c, true)
+}
+
+// respondS3ConnectionTest deliberately excludes SDK/upstream error text. S3
+// errors can contain endpoint URLs, request IDs, HTML or credential metadata.
+func respondS3ConnectionTest(c *gin.Context, ok bool) {
+	if ok {
+		response.Success(c, gin.H{"ok": true, "message": "connection successful"})
+		return
+	}
+	response.Success(c, gin.H{
+		"ok":      false,
+		"code":    "S3_CONNECTION_TEST_FAILED",
+		"message": "connection failed",
+	})
 }
 
 // ─── 定时备份 ───

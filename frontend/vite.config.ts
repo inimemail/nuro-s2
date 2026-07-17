@@ -69,7 +69,22 @@ export default defineConfig(({ mode }) => {
          * 手动分包配置
          * 分离第三方库并按功能合并应用代码，避免循环依赖
          */
-        manualChunks(id: string) {
+        manualChunks(id: string, { getModuleInfo }) {
+          const stripeConsumerPattern = /\/(StripePaymentView|StripePopupView|StripePaymentInline)\.vue(?:\?|$)/
+          const isDirectStripeDynamicDependency =
+            getModuleInfo(id)?.dynamicImporters.some((importer) => stripeConsumerPattern.test(importer)) === true
+          // pnpm's physical path uses "@stripe+stripe-js@..." while other
+          // package managers use "@stripe/stripe-js". Match both before the
+          // generic node_modules branches. Vite may also present a prebundled
+          // virtual id, so retain the dynamic-importer check as a fallback.
+          if (
+            id.includes('@stripe/stripe-js') ||
+            id.includes('@stripe+stripe-js') ||
+            isDirectStripeDynamicDependency
+          ) {
+            return 'vendor-stripe'
+          }
+
           if (id.includes('node_modules')) {
             // Vue 核心库
             if (

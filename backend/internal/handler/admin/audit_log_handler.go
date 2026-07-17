@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -103,7 +102,7 @@ func (h *AuditLogHandler) Clear(c *gin.Context) {
 	uid := subject.UserID
 	role, _ := middleware.GetUserRoleFromContext(c)
 	requestID, _ := c.Request.Context().Value(ctxkey.RequestID).(string)
-	trace := &service.AuditLog{ActorUserID: &uid, ActorEmail: c.GetString(middleware.ContextKeyAuthEmail), ActorRole: role, AuthMethod: c.GetString("auth_method"), CredentialMasked: middleware.MaskedRequestCredential(c), Method: http.MethodPost, Path: c.FullPath(), RequestID: strings.TrimSpace(requestID), ClientIP: ip.GetTrustedClientIP(c), UserAgent: c.Request.UserAgent(), StatusCode: http.StatusOK}
+	trace := &service.AuditLog{ActorUserID: &uid, ActorEmail: c.GetString(middleware.ContextKeyAuthEmail), ActorRole: role, AuthMethod: c.GetString("auth_method"), CredentialMasked: middleware.MaskedRequestCredential(c), Method: http.MethodPost, Path: c.FullPath(), RequestID: strings.TrimSpace(requestID), ClientIP: middleware.SecurityClientIP(c), UserAgent: c.Request.UserAgent(), StatusCode: http.StatusOK}
 	deleted, err := h.auditService.ClearAll(c.Request.Context(), trace)
 	if err != nil {
 		response.ErrorFrom(c, err)

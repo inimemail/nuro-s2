@@ -441,7 +441,7 @@ func runClientToUpstream(
 			exitCh <- relayExitSignal{stage: "read_client", err: err, graceful: isDisconnectError(err)}
 			return
 		}
-		if msgType == coderws.MessageText && strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
+		if (msgType == coderws.MessageText || msgType == coderws.MessageBinary) && strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
 			// A persistent WS connection can carry multiple response.create turns.
 			// The terminal marker is per turn; never let a previous completed turn
 			// make an incomplete next turn look successful.

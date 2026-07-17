@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -13,7 +14,11 @@ import (
 )
 
 func (h *GatewayHandler) checkContentModeration(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol string, model string, body []byte) *service.ContentModerationDecision {
-	if h == nil || h.contentModerationService == nil {
+	if h == nil {
+		return nil
+	}
+	if h.contentModerationService == nil {
+		capturePromptAuditRequest(c, apiKey, subject, protocol, model, body)
 		return nil
 	}
 	return runContentModeration(c, reqLog, h.contentModerationService, apiKey, subject, protocol, model, body)
@@ -31,7 +36,11 @@ func contentModerationErrorCode(decision *service.ContentModerationDecision) str
 }
 
 func (h *OpenAIGatewayHandler) checkContentModeration(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol string, model string, body []byte) *service.ContentModerationDecision {
-	if h == nil || h.contentModerationService == nil {
+	if h == nil {
+		return nil
+	}
+	if h.contentModerationService == nil {
+		capturePromptAuditRequest(c, apiKey, subject, protocol, model, body)
 		return nil
 	}
 	return runContentModeration(c, reqLog, h.contentModerationService, apiKey, subject, protocol, model, body)
@@ -42,6 +51,7 @@ func runContentModeration(c *gin.Context, reqLog *zap.Logger, svc *service.Conte
 		return nil
 	}
 	input := buildContentModerationInput(c, apiKey, subject, protocol, model, body)
+	capturePromptAudit(c, securityaudit.RequestFromContentInput(input, promptAuditStage(c)))
 	if reqLog != nil {
 		reqLog.Info("content_moderation.gateway_check_start",
 			zap.String("request_id", input.RequestID),
@@ -77,6 +87,53 @@ func runContentModeration(c *gin.Context, reqLog *zap.Logger, svc *service.Conte
 		)
 	}
 	return decision
+}
+
+func capturePromptAudit(c *gin.Context, req securityaudit.Request) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	if collector := securityaudit.CollectorFromContext(c.Request.Context()); collector != nil {
+		collector.Add(req)
+	}
+}
+
+func hasPromptAuditCollector(c *gin.Context) bool {
+	return c != nil && c.Request != nil && securityaudit.CollectorFromContext(c.Request.Context()) != nil
+}
+
+func capturePromptAuditRequest(c *gin.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte) {
+	if !hasPromptAuditCollector(c) {
+		return
+	}
+	input := buildContentModerationInput(c, apiKey, subject, protocol, model, body)
+	capturePromptAudit(c, securityaudit.RequestFromContentInput(input, promptAuditStage(c)))
+}
+
+func capturePromptAuditTexts(c *gin.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, texts []string) {
+	if !hasPromptAuditCollector(c) {
+		return
+	}
+	input := buildContentModerationInput(c, apiKey, subject, protocol, model, nil)
+	req := securityaudit.RequestFromContentInput(input, promptAuditStage(c))
+	req.PromptTexts = texts
+	capturePromptAudit(c, req)
+}
+
+func promptAuditStage(c *gin.Context) string {
+	if c != nil && strings.EqualFold(strings.TrimSpace(c.GetHeader("Upgrade")), "websocket") {
+		return "ws_turn"
+	}
+	return "http"
+}
+
+func flushPromptAuditWSTurn(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	if collector := securityaudit.CollectorFromContext(c.Request.Context()); collector != nil {
+		collector.FlushNextWSTurn()
+	}
 }
 
 func buildContentModerationInput(c *gin.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol string, model string, body []byte) service.ContentModerationCheckInput {

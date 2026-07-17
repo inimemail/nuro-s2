@@ -266,16 +266,6 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			}
 		}
 	}
-	if strongIsolationEnabled {
-		isolatedBody, isolated, err := applyOpenAIUpstreamStrongIsolationBody(responsesBody, true)
-		if err != nil {
-			return nil, fmt.Errorf("apply upstream strong isolation: %w", err)
-		}
-		if isolated {
-			responsesBody = isolatedBody
-		}
-	}
-
 	// 4c. Apply OpenAI fast policy (may filter service_tier or block the request).
 	// Mirrors the Claude anthropic-beta "fast-mode-2026-02-01" filter, but keyed
 	// on the body-level service_tier field (priority/flex).
@@ -312,6 +302,18 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		responsesBody, patchErr = applyGrokFreeMessagesFunctionToolCacheRoute(responsesBody, grokIntentBody, account, grokCacheIdentity)
 		if patchErr != nil {
 			return nil, fmt.Errorf("apply grok free function-tool cache route: %w", patchErr)
+		}
+	}
+
+	// Strong isolation is the final body transform. Compatibility and cache
+	// transforms above must not be able to restore an upstream session field.
+	if strongIsolationEnabled {
+		isolatedBody, isolated, isolationErr := applyOpenAIUpstreamStrongIsolationBody(responsesBody, true)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			responsesBody = isolatedBody
 		}
 	}
 
@@ -356,8 +358,11 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	if account.Type == AccountTypeOAuth && promptCacheKey != "" && strings.TrimSpace(c.GetHeader("conversation_id")) == "" {
 		upstreamReq.Header.Del("conversation_id")
 	}
-	if compatTurnState != "" && upstreamReq.Header.Get("x-codex-turn-state") == "" {
+	if !strongIsolationEnabled && compatTurnState != "" && upstreamReq.Header.Get("x-codex-turn-state") == "" {
 		upstreamReq.Header.Set("x-codex-turn-state", compatTurnState)
+	}
+	if strongIsolationEnabled {
+		applyOpenAIUpstreamStrongIsolationHeaders(upstreamReq)
 	}
 
 	// 7. Send request

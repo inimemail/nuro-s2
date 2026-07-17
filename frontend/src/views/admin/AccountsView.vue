@@ -253,7 +253,24 @@
           </template>
           <template #cell-name="{ row, value }">
             <div class="flex flex-col">
-              <span class="font-medium text-gray-900 dark:text-white">{{ value }}</span>
+              <HelpTooltip
+                v-if="accountHomepageUrl(row)"
+                :content="accountHomepageUrl(row)"
+                width-class="w-max max-w-sm break-all"
+                class="-ml-1 self-start"
+              >
+                <template #trigger>
+                  <a
+                    :href="accountHomepageUrl(row)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="border-b border-dotted border-gray-300 font-medium text-gray-900 dark:border-gray-600 dark:text-white"
+                  >
+                    {{ value }}
+                  </a>
+                </template>
+              </HelpTooltip>
+              <span v-else class="font-medium text-gray-900 dark:text-white">{{ value }}</span>
               <span
                 v-if="row.extra?.email_address || row.extra?.email || row.credentials?.email"
                 class="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[200px]"
@@ -271,6 +288,17 @@
             <div class="flex min-w-0 flex-col gap-1">
               <div class="flex flex-wrap items-center gap-1">
                 <PlatformTypeBadge :platform="row.platform" :type="row.type" :plan-type="row.credentials?.plan_type" :privacy-mode="row.extra?.privacy_mode" :subscription-expires-at="row.credentials?.subscription_expires_at" />
+                <span
+                  v-if="grokMediaEligibilityMeta(row)"
+                  :class="[
+                    'inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium',
+                    grokMediaEligibilityMeta(row)?.className
+                  ]"
+                  :title="grokMediaEligibilityMeta(row)?.title"
+                  data-testid="grok-media-eligibility-badge"
+                >
+                  {{ grokMediaEligibilityMeta(row)?.label }}
+                </span>
                 <span
                   v-if="getAntigravityTierLabel(row)"
                   :class="['inline-block rounded px-1.5 py-0.5 text-[10px] font-medium', getAntigravityTierClass(row)]"
@@ -482,10 +510,13 @@ import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import UpstreamBillingRateCell from '@/components/account/UpstreamBillingRateCell.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
+import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { isImagePoolModeAccount, isPoolModeAccount } from '@/utils/accountPoolMode'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
+import { accountHomepageUrl } from '@/utils/accountHomepage'
+import { resolveGrokMediaEligibility } from '@/utils/grokMediaEligibility'
 import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
 
 const CreateAccountModal = defineAsyncComponent(() => import('@/components/account/CreateAccountModal.vue'))
@@ -1451,6 +1482,37 @@ function getOpenAICompactTitle(row: any): string {
   const label = getOpenAICompactMeta(row)?.label || ''
   if (!checkedAt) return label
   return `${label} | ${t('admin.accounts.openai.compactLastChecked')}: ${formatDateTime(new Date(checkedAt))}`
+}
+
+function grokMediaEligibilityMeta(row: Account) {
+  const state = resolveGrokMediaEligibility(row)
+  if (!state) return null
+  switch (state) {
+    case 'forced_enabled':
+      return {
+        label: t('admin.accounts.grokMediaEligibility.badgeForcedEnabled'),
+        title: t('admin.accounts.grokMediaEligibility.forcedEnabledHint'),
+        className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+      }
+    case 'forced_disabled':
+      return {
+        label: t('admin.accounts.grokMediaEligibility.badgeForcedDisabled'),
+        title: t('admin.accounts.grokMediaEligibility.forcedDisabledHint'),
+        className: 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200'
+      }
+    case 'observed_forbidden':
+      return {
+        label: t('admin.accounts.grokMediaEligibility.badgeObservedForbidden'),
+        title: t('admin.accounts.grokMediaEligibility.observedForbiddenHint'),
+        className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+      }
+    default:
+      return {
+        label: t('admin.accounts.grokMediaEligibility.badgeAutomatic'),
+        title: t('admin.accounts.grokMediaEligibility.automaticHint'),
+        className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+      }
+  }
 }
 
 function getAntigravityTierClass(row: any): string {

@@ -25,6 +25,24 @@ func applyOpenAIPromptCacheCreationOptimizationBody(
 	upstreamModel string,
 	body []byte,
 ) ([]byte, openAIPromptCacheCreationOptimizationResult, error) {
+	return applyOpenAIPromptCacheCreationOptimizationBodyWithIntent(account, upstreamModel, body, nil)
+}
+
+func applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(
+	account *Account,
+	upstreamModel string,
+	body []byte,
+	explicitImageIntent bool,
+) ([]byte, openAIPromptCacheCreationOptimizationResult, error) {
+	return applyOpenAIPromptCacheCreationOptimizationBodyWithIntent(account, upstreamModel, body, &explicitImageIntent)
+}
+
+func applyOpenAIPromptCacheCreationOptimizationBodyWithIntent(
+	account *Account,
+	upstreamModel string,
+	body []byte,
+	explicitImageIntent *bool,
+) ([]byte, openAIPromptCacheCreationOptimizationResult, error) {
 	var result openAIPromptCacheCreationOptimizationResult
 	if account == nil || !account.IsOpenAIPromptCacheCreationOptimizationEnabled() || !isOpenAIGPT56Model(upstreamModel) {
 		return body, result, nil
@@ -39,10 +57,18 @@ func applyOpenAIPromptCacheCreationOptimizationBody(
 	if err := ensureOpenAIPromptCacheJSONEOF(decoder); err != nil {
 		return nil, result, err
 	}
-	if IsImageGenerationIntentMap(openAIResponsesEndpoint, upstreamModel, request) {
+	imageIntent := IsExplicitImageGenerationIntentMap(openAIResponsesEndpoint, upstreamModel, request)
+	if explicitImageIntent != nil {
+		// The ingress marker overrides only tool intent introduced by server-side
+		// transforms. A mapped image-only model remains image intent regardless.
+		imageIntent = *explicitImageIntent ||
+			isOpenAIImageGenerationModel(upstreamModel) ||
+			isOpenAIImageGenerationModel(firstNonEmptyString(request["model"]))
+	}
+	if imageIntent {
 		return body, result, nil
 	}
-	result = applyOpenAIPromptCacheCreationOptimizationMap(account, upstreamModel, request)
+	result = applyOpenAIPromptCacheCreationOptimizationMapWithExplicitIntent(account, upstreamModel, request, imageIntent)
 
 	updated, err := json.Marshal(request)
 	if err != nil {
@@ -67,11 +93,25 @@ func applyOpenAIPromptCacheCreationOptimizationMap(
 	upstreamModel string,
 	request map[string]any,
 ) openAIPromptCacheCreationOptimizationResult {
+	return applyOpenAIPromptCacheCreationOptimizationMapWithExplicitIntent(
+		account,
+		upstreamModel,
+		request,
+		IsExplicitImageGenerationIntentMap(openAIResponsesEndpoint, upstreamModel, request),
+	)
+}
+
+func applyOpenAIPromptCacheCreationOptimizationMapWithExplicitIntent(
+	account *Account,
+	upstreamModel string,
+	request map[string]any,
+	explicitImageIntent bool,
+) openAIPromptCacheCreationOptimizationResult {
 	var result openAIPromptCacheCreationOptimizationResult
 	if account == nil || !account.IsOpenAIPromptCacheCreationOptimizationEnabled() || !isOpenAIGPT56Model(upstreamModel) || request == nil {
 		return result
 	}
-	if IsImageGenerationIntentMap(openAIResponsesEndpoint, upstreamModel, request) {
+	if explicitImageIntent || isOpenAIImageGenerationModel(upstreamModel) || isOpenAIImageGenerationModel(firstNonEmptyString(request["model"])) {
 		return result
 	}
 	result.Applied = true

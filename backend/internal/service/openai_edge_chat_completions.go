@@ -67,15 +67,6 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 		return nil, policyErr
 	}
 	upstreamBody = updatedBody
-	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
-		isolatedBody, isolated, err := applyOpenAIUpstreamStrongIsolationBody(upstreamBody, false)
-		if err != nil {
-			return nil, fmt.Errorf("apply upstream strong isolation: %w", err)
-		}
-		if isolated {
-			upstreamBody = isolatedBody
-		}
-	}
 	var err error
 	upstreamBody, err = ensureOpenAIChatStreamUsage(upstreamBody)
 	if err != nil {
@@ -84,6 +75,15 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, upstreamBody)
 	if err != nil {
 		return nil, err
+	}
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyOpenAIUpstreamStrongIsolationBody(upstreamBody, false)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			upstreamBody = isolatedBody
+		}
 	}
 	cacheCreationMode, cacheCreationModel := openAIEdgePromptCacheCreationOptimizationFields(account, upstreamModel, cacheCreationOptimization)
 
@@ -116,6 +116,9 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 		headers["user-agent"] = customUA
 	}
 	applyOpenAIEdgeHeaderOverrides(account, headers)
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		scrubOpenAIEdgeStrongIsolationHeaders(headers)
+	}
 
 	proxyURL := ""
 	if account.Proxy != nil {
@@ -228,7 +231,7 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	if originalModel == "" {
 		return nil, fmt.Errorf("missing model in request")
 	}
-	if IsImageGenerationIntent(openAIResponsesEndpoint, originalModel, body) {
+	if IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, body) {
 		return nil, fmt.Errorf("image responses require Go")
 	}
 	if previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); previousResponseID != "" {
@@ -268,18 +271,18 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	if err != nil {
 		return nil, err
 	}
+	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, policyModel, upstreamBody)
+	if err != nil {
+		return nil, err
+	}
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
-		isolatedBody, isolated, err := applyOpenAIUpstreamStrongIsolationBody(upstreamBody, true)
-		if err != nil {
-			return nil, fmt.Errorf("apply upstream strong isolation: %w", err)
+		isolatedBody, isolated, isolationErr := applyOpenAIUpstreamStrongIsolationBody(upstreamBody, true)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", isolationErr)
 		}
 		if isolated {
 			upstreamBody = isolatedBody
 		}
-	}
-	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, policyModel, upstreamBody)
-	if err != nil {
-		return nil, err
 	}
 	cacheCreationMode, cacheCreationModel := openAIEdgePromptCacheCreationOptimizationFields(account, policyModel, cacheCreationOptimization)
 
@@ -327,10 +330,10 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		headers["user-agent"] = codexCLIUserAgent
 	}
+	applyOpenAIEdgeHeaderOverrides(account, headers)
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		scrubOpenAIEdgeStrongIsolationHeaders(headers)
 	}
-	applyOpenAIEdgeHeaderOverrides(account, headers)
 
 	proxyURL := ""
 	if account.Proxy != nil {
@@ -398,7 +401,7 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if originalModel == "" {
 		return nil, fmt.Errorf("missing model in request")
 	}
-	if IsImageGenerationIntent(openAIResponsesEndpoint, originalModel, body) {
+	if IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, body) {
 		return nil, fmt.Errorf("image responses require Go")
 	}
 	if previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); previousResponseID != "" {
@@ -508,12 +511,6 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if sanitizeEmptyBase64InputImagesInOpenAIRequestBodyMap(reqBody) {
 		bodyModified = true
 	}
-	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
-		if applyOpenAIUpstreamStrongIsolationMap(reqBody, true) {
-			bodyModified = true
-		}
-	}
-
 	upstreamBody := body
 	if bodyModified {
 		upstreamBody, err = json.Marshal(reqBody)
@@ -528,6 +525,15 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, upstreamBody)
 	if err != nil {
 		return nil, err
+	}
+	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
+		isolatedBody, isolated, isolationErr := applyOpenAIUpstreamStrongIsolationBody(upstreamBody, true)
+		if isolationErr != nil {
+			return nil, fmt.Errorf("apply upstream strong isolation: %w", isolationErr)
+		}
+		if isolated {
+			upstreamBody = isolatedBody
+		}
 	}
 	cacheCreationMode, cacheCreationModel := openAIEdgePromptCacheCreationOptimizationFields(account, upstreamModel, cacheCreationOptimization)
 
@@ -752,7 +758,7 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 	if previousResponseID := strings.TrimSpace(gjson.GetBytes(firstMessage, "previous_response_id").String()); previousResponseID != "" {
 		return nil, fmt.Errorf("previous_response_id requires Go WS state")
 	}
-	if IsImageGenerationIntent(openAIResponsesEndpoint, model, firstMessage) {
+	if IsExplicitImageGenerationIntent(openAIResponsesEndpoint, model, firstMessage) {
 		return nil, fmt.Errorf("image ws requires Go")
 	}
 	if bytes.Contains(firstMessage, []byte("function_call_output")) {

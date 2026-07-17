@@ -54,6 +54,19 @@ func GetTrustedClientIP(c *gin.Context) string {
 	return normalizeIP(c.ClientIP())
 }
 
+// GetSecurityClientIP returns the IP used by security-sensitive features.
+// Forwarded headers are trusted only when the existing ACL trust toggle is on;
+// the default path remains Gin's trusted-proxy chain.
+func GetSecurityClientIP(c *gin.Context, trustForwarded bool) string {
+	if c == nil {
+		return ""
+	}
+	if trustForwarded {
+		return GetClientIP(c)
+	}
+	return GetTrustedClientIP(c)
+}
+
 // normalizeIP 规范化 IP 地址，去除端口号和空格。
 func normalizeIP(ip string) string {
 	ip = strings.TrimSpace(ip)

@@ -132,10 +132,10 @@ func applyGrokResponsesCacheIdentity(body, intentSourceBody []byte, identity str
 }
 
 // applyGrokFreeMessagesFunctionToolCacheRoute enables xAI's cache-capable
-// mixed-tools route only for the Anthropic Messages bridge and only when the
+// mixed-tools route for supported Responses/WS/Messages ingress only when the
 // selected account is known to be Free. Native tools become eligible under
-// auto selection, so callers must not apply this policy to paid accounts or
-// other ingress protocols implicitly.
+// auto selection, so every caller must preserve the tier and tenant-identity
+// gates rather than applying the route to paid or unknown accounts.
 func applyGrokFreeMessagesFunctionToolCacheRoute(body, intentSourceBody []byte, account *Account, cacheIdentity string) ([]byte, error) {
 	if strings.TrimSpace(cacheIdentity) == "" || !isKnownGrokFreeAccount(account) {
 		return body, nil
@@ -145,7 +145,47 @@ func applyGrokFreeMessagesFunctionToolCacheRoute(body, intentSourceBody []byte, 
 	if !isGrokFreeCacheFunctionToolIntent(intentTools, intentToolChoice) {
 		return body, nil
 	}
+	// xAI's Grok Build client declares its native search tools as Responses
+	// function entries named web_search/x_search. Converting those reserved
+	// declarations avoids duplicate native tool names after augmentation, but
+	// the same names are valid custom function names for ordinary models. Keep
+	// ordinary-model requests byte-for-byte unchanged rather than dropping a
+	// caller's function schema.
+	if grokFreeCacheFunctionToolsContainReservedName(intentTools) && !isGrokBuildFunctionToolModel(intentSourceBody) {
+		return body, nil
+	}
 	return appendMissingGrokFreeCacheNativeTools(body)
+}
+
+func grokFreeCacheFunctionToolsContainReservedName(tools gjson.Result) bool {
+	if !tools.IsArray() {
+		return false
+	}
+	for _, tool := range tools.Array() {
+		if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "function") &&
+			isGrokFreeCacheReservedSearchName(tool.Get("name").String()) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGrokFreeCacheReservedSearchName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "web_search", "x_search":
+		return true
+	default:
+		return false
+	}
+}
+
+func isGrokBuildFunctionToolModel(body []byte) bool {
+	switch strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "model").String())) {
+	case "grok-build", "grok-build-latest", "grok-build-0.1":
+		return true
+	default:
+		return false
+	}
 }
 
 func isKnownGrokFreeAccount(account *Account) bool {
@@ -262,17 +302,37 @@ func appendMissingGrokFreeCacheNativeTools(body []byte) ([]byte, error) {
 		toolType := strings.TrimSpace(tool.Get("type").String())
 		switch toolType {
 		case "function":
-			if !tool.IsObject() || strings.TrimSpace(tool.Get("name").String()) == "" || tool.Get("function").Exists() {
+			name := strings.TrimSpace(tool.Get("name").String())
+			if !tool.IsObject() || name == "" || tool.Get("function").Exists() {
 				return body, nil
 			}
+			// Grok Build may send web_search/x_search as function declarations.
+			// Convert those two reserved names to native entries and deduplicate;
+			// arbitrary function tools remain unchanged.
+			if isGrokFreeCacheReservedSearchName(name) {
+				reservedName := strings.ToLower(name)
+				if present[reservedName] {
+					continue
+				}
+				raw, err := json.Marshal(map[string]string{"type": reservedName})
+				if err != nil {
+					return nil, err
+				}
+				merged = append(merged, raw)
+				present[reservedName] = true
+				continue
+			}
 			hasFunction = true
+			merged = append(merged, json.RawMessage(tool.Raw))
 		case "web_search", "x_search":
-			// Native tools may already be present when this helper is retried.
+			if present[toolType] {
+				continue
+			}
+			merged = append(merged, json.RawMessage(tool.Raw))
+			present[toolType] = true
 		default:
 			return body, nil
 		}
-		merged = append(merged, json.RawMessage(tool.Raw))
-		present[toolType] = true
 	}
 	if !hasFunction {
 		return body, nil

@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/server/routes"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -34,6 +36,7 @@ func SetupRouter(
 	settingService *service.SettingService,
 	cfg *config.Config,
 	redisClient *redis.Client,
+	promptAudit *securityaudit.Service,
 ) *gin.Engine {
 	// 缓存 iframe 页面的 origin 列表，用于动态注入 CSP frame-src
 	var cachedFrameOrigins atomic.Pointer[[]string]
@@ -56,13 +59,14 @@ func SetupRouter(
 	r.Use(middleware2.RequestLogger())
 	r.Use(middleware2.Logger())
 	r.Use(middleware2.CORS(cfg.CORS))
-	r.Use(middleware2.SessionBindingContext())
+	r.Use(middleware2.SessionBindingContext(cfg))
 	r.Use(middleware2.SecurityHeaders(cfg.Security.CSP, func() []string {
 		if p := cachedFrameOrigins.Load(); p != nil {
 			return *p
 		}
 		return nil
 	}))
+	r.Use(promptAuditCollectorMiddleware(promptAudit))
 
 	// Serve embedded frontend with settings injection if available
 	if web.HasEmbeddedFrontend() {
@@ -89,6 +93,30 @@ func SetupRouter(
 	return r
 }
 
+func promptAuditCollectorMiddleware(promptAudit *securityaudit.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if promptAudit == nil {
+			c.Next()
+			return
+		}
+		// edge-rs calls this internal prepare endpoint before it opens the
+		// upstream stream. Capturing here would run the audit worker before the
+		// real first token and would be duplicated when edge falls back to Go.
+		if c.Request != nil && strings.HasPrefix(c.Request.URL.Path, "/internal/edge/openai/") {
+			c.Next()
+			return
+		}
+		collector := promptAudit.NewCollector()
+		if collector == nil || c.Request == nil {
+			c.Next()
+			return
+		}
+		c.Request = c.Request.WithContext(securityaudit.WithCollector(c.Request.Context(), collector))
+		defer promptAudit.FlushCollector(collector)
+		c.Next()
+	}
+}
+
 // registerRoutes 注册所有 HTTP 路由
 func registerRoutes(
 	r *gin.Engine,
@@ -113,7 +141,7 @@ func registerRoutes(
 	v1 := r.Group("/api/v1")
 
 	// 注册各模块路由
-	routes.RegisterAuthRoutes(v1, h, jwtAuth, redisClient, settingService)
+	routes.RegisterAuthRoutes(v1, h, jwtAuth, auditLog, redisClient, settingService)
 	routes.RegisterUserRoutes(v1, h, jwtAuth, auditLog, settingService)
 	routes.RegisterAdminRoutes(v1, h, adminAuth, auditLog, stepUp)
 	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg)

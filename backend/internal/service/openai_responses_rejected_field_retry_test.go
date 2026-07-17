@@ -70,6 +70,27 @@ func TestNormalizeOpenAIResponsesRejectedFieldRetryBodyIsExact(t *testing.T) {
 		require.Nil(t, retryBody)
 	})
 
+	t.Run("legacy alias alone cannot trigger replay", func(t *testing.T) {
+		retryBody, _, changed, err := normalizeOpenAIResponsesRejectedFieldRetryBody(
+			http.StatusBadRequest,
+			[]byte(`{"max_tokens":2048}`),
+			[]byte(`{"error":{"code":"unsupported_parameter","param":"max_output_tokens","message":"Unsupported parameter: max_output_tokens"}}`),
+		)
+		require.NoError(t, err)
+		require.False(t, changed)
+		require.Nil(t, retryBody)
+	})
+
+	t.Run("canonical rebuild removes compatibility alias", func(t *testing.T) {
+		body := []byte(`{"max_tokens":1024,"max_output_tokens":2048,"input":"keep"}`)
+		rebuilt, changed, err := RemoveOpenAIResponsesRejectedField(body, "max_output_tokens")
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.False(t, gjson.GetBytes(rebuilt, "max_tokens").Exists())
+		require.False(t, gjson.GetBytes(rebuilt, "max_output_tokens").Exists())
+		require.Equal(t, "keep", gjson.GetBytes(rebuilt, "input").String())
+	})
+
 	t.Run("websocket response failed envelope", func(t *testing.T) {
 		body := []byte(`{"input":[{"type":"custom_tool_call","namespace":"remove"}]}`)
 		retryBody, field, changed, err := normalizeOpenAIResponsesRejectedFieldRetryBody(

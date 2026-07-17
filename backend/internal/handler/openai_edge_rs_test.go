@@ -30,6 +30,36 @@ func newOpenAIEdgeTestContext(method, path, body, secret string) (*gin.Context, 
 	return c, w
 }
 
+func newOpenAIEdgeRetryWSTestService() *service.OpenAIGatewayService {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.OAuthEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = service.OpenAIWSIngressModeCtxPool
+	return service.NewOpenAIGatewayService(
+		nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+}
+
+func newOpenAIEdgeRetryWSTestAccount(id int64, strongIsolation bool) *service.Account {
+	credentials := map[string]any{"access_token": "oauth-token"}
+	if strongIsolation {
+		credentials["upstream_strong_isolation_enabled"] = true
+	}
+	return &service.Account{
+		ID:          id,
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: credentials,
+		Extra: map[string]any{
+			"openai_oauth_responses_websockets_v2_mode": service.OpenAIWSIngressModePassthrough,
+		},
+	}
+}
+
 func TestOpenAIEdgePrepareRequiresEnabledInternalAPIAndSecret(t *testing.T) {
 	h := &OpenAIGatewayHandler{cfg: &config.Config{}}
 	c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/prepare", `{}`, "")
@@ -341,6 +371,33 @@ func TestOpenAIEdgePrepareResponsesWSFallsBackForPerTurnGovernance(t *testing.T)
 	}
 }
 
+func TestOpenAIEdgeResponsesWSAccountFallbackReason(t *testing.T) {
+	strongIsolation := &service.Account{
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Credentials: map[string]any{
+			"upstream_strong_isolation_enabled": true,
+		},
+	}
+	if got := openAIEdgeResponsesWSAccountFallbackReason(strongIsolation); got != "edge_ws_strong_isolation_requires_go" {
+		t.Fatalf("expected strong-isolation fallback, got %q", got)
+	}
+
+	ordinary := &service.Account{
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Credentials: map[string]any{
+			"upstream_strong_isolation_enabled": false,
+		},
+	}
+	if got := openAIEdgeResponsesWSAccountFallbackReason(ordinary); got != "" {
+		t.Fatalf("expected ordinary account to remain eligible, got %q", got)
+	}
+	if got := openAIEdgeResponsesWSAccountFallbackReason(nil); got != "" {
+		t.Fatalf("expected nil account to remain a no-op, got %q", got)
+	}
+}
+
 func TestOpenAIEdgeToolOutputFallbackReason(t *testing.T) {
 	tests := []struct {
 		name string
@@ -637,6 +694,7 @@ func TestOpenAIEdgeRetryExplicitRejectedResponsesFieldsStayOnSameLease(t *testin
 		expiresAt:          time.Now().Add(time.Minute),
 		account:            account,
 		inboundEndpoint:    "/v1/responses",
+		forwardBody:        append([]byte(nil), body...),
 		lastPlan:           service.OpenAIEdgePlan{EdgeRequestID: "edge-1", LeaseID: "lease-1", AccountID: account.ID, Headers: map[string]string{"Authorization": "Bearer stable"}, BodyRawBase64: service.EncodeOpenAIEdgeRawBody(body)},
 		sameAccountRetries: map[int64]int{},
 		failedAccountIDs:   map[int64]struct{}{},
@@ -660,6 +718,9 @@ func TestOpenAIEdgeRetryExplicitRejectedResponsesFieldsStayOnSameLease(t *testin
 	if gjson.GetBytes(firstBody, "input.0.namespace").Exists() || !gjson.GetBytes(firstBody, "max_output_tokens").Exists() {
 		t.Fatalf("first retry removed the wrong field: %s", firstBody)
 	}
+	if !bytes.Equal(lease.forwardBody, firstBody) {
+		t.Fatalf("first retry did not update failover body: plan=%s forward=%s", firstBody, lease.forwardBody)
+	}
 
 	second := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
 		LeaseID:            lease.leaseID,
@@ -677,11 +738,193 @@ func TestOpenAIEdgeRetryExplicitRejectedResponsesFieldsStayOnSameLease(t *testin
 	if gjson.GetBytes(secondBody, "input.0.namespace").Exists() || gjson.GetBytes(secondBody, "max_output_tokens").Exists() {
 		t.Fatalf("second retry did not preserve both removals: %s", secondBody)
 	}
+	if !bytes.Equal(lease.forwardBody, secondBody) {
+		t.Fatalf("second retry did not update failover body: plan=%s forward=%s", secondBody, lease.forwardBody)
+	}
+	if len(lease.rejectedFields) != 2 {
+		t.Fatalf("expected two confirmed rejected fields, got %v", lease.rejectedFields)
+	}
 	if second.Plan.AccountID != account.ID || second.Plan.LeaseID != lease.leaseID || second.Plan.Headers["Authorization"] != "Bearer stable" {
 		t.Fatal("compatibility retry changed account, lease, or authentication headers")
 	}
 	if lease.switchCount != 0 || len(lease.sameAccountRetries) != 0 || len(lease.failedAccountIDs) != 0 {
 		t.Fatal("compatibility retry polluted ordinary retry or failover state")
+	}
+}
+
+func TestOpenAIEdgeRetryRejectedFieldsSurviveCachePolicyFallback(t *testing.T) {
+	cfg := &config.Config{}
+	gatewaySvc := service.NewOpenAIGatewayService(
+		nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	canonicalBody := []byte(`{"model":"gpt-5.6-sol","stream":true,"max_tokens":2048,"input":[{"type":"custom_tool_call","namespace":"tools","input":"{}"}]}`)
+	account := &service.Account{
+		ID: 1002, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.openai.com",
+			"openai_prompt_cache_creation_optimization_enabled": true,
+			"openai_prompt_cache_creation_optimization_mode":    service.OpenAIPromptCacheCreationOptimizationModeSuppress,
+		},
+		Extra: map[string]any{
+			"openai_passthrough":                     true,
+			"openai_responses_passthrough_compat":    true,
+			openai_compat.ExtraKeyResponsesSupported: true,
+		},
+	}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+	prepared, err := gatewaySvc.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, canonicalBody)
+	if err != nil {
+		t.Fatalf("build initial optimized plan: %v", err)
+	}
+	initialBody, err := openAIEdgePlanBody(prepared.Plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gjson.GetBytes(initialBody, "prompt_cache_options").Exists() || !gjson.GetBytes(initialBody, "max_output_tokens").Exists() {
+		t.Fatalf("test setup did not apply cache policy and token alias: %s", initialBody)
+	}
+
+	prepared.Plan.EdgeRequestID = "edge-2"
+	prepared.Plan.LeaseID = "lease-2"
+	lease := &openAIEdgeLease{
+		edgeRequestID: "edge-2", leaseID: "lease-2", expiresAt: time.Now().Add(time.Minute),
+		account: account, cachePolicyEnabled: true, cachePolicyApplied: true,
+		forwardBody: append([]byte(nil), canonicalBody...), lastPlan: prepared.Plan,
+		inboundEndpoint: "/v1/responses", sameAccountRetries: map[int64]int{}, failedAccountIDs: map[int64]struct{}{},
+	}
+	h := &OpenAIGatewayHandler{gatewayService: gatewaySvc, openAIEdgeLeases: map[string]*openAIEdgeLease{lease.leaseID: lease}}
+
+	for _, rejection := range []struct {
+		field string
+		body  string
+	}{
+		{"input[0].namespace", `{"error":{"code":"unknown_parameter","param":"input[0].namespace","message":"Unknown parameter: input[0].namespace"}}`},
+		{"max_output_tokens", `{"error":{"code":"unsupported_parameter","param":"max_output_tokens","message":"Unsupported parameter: max_output_tokens"}}`},
+	} {
+		decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+			LeaseID: lease.leaseID, AccountID: account.ID, UpstreamStatusCode: http.StatusBadRequest,
+			ResponseBody: json.RawMessage(rejection.body),
+		})
+		if decision.Action != service.OpenAIEdgeActionRelay || decision.Plan == nil || !strings.Contains(decision.Reason, "responses_rejected_field_") {
+			t.Fatalf("field %s retry failed: action=%q reason=%q", rejection.field, decision.Action, decision.Reason)
+		}
+	}
+
+	cacheError := `{"error":{"code":"unknown_parameter","param":"prompt_cache_options","message":"Unsupported parameter: prompt_cache_options"}}`
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID: lease.leaseID, AccountID: account.ID, UpstreamStatusCode: http.StatusBadRequest,
+		ErrorMessage: cacheError, ResponseBody: json.RawMessage(cacheError),
+	})
+	if decision.Action != service.OpenAIEdgeActionRelay || decision.Plan == nil || decision.Reason != "cache_creation_optimization_unsupported" {
+		t.Fatalf("cache fallback failed: action=%q reason=%q", decision.Action, decision.Reason)
+	}
+	fallbackBody, err := openAIEdgePlanBody(*decision.Plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"input.0.namespace", "max_tokens", "max_output_tokens", "prompt_cache_options"} {
+		if gjson.GetBytes(fallbackBody, path).Exists() {
+			t.Fatalf("fallback resurrected rejected or account-policy field %s: %s", path, fallbackBody)
+		}
+	}
+	if len(lease.rejectedFields) != 2 || lease.cachePolicyEnabled || lease.cachePolicyApplied {
+		t.Fatalf("unexpected fallback state: fields=%v enabled=%v applied=%v", lease.rejectedFields, lease.cachePolicyEnabled, lease.cachePolicyApplied)
+	}
+	if !account.IsOpenAIPromptCacheCreationSuppressEnabled() {
+		t.Fatal("fallback mutated the scheduler account policy")
+	}
+}
+
+func TestOpenAIEdgeRetryEndpointEligibilityPreservesTransportContracts(t *testing.T) {
+	wsAccount := newOpenAIEdgeRetryWSTestAccount(1001, false)
+	if got := openAIEdgeRetryRequiredTransport("/v1/responses:ws"); got != service.OpenAIUpstreamTransportResponsesWebsocketV2 {
+		t.Fatalf("WS retry transport = %q, want ws_v2", got)
+	}
+	if !openAIEdgeRetryAccountEligible(wsAccount, "/v1/responses:ws") {
+		t.Fatal("ordinary WSv2 account must remain eligible for an edge retry")
+	}
+	if openAIEdgeRetryAccountEligible(newOpenAIEdgeRetryWSTestAccount(1002, true), "/v1/responses:ws") {
+		t.Fatal("strong-isolation WS account must remain on the Go HTTP bridge")
+	}
+
+	rawResponsesAccount := &service.Account{
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra: map[string]any{
+			"openai_passthrough":                     true,
+			"openai_responses_passthrough_compat":    true,
+			openai_compat.ExtraKeyResponsesSupported: true,
+		},
+	}
+	if got := openAIEdgeRetryRequiredTransport("/v1/responses"); got != service.OpenAIUpstreamTransportAny {
+		t.Fatalf("HTTP retry transport = %q, want scheduler default", got)
+	}
+	if got, want := openAIEdgeRetryAccountEligible(rawResponsesAccount, "/v1/responses"), service.IsOpenAIEdgeRawRelayEligibleForInboundEndpoint(rawResponsesAccount, "/v1/responses"); got != want || !got {
+		t.Fatalf("HTTP Responses eligibility changed: got=%v want=%v", got, want)
+	}
+	if openAIEdgeRetryAccountEligible(wsAccount, "/v1/responses") {
+		t.Fatal("WS-only OAuth account must not become eligible for raw HTTP Responses retry")
+	}
+}
+
+func TestOpenAIEdgeRetryResponsesWSRebuildRetainsTransportAndRejectedFieldRemoval(t *testing.T) {
+	body := []byte(`{"type":"response.create","model":"gpt-5.6","max_output_tokens":2048,"input":"hello"}`)
+	account := newOpenAIEdgeRetryWSTestAccount(1001, false)
+	lease := &openAIEdgeLease{
+		edgeRequestID:   "edge-ws-1",
+		leaseID:         "lease-ws-1",
+		expiresAt:       time.Now().Add(time.Minute),
+		account:         account,
+		inboundEndpoint: "/v1/responses:ws",
+		forwardBody:     append([]byte(nil), body...),
+		lastPlan: service.OpenAIEdgePlan{
+			EdgeRequestID: "edge-ws-1",
+			LeaseID:       "lease-ws-1",
+			AccountID:     account.ID,
+			Transport:     service.OpenAIEdgeTransportWSV2,
+			BodyRawBase64: service.EncodeOpenAIEdgeRawBody(body),
+		},
+		sameAccountRetries: map[int64]int{},
+		sameAccountStarted: map[int64]time.Time{},
+		failedAccountIDs:   map[int64]struct{}{},
+	}
+	h := &OpenAIGatewayHandler{
+		gatewayService:   newOpenAIEdgeRetryWSTestService(),
+		openAIEdgeLeases: map[string]*openAIEdgeLease{lease.leaseID: lease},
+	}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:            lease.leaseID,
+		AccountID:          account.ID,
+		UpstreamStatusCode: http.StatusBadRequest,
+		ResponseBody:       json.RawMessage(`{"error":{"code":"unsupported_parameter","param":"max_output_tokens","message":"Unsupported parameter: max_output_tokens"}}`),
+	})
+	if decision.Action != service.OpenAIEdgeActionRelay || decision.Plan == nil {
+		t.Fatalf("expected same-lease WS field retry, got action=%q reason=%q", decision.Action, decision.Reason)
+	}
+	if gjson.GetBytes(lease.forwardBody, "max_output_tokens").Exists() {
+		t.Fatalf("rejected field remained in failover body: %s", lease.forwardBody)
+	}
+
+	rebuilt, err := h.buildOpenAIEdgeRetryPlan(c, lease, newOpenAIEdgeRetryWSTestAccount(1002, false), nil)
+	if err != nil {
+		t.Fatalf("rebuild WS retry plan: %v", err)
+	}
+	if rebuilt.Transport != service.OpenAIEdgeTransportWSV2 || rebuilt.AccountID != 1002 {
+		t.Fatalf("rebuilt retry changed transport/account: transport=%q account=%d", rebuilt.Transport, rebuilt.AccountID)
+	}
+	rebuiltBody, err := base64.StdEncoding.DecodeString(rebuilt.BodyRawBase64)
+	if err != nil {
+		t.Fatalf("decode rebuilt WS body: %v", err)
+	}
+	if gjson.GetBytes(rebuiltBody, "max_output_tokens").Exists() || gjson.GetBytes(rebuiltBody, "type").String() != "response.create" {
+		t.Fatalf("rebuilt WS body lost the compatibility rewrite or frame type: %s", rebuiltBody)
+	}
+	if lease.lastPlan.Transport != service.OpenAIEdgeTransportWSV2 || !bytes.Equal(lease.forwardBody, rebuiltBody) {
+		t.Fatal("lease state diverged from the rebuilt WS retry plan")
 	}
 }
 

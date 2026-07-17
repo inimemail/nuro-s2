@@ -37,6 +37,20 @@ func (h *BatchImageHandler) Submit(c *gin.Context) {
 		batchImageError(c, infraerrors.New(http.StatusUnauthorized, "API_KEY_REQUIRED", "API key is required"))
 		return
 	}
+	if hasPromptAuditCollector(c) {
+		apiKey, _ := middleware.GetAPIKeyFromContext(c)
+		subject, subjectOK := middleware.GetAuthSubjectFromContext(c)
+		if !subjectOK {
+			subject.UserID = owner.UserID
+		}
+		prompts := make([]string, 0, len(req.Items))
+		for _, item := range req.Items {
+			if strings.TrimSpace(item.Prompt) != "" {
+				prompts = append(prompts, item.Prompt)
+			}
+		}
+		capturePromptAuditTexts(c, apiKey, subject, service.ContentModerationProtocolOpenAIImages, req.Model, prompts)
+	}
 	got, err := h.service.Submit(c.Request.Context(), owner, req, c.GetHeader("Idempotency-Key"))
 	if err != nil {
 		batchImageError(c, err)

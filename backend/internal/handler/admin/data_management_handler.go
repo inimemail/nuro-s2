@@ -171,10 +171,10 @@ func (h *DataManagementHandler) TestS3(c *gin.Context) {
 		UseSSL:          req.UseSSL,
 	})
 	if err != nil {
-		response.ErrorFrom(c, err)
+		respondS3ConnectionTest(c, false)
 		return
 	}
-	response.Success(c, gin.H{"ok": result.OK, "message": result.Message})
+	respondS3ConnectionTest(c, result.OK)
 }
 
 func (h *DataManagementHandler) CreateBackupJob(c *gin.Context) {
