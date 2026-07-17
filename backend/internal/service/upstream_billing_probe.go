@@ -52,6 +52,9 @@ var (
 	ErrUpstreamBillingGuardRequiresAutoProbe = infraerrors.BadRequest(
 		"UPSTREAM_BILLING_GUARD_REQUIRES_AUTO_PROBE", "enable account automatic billing probe before enabling the rate guard",
 	)
+	ErrUpstreamBillingGuardRequiresGroupLimit = infraerrors.BadRequest(
+		"UPSTREAM_BILLING_GUARD_REQUIRES_GROUP_LIMIT", "upstream billing guard requires at least one bound OpenAI group with a configured limit",
+	)
 	ErrUpstreamBillingProbeRequiredByGuard = infraerrors.Conflict(
 		"UPSTREAM_BILLING_PROBE_REQUIRED_BY_GUARD", "disable the upstream billing guard before disabling automatic probe",
 	)
@@ -72,8 +75,7 @@ type upstreamBillingProbeSettingsStorage struct {
 }
 
 type UpstreamBillingGuardSettings struct {
-	Enabled       bool    `json:"enabled"`
-	MaxMultiplier float64 `json:"max_multiplier"`
+	Enabled bool `json:"enabled"`
 }
 
 type UpstreamBillingGuardResult struct {
@@ -126,7 +128,7 @@ type upstreamBillingProbeEnabledWriter interface {
 }
 
 type upstreamBillingGuardWriter interface {
-	UpdateUpstreamBillingGuard(context.Context, int64, bool, float64) (*Account, bool, error)
+	UpdateUpstreamBillingGuard(context.Context, int64, bool) (*Account, bool, error)
 }
 
 type UpstreamBillingProbeService struct {
@@ -415,9 +417,6 @@ func (s *UpstreamBillingProbeService) UpdateGuard(ctx context.Context, id int64,
 	if s == nil || s.accountRepo == nil {
 		return nil, ErrUpstreamBillingProbeUnavailable
 	}
-	if math.IsNaN(settings.MaxMultiplier) || math.IsInf(settings.MaxMultiplier, 0) || settings.MaxMultiplier < 0 {
-		return nil, infraerrors.BadRequest("INVALID_UPSTREAM_BILLING_GUARD_MULTIPLIER", "max_multiplier must be a finite number greater than or equal to 0")
-	}
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -425,15 +424,28 @@ func (s *UpstreamBillingProbeService) UpdateGuard(ctx context.Context, id int64,
 	if !isUpstreamBillingProbeAccount(account) {
 		return nil, ErrUpstreamBillingProbeAccountInvalid
 	}
+	if settings.Enabled && !account.HasUpstreamBillingGuardGroupLimit() {
+		return nil, ErrUpstreamBillingGuardRequiresGroupLimit
+	}
 	autoProbeEnabled, _ := account.Extra[UpstreamBillingProbeEnabledExtraKey].(bool)
 	if settings.Enabled && !autoProbeEnabled {
-		return nil, ErrUpstreamBillingGuardRequiresAutoProbe
+		enabledWriter, ok := s.accountRepo.(upstreamBillingProbeEnabledWriter)
+		if !ok {
+			return nil, ErrUpstreamBillingProbeUnavailable
+		}
+		if err := enabledWriter.UpdateUpstreamBillingProbeEnabled(ctx, id, true); err != nil {
+			return nil, err
+		}
+		account, err = s.accountRepo.GetByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
 	}
 	writer, ok := s.accountRepo.(upstreamBillingGuardWriter)
 	if !ok {
 		return nil, ErrUpstreamBillingProbeUnavailable
 	}
-	updated, _, err := writer.UpdateUpstreamBillingGuard(ctx, id, settings.Enabled, settings.MaxMultiplier)
+	updated, _, err := writer.UpdateUpstreamBillingGuard(ctx, id, settings.Enabled)
 	if err != nil {
 		return nil, err
 	}

@@ -894,6 +894,7 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		Description:                        derefString(g.Description),
 		Platform:                           g.Platform,
 		RateMultiplier:                     g.RateMultiplier,
+		UpstreamBillingGuardMaxMultiplier:  g.UpstreamBillingGuardMaxMultiplier,
 		PeakRateEnabled:                    g.PeakRateEnabled,
 		PeakStart:                          g.PeakStart,
 		PeakEnd:                            g.PeakEnd,

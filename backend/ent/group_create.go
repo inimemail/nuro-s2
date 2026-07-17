@@ -105,6 +105,20 @@ func (_c *GroupCreate) SetNillableRateMultiplier(v *float64) *GroupCreate {
 	return _c
 }
 
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (_c *GroupCreate) SetUpstreamBillingGuardMaxMultiplier(v float64) *GroupCreate {
+	_c.mutation.SetUpstreamBillingGuardMaxMultiplier(v)
+	return _c
+}
+
+// SetNillableUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableUpstreamBillingGuardMaxMultiplier(v *float64) *GroupCreate {
+	if v != nil {
+		_c.SetUpstreamBillingGuardMaxMultiplier(*v)
+	}
+	return _c
+}
+
 // SetPeakRateEnabled sets the "peak_rate_enabled" field.
 func (_c *GroupCreate) SetPeakRateEnabled(v bool) *GroupCreate {
 	_c.mutation.SetPeakRateEnabled(v)
@@ -1168,6 +1182,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 		_spec.SetField(group.FieldRateMultiplier, field.TypeFloat64, value)
 		_node.RateMultiplier = value
 	}
+	if value, ok := _c.mutation.UpstreamBillingGuardMaxMultiplier(); ok {
+		_spec.SetField(group.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
+		_node.UpstreamBillingGuardMaxMultiplier = &value
+	}
 	if value, ok := _c.mutation.PeakRateEnabled(); ok {
 		_spec.SetField(group.FieldPeakRateEnabled, field.TypeBool, value)
 		_node.PeakRateEnabled = value
@@ -1575,6 +1593,30 @@ func (u *GroupUpsert) UpdateRateMultiplier() *GroupUpsert {
 // AddRateMultiplier adds v to the "rate_multiplier" field.
 func (u *GroupUpsert) AddRateMultiplier(v float64) *GroupUpsert {
 	u.Add(group.FieldRateMultiplier, v)
+	return u
+}
+
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (u *GroupUpsert) SetUpstreamBillingGuardMaxMultiplier(v float64) *GroupUpsert {
+	u.Set(group.FieldUpstreamBillingGuardMaxMultiplier, v)
+	return u
+}
+
+// UpdateUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateUpstreamBillingGuardMaxMultiplier() *GroupUpsert {
+	u.SetExcluded(group.FieldUpstreamBillingGuardMaxMultiplier)
+	return u
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds v to the "upstream_billing_guard_max_multiplier" field.
+func (u *GroupUpsert) AddUpstreamBillingGuardMaxMultiplier(v float64) *GroupUpsert {
+	u.Add(group.FieldUpstreamBillingGuardMaxMultiplier, v)
+	return u
+}
+
+// ClearUpstreamBillingGuardMaxMultiplier clears the value of the "upstream_billing_guard_max_multiplier" field.
+func (u *GroupUpsert) ClearUpstreamBillingGuardMaxMultiplier() *GroupUpsert {
+	u.SetNull(group.FieldUpstreamBillingGuardMaxMultiplier)
 	return u
 }
 
@@ -2428,6 +2470,34 @@ func (u *GroupUpsertOne) AddRateMultiplier(v float64) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdateRateMultiplier() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateRateMultiplier()
+	})
+}
+
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (u *GroupUpsertOne) SetUpstreamBillingGuardMaxMultiplier(v float64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetUpstreamBillingGuardMaxMultiplier(v)
+	})
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds v to the "upstream_billing_guard_max_multiplier" field.
+func (u *GroupUpsertOne) AddUpstreamBillingGuardMaxMultiplier(v float64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddUpstreamBillingGuardMaxMultiplier(v)
+	})
+}
+
+// UpdateUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateUpstreamBillingGuardMaxMultiplier() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateUpstreamBillingGuardMaxMultiplier()
+	})
+}
+
+// ClearUpstreamBillingGuardMaxMultiplier clears the value of the "upstream_billing_guard_max_multiplier" field.
+func (u *GroupUpsertOne) ClearUpstreamBillingGuardMaxMultiplier() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearUpstreamBillingGuardMaxMultiplier()
 	})
 }
 
@@ -3566,6 +3636,34 @@ func (u *GroupUpsertBulk) AddRateMultiplier(v float64) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdateRateMultiplier() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateRateMultiplier()
+	})
+}
+
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (u *GroupUpsertBulk) SetUpstreamBillingGuardMaxMultiplier(v float64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetUpstreamBillingGuardMaxMultiplier(v)
+	})
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds v to the "upstream_billing_guard_max_multiplier" field.
+func (u *GroupUpsertBulk) AddUpstreamBillingGuardMaxMultiplier(v float64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddUpstreamBillingGuardMaxMultiplier(v)
+	})
+}
+
+// UpdateUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateUpstreamBillingGuardMaxMultiplier() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateUpstreamBillingGuardMaxMultiplier()
+	})
+}
+
+// ClearUpstreamBillingGuardMaxMultiplier clears the value of the "upstream_billing_guard_max_multiplier" field.
+func (u *GroupUpsertBulk) ClearUpstreamBillingGuardMaxMultiplier() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearUpstreamBillingGuardMaxMultiplier()
 	})
 }
 

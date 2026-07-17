@@ -55,6 +55,7 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetDescription(groupIn.Description).
 		SetPlatform(groupIn.Platform).
 		SetRateMultiplier(groupIn.RateMultiplier).
+		SetNillableUpstreamBillingGuardMaxMultiplier(groupIn.UpstreamBillingGuardMaxMultiplier).
 		SetPeakRateEnabled(groupIn.PeakRateEnabled).
 		SetPeakStart(groupIn.PeakStart).
 		SetPeakEnd(groupIn.PeakEnd).
@@ -219,6 +220,7 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetDescription(groupIn.Description).
 		SetPlatform(groupIn.Platform).
 		SetRateMultiplier(groupIn.RateMultiplier).
+		SetNillableUpstreamBillingGuardMaxMultiplier(groupIn.UpstreamBillingGuardMaxMultiplier).
 		SetPeakRateEnabled(groupIn.PeakRateEnabled).
 		SetPeakStart(groupIn.PeakStart).
 		SetPeakEnd(groupIn.PeakEnd).
@@ -307,6 +309,11 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		builder = builder.SetWebSearchPricePerCall(*groupIn.WebSearchPricePerCall)
 	} else {
 		builder = builder.ClearWebSearchPricePerCall()
+	}
+	if groupIn.UpstreamBillingGuardMaxMultiplier != nil {
+		builder = builder.SetUpstreamBillingGuardMaxMultiplier(*groupIn.UpstreamBillingGuardMaxMultiplier)
+	} else {
+		builder = builder.ClearUpstreamBillingGuardMaxMultiplier()
 	}
 
 	// 处理 FallbackGroupID：nil 时清除，否则设置
@@ -722,7 +729,9 @@ func (r *groupRepository) GetAccountCount(ctx context.Context, groupID int64) (t
 			COUNT(*) FILTER (WHERE a.deleted_at IS NULL),
 			COUNT(*) FILTER (WHERE %s),
 			COUNT(*) FILTER (WHERE %s)
-		FROM account_groups ag JOIN accounts a ON a.id = ag.account_id
+		FROM account_groups ag
+		JOIN accounts a ON a.id = ag.account_id
+		JOIN groups g ON g.id = ag.group_id AND g.deleted_at IS NULL
 		WHERE ag.group_id = $1`, groupAccountAvailableSQL, groupAccountTemporarilyLimitedSQL),
 		[]any{groupID}, &total, &active, &rateLimited)
 	return
@@ -855,10 +864,12 @@ const (
 				AND NOT (
 					a.platform = 'openai'
 					AND a.type = 'apikey'
-					AND ag.upstream_billing_guard_max_multiplier IS NOT NULL
+					AND a.upstream_billing_guard_enabled = TRUE
+					AND g.platform = 'openai'
+					AND g.upstream_billing_guard_max_multiplier IS NOT NULL
 					AND (
 						COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
-						OR COALESCE(a.upstream_billing_guard_observed_multiplier > ag.upstream_billing_guard_max_multiplier, FALSE)
+						OR COALESCE(a.upstream_billing_guard_observed_multiplier > g.upstream_billing_guard_max_multiplier, FALSE)
 					)
 				)
 				AND (a.expires_at IS NULL OR a.expires_at > NOW() OR a.auto_pause_on_expired = FALSE)
@@ -892,6 +903,7 @@ func (r *groupRepository) loadAccountCounts(ctx context.Context, groupIDs []int6
 			COUNT(*) FILTER (WHERE %s) AS rate_limited
 		FROM account_groups ag
 		JOIN accounts a ON a.id = ag.account_id
+		JOIN groups g ON g.id = ag.group_id AND g.deleted_at IS NULL
 		WHERE ag.group_id = ANY($1)
 		GROUP BY ag.group_id`, groupAccountAvailableSQL, groupAccountTemporarilyLimitedSQL),
 		pq.Array(groupIDs),

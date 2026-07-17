@@ -31,3 +31,22 @@ export const buildOpenAIUsageRefreshKey = (account: Pick<Account, 'id' | 'platfo
     extra.codex_7d_window_minutes
   ].map(normalizeUsageRefreshValue).join('|')
 }
+
+export const buildUpstreamBillingGuardRefreshKey = (
+  account: Pick<Account, 'upstream_billing_guard_enabled' | 'upstream_billing_guard_observed_multiplier' | 'account_groups' | 'extra'>
+): string => {
+  const bindings = (account.account_groups ?? [])
+    .map((binding) => {
+      const group = binding.group
+      const hasGroupLimit = group != null && Object.prototype.hasOwnProperty.call(group, 'upstream_billing_guard_max_multiplier')
+      const groupLimit = hasGroupLimit ? group?.upstream_billing_guard_max_multiplier : ''
+      return [binding.group_id, binding.upstream_billing_guard_max_multiplier, groupLimit].map(normalizeUsageRefreshValue).join(':')
+    })
+    .sort()
+  return [
+    account.upstream_billing_guard_enabled,
+    account.upstream_billing_guard_observed_multiplier,
+    account.extra?.upstream_billing_probe_enabled,
+    ...bindings
+  ].map(normalizeUsageRefreshValue).join('|')
+}

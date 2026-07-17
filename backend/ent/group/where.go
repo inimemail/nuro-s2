@@ -85,6 +85,11 @@ func RateMultiplier(v float64) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldRateMultiplier, v))
 }
 
+// UpstreamBillingGuardMaxMultiplier applies equality check predicate on the "upstream_billing_guard_max_multiplier" field. It's identical to UpstreamBillingGuardMaxMultiplierEQ.
+func UpstreamBillingGuardMaxMultiplier(v float64) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
 // PeakRateEnabled applies equality check predicate on the "peak_rate_enabled" field. It's identical to PeakRateEnabledEQ.
 func PeakRateEnabled(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldPeakRateEnabled, v))
@@ -593,6 +598,56 @@ func RateMultiplierLT(v float64) predicate.Group {
 // RateMultiplierLTE applies the LTE predicate on the "rate_multiplier" field.
 func RateMultiplierLTE(v float64) predicate.Group {
 	return predicate.Group(sql.FieldLTE(FieldRateMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierEQ applies the EQ predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierEQ(v float64) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierNEQ applies the NEQ predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierNEQ(v float64) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierIn applies the In predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierIn(vs ...float64) predicate.Group {
+	return predicate.Group(sql.FieldIn(FieldUpstreamBillingGuardMaxMultiplier, vs...))
+}
+
+// UpstreamBillingGuardMaxMultiplierNotIn applies the NotIn predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierNotIn(vs ...float64) predicate.Group {
+	return predicate.Group(sql.FieldNotIn(FieldUpstreamBillingGuardMaxMultiplier, vs...))
+}
+
+// UpstreamBillingGuardMaxMultiplierGT applies the GT predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierGT(v float64) predicate.Group {
+	return predicate.Group(sql.FieldGT(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierGTE applies the GTE predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierGTE(v float64) predicate.Group {
+	return predicate.Group(sql.FieldGTE(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierLT applies the LT predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierLT(v float64) predicate.Group {
+	return predicate.Group(sql.FieldLT(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierLTE applies the LTE predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierLTE(v float64) predicate.Group {
+	return predicate.Group(sql.FieldLTE(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierIsNil applies the IsNil predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierIsNil() predicate.Group {
+	return predicate.Group(sql.FieldIsNull(FieldUpstreamBillingGuardMaxMultiplier))
+}
+
+// UpstreamBillingGuardMaxMultiplierNotNil applies the NotNil predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierNotNil() predicate.Group {
+	return predicate.Group(sql.FieldNotNull(FieldUpstreamBillingGuardMaxMultiplier))
 }
 
 // PeakRateEnabledEQ applies the EQ predicate on the "peak_rate_enabled" field.

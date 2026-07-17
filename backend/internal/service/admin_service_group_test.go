@@ -4,8 +4,11 @@ package service
 
 import (
 	"context"
+	"math"
+	"net/http"
 	"testing"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
@@ -139,6 +142,89 @@ func TestAdminService_ListGroups_PassesSortParams(t *testing.T) {
 		SortBy:    "account_count",
 		SortOrder: "ASC",
 	}, repo.listWithFiltersParams)
+}
+
+func TestAdminServiceCreateOpenAIGroupAllowsZeroUpstreamGuardLimit(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+	limit := 0.0
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                              "guarded-openai",
+		Platform:                          PlatformOpenAI,
+		RateMultiplier:                    1,
+		UpstreamBillingGuardMaxMultiplier: &limit,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, group.UpstreamBillingGuardMaxMultiplier)
+	require.Zero(t, *group.UpstreamBillingGuardMaxMultiplier)
+}
+
+func TestAdminServiceRejectsUpstreamGuardLimitForNonOpenAIGroup(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+	limit := 1.5
+
+	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                              "anthropic",
+		Platform:                          PlatformAnthropic,
+		RateMultiplier:                    1,
+		UpstreamBillingGuardMaxMultiplier: &limit,
+	})
+
+	require.Error(t, err)
+	statusCode, status := infraerrors.ToHTTP(err)
+	require.Equal(t, http.StatusBadRequest, statusCode)
+	require.Equal(t, "UPSTREAM_BILLING_GUARD_GROUP_PLATFORM_UNSUPPORTED", status.Reason)
+	require.Nil(t, repo.created)
+}
+
+func TestAdminServiceRejectsNonFiniteUpstreamGuardLimitAsBadRequest(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+	limit := math.Inf(1)
+
+	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                              "openai",
+		Platform:                          PlatformOpenAI,
+		RateMultiplier:                    1,
+		UpstreamBillingGuardMaxMultiplier: &limit,
+	})
+
+	statusCode, status := infraerrors.ToHTTP(err)
+	require.Equal(t, http.StatusBadRequest, statusCode)
+	require.Equal(t, "INVALID_UPSTREAM_BILLING_GUARD_GROUP_MULTIPLIER", status.Reason)
+	require.Nil(t, repo.created)
+}
+
+func TestAdminServiceUpdateGroupSetsAndClearsUpstreamGuardLimit(t *testing.T) {
+	group := &Group{
+		ID:               7,
+		Name:             "openai",
+		Platform:         PlatformOpenAI,
+		RateMultiplier:   1,
+		Status:           StatusActive,
+		SubscriptionType: SubscriptionTypeStandard,
+	}
+	repo := &groupRepoStubForAdmin{getByID: group}
+	svc := &adminServiceImpl{groupRepo: repo}
+	limit := 1.25
+	setLimit := &limit
+
+	updated, err := svc.UpdateGroup(context.Background(), group.ID, &UpdateGroupInput{
+		UpstreamBillingGuardMaxMultiplier: &setLimit,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, updated.UpstreamBillingGuardMaxMultiplier)
+	require.Equal(t, limit, *updated.UpstreamBillingGuardMaxMultiplier)
+
+	var cleared *float64
+	updated, err = svc.UpdateGroup(context.Background(), group.ID, &UpdateGroupInput{
+		UpstreamBillingGuardMaxMultiplier: &cleared,
+	})
+	require.NoError(t, err)
+	require.Nil(t, updated.UpstreamBillingGuardMaxMultiplier)
 }
 
 // TestAdminService_CreateGroup_WithImagePricing 测试创建分组时 ImagePrice 字段正确传递

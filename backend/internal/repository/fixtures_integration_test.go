@@ -102,6 +102,9 @@ func mustCreateGroup(t *testing.T, client *dbent.Client, g *service.Group) *serv
 	if g.MonthlyLimitUSD != nil {
 		create.SetMonthlyLimitUsd(*g.MonthlyLimitUSD)
 	}
+	if g.UpstreamBillingGuardMaxMultiplier != nil {
+		create.SetUpstreamBillingGuardMaxMultiplier(*g.UpstreamBillingGuardMaxMultiplier)
+	}
 	if !g.CreatedAt.IsZero() {
 		create.SetCreatedAt(g.CreatedAt)
 	}
@@ -233,6 +236,12 @@ func mustCreateAccount(t *testing.T, client *dbent.Client, a *service.Account) *
 	}
 	if a.SessionWindowStatus != "" {
 		create.SetSessionWindowStatus(a.SessionWindowStatus)
+	}
+	if a.UpstreamBillingGuardEnabled {
+		create.SetUpstreamBillingGuardEnabled(true)
+	}
+	if a.UpstreamBillingGuardObservedMultiplier != nil {
+		create.SetUpstreamBillingGuardObservedMultiplier(*a.UpstreamBillingGuardObservedMultiplier)
 	}
 	if !a.CreatedAt.IsZero() {
 		create.SetCreatedAt(a.CreatedAt)

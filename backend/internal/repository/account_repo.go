@@ -365,12 +365,16 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 		SetErrorMessage(account.ErrorMessage).
 		SetSchedulable(schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
+	if account.Platform == service.PlatformOpenAI && account.Type == service.AccountTypeAPIKey {
+		builder.SetUpstreamBillingGuardEnabled(account.UpstreamBillingGuardEnabled).
+			SetUpstreamBillingGuardBlocked(false)
+	}
 	if !preserveRuntimeSnapshot {
 		builder.SetExtra(normalizeJSONMap(account.Extra))
 	}
 	autoProbeEnabled, _ := account.Extra[service.UpstreamBillingProbeEnabledExtraKey].(bool)
 	guardRequiresAutoProbePredicate := account.Platform == service.PlatformOpenAI &&
-		account.Type == service.AccountTypeAPIKey && !autoProbeEnabled
+		account.Type == service.AccountTypeAPIKey && account.UpstreamBillingGuardEnabled && !autoProbeEnabled
 	if guardRequiresAutoProbePredicate {
 		// Preserve the guard/probe invariant even when a normal account update
 		// races with the dedicated guard endpoint.
@@ -1600,6 +1604,9 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 			}
 			for i := range accounts {
 				acc := &accounts[i]
+				if acc.UpstreamBillingGuardGroupBlocked {
+					continue
+				}
 				rows = append(rows, service.GroupAccountCapacityRow{
 					GroupID:             groupID,
 					AccountID:           acc.ID,
@@ -1626,6 +1633,7 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 			COALESCE(a.session_window_status, '') AS session_window_status
 		FROM account_groups ag
 		JOIN accounts a ON a.id = ag.account_id
+		JOIN groups g ON g.id = ag.group_id AND g.deleted_at IS NULL
 		WHERE ag.group_id = ANY($1)
 			AND a.deleted_at IS NULL
 			AND a.status = $2
@@ -1633,10 +1641,12 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 			AND NOT (
 				a.platform = $4
 				AND a.type = $5
-				AND ag.upstream_billing_guard_max_multiplier IS NOT NULL
+				AND a.upstream_billing_guard_enabled = TRUE
+				AND g.platform = $4
+				AND g.upstream_billing_guard_max_multiplier IS NOT NULL
 				AND (
 					COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
-					OR COALESCE(a.upstream_billing_guard_observed_multiplier > ag.upstream_billing_guard_max_multiplier, FALSE)
+					OR COALESCE(a.upstream_billing_guard_observed_multiplier > g.upstream_billing_guard_max_multiplier, FALSE)
 				)
 			)
 			AND (a.temp_unschedulable_until IS NULL OR a.temp_unschedulable_until <= $3)
@@ -2256,10 +2266,9 @@ func (r *accountRepository) UpdateUpstreamBillingProbeSnapshot(ctx context.Conte
 	if observedMultiplier != nil {
 		guardEvaluatedAt = &snapshot.LastAttemptAt
 	}
-	desiredBlocked := account.UpstreamBillingGuardBlocked
-	if observedMultiplier != nil {
-		desiredBlocked = account.UpstreamBillingGuardEnabled && *observedMultiplier > account.UpstreamBillingGuardMaxMultiplier
-	}
+	// Blocking is now evaluated per account-group snapshot. Keep the legacy
+	// account-global flag clear so account-wide status never masks healthy groups.
+	desiredBlocked := false
 	result, err := r.sql.ExecContext(ctx, `
 		UPDATE accounts
 		SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb,
@@ -2361,7 +2370,7 @@ func (r *accountRepository) UpdateUpstreamBillingProbeEnabled(ctx context.Contex
 	return nil
 }
 
-func (r *accountRepository) UpdateUpstreamBillingGuard(ctx context.Context, id int64, enabled bool, maxMultiplier float64) (*service.Account, bool, error) {
+func (r *accountRepository) UpdateUpstreamBillingGuard(ctx context.Context, id int64, enabled bool) (*service.Account, bool, error) {
 	previous, err := r.GetByID(ctx, id)
 	if err != nil {
 		return nil, false, err
@@ -2369,19 +2378,14 @@ func (r *accountRepository) UpdateUpstreamBillingGuard(ctx context.Context, id i
 	result, err := r.sql.ExecContext(ctx, `
 		UPDATE accounts
 		SET upstream_billing_guard_enabled = $1,
-			upstream_billing_guard_max_multiplier = $2,
-			upstream_billing_guard_blocked = CASE
-				WHEN $1 = FALSE THEN FALSE
-				WHEN upstream_billing_guard_observed_multiplier IS NULL THEN FALSE
-				ELSE upstream_billing_guard_observed_multiplier > $2
-			END,
+			upstream_billing_guard_blocked = FALSE,
 			updated_at = NOW()
-				WHERE id = $3
-					AND platform = $4
-					AND type = $5
+				WHERE id = $2
+					AND platform = $3
+					AND type = $4
 					AND ($1 = FALSE OR COALESCE(extra ->> 'upstream_billing_probe_enabled', 'false') = 'true')
 					AND deleted_at IS NULL
-		`, enabled, maxMultiplier, id, service.PlatformOpenAI, service.AccountTypeAPIKey)
+		`, enabled, id, service.PlatformOpenAI, service.AccountTypeAPIKey)
 	if err != nil {
 		return nil, false, err
 	}
@@ -2404,7 +2408,7 @@ func (r *accountRepository) UpdateUpstreamBillingGuard(ctx context.Context, id i
 	if err != nil {
 		return nil, false, err
 	}
-	changed := previous.UpstreamBillingGuardBlocked != updated.UpstreamBillingGuardBlocked
+	changed := previous.UpstreamBillingGuardEnabled != updated.UpstreamBillingGuardEnabled
 	if changed {
 		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
 			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue billing guard config transition failed: account=%d err=%v", id, err)
@@ -2813,11 +2817,15 @@ func (r *accountRepository) loadAccountGroups(ctx context.Context, accountIDs []
 
 	for _, ag := range entries {
 		groupSvc := groupEntityToService(ag.Edges.Group)
+		var derivedGuardLimit *float64
+		if groupSvc != nil && groupSvc.Platform == service.PlatformOpenAI {
+			derivedGuardLimit = cloneFloat64Ptr(groupSvc.UpstreamBillingGuardMaxMultiplier)
+		}
 		agSvc := service.AccountGroup{
 			AccountID:                         ag.AccountID,
 			GroupID:                           ag.GroupID,
 			Priority:                          ag.Priority,
-			UpstreamBillingGuardMaxMultiplier: ag.UpstreamBillingGuardMaxMultiplier,
+			UpstreamBillingGuardMaxMultiplier: derivedGuardLimit,
 			CreatedAt:                         ag.CreatedAt,
 			Group:                             groupSvc,
 		}

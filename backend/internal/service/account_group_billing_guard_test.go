@@ -16,6 +16,7 @@ func TestAccountUpstreamBillingGuardIsScopedToBinding(t *testing.T) {
 		Type:                                   AccountTypeAPIKey,
 		Status:                                 StatusActive,
 		Schedulable:                            true,
+		UpstreamBillingGuardEnabled:            true,
 		Extra:                                  map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
 		UpstreamBillingGuardObservedMultiplier: &observed,
 		AccountGroups: []AccountGroup{
@@ -40,9 +41,10 @@ func TestAccountUpstreamBillingGuardRequiresAutoProbeOnlyWhenConfigured(t *testi
 	limit := 1.0
 	groupID := int64(10)
 	account := &Account{
-		Platform:      PlatformOpenAI,
-		Type:          AccountTypeAPIKey,
-		AccountGroups: []AccountGroup{{GroupID: groupID, UpstreamBillingGuardMaxMultiplier: &limit}},
+		Platform:                    PlatformOpenAI,
+		Type:                        AccountTypeAPIKey,
+		UpstreamBillingGuardEnabled: true,
+		AccountGroups:               []AccountGroup{{GroupID: groupID, UpstreamBillingGuardMaxMultiplier: &limit}},
 	}
 
 	require.True(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
@@ -51,6 +53,71 @@ func TestAccountUpstreamBillingGuardRequiresAutoProbeOnlyWhenConfigured(t *testi
 	account.Extra = map[string]any{UpstreamBillingProbeEnabledExtraKey: true}
 	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID), "first successful probe is pending")
 	account.AccountGroups[0].UpstreamBillingGuardMaxMultiplier = nil
+	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
+}
+
+func TestAccountUpstreamBillingGuardMasterSwitchIsNoOpWhenDisabled(t *testing.T) {
+	observed := 3.0
+	limit := 1.0
+	groupID := int64(10)
+	account := &Account{
+		Platform:                               PlatformOpenAI,
+		Type:                                   AccountTypeAPIKey,
+		Extra:                                  map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		UpstreamBillingGuardObservedMultiplier: &observed,
+		AccountGroups:                          []AccountGroup{{GroupID: groupID, UpstreamBillingGuardMaxMultiplier: &limit}},
+	}
+
+	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
+	account.UpstreamBillingGuardEnabled = true
+	require.True(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
+}
+
+func TestAccountUpstreamBillingGuardPrefersHydratedGroupPolicyOverStaleBinding(t *testing.T) {
+	groupID := int64(10)
+	staleBindingLimit := 1.0
+	groupLimit := 2.0
+	account := &Account{
+		Platform:                    PlatformOpenAI,
+		Type:                        AccountTypeAPIKey,
+		UpstreamBillingGuardEnabled: true,
+		Extra:                       map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		UpstreamBillingGuardObservedMultiplier: func() *float64 {
+			value := 1.5
+			return &value
+		}(),
+		AccountGroups: []AccountGroup{{
+			GroupID:                           groupID,
+			UpstreamBillingGuardMaxMultiplier: &staleBindingLimit,
+			Group:                             &Group{ID: groupID, Platform: PlatformOpenAI, UpstreamBillingGuardMaxMultiplier: &groupLimit},
+		}},
+	}
+
+	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
+	account.AccountGroups[0].Group.UpstreamBillingGuardMaxMultiplier = nil
+	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID), "explicit group nil must mean unrestricted")
+}
+
+func TestAccountUpstreamBillingGuardIgnoresStaleBindingForHydratedNonOpenAIGroup(t *testing.T) {
+	groupID := int64(20)
+	staleBindingLimit := 1.0
+	account := &Account{
+		Platform:                    PlatformOpenAI,
+		Type:                        AccountTypeAPIKey,
+		UpstreamBillingGuardEnabled: true,
+		Extra:                       map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		UpstreamBillingGuardObservedMultiplier: func() *float64 {
+			value := 3.0
+			return &value
+		}(),
+		AccountGroups: []AccountGroup{{
+			GroupID:                           groupID,
+			UpstreamBillingGuardMaxMultiplier: &staleBindingLimit,
+			Group:                             &Group{ID: groupID, Platform: PlatformAnthropic, UpstreamBillingGuardMaxMultiplier: &staleBindingLimit},
+		}},
+	}
+
+	require.False(t, account.HasUpstreamBillingGuardGroupLimit())
 	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
 }
 

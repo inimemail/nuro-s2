@@ -157,12 +157,13 @@ func TestRecheckSelectedOpenAIAccountForGroupRejectsLatestBindingGuard(t *testin
 	limit := 1.0
 	observed := 1.1
 	account := Account{
-		ID:          91003,
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
-		Status:      StatusActive,
-		Schedulable: true,
-		Extra:       map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		ID:                          91003,
+		Platform:                    PlatformOpenAI,
+		Type:                        AccountTypeAPIKey,
+		Status:                      StatusActive,
+		Schedulable:                 true,
+		UpstreamBillingGuardEnabled: true,
+		Extra:                       map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
 		AccountGroups: []AccountGroup{{
 			GroupID:                           groupID,
 			UpstreamBillingGuardMaxMultiplier: &limit,

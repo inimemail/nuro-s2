@@ -20,6 +20,7 @@ function makeAccount(options: {
   observed?: number
   limit?: number
   autoProbe?: boolean
+  guardEnabled?: boolean
   status?: 'ok' | 'failed' | 'unsupported'
   groupCount?: number
 } = {}): Account {
@@ -27,12 +28,14 @@ function makeAccount(options: {
     observed,
     limit = 1,
     autoProbe = true,
+    guardEnabled = true,
     status = 'ok',
     groupCount = 1
   } = options
   const groups = Array.from({ length: groupCount }, (_, index) => ({
     id: index + 10,
-    name: `Group ${index + 1}`
+    name: `Group ${index + 1}`,
+    upstream_billing_guard_max_multiplier: limit
   }))
 
   return {
@@ -51,6 +54,7 @@ function makeAccount(options: {
     created_at: '2026-07-17T00:00:00Z',
     updated_at: '2026-07-17T00:00:00Z',
     schedulable: true,
+    upstream_billing_guard_enabled: guardEnabled,
     upstream_billing_guard_observed_multiplier: observed ?? null,
     rate_limited_at: null,
     rate_limit_reset_at: null,
@@ -65,7 +69,7 @@ function makeAccount(options: {
       account_id: 1,
       group_id: group.id,
       priority: index + 1,
-      upstream_billing_guard_max_multiplier: limit,
+      upstream_billing_guard_max_multiplier: null,
       created_at: '2026-07-17T00:00:00Z',
       group: group as any
     })),
@@ -119,6 +123,44 @@ describe('UpstreamBillingRateCell', () => {
     expect(wrapper.get('[data-testid="upstream-billing-guard-group-10-details"]').text()).toContain(
       'admin.accounts.upstreamBilling.guardProbeDisabled'
     )
+  })
+
+  it('shows configured groups as disabled when the account master switch is off', () => {
+    const wrapper = mountCell(makeAccount({ observed: 2, limit: 1, guardEnabled: false }))
+
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('disabled')
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10-details"]').text()).toContain(
+      'admin.accounts.upstreamBilling.guardDisabled'
+    )
+  })
+
+  it('treats an explicit group null as unrestricted over a stale binding value', () => {
+    const account = makeAccount({ observed: 2, limit: 1 })
+    const group = { ...(account.groups?.[0] as any), upstream_billing_guard_max_multiplier: null }
+    account.groups = [group]
+    account.account_groups = [{
+      ...(account.account_groups?.[0] as any),
+      upstream_billing_guard_max_multiplier: 1.5,
+      group
+    }]
+
+    const wrapper = mountCell(account)
+
+    expect(wrapper.find('[data-testid="upstream-billing-guard-group-10"]').exists()).toBe(false)
+  })
+
+  it('uses a richer account group object when the binding group is shallow', () => {
+    const account = makeAccount({ observed: 0.8, limit: 1 })
+    account.account_groups = [{
+      ...(account.account_groups?.[0] as any),
+      upstream_billing_guard_max_multiplier: null,
+      group: { id: 10, name: 'Shallow group' } as any
+    }]
+
+    const wrapper = mountCell(account)
+
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').text()).toContain('Group 1')
   })
 
   it('marks groups gray while waiting for the first successful probe', () => {
@@ -188,5 +230,9 @@ describe('UpstreamBillingRateCell', () => {
     )
     expect(wrapper.text()).not.toContain('common.time.')
     expect(wrapper.text()).not.toContain('秒前更新')
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('pending')
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10-details"]').text()).toContain(
+      'admin.accounts.upstreamBilling.guardGlobalProbeDisabled'
+    )
   })
 })

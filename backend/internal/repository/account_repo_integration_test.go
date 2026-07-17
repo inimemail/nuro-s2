@@ -104,8 +104,16 @@ func TestUpdateAccountWithGroupConfigCommitsFinalStateAndRefreshesOnce(t *testin
 	cache := &schedulerCacheRecorder{}
 	repo := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, cache)
 	suffix := time.Now().UnixNano()
-	group1 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("atomic-old-%d", suffix)})
-	group2 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("atomic-new-%d", suffix)})
+	group1Limit := 1.0
+	group2Limit := 2.5
+	group1 := mustCreateGroup(t, integrationEntClient, &service.Group{
+		Name: fmt.Sprintf("atomic-old-%d", suffix), Platform: service.PlatformOpenAI,
+		UpstreamBillingGuardMaxMultiplier: &group1Limit,
+	})
+	group2 := mustCreateGroup(t, integrationEntClient, &service.Group{
+		Name: fmt.Sprintf("atomic-new-%d", suffix), Platform: service.PlatformOpenAI,
+		UpstreamBillingGuardMaxMultiplier: &group2Limit,
+	})
 	account := mustCreateAccount(t, integrationEntClient, &service.Account{
 		Name:     fmt.Sprintf("atomic-account-%d", suffix),
 		Platform: service.PlatformOpenAI,
@@ -167,8 +175,14 @@ func TestUpdateAccountWithGroupConfigRollsBackEverySideEffect(t *testing.T) {
 	cache := &schedulerCacheRecorder{}
 	repo := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, cache)
 	suffix := time.Now().UnixNano()
-	group1 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("rollback-old-%d", suffix)})
-	group2 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("rollback-new-%d", suffix)})
+	group1Limit := 1.0
+	group1 := mustCreateGroup(t, integrationEntClient, &service.Group{
+		Name: fmt.Sprintf("rollback-old-%d", suffix), Platform: service.PlatformOpenAI,
+		UpstreamBillingGuardMaxMultiplier: &group1Limit,
+	})
+	group2 := mustCreateGroup(t, integrationEntClient, &service.Group{
+		Name: fmt.Sprintf("rollback-new-%d", suffix), Platform: service.PlatformOpenAI,
+	})
 	account := mustCreateAccount(t, integrationEntClient, &service.Account{
 		Name:     fmt.Sprintf("rollback-account-%d", suffix),
 		Platform: service.PlatformOpenAI,
@@ -416,8 +430,16 @@ func TestUpdateAccountWithGroupConfigOuterCommitRefreshesFinalParentAndShadow(t 
 	suffix := time.Now().UnixNano()
 	proxy1 := mustCreateProxy(t, integrationEntClient, &service.Proxy{Name: fmt.Sprintf("commit-proxy-old-%d", suffix)})
 	proxy2 := mustCreateProxy(t, integrationEntClient, &service.Proxy{Name: fmt.Sprintf("commit-proxy-new-%d", suffix)})
-	group1 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("commit-group-old-%d", suffix)})
-	group2 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("commit-group-new-%d", suffix)})
+	group1Limit := 1.0
+	group2Limit := 2.5
+	group1 := mustCreateGroup(t, integrationEntClient, &service.Group{
+		Name: fmt.Sprintf("commit-group-old-%d", suffix), Platform: service.PlatformOpenAI,
+		UpstreamBillingGuardMaxMultiplier: &group1Limit,
+	})
+	group2 := mustCreateGroup(t, integrationEntClient, &service.Group{
+		Name: fmt.Sprintf("commit-group-new-%d", suffix), Platform: service.PlatformOpenAI,
+		UpstreamBillingGuardMaxMultiplier: &group2Limit,
+	})
 	parent := mustCreateAccount(t, integrationEntClient, &service.Account{
 		Name:        fmt.Sprintf("commit-parent-%d", suffix),
 		Platform:    service.PlatformOpenAI,
@@ -1426,19 +1448,26 @@ func (s *AccountRepoSuite) TestListSchedulable() {
 }
 
 func (s *AccountRepoSuite) TestListSchedulableCapacityUsesBindingGuardAndAllowsPendingProbe() {
-	lowGroup := mustCreateGroup(s.T(), s.client, &service.Group{Name: "guard-low"})
-	highGroup := mustCreateGroup(s.T(), s.client, &service.Group{Name: "guard-high"})
+	lowLimit := 1.0
+	highLimit := 3.0
+	lowGroup := mustCreateGroup(s.T(), s.client, &service.Group{
+		Name:                              "guard-low",
+		Platform:                          service.PlatformOpenAI,
+		UpstreamBillingGuardMaxMultiplier: &lowLimit,
+	})
+	highGroup := mustCreateGroup(s.T(), s.client, &service.Group{
+		Name:                              "guard-high",
+		Platform:                          service.PlatformOpenAI,
+		UpstreamBillingGuardMaxMultiplier: &highLimit,
+	})
 	account := mustCreateAccount(s.T(), s.client, &service.Account{
-		Name:     "group-guard-capacity",
-		Platform: service.PlatformOpenAI,
-		Type:     service.AccountTypeAPIKey,
-		Extra:    map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true},
+		Name:                        "group-guard-capacity",
+		Platform:                    service.PlatformOpenAI,
+		Type:                        service.AccountTypeAPIKey,
+		Extra:                       map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true},
+		UpstreamBillingGuardEnabled: true,
 	})
 	s.Require().NoError(s.repo.BindGroups(s.ctx, account.ID, []int64{lowGroup.ID, highGroup.ID}))
-	s.Require().NoError(s.repo.UpdateUpstreamBillingGuardGroupLimits(s.ctx, account.ID, map[int64]float64{
-		lowGroup.ID:  1,
-		highGroup.ID: 3,
-	}))
 
 	rows, err := s.repo.ListSchedulableCapacityByGroupIDs(s.ctx, []int64{lowGroup.ID, highGroup.ID})
 	s.Require().NoError(err)

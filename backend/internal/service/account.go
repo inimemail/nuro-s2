@@ -248,11 +248,43 @@ func (a *Account) UpstreamBillingGuardLimitForGroup(groupID *int64) (*float64, b
 	}
 	for i := range a.AccountGroups {
 		binding := &a.AccountGroups[i]
-		if binding.GroupID == *groupID && binding.UpstreamBillingGuardMaxMultiplier != nil {
+		if binding.GroupID != *groupID {
+			continue
+		}
+		// A hydrated group object is the authoritative policy source. Its
+		// explicit nil must override any stale legacy binding value.
+		if binding.Group != nil {
+			// A hydrated group is authoritative for every platform. Non-OpenAI
+			// groups and an explicit OpenAI nil both override stale legacy data.
+			if binding.Group.Platform != PlatformOpenAI || binding.Group.UpstreamBillingGuardMaxMultiplier == nil {
+				return nil, false
+			}
+			return binding.Group.UpstreamBillingGuardMaxMultiplier, true
+		}
+		if binding.UpstreamBillingGuardMaxMultiplier != nil {
 			return binding.UpstreamBillingGuardMaxMultiplier, true
 		}
 	}
 	return nil, false
+}
+
+func (a *Account) HasUpstreamBillingGuardGroupLimit() bool {
+	if a == nil || a.Platform != PlatformOpenAI || a.Type != AccountTypeAPIKey {
+		return false
+	}
+	for i := range a.AccountGroups {
+		binding := &a.AccountGroups[i]
+		if binding.Group != nil {
+			if binding.Group.Platform == PlatformOpenAI && binding.Group.UpstreamBillingGuardMaxMultiplier != nil {
+				return true
+			}
+			continue
+		}
+		if binding.UpstreamBillingGuardMaxMultiplier != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // IsUpstreamBillingGuardBlockedForGroup makes an account x group decision.
@@ -260,6 +292,9 @@ func (a *Account) UpstreamBillingGuardLimitForGroup(groupID *int64) (*float64, b
 // probing; an enabled probe with no first successful observation is allowed
 // while waiting. A successful value <= the limit restores scheduling.
 func (a *Account) IsUpstreamBillingGuardBlockedForGroup(groupID *int64) bool {
+	if a == nil || !a.UpstreamBillingGuardEnabled {
+		return false
+	}
 	limit, configured := a.UpstreamBillingGuardLimitForGroup(groupID)
 	if !configured || limit == nil {
 		return false

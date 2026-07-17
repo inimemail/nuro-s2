@@ -98,6 +98,7 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 		Description:                        source.Description,
 		Platform:                           source.Platform,
 		RateMultiplier:                     source.RateMultiplier,
+		UpstreamBillingGuardMaxMultiplier:  cloneGroupPointer(source.UpstreamBillingGuardMaxMultiplier),
 		PeakRateEnabled:                    source.PeakRateEnabled,
 		PeakStart:                          source.PeakStart,
 		PeakEnd:                            source.PeakEnd,

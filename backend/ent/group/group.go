@@ -28,6 +28,8 @@ const (
 	FieldDescription = "description"
 	// FieldRateMultiplier holds the string denoting the rate_multiplier field in the database.
 	FieldRateMultiplier = "rate_multiplier"
+	// FieldUpstreamBillingGuardMaxMultiplier holds the string denoting the upstream_billing_guard_max_multiplier field in the database.
+	FieldUpstreamBillingGuardMaxMultiplier = "upstream_billing_guard_max_multiplier"
 	// FieldPeakRateEnabled holds the string denoting the peak_rate_enabled field in the database.
 	FieldPeakRateEnabled = "peak_rate_enabled"
 	// FieldPeakStart holds the string denoting the peak_start field in the database.
@@ -197,6 +199,7 @@ var Columns = []string{
 	FieldName,
 	FieldDescription,
 	FieldRateMultiplier,
+	FieldUpstreamBillingGuardMaxMultiplier,
 	FieldPeakRateEnabled,
 	FieldPeakStart,
 	FieldPeakEnd,
@@ -392,6 +395,11 @@ func ByDescription(opts ...sql.OrderTermOption) OrderOption {
 // ByRateMultiplier orders the results by the rate_multiplier field.
 func ByRateMultiplier(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldRateMultiplier, opts...).ToFunc()
+}
+
+// ByUpstreamBillingGuardMaxMultiplier orders the results by the upstream_billing_guard_max_multiplier field.
+func ByUpstreamBillingGuardMaxMultiplier(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUpstreamBillingGuardMaxMultiplier, opts...).ToFunc()
 }
 
 // ByPeakRateEnabled orders the results by the peak_rate_enabled field.

@@ -467,19 +467,20 @@ func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any,
 
 func buildSchedulerMetadataAccount(account service.Account) service.Account {
 	return service.Account{
-		ID:                 account.ID,
-		Name:               account.Name,
-		Platform:           account.Platform,
-		Type:               account.Type,
-		Concurrency:        account.Concurrency,
-		LoadFactor:         account.LoadFactor,
-		Priority:           account.Priority,
-		RateMultiplier:     account.RateMultiplier,
-		Status:             account.Status,
-		LastUsedAt:         account.LastUsedAt,
-		ExpiresAt:          account.ExpiresAt,
-		AutoPauseOnExpired: account.AutoPauseOnExpired,
-		Schedulable:        account.Schedulable,
+		ID:                          account.ID,
+		Name:                        account.Name,
+		Platform:                    account.Platform,
+		Type:                        account.Type,
+		Concurrency:                 account.Concurrency,
+		LoadFactor:                  account.LoadFactor,
+		Priority:                    account.Priority,
+		RateMultiplier:              account.RateMultiplier,
+		Status:                      account.Status,
+		LastUsedAt:                  account.LastUsedAt,
+		ExpiresAt:                   account.ExpiresAt,
+		AutoPauseOnExpired:          account.AutoPauseOnExpired,
+		Schedulable:                 account.Schedulable,
+		UpstreamBillingGuardEnabled: account.UpstreamBillingGuardEnabled,
 		// Binding-scoped protection only needs the last successful observation;
 		// limits and the account probe toggle are carried below with their own
 		// scheduler metadata. Legacy account-global guard fields stay out of the

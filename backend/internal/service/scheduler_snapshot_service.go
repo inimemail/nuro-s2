@@ -104,11 +104,12 @@ func (s *SchedulerSnapshotService) Start() {
 		}()
 	}
 
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		s.runInitialRebuild()
-	}()
+	// Complete the initial rebuild before the provider returns and the HTTP
+	// server starts accepting traffic. This avoids request-time DB fallback and
+	// stale account metadata during cache schema/configuration upgrades.
+	if err := s.runInitialRebuild(); err != nil {
+		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] initial rebuild completed with degraded state: %v", err)
+	}
 
 	interval := s.outboxPollInterval()
 	if s.outboxRepo != nil && interval > 0 {
@@ -336,13 +337,20 @@ func (s *SchedulerSnapshotService) UpdateAccountInCache(ctx context.Context, acc
 	return err
 }
 
-func (s *SchedulerSnapshotService) runInitialRebuild() {
+func (s *SchedulerSnapshotService) runInitialRebuild() error {
 	if s.cache == nil {
-		return
+		return nil
 	}
-	_ = s.coalesceFullRebuild(func() error {
+	return s.coalesceFullRebuild(func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
+		refreshErr := s.refreshActiveAccountMetadata(ctx)
+		if refreshErr != nil {
+			// Keep the existing bucket rebuild attempt available during a
+			// transient metadata refresh failure. The rebuild result is still
+			// returned to the coalescer for observability.
+			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] refresh active account metadata at startup failed: %v", refreshErr)
+		}
 		buckets, err := s.cache.ListBuckets(ctx)
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] list buckets failed: %v", err)
@@ -358,8 +366,28 @@ func (s *SchedulerSnapshotService) runInitialRebuild() {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild startup failed: %v", err)
 			return err
 		}
-		return nil
+		return refreshErr
 	})
+}
+
+// refreshActiveAccountMetadata updates single-account cache entries, including
+// accounts temporarily absent from schedulable buckets because of a cooldown or
+// rate-limit window. It runs only at startup or for an explicitly marked outbox
+// rebuild, never on the request path.
+func (s *SchedulerSnapshotService) refreshActiveAccountMetadata(ctx context.Context) error {
+	if s.accountRepo == nil || s.cache == nil {
+		return nil
+	}
+	accounts, err := s.accountRepo.ListActive(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range accounts {
+		if err := s.cache.SetAccount(ctx, &accounts[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SchedulerSnapshotService) runOutboxWorker(interval time.Duration) {
@@ -462,6 +490,11 @@ func (s *SchedulerSnapshotService) handleOutboxEvent(ctx context.Context, event 
 	case SchedulerOutboxEventGroupChanged:
 		return s.handleGroupEvent(ctx, event.GroupID, seen)
 	case SchedulerOutboxEventFullRebuild:
+		if refreshAccountMetadata, _ := event.Payload["refresh_account_metadata"].(bool); refreshAccountMetadata {
+			if err := s.refreshActiveAccountMetadata(ctx); err != nil {
+				return err
+			}
+		}
 		return s.triggerFullRebuild("outbox")
 	default:
 		return nil
@@ -611,6 +644,17 @@ func (s *SchedulerSnapshotService) handleAccountEvent(ctx context.Context, accou
 func (s *SchedulerSnapshotService) handleGroupEvent(ctx context.Context, groupID *int64, seen map[batchSeenKey]struct{}) error {
 	if groupID == nil || *groupID <= 0 {
 		return nil
+	}
+	if s.accountRepo != nil && s.cache != nil {
+		accounts, err := s.accountRepo.ListByGroup(ctx, *groupID)
+		if err != nil {
+			return err
+		}
+		for i := range accounts {
+			if err := s.cache.SetAccount(ctx, &accounts[i]); err != nil {
+				return err
+			}
+		}
 	}
 	groupIDs := []int64{*groupID}
 	return s.rebuildByGroupIDs(ctx, groupIDs, "group_change", seen)

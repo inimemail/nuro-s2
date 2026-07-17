@@ -182,12 +182,11 @@ func (r *upstreamBillingProbeAccountRepoStub) UpdateUpstreamBillingProbeEnabled(
 	return nil
 }
 
-func (r *upstreamBillingProbeAccountRepoStub) UpdateUpstreamBillingGuard(_ context.Context, _ int64, enabled bool, maxMultiplier float64) (*Account, bool, error) {
-	r.guardUpdates = append(r.guardUpdates, UpstreamBillingGuardSettings{Enabled: enabled, MaxMultiplier: maxMultiplier})
+func (r *upstreamBillingProbeAccountRepoStub) UpdateUpstreamBillingGuard(_ context.Context, _ int64, enabled bool) (*Account, bool, error) {
+	r.guardUpdates = append(r.guardUpdates, UpstreamBillingGuardSettings{Enabled: enabled})
 	updated := *r.account
 	updated.UpstreamBillingGuardEnabled = enabled
-	updated.UpstreamBillingGuardMaxMultiplier = maxMultiplier
-	updated.UpstreamBillingGuardBlocked = enabled && updated.UpstreamBillingGuardObservedMultiplier != nil && *updated.UpstreamBillingGuardObservedMultiplier > maxMultiplier
+	updated.UpstreamBillingGuardBlocked = false
 	r.account = &updated
 	return &updated, true, nil
 }
@@ -398,26 +397,24 @@ func TestUpstreamBillingProbeSettingsRejectOutOfRangeSeconds(t *testing.T) {
 	require.Equal(t, upstreamBillingProbeMaxIntervalSeconds, settings.IntervalSeconds)
 }
 
-func TestUpstreamBillingGuardRequiresAutomaticProbeAndReevaluatesThreshold(t *testing.T) {
+func TestUpstreamBillingGuardEnablesAutomaticProbeAndMasterSwitch(t *testing.T) {
 	observed := 2.0
+	limit := 3.0
 	repo := &upstreamBillingProbeAccountRepoStub{account: &Account{
 		ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
 		Extra:                                  map[string]any{UpstreamBillingProbeEnabledExtraKey: false},
 		UpstreamBillingGuardObservedMultiplier: &observed,
+		AccountGroups: []AccountGroup{{
+			GroupID: 11, UpstreamBillingGuardMaxMultiplier: &limit,
+		}},
 	}}
 	svc := NewUpstreamBillingProbeService(repo, nil, nil)
-	_, err := svc.UpdateGuard(context.Background(), 7, UpstreamBillingGuardSettings{Enabled: true, MaxMultiplier: 1.5})
-	require.ErrorIs(t, err, ErrUpstreamBillingGuardRequiresAutoProbe)
-
-	repo.account.Extra[UpstreamBillingProbeEnabledExtraKey] = true
-	result, err := svc.UpdateGuard(context.Background(), 7, UpstreamBillingGuardSettings{Enabled: true, MaxMultiplier: 1.5})
+	result, err := svc.UpdateGuard(context.Background(), 7, UpstreamBillingGuardSettings{Enabled: true})
 	require.NoError(t, err)
-	require.True(t, result.Account.UpstreamBillingGuardBlocked)
-	require.Len(t, repo.guardUpdates, 1)
-
-	result, err = svc.UpdateGuard(context.Background(), 7, UpstreamBillingGuardSettings{Enabled: true, MaxMultiplier: 2.0})
-	require.NoError(t, err)
+	require.True(t, result.Account.UpstreamBillingGuardEnabled)
 	require.False(t, result.Account.UpstreamBillingGuardBlocked)
+	require.Equal(t, true, repo.account.Extra[UpstreamBillingProbeEnabledExtraKey])
+	require.Len(t, repo.guardUpdates, 1)
 
 	repo.account.UpstreamBillingGuardEnabled = false
 	err = svc.SetAccountEnabled(context.Background(), 7, true)
@@ -425,6 +422,19 @@ func TestUpstreamBillingGuardRequiresAutomaticProbeAndReevaluatesThreshold(t *te
 	repo.account.UpstreamBillingGuardEnabled = true
 	err = svc.SetAccountEnabled(context.Background(), 7, false)
 	require.ErrorIs(t, err, ErrUpstreamBillingProbeRequiredByGuard)
+}
+
+func TestUpstreamBillingGuardRejectsEnableWithoutConfiguredGroup(t *testing.T) {
+	repo := &upstreamBillingProbeAccountRepoStub{account: &Account{
+		ID: 9, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Extra: map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+	}}
+	svc := NewUpstreamBillingProbeService(repo, nil, nil)
+
+	_, err := svc.UpdateGuard(context.Background(), 9, UpstreamBillingGuardSettings{Enabled: true})
+
+	require.ErrorIs(t, err, ErrUpstreamBillingGuardRequiresGroupLimit)
+	require.Empty(t, repo.guardUpdates)
 }
 
 func TestUpstreamBillingProbeFailurePreservesGuardState(t *testing.T) {

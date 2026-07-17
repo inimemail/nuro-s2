@@ -21939,103 +21939,105 @@ func (m *ErrorPassthroughRuleMutation) ResetEdge(name string) error {
 // GroupMutation represents an operation that mutates the Group nodes in the graph.
 type GroupMutation struct {
 	config
-	op                                      Op
-	typ                                     string
-	id                                      *int64
-	created_at                              *time.Time
-	updated_at                              *time.Time
-	deleted_at                              *time.Time
-	name                                    *string
-	description                             *string
-	rate_multiplier                         *float64
-	addrate_multiplier                      *float64
-	peak_rate_enabled                       *bool
-	peak_start                              *string
-	peak_end                                *string
-	peak_rate_multiplier                    *float64
-	addpeak_rate_multiplier                 *float64
-	is_exclusive                            *bool
-	status                                  *string
-	duplicate_operation_id                  *string
-	platform                                *string
-	subscription_type                       *string
-	daily_limit_usd                         *float64
-	adddaily_limit_usd                      *float64
-	weekly_limit_usd                        *float64
-	addweekly_limit_usd                     *float64
-	monthly_limit_usd                       *float64
-	addmonthly_limit_usd                    *float64
-	default_validity_days                   *int
-	adddefault_validity_days                *int
-	allow_image_generation                  *bool
-	allow_batch_image_generation            *bool
-	image_rate_independent                  *bool
-	image_rate_multiplier                   *float64
-	addimage_rate_multiplier                *float64
-	image_price_1k                          *float64
-	addimage_price_1k                       *float64
-	image_price_2k                          *float64
-	addimage_price_2k                       *float64
-	image_price_4k                          *float64
-	addimage_price_4k                       *float64
-	batch_image_discount_multiplier         *float64
-	addbatch_image_discount_multiplier      *float64
-	batch_image_hold_multiplier             *float64
-	addbatch_image_hold_multiplier          *float64
-	video_rate_independent                  *bool
-	video_rate_multiplier                   *float64
-	addvideo_rate_multiplier                *float64
-	video_price_480p                        *float64
-	addvideo_price_480p                     *float64
-	video_price_720p                        *float64
-	addvideo_price_720p                     *float64
-	video_price_1080p                       *float64
-	addvideo_price_1080p                    *float64
-	web_search_price_per_call               *float64
-	addweb_search_price_per_call            *float64
-	claude_code_only                        *bool
-	fallback_group_id                       *int64
-	addfallback_group_id                    *int64
-	fallback_group_id_on_invalid_request    *int64
-	addfallback_group_id_on_invalid_request *int64
-	model_routing                           *map[string][]int64
-	model_routing_enabled                   *bool
-	mcp_xml_inject                          *bool
-	supported_model_scopes                  *[]string
-	appendsupported_model_scopes            []string
-	sort_order                              *int
-	addsort_order                           *int
-	allow_messages_dispatch                 *bool
-	require_oauth_only                      *bool
-	require_privacy_set                     *bool
-	default_mapped_model                    *string
-	messages_dispatch_model_config          *domain.OpenAIMessagesDispatchModelConfig
-	models_list_config                      *domain.GroupModelsListConfig
-	strict_model_priority_on_model_mismatch *bool
-	rpm_limit                               *int
-	addrpm_limit                            *int
-	clearedFields                           map[string]struct{}
-	api_keys                                map[int64]struct{}
-	removedapi_keys                         map[int64]struct{}
-	clearedapi_keys                         bool
-	redeem_codes                            map[int64]struct{}
-	removedredeem_codes                     map[int64]struct{}
-	clearedredeem_codes                     bool
-	subscriptions                           map[int64]struct{}
-	removedsubscriptions                    map[int64]struct{}
-	clearedsubscriptions                    bool
-	usage_logs                              map[int64]struct{}
-	removedusage_logs                       map[int64]struct{}
-	clearedusage_logs                       bool
-	accounts                                map[int64]struct{}
-	removedaccounts                         map[int64]struct{}
-	clearedaccounts                         bool
-	allowed_users                           map[int64]struct{}
-	removedallowed_users                    map[int64]struct{}
-	clearedallowed_users                    bool
-	done                                    bool
-	oldValue                                func(context.Context) (*Group, error)
-	predicates                              []predicate.Group
+	op                                       Op
+	typ                                      string
+	id                                       *int64
+	created_at                               *time.Time
+	updated_at                               *time.Time
+	deleted_at                               *time.Time
+	name                                     *string
+	description                              *string
+	rate_multiplier                          *float64
+	addrate_multiplier                       *float64
+	upstream_billing_guard_max_multiplier    *float64
+	addupstream_billing_guard_max_multiplier *float64
+	peak_rate_enabled                        *bool
+	peak_start                               *string
+	peak_end                                 *string
+	peak_rate_multiplier                     *float64
+	addpeak_rate_multiplier                  *float64
+	is_exclusive                             *bool
+	status                                   *string
+	duplicate_operation_id                   *string
+	platform                                 *string
+	subscription_type                        *string
+	daily_limit_usd                          *float64
+	adddaily_limit_usd                       *float64
+	weekly_limit_usd                         *float64
+	addweekly_limit_usd                      *float64
+	monthly_limit_usd                        *float64
+	addmonthly_limit_usd                     *float64
+	default_validity_days                    *int
+	adddefault_validity_days                 *int
+	allow_image_generation                   *bool
+	allow_batch_image_generation             *bool
+	image_rate_independent                   *bool
+	image_rate_multiplier                    *float64
+	addimage_rate_multiplier                 *float64
+	image_price_1k                           *float64
+	addimage_price_1k                        *float64
+	image_price_2k                           *float64
+	addimage_price_2k                        *float64
+	image_price_4k                           *float64
+	addimage_price_4k                        *float64
+	batch_image_discount_multiplier          *float64
+	addbatch_image_discount_multiplier       *float64
+	batch_image_hold_multiplier              *float64
+	addbatch_image_hold_multiplier           *float64
+	video_rate_independent                   *bool
+	video_rate_multiplier                    *float64
+	addvideo_rate_multiplier                 *float64
+	video_price_480p                         *float64
+	addvideo_price_480p                      *float64
+	video_price_720p                         *float64
+	addvideo_price_720p                      *float64
+	video_price_1080p                        *float64
+	addvideo_price_1080p                     *float64
+	web_search_price_per_call                *float64
+	addweb_search_price_per_call             *float64
+	claude_code_only                         *bool
+	fallback_group_id                        *int64
+	addfallback_group_id                     *int64
+	fallback_group_id_on_invalid_request     *int64
+	addfallback_group_id_on_invalid_request  *int64
+	model_routing                            *map[string][]int64
+	model_routing_enabled                    *bool
+	mcp_xml_inject                           *bool
+	supported_model_scopes                   *[]string
+	appendsupported_model_scopes             []string
+	sort_order                               *int
+	addsort_order                            *int
+	allow_messages_dispatch                  *bool
+	require_oauth_only                       *bool
+	require_privacy_set                      *bool
+	default_mapped_model                     *string
+	messages_dispatch_model_config           *domain.OpenAIMessagesDispatchModelConfig
+	models_list_config                       *domain.GroupModelsListConfig
+	strict_model_priority_on_model_mismatch  *bool
+	rpm_limit                                *int
+	addrpm_limit                             *int
+	clearedFields                            map[string]struct{}
+	api_keys                                 map[int64]struct{}
+	removedapi_keys                          map[int64]struct{}
+	clearedapi_keys                          bool
+	redeem_codes                             map[int64]struct{}
+	removedredeem_codes                      map[int64]struct{}
+	clearedredeem_codes                      bool
+	subscriptions                            map[int64]struct{}
+	removedsubscriptions                     map[int64]struct{}
+	clearedsubscriptions                     bool
+	usage_logs                               map[int64]struct{}
+	removedusage_logs                        map[int64]struct{}
+	clearedusage_logs                        bool
+	accounts                                 map[int64]struct{}
+	removedaccounts                          map[int64]struct{}
+	clearedaccounts                          bool
+	allowed_users                            map[int64]struct{}
+	removedallowed_users                     map[int64]struct{}
+	clearedallowed_users                     bool
+	done                                     bool
+	oldValue                                 func(context.Context) (*Group, error)
+	predicates                               []predicate.Group
 }
 
 var _ ent.Mutation = (*GroupMutation)(nil)
@@ -22396,6 +22398,76 @@ func (m *GroupMutation) AddedRateMultiplier() (r float64, exists bool) {
 func (m *GroupMutation) ResetRateMultiplier() {
 	m.rate_multiplier = nil
 	m.addrate_multiplier = nil
+}
+
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (m *GroupMutation) SetUpstreamBillingGuardMaxMultiplier(f float64) {
+	m.upstream_billing_guard_max_multiplier = &f
+	m.addupstream_billing_guard_max_multiplier = nil
+}
+
+// UpstreamBillingGuardMaxMultiplier returns the value of the "upstream_billing_guard_max_multiplier" field in the mutation.
+func (m *GroupMutation) UpstreamBillingGuardMaxMultiplier() (r float64, exists bool) {
+	v := m.upstream_billing_guard_max_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpstreamBillingGuardMaxMultiplier returns the old "upstream_billing_guard_max_multiplier" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldUpstreamBillingGuardMaxMultiplier(ctx context.Context) (v *float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpstreamBillingGuardMaxMultiplier is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpstreamBillingGuardMaxMultiplier requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpstreamBillingGuardMaxMultiplier: %w", err)
+	}
+	return oldValue.UpstreamBillingGuardMaxMultiplier, nil
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds f to the "upstream_billing_guard_max_multiplier" field.
+func (m *GroupMutation) AddUpstreamBillingGuardMaxMultiplier(f float64) {
+	if m.addupstream_billing_guard_max_multiplier != nil {
+		*m.addupstream_billing_guard_max_multiplier += f
+	} else {
+		m.addupstream_billing_guard_max_multiplier = &f
+	}
+}
+
+// AddedUpstreamBillingGuardMaxMultiplier returns the value that was added to the "upstream_billing_guard_max_multiplier" field in this mutation.
+func (m *GroupMutation) AddedUpstreamBillingGuardMaxMultiplier() (r float64, exists bool) {
+	v := m.addupstream_billing_guard_max_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearUpstreamBillingGuardMaxMultiplier clears the value of the "upstream_billing_guard_max_multiplier" field.
+func (m *GroupMutation) ClearUpstreamBillingGuardMaxMultiplier() {
+	m.upstream_billing_guard_max_multiplier = nil
+	m.addupstream_billing_guard_max_multiplier = nil
+	m.clearedFields[group.FieldUpstreamBillingGuardMaxMultiplier] = struct{}{}
+}
+
+// UpstreamBillingGuardMaxMultiplierCleared returns if the "upstream_billing_guard_max_multiplier" field was cleared in this mutation.
+func (m *GroupMutation) UpstreamBillingGuardMaxMultiplierCleared() bool {
+	_, ok := m.clearedFields[group.FieldUpstreamBillingGuardMaxMultiplier]
+	return ok
+}
+
+// ResetUpstreamBillingGuardMaxMultiplier resets all changes to the "upstream_billing_guard_max_multiplier" field.
+func (m *GroupMutation) ResetUpstreamBillingGuardMaxMultiplier() {
+	m.upstream_billing_guard_max_multiplier = nil
+	m.addupstream_billing_guard_max_multiplier = nil
+	delete(m.clearedFields, group.FieldUpstreamBillingGuardMaxMultiplier)
 }
 
 // SetPeakRateEnabled sets the "peak_rate_enabled" field.
@@ -24949,7 +25021,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 50)
+	fields := make([]string, 0, 51)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -24967,6 +25039,9 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.rate_multiplier != nil {
 		fields = append(fields, group.FieldRateMultiplier)
+	}
+	if m.upstream_billing_guard_max_multiplier != nil {
+		fields = append(fields, group.FieldUpstreamBillingGuardMaxMultiplier)
 	}
 	if m.peak_rate_enabled != nil {
 		fields = append(fields, group.FieldPeakRateEnabled)
@@ -25120,6 +25195,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.Description()
 	case group.FieldRateMultiplier:
 		return m.RateMultiplier()
+	case group.FieldUpstreamBillingGuardMaxMultiplier:
+		return m.UpstreamBillingGuardMaxMultiplier()
 	case group.FieldPeakRateEnabled:
 		return m.PeakRateEnabled()
 	case group.FieldPeakStart:
@@ -25229,6 +25306,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldDescription(ctx)
 	case group.FieldRateMultiplier:
 		return m.OldRateMultiplier(ctx)
+	case group.FieldUpstreamBillingGuardMaxMultiplier:
+		return m.OldUpstreamBillingGuardMaxMultiplier(ctx)
 	case group.FieldPeakRateEnabled:
 		return m.OldPeakRateEnabled(ctx)
 	case group.FieldPeakStart:
@@ -25367,6 +25446,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetRateMultiplier(v)
+		return nil
+	case group.FieldUpstreamBillingGuardMaxMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpstreamBillingGuardMaxMultiplier(v)
 		return nil
 	case group.FieldPeakRateEnabled:
 		v, ok := value.(bool)
@@ -25687,6 +25773,9 @@ func (m *GroupMutation) AddedFields() []string {
 	if m.addrate_multiplier != nil {
 		fields = append(fields, group.FieldRateMultiplier)
 	}
+	if m.addupstream_billing_guard_max_multiplier != nil {
+		fields = append(fields, group.FieldUpstreamBillingGuardMaxMultiplier)
+	}
 	if m.addpeak_rate_multiplier != nil {
 		fields = append(fields, group.FieldPeakRateMultiplier)
 	}
@@ -25757,6 +25846,8 @@ func (m *GroupMutation) AddedField(name string) (ent.Value, bool) {
 	switch name {
 	case group.FieldRateMultiplier:
 		return m.AddedRateMultiplier()
+	case group.FieldUpstreamBillingGuardMaxMultiplier:
+		return m.AddedUpstreamBillingGuardMaxMultiplier()
 	case group.FieldPeakRateMultiplier:
 		return m.AddedPeakRateMultiplier()
 	case group.FieldDailyLimitUsd:
@@ -25812,6 +25903,13 @@ func (m *GroupMutation) AddField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.AddRateMultiplier(v)
+		return nil
+	case group.FieldUpstreamBillingGuardMaxMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddUpstreamBillingGuardMaxMultiplier(v)
 		return nil
 	case group.FieldPeakRateMultiplier:
 		v, ok := value.(float64)
@@ -25967,6 +26065,9 @@ func (m *GroupMutation) ClearedFields() []string {
 	if m.FieldCleared(group.FieldDescription) {
 		fields = append(fields, group.FieldDescription)
 	}
+	if m.FieldCleared(group.FieldUpstreamBillingGuardMaxMultiplier) {
+		fields = append(fields, group.FieldUpstreamBillingGuardMaxMultiplier)
+	}
 	if m.FieldCleared(group.FieldDuplicateOperationID) {
 		fields = append(fields, group.FieldDuplicateOperationID)
 	}
@@ -26028,6 +26129,9 @@ func (m *GroupMutation) ClearField(name string) error {
 		return nil
 	case group.FieldDescription:
 		m.ClearDescription()
+		return nil
+	case group.FieldUpstreamBillingGuardMaxMultiplier:
+		m.ClearUpstreamBillingGuardMaxMultiplier()
 		return nil
 	case group.FieldDuplicateOperationID:
 		m.ClearDuplicateOperationID()
@@ -26096,6 +26200,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldRateMultiplier:
 		m.ResetRateMultiplier()
+		return nil
+	case group.FieldUpstreamBillingGuardMaxMultiplier:
+		m.ResetUpstreamBillingGuardMaxMultiplier()
 		return nil
 	case group.FieldPeakRateEnabled:
 		m.ResetPeakRateEnabled()

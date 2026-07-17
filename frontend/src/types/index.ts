@@ -504,6 +504,7 @@ export interface Group {
   description: string | null
   platform: GroupPlatform
   rate_multiplier: number
+  upstream_billing_guard_max_multiplier?: number | null
   rpm_limit?: number // Group-level RPM cap (0 = unlimited); overrides user-level rpm_limit when set
   is_exclusive: boolean
   status: 'active' | 'inactive'
@@ -642,6 +643,7 @@ export interface CreateGroupRequest {
   description?: string | null
   platform?: GroupPlatform
   rate_multiplier?: number
+  upstream_billing_guard_max_multiplier?: number | null
   is_exclusive?: boolean
   subscription_type?: SubscriptionType
   daily_limit_usd?: number | null
@@ -690,6 +692,7 @@ export interface UpdateGroupRequest {
   description?: string | null
   platform?: GroupPlatform
   rate_multiplier?: number
+  upstream_billing_guard_max_multiplier?: number | null
   is_exclusive?: boolean
   status?: 'active' | 'inactive'
   subscription_type?: SubscriptionType
@@ -951,7 +954,9 @@ export interface Account {
   // Rate limit & scheduling fields
   schedulable: boolean
   upstream_billing_guard_enabled?: boolean
+  /** Deprecated account-global field; group thresholds are authoritative. */
   upstream_billing_guard_max_multiplier?: number
+  /** Deprecated account-global runtime field; use per-group state instead. */
   upstream_billing_guard_blocked?: boolean
   upstream_billing_guard_observed_multiplier?: number | null
   upstream_billing_guard_evaluated_at?: string | null
@@ -1259,7 +1264,7 @@ export interface UpdateAccountRequest {
   schedulable?: boolean
   status?: 'active' | 'inactive' | 'error'
   group_ids?: number[]
-  upstream_billing_guard_group_limits?: Record<number, number>
+  upstream_billing_guard_enabled?: boolean
   expires_at?: number | null
   auto_pause_on_expired?: boolean
   confirm_mixed_channel_risk?: boolean

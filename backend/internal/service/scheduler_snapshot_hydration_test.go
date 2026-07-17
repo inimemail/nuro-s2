@@ -268,6 +268,7 @@ func TestSchedulerSnapshotListSchedulableAccounts_AppliesBindingScopedBillingGua
 	cache := &snapshotHydrationCache{snapshot: []*Account{{
 		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
 		Status: StatusActive, Schedulable: true,
+		UpstreamBillingGuardEnabled:            true,
 		Extra:                                  map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
 		UpstreamBillingGuardObservedMultiplier: &observed,
 		GroupIDs:                               []int64{10, 20},

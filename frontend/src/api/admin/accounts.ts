@@ -868,7 +868,6 @@ export async function probeUpstreamBillingBatch(accountIds: number[]): Promise<U
 
 export interface UpstreamBillingGuardSettings {
   enabled: boolean
-  max_multiplier: number
 }
 
 export interface UpstreamBillingGuardResult {

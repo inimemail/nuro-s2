@@ -105,34 +105,59 @@ const guardObservedRate = computed(() => {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 })
 const autoProbeEnabled = computed(() => props.account.extra?.upstream_billing_probe_enabled === true)
+const globalProbeDisabled = computed(() => props.globalProbeEnabled === false)
 const protectedGroups = computed(() => {
-  const groupNames = new Map((props.account.groups || []).map((group) => [group.id, group.name]))
+  const groups = new Map((props.account.groups || []).map((group) => [group.id, group]))
   return (props.account.account_groups || [])
-    .filter((binding) => typeof binding.upstream_billing_guard_max_multiplier === 'number')
     .map((binding) => {
-      const limit = binding.upstream_billing_guard_max_multiplier as number
-      const blocked = !autoProbeEnabled.value || (guardObservedRate.value != null && guardObservedRate.value > limit)
-      const pending = autoProbeEnabled.value && guardObservedRate.value == null
-      const state = blocked ? 'blocked' : pending ? 'pending' : 'available'
+      const mappedGroup = groups.get(binding.group_id)
+      const group = mappedGroup || binding.group
+      const policyGroup = mappedGroup && Object.prototype.hasOwnProperty.call(mappedGroup, 'upstream_billing_guard_max_multiplier')
+        ? mappedGroup
+        : binding.group && Object.prototype.hasOwnProperty.call(binding.group, 'upstream_billing_guard_max_multiplier')
+          ? binding.group
+          : undefined
+      const limit = policyGroup
+        ? policyGroup.upstream_billing_guard_max_multiplier ?? null
+        : binding.upstream_billing_guard_max_multiplier
+      return { binding, group, limit }
+    })
+    .filter((item) => typeof item.limit === 'number' && Number.isFinite(item.limit) && item.limit >= 0)
+    .map((binding) => {
+      const limit = binding.limit as number
+      const disabled = props.account.upstream_billing_guard_enabled !== true
+      const blocked = !disabled && (
+        !autoProbeEnabled.value || (guardObservedRate.value != null && guardObservedRate.value > limit)
+      )
+      const pending = !disabled && !blocked && (
+        globalProbeDisabled.value || guardObservedRate.value == null
+      )
+      const state = disabled ? 'disabled' : blocked ? 'blocked' : pending ? 'pending' : 'available'
       return {
-        groupId: binding.group_id,
-        name: binding.group?.name || groupNames.get(binding.group_id) || `#${binding.group_id}`,
+        groupId: binding.binding.group_id,
+        name: binding.group?.name || `#${binding.binding.group_id}`,
         limit: Number(limit.toPrecision(8)),
         blocked,
         state,
         badgeClass: blocked
           ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
-          : pending
+          : pending || disabled
             ? 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
             : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
-        dotClass: blocked ? 'bg-amber-500' : pending ? 'bg-gray-400' : 'bg-emerald-500',
-        detailClass: blocked ? 'text-amber-300' : pending ? 'text-gray-300' : 'text-emerald-300',
-        detail: !autoProbeEnabled.value
+        dotClass: blocked ? 'bg-amber-500' : pending || disabled ? 'bg-gray-400' : 'bg-emerald-500',
+        detailClass: blocked ? 'text-amber-300' : pending || disabled ? 'text-gray-300' : 'text-emerald-300',
+        detail: disabled
+          ? t('admin.accounts.upstreamBilling.guardDisabled')
+          : blocked
+            ? !autoProbeEnabled.value
+              ? t('admin.accounts.upstreamBilling.guardProbeDisabled')
+              : t('admin.accounts.upstreamBilling.guardPaused')
+            : globalProbeDisabled.value
+              ? t('admin.accounts.upstreamBilling.guardGlobalProbeDisabled')
+          : !autoProbeEnabled.value
           ? t('admin.accounts.upstreamBilling.guardProbeDisabled')
           : pending
             ? t('admin.accounts.upstreamBilling.guardWaitingFirstProbe')
-            : blocked
-              ? t('admin.accounts.upstreamBilling.guardPaused')
               : t('admin.accounts.upstreamBilling.guardAvailable')
       }
     })

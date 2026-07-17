@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildOpenAIUsageRefreshKey } from '../accountUsageRefresh'
+import { buildOpenAIUsageRefreshKey, buildUpstreamBillingGuardRefreshKey } from '../accountUsageRefresh'
 
 describe('buildOpenAIUsageRefreshKey', () => {
   it('会在 codex 快照变化时生成不同 key', () => {
@@ -59,5 +59,37 @@ describe('buildOpenAIUsageRefreshKey', () => {
       last_used_at: '2026-03-07T10:00:00Z',
       extra: {}
     } as any)).toBe('')
+  })
+})
+
+describe('buildUpstreamBillingGuardRefreshKey', () => {
+  it('changes when a bound group threshold changes', () => {
+    const base = {
+      upstream_billing_guard_enabled: true,
+      upstream_billing_guard_observed_multiplier: 1,
+      account_groups: [{ group_id: 10, upstream_billing_guard_max_multiplier: 1, group: { id: 10 } }],
+      extra: { upstream_billing_probe_enabled: true }
+    } as any
+    const next = {
+      ...base,
+      account_groups: [{ ...base.account_groups[0], upstream_billing_guard_max_multiplier: 2 }]
+    }
+
+    expect(buildUpstreamBillingGuardRefreshKey(base)).not.toBe(buildUpstreamBillingGuardRefreshKey(next))
+  })
+
+  it('treats an explicit group null as a policy change', () => {
+    const base = {
+      upstream_billing_guard_enabled: true,
+      upstream_billing_guard_observed_multiplier: 1,
+      account_groups: [{ group_id: 10, upstream_billing_guard_max_multiplier: 1, group: { id: 10, upstream_billing_guard_max_multiplier: 1 } }],
+      extra: { upstream_billing_probe_enabled: true }
+    } as any
+    const next = {
+      ...base,
+      account_groups: [{ ...base.account_groups[0], group: { id: 10, upstream_billing_guard_max_multiplier: null } }]
+    }
+
+    expect(buildUpstreamBillingGuardRefreshKey(base)).not.toBe(buildUpstreamBillingGuardRefreshKey(next))
   })
 })

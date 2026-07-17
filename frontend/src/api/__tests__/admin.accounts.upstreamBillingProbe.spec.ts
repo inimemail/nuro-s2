@@ -54,10 +54,9 @@ describe('admin account upstream billing probe API', () => {
 	it('updates account billing guard settings through the dedicated endpoint', async () => {
 		const result = { account_id: 7, account: { id: 7 } }
 		put.mockResolvedValueOnce({ data: result })
-		await expect(updateUpstreamBillingGuard(7, { enabled: true, max_multiplier: 2.5 })).resolves.toEqual(result)
+		await expect(updateUpstreamBillingGuard(7, { enabled: true })).resolves.toEqual(result)
 		expect(put).toHaveBeenCalledWith('/admin/accounts/7/upstream-billing-guard', {
-			enabled: true,
-			max_multiplier: 2.5
+			enabled: true
 		})
 	})
 })

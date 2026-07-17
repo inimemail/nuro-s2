@@ -217,7 +217,7 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAILongContextBillingPolicy(t *te
 	require.True(t, got.IsOpenAILongContextBillingEnabled())
 }
 
-func TestBuildSchedulerMetadataAccount_KeepsOnlyBindingGuardObservation(t *testing.T) {
+func TestBuildSchedulerMetadataAccount_KeepsGroupGuardMasterAndObservation(t *testing.T) {
 	observed := 2.5
 	evaluatedAt := time.Now().UTC()
 	account := service.Account{
@@ -231,7 +231,7 @@ func TestBuildSchedulerMetadataAccount_KeepsOnlyBindingGuardObservation(t *testi
 
 	got := buildSchedulerMetadataAccount(account)
 
-	require.False(t, got.UpstreamBillingGuardEnabled)
+	require.True(t, got.UpstreamBillingGuardEnabled)
 	require.Zero(t, got.UpstreamBillingGuardMaxMultiplier)
 	require.False(t, got.UpstreamBillingGuardBlocked)
 	require.NotNil(t, got.UpstreamBillingGuardObservedMultiplier)

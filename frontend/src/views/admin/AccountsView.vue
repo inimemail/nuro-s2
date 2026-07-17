@@ -512,7 +512,7 @@ import UpstreamBillingRateCell from '@/components/account/UpstreamBillingRateCel
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
+import { buildOpenAIUsageRefreshKey, buildUpstreamBillingGuardRefreshKey } from '@/utils/accountUsageRefresh'
 import { isImagePoolModeAccount, isPoolModeAccount } from '@/utils/accountPoolMode'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import { accountHomepageUrl } from '@/utils/accountHomepage'
@@ -1208,7 +1208,8 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.anthropic_pool_last_probe_status_code !== next.anthropic_pool_last_probe_status_code ||
     current.anthropic_pool_last_probe_reason !== next.anthropic_pool_last_probe_reason ||
     current.anthropic_pool_recovery_probe_in_flight !== next.anthropic_pool_recovery_probe_in_flight ||
-    buildOpenAIUsageRefreshKey(current) !== buildOpenAIUsageRefreshKey(next)
+    buildOpenAIUsageRefreshKey(current) !== buildOpenAIUsageRefreshKey(next) ||
+    buildUpstreamBillingGuardRefreshKey(current) !== buildUpstreamBillingGuardRefreshKey(next)
   )
 }
 

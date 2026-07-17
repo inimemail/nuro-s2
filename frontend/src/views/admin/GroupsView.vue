@@ -571,6 +571,21 @@
           />
           <p class="input-hint">{{ t("admin.groups.rateMultiplierHint") }}</p>
         </div>
+        <div v-if="createForm.platform === 'openai'">
+          <label class="input-label">{{
+            t("admin.groups.form.upstreamBillingGuardLimit")
+          }}</label>
+          <input
+            v-model="createForm.upstream_billing_guard_max_multiplier"
+            type="number"
+            min="0"
+            step="0.01"
+            class="input"
+            data-testid="create-group-upstream-billing-guard-limit"
+            :placeholder="t('admin.groups.form.upstreamBillingGuardUnlimited')"
+          />
+          <p class="input-hint">{{ t("admin.groups.form.upstreamBillingGuardHint") }}</p>
+        </div>
         <div>
           <label class="input-label">{{ t("admin.groups.form.rpmLimit") }}</label>
           <input
@@ -2068,6 +2083,21 @@
             data-tour="group-form-multiplier"
           />
         </div>
+        <div v-if="editForm.platform === 'openai'">
+          <label class="input-label">{{
+            t("admin.groups.form.upstreamBillingGuardLimit")
+          }}</label>
+          <input
+            v-model="editForm.upstream_billing_guard_max_multiplier"
+            type="number"
+            min="0"
+            step="0.01"
+            class="input"
+            data-testid="edit-group-upstream-billing-guard-limit"
+            :placeholder="t('admin.groups.form.upstreamBillingGuardUnlimited')"
+          />
+          <p class="input-hint">{{ t("admin.groups.form.upstreamBillingGuardHint") }}</p>
+        </div>
         <div>
           <label class="input-label">{{ t("admin.groups.form.rpmLimit") }}</label>
           <input
@@ -3556,6 +3586,7 @@ import { VueDraggable } from "vue-draggable-plus";
 import { createStableObjectKeyResolver } from "@/utils/stableObjectKey";
 import { useKeyedDebouncedSearch } from "@/composables/useKeyedDebouncedSearch";
 import { getPersistedPageSize } from "@/composables/usePersistedPageSize";
+import { extractApiErrorMessage } from "@/utils/apiError";
 import {
   createDefaultMessagesDispatchFormState,
   messagesDispatchConfigToFormState,
@@ -3563,6 +3594,7 @@ import {
   resetMessagesDispatchFormState,
   type MessagesDispatchMappingRow,
 } from "./groupsMessagesDispatch";
+import { buildUpstreamBillingGuardLimitPayload } from "./groupsUpstreamBillingGuard";
 import {
   buildModelsListConfig,
   createModelsListState as createInitialModelsListState,
@@ -3905,6 +3937,7 @@ const createForm = reactive({
   description: "",
   platform: "anthropic" as GroupPlatform,
   rate_multiplier: 1.0,
+  upstream_billing_guard_max_multiplier: null as number | string | null,
   is_exclusive: false,
   subscription_type: "standard" as SubscriptionType,
   daily_limit_usd: null as number | null,
@@ -4249,6 +4282,7 @@ const editForm = reactive({
   description: "",
   platform: "anthropic" as GroupPlatform,
   rate_multiplier: 1.0,
+  upstream_billing_guard_max_multiplier: null as number | string | null,
   is_exclusive: false,
   status: "active" as "active" | "inactive",
   subscription_type: "standard" as SubscriptionType,
@@ -4595,6 +4629,7 @@ const closeCreateModal = () => {
   createForm.description = "";
   createForm.platform = "anthropic";
   createForm.rate_multiplier = 1.0;
+  createForm.upstream_billing_guard_max_multiplier = null;
   createForm.is_exclusive = false;
   createForm.subscription_type = "standard";
   createForm.daily_limit_usd = null;
@@ -4669,11 +4704,20 @@ const handleCreateGroup = async () => {
     appStore.showError(t("admin.groups.nameRequired"));
     return;
   }
+  const guardLimit = buildUpstreamBillingGuardLimitPayload(
+    createForm.platform,
+    createForm.upstream_billing_guard_max_multiplier,
+  );
+  if (createForm.platform === "openai" && guardLimit === undefined) {
+    appStore.showError(t("admin.groups.form.upstreamBillingGuardInvalid"));
+    return;
+  }
   submitting.value = true;
   try {
     // 构建请求数据，包含模型路由配置
     const requestData = {
       ...createForm,
+      upstream_billing_guard_max_multiplier: guardLimit,
       daily_limit_usd: normalizeOptionalLimit(
         createForm.daily_limit_usd as number | string | null,
       ),
@@ -4737,9 +4781,7 @@ const handleCreateGroup = async () => {
       onboardingStore.nextStep(500);
     }
   } catch (error: any) {
-    appStore.showError(
-      error.response?.data?.detail || t("admin.groups.failedToCreate"),
-    );
+    appStore.showError(extractApiErrorMessage(error, t("admin.groups.failedToCreate")));
     console.error("Error creating group:", error);
     // Don't advance tour on error
   } finally {
@@ -4753,6 +4795,8 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.description = group.description || "";
   editForm.platform = group.platform;
   editForm.rate_multiplier = group.rate_multiplier;
+  editForm.upstream_billing_guard_max_multiplier =
+    group.upstream_billing_guard_max_multiplier ?? null;
   editForm.is_exclusive = group.is_exclusive;
   editForm.status = group.status;
   editForm.subscription_type = group.subscription_type || "standard";
@@ -4830,6 +4874,7 @@ const closeEditModal = () => {
   editForm.peak_end = "";
   editForm.peak_rate_multiplier = 1;
   editForm.web_search_price_per_call = null;
+  editForm.upstream_billing_guard_max_multiplier = null;
   editForm.allow_batch_image_generation = false;
   editForm.batch_image_discount_multiplier = 0.5;
   editForm.batch_image_hold_multiplier = 0.6;
@@ -4845,11 +4890,21 @@ const handleUpdateGroup = async () => {
     return;
   }
 
+  const guardLimit = buildUpstreamBillingGuardLimitPayload(
+    editForm.platform,
+    editForm.upstream_billing_guard_max_multiplier,
+  );
+  if (editForm.platform === "openai" && guardLimit === undefined) {
+    appStore.showError(t("admin.groups.form.upstreamBillingGuardInvalid"));
+    return;
+  }
+
   submitting.value = true;
   try {
     // 转换 fallback_group_id: null -> 0 (后端使用 0 表示清除)
     const payload = {
       ...editForm,
+      upstream_billing_guard_max_multiplier: guardLimit,
       daily_limit_usd: normalizeOptionalLimit(
         editForm.daily_limit_usd as number | string | null,
       ),
@@ -4922,9 +4977,7 @@ const handleUpdateGroup = async () => {
     closeEditModal();
     loadGroups();
   } catch (error: any) {
-    appStore.showError(
-      error.response?.data?.detail || t("admin.groups.failedToUpdate"),
-    );
+    appStore.showError(extractApiErrorMessage(error, t("admin.groups.failedToUpdate")));
     console.error("Error updating group:", error);
   } finally {
     submitting.value = false;
@@ -5044,6 +5097,9 @@ watch(
       createForm.allow_messages_dispatch = allowMessagesDispatch;
       createForm.strict_model_priority_on_model_mismatch = false;
     }
+    if (newVal !== "openai") {
+      createForm.upstream_billing_guard_max_multiplier = null;
+    }
     if (!["openai", "antigravity", "anthropic", "gemini", "grok"].includes(newVal)) {
       createForm.require_oauth_only = false;
       createForm.require_privacy_set = false;
@@ -5067,6 +5123,9 @@ watch(
       resetMessagesDispatchFormState(editForm);
       editForm.allow_messages_dispatch = allowMessagesDispatch;
       editForm.strict_model_priority_on_model_mismatch = false;
+    }
+    if (newVal !== "openai") {
+      editForm.upstream_billing_guard_max_multiplier = null;
     }
     if (!["openai", "antigravity", "anthropic", "gemini", "grok"].includes(newVal)) {
       editForm.require_oauth_only = false;

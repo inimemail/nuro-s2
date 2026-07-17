@@ -425,8 +425,10 @@
                 type="button"
                 data-testid="upstream-billing-guard-toggle"
                 :aria-label="t('admin.accounts.upstreamBilling.guard')"
+                :disabled="!upstreamBillingGuardEnabled && configuredUpstreamBillingGuardGroupCount === 0"
+                :title="configuredUpstreamBillingGuardGroupCount === 0 ? t('admin.accounts.upstreamBilling.noConfiguredGroup') : undefined"
                 :class="[
-                  'relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500',
+                  'relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50',
                   upstreamBillingGuardEnabled ? 'bg-amber-500' : 'bg-gray-200 dark:bg-dark-600'
                 ]"
                 @click="toggleUpstreamBillingGuard"
@@ -434,30 +436,23 @@
                 <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition', upstreamBillingGuardEnabled ? 'translate-x-5' : 'translate-x-0']" />
               </button>
             </div>
-            <div v-if="upstreamBillingGuardEnabled" class="mt-3 space-y-2">
+            <div v-if="upstreamBillingGuardGroupSummaries.length" class="mt-3 space-y-2">
               <div
-                v-for="group in selectedUpstreamBillingGuardGroups"
-                :key="group.id"
-                class="grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-3"
+                v-for="item in upstreamBillingGuardGroupSummaries"
+                :key="item.group.id"
+                :data-testid="`upstream-billing-guard-group-${item.group.id}`"
+                class="flex items-center justify-between gap-3 rounded border border-gray-100 px-3 py-2 dark:border-dark-700"
               >
                 <div class="min-w-0">
-                  <div class="truncate text-sm font-medium text-gray-700 dark:text-gray-300" :title="group.name">{{ group.name }}</div>
-                  <div class="text-xs text-gray-400">{{ t('admin.accounts.upstreamBilling.blankMeansUnlimited') }}</div>
+                  <div class="truncate text-sm font-medium text-gray-700 dark:text-gray-300" :title="item.group.name">{{ item.group.name }}</div>
+                  <div class="text-xs text-gray-400">{{ item.limitLabel }}</div>
                 </div>
-                <input
-                  v-model="upstreamBillingGuardGroupLimits[group.id]"
-                  :data-testid="`upstream-billing-guard-group-${group.id}`"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  class="input h-9"
-                  :placeholder="t('admin.accounts.upstreamBilling.unlimited')"
-                />
+                <span :class="item.badgeClass" class="flex-none rounded px-2 py-1 text-xs font-medium">{{ item.statusLabel }}</span>
               </div>
-              <p v-if="selectedUpstreamBillingGuardGroups.length === 0" class="text-xs text-amber-600 dark:text-amber-400">
-                {{ t('admin.accounts.upstreamBilling.selectGroupFirst') }}
-              </p>
             </div>
+            <p v-else class="mt-3 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.upstreamBilling.selectGroupFirst') }}
+            </p>
           </div>
         </div>
 
@@ -3604,6 +3599,7 @@ import { useQuotaNotifyState } from '@/composables/useQuotaNotifyState'
 import type {
   Account,
   Proxy,
+  Group,
   AdminGroup,
   CheckMixedChannelResponse,
   OpenAICompactMode,
@@ -4022,8 +4018,7 @@ const normalizeGrokMediaEligibilityMode = (value: unknown): GrokMediaEligibility
 }
 const upstreamBillingAutoProbeEnabled = ref(false)
 const upstreamBillingGuardEnabled = ref(false)
-const upstreamBillingGuardGroupLimits = reactive<Record<number, number | string | null>>({})
-const initialUpstreamBillingGuardGroupLimits = reactive<Record<number, number>>({})
+const initialUpstreamBillingGuardEnabled = ref(false)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(false)
 const autoPause5hThreshold = ref<number | null>(null)
@@ -4487,34 +4482,102 @@ const form = reactive({
 
 const selectedUpstreamBillingGuardGroups = computed(() => {
   const selected = new Set(form.group_ids)
-  return props.groups.filter((group) => selected.has(group.id))
+  const groups = new Map<number, Group>()
+  for (const group of props.account?.groups || []) groups.set(group.id, group)
+  for (const group of props.groups) {
+    const existing = groups.get(group.id)
+    const incomingHasPolicy = Object.prototype.hasOwnProperty.call(group, 'upstream_billing_guard_max_multiplier')
+    const existingHasPolicy = existing && Object.prototype.hasOwnProperty.call(existing, 'upstream_billing_guard_max_multiplier')
+    // Preserve a richer account response when an older groups endpoint returns
+    // a shallow object without the new policy field. An explicit null from the
+    // newer endpoint still intentionally overrides the old value.
+    if (!existing || incomingHasPolicy || !existingHasPolicy) {
+      groups.set(group.id, group)
+    }
+  }
+  for (const binding of props.account?.account_groups || []) {
+    const mappedGroup = groups.get(binding.group_id)
+    const group = mappedGroup || binding.group
+    if (!group) continue
+    const policyGroup = mappedGroup && Object.prototype.hasOwnProperty.call(mappedGroup, 'upstream_billing_guard_max_multiplier')
+      ? mappedGroup
+      : binding.group && Object.prototype.hasOwnProperty.call(binding.group, 'upstream_billing_guard_max_multiplier')
+        ? binding.group
+        : undefined
+    groups.set(binding.group_id, {
+      ...group,
+      upstream_billing_guard_max_multiplier: policyGroup
+        ? policyGroup.upstream_billing_guard_max_multiplier ?? null
+        : binding.upstream_billing_guard_max_multiplier ?? null
+    })
+  }
+  return [...groups.values()].filter((group) => selected.has(group.id))
 })
 
-const clearUpstreamBillingGuardGroupLimits = () => {
-  for (const key of Object.keys(upstreamBillingGuardGroupLimits)) {
-    delete upstreamBillingGuardGroupLimits[Number(key)]
-  }
-}
+const configuredUpstreamBillingGuardGroupCount = computed(() =>
+  selectedUpstreamBillingGuardGroups.value.filter((group) => {
+    const value = group.upstream_billing_guard_max_multiplier
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0
+  }).length
+)
 
-const clearInitialUpstreamBillingGuardGroupLimits = () => {
-  for (const key of Object.keys(initialUpstreamBillingGuardGroupLimits)) {
-    delete initialUpstreamBillingGuardGroupLimits[Number(key)]
-  }
-}
+const upstreamBillingGuardObservedRate = computed(() => {
+  const value = props.account?.upstream_billing_guard_observed_multiplier
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+})
 
-const upstreamBillingGuardLimitsEqual = (left: Record<number, number>, right: Record<number, number>) => {
-  const leftKeys = Object.keys(left)
-  const rightKeys = Object.keys(right)
-  if (leftKeys.length !== rightKeys.length) return false
-  return leftKeys.every((key) => right[Number(key)] === left[Number(key)])
-}
+const upstreamBillingGuardGroupSummaries = computed(() =>
+  selectedUpstreamBillingGuardGroups.value.map((group) => {
+    const rawLimit = group.upstream_billing_guard_max_multiplier
+    const configured = typeof rawLimit === 'number' && Number.isFinite(rawLimit) && rawLimit >= 0
+    if (!configured) {
+      return {
+        group,
+        limitLabel: t('admin.accounts.upstreamBilling.groupNotConfigured'),
+        statusLabel: t('admin.accounts.upstreamBilling.unlimited'),
+        badgeClass: 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+      }
+    }
+
+    const limit = Number(Number(rawLimit).toPrecision(8))
+    if (!upstreamBillingGuardEnabled.value) {
+      return {
+        group,
+        limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
+        statusLabel: t('admin.accounts.upstreamBilling.guardDisabled'),
+        badgeClass: 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
+      }
+    }
+    if (!upstreamBillingAutoProbeEnabled.value || (upstreamBillingGuardObservedRate.value != null && upstreamBillingGuardObservedRate.value > limit)) {
+      return {
+        group,
+        limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
+        statusLabel: t('admin.accounts.upstreamBilling.guardPaused'),
+        badgeClass: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+      }
+    }
+    if (upstreamBillingGuardObservedRate.value == null) {
+      return {
+        group,
+        limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
+        statusLabel: t('admin.accounts.upstreamBilling.guardWaitingFirstProbe'),
+        badgeClass: 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
+      }
+    }
+    return {
+      group,
+      limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
+      statusLabel: t('admin.accounts.upstreamBilling.guardAvailable'),
+      badgeClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+    }
+  })
+)
 
 const toggleUpstreamBillingGuard = () => {
+  if (!upstreamBillingGuardEnabled.value && configuredUpstreamBillingGuardGroupCount.value === 0) return
   upstreamBillingGuardEnabled.value = !upstreamBillingGuardEnabled.value
   if (upstreamBillingGuardEnabled.value) {
     upstreamBillingAutoProbeEnabled.value = true
-  } else {
-    clearUpstreamBillingGuardGroupLimits()
   }
 }
 
@@ -4522,21 +4585,8 @@ const toggleUpstreamBillingAutoProbe = () => {
   upstreamBillingAutoProbeEnabled.value = !upstreamBillingAutoProbeEnabled.value
   if (!upstreamBillingAutoProbeEnabled.value) {
     upstreamBillingGuardEnabled.value = false
-    clearUpstreamBillingGuardGroupLimits()
   }
 }
-
-watch(
-  () => [...form.group_ids],
-  (current, previous) => {
-    const currentIDs = new Set(current)
-    for (const removedID of previous || []) {
-      if (!currentIDs.has(removedID)) {
-        delete upstreamBillingGuardGroupLimits[removedID]
-      }
-    }
-  }
-)
 
 const statusOptions = computed(() => {
   const options = [
@@ -4698,16 +4748,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   grokMediaEligibilityMode.value = mediaEligibilityMode
   initialGrokMediaEligibilityMode.value = mediaEligibilityMode
   upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
-  clearUpstreamBillingGuardGroupLimits()
-  clearInitialUpstreamBillingGuardGroupLimits()
-  for (const binding of newAccount.account_groups || []) {
-    const limit = binding.upstream_billing_guard_max_multiplier
-    if (typeof limit === 'number' && Number.isFinite(limit) && limit >= 0) {
-      upstreamBillingGuardGroupLimits[binding.group_id] = limit
-      initialUpstreamBillingGuardGroupLimits[binding.group_id] = limit
-    }
-  }
-  upstreamBillingGuardEnabled.value = Object.keys(upstreamBillingGuardGroupLimits).length > 0
+  upstreamBillingGuardEnabled.value = newAccount.upstream_billing_guard_enabled === true
+  initialUpstreamBillingGuardEnabled.value = upstreamBillingGuardEnabled.value
   mixedScheduling.value = extra?.mixed_scheduling === true
   allowOverages.value = extra?.allow_overages === true
   autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
@@ -6438,21 +6480,11 @@ const handleSubmit = async () => {
     }
 
     if (showUpstreamBillingProbeConfig.value) {
-      const limits: Record<number, number> = {}
-      if (upstreamBillingGuardEnabled.value) {
-        for (const groupID of form.group_ids) {
-          const raw = upstreamBillingGuardGroupLimits[groupID]
-          if (raw === '' || raw === null || raw === undefined) continue
-          const value = Number(raw)
-          if (!Number.isFinite(value) || value < 0) {
-            appStore.showError(t('admin.accounts.upstreamBilling.invalidGuardLimit'))
-            return
-          }
-          limits[groupID] = value
-        }
+      if (upstreamBillingGuardEnabled.value && configuredUpstreamBillingGuardGroupCount.value === 0) {
+        upstreamBillingGuardEnabled.value = false
       }
-      if (!upstreamBillingGuardLimitsEqual(limits, initialUpstreamBillingGuardGroupLimits)) {
-        updatePayload.upstream_billing_guard_group_limits = limits
+      if (upstreamBillingGuardEnabled.value !== initialUpstreamBillingGuardEnabled.value) {
+        updatePayload.upstream_billing_guard_enabled = upstreamBillingGuardEnabled.value
       }
     }
 

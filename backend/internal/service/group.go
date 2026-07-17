@@ -19,6 +19,9 @@ type Group struct {
 	Description    string
 	Platform       string
 	RateMultiplier float64
+	// UpstreamBillingGuardMaxMultiplier is configured only for OpenAI groups.
+	// nil means accounts in this group are not protected by an upstream rate cap.
+	UpstreamBillingGuardMaxMultiplier *float64
 	// 高峰时段倍率：peak_rate_enabled 为 true 且当前时刻处于 [PeakStart, PeakEnd) 时，
 	// token 计费倍率额外乘以 PeakRateMultiplier。详见 PeakMultiplierAt。
 	PeakRateEnabled      bool

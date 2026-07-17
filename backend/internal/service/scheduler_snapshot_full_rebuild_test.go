@@ -20,6 +20,109 @@ type schedulerFullRebuildTestCache struct {
 	lockCalls int
 }
 
+type schedulerGroupPolicyRefreshCache struct {
+	SchedulerCache
+	accounts []Account
+}
+
+func (c *schedulerGroupPolicyRefreshCache) SetAccount(_ context.Context, account *Account) error {
+	if account != nil {
+		c.accounts = append(c.accounts, *account)
+	}
+	return nil
+}
+
+func (c *schedulerGroupPolicyRefreshCache) TryLockBucket(context.Context, SchedulerBucket, time.Duration) (bool, error) {
+	return false, nil
+}
+
+type schedulerGroupPolicyRefreshRepo struct {
+	AccountRepository
+	accounts []Account
+}
+
+func (r *schedulerGroupPolicyRefreshRepo) ListByGroup(context.Context, int64) ([]Account, error) {
+	return r.accounts, nil
+}
+
+func (r *schedulerGroupPolicyRefreshRepo) ListActive(context.Context) ([]Account, error) {
+	return r.accounts, nil
+}
+
+func (c *schedulerGroupPolicyRefreshCache) ListBuckets(context.Context) ([]SchedulerBucket, error) {
+	return []SchedulerBucket{{GroupID: 10, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}}, nil
+}
+
+func TestSchedulerGroupChangeRefreshesAccountsOutsideSchedulableWindows(t *testing.T) {
+	groupID := int64(10)
+	limit := 1.25
+	cache := &schedulerGroupPolicyRefreshCache{}
+	repo := &schedulerGroupPolicyRefreshRepo{accounts: []Account{{
+		ID:                          7,
+		Status:                      StatusActive,
+		RateLimitResetAt:            ptrTimeForSchedulerTest(time.Now().Add(time.Hour)),
+		UpstreamBillingGuardEnabled: true,
+		AccountGroups: []AccountGroup{{
+			GroupID:                           groupID,
+			UpstreamBillingGuardMaxMultiplier: &limit,
+		}},
+	}}}
+	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, nil, nil)
+
+	require.NoError(t, svc.handleGroupEvent(context.Background(), &groupID, nil))
+	require.Len(t, cache.accounts, 1)
+	require.Equal(t, int64(7), cache.accounts[0].ID)
+	require.NotNil(t, cache.accounts[0].AccountGroups[0].UpstreamBillingGuardMaxMultiplier)
+	require.Equal(t, limit, *cache.accounts[0].AccountGroups[0].UpstreamBillingGuardMaxMultiplier)
+}
+
+func TestSchedulerInitialRebuildRefreshesAccountsOutsideSchedulableWindows(t *testing.T) {
+	groupID := int64(10)
+	limit := 1.25
+	cache := &schedulerGroupPolicyRefreshCache{}
+	repo := &schedulerGroupPolicyRefreshRepo{accounts: []Account{{
+		ID:                          7,
+		Status:                      StatusActive,
+		RateLimitResetAt:            ptrTimeForSchedulerTest(time.Now().Add(time.Hour)),
+		UpstreamBillingGuardEnabled: true,
+		AccountGroups: []AccountGroup{{
+			GroupID:                           groupID,
+			UpstreamBillingGuardMaxMultiplier: &limit,
+		}},
+	}}}
+	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, nil, nil)
+
+	svc.runInitialRebuild()
+
+	require.Len(t, cache.accounts, 1)
+	require.Equal(t, int64(7), cache.accounts[0].ID)
+	require.Equal(t, limit, *cache.accounts[0].AccountGroups[0].UpstreamBillingGuardMaxMultiplier)
+}
+
+func TestSchedulerMarkedFullRebuildRefreshesAccountsOutsideSchedulableWindows(t *testing.T) {
+	cache := &schedulerGroupPolicyRefreshCache{}
+	repo := &schedulerGroupPolicyRefreshRepo{accounts: []Account{{
+		ID:            8,
+		Status:        StatusActive,
+		OverloadUntil: ptrTimeForSchedulerTest(time.Now().Add(time.Hour)),
+		AccountGroups: []AccountGroup{{GroupID: 10}},
+	}}}
+	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, nil, nil)
+
+	err := svc.handleOutboxEvent(context.Background(), SchedulerOutboxEvent{
+		EventType: SchedulerOutboxEventFullRebuild,
+		Payload:   map[string]any{"refresh_account_metadata": true},
+	}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, cache.accounts, 1)
+	require.Equal(t, int64(8), cache.accounts[0].ID)
+}
+
+func ptrTimeForSchedulerTest(value time.Time) *time.Time {
+	return &value
+}
+
 func (c *schedulerFullRebuildTestCache) ListBuckets(context.Context) ([]SchedulerBucket, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
