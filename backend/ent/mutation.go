@@ -2280,60 +2280,67 @@ func (m *APIKeyMutation) ResetEdge(name string) error {
 // AccountMutation represents an operation that mutates the Account nodes in the graph.
 type AccountMutation struct {
 	config
-	op                          Op
-	typ                         string
-	id                          *int64
-	created_at                  *time.Time
-	updated_at                  *time.Time
-	deleted_at                  *time.Time
-	name                        *string
-	notes                       *string
-	platform                    *string
-	_type                       *string
-	credentials                 *map[string]interface{}
-	extra                       *map[string]interface{}
-	proxy_fallback_origin_id    *int64
-	addproxy_fallback_origin_id *int64
-	concurrency                 *int
-	addconcurrency              *int
-	load_factor                 *int
-	addload_factor              *int
-	priority                    *int
-	addpriority                 *int
-	rate_multiplier             *float64
-	addrate_multiplier          *float64
-	status                      *string
-	error_message               *string
-	last_used_at                *time.Time
-	expires_at                  *time.Time
-	auto_pause_on_expired       *bool
-	schedulable                 *bool
-	rate_limited_at             *time.Time
-	rate_limit_reset_at         *time.Time
-	overload_until              *time.Time
-	temp_unschedulable_until    *time.Time
-	temp_unschedulable_reason   *string
-	session_window_start        *time.Time
-	session_window_end          *time.Time
-	session_window_status       *string
-	quota_dimension             *account.QuotaDimension
-	clearedFields               map[string]struct{}
-	groups                      map[int64]struct{}
-	removedgroups               map[int64]struct{}
-	clearedgroups               bool
-	proxy                       *int64
-	clearedproxy                bool
-	parent                      *int64
-	clearedparent               bool
-	children                    map[int64]struct{}
-	removedchildren             map[int64]struct{}
-	clearedchildren             bool
-	usage_logs                  map[int64]struct{}
-	removedusage_logs           map[int64]struct{}
-	clearedusage_logs           bool
-	done                        bool
-	oldValue                    func(context.Context) (*Account, error)
-	predicates                  []predicate.Account
+	op                                            Op
+	typ                                           string
+	id                                            *int64
+	created_at                                    *time.Time
+	updated_at                                    *time.Time
+	deleted_at                                    *time.Time
+	name                                          *string
+	notes                                         *string
+	platform                                      *string
+	_type                                         *string
+	credentials                                   *map[string]interface{}
+	extra                                         *map[string]interface{}
+	proxy_fallback_origin_id                      *int64
+	addproxy_fallback_origin_id                   *int64
+	concurrency                                   *int
+	addconcurrency                                *int
+	load_factor                                   *int
+	addload_factor                                *int
+	priority                                      *int
+	addpriority                                   *int
+	rate_multiplier                               *float64
+	addrate_multiplier                            *float64
+	status                                        *string
+	error_message                                 *string
+	last_used_at                                  *time.Time
+	expires_at                                    *time.Time
+	auto_pause_on_expired                         *bool
+	schedulable                                   *bool
+	upstream_billing_guard_enabled                *bool
+	upstream_billing_guard_max_multiplier         *float64
+	addupstream_billing_guard_max_multiplier      *float64
+	upstream_billing_guard_blocked                *bool
+	upstream_billing_guard_observed_multiplier    *float64
+	addupstream_billing_guard_observed_multiplier *float64
+	upstream_billing_guard_evaluated_at           *time.Time
+	rate_limited_at                               *time.Time
+	rate_limit_reset_at                           *time.Time
+	overload_until                                *time.Time
+	temp_unschedulable_until                      *time.Time
+	temp_unschedulable_reason                     *string
+	session_window_start                          *time.Time
+	session_window_end                            *time.Time
+	session_window_status                         *string
+	quota_dimension                               *account.QuotaDimension
+	clearedFields                                 map[string]struct{}
+	groups                                        map[int64]struct{}
+	removedgroups                                 map[int64]struct{}
+	clearedgroups                                 bool
+	proxy                                         *int64
+	clearedproxy                                  bool
+	parent                                        *int64
+	clearedparent                                 bool
+	children                                      map[int64]struct{}
+	removedchildren                               map[int64]struct{}
+	clearedchildren                               bool
+	usage_logs                                    map[int64]struct{}
+	removedusage_logs                             map[int64]struct{}
+	clearedusage_logs                             bool
+	done                                          bool
+	oldValue                                      func(context.Context) (*Account, error)
+	predicates                                    []predicate.Account
 }
 
 var _ ent.Mutation = (*AccountMutation)(nil)
@@ -3396,6 +3403,253 @@ func (m *AccountMutation) ResetSchedulable() {
 	m.schedulable = nil
 }
 
+// SetUpstreamBillingGuardEnabled sets the "upstream_billing_guard_enabled" field.
+func (m *AccountMutation) SetUpstreamBillingGuardEnabled(b bool) {
+	m.upstream_billing_guard_enabled = &b
+}
+
+// UpstreamBillingGuardEnabled returns the value of the "upstream_billing_guard_enabled" field in the mutation.
+func (m *AccountMutation) UpstreamBillingGuardEnabled() (r bool, exists bool) {
+	v := m.upstream_billing_guard_enabled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpstreamBillingGuardEnabled returns the old "upstream_billing_guard_enabled" field's value of the Account entity.
+// If the Account object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AccountMutation) OldUpstreamBillingGuardEnabled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpstreamBillingGuardEnabled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpstreamBillingGuardEnabled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpstreamBillingGuardEnabled: %w", err)
+	}
+	return oldValue.UpstreamBillingGuardEnabled, nil
+}
+
+// ResetUpstreamBillingGuardEnabled resets all changes to the "upstream_billing_guard_enabled" field.
+func (m *AccountMutation) ResetUpstreamBillingGuardEnabled() {
+	m.upstream_billing_guard_enabled = nil
+}
+
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (m *AccountMutation) SetUpstreamBillingGuardMaxMultiplier(f float64) {
+	m.upstream_billing_guard_max_multiplier = &f
+	m.addupstream_billing_guard_max_multiplier = nil
+}
+
+// UpstreamBillingGuardMaxMultiplier returns the value of the "upstream_billing_guard_max_multiplier" field in the mutation.
+func (m *AccountMutation) UpstreamBillingGuardMaxMultiplier() (r float64, exists bool) {
+	v := m.upstream_billing_guard_max_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpstreamBillingGuardMaxMultiplier returns the old "upstream_billing_guard_max_multiplier" field's value of the Account entity.
+// If the Account object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AccountMutation) OldUpstreamBillingGuardMaxMultiplier(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpstreamBillingGuardMaxMultiplier is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpstreamBillingGuardMaxMultiplier requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpstreamBillingGuardMaxMultiplier: %w", err)
+	}
+	return oldValue.UpstreamBillingGuardMaxMultiplier, nil
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds f to the "upstream_billing_guard_max_multiplier" field.
+func (m *AccountMutation) AddUpstreamBillingGuardMaxMultiplier(f float64) {
+	if m.addupstream_billing_guard_max_multiplier != nil {
+		*m.addupstream_billing_guard_max_multiplier += f
+	} else {
+		m.addupstream_billing_guard_max_multiplier = &f
+	}
+}
+
+// AddedUpstreamBillingGuardMaxMultiplier returns the value that was added to the "upstream_billing_guard_max_multiplier" field in this mutation.
+func (m *AccountMutation) AddedUpstreamBillingGuardMaxMultiplier() (r float64, exists bool) {
+	v := m.addupstream_billing_guard_max_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetUpstreamBillingGuardMaxMultiplier resets all changes to the "upstream_billing_guard_max_multiplier" field.
+func (m *AccountMutation) ResetUpstreamBillingGuardMaxMultiplier() {
+	m.upstream_billing_guard_max_multiplier = nil
+	m.addupstream_billing_guard_max_multiplier = nil
+}
+
+// SetUpstreamBillingGuardBlocked sets the "upstream_billing_guard_blocked" field.
+func (m *AccountMutation) SetUpstreamBillingGuardBlocked(b bool) {
+	m.upstream_billing_guard_blocked = &b
+}
+
+// UpstreamBillingGuardBlocked returns the value of the "upstream_billing_guard_blocked" field in the mutation.
+func (m *AccountMutation) UpstreamBillingGuardBlocked() (r bool, exists bool) {
+	v := m.upstream_billing_guard_blocked
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpstreamBillingGuardBlocked returns the old "upstream_billing_guard_blocked" field's value of the Account entity.
+// If the Account object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AccountMutation) OldUpstreamBillingGuardBlocked(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpstreamBillingGuardBlocked is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpstreamBillingGuardBlocked requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpstreamBillingGuardBlocked: %w", err)
+	}
+	return oldValue.UpstreamBillingGuardBlocked, nil
+}
+
+// ResetUpstreamBillingGuardBlocked resets all changes to the "upstream_billing_guard_blocked" field.
+func (m *AccountMutation) ResetUpstreamBillingGuardBlocked() {
+	m.upstream_billing_guard_blocked = nil
+}
+
+// SetUpstreamBillingGuardObservedMultiplier sets the "upstream_billing_guard_observed_multiplier" field.
+func (m *AccountMutation) SetUpstreamBillingGuardObservedMultiplier(f float64) {
+	m.upstream_billing_guard_observed_multiplier = &f
+	m.addupstream_billing_guard_observed_multiplier = nil
+}
+
+// UpstreamBillingGuardObservedMultiplier returns the value of the "upstream_billing_guard_observed_multiplier" field in the mutation.
+func (m *AccountMutation) UpstreamBillingGuardObservedMultiplier() (r float64, exists bool) {
+	v := m.upstream_billing_guard_observed_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpstreamBillingGuardObservedMultiplier returns the old "upstream_billing_guard_observed_multiplier" field's value of the Account entity.
+// If the Account object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AccountMutation) OldUpstreamBillingGuardObservedMultiplier(ctx context.Context) (v *float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpstreamBillingGuardObservedMultiplier is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpstreamBillingGuardObservedMultiplier requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpstreamBillingGuardObservedMultiplier: %w", err)
+	}
+	return oldValue.UpstreamBillingGuardObservedMultiplier, nil
+}
+
+// AddUpstreamBillingGuardObservedMultiplier adds f to the "upstream_billing_guard_observed_multiplier" field.
+func (m *AccountMutation) AddUpstreamBillingGuardObservedMultiplier(f float64) {
+	if m.addupstream_billing_guard_observed_multiplier != nil {
+		*m.addupstream_billing_guard_observed_multiplier += f
+	} else {
+		m.addupstream_billing_guard_observed_multiplier = &f
+	}
+}
+
+// AddedUpstreamBillingGuardObservedMultiplier returns the value that was added to the "upstream_billing_guard_observed_multiplier" field in this mutation.
+func (m *AccountMutation) AddedUpstreamBillingGuardObservedMultiplier() (r float64, exists bool) {
+	v := m.addupstream_billing_guard_observed_multiplier
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearUpstreamBillingGuardObservedMultiplier clears the value of the "upstream_billing_guard_observed_multiplier" field.
+func (m *AccountMutation) ClearUpstreamBillingGuardObservedMultiplier() {
+	m.upstream_billing_guard_observed_multiplier = nil
+	m.addupstream_billing_guard_observed_multiplier = nil
+	m.clearedFields[account.FieldUpstreamBillingGuardObservedMultiplier] = struct{}{}
+}
+
+// UpstreamBillingGuardObservedMultiplierCleared returns if the "upstream_billing_guard_observed_multiplier" field was cleared in this mutation.
+func (m *AccountMutation) UpstreamBillingGuardObservedMultiplierCleared() bool {
+	_, ok := m.clearedFields[account.FieldUpstreamBillingGuardObservedMultiplier]
+	return ok
+}
+
+// ResetUpstreamBillingGuardObservedMultiplier resets all changes to the "upstream_billing_guard_observed_multiplier" field.
+func (m *AccountMutation) ResetUpstreamBillingGuardObservedMultiplier() {
+	m.upstream_billing_guard_observed_multiplier = nil
+	m.addupstream_billing_guard_observed_multiplier = nil
+	delete(m.clearedFields, account.FieldUpstreamBillingGuardObservedMultiplier)
+}
+
+// SetUpstreamBillingGuardEvaluatedAt sets the "upstream_billing_guard_evaluated_at" field.
+func (m *AccountMutation) SetUpstreamBillingGuardEvaluatedAt(t time.Time) {
+	m.upstream_billing_guard_evaluated_at = &t
+}
+
+// UpstreamBillingGuardEvaluatedAt returns the value of the "upstream_billing_guard_evaluated_at" field in the mutation.
+func (m *AccountMutation) UpstreamBillingGuardEvaluatedAt() (r time.Time, exists bool) {
+	v := m.upstream_billing_guard_evaluated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpstreamBillingGuardEvaluatedAt returns the old "upstream_billing_guard_evaluated_at" field's value of the Account entity.
+// If the Account object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AccountMutation) OldUpstreamBillingGuardEvaluatedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpstreamBillingGuardEvaluatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpstreamBillingGuardEvaluatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpstreamBillingGuardEvaluatedAt: %w", err)
+	}
+	return oldValue.UpstreamBillingGuardEvaluatedAt, nil
+}
+
+// ClearUpstreamBillingGuardEvaluatedAt clears the value of the "upstream_billing_guard_evaluated_at" field.
+func (m *AccountMutation) ClearUpstreamBillingGuardEvaluatedAt() {
+	m.upstream_billing_guard_evaluated_at = nil
+	m.clearedFields[account.FieldUpstreamBillingGuardEvaluatedAt] = struct{}{}
+}
+
+// UpstreamBillingGuardEvaluatedAtCleared returns if the "upstream_billing_guard_evaluated_at" field was cleared in this mutation.
+func (m *AccountMutation) UpstreamBillingGuardEvaluatedAtCleared() bool {
+	_, ok := m.clearedFields[account.FieldUpstreamBillingGuardEvaluatedAt]
+	return ok
+}
+
+// ResetUpstreamBillingGuardEvaluatedAt resets all changes to the "upstream_billing_guard_evaluated_at" field.
+func (m *AccountMutation) ResetUpstreamBillingGuardEvaluatedAt() {
+	m.upstream_billing_guard_evaluated_at = nil
+	delete(m.clearedFields, account.FieldUpstreamBillingGuardEvaluatedAt)
+}
+
 // SetRateLimitedAt sets the "rate_limited_at" field.
 func (m *AccountMutation) SetRateLimitedAt(t time.Time) {
 	m.rate_limited_at = &t
@@ -4136,7 +4390,7 @@ func (m *AccountMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *AccountMutation) Fields() []string {
-	fields := make([]string, 0, 31)
+	fields := make([]string, 0, 36)
 	if m.created_at != nil {
 		fields = append(fields, account.FieldCreatedAt)
 	}
@@ -4199,6 +4453,21 @@ func (m *AccountMutation) Fields() []string {
 	}
 	if m.schedulable != nil {
 		fields = append(fields, account.FieldSchedulable)
+	}
+	if m.upstream_billing_guard_enabled != nil {
+		fields = append(fields, account.FieldUpstreamBillingGuardEnabled)
+	}
+	if m.upstream_billing_guard_max_multiplier != nil {
+		fields = append(fields, account.FieldUpstreamBillingGuardMaxMultiplier)
+	}
+	if m.upstream_billing_guard_blocked != nil {
+		fields = append(fields, account.FieldUpstreamBillingGuardBlocked)
+	}
+	if m.upstream_billing_guard_observed_multiplier != nil {
+		fields = append(fields, account.FieldUpstreamBillingGuardObservedMultiplier)
+	}
+	if m.upstream_billing_guard_evaluated_at != nil {
+		fields = append(fields, account.FieldUpstreamBillingGuardEvaluatedAt)
 	}
 	if m.rate_limited_at != nil {
 		fields = append(fields, account.FieldRateLimitedAt)
@@ -4280,6 +4549,16 @@ func (m *AccountMutation) Field(name string) (ent.Value, bool) {
 		return m.AutoPauseOnExpired()
 	case account.FieldSchedulable:
 		return m.Schedulable()
+	case account.FieldUpstreamBillingGuardEnabled:
+		return m.UpstreamBillingGuardEnabled()
+	case account.FieldUpstreamBillingGuardMaxMultiplier:
+		return m.UpstreamBillingGuardMaxMultiplier()
+	case account.FieldUpstreamBillingGuardBlocked:
+		return m.UpstreamBillingGuardBlocked()
+	case account.FieldUpstreamBillingGuardObservedMultiplier:
+		return m.UpstreamBillingGuardObservedMultiplier()
+	case account.FieldUpstreamBillingGuardEvaluatedAt:
+		return m.UpstreamBillingGuardEvaluatedAt()
 	case account.FieldRateLimitedAt:
 		return m.RateLimitedAt()
 	case account.FieldRateLimitResetAt:
@@ -4351,6 +4630,16 @@ func (m *AccountMutation) OldField(ctx context.Context, name string) (ent.Value,
 		return m.OldAutoPauseOnExpired(ctx)
 	case account.FieldSchedulable:
 		return m.OldSchedulable(ctx)
+	case account.FieldUpstreamBillingGuardEnabled:
+		return m.OldUpstreamBillingGuardEnabled(ctx)
+	case account.FieldUpstreamBillingGuardMaxMultiplier:
+		return m.OldUpstreamBillingGuardMaxMultiplier(ctx)
+	case account.FieldUpstreamBillingGuardBlocked:
+		return m.OldUpstreamBillingGuardBlocked(ctx)
+	case account.FieldUpstreamBillingGuardObservedMultiplier:
+		return m.OldUpstreamBillingGuardObservedMultiplier(ctx)
+	case account.FieldUpstreamBillingGuardEvaluatedAt:
+		return m.OldUpstreamBillingGuardEvaluatedAt(ctx)
 	case account.FieldRateLimitedAt:
 		return m.OldRateLimitedAt(ctx)
 	case account.FieldRateLimitResetAt:
@@ -4527,6 +4816,41 @@ func (m *AccountMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetSchedulable(v)
 		return nil
+	case account.FieldUpstreamBillingGuardEnabled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpstreamBillingGuardEnabled(v)
+		return nil
+	case account.FieldUpstreamBillingGuardMaxMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpstreamBillingGuardMaxMultiplier(v)
+		return nil
+	case account.FieldUpstreamBillingGuardBlocked:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpstreamBillingGuardBlocked(v)
+		return nil
+	case account.FieldUpstreamBillingGuardObservedMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpstreamBillingGuardObservedMultiplier(v)
+		return nil
+	case account.FieldUpstreamBillingGuardEvaluatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpstreamBillingGuardEvaluatedAt(v)
+		return nil
 	case account.FieldRateLimitedAt:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -4620,6 +4944,12 @@ func (m *AccountMutation) AddedFields() []string {
 	if m.addrate_multiplier != nil {
 		fields = append(fields, account.FieldRateMultiplier)
 	}
+	if m.addupstream_billing_guard_max_multiplier != nil {
+		fields = append(fields, account.FieldUpstreamBillingGuardMaxMultiplier)
+	}
+	if m.addupstream_billing_guard_observed_multiplier != nil {
+		fields = append(fields, account.FieldUpstreamBillingGuardObservedMultiplier)
+	}
 	return fields
 }
 
@@ -4638,6 +4968,10 @@ func (m *AccountMutation) AddedField(name string) (ent.Value, bool) {
 		return m.AddedPriority()
 	case account.FieldRateMultiplier:
 		return m.AddedRateMultiplier()
+	case account.FieldUpstreamBillingGuardMaxMultiplier:
+		return m.AddedUpstreamBillingGuardMaxMultiplier()
+	case account.FieldUpstreamBillingGuardObservedMultiplier:
+		return m.AddedUpstreamBillingGuardObservedMultiplier()
 	}
 	return nil, false
 }
@@ -4682,6 +5016,20 @@ func (m *AccountMutation) AddField(name string, value ent.Value) error {
 		}
 		m.AddRateMultiplier(v)
 		return nil
+	case account.FieldUpstreamBillingGuardMaxMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddUpstreamBillingGuardMaxMultiplier(v)
+		return nil
+	case account.FieldUpstreamBillingGuardObservedMultiplier:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddUpstreamBillingGuardObservedMultiplier(v)
+		return nil
 	}
 	return fmt.Errorf("unknown Account numeric field %s", name)
 }
@@ -4713,6 +5061,12 @@ func (m *AccountMutation) ClearedFields() []string {
 	}
 	if m.FieldCleared(account.FieldExpiresAt) {
 		fields = append(fields, account.FieldExpiresAt)
+	}
+	if m.FieldCleared(account.FieldUpstreamBillingGuardObservedMultiplier) {
+		fields = append(fields, account.FieldUpstreamBillingGuardObservedMultiplier)
+	}
+	if m.FieldCleared(account.FieldUpstreamBillingGuardEvaluatedAt) {
+		fields = append(fields, account.FieldUpstreamBillingGuardEvaluatedAt)
 	}
 	if m.FieldCleared(account.FieldRateLimitedAt) {
 		fields = append(fields, account.FieldRateLimitedAt)
@@ -4778,6 +5132,12 @@ func (m *AccountMutation) ClearField(name string) error {
 		return nil
 	case account.FieldExpiresAt:
 		m.ClearExpiresAt()
+		return nil
+	case account.FieldUpstreamBillingGuardObservedMultiplier:
+		m.ClearUpstreamBillingGuardObservedMultiplier()
+		return nil
+	case account.FieldUpstreamBillingGuardEvaluatedAt:
+		m.ClearUpstreamBillingGuardEvaluatedAt()
 		return nil
 	case account.FieldRateLimitedAt:
 		m.ClearRateLimitedAt()
@@ -4876,6 +5236,21 @@ func (m *AccountMutation) ResetField(name string) error {
 		return nil
 	case account.FieldSchedulable:
 		m.ResetSchedulable()
+		return nil
+	case account.FieldUpstreamBillingGuardEnabled:
+		m.ResetUpstreamBillingGuardEnabled()
+		return nil
+	case account.FieldUpstreamBillingGuardMaxMultiplier:
+		m.ResetUpstreamBillingGuardMaxMultiplier()
+		return nil
+	case account.FieldUpstreamBillingGuardBlocked:
+		m.ResetUpstreamBillingGuardBlocked()
+		return nil
+	case account.FieldUpstreamBillingGuardObservedMultiplier:
+		m.ResetUpstreamBillingGuardObservedMultiplier()
+		return nil
+	case account.FieldUpstreamBillingGuardEvaluatedAt:
+		m.ResetUpstreamBillingGuardEvaluatedAt()
 		return nil
 	case account.FieldRateLimitedAt:
 		m.ResetRateLimitedAt()
@@ -21490,6 +21865,7 @@ type GroupMutation struct {
 	addpeak_rate_multiplier                 *float64
 	is_exclusive                            *bool
 	status                                  *string
+	duplicate_operation_id                  *string
 	platform                                *string
 	subscription_type                       *string
 	daily_limit_usd                         *float64
@@ -22165,6 +22541,55 @@ func (m *GroupMutation) OldStatus(ctx context.Context) (v string, err error) {
 // ResetStatus resets all changes to the "status" field.
 func (m *GroupMutation) ResetStatus() {
 	m.status = nil
+}
+
+// SetDuplicateOperationID sets the "duplicate_operation_id" field.
+func (m *GroupMutation) SetDuplicateOperationID(s string) {
+	m.duplicate_operation_id = &s
+}
+
+// DuplicateOperationID returns the value of the "duplicate_operation_id" field in the mutation.
+func (m *GroupMutation) DuplicateOperationID() (r string, exists bool) {
+	v := m.duplicate_operation_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldDuplicateOperationID returns the old "duplicate_operation_id" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldDuplicateOperationID(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldDuplicateOperationID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldDuplicateOperationID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldDuplicateOperationID: %w", err)
+	}
+	return oldValue.DuplicateOperationID, nil
+}
+
+// ClearDuplicateOperationID clears the value of the "duplicate_operation_id" field.
+func (m *GroupMutation) ClearDuplicateOperationID() {
+	m.duplicate_operation_id = nil
+	m.clearedFields[group.FieldDuplicateOperationID] = struct{}{}
+}
+
+// DuplicateOperationIDCleared returns if the "duplicate_operation_id" field was cleared in this mutation.
+func (m *GroupMutation) DuplicateOperationIDCleared() bool {
+	_, ok := m.clearedFields[group.FieldDuplicateOperationID]
+	return ok
+}
+
+// ResetDuplicateOperationID resets all changes to the "duplicate_operation_id" field.
+func (m *GroupMutation) ResetDuplicateOperationID() {
+	m.duplicate_operation_id = nil
+	delete(m.clearedFields, group.FieldDuplicateOperationID)
 }
 
 // SetPlatform sets the "platform" field.
@@ -24433,7 +24858,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 49)
+	fields := make([]string, 0, 50)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -24469,6 +24894,9 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.status != nil {
 		fields = append(fields, group.FieldStatus)
+	}
+	if m.duplicate_operation_id != nil {
+		fields = append(fields, group.FieldDuplicateOperationID)
 	}
 	if m.platform != nil {
 		fields = append(fields, group.FieldPlatform)
@@ -24613,6 +25041,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.IsExclusive()
 	case group.FieldStatus:
 		return m.Status()
+	case group.FieldDuplicateOperationID:
+		return m.DuplicateOperationID()
 	case group.FieldPlatform:
 		return m.Platform()
 	case group.FieldSubscriptionType:
@@ -24720,6 +25150,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldIsExclusive(ctx)
 	case group.FieldStatus:
 		return m.OldStatus(ctx)
+	case group.FieldDuplicateOperationID:
+		return m.OldDuplicateOperationID(ctx)
 	case group.FieldPlatform:
 		return m.OldPlatform(ctx)
 	case group.FieldSubscriptionType:
@@ -24886,6 +25318,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetStatus(v)
+		return nil
+	case group.FieldDuplicateOperationID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetDuplicateOperationID(v)
 		return nil
 	case group.FieldPlatform:
 		v, ok := value.(string)
@@ -25437,6 +25876,9 @@ func (m *GroupMutation) ClearedFields() []string {
 	if m.FieldCleared(group.FieldDescription) {
 		fields = append(fields, group.FieldDescription)
 	}
+	if m.FieldCleared(group.FieldDuplicateOperationID) {
+		fields = append(fields, group.FieldDuplicateOperationID)
+	}
 	if m.FieldCleared(group.FieldDailyLimitUsd) {
 		fields = append(fields, group.FieldDailyLimitUsd)
 	}
@@ -25495,6 +25937,9 @@ func (m *GroupMutation) ClearField(name string) error {
 		return nil
 	case group.FieldDescription:
 		m.ClearDescription()
+		return nil
+	case group.FieldDuplicateOperationID:
+		m.ClearDuplicateOperationID()
 		return nil
 	case group.FieldDailyLimitUsd:
 		m.ClearDailyLimitUsd()
@@ -25578,6 +26023,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldStatus:
 		m.ResetStatus()
+		return nil
+	case group.FieldDuplicateOperationID:
+		m.ResetDuplicateOperationID()
 		return nil
 	case group.FieldPlatform:
 		m.ResetPlatform()

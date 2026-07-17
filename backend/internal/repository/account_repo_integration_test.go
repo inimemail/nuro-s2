@@ -137,6 +137,38 @@ func (s *AccountRepoSuite) TestUpdate() {
 	s.Require().Equal("updated", got.Name)
 }
 
+func (s *AccountRepoSuite) TestUpdate_ClearsBillingGuardWhenAccountIdentityLeavesAPIKey() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:     "guard-identity-transition",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+	})
+	observed := 3.0
+	_, err := s.repo.sql.ExecContext(s.ctx, `
+		UPDATE accounts
+		SET upstream_billing_guard_enabled = TRUE,
+		    upstream_billing_guard_max_multiplier = 2.0,
+		    upstream_billing_guard_blocked = TRUE,
+		    upstream_billing_guard_observed_multiplier = $2,
+		    upstream_billing_guard_evaluated_at = NOW()
+		WHERE id = $1
+	`, account.ID, observed)
+	s.Require().NoError(err)
+
+	account, err = s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	account.Type = service.AccountTypeOAuth
+	s.Require().NoError(s.repo.Update(s.ctx, account))
+
+	updated, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().False(updated.UpstreamBillingGuardEnabled)
+	s.Require().False(updated.UpstreamBillingGuardBlocked)
+	s.Require().Nil(updated.UpstreamBillingGuardObservedMultiplier)
+	s.Require().Nil(updated.UpstreamBillingGuardEvaluatedAt)
+	s.Require().Equal(2.0, updated.UpstreamBillingGuardMaxMultiplier)
+}
+
 func (s *AccountRepoSuite) TestUpdate_SyncSchedulerSnapshotOnDisabled() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "sync-update", Status: service.StatusActive, Schedulable: true})
 	cacheRecorder := &schedulerCacheRecorder{}

@@ -197,7 +197,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if customUA != "" {
 		upstreamReq.Header.Set("user-agent", customUA)
 	}
-	if account.IsGrokOAuth() {
+	if account.IsGrokOAuth() && isGrokCLIProxyTarget(targetURL) {
 		applyGrokCLIHeaders(upstreamReq.Header)
 	} else if account.Platform == PlatformGrok {
 		upstreamReq.Header.Set("User-Agent", grokUpstreamUserAgent)

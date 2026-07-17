@@ -21,6 +21,7 @@ import type {
   CheckMixedChannelRequest,
   CheckMixedChannelResponse,
   UpstreamBillingProbeResult,
+  UpstreamBillingProbeSnapshot,
   UpstreamBillingProbeSettings
 } from '@/types'
 
@@ -865,6 +866,28 @@ export async function probeUpstreamBillingBatch(accountIds: number[]): Promise<U
   return data.results
 }
 
+export interface UpstreamBillingGuardSettings {
+  enabled: boolean
+  max_multiplier: number
+}
+
+export interface UpstreamBillingGuardResult {
+  account_id: number
+  account: Account
+  snapshot?: UpstreamBillingProbeSnapshot
+}
+
+export async function updateUpstreamBillingGuard(
+  id: number,
+  settings: UpstreamBillingGuardSettings
+): Promise<UpstreamBillingGuardResult> {
+  const { data } = await apiClient.put<UpstreamBillingGuardResult>(
+    `/admin/accounts/${id}/upstream-billing-guard`,
+    settings
+  )
+  return data
+}
+
 export const accountsAPI = {
   list,
   listWithEtag,
@@ -920,7 +943,8 @@ export const accountsAPI = {
   updateUpstreamBillingProbeSettings,
   setUpstreamBillingProbeEnabled,
   probeUpstreamBilling,
-  probeUpstreamBillingBatch
+  probeUpstreamBillingBatch,
+  updateUpstreamBillingGuard
 }
 
 export default accountsAPI

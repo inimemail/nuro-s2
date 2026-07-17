@@ -583,6 +583,9 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}
 		return nil, false, nil
 	}
+	if account.UpstreamBillingGuardBlocked {
+		return nil, false, nil
+	}
 	if IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) &&
 		!s.service.isOpenAIPromptCacheBoostAffinityHashUsableForAccount(sessionHash, account) {
 		if sessionHash != "" {

@@ -2335,6 +2335,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
 		}
 
+		if normalized, changed := normalizeCompletedImageGenerationStatus(message); changed {
+			message = normalized
+		}
 		originalMessage := message
 		originalEventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(originalMessage)
 		message, eventType, normalizedUnsafe := normalizeOpenAIWSUpstreamEventForSafety(originalMessage, originalEventType)
@@ -3372,6 +3375,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				)
 			}
 
+			if normalized, changed := normalizeCompletedImageGenerationStatus(upstreamMessage); changed {
+				upstreamMessage = normalized
+			}
 			originalUpstreamMessage := upstreamMessage
 			originalEventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(originalUpstreamMessage)
 			upstreamMessage, eventType, _ := normalizeOpenAIWSUpstreamEventForSafety(originalUpstreamMessage, originalEventType)
@@ -4598,6 +4604,9 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	if s.getOpenAIWSProtocolResolver().Resolve(account).Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 		return nil, nil
 	}
+	if account.UpstreamBillingGuardBlocked {
+		return nil, nil
+	}
 	if shouldClearStickySession(account, requestedModel) || !account.IsOpenAI() || !account.IsSchedulable() || !s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil
@@ -4619,6 +4628,9 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		latest, latestErr := s.accountRepo.GetByID(ctx, account.ID)
 		if latestErr != nil || latest == nil {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+			return nil, nil
+		}
+		if latest.UpstreamBillingGuardBlocked {
 			return nil, nil
 		}
 		if shouldClearStickySession(latest, requestedModel) || !latest.IsOpenAI() || !latest.IsSchedulable() || !s.latestOpenAIAccountMatchesGroup(ctx, latest, groupID) {

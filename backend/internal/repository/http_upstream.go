@@ -2,6 +2,7 @@ package repository
 
 import (
 	"bufio"
+	"bytes"
 	"compress/flate"
 	"compress/gzip"
 	"context"
@@ -54,14 +55,17 @@ const (
 	// 超出后会淘汰最久未使用的客户端
 	defaultMaxUpstreamClients = 5000
 	// defaultClientIdleTTLSeconds: 默认客户端空闲回收阈值（15分钟）
-	defaultClientIdleTTLSeconds = 900
+	defaultClientIdleTTLSeconds               = 900
+	upstreamBillingProbeResponseHeaderTimeout = 10 * time.Second
 	// OpenAI HTTP/2 代理回退策略默认值
 	defaultOpenAIHTTP2FallbackErrorThreshold = 2
 	defaultOpenAIHTTP2FallbackWindow         = 60 * time.Second
 	defaultOpenAIHTTP2FallbackTTL            = 10 * time.Minute
 	grokCLIProxyHost                         = "cli-chat-proxy.grok.com"
+	grokOfficialAPIHost                      = "api.x.ai"
 	grokCLIStableVersion                     = "0.2.93"
 	grokCLIVersionOverride                   = "XAI_GROK_CLI_VERSION"
+	grokFallbackBodyLimit                    = 64 << 10
 )
 
 const (
@@ -69,6 +73,7 @@ const (
 	upstreamProtocolModeOpenAIH1         = "openai_h1"
 	upstreamProtocolModeOpenAIH2         = "openai_h2"
 	upstreamProtocolModeOpenAIH1Fallback = "openai_h1_fallback"
+	upstreamProtocolModeBillingProbe     = "billing_probe"
 )
 
 var errUpstreamClientLimitReached = errors.New("upstream client cache limit reached")
@@ -183,7 +188,11 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 
 	// 执行请求
 	upstreamStart := time.Now()
-	resp, err := httpClientForUpstreamRequest(entry.client, req).Do(req)
+	client := httpClientForUpstreamRequest(entry.client, req)
+	resp, err := client.Do(req)
+	if err == nil {
+		resp = performGrokAccessDeniedFallback(client, req, resp)
+	}
 	service.RecordOpsLatency(req.Context(), service.OpsUpstreamHeaderMsKey, time.Since(upstreamStart))
 	if err != nil {
 		s.recordOpenAIHTTP2Failure(profile, entry.protocolMode, entry.proxyKey, err)
@@ -247,7 +256,11 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	}
 
 	upstreamStart := time.Now()
-	resp, err := httpClientForUpstreamRequest(entry.client, req).Do(req)
+	client := httpClientForUpstreamRequest(entry.client, req)
+	resp, err := client.Do(req)
+	if err == nil {
+		resp = performGrokAccessDeniedFallback(client, req, resp)
+	}
 	service.RecordOpsLatency(req.Context(), service.OpsUpstreamHeaderMsKey, time.Since(upstreamStart))
 	if err != nil {
 		atomic.AddInt64(&entry.inFlight, -1)
@@ -275,6 +288,88 @@ func httpClientForUpstreamRequest(client *http.Client, req *http.Request) *http.
 	clone := *client
 	clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &clone
+}
+
+func performGrokAccessDeniedFallback(client *http.Client, req *http.Request, resp *http.Response) *http.Response {
+	if client == nil || !isGrokCLIAccessDeniedFallbackCandidate(req, resp) {
+		return resp
+	}
+	body, ok := bufferSmallResponseBody(resp, grokFallbackBodyLimit)
+	if !ok || !bytes.Contains(bytes.ToLower(body), []byte("access denied")) {
+		return resp
+	}
+	fallbackReq, err := newGrokOfficialAPIFallbackRequest(req, resp)
+	if err != nil {
+		return resp
+	}
+	fallbackResp, err := client.Do(fallbackReq)
+	if err != nil || fallbackResp == nil || fallbackResp.StatusCode < http.StatusOK || fallbackResp.StatusCode >= http.StatusMultipleChoices {
+		if fallbackResp != nil && fallbackResp.Body != nil {
+			_ = fallbackResp.Body.Close()
+		}
+		return resp
+	}
+	if resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	slog.Warn("grok_cli_access_denied_api_fallback_succeeded", "method", req.Method, "path", req.URL.EscapedPath())
+	return fallbackResp
+}
+
+func isGrokCLIAccessDeniedFallbackCandidate(req *http.Request, resp *http.Response) bool {
+	return req != nil && req.URL != nil && req.GetBody != nil && resp != nil &&
+		resp.StatusCode == http.StatusForbidden &&
+		strings.EqualFold(strings.TrimSpace(req.URL.Hostname()), grokCLIProxyHost) &&
+		strings.EqualFold(strings.TrimSpace(req.Header.Get("X-XAI-Token-Auth")), "xai-grok-cli") &&
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.Header.Get("Authorization"))), "bearer ")
+}
+
+func newGrokOfficialAPIFallbackRequest(req *http.Request, resp *http.Response) (*http.Request, error) {
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, err
+	}
+	fallbackReq := req.Clone(req.Context())
+	fallbackReq.Body = body
+	urlCopy := *req.URL
+	fallbackReq.URL = &urlCopy
+	fallbackReq.URL.Scheme = "https"
+	fallbackReq.URL.Host = grokOfficialAPIHost
+	fallbackReq.Host = ""
+	fallbackReq.RequestURI = ""
+	// Only carry protocol headers that are meaningful to the official API.
+	// Account-specific relay headers must not cross from the CLI proxy to x.ai.
+	fallbackReq.Header = make(http.Header)
+	for _, header := range []string{"Authorization", "Accept", "Content-Type", "Content-Encoding", "Idempotency-Key"} {
+		for _, value := range req.Header.Values(header) {
+			fallbackReq.Header.Add(header, value)
+		}
+	}
+	if fallbackReq.Header.Get("X-Grok-Conv-Id") == "" && resp != nil {
+		fallbackReq.Header.Set("X-Grok-Conv-Id", strings.TrimSpace(resp.Header.Get("X-Grok-Conv-Id")))
+	}
+	return fallbackReq, nil
+}
+
+func bufferSmallResponseBody(resp *http.Response, limit int64) ([]byte, bool) {
+	if resp == nil || resp.Body == nil || limit <= 0 {
+		return nil, false
+	}
+	original := resp.Body
+	body, err := io.ReadAll(io.LimitReader(original, limit+1))
+	if err != nil || int64(len(body)) > limit {
+		resp.Body = &prefixedReadCloser{Reader: io.MultiReader(bytes.NewReader(body), original), Closer: original}
+		return nil, false
+	}
+	_ = original.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	return body, true
+}
+
+type prefixedReadCloser struct {
+	io.Reader
+	io.Closer
 }
 
 func applyGrokCLIProxyHeaders(req *http.Request) {
@@ -316,13 +411,14 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	}
 	settings := s.resolvePoolSettings(isolation, accountConcurrency)
 	settings = s.applyProfilePoolSettings(settings, upstreamProfile)
+	protocolMode := s.resolveProtocolMode(upstreamProfile, proxyKey, parsedProxy)
 	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀，并包含 profile，避免同账号切换模板后复用旧 Transport。
 	profileKey := "none"
 	if profile != nil {
 		profileKey = profile.CacheKey()
 	}
-	cacheKey := "tls:" + profileKey + ":" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault)
-	poolKey := buildPoolKey(settings, upstreamProtocolModeDefault) + ":tls"
+	cacheKey := "tls:" + profileKey + ":" + buildCacheKey(isolation, proxyKey, accountID, protocolMode)
+	poolKey := buildPoolKey(settings, protocolMode) + ":tls"
 
 	now := time.Now()
 	nowUnix := now.UnixNano()
@@ -724,6 +820,14 @@ func (s *httpUpstreamService) resolvePoolSettings(isolation string, accountConcu
 }
 
 func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, profile service.HTTPUpstreamProfile) poolSettings {
+	if profile == service.HTTPUpstreamProfileBillingProbe {
+		settings.maxIdleConns = 4
+		settings.maxIdleConnsPerHost = 2
+		settings.maxConnsPerHost = 2
+		settings.idleConnTimeout = 30 * time.Second
+		settings.responseHeaderTimeout = upstreamBillingProbeResponseHeaderTimeout
+		return settings
+	}
 	if profile != service.HTTPUpstreamProfileOpenAI {
 		return settings
 	}
@@ -808,6 +912,9 @@ func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
 }
 
 func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamProfile, proxyKey string, parsedProxy *url.URL) string {
+	if profile == service.HTTPUpstreamProfileBillingProbe {
+		return upstreamProtocolModeBillingProbe
+	}
 	if profile != service.HTTPUpstreamProfileOpenAI {
 		return upstreamProtocolModeDefault
 	}

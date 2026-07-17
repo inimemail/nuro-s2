@@ -12,6 +12,7 @@ vi.mock('@/api/client', () => ({
 
 import {
   bindUserAuthIdentity,
+  batchUpdateLimits,
   type AdminBindAuthIdentityRequest,
   type AdminBoundAuthIdentity,
 } from '@/api/admin/users'
@@ -113,5 +114,17 @@ describe('admin users api auth identity binding', () => {
   it('keeps bind auth identity request and response types aligned with the backend contract', () => {
     expect(requestContractExact).toBe(true)
     expect(responseContractExact).toBe(true)
+  })
+})
+
+describe('admin users api batch limits', () => {
+  beforeEach(() => post.mockReset())
+
+  it('preserves explicit zero values and all-users scope', async () => {
+    post.mockResolvedValue({ data: { affected: 4 } })
+    await expect(batchUpdateLimits({ user_ids: [], all: true, concurrency: 0, rpm_limit: 0 })).resolves.toEqual({ affected: 4 })
+    expect(post).toHaveBeenCalledWith('/admin/users/batch-limits', {
+      user_ids: [], all: true, concurrency: 0, rpm_limit: 0
+    })
   })
 })

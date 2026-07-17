@@ -362,7 +362,7 @@ func (h *GrokOAuthHandler) createAccountFromSSOToken(
 	if err != nil {
 		return false, GrokSSOToOAuthItemResult{Index: index, Error: grokSSOImportErrorMessage(err)}
 	}
-	credentials := service.MergeCredentials(cloneGrokSSOMap(req.Credentials), h.grokOAuthService.BuildAccountCredentials(tokenInfo))
+	credentials := grokSSOImportCredentials(h.grokOAuthService.BuildAccountCredentials(tokenInfo), req.Credentials)
 	name := grokSSOImportAccountName(req.Name, tokenInfo, index, total)
 	expiresAt, autoPause := grokSSOImportExpiry(req.ExpiresAt, req.AutoPauseOnExpired, tokenInfo)
 	account, err := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
@@ -376,6 +376,14 @@ func (h *GrokOAuthHandler) createAccountFromSSOToken(
 		return false, GrokSSOToOAuthItemResult{Index: index, Name: name, Email: tokenInfo.Email, Error: grokSSOImportErrorMessage(err)}
 	}
 	return true, GrokSSOToOAuthItemResult{Index: index, Name: name, Email: tokenInfo.Email, Account: dto.AccountFromService(account)}
+}
+
+func grokSSOImportCredentials(built map[string]any, request map[string]any) map[string]any {
+	credentials := service.MergeCredentials(cloneGrokSSOMap(request), built)
+	if baseURL, ok := request["base_url"].(string); ok && strings.TrimSpace(baseURL) != "" {
+		credentials["base_url"] = strings.TrimSpace(baseURL)
+	}
+	return credentials
 }
 
 func normalizeGrokSSOImportTokens(tokens []string, single string) []string {

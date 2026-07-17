@@ -41,7 +41,7 @@ const (
 
 var (
 	oauthEndpointAllowedHosts = []string{"x.ai", "*.x.ai"}
-	baseURLAllowedHosts       = []string{"api.x.ai", "cli-chat-proxy.grok.com"}
+	baseURLAllowedHosts       = []string{"api.x.ai", "*.api.x.ai", "cli-chat-proxy.grok.com"}
 )
 
 type OAuthSession struct {
@@ -322,6 +322,17 @@ func normalizeKnownBaseURLPath(raw string) (string, error) {
 	parsed.Path = path
 	parsed.RawPath = ""
 	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+// IsParseableBaseURL is a read-path guard for legacy stored credentials. Full
+// trust validation still happens when the outbound URL is built.
+func IsParseableBaseURL(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	parsed, err := url.Parse(trimmed)
+	return err == nil && parsed.Scheme != "" && parsed.Host != ""
 }
 
 func AllowUnsafeURLOverrides() bool {

@@ -27,14 +27,15 @@ const (
 	UpstreamBillingProbeEnabledExtraKey = "upstream_billing_probe_enabled"
 	UpstreamBillingProbeMaxBatchSize    = 20
 
-	upstreamBillingProbeDefaultIntervalMinutes = 30
-	upstreamBillingProbeMinIntervalMinutes     = 5
-	upstreamBillingProbeMaxIntervalMinutes     = 24 * 60
-	upstreamBillingProbeCycleInterval          = time.Minute
+	upstreamBillingProbeDefaultIntervalSeconds = 5
+	upstreamBillingProbeMinIntervalSeconds     = 1
+	upstreamBillingProbeMaxIntervalSeconds     = 36000
 	upstreamBillingProbeRequestTimeout         = 10 * time.Second
 	upstreamBillingProbeMaxBodyBytes           = 64 * 1024
 	upstreamBillingProbeConcurrency            = 4
 	upstreamBillingProbeMaxBackoff             = 24 * time.Hour
+	upstreamBillingProbeMinFailureBackoff      = 5 * time.Second
+	upstreamBillingProbeSettingsPollInterval   = 5 * time.Second
 	upstreamBillingProbeLeaderLockKey          = "upstream:billing:probe:leader"
 )
 
@@ -48,11 +49,37 @@ var (
 	ErrUpstreamBillingProbeIdentityChanged = infraerrors.Conflict(
 		"UPSTREAM_BILLING_PROBE_IDENTITY_CHANGED", "account identity changed during upstream billing probe; retry the probe",
 	)
+	ErrUpstreamBillingGuardRequiresAutoProbe = infraerrors.BadRequest(
+		"UPSTREAM_BILLING_GUARD_REQUIRES_AUTO_PROBE", "enable account automatic billing probe before enabling the rate guard",
+	)
+	ErrUpstreamBillingProbeRequiredByGuard = infraerrors.Conflict(
+		"UPSTREAM_BILLING_PROBE_REQUIRED_BY_GUARD", "disable the upstream billing guard before disabling automatic probe",
+	)
+	ErrInvalidUpstreamBillingProbeEnabled = infraerrors.BadRequest(
+		"INVALID_UPSTREAM_BILLING_PROBE_ENABLED", "upstream_billing_probe_enabled must be a boolean",
+	)
 )
 
 type UpstreamBillingProbeSettings struct {
 	Enabled         bool `json:"enabled"`
-	IntervalMinutes int  `json:"interval_minutes"`
+	IntervalSeconds int  `json:"interval_seconds"`
+}
+
+type upstreamBillingProbeSettingsStorage struct {
+	Enabled         bool `json:"enabled"`
+	IntervalSeconds int  `json:"interval_seconds,omitempty"`
+	IntervalMinutes int  `json:"interval_minutes,omitempty"`
+}
+
+type UpstreamBillingGuardSettings struct {
+	Enabled       bool    `json:"enabled"`
+	MaxMultiplier float64 `json:"max_multiplier"`
+}
+
+type UpstreamBillingGuardResult struct {
+	AccountID int64                         `json:"account_id"`
+	Account   *Account                      `json:"account,omitempty"`
+	Snapshot  *UpstreamBillingProbeSnapshot `json:"snapshot,omitempty"`
 }
 
 type UpstreamBillingProbeSnapshot struct {
@@ -91,7 +118,15 @@ type upstreamBillingProbeResponse struct {
 }
 
 type upstreamBillingProbeSnapshotWriter interface {
-	UpdateUpstreamBillingProbeSnapshot(context.Context, *Account, *UpstreamBillingProbeSnapshot) error
+	UpdateUpstreamBillingProbeSnapshot(context.Context, *Account, *UpstreamBillingProbeSnapshot, *float64) (bool, error)
+}
+
+type upstreamBillingProbeEnabledWriter interface {
+	UpdateUpstreamBillingProbeEnabled(context.Context, int64, bool) error
+}
+
+type upstreamBillingGuardWriter interface {
+	UpdateUpstreamBillingGuard(context.Context, int64, bool, float64) (*Account, bool, error)
 }
 
 type UpstreamBillingProbeService struct {
@@ -102,6 +137,7 @@ type UpstreamBillingProbeService struct {
 	parentCtx          context.Context
 	parentCancel       context.CancelFunc
 	wg                 sync.WaitGroup
+	wakeCh             chan struct{}
 	startMu            sync.Mutex
 	started            bool
 	stopped            bool
@@ -115,7 +151,8 @@ func NewUpstreamBillingProbeService(repo AccountRepository, tests *AccountTestSe
 	ctx, cancel := context.WithCancel(context.Background())
 	return &UpstreamBillingProbeService{
 		accountRepo: repo, accountTestService: tests, settingService: settings,
-		parentCtx: ctx, parentCancel: cancel, probeSlots: make(chan struct{}, upstreamBillingProbeConcurrency), now: time.Now,
+		parentCtx: ctx, parentCancel: cancel, wakeCh: make(chan struct{}, 1),
+		probeSlots: make(chan struct{}, upstreamBillingProbeConcurrency), now: time.Now,
 	}
 }
 
@@ -127,7 +164,7 @@ func ProvideUpstreamBillingProbeService(repo AccountRepository, tests *AccountTe
 }
 
 func defaultUpstreamBillingProbeSettings() *UpstreamBillingProbeSettings {
-	return &UpstreamBillingProbeSettings{Enabled: false, IntervalMinutes: upstreamBillingProbeDefaultIntervalMinutes}
+	return &UpstreamBillingProbeSettings{Enabled: false, IntervalSeconds: upstreamBillingProbeDefaultIntervalSeconds}
 }
 
 func (s *SettingService) GetUpstreamBillingProbeSettings(ctx context.Context) (*UpstreamBillingProbeSettings, error) {
@@ -145,24 +182,34 @@ func (s *SettingService) GetUpstreamBillingProbeSettings(ctx context.Context) (*
 	if strings.TrimSpace(raw) == "" {
 		return defaults, nil
 	}
-	settings := *defaults
-	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+	var stored upstreamBillingProbeSettingsStorage
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return nil, fmt.Errorf("parse upstream billing probe settings: %w", err)
 	}
-	if settings.IntervalMinutes == 0 {
-		settings.IntervalMinutes = defaults.IntervalMinutes
+	intervalSeconds := stored.IntervalSeconds
+	if intervalSeconds == 0 && stored.IntervalMinutes > 0 {
+		intervalSeconds = stored.IntervalMinutes * 60
 	}
-	return &settings, nil
+	if intervalSeconds == 0 {
+		intervalSeconds = defaults.IntervalSeconds
+	}
+	if intervalSeconds < upstreamBillingProbeMinIntervalSeconds {
+		intervalSeconds = upstreamBillingProbeMinIntervalSeconds
+	}
+	if intervalSeconds > upstreamBillingProbeMaxIntervalSeconds {
+		intervalSeconds = upstreamBillingProbeMaxIntervalSeconds
+	}
+	return &UpstreamBillingProbeSettings{Enabled: stored.Enabled, IntervalSeconds: intervalSeconds}, nil
 }
 
 func (s *SettingService) SetUpstreamBillingProbeSettings(ctx context.Context, settings *UpstreamBillingProbeSettings) error {
 	if s == nil || s.settingRepo == nil {
 		return ErrUpstreamBillingProbeUnavailable
 	}
-	if settings == nil || settings.IntervalMinutes < upstreamBillingProbeMinIntervalMinutes || settings.IntervalMinutes > upstreamBillingProbeMaxIntervalMinutes {
-		return infraerrors.BadRequest("INVALID_UPSTREAM_BILLING_PROBE_INTERVAL", "interval_minutes must be between 5 and 1440")
+	if settings == nil || settings.IntervalSeconds < upstreamBillingProbeMinIntervalSeconds || settings.IntervalSeconds > upstreamBillingProbeMaxIntervalSeconds {
+		return infraerrors.BadRequest("INVALID_UPSTREAM_BILLING_PROBE_INTERVAL", "interval_seconds must be between 1 and 36000")
 	}
-	raw, err := json.Marshal(settings)
+	raw, err := json.Marshal(upstreamBillingProbeSettingsStorage{Enabled: settings.Enabled, IntervalSeconds: settings.IntervalSeconds})
 	if err != nil {
 		return err
 	}
@@ -200,15 +247,54 @@ func (s *UpstreamBillingProbeService) Stop() {
 
 func (s *UpstreamBillingProbeService) runLoop() {
 	defer s.wg.Done()
-	ticker := time.NewTicker(upstreamBillingProbeCycleInterval)
-	defer ticker.Stop()
+	nextProbeAt := time.Time{}
 	for {
+		settings, settingsErr := s.GetSettings(s.parentCtx)
+		if settingsErr == nil && settings != nil && settings.Enabled {
+			now := s.currentTime()
+			if nextProbeAt.IsZero() || !now.Before(nextProbeAt) {
+				_ = s.RunDue(s.parentCtx)
+				nextProbeAt = s.currentTime().Add(time.Duration(settings.IntervalSeconds) * time.Second)
+			}
+		}
+
+		wait := upstreamBillingProbeSettingsPollInterval
+		if settingsErr == nil && settings != nil && settings.Enabled && !nextProbeAt.IsZero() {
+			until := nextProbeAt.Sub(s.currentTime())
+			if until <= 0 {
+				continue
+			}
+			if until < wait {
+				wait = until
+			}
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-s.parentCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return
-		case <-ticker.C:
-			_ = s.RunDue(s.parentCtx)
+		case <-timer.C:
+		case <-s.wakeCh:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			nextProbeAt = time.Time{}
 		}
+	}
+}
+
+func (s *UpstreamBillingProbeService) signalWake() {
+	if s == nil || s.wakeCh == nil {
+		return
+	}
+	select {
+	case s.wakeCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -232,7 +318,11 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 		return err
 	}
 	now := s.currentTime()
-	due := make([]int64, 0, len(accounts))
+	type dueProbe struct {
+		accountID int64
+		nextAt    time.Time
+	}
+	due := make([]dueProbe, 0, len(accounts))
 	for i := range accounts {
 		account := &accounts[i]
 		if !isUpstreamBillingProbeAccount(account) || !account.IsActive() {
@@ -240,21 +330,44 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 		}
 		snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
 		if snapshot == nil || snapshot.NextProbeAt.IsZero() || !now.Before(snapshot.NextProbeAt) {
-			due = append(due, account.ID)
+			nextAt := time.Time{}
+			if snapshot != nil {
+				nextAt = snapshot.NextProbeAt
+			}
+			due = append(due, dueProbe{accountID: account.ID, nextAt: nextAt})
 		}
 	}
-	sort.Slice(due, func(i, j int) bool { return due[i] < due[j] })
-	if len(due) > UpstreamBillingProbeMaxBatchSize {
-		due = due[:UpstreamBillingProbeMaxBatchSize]
-	}
+	sort.Slice(due, func(i, j int) bool {
+		if due[i].nextAt.Equal(due[j].nextAt) {
+			return due[i].accountID < due[j].accountID
+		}
+		return due[i].nextAt.Before(due[j].nextAt)
+	})
+	jobs := make(chan int64)
 	var group errgroup.Group
-	for _, id := range due {
-		id := id
+	workerCount := upstreamBillingProbeConcurrency
+	if len(due) < workerCount {
+		workerCount = len(due)
+	}
+	for i := 0; i < workerCount; i++ {
 		group.Go(func() error {
-			_, _ = s.probeScheduledAccount(ctx, id, settings.IntervalMinutes)
+			for id := range jobs {
+				_, _ = s.probeScheduledAccount(ctx, id, settings.IntervalSeconds)
+			}
 			return nil
 		})
 	}
+	group.Go(func() error {
+		defer close(jobs)
+		for _, item := range due {
+			select {
+			case jobs <- item.accountID:
+			case <-ctx.Done():
+				return nil
+			}
+		}
+		return nil
+	})
 	return group.Wait()
 }
 
@@ -269,7 +382,11 @@ func (s *UpstreamBillingProbeService) UpdateSettings(ctx context.Context, settin
 	if s == nil || s.settingService == nil {
 		return ErrUpstreamBillingProbeUnavailable
 	}
-	return s.settingService.SetUpstreamBillingProbeSettings(ctx, settings)
+	if err := s.settingService.SetUpstreamBillingProbeSettings(ctx, settings); err != nil {
+		return err
+	}
+	s.signalWake()
+	return nil
 }
 
 func (s *UpstreamBillingProbeService) SetAccountEnabled(ctx context.Context, id int64, enabled bool) error {
@@ -283,7 +400,52 @@ func (s *UpstreamBillingProbeService) SetAccountEnabled(ctx context.Context, id 
 	if !isUpstreamBillingProbeAccount(account) {
 		return ErrUpstreamBillingProbeAccountInvalid
 	}
-	return s.accountRepo.UpdateExtra(ctx, id, map[string]any{UpstreamBillingProbeEnabledExtraKey: enabled})
+	writer, ok := s.accountRepo.(upstreamBillingProbeEnabledWriter)
+	if !ok {
+		return ErrUpstreamBillingProbeUnavailable
+	}
+	if err := writer.UpdateUpstreamBillingProbeEnabled(ctx, id, enabled); err != nil {
+		return err
+	}
+	s.signalWake()
+	return nil
+}
+
+func (s *UpstreamBillingProbeService) UpdateGuard(ctx context.Context, id int64, settings UpstreamBillingGuardSettings) (*UpstreamBillingGuardResult, error) {
+	if s == nil || s.accountRepo == nil {
+		return nil, ErrUpstreamBillingProbeUnavailable
+	}
+	if math.IsNaN(settings.MaxMultiplier) || math.IsInf(settings.MaxMultiplier, 0) || settings.MaxMultiplier < 0 {
+		return nil, infraerrors.BadRequest("INVALID_UPSTREAM_BILLING_GUARD_MULTIPLIER", "max_multiplier must be a finite number greater than or equal to 0")
+	}
+	account, err := s.accountRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !isUpstreamBillingProbeAccount(account) {
+		return nil, ErrUpstreamBillingProbeAccountInvalid
+	}
+	autoProbeEnabled, _ := account.Extra[UpstreamBillingProbeEnabledExtraKey].(bool)
+	if settings.Enabled && !autoProbeEnabled {
+		return nil, ErrUpstreamBillingGuardRequiresAutoProbe
+	}
+	writer, ok := s.accountRepo.(upstreamBillingGuardWriter)
+	if !ok {
+		return nil, ErrUpstreamBillingProbeUnavailable
+	}
+	updated, _, err := writer.UpdateUpstreamBillingGuard(ctx, id, settings.Enabled, settings.MaxMultiplier)
+	if err != nil {
+		return nil, err
+	}
+	result := &UpstreamBillingGuardResult{AccountID: id, Account: updated}
+	if settings.Enabled && updated.UpstreamBillingGuardObservedMultiplier == nil {
+		snapshot, probeErr := s.ProbeAccount(ctx, id)
+		if probeErr == nil {
+			result.Snapshot = snapshot
+			result.Account, _ = s.accountRepo.GetByID(ctx, id)
+		}
+	}
+	return result, nil
 }
 
 func (s *UpstreamBillingProbeService) ProbeAccount(ctx context.Context, id int64) (*UpstreamBillingProbeSnapshot, error) {
@@ -308,7 +470,7 @@ func (s *UpstreamBillingProbeService) ProbeAccount(ctx context.Context, id int64
 		if !isUpstreamBillingProbeAccount(account) {
 			return nil, ErrUpstreamBillingProbeAccountInvalid
 		}
-		return s.probe(ctx, account, settings.IntervalMinutes)
+		return s.probe(ctx, account, settings.IntervalSeconds)
 	})
 	if err != nil {
 		return nil, err
@@ -317,8 +479,8 @@ func (s *UpstreamBillingProbeService) ProbeAccount(ctx context.Context, id int64
 	return snapshot, nil
 }
 
-func (s *UpstreamBillingProbeService) probeScheduledAccount(ctx context.Context, id int64, intervalMinutes int) (*UpstreamBillingProbeSnapshot, error) {
-	value, err, _ := s.probeGroup.Do("scheduled:"+strconv.FormatInt(id, 10), func() (any, error) {
+func (s *UpstreamBillingProbeService) probeScheduledAccount(ctx context.Context, id int64, intervalSeconds int) (*UpstreamBillingProbeSnapshot, error) {
+	value, err, _ := s.probeGroup.Do(strconv.FormatInt(id, 10), func() (any, error) {
 		select {
 		case s.probeSlots <- struct{}{}:
 			defer func() { <-s.probeSlots }()
@@ -336,7 +498,7 @@ func (s *UpstreamBillingProbeService) probeScheduledAccount(ctx context.Context,
 		if snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra); snapshot != nil && !snapshot.NextProbeAt.IsZero() && s.currentTime().Before(snapshot.NextProbeAt) {
 			return nil, nil
 		}
-		return s.probe(ctx, account, intervalMinutes)
+		return s.probe(ctx, account, intervalSeconds)
 	})
 	if err != nil || value == nil {
 		return nil, err
@@ -368,14 +530,14 @@ func (s *UpstreamBillingProbeService) ProbeAccounts(ctx context.Context, ids []i
 	return out
 }
 
-func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Account, intervalMinutes int) (*UpstreamBillingProbeSnapshot, error) {
+func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Account, intervalSeconds int) (*UpstreamBillingProbeSnapshot, error) {
 	now := s.currentTime().UTC()
 	if s.accountTestService == nil || s.accountTestService.httpUpstream == nil {
-		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "transport_unavailable")
+		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "transport_unavailable")
 	}
 	apiKey := account.GetOpenAIApiKey()
 	if apiKey == "" {
-		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "missing_api_key")
+		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "missing_api_key")
 	}
 	baseURL := account.GetOpenAIBaseURL()
 	if baseURL == "" {
@@ -383,7 +545,7 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 	}
 	normalized, err := s.accountTestService.validateUpstreamBaseURL(baseURL)
 	if err != nil {
-		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "invalid_base_url")
+		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "invalid_base_url")
 	}
 	proxyURL := ""
 	if account.ProxyID != nil {
@@ -396,9 +558,9 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 	defer cancel()
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, buildOpenAIEndpointURL(normalized, "/v1/sub2api/billing"), bytes.NewReader(nil))
 	if err != nil {
-		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "request_build_failed")
+		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "request_build_failed")
 	}
-	reqCtx := WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI)
+	reqCtx := WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileBillingProbe)
 	req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(reqCtx))
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -409,39 +571,43 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 	}
 	resp, err := s.accountTestService.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, tlsProfile)
 	if err != nil {
-		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "request_failed")
+		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "request_failed")
 	}
 	if resp == nil || resp.Body == nil {
-		return s.persistFailure(ctx, account, intervalMinutes, now, 0, "empty_response")
+		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "empty_response")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, upstreamBillingProbeMaxBodyBytes+1))
 	if err != nil || len(body) > upstreamBillingProbeMaxBodyBytes {
-		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_read_failed")
+		return s.persistFailure(ctx, account, intervalSeconds, now, resp.StatusCode, "response_read_failed")
 	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "unsupported")
+		return s.persistFailure(ctx, account, intervalSeconds, now, resp.StatusCode, "unsupported")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "http_error")
+		return s.persistFailure(ctx, account, intervalSeconds, now, resp.StatusCode, "http_error")
 	}
 	data, err := parseUpstreamBillingProbeResponse(body)
 	if err != nil {
-		return s.persistFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "invalid_response")
+		return s.persistFailure(ctx, account, intervalSeconds, now, resp.StatusCode, "invalid_response")
+	}
+	observedMultiplier, ok := billingMultiplierFromProbeData(data)
+	if !ok {
+		return s.persistFailure(ctx, account, intervalSeconds, now, resp.StatusCode, "invalid_response")
 	}
 	receivedAt := now
-	freshUntil := now.Add(2 * time.Duration(intervalMinutes) * time.Minute)
+	freshUntil := now.Add(2 * time.Duration(intervalSeconds) * time.Second)
 	snapshot := &UpstreamBillingProbeSnapshot{
 		Status: "ok", Data: data, ReceivedAt: &receivedAt, FreshUntil: &freshUntil,
-		LastAttemptAt: now, NextProbeAt: now.Add(time.Duration(intervalMinutes) * time.Minute), HTTPStatus: resp.StatusCode,
+		LastAttemptAt: now, NextProbeAt: now.Add(time.Duration(intervalSeconds) * time.Second), HTTPStatus: resp.StatusCode,
 	}
-	if err := s.updateSnapshot(ctx, account, snapshot); err != nil {
+	if err := s.updateSnapshot(ctx, account, snapshot, &observedMultiplier); err != nil {
 		return nil, err
 	}
 	return snapshot, nil
 }
 
-func (s *UpstreamBillingProbeService) persistFailure(ctx context.Context, account *Account, intervalMinutes int, now time.Time, statusCode int, reason string) (*UpstreamBillingProbeSnapshot, error) {
+func (s *UpstreamBillingProbeService) persistFailure(ctx context.Context, account *Account, intervalSeconds int, now time.Time, statusCode int, reason string) (*UpstreamBillingProbeSnapshot, error) {
 	previous := decodeUpstreamBillingProbeSnapshot(account.Extra)
 	failureCount := 1
 	if previous != nil {
@@ -452,24 +618,33 @@ func (s *UpstreamBillingProbeService) persistFailure(ctx context.Context, accoun
 		status = "unsupported"
 	}
 	snapshot := &UpstreamBillingProbeSnapshot{
-		Status: status, LastAttemptAt: now, NextProbeAt: now.Add(nextUpstreamBillingProbeDelay(intervalMinutes, failureCount)),
+		Status: status, LastAttemptAt: now, NextProbeAt: now.Add(nextUpstreamBillingProbeDelay(intervalSeconds, failureCount)),
 		FailureCount: failureCount, HTTPStatus: statusCode, LastError: reason,
 	}
 	if previous != nil {
 		snapshot.Data, snapshot.ReceivedAt, snapshot.FreshUntil = previous.Data, previous.ReceivedAt, previous.FreshUntil
 	}
-	if err := s.updateSnapshot(ctx, account, snapshot); err != nil {
+	if err := s.updateSnapshot(ctx, account, snapshot, nil); err != nil {
 		return nil, err
 	}
 	return snapshot, nil
 }
 
-func (s *UpstreamBillingProbeService) updateSnapshot(ctx context.Context, account *Account, snapshot *UpstreamBillingProbeSnapshot) error {
+func (s *UpstreamBillingProbeService) updateSnapshot(ctx context.Context, account *Account, snapshot *UpstreamBillingProbeSnapshot, observedMultiplier *float64) error {
 	writer, ok := s.accountRepo.(upstreamBillingProbeSnapshotWriter)
 	if !ok {
 		return ErrUpstreamBillingProbeUnavailable
 	}
-	return writer.UpdateUpstreamBillingProbeSnapshot(ctx, account, snapshot)
+	_, err := writer.UpdateUpstreamBillingProbeSnapshot(ctx, account, snapshot, observedMultiplier)
+	return err
+}
+
+func billingMultiplierFromProbeData(data map[string]any) (float64, bool) {
+	if data == nil {
+		return 0, false
+	}
+	value, ok := data["effective_rate_multiplier"].(float64)
+	return value, ok && value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func parseUpstreamBillingProbeResponse(body []byte) (map[string]any, error) {
@@ -560,10 +735,10 @@ func decodeUpstreamBillingProbeSnapshot(extra map[string]any) *UpstreamBillingPr
 	return &snapshot
 }
 
-func nextUpstreamBillingProbeDelay(intervalMinutes, failureCount int) time.Duration {
-	delay := time.Duration(intervalMinutes) * time.Minute
-	if delay < upstreamBillingProbeMinIntervalMinutes*time.Minute {
-		delay = upstreamBillingProbeMinIntervalMinutes * time.Minute
+func nextUpstreamBillingProbeDelay(intervalSeconds, failureCount int) time.Duration {
+	delay := time.Duration(intervalSeconds) * time.Second
+	if delay < upstreamBillingProbeMinFailureBackoff {
+		delay = upstreamBillingProbeMinFailureBackoff
 	}
 	if failureCount > 0 {
 		shift := failureCount

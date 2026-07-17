@@ -1096,14 +1096,16 @@
             <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition', grokOAuthCustomBaseUrlEnabled ? 'translate-x-5' : 'translate-x-0']" />
           </button>
         </div>
-        <input
-          v-if="grokOAuthCustomBaseUrlEnabled"
-          v-model="grokOAuthBaseUrl"
-          type="url"
-          class="input"
-          data-testid="grok-custom-base-url-input"
-          :placeholder="t('admin.accounts.grokCustomBaseUrl.placeholder')"
-        />
+        <div v-if="grokOAuthCustomBaseUrlEnabled" class="space-y-2">
+          <input
+            v-model="grokOAuthBaseUrl"
+            type="url"
+            class="input"
+            data-testid="grok-custom-base-url-input"
+            :placeholder="t('admin.accounts.grokCustomBaseUrl.placeholder')"
+          />
+          <GrokBaseUrlPresets @select="grokOAuthBaseUrl = $event" />
+        </div>
       </div>
 
       <div v-if="form.platform === 'grok' && isOAuthFlow" class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -1150,6 +1152,11 @@
             "
           />
           <p class="input-hint">{{ baseUrlHint }}</p>
+          <GrokBaseUrlPresets
+            v-if="form.platform === 'grok'"
+            class="mt-2"
+            @select="apiKeyBaseUrl = $event"
+          />
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.apiKeyRequired') }}</label>
@@ -4432,6 +4439,7 @@ import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import PromptCacheCreationOptimizationControl from '@/components/account/PromptCacheCreationOptimizationControl.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
+import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import {
 	applyGrokOAuthBaseURL,
 	applyHeaderOverride,

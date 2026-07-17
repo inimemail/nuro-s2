@@ -15,7 +15,8 @@ import {
   probeUpstreamBilling,
   probeUpstreamBillingBatch,
   setUpstreamBillingProbeEnabled,
-  updateUpstreamBillingProbeSettings
+	updateUpstreamBillingProbeSettings,
+	updateUpstreamBillingGuard
 } from '@/api/admin/accounts'
 
 describe('admin account upstream billing probe API', () => {
@@ -26,7 +27,7 @@ describe('admin account upstream billing probe API', () => {
   })
 
   it('reads and updates global settings', async () => {
-    const settings = { enabled: true, interval_minutes: 30 }
+    const settings = { enabled: true, interval_seconds: 5 }
     get.mockResolvedValueOnce({ data: settings })
     put.mockResolvedValueOnce({ data: settings })
 
@@ -49,4 +50,14 @@ describe('admin account upstream billing probe API', () => {
     expect(post).toHaveBeenNthCalledWith(1, '/admin/accounts/7/upstream-billing-probe')
     expect(post).toHaveBeenNthCalledWith(2, '/admin/accounts/upstream-billing-probe/batch', { account_ids: [7] })
   })
+
+	it('updates account billing guard settings through the dedicated endpoint', async () => {
+		const result = { account_id: 7, account: { id: 7 } }
+		put.mockResolvedValueOnce({ data: result })
+		await expect(updateUpstreamBillingGuard(7, { enabled: true, max_multiplier: 2.5 })).resolves.toEqual(result)
+		expect(put).toHaveBeenCalledWith('/admin/accounts/7/upstream-billing-guard', {
+			enabled: true,
+			max_multiplier: 2.5
+		})
+	})
 })

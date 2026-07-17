@@ -197,6 +197,12 @@ type Account struct {
 
 	Schedulable bool `json:"schedulable"`
 
+	UpstreamBillingGuardEnabled            bool       `json:"upstream_billing_guard_enabled"`
+	UpstreamBillingGuardMaxMultiplier      float64    `json:"upstream_billing_guard_max_multiplier"`
+	UpstreamBillingGuardBlocked            bool       `json:"upstream_billing_guard_blocked"`
+	UpstreamBillingGuardObservedMultiplier *float64   `json:"upstream_billing_guard_observed_multiplier"`
+	UpstreamBillingGuardEvaluatedAt        *time.Time `json:"upstream_billing_guard_evaluated_at"`
+
 	RateLimitedAt    *time.Time `json:"rate_limited_at"`
 	RateLimitResetAt *time.Time `json:"rate_limit_reset_at"`
 	OverloadUntil    *time.Time `json:"overload_until"`

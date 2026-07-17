@@ -2,12 +2,15 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -20,6 +23,54 @@ type GroupHandler struct {
 	adminService         service.AdminService
 	dashboardService     *service.DashboardService
 	groupCapacityService *service.GroupCapacityService
+}
+
+func (h *GroupHandler) Duplicate(c *gin.Context) {
+	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || groupID <= 0 {
+		response.BadRequest(c, "Invalid group ID")
+		return
+	}
+	actorScope := adminActorScope(c)
+	duplicateService, ok := h.adminService.(service.AdminGroupDuplicateService)
+	if !ok {
+		response.ErrorFrom(c, fmt.Errorf("group duplicate service is unavailable"))
+		return
+	}
+	result, err := executeAdminIdempotent(
+		c,
+		"admin.groups.duplicate",
+		struct {
+			GroupID int64 `json:"group_id"`
+		}{GroupID: groupID},
+		service.DefaultWriteIdempotencyTTL(),
+		func(ctx context.Context) (any, error) {
+			group, executeErr := duplicateService.DuplicateGroup(ctx, groupID, actorScope, c.GetHeader("Idempotency-Key"))
+			if executeErr != nil {
+				return nil, executeErr
+			}
+			return dto.GroupFromServiceAdmin(group), nil
+		},
+	)
+	if err != nil {
+		reason := infraerrors.Reason(err)
+		if reason == infraerrors.Reason(service.ErrIdempotencyInProgress) || reason == infraerrors.Reason(service.ErrIdempotencyStoreUnavail) {
+			recovered, recoverErr := duplicateService.RecoverDuplicateGroup(c.Request.Context(), groupID, actorScope, c.GetHeader("Idempotency-Key"))
+			if recoverErr != nil {
+				slog.Warn("group_duplicate_recovery_failed", "group_id", groupID, "error", recoverErr)
+			} else if recovered != nil {
+				c.Header("X-Idempotency-Recovered", "true")
+				response.Success(c, dto.GroupFromServiceAdmin(recovered))
+				return
+			}
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	if result != nil && result.Replayed {
+		c.Header("X-Idempotency-Replayed", "true")
+	}
+	response.Success(c, result.Data)
 }
 
 type optionalLimitField struct {

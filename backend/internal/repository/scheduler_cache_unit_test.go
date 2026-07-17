@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
@@ -201,6 +202,28 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAILongContextBillingPolicy(t *te
 	got := buildSchedulerMetadataAccount(account)
 
 	require.True(t, got.IsOpenAILongContextBillingEnabled())
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsUpstreamBillingGuardDecision(t *testing.T) {
+	observed := 2.5
+	evaluatedAt := time.Now().UTC()
+	account := service.Account{
+		ID:                                     206,
+		UpstreamBillingGuardEnabled:            true,
+		UpstreamBillingGuardMaxMultiplier:      2,
+		UpstreamBillingGuardBlocked:            true,
+		UpstreamBillingGuardObservedMultiplier: &observed,
+		UpstreamBillingGuardEvaluatedAt:        &evaluatedAt,
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.True(t, got.UpstreamBillingGuardEnabled)
+	require.Equal(t, 2.0, got.UpstreamBillingGuardMaxMultiplier)
+	require.True(t, got.UpstreamBillingGuardBlocked)
+	require.NotNil(t, got.UpstreamBillingGuardObservedMultiplier)
+	require.Equal(t, observed, *got.UpstreamBillingGuardObservedMultiplier)
+	require.Equal(t, evaluatedAt, *got.UpstreamBillingGuardEvaluatedAt)
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsOpenAICompactCapability(t *testing.T) {

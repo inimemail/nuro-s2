@@ -32,6 +32,12 @@ func TestNormalizeCompletedImageGenerationStatus(t *testing.T) {
 			wantChanged: true,
 		},
 		{
+			name:        "ordinary text delta bypasses image normalization",
+			input:       `{"type":"response.output_text.delta","delta":"first token"}`,
+			want:        `{"type":"response.output_text.delta","delta":"first token"}`,
+			wantChanged: false,
+		},
+		{
 			name:        "incomplete response remains incomplete",
 			input:       `{"type":"response.incomplete","response":{"output":[{"type":"image_generation_call","status":"generating","result":"partial-data"}]}}`,
 			want:        `{"type":"response.incomplete","response":{"output":[{"type":"image_generation_call","status":"generating","result":"partial-data"}]}}`,

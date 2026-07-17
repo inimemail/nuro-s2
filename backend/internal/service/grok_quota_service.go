@@ -148,7 +148,12 @@ func (s *GrokQuotaService) probeUsage(ctx context.Context, accountID int64) (*Gr
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	applyGrokCLIHeaders(req.Header)
+	if account.IsGrokOAuth() && isGrokOfficialOAuthTarget(targetURL) {
+		applyGrokCLIHeaders(req.Header)
+	} else {
+		req.Header.Set("User-Agent", grokUpstreamUserAgent)
+	}
+	account.ApplyHeaderOverrides(req.Header)
 
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, maxGrokProbeConcurrency(account.Concurrency, 1))
 	if err != nil {
@@ -288,7 +293,15 @@ func (s *GrokQuotaService) fetchBilling(
 	if err != nil {
 		return nil, 0, infraerrors.New(http.StatusInternalServerError, "GROK_QUOTA_PROBE_REQUEST_BUILD_FAILED", "failed to build billing request")
 	}
-	xai.ApplyCLIBillingHeaders(req, token)
+	if isGrokCLIProxyTarget(targetURL) {
+		xai.ApplyCLIBillingHeaders(req, token)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", grokUpstreamUserAgent)
+	}
+	account.ApplyHeaderOverrides(req.Header)
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, maxGrokProbeConcurrency(account.Concurrency, 2))
 	if err != nil {
 		return nil, 0, infraerrors.New(http.StatusBadGateway, "GROK_QUOTA_PROBE_REQUEST_FAILED", "billing request failed")

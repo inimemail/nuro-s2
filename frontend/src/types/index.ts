@@ -897,11 +897,12 @@ export interface UpstreamBillingProbeSnapshot {
 
 export interface UpstreamBillingProbeSettings {
   enabled: boolean
-  interval_minutes: number
+  interval_seconds: number
 }
 
 export interface UpstreamBillingProbeResult {
   account_id: number
+  account?: Account
   snapshot?: UpstreamBillingProbeSnapshot
   error?: string
 }
@@ -946,6 +947,11 @@ export interface Account {
 
   // Rate limit & scheduling fields
   schedulable: boolean
+  upstream_billing_guard_enabled?: boolean
+  upstream_billing_guard_max_multiplier?: number
+  upstream_billing_guard_blocked?: boolean
+  upstream_billing_guard_observed_multiplier?: number | null
+  upstream_billing_guard_evaluated_at?: string | null
   rate_limited_at: string | null
   rate_limit_reset_at: string | null
   overload_until: string | null

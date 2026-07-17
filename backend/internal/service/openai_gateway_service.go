@@ -433,6 +433,7 @@ type OpenAIGatewayService struct {
 	openaiCyberPolicySessionBlocks               sync.Map // key: platform:accountID:anchorType:anchorHash, value: cyberPolicySessionBlock
 	openaiFirstTokenTimeoutPlaceholderGuard      openAIFirstTokenTimeoutPlaceholderGuard
 	agentIdentityTaskMu                          sync.Mutex
+	codexModelsManifestCache                     codexModelsManifestCache
 }
 
 type promptCacheBoostGroupAvailability struct {
@@ -9183,6 +9184,9 @@ func (s *OpenAIGatewayService) replaceModelInSSEBody(body, fromModel, toModel st
 }
 
 func (s *OpenAIGatewayService) validateUpstreamBaseURL(raw string) (string, error) {
+	if s == nil || s.cfg == nil {
+		return "", errors.New("config is not available")
+	}
 	if s.cfg != nil && !s.cfg.Security.URLAllowlist.Enabled {
 		normalized, err := urlvalidator.ValidateURLFormat(raw, s.cfg.Security.URLAllowlist.AllowInsecureHTTP)
 		if err != nil {

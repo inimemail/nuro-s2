@@ -47,6 +47,11 @@
             "
           />
           <p class="input-hint">{{ baseUrlHint }}</p>
+          <GrokBaseUrlPresets
+            v-if="account.platform === 'grok'"
+            class="mt-2"
+            @select="editBaseUrl = $event"
+          />
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
@@ -392,6 +397,7 @@
             </div>
             <button
               type="button"
+              data-testid="upstream-billing-auto-probe-toggle"
               :aria-label="t('admin.accounts.upstreamBilling.autoProbe')"
               :class="[
                 'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -406,6 +412,36 @@
                 ]"
               />
             </button>
+          </div>
+          <div class="mt-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.guard') }}</label>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.accounts.upstreamBilling.guardHint') }}
+                </p>
+              </div>
+              <button
+                type="button"
+                data-testid="upstream-billing-guard-toggle"
+                :disabled="!upstreamBillingAutoProbeEnabled && !upstreamBillingGuardEnabled"
+                :aria-label="t('admin.accounts.upstreamBilling.guard')"
+                :class="[
+                  'relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50',
+                  upstreamBillingGuardEnabled ? 'bg-red-600' : 'bg-gray-200 dark:bg-dark-600'
+                ]"
+                @click="upstreamBillingGuardEnabled = !upstreamBillingGuardEnabled"
+              >
+                <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition', upstreamBillingGuardEnabled ? 'translate-x-5' : 'translate-x-0']" />
+              </button>
+            </div>
+            <label v-if="upstreamBillingGuardEnabled" class="mt-3 block">
+              <span class="input-label">{{ t('admin.accounts.upstreamBilling.guardMaxMultiplier') }}</span>
+              <input v-model.number="upstreamBillingGuardMaxMultiplier" data-testid="upstream-billing-guard-max-multiplier" type="number" min="0" step="0.01" class="input w-full" />
+              <span v-if="account?.upstream_billing_guard_observed_multiplier != null" class="mt-1 block text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.upstreamBilling.guardObserved', { rate: account.upstream_billing_guard_observed_multiplier }) }}
+              </span>
+            </label>
           </div>
         </div>
 
@@ -862,14 +898,16 @@
             <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition', grokOAuthCustomBaseUrlEnabled ? 'translate-x-5' : 'translate-x-0']" />
           </button>
         </div>
-        <input
-          v-if="grokOAuthCustomBaseUrlEnabled"
-          v-model="grokOAuthBaseUrl"
-          type="url"
-          class="input"
-          data-testid="grok-custom-base-url-input"
-          :placeholder="t('admin.accounts.grokCustomBaseUrl.placeholder')"
-        />
+        <div v-if="grokOAuthCustomBaseUrlEnabled" class="space-y-2">
+          <input
+            v-model="grokOAuthBaseUrl"
+            type="url"
+            class="input"
+            data-testid="grok-custom-base-url-input"
+            :placeholder="t('admin.accounts.grokCustomBaseUrl.placeholder')"
+          />
+          <GrokBaseUrlPresets @select="grokOAuthBaseUrl = $event" />
+        </div>
         <div class="mt-4 flex items-center justify-between gap-4">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.headerOverride.title') }}</label>
@@ -3543,13 +3581,15 @@ import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import PromptCacheCreationOptimizationControl from '@/components/account/PromptCacheCreationOptimizationControl.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
+import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import {
-	applyHeaderOverride,
-	applyGrokOAuthBaseURL,
-	applyInterceptWarmup,
+  applyHeaderOverride,
+  applyGrokOAuthBaseURL,
+  applyInterceptWarmup,
   getHeaderOverrideTemplate,
-	isHeaderOverrideCapable,
-	isValidHTTPBaseURL,
+  isHeaderOverrideCapable,
+  isCustomGrokBaseUrl,
+  isValidHTTPBaseURL,
   splitHeaderOverridesObject,
   validateHeaderOverrideRows,
   type HeaderOverrideRow
@@ -3930,6 +3970,8 @@ const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 const grokOAuthCustomBaseUrlEnabled = ref(false)
 const grokOAuthBaseUrl = ref('')
 const upstreamBillingAutoProbeEnabled = ref(false)
+const upstreamBillingGuardEnabled = ref(false)
+const upstreamBillingGuardMaxMultiplier = ref(1)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(false)
 const autoPause5hThreshold = ref<number | null>(null)
@@ -4536,7 +4578,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   headerOverrideRows.value = canUseHeaderOverride
     ? splitHeaderOverridesObject(credentials?.header_overrides)
     : []
-  grokOAuthCustomBaseUrlEnabled.value = newAccount.platform === 'grok' && newAccount.type === 'oauth' && typeof credentials?.base_url === 'string' && credentials.base_url.trim() !== ''
+  grokOAuthCustomBaseUrlEnabled.value = newAccount.platform === 'grok' && newAccount.type === 'oauth' && isCustomGrokBaseUrl(credentials?.base_url)
   grokOAuthBaseUrl.value = grokOAuthCustomBaseUrlEnabled.value ? String(credentials?.base_url || '') : ''
   autoPauseOnExpired.value = newAccount.auto_pause_on_expired === true
   editVertexProjectId.value = ''
@@ -4546,14 +4588,18 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Load mixed scheduling setting (only for antigravity accounts)
   mixedScheduling.value = false
   allowOverages.value = false
-	const extra = newAccount.extra as Record<string, unknown> | undefined
-	upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
-	mixedScheduling.value = extra?.mixed_scheduling === true
-	allowOverages.value = extra?.allow_overages === true
-	autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
-	autoPause7dThreshold.value = typeof extra?.auto_pause_7d_threshold === 'number' ? extra.auto_pause_7d_threshold * 100 : null
-	autoPause5hDisabled.value = extra?.auto_pause_5h_disabled === true
-	autoPause7dDisabled.value = extra?.auto_pause_7d_disabled === true
+  const extra = newAccount.extra as Record<string, unknown> | undefined
+  upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
+  upstreamBillingGuardEnabled.value = newAccount.upstream_billing_guard_enabled === true
+  upstreamBillingGuardMaxMultiplier.value = typeof newAccount.upstream_billing_guard_max_multiplier === 'number'
+    ? newAccount.upstream_billing_guard_max_multiplier
+    : 1
+  mixedScheduling.value = extra?.mixed_scheduling === true
+  allowOverages.value = extra?.allow_overages === true
+  autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
+  autoPause7dThreshold.value = typeof extra?.auto_pause_7d_threshold === 'number' ? extra.auto_pause_7d_threshold * 100 : null
+  autoPause5hDisabled.value = extra?.auto_pause_5h_disabled === true
+  autoPause7dDisabled.value = extra?.auto_pause_7d_disabled === true
 
   // Load OpenAI passthrough toggle (OpenAI OAuth/API Key)
   openaiPassthroughEnabled.value = false
@@ -4856,26 +4902,26 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       newAccount.platform === 'openai'
         ? 'https://api.openai.com'
         : newAccount.platform === 'gemini'
-		  ? 'https://generativelanguage.googleapis.com'
-		  : newAccount.platform === 'grok'
-		    ? 'https://api.x.ai/v1'
-		  : 'https://api.anthropic.com'
+          ? 'https://generativelanguage.googleapis.com'
+          : newAccount.platform === 'grok'
+            ? 'https://api.x.ai/v1'
+            : 'https://api.anthropic.com'
     editBaseUrl.value = platformDefaultUrl
 
     // Load model mappings for OpenAI OAuth accounts and platform-specific cache controls.
-	if ((newAccount.platform === 'openai' || newAccount.platform === 'anthropic') && newAccount.credentials) {
-	      const oauthCredentials = newAccount.credentials as Record<string, unknown>
+    if ((newAccount.platform === 'openai' || newAccount.platform === 'anthropic') && newAccount.credentials) {
+      const oauthCredentials = newAccount.credentials as Record<string, unknown>
       if (newAccount.platform === 'openai') {
         loadModelRestrictionFromMapping(oauthCredentials.model_mapping as Record<string, unknown> | undefined)
-	      }
-	      loadCacheBoostAndIsolationFromCredentials(oauthCredentials)
-	    } else if (newAccount.platform === 'grok' && newAccount.type === 'oauth' && newAccount.credentials) {
-	      const grokCredentials = newAccount.credentials as Record<string, unknown>
-	      if (typeof grokCredentials.base_url === 'string' && grokCredentials.base_url.trim() !== '') {
-	        grokOAuthCustomBaseUrlEnabled.value = true
-	        grokOAuthBaseUrl.value = grokCredentials.base_url.trim()
-	      }
-	    } else {
+      }
+      loadCacheBoostAndIsolationFromCredentials(oauthCredentials)
+    } else if (newAccount.platform === 'grok' && newAccount.type === 'oauth' && newAccount.credentials) {
+      const grokCredentials = newAccount.credentials as Record<string, unknown>
+      if (isCustomGrokBaseUrl(grokCredentials.base_url)) {
+        grokOAuthCustomBaseUrlEnabled.value = true
+        grokOAuthBaseUrl.value = String(grokCredentials.base_url).trim()
+      }
+    } else {
       modelRestrictionMode.value = 'whitelist'
       modelMappings.value = []
       allowedModels.value = []
@@ -5050,18 +5096,18 @@ const applyHeaderOverrideCredentials = (credentials: Record<string, unknown>): b
 }
 
 const applyGrokOAuthUpstreamConfig = (credentials: Record<string, unknown>): boolean => {
-	if (!grokOAuthCustomBaseUrlEnabled.value) {
-		delete credentials.base_url
-	} else {
-		const baseURL = grokOAuthBaseUrl.value.trim()
-		if (!isValidHTTPBaseURL(baseURL)) {
-			appStore.showError(t(baseURL ? 'admin.accounts.grokCustomBaseUrl.invalid' : 'admin.accounts.grokCustomBaseUrl.required'))
-			return false
-		}
-		applyGrokOAuthBaseURL(credentials, true, baseURL, 'edit')
-	}
-	if (!applyHeaderOverrideCredentials(credentials)) return false
-	return true
+  if (!grokOAuthCustomBaseUrlEnabled.value) {
+    delete credentials.base_url
+  } else {
+    const baseURL = grokOAuthBaseUrl.value.trim()
+    if (!isValidHTTPBaseURL(baseURL)) {
+      appStore.showError(t(baseURL ? 'admin.accounts.grokCustomBaseUrl.invalid' : 'admin.accounts.grokCustomBaseUrl.required'))
+      return false
+    }
+    applyGrokOAuthBaseURL(credentials, true, baseURL, 'edit')
+  }
+  if (!applyHeaderOverrideCredentials(credentials)) return false
+  return true
 }
 
 const addPresetMapping = (from: string, to: string) => {
@@ -5481,7 +5527,41 @@ const handleClose = () => {
 const submitUpdateAccount = async (accountID: number, updatePayload: Record<string, unknown>) => {
   submitting.value = true
   try {
-    const updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag(updatePayload))
+    const managesBillingGuard = props.account?.platform === 'openai' && props.account?.type === 'apikey'
+    const disablingBillingGuard =
+      managesBillingGuard && props.account?.upstream_billing_guard_enabled === true && !upstreamBillingGuardEnabled.value
+    const disablingRequiredAutoProbe = disablingBillingGuard && !upstreamBillingAutoProbeEnabled.value
+
+    // A guarded account cannot persist auto-probe=false while the guard is
+    // enabled. Keep the probe enabled for the ordinary account update, then
+    // disable the guard and only afterward turn probing off. This preserves
+    // the safety invariant when the ordinary update fails or needs a retry.
+    let accountUpdatePayload = updatePayload
+    if (disablingRequiredAutoProbe) {
+      const extra = { ...((updatePayload.extra as Record<string, unknown> | undefined) || {}) }
+      extra.upstream_billing_probe_enabled = true
+      accountUpdatePayload = { ...updatePayload, extra }
+    }
+    let updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag(accountUpdatePayload))
+    if (disablingBillingGuard) {
+      const guardResult = await adminAPI.accounts.updateUpstreamBillingGuard(accountID, {
+        enabled: false,
+        max_multiplier: Math.max(0, Number(upstreamBillingGuardMaxMultiplier.value) || 0)
+      })
+      updatedAccount = guardResult.account
+    }
+    if (disablingRequiredAutoProbe) {
+      updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag({
+        extra: { upstream_billing_probe_enabled: false }
+      }))
+    }
+    if (managesBillingGuard && upstreamBillingGuardEnabled.value) {
+      const guardResult = await adminAPI.accounts.updateUpstreamBillingGuard(accountID, {
+        enabled: true,
+        max_multiplier: Math.max(0, Number(upstreamBillingGuardMaxMultiplier.value) || 0)
+      })
+      updatedAccount = guardResult.account
+    }
     appStore.showSuccess(t('admin.accounts.accountUpdated'))
     emit('updated', updatedAccount)
     handleClose()
@@ -5505,6 +5585,10 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
 const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
+  if (upstreamBillingGuardEnabled.value && !upstreamBillingAutoProbeEnabled.value) {
+    appStore.showError(t('admin.accounts.upstreamBilling.guardRequiresAutoProbe'))
+    return
+  }
 
   if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error') {
     appStore.showError(t('admin.accounts.pleaseSelectStatus'))
@@ -5810,9 +5894,9 @@ const handleSubmit = async () => {
       if (!applyTempUnschedConfig(newCredentials)) {
         return
       }
-		if (props.account.platform === 'grok' && props.account.type === 'oauth' && !applyGrokOAuthUpstreamConfig(newCredentials)) {
-			return
-		}
+      if (props.account.platform === 'grok' && props.account.type === 'oauth' && !applyGrokOAuthUpstreamConfig(newCredentials)) {
+        return
+      }
 
       updatePayload.credentials = newCredentials
     }
@@ -6011,9 +6095,9 @@ const handleSubmit = async () => {
     }
 
     // For OpenAI OAuth/SetupToken/API Key accounts, handle passthrough mode in extra
-	if (props.account.platform === 'openai' && (props.account.type === 'oauth' || props.account.type === 'setup-token' || props.account.type === 'apikey')) {
-		const currentExtra = (props.account.extra as Record<string, unknown>) || {}
-		const newExtra: Record<string, unknown> = { ...currentExtra }
+    if (props.account.platform === 'openai' && (props.account.type === 'oauth' || props.account.type === 'setup-token' || props.account.type === 'apikey')) {
+      const currentExtra = (props.account.extra as Record<string, unknown>) || {}
+      const newExtra: Record<string, unknown> = { ...currentExtra }
       const hadCodexCLIOnlyEnabled = currentExtra.codex_cli_only === true
       if (props.account.type === 'oauth') {
         newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
@@ -6134,38 +6218,38 @@ const handleSubmit = async () => {
       } else {
         newExtra.openai_compact_mode = openAICompactMode.value
       }
-		if (props.account.type === 'apikey') {
+      if (props.account.type === 'apikey') {
         if (!openAITextGenerationCapabilityEnabled.value || openAIResponsesMode.value === 'auto') {
           delete newExtra.openai_responses_mode
         } else {
           newExtra.openai_responses_mode = openAIResponsesMode.value
         }
-			if (upstreamBillingAutoProbeEnabled.value) {
-				newExtra.upstream_billing_probe_enabled = true
-			} else {
-				delete newExtra.upstream_billing_probe_enabled
-			}
-		}
-		if (autoPause5hThreshold.value != null && autoPause5hThreshold.value > 0) {
-			newExtra.auto_pause_5h_threshold = autoPause5hThreshold.value / 100
-		} else {
-			delete newExtra.auto_pause_5h_threshold
-		}
-		if (autoPause7dThreshold.value != null && autoPause7dThreshold.value > 0) {
-			newExtra.auto_pause_7d_threshold = autoPause7dThreshold.value / 100
-		} else {
-			delete newExtra.auto_pause_7d_threshold
-		}
-		if (autoPause5hDisabled.value) {
-			newExtra.auto_pause_5h_disabled = true
-		} else {
-			delete newExtra.auto_pause_5h_disabled
-		}
-		if (autoPause7dDisabled.value) {
-			newExtra.auto_pause_7d_disabled = true
-		} else {
-			delete newExtra.auto_pause_7d_disabled
-		}
+        if (upstreamBillingAutoProbeEnabled.value) {
+          newExtra.upstream_billing_probe_enabled = true
+        } else {
+          newExtra.upstream_billing_probe_enabled = false
+        }
+      }
+      if (autoPause5hThreshold.value != null && autoPause5hThreshold.value > 0) {
+        newExtra.auto_pause_5h_threshold = autoPause5hThreshold.value / 100
+      } else {
+        delete newExtra.auto_pause_5h_threshold
+      }
+      if (autoPause7dThreshold.value != null && autoPause7dThreshold.value > 0) {
+        newExtra.auto_pause_7d_threshold = autoPause7dThreshold.value / 100
+      } else {
+        delete newExtra.auto_pause_7d_threshold
+      }
+      if (autoPause5hDisabled.value) {
+        newExtra.auto_pause_5h_disabled = true
+      } else {
+        delete newExtra.auto_pause_5h_disabled
+      }
+      if (autoPause7dDisabled.value) {
+        newExtra.auto_pause_7d_disabled = true
+      } else {
+        delete newExtra.auto_pause_7d_disabled
+      }
 
       delete newExtra.codex_image_generation_bridge_enabled
       switch (codexImageGenerationBridgeMode.value) {

@@ -136,6 +136,7 @@
                         </span>
                         <button
                           type="button"
+                          data-testid="upstream-billing-global-toggle"
                           class="relative inline-flex h-5 w-9 rounded-full transition-colors"
                           :class="upstreamBillingProbeSettings.enabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'"
                           :aria-label="t('admin.accounts.upstreamBilling.autoProbeSettings')"
@@ -149,17 +150,19 @@
                       </div>
                       <div class="flex items-end gap-2">
                         <label class="min-w-0 flex-1 text-[11px] text-gray-500 dark:text-gray-400">
-                          {{ t('admin.accounts.upstreamBilling.intervalMinutes') }}
+                          {{ t('admin.accounts.upstreamBilling.intervalSeconds') }}
                           <input
-                            v-model.number="upstreamBillingProbeSettings.interval_minutes"
+                            v-model.number="upstreamBillingProbeSettings.interval_seconds"
+                            data-testid="upstream-billing-global-interval"
                             type="number"
-                            min="5"
-                            max="1440"
+                            min="1"
+                            max="36000"
                             class="input mt-1 h-8 w-full px-2 text-xs"
                           />
                         </label>
                         <button
                           type="button"
+                          data-testid="upstream-billing-global-save"
                           class="btn btn-secondary h-8 px-2"
                           :disabled="upstreamBillingSettingsSaving"
                           :title="t('common.save')"
@@ -235,6 +238,7 @@
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
           :estimate-row-height="72"
           :overscan="5"
+          :row-class="accountRowClass"
         >
           <template #header-select>
             <input
@@ -593,7 +597,7 @@ const scheduleAcc = ref<Account | null>(null)
 const scheduleModelOptions = ref<SelectOption[]>([])
 const togglingSchedulable = ref<number | null>(null)
 const probingUpstreamBillingIDs = ref(new Set<number>())
-const upstreamBillingProbeSettings = reactive({ enabled: false, interval_minutes: 60 })
+const upstreamBillingProbeSettings = reactive({ enabled: false, interval_seconds: 5 })
 const upstreamBillingSettingsSaving = ref(false)
 const menu = reactive<{show:boolean, acc:Account|null, pos:{top:number, left:number}|null}>({ show: false, acc: null, pos: null })
 const exportingData = ref(false)
@@ -1915,7 +1919,13 @@ const accountMatchesCurrentFilters = (account: Account) => {
     const isTempUnschedulable = Number.isFinite(tempUnschedUntil) && tempUnschedUntil > now
 
     if (filters.status === 'active') {
-      if (account.status !== 'active' || isRateLimited || isTempUnschedulable || !account.schedulable) return false
+      if (
+        account.status !== 'active' ||
+        isRateLimited ||
+        isTempUnschedulable ||
+        !account.schedulable ||
+        account.upstream_billing_guard_blocked
+      ) return false
     } else if (filters.status === 'rate_limited') {
       if (account.status !== 'active' || !isRateLimited || isTempUnschedulable) return false
     } else if (filters.status === 'temp_unschedulable') {
@@ -2004,6 +2014,9 @@ const handleAccountUpdated = (updatedAccount: Account) => {
   patchAccountInList(updatedAccount)
   enterAutoRefreshSilentWindow()
 }
+const accountRowClass = (account: Account) => account.upstream_billing_guard_blocked
+  ? 'account-billing-guard-blocked bg-red-50/80 hover:bg-red-100/80 dark:bg-red-950/20 dark:hover:bg-red-950/30'
+  : ''
 const handleProbeUpstreamBilling = async (account: Account) => {
   if (probingUpstreamBillingIDs.value.has(account.id)) return
   probingUpstreamBillingIDs.value = new Set(probingUpstreamBillingIDs.value).add(account.id)
@@ -2012,10 +2025,11 @@ const handleProbeUpstreamBilling = async (account: Account) => {
     if (!result.snapshot) {
       throw new Error(result.error || t('admin.accounts.upstreamBilling.probeFailed'))
     }
+    const latestAccount = result.account || account
     patchAccountInList({
-      ...account,
+      ...latestAccount,
       extra: {
-        ...(account.extra || {}),
+        ...(latestAccount.extra || {}),
         upstream_billing_probe: result.snapshot
       }
     })
@@ -2038,9 +2052,11 @@ const saveUpstreamBillingProbeSettings = async () => {
   if (upstreamBillingSettingsSaving.value) return
   upstreamBillingSettingsSaving.value = true
   try {
+    const rawInterval = Number(upstreamBillingProbeSettings.interval_seconds)
+    const normalizedInterval = Number.isFinite(rawInterval) ? Math.trunc(rawInterval) : 5
     const saved = await adminAPI.accounts.updateUpstreamBillingProbeSettings({
       enabled: upstreamBillingProbeSettings.enabled,
-      interval_minutes: Math.min(1440, Math.max(5, Math.trunc(Number(upstreamBillingProbeSettings.interval_minutes) || 60)))
+      interval_seconds: Math.min(36000, Math.max(1, normalizedInterval))
     })
     Object.assign(upstreamBillingProbeSettings, saved)
     appStore.showSuccess(t('admin.accounts.upstreamBilling.settingsSaved'))
@@ -2290,5 +2306,21 @@ onUnmounted(() => {
 
 .account-tools-menu-icon {
   @apply inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md;
+}
+
+:deep(tbody tr.account-billing-guard-blocked > .sticky-col) {
+  background-color: rgb(254 242 242 / 0.8);
+}
+
+:deep(tbody tr.account-billing-guard-blocked:hover > .sticky-col) {
+  background-color: rgb(254 226 226 / 0.8);
+}
+
+:global(.dark) :deep(tbody tr.account-billing-guard-blocked > .sticky-col) {
+  background-color: rgb(69 10 10 / 0.2);
+}
+
+:global(.dark) :deep(tbody tr.account-billing-guard-blocked:hover > .sticky-col) {
+  background-color: rgb(69 10 10 / 0.3);
 }
 </style>

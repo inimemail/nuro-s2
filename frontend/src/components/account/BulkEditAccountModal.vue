@@ -168,6 +168,11 @@
           :placeholder="t('admin.accounts.bulkEdit.baseUrlPlaceholder')"
           aria-labelledby="bulk-edit-base-url-label"
         />
+        <GrokBaseUrlPresets
+          v-if="allTargetsGrok"
+          class="mt-2"
+          @select="baseUrl = $event; enableBaseUrl = true"
+        />
         <p class="input-hint">
           {{ t('admin.accounts.bulkEdit.baseUrlNotice') }}
         </p>
@@ -1907,6 +1912,7 @@ import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import Icon from '@/components/icons/Icon.vue'
+import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import {
   buildModelMappingObject as buildModelMappingPayload,
   getPresetMappingsByPlatform
@@ -1967,6 +1973,11 @@ const targetSelectedTypes = computed(() => props.target?.selectedTypes ?? props.
 const targetSelectedImagePoolModes = computed(() => props.target?.selectedImagePoolModes ?? props.selectedImagePoolModes ?? [])
 const targetSelectedShadowModes = computed(() => props.target?.selectedShadowModes ?? props.selectedShadowModes ?? [])
 const isMixedPlatform = computed(() => targetSelectedPlatforms.value.length > 1)
+const allTargetsGrok = computed(
+  () =>
+    targetSelectedPlatforms.value.length > 0 &&
+    targetSelectedPlatforms.value.every(platform => platform === 'grok')
+)
 const targetIncludesShadow = computed(() => targetSelectedShadowModes.value.includes(true))
 const targetAllShadow = computed(() => targetSelectedShadowModes.value.length > 0 && targetSelectedShadowModes.value.every(Boolean))
 

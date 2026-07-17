@@ -597,7 +597,11 @@ description = "Grok 4.5 through a Sub2API Grok group"
 api_key = "${apiKey}"
 api_backend = "responses"
 context_window = 1000000
-supports_backend_search = true`
+supports_backend_search = true
+supports_websockets = true
+
+[features]
+responses_websockets_v2 = true`
 
   return [{
     path: `${configDir}/config.toml`,

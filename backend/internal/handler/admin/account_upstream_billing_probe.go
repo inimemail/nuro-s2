@@ -16,6 +16,18 @@ type upstreamBillingProbeBatchRequest struct {
 	AccountIDs []int64 `json:"account_ids" binding:"required"`
 }
 
+type upstreamBillingGuardResponse struct {
+	AccountID int64                                 `json:"account_id"`
+	Account   AccountWithConcurrency                `json:"account"`
+	Snapshot  *service.UpstreamBillingProbeSnapshot `json:"snapshot,omitempty"`
+}
+
+type upstreamBillingProbeResponse struct {
+	AccountID int64                                 `json:"account_id"`
+	Account   *AccountWithConcurrency               `json:"account,omitempty"`
+	Snapshot  *service.UpstreamBillingProbeSnapshot `json:"snapshot,omitempty"`
+}
+
 func (h *AccountHandler) SetUpstreamBillingProbeService(probe *service.UpstreamBillingProbeService) {
 	h.upstreamBillingProbe = probe
 }
@@ -72,6 +84,33 @@ func (h *AccountHandler) SetUpstreamBillingProbeEnabled(c *gin.Context) {
 	response.Success(c, gin.H{"account_id": id, "enabled": *req.Enabled})
 }
 
+func (h *AccountHandler) UpdateUpstreamBillingGuard(c *gin.Context) {
+	if h.upstreamBillingProbe == nil {
+		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	var req service.UpstreamBillingGuardSettings
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	result, err := h.upstreamBillingProbe.UpdateGuard(c.Request.Context(), id, req)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, upstreamBillingGuardResponse{
+		AccountID: result.AccountID,
+		Account:   h.buildAccountResponseWithRuntime(c.Request.Context(), result.Account),
+		Snapshot:  result.Snapshot,
+	})
+}
+
 func (h *AccountHandler) ProbeUpstreamBilling(c *gin.Context) {
 	if h.upstreamBillingProbe == nil {
 		response.ErrorFrom(c, service.ErrUpstreamBillingProbeUnavailable)
@@ -87,7 +126,12 @@ func (h *AccountHandler) ProbeUpstreamBilling(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, service.UpstreamBillingProbeResult{AccountID: id, Snapshot: snapshot})
+	result := upstreamBillingProbeResponse{AccountID: id, Snapshot: snapshot}
+	if account, loadErr := h.adminService.GetAccount(c.Request.Context(), id); loadErr == nil && account != nil {
+		accountResponse := h.buildAccountResponseWithRuntime(c.Request.Context(), account)
+		result.Account = &accountResponse
+	}
+	response.Success(c, result)
 }
 
 func (h *AccountHandler) ProbeUpstreamBillingBatch(c *gin.Context) {

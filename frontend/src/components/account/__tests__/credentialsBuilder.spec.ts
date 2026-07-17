@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
 	applyGrokOAuthBaseURL,
+  GROK_BASE_URL_PRESETS,
   applyHeaderOverride,
   applyInterceptWarmup,
   buildHeaderOverridesObject,
   getHeaderOverrideTemplate,
 	isHeaderOverrideCapable,
+  isCustomGrokBaseUrl,
   isHeaderOverridePlatform,
 	isValidHTTPBaseURL,
   splitHeaderOverridesObject,
@@ -90,6 +92,15 @@ describe('header override credentials helpers', () => {
 		applyGrokOAuthBaseURL(edited, false, '', 'edit')
 		expect(edited).toEqual({ access_token: 'token' })
 	})
+
+  it('distinguishes the default Grok CLI endpoint from explicit endpoint choices', () => {
+    expect(isCustomGrokBaseUrl('https://cli-chat-proxy.grok.com/v1')).toBe(false)
+    expect(isCustomGrokBaseUrl('https://api.x.ai/v1')).toBe(true)
+    expect(isCustomGrokBaseUrl('https://us-east-1.api.x.ai/v1')).toBe(true)
+    expect(isCustomGrokBaseUrl('https://relay.example.com/v1')).toBe(true)
+    expect(isCustomGrokBaseUrl('://invalid')).toBe(false)
+    expect(GROK_BASE_URL_PRESETS.map(preset => preset.url)).toContain('https://eu-west-1.api.x.ai/v1')
+  })
 
   it('builds normalized header override objects', () => {
     expect(

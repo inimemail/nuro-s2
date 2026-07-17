@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -432,11 +433,7 @@ func buildGrokResponsesRequest(ctx context.Context, c *gin.Context, account *Acc
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	if account.IsGrokOAuth() {
-		applyGrokCLIHeaders(req.Header)
-	} else {
-		req.Header.Set("User-Agent", "sub2api-grok/1.0")
-	}
+	applyGrokOAuthIdentityHeaders(req.Header, targetURL, account.IsGrokOAuth())
 	applyGrokCacheHeaders(req.Header, cacheIdentity)
 	if c != nil {
 		if v := c.GetHeader("OpenAI-Beta"); strings.TrimSpace(v) != "" {
@@ -464,6 +461,29 @@ func applyGrokCLIHeaders(headers http.Header) {
 	}
 	headers.Set("User-Agent", grokUpstreamUserAgent)
 	headers.Set("X-Grok-Client-Version", grokCLIVersion)
+}
+
+// applyGrokOAuthIdentityHeaders adds the protocol identity required by the
+// official Grok endpoints. Custom or regional OAuth endpoints must receive
+// only the neutral gateway user agent, so CLI/relay identity cannot cross a
+// user-configured domain.
+func applyGrokOAuthIdentityHeaders(headers http.Header, targetURL string, oauth bool) {
+	if oauth && isGrokOfficialOAuthTarget(targetURL) {
+		applyGrokCLIHeaders(headers)
+		return
+	}
+	if headers != nil {
+		headers.Set("User-Agent", grokUpstreamUserAgent)
+	}
+}
+
+func isGrokOfficialOAuthTarget(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed == nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	return host == "api.x.ai" || host == "cli-chat-proxy.grok.com"
 }
 
 func (s *OpenAIGatewayService) updateGrokUsageSnapshot(ctx context.Context, account *Account, snapshot *xai.QuotaSnapshot) {

@@ -147,6 +147,24 @@ func (Account) Fields() []ent.Field {
 		// false 表示账户暂时不参与请求分配（如正在刷新 token）
 		field.Bool("schedulable").
 			Default(true),
+		// upstream_billing_guard_*: independent automatic scheduling guard.
+		// This must remain separate from schedulable so automatic recovery never
+		// overrides an administrator pause.
+		field.Bool("upstream_billing_guard_enabled").
+			Default(false),
+		field.Float("upstream_billing_guard_max_multiplier").
+			SchemaType(map[string]string{dialect.Postgres: "double precision"}).
+			Default(1.0),
+		field.Bool("upstream_billing_guard_blocked").
+			Default(false),
+		field.Float("upstream_billing_guard_observed_multiplier").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "double precision"}),
+		field.Time("upstream_billing_guard_evaluated_at").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
 
 		// rate_limited_at: 触发速率限制的时间
 		// 当收到 429 错误时记录
@@ -238,13 +256,16 @@ func (Account) Edges() []ent.Edge {
 // 每个索引对应一个常用的查询条件。
 func (Account) Indexes() []ent.Index {
 	return []ent.Index{
-		index.Fields("platform"),            // 按平台筛选
-		index.Fields("type"),                // 按认证类型筛选
-		index.Fields("status"),              // 按状态筛选
-		index.Fields("proxy_id"),            // 按代理筛选
-		index.Fields("priority"),            // 按优先级排序
-		index.Fields("last_used_at"),        // 按最后使用时间排序
-		index.Fields("schedulable"),         // 筛选可调度账户
+		index.Fields("platform"),     // 按平台筛选
+		index.Fields("type"),         // 按认证类型筛选
+		index.Fields("status"),       // 按状态筛选
+		index.Fields("proxy_id"),     // 按代理筛选
+		index.Fields("priority"),     // 按优先级排序
+		index.Fields("last_used_at"), // 按最后使用时间排序
+		index.Fields("schedulable"),  // 筛选可调度账户
+		index.Fields("upstream_billing_guard_blocked").
+			StorageKey("idx_accounts_upstream_billing_guard_blocked").
+			Annotations(entsql.IndexWhere("deleted_at IS NULL AND upstream_billing_guard_blocked = TRUE")),
 		index.Fields("rate_limited_at"),     // 筛选速率限制账户
 		index.Fields("rate_limit_reset_at"), // 筛选速率限制解除时间
 		index.Fields("overload_until"),      // 筛选过载账户

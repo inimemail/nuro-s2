@@ -150,6 +150,31 @@ func Schedulable(v bool) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldSchedulable, v))
 }
 
+// UpstreamBillingGuardEnabled applies equality check predicate on the "upstream_billing_guard_enabled" field. It's identical to UpstreamBillingGuardEnabledEQ.
+func UpstreamBillingGuardEnabled(v bool) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldUpstreamBillingGuardEnabled, v))
+}
+
+// UpstreamBillingGuardMaxMultiplier applies equality check predicate on the "upstream_billing_guard_max_multiplier" field. It's identical to UpstreamBillingGuardMaxMultiplierEQ.
+func UpstreamBillingGuardMaxMultiplier(v float64) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardBlocked applies equality check predicate on the "upstream_billing_guard_blocked" field. It's identical to UpstreamBillingGuardBlockedEQ.
+func UpstreamBillingGuardBlocked(v bool) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldUpstreamBillingGuardBlocked, v))
+}
+
+// UpstreamBillingGuardObservedMultiplier applies equality check predicate on the "upstream_billing_guard_observed_multiplier" field. It's identical to UpstreamBillingGuardObservedMultiplierEQ.
+func UpstreamBillingGuardObservedMultiplier(v float64) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldUpstreamBillingGuardObservedMultiplier, v))
+}
+
+// UpstreamBillingGuardEvaluatedAt applies equality check predicate on the "upstream_billing_guard_evaluated_at" field. It's identical to UpstreamBillingGuardEvaluatedAtEQ.
+func UpstreamBillingGuardEvaluatedAt(v time.Time) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldUpstreamBillingGuardEvaluatedAt, v))
+}
+
 // RateLimitedAt applies equality check predicate on the "rate_limited_at" field. It's identical to RateLimitedAtEQ.
 func RateLimitedAt(v time.Time) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldRateLimitedAt, v))
@@ -1103,6 +1128,166 @@ func SchedulableEQ(v bool) predicate.Account {
 // SchedulableNEQ applies the NEQ predicate on the "schedulable" field.
 func SchedulableNEQ(v bool) predicate.Account {
 	return predicate.Account(sql.FieldNEQ(FieldSchedulable, v))
+}
+
+// UpstreamBillingGuardEnabledEQ applies the EQ predicate on the "upstream_billing_guard_enabled" field.
+func UpstreamBillingGuardEnabledEQ(v bool) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldUpstreamBillingGuardEnabled, v))
+}
+
+// UpstreamBillingGuardEnabledNEQ applies the NEQ predicate on the "upstream_billing_guard_enabled" field.
+func UpstreamBillingGuardEnabledNEQ(v bool) predicate.Account {
+	return predicate.Account(sql.FieldNEQ(FieldUpstreamBillingGuardEnabled, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierEQ applies the EQ predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierEQ(v float64) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierNEQ applies the NEQ predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierNEQ(v float64) predicate.Account {
+	return predicate.Account(sql.FieldNEQ(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierIn applies the In predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierIn(vs ...float64) predicate.Account {
+	return predicate.Account(sql.FieldIn(FieldUpstreamBillingGuardMaxMultiplier, vs...))
+}
+
+// UpstreamBillingGuardMaxMultiplierNotIn applies the NotIn predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierNotIn(vs ...float64) predicate.Account {
+	return predicate.Account(sql.FieldNotIn(FieldUpstreamBillingGuardMaxMultiplier, vs...))
+}
+
+// UpstreamBillingGuardMaxMultiplierGT applies the GT predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierGT(v float64) predicate.Account {
+	return predicate.Account(sql.FieldGT(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierGTE applies the GTE predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierGTE(v float64) predicate.Account {
+	return predicate.Account(sql.FieldGTE(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierLT applies the LT predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierLT(v float64) predicate.Account {
+	return predicate.Account(sql.FieldLT(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardMaxMultiplierLTE applies the LTE predicate on the "upstream_billing_guard_max_multiplier" field.
+func UpstreamBillingGuardMaxMultiplierLTE(v float64) predicate.Account {
+	return predicate.Account(sql.FieldLTE(FieldUpstreamBillingGuardMaxMultiplier, v))
+}
+
+// UpstreamBillingGuardBlockedEQ applies the EQ predicate on the "upstream_billing_guard_blocked" field.
+func UpstreamBillingGuardBlockedEQ(v bool) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldUpstreamBillingGuardBlocked, v))
+}
+
+// UpstreamBillingGuardBlockedNEQ applies the NEQ predicate on the "upstream_billing_guard_blocked" field.
+func UpstreamBillingGuardBlockedNEQ(v bool) predicate.Account {
+	return predicate.Account(sql.FieldNEQ(FieldUpstreamBillingGuardBlocked, v))
+}
+
+// UpstreamBillingGuardObservedMultiplierEQ applies the EQ predicate on the "upstream_billing_guard_observed_multiplier" field.
+func UpstreamBillingGuardObservedMultiplierEQ(v float64) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldUpstreamBillingGuardObservedMultiplier, v))
+}
+
+// UpstreamBillingGuardObservedMultiplierNEQ applies the NEQ predicate on the "upstream_billing_guard_observed_multiplier" field.
+func UpstreamBillingGuardObservedMultiplierNEQ(v float64) predicate.Account {
+	return predicate.Account(sql.FieldNEQ(FieldUpstreamBillingGuardObservedMultiplier, v))
+}
+
+// UpstreamBillingGuardObservedMultiplierIn applies the In predicate on the "upstream_billing_guard_observed_multiplier" field.
+func UpstreamBillingGuardObservedMultiplierIn(vs ...float64) predicate.Account {
+	return predicate.Account(sql.FieldIn(FieldUpstreamBillingGuardObservedMultiplier, vs...))
+}
+
+// UpstreamBillingGuardObservedMultiplierNotIn applies the NotIn predicate on the "upstream_billing_guard_observed_multiplier" field.
+func UpstreamBillingGuardObservedMultiplierNotIn(vs ...float64) predicate.Account {
+	return predicate.Account(sql.FieldNotIn(FieldUpstreamBillingGuardObservedMultiplier, vs...))
+}
+
+// UpstreamBillingGuardObservedMultiplierGT applies the GT predicate on the "upstream_billing_guard_observed_multiplier" field.
+func UpstreamBillingGuardObservedMultiplierGT(v float64) predicate.Account {
+	return predicate.Account(sql.FieldGT(FieldUpstreamBillingGuardObservedMultiplier, v))
+}
+
+// UpstreamBillingGuardObservedMultiplierGTE applies the GTE predicate on the "upstream_billing_guard_observed_multiplier" field.
+func UpstreamBillingGuardObservedMultiplierGTE(v float64) predicate.Account {
+	return predicate.Account(sql.FieldGTE(FieldUpstreamBillingGuardObservedMultiplier, v))
+}
+
+// UpstreamBillingGuardObservedMultiplierLT applies the LT predicate on the "upstream_billing_guard_observed_multiplier" field.
+func UpstreamBillingGuardObservedMultiplierLT(v float64) predicate.Account {
+	return predicate.Account(sql.FieldLT(FieldUpstreamBillingGuardObservedMultiplier, v))
+}
+
+// UpstreamBillingGuardObservedMultiplierLTE applies the LTE predicate on the "upstream_billing_guard_observed_multiplier" field.
+func UpstreamBillingGuardObservedMultiplierLTE(v float64) predicate.Account {
+	return predicate.Account(sql.FieldLTE(FieldUpstreamBillingGuardObservedMultiplier, v))
+}
+
+// UpstreamBillingGuardObservedMultiplierIsNil applies the IsNil predicate on the "upstream_billing_guard_observed_multiplier" field.
+func UpstreamBillingGuardObservedMultiplierIsNil() predicate.Account {
+	return predicate.Account(sql.FieldIsNull(FieldUpstreamBillingGuardObservedMultiplier))
+}
+
+// UpstreamBillingGuardObservedMultiplierNotNil applies the NotNil predicate on the "upstream_billing_guard_observed_multiplier" field.
+func UpstreamBillingGuardObservedMultiplierNotNil() predicate.Account {
+	return predicate.Account(sql.FieldNotNull(FieldUpstreamBillingGuardObservedMultiplier))
+}
+
+// UpstreamBillingGuardEvaluatedAtEQ applies the EQ predicate on the "upstream_billing_guard_evaluated_at" field.
+func UpstreamBillingGuardEvaluatedAtEQ(v time.Time) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldUpstreamBillingGuardEvaluatedAt, v))
+}
+
+// UpstreamBillingGuardEvaluatedAtNEQ applies the NEQ predicate on the "upstream_billing_guard_evaluated_at" field.
+func UpstreamBillingGuardEvaluatedAtNEQ(v time.Time) predicate.Account {
+	return predicate.Account(sql.FieldNEQ(FieldUpstreamBillingGuardEvaluatedAt, v))
+}
+
+// UpstreamBillingGuardEvaluatedAtIn applies the In predicate on the "upstream_billing_guard_evaluated_at" field.
+func UpstreamBillingGuardEvaluatedAtIn(vs ...time.Time) predicate.Account {
+	return predicate.Account(sql.FieldIn(FieldUpstreamBillingGuardEvaluatedAt, vs...))
+}
+
+// UpstreamBillingGuardEvaluatedAtNotIn applies the NotIn predicate on the "upstream_billing_guard_evaluated_at" field.
+func UpstreamBillingGuardEvaluatedAtNotIn(vs ...time.Time) predicate.Account {
+	return predicate.Account(sql.FieldNotIn(FieldUpstreamBillingGuardEvaluatedAt, vs...))
+}
+
+// UpstreamBillingGuardEvaluatedAtGT applies the GT predicate on the "upstream_billing_guard_evaluated_at" field.
+func UpstreamBillingGuardEvaluatedAtGT(v time.Time) predicate.Account {
+	return predicate.Account(sql.FieldGT(FieldUpstreamBillingGuardEvaluatedAt, v))
+}
+
+// UpstreamBillingGuardEvaluatedAtGTE applies the GTE predicate on the "upstream_billing_guard_evaluated_at" field.
+func UpstreamBillingGuardEvaluatedAtGTE(v time.Time) predicate.Account {
+	return predicate.Account(sql.FieldGTE(FieldUpstreamBillingGuardEvaluatedAt, v))
+}
+
+// UpstreamBillingGuardEvaluatedAtLT applies the LT predicate on the "upstream_billing_guard_evaluated_at" field.
+func UpstreamBillingGuardEvaluatedAtLT(v time.Time) predicate.Account {
+	return predicate.Account(sql.FieldLT(FieldUpstreamBillingGuardEvaluatedAt, v))
+}
+
+// UpstreamBillingGuardEvaluatedAtLTE applies the LTE predicate on the "upstream_billing_guard_evaluated_at" field.
+func UpstreamBillingGuardEvaluatedAtLTE(v time.Time) predicate.Account {
+	return predicate.Account(sql.FieldLTE(FieldUpstreamBillingGuardEvaluatedAt, v))
+}
+
+// UpstreamBillingGuardEvaluatedAtIsNil applies the IsNil predicate on the "upstream_billing_guard_evaluated_at" field.
+func UpstreamBillingGuardEvaluatedAtIsNil() predicate.Account {
+	return predicate.Account(sql.FieldIsNull(FieldUpstreamBillingGuardEvaluatedAt))
+}
+
+// UpstreamBillingGuardEvaluatedAtNotNil applies the NotNil predicate on the "upstream_billing_guard_evaluated_at" field.
+func UpstreamBillingGuardEvaluatedAtNotNil() predicate.Account {
+	return predicate.Account(sql.FieldNotNull(FieldUpstreamBillingGuardEvaluatedAt))
 }
 
 // RateLimitedAtEQ applies the EQ predicate on the "rate_limited_at" field.

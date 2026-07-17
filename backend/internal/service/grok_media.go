@@ -10,6 +10,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -391,11 +392,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(ctx context.Context, c *gin.Cont
 	}
 	upstreamReq.Header.Set("Authorization", "Bearer "+token)
 	upstreamReq.Header.Set("Accept", "application/json")
-	if account.IsGrokOAuth() {
-		applyGrokCLIHeaders(upstreamReq.Header)
-	} else {
-		upstreamReq.Header.Set("User-Agent", grokUpstreamUserAgent)
-	}
+	applyGrokOAuthIdentityHeaders(upstreamReq.Header, targetURL, account.IsGrokOAuth())
 	if endpoint.RequiresRequestBody() {
 		contentType = strings.TrimSpace(contentType)
 		if contentType == "" {
@@ -460,6 +457,11 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(ctx context.Context, c *gin.Cont
 		VideoResolution:      usage.VideoResolution,
 		VideoDurationSeconds: usage.VideoDurationSeconds,
 	}, nil
+}
+
+func isGrokCLIProxyTarget(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	return err == nil && strings.EqualFold(parsed.Hostname(), "cli-chat-proxy.grok.com")
 }
 
 func grokMediaSuccessResponseIsValid(endpoint GrokMediaEndpoint, body []byte) bool {

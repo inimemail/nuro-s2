@@ -43,11 +43,7 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+token)
-	if account.IsGrokOAuth() {
-		applyGrokCLIHeaders(req.Header)
-	} else {
-		req.Header.Set("User-Agent", grokUpstreamUserAgent)
-	}
+	applyGrokOAuthIdentityHeaders(req.Header, url, account.IsGrokOAuth())
 	if account.Proxy != nil {
 		resp, err := s.httpUpstream.DoWithTLS(req, account.Proxy.URL(), account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 		return s.finishGrokTest(c, resp, err, model)

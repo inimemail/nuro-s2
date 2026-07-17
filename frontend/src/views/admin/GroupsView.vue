@@ -370,6 +370,16 @@
                 }}</span>
               </button>
               <button
+                data-testid="group-duplicate"
+                :disabled="duplicatingGroupIds.has(row.id)"
+                :title="duplicatingGroupIds.has(row.id) ? t('admin.groups.duplicating') : t('admin.groups.duplicate')"
+                @click="handleDuplicate(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-dark-700 dark:hover:text-primary-400"
+              >
+                <Icon name="copy" size="sm" />
+                <span class="text-xs">{{ duplicatingGroupIds.has(row.id) ? t('admin.groups.duplicating') : t('admin.groups.duplicate') }}</span>
+              </button>
+              <button
                 @click="handleRPMOverrides(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-orange-600 dark:hover:bg-dark-700 dark:hover:text-orange-400"
               >
@@ -3870,6 +3880,7 @@ const submitting = ref(false);
 const sortSubmitting = ref(false);
 const editingGroup = ref<AdminGroup | null>(null);
 const deletingGroup = ref<AdminGroup | null>(null);
+const duplicatingGroupIds = reactive(new Set<number>());
 const showRateMultipliersModal = ref(false);
 const rateMultipliersGroup = ref<AdminGroup | null>(null);
 const showRPMOverridesModal = ref(false);
@@ -4947,6 +4958,20 @@ const removeEditMessagesDispatchMapping = (row: MessagesDispatchMappingRow) => {
 const handleRateMultipliers = (group: AdminGroup) => {
   rateMultipliersGroup.value = group;
   showRateMultipliersModal.value = true;
+};
+
+const handleDuplicate = async (group: AdminGroup) => {
+  if (duplicatingGroupIds.has(group.id)) return;
+  duplicatingGroupIds.add(group.id);
+  try {
+    const duplicate = await adminAPI.groups.duplicate(group.id);
+    appStore.showSuccess(t('admin.groups.duplicateSuccess', { name: duplicate.name }));
+    await loadGroups();
+  } catch (error: any) {
+    appStore.showError(error.response?.data?.message || error.message || t('admin.groups.duplicateFailed'));
+  } finally {
+    duplicatingGroupIds.delete(group.id);
+  }
 };
 
 const handleRPMOverrides = (group: AdminGroup) => {

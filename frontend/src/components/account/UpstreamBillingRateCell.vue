@@ -1,8 +1,8 @@
 <template>
-  <div v-if="eligible" class="flex min-w-[6.5rem] items-center gap-1.5">
+  <div v-if="eligible" class="flex min-w-[7rem] items-center gap-1.5">
     <div class="min-w-0">
       <div class="font-mono text-sm font-medium text-gray-800 dark:text-gray-200">
-        {{ displayedRate }}
+        {{ displayedRate }}<span v-if="thresholdLabel" class="ml-1 text-[10px] text-gray-500">{{ thresholdLabel }}</span>
       </div>
       <div :class="statusClass" class="truncate text-[10px]" :title="statusTitle">
         {{ statusLabel }}
@@ -52,11 +52,17 @@ const stale = computed(() => {
   return !Number.isFinite(freshUntil.value) || props.now >= freshUntil.value
 })
 const displayedRate = computed(() => {
-  if (snapshot.value?.status !== 'ok' || stale.value) return '-'
+  if (snapshot.value?.status !== 'ok') return '-'
   const value = snapshot.value.data?.effective_rate_multiplier
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? `${Number(value.toPrecision(12))}x`
     : '-'
+})
+const thresholdLabel = computed(() => {
+  const value = props.account.upstream_billing_guard_max_multiplier
+  return props.account.upstream_billing_guard_enabled && typeof value === 'number' && Number.isFinite(value)
+    ? `/ ${Number(value.toPrecision(8))}x`
+    : ''
 })
 const statusLabel = computed(() => {
   if (!snapshot.value) return t('admin.accounts.upstreamBilling.notProbed')

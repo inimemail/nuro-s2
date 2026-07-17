@@ -186,6 +186,8 @@ func cloneSchedulerAccount(account Account) Account {
 	cloned.RateLimitedAt = cloneTimePtr(account.RateLimitedAt)
 	cloned.RateLimitResetAt = cloneTimePtr(account.RateLimitResetAt)
 	cloned.OverloadUntil = cloneTimePtr(account.OverloadUntil)
+	cloned.UpstreamBillingGuardObservedMultiplier = cloneFloatPtr(account.UpstreamBillingGuardObservedMultiplier)
+	cloned.UpstreamBillingGuardEvaluatedAt = cloneTimePtr(account.UpstreamBillingGuardEvaluatedAt)
 	cloned.OpenAIPoolSoftCooldownUntil = cloneTimePtr(account.OpenAIPoolSoftCooldownUntil)
 	cloned.AnthropicPoolSoftCooldownUntil = cloneTimePtr(account.AnthropicPoolSoftCooldownUntil)
 	cloned.SessionWindowStart = cloneTimePtr(account.SessionWindowStart)
@@ -227,6 +229,14 @@ func cloneSchedulerAccount(account Account) Account {
 	cloned.headerOverrideCacheRawLen = 0
 	cloned.headerOverrideCacheRawSig = 0
 	return cloned
+}
+
+func cloneFloatPtr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func cloneStringAnyMap(in map[string]any) map[string]any {

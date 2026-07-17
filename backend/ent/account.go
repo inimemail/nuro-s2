@@ -61,6 +61,16 @@ type Account struct {
 	AutoPauseOnExpired bool `json:"auto_pause_on_expired,omitempty"`
 	// Schedulable holds the value of the "schedulable" field.
 	Schedulable bool `json:"schedulable,omitempty"`
+	// UpstreamBillingGuardEnabled holds the value of the "upstream_billing_guard_enabled" field.
+	UpstreamBillingGuardEnabled bool `json:"upstream_billing_guard_enabled,omitempty"`
+	// UpstreamBillingGuardMaxMultiplier holds the value of the "upstream_billing_guard_max_multiplier" field.
+	UpstreamBillingGuardMaxMultiplier float64 `json:"upstream_billing_guard_max_multiplier,omitempty"`
+	// UpstreamBillingGuardBlocked holds the value of the "upstream_billing_guard_blocked" field.
+	UpstreamBillingGuardBlocked bool `json:"upstream_billing_guard_blocked,omitempty"`
+	// UpstreamBillingGuardObservedMultiplier holds the value of the "upstream_billing_guard_observed_multiplier" field.
+	UpstreamBillingGuardObservedMultiplier *float64 `json:"upstream_billing_guard_observed_multiplier,omitempty"`
+	// UpstreamBillingGuardEvaluatedAt holds the value of the "upstream_billing_guard_evaluated_at" field.
+	UpstreamBillingGuardEvaluatedAt *time.Time `json:"upstream_billing_guard_evaluated_at,omitempty"`
 	// RateLimitedAt holds the value of the "rate_limited_at" field.
 	RateLimitedAt *time.Time `json:"rate_limited_at,omitempty"`
 	// RateLimitResetAt holds the value of the "rate_limit_reset_at" field.
@@ -171,15 +181,15 @@ func (*Account) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case account.FieldCredentials, account.FieldExtra:
 			values[i] = new([]byte)
-		case account.FieldAutoPauseOnExpired, account.FieldSchedulable:
+		case account.FieldAutoPauseOnExpired, account.FieldSchedulable, account.FieldUpstreamBillingGuardEnabled, account.FieldUpstreamBillingGuardBlocked:
 			values[i] = new(sql.NullBool)
-		case account.FieldRateMultiplier:
+		case account.FieldRateMultiplier, account.FieldUpstreamBillingGuardMaxMultiplier, account.FieldUpstreamBillingGuardObservedMultiplier:
 			values[i] = new(sql.NullFloat64)
 		case account.FieldID, account.FieldProxyID, account.FieldProxyFallbackOriginID, account.FieldConcurrency, account.FieldLoadFactor, account.FieldPriority, account.FieldParentAccountID:
 			values[i] = new(sql.NullInt64)
 		case account.FieldName, account.FieldNotes, account.FieldPlatform, account.FieldType, account.FieldStatus, account.FieldErrorMessage, account.FieldTempUnschedulableReason, account.FieldSessionWindowStatus, account.FieldQuotaDimension:
 			values[i] = new(sql.NullString)
-		case account.FieldCreatedAt, account.FieldUpdatedAt, account.FieldDeletedAt, account.FieldLastUsedAt, account.FieldExpiresAt, account.FieldRateLimitedAt, account.FieldRateLimitResetAt, account.FieldOverloadUntil, account.FieldTempUnschedulableUntil, account.FieldSessionWindowStart, account.FieldSessionWindowEnd:
+		case account.FieldCreatedAt, account.FieldUpdatedAt, account.FieldDeletedAt, account.FieldLastUsedAt, account.FieldExpiresAt, account.FieldUpstreamBillingGuardEvaluatedAt, account.FieldRateLimitedAt, account.FieldRateLimitResetAt, account.FieldOverloadUntil, account.FieldTempUnschedulableUntil, account.FieldSessionWindowStart, account.FieldSessionWindowEnd:
 			values[i] = new(sql.NullTime)
 		default:
 			values[i] = new(sql.UnknownType)
@@ -339,6 +349,38 @@ func (_m *Account) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field schedulable", values[i])
 			} else if value.Valid {
 				_m.Schedulable = value.Bool
+			}
+		case account.FieldUpstreamBillingGuardEnabled:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field upstream_billing_guard_enabled", values[i])
+			} else if value.Valid {
+				_m.UpstreamBillingGuardEnabled = value.Bool
+			}
+		case account.FieldUpstreamBillingGuardMaxMultiplier:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field upstream_billing_guard_max_multiplier", values[i])
+			} else if value.Valid {
+				_m.UpstreamBillingGuardMaxMultiplier = value.Float64
+			}
+		case account.FieldUpstreamBillingGuardBlocked:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field upstream_billing_guard_blocked", values[i])
+			} else if value.Valid {
+				_m.UpstreamBillingGuardBlocked = value.Bool
+			}
+		case account.FieldUpstreamBillingGuardObservedMultiplier:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field upstream_billing_guard_observed_multiplier", values[i])
+			} else if value.Valid {
+				_m.UpstreamBillingGuardObservedMultiplier = new(float64)
+				*_m.UpstreamBillingGuardObservedMultiplier = value.Float64
+			}
+		case account.FieldUpstreamBillingGuardEvaluatedAt:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field upstream_billing_guard_evaluated_at", values[i])
+			} else if value.Valid {
+				_m.UpstreamBillingGuardEvaluatedAt = new(time.Time)
+				*_m.UpstreamBillingGuardEvaluatedAt = value.Time
 			}
 		case account.FieldRateLimitedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
@@ -553,6 +595,25 @@ func (_m *Account) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("schedulable=")
 	builder.WriteString(fmt.Sprintf("%v", _m.Schedulable))
+	builder.WriteString(", ")
+	builder.WriteString("upstream_billing_guard_enabled=")
+	builder.WriteString(fmt.Sprintf("%v", _m.UpstreamBillingGuardEnabled))
+	builder.WriteString(", ")
+	builder.WriteString("upstream_billing_guard_max_multiplier=")
+	builder.WriteString(fmt.Sprintf("%v", _m.UpstreamBillingGuardMaxMultiplier))
+	builder.WriteString(", ")
+	builder.WriteString("upstream_billing_guard_blocked=")
+	builder.WriteString(fmt.Sprintf("%v", _m.UpstreamBillingGuardBlocked))
+	builder.WriteString(", ")
+	if v := _m.UpstreamBillingGuardObservedMultiplier; v != nil {
+		builder.WriteString("upstream_billing_guard_observed_multiplier=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
+	builder.WriteString(", ")
+	if v := _m.UpstreamBillingGuardEvaluatedAt; v != nil {
+		builder.WriteString("upstream_billing_guard_evaluated_at=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
 	builder.WriteString(", ")
 	if v := _m.RateLimitedAt; v != nil {
 		builder.WriteString("rate_limited_at=")

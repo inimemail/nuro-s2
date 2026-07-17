@@ -52,6 +52,39 @@ export function applyGrokOAuthBaseURL(
   }
 }
 
+const GROK_DEFAULT_GATEWAY_HOST = 'cli-chat-proxy.grok.com'
+
+/**
+ * OAuth creation and refresh persist the CLI gateway by default. Official,
+ * regional, and third-party endpoints are operator-selected values and must
+ * remain visible when an account is edited.
+ */
+export function isCustomGrokBaseUrl(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.hostname.toLowerCase() !== GROK_DEFAULT_GATEWAY_HOST
+  } catch {
+    return false
+  }
+}
+
+export interface GrokBaseUrlPreset {
+  labelKey?: 'cli' | 'official'
+  label?: string
+  url: string
+}
+
+export const GROK_BASE_URL_PRESETS: GrokBaseUrlPreset[] = [
+  { labelKey: 'cli', url: 'https://cli-chat-proxy.grok.com/v1' },
+  { labelKey: 'official', url: 'https://api.x.ai/v1' },
+  { label: 'us-east-1', url: 'https://us-east-1.api.x.ai/v1' },
+  { label: 'us-west-2', url: 'https://us-west-2.api.x.ai/v1' },
+  { label: 'eu-west-1', url: 'https://eu-west-1.api.x.ai/v1' }
+]
+
 const HEADER_OVERRIDE_BLOCKED_NAMES = new Set([
   'host',
   'content-length',

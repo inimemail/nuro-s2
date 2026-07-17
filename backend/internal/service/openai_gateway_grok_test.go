@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +71,63 @@ func TestBuildGrokResponsesRequestHeaderOverrideDisabledIsNoOp(t *testing.T) {
 	require.NotEqual(t, "custom-grok-client", req.Header.Get("User-Agent"))
 	require.Equal(t, "Bearer grok-token", req.Header.Get("Authorization"))
 	require.Equal(t, "server-session", req.Header.Get("X-Grok-Conv-Id"))
+}
+
+func TestBuildGrokResponsesRequestCustomOAuthEndpointOmitsCLIIdentity(t *testing.T) {
+	account := &Account{
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":               "grok-token",
+			"base_url":                   "https://regional-grok.example/v1",
+			credKeyHeaderOverrideEnabled: true,
+			credKeyHeaderOverrides: map[string]any{
+				"x-region-route": "eu-west",
+			},
+		},
+	}
+
+	req, err := buildGrokResponsesRequest(context.Background(), nil, account, []byte(`{"input":"hi"}`), "grok-token", "session-1", &config.Config{})
+	require.NoError(t, err)
+	require.Equal(t, "https://regional-grok.example/v1/responses", req.URL.String())
+	require.Equal(t, "eu-west", getHeaderRaw(req.Header, "x-region-route"))
+	require.Equal(t, "sub2api-grok/1.0", req.Header.Get("User-Agent"))
+	require.Empty(t, req.Header.Get("X-XAI-Token-Auth"))
+	require.Empty(t, req.Header.Get("X-Grok-Client-Version"))
+}
+
+func TestGrokBillingProbeCustomOAuthEndpointUsesAccountHeadersWithoutCLIIdentity(t *testing.T) {
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"config":{"creditUsagePercent":42}}`)),
+	}}
+	service := &GrokQuotaService{httpUpstream: upstream}
+	account := &Account{
+		ID:       123,
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"base_url":                   "https://regional-grok.example/v1",
+			credKeyHeaderOverrideEnabled: true,
+			credKeyHeaderOverrides: map[string]any{
+				"x-region-route": "eu-west",
+				"user-agent":     "regional-client/1.0",
+			},
+		},
+	}
+
+	_, status, err := service.fetchBilling(context.Background(), account, "grok-token", "", true)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	require.Len(t, upstream.requests, 1)
+	req := upstream.requests[0]
+	require.Equal(t, "https://regional-grok.example/v1/billing?format=credits", req.URL.String())
+	require.Equal(t, "Bearer grok-token", req.Header.Get("Authorization"))
+	require.Equal(t, "eu-west", getHeaderRaw(req.Header, "x-region-route"))
+	require.Equal(t, "regional-client/1.0", req.Header.Get("User-Agent"))
+	require.Empty(t, req.Header.Get("X-XAI-Token-Auth"))
+	require.Empty(t, req.Header.Get("X-Grok-Client-Version"))
 }
 
 type grokMediaCacheErrorStub struct {

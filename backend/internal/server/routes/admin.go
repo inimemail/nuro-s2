@@ -256,6 +256,7 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers, s
 		users.POST("/:id/replace-group", h.Admin.User.ReplaceGroup)
 		users.GET("/:id/rpm-status", h.Admin.User.GetUserRPMStatus)
 		users.POST("/batch-concurrency", h.Admin.User.BatchUpdateConcurrency)
+		users.POST("/batch-limits", h.Admin.User.BatchUpdateLimits)
 		users.GET("/:id/platform-quotas", h.Admin.User.GetUserPlatformQuotas)
 		users.PUT("/:id/platform-quotas", h.Admin.User.UpdateUserPlatformQuotas)
 		users.POST("/:id/platform-quotas/reset", h.Admin.User.ResetUserPlatformQuotaWindow)
@@ -277,6 +278,7 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp mid
 		groups.GET("/:id/models-list-candidates", h.Admin.Group.GetModelsListCandidates)
 		groups.GET("/:id", h.Admin.Group.GetByID)
 		groups.POST("", h.Admin.Group.Create)
+		groups.POST("/:id/duplicate", h.Admin.Group.Duplicate)
 		groups.PUT("/:id", h.Admin.Group.Update)
 		groups.DELETE("/:id", h.Admin.Group.Delete)
 		groups.GET("/:id/stats", h.Admin.Group.GetStats)
@@ -337,6 +339,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp m
 		accounts.POST("/upstream-billing-probe/batch", h.Admin.Account.ProbeUpstreamBillingBatch)
 		accounts.PUT("/:id/upstream-billing-probe", h.Admin.Account.SetUpstreamBillingProbeEnabled)
 		accounts.POST("/:id/upstream-billing-probe", h.Admin.Account.ProbeUpstreamBilling)
+		accounts.PUT("/:id/upstream-billing-guard", h.Admin.Account.UpdateUpstreamBillingGuard)
 
 		// Antigravity 默认模型映射
 		accounts.GET("/antigravity/default-model-mapping", h.Admin.Account.GetAntigravityDefaultModelMapping)

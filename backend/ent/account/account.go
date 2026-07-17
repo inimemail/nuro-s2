@@ -58,6 +58,16 @@ const (
 	FieldAutoPauseOnExpired = "auto_pause_on_expired"
 	// FieldSchedulable holds the string denoting the schedulable field in the database.
 	FieldSchedulable = "schedulable"
+	// FieldUpstreamBillingGuardEnabled holds the string denoting the upstream_billing_guard_enabled field in the database.
+	FieldUpstreamBillingGuardEnabled = "upstream_billing_guard_enabled"
+	// FieldUpstreamBillingGuardMaxMultiplier holds the string denoting the upstream_billing_guard_max_multiplier field in the database.
+	FieldUpstreamBillingGuardMaxMultiplier = "upstream_billing_guard_max_multiplier"
+	// FieldUpstreamBillingGuardBlocked holds the string denoting the upstream_billing_guard_blocked field in the database.
+	FieldUpstreamBillingGuardBlocked = "upstream_billing_guard_blocked"
+	// FieldUpstreamBillingGuardObservedMultiplier holds the string denoting the upstream_billing_guard_observed_multiplier field in the database.
+	FieldUpstreamBillingGuardObservedMultiplier = "upstream_billing_guard_observed_multiplier"
+	// FieldUpstreamBillingGuardEvaluatedAt holds the string denoting the upstream_billing_guard_evaluated_at field in the database.
+	FieldUpstreamBillingGuardEvaluatedAt = "upstream_billing_guard_evaluated_at"
 	// FieldRateLimitedAt holds the string denoting the rate_limited_at field in the database.
 	FieldRateLimitedAt = "rate_limited_at"
 	// FieldRateLimitResetAt holds the string denoting the rate_limit_reset_at field in the database.
@@ -152,6 +162,11 @@ var Columns = []string{
 	FieldExpiresAt,
 	FieldAutoPauseOnExpired,
 	FieldSchedulable,
+	FieldUpstreamBillingGuardEnabled,
+	FieldUpstreamBillingGuardMaxMultiplier,
+	FieldUpstreamBillingGuardBlocked,
+	FieldUpstreamBillingGuardObservedMultiplier,
+	FieldUpstreamBillingGuardEvaluatedAt,
 	FieldRateLimitedAt,
 	FieldRateLimitResetAt,
 	FieldOverloadUntil,
@@ -218,6 +233,12 @@ var (
 	DefaultAutoPauseOnExpired bool
 	// DefaultSchedulable holds the default value on creation for the "schedulable" field.
 	DefaultSchedulable bool
+	// DefaultUpstreamBillingGuardEnabled holds the default value on creation for the "upstream_billing_guard_enabled" field.
+	DefaultUpstreamBillingGuardEnabled bool
+	// DefaultUpstreamBillingGuardMaxMultiplier holds the default value on creation for the "upstream_billing_guard_max_multiplier" field.
+	DefaultUpstreamBillingGuardMaxMultiplier float64
+	// DefaultUpstreamBillingGuardBlocked holds the default value on creation for the "upstream_billing_guard_blocked" field.
+	DefaultUpstreamBillingGuardBlocked bool
 	// SessionWindowStatusValidator is a validator for the "session_window_status" field. It is called by the builders before save.
 	SessionWindowStatusValidator func(string) error
 )
@@ -349,6 +370,31 @@ func ByAutoPauseOnExpired(opts ...sql.OrderTermOption) OrderOption {
 // BySchedulable orders the results by the schedulable field.
 func BySchedulable(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldSchedulable, opts...).ToFunc()
+}
+
+// ByUpstreamBillingGuardEnabled orders the results by the upstream_billing_guard_enabled field.
+func ByUpstreamBillingGuardEnabled(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUpstreamBillingGuardEnabled, opts...).ToFunc()
+}
+
+// ByUpstreamBillingGuardMaxMultiplier orders the results by the upstream_billing_guard_max_multiplier field.
+func ByUpstreamBillingGuardMaxMultiplier(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUpstreamBillingGuardMaxMultiplier, opts...).ToFunc()
+}
+
+// ByUpstreamBillingGuardBlocked orders the results by the upstream_billing_guard_blocked field.
+func ByUpstreamBillingGuardBlocked(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUpstreamBillingGuardBlocked, opts...).ToFunc()
+}
+
+// ByUpstreamBillingGuardObservedMultiplier orders the results by the upstream_billing_guard_observed_multiplier field.
+func ByUpstreamBillingGuardObservedMultiplier(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUpstreamBillingGuardObservedMultiplier, opts...).ToFunc()
+}
+
+// ByUpstreamBillingGuardEvaluatedAt orders the results by the upstream_billing_guard_evaluated_at field.
+func ByUpstreamBillingGuardEvaluatedAt(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUpstreamBillingGuardEvaluatedAt, opts...).ToFunc()
 }
 
 // ByRateLimitedAt orders the results by the rate_limited_at field.

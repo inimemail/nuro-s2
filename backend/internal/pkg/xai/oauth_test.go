@@ -37,3 +37,15 @@ func TestNormalizeKnownBaseURLPathAcceptsKnownShape(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "https://api.x.ai/v1", got)
 }
+
+func TestOfficialBaseURLHostsIncludeRegionalAPIEndpoints(t *testing.T) {
+	t.Parallel()
+	for _, host := range []string{"api.x.ai", "us-east-1.api.x.ai", "us-west-2.api.x.ai", "eu-west-1.api.x.ai"} {
+		validated, err := ValidateTrustedBaseURL("https://" + host + "/v1")
+		require.NoError(t, err, host)
+		require.Equal(t, "https://"+host+"/v1", validated)
+	}
+	_, err := ValidateTrustedBaseURL("https://api.x.ai.attacker.example/v1")
+	require.Error(t, err)
+	require.False(t, IsParseableBaseURL("://invalid"))
+}

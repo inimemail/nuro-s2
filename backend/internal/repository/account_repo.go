@@ -345,6 +345,24 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 		SetErrorMessage(account.ErrorMessage).
 		SetSchedulable(schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
+	autoProbeEnabled, _ := account.Extra[service.UpstreamBillingProbeEnabledExtraKey].(bool)
+	guardRequiresAutoProbePredicate := account.Platform == service.PlatformOpenAI &&
+		account.Type == service.AccountTypeAPIKey && !autoProbeEnabled
+	if guardRequiresAutoProbePredicate {
+		// Preserve the guard/probe invariant even when a normal account update
+		// races with the dedicated guard endpoint.
+		builder.Where(dbaccount.UpstreamBillingGuardEnabledEQ(false))
+	}
+	if account.Platform != service.PlatformOpenAI || account.Type != service.AccountTypeAPIKey {
+		// The guard is meaningful only for OpenAI API-key accounts. Clear its
+		// runtime decision when an account changes identity so a stale blocked
+		// flag cannot suppress an unrelated credential type. Keep the configured
+		// threshold for a future API-key conversion, but force a fresh probe.
+		builder.SetUpstreamBillingGuardEnabled(false).
+			SetUpstreamBillingGuardBlocked(false).
+			ClearUpstreamBillingGuardObservedMultiplier().
+			ClearUpstreamBillingGuardEvaluatedAt()
+	}
 
 	if account.RateMultiplier != nil {
 		builder.SetRateMultiplier(*account.RateMultiplier)
@@ -408,6 +426,12 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 
 	updated, err := builder.Save(ctx)
 	if err != nil {
+		if guardRequiresAutoProbePredicate && dbent.IsNotFound(err) {
+			current, loadErr := r.GetByID(ctx, account.ID)
+			if loadErr == nil && current.UpstreamBillingGuardEnabled {
+				return service.ErrUpstreamBillingProbeRequiredByGuard
+			}
+		}
 		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
 	}
 	account.UpdatedAt = updated.UpdatedAt
@@ -626,6 +650,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 			q = q.Where(
 				dbaccount.StatusEQ(status),
 				dbaccount.SchedulableEQ(true),
+				dbaccount.UpstreamBillingGuardBlockedEQ(false),
 				dbaccount.Or(
 					dbaccount.RateLimitResetAtIsNil(),
 					dbaccount.RateLimitResetAtLTE(time.Now()),
@@ -779,6 +804,7 @@ func (r *accountRepository) ListOpsAccountsForStats(ctx context.Context, platfor
 			dbaccount.FieldStatus,
 			dbaccount.FieldErrorMessage,
 			dbaccount.FieldSchedulable,
+			dbaccount.FieldUpstreamBillingGuardBlocked,
 			dbaccount.FieldRateLimitResetAt,
 			dbaccount.FieldOverloadUntil,
 			dbaccount.FieldTempUnschedulableUntil,
@@ -806,17 +832,18 @@ func (r *accountRepository) ListOpsAccountsForStats(ctx context.Context, platfor
 			continue
 		}
 		item := service.Account{
-			ID:                     acc.ID,
-			Name:                   acc.Name,
-			Platform:               acc.Platform,
-			Concurrency:            acc.Concurrency,
-			LoadFactor:             acc.LoadFactor,
-			Status:                 acc.Status,
-			ErrorMessage:           derefString(acc.ErrorMessage),
-			Schedulable:            acc.Schedulable,
-			RateLimitResetAt:       acc.RateLimitResetAt,
-			OverloadUntil:          acc.OverloadUntil,
-			TempUnschedulableUntil: acc.TempUnschedulableUntil,
+			ID:                          acc.ID,
+			Name:                        acc.Name,
+			Platform:                    acc.Platform,
+			Concurrency:                 acc.Concurrency,
+			LoadFactor:                  acc.LoadFactor,
+			Status:                      acc.Status,
+			ErrorMessage:                derefString(acc.ErrorMessage),
+			Schedulable:                 acc.Schedulable,
+			UpstreamBillingGuardBlocked: acc.UpstreamBillingGuardBlocked,
+			RateLimitResetAt:            acc.RateLimitResetAt,
+			OverloadUntil:               acc.OverloadUntil,
+			TempUnschedulableUntil:      acc.TempUnschedulableUntil,
 		}
 		if groups, ok := groupsByAccount[acc.ID]; ok {
 			item.Groups = groups
@@ -1176,6 +1203,7 @@ func (r *accountRepository) ListSchedulable(ctx context.Context) ([]service.Acco
 		Where(
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
+			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
@@ -1240,6 +1268,7 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 			AND a.deleted_at IS NULL
 			AND a.status = $2
 			AND a.schedulable = TRUE
+			AND a.upstream_billing_guard_blocked = FALSE
 			AND (a.temp_unschedulable_until IS NULL OR a.temp_unschedulable_until <= $3)
 			AND (a.expires_at IS NULL OR a.expires_at > $3 OR a.auto_pause_on_expired = FALSE)
 			AND (a.overload_until IS NULL OR a.overload_until <= $3)
@@ -1288,6 +1317,7 @@ func (r *accountRepository) ListSchedulableByPlatform(ctx context.Context, platf
 			dbaccount.PlatformEQ(platform),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
+			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
@@ -1322,6 +1352,7 @@ func (r *accountRepository) ListSchedulableByPlatforms(ctx context.Context, plat
 			dbaccount.PlatformIn(platforms...),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
+			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
@@ -1342,6 +1373,7 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatform(ctx context.Conte
 			dbaccount.PlatformEQ(platform),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
+			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			dbaccount.Not(dbaccount.HasAccountGroups()),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
@@ -1366,6 +1398,7 @@ func (r *accountRepository) ListSchedulableUngroupedByPlatforms(ctx context.Cont
 			dbaccount.PlatformIn(platforms...),
 			dbaccount.StatusEQ(service.StatusActive),
 			dbaccount.SchedulableEQ(true),
+			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			dbaccount.Not(dbaccount.HasAccountGroups()),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
@@ -1759,6 +1792,14 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	if len(updates) == 0 {
 		return nil
 	}
+	probeDisableRequested := false
+	if value, exists := updates[service.UpstreamBillingProbeEnabledExtraKey]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return service.ErrInvalidUpstreamBillingProbeEnabled
+		}
+		probeDisableRequested = !enabled
+	}
 
 	// 使用 JSONB 合并操作实现原子更新，避免读-改-写的并发丢失更新问题
 	payload, err := json.Marshal(updates)
@@ -1767,11 +1808,13 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	}
 
 	client := clientFromContext(ctx, r.client)
-	result, err := client.ExecContext(
-		ctx,
-		"UPDATE accounts SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL",
-		string(payload), id,
-	)
+	query := "UPDATE accounts SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL"
+	args := []any{string(payload), id}
+	if probeDisableRequested {
+		query += " AND NOT (platform = $3 AND type = $4 AND upstream_billing_guard_enabled = TRUE)"
+		args = append(args, service.PlatformOpenAI, service.AccountTypeAPIKey)
+	}
+	result, err := client.ExecContext(ctx, query, args...)
 
 	if err != nil {
 		return err
@@ -1782,6 +1825,12 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		return err
 	}
 	if affected == 0 {
+		if probeDisableRequested {
+			account, loadErr := r.GetByID(ctx, id)
+			if loadErr == nil && account.UpstreamBillingGuardEnabled {
+				return service.ErrUpstreamBillingProbeRequiredByGuard
+			}
+		}
 		return service.ErrAccountNotFound
 	}
 	if shouldEnqueueSchedulerOutboxForExtraUpdates(updates) {
@@ -1798,19 +1847,20 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 }
 
 // UpdateUpstreamBillingProbeSnapshot persists observation data only if the
-// account credentials, proxy selection, previous snapshot, and enable switch
-// still match the identity used for the network request.
-func (r *accountRepository) UpdateUpstreamBillingProbeSnapshot(ctx context.Context, account *service.Account, snapshot *service.UpstreamBillingProbeSnapshot) error {
+// account identity and guard configuration still match the request snapshot.
+// A nil observedMultiplier denotes a failed probe and deliberately leaves the
+// guard state untouched.
+func (r *accountRepository) UpdateUpstreamBillingProbeSnapshot(ctx context.Context, account *service.Account, snapshot *service.UpstreamBillingProbeSnapshot, observedMultiplier *float64) (bool, error) {
 	if account == nil || snapshot == nil {
-		return service.ErrAccountNilInput
+		return false, service.ErrAccountNilInput
 	}
 	payload, err := json.Marshal(map[string]any{service.UpstreamBillingProbeExtraKey: snapshot})
 	if err != nil {
-		return err
+		return false, err
 	}
 	credentials, err := json.Marshal(account.Credentials)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var previous, enabled any
 	if account.Extra != nil {
@@ -1819,11 +1869,11 @@ func (r *accountRepository) UpdateUpstreamBillingProbeSnapshot(ctx context.Conte
 	}
 	previousJSON, err := json.Marshal(previous)
 	if err != nil {
-		return err
+		return false, err
 	}
 	enabledJSON, err := json.Marshal(enabled)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var proxyID any
 	proxyProtocol, proxyHost, proxyUsername, proxyPassword, proxyStatus := "", "", "", "", ""
@@ -1831,14 +1881,26 @@ func (r *accountRepository) UpdateUpstreamBillingProbeSnapshot(ctx context.Conte
 	if account.ProxyID != nil {
 		proxyID = *account.ProxyID
 		if account.Proxy == nil || account.Proxy.ID != *account.ProxyID {
-			return service.ErrUpstreamBillingProbeIdentityChanged
+			return false, service.ErrUpstreamBillingProbeIdentityChanged
 		}
 		proxyProtocol, proxyHost, proxyPort = account.Proxy.Protocol, account.Proxy.Host, account.Proxy.Port
 		proxyUsername, proxyPassword, proxyStatus = account.Proxy.Username, account.Proxy.Password, account.Proxy.Status
 	}
+	guardEvaluatedAt := account.UpstreamBillingGuardEvaluatedAt
+	if observedMultiplier != nil {
+		guardEvaluatedAt = &snapshot.LastAttemptAt
+	}
+	desiredBlocked := account.UpstreamBillingGuardBlocked
+	if observedMultiplier != nil {
+		desiredBlocked = account.UpstreamBillingGuardEnabled && *observedMultiplier > account.UpstreamBillingGuardMaxMultiplier
+	}
 	result, err := r.sql.ExecContext(ctx, `
 		UPDATE accounts
-		SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb, updated_at = NOW()
+		SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb,
+			upstream_billing_guard_observed_multiplier = CASE WHEN $15::double precision IS NULL THEN upstream_billing_guard_observed_multiplier ELSE $15 END,
+			upstream_billing_guard_evaluated_at = CASE WHEN $15::double precision IS NULL THEN upstream_billing_guard_evaluated_at ELSE $16 END,
+			upstream_billing_guard_blocked = CASE WHEN $15::double precision IS NULL THEN upstream_billing_guard_blocked ELSE $17 END,
+			updated_at = NOW()
 		WHERE id = $2
 			AND platform = $3
 			AND type = $4
@@ -1846,6 +1908,11 @@ func (r *accountRepository) UpdateUpstreamBillingProbeSnapshot(ctx context.Conte
 			AND proxy_id IS NOT DISTINCT FROM $6
 			AND COALESCE(extra -> 'upstream_billing_probe', 'null'::jsonb) = $7::jsonb
 			AND COALESCE(extra -> 'upstream_billing_probe_enabled', 'null'::jsonb) = $8::jsonb
+			AND upstream_billing_guard_enabled = $18
+			AND upstream_billing_guard_max_multiplier = $19
+			AND upstream_billing_guard_blocked = $20
+			AND upstream_billing_guard_observed_multiplier IS NOT DISTINCT FROM $21
+			AND upstream_billing_guard_evaluated_at IS NOT DISTINCT FROM $22
 			AND ($6::bigint IS NULL OR EXISTS (
 				SELECT 1 FROM proxies
 				WHERE proxies.id = $6
@@ -1859,7 +1926,47 @@ func (r *accountRepository) UpdateUpstreamBillingProbeSnapshot(ctx context.Conte
 			))
 			AND deleted_at IS NULL
 	`, string(payload), account.ID, account.Platform, account.Type, string(credentials), proxyID, string(previousJSON), string(enabledJSON),
-		proxyProtocol, proxyHost, proxyPort, proxyUsername, proxyPassword, proxyStatus)
+		proxyProtocol, proxyHost, proxyPort, proxyUsername, proxyPassword, proxyStatus, observedMultiplier, guardEvaluatedAt, desiredBlocked,
+		account.UpstreamBillingGuardEnabled, account.UpstreamBillingGuardMaxMultiplier, account.UpstreamBillingGuardBlocked,
+		account.UpstreamBillingGuardObservedMultiplier, account.UpstreamBillingGuardEvaluatedAt)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected == 0 {
+		return false, service.ErrUpstreamBillingProbeIdentityChanged
+	}
+	changed := desiredBlocked != account.UpstreamBillingGuardBlocked
+	if changed {
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &account.ID, nil, nil); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue billing guard transition failed: account=%d err=%v", account.ID, err)
+		}
+		r.syncSchedulerAccountSnapshot(ctx, account.ID)
+	}
+	return changed, nil
+}
+
+func (r *accountRepository) UpdateUpstreamBillingProbeEnabled(ctx context.Context, id int64, enabled bool) error {
+	payload, err := json.Marshal(map[string]any{service.UpstreamBillingProbeEnabledExtraKey: enabled})
+	if err != nil {
+		return err
+	}
+	result, err := r.sql.ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = CASE
+				WHEN $5 = TRUE THEN (COALESCE(extra, '{}'::jsonb) || $1::jsonb) #- '{upstream_billing_probe,next_probe_at}'
+				ELSE COALESCE(extra, '{}'::jsonb) || $1::jsonb
+			END,
+			updated_at = NOW()
+		WHERE id = $2
+			AND platform = $3
+			AND type = $4
+			AND ($5 = TRUE OR upstream_billing_guard_enabled = FALSE)
+			AND deleted_at IS NULL
+	`, string(payload), id, service.PlatformOpenAI, service.AccountTypeAPIKey, enabled)
 	if err != nil {
 		return err
 	}
@@ -1868,10 +1975,76 @@ func (r *accountRepository) UpdateUpstreamBillingProbeSnapshot(ctx context.Conte
 		return err
 	}
 	if affected == 0 {
+		account, loadErr := r.GetByID(ctx, id)
+		if loadErr != nil {
+			return loadErr
+		}
+		if account.Platform != service.PlatformOpenAI || account.Type != service.AccountTypeAPIKey {
+			return service.ErrUpstreamBillingProbeAccountInvalid
+		}
+		if !enabled && account.UpstreamBillingGuardEnabled {
+			return service.ErrUpstreamBillingProbeRequiredByGuard
+		}
 		return service.ErrUpstreamBillingProbeIdentityChanged
 	}
-	r.syncSchedulerAccountSnapshot(ctx, account.ID)
 	return nil
+}
+
+func (r *accountRepository) UpdateUpstreamBillingGuard(ctx context.Context, id int64, enabled bool, maxMultiplier float64) (*service.Account, bool, error) {
+	previous, err := r.GetByID(ctx, id)
+	if err != nil {
+		return nil, false, err
+	}
+	result, err := r.sql.ExecContext(ctx, `
+		UPDATE accounts
+		SET upstream_billing_guard_enabled = $1,
+			upstream_billing_guard_max_multiplier = $2,
+			upstream_billing_guard_blocked = CASE
+				WHEN $1 = FALSE THEN FALSE
+				WHEN upstream_billing_guard_observed_multiplier IS NULL THEN FALSE
+				ELSE upstream_billing_guard_observed_multiplier > $2
+			END,
+			updated_at = NOW()
+				WHERE id = $3
+					AND platform = $4
+					AND type = $5
+					AND ($1 = FALSE OR COALESCE(extra ->> 'upstream_billing_probe_enabled', 'false') = 'true')
+					AND deleted_at IS NULL
+		`, enabled, maxMultiplier, id, service.PlatformOpenAI, service.AccountTypeAPIKey)
+	if err != nil {
+		return nil, false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	if affected == 0 {
+		account, loadErr := r.GetByID(ctx, id)
+		if loadErr != nil {
+			return nil, false, loadErr
+		}
+		autoProbeEnabled, _ := account.Extra[service.UpstreamBillingProbeEnabledExtraKey].(bool)
+		if enabled && !autoProbeEnabled {
+			return nil, false, service.ErrUpstreamBillingGuardRequiresAutoProbe
+		}
+		return nil, false, service.ErrUpstreamBillingProbeIdentityChanged
+	}
+	updated, err := r.GetByID(ctx, id)
+	if err != nil {
+		return nil, false, err
+	}
+	changed := previous.UpstreamBillingGuardBlocked != updated.UpstreamBillingGuardBlocked
+	if changed {
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue billing guard config transition failed: account=%d err=%v", id, err)
+		}
+	}
+	// This endpoint is an explicit administrator mutation, not a periodic probe.
+	// Refresh unconditionally so a concurrent probe transition cannot leave the
+	// scheduler cache behind the final database state even when the pre-update
+	// read observed the same blocked value.
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return updated, changed, nil
 }
 
 func shouldEnqueueSchedulerOutboxForExtraUpdates(updates map[string]any) bool {
@@ -1903,9 +2076,31 @@ func isSchedulerNeutralExtraKey(key string) bool {
 	return false
 }
 
+func bulkUpdateDisablesUpstreamBillingProbe(updates service.AccountBulkUpdate) (bool, error) {
+	if value, exists := updates.Extra[service.UpstreamBillingProbeEnabledExtraKey]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return false, service.ErrInvalidUpstreamBillingProbeEnabled
+		}
+		if !enabled {
+			return true, nil
+		}
+	}
+	for _, key := range updates.ExtraRemoveKeys {
+		if strings.TrimSpace(key) == service.UpstreamBillingProbeEnabledExtraKey {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates service.AccountBulkUpdate) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
+	}
+	probeDisableRequested, err := bulkUpdateDisablesUpstreamBillingProbe(updates)
+	if err != nil {
+		return 0, err
 	}
 
 	setClauses := make([]string, 0, 8)
@@ -2016,6 +2211,16 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 
 	query := "UPDATE accounts SET " + joinClauses(setClauses, ", ") + " WHERE id = ANY($" + itoa(idx) + ") AND deleted_at IS NULL"
 	args = append(args, pq.Array(ids))
+	idx++
+	// Keep the probe/guard invariant atomic for bulk edits. The service does a
+	// friendly preflight, but another admin request can enable the guard after
+	// that read and before this UPDATE executes. In that race, leave guarded
+	// accounts untouched rather than persisting probe=false. Other accounts in
+	// the same batch may still be updated normally.
+	if probeDisableRequested {
+		query += " AND NOT (platform = $" + itoa(idx) + " AND type = $" + itoa(idx+1) + " AND upstream_billing_guard_enabled = TRUE)"
+		args = append(args, service.PlatformOpenAI, service.AccountTypeAPIKey)
+	}
 
 	result, err := r.sql.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -2070,6 +2275,7 @@ func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID in
 		now := time.Now()
 		preds = append(preds,
 			dbaccount.SchedulableEQ(true),
+			dbaccount.UpstreamBillingGuardBlockedEQ(false),
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
@@ -2302,37 +2508,42 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 	rateMultiplier := m.RateMultiplier
 
 	return &service.Account{
-		ID:                      m.ID,
-		Name:                    m.Name,
-		Notes:                   m.Notes,
-		Platform:                m.Platform,
-		Type:                    m.Type,
-		Credentials:             copyJSONMap(m.Credentials),
-		Extra:                   copyJSONMap(m.Extra),
-		ProxyID:                 m.ProxyID,
-		ProxyFallbackOriginID:   m.ProxyFallbackOriginID,
-		Concurrency:             m.Concurrency,
-		Priority:                m.Priority,
-		RateMultiplier:          &rateMultiplier,
-		LoadFactor:              m.LoadFactor,
-		Status:                  m.Status,
-		ErrorMessage:            derefString(m.ErrorMessage),
-		LastUsedAt:              m.LastUsedAt,
-		ExpiresAt:               m.ExpiresAt,
-		AutoPauseOnExpired:      m.AutoPauseOnExpired,
-		CreatedAt:               m.CreatedAt,
-		UpdatedAt:               m.UpdatedAt,
-		Schedulable:             m.Schedulable,
-		RateLimitedAt:           m.RateLimitedAt,
-		RateLimitResetAt:        m.RateLimitResetAt,
-		OverloadUntil:           m.OverloadUntil,
-		TempUnschedulableUntil:  m.TempUnschedulableUntil,
-		TempUnschedulableReason: derefString(m.TempUnschedulableReason),
-		SessionWindowStart:      m.SessionWindowStart,
-		SessionWindowEnd:        m.SessionWindowEnd,
-		SessionWindowStatus:     derefString(m.SessionWindowStatus),
-		ParentAccountID:         m.ParentAccountID,
-		QuotaDimension:          string(m.QuotaDimension),
+		ID:                                     m.ID,
+		Name:                                   m.Name,
+		Notes:                                  m.Notes,
+		Platform:                               m.Platform,
+		Type:                                   m.Type,
+		Credentials:                            copyJSONMap(m.Credentials),
+		Extra:                                  copyJSONMap(m.Extra),
+		ProxyID:                                m.ProxyID,
+		ProxyFallbackOriginID:                  m.ProxyFallbackOriginID,
+		Concurrency:                            m.Concurrency,
+		Priority:                               m.Priority,
+		RateMultiplier:                         &rateMultiplier,
+		LoadFactor:                             m.LoadFactor,
+		Status:                                 m.Status,
+		ErrorMessage:                           derefString(m.ErrorMessage),
+		LastUsedAt:                             m.LastUsedAt,
+		ExpiresAt:                              m.ExpiresAt,
+		AutoPauseOnExpired:                     m.AutoPauseOnExpired,
+		CreatedAt:                              m.CreatedAt,
+		UpdatedAt:                              m.UpdatedAt,
+		Schedulable:                            m.Schedulable,
+		UpstreamBillingGuardEnabled:            m.UpstreamBillingGuardEnabled,
+		UpstreamBillingGuardMaxMultiplier:      m.UpstreamBillingGuardMaxMultiplier,
+		UpstreamBillingGuardBlocked:            m.UpstreamBillingGuardBlocked,
+		UpstreamBillingGuardObservedMultiplier: m.UpstreamBillingGuardObservedMultiplier,
+		UpstreamBillingGuardEvaluatedAt:        m.UpstreamBillingGuardEvaluatedAt,
+		RateLimitedAt:                          m.RateLimitedAt,
+		RateLimitResetAt:                       m.RateLimitResetAt,
+		OverloadUntil:                          m.OverloadUntil,
+		TempUnschedulableUntil:                 m.TempUnschedulableUntil,
+		TempUnschedulableReason:                derefString(m.TempUnschedulableReason),
+		SessionWindowStart:                     m.SessionWindowStart,
+		SessionWindowEnd:                       m.SessionWindowEnd,
+		SessionWindowStatus:                    derefString(m.SessionWindowStatus),
+		ParentAccountID:                        m.ParentAccountID,
+		QuotaDimension:                         string(m.QuotaDimension),
 	}
 }
 

@@ -1138,8 +1138,10 @@ async fn relay_ws_session(
     let mut success = true;
     let mut client_disconnected = false;
     let mut error_message: Option<String> = None;
-    let mut summary = ChatStreamSummary::default();
-    summary.request_id = upstream_request_id;
+    let mut summary = ChatStreamSummary {
+        request_id: upstream_request_id,
+        ..Default::default()
+    };
     let mut prompt_cache_creation_optimization_model =
         plan.prompt_cache_creation_optimization_model.clone();
     let mut cache_creation_policy_applied_for_turn =
@@ -1232,10 +1234,10 @@ async fn relay_ws_session(
                                             let same_lease = next_plan.lease_id == plan.lease_id;
                                             let same_account = next_plan.account_id == plan.account_id;
                                             let supported_transport = next_plan.transport.as_deref() == Some("ws_v2");
-                                            let proxy_free = !next_plan
+                                            let proxy_free = next_plan
                                                 .proxy_url
                                                 .as_deref()
-                                                .is_some_and(|value| !value.trim().is_empty());
+                                                .is_none_or(|value| value.trim().is_empty());
                                             if same_lease && same_account && supported_transport && proxy_free {
                                                 let next_original = AxumWsMessage::Text(request_body.to_string());
                                                 if let Ok(next_message) = edge_plan_ws_first_message(&next_plan, next_original) {
@@ -2398,7 +2400,7 @@ async fn relay_upstream_direct(
                         let frame = openai_stream_error_frame(
                             response_dialect.as_deref(),
                             summary.model.as_deref(),
-                            &message,
+                            message,
                         );
                         yield Ok::<Bytes, std::io::Error>(Bytes::from(frame));
                         complete_state.pools.recycle_sse_string(std::mem::take(&mut summary.pending));
@@ -2488,7 +2490,7 @@ async fn relay_upstream_direct(
                                     upstream_status_code,
                                     true,
                                 );
-                                yield Err(std::io::Error::new(std::io::ErrorKind::Other, err.to_string()));
+                                yield Err(std::io::Error::other(err.to_string()));
                                 break;
                             }
                         }
@@ -2948,7 +2950,7 @@ async fn relay_upstream_direct(
                         Some(status.as_u16()),
                         true,
                     );
-                    yield Err(std::io::Error::new(std::io::ErrorKind::Other, err.to_string()));
+                    yield Err(std::io::Error::other(err.to_string()));
                     break;
                 }
             }
@@ -3223,10 +3225,7 @@ impl OpenAIStreamSanitizer {
 
     fn drain_lines(&mut self, flush_tail: bool) -> Bytes {
         let mut output = Vec::with_capacity(self.pending.len());
-        loop {
-            let Some(pos) = self.pending.iter().position(|byte| *byte == b'\n') else {
-                break;
-            };
+        while let Some(pos) = self.pending.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = self.pending.drain(..=pos).collect();
             output.extend_from_slice(&sanitize_openai_sse_line(
                 &line,
@@ -3267,7 +3266,7 @@ fn sanitize_openai_sse_line(
         if payload.is_empty() || payload == "[DONE]" {
             return line.to_vec();
         }
-        let Ok(value) = serde_json::from_str::<Value>(payload) else {
+        let Ok(mut value) = serde_json::from_str::<Value>(payload) else {
             return safe_sse_error_line(chat_dialect);
         };
         let event_type = json_event_type(&value)
@@ -3280,11 +3279,16 @@ fn sanitize_openai_sse_line(
         if has_error {
             return safe_sse_error_line(chat_dialect);
         }
+        let normalized_payload = if normalize_completed_image_generation_status(&mut value) {
+            value.to_string()
+        } else {
+            payload.to_string()
+        };
         let newline = if text.ends_with("\r\n") { "\r\n" } else { "\n" };
-        return format!("data: {payload}{newline}").into_bytes();
+        return format!("data: {normalized_payload}{newline}").into_bytes();
     }
-    if trimmed.starts_with("event:") {
-        let event = trimmed["event:".len()..].trim();
+    if let Some(event) = trimmed.strip_prefix("event:") {
+        let event = event.trim();
         if (event == "error" || event.starts_with("response."))
             && event
                 .chars()
@@ -3314,17 +3318,26 @@ fn safe_sse_error_line(chat_dialect: bool) -> Vec<u8> {
 fn sanitize_openai_ws_message(msg: TungsteniteMessage) -> TungsteniteMessage {
     match msg {
         TungsteniteMessage::Text(text) => {
-            let value = serde_json::from_str::<Value>(&text).ok();
-            let has_error = value.as_ref().is_some_and(|value| {
-                let event_type = json_event_type(value).unwrap_or_default();
-                event_type == "error"
-                    || event_type == "response.failed"
-                    || json_is_unsafe_upstream_diagnostic(value)
-            });
-            if has_error || value.is_none() {
+            let mut value = match serde_json::from_str::<Value>(&text) {
+                Ok(value) => value,
+                Err(_) => {
+                    return TungsteniteMessage::Text(
+                        r#"{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}"#.to_string(),
+                    )
+                }
+            };
+            let image_status_normalized =
+                normalize_completed_image_generation_status(&mut value);
+            let event_type = json_event_type(&value).unwrap_or_default();
+            let has_error = event_type == "error"
+                || event_type == "response.failed"
+                || json_is_unsafe_upstream_diagnostic(&value);
+            if has_error {
                 TungsteniteMessage::Text(
                     r#"{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}"#.to_string(),
                 )
+            } else if image_status_normalized {
+                TungsteniteMessage::Text(value.to_string())
             } else {
                 TungsteniteMessage::Text(text)
             }
@@ -3333,6 +3346,72 @@ fn sanitize_openai_ws_message(msg: TungsteniteMessage) -> TungsteniteMessage {
             r#"{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}"#.to_string(),
         ),
         other => other,
+    }
+}
+
+fn normalize_completed_image_generation_status(value: &mut Value) -> bool {
+    fn normalize_item(item: &mut Value) -> bool {
+        if item.get("type").and_then(Value::as_str) != Some("image_generation_call") {
+            return false;
+        }
+        let status = item
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let has_result = item.get("result").is_some_and(|result| {
+            !result.is_null()
+                && result
+                    .as_str()
+                    .map(|text| !text.trim().is_empty())
+                    .unwrap_or(true)
+        });
+        if !has_result || !matches!(status, "generating" | "in_progress") {
+            return false;
+        }
+        let Some(object) = item.as_object_mut() else {
+            return false;
+        };
+        object.insert("status".to_string(), Value::String("completed".to_string()));
+        true
+    }
+
+    let event_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    match event_type.as_str() {
+        "response.output_item.done" => value.get_mut("item").is_some_and(normalize_item),
+        "response.completed" | "response.done" => {
+            let Some(items) = value
+                .get_mut("response")
+                .and_then(|response| response.get_mut("output"))
+                .and_then(Value::as_array_mut)
+            else {
+                return false;
+            };
+            let mut changed = false;
+            for item in items {
+                changed |= normalize_item(item);
+            }
+            changed
+        }
+        _ => {
+            if !matches!(
+                value.get("status").and_then(Value::as_str),
+                Some("completed" | "done")
+            ) {
+                return false;
+            }
+            let Some(items) = value.get_mut("output").and_then(Value::as_array_mut) else {
+                return false;
+            };
+            let mut changed = false;
+            for item in items {
+                changed |= normalize_item(item);
+            }
+            changed
+        }
     }
 }
 
@@ -3763,9 +3842,9 @@ async fn fallback_to_go(
     };
     let status = upstream.status();
     let headers = upstream.headers().clone();
-    let stream = upstream.bytes_stream().map(|item| {
-        item.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))
-    });
+    let stream = upstream
+        .bytes_stream()
+        .map(|item| item.map_err(|err| std::io::Error::other(err.to_string())));
     let mut builder = Response::builder().status(status.as_u16());
     copy_response_headers(builder.headers_mut().expect("headers"), &headers);
     builder
@@ -3880,7 +3959,7 @@ fn ws_idle_key(plan: &EdgePlan) -> Option<String> {
         .as_ref()
         .map(|headers| headers.iter().collect())
         .unwrap_or_default();
-    headers.sort_by(|(ak, _), (bk, _)| ak.cmp(bk));
+    headers.sort_by_key(|(key, _)| *key);
     let header_key = headers
         .into_iter()
         .map(|(k, v)| format!("{k}:{v}"))
@@ -4041,11 +4120,16 @@ impl ChatStreamSummary {
         if self.failed || self.neutral_terminal_event_type.is_some() {
             return false;
         }
-        match (dialect, self.terminal_event_type.as_deref()) {
-            (Some("chat_completions"), Some("[DONE]" | "chat.finish_reason")) => true,
-            (Some("responses"), Some("response.completed" | "response.done")) => true,
-            _ => false,
-        }
+        matches!(
+            (dialect, self.terminal_event_type.as_deref()),
+            (
+                Some("chat_completions"),
+                Some("[DONE]" | "chat.finish_reason")
+            ) | (
+                Some("responses"),
+                Some("response.completed" | "response.done")
+            )
+        )
     }
 
     fn terminal_event_type(&self, _dialect: Option<&str>) -> Option<String> {
@@ -4204,7 +4288,7 @@ impl ChatStreamSummary {
         {
             self.terminal_event_type = Some("chat.finish_reason".to_string());
         }
-        let response = value.get("response").unwrap_or(&value);
+        let response = value.get("response").unwrap_or(value);
         if self.response_id.is_none() {
             self.response_id = response
                 .get("id")
@@ -4552,7 +4636,7 @@ fn b64_encode(input: &[u8]) -> String {
 
 fn b64_decode(input: &str) -> anyhow::Result<Vec<u8>> {
     let cleaned: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    if cleaned.len() % 4 != 0 {
+    if !cleaned.len().is_multiple_of(4) {
         anyhow::bail!("invalid base64 length");
     }
     let mut out = Vec::with_capacity(cleaned.len() / 4 * 3);
@@ -4813,9 +4897,11 @@ mod tests {
 
     #[test]
     fn first_token_timeout_placeholder_uses_chat_chunk_for_chat_dialect() {
-        let mut summary = ChatStreamSummary::default();
-        summary.response_id = Some("chatcmpl_123".to_string());
-        summary.model = Some("gpt-4.1".to_string());
+        let summary = ChatStreamSummary {
+            response_id: Some("chatcmpl_123".to_string()),
+            model: Some("gpt-4.1".to_string()),
+            ..Default::default()
+        };
 
         let frame = openai_stream_timeout_placeholder_frame(Some("chat_completions"), &summary);
         assert!(frame.starts_with("data: "));
@@ -4889,6 +4975,24 @@ data: {"type":"response.output_text.delta","delta":"ok"}
     }
 
     #[test]
+    fn sse_completed_image_generation_status_is_normalized() {
+        let mut sanitizer = OpenAIStreamSanitizer::new(None);
+        let input = br#"data: {"type":"response.output_item.done","item":{"type":"image_generation_call","status":"generating","result":"final-image"}}
+
+data: {"type":"response.completed","response":{"output":[{"type":"image_generation_call","status":"in_progress","result":"final-image"}]}}
+
+"#;
+        let output = String::from_utf8(sanitizer.push(input).to_vec()).unwrap();
+        let statuses = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|payload| serde_json::from_str::<Value>(payload).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(statuses[0]["item"]["status"], "completed");
+        assert_eq!(statuses[1]["response"]["output"][0]["status"], "completed");
+    }
+
+    #[test]
     fn sse_error_split_across_chunks_is_sanitized_once_complete() {
         let mut sanitizer = OpenAIStreamSanitizer::new(None);
         let first = sanitizer
@@ -4944,6 +5048,55 @@ data: {"type":"response.output_text.delta","delta":"ok"}
         assert!(!json_is_unsafe_upstream_diagnostic(&serde_json::json!({
             "data": [{"embedding": [0.1, 0.2], "index": 0}]
         })));
+    }
+
+    #[test]
+    fn ws_completed_image_generation_status_is_normalized() {
+        let done = sanitize_openai_ws_message(TungsteniteMessage::Text(
+            r#"{"type":"response.output_item.done","item":{"type":"image_generation_call","status":"generating","result":"final-image"}}"#.to_string(),
+        ));
+        let TungsteniteMessage::Text(done) = done else {
+            panic!("expected text frame")
+        };
+        let done: Value = serde_json::from_str(&done).unwrap();
+        assert_eq!(done["item"]["status"], "completed");
+
+        let completed = sanitize_openai_ws_message(TungsteniteMessage::Text(
+            r#"{"type":"response.completed","response":{"output":[{"type":"image_generation_call","status":"in_progress","result":"final-image"}]}}"#.to_string(),
+        ));
+        let TungsteniteMessage::Text(completed) = completed else {
+            panic!("expected text frame")
+        };
+        let completed: Value = serde_json::from_str(&completed).unwrap();
+        assert_eq!(completed["response"]["output"][0]["status"], "completed");
+    }
+
+    #[test]
+    fn ws_image_generation_without_result_or_terminal_event_is_unchanged() {
+        let mut without_result = serde_json::json!({
+            "type": "response.output_item.done",
+            "item": {"type": "image_generation_call", "status": "generating"}
+        });
+        assert!(!normalize_completed_image_generation_status(
+            &mut without_result
+        ));
+        assert_eq!(without_result["item"]["status"], "generating");
+
+        let mut non_terminal = serde_json::json!({
+            "type": "response.in_progress",
+            "output": [{"type": "image_generation_call", "status": "in_progress", "result": "partial"}]
+        });
+        assert!(!normalize_completed_image_generation_status(
+            &mut non_terminal
+        ));
+        assert_eq!(non_terminal["output"][0]["status"], "in_progress");
+    }
+
+    #[test]
+    fn ws_non_image_frames_preserve_original_text_bytes() {
+        let original = r#"{ "type": "response.output_text.delta", "delta": "first token" }"#;
+        let sanitized = sanitize_openai_ws_message(TungsteniteMessage::Text(original.to_string()));
+        assert!(matches!(sanitized, TungsteniteMessage::Text(text) if text == original));
     }
 
     #[test]

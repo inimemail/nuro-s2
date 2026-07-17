@@ -8,13 +8,17 @@ const {
   listWithEtag,
   getBatchTodayStats,
   getAllProxies,
-  getAllGroups
+	getAllGroups,
+	getUpstreamBillingProbeSettings,
+	updateUpstreamBillingProbeSettings
 } = vi.hoisted(() => ({
   listAccounts: vi.fn(),
   listWithEtag: vi.fn(),
   getBatchTodayStats: vi.fn(),
   getAllProxies: vi.fn(),
-  getAllGroups: vi.fn()
+	getAllGroups: vi.fn(),
+	getUpstreamBillingProbeSettings: vi.fn(),
+	updateUpstreamBillingProbeSettings: vi.fn()
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -26,7 +30,9 @@ vi.mock('@/api/admin', () => ({
       delete: vi.fn(),
       batchClearError: vi.fn(),
       batchRefresh: vi.fn(),
-      toggleSchedulable: vi.fn()
+			toggleSchedulable: vi.fn(),
+			getUpstreamBillingProbeSettings,
+			updateUpstreamBillingProbeSettings
     },
     proxies: {
       getAll: getAllProxies
@@ -138,6 +144,8 @@ describe('admin AccountsView bulk edit scope', () => {
     getBatchTodayStats.mockReset()
     getAllProxies.mockReset()
     getAllGroups.mockReset()
+		getUpstreamBillingProbeSettings.mockReset()
+		updateUpstreamBillingProbeSettings.mockReset()
 
     listAccounts.mockResolvedValue({
       items: [],
@@ -154,6 +162,8 @@ describe('admin AccountsView bulk edit scope', () => {
     getBatchTodayStats.mockResolvedValue({ stats: {} })
     getAllProxies.mockResolvedValue([])
     getAllGroups.mockResolvedValue([])
+		getUpstreamBillingProbeSettings.mockResolvedValue({ enabled: false, interval_seconds: 5 })
+		updateUpstreamBillingProbeSettings.mockImplementation(async settings => settings)
   })
 
   it('opens bulk edit in filtered-results mode from the bulk actions dropdown', async () => {
@@ -279,4 +289,27 @@ describe('admin AccountsView bulk edit scope', () => {
     expect(wrapper.html()).toContain('admin.accounts.anthropicCacheBoostEnabledHint')
     expect(wrapper.html()).toContain('admin.accounts.anthropicUpstreamStrongIsolationEnabledHint')
   })
+
+	it('clamps the global upstream billing probe interval to 1-36000 seconds', async () => {
+		const wrapper = mountAccountsView()
+		await flushPromises()
+		await wrapper.get('[title="admin.accounts.moreActions"]').trigger('click')
+
+		const input = wrapper.get('[data-testid="upstream-billing-global-interval"]')
+		await input.setValue('0')
+		await wrapper.get('[data-testid="upstream-billing-global-save"]').trigger('click')
+		await flushPromises()
+		expect(updateUpstreamBillingProbeSettings).toHaveBeenLastCalledWith({
+			enabled: false,
+			interval_seconds: 1
+		})
+
+		await input.setValue('50000')
+		await wrapper.get('[data-testid="upstream-billing-global-save"]').trigger('click')
+		await flushPromises()
+		expect(updateUpstreamBillingProbeSettings).toHaveBeenLastCalledWith({
+			enabled: false,
+			interval_seconds: 36000
+		})
+	})
 })

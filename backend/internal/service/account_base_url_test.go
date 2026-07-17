@@ -181,3 +181,38 @@ func TestGetGrokBaseURLDefaultsOfficialWhenUnset(t *testing.T) {
 		t.Fatalf("GetGrokBaseURL() = %q, want %q", got, xai.DefaultCLIBaseURL)
 	}
 }
+
+func TestGetGrokBaseURLHonorsOfficialAndRegionalOAuthEndpoints(t *testing.T) {
+	for _, baseURL := range []string{
+		xai.DefaultBaseURL,
+		"https://us-east-1.api.x.ai/v1",
+		"https://us-west-2.api.x.ai/v1",
+		"https://eu-west-1.api.x.ai/v1",
+	} {
+		account := Account{Type: AccountTypeOAuth, Platform: PlatformGrok, Credentials: map[string]any{"base_url": baseURL}}
+		if got := account.GetGrokBaseURL(); got != baseURL {
+			t.Fatalf("GetGrokBaseURL() = %q, want %q", got, baseURL)
+		}
+		if got := account.GetGrokMediaBaseURL(); got != baseURL {
+			t.Fatalf("GetGrokMediaBaseURL() = %q, want %q", got, baseURL)
+		}
+	}
+}
+
+func TestGetGrokMediaBaseURLMovesOnlyCLITrafficToOfficialAPI(t *testing.T) {
+	account := Account{
+		Type: AccountTypeOAuth, Platform: PlatformGrok,
+		Credentials: map[string]any{"base_url": xai.DefaultCLIBaseURL},
+	}
+	if got := account.GetGrokBaseURL(); got != xai.DefaultCLIBaseURL {
+		t.Fatalf("GetGrokBaseURL() = %q, want CLI", got)
+	}
+	if got := account.GetGrokMediaBaseURL(); got != xai.DefaultBaseURL {
+		t.Fatalf("GetGrokMediaBaseURL() = %q, want official API", got)
+	}
+
+	account.Credentials["base_url"] = "://invalid"
+	if got := account.GetGrokBaseURL(); got != xai.DefaultCLIBaseURL {
+		t.Fatalf("invalid stored URL must fall back to CLI, got %q", got)
+	}
+}

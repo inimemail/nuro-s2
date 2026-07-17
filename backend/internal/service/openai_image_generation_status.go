@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"strconv"
 	"strings"
 
@@ -13,7 +14,9 @@ import (
 // Only terminal image items are changed; non-terminal progress events remain
 // untouched.
 func normalizeCompletedImageGenerationStatus(data []byte) ([]byte, bool) {
-	if len(data) == 0 || !gjson.ValidBytes(data) {
+	// Most streaming frames are text deltas. Avoid a full JSON validation on
+	// the first-token path unless the frame can actually contain an image item.
+	if len(data) == 0 || !bytes.Contains(data, []byte("image_generation_call")) || !gjson.ValidBytes(data) {
 		return data, false
 	}
 	shouldNormalize := func(item gjson.Result) bool {

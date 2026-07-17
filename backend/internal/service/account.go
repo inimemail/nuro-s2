@@ -46,6 +46,12 @@ type Account struct {
 
 	Schedulable bool
 
+	UpstreamBillingGuardEnabled            bool
+	UpstreamBillingGuardMaxMultiplier      float64
+	UpstreamBillingGuardBlocked            bool
+	UpstreamBillingGuardObservedMultiplier *float64
+	UpstreamBillingGuardEvaluatedAt        *time.Time
+
 	RateLimitedAt    *time.Time
 	RateLimitResetAt *time.Time
 	OverloadUntil    *time.Time
@@ -193,7 +199,7 @@ func (a *Account) EffectiveLoadFactor() int {
 }
 
 func (a *Account) IsSchedulable() bool {
-	if !a.IsActive() || !a.Schedulable {
+	if !a.IsActive() || !a.Schedulable || a.UpstreamBillingGuardBlocked {
 		return false
 	}
 	now := time.Now()
@@ -1725,7 +1731,7 @@ func (a *Account) GetGrokBaseURL() string {
 	}
 	baseURL := strings.TrimSpace(a.GetCredential("base_url"))
 	if a.IsGrokOAuth() {
-		if baseURL == "" || isOfficialGrokAPIBaseURL(baseURL) || isOfficialGrokCLIBaseURL(baseURL) {
+		if baseURL == "" || !xai.IsParseableBaseURL(baseURL) {
 			return xai.DefaultCLIBaseURL
 		}
 		// Custom OAuth forwarding hosts are validated at the outbound URL
@@ -1750,11 +1756,11 @@ func (a *Account) GetGrokMediaBaseURL() string {
 	if !a.IsGrokOAuth() {
 		return a.GetGrokBaseURL()
 	}
-	baseURL := strings.TrimSpace(a.GetCredential("base_url"))
-	if baseURL == "" || isOfficialGrokAPIBaseURL(baseURL) || isOfficialGrokCLIBaseURL(baseURL) {
+	baseURL := a.GetGrokBaseURL()
+	if isGrokCLIProxyTarget(baseURL) {
 		return xai.DefaultBaseURL
 	}
-	return strings.TrimRight(baseURL, "/")
+	return baseURL
 }
 
 func isOfficialGrokAPIBaseURL(raw string) bool {

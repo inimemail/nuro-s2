@@ -11,6 +11,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -65,6 +66,167 @@ func (s *GroupRepoSuite) TestCreate() {
 	got, err := s.repo.GetByID(s.ctx, group.ID)
 	s.Require().NoError(err, "GetByID")
 	s.Require().Equal("test-create", got.Name)
+}
+
+func (s *GroupRepoSuite) TestCreateFromSourceOAuthOnlyFiltersAPIKeyAndDeletedAccounts() {
+	source := &service.Group{
+		Name:             "duplicate-source-oauth-filter",
+		Platform:         service.PlatformOpenAI,
+		RateMultiplier:   1,
+		Status:           service.StatusActive,
+		SubscriptionType: service.SubscriptionTypeStandard,
+	}
+	s.Require().NoError(s.repo.Create(s.ctx, source))
+
+	oauth := mustCreateAccount(s.T(), s.tx.Client(), &service.Account{
+		Name:     "duplicate-oauth-account",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+	})
+	apiKey := mustCreateAccount(s.T(), s.tx.Client(), &service.Account{
+		Name:     "duplicate-apikey-account",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+	})
+	deletedOAuth := mustCreateAccount(s.T(), s.tx.Client(), &service.Account{
+		Name:     "duplicate-deleted-oauth-account",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+	})
+
+	for _, binding := range []struct {
+		accountID int64
+		priority  int
+	}{
+		{accountID: oauth.ID, priority: 7},
+		{accountID: apiKey.ID, priority: 11},
+		{accountID: deletedOAuth.ID, priority: 13},
+	} {
+		_, err := s.tx.ExecContext(s.ctx, `
+			INSERT INTO account_groups (account_id, group_id, priority, created_at)
+			VALUES ($1, $2, $3, NOW())
+		`, binding.accountID, source.ID, binding.priority)
+		s.Require().NoError(err)
+	}
+	_, err := s.tx.ExecContext(s.ctx, "UPDATE accounts SET deleted_at = NOW() WHERE id = $1", deletedOAuth.ID)
+	s.Require().NoError(err)
+
+	duplicate := &service.Group{
+		Name:                 "duplicate-oauth-filter-result",
+		Platform:             service.PlatformOpenAI,
+		RateMultiplier:       1,
+		Status:               service.StatusDisabled,
+		SubscriptionType:     service.SubscriptionTypeStandard,
+		RequireOAuthOnly:     true,
+		DuplicateOperationID: "duplicate-oauth-filter-operation",
+	}
+	s.Require().NoError(s.repo.CreateFromSource(s.ctx, duplicate, source.ID))
+	s.Require().Equal(int64(1), duplicate.AccountCount)
+
+	rows, err := s.tx.QueryContext(s.ctx, `
+		SELECT account_id, priority
+		FROM account_groups
+		WHERE group_id = $1
+		ORDER BY account_id
+	`, duplicate.ID)
+	s.Require().NoError(err)
+	defer rows.Close()
+
+	type clonedBinding struct {
+		accountID int64
+		priority  int
+	}
+	var bindings []clonedBinding
+	for rows.Next() {
+		var binding clonedBinding
+		s.Require().NoError(rows.Scan(&binding.accountID, &binding.priority))
+		bindings = append(bindings, binding)
+	}
+	s.Require().NoError(rows.Err())
+	s.Require().Equal([]clonedBinding{{accountID: oauth.ID, priority: 7}}, bindings)
+}
+
+func TestGroupRepositoryCreateFromSourceRollsBackWhenOutboxFails(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	repo := newGroupRepositoryWithSQL(client, integrationDB)
+
+	source := &service.Group{
+		Name:             "duplicate-rollback-source",
+		Platform:         service.PlatformOpenAI,
+		RateMultiplier:   1,
+		Status:           service.StatusActive,
+		SubscriptionType: service.SubscriptionTypeStandard,
+	}
+	require.NoError(t, repo.Create(ctx, source))
+	account := mustCreateAccount(t, client, &service.Account{
+		Name:     "duplicate-rollback-account",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+	})
+	_, err := integrationDB.ExecContext(ctx, `
+		INSERT INTO account_groups (account_id, group_id, priority, created_at)
+		VALUES ($1, $2, 9, NOW())
+	`, account.ID, source.ID)
+	require.NoError(t, err)
+
+	const triggerName = "test_fail_group_duplicate_outbox"
+	const functionName = "test_fail_group_duplicate_outbox_fn"
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DROP TRIGGER IF EXISTS "+triggerName+" ON scheduler_outbox")
+		_, _ = integrationDB.ExecContext(context.Background(), "DROP FUNCTION IF EXISTS "+functionName+"()")
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM account_groups WHERE group_id IN (SELECT id FROM groups WHERE name IN ($1, $2))", source.Name, "duplicate-rollback-result")
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE name IN ($1, $2)", source.Name, "duplicate-rollback-result")
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+	})
+
+	_, err = integrationDB.ExecContext(ctx, `
+		CREATE FUNCTION test_fail_group_duplicate_outbox_fn()
+		RETURNS trigger
+		LANGUAGE plpgsql
+		AS $$
+		BEGIN
+			IF NEW.event_type = 'group_changed' THEN
+				RAISE EXCEPTION 'forced group duplicate outbox failure';
+			END IF;
+			RETURN NEW;
+		END;
+		$$
+	`)
+	require.NoError(t, err)
+	_, err = integrationDB.ExecContext(ctx, `
+		CREATE TRIGGER test_fail_group_duplicate_outbox
+		BEFORE INSERT ON scheduler_outbox
+		FOR EACH ROW EXECUTE FUNCTION test_fail_group_duplicate_outbox_fn()
+	`)
+	require.NoError(t, err)
+
+	duplicate := &service.Group{
+		Name:                 "duplicate-rollback-result",
+		Platform:             service.PlatformOpenAI,
+		RateMultiplier:       1,
+		Status:               service.StatusDisabled,
+		SubscriptionType:     service.SubscriptionTypeStandard,
+		DuplicateOperationID: "duplicate-rollback-operation",
+	}
+	err = repo.CreateFromSource(ctx, duplicate, source.ID)
+	require.ErrorContains(t, err, "forced group duplicate outbox failure")
+
+	var duplicateCount int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM groups
+		WHERE duplicate_operation_id = $1 OR name = $2
+	`, duplicate.DuplicateOperationID, duplicate.Name).Scan(&duplicateCount))
+	require.Zero(t, duplicateCount, "group insert must roll back with the outbox failure")
+
+	var bindingCount int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM account_groups
+		WHERE group_id = $1
+	`, duplicate.ID).Scan(&bindingCount))
+	require.Zero(t, bindingCount, "account bindings must roll back with the outbox failure")
 }
 
 func (s *GroupRepoSuite) TestGetByID_NotFound() {

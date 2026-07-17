@@ -103,6 +103,22 @@ export async function create(groupData: CreateGroupRequest): Promise<AdminGroup>
   return data
 }
 
+const duplicateOperationKeys = new Map<number, string>()
+
+export async function duplicate(id: number): Promise<AdminGroup> {
+  let idempotencyKey = duplicateOperationKeys.get(id)
+  if (!idempotencyKey) {
+    const requestID = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    idempotencyKey = `group-duplicate-${id}-${requestID}`
+    duplicateOperationKeys.set(id, idempotencyKey)
+  }
+  const { data } = await apiClient.post<AdminGroup>(`/admin/groups/${id}/duplicate`, undefined, {
+    headers: { 'Idempotency-Key': idempotencyKey }
+  })
+  duplicateOperationKeys.delete(id)
+  return data
+}
+
 /**
  * Update group
  * @param id - Group ID
@@ -325,6 +341,7 @@ export const groupsAPI = {
   getById,
   getModelsListCandidates,
   create,
+  duplicate,
   update,
   delete: deleteGroup,
   toggleStatus,

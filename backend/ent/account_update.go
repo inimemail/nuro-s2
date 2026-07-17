@@ -370,6 +370,102 @@ func (_u *AccountUpdate) SetNillableSchedulable(v *bool) *AccountUpdate {
 	return _u
 }
 
+// SetUpstreamBillingGuardEnabled sets the "upstream_billing_guard_enabled" field.
+func (_u *AccountUpdate) SetUpstreamBillingGuardEnabled(v bool) *AccountUpdate {
+	_u.mutation.SetUpstreamBillingGuardEnabled(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardEnabled sets the "upstream_billing_guard_enabled" field if the given value is not nil.
+func (_u *AccountUpdate) SetNillableUpstreamBillingGuardEnabled(v *bool) *AccountUpdate {
+	if v != nil {
+		_u.SetUpstreamBillingGuardEnabled(*v)
+	}
+	return _u
+}
+
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (_u *AccountUpdate) SetUpstreamBillingGuardMaxMultiplier(v float64) *AccountUpdate {
+	_u.mutation.ResetUpstreamBillingGuardMaxMultiplier()
+	_u.mutation.SetUpstreamBillingGuardMaxMultiplier(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field if the given value is not nil.
+func (_u *AccountUpdate) SetNillableUpstreamBillingGuardMaxMultiplier(v *float64) *AccountUpdate {
+	if v != nil {
+		_u.SetUpstreamBillingGuardMaxMultiplier(*v)
+	}
+	return _u
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds value to the "upstream_billing_guard_max_multiplier" field.
+func (_u *AccountUpdate) AddUpstreamBillingGuardMaxMultiplier(v float64) *AccountUpdate {
+	_u.mutation.AddUpstreamBillingGuardMaxMultiplier(v)
+	return _u
+}
+
+// SetUpstreamBillingGuardBlocked sets the "upstream_billing_guard_blocked" field.
+func (_u *AccountUpdate) SetUpstreamBillingGuardBlocked(v bool) *AccountUpdate {
+	_u.mutation.SetUpstreamBillingGuardBlocked(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardBlocked sets the "upstream_billing_guard_blocked" field if the given value is not nil.
+func (_u *AccountUpdate) SetNillableUpstreamBillingGuardBlocked(v *bool) *AccountUpdate {
+	if v != nil {
+		_u.SetUpstreamBillingGuardBlocked(*v)
+	}
+	return _u
+}
+
+// SetUpstreamBillingGuardObservedMultiplier sets the "upstream_billing_guard_observed_multiplier" field.
+func (_u *AccountUpdate) SetUpstreamBillingGuardObservedMultiplier(v float64) *AccountUpdate {
+	_u.mutation.ResetUpstreamBillingGuardObservedMultiplier()
+	_u.mutation.SetUpstreamBillingGuardObservedMultiplier(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardObservedMultiplier sets the "upstream_billing_guard_observed_multiplier" field if the given value is not nil.
+func (_u *AccountUpdate) SetNillableUpstreamBillingGuardObservedMultiplier(v *float64) *AccountUpdate {
+	if v != nil {
+		_u.SetUpstreamBillingGuardObservedMultiplier(*v)
+	}
+	return _u
+}
+
+// AddUpstreamBillingGuardObservedMultiplier adds value to the "upstream_billing_guard_observed_multiplier" field.
+func (_u *AccountUpdate) AddUpstreamBillingGuardObservedMultiplier(v float64) *AccountUpdate {
+	_u.mutation.AddUpstreamBillingGuardObservedMultiplier(v)
+	return _u
+}
+
+// ClearUpstreamBillingGuardObservedMultiplier clears the value of the "upstream_billing_guard_observed_multiplier" field.
+func (_u *AccountUpdate) ClearUpstreamBillingGuardObservedMultiplier() *AccountUpdate {
+	_u.mutation.ClearUpstreamBillingGuardObservedMultiplier()
+	return _u
+}
+
+// SetUpstreamBillingGuardEvaluatedAt sets the "upstream_billing_guard_evaluated_at" field.
+func (_u *AccountUpdate) SetUpstreamBillingGuardEvaluatedAt(v time.Time) *AccountUpdate {
+	_u.mutation.SetUpstreamBillingGuardEvaluatedAt(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardEvaluatedAt sets the "upstream_billing_guard_evaluated_at" field if the given value is not nil.
+func (_u *AccountUpdate) SetNillableUpstreamBillingGuardEvaluatedAt(v *time.Time) *AccountUpdate {
+	if v != nil {
+		_u.SetUpstreamBillingGuardEvaluatedAt(*v)
+	}
+	return _u
+}
+
+// ClearUpstreamBillingGuardEvaluatedAt clears the value of the "upstream_billing_guard_evaluated_at" field.
+func (_u *AccountUpdate) ClearUpstreamBillingGuardEvaluatedAt() *AccountUpdate {
+	_u.mutation.ClearUpstreamBillingGuardEvaluatedAt()
+	return _u
+}
+
 // SetRateLimitedAt sets the "rate_limited_at" field.
 func (_u *AccountUpdate) SetRateLimitedAt(v time.Time) *AccountUpdate {
 	_u.mutation.SetRateLimitedAt(v)
@@ -894,6 +990,33 @@ func (_u *AccountUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.Schedulable(); ok {
 		_spec.SetField(account.FieldSchedulable, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardEnabled(); ok {
+		_spec.SetField(account.FieldUpstreamBillingGuardEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardMaxMultiplier(); ok {
+		_spec.SetField(account.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamBillingGuardMaxMultiplier(); ok {
+		_spec.AddField(account.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardBlocked(); ok {
+		_spec.SetField(account.FieldUpstreamBillingGuardBlocked, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardObservedMultiplier(); ok {
+		_spec.SetField(account.FieldUpstreamBillingGuardObservedMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamBillingGuardObservedMultiplier(); ok {
+		_spec.AddField(account.FieldUpstreamBillingGuardObservedMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.UpstreamBillingGuardObservedMultiplierCleared() {
+		_spec.ClearField(account.FieldUpstreamBillingGuardObservedMultiplier, field.TypeFloat64)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardEvaluatedAt(); ok {
+		_spec.SetField(account.FieldUpstreamBillingGuardEvaluatedAt, field.TypeTime, value)
+	}
+	if _u.mutation.UpstreamBillingGuardEvaluatedAtCleared() {
+		_spec.ClearField(account.FieldUpstreamBillingGuardEvaluatedAt, field.TypeTime)
 	}
 	if value, ok := _u.mutation.RateLimitedAt(); ok {
 		_spec.SetField(account.FieldRateLimitedAt, field.TypeTime, value)
@@ -1510,6 +1633,102 @@ func (_u *AccountUpdateOne) SetNillableSchedulable(v *bool) *AccountUpdateOne {
 	return _u
 }
 
+// SetUpstreamBillingGuardEnabled sets the "upstream_billing_guard_enabled" field.
+func (_u *AccountUpdateOne) SetUpstreamBillingGuardEnabled(v bool) *AccountUpdateOne {
+	_u.mutation.SetUpstreamBillingGuardEnabled(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardEnabled sets the "upstream_billing_guard_enabled" field if the given value is not nil.
+func (_u *AccountUpdateOne) SetNillableUpstreamBillingGuardEnabled(v *bool) *AccountUpdateOne {
+	if v != nil {
+		_u.SetUpstreamBillingGuardEnabled(*v)
+	}
+	return _u
+}
+
+// SetUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field.
+func (_u *AccountUpdateOne) SetUpstreamBillingGuardMaxMultiplier(v float64) *AccountUpdateOne {
+	_u.mutation.ResetUpstreamBillingGuardMaxMultiplier()
+	_u.mutation.SetUpstreamBillingGuardMaxMultiplier(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardMaxMultiplier sets the "upstream_billing_guard_max_multiplier" field if the given value is not nil.
+func (_u *AccountUpdateOne) SetNillableUpstreamBillingGuardMaxMultiplier(v *float64) *AccountUpdateOne {
+	if v != nil {
+		_u.SetUpstreamBillingGuardMaxMultiplier(*v)
+	}
+	return _u
+}
+
+// AddUpstreamBillingGuardMaxMultiplier adds value to the "upstream_billing_guard_max_multiplier" field.
+func (_u *AccountUpdateOne) AddUpstreamBillingGuardMaxMultiplier(v float64) *AccountUpdateOne {
+	_u.mutation.AddUpstreamBillingGuardMaxMultiplier(v)
+	return _u
+}
+
+// SetUpstreamBillingGuardBlocked sets the "upstream_billing_guard_blocked" field.
+func (_u *AccountUpdateOne) SetUpstreamBillingGuardBlocked(v bool) *AccountUpdateOne {
+	_u.mutation.SetUpstreamBillingGuardBlocked(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardBlocked sets the "upstream_billing_guard_blocked" field if the given value is not nil.
+func (_u *AccountUpdateOne) SetNillableUpstreamBillingGuardBlocked(v *bool) *AccountUpdateOne {
+	if v != nil {
+		_u.SetUpstreamBillingGuardBlocked(*v)
+	}
+	return _u
+}
+
+// SetUpstreamBillingGuardObservedMultiplier sets the "upstream_billing_guard_observed_multiplier" field.
+func (_u *AccountUpdateOne) SetUpstreamBillingGuardObservedMultiplier(v float64) *AccountUpdateOne {
+	_u.mutation.ResetUpstreamBillingGuardObservedMultiplier()
+	_u.mutation.SetUpstreamBillingGuardObservedMultiplier(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardObservedMultiplier sets the "upstream_billing_guard_observed_multiplier" field if the given value is not nil.
+func (_u *AccountUpdateOne) SetNillableUpstreamBillingGuardObservedMultiplier(v *float64) *AccountUpdateOne {
+	if v != nil {
+		_u.SetUpstreamBillingGuardObservedMultiplier(*v)
+	}
+	return _u
+}
+
+// AddUpstreamBillingGuardObservedMultiplier adds value to the "upstream_billing_guard_observed_multiplier" field.
+func (_u *AccountUpdateOne) AddUpstreamBillingGuardObservedMultiplier(v float64) *AccountUpdateOne {
+	_u.mutation.AddUpstreamBillingGuardObservedMultiplier(v)
+	return _u
+}
+
+// ClearUpstreamBillingGuardObservedMultiplier clears the value of the "upstream_billing_guard_observed_multiplier" field.
+func (_u *AccountUpdateOne) ClearUpstreamBillingGuardObservedMultiplier() *AccountUpdateOne {
+	_u.mutation.ClearUpstreamBillingGuardObservedMultiplier()
+	return _u
+}
+
+// SetUpstreamBillingGuardEvaluatedAt sets the "upstream_billing_guard_evaluated_at" field.
+func (_u *AccountUpdateOne) SetUpstreamBillingGuardEvaluatedAt(v time.Time) *AccountUpdateOne {
+	_u.mutation.SetUpstreamBillingGuardEvaluatedAt(v)
+	return _u
+}
+
+// SetNillableUpstreamBillingGuardEvaluatedAt sets the "upstream_billing_guard_evaluated_at" field if the given value is not nil.
+func (_u *AccountUpdateOne) SetNillableUpstreamBillingGuardEvaluatedAt(v *time.Time) *AccountUpdateOne {
+	if v != nil {
+		_u.SetUpstreamBillingGuardEvaluatedAt(*v)
+	}
+	return _u
+}
+
+// ClearUpstreamBillingGuardEvaluatedAt clears the value of the "upstream_billing_guard_evaluated_at" field.
+func (_u *AccountUpdateOne) ClearUpstreamBillingGuardEvaluatedAt() *AccountUpdateOne {
+	_u.mutation.ClearUpstreamBillingGuardEvaluatedAt()
+	return _u
+}
+
 // SetRateLimitedAt sets the "rate_limited_at" field.
 func (_u *AccountUpdateOne) SetRateLimitedAt(v time.Time) *AccountUpdateOne {
 	_u.mutation.SetRateLimitedAt(v)
@@ -2064,6 +2283,33 @@ func (_u *AccountUpdateOne) sqlSave(ctx context.Context) (_node *Account, err er
 	}
 	if value, ok := _u.mutation.Schedulable(); ok {
 		_spec.SetField(account.FieldSchedulable, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardEnabled(); ok {
+		_spec.SetField(account.FieldUpstreamBillingGuardEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardMaxMultiplier(); ok {
+		_spec.SetField(account.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamBillingGuardMaxMultiplier(); ok {
+		_spec.AddField(account.FieldUpstreamBillingGuardMaxMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardBlocked(); ok {
+		_spec.SetField(account.FieldUpstreamBillingGuardBlocked, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardObservedMultiplier(); ok {
+		_spec.SetField(account.FieldUpstreamBillingGuardObservedMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedUpstreamBillingGuardObservedMultiplier(); ok {
+		_spec.AddField(account.FieldUpstreamBillingGuardObservedMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.UpstreamBillingGuardObservedMultiplierCleared() {
+		_spec.ClearField(account.FieldUpstreamBillingGuardObservedMultiplier, field.TypeFloat64)
+	}
+	if value, ok := _u.mutation.UpstreamBillingGuardEvaluatedAt(); ok {
+		_spec.SetField(account.FieldUpstreamBillingGuardEvaluatedAt, field.TypeTime, value)
+	}
+	if _u.mutation.UpstreamBillingGuardEvaluatedAtCleared() {
+		_spec.ClearField(account.FieldUpstreamBillingGuardEvaluatedAt, field.TypeTime)
 	}
 	if value, ok := _u.mutation.RateLimitedAt(); ok {
 		_spec.SetField(account.FieldRateLimitedAt, field.TypeTime, value)

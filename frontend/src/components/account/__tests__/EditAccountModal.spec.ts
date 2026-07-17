@@ -2,9 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 
-const { updateAccountMock, checkMixedChannelRiskMock } = vi.hoisted(() => ({
+const { updateAccountMock, checkMixedChannelRiskMock, updateUpstreamBillingGuardMock } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
-  checkMixedChannelRiskMock: vi.fn()
+  checkMixedChannelRiskMock: vi.fn(),
+  updateUpstreamBillingGuardMock: vi.fn()
 }))
 
 vi.mock('@/stores/app', () => ({
@@ -25,7 +26,8 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
-      checkMixedChannelRisk: checkMixedChannelRiskMock
+      checkMixedChannelRisk: checkMixedChannelRiskMock,
+      updateUpstreamBillingGuard: updateUpstreamBillingGuardMock
     },
     settings: {
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
@@ -339,6 +341,118 @@ describe('EditAccountModal', () => {
     expect(credentials?.openai_prompt_cache_creation_optimization_enabled).toBe(true)
     expect(credentials?.openai_prompt_cache_creation_optimization_mode).toBe('suppress')
     expect(credentials).not.toHaveProperty('pool_mode')
+  })
+
+  it('updates an enabled billing guard after saving auto-probe state and immediately reevaluates its threshold', async () => {
+    const account = buildAccount()
+    account.extra = { upstream_billing_probe_enabled: true }
+    account.upstream_billing_guard_enabled = true
+    account.upstream_billing_guard_max_multiplier = 1
+    account.upstream_billing_guard_observed_multiplier = 2
+    account.upstream_billing_guard_blocked = true
+    updateAccountMock.mockReset()
+    updateUpstreamBillingGuardMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+    updateUpstreamBillingGuardMock.mockResolvedValue({
+      account: { ...account, upstream_billing_guard_max_multiplier: 3, upstream_billing_guard_blocked: false }
+    })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="upstream-billing-guard-max-multiplier"]').setValue('3')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.upstream_billing_probe_enabled).toBe(true)
+    expect(updateUpstreamBillingGuardMock).toHaveBeenCalledWith(account.id, {
+      enabled: true,
+      max_multiplier: 3
+    })
+    expect(updateAccountMock.mock.invocationCallOrder[0]).toBeLessThan(
+      updateUpstreamBillingGuardMock.mock.invocationCallOrder[0]
+    )
+  })
+
+  it('disables the billing guard before disabling its required auto probe', async () => {
+    const account = buildAccount()
+    account.extra = { upstream_billing_probe_enabled: true }
+    account.upstream_billing_guard_enabled = true
+    account.upstream_billing_guard_max_multiplier = 1
+    updateAccountMock.mockReset()
+    updateUpstreamBillingGuardMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+    updateUpstreamBillingGuardMock.mockResolvedValue({ account: { ...account, upstream_billing_guard_enabled: false } })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="upstream-billing-guard-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="upstream-billing-auto-probe-toggle"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateUpstreamBillingGuardMock).toHaveBeenCalledWith(account.id, {
+      enabled: false,
+      max_multiplier: 1
+    })
+    expect(updateAccountMock).toHaveBeenCalledTimes(2)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toHaveProperty('upstream_billing_probe_enabled', true)
+    expect(updateAccountMock.mock.calls[1]?.[1]?.extra).toHaveProperty('upstream_billing_probe_enabled', false)
+    expect(updateAccountMock.mock.invocationCallOrder[0]).toBeLessThan(
+      updateUpstreamBillingGuardMock.mock.invocationCallOrder[0]
+    )
+    expect(updateUpstreamBillingGuardMock.mock.invocationCallOrder[0]).toBeLessThan(
+      updateAccountMock.mock.invocationCallOrder[1]
+    )
+  })
+
+  it('allows disabling an active billing guard after auto probe is toggled off first', async () => {
+    const account = buildAccount()
+    account.extra = { upstream_billing_probe_enabled: true }
+    account.upstream_billing_guard_enabled = true
+    account.upstream_billing_guard_max_multiplier = 1
+    updateAccountMock.mockReset()
+    updateUpstreamBillingGuardMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+    updateUpstreamBillingGuardMock.mockResolvedValue({ account: { ...account, upstream_billing_guard_enabled: false } })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="upstream-billing-auto-probe-toggle"]').trigger('click')
+    const guardToggle = wrapper.get('[data-testid="upstream-billing-guard-toggle"]')
+    expect(guardToggle.attributes('disabled')).toBeUndefined()
+    await guardToggle.trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateUpstreamBillingGuardMock).toHaveBeenCalledWith(account.id, {
+      enabled: false,
+      max_multiplier: 1
+    })
+    expect(updateAccountMock).toHaveBeenCalledTimes(2)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toHaveProperty('upstream_billing_probe_enabled', true)
+    expect(updateAccountMock.mock.calls[1]?.[1]?.extra).toHaveProperty('upstream_billing_probe_enabled', false)
+  })
+
+  it('does not disable a billing guard when the ordinary account update fails', async () => {
+    const account = buildAccount()
+    account.extra = { upstream_billing_probe_enabled: true }
+    account.upstream_billing_guard_enabled = true
+    updateAccountMock.mockReset()
+    updateUpstreamBillingGuardMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockRejectedValue(new Error('update failed'))
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="upstream-billing-guard-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="upstream-billing-auto-probe-toggle"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateUpstreamBillingGuardMock).not.toHaveBeenCalled()
   })
 
   it('removes both cache creation optimization credentials when the switch is turned off', async () => {

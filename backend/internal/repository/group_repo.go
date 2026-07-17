@@ -37,7 +37,20 @@ func newGroupRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *groupRep
 }
 
 func (r *groupRepository) Create(ctx context.Context, groupIn *service.Group) error {
-	builder := r.client.Group.Create().
+	if err := createGroupRecord(ctx, r.client, groupIn); err != nil {
+		return err
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupIn.ID, nil); err != nil {
+		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group create failed: group=%d err=%v", groupIn.ID, err)
+	}
+	return nil
+}
+
+func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *service.Group) error {
+	if groupIn == nil {
+		return errors.New("group is nil")
+	}
+	builder := client.Group.Create().
 		SetName(groupIn.Name).
 		SetDescription(groupIn.Description).
 		SetPlatform(groupIn.Platform).
@@ -82,6 +95,9 @@ func (r *groupRepository) Create(ctx context.Context, groupIn *service.Group) er
 		SetModelsListConfig(groupIn.ModelsListConfig).
 		SetStrictModelPriorityOnModelMismatch(groupIn.StrictModelPriorityOnModelMismatch).
 		SetRpmLimit(groupIn.RPMLimit)
+	if groupIn.DuplicateOperationID != "" {
+		builder = builder.SetDuplicateOperationID(groupIn.DuplicateOperationID)
+	}
 
 	// 设置模型路由配置
 	if groupIn.ModelRouting != nil {
@@ -92,15 +108,83 @@ func (r *groupRepository) Create(ctx context.Context, groupIn *service.Group) er
 	builder = builder.SetSupportedModelScopes(groupIn.SupportedModelScopes)
 
 	created, err := builder.Save(ctx)
+	if err != nil {
+		return translatePersistenceError(err, nil, service.ErrGroupExists)
+	}
+	groupIn.ID = created.ID
+	groupIn.CreatedAt = created.CreatedAt
+	groupIn.UpdatedAt = created.UpdatedAt
+	return nil
+}
+
+func (r *groupRepository) FindByDuplicateOperationID(ctx context.Context, operationID string) (*service.Group, error) {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return nil, nil
+	}
+	row, err := r.client.Group.Query().
+		Where(group.DuplicateOperationIDEQ(operationID)).
+		Order(dbent.Asc(group.FieldID)).
+		First(ctx)
+	if dbent.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find group duplicate operation: %w", err)
+	}
+	return groupEntityToService(row), nil
+}
+
+// CreateFromSource atomically creates an inactive copy, clones the source
+// account bindings with their exact priorities, and writes its scheduler event.
+// The outbox is part of the same transaction so a committed copy can never be
+// observed by the scheduler without its binding snapshot.
+func (r *groupRepository) CreateFromSource(ctx context.Context, groupIn *service.Group, sourceGroupID int64) error {
+	if groupIn == nil {
+		return errors.New("group is nil")
+	}
+	tx, err := r.client.Tx(ctx)
+	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+		return err
+	}
+	txClient := r.client
 	if err == nil {
-		groupIn.ID = created.ID
-		groupIn.CreatedAt = created.CreatedAt
-		groupIn.UpdatedAt = created.UpdatedAt
-		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupIn.ID, nil); err != nil {
-			logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group create failed: group=%d err=%v", groupIn.ID, err)
+		defer func() { _ = tx.Rollback() }()
+		txClient = tx.Client()
+	} else if existingTx := dbent.TxFromContext(ctx); existingTx != nil {
+		// Reuse the caller's transaction client when Ent reports that the
+		// context is already transactional; falling back to r.client here would
+		// commit the copied bindings outside the caller's transaction.
+		txClient = existingTx.Client()
+	}
+	if err := createGroupRecord(ctx, txClient, groupIn); err != nil {
+		return err
+	}
+	result, err := txClient.ExecContext(ctx, `
+		INSERT INTO account_groups (account_id, group_id, priority, created_at)
+		SELECT ag.account_id, $2, ag.priority, NOW()
+		FROM account_groups ag
+		JOIN accounts a ON a.id = ag.account_id
+		WHERE ag.group_id = $1
+		  AND a.deleted_at IS NULL
+		  AND (NOT $3 OR a.type <> $4)
+		ON CONFLICT (account_id, group_id) DO NOTHING
+	`, sourceGroupID, groupIn.ID, groupIn.RequireOAuthOnly, service.AccountTypeAPIKey)
+	if err != nil {
+		return err
+	}
+	if count, countErr := result.RowsAffected(); countErr == nil {
+		groupIn.AccountCount = count
+	}
+	if err := enqueueSchedulerOutbox(ctx, txClient, service.SchedulerOutboxEventGroupChanged, nil, &groupIn.ID, nil); err != nil {
+		return err
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return err
 		}
 	}
-	return translatePersistenceError(err, nil, service.ErrGroupExists)
+	return nil
 }
 
 func (r *groupRepository) GetByID(ctx context.Context, id int64) (*service.Group, error) {
@@ -768,6 +852,7 @@ const (
 	groupAccountAvailableSQL = `a.deleted_at IS NULL
 				AND a.status = 'active'
 				AND a.schedulable = true
+				AND a.upstream_billing_guard_blocked = false
 				AND (a.expires_at IS NULL OR a.expires_at > NOW() OR a.auto_pause_on_expired = FALSE)
 				AND (a.rate_limit_reset_at IS NULL OR a.rate_limit_reset_at <= NOW())
 				AND (a.overload_until IS NULL OR a.overload_until <= NOW())

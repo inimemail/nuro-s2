@@ -123,6 +123,8 @@ func TestSchedulerLocalSnapshot_ClonesMutableAccountFields(t *testing.T) {
 		LocalSnapshotMaxKeys: 16,
 	})
 	bucket := SchedulerBucket{GroupID: 1, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
+	observed := 2.5
+	evaluatedAt := time.Now().UTC()
 	accounts := []Account{{
 		ID:          12,
 		Platform:    PlatformOpenAI,
@@ -133,12 +135,16 @@ func TestSchedulerLocalSnapshot_ClonesMutableAccountFields(t *testing.T) {
 			"api_key": "old",
 			"nested":  map[string]any{"flag": "old"},
 		},
-		GroupIDs: []int64{1},
+		GroupIDs:                               []int64{1},
+		UpstreamBillingGuardObservedMultiplier: &observed,
+		UpstreamBillingGuardEvaluatedAt:        &evaluatedAt,
 	}}
 	snapshot.Set(bucket, accounts, time.Now())
 	accounts[0].Credentials["api_key"] = "mutated"
 	accounts[0].Credentials["nested"].(map[string]any)["flag"] = "mutated"
 	accounts[0].GroupIDs[0] = 99
+	observed = 9
+	evaluatedAt = evaluatedAt.Add(time.Hour)
 
 	got, hit := snapshot.Get(bucket, time.Now())
 	if !hit || len(got) != 1 {
@@ -152,6 +158,12 @@ func TestSchedulerLocalSnapshot_ClonesMutableAccountFields(t *testing.T) {
 	}
 	if got[0].GroupIDs[0] != 1 {
 		t.Fatalf("expected group ids clone, got %v", got[0].GroupIDs)
+	}
+	if got[0].UpstreamBillingGuardObservedMultiplier == nil || *got[0].UpstreamBillingGuardObservedMultiplier != 2.5 {
+		t.Fatalf("expected billing guard multiplier clone, got %v", got[0].UpstreamBillingGuardObservedMultiplier)
+	}
+	if got[0].UpstreamBillingGuardEvaluatedAt == nil || !got[0].UpstreamBillingGuardEvaluatedAt.Equal(evaluatedAt.Add(-time.Hour)) {
+		t.Fatalf("expected billing guard evaluation time clone, got %v", got[0].UpstreamBillingGuardEvaluatedAt)
 	}
 }
 

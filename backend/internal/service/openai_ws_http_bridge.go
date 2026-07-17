@@ -372,6 +372,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		}
 
 		originalUpstreamMessage := []byte(trimmedData)
+		if normalized, changed := normalizeCompletedImageGenerationStatus(originalUpstreamMessage); changed {
+			originalUpstreamMessage = normalized
+		}
 		originalEventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(originalUpstreamMessage)
 		upstreamMessage, eventType, _ := normalizeOpenAIWSUpstreamEventForSafety(originalUpstreamMessage, originalEventType)
 		if responseID == "" && eventResponseID != "" {

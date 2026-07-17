@@ -125,6 +125,12 @@ type AdminService interface {
 	ResetAccountQuota(ctx context.Context, id int64) error
 }
 
+// AdminUserLimitsService is optional so existing lightweight admin test
+// doubles and integrations do not need to implement the newer batch endpoint.
+type AdminUserLimitsService interface {
+	BatchUpdateLimits(context.Context, []int64, *int, *int) (int, error)
+}
+
 // CreateUserInput represents input for creating a new user via admin operations.
 type CreateUserInput struct {
 	Email         string
@@ -578,7 +584,9 @@ var ErrRPMStatusUnavailable = infraerrors.New(http.StatusNotImplemented, "RPM_ST
 // adminServiceImpl implements AdminService
 type adminServiceImpl struct {
 	userRepo             UserRepository
+	userLimitRepo        userBatchLimitRepository
 	groupRepo            GroupRepository
+	groupDuplicateRepo   AdminGroupDuplicateRepository
 	accountRepo          AccountRepository
 	proxyRepo            ProxyRepository
 	apiKeyRepo           APIKeyRepository
@@ -630,7 +638,9 @@ func NewAdminService(
 ) AdminService {
 	return &adminServiceImpl{
 		userRepo:             userRepo,
+		userLimitRepo:        userBatchLimitRepositoryFrom(userRepo),
 		groupRepo:            groupRepo,
+		groupDuplicateRepo:   adminGroupDuplicateRepositoryFrom(groupRepo),
 		accountRepo:          accountRepo,
 		proxyRepo:            proxyRepo,
 		apiKeyRepo:           apiKeyRepo,
@@ -1134,6 +1144,52 @@ func (s *adminServiceImpl) BatchUpdateConcurrency(ctx context.Context, userIDs [
 	if s.authCacheInvalidator != nil {
 		for _, uid := range cleaned {
 			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, uid)
+		}
+	}
+	return affected, nil
+}
+
+type userBatchLimitRepository interface {
+	BatchUpdateLimits(context.Context, []int64, *int, *int) (int, error)
+}
+
+func userBatchLimitRepositoryFrom(repo UserRepository) userBatchLimitRepository {
+	limitRepo, _ := repo.(userBatchLimitRepository)
+	return limitRepo
+}
+
+func (s *adminServiceImpl) BatchUpdateLimits(ctx context.Context, userIDs []int64, concurrency, rpmLimit *int) (int, error) {
+	if concurrency == nil && rpmLimit == nil {
+		return 0, errors.New("at least one of concurrency or rpm_limit is required")
+	}
+	if (concurrency != nil && *concurrency < 0) || (rpmLimit != nil && *rpmLimit < 0) {
+		return 0, errors.New("limits must be greater than or equal to 0")
+	}
+	cleaned := make([]int64, 0, len(userIDs))
+	seen := make(map[int64]struct{}, len(userIDs))
+	for _, userID := range userIDs {
+		if userID <= 0 {
+			continue
+		}
+		if _, ok := seen[userID]; ok {
+			continue
+		}
+		seen[userID] = struct{}{}
+		cleaned = append(cleaned, userID)
+	}
+	if len(cleaned) == 0 {
+		return 0, nil
+	}
+	if s.userLimitRepo == nil {
+		return 0, errors.New("batch user limit repository is not configured")
+	}
+	affected, err := s.userLimitRepo.BatchUpdateLimits(ctx, cleaned, concurrency, rpmLimit)
+	if err != nil {
+		return 0, err
+	}
+	if s.authCacheInvalidator != nil {
+		for _, userID := range cleaned {
+			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 		}
 	}
 	return affected, nil
@@ -2993,6 +3049,23 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 	if !provided && hasCurrent {
 		normalized[openAILongContextBillingEnabledKey] = current
 	}
+	// Automatic billing-probe enablement is an administrator setting. Preserve
+	// it on partial account updates; clients must send an explicit boolean to
+	// change it. The probe snapshot itself is runtime-owned and must never be
+	// accepted from a stale account form, otherwise a concurrent successful
+	// probe can be overwritten by an unrelated edit.
+	if value, enabledProvided := input.Extra[UpstreamBillingProbeEnabledExtraKey]; enabledProvided {
+		if _, ok := value.(bool); !ok {
+			return nil, ErrInvalidUpstreamBillingProbeEnabled
+		}
+	} else if currentEnabled, ok := account.Extra[UpstreamBillingProbeEnabledExtraKey].(bool); ok {
+		normalized[UpstreamBillingProbeEnabledExtraKey] = currentEnabled
+	}
+	if currentSnapshot, ok := account.Extra[UpstreamBillingProbeExtraKey]; ok {
+		normalized[UpstreamBillingProbeExtraKey] = currentSnapshot
+	} else {
+		delete(normalized, UpstreamBillingProbeExtraKey)
+	}
 	return normalized, nil
 }
 
@@ -3117,6 +3190,12 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		normalizedExtra, err = normalizeOpenAILongContextBillingUpdateExtra(account, input)
 		if err != nil {
 			return nil, err
+		}
+		if account.UpstreamBillingGuardEnabled {
+			autoProbeEnabled, _ := normalizedExtra[UpstreamBillingProbeEnabledExtraKey].(bool)
+			if !autoProbeEnabled {
+				return nil, ErrUpstreamBillingProbeRequiredByGuard
+			}
 		}
 	}
 	wasOveragesEnabled := account.IsOveragesEnabled()
@@ -3291,6 +3370,24 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	return s.accountRepo.UpdateExtra(ctx, id, updates)
 }
 
+func bulkUpdateDisablesUpstreamBillingProbe(extra map[string]any, removeKeys []string) (bool, error) {
+	if value, exists := extra[UpstreamBillingProbeEnabledExtraKey]; exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return false, ErrInvalidUpstreamBillingProbeEnabled
+		}
+		if !enabled {
+			return true, nil
+		}
+	}
+	for _, key := range removeKeys {
+		if strings.TrimSpace(key) == UpstreamBillingProbeEnabledExtraKey {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
@@ -3319,10 +3416,14 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
 	_, hasLongContextBillingUpdate := input.Extra[openAILongContextBillingEnabledKey]
+	probeDisableRequested, err := bulkUpdateDisablesUpstreamBillingProbe(input.Extra, input.ExtraRemoveKeys)
+	if err != nil {
+		return nil, err
+	}
 
 	// 预加载账号平台信息（混合渠道检查需要）。
 	platformByID := map[int64]string{}
-	if needMixedChannelCheck || hasLongContextBillingUpdate {
+	if needMixedChannelCheck || hasLongContextBillingUpdate || probeDisableRequested {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
@@ -3334,6 +3435,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 					if err := ValidateOpenAILongContextBillingExtra(account.Platform, input.Extra); err != nil {
 						return nil, err
 					}
+				}
+				if probeDisableRequested && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey && account.UpstreamBillingGuardEnabled {
+					return nil, ErrUpstreamBillingProbeRequiredByGuard
 				}
 			}
 		}
