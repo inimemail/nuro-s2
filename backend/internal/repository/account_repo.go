@@ -28,6 +28,7 @@ import (
 	dbgroup "github.com/Wei-Shaw/sub2api/ent/group"
 	dbpredicate "github.com/Wei-Shaw/sub2api/ent/predicate"
 	dbproxy "github.com/Wei-Shaw/sub2api/ent/proxy"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -464,12 +465,12 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 		}
 	}
 	account.UpdatedAt = updated.UpdatedAt
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &account.ID, nil, buildSchedulerGroupPayload(account.GroupIDs)); err != nil {
+	if err := enqueueSchedulerOutbox(ctx, sqlExecutorFromContext(ctx, r.sql), service.SchedulerOutboxEventAccountChanged, &account.ID, nil, buildSchedulerGroupPayload(account.GroupIDs)); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account update failed: account=%d err=%v", account.ID, err)
 	}
 	// 普通账号编辑（如 model_mapping / credentials）也需要立即刷新单账号快照，
 	// 否则网关在 outbox worker 延迟或异常时仍可能读到旧配置。
-	r.syncSchedulerAccountSnapshot(ctx, account.ID)
+	r.syncSchedulerAccountSnapshotUnlessTransactional(ctx, account.ID)
 	return nil
 }
 
@@ -501,6 +502,107 @@ func updateAccountExtraPreservingUpstreamBillingProbeSnapshot(ctx context.Contex
 		return service.ErrAccountNotFound
 	}
 	return nil
+}
+
+// UpdateAccountWithGroupConfig commits the account row, group bindings,
+// binding-level upstream billing guard limits, and optional shadow proxy
+// propagation as one unit. Scheduler cache refresh is deferred until after
+// commit so readers never observe state that can still be rolled back.
+func (r *accountRepository) UpdateAccountWithGroupConfig(
+	ctx context.Context,
+	account *service.Account,
+	groupIDs *[]int64,
+	guardLimits *map[int64]float64,
+	propagateProxyToShadows bool,
+) error {
+	if account == nil {
+		return nil
+	}
+	if outerTx := dbent.TxFromContext(ctx); outerTx != nil {
+		shadowIDs, err := r.updateAccountWithGroupConfig(ctx, account, groupIDs, guardLimits, propagateProxyToShadows)
+		if err != nil {
+			return err
+		}
+		outerTx.OnCommit(func(next dbent.Committer) dbent.Committer {
+			return dbent.CommitFunc(func(commitCtx context.Context, tx *dbent.Tx) error {
+				if err := next.Commit(commitCtx, tx); err != nil {
+					return err
+				}
+				// commitCtx is the context captured when the transaction was
+				// created, before callers attached the transaction itself with
+				// dbent.NewTxContext. Using it here avoids carrying a committed
+				// Tx into post-commit database reads.
+				refreshCtx := context.WithoutCancel(commitCtx)
+				r.syncSchedulerAccountSnapshot(refreshCtx, account.ID)
+				for _, shadowID := range shadowIDs {
+					r.syncSchedulerAccountSnapshot(refreshCtx, shadowID)
+				}
+				return nil
+			})
+		})
+		return nil
+	}
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin account group config transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	txCtx := dbent.NewTxContext(ctx, tx)
+	shadowIDs, err := r.updateAccountWithGroupConfig(txCtx, account, groupIDs, guardLimits, propagateProxyToShadows)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit account group config transaction: %w", err)
+	}
+	refreshCtx := context.WithoutCancel(ctx)
+	r.syncSchedulerAccountSnapshot(refreshCtx, account.ID)
+	for _, shadowID := range shadowIDs {
+		r.syncSchedulerAccountSnapshot(refreshCtx, shadowID)
+	}
+	return nil
+}
+
+func (r *accountRepository) updateAccountWithGroupConfig(
+	ctx context.Context,
+	account *service.Account,
+	groupIDs *[]int64,
+	guardLimits *map[int64]float64,
+	propagateProxyToShadows bool,
+) ([]int64, error) {
+	if err := r.Update(ctx, account); err != nil {
+		return nil, fmt.Errorf("update account row: %w", err)
+	}
+	if groupIDs != nil {
+		if err := r.BindGroups(ctx, account.ID, *groupIDs); err != nil {
+			return nil, fmt.Errorf("bind account groups: %w", err)
+		}
+	}
+	if guardLimits != nil {
+		if err := r.UpdateUpstreamBillingGuardGroupLimits(ctx, account.ID, *guardLimits); err != nil {
+			return nil, fmt.Errorf("update account group guard limits: %w", err)
+		}
+	}
+	shadowIDs := make([]int64, 0)
+	if propagateProxyToShadows {
+		shadows, err := r.ListShadowsByParent(ctx, account.ID)
+		if err != nil {
+			return nil, fmt.Errorf("list account shadows: %w", err)
+		}
+		for _, shadow := range shadows {
+			if shadow == nil {
+				continue
+			}
+			shadow.ProxyID = account.ProxyID
+			shadow.Proxy = nil
+			if err := r.Update(ctx, shadow); err != nil {
+				return nil, fmt.Errorf("update shadow account %d proxy: %w", shadow.ID, err)
+			}
+			shadowIDs = append(shadowIDs, shadow.ID)
+		}
+	}
+	return shadowIDs, nil
 }
 
 func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, credentials map[string]any) error {
@@ -649,10 +751,6 @@ func (r *accountRepository) updateGrokOAuthSchedulingStateIfCredentialsUnchanged
 }
 
 func (r *accountRepository) Delete(ctx context.Context, id int64) error {
-	groupIDs, err := r.loadAccountGroupIDs(ctx, id)
-	if err != nil {
-		return err
-	}
 	// 使用事务保证账号与关联分组的删除原子性
 	tx, err := r.client.Tx(ctx)
 	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
@@ -666,6 +764,22 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 	} else {
 		// 已处于外部事务中（ErrTxStarted），复用当前 client
 		txClient = r.client
+	}
+	// Keep the account -> account_groups lock order consistent with BindGroups
+	// and composite account edits. This avoids a delete/rebind deadlock where
+	// each transaction holds one side and waits for the other.
+	if _, err := txClient.Account.Query().
+		Where(dbaccount.IDEQ(id)).
+		ForUpdate().
+		OnlyID(ctx); err != nil {
+		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
+	}
+	var groupIDs []int64
+	if err := txClient.AccountGroup.Query().
+		Where(dbaccountgroup.AccountIDEQ(id)).
+		Select(dbaccountgroup.FieldGroupID).
+		Scan(ctx, &groupIDs); err != nil {
+		return err
 	}
 
 	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(id)).Exec(ctx); err != nil {
@@ -1090,6 +1204,13 @@ func (r *accountRepository) syncSchedulerAccountSnapshot(ctx context.Context, ac
 	}
 }
 
+func (r *accountRepository) syncSchedulerAccountSnapshotUnlessTransactional(ctx context.Context, accountID int64) {
+	if dbent.TxFromContext(ctx) != nil {
+		return
+	}
+	r.syncSchedulerAccountSnapshot(ctx, accountID)
+}
+
 func (r *accountRepository) deleteSchedulerAccountSnapshot(ctx context.Context, accountID int64) {
 	if r == nil || r.schedulerCache == nil || accountID <= 0 {
 		return
@@ -1204,7 +1325,60 @@ func (r *accountRepository) GetGroups(ctx context.Context, accountID int64) ([]s
 }
 
 func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, groupIDs []int64) error {
-	existingBindings, err := r.client.AccountGroup.Query().
+	client := clientFromContext(ctx, r.client)
+	// 使用事务保证删除旧绑定与创建新绑定的原子性。调用方已开启
+	// 外层事务时直接复用，避免账号字段与分组绑定分开提交。
+	var ownedTx *dbent.Tx
+	txClient := client
+	if dbent.TxFromContext(ctx) == nil {
+		tx, txErr := client.Tx(ctx)
+		if txErr != nil && !errors.Is(txErr, dbent.ErrTxStarted) {
+			return txErr
+		}
+		if txErr == nil {
+			ownedTx = tx
+			txClient = tx.Client()
+			defer func() { _ = tx.Rollback() }()
+		}
+	}
+	// Serialize every binding replacement for the same account. Locking the
+	// parent row before reading the old bindings prevents two concurrent
+	// delete-and-recreate transactions from both reading the same snapshot and
+	// leaving a union of their requested groups behind.
+	if _, err := txClient.Account.Query().
+		Where(dbaccount.IDEQ(accountID)).
+		ForUpdate().
+		OnlyID(ctx); err != nil {
+		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
+	}
+	// Lock every target group before deleting bindings. A concurrent group
+	// cascade delete locks the group first; waiting here (before touching the
+	// join rows) prevents a group<->binding lock cycle during the later FK
+	// checks on inserts. Sort the lock order to avoid cross-group deadlocks.
+	targetGroupIDs := make([]int64, 0, len(groupIDs))
+	seenTargetGroups := make(map[int64]struct{}, len(groupIDs))
+	for _, groupID := range groupIDs {
+		if _, seen := seenTargetGroups[groupID]; seen {
+			continue
+		}
+		seenTargetGroups[groupID] = struct{}{}
+		targetGroupIDs = append(targetGroupIDs, groupID)
+	}
+	sort.Slice(targetGroupIDs, func(i, j int) bool { return targetGroupIDs[i] < targetGroupIDs[j] })
+	if len(targetGroupIDs) > 0 {
+		lockedGroupIDs, err := txClient.Group.Query().
+			Where(dbgroup.IDIn(targetGroupIDs...)).
+			Order(dbent.Asc(dbgroup.FieldID)).
+			ForUpdate().
+			IDs(ctx)
+		if err != nil {
+			return err
+		}
+		if len(lockedGroupIDs) != len(targetGroupIDs) {
+			return service.ErrGroupNotFound
+		}
+	}
+	existingBindings, err := txClient.AccountGroup.Query().
 		Where(dbaccountgroup.AccountIDEQ(accountID)).
 		All(ctx)
 	if err != nil {
@@ -1218,20 +1392,6 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 			value := *binding.UpstreamBillingGuardMaxMultiplier
 			existingLimits[binding.GroupID] = &value
 		}
-	}
-	// 使用事务保证删除旧绑定与创建新绑定的原子性
-	tx, err := r.client.Tx(ctx)
-	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
-		return err
-	}
-
-	var txClient *dbent.Client
-	if err == nil {
-		defer func() { _ = tx.Rollback() }()
-		txClient = tx.Client()
-	} else {
-		// 已处于外部事务中（ErrTxStarted），复用当前 client
-		txClient = r.client
 	}
 
 	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(accountID)).Exec(ctx); err != nil {
@@ -1256,21 +1416,21 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 		}
 	}
 
-	if tx != nil {
-		if err := tx.Commit(); err != nil {
+	if ownedTx != nil {
+		if err := ownedTx.Commit(); err != nil {
 			return err
 		}
 	}
 	payload := buildSchedulerGroupPayload(mergeGroupIDs(existingGroupIDs, groupIDs))
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
+	if err := enqueueSchedulerOutbox(ctx, sqlExecutorFromContext(ctx, r.sql), service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue bind groups failed: account=%d err=%v", accountID, err)
 	}
-	r.syncSchedulerAccountSnapshot(ctx, accountID)
+	r.syncSchedulerAccountSnapshotUnlessTransactional(ctx, accountID)
 	return nil
 }
 
 func (r *accountRepository) UpdateUpstreamBillingGuardGroupLimits(ctx context.Context, accountID int64, limits map[int64]float64) error {
-	client := r.sql
+	client := sqlExecutorFromContext(ctx, r.sql)
 	if client == nil {
 		return errors.New("account group billing guard SQL executor is unavailable")
 	}
@@ -1291,10 +1451,10 @@ func (r *accountRepository) UpdateUpstreamBillingGuardGroupLimits(ctx context.Co
 			limit := limits[groupID]
 			groupArg := len(args) + 1
 			limitArg := groupArg + 1
-			caseExpr.WriteString(fmt.Sprintf(" WHEN $%d THEN $%d", groupArg, limitArg))
+			caseExpr.WriteString(fmt.Sprintf(" WHEN $%d::bigint THEN $%d::double precision", groupArg, limitArg))
 			args = append(args, groupID, limit)
 		}
-		caseExpr.WriteString(" ELSE NULL END")
+		caseExpr.WriteString(" ELSE NULL::double precision END")
 		assignmentExpr = caseExpr.String()
 	}
 	requestedGroupsArg := len(args) + 1
@@ -1336,7 +1496,10 @@ func (r *accountRepository) UpdateUpstreamBillingGuardGroupLimits(ctx context.Co
 			return err
 		}
 		if missing {
-			return fmt.Errorf("account %d is not bound to group %d", accountID, groupID)
+			return infraerrors.Conflict(
+				"UPSTREAM_BILLING_GUARD_GROUP_BINDING_CHANGED",
+				"account group bindings changed while updating the billing guard; reload and retry",
+			).WithCause(fmt.Errorf("account %d is not bound to group %d", accountID, groupID))
 		}
 		changedGroupIDs = append(changedGroupIDs, groupID)
 	}
@@ -1347,10 +1510,10 @@ func (r *accountRepository) UpdateUpstreamBillingGuardGroupLimits(ctx context.Co
 		return nil
 	}
 	payload := buildSchedulerGroupPayload(changedGroupIDs)
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &accountID, nil, payload); err != nil {
+	if err := enqueueSchedulerOutbox(ctx, sqlExecutorFromContext(ctx, r.sql), service.SchedulerOutboxEventAccountChanged, &accountID, nil, payload); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue account group billing guard update failed: account=%d err=%v", accountID, err)
 	}
-	r.syncSchedulerAccountSnapshot(ctx, accountID)
+	r.syncSchedulerAccountSnapshotUnlessTransactional(ctx, accountID)
 	return nil
 }
 
@@ -3011,7 +3174,7 @@ func (r *accountRepository) ResetQuotaUsed(ctx context.Context, id int64) error 
 
 // ListShadowsByParent returns spark shadow accounts for the given parent account.
 func (r *accountRepository) ListShadowsByParent(ctx context.Context, parentID int64) ([]*service.Account, error) {
-	rows, err := r.client.Account.Query().
+	rows, err := clientFromContext(ctx, r.client).Account.Query().
 		Where(dbaccount.ParentAccountIDEQ(parentID), dbaccount.QuotaDimensionEQ(dbaccount.QuotaDimensionSpark)).
 		All(ctx)
 	if err != nil {

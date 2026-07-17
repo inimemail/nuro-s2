@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -22,9 +23,10 @@ type AccountRepoSuite struct {
 }
 
 type schedulerCacheRecorder struct {
-	setAccounts []*service.Account
-	deleteIDs   []int64
-	accounts    map[int64]*service.Account
+	setAccounts     []*service.Account
+	setAccountHasTx []bool
+	deleteIDs       []int64
+	accounts        map[int64]*service.Account
 }
 
 func (s *schedulerCacheRecorder) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
@@ -44,6 +46,7 @@ func (s *schedulerCacheRecorder) GetAccount(ctx context.Context, accountID int64
 
 func (s *schedulerCacheRecorder) SetAccount(ctx context.Context, account *service.Account) error {
 	s.setAccounts = append(s.setAccounts, account)
+	s.setAccountHasTx = append(s.setAccountHasTx, dbent.TxFromContext(ctx) != nil)
 	if s.accounts == nil {
 		s.accounts = make(map[int64]*service.Account)
 	}
@@ -94,6 +97,712 @@ func (s *AccountRepoSuite) SetupTest() {
 
 func TestAccountRepoSuite(t *testing.T) {
 	suite.Run(t, new(AccountRepoSuite))
+}
+
+func TestUpdateAccountWithGroupConfigCommitsFinalStateAndRefreshesOnce(t *testing.T) {
+	ctx := context.Background()
+	cache := &schedulerCacheRecorder{}
+	repo := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, cache)
+	suffix := time.Now().UnixNano()
+	group1 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("atomic-old-%d", suffix)})
+	group2 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("atomic-new-%d", suffix)})
+	account := mustCreateAccount(t, integrationEntClient, &service.Account{
+		Name:     fmt.Sprintf("atomic-account-%d", suffix),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra:    map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true},
+	})
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM scheduler_outbox WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id IN ($1, $2)", group1.ID, group2.ID)
+	})
+
+	requireNoError := func(err error) {
+		if err != nil {
+			t.Fatalf("fixture setup: %v", err)
+		}
+	}
+	requireNoError(repo.BindGroups(ctx, account.ID, []int64{group1.ID}))
+	requireNoError(repo.UpdateUpstreamBillingGuardGroupLimits(ctx, account.ID, map[int64]float64{group1.ID: 1}))
+	_, _ = integrationDB.ExecContext(ctx, "DELETE FROM scheduler_outbox WHERE account_id = $1", account.ID)
+	cache.setAccounts = nil
+
+	account, err := repo.GetByID(ctx, account.ID)
+	requireNoError(err)
+	account.Name = "atomic-committed"
+	groupIDs := []int64{group2.ID}
+	limits := map[int64]float64{group2.ID: 2.5}
+	requireNoError(repo.UpdateAccountWithGroupConfig(ctx, account, &groupIDs, &limits, false))
+
+	updated, err := repo.GetByID(ctx, account.ID)
+	requireNoError(err)
+	if updated.Name != "atomic-committed" {
+		t.Fatalf("expected committed name, got %q", updated.Name)
+	}
+	if len(updated.AccountGroups) != 1 || updated.AccountGroups[0].GroupID != group2.ID {
+		t.Fatalf("expected only group %d, got %+v", group2.ID, updated.AccountGroups)
+	}
+	if got := updated.AccountGroups[0].UpstreamBillingGuardMaxMultiplier; got == nil || *got != 2.5 {
+		t.Fatalf("expected committed guard limit 2.5, got %v", got)
+	}
+	if len(cache.setAccounts) != 1 {
+		t.Fatalf("expected one post-commit scheduler refresh, got %d", len(cache.setAccounts))
+	}
+	if len(cache.setAccounts[0].AccountGroups) != 1 {
+		t.Fatalf("scheduler cache received incomplete group state: %+v", cache.setAccounts[0].AccountGroups)
+	}
+	if got := cache.setAccounts[0].AccountGroups[0].UpstreamBillingGuardMaxMultiplier; got == nil || *got != 2.5 {
+		t.Fatalf("scheduler cache did not receive final guard state: %v", got)
+	}
+	var outboxCount int
+	requireNoError(integrationDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduler_outbox WHERE account_id = $1", account.ID).Scan(&outboxCount))
+	if outboxCount == 0 {
+		t.Fatal("expected committed scheduler outbox events")
+	}
+}
+
+func TestUpdateAccountWithGroupConfigRollsBackEverySideEffect(t *testing.T) {
+	ctx := context.Background()
+	cache := &schedulerCacheRecorder{}
+	repo := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, cache)
+	suffix := time.Now().UnixNano()
+	group1 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("rollback-old-%d", suffix)})
+	group2 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("rollback-new-%d", suffix)})
+	account := mustCreateAccount(t, integrationEntClient, &service.Account{
+		Name:     fmt.Sprintf("rollback-account-%d", suffix),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra:    map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true},
+	})
+	originalName := account.Name
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM scheduler_outbox WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id IN ($1, $2)", group1.ID, group2.ID)
+	})
+
+	if err := repo.BindGroups(ctx, account.ID, []int64{group1.ID}); err != nil {
+		t.Fatalf("bind fixture group: %v", err)
+	}
+	if err := repo.UpdateUpstreamBillingGuardGroupLimits(ctx, account.ID, map[int64]float64{group1.ID: 1}); err != nil {
+		t.Fatalf("set fixture guard: %v", err)
+	}
+	_, _ = integrationDB.ExecContext(ctx, "DELETE FROM scheduler_outbox WHERE account_id = $1", account.ID)
+	cache.setAccounts = nil
+
+	account, err := repo.GetByID(ctx, account.ID)
+	if err != nil {
+		t.Fatalf("load fixture account: %v", err)
+	}
+	account.Name = "must-rollback"
+	groupIDs := []int64{group2.ID}
+	// group1 is deliberately absent after rebinding, forcing the last stage to fail.
+	limits := map[int64]float64{group1.ID: 2}
+	if err := repo.UpdateAccountWithGroupConfig(ctx, account, &groupIDs, &limits, false); err == nil {
+		t.Fatal("expected missing guard binding to roll back the transaction")
+	}
+
+	updated, err := repo.GetByID(ctx, account.ID)
+	if err != nil {
+		t.Fatalf("reload rolled-back account: %v", err)
+	}
+	if updated.Name != originalName {
+		t.Fatalf("account row was partially committed: got %q want %q", updated.Name, originalName)
+	}
+	if len(updated.AccountGroups) != 1 || updated.AccountGroups[0].GroupID != group1.ID {
+		t.Fatalf("group bindings were partially committed: %+v", updated.AccountGroups)
+	}
+	if got := updated.AccountGroups[0].UpstreamBillingGuardMaxMultiplier; got == nil || *got != 1 {
+		t.Fatalf("guard limit was partially committed: %v", got)
+	}
+	if len(cache.setAccounts) != 0 {
+		t.Fatalf("rolled-back state leaked to scheduler cache: %d writes", len(cache.setAccounts))
+	}
+	var outboxCount int
+	if err := integrationDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduler_outbox WHERE account_id = $1", account.ID).Scan(&outboxCount); err != nil {
+		t.Fatalf("count scheduler outbox: %v", err)
+	}
+	if outboxCount != 0 {
+		t.Fatalf("rolled-back state leaked to scheduler outbox: %d events", outboxCount)
+	}
+}
+
+func TestUpdatePreservesProbeSnapshotWrittenWhileAccountRowIsBlocked(t *testing.T) {
+	ctx := context.Background()
+	repo := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, nil)
+	suffix := time.Now().UnixNano()
+	account := mustCreateAccount(t, integrationEntClient, &service.Account{
+		Name:     fmt.Sprintf("probe-race-%d", suffix),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra: map[string]any{
+			service.UpstreamBillingProbeEnabledExtraKey: true,
+			service.UpstreamBillingProbeExtraKey:        map[string]any{"status": "old"},
+		},
+	})
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM scheduler_outbox WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+	})
+
+	stale, err := repo.GetByID(ctx, account.ID)
+	if err != nil {
+		t.Fatalf("load stale account: %v", err)
+	}
+	stale.Name = "updated-with-blocked-probe"
+
+	lockTx, err := integrationDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin blocking transaction: %v", err)
+	}
+	defer func() { _ = lockTx.Rollback() }()
+	var blockerPID int
+	if err := lockTx.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&blockerPID); err != nil {
+		t.Fatalf("read blocker pid: %v", err)
+	}
+	if _, err := lockTx.ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = jsonb_set(extra, '{upstream_billing_probe}', '{"status":"new"}'::jsonb)
+		WHERE id = $1
+	`, account.ID); err != nil {
+		t.Fatalf("stage concurrent probe snapshot: %v", err)
+	}
+
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- repo.Update(context.Background(), stale)
+	}()
+
+	blocked := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := integrationDB.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_stat_activity
+				WHERE $1 = ANY(pg_blocking_pids(pid))
+			)
+		`, blockerPID).Scan(&blocked); err != nil {
+			t.Fatalf("inspect blocked account update: %v", err)
+		}
+		if blocked {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !blocked {
+		_ = lockTx.Rollback()
+		t.Fatal("account update never blocked behind the concurrent probe write")
+	}
+	if err := lockTx.Commit(); err != nil {
+		t.Fatalf("commit concurrent probe snapshot: %v", err)
+	}
+
+	select {
+	case err := <-updateDone:
+		if err != nil {
+			t.Fatalf("update account after probe commit: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("account update did not resume after probe commit")
+	}
+
+	updated, err := repo.GetByID(ctx, account.ID)
+	if err != nil {
+		t.Fatalf("reload account after concurrent update: %v", err)
+	}
+	snapshot, ok := updated.Extra[service.UpstreamBillingProbeExtraKey].(map[string]any)
+	if !ok || snapshot["status"] != "new" {
+		t.Fatalf("concurrent probe snapshot was overwritten: %#v", updated.Extra[service.UpstreamBillingProbeExtraKey])
+	}
+}
+
+func TestUpdateAccountWithGroupConfigOuterRollbackIncludesShadowProxy(t *testing.T) {
+	ctx := context.Background()
+	cache := &schedulerCacheRecorder{}
+	repo := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, cache)
+	suffix := time.Now().UnixNano()
+	proxy1 := mustCreateProxy(t, integrationEntClient, &service.Proxy{Name: fmt.Sprintf("proxy-old-%d", suffix)})
+	proxy2 := mustCreateProxy(t, integrationEntClient, &service.Proxy{Name: fmt.Sprintf("proxy-new-%d", suffix)})
+	group1 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("shadow-old-%d", suffix)})
+	group2 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("shadow-new-%d", suffix)})
+	parent := mustCreateAccount(t, integrationEntClient, &service.Account{
+		Name:        fmt.Sprintf("shadow-parent-%d", suffix),
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeOAuth,
+		ProxyID:     &proxy1.ID,
+		Extra:       map[string]any{},
+		Status:      service.StatusActive,
+		Schedulable: true,
+	})
+	shadow := mustCreateAccount(t, integrationEntClient, &service.Account{
+		Name:            fmt.Sprintf("shadow-child-%d", suffix),
+		Platform:        service.PlatformOpenAI,
+		Type:            service.AccountTypeOAuth,
+		ProxyID:         &proxy1.ID,
+		ParentAccountID: &parent.ID,
+		QuotaDimension:  service.QuotaDimensionSpark,
+		Extra:           map[string]any{},
+		Status:          service.StatusActive,
+		Schedulable:     true,
+	})
+	originalName := parent.Name
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM scheduler_outbox WHERE account_id IN ($1, $2)", parent.ID, shadow.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id IN ($1, $2)", parent.ID, shadow.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id IN ($1, $2)", group1.ID, group2.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM proxies WHERE id IN ($1, $2)", proxy1.ID, proxy2.ID)
+	})
+	if err := repo.BindGroups(ctx, parent.ID, []int64{group1.ID}); err != nil {
+		t.Fatalf("bind parent fixture group: %v", err)
+	}
+	_, _ = integrationDB.ExecContext(ctx, "DELETE FROM scheduler_outbox WHERE account_id IN ($1, $2)", parent.ID, shadow.ID)
+	cache.setAccounts = nil
+
+	parent, err := repo.GetByID(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("load parent: %v", err)
+	}
+	parent.Name = "parent-must-rollback"
+	parent.ProxyID = &proxy2.ID
+	groupIDs := []int64{group2.ID}
+	tx, err := integrationEntClient.Tx(ctx)
+	if err != nil {
+		t.Fatalf("begin outer rollback transaction: %v", err)
+	}
+	txCtx := dbent.NewTxContext(ctx, tx)
+	if err := repo.UpdateAccountWithGroupConfig(txCtx, parent, &groupIDs, nil, true); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("update parent and shadow in outer transaction: %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback parent and shadow transaction: %v", err)
+	}
+
+	rolledBackParent, err := repo.GetByID(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("reload rolled-back parent: %v", err)
+	}
+	rolledBackShadow, err := repo.GetByID(ctx, shadow.ID)
+	if err != nil {
+		t.Fatalf("reload rolled-back shadow: %v", err)
+	}
+	if rolledBackParent.Name != originalName || rolledBackParent.ProxyID == nil || *rolledBackParent.ProxyID != proxy1.ID {
+		t.Fatalf("parent escaped rollback: name=%q proxy=%v", rolledBackParent.Name, rolledBackParent.ProxyID)
+	}
+	if len(rolledBackParent.GroupIDs) != 1 || rolledBackParent.GroupIDs[0] != group1.ID {
+		t.Fatalf("parent groups escaped rollback: %v", rolledBackParent.GroupIDs)
+	}
+	if rolledBackShadow.ProxyID == nil || *rolledBackShadow.ProxyID != proxy1.ID {
+		t.Fatalf("shadow proxy escaped rollback: %v", rolledBackShadow.ProxyID)
+	}
+	if len(cache.setAccounts) != 0 {
+		t.Fatalf("outer rollback leaked scheduler cache writes: %d", len(cache.setAccounts))
+	}
+	var outboxCount int
+	if err := integrationDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduler_outbox WHERE account_id IN ($1, $2)", parent.ID, shadow.ID).Scan(&outboxCount); err != nil {
+		t.Fatalf("count rolled-back outbox events: %v", err)
+	}
+	if outboxCount != 0 {
+		t.Fatalf("outer rollback leaked scheduler outbox events: %d", outboxCount)
+	}
+}
+
+func TestUpdateAccountWithGroupConfigOuterCommitRefreshesFinalParentAndShadow(t *testing.T) {
+	ctx := context.Background()
+	cache := &schedulerCacheRecorder{}
+	repo := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, cache)
+	suffix := time.Now().UnixNano()
+	proxy1 := mustCreateProxy(t, integrationEntClient, &service.Proxy{Name: fmt.Sprintf("commit-proxy-old-%d", suffix)})
+	proxy2 := mustCreateProxy(t, integrationEntClient, &service.Proxy{Name: fmt.Sprintf("commit-proxy-new-%d", suffix)})
+	group1 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("commit-group-old-%d", suffix)})
+	group2 := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("commit-group-new-%d", suffix)})
+	parent := mustCreateAccount(t, integrationEntClient, &service.Account{
+		Name:        fmt.Sprintf("commit-parent-%d", suffix),
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		ProxyID:     &proxy1.ID,
+		Extra:       map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true},
+		Status:      service.StatusActive,
+		Schedulable: true,
+	})
+	shadow := mustCreateAccount(t, integrationEntClient, &service.Account{
+		Name:            fmt.Sprintf("commit-shadow-%d", suffix),
+		Platform:        service.PlatformOpenAI,
+		Type:            service.AccountTypeAPIKey,
+		ProxyID:         &proxy1.ID,
+		ParentAccountID: &parent.ID,
+		QuotaDimension:  service.QuotaDimensionSpark,
+		Extra:           map[string]any{service.UpstreamBillingProbeEnabledExtraKey: true},
+		Status:          service.StatusActive,
+		Schedulable:     true,
+	})
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM scheduler_outbox WHERE account_id IN ($1, $2)", parent.ID, shadow.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id IN ($1, $2)", parent.ID, shadow.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id IN ($1, $2)", group1.ID, group2.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM proxies WHERE id IN ($1, $2)", proxy1.ID, proxy2.ID)
+	})
+	if err := repo.BindGroups(ctx, parent.ID, []int64{group1.ID}); err != nil {
+		t.Fatalf("bind parent fixture group: %v", err)
+	}
+	if err := repo.UpdateUpstreamBillingGuardGroupLimits(ctx, parent.ID, map[int64]float64{group1.ID: 1}); err != nil {
+		t.Fatalf("set parent fixture guard: %v", err)
+	}
+	_, _ = integrationDB.ExecContext(ctx, "DELETE FROM scheduler_outbox WHERE account_id IN ($1, $2)", parent.ID, shadow.ID)
+	cache.setAccounts = nil
+	cache.setAccountHasTx = nil
+	cache.accounts = nil
+
+	parent, err := repo.GetByID(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("load parent: %v", err)
+	}
+	parent.Name = "parent-committed"
+	parent.ProxyID = &proxy2.ID
+	groupIDs := []int64{group2.ID}
+	limits := map[int64]float64{group2.ID: 2.5}
+	tx, err := integrationEntClient.Tx(ctx)
+	if err != nil {
+		t.Fatalf("begin outer commit transaction: %v", err)
+	}
+	txCtx := dbent.NewTxContext(ctx, tx)
+	if err := repo.UpdateAccountWithGroupConfig(txCtx, parent, &groupIDs, &limits, true); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("update parent and shadow in outer transaction: %v", err)
+	}
+	if len(cache.setAccounts) != 0 {
+		_ = tx.Rollback()
+		t.Fatalf("uncommitted state leaked to scheduler cache: %d writes", len(cache.setAccounts))
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit parent and shadow transaction: %v", err)
+	}
+
+	if len(cache.setAccounts) != 2 {
+		t.Fatalf("expected one post-commit refresh per parent and shadow, got %d", len(cache.setAccounts))
+	}
+	for i, hasTx := range cache.setAccountHasTx {
+		if hasTx {
+			t.Fatalf("post-commit scheduler refresh %d retained a committed transaction in its context", i)
+		}
+	}
+	cachedParent := cache.accounts[parent.ID]
+	if cachedParent == nil {
+		t.Fatal("parent was not refreshed after outer commit")
+	}
+	if cachedParent.Name != "parent-committed" || cachedParent.ProxyID == nil || *cachedParent.ProxyID != proxy2.ID {
+		t.Fatalf("parent cache did not receive committed row state: name=%q proxy=%v", cachedParent.Name, cachedParent.ProxyID)
+	}
+	if len(cachedParent.AccountGroups) != 1 || cachedParent.AccountGroups[0].GroupID != group2.ID {
+		t.Fatalf("parent cache did not receive committed groups: %+v", cachedParent.AccountGroups)
+	}
+	if got := cachedParent.AccountGroups[0].UpstreamBillingGuardMaxMultiplier; got == nil || *got != 2.5 {
+		t.Fatalf("parent cache did not receive committed guard limit: %v", got)
+	}
+	cachedShadow := cache.accounts[shadow.ID]
+	if cachedShadow == nil || cachedShadow.ProxyID == nil || *cachedShadow.ProxyID != proxy2.ID {
+		t.Fatalf("shadow cache did not receive committed proxy: %+v", cachedShadow)
+	}
+}
+
+func TestBindGroupsConcurrentReplacementsRemainLastWriterWins(t *testing.T) {
+	ctx := context.Background()
+	repo := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, nil)
+	suffix := time.Now().UnixNano()
+	oldGroup := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("bind-race-old-%d", suffix)})
+	firstGroup := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("bind-race-first-%d", suffix)})
+	secondGroup := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("bind-race-second-%d", suffix)})
+	account := mustCreateAccount(t, integrationEntClient, &service.Account{
+		Name:     fmt.Sprintf("bind-race-account-%d", suffix),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra:    map[string]any{},
+	})
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM scheduler_outbox WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id IN ($1, $2, $3)", oldGroup.ID, firstGroup.ID, secondGroup.ID)
+	})
+	if err := repo.BindGroups(ctx, account.ID, []int64{oldGroup.ID}); err != nil {
+		t.Fatalf("bind initial group: %v", err)
+	}
+
+	blocker, err := integrationDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin account-group blocker: %v", err)
+	}
+	defer func() { _ = blocker.Rollback() }()
+	var blockerPID int
+	if err := blocker.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&blockerPID); err != nil {
+		t.Fatalf("read account-group blocker pid: %v", err)
+	}
+	var lockedGroupID int64
+	if err := blocker.QueryRowContext(ctx, `
+		SELECT group_id
+		FROM account_groups
+		WHERE account_id = $1 AND group_id = $2
+		FOR UPDATE
+	`, account.ID, oldGroup.ID).Scan(&lockedGroupID); err != nil {
+		t.Fatalf("lock initial account-group row: %v", err)
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- repo.BindGroups(context.Background(), account.ID, []int64{firstGroup.ID})
+	}()
+	if !waitForPostgresBlocker(t, blockerPID, 1, 5*time.Second) {
+		_ = blocker.Rollback()
+		t.Fatal("first group replacement did not block on the fixture row")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- repo.BindGroups(context.Background(), account.ID, []int64{secondGroup.ID})
+	}()
+	if !waitForPostgresBlockedSessions(t, 2, 5*time.Second) {
+		_ = blocker.Rollback()
+		t.Fatal("concurrent group replacements did not both reach their serialization locks")
+	}
+	if err := blocker.Commit(); err != nil {
+		t.Fatalf("release account-group blocker: %v", err)
+	}
+
+	for name, done := range map[string]<-chan error{"first": firstDone, "second": secondDone} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s group replacement failed: %v", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s group replacement did not finish", name)
+		}
+	}
+
+	updated, err := repo.GetByID(ctx, account.ID)
+	if err != nil {
+		t.Fatalf("reload concurrently rebound account: %v", err)
+	}
+	if len(updated.GroupIDs) != 1 || updated.GroupIDs[0] != secondGroup.ID {
+		t.Fatalf("concurrent replacements left merged or stale bindings: got %v want [%d]", updated.GroupIDs, secondGroup.ID)
+	}
+}
+
+func TestBindGroupsAndGroupDeleteAvoidGroupBindingDeadlock(t *testing.T) {
+	ctx := context.Background()
+	accountRepo := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, nil)
+	groupRepo := newGroupRepositoryWithSQL(integrationEntClient, integrationDB)
+	suffix := time.Now().UnixNano()
+	group := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("bind-delete-race-%d", suffix)})
+	account := mustCreateAccount(t, integrationEntClient, &service.Account{
+		Name:     fmt.Sprintf("bind-delete-account-%d", suffix),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra:    map[string]any{},
+	})
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM scheduler_outbox WHERE account_id = $1 OR group_id = $2", account.ID, group.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = $1", group.ID)
+	})
+	if err := accountRepo.BindGroups(ctx, account.ID, []int64{group.ID}); err != nil {
+		t.Fatalf("bind fixture group: %v", err)
+	}
+
+	blocker, err := integrationDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin binding blocker: %v", err)
+	}
+	defer func() { _ = blocker.Rollback() }()
+	var blockerPID int
+	if err := blocker.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&blockerPID); err != nil {
+		t.Fatalf("read binding blocker pid: %v", err)
+	}
+	var lockedGroupID int64
+	if err := blocker.QueryRowContext(ctx, `
+		SELECT group_id
+		FROM account_groups
+		WHERE account_id = $1 AND group_id = $2
+		FOR UPDATE
+	`, account.ID, group.ID).Scan(&lockedGroupID); err != nil {
+		t.Fatalf("lock binding row: %v", err)
+	}
+
+	bindDone := make(chan error, 1)
+	go func() {
+		bindDone <- accountRepo.BindGroups(context.Background(), account.ID, []int64{group.ID})
+	}()
+	if !waitForPostgresBlocker(t, blockerPID, 1, 5*time.Second) {
+		_ = blocker.Rollback()
+		t.Fatal("binding replacement did not block on the fixture row")
+	}
+
+	deleteDone := make(chan error, 1)
+	go func() {
+		_, deleteErr := groupRepo.DeleteCascade(context.Background(), group.ID)
+		deleteDone <- deleteErr
+	}()
+	if !waitForPostgresBlockedSessions(t, 2, 5*time.Second) {
+		_ = blocker.Rollback()
+		t.Fatal("binding replacement and group delete did not reach the expected locks")
+	}
+	if err := blocker.Commit(); err != nil {
+		t.Fatalf("release binding blocker: %v", err)
+	}
+
+	for name, done := range map[string]<-chan error{"bind": bindDone, "delete": deleteDone} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s operation failed after lock serialization: %v", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s operation did not finish", name)
+		}
+	}
+
+	updated, err := accountRepo.GetByID(ctx, account.ID)
+	if err != nil {
+		t.Fatalf("reload account after group delete: %v", err)
+	}
+	if len(updated.GroupIDs) != 0 {
+		t.Fatalf("deleted group remained bound to account: %v", updated.GroupIDs)
+	}
+	var activeGroupCount int
+	if err := integrationDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM groups WHERE id = $1 AND deleted_at IS NULL", group.ID).Scan(&activeGroupCount); err != nil {
+		t.Fatalf("verify group soft delete: %v", err)
+	}
+	if activeGroupCount != 0 {
+		t.Fatalf("group was not deleted: active rows=%d", activeGroupCount)
+	}
+}
+
+func TestDeleteBuildsSchedulerPayloadFromBindingsAfterAccountLock(t *testing.T) {
+	ctx := context.Background()
+	repo := newAccountRepositoryWithSQL(integrationEntClient, integrationDB, nil)
+	suffix := time.Now().UnixNano()
+	oldGroup := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("delete-payload-old-%d", suffix)})
+	newGroup := mustCreateGroup(t, integrationEntClient, &service.Group{Name: fmt.Sprintf("delete-payload-new-%d", suffix)})
+	account := mustCreateAccount(t, integrationEntClient, &service.Account{
+		Name:     fmt.Sprintf("delete-payload-account-%d", suffix),
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra:    map[string]any{},
+	})
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM scheduler_outbox WHERE account_id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM accounts WHERE id = $1", account.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id IN ($1, $2)", oldGroup.ID, newGroup.ID)
+	})
+	if err := repo.BindGroups(ctx, account.ID, []int64{oldGroup.ID}); err != nil {
+		t.Fatalf("bind initial delete payload group: %v", err)
+	}
+	_, _ = integrationDB.ExecContext(ctx, "DELETE FROM scheduler_outbox WHERE account_id = $1", account.ID)
+
+	blocker, err := integrationDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin account delete blocker: %v", err)
+	}
+	defer func() { _ = blocker.Rollback() }()
+	var blockerPID int
+	if err := blocker.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&blockerPID); err != nil {
+		t.Fatalf("read account delete blocker pid: %v", err)
+	}
+	var lockedAccountID int64
+	if err := blocker.QueryRowContext(ctx, `
+		SELECT id
+		FROM accounts
+		WHERE id = $1
+		FOR UPDATE
+	`, account.ID).Scan(&lockedAccountID); err != nil {
+		t.Fatalf("lock account before delete: %v", err)
+	}
+
+	deleteDone := make(chan error, 1)
+	go func() {
+		deleteDone <- repo.Delete(context.Background(), account.ID)
+	}()
+	if !waitForPostgresBlocker(t, blockerPID, 1, 5*time.Second) {
+		_ = blocker.Rollback()
+		t.Fatal("account delete did not block on the account row")
+	}
+	if _, err := blocker.ExecContext(ctx, "DELETE FROM account_groups WHERE account_id = $1", account.ID); err != nil {
+		t.Fatalf("replace binding while delete waits: %v", err)
+	}
+	if _, err := blocker.ExecContext(ctx, `
+		INSERT INTO account_groups (account_id, group_id, priority, created_at)
+		VALUES ($1, $2, 0, NOW())
+	`, account.ID, newGroup.ID); err != nil {
+		t.Fatalf("insert replacement binding while delete waits: %v", err)
+	}
+	if err := blocker.Commit(); err != nil {
+		t.Fatalf("commit replacement binding: %v", err)
+	}
+	select {
+	case err := <-deleteDone:
+		if err != nil {
+			t.Fatalf("delete account after binding replacement: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("account delete did not finish")
+	}
+
+	var payloadUsesNewGroup bool
+	if err := integrationDB.QueryRowContext(ctx, `
+		SELECT payload->'group_ids' = to_jsonb(ARRAY[$2]::bigint[])
+		FROM scheduler_outbox
+		WHERE event_type = $1 AND account_id = $3
+		ORDER BY id DESC
+		LIMIT 1
+	`, service.SchedulerOutboxEventAccountChanged, newGroup.ID, account.ID).Scan(&payloadUsesNewGroup); err != nil {
+		t.Fatalf("read account delete scheduler payload: %v", err)
+	}
+	if !payloadUsesNewGroup {
+		t.Fatalf("account delete scheduler payload did not use post-lock group %d", newGroup.ID)
+	}
+}
+
+func waitForPostgresBlocker(t *testing.T, blockerPID, minimum int, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var blocked int
+		if err := integrationDB.QueryRowContext(context.Background(), `
+			SELECT COUNT(*)
+			FROM pg_stat_activity
+			WHERE $1 = ANY(pg_blocking_pids(pid))
+		`, blockerPID).Scan(&blocked); err != nil {
+			t.Fatalf("inspect postgres blocker: %v", err)
+		}
+		if blocked >= minimum {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+func waitForPostgresBlockedSessions(t *testing.T, minimum int, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var blocked int
+		if err := integrationDB.QueryRowContext(context.Background(), `
+			SELECT COUNT(*)
+			FROM pg_stat_activity
+			WHERE datname = current_database()
+				AND pid <> pg_backend_pid()
+				AND cardinality(pg_blocking_pids(pid)) > 0
+		`).Scan(&blocked); err != nil {
+			t.Fatalf("inspect blocked postgres sessions: %v", err)
+		}
+		if blocked >= minimum {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 // --- Create / GetByID / Update / Delete ---

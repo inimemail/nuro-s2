@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -23,6 +24,13 @@ type failingAdminService struct {
 	*stubAdminService
 	failOnAccountID int64
 	updateCallCount atomic.Int64
+}
+
+func TestSafeAdminBatchErrorMessage(t *testing.T) {
+	require.Equal(t, "internal error", safeAdminBatchErrorMessage(errors.New("database at db.internal.example failed")))
+	require.Equal(t, "invalid guard limit", safeAdminBatchErrorMessage(
+		infraerrors.BadRequest("INVALID_GUARD_LIMIT", "invalid guard limit"),
+	))
 }
 
 func (f *failingAdminService) UpdateAccount(ctx context.Context, id int64, input *service.UpdateAccountInput) (*service.Account, error) {
@@ -88,6 +96,10 @@ func TestBatchUpdateCredentials_PartialFailure(t *testing.T) {
 	data := resp["data"].(map[string]any)
 	require.Equal(t, float64(2), data["success"], "应有 2 个成功")
 	require.Equal(t, float64(1), data["failed"], "应有 1 个失败")
+	results := data["results"].([]any)
+	failedResult := results[1].(map[string]any)
+	require.Equal(t, "internal error", failedResult["error"])
+	require.NotContains(t, w.Body.String(), "database error", "批量结果不得暴露内部错误正文")
 
 	// 所有 3 个账号都会被尝试更新（非 fail-fast）
 	require.Equal(t, int64(3), svc.updateCallCount.Load(),

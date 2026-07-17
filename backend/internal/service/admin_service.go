@@ -3185,15 +3185,23 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load account %d for update: %w", id, err)
 	}
+	effectiveAccountType := account.Type
+	if input.Type != "" {
+		effectiveAccountType = input.Type
+	}
+	guardCapableAccount := account.Platform == PlatformOpenAI && effectiveAccountType == AccountTypeAPIKey
 	if input.UpstreamBillingGuardGroupLimits != nil && len(*input.UpstreamBillingGuardGroupLimits) > 0 {
-		if account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
+		if !guardCapableAccount {
 			return nil, ErrUpstreamBillingProbeAccountInvalid
 		}
 		for groupID, limit := range *input.UpstreamBillingGuardGroupLimits {
 			if groupID <= 0 || limit < 0 || math.IsNaN(limit) || math.IsInf(limit, 0) {
-				return nil, errors.New("upstream billing guard group limits must use positive group IDs and finite values >= 0")
+				return nil, infraerrors.BadRequest(
+					"INVALID_UPSTREAM_BILLING_GUARD_GROUP_LIMIT",
+					"upstream billing guard group limits must use positive group IDs and finite values greater than or equal to 0",
+				)
 			}
 		}
 		if input.Extra == nil {
@@ -3203,6 +3211,15 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			input.Extra = make(map[string]any)
 		}
 		input.Extra[UpstreamBillingProbeEnabledExtraKey] = true
+	}
+	if !guardCapableAccount {
+		for i := range account.AccountGroups {
+			if account.AccountGroups[i].UpstreamBillingGuardMaxMultiplier != nil {
+				emptyLimits := map[int64]float64{}
+				input.UpstreamBillingGuardGroupLimits = &emptyLimits
+				break
+			}
+		}
 	}
 	var normalizedExtra map[string]any
 	if input.Extra != nil {
@@ -3348,35 +3365,50 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 		for groupID := range *input.UpstreamBillingGuardGroupLimits {
 			if _, ok := allowed[groupID]; !ok {
-				return nil, fmt.Errorf("upstream billing guard group %d is not bound to this account", groupID)
+				return nil, infraerrors.BadRequest(
+					"UPSTREAM_BILLING_GUARD_GROUP_NOT_BOUND",
+					"upstream billing guard group is not bound to this account",
+				)
 			}
 		}
 	}
 
-	if err := s.accountRepo.Update(ctx, account); err != nil {
-		return nil, err
+	atomicUpdater, supportsAtomicGroupConfig := s.accountRepo.(interface {
+		UpdateAccountWithGroupConfig(context.Context, *Account, *[]int64, *map[int64]float64, bool) error
+	})
+	propagateProxyAtomically := input.ProxyID != nil && !account.IsCredentialShadow()
+	usedAtomicGroupConfig := supportsAtomicGroupConfig &&
+		(input.GroupIDs != nil || input.UpstreamBillingGuardGroupLimits != nil || propagateProxyAtomically)
+	if usedAtomicGroupConfig {
+		if err := atomicUpdater.UpdateAccountWithGroupConfig(
+			ctx, account, input.GroupIDs, input.UpstreamBillingGuardGroupLimits, propagateProxyAtomically,
+		); err != nil {
+			return nil, fmt.Errorf("update account %d group configuration: %w", account.ID, err)
+		}
+	} else if err := s.accountRepo.Update(ctx, account); err != nil {
+		return nil, fmt.Errorf("update account %d: %w", account.ID, err)
 	}
-	if input.ProxyID != nil && !account.IsCredentialShadow() {
+	if propagateProxyAtomically && !usedAtomicGroupConfig {
 		if err := propagateAccountProxyToShadows(ctx, s.accountRepo, account.ID, account.ProxyID); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("propagate proxy for account %d: %w", account.ID, err)
 		}
 	}
 
-	// 绑定分组
-	if input.GroupIDs != nil {
+	// Repositories without the optional atomic updater retain the legacy path.
+	if !usedAtomicGroupConfig && input.GroupIDs != nil {
 		if err := s.accountRepo.BindGroups(ctx, account.ID, *input.GroupIDs); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("bind groups for account %d: %w", account.ID, err)
 		}
 	}
-	if input.UpstreamBillingGuardGroupLimits != nil {
+	if !usedAtomicGroupConfig && input.UpstreamBillingGuardGroupLimits != nil {
 		updater, ok := s.accountRepo.(interface {
 			UpdateUpstreamBillingGuardGroupLimits(context.Context, int64, map[int64]float64) error
 		})
 		if !ok {
-			return nil, errors.New("account group billing guard repository is unavailable")
+			return nil, fmt.Errorf("update guard limits for account %d: repository is unavailable", account.ID)
 		}
 		if err := updater.UpdateUpstreamBillingGuardGroupLimits(ctx, account.ID, *input.UpstreamBillingGuardGroupLimits); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("update guard limits for account %d: %w", account.ID, err)
 		}
 	}
 	if clearRuntimeBlock {
@@ -3386,7 +3418,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	// 重新查询以确保返回完整数据（包括正确的 Proxy 关联对象）
 	updated, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reload account %d after update: %w", id, err)
 	}
 	return updated, nil
 }

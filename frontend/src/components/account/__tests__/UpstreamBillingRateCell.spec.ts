@@ -83,9 +83,9 @@ function makeAccount(options: {
   } as Account
 }
 
-function mountCell(account: Account) {
+function mountCell(account: Account, globalProbeEnabled = true) {
   return mount(UpstreamBillingRateCell, {
-    props: { account, now },
+    props: { account, now, globalProbeEnabled },
     global: { stubs: { Icon: true } }
   })
 }
@@ -111,6 +111,10 @@ describe('UpstreamBillingRateCell', () => {
   it('marks configured groups yellow when account automatic probing is disabled', () => {
     const wrapper = mountCell(makeAccount({ observed: 0.5, limit: 1, autoProbe: false }))
 
+    expect(wrapper.get('[data-testid="upstream-billing-status"]').text()).toBe(
+      'admin.accounts.upstreamBilling.autoProbeDisabled'
+    )
+    expect(wrapper.text()).not.toContain('common.time.')
     expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('blocked')
     expect(wrapper.get('[data-testid="upstream-billing-guard-group-10-details"]').text()).toContain(
       'admin.accounts.upstreamBilling.guardProbeDisabled'
@@ -152,7 +156,7 @@ describe('UpstreamBillingRateCell', () => {
     expect(details).toContain('Group 1')
     expect(details).toContain('admin.accounts.upstreamBilling.currentRateDetail:{"rate":"0.8x"}')
     expect(details).toContain('admin.accounts.upstreamBilling.guardLimitDetail:{"rate":"1.5x"}')
-    expect(details).toContain('admin.accounts.upstreamBilling.updatedAgo:{"seconds":10}')
+    expect(details).toContain('common.time.justNow')
     expect(details).toContain('admin.accounts.upstreamBilling.guardAvailable')
   })
 
@@ -164,5 +168,25 @@ describe('UpstreamBillingRateCell', () => {
     expect(details).toContain('Group 5')
     expect(details).toContain('admin.accounts.upstreamBilling.currentRateDetail:{"rate":"0.8x"}')
     expect(details).toContain('admin.accounts.upstreamBilling.guardAvailable')
+  })
+
+  it('formats old probe timestamps as readable hours instead of raw seconds', () => {
+    const account = makeAccount({ observed: 0.8, limit: 1 })
+    const snapshot = account.extra?.upstream_billing_probe
+    if (snapshot) snapshot.received_at = '2026-07-17T00:00:00Z'
+    const wrapper = mountCell(account)
+
+    expect(wrapper.get('[data-testid="upstream-billing-status"]').text()).toContain('common.time.hoursAgo:{"n":8}')
+    expect(wrapper.text()).not.toContain('28810')
+  })
+
+  it('shows the global probe disabled state instead of historical age', () => {
+    const wrapper = mountCell(makeAccount({ observed: 0.8, limit: 1 }), false)
+
+    expect(wrapper.get('[data-testid="upstream-billing-status"]').text()).toBe(
+      'admin.accounts.upstreamBilling.globalProbeDisabled'
+    )
+    expect(wrapper.text()).not.toContain('common.time.')
+    expect(wrapper.text()).not.toContain('秒前更新')
   })
 })

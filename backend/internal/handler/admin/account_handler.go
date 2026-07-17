@@ -26,6 +26,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/sync/errgroup"
@@ -1257,11 +1258,15 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 		g.Go(func() error {
 			account, err := h.adminService.ClearAccountError(gctx, accountID)
 			if err != nil {
+				slog.Error("batch_clear_account_error_failed",
+					"account_id", accountID,
+					"error", logredact.RedactText(err.Error()),
+				)
 				mu.Lock()
 				failedCount++
 				errors = append(errors, gin.H{
 					"account_id": accountID,
-					"error":      err.Error(),
+					"error":      safeAdminBatchErrorMessage(err),
 				})
 				mu.Unlock()
 				return nil
@@ -1353,12 +1358,18 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 		}
 		g.Go(func() error {
 			_, warning, err := h.refreshSingleAccount(gctx, acc)
+			if err != nil {
+				slog.Error("batch_account_refresh_failed",
+					"account_id", acc.ID,
+					"error", logredact.RedactText(err.Error()),
+				)
+			}
 			mu.Lock()
 			if err != nil {
 				failedCount++
 				errors = append(errors, gin.H{
 					"account_id": acc.ID,
-					"error":      err.Error(),
+					"error":      safeAdminBatchErrorMessage(err),
 				})
 			} else {
 				successCount++
@@ -1440,11 +1451,15 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 				SkipMixedChannelCheck: skipCheck,
 			})
 			if err != nil {
+				slog.Error("batch_account_create_failed",
+					"name", item.Name,
+					"error", logredact.RedactText(err.Error()),
+				)
 				failed++
 				results = append(results, gin.H{
 					"name":    item.Name,
 					"success": false,
-					"error":   err.Error(),
+					"error":   safeAdminBatchErrorMessage(err),
 				})
 				continue
 			}
@@ -1511,6 +1526,21 @@ type BatchUpdateCredentialsRequest struct {
 	AccountIDs []int64 `json:"account_ids" binding:"required,min=1"`
 	Field      string  `json:"field" binding:"required,oneof=account_uuid org_uuid intercept_warmup_requests"`
 	Value      any     `json:"value"`
+}
+
+// safeAdminBatchErrorMessage keeps per-item batch results aligned with the
+// normal response.ErrorFrom contract. Internal causes stay in redacted server
+// logs, while explicitly classified 4xx messages remain actionable to admins.
+func safeAdminBatchErrorMessage(err error) string {
+	var mixedErr *service.MixedChannelError
+	if errors.As(err, &mixedErr) {
+		return mixedErr.Error()
+	}
+	statusCode, status := infraerrors.ToHTTP(err)
+	if statusCode >= http.StatusInternalServerError || strings.TrimSpace(status.Message) == "" {
+		return infraerrors.UnknownMessage
+	}
+	return status.Message
 }
 
 // BatchUpdateCredentials handles batch updating credentials fields
@@ -1587,12 +1617,16 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 		}
 		updateInput := &service.UpdateAccountInput{Credentials: u.Credentials}
 		if _, err := h.adminService.UpdateAccount(ctx, u.ID, updateInput); err != nil {
+			slog.Error("batch_account_credentials_update_failed",
+				"account_id", u.ID,
+				"error", logredact.RedactText(err.Error()),
+			)
 			failed++
 			failedIDs = append(failedIDs, u.ID)
 			results = append(results, gin.H{
 				"account_id": u.ID,
 				"success":    false,
-				"error":      err.Error(),
+				"error":      safeAdminBatchErrorMessage(err),
 			})
 			continue
 		}
@@ -2567,11 +2601,15 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 		g.Go(func() error {
 			_, extra, creds, err := h.geminiOAuthService.RefreshAccountGoogleOneTier(gctx, acc)
 			if err != nil {
+				slog.Error("batch_gemini_tier_refresh_failed",
+					"account_id", acc.ID,
+					"error", logredact.RedactText(err.Error()),
+				)
 				mu.Lock()
 				failedCount++
 				errors = append(errors, gin.H{
 					"account_id": acc.ID,
-					"error":      err.Error(),
+					"error":      safeAdminBatchErrorMessage(err),
 				})
 				mu.Unlock()
 				return nil
@@ -2584,10 +2622,14 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 
 			mu.Lock()
 			if updateErr != nil {
+				slog.Error("batch_gemini_tier_account_update_failed",
+					"account_id", acc.ID,
+					"error", logredact.RedactText(updateErr.Error()),
+				)
 				failedCount++
 				errors = append(errors, gin.H{
 					"account_id": acc.ID,
-					"error":      updateErr.Error(),
+					"error":      safeAdminBatchErrorMessage(updateErr),
 				})
 			} else {
 				successCount++

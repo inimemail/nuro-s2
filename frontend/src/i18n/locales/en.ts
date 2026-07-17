@@ -3290,6 +3290,8 @@ export default {
         intervalMinutes: 'Probe interval (minutes)',
         autoProbe: 'Auto probe',
         autoProbeHint: 'Probe this account on the global interval when global probing is enabled.',
+        autoProbeDisabled: 'Automatic probing is off',
+        globalProbeDisabled: 'Global automatic probing is off',
         manualProbe: 'Probe upstream rate now',
         stale: 'Stale',
         unsupported: 'Unsupported',

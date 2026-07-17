@@ -3,10 +3,12 @@ package repository
 import (
 	"context"
 	"math"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
@@ -90,7 +92,7 @@ func TestUpdateUpstreamBillingProbeSnapshotDoesNotSyncSchedulerWithoutGuardTrans
 func TestUpdateUpstreamBillingGuardGroupLimitsReplacesOnlyBindingPolicies(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := newAccountRepositoryWithSQL(nil, db, nil)
-	mock.ExpectQuery(`(?s)WITH requested.*UPDATE account_groups.*CASE group_id WHEN \$2 THEN \$3 WHEN \$4 THEN \$5 ELSE NULL END.*SELECT group_id, FALSE AS is_missing FROM updated`).
+	mock.ExpectQuery(`(?s)WITH requested.*UPDATE account_groups.*CASE group_id WHEN \$2::bigint THEN \$3::double precision WHEN \$4::bigint THEN \$5::double precision ELSE NULL::double precision END.*SELECT group_id, FALSE AS is_missing FROM updated`).
 		WithArgs(int64(7), int64(10), 1.5, int64(20), 3.0, pq.Array([]int64{10, 20})).
 		WillReturnRows(sqlmock.NewRows([]string{"group_id", "is_missing"}).AddRow(10, false).AddRow(20, false))
 	mock.ExpectExec(`(?s)INSERT INTO scheduler_outbox`).
@@ -120,6 +122,22 @@ func TestUpdateUpstreamBillingGuardGroupLimitsDoesNotRefreshSchedulerWhenUnchang
 
 	err := repo.UpdateUpstreamBillingGuardGroupLimits(context.Background(), 7, map[int64]float64{10: 1.5})
 	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUpdateUpstreamBillingGuardGroupLimitsReturnsConflictWhenBindingChanged(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := newAccountRepositoryWithSQL(nil, db, &unexpectedSchedulerCache{})
+	mock.ExpectQuery(`(?s)WITH requested.*UPDATE account_groups.*SELECT group_id, TRUE AS is_missing FROM missing`).
+		WithArgs(int64(7), int64(10), 1.5, pq.Array([]int64{10})).
+		WillReturnRows(sqlmock.NewRows([]string{"group_id", "is_missing"}).AddRow(10, true))
+
+	err := repo.UpdateUpstreamBillingGuardGroupLimits(context.Background(), 7, map[int64]float64{10: 1.5})
+	require.Error(t, err)
+	statusCode, status := infraerrors.ToHTTP(err)
+	require.Equal(t, http.StatusConflict, statusCode)
+	require.Equal(t, "UPSTREAM_BILLING_GUARD_GROUP_BINDING_CHANGED", status.Reason)
+	require.NotContains(t, status.Message, "account 7")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

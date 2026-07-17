@@ -69,6 +69,7 @@ import type { Account, UpstreamBillingProbeSnapshot } from '@/types'
 const props = defineProps<{
   account: Account
   now: number
+  globalProbeEnabled?: boolean
   probing?: boolean
 }>()
 
@@ -139,13 +140,22 @@ const protectedGroups = computed(() => {
 const visibleProtectedGroups = computed(() => protectedGroups.value.slice(0, 3))
 const hiddenProtectedGroups = computed(() => protectedGroups.value.slice(3))
 const hiddenProtectedGroupCount = computed(() => Math.max(0, protectedGroups.value.length - visibleProtectedGroups.value.length))
-const receivedAgeSeconds = computed(() => {
+const receivedAgeLabel = computed(() => {
   const value = snapshot.value?.received_at
   if (!value) return null
   const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? Math.max(0, Math.floor((props.now - timestamp) / 1000)) : null
+  if (!Number.isFinite(timestamp)) return null
+  const seconds = Math.max(0, Math.floor((props.now - timestamp) / 1000))
+  if (seconds < 60) return t('common.time.justNow')
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return t('common.time.minutesAgo', { n: minutes })
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return t('common.time.hoursAgo', { n: hours })
+  return t('common.time.daysAgo', { n: Math.floor(hours / 24) })
 })
 const statusLabel = computed(() => {
+  if (!autoProbeEnabled.value) return t('admin.accounts.upstreamBilling.autoProbeDisabled')
+  if (props.globalProbeEnabled === false) return t('admin.accounts.upstreamBilling.globalProbeDisabled')
   if (!snapshot.value) return t('admin.accounts.upstreamBilling.notProbed')
   if (snapshot.value.status === 'unsupported') return t('admin.accounts.upstreamBilling.unsupported')
   if (snapshot.value.status === 'failed') {
@@ -153,11 +163,12 @@ const statusLabel = computed(() => {
       ? t('admin.accounts.upstreamBilling.failed')
       : t('admin.accounts.upstreamBilling.failedWithLast')
   }
-  return receivedAgeSeconds.value == null
+  return receivedAgeLabel.value == null
     ? t('admin.accounts.upstreamBilling.observed')
-    : t('admin.accounts.upstreamBilling.updatedAgo', { seconds: receivedAgeSeconds.value })
+    : receivedAgeLabel.value
 })
 const statusClass = computed(() => {
+  if (!autoProbeEnabled.value || props.globalProbeEnabled === false) return 'text-gray-500 dark:text-gray-400'
   if (snapshot.value?.status === 'failed') return 'text-red-600 dark:text-red-400'
   if (snapshot.value?.status === 'unsupported') return 'text-gray-500 dark:text-gray-400'
   if (stale.value) return 'text-amber-600 dark:text-amber-400'
@@ -165,6 +176,7 @@ const statusClass = computed(() => {
   return 'text-gray-400 dark:text-gray-500'
 })
 const statusTitle = computed(() => {
+  if (!autoProbeEnabled.value || props.globalProbeEnabled === false) return statusLabel.value
   const value = snapshot.value?.received_at || snapshot.value?.last_attempt_at
   if (!value) return statusLabel.value
   const timestamp = Date.parse(value)

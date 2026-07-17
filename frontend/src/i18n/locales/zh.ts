@@ -3314,6 +3314,8 @@ export default {
         intervalMinutes: '探测周期（分钟）',
         autoProbe: '自动探测',
         autoProbeHint: '启用后按全局周期探测此账号；全局探测关闭时不会执行。',
+        autoProbeDisabled: '自动探测已关闭',
+        globalProbeDisabled: '全局自动探测已关闭',
         manualProbe: '立即探测上游倍率',
         stale: '已过期',
         unsupported: '不支持',

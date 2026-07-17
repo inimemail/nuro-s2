@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/gin-gonic/gin"
 )
 
@@ -291,17 +293,22 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 			}
 			updated, updateErr := h.adminService.UpdateAccount(ctx, existing.ID, updateInput)
 			if updateErr != nil {
+				slog.Error("codex_session_import_account_update_failed",
+					"account_id", existing.ID,
+					"error", logredact.RedactText(updateErr.Error()),
+				)
+				safeMessage := safeAdminBatchErrorMessage(updateErr)
 				result.Failed++
 				result.Items = append(result.Items, CodexSessionImportItem{
 					Index:   entry.Index,
 					Name:    accountName,
 					Action:  "failed",
-					Message: updateErr.Error(),
+					Message: safeMessage,
 				})
 				result.Errors = append(result.Errors, CodexSessionImportMessage{
 					Index:   entry.Index,
 					Name:    accountName,
-					Message: updateErr.Error(),
+					Message: safeMessage,
 				})
 				continue
 			}
@@ -342,17 +349,22 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 			SkipMixedChannelCheck: skipMixedChannelCheck,
 		})
 		if createErr != nil {
+			slog.Error("codex_session_import_account_create_failed",
+				"name", accountName,
+				"error", logredact.RedactText(createErr.Error()),
+			)
+			safeMessage := safeAdminBatchErrorMessage(createErr)
 			result.Failed++
 			result.Items = append(result.Items, CodexSessionImportItem{
 				Index:   entry.Index,
 				Name:    accountName,
 				Action:  "failed",
-				Message: createErr.Error(),
+				Message: safeMessage,
 			})
 			result.Errors = append(result.Errors, CodexSessionImportMessage{
 				Index:   entry.Index,
 				Name:    accountName,
-				Message: createErr.Error(),
+				Message: safeMessage,
 			})
 			continue
 		}

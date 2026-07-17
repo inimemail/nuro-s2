@@ -362,6 +362,7 @@
             <UpstreamBillingRateCell
               :account="row"
               :now="uiNowMs"
+              :global-probe-enabled="upstreamBillingProbeSettings.enabled"
               :probing="probingUpstreamBillingIDs.has(row.id)"
               @probe="handleProbeUpstreamBilling(row)"
             />
