@@ -242,6 +242,14 @@ func cloneSchedulerAccountGroups(in []AccountGroup) []AccountGroup {
 			value := *in[i].UpstreamBillingGuardMaxMultiplier
 			out[i].UpstreamBillingGuardMaxMultiplier = &value
 		}
+		if in[i].UpstreamBillingGuardOverrideMaxMultiplier != nil {
+			value := *in[i].UpstreamBillingGuardOverrideMaxMultiplier
+			out[i].UpstreamBillingGuardOverrideMaxMultiplier = &value
+		}
+		if in[i].GroupUpstreamBillingGuardMaxMultiplier != nil {
+			value := *in[i].GroupUpstreamBillingGuardMaxMultiplier
+			out[i].GroupUpstreamBillingGuardMaxMultiplier = &value
+		}
 	}
 	return out
 }

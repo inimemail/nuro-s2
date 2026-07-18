@@ -518,7 +518,10 @@ func filterSchedulerAccountGroups(accountGroups []service.AccountGroup) []servic
 			GroupID:                           ag.GroupID,
 			Priority:                          ag.Priority,
 			UpstreamBillingGuardMaxMultiplier: cloneFloat64Ptr(ag.UpstreamBillingGuardMaxMultiplier),
-			CreatedAt:                         ag.CreatedAt,
+			UpstreamBillingGuardOverrideMaxMultiplier: cloneFloat64Ptr(ag.UpstreamBillingGuardOverrideMaxMultiplier),
+			GroupUpstreamBillingGuardMaxMultiplier:    cloneFloat64Ptr(ag.GroupUpstreamBillingGuardMaxMultiplier),
+			GroupPolicyLoaded:                         ag.GroupPolicyLoaded,
+			CreatedAt:                                 ag.CreatedAt,
 		})
 	}
 	if len(filtered) == 0 {

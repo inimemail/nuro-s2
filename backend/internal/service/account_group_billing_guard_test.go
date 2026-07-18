@@ -98,6 +98,72 @@ func TestAccountUpstreamBillingGuardPrefersHydratedGroupPolicyOverStaleBinding(t
 	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID), "explicit group nil must mean unrestricted")
 }
 
+func TestAccountUpstreamBillingGuardUsesAccountGroupOverrideBeforeDefault(t *testing.T) {
+	groupID := int64(10)
+	groupLimit := 3.0
+	override := 1.5
+	observed := 2.0
+	account := &Account{
+		Platform:                               PlatformOpenAI,
+		Type:                                   AccountTypeAPIKey,
+		UpstreamBillingGuardEnabled:            true,
+		Extra:                                  map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		UpstreamBillingGuardObservedMultiplier: &observed,
+		AccountGroups: []AccountGroup{{
+			GroupID: groupID,
+			UpstreamBillingGuardOverrideMaxMultiplier: &override,
+			GroupUpstreamBillingGuardMaxMultiplier:    &groupLimit,
+			GroupPolicyLoaded:                         true,
+		}},
+	}
+
+	limit, configured := account.UpstreamBillingGuardLimitForGroup(&groupID)
+	require.True(t, configured)
+	require.Equal(t, override, *limit)
+	require.True(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
+
+	account.AccountGroups[0].UpstreamBillingGuardOverrideMaxMultiplier = nil
+	limit, configured = account.UpstreamBillingGuardLimitForGroup(&groupID)
+	require.True(t, configured)
+	require.Equal(t, groupLimit, *limit)
+	require.False(t, account.IsUpstreamBillingGuardBlockedForGroup(&groupID))
+}
+
+func TestAccountUpstreamBillingGuardOverrideCannotRelaxGroupCeiling(t *testing.T) {
+	groupID := int64(10)
+	groupLimit := 2.0
+	staleOverride := 5.0
+	binding := AccountGroup{
+		GroupID: groupID,
+		UpstreamBillingGuardOverrideMaxMultiplier: &staleOverride,
+		GroupUpstreamBillingGuardMaxMultiplier:    &groupLimit,
+		GroupPolicyLoaded:                         true,
+	}
+
+	limit, configured := binding.EffectiveUpstreamBillingGuardMaxMultiplier()
+	require.True(t, configured)
+	require.Equal(t, groupLimit, *limit)
+}
+
+func TestAccountUpstreamBillingGuardLoadedNilGroupPolicyDisablesStaleOverride(t *testing.T) {
+	staleEffective := 1.0
+	staleOverride := 0.5
+	binding := AccountGroup{
+		UpstreamBillingGuardMaxMultiplier:         &staleEffective,
+		UpstreamBillingGuardOverrideMaxMultiplier: &staleOverride,
+		GroupPolicyLoaded:                         true,
+	}
+
+	limit, configured := binding.EffectiveUpstreamBillingGuardMaxMultiplier()
+	require.False(t, configured)
+	require.Nil(t, limit)
+
+	binding.GroupPolicyLoaded = false
+	limit, configured = binding.EffectiveUpstreamBillingGuardMaxMultiplier()
+	require.True(t, configured, "old scheduler metadata must remain compatible during a rolling upgrade")
+	require.Equal(t, staleEffective, *limit)
+}
+
 func TestAccountUpstreamBillingGuardIgnoresStaleBindingForHydratedNonOpenAIGroup(t *testing.T) {
 	groupID := int64(20)
 	staleBindingLimit := 1.0

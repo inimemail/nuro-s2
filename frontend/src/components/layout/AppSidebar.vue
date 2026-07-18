@@ -687,6 +687,7 @@ const flagPayment = makeSidebarFlag(FeatureFlags.payment)
 const flagAvailableChannels = makeSidebarFlag(FeatureFlags.availableChannels)
 const flagAffiliate = makeSidebarFlag(FeatureFlags.affiliate)
 const flagRiskControl = makeSidebarFlag(FeatureFlags.riskControl)
+const flagPromptAudit = makeSidebarFlag(FeatureFlags.promptAudit)
 const flagBatchImage = () => canUseBatchImage.value
 const flagOpsMonitoring = () => adminSettingsStore.opsMonitoringEnabled
 const flagAdminPayment = () => adminSettingsStore.paymentEnabled
@@ -757,7 +758,7 @@ const adminNavItems = computed((): NavItem[] => {
     { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon },
     { path: '/admin/ops', label: t('nav.ops'), icon: ChartIcon, featureFlag: flagOpsMonitoring },
     { path: '/admin/audit-logs', label: t('nav.auditLogs'), icon: ShieldIcon },
-    { path: '/admin/prompt-audit', label: t('nav.promptAudit'), icon: ShieldIcon, hideInSimpleMode: true },
+    { path: '/admin/prompt-audit', label: t('nav.promptAudit'), icon: ShieldIcon, hideInSimpleMode: true, featureFlag: flagPromptAudit },
     { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true },
     { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon, hideInSimpleMode: true },
     {

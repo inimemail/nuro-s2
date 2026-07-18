@@ -67,6 +67,8 @@ func TestBuildSchedulerMetadataAccount_KeepsAnthropicAPIKeyBehaviorFlags(t *test
 
 func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
 	limit := 1.25
+	override := 1.0
+	groupLimit := 2.0
 	account := service.Account{
 		ID:       42,
 		Platform: service.PlatformAnthropic,
@@ -77,8 +79,11 @@ func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
 				GroupID:                           7,
 				Priority:                          2,
 				UpstreamBillingGuardMaxMultiplier: &limit,
-				Account:                           &service.Account{ID: 42, Name: "drop-from-metadata"},
-				Group:                             &service.Group{ID: 7, Name: "drop-from-metadata"},
+				UpstreamBillingGuardOverrideMaxMultiplier: &override,
+				GroupUpstreamBillingGuardMaxMultiplier:    &groupLimit,
+				GroupPolicyLoaded:                         true,
+				Account:                                   &service.Account{ID: 42, Name: "drop-from-metadata"},
+				Group:                                     &service.Group{ID: 7, Name: "drop-from-metadata"},
 			},
 			{
 				AccountID: 42,
@@ -103,6 +108,11 @@ func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
 	require.Equal(t, 2, got.AccountGroups[0].Priority)
 	require.NotNil(t, got.AccountGroups[0].UpstreamBillingGuardMaxMultiplier)
 	require.Equal(t, 1.25, *got.AccountGroups[0].UpstreamBillingGuardMaxMultiplier)
+	require.NotNil(t, got.AccountGroups[0].UpstreamBillingGuardOverrideMaxMultiplier)
+	require.Equal(t, 1.0, *got.AccountGroups[0].UpstreamBillingGuardOverrideMaxMultiplier)
+	require.NotNil(t, got.AccountGroups[0].GroupUpstreamBillingGuardMaxMultiplier)
+	require.Equal(t, 2.0, *got.AccountGroups[0].GroupUpstreamBillingGuardMaxMultiplier)
+	require.True(t, got.AccountGroups[0].GroupPolicyLoaded)
 	require.Nil(t, got.AccountGroups[0].Account)
 	require.Nil(t, got.AccountGroups[0].Group)
 	require.Equal(t, int64(11), got.AccountGroups[1].GroupID)

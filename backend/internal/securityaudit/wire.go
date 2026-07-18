@@ -10,11 +10,16 @@ import (
 
 func ProvideService(
 	settingRepo service.SettingRepository,
+	settingService *service.SettingService,
 	db *sql.DB,
 	redisClient *redis.Client,
 	encryptor service.SecretEncryptor,
 ) *Service {
-	return NewService(settingRepo, db, redisClient, encryptor)
+	svc := NewService(settingRepo, db, redisClient, encryptor)
+	if settingService != nil {
+		settingService.SetOnPromptAuditEnabledUpdate(svc.SetFeatureEnabled)
+	}
+	return svc
 }
 
 var ProviderSet = wire.NewSet(

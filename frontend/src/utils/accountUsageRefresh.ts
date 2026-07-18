@@ -40,7 +40,7 @@ export const buildUpstreamBillingGuardRefreshKey = (
       const group = binding.group
       const hasGroupLimit = group != null && Object.prototype.hasOwnProperty.call(group, 'upstream_billing_guard_max_multiplier')
       const groupLimit = hasGroupLimit ? group?.upstream_billing_guard_max_multiplier : ''
-      return [binding.group_id, binding.upstream_billing_guard_max_multiplier, groupLimit].map(normalizeUsageRefreshValue).join(':')
+      return [binding.group_id, binding.upstream_billing_guard_max_multiplier, binding.upstream_billing_guard_override_max_multiplier, groupLimit].map(normalizeUsageRefreshValue).join(':')
     })
     .sort()
   return [

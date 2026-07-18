@@ -52,8 +52,9 @@ type Service struct {
 	redis       *redis.Client
 	encryptor   service.SecretEncryptor
 
-	config atomic.Pointer[Config]
-	queue  chan auditTask
+	config         atomic.Pointer[Config]
+	featureEnabled atomic.Bool
+	queue          chan auditTask
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -157,7 +158,7 @@ func (s *Service) waitForDrain() {
 }
 
 func (s *Service) EnabledFast() bool {
-	if s == nil {
+	if s == nil || !s.featureEnabled.Load() {
 		return false
 	}
 	cfg := s.config.Load()
@@ -170,6 +171,20 @@ func (s *Service) EnabledFast() bool {
 		}
 	}
 	return false
+}
+
+// SetFeatureEnabled updates the system-level Prompt Audit gate. It is called
+// after startup loading and immediately after an admin settings update.
+func (s *Service) SetFeatureEnabled(enabled bool) {
+	if s != nil {
+		s.featureEnabled.Store(enabled)
+	}
+}
+
+// FeatureEnabledFast reports only the system-level gate state. It deliberately
+// avoids settings I/O so both admin routing and gateway collection fail closed.
+func (s *Service) FeatureEnabledFast() bool {
+	return s != nil && s.featureEnabled.Load()
 }
 
 func (s *Service) NewCollector() *Collector {
@@ -302,6 +317,9 @@ func (s *Service) worker(ctx context.Context, workerID int) {
 }
 
 func (s *Service) processTask(parent context.Context, task auditTask) {
+	if !s.FeatureEnabledFast() {
+		return
+	}
 	cfg := s.configSnapshot()
 	if !cfg.Enabled || cfg.Mode != ModeAsync {
 		return
@@ -471,6 +489,9 @@ func (s *Service) cleanupLoop(ctx context.Context) {
 }
 
 func (s *Service) runCleanup(parent context.Context) {
+	if !s.FeatureEnabledFast() {
+		return
+	}
 	cleanupCtx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	if err := s.cleanupExpired(cleanupCtx, s.configSnapshot().RetentionDays); err != nil {

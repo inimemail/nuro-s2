@@ -357,9 +357,12 @@ type UpdateAccountInput struct {
 	Status                      string
 	GroupIDs                    *[]int64
 	UpstreamBillingGuardEnabled *bool
-	ExpiresAt                   *int64
-	AutoPauseOnExpired          *bool
-	SkipMixedChannelCheck       bool // 跳过混合渠道检查（用户已确认风险）
+	// UpstreamBillingGuardGroupLimits contains account x group overrides.
+	// Omitted means unchanged; an empty map clears every override (inherit all).
+	UpstreamBillingGuardGroupLimits *map[int64]float64
+	ExpiresAt                       *int64
+	AutoPauseOnExpired              *bool
+	SkipMixedChannelCheck           bool // 跳过混合渠道检查（用户已确认风险）
 }
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.
@@ -2544,6 +2547,13 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if err := s.groupRepo.Update(ctx, group); err != nil {
 		return nil, err
 	}
+	if reconciler, ok := s.groupRepo.(interface {
+		ReconcileUpstreamBillingGuardAccounts(context.Context, int64) error
+	}); ok {
+		if err := reconciler.ReconcileUpstreamBillingGuardAccounts(ctx, group.ID); err != nil {
+			return nil, fmt.Errorf("reconcile upstream billing guard accounts for group %d: %w", group.ID, err)
+		}
+	}
 
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByGroupID(ctx, id)
@@ -3338,8 +3348,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return false, nil
 		}
 		for _, binding := range account.AccountGroups {
-			if _, ok := selected[binding.GroupID]; ok && binding.UpstreamBillingGuardMaxMultiplier != nil {
-				return true, nil
+			if _, ok := selected[binding.GroupID]; ok {
+				if _, configured := binding.EffectiveUpstreamBillingGuardMaxMultiplier(); configured {
+					return true, nil
+				}
 			}
 		}
 		return false, nil
@@ -3517,6 +3529,74 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			}
 		}
 	}
+	if input.UpstreamBillingGuardGroupLimits != nil {
+		if len(*input.UpstreamBillingGuardGroupLimits) > 0 && !guardCapableAccount {
+			return nil, ErrUpstreamBillingProbeAccountInvalid
+		}
+		selectedGroupIDs := account.GroupIDs
+		if input.GroupIDs != nil {
+			selectedGroupIDs = *input.GroupIDs
+		} else if len(selectedGroupIDs) == 0 {
+			selectedGroupIDs = make([]int64, 0, len(account.AccountGroups))
+			for _, binding := range account.AccountGroups {
+				selectedGroupIDs = append(selectedGroupIDs, binding.GroupID)
+			}
+		}
+		selected := make(map[int64]struct{}, len(selectedGroupIDs))
+		for _, groupID := range selectedGroupIDs {
+			if groupID > 0 {
+				selected[groupID] = struct{}{}
+			}
+		}
+		for groupID, override := range *input.UpstreamBillingGuardGroupLimits {
+			if groupID <= 0 || override < 0 || math.IsNaN(override) || math.IsInf(override, 0) {
+				return nil, ErrInvalidUpstreamBillingGuardGroupLimits
+			}
+			if _, bound := selected[groupID]; !bound {
+				return nil, ErrInvalidUpstreamBillingGuardGroupLimits
+			}
+
+			var groupLimit *float64
+			validOpenAIGroup := false
+			if s.groupRepo != nil {
+				group, loadErr := s.groupRepo.GetByIDLite(ctx, groupID)
+				if loadErr != nil {
+					return nil, loadErr
+				}
+				if group != nil && group.Platform == PlatformOpenAI {
+					validOpenAIGroup = true
+					groupLimit = group.UpstreamBillingGuardMaxMultiplier
+				}
+			} else {
+				for i := range account.AccountGroups {
+					binding := &account.AccountGroups[i]
+					if binding.GroupID != groupID {
+						continue
+					}
+					if binding.Group != nil {
+						// A hydrated group is authoritative, including a non-OpenAI
+						// group or an explicit nil policy. Do not fall through to the
+						// legacy effective field in either case.
+						if binding.Group.Platform == PlatformOpenAI {
+							validOpenAIGroup = true
+							groupLimit = binding.Group.UpstreamBillingGuardMaxMultiplier
+						}
+					} else if binding.GroupPolicyLoaded {
+						validOpenAIGroup = true
+						groupLimit = binding.GroupUpstreamBillingGuardMaxMultiplier
+					} else if binding.UpstreamBillingGuardMaxMultiplier != nil {
+						// Compatibility for unit stubs and pre-upgrade snapshots.
+						validOpenAIGroup = true
+						groupLimit = binding.UpstreamBillingGuardMaxMultiplier
+					}
+					break
+				}
+			}
+			if !validOpenAIGroup || groupLimit == nil || override > *groupLimit {
+				return nil, ErrInvalidUpstreamBillingGuardGroupLimits
+			}
+		}
+	}
 	if input.UpstreamBillingGuardEnabled != nil && *input.UpstreamBillingGuardEnabled {
 		hasConfiguredLimit := false
 		if input.GroupIDs == nil {
@@ -3547,10 +3627,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	})
 	propagateProxyAtomically := input.ProxyID != nil && !account.IsCredentialShadow()
 	usedAtomicGroupConfig := supportsAtomicGroupConfig &&
-		(input.GroupIDs != nil || propagateProxyAtomically)
+		(input.GroupIDs != nil || input.UpstreamBillingGuardGroupLimits != nil || propagateProxyAtomically)
 	if usedAtomicGroupConfig {
 		if err := atomicUpdater.UpdateAccountWithGroupConfig(
-			ctx, account, input.GroupIDs, nil, propagateProxyAtomically,
+			ctx, account, input.GroupIDs, input.UpstreamBillingGuardGroupLimits, propagateProxyAtomically,
 		); err != nil {
 			return nil, fmt.Errorf("update account %d group configuration: %w", account.ID, err)
 		}
@@ -3567,6 +3647,17 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if !usedAtomicGroupConfig && input.GroupIDs != nil {
 		if err := s.accountRepo.BindGroups(ctx, account.ID, *input.GroupIDs); err != nil {
 			return nil, fmt.Errorf("bind groups for account %d: %w", account.ID, err)
+		}
+	}
+	if !usedAtomicGroupConfig && input.UpstreamBillingGuardGroupLimits != nil {
+		guardUpdater, ok := s.accountRepo.(interface {
+			UpdateUpstreamBillingGuardGroupLimits(context.Context, int64, map[int64]float64) error
+		})
+		if !ok {
+			return nil, errors.New("account repository does not support billing guard group overrides")
+		}
+		if err := guardUpdater.UpdateUpstreamBillingGuardGroupLimits(ctx, account.ID, *input.UpstreamBillingGuardGroupLimits); err != nil {
+			return nil, fmt.Errorf("update account %d billing guard group overrides: %w", account.ID, err)
 		}
 	}
 	if clearRuntimeBlock {

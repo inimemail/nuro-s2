@@ -36,7 +36,7 @@ func (AccountGroup) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "double precision"}).
-			Comment("上游倍率保护上限；NULL 表示此账号在该分组不限制"),
+			Comment("账号-分组上游倍率保护覆盖值；NULL 表示继承分组默认值"),
 		field.Time("created_at").
 			Immutable().
 			Default(time.Now).

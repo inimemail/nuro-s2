@@ -133,11 +133,31 @@ func validateConfig(cfg Config) error {
 }
 
 func (s *Service) loadConfig(ctx context.Context) error {
+	if err := s.loadFeatureEnabled(ctx); err != nil {
+		return err
+	}
 	cfg, err := s.readConfig(ctx)
 	if err != nil {
 		return err
 	}
 	s.storeConfig(cfg)
+	return nil
+}
+
+func (s *Service) loadFeatureEnabled(ctx context.Context) error {
+	if s == nil || s.settingRepo == nil {
+		s.SetFeatureEnabled(false)
+		return nil
+	}
+	raw, err := s.settingRepo.GetValue(ctx, service.SettingKeyPromptAuditEnabled)
+	if err != nil {
+		s.SetFeatureEnabled(false)
+		if errors.Is(err, service.ErrSettingNotFound) {
+			return nil
+		}
+		return err
+	}
+	s.SetFeatureEnabled(raw == "true")
 	return nil
 }
 
@@ -172,7 +192,11 @@ func decodeConfig(raw string) (Config, error) {
 
 func (s *Service) refreshConfig(ctx context.Context) error {
 	if s == nil || s.settingRepo == nil {
+		s.SetFeatureEnabled(false)
 		return nil
+	}
+	if err := s.loadFeatureEnabled(ctx); err != nil {
+		return err
 	}
 	raw, err := s.settingRepo.GetValue(ctx, SettingKeyPromptAuditConfig)
 	if err != nil {

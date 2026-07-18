@@ -115,6 +115,25 @@ func TestSettingService_AffiliateAdminRechargeSetting(t *testing.T) {
 	})
 }
 
+func TestSettingService_PromptAuditFeatureUpdatePersistsAndRefreshesRuntimeGate(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, &config.Config{})
+	var (
+		called  int
+		enabled bool
+	)
+	svc.SetOnPromptAuditEnabledUpdate(func(value bool) {
+		called++
+		enabled = value
+	})
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{PromptAuditEnabled: true})
+	require.NoError(t, err)
+	require.Equal(t, "true", repo.updates[SettingKeyPromptAuditEnabled])
+	require.Equal(t, 1, called)
+	require.True(t, enabled)
+}
+
 func (s *defaultSubGroupReaderStub) GetByID(ctx context.Context, id int64) (*Group, error) {
 	s.calls = append(s.calls, id)
 	if err, ok := s.errBy[id]; ok {

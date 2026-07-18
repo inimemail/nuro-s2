@@ -461,6 +461,36 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('upstream_billing_guard_group_limits')
   })
 
+  it('submits an account-group override while preserving group defaults', async () => {
+    const account = buildAccount()
+    const group = buildGroup(10, 'Primary', 2)
+    account.group_ids = [10]
+    account.groups = [group]
+    account.account_groups = [{
+      account_id: 1,
+      group_id: 10,
+      priority: 1,
+      upstream_billing_guard_max_multiplier: 1.5,
+      upstream_billing_guard_override_max_multiplier: 1.5,
+      created_at: '2026-07-17T00:00:00Z',
+      group
+    }]
+    account.upstream_billing_guard_enabled = true
+    account.extra = { upstream_billing_probe_enabled: true }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account, [group])
+    const override = wrapper.get('input[aria-label="admin.accounts.upstreamBilling.overrideLabel"]')
+    await override.setValue('1.25')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_group_limits).toEqual({ '10': 1.25 })
+  })
+
   it('does not submit an unchanged account protection switch during an unrelated edit', async () => {
     const account = buildAccount()
     const groups = [buildGroup(10, 'Primary', 1)]

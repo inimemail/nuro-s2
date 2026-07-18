@@ -234,6 +234,45 @@ func TestRefreshConfigAdvancesButNeverRegressesTrustedSnapshot(t *testing.T) {
 	}
 }
 
+func TestSystemFeatureGateDefaultsOffAndRefreshesIndependently(t *testing.T) {
+	cfg := enabledAuditTestConfig("https://guard.example")
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &auditSettingRepo{values: map[string]string{
+		SettingKeyPromptAuditConfig: string(raw),
+	}}
+	svc := NewService(repo, nil, nil, auditEncryptor{})
+
+	if err := svc.loadConfig(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if svc.FeatureEnabledFast() || svc.EnabledFast() || svc.NewCollector() != nil {
+		t.Fatal("missing system feature setting must fail closed")
+	}
+
+	repo.mu.Lock()
+	repo.values[service.SettingKeyPromptAuditEnabled] = "true"
+	repo.mu.Unlock()
+	if err := svc.refreshConfig(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.FeatureEnabledFast() || !svc.EnabledFast() || svc.NewCollector() == nil {
+		t.Fatal("enabled system feature setting did not activate the existing audit config")
+	}
+
+	repo.mu.Lock()
+	repo.values[service.SettingKeyPromptAuditEnabled] = "false"
+	repo.mu.Unlock()
+	if err := svc.refreshConfig(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if svc.FeatureEnabledFast() || svc.EnabledFast() || svc.NewCollector() != nil {
+		t.Fatal("disabled system feature setting did not stop collection")
+	}
+}
+
 func TestSaveConfigUsesDatabaseVersionForCrossInstanceConflict(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

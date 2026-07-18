@@ -431,6 +431,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
+      requiresPromptAudit: true,
       title: 'Prompt Audit',
       titleKey: 'admin.promptAudit.title',
       descriptionKey: 'admin.promptAudit.description'
@@ -845,6 +846,14 @@ router.beforeEach(async (to, _from, next) => {
   if (to.meta.requiresRiskControl) {
     const riskControlEnabled = appStore.cachedPublicSettings?.risk_control_enabled === true
     if (!riskControlEnabled) {
+      next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
+      return
+    }
+  }
+
+  if (to.meta.requiresPromptAudit) {
+    const promptAuditEnabled = appStore.cachedPublicSettings?.prompt_audit_enabled === true
+    if (!promptAuditEnabled) {
       next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
       return
     }

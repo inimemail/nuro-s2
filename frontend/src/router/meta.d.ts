@@ -55,6 +55,9 @@ declare module 'vue-router' {
      */
     requiresRiskControl?: boolean
 
+    /** Whether the Prompt Audit feature switch must be enabled. */
+    requiresPromptAudit?: boolean
+
     /**
      * i18n key for the page title
      */

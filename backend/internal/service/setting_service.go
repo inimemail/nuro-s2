@@ -207,6 +207,7 @@ type SettingService struct {
 	proxyRepo                   ProxyRepository // for resolving websearch provider proxy URLs
 	cfg                         *config.Config
 	onUpdate                    func() // Callback when settings are updated (for cache invalidation)
+	onPromptAuditEnabledUpdate  func(bool)
 	version                     string // Application version
 	webSearchManagerBuilder     WebSearchManagerBuilder
 	antigravityUAVersionCache   atomic.Value // *cachedAntigravityUserAgentVersion
@@ -791,6 +792,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyAvailableChannelsEnabled,
 		SettingKeyAffiliateEnabled,
 		SettingKeyRiskControlEnabled,
+		SettingKeyPromptAuditEnabled,
 		SettingKeyAllowUserViewErrorRequests,
 	}
 
@@ -904,6 +906,8 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		AffiliateEnabled: settings[SettingKeyAffiliateEnabled] == "true",
 
 		RiskControlEnabled: settings[SettingKeyRiskControlEnabled] == "true",
+
+		PromptAuditEnabled: settings[SettingKeyPromptAuditEnabled] == "true",
 
 		AllowUserViewErrorRequests: settings[SettingKeyAllowUserViewErrorRequests] == "true",
 	}, nil
@@ -1245,6 +1249,13 @@ func (s *SettingService) SetOnUpdateCallback(callback func()) {
 	s.onUpdate = callback
 }
 
+// SetOnPromptAuditEnabledUpdate registers the runtime Prompt Audit gate updater.
+// The dedicated callback keeps gateway collection on an in-memory fast path while
+// making an admin setting change effective immediately.
+func (s *SettingService) SetOnPromptAuditEnabledUpdate(callback func(bool)) {
+	s.onPromptAuditEnabledUpdate = callback
+}
+
 // SetVersion sets the application version for injection into public settings
 func (s *SettingService) SetVersion(version string) {
 	s.version = version
@@ -1318,6 +1329,7 @@ type PublicSettingsInjectionPayload struct {
 	AvailableChannelsEnabled             bool `json:"available_channels_enabled"`
 	AffiliateEnabled                     bool `json:"affiliate_enabled"`
 	RiskControlEnabled                   bool `json:"risk_control_enabled"`
+	PromptAuditEnabled                   bool `json:"prompt_audit_enabled"`
 	AllowUserViewErrorRequests           bool `json:"allow_user_view_error_requests"`
 }
 
@@ -1381,6 +1393,7 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		AvailableChannelsEnabled:             settings.AvailableChannelsEnabled,
 		AffiliateEnabled:                     settings.AffiliateEnabled,
 		RiskControlEnabled:                   settings.RiskControlEnabled,
+		PromptAuditEnabled:                   settings.PromptAuditEnabled,
 		AllowUserViewErrorRequests:           settings.AllowUserViewErrorRequests,
 	}, nil
 }
@@ -2027,6 +2040,9 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	// 风控中心功能开关
 	updates[SettingKeyRiskControlEnabled] = strconv.FormatBool(settings.RiskControlEnabled)
 
+	// Prompt 审计功能开关
+	updates[SettingKeyPromptAuditEnabled] = strconv.FormatBool(settings.PromptAuditEnabled)
+
 	// Claude Code version check
 	updates[SettingKeyMinClaudeCodeVersion] = settings.MinClaudeCodeVersion
 	updates[SettingKeyMaxClaudeCodeVersion] = settings.MaxClaudeCodeVersion
@@ -2258,6 +2274,9 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	})
 	s.codexCLIOnlyPolicySF.Forget("codex_cli_only_policy")
 	s.codexCLIOnlyPolicyCache.Store(&cachedCodexCLIOnlyPolicy{expiresAt: 0})
+	if s.onPromptAuditEnabledUpdate != nil {
+		s.onPromptAuditEnabledUpdate(settings.PromptAuditEnabled)
+	}
 	if s.onUpdate != nil {
 		s.onUpdate() // Invalidate cache after settings update
 	}
@@ -3223,6 +3242,9 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		// 风控中心功能（默认关闭，显式启用）
 		SettingKeyRiskControlEnabled: "false",
 
+		// Prompt 审计功能（默认关闭，显式启用）
+		SettingKeyPromptAuditEnabled: "false",
+
 		// Claude Code version check (default: empty = disabled)
 		SettingKeyMinClaudeCodeVersion: "",
 		SettingKeyMaxClaudeCodeVersion: "",
@@ -3755,6 +3777,9 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// 风控中心功能（默认关闭，严格 true 才启用）
 	result.RiskControlEnabled = settings[SettingKeyRiskControlEnabled] == "true"
+
+	// Prompt 审计功能（默认关闭，严格 true 才启用）
+	result.PromptAuditEnabled = settings[SettingKeyPromptAuditEnabled] == "true"
 
 	// Claude Code version check
 	result.MinClaudeCodeVersion = settings[SettingKeyMinClaudeCodeVersion]

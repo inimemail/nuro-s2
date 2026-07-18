@@ -84,6 +84,7 @@ func TestPromptAuditCollectorQueuesOnlyAfterHandlerReturns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc.SetFeatureEnabled(true)
 
 	router := gin.New()
 	router.Use(promptAuditCollectorMiddleware(svc))
@@ -142,6 +143,7 @@ func TestPromptAuditCollectorFlushesWhenHandlerPanics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc.SetFeatureEnabled(true)
 
 	router := gin.New()
 	router.Use(promptAuditCollectorMiddleware(svc))

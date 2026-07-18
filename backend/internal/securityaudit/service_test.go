@@ -45,6 +45,7 @@ func TestDisabledModeCreatesNoCollectorOrQueueWork(t *testing.T) {
 func TestEnabledFastDoesNotAllocateOnRequestPath(t *testing.T) {
 	disabled := NewService(nil, nil, nil, auditEncryptor{})
 	enabled := NewService(nil, nil, nil, auditEncryptor{})
+	enabled.SetFeatureEnabled(true)
 	enabled.storeConfig(enabledAuditTestConfig("https://guard.example"))
 
 	for _, test := range []struct {
@@ -77,6 +78,7 @@ func TestCollectorCopiesOnlyAfterResponseFlushAndHonorsCapacity(t *testing.T) {
 	svc := NewService(nil, nil, nil, auditEncryptor{})
 	cfg := enabledAuditTestConfig("https://guard.example")
 	cfg.QueueCapacity = 1
+	svc.SetFeatureEnabled(true)
 	svc.storeConfig(cfg)
 	collector := svc.NewCollector()
 	if collector == nil {
@@ -101,6 +103,7 @@ func TestCollectorCopiesOnlyAfterResponseFlushAndHonorsCapacity(t *testing.T) {
 
 func TestCollectorFlushesEachWebSocketTurnAfterTurnCompletion(t *testing.T) {
 	svc := NewService(nil, nil, nil, auditEncryptor{})
+	svc.SetFeatureEnabled(true)
 	svc.storeConfig(enabledAuditTestConfig("https://guard.example"))
 	collector := svc.NewCollector()
 	collector.Add(Request{Body: []byte(`{"input":"one"}`), Protocol: "openai_responses", Stage: "ws_turn"})
@@ -251,6 +254,7 @@ func TestRunCleanupExecutesImmediatelyWhenInvoked(t *testing.T) {
 	mock.ExpectExec("DELETE FROM prompt_audit_jobs").WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
 
 	svc := NewService(nil, db, nil, auditEncryptor{})
+	svc.SetFeatureEnabled(true)
 	svc.runCleanup(context.Background())
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -261,6 +265,7 @@ func TestInactiveWorkerDoesNotDequeueOrReleaseBudget(t *testing.T) {
 	svc := NewService(nil, nil, nil, auditEncryptor{})
 	cfg := enabledAuditTestConfig("https://guard.example")
 	cfg.WorkerCount = 1
+	svc.SetFeatureEnabled(true)
 	svc.storeConfig(cfg)
 	task := auditTask{request: Request{Body: []byte(`{"input":"queued"}`), Protocol: "openai_responses"}}
 	if !svc.enqueueTask(task, cfg) {
@@ -285,6 +290,7 @@ func TestInactiveWorkerExitsPromptlyWhenContextIsCancelled(t *testing.T) {
 	svc := NewService(nil, nil, nil, auditEncryptor{})
 	cfg := enabledAuditTestConfig("https://guard.example")
 	cfg.WorkerCount = 1
+	svc.SetFeatureEnabled(true)
 	svc.storeConfig(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -307,6 +313,7 @@ func TestInactiveWorkerExitsPromptlyWhenContextIsCancelled(t *testing.T) {
 func TestStopRejectsAdmissionAndReleasesUnstagedPromptBuffers(t *testing.T) {
 	svc := NewService(nil, nil, nil, auditEncryptor{})
 	cfg := enabledAuditTestConfig("https://guard.example")
+	svc.SetFeatureEnabled(true)
 	svc.storeConfig(cfg)
 	task := auditTask{request: Request{Body: []byte(`{"input":"queued"}`)}}
 	if !svc.enqueueTask(task, cfg) {
@@ -387,6 +394,7 @@ func TestRecoverPendingJobsRestoresEncryptedPayloadWithoutDuplicatingPlaintext(t
 
 	svc := NewService(nil, db, rdb, auditEncryptor{})
 	cfg := enabledAuditTestConfig("https://guard.example")
+	svc.SetFeatureEnabled(true)
 	svc.storeConfig(cfg)
 	svc.recoverPendingJobs(context.Background())
 
@@ -433,6 +441,7 @@ func TestRecoverPendingJobsMarksExpiredPayloadTerminal(t *testing.T) {
 	mock.ExpectExec("UPDATE prompt_audit_jobs").WithArgs(int64(22), "failed", "recovery_payload_expired").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	svc := NewService(nil, db, rdb, auditEncryptor{})
+	svc.SetFeatureEnabled(true)
 	svc.storeConfig(enabledAuditTestConfig("https://guard.example"))
 	svc.recoverPendingJobs(context.Background())
 	if len(svc.queue) != 0 || svc.failed.Load() != 1 {
@@ -461,6 +470,7 @@ func TestRecoveredTaskContinuesExistingJobAndDeletesPayloadOnTerminalState(t *te
 	svc := NewService(nil, db, rdb, auditEncryptor{})
 	cfg := enabledAuditTestConfig("https://guard.example")
 	cfg.Endpoints[0].TokenCiphertext = "invalid-ciphertext"
+	svc.SetFeatureEnabled(true)
 	svc.storeConfig(cfg)
 	svc.processTask(context.Background(), auditTask{
 		jobID: 31, text: "payload", hash: "stored-hash", preview: "stored-preview",
@@ -495,6 +505,7 @@ func TestEventWriteFailureKeepsRecoveredPayloadForRetry(t *testing.T) {
 	svc := NewService(nil, db, rdb, auditEncryptor{})
 	cfg := enabledAuditTestConfig("https://guard.example")
 	cfg.Endpoints[0].TokenCiphertext = "invalid-ciphertext"
+	svc.SetFeatureEnabled(true)
 	svc.storeConfig(cfg)
 	svc.processTask(context.Background(), auditTask{
 		jobID: 32, text: "payload", hash: "stored-hash", preview: "stored-preview",
@@ -541,6 +552,7 @@ func TestProcessTaskEncryptsTransientRedisPayloadAndDeletesIt(t *testing.T) {
 	mock.ExpectExec("UPDATE prompt_audit_jobs").WithArgs(int64(42), "done", "").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	svc := NewService(nil, db, rdb, auditEncryptor{})
+	svc.SetFeatureEnabled(true)
 	svc.storeConfig(enabledAuditTestConfig(guard.URL))
 	const prompt = "audit-plaintext-must-not-live-in-redis"
 	done := make(chan struct{})

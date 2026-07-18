@@ -450,7 +450,38 @@
                 <span :class="item.badgeClass" class="flex-none rounded px-2 py-1 text-xs font-medium">{{ item.statusLabel }}</span>
               </div>
             </div>
-            <p v-else class="mt-3 text-xs text-gray-500 dark:text-gray-400">
+            <details v-if="upstreamBillingGuardGroupSummaries.some((item) => item.defaultLimit != null)" class="mt-3 rounded border border-gray-200 dark:border-dark-700">
+              <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-300">
+                {{ t('admin.accounts.upstreamBilling.advancedOverrides') }}
+              </summary>
+              <div class="space-y-2 border-t border-gray-100 p-3 dark:border-dark-700">
+                <div
+                  v-for="item in upstreamBillingGuardGroupSummaries.filter((entry) => entry.defaultLimit != null)"
+                  :key="`override-${item.group.id}`"
+                  class="grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-3"
+                >
+                  <div class="min-w-0">
+                    <div class="truncate text-xs font-medium text-gray-700 dark:text-gray-300" :title="item.group.name">{{ item.group.name }}</div>
+                    <div class="text-[11px] text-gray-400">
+                      {{ t('admin.accounts.upstreamBilling.inheritDefault', { rate: `${item.defaultLimit}x` }) }}
+                    </div>
+                  </div>
+                  <input
+                    :value="guardOverrideInputValue(item.group.id)"
+                    type="number"
+                    min="0"
+                    :max="item.defaultLimit ?? undefined"
+                    step="0.01"
+                    class="input py-1.5 text-xs"
+                    :placeholder="t('admin.accounts.upstreamBilling.inheritPlaceholder')"
+                    :aria-label="t('admin.accounts.upstreamBilling.overrideLabel', { group: item.group.name })"
+                    @input="handleGuardOverrideInput(item.group.id, $event)"
+                  />
+                </div>
+                <p class="text-[11px] text-gray-400">{{ t('admin.accounts.upstreamBilling.overrideHint') }}</p>
+              </div>
+            </details>
+            <p v-if="!upstreamBillingGuardGroupSummaries.length" class="mt-3 text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.upstreamBilling.selectGroupFirst') }}
             </p>
           </div>
@@ -4019,6 +4050,8 @@ const normalizeGrokMediaEligibilityMode = (value: unknown): GrokMediaEligibility
 const upstreamBillingAutoProbeEnabled = ref(false)
 const upstreamBillingGuardEnabled = ref(false)
 const initialUpstreamBillingGuardEnabled = ref(false)
+const upstreamBillingGuardGroupOverrides = ref<Record<string, number | string | null>>({})
+const initialUpstreamBillingGuardGroupOverrides = ref<Record<string, number>>({})
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(false)
 const autoPause5hThreshold = ref<number | null>(null)
@@ -4504,15 +4537,57 @@ const selectedUpstreamBillingGuardGroups = computed(() => {
       : binding.group && Object.prototype.hasOwnProperty.call(binding.group, 'upstream_billing_guard_max_multiplier')
         ? binding.group
         : undefined
+    const effectiveLimit = policyGroup
+      ? (policyGroup.upstream_billing_guard_max_multiplier == null
+        ? null
+        : binding.upstream_billing_guard_max_multiplier ?? policyGroup.upstream_billing_guard_max_multiplier)
+      : binding.upstream_billing_guard_max_multiplier ?? null
     groups.set(binding.group_id, {
       ...group,
-      upstream_billing_guard_max_multiplier: policyGroup
-        ? policyGroup.upstream_billing_guard_max_multiplier ?? null
-        : binding.upstream_billing_guard_max_multiplier ?? null
-    })
+      upstream_billing_guard_max_multiplier: effectiveLimit,
+      __upstream_billing_guard_default_multiplier: policyGroup?.upstream_billing_guard_max_multiplier ?? null
+    } as GuardGroupView)
   }
   return [...groups.values()].filter((group) => selected.has(group.id))
 })
+
+type GuardGroupView = Group & { __upstream_billing_guard_default_multiplier?: number | null }
+
+const guardGroupDefaultLimit = (group: Group): number | null => {
+  const value = (group as GuardGroupView).__upstream_billing_guard_default_multiplier
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value
+  const fallback = group.upstream_billing_guard_max_multiplier
+  return typeof fallback === 'number' && Number.isFinite(fallback) && fallback >= 0 ? fallback : null
+}
+
+const guardOverrideInputValue = (groupID: number): string | number => {
+  const value = upstreamBillingGuardGroupOverrides.value[String(groupID)]
+  return value == null ? '' : value
+}
+
+const setGuardOverride = (groupID: number, raw: string) => {
+  upstreamBillingGuardGroupOverrides.value[String(groupID)] = raw.trim() === '' ? null : raw
+}
+
+const handleGuardOverrideInput = (groupID: number, event: Event) => {
+  const target = event.target
+  setGuardOverride(groupID, target instanceof HTMLInputElement ? target.value : '')
+}
+
+const normalizedGuardOverrides = (): Record<string, number> => {
+  const selected = new Set(form.group_ids)
+  const result: Record<string, number> = {}
+  for (const [groupID, raw] of Object.entries(upstreamBillingGuardGroupOverrides.value)) {
+    const id = Number(groupID)
+    if (!selected.has(id) || raw == null || raw === '') continue
+    const value = Number(raw)
+    if (Number.isFinite(value) && value >= 0) result[groupID] = value
+  }
+  return result
+}
+
+const guardOverridesChanged = (): boolean =>
+  JSON.stringify(normalizedGuardOverrides()) !== JSON.stringify(initialUpstreamBillingGuardGroupOverrides.value)
 
 const configuredUpstreamBillingGuardGroupCount = computed(() =>
   selectedUpstreamBillingGuardGroups.value.filter((group) => {
@@ -4533,6 +4608,7 @@ const upstreamBillingGuardGroupSummaries = computed(() =>
     if (!configured) {
       return {
         group,
+        defaultLimit: guardGroupDefaultLimit(group),
         limitLabel: t('admin.accounts.upstreamBilling.groupNotConfigured'),
         statusLabel: t('admin.accounts.upstreamBilling.unlimited'),
         badgeClass: 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
@@ -4543,6 +4619,7 @@ const upstreamBillingGuardGroupSummaries = computed(() =>
     if (!upstreamBillingGuardEnabled.value) {
       return {
         group,
+        defaultLimit: guardGroupDefaultLimit(group),
         limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
         statusLabel: t('admin.accounts.upstreamBilling.guardDisabled'),
         badgeClass: 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
@@ -4551,6 +4628,7 @@ const upstreamBillingGuardGroupSummaries = computed(() =>
     if (!upstreamBillingAutoProbeEnabled.value || (upstreamBillingGuardObservedRate.value != null && upstreamBillingGuardObservedRate.value > limit)) {
       return {
         group,
+        defaultLimit: guardGroupDefaultLimit(group),
         limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
         statusLabel: t('admin.accounts.upstreamBilling.guardPaused'),
         badgeClass: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
@@ -4559,6 +4637,7 @@ const upstreamBillingGuardGroupSummaries = computed(() =>
     if (upstreamBillingGuardObservedRate.value == null) {
       return {
         group,
+        defaultLimit: guardGroupDefaultLimit(group),
         limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
         statusLabel: t('admin.accounts.upstreamBilling.guardWaitingFirstProbe'),
         badgeClass: 'bg-gray-100 text-gray-600 dark:bg-dark-600 dark:text-gray-300'
@@ -4566,6 +4645,7 @@ const upstreamBillingGuardGroupSummaries = computed(() =>
     }
     return {
       group,
+      defaultLimit: guardGroupDefaultLimit(group),
       limitLabel: t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${limit}x` }),
       statusLabel: t('admin.accounts.upstreamBilling.guardAvailable'),
       badgeClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
@@ -4750,6 +4830,17 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
   upstreamBillingGuardEnabled.value = newAccount.upstream_billing_guard_enabled === true
   initialUpstreamBillingGuardEnabled.value = upstreamBillingGuardEnabled.value
+  const overrides: Record<string, number | string | null> = {}
+  for (const binding of newAccount.account_groups || []) {
+    const value = binding.upstream_billing_guard_override_max_multiplier
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      overrides[String(binding.group_id)] = value
+    }
+  }
+  upstreamBillingGuardGroupOverrides.value = overrides
+  initialUpstreamBillingGuardGroupOverrides.value = Object.fromEntries(
+    Object.entries(overrides).filter(([, value]) => typeof value === 'number')
+  ) as Record<string, number>
   mixedScheduling.value = extra?.mixed_scheduling === true
   allowOverages.value = extra?.allow_overages === true
   autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
@@ -6485,6 +6576,9 @@ const handleSubmit = async () => {
       }
       if (upstreamBillingGuardEnabled.value !== initialUpstreamBillingGuardEnabled.value) {
         updatePayload.upstream_billing_guard_enabled = upstreamBillingGuardEnabled.value
+      }
+      if (guardOverridesChanged()) {
+        updatePayload.upstream_billing_guard_group_limits = normalizedGuardOverrides()
       }
     }
 

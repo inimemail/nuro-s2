@@ -147,6 +147,7 @@ type SystemSettings struct {
 	DefaultConcurrency           int
 	DefaultBalance               float64
 	RiskControlEnabled           bool
+	PromptAuditEnabled           bool
 	AffiliateEnabled             bool
 	AffiliateRebateRate          float64
 	AffiliateRebateFreezeHours   int
@@ -327,6 +328,9 @@ type PublicSettings struct {
 
 	// 风控中心功能开关
 	RiskControlEnabled bool `json:"risk_control_enabled"`
+
+	// Prompt 审计功能开关
+	PromptAuditEnabled bool `json:"prompt_audit_enabled"`
 
 	// Allow end users to view their own failed requests on the usage page.
 	AllowUserViewErrorRequests bool `json:"allow_user_view_error_requests"`

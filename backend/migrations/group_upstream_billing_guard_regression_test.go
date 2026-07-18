@@ -23,3 +23,17 @@ func TestMigration189MovesGuardPolicyToGroupsWithoutDroppingLegacyData(t *testin
 	require.NotContains(t, sql, "DROP COLUMN")
 	require.NotContains(t, sql, "DELETE FROM account_groups")
 }
+
+func TestMigration190DefinesBindingValuesAsExplicitOverrides(t *testing.T) {
+	content, err := FS.ReadFile("190_account_group_billing_guard_overrides.sql")
+	require.NoError(t, err)
+
+	sql := string(content)
+	require.Contains(t, sql, "UPDATE account_groups")
+	require.Contains(t, sql, "LEAST(ag.upstream_billing_guard_max_multiplier, g.upstream_billing_guard_max_multiplier)")
+	require.Contains(t, sql, "g.platform = 'openai'")
+	require.Contains(t, sql, "ELSE NULL")
+	require.Contains(t, sql, "ag.upstream_billing_guard_max_multiplier IS NOT NULL")
+	require.Contains(t, sql, "account_group_billing_guard_overrides_v3")
+	require.Contains(t, sql, `"refresh_account_metadata":true`)
+}

@@ -118,7 +118,9 @@ const protectedGroups = computed(() => {
           ? binding.group
           : undefined
       const limit = policyGroup
-        ? policyGroup.upstream_billing_guard_max_multiplier ?? null
+        ? (policyGroup.upstream_billing_guard_max_multiplier == null
+          ? null
+          : binding.upstream_billing_guard_max_multiplier ?? policyGroup.upstream_billing_guard_max_multiplier)
         : binding.upstream_billing_guard_max_multiplier
       return { binding, group, limit }
     })

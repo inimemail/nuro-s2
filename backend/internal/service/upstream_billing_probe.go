@@ -55,6 +55,9 @@ var (
 	ErrUpstreamBillingGuardRequiresGroupLimit = infraerrors.BadRequest(
 		"UPSTREAM_BILLING_GUARD_REQUIRES_GROUP_LIMIT", "upstream billing guard requires at least one bound OpenAI group with a configured limit",
 	)
+	ErrInvalidUpstreamBillingGuardGroupLimits = infraerrors.BadRequest(
+		"INVALID_UPSTREAM_BILLING_GUARD_GROUP_LIMITS", "billing guard overrides must target bound OpenAI groups and be finite, non-negative, and no greater than the group limit",
+	)
 	ErrUpstreamBillingProbeRequiredByGuard = infraerrors.Conflict(
 		"UPSTREAM_BILLING_PROBE_REQUIRED_BY_GUARD", "disable the upstream billing guard before disabling automatic probe",
 	)

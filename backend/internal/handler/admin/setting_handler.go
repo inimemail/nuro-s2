@@ -264,6 +264,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		DefaultConcurrency:                              settings.DefaultConcurrency,
 		DefaultBalance:                                  settings.DefaultBalance,
 		RiskControlEnabled:                              settings.RiskControlEnabled,
+		PromptAuditEnabled:                              settings.PromptAuditEnabled,
 		AffiliateRebateRate:                             settings.AffiliateRebateRate,
 		AffiliateRebateFreezeHours:                      settings.AffiliateRebateFreezeHours,
 		AffiliateRebateDurationDays:                     settings.AffiliateRebateDurationDays,
@@ -734,6 +735,9 @@ type UpdateSettingsRequest struct {
 
 	// 风控中心功能开关
 	RiskControlEnabled *bool `json:"risk_control_enabled"`
+
+	// Prompt 审计功能开关
+	PromptAuditEnabled *bool `json:"prompt_audit_enabled"`
 
 	// OpenAI fast/flex policy (optional, only updated when provided)
 	OpenAIFastPolicySettings *dto.OpenAIFastPolicySettings `json:"openai_fast_policy_settings,omitempty"`
@@ -2084,6 +2088,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.RiskControlEnabled
 		}(),
+		PromptAuditEnabled: func() bool {
+			if req.PromptAuditEnabled != nil {
+				return *req.PromptAuditEnabled
+			}
+			return previousSettings.PromptAuditEnabled
+		}(),
 	}
 
 	// req.AuthSourceXxxPlatformQuotas 为 nil 表示本次请求未包含该 source 的 quota 配置（保留 previousAuthSourceDefaults 中的值）；
@@ -2436,6 +2446,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AffiliateEnabled: updatedSettings.AffiliateEnabled,
 
 		RiskControlEnabled: updatedSettings.RiskControlEnabled,
+
+		PromptAuditEnabled: updatedSettings.PromptAuditEnabled,
 	}
 	if fastPolicy, err := h.settingService.GetOpenAIFastPolicySettings(c.Request.Context()); err != nil {
 		slog.Error("openai_fast_policy_settings_get_failed", "error", err)
@@ -2997,6 +3009,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.RiskControlEnabled != after.RiskControlEnabled {
 		changed = append(changed, "risk_control_enabled")
+	}
+	if before.PromptAuditEnabled != after.PromptAuditEnabled {
+		changed = append(changed, "prompt_audit_enabled")
 	}
 	// Default platform quotas（JSON map，整体比较）
 	if !equalPlatformQuotaSettings(before.DefaultPlatformQuotas, after.DefaultPlatformQuotas) {

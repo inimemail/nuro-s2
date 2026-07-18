@@ -448,9 +448,10 @@ func AccountGroupFromService(ag *service.AccountGroup) *AccountGroup {
 		GroupID:                           ag.GroupID,
 		Priority:                          ag.Priority,
 		UpstreamBillingGuardMaxMultiplier: ag.UpstreamBillingGuardMaxMultiplier,
-		CreatedAt:                         ag.CreatedAt,
-		Account:                           AccountFromServiceShallow(ag.Account),
-		Group:                             GroupFromServiceShallow(ag.Group),
+		UpstreamBillingGuardOverrideMaxMultiplier: ag.UpstreamBillingGuardOverrideMaxMultiplier,
+		CreatedAt: ag.CreatedAt,
+		Account:   AccountFromServiceShallow(ag.Account),
+		Group:     GroupFromServiceShallow(ag.Group),
 	}
 }
 

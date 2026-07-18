@@ -15,6 +15,34 @@ type updateAccountGuardRepoStub struct {
 	updateCalls int
 }
 
+type updateAccountGuardAtomicRepoStub struct {
+	updateAccountGuardRepoStub
+	guardLimits *map[int64]float64
+}
+
+func (r *updateAccountGuardAtomicRepoStub) UpdateAccountWithGroupConfig(
+	_ context.Context,
+	account *Account,
+	_ *[]int64,
+	guardLimits *map[int64]float64,
+	_ bool,
+) error {
+	r.updateCalls++
+	r.account = account
+	r.guardLimits = guardLimits
+	if guardLimits != nil {
+		for i := range account.AccountGroups {
+			limit, exists := (*guardLimits)[account.AccountGroups[i].GroupID]
+			if !exists {
+				account.AccountGroups[i].UpstreamBillingGuardOverrideMaxMultiplier = nil
+				continue
+			}
+			account.AccountGroups[i].UpstreamBillingGuardOverrideMaxMultiplier = &limit
+		}
+	}
+	return nil
+}
+
 func (r *updateAccountGuardRepoStub) GetByID(context.Context, int64) (*Account, error) {
 	return r.account, nil
 }
@@ -164,5 +192,96 @@ func TestUpdateAccountRejectsDisablingProbeWhileGuardRemainsEnabled(t *testing.T
 	})
 
 	require.ErrorIs(t, err, ErrUpstreamBillingProbeRequiredByGuard)
+	require.Zero(t, repo.updateCalls)
+}
+
+func TestUpdateAccountPersistsBillingGuardOverridesAtomically(t *testing.T) {
+	groupLimit := 3.0
+	account := &Account{
+		ID:                          359,
+		Platform:                    PlatformOpenAI,
+		Type:                        AccountTypeAPIKey,
+		Status:                      StatusActive,
+		Extra:                       map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		UpstreamBillingGuardEnabled: true,
+		GroupIDs:                    []int64{7},
+		AccountGroups: []AccountGroup{{
+			GroupID:                                7,
+			UpstreamBillingGuardMaxMultiplier:      &groupLimit,
+			GroupUpstreamBillingGuardMaxMultiplier: &groupLimit,
+			GroupPolicyLoaded:                      true,
+		}},
+	}
+	repo := &updateAccountGuardAtomicRepoStub{updateAccountGuardRepoStub: updateAccountGuardRepoStub{account: account}}
+	svc := &adminServiceImpl{
+		accountRepo: repo,
+		groupRepo: &groupRepoStubForAdmin{getByID: &Group{
+			ID: 7, Platform: PlatformOpenAI, UpstreamBillingGuardMaxMultiplier: &groupLimit,
+		}},
+	}
+	override := 1.5
+	limits := map[int64]float64{7: override}
+
+	updated, err := svc.UpdateAccount(context.Background(), 359, &UpdateAccountInput{
+		UpstreamBillingGuardGroupLimits: &limits,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.updateCalls)
+	require.Same(t, &limits, repo.guardLimits)
+	require.NotNil(t, updated.AccountGroups[0].UpstreamBillingGuardOverrideMaxMultiplier)
+	require.Equal(t, override, *updated.AccountGroups[0].UpstreamBillingGuardOverrideMaxMultiplier)
+}
+
+func TestUpdateAccountRejectsBillingGuardOverrideAboveGroupCeiling(t *testing.T) {
+	groupLimit := 2.0
+	account := &Account{
+		ID:       359,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		GroupIDs: []int64{7},
+		AccountGroups: []AccountGroup{{
+			GroupID: 7, GroupUpstreamBillingGuardMaxMultiplier: &groupLimit, GroupPolicyLoaded: true,
+		}},
+	}
+	repo := &updateAccountGuardAtomicRepoStub{updateAccountGuardRepoStub: updateAccountGuardRepoStub{account: account}}
+	svc := &adminServiceImpl{
+		accountRepo: repo,
+		groupRepo: &groupRepoStubForAdmin{getByID: &Group{
+			ID: 7, Platform: PlatformOpenAI, UpstreamBillingGuardMaxMultiplier: &groupLimit,
+		}},
+	}
+	limits := map[int64]float64{7: 2.5}
+
+	_, err := svc.UpdateAccount(context.Background(), 359, &UpdateAccountInput{
+		UpstreamBillingGuardGroupLimits: &limits,
+	})
+
+	require.ErrorIs(t, err, ErrInvalidUpstreamBillingGuardGroupLimits)
+	require.Zero(t, repo.updateCalls)
+}
+
+func TestUpdateAccountRejectsOverrideForHydratedNonOpenAIGroup(t *testing.T) {
+	staleLimit := 1.0
+	account := &Account{
+		ID:       359,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		GroupIDs: []int64{7},
+		AccountGroups: []AccountGroup{{
+			GroupID:                           7,
+			UpstreamBillingGuardMaxMultiplier: &staleLimit,
+			Group:                             &Group{ID: 7, Platform: PlatformAnthropic, UpstreamBillingGuardMaxMultiplier: &staleLimit},
+		}},
+	}
+	repo := &updateAccountGuardAtomicRepoStub{updateAccountGuardRepoStub: updateAccountGuardRepoStub{account: account}}
+	svc := &adminServiceImpl{accountRepo: repo}
+	override := map[int64]float64{7: 0.5}
+
+	_, err := svc.UpdateAccount(context.Background(), 359, &UpdateAccountInput{
+		UpstreamBillingGuardGroupLimits: &override,
+	})
+
+	require.ErrorIs(t, err, ErrInvalidUpstreamBillingGuardGroupLimits)
 	require.Zero(t, repo.updateCalls)
 }

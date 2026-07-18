@@ -1646,7 +1646,13 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 				AND g.upstream_billing_guard_max_multiplier IS NOT NULL
 				AND (
 					COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
-					OR COALESCE(a.upstream_billing_guard_observed_multiplier > g.upstream_billing_guard_max_multiplier, FALSE)
+					OR COALESCE(
+						a.upstream_billing_guard_observed_multiplier > LEAST(
+							COALESCE(ag.upstream_billing_guard_max_multiplier, g.upstream_billing_guard_max_multiplier),
+							g.upstream_billing_guard_max_multiplier
+						),
+						FALSE
+					)
 				)
 			)
 			AND (a.temp_unschedulable_until IS NULL OR a.temp_unschedulable_until <= $3)
@@ -2817,17 +2823,22 @@ func (r *accountRepository) loadAccountGroups(ctx context.Context, accountIDs []
 
 	for _, ag := range entries {
 		groupSvc := groupEntityToService(ag.Edges.Group)
-		var derivedGuardLimit *float64
+		var groupGuardLimit *float64
 		if groupSvc != nil && groupSvc.Platform == service.PlatformOpenAI {
-			derivedGuardLimit = cloneFloat64Ptr(groupSvc.UpstreamBillingGuardMaxMultiplier)
+			groupGuardLimit = cloneFloat64Ptr(groupSvc.UpstreamBillingGuardMaxMultiplier)
 		}
 		agSvc := service.AccountGroup{
-			AccountID:                         ag.AccountID,
-			GroupID:                           ag.GroupID,
-			Priority:                          ag.Priority,
-			UpstreamBillingGuardMaxMultiplier: derivedGuardLimit,
-			CreatedAt:                         ag.CreatedAt,
-			Group:                             groupSvc,
+			AccountID: ag.AccountID,
+			GroupID:   ag.GroupID,
+			Priority:  ag.Priority,
+			UpstreamBillingGuardOverrideMaxMultiplier: cloneFloat64Ptr(ag.UpstreamBillingGuardMaxMultiplier),
+			GroupUpstreamBillingGuardMaxMultiplier:    groupGuardLimit,
+			GroupPolicyLoaded:                         true,
+			CreatedAt:                                 ag.CreatedAt,
+			Group:                                     groupSvc,
+		}
+		if effective, configured := agSvc.EffectiveUpstreamBillingGuardMaxMultiplier(); configured {
+			agSvc.UpstreamBillingGuardMaxMultiplier = cloneFloat64Ptr(effective)
 		}
 		accountGroupsByAccount[ag.AccountID] = append(accountGroupsByAccount[ag.AccountID], agSvc)
 		groupIDsByAccount[ag.AccountID] = append(groupIDsByAccount[ag.AccountID], ag.GroupID)

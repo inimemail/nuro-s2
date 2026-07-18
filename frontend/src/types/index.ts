@@ -212,6 +212,7 @@ export interface PublicSettings {
   hide_ccs_import_button: boolean
   payment_enabled: boolean
   risk_control_enabled: boolean
+  prompt_audit_enabled: boolean
   allow_user_view_error_requests: boolean
   table_default_page_size: number
   table_page_size_options: number[]
@@ -1054,6 +1055,7 @@ export interface AccountGroupBinding {
   group_id: number
   priority: number
   upstream_billing_guard_max_multiplier: number | null
+  upstream_billing_guard_override_max_multiplier?: number | null
   created_at: string
   group?: Group
 }
@@ -1265,6 +1267,7 @@ export interface UpdateAccountRequest {
   status?: 'active' | 'inactive' | 'error'
   group_ids?: number[]
   upstream_billing_guard_enabled?: boolean
+  upstream_billing_guard_group_limits?: Record<string, number>
   expires_at?: number | null
   auto_pause_on_expired?: boolean
   confirm_mixed_channel_risk?: boolean

@@ -114,6 +114,11 @@ export const FeatureFlags = {
     mode: 'opt-in',
     label: 'Risk Control',
   }),
+  promptAudit: defineFlag({
+    key: 'prompt_audit_enabled',
+    mode: 'opt-in',
+    label: 'Prompt Audit',
+  }),
   affiliate: defineFlag({
     key: 'affiliate_enabled',
     mode: 'opt-in',

@@ -350,6 +350,75 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 	return nil
 }
 
+// ReconcileUpstreamBillingGuardAccounts keeps binding overrides within the
+// updated group ceiling and turns off account master switches that no longer
+// have any effective protected OpenAI group. The scheduler already applies the
+// ceiling defensively; this persistence step keeps admin state truthful and
+// prevents needless probes after a group policy is removed.
+func (r *groupRepository) ReconcileUpstreamBillingGuardAccounts(ctx context.Context, groupID int64) error {
+	if r == nil || r.sql == nil || groupID <= 0 {
+		return nil
+	}
+	exec := sqlExecutorFromContext(ctx, r.sql)
+	rows, err := exec.QueryContext(ctx, `
+		WITH capped AS (
+			UPDATE account_groups ag
+			SET upstream_billing_guard_max_multiplier = CASE
+				WHEN g.platform <> 'openai' OR g.upstream_billing_guard_max_multiplier IS NULL THEN NULL
+				WHEN ag.upstream_billing_guard_max_multiplier IS NULL THEN NULL
+				WHEN ag.upstream_billing_guard_max_multiplier > g.upstream_billing_guard_max_multiplier
+					THEN g.upstream_billing_guard_max_multiplier
+				ELSE ag.upstream_billing_guard_max_multiplier
+			END
+			FROM groups g
+			WHERE ag.group_id = $1 AND g.id = ag.group_id
+			RETURNING ag.account_id
+		), disabled AS (
+			UPDATE accounts a
+			SET upstream_billing_guard_enabled = FALSE,
+				upstream_billing_guard_blocked = FALSE,
+				updated_at = NOW()
+			WHERE a.id IN (SELECT DISTINCT account_id FROM capped)
+			  AND a.upstream_billing_guard_enabled = TRUE
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM account_groups ag2
+				JOIN groups g2 ON g2.id = ag2.group_id AND g2.deleted_at IS NULL
+				WHERE ag2.account_id = a.id
+				  AND g2.platform = 'openai'
+				  AND g2.upstream_billing_guard_max_multiplier IS NOT NULL
+			  )
+			  AND a.deleted_at IS NULL
+			RETURNING a.id
+		)
+		SELECT id FROM disabled ORDER BY id`, groupID)
+	if err != nil {
+		return err
+	}
+	accountIDs := make([]int64, 0)
+	for rows.Next() {
+		var accountID int64
+		if err := rows.Scan(&accountID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		accountIDs = append(accountIDs, accountID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, accountID := range accountIDs {
+		if err := enqueueSchedulerOutbox(ctx, exec, service.SchedulerOutboxEventAccountChanged, &accountID, nil, nil); err != nil {
+			logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue guard reconciliation failed: account=%d group=%d err=%v", accountID, groupID, err)
+		}
+	}
+	return nil
+}
+
 func (r *groupRepository) Delete(ctx context.Context, id int64) error {
 	_, err := r.client.Group.Delete().Where(group.IDEQ(id)).Exec(ctx)
 	if err != nil {
@@ -869,7 +938,13 @@ const (
 					AND g.upstream_billing_guard_max_multiplier IS NOT NULL
 					AND (
 						COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
-						OR COALESCE(a.upstream_billing_guard_observed_multiplier > g.upstream_billing_guard_max_multiplier, FALSE)
+						OR COALESCE(
+							a.upstream_billing_guard_observed_multiplier > LEAST(
+								COALESCE(ag.upstream_billing_guard_max_multiplier, g.upstream_billing_guard_max_multiplier),
+								g.upstream_billing_guard_max_multiplier
+							),
+							FALSE
+						)
 					)
 				)
 				AND (a.expires_at IS NULL OR a.expires_at > NOW() OR a.auto_pause_on_expired = FALSE)

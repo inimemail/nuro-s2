@@ -70,6 +70,7 @@ func newEnabledOpenAIEdgePromptAuditService(t *testing.T) *securityaudit.Service
 		}},
 	})
 	require.NoError(t, err)
+	svc.SetFeatureEnabled(true)
 	return svc
 }
 

@@ -24,6 +24,10 @@ func (h *PromptAdminHandler) available(c *gin.Context) *Service {
 		response.ErrorFrom(c, infraerrors.New(http.StatusServiceUnavailable, "PROMPT_AUDIT_UNAVAILABLE", "prompt audit service is unavailable"))
 		return nil
 	}
+	if !h.service.FeatureEnabledFast() {
+		response.ErrorFrom(c, infraerrors.NotFound("PROMPT_AUDIT_DISABLED", "prompt audit is disabled"))
+		return nil
+	}
 	return h.service
 }
 
