@@ -173,9 +173,11 @@ func (s *SchedulerSnapshotService) localSnapshotEnabledForBucket(bucket Schedule
 	if s == nil || s.localSnapshot == nil || !s.localSnapshot.Enabled() {
 		return false
 	}
-	if s.cellRouter != nil && s.cellRouter.Enabled() {
-		return s.cellRouter.OwnsBucket(bucket)
-	}
+	// Cell ownership is a claim-plane concern. Filtering snapshot buckets here
+	// would make an account invisible to the global priority scheduler whenever
+	// a Cell is added, and can cause duplicate/uneven selection during rollout.
+	// Every scheduler instance keeps the complete immutable view; the account
+	// directory selects the Cell only for the atomic claim operation.
 	return true
 }
 

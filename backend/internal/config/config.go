@@ -619,15 +619,16 @@ type PricingConfig struct {
 }
 
 type ServerConfig struct {
-	Host               string    `mapstructure:"host"`
-	Port               int       `mapstructure:"port"`
-	Mode               string    `mapstructure:"mode"`                  // debug/release
-	FrontendURL        string    `mapstructure:"frontend_url"`          // 前端基础 URL，用于生成邮件中的外部链接
-	ReadHeaderTimeout  int       `mapstructure:"read_header_timeout"`   // 读取请求头超时（秒）
-	IdleTimeout        int       `mapstructure:"idle_timeout"`          // 空闲连接超时（秒）
-	TrustedProxies     []string  `mapstructure:"trusted_proxies"`       // 可信代理列表（CIDR/IP）
-	MaxRequestBodySize int64     `mapstructure:"max_request_body_size"` // 全局最大请求体限制
-	H2C                H2CConfig `mapstructure:"h2c"`                   // HTTP/2 Cleartext 配置
+	Host                    string    `mapstructure:"host"`
+	Port                    int       `mapstructure:"port"`
+	Mode                    string    `mapstructure:"mode"`                      // debug/release
+	FrontendURL             string    `mapstructure:"frontend_url"`              // 前端基础 URL，用于生成邮件中的外部链接
+	ReadHeaderTimeout       int       `mapstructure:"read_header_timeout"`       // 读取请求头超时（秒）
+	IdleTimeout             int       `mapstructure:"idle_timeout"`              // 空闲连接超时（秒）
+	GracefulShutdownTimeout int       `mapstructure:"graceful_shutdown_timeout"` // drain 后等待现有流的最长时间（秒）
+	TrustedProxies          []string  `mapstructure:"trusted_proxies"`           // 可信代理列表（CIDR/IP）
+	MaxRequestBodySize      int64     `mapstructure:"max_request_body_size"`     // 全局最大请求体限制
+	H2C                     H2CConfig `mapstructure:"h2c"`                       // HTTP/2 Cleartext 配置
 }
 
 // H2CConfig HTTP/2 Cleartext 配置
@@ -962,6 +963,10 @@ type GatewayConfig struct {
 
 	// Scheduling: 账号调度相关配置
 	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
+	// Admission: distributed account Cells and tenant escrow. This is separate
+	// from scheduling Cells: scheduling ownership never implies that admission
+	// slot state has been moved.
+	Admission GatewayAdmissionConfig `mapstructure:"admission"`
 
 	// TLSFingerprint: TLS指纹伪装配置
 	TLSFingerprint TLSFingerprintConfig `mapstructure:"tls_fingerprint"`
@@ -977,6 +982,21 @@ type GatewayConfig struct {
 	// UserMessageQueue: 用户消息串行队列配置
 	// 对 role:"user" 的真实用户消息实施账号级串行化 + RPM 自适应延迟
 	UserMessageQueue UserMessageQueueConfig `mapstructure:"user_message_queue"`
+}
+
+// GatewayAdmissionConfig configures the optional distributed admission data
+// plane. Cell entries use "cell-id=redis://host:port/db". Account ownership is
+// stored in the control Redis and is append-only; adding a Cell only affects
+// accounts that do not have an assignment yet.
+type GatewayAdmissionConfig struct {
+	Enabled              bool   `mapstructure:"enabled"`
+	NodeID               string `mapstructure:"node_id"`
+	OpenAICells          string `mapstructure:"openai_cells"`
+	AnthropicCells       string `mapstructure:"anthropic_cells"`
+	EscrowEnabled        bool   `mapstructure:"escrow_enabled"`
+	EscrowGrantSize      int    `mapstructure:"escrow_grant_size"`
+	NodeTTLSeconds       int    `mapstructure:"node_ttl_seconds"`
+	DeadNodeGraceSeconds int    `mapstructure:"dead_node_grace_seconds"`
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -1081,14 +1101,25 @@ type GatewayOpenAIEdgeRSConfig struct {
 	LeaseTTLMS int `mapstructure:"lease_ttl_ms"`
 	// InitialPoolSize prewarms edge-side scratch buffers.
 	InitialPoolSize int `mapstructure:"initial_pool_size"`
-	// QueueBufferSize bounds each edge account/proxy/host relay queue.
+	// QueueBufferSize bounds the process-wide edge relay queue.
 	QueueBufferSize int `mapstructure:"queue_buffer_size"`
-	// PerAccountWorkers controls workers per edge account/proxy/host queue.
+	QueueMaxBytes   int `mapstructure:"queue_max_bytes"`
+	// GlobalWorkers bounds concurrent relay jobs per edge process.
+	GlobalWorkers int `mapstructure:"global_workers"`
+	// PerAccountWorkers is the per account/proxy/host in-flight relay limit.
 	PerAccountWorkers int `mapstructure:"per_account_workers"`
+	// MaxRelayDomains bounds account/proxy/upstream queue domains.
+	MaxRelayDomains        int `mapstructure:"max_relay_domains"`
+	RelayDomainIdleSeconds int `mapstructure:"relay_domain_idle_seconds"`
+	MaxProxyClients        int `mapstructure:"max_proxy_clients"`
+	ProxyClientIdleSeconds int `mapstructure:"proxy_client_idle_seconds"`
 	// MaxIdleConnsPerAccount is the edge-side upstream connection pool hint.
 	MaxIdleConnsPerAccount int `mapstructure:"max_idle_conns_per_account"`
 	// WSIdlePerKey keeps unused preconnected WSv2 sockets per account/header key.
-	WSIdlePerKey int `mapstructure:"ws_idle_per_key"`
+	WSIdlePerKey       int `mapstructure:"ws_idle_per_key"`
+	MaxWSIdleKeys      int `mapstructure:"max_ws_idle_keys"`
+	WSIdleTTLSeconds   int `mapstructure:"ws_idle_ttl_seconds"`
+	MaxDynamicWarmKeys int `mapstructure:"max_dynamic_warm_keys"`
 	// LargePayloadPassthrough sends raw request/plan bodies to the edge so it can
 	// forward bytes without JSON re-materialization.
 	LargePayloadPassthrough bool `mapstructure:"large_payload_passthrough"`
@@ -1789,6 +1820,7 @@ func setDefaults() {
 	viper.SetDefault("server.frontend_url", "")
 	viper.SetDefault("server.read_header_timeout", 30) // 30秒读取请求头
 	viper.SetDefault("server.idle_timeout", 120)       // 120秒空闲超时
+	viper.SetDefault("server.graceful_shutdown_timeout", 1800)
 	viper.SetDefault("server.trusted_proxies", []string{})
 	viper.SetDefault("server.max_request_body_size", int64(256*1024*1024))
 	// H2C 默认配置
@@ -2195,11 +2227,20 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_edge_rs.prepare_timeout_ms", 1500)
 	viper.SetDefault("gateway.openai_edge_rs.complete_timeout_ms", 1500)
 	viper.SetDefault("gateway.openai_edge_rs.lease_ttl_ms", 30*60*1000)
-	viper.SetDefault("gateway.openai_edge_rs.initial_pool_size", 10000)
-	viper.SetDefault("gateway.openai_edge_rs.queue_buffer_size", 2000)
+	viper.SetDefault("gateway.openai_edge_rs.initial_pool_size", 512)
+	viper.SetDefault("gateway.openai_edge_rs.queue_buffer_size", 128)
+	viper.SetDefault("gateway.openai_edge_rs.queue_max_bytes", 64*1024*1024)
+	viper.SetDefault("gateway.openai_edge_rs.global_workers", 256)
 	viper.SetDefault("gateway.openai_edge_rs.per_account_workers", 32)
+	viper.SetDefault("gateway.openai_edge_rs.max_relay_domains", 4096)
+	viper.SetDefault("gateway.openai_edge_rs.relay_domain_idle_seconds", 300)
+	viper.SetDefault("gateway.openai_edge_rs.max_proxy_clients", 1024)
+	viper.SetDefault("gateway.openai_edge_rs.proxy_client_idle_seconds", 300)
 	viper.SetDefault("gateway.openai_edge_rs.max_idle_conns_per_account", 64)
 	viper.SetDefault("gateway.openai_edge_rs.ws_idle_per_key", 1)
+	viper.SetDefault("gateway.openai_edge_rs.max_ws_idle_keys", 1024)
+	viper.SetDefault("gateway.openai_edge_rs.ws_idle_ttl_seconds", 300)
+	viper.SetDefault("gateway.openai_edge_rs.max_dynamic_warm_keys", 4096)
 	viper.SetDefault("gateway.openai_edge_rs.large_payload_passthrough", true)
 	viper.SetDefault("gateway.openai_edge_rs.fallback_before_first_write", true)
 	// OpenAI HTTP upstream protocol strategy
@@ -2254,6 +2295,14 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.cell_enabled", false)
 	viper.SetDefault("gateway.scheduling.cell_id", "")
 	viper.SetDefault("gateway.scheduling.cell_ids", []string{})
+	viper.SetDefault("gateway.admission.enabled", false)
+	viper.SetDefault("gateway.admission.node_id", "")
+	viper.SetDefault("gateway.admission.openai_cells", "")
+	viper.SetDefault("gateway.admission.anthropic_cells", "")
+	viper.SetDefault("gateway.admission.escrow_enabled", true)
+	viper.SetDefault("gateway.admission.escrow_grant_size", 16)
+	viper.SetDefault("gateway.admission.node_ttl_seconds", 30)
+	viper.SetDefault("gateway.admission.dead_node_grace_seconds", 0)
 	viper.SetDefault("gateway.scheduling.candidate_slot_arbiter_enabled", false)
 	viper.SetDefault("gateway.scheduling.candidate_slot_arbiter_max_candidates", 16)
 	viper.SetDefault("gateway.scheduling.local_snapshot_enabled", false)
@@ -3105,14 +3154,32 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIEdgeRS.QueueBufferSize <= 0 {
 		return fmt.Errorf("gateway.openai_edge_rs.queue_buffer_size must be positive")
 	}
+	if c.Gateway.OpenAIEdgeRS.QueueMaxBytes <= 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.queue_max_bytes must be positive")
+	}
+	if c.Gateway.OpenAIEdgeRS.GlobalWorkers <= 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.global_workers must be positive")
+	}
 	if c.Gateway.OpenAIEdgeRS.PerAccountWorkers <= 0 {
 		return fmt.Errorf("gateway.openai_edge_rs.per_account_workers must be positive")
+	}
+	if c.Gateway.OpenAIEdgeRS.MaxRelayDomains <= 0 || c.Gateway.OpenAIEdgeRS.MaxProxyClients <= 0 {
+		return fmt.Errorf("gateway.openai_edge_rs resource limits must be positive")
+	}
+	if c.Gateway.OpenAIEdgeRS.RelayDomainIdleSeconds <= 0 || c.Gateway.OpenAIEdgeRS.ProxyClientIdleSeconds <= 0 {
+		return fmt.Errorf("gateway.openai_edge_rs resource idle TTLs must be positive")
 	}
 	if c.Gateway.OpenAIEdgeRS.MaxIdleConnsPerAccount < 0 {
 		return fmt.Errorf("gateway.openai_edge_rs.max_idle_conns_per_account must be non-negative")
 	}
 	if c.Gateway.OpenAIEdgeRS.WSIdlePerKey < 0 {
 		return fmt.Errorf("gateway.openai_edge_rs.ws_idle_per_key must be non-negative")
+	}
+	if c.Gateway.OpenAIEdgeRS.MaxWSIdleKeys <= 0 || c.Gateway.OpenAIEdgeRS.WSIdleTTLSeconds <= 0 {
+		return fmt.Errorf("gateway.openai_edge_rs ws idle limits must be positive")
+	}
+	if c.Gateway.OpenAIEdgeRS.MaxDynamicWarmKeys <= 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.max_dynamic_warm_keys must be positive")
 	}
 	if c.Gateway.OpenAIHTTP2.FallbackErrorThreshold < 0 {
 		return fmt.Errorf("gateway.openai_http2.fallback_error_threshold must be non-negative")
@@ -3236,6 +3303,23 @@ func (c *Config) Validate() error {
 		}
 		if len(c.Gateway.Scheduling.CellIDs) == 0 {
 			return fmt.Errorf("gateway.scheduling.cell_ids must be set when cell_enabled is true")
+		}
+	}
+	if c.Gateway.Admission.Enabled {
+		if strings.TrimSpace(c.Gateway.Admission.OpenAICells) == "" {
+			return fmt.Errorf("gateway.admission.openai_cells must be set when admission is enabled")
+		}
+		if strings.TrimSpace(c.Gateway.Admission.AnthropicCells) == "" {
+			return fmt.Errorf("gateway.admission.anthropic_cells must be set when admission is enabled")
+		}
+		if c.Gateway.Admission.EscrowGrantSize <= 0 {
+			return fmt.Errorf("gateway.admission.escrow_grant_size must be positive")
+		}
+		if c.Gateway.Admission.NodeTTLSeconds <= 0 {
+			return fmt.Errorf("gateway.admission.node_ttl_seconds must be positive")
+		}
+		if c.Gateway.Admission.DeadNodeGraceSeconds < 0 {
+			return fmt.Errorf("gateway.admission.dead_node_grace_seconds must be non-negative")
 		}
 	}
 	if c.Gateway.Scheduling.LocalSnapshotTTLMS < 0 {

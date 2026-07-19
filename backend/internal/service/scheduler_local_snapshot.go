@@ -12,6 +12,12 @@ import (
 type schedulerLocalSnapshotEntry struct {
 	accounts  []Account
 	expiresAt time.Time
+	version   uint64
+}
+
+type schedulerLocalSnapshotOrderEntry struct {
+	key     string
+	version uint64
 }
 
 type SchedulerLocalSnapshot struct {
@@ -21,7 +27,8 @@ type SchedulerLocalSnapshot struct {
 
 	mu      sync.RWMutex
 	buckets map[string]schedulerLocalSnapshotEntry
-	order   []string
+	order   []schedulerLocalSnapshotOrderEntry
+	version uint64
 
 	hits   atomic.Int64
 	misses atomic.Int64
@@ -71,7 +78,16 @@ func (s *SchedulerLocalSnapshot) Get(bucket SchedulerBucket, now time.Time) ([]A
 		return nil, false
 	}
 	s.hits.Add(1)
-	return cloneAccounts(entry.accounts), true
+	// Snapshot payload is immutable after Set. Return a copy-on-write request
+	// view: top-level mutable maps/slices are detached, while nested immutable
+	// payload values remain shared. This prevents request-local assignments from
+	// contaminating another group without recursively cloning large credentials
+	// and Extra payloads on every scheduling request.
+	out := make([]Account, len(entry.accounts))
+	for i := range entry.accounts {
+		out[i] = cloneSchedulerAccountView(entry.accounts[i])
+	}
+	return out, true
 }
 
 func (s *SchedulerLocalSnapshot) Set(bucket SchedulerBucket, accounts []Account, now time.Time) {
@@ -85,10 +101,10 @@ func (s *SchedulerLocalSnapshot) Set(bucket SchedulerBucket, accounts []Account,
 	}
 
 	s.mu.Lock()
-	if _, exists := s.buckets[key]; !exists {
-		s.order = append(s.order, key)
-	}
+	s.version++
+	entry.version = s.version
 	s.buckets[key] = entry
+	s.order = append(s.order, schedulerLocalSnapshotOrderEntry{key: key, version: entry.version})
 	s.evictLocked()
 	s.mu.Unlock()
 }
@@ -100,12 +116,7 @@ func (s *SchedulerLocalSnapshot) Delete(bucket SchedulerBucket) {
 	key := bucket.String()
 	s.mu.Lock()
 	delete(s.buckets, key)
-	for i, orderedKey := range s.order {
-		if orderedKey == key {
-			s.order = append(s.order[:i], s.order[i+1:]...)
-			break
-		}
-	}
+	s.compactOrderLocked()
 	s.mu.Unlock()
 }
 
@@ -155,12 +166,30 @@ func (s *SchedulerLocalSnapshot) evictLocked() {
 		return
 	}
 	for len(s.buckets) > s.maxKeys && len(s.order) > 0 {
-		key := s.order[0]
+		ordered := s.order[0]
 		s.order = s.order[1:]
-		if _, ok := s.buckets[key]; ok {
-			delete(s.buckets, key)
+		if current, ok := s.buckets[ordered.key]; ok && current.version == ordered.version {
+			delete(s.buckets, ordered.key)
 		}
 	}
+	s.compactOrderLocked()
+}
+
+func (s *SchedulerLocalSnapshot) compactOrderLocked() {
+	limit := s.maxKeys * 2
+	if limit < 64 {
+		limit = 64
+	}
+	if len(s.order) <= limit {
+		return
+	}
+	compacted := make([]schedulerLocalSnapshotOrderEntry, 0, len(s.buckets))
+	for _, ordered := range s.order {
+		if current, ok := s.buckets[ordered.key]; ok && current.version == ordered.version {
+			compacted = append(compacted, ordered)
+		}
+	}
+	s.order = compacted
 }
 
 func cloneAccounts(accounts []Account) []Account {
@@ -229,6 +258,33 @@ func cloneSchedulerAccount(account Account) Account {
 	cloned.headerOverrideCacheRawLen = 0
 	cloned.headerOverrideCacheRawSig = 0
 	return cloned
+}
+
+func cloneSchedulerAccountView(account Account) Account {
+	cloned := account
+	cloned.Credentials = cloneStringAnyMapShallow(account.Credentials)
+	cloned.Extra = cloneStringAnyMapShallow(account.Extra)
+	// Runtime quota handling mutates this nested map after selection. Clone the
+	// known mutable subtree without recursively copying every credentials/Extra
+	// payload on the hot path.
+	if raw, ok := account.Extra[modelRateLimitsKey].(map[string]any); ok {
+		cloned.Extra[modelRateLimitsKey] = cloneStringAnyMap(raw)
+	}
+	cloned.GroupIDs = append([]int64(nil), account.GroupIDs...)
+	cloned.AccountGroups = append([]AccountGroup(nil), account.AccountGroups...)
+	cloned.Groups = append([]*Group(nil), account.Groups...)
+	return cloned
+}
+
+func cloneStringAnyMapShallow(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func cloneSchedulerAccountGroups(in []AccountGroup) []AccountGroup {

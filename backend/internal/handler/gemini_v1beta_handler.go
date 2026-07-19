@@ -484,6 +484,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				selection.WaitPlan.Timeout,
 				stream,
 				&streamStarted,
+				account.Platform,
 			)
 			if err != nil {
 				if retryAccountID > 0 {

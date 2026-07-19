@@ -135,6 +135,7 @@ func TestSchedulerLocalSnapshot_ClonesMutableAccountFields(t *testing.T) {
 			"api_key": "old",
 			"nested":  map[string]any{"flag": "old"},
 		},
+		Extra:                                  map[string]any{modelRateLimitsKey: map[string]any{"gpt": map[string]any{"remaining": 2}}},
 		GroupIDs:                               []int64{1},
 		UpstreamBillingGuardObservedMultiplier: &observed,
 		UpstreamBillingGuardEvaluatedAt:        &evaluatedAt,
@@ -164,6 +165,14 @@ func TestSchedulerLocalSnapshot_ClonesMutableAccountFields(t *testing.T) {
 	}
 	if got[0].UpstreamBillingGuardEvaluatedAt == nil || !got[0].UpstreamBillingGuardEvaluatedAt.Equal(evaluatedAt.Add(-time.Hour)) {
 		t.Fatalf("expected billing guard evaluation time clone, got %v", got[0].UpstreamBillingGuardEvaluatedAt)
+	}
+	got[0].Credentials["api_key"] = "request-local"
+	got[0].Extra["request"] = true
+	got[0].Extra[modelRateLimitsKey].(map[string]any)["gpt"].(map[string]any)["remaining"] = 0
+	again, hit := snapshot.Get(bucket, time.Now())
+	remaining := again[0].Extra[modelRateLimitsKey].(map[string]any)["gpt"].(map[string]any)["remaining"]
+	if !hit || again[0].Credentials["api_key"] != "old" || again[0].Extra["request"] != nil || remaining != 2 {
+		t.Fatalf("request-local account view contaminated snapshot: %+v", again[0])
 	}
 }
 

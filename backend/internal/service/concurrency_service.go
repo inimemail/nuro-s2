@@ -53,6 +53,26 @@ type ConcurrencyCache interface {
 	CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error
 }
 
+// ConcurrencySlotRefresher is optional so existing test and non-Redis caches
+// keep working. Production Redis caches refresh the same member in-place.
+type ConcurrencySlotRefresher interface {
+	RefreshSlot(ctx context.Context, kind string, entityID int64, requestID string) error
+}
+
+type ConcurrencySlotTTLProvider interface {
+	SlotTTL() time.Duration
+}
+
+type ConcurrencySlotRenewal struct {
+	Kind      string
+	EntityID  int64
+	RequestID string
+}
+
+type ConcurrencySlotBatchRefresher interface {
+	RefreshSlots(ctx context.Context, renewals []ConcurrencySlotRenewal) error
+}
+
 type APIKeyConcurrencyCache interface {
 	TrackAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
 	ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
@@ -63,6 +83,16 @@ type APIKeyConcurrencyCache interface {
 type AccountSlotCandidate struct {
 	AccountID      int64
 	MaxConcurrency int
+	// Platform is the hard admission isolation domain. Empty preserves the
+	// legacy single-Redis path for callers that do not have account metadata.
+	Platform string
+}
+
+// PlatformAccountSlotCache is implemented by admission Cell aware caches.
+// Keeping it optional preserves every existing cache implementation and test
+// double when distributed admission is disabled.
+type PlatformAccountSlotCache interface {
+	AcquireAccountSlotForPlatform(ctx context.Context, platform string, accountID int64, maxConcurrency int, requestID string) (bool, error)
 }
 
 // AccountSlotArbitrationResult describes the account selected by Redis.
@@ -180,26 +210,62 @@ const (
 	slotReleaseBackgroundBackoff    = 5 * time.Second
 	slotReleaseBackgroundMaxBackoff = 30 * time.Second
 	slotReleaseBackgroundMaxElapsed = 30 * time.Minute
+	slotReleaseRetryWorkers         = 32
+	slotReleaseRetryQueueSize       = 65536
 )
 
-func retryConcurrencySlotReleaseInBackground(kind string, entityID int64, requestID string, release func(context.Context) error) {
-	go func() {
-		deadline := time.Now().Add(slotReleaseBackgroundMaxElapsed)
-		backoff := slotReleaseBackgroundBackoff
-		var lastErr error
-		for time.Now().Before(deadline) {
-			time.Sleep(backoff)
-			attemptCtx, cancel := context.WithTimeout(context.Background(), slotReleaseInitialTimeout)
-			lastErr = release(attemptCtx)
-			cancel()
-			if lastErr == nil {
-				logger.LegacyPrintf("service.concurrency", "Background release recovered for %s slot %d (req=%s)", kind, entityID, requestID)
-				return
-			}
-			backoff = min(backoff*2, slotReleaseBackgroundMaxBackoff)
+type slotReleaseRetryJob struct {
+	kind      string
+	entityID  int64
+	requestID string
+	release   func(context.Context) error
+	queuedAt  time.Time
+}
+
+var (
+	slotReleaseRetryOnce  sync.Once
+	slotReleaseRetryQueue chan slotReleaseRetryJob
+)
+
+func startSlotReleaseRetryWorkers() chan slotReleaseRetryJob {
+	slotReleaseRetryOnce.Do(func() {
+		slotReleaseRetryQueue = make(chan slotReleaseRetryJob, slotReleaseRetryQueueSize)
+		for range slotReleaseRetryWorkers {
+			go func() {
+				for job := range slotReleaseRetryQueue {
+					retryConcurrencySlotReleaseJob(job)
+				}
+			}()
 		}
-		logger.LegacyPrintf("service.concurrency", "Warning: background release expired for %s slot %d (req=%s): %v", kind, entityID, requestID, lastErr)
-	}()
+	})
+	return slotReleaseRetryQueue
+}
+
+func retryConcurrencySlotReleaseInBackground(kind string, entityID int64, requestID string, release func(context.Context) error) {
+	job := slotReleaseRetryJob{kind: kind, entityID: entityID, requestID: requestID, release: release, queuedAt: time.Now()}
+	select {
+	case startSlotReleaseRetryWorkers() <- job:
+	default:
+		logger.LegacyPrintf("service.concurrency", "Warning: release retry queue full for %s slot %d (req=%s); relying on slot TTL", kind, entityID, requestID)
+	}
+}
+
+func retryConcurrencySlotReleaseJob(job slotReleaseRetryJob) {
+	deadline := job.queuedAt.Add(slotReleaseBackgroundMaxElapsed)
+	backoff := slotReleaseBackgroundBackoff
+	var lastErr error
+	for time.Now().Before(deadline) {
+		time.Sleep(backoff)
+		attemptCtx, cancel := context.WithTimeout(context.Background(), slotReleaseInitialTimeout)
+		lastErr = job.release(attemptCtx)
+		cancel()
+		if lastErr == nil {
+			logger.LegacyPrintf("service.concurrency", "Background release recovered for %s slot %d (req=%s)", job.kind, job.entityID, job.requestID)
+			return
+		}
+		backoff = min(backoff*2, slotReleaseBackgroundMaxBackoff)
+	}
+	logger.LegacyPrintf("service.concurrency", "Warning: background release expired for %s slot %d (req=%s): %v", job.kind, job.entityID, job.requestID, lastErr)
 }
 
 func retryConcurrencySlotRelease(kind string, entityID int64, requestID string, release func(context.Context) error) {
@@ -240,6 +306,18 @@ type ConcurrencyService struct {
 	staleProcessCleanupMu    sync.Mutex
 	staleProcessCleanupDone  atomic.Bool
 	staleProcessRetryStarted atomic.Bool
+	renewMu                  sync.Mutex
+	renewals                 map[string]slotRenewal
+	renewStop                chan struct{}
+	renewDone                chan struct{}
+	renewStopOnce            sync.Once
+	renewInterval            time.Duration
+}
+
+type slotRenewal struct {
+	kind      string
+	entityID  int64
+	requestID string
 }
 
 type cachedAccountLoadBatch struct {
@@ -252,9 +330,111 @@ func NewConcurrencyService(cache ConcurrencyCache) *ConcurrencyService {
 	svc := &ConcurrencyService{
 		cache:            cache,
 		accountLoadCache: make(map[string]cachedAccountLoadBatch),
+		renewals:         make(map[string]slotRenewal),
+		renewStop:        make(chan struct{}),
+		renewInterval:    5 * time.Minute,
 	}
 	svc.SetAccountLoadBatchCacheTTL(defaultAccountLoadBatchCacheTTL)
+	if _, ok := cache.(ConcurrencySlotRefresher); ok {
+		svc.renewDone = make(chan struct{})
+		if provider, ok := cache.(ConcurrencySlotTTLProvider); ok {
+			if ttl := provider.SlotTTL(); ttl > 0 {
+				interval := ttl / 3
+				if interval < 10*time.Second {
+					interval = 10 * time.Second
+				}
+				if interval < svc.renewInterval {
+					svc.renewInterval = interval
+				}
+			}
+		}
+		go svc.runSlotRenewalLoop()
+	}
 	return svc
+}
+
+func (s *ConcurrencyService) registerSlotRenewal(key, kind string, entityID int64, requestID string) {
+	if s == nil || key == "" || kind == "" || entityID <= 0 || requestID == "" {
+		return
+	}
+	s.renewMu.Lock()
+	s.renewals[key] = slotRenewal{kind: kind, entityID: entityID, requestID: requestID}
+	s.renewMu.Unlock()
+}
+
+func (s *ConcurrencyService) unregisterSlotRenewal(key string) {
+	if s == nil || key == "" {
+		return
+	}
+	s.renewMu.Lock()
+	delete(s.renewals, key)
+	s.renewMu.Unlock()
+}
+
+func (s *ConcurrencyService) runSlotRenewalLoop() {
+	defer close(s.renewDone)
+	ticker := time.NewTicker(s.renewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.renewMu.Lock()
+			refreshers := make([]slotRenewal, 0, len(s.renewals))
+			for _, renewal := range s.renewals {
+				refreshers = append(refreshers, renewal)
+			}
+			s.renewMu.Unlock()
+			if batch, ok := s.cache.(ConcurrencySlotBatchRefresher); ok {
+				renewals := make([]ConcurrencySlotRenewal, len(refreshers))
+				for i, renewal := range refreshers {
+					renewals[i] = ConcurrencySlotRenewal{
+						Kind: renewal.kind, EntityID: renewal.entityID, RequestID: renewal.requestID,
+					}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				_ = batch.RefreshSlots(ctx, renewals)
+				cancel()
+				continue
+			}
+			jobs := make(chan slotRenewal, 256)
+			var workers sync.WaitGroup
+			for i := 0; i < 32; i++ {
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					for renewal := range jobs {
+						ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+						if refresher, ok := s.cache.(ConcurrencySlotRefresher); ok {
+							_ = refresher.RefreshSlot(ctx, renewal.kind, renewal.entityID, renewal.requestID)
+						}
+						cancel()
+					}
+				}()
+			}
+			for _, refresh := range refreshers {
+				jobs <- refresh
+			}
+			close(jobs)
+			workers.Wait()
+		case <-s.renewStop:
+			return
+		}
+	}
+}
+
+func (s *ConcurrencyService) StopBackgroundWorkers() {
+	if s == nil {
+		return
+	}
+	s.renewStopOnce.Do(func() { close(s.renewStop) })
+	if s.renewDone != nil {
+		<-s.renewDone
+	}
+	if closer, ok := s.cache.(interface{ Close() error }); ok {
+		if err := closer.Close(); err != nil {
+			logger.LegacyPrintf("service.concurrency", "Warning: close admission cache: %v", err)
+		}
+	}
 }
 
 // SetAccountLoadBatchCacheTTL 设置账号负载批量读取的极短 TTL 缓存；非正数表示禁用缓存。
@@ -304,6 +484,10 @@ type UserLoadInfo struct {
 // If the account is at max concurrency, it waits until a slot is available or timeout.
 // Returns a release function that MUST be called when the request completes.
 func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
+	return s.AcquireAccountSlotForPlatform(ctx, "", accountID, maxConcurrency)
+}
+
+func (s *ConcurrencyService) AcquireAccountSlotForPlatform(ctx context.Context, platform string, accountID int64, maxConcurrency int) (*AcquireResult, error) {
 	// If maxConcurrency is 0 or negative, no limit
 	if maxConcurrency <= 0 {
 		return &AcquireResult{
@@ -315,15 +499,26 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 	// Generate unique request ID for this slot
 	requestID := generateRequestID()
 
-	acquired, err := s.cache.AcquireAccountSlot(ctx, accountID, maxConcurrency, requestID)
+	var acquired bool
+	var err error
+	if platformCache, ok := s.cache.(PlatformAccountSlotCache); ok && platform != "" {
+		acquired, err = platformCache.AcquireAccountSlotForPlatform(ctx, platform, accountID, maxConcurrency, requestID)
+	} else {
+		acquired, err = s.cache.AcquireAccountSlot(ctx, accountID, maxConcurrency, requestID)
+	}
 	if err != nil {
 		return nil, err
 	}
 
 	if acquired {
+		renewalKey := "account:" + strconv.FormatInt(accountID, 10) + ":" + requestID
+		if _, ok := s.cache.(ConcurrencySlotRefresher); ok {
+			s.registerSlotRenewal(renewalKey, "account", accountID, requestID)
+		}
 		return &AcquireResult{
 			Acquired: true,
 			ReleaseFunc: func() {
+				s.unregisterSlotRenewal(renewalKey)
 				retryConcurrencySlotRelease("account", accountID, requestID, func(ctx context.Context) error {
 					return s.cache.ReleaseAccountSlot(ctx, accountID, requestID)
 				})
@@ -379,11 +574,16 @@ func (s *ConcurrencyService) AcquireFirstAvailableAccountSlot(ctx context.Contex
 	if !acquired || accountID <= 0 {
 		return &AccountSlotArbitrationResult{Acquired: false}, nil
 	}
+	renewalKey := "account:" + strconv.FormatInt(accountID, 10) + ":" + requestID
+	if _, ok := s.cache.(ConcurrencySlotRefresher); ok {
+		s.registerSlotRenewal(renewalKey, "account", accountID, requestID)
+	}
 	return &AccountSlotArbitrationResult{
 		Acquired:  true,
 		AccountID: accountID,
 		RequestID: requestID,
 		ReleaseFunc: func() {
+			s.unregisterSlotRenewal(renewalKey)
 			retryConcurrencySlotRelease("arbitrated account", accountID, requestID, func(ctx context.Context) error {
 				return s.cache.ReleaseAccountSlot(ctx, accountID, requestID)
 			})
@@ -440,12 +640,20 @@ func (s *ConcurrencyService) AcquireFirstAvailableUserAccountSlots(
 	if !acquired || accountID <= 0 {
 		return &UserAccountSlotArbitrationResult{Acquired: false}, nil
 	}
+	userRenewalKey := "user:" + strconv.FormatInt(userID, 10) + ":" + userRequestID
+	accountRenewalKey := "account:" + strconv.FormatInt(accountID, 10) + ":" + accountRequestID
+	if _, ok := s.cache.(ConcurrencySlotRefresher); ok {
+		s.registerSlotRenewal(userRenewalKey, "user", userID, userRequestID)
+		s.registerSlotRenewal(accountRenewalKey, "account", accountID, accountRequestID)
+	}
 	releaseUser := func() {
+		s.unregisterSlotRenewal(userRenewalKey)
 		retryConcurrencySlotRelease("arbitrated user", userID, userRequestID, func(ctx context.Context) error {
 			return s.cache.ReleaseUserSlot(ctx, userID, userRequestID)
 		})
 	}
 	releaseAccount := func() {
+		s.unregisterSlotRenewal(accountRenewalKey)
 		retryConcurrencySlotRelease("arbitrated account", accountID, accountRequestID, func(ctx context.Context) error {
 			return s.cache.ReleaseAccountSlot(ctx, accountID, accountRequestID)
 		})
@@ -507,9 +715,14 @@ func (s *ConcurrencyService) AcquireUserSlot(ctx context.Context, userID int64, 
 	}
 
 	if acquired {
+		renewalKey := "user:" + strconv.FormatInt(userID, 10) + ":" + requestID
+		if _, ok := s.cache.(ConcurrencySlotRefresher); ok {
+			s.registerSlotRenewal(renewalKey, "user", userID, requestID)
+		}
 		return &AcquireResult{
 			Acquired: true,
 			ReleaseFunc: func() {
+				s.unregisterSlotRenewal(renewalKey)
 				retryConcurrencySlotRelease("user", userID, requestID, func(ctx context.Context) error {
 					return s.cache.ReleaseUserSlot(ctx, userID, requestID)
 				})
@@ -547,8 +760,13 @@ func (s *ConcurrencyService) TrackAPIKeySlot(ctx context.Context, apiKeyID int64
 		logger.LegacyPrintf("service.concurrency", "Warning: failed to track api key slot for %d (req=%s): %v", apiKeyID, requestID, err)
 		return func() {}
 	}
+	renewalKey := "api_key:" + strconv.FormatInt(apiKeyID, 10) + ":" + requestID
+	if _, ok := s.cache.(ConcurrencySlotRefresher); ok {
+		s.registerSlotRenewal(renewalKey, "api_key", apiKeyID, requestID)
+	}
 
 	return func() {
+		s.unregisterSlotRenewal(renewalKey)
 		retryConcurrencySlotRelease("api key", apiKeyID, requestID, func(ctx context.Context) error {
 			return cache.ReleaseAPIKeySlot(ctx, apiKeyID, requestID)
 		})
@@ -834,14 +1052,6 @@ func (s *ConcurrencyService) StartSlotCleanupWorker(_ AccountRepository, interva
 	}
 
 	runCleanup := func() {
-		if !s.staleProcessCleanupDone.Load() {
-			staleCtx, staleCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			staleErr := s.CleanupStaleProcessSlots(staleCtx)
-			staleCancel()
-			if staleErr != nil {
-				logger.LegacyPrintf("service.concurrency", "Warning: periodic cleanup stale process slots failed: %v", staleErr)
-			}
-		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := s.cache.CleanupExpiredAccountSlotKeys(cleanupCtx)
 		cancel()
@@ -856,8 +1066,13 @@ func (s *ConcurrencyService) StartSlotCleanupWorker(_ AccountRepository, interva
 		defer ticker.Stop()
 
 		runCleanup()
-		for range ticker.C {
-			runCleanup()
+		for {
+			select {
+			case <-ticker.C:
+				runCleanup()
+			case <-s.renewStop:
+				return
+			}
 		}
 	}()
 }

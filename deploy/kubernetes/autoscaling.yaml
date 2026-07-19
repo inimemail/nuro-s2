@@ -1,0 +1,69 @@
+# Requires Prometheus and KEDA. The metrics endpoints are read-only and do not
+# participate in the OpenAI/Anthropic request path.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sub2api-gateway
+spec:
+  scaleTargetRef:
+    name: sub2api-gateway
+  minReplicaCount: 2
+  # Hard node/cost ceiling. Raising it is an explicit capacity review, never
+  # an automatic reaction to an upstream outage.
+  maxReplicaCount: 200
+  pollingInterval: 15
+  cooldownPeriod: 600
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 120
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        # 30% warm headroom: target only 70% of the measured 20k stream limit.
+        query: max(sub2api_edge_active_streams{service="sub2api-gateway"}) / 20000
+        threshold: "0.70"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        query: max(sub2api_edge_relay_queue_depth{service="sub2api-gateway"}) / 128
+        threshold: "0.50"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        query: max(sub2api_edge_relay_queue_bytes{service="sub2api-gateway"}) / 67108864
+        threshold: "0.80"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        query: max(sub2api_go_active_requests{service="sub2api-gateway"}) / 4000
+        threshold: "0.70"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        query: rate(sub2api_go_requests_total{service="sub2api-gateway"}[30s]) / 3000
+        threshold: "0.70"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        query: max(rate(sub2api_go_gc_pause_seconds_total{service="sub2api-gateway"}[2m])) / 0.05
+        threshold: "1"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc:9090
+        # Redis claim latency is controllable gateway pressure. Upstream header
+        # or end-to-end TTFT metrics are deliberately excluded from autoscaling.
+        query: histogram_quantile(0.99, sum by (le) (rate(sub2api_admission_claim_duration_seconds_bucket{service="sub2api-gateway"}[2m]))) / 0.010
+        threshold: "1"

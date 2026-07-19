@@ -122,6 +122,12 @@ safe_remove_dir() {
     rm -rf -- "$resolved"
 }
 
+remove_dynamic_admission_cells() {
+    local ids
+    ids="$(docker ps -aq --filter "name=^/${COMPOSE_PROJECT_NAME}-admission-(openai|anthropic)-" 2>/dev/null || true)"
+    [[ -z "$ids" ]] || docker rm -f $ids >/dev/null 2>&1 || true
+}
+
 set_env_value() {
     local file="$1"
     local key="$2"
@@ -200,6 +206,7 @@ sync_project_source() {
             --exclude='./node_modules' \
             --exclude='./frontend/node_modules' \
             --exclude='./frontend/dist' \
+            --exclude='./edge-rs/target' \
             --exclude='./backend/data' \
             --exclude='./logs' \
             --exclude='./backups' \
@@ -288,6 +295,17 @@ ensure_edge_env_values() {
 
     touch "$env_file"
     ensure_env_value "$env_file" NURO_EDGE_ENABLED "$NURO_EDGE_ENABLED"
+    ensure_env_value "$env_file" AUTOSCALE_MIN_REPLICAS 2
+    ensure_env_value "$env_file" AUTOSCALE_MAX_REPLICAS 32
+    ensure_env_value "$env_file" AUTOSCALE_INTERVAL_SECONDS 15
+    ensure_env_value "$env_file" AUTOSCALE_TARGET_STREAMS_PER_PAIR 20000
+    ensure_env_value "$env_file" AUTOSCALE_TARGET_RPS_PER_PAIR 3000
+    ensure_env_value "$env_file" AUTOSCALE_TARGET_GO_ACTIVE_PER_PAIR 4000
+    ensure_env_value "$env_file" AUTOSCALE_TARGET_RELAY_WORKERS 256
+    ensure_env_value "$env_file" AUTOSCALE_MIN_CPU_PER_PAIR 4
+    ensure_env_value "$env_file" AUTOSCALE_MIN_MEMORY_MB_PER_PAIR 2048
+    ensure_env_value "$env_file" AUTOSCALE_SCALE_DOWN_SECONDS 600
+    ensure_env_value "$env_file" AUTOSCALE_DRAIN_SECONDS 1800
     if [[ "$(read_env_value "$env_file" NURO_EDGE_ENABLED)" != "true" ]]; then
         secret="$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET)"
         if [[ -z "$secret" ]]; then
@@ -320,9 +338,9 @@ ensure_edge_env_values() {
     set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET "$secret"
     set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_MODE relay
     set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED true
-    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR edge-rs:18080
-    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL http://app:8080
-    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL http://app:8080
+    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR 127.0.0.1:18080
+    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL http://127.0.0.1:8080
+    set_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL http://127.0.0.1:8080
     ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_RELAY_CHAT_COMPLETIONS true
     ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES true
     ensure_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES_WEBSOCKET true
@@ -338,17 +356,29 @@ ensure_edge_env_values() {
     set_env_value "$env_file" SUB2API_EDGE_GO_BASE_URL http://app:8080
     set_env_value "$env_file" SUB2API_EDGE_CONTROL_BASE_URL http://app:8080
     set_env_value "$env_file" SUB2API_EDGE_INTERNAL_SECRET "$secret"
-    ensure_env_value "$env_file" SUB2API_EDGE_NODE_ID nuro-edge-rs
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_NODE_ID nuro-edge-rs ""
     set_env_value "$env_file" SUB2API_EDGE_PREPARE_TIMEOUT_MS "$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_PREPARE_TIMEOUT_MS)"
     set_env_value "$env_file" SUB2API_EDGE_COMPLETE_TIMEOUT_MS "$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_COMPLETE_TIMEOUT_MS)"
-    ensure_env_value "$env_file" SUB2API_EDGE_INITIAL_POOL_SIZE 10000
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 20000 2000
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_INITIAL_POOL_SIZE 10000 512
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 20000 128
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 2000 128
+    ensure_env_value "$env_file" SUB2API_EDGE_QUEUE_MAX_BYTES 67108864
+    ensure_env_value "$env_file" SUB2API_EDGE_INGRESS_BODY_MAX_BYTES 1073741824
+    ensure_env_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 256
     upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 4 32
+    ensure_env_value "$env_file" SUB2API_EDGE_MAX_RELAY_DOMAINS 4096
+    ensure_env_value "$env_file" SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS 300
+    ensure_env_value "$env_file" SUB2API_EDGE_MAX_PROXY_CLIENTS 1024
+    ensure_env_value "$env_file" SUB2API_EDGE_PROXY_CLIENT_IDLE_SECS 300
     upgrade_env_default_value "$env_file" SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT 8 64
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT 16 64
     ensure_env_value "$env_file" SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS 150
     ensure_env_value "$env_file" SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH true
     ensure_env_value "$env_file" SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES 262144
     ensure_env_value "$env_file" SUB2API_EDGE_WS_IDLE_PER_KEY 1
+    ensure_env_value "$env_file" SUB2API_EDGE_MAX_WS_IDLE_KEYS 1024
+    ensure_env_value "$env_file" SUB2API_EDGE_WS_IDLE_TTL_SECS 300
+    ensure_env_value "$env_file" SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS 4096
     if [[ "$(read_env_value "$env_file" SUB2API_EDGE_UPSTREAM_WARM_URL)" == "https://api.openai.com/v1/chat/completions" ]]; then
         set_env_value "$env_file" SUB2API_EDGE_UPSTREAM_WARM_URL ""
     fi
@@ -380,6 +410,23 @@ ensure_scheduler_env_values() {
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_EVENT_BUS_ENABLED true
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_EVENT_BUS_BACKEND redis_stream
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_SLOT_CLEANUP_INTERVAL 10s
+
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_ENABLED true
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_NODE_ID ""
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_OPENAI_CELLS "openai-001=redis://admission-openai-001:6379/0"
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_ANTHROPIC_CELLS "anthropic-001=redis://admission-anthropic-001:6379/0"
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_ESCROW_ENABLED true
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_ESCROW_GRANT_SIZE 16
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_NODE_TTL_SECONDS 30
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_DEAD_NODE_GRACE_SECONDS 900
+	ensure_env_value "$env_file" ADMISSION_CELL_AUTOSCALE_ENABLED true
+	ensure_env_value "$env_file" ADMISSION_CELL_MAX_PER_PLATFORM 8
+	ensure_env_value "$env_file" ADMISSION_CELL_TARGET_OPS 50000
+	ensure_env_value "$env_file" ADMISSION_CELL_TARGET_MEMORY_MB 8192
+	ensure_env_value "$env_file" AUTOSCALE_UPSTREAM_ERROR_RATIO 0.20
+    ensure_env_value "$env_file" AUTOSCALE_FORCE_STOP_SECONDS 30
+	ensure_env_value "$env_file" SUB2API_STARTUP_JITTER_MAX_MS 30000
+	ensure_env_value "$env_file" SUB2API_EDGE_STARTUP_JITTER_MAX_MS 30000
 }
 
 generate_admin_password() {
@@ -417,14 +464,17 @@ TZ=Asia/Shanghai
 POSTGRES_USER=nuro_sub2api
 POSTGRES_DB=nuro_sub2api
 POSTGRES_PASSWORD=$(generate_secret)
+POSTGRES_MAX_CONNECTIONS=2000
 
 REDIS_PASSWORD=
 REDIS_DB=0
 REDIS_POOL_SIZE=1024
 REDIS_MIN_IDLE_CONNS=128
+REDIS_MAX_CLIENTS=100000
 REDIS_DIAL_TIMEOUT_SECONDS=1
 REDIS_READ_TIMEOUT_SECONDS=1
 REDIS_WRITE_TIMEOUT_SECONDS=1
+REDIS_IO_THREADS=8
 
 ADMIN_EMAIL=admin@nuro-sub2api.local
 ADMIN_PASSWORD=${ADMIN_PASS}
@@ -453,14 +503,25 @@ GATEWAY_OPENAI_HTTP2_FALLBACK_ERROR_THRESHOLD=2
 GATEWAY_OPENAI_HTTP2_FALLBACK_WINDOW_SECONDS=60
 GATEWAY_OPENAI_HTTP2_FALLBACK_TTL_SECONDS=600
 NURO_EDGE_ENABLED=true
+AUTOSCALE_MIN_REPLICAS=2
+AUTOSCALE_MAX_REPLICAS=32
+AUTOSCALE_INTERVAL_SECONDS=15
+AUTOSCALE_TARGET_STREAMS_PER_PAIR=20000
+AUTOSCALE_TARGET_RPS_PER_PAIR=3000
+AUTOSCALE_TARGET_GO_ACTIVE_PER_PAIR=4000
+AUTOSCALE_TARGET_RELAY_WORKERS=256
+AUTOSCALE_MIN_CPU_PER_PAIR=4
+AUTOSCALE_MIN_MEMORY_MB_PER_PAIR=2048
+AUTOSCALE_SCALE_DOWN_SECONDS=600
+AUTOSCALE_DRAIN_SECONDS=1800
 GATEWAY_OPENAI_EDGE_RS_ENABLED=true
 GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED=true
 GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET=$(generate_secret)
 GATEWAY_OPENAI_EDGE_RS_MODE=relay
 GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED=true
-GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR=edge-rs:18080
-GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL=http://app:8080
-GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL=http://app:8080
+GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR=127.0.0.1:18080
+GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL=http://127.0.0.1:8080
+GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL=http://127.0.0.1:8080
 GATEWAY_OPENAI_EDGE_RS_RELAY_CHAT_COMPLETIONS=true
 GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES=true
 GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES_WEBSOCKET=true
@@ -470,20 +531,31 @@ GATEWAY_OPENAI_EDGE_RS_COMPLETE_TIMEOUT_MS=1500
 GATEWAY_STREAM_LOW_LATENCY_MODE=smart
 GATEWAY_LOW_LATENCY_STREAM_HEADERS=true
 SUB2API_EDGE_LISTEN_ADDR=0.0.0.0:18080
-SUB2API_EDGE_GO_BASE_URL=http://app:8080
-SUB2API_EDGE_CONTROL_BASE_URL=http://app:8080
+SUB2API_EDGE_GO_BASE_URL=http://127.0.0.1:8080
+SUB2API_EDGE_CONTROL_BASE_URL=http://127.0.0.1:8080
 SUB2API_EDGE_INTERNAL_SECRET=
-SUB2API_EDGE_NODE_ID=nuro-edge-rs
+SUB2API_EDGE_NODE_ID=
 SUB2API_EDGE_PREPARE_TIMEOUT_MS=1500
 SUB2API_EDGE_COMPLETE_TIMEOUT_MS=1500
-SUB2API_EDGE_INITIAL_POOL_SIZE=10000
-SUB2API_EDGE_QUEUE_BUFFER_SIZE=2000
+SUB2API_EDGE_DRAIN_TIMEOUT_SECS=1800
+SUB2API_EDGE_INITIAL_POOL_SIZE=512
+SUB2API_EDGE_QUEUE_BUFFER_SIZE=128
+SUB2API_EDGE_QUEUE_MAX_BYTES=67108864
+SUB2API_EDGE_INGRESS_BODY_MAX_BYTES=1073741824
+SUB2API_EDGE_GLOBAL_WORKERS=256
 SUB2API_EDGE_PER_ACCOUNT_WORKERS=32
+SUB2API_EDGE_MAX_RELAY_DOMAINS=4096
+SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS=300
+SUB2API_EDGE_MAX_PROXY_CLIENTS=1024
+SUB2API_EDGE_PROXY_CLIENT_IDLE_SECS=300
 SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT=64
 SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=150
 SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH=true
 SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES=262144
 SUB2API_EDGE_WS_IDLE_PER_KEY=1
+SUB2API_EDGE_MAX_WS_IDLE_KEYS=1024
+SUB2API_EDGE_WS_IDLE_TTL_SECS=300
+SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS=4096
 SUB2API_EDGE_UPSTREAM_WARM_URL=
 SUB2API_EDGE_UPSTREAM_WARM_INTERVAL_SECS=30
 SUB2API_EDGE_UPSTREAM_DYNAMIC_WARM_ACTIVE_SECS=300
@@ -508,6 +580,22 @@ GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_MAX_KEYS=4096
 GATEWAY_SCHEDULING_EVENT_BUS_ENABLED=true
 GATEWAY_SCHEDULING_EVENT_BUS_BACKEND=redis_stream
 GATEWAY_SCHEDULING_SLOT_CLEANUP_INTERVAL=10s
+GATEWAY_ADMISSION_ENABLED=true
+GATEWAY_ADMISSION_NODE_ID=
+GATEWAY_ADMISSION_OPENAI_CELLS=openai-001=redis://admission-openai-001:6379/0
+GATEWAY_ADMISSION_ANTHROPIC_CELLS=anthropic-001=redis://admission-anthropic-001:6379/0
+GATEWAY_ADMISSION_ESCROW_ENABLED=true
+GATEWAY_ADMISSION_ESCROW_GRANT_SIZE=16
+GATEWAY_ADMISSION_NODE_TTL_SECONDS=30
+GATEWAY_ADMISSION_DEAD_NODE_GRACE_SECONDS=900
+ADMISSION_CELL_AUTOSCALE_ENABLED=true
+ADMISSION_CELL_MAX_PER_PLATFORM=8
+ADMISSION_CELL_TARGET_OPS=50000
+ADMISSION_CELL_TARGET_MEMORY_MB=8192
+AUTOSCALE_UPSTREAM_ERROR_RATIO=0.20
+AUTOSCALE_FORCE_STOP_SECONDS=30
+SUB2API_STARTUP_JITTER_MAX_MS=30000
+SUB2API_EDGE_STARTUP_JITTER_MAX_MS=30000
 EOF
 
     local edge_secret
@@ -517,68 +605,63 @@ EOF
     chmod 600 "${workdir}/.env"
 }
 
+create_haproxy_config() {
+    local workdir="$1"
+    cat > "${workdir}/haproxy.cfg" <<'EOF'
+global
+    maxconn 1000000
+    log stdout format raw local0
+
+defaults
+    mode http
+    log global
+    option httplog
+    option dontlognull
+    timeout connect 3s
+    timeout client 1800s
+    timeout server 1800s
+    timeout tunnel 3600s
+
+resolvers docker
+    nameserver dns 127.0.0.11:53
+    resolve_retries 3
+    timeout resolve 1s
+    timeout retry 1s
+    hold valid 5s
+
+frontend public_api
+    bind *:8080
+    acl private_runtime path -i /metrics
+    acl private_runtime path_beg -i /internal/
+    http-request deny deny_status 404 if private_runtime
+    acl openai_edge path -i /v1/chat/completions /v1/responses
+    use_backend edge_pool if openai_edge
+    default_backend go_pool
+
+backend edge_pool
+    balance leastconn
+    option httpchk GET /readyz
+    http-check expect status 200
+    server-template edge 1-128 app:18080 check resolvers docker resolve-opts allow-dup-ip init-addr libc,none
+
+backend go_pool
+    balance leastconn
+    option httpchk GET /readyz
+    http-check expect status 200
+    server-template go 1-128 app:8080 check resolvers docker resolve-opts allow-dup-ip init-addr libc,none
+
+frontend stats
+    bind *:8404
+    http-request use-service prometheus-exporter if { path /metrics }
+    stats enable
+    stats uri /stats
+EOF
+}
+
 create_compose_file() {
     local workdir="$1"
-    local edge_enabled
-    local edge_depends=""
-    local edge_service=""
 
-    edge_enabled="$(read_env_value "${workdir}/.env" NURO_EDGE_ENABLED)"
-    edge_enabled="${edge_enabled:-true}"
-    if [[ "$edge_enabled" == "true" ]]; then
-        edge_depends='
-      edge-rs:
-        condition: service_healthy'
-        edge_service="
-
-  edge-rs:
-    build:
-      context: ./${SOURCE_DIR_NAME}/edge-rs
-      dockerfile: Dockerfile
-    image: ${EDGE_IMAGE_NAME}
-    container_name: ${EDGE_CONTAINER}
-    restart: unless-stopped
-    ulimits:
-      nofile:
-        soft: 100000
-        hard: 100000
-    environment:
-      - TZ=\${TZ:-Asia/Shanghai}
-      - RUST_LOG=\${RUST_LOG:-warn}
-      - SUB2API_EDGE_LISTEN_ADDR=\${SUB2API_EDGE_LISTEN_ADDR:-0.0.0.0:18080}
-      - SUB2API_EDGE_GO_BASE_URL=\${SUB2API_EDGE_GO_BASE_URL:-http://app:8080}
-      - SUB2API_EDGE_CONTROL_BASE_URL=\${SUB2API_EDGE_CONTROL_BASE_URL:-http://app:8080}
-      - SUB2API_EDGE_INTERNAL_SECRET=\${SUB2API_EDGE_INTERNAL_SECRET:?SUB2API_EDGE_INTERNAL_SECRET is required}
-      - SUB2API_EDGE_NODE_ID=\${SUB2API_EDGE_NODE_ID:-nuro-edge-rs}
-      - SUB2API_EDGE_PREPARE_TIMEOUT_MS=\${SUB2API_EDGE_PREPARE_TIMEOUT_MS:-1500}
-      - SUB2API_EDGE_COMPLETE_TIMEOUT_MS=\${SUB2API_EDGE_COMPLETE_TIMEOUT_MS:-1500}
-      - SUB2API_EDGE_INITIAL_POOL_SIZE=\${SUB2API_EDGE_INITIAL_POOL_SIZE:-10000}
-      - SUB2API_EDGE_QUEUE_BUFFER_SIZE=\${SUB2API_EDGE_QUEUE_BUFFER_SIZE:-2000}
-      - SUB2API_EDGE_PER_ACCOUNT_WORKERS=\${SUB2API_EDGE_PER_ACCOUNT_WORKERS:-32}
-      - SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT=\${SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT:-64}
-      - SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=\${SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS:-150}
-      - SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH=\${SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH:-true}
-      - SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES=\${SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES:-262144}
-      - SUB2API_EDGE_WS_IDLE_PER_KEY=\${SUB2API_EDGE_WS_IDLE_PER_KEY:-1}
-      - SUB2API_EDGE_UPSTREAM_WARM_URL=\${SUB2API_EDGE_UPSTREAM_WARM_URL:-}
-      - SUB2API_EDGE_UPSTREAM_WARM_INTERVAL_SECS=\${SUB2API_EDGE_UPSTREAM_WARM_INTERVAL_SECS:-30}
-      - SUB2API_EDGE_UPSTREAM_DYNAMIC_WARM_ACTIVE_SECS=\${SUB2API_EDGE_UPSTREAM_DYNAMIC_WARM_ACTIVE_SECS:-300}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      nuro-sub2api-network:
-        aliases:
-          - edge-rs
-    healthcheck:
-      test: [\"CMD\", \"wget\", \"-q\", \"-T\", \"5\", \"-O\", \"/dev/null\", \"http://localhost:18080/healthz\"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 10s"
-    fi
+    create_haproxy_config "$workdir"
 
     cat > "${workdir}/docker-compose.yml" <<EOF
 name: ${COMPOSE_PROJECT_NAME}
@@ -589,14 +672,16 @@ services:
       context: ./${SOURCE_DIR_NAME}
       dockerfile: Dockerfile
     image: ${IMAGE_NAME}
-    container_name: ${APP_CONTAINER}
     restart: unless-stopped
+    stop_grace_period: 30m
+    command: ["/app/paired-entrypoint.sh"]
     ulimits:
       nofile:
         soft: 100000
         hard: 100000
-    ports:
-      - "\${BIND_HOST:-0.0.0.0}:\${SERVER_PORT:-6182}:8080"
+    expose:
+      - "8080"
+      - "18080"
     volumes:
       - ./data:/app/data:Z
     environment:
@@ -631,6 +716,8 @@ services:
       - JWT_EXPIRE_HOUR=\${JWT_EXPIRE_HOUR:-24}
       - TOTP_ENCRYPTION_KEY=\${TOTP_ENCRYPTION_KEY:-}
       - TZ=\${TZ:-Asia/Shanghai}
+      - SUB2API_STARTUP_JITTER_MAX_MS=\${SUB2API_STARTUP_JITTER_MAX_MS:-30000}
+      - SUB2API_EDGE_STARTUP_JITTER_MAX_MS=\${SUB2API_EDGE_STARTUP_JITTER_MAX_MS:-30000}
       - GEMINI_OAUTH_CLIENT_ID=\${GEMINI_OAUTH_CLIENT_ID:-}
       - GEMINI_OAUTH_CLIENT_SECRET=\${GEMINI_OAUTH_CLIENT_SECRET:-}
       - GEMINI_OAUTH_SCOPES=\${GEMINI_OAUTH_SCOPES:-}
@@ -654,9 +741,9 @@ services:
       - GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET=\${GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET:?GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET is required}
       - GATEWAY_OPENAI_EDGE_RS_MODE=\${GATEWAY_OPENAI_EDGE_RS_MODE:-relay}
       - GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED=\${GATEWAY_OPENAI_EDGE_RS_INGRESS_PROXY_ENABLED:-true}
-      - GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR=\${GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR:-edge-rs:18080}
-      - GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL=\${GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL:-http://app:8080}
-      - GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL=\${GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL:-http://app:8080}
+      - GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR=\${GATEWAY_OPENAI_EDGE_RS_LISTEN_ADDR:-127.0.0.1:18080}
+      - GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL=\${GATEWAY_OPENAI_EDGE_RS_GO_BASE_URL:-http://127.0.0.1:8080}
+      - GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL=\${GATEWAY_OPENAI_EDGE_RS_CONTROL_BASE_URL:-http://127.0.0.1:8080}
       - GATEWAY_OPENAI_EDGE_RS_RELAY_CHAT_COMPLETIONS=\${GATEWAY_OPENAI_EDGE_RS_RELAY_CHAT_COMPLETIONS:-true}
       - GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES=\${GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES:-true}
       - GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES_WEBSOCKET=\${GATEWAY_OPENAI_EDGE_RS_RELAY_RESPONSES_WEBSOCKET:-true}
@@ -677,6 +764,33 @@ services:
       - GATEWAY_SCHEDULING_CELL_ID=\${GATEWAY_SCHEDULING_CELL_ID:-cell-1}
       - GATEWAY_SCHEDULING_CELL_IDS=\${GATEWAY_SCHEDULING_CELL_IDS:-cell-1}
       - GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_ENABLED=\${GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_ENABLED:-true}
+      - RUST_LOG=\${RUST_LOG:-warn}
+      - SUB2API_EDGE_LISTEN_ADDR=0.0.0.0:18080
+      - SUB2API_EDGE_GO_BASE_URL=http://127.0.0.1:8080
+      - SUB2API_EDGE_CONTROL_BASE_URL=http://127.0.0.1:8080
+      - SUB2API_EDGE_INTERNAL_SECRET=\${SUB2API_EDGE_INTERNAL_SECRET:?SUB2API_EDGE_INTERNAL_SECRET is required}
+      - SUB2API_EDGE_NODE_ID=
+      - SUB2API_EDGE_PREPARE_TIMEOUT_MS=\${SUB2API_EDGE_PREPARE_TIMEOUT_MS:-1500}
+      - SUB2API_EDGE_COMPLETE_TIMEOUT_MS=\${SUB2API_EDGE_COMPLETE_TIMEOUT_MS:-1500}
+      - SUB2API_EDGE_DRAIN_TIMEOUT_SECS=\${SUB2API_EDGE_DRAIN_TIMEOUT_SECS:-1800}
+      - SUB2API_EDGE_INITIAL_POOL_SIZE=\${SUB2API_EDGE_INITIAL_POOL_SIZE:-512}
+      - SUB2API_EDGE_QUEUE_BUFFER_SIZE=\${SUB2API_EDGE_QUEUE_BUFFER_SIZE:-128}
+      - SUB2API_EDGE_QUEUE_MAX_BYTES=\${SUB2API_EDGE_QUEUE_MAX_BYTES:-67108864}
+      - SUB2API_EDGE_INGRESS_BODY_MAX_BYTES=\${SUB2API_EDGE_INGRESS_BODY_MAX_BYTES:-1073741824}
+      - SUB2API_EDGE_GLOBAL_WORKERS=\${SUB2API_EDGE_GLOBAL_WORKERS:-256}
+      - SUB2API_EDGE_PER_ACCOUNT_WORKERS=\${SUB2API_EDGE_PER_ACCOUNT_WORKERS:-32}
+      - SUB2API_EDGE_MAX_RELAY_DOMAINS=\${SUB2API_EDGE_MAX_RELAY_DOMAINS:-4096}
+      - SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS=\${SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS:-300}
+      - SUB2API_EDGE_MAX_PROXY_CLIENTS=\${SUB2API_EDGE_MAX_PROXY_CLIENTS:-1024}
+      - SUB2API_EDGE_PROXY_CLIENT_IDLE_SECS=\${SUB2API_EDGE_PROXY_CLIENT_IDLE_SECS:-300}
+      - SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT=\${SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT:-64}
+      - SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=\${SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS:-150}
+      - SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH=\${SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH:-true}
+      - SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES=\${SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES:-262144}
+      - SUB2API_EDGE_WS_IDLE_PER_KEY=\${SUB2API_EDGE_WS_IDLE_PER_KEY:-1}
+      - SUB2API_EDGE_MAX_WS_IDLE_KEYS=\${SUB2API_EDGE_MAX_WS_IDLE_KEYS:-1024}
+      - SUB2API_EDGE_WS_IDLE_TTL_SECS=\${SUB2API_EDGE_WS_IDLE_TTL_SECS:-300}
+      - SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS=\${SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS:-4096}
       - GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_MAX_CANDIDATES=\${GATEWAY_SCHEDULING_CANDIDATE_SLOT_ARBITER_MAX_CANDIDATES:-16}
       - GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_ENABLED=\${GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_ENABLED:-true}
       - GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_TTL_MS=\${GATEWAY_SCHEDULING_LOCAL_SNAPSHOT_TTL_MS:-500}
@@ -684,12 +798,23 @@ services:
       - GATEWAY_SCHEDULING_EVENT_BUS_ENABLED=\${GATEWAY_SCHEDULING_EVENT_BUS_ENABLED:-true}
       - GATEWAY_SCHEDULING_EVENT_BUS_BACKEND=\${GATEWAY_SCHEDULING_EVENT_BUS_BACKEND:-redis_stream}
       - GATEWAY_SCHEDULING_SLOT_CLEANUP_INTERVAL=\${GATEWAY_SCHEDULING_SLOT_CLEANUP_INTERVAL:-10s}
+      - GATEWAY_ADMISSION_ENABLED=\${GATEWAY_ADMISSION_ENABLED:-true}
+      - GATEWAY_ADMISSION_NODE_ID=\${GATEWAY_ADMISSION_NODE_ID:-}
+      - GATEWAY_ADMISSION_OPENAI_CELLS=\${GATEWAY_ADMISSION_OPENAI_CELLS:-openai-001=redis://admission-openai-001:6379/0}
+      - GATEWAY_ADMISSION_ANTHROPIC_CELLS=\${GATEWAY_ADMISSION_ANTHROPIC_CELLS:-anthropic-001=redis://admission-anthropic-001:6379/0}
+      - GATEWAY_ADMISSION_ESCROW_ENABLED=\${GATEWAY_ADMISSION_ESCROW_ENABLED:-true}
+      - GATEWAY_ADMISSION_ESCROW_GRANT_SIZE=\${GATEWAY_ADMISSION_ESCROW_GRANT_SIZE:-16}
+      - GATEWAY_ADMISSION_NODE_TTL_SECONDS=\${GATEWAY_ADMISSION_NODE_TTL_SECONDS:-30}
+      - GATEWAY_ADMISSION_DEAD_NODE_GRACE_SECONDS=\${GATEWAY_ADMISSION_DEAD_NODE_GRACE_SECONDS:-900}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-${edge_depends}
+      admission-openai-001:
+        condition: service_healthy
+      admission-anthropic-001:
+        condition: service_healthy
     networks:
       - nuro-sub2api-network
     healthcheck:
@@ -698,12 +823,134 @@ ${edge_depends}
       timeout: 10s
       retries: 3
       start_period: 30s
-${edge_service}
+
+  haproxy:
+    image: haproxy:3.1-alpine
+    container_name: nuro-sub2api-haproxy
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 1000000
+        hard: 1000000
+    ports:
+      - "\${BIND_HOST:-0.0.0.0}:\${SERVER_PORT:-6182}:8080"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - nuro-sub2api-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8404/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  autoscaler:
+    image: docker:27-cli
+    container_name: nuro-sub2api-autoscaler
+    restart: unless-stopped
+    working_dir: /workspace
+    command: ["/bin/sh", "/autoscaler.sh"]
+    environment:
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
+      - AUTOSCALE_MIN_REPLICAS=\${AUTOSCALE_MIN_REPLICAS:-2}
+      - AUTOSCALE_MAX_REPLICAS=\${AUTOSCALE_MAX_REPLICAS:-32}
+      - AUTOSCALE_MIN_CPU_PER_PAIR=\${AUTOSCALE_MIN_CPU_PER_PAIR:-4}
+      - AUTOSCALE_MIN_MEMORY_MB_PER_PAIR=\${AUTOSCALE_MIN_MEMORY_MB_PER_PAIR:-2048}
+      - AUTOSCALE_INTERVAL_SECONDS=\${AUTOSCALE_INTERVAL_SECONDS:-15}
+      - AUTOSCALE_TARGET_STREAMS_PER_PAIR=\${AUTOSCALE_TARGET_STREAMS_PER_PAIR:-20000}
+      - AUTOSCALE_TARGET_RPS_PER_PAIR=\${AUTOSCALE_TARGET_RPS_PER_PAIR:-3000}
+      - AUTOSCALE_TARGET_GO_ACTIVE_PER_PAIR=\${AUTOSCALE_TARGET_GO_ACTIVE_PER_PAIR:-4000}
+      - AUTOSCALE_TARGET_RELAY_WORKERS=\${AUTOSCALE_TARGET_RELAY_WORKERS:-256}
+      - AUTOSCALE_SCALE_DOWN_SECONDS=\${AUTOSCALE_SCALE_DOWN_SECONDS:-600}
+      - AUTOSCALE_DRAIN_SECONDS=\${AUTOSCALE_DRAIN_SECONDS:-1800}
+      - AUTOSCALE_FORCE_STOP_SECONDS=\${AUTOSCALE_FORCE_STOP_SECONDS:-30}
+      - AUTOSCALE_UPSTREAM_ERROR_RATIO=\${AUTOSCALE_UPSTREAM_ERROR_RATIO:-0.20}
+      - REDIS_PASSWORD=\${REDIS_PASSWORD:-}
+      - ADMISSION_CELL_AUTOSCALE_ENABLED=\${ADMISSION_CELL_AUTOSCALE_ENABLED:-true}
+      - ADMISSION_CELL_MAX_PER_PLATFORM=\${ADMISSION_CELL_MAX_PER_PLATFORM:-8}
+      - ADMISSION_CELL_TARGET_OPS=\${ADMISSION_CELL_TARGET_OPS:-50000}
+      - ADMISSION_CELL_TARGET_MEMORY_MB=\${ADMISSION_CELL_TARGET_MEMORY_MB:-8192}
+      - ADMISSION_CELL_IO_THREADS=\${REDIS_IO_THREADS:-8}
+      - ADMISSION_CELL_MAX_CLIENTS=\${REDIS_MAX_CLIENTS:-100000}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace
+      - ./${SOURCE_DIR_NAME}/deploy/single-host-autoscaler.sh:/autoscaler.sh:ro
+      - autoscaler_state:/state
+    depends_on:
+      haproxy:
+        condition: service_healthy
+    networks:
+      - nuro-sub2api-network
+
+  admission-openai-001:
+    image: redis:8-alpine
+    container_name: nuro-sub2api-admission-openai-001
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    command: >
+      sh -c '
+        redis-server --save "300 10" --appendonly yes --appendfsync everysec
+        --maxmemory \${ADMISSION_CELL_TARGET_MEMORY_MB:-8192}mb
+        --maxmemory-policy noeviction --tcp-backlog 8192 --timeout 0 --hz 20
+        --maxclients \${REDIS_MAX_CLIENTS:-100000}
+        --io-threads \${REDIS_IO_THREADS:-8} --io-threads-do-reads yes
+        \${REDIS_PASSWORD:+--requirepass "\$REDIS_PASSWORD"}'
+    environment:
+      - REDIS_PASSWORD=\${REDIS_PASSWORD:-}
+      - REDIS_IO_THREADS=\${REDIS_IO_THREADS:-8}
+      - REDISCLI_AUTH=\${REDIS_PASSWORD:-}
+    volumes:
+      - ./admission_openai_001_data:/data:Z
+    networks:
+      - nuro-sub2api-network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  admission-anthropic-001:
+    image: redis:8-alpine
+    container_name: nuro-sub2api-admission-anthropic-001
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    command: >
+      sh -c '
+        redis-server --save "300 10" --appendonly yes --appendfsync everysec
+        --maxmemory \${ADMISSION_CELL_TARGET_MEMORY_MB:-8192}mb
+        --maxmemory-policy noeviction --tcp-backlog 8192 --timeout 0 --hz 20
+        --maxclients \${REDIS_MAX_CLIENTS:-100000}
+        --io-threads \${REDIS_IO_THREADS:-8} --io-threads-do-reads yes
+        \${REDIS_PASSWORD:+--requirepass "\$REDIS_PASSWORD"}'
+    environment:
+      - REDIS_PASSWORD=\${REDIS_PASSWORD:-}
+      - REDIS_IO_THREADS=\${REDIS_IO_THREADS:-8}
+      - REDISCLI_AUTH=\${REDIS_PASSWORD:-}
+    volumes:
+      - ./admission_anthropic_001_data:/data:Z
+    networks:
+      - nuro-sub2api-network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   postgres:
     image: postgres:18-alpine
     container_name: ${POSTGRES_CONTAINER}
     restart: unless-stopped
+    command: ["postgres", "-c", "max_connections=\${POSTGRES_MAX_CONNECTIONS:-2000}"]
     ulimits:
       nofile:
         soft: 100000
@@ -738,12 +985,16 @@ ${edge_service}
     command: >
         sh -c '
           redis-server
-          --save ""
-          --appendonly no
+          --save "300 10"
+          --appendonly yes
+          --appendfsync everysec
           --maxmemory-policy noeviction
+          --maxclients \${REDIS_MAX_CLIENTS:-100000}
           --tcp-backlog 8192
           --timeout 0
           --hz 20
+          --io-threads \${REDIS_IO_THREADS:-8}
+          --io-threads-do-reads yes
           \${REDIS_PASSWORD:+--requirepass "\$REDIS_PASSWORD"}'
     environment:
       - TZ=\${TZ:-Asia/Shanghai}
@@ -760,52 +1011,22 @@ ${edge_service}
 networks:
   nuro-sub2api-network:
     driver: bridge
+
+volumes:
+  autoscaler_state:
 EOF
 }
 
 compose_build_with_edge_fallback() {
     local workdir="$1"
     local dc_cmd="$2"
-    local env_file="${workdir}/.env"
-
-    if $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build; then
-        return 0
-    fi
-
-    if [[ "$(read_env_value "$env_file" NURO_EDGE_ENABLED)" == "true" ]]; then
-        warn "包含 Rust edge 的镜像构建失败，自动关闭 edge 后重试，避免影响主服务升级。"
-        set_env_value "$env_file" NURO_EDGE_ENABLED false
-        set_env_value "$env_file" NURO_EDGE_AUTO_DISABLED true
-        ensure_edge_env_values "$env_file"
-        create_compose_file "$workdir"
-        $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build
-        return $?
-    fi
-
-    return 1
+    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build
 }
 
 compose_up_with_edge_fallback() {
     local workdir="$1"
     local dc_cmd="$2"
-    local env_file="${workdir}/.env"
-
-    if $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans; then
-        return 0
-    fi
-
-    if [[ "$(read_env_value "$env_file" NURO_EDGE_ENABLED)" == "true" ]]; then
-        warn "Rust edge 启动或健康检查失败，自动关闭 edge 后重试启动主服务。"
-        docker logs --tail=120 "$EDGE_CONTAINER" 2>/dev/null || true
-        set_env_value "$env_file" NURO_EDGE_ENABLED false
-        set_env_value "$env_file" NURO_EDGE_AUTO_DISABLED true
-        ensure_edge_env_values "$env_file"
-        create_compose_file "$workdir"
-        $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans
-        return $?
-    fi
-
-    return 1
+    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans
 }
 
 show_access() {
@@ -826,24 +1047,27 @@ show_access() {
     echo "管理员密码: ${admin_password:-请查看 .env 或容器日志}"
     echo "部署目录:   ${workdir}"
     echo "环境文件:   ${workdir}/.env"
-    echo "容器名称:   ${APP_CONTAINER}, ${POSTGRES_CONTAINER}, ${REDIS_CONTAINER}"
+    echo "容器拓扑:   app 成对副本 + HAProxy + autoscaler + PostgreSQL + 主 Redis + OpenAI/Anthropic Admission Cells"
     echo "端口映射:   ${host_port} -> 8080"
     echo "=================================================="
     echo ""
 }
 
 wait_app_ready() {
+    local app_log_container
     info "正在等待 ${APP_NAME} 启动 ..."
     for _ in $(seq 1 60); do
-        if docker ps --format '{{.Names}} {{.Status}}' | grep -q "^${APP_CONTAINER} .*Up"; then
-            info "${APP_NAME} 容器已运行。"
+        if docker ps --format '{{.Names}} {{.Status}}' | grep -q '^nuro-sub2api-haproxy .*Up'; then
+            info "${APP_NAME} HAProxy 和成对副本已运行。"
             return 0
         fi
         sleep 2
     done
 
     warn "${APP_NAME} 可能未正常启动，最近日志如下："
-    docker logs --tail=120 "$APP_CONTAINER" 2>/dev/null || true
+    docker logs --tail=120 nuro-sub2api-haproxy 2>/dev/null || true
+    app_log_container="$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" --filter 'label=com.docker.compose.service=app' --format '{{.ID}}' | head -n 1)"
+    [[ -z "$app_log_container" ]] || docker logs --tail=120 "$app_log_container" 2>/dev/null || true
     return 1
 }
 
@@ -1100,6 +1324,7 @@ restore_backup() {
         [[ ! "$confirm" =~ ^[Yy]$ ]] && { rm -rf "$tmp_extract"; rm -f "$safe_backup"; return; }
         cd "$target" 2>/dev/null && $(docker_compose_cmd) -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml down 2>/dev/null || true
         docker rm -f "$APP_CONTAINER" "$EDGE_CONTAINER" "$POSTGRES_CONTAINER" "$REDIS_CONTAINER" 2>/dev/null || true
+		remove_dynamic_admission_cells
         safe_remove_dir "$target" || { rm -rf "$tmp_extract"; rm -f "$safe_backup"; return; }
     fi
 
@@ -1263,6 +1488,7 @@ uninstall_service() {
     fi
 
     docker rm -f "$APP_CONTAINER" "$EDGE_CONTAINER" "$POSTGRES_CONTAINER" "$REDIS_CONTAINER" 2>/dev/null || true
+	remove_dynamic_admission_cells
     safe_remove_dir "$workdir" || return
     rm -f "$ENV_RECORD_FILE"
     crontab -l 2>/dev/null | sed "/^${CRON_TAG_BEGIN}$/,/^${CRON_TAG_END}$/d" | crontab - 2>/dev/null || true

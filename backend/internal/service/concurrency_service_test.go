@@ -136,6 +136,24 @@ type arbitrationConcurrencyCacheForTest struct {
 	userMaxConcurrency    int
 }
 
+type ttlRefreshConcurrencyCache struct{ stubConcurrencyCacheForTest }
+
+func (c *ttlRefreshConcurrencyCache) RefreshSlot(context.Context, string, int64, string) error {
+	return nil
+}
+
+func (c *ttlRefreshConcurrencyCache) SlotTTL() time.Duration { return time.Minute }
+
+func TestConcurrencyRenewalIntervalTracksSlotTTL(t *testing.T) {
+	svc := NewConcurrencyService(&ttlRefreshConcurrencyCache{})
+	defer svc.StopBackgroundWorkers()
+	require.Equal(t, 20*time.Second, svc.renewInterval)
+	require.NotPanics(t, func() {
+		svc.StopBackgroundWorkers()
+		svc.StopBackgroundWorkers()
+	})
+}
+
 func (c *arbitrationConcurrencyCacheForTest) AcquireFirstAvailableAccountSlot(_ context.Context, candidates []AccountSlotCandidate, requestID string) (int64, bool, error) {
 	c.candidates = append([]AccountSlotCandidate(nil), candidates...)
 	c.requestID = requestID

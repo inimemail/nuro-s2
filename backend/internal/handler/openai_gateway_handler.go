@@ -1746,8 +1746,9 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 		return openAIAccountSlotAcquireResult{Err: errors.New("no account wait plan")}
 	}
 
-	fastReleaseFunc, fastAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(
+	fastReleaseFunc, fastAcquired, err := h.concurrencyHelper.TryAcquireAccountSlotForPlatform(
 		ctx,
+		account.Platform,
 		account.ID,
 		selection.WaitPlan.MaxConcurrency,
 	)
@@ -1801,6 +1802,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 		selection.WaitPlan.Timeout,
 		reqStream,
 		streamStarted,
+		account.Platform,
 	)
 	service.SetOpsLatencyMsOnce(c, service.OpsSlotWaitMsKey, time.Since(slotWaitStart).Milliseconds())
 	if err != nil {
@@ -2159,8 +2161,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "account is busy, please retry later")
 				return
 			}
-			fastReleaseFunc, fastAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(
+			fastReleaseFunc, fastAcquired, err := h.concurrencyHelper.TryAcquireAccountSlotForPlatform(
 				ctx,
+				account.Platform,
 				account.ID,
 				selection.WaitPlan.MaxConcurrency,
 			)
@@ -2275,7 +2278,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					}
 					return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "too many concurrent requests, please retry later", nil)
 				}
-				accountReleaseFunc, accountAcquired, err := h.concurrencyHelper.TryAcquireAccountSlot(ctx, account.ID, accountMaxConcurrency)
+				accountReleaseFunc, accountAcquired, err := h.concurrencyHelper.TryAcquireAccountSlotForPlatform(ctx, account.Platform, account.ID, accountMaxConcurrency)
 				if err != nil {
 					if userReleaseFunc != nil {
 						userReleaseFunc()

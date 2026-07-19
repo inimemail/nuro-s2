@@ -8,6 +8,7 @@
 
 ARG NODE_IMAGE=node:24-alpine
 ARG GOLANG_IMAGE=golang:1.26.5-alpine
+ARG RUST_IMAGE=rust:1.90-alpine
 ARG ALPINE_IMAGE=alpine:3.21
 ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GOPROXY=https://goproxy.cn,direct
@@ -74,12 +75,23 @@ RUN VERSION_VALUE="${VERSION}" && \
     ./cmd/server
 
 # -----------------------------------------------------------------------------
-# Stage 3: PostgreSQL Client (version-matched with docker-compose)
+# Stage 3: Edge Builder (paired with the Go process in the final image)
+# -----------------------------------------------------------------------------
+FROM ${RUST_IMAGE} AS edge-builder
+
+RUN apk add --no-cache build-base pkgconfig perl
+WORKDIR /app/edge-rs
+COPY edge-rs/Cargo.toml edge-rs/Cargo.lock ./
+COPY edge-rs/src ./src
+RUN cargo build --release --locked
+
+# -----------------------------------------------------------------------------
+# Stage 4: PostgreSQL Client (version-matched with docker-compose)
 # -----------------------------------------------------------------------------
 FROM ${POSTGRES_IMAGE} AS pg-client
 
 # -----------------------------------------------------------------------------
-# Stage 4: Final Runtime Image
+# Stage 5: Final Runtime Image
 # -----------------------------------------------------------------------------
 FROM ${ALPINE_IMAGE}
 
@@ -116,6 +128,7 @@ WORKDIR /app
 
 # Copy binary/resources with ownership to avoid extra full-layer chown copy
 COPY --from=backend-builder --chown=sub2api:sub2api /app/sub2api /app/sub2api
+COPY --from=edge-builder --chown=sub2api:sub2api /app/edge-rs/target/release/sub2api-edge-rs /app/sub2api-edge-rs
 COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/resources
 
 # Create data directory
@@ -123,10 +136,11 @@ RUN mkdir -p /app/data && chown sub2api:sub2api /app/data
 
 # Copy entrypoint script (fixes volume permissions then drops to sub2api)
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+COPY deploy/paired-entrypoint.sh /app/paired-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh /app/paired-entrypoint.sh
 
 # Expose port (can be overridden by SERVER_PORT env var)
-EXPOSE 8080
+EXPOSE 8080 18080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \

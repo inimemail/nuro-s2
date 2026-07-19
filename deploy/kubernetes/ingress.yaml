@@ -1,0 +1,36 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sub2api-gateway
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "1800"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "1800"
+spec:
+  rules:
+    - host: api.sub2api.com
+      http:
+        paths:
+          - path: /v1/chat/completions
+            pathType: Exact
+            backend:
+              service:
+                name: sub2api-gateway
+                port:
+                  name: edge-http
+          - path: /v1/responses
+            pathType: Exact
+            backend:
+              service:
+                name: sub2api-gateway
+                port:
+                  name: edge-http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sub2api-gateway
+                port:
+                  name: go-http

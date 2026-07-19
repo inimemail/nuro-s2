@@ -1,7 +1,6 @@
 package service
 
 import (
-	"hash/fnv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -41,18 +40,23 @@ func (r *SchedulerCellRouter) Enabled() bool {
 }
 
 func (r *SchedulerCellRouter) OwnsBucket(bucket SchedulerBucket) bool {
-	if !r.Enabled() {
-		return true
-	}
-	return r.cellForBucket(bucket) == r.cellID
+	// Deprecated compatibility method. Cells never own scheduler buckets: the
+	// global snapshot must remain visible to every scheduler instance.
+	return true
 }
 
 func (r *SchedulerCellRouter) cellForBucket(bucket SchedulerBucket) string {
-	if !r.Enabled() {
+	// Kept for source compatibility with older integrations. Account Cell
+	// ownership is now resolved by AccountCellDirectory, never by bucket hash.
+	if !r.Enabled() || len(r.cells) == 0 {
 		return ""
 	}
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(bucket.String()))
-	idx := int(h.Sum64() % uint64(len(r.cells)))
-	return r.cells[idx]
+	return r.cellID
+}
+
+func (r *SchedulerCellRouter) Cells() []string {
+	if r == nil {
+		return nil
+	}
+	return append([]string(nil), r.cells...)
 }

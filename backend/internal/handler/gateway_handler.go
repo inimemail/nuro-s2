@@ -505,6 +505,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					selection.WaitPlan.Timeout,
 					reqStream,
 					&streamStarted,
+					account.Platform,
 				)
 				if err != nil {
 					if retryAccountID > 0 {
@@ -826,6 +827,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					selection.WaitPlan.Timeout,
 					reqStream,
 					&streamStarted,
+					account.Platform,
 				)
 				if err != nil {
 					if retryAccountID > 0 {

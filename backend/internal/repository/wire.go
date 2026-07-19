@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
@@ -23,7 +24,15 @@ func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config) service.Conc
 	if waitTTLSeconds <= 0 {
 		waitTTLSeconds = cfg.Gateway.ConcurrencySlotTTLMinutes * 60
 	}
-	return NewConcurrencyCache(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
+	legacy := NewConcurrencyCache(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds).(*concurrencyCache)
+	cache, err := newCellAwareConcurrencyCache(rdb, cfg, legacy)
+	if err != nil {
+		// Admission configuration errors must fail startup. Silently falling back
+		// to the shared Redis could double-admit accounts already assigned to a
+		// Cell.
+		panic(fmt.Sprintf("initialize distributed admission: %v", err))
+	}
+	return cache
 }
 
 // ProvideGitHubReleaseClient 创建 GitHub Release 客户端

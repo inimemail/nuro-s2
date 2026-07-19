@@ -324,7 +324,7 @@ func (s *OpenAIGatewayService) SelectBoundGrokMediaVideoRequestAccount(ctx conte
 		return nil, true, ErrNoAvailableAccounts
 	}
 
-	acquired, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
+	acquired, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency, account.Platform)
 	if err != nil {
 		return nil, true, err
 	}

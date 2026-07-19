@@ -260,6 +260,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				selection.WaitPlan.Timeout,
 				reqStream,
 				&streamStarted,
+				account.Platform,
 			)
 			if err != nil {
 				if retryAccountID > 0 {

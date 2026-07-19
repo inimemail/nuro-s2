@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	_ "embed"
 	"errors"
 	"flag"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/runtimeops"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
 	"github.com/Wei-Shaw/sub2api/internal/web"
@@ -132,6 +135,7 @@ func runSetupServer() {
 }
 
 func runMainServer() {
+	applyStartupJitter()
 	cfg, err := config.LoadForBootstrap()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -176,12 +180,44 @@ func runMainServer() {
 
 	log.Println("Shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	runtimeops.SetDraining(true)
+	shutdownTimeout := time.Duration(cfg.Server.GracefulShutdownTimeout) * time.Second
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	if err := app.Server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		// Keep deferred application cleanup (Redis/DB workers and slot renewal)
+		// running even when the graceful deadline expires. Close is the explicit
+		// hard boundary after the bounded drain period.
+		log.Printf("Server graceful shutdown deadline reached: %v", err)
+		_ = app.Server.Close()
 	}
 
 	log.Println("Server exited")
+}
+
+// applyStartupJitter prevents a scale-out wave from synchronously registering,
+// hydrating snapshots, and opening Redis pools. It runs before application
+// initialization and never runs on a request/first-token path.
+func applyStartupJitter() {
+	maxMS, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SUB2API_STARTUP_JITTER_MAX_MS")))
+	if err != nil || maxMS <= 0 {
+		return
+	}
+	var seed [8]byte
+	if _, err := cryptorand.Read(seed[:]); err != nil {
+		return
+	}
+	var value uint64
+	for _, b := range seed {
+		value = value<<8 | uint64(b)
+	}
+	delay := time.Duration(value%uint64(maxMS+1)) * time.Millisecond
+	if delay > 0 {
+		log.Printf("startup jitter: delaying readiness by %s", delay)
+		time.Sleep(delay)
+	}
 }

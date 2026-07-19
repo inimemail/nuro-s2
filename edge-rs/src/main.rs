@@ -5,7 +5,7 @@ use std::{
     net::SocketAddr,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -27,7 +27,7 @@ use reqwest::{Client, ClientBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio_tungstenite::{
     connect_async_tls_with_config,
     tungstenite::{
@@ -50,6 +50,9 @@ const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 const SSE_STRING_INITIAL_CAPACITY: usize = 8192;
 const SSE_STRING_IDLE_MAX_CAPACITY: usize = 64 * 1024;
 const SETTLEMENT_RETRY_CONCURRENCY: usize = 32;
+const PAYLOAD_COMMIT_CONCURRENCY: usize = 64;
+const PAYLOAD_COMMIT_QUEUE_SIZE: usize = 65_536;
+const PAYLOAD_COMMIT_MAX_ATTEMPTS: usize = 5;
 // Keep settlement delivery alive for roughly the same 30-minute window as the
 // Go lease TTL, so a longer control-plane interruption does not leave slots to
 // expire solely through Redis TTL cleanup.
@@ -64,11 +67,255 @@ struct AppState {
     edge_instance_id: Arc<String>,
     client: Client,
     clients_by_proxy: Arc<Mutex<HashMap<String, Client>>>,
-    relay_queues: Arc<Mutex<HashMap<String, mpsc::Sender<RelayJob>>>>,
+    relay_domains: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
+    relay_queue_last_used: Arc<Mutex<HashMap<String, Instant>>>,
     warm_keys: Arc<Mutex<HashMap<String, WarmKeyState>>>,
     ws_idle: Arc<tokio::sync::Mutex<HashMap<String, Vec<WsIdleConn>>>>,
+    ws_idle_last_used: Arc<tokio::sync::Mutex<HashMap<String, Instant>>>,
+    proxy_last_used: Arc<Mutex<HashMap<String, Instant>>>,
     pools: Arc<BufferPools>,
     settlement_retry_tx: mpsc::Sender<SettlementRetryJob>,
+    payload_commit_tx: mpsc::Sender<CommitRequest>,
+    relay_tx: mpsc::Sender<RelayJob>,
+    relay_queue_bytes: Arc<Semaphore>,
+    ingress_permits: Arc<Semaphore>,
+    ingress_body_bytes: Arc<Semaphore>,
+    metrics: Arc<EdgeMetrics>,
+    draining: Arc<AtomicBool>,
+}
+
+impl AppState {
+    fn metrics_is_draining(&self) -> bool {
+        self.draining.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Default)]
+struct EdgeMetrics {
+    active_requests: AtomicU64,
+    active_streams: AtomicU64,
+    accepted_requests: AtomicU64,
+    rejected_requests: AtomicU64,
+    relay_requests: AtomicU64,
+    fallback_requests: AtomicU64,
+    drain_rejections: AtomicU64,
+    prepare_failures: AtomicU64,
+    active_relay_workers: AtomicU64,
+    active_settlement_workers: AtomicU64,
+    active_payload_commit_workers: AtomicU64,
+}
+
+struct ActiveRequestGuard {
+    metrics: Arc<EdgeMetrics>,
+}
+
+struct ActiveStreamGuard {
+    metrics: Arc<EdgeMetrics>,
+}
+
+struct ActiveRelayWorkerGuard {
+    metrics: Arc<EdgeMetrics>,
+}
+
+struct ActiveCallbackWorkerGuard {
+    metrics: Arc<EdgeMetrics>,
+    payload_commit: bool,
+}
+
+impl Drop for ActiveStreamGuard {
+    fn drop(&mut self) {
+        self.metrics.active_streams.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        self.metrics.active_requests.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Drop for ActiveRelayWorkerGuard {
+    fn drop(&mut self) {
+        self.metrics
+            .active_relay_workers
+            .fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Drop for ActiveCallbackWorkerGuard {
+    fn drop(&mut self) {
+        let counter = if self.payload_commit {
+            &self.metrics.active_payload_commit_workers
+        } else {
+            &self.metrics.active_settlement_workers
+        };
+        counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl EdgeMetrics {
+    fn begin_request(self: &Arc<Self>) -> ActiveRequestGuard {
+        self.active_requests.fetch_add(1, Ordering::Relaxed);
+        self.accepted_requests.fetch_add(1, Ordering::Relaxed);
+        ActiveRequestGuard {
+            metrics: Arc::clone(self),
+        }
+    }
+
+    fn begin_stream(self: &Arc<Self>) -> ActiveStreamGuard {
+        self.active_streams.fetch_add(1, Ordering::Relaxed);
+        ActiveStreamGuard {
+            metrics: Arc::clone(self),
+        }
+    }
+
+    fn begin_relay_work(self: &Arc<Self>) -> ActiveRelayWorkerGuard {
+        self.active_relay_workers.fetch_add(1, Ordering::Relaxed);
+        ActiveRelayWorkerGuard {
+            metrics: Arc::clone(self),
+        }
+    }
+
+    fn begin_callback_work(self: &Arc<Self>, payload_commit: bool) -> ActiveCallbackWorkerGuard {
+        let counter = if payload_commit {
+            &self.active_payload_commit_workers
+        } else {
+            &self.active_settlement_workers
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+        ActiveCallbackWorkerGuard {
+            metrics: Arc::clone(self),
+            payload_commit,
+        }
+    }
+
+    fn render(&self, state: &AppState) -> String {
+        let active = self.active_requests.load(Ordering::Relaxed);
+        let active_streams = self.active_streams.load(Ordering::Relaxed);
+        let (relay_domains, relay_domain_permits_used) = state
+            .relay_domains
+            .lock()
+            .map(|domains| {
+                let used = domains
+                    .values()
+                    .map(|domain| {
+                        state
+                            .cfg
+                            .per_account_workers
+                            .max(1)
+                            .saturating_sub(domain.available_permits())
+                    })
+                    .sum::<usize>();
+                (domains.len(), used)
+            })
+            .unwrap_or_default();
+        let proxy_clients = state
+            .clients_by_proxy
+            .lock()
+            .map(|clients| clients.len())
+            .unwrap_or_default();
+        let warm_keys = state
+            .warm_keys
+            .lock()
+            .map(|keys| keys.len())
+            .unwrap_or_default();
+        let ws_idle_keys = state
+            .ws_idle
+            .try_lock()
+            .map(|pools| pools.len())
+            .unwrap_or_default();
+        let relay_queue_depth = state
+            .relay_tx
+            .max_capacity()
+            .saturating_sub(state.relay_tx.capacity());
+        let relay_queue_bytes = state
+            .cfg
+            .queue_max_bytes
+            .saturating_sub(state.relay_queue_bytes.available_permits());
+        let ingress_limit = state
+            .cfg
+            .global_workers
+            .max(1)
+            .saturating_add(state.cfg.queue_buffer_size.max(128));
+        let ingress_used = ingress_limit.saturating_sub(state.ingress_permits.available_permits());
+        let settlement_retry_depth = state
+            .settlement_retry_tx
+            .max_capacity()
+            .saturating_sub(state.settlement_retry_tx.capacity());
+        let payload_commit_depth = state
+            .payload_commit_tx
+            .max_capacity()
+            .saturating_sub(state.payload_commit_tx.capacity());
+        let open_fds = linux_open_fd_count();
+        let max_fds = linux_max_open_files();
+        format!(
+            "# TYPE sub2api_edge_active_requests gauge\nsub2api_edge_active_requests {active}\n\
+             # TYPE sub2api_edge_active_streams gauge\nsub2api_edge_active_streams {active_streams}\n\
+             # TYPE sub2api_edge_accepted_requests counter\nsub2api_edge_accepted_requests {}\n\
+             # TYPE sub2api_edge_rejected_requests counter\nsub2api_edge_rejected_requests {}\n\
+             # TYPE sub2api_edge_drain_rejections counter\nsub2api_edge_drain_rejections {}\n\
+             # TYPE sub2api_edge_prepare_failures counter\nsub2api_edge_prepare_failures {}\n\
+             # TYPE sub2api_edge_relay_requests counter\nsub2api_edge_relay_requests {}\n\
+             # TYPE sub2api_edge_fallback_requests counter\nsub2api_edge_fallback_requests {}\n\
+             # TYPE sub2api_edge_relay_domains gauge\nsub2api_edge_relay_domains {relay_domains}\n\
+             # TYPE sub2api_edge_relay_domain_permits_used gauge\nsub2api_edge_relay_domain_permits_used {relay_domain_permits_used}\n\
+             # TYPE sub2api_edge_relay_workers_active gauge\nsub2api_edge_relay_workers_active {}\n\
+             # TYPE sub2api_edge_relay_queue_depth gauge\nsub2api_edge_relay_queue_depth {relay_queue_depth}\n\
+             # TYPE sub2api_edge_relay_queue_bytes gauge\nsub2api_edge_relay_queue_bytes {relay_queue_bytes}\n\
+             # TYPE sub2api_edge_ingress_permits_used gauge\nsub2api_edge_ingress_permits_used {ingress_used}\n\
+             # TYPE sub2api_edge_ingress_permits_limit gauge\nsub2api_edge_ingress_permits_limit {ingress_limit}\n\
+             # TYPE sub2api_edge_settlement_retry_queue_depth gauge\nsub2api_edge_settlement_retry_queue_depth {settlement_retry_depth}\n\
+             # TYPE sub2api_edge_settlement_workers_active gauge\nsub2api_edge_settlement_workers_active {}\n\
+             # TYPE sub2api_edge_payload_commit_queue_depth gauge\nsub2api_edge_payload_commit_queue_depth {payload_commit_depth}\n\
+             # TYPE sub2api_edge_payload_commit_workers_active gauge\nsub2api_edge_payload_commit_workers_active {}\n\
+             # TYPE sub2api_edge_proxy_clients gauge\nsub2api_edge_proxy_clients {proxy_clients}\n\
+             # TYPE sub2api_edge_dynamic_warm_keys gauge\nsub2api_edge_dynamic_warm_keys {warm_keys}\n\
+             # TYPE sub2api_edge_open_fds gauge\nsub2api_edge_open_fds {open_fds}\n\
+             # TYPE sub2api_edge_max_fds gauge\nsub2api_edge_max_fds {max_fds}\n\
+             # TYPE sub2api_edge_ws_idle_keys gauge\nsub2api_edge_ws_idle_keys {ws_idle_keys}\n\
+             # TYPE sub2api_edge_draining gauge\nsub2api_edge_draining {}\n\
+             # HELP sub2api_edge_node_info Stable node identity and capacity configuration.\n\
+             sub2api_edge_node_info{{node_id=\"{}\",instance_id=\"{}\",global_workers=\"{}\"}} 1\n",
+            self.accepted_requests.load(Ordering::Relaxed),
+            self.rejected_requests.load(Ordering::Relaxed),
+            self.drain_rejections.load(Ordering::Relaxed),
+            self.prepare_failures.load(Ordering::Relaxed),
+            self.relay_requests.load(Ordering::Relaxed),
+            self.fallback_requests.load(Ordering::Relaxed),
+            self.active_relay_workers.load(Ordering::Relaxed),
+            self.active_settlement_workers.load(Ordering::Relaxed),
+            self.active_payload_commit_workers.load(Ordering::Relaxed),
+            u64::from(state.metrics_is_draining()),
+            prometheus_label(state.cfg.edge_node_id.as_deref().unwrap_or("unknown")),
+            prometheus_label(state.edge_instance_id.as_str()),
+            state.cfg.global_workers,
+        )
+    }
+}
+
+fn linux_open_fd_count() -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .map(|entries| entries.count())
+        .unwrap_or_default()
+}
+
+fn linux_max_open_files() -> usize {
+    let Ok(limits) = std::fs::read_to_string("/proc/self/limits") else {
+        return 0;
+    };
+    limits
+        .lines()
+        .find(|line| line.starts_with("Max open files"))
+        .and_then(|line| line.split_whitespace().nth(3))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_default()
+}
+
+fn prometheus_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
 }
 
 #[derive(Clone, Debug)]
@@ -82,15 +329,26 @@ struct EdgeConfig {
     complete_timeout_ms: u64,
     initial_pool_size: usize,
     queue_buffer_size: usize,
+    queue_max_bytes: usize,
+    ingress_body_max_bytes: usize,
+    global_workers: usize,
     per_account_workers: usize,
+    max_relay_domains: usize,
+    relay_domain_idle_secs: u64,
+    max_proxy_clients: usize,
+    proxy_client_idle_secs: u64,
     max_idle_conns_per_account: usize,
     queue_wait_budget_ms: u64,
     large_payload_passthrough: bool,
     large_payload_threshold_bytes: usize,
     ws_idle_per_key: usize,
+    max_ws_idle_keys: usize,
+    ws_idle_ttl_secs: u64,
+    drain_timeout_secs: u64,
     upstream_warm_url: Option<String>,
     upstream_warm_interval_secs: u64,
     upstream_dynamic_warm_active_secs: u64,
+    max_dynamic_warm_keys: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -106,6 +364,11 @@ struct PrepareRequest {
     body: Value,
     body_raw_base64: Option<String>,
     client_ip: Option<String>,
+    stream: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct StreamOnlyRequest {
     stream: Option<bool>,
 }
 
@@ -155,6 +418,9 @@ struct RelayJob {
     timing: EdgeTiming,
     timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
     response_tx: oneshot::Sender<anyhow::Result<Response>>,
+    _domain_permit: OwnedSemaphorePermit,
+    _queue_bytes_permit: OwnedSemaphorePermit,
+    _ingress_permit: OwnedSemaphorePermit,
 }
 
 #[derive(Clone, Debug)]
@@ -205,6 +471,20 @@ fn relay_error_fallback_reason(err: &anyhow::Error) -> &'static str {
         return "edge_relay_queue_full";
     }
     "relay_error_before_commit"
+}
+
+fn relay_error_is_local_capacity(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    [
+        "edge relay queue full",
+        "edge relay queue byte budget exhausted",
+        "edge relay domain capacity exhausted",
+        "edge proxy client capacity exhausted",
+        "queue wait budget",
+        "edge_queue_wait_timeout",
+    ]
+    .iter()
+    .any(|marker| message.contains(marker))
 }
 
 #[derive(Default)]
@@ -270,6 +550,13 @@ struct RetryRequest {
     request_body: Option<Value>,
     response_body: Option<Value>,
     wrote_client_response: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CommitRequest {
+    edge_request_id: String,
+    lease_id: Option<String>,
+    account_id: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -636,30 +923,66 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = Arc::new(EdgeConfig::from_env()?);
+    let startup_jitter_ms = env_u64("SUB2API_EDGE_STARTUP_JITTER_MAX_MS", 0);
+    if startup_jitter_ms > 0 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.subsec_nanos() as u64)
+            .unwrap_or_default();
+        let delay_ms = nanos % (startup_jitter_ms + 1);
+        if delay_ms > 0 {
+            info!("startup jitter: delaying readiness by {}ms", delay_ms);
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+    }
     let client = edge_http_client_builder(&cfg).build()?;
     let (settlement_retry_tx, settlement_retry_rx) = mpsc::channel(cfg.queue_buffer_size.max(1024));
+    let (payload_commit_tx, payload_commit_rx) = mpsc::channel(PAYLOAD_COMMIT_QUEUE_SIZE);
+    let (relay_tx, relay_rx) = mpsc::channel(cfg.queue_buffer_size.max(128));
     let state = AppState {
         cfg: cfg.clone(),
         edge_instance_id: Arc::new(Uuid::new_v4().to_string()),
         client,
         clients_by_proxy: Arc::new(Mutex::new(HashMap::new())),
-        relay_queues: Arc::new(Mutex::new(HashMap::new())),
+        relay_domains: Arc::new(Mutex::new(HashMap::new())),
+        relay_queue_last_used: Arc::new(Mutex::new(HashMap::new())),
         warm_keys: Arc::new(Mutex::new(HashMap::new())),
         ws_idle: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        ws_idle_last_used: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        proxy_last_used: Arc::new(Mutex::new(HashMap::new())),
         pools: Arc::new(BufferPools::prewarmed(cfg.initial_pool_size)),
         settlement_retry_tx,
+        payload_commit_tx,
+        relay_tx,
+        relay_queue_bytes: Arc::new(Semaphore::new(cfg.queue_max_bytes.max(1))),
+        ingress_permits: Arc::new(Semaphore::new(
+            cfg.global_workers
+                .max(1)
+                .saturating_add(cfg.queue_buffer_size.max(128)),
+        )),
+        ingress_body_bytes: Arc::new(Semaphore::new(
+            cfg.ingress_body_max_bytes.max(MAX_BODY_BYTES),
+        )),
+        metrics: Arc::new(EdgeMetrics::default()),
+        draining: Arc::new(AtomicBool::new(false)),
     };
     tokio::spawn(run_settlement_retry_queue(
         state.clone(),
         settlement_retry_rx,
     ));
+    tokio::spawn(run_payload_commit_queue(state.clone(), payload_commit_rx));
+    tokio::spawn(run_relay_executor(state.clone(), relay_rx));
     tokio::spawn(recover_previous_edge_leases(state.clone()));
+    tokio::spawn(run_edge_resource_reaper(state.clone()));
     let warm_client = state.client.clone();
     let dynamic_warm_state = state.clone();
     let app = Router::new()
         .route("/healthz", any(healthz))
+        .route("/readyz", any(readyz))
+        .route("/metrics", any(metrics))
+        .route("/internal/drain", axum::routing::post(drain))
         .route("/*path", any(handle_openai_edge))
-        .with_state(state);
+        .with_state(state.clone());
 
     info!("sub2api-edge-rs listening on {}", cfg.listen_addr);
 
@@ -677,11 +1000,50 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(cfg.listen_addr).await?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown_signal(state.clone()))
         .await?;
     Ok(())
+}
+
+async fn shutdown_signal(state: AppState) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = signal(SignalKind::terminate()).ok();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = async {
+                if let Some(ref mut signal) = terminate {
+                    let _ = signal.recv().await;
+                } else {
+                    pending::<()>().await;
+                }
+            } => {},
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
+
+    state.draining.store(true, Ordering::Release);
+    let deadline = Instant::now() + Duration::from_secs(state.cfg.drain_timeout_secs.max(30));
+    while (state.metrics.active_requests.load(Ordering::Acquire) > 0
+        || state.metrics.active_streams.load(Ordering::Acquire) > 0
+        || state
+            .metrics
+            .active_settlement_workers
+            .load(Ordering::Acquire)
+            > 0
+        || state
+            .metrics
+            .active_payload_commit_workers
+            .load(Ordering::Acquire)
+            > 0
+        || state.settlement_retry_tx.capacity() < state.settlement_retry_tx.max_capacity()
+        || state.payload_commit_tx.capacity() < state.payload_commit_tx.max_capacity())
+        && Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 fn edge_http_client_builder(cfg: &EdgeConfig) -> ClientBuilder {
@@ -786,8 +1148,121 @@ async fn run_dynamic_upstream_keep_warm(state: AppState) {
     }
 }
 
+async fn run_edge_resource_reaper(state: AppState) {
+    let interval = Duration::from_secs(60);
+    loop {
+        tokio::time::sleep(interval).await;
+        let now = Instant::now();
+
+        if let (Ok(mut queues), Ok(mut last_used)) = (
+            state.relay_domains.lock(),
+            state.relay_queue_last_used.lock(),
+        ) {
+            let idle = Duration::from_secs(state.cfg.relay_domain_idle_secs.max(60));
+            let stale = last_used
+                .iter()
+                .filter_map(|(key, used)| {
+                    let idle = now.duration_since(*used) >= idle;
+                    let idle_permits = queues.get(key).is_some_and(|domain| {
+                        domain.available_permits() >= state.cfg.per_account_workers.max(1)
+                    });
+                    (idle && idle_permits).then_some(key.clone())
+                })
+                .collect::<Vec<_>>();
+            for key in stale {
+                queues.remove(&key);
+                last_used.remove(&key);
+            }
+        }
+
+        if let (Ok(mut clients), Ok(mut last_used)) =
+            (state.clients_by_proxy.lock(), state.proxy_last_used.lock())
+        {
+            let idle = Duration::from_secs(state.cfg.proxy_client_idle_secs.max(60));
+            let mut stale = last_used
+                .iter()
+                .filter_map(|(key, used)| {
+                    (now.duration_since(*used) >= idle).then_some(key.clone())
+                })
+                .collect::<Vec<_>>();
+            while clients.len().saturating_sub(stale.len()) > state.cfg.max_proxy_clients.max(1) {
+                if let Some((key, _)) = last_used
+                    .iter()
+                    .filter(|(key, _)| !stale.iter().any(|item| item == *key))
+                    .min_by_key(|(_, used)| *used)
+                {
+                    stale.push(key.clone());
+                } else {
+                    break;
+                }
+            }
+            for key in stale {
+                clients.remove(&key);
+                last_used.remove(&key);
+            }
+        }
+
+        let idle = Duration::from_secs(state.cfg.ws_idle_ttl_secs.max(60));
+        let stale_ws = {
+            let last_used = state.ws_idle_last_used.lock().await;
+            last_used
+                .iter()
+                .filter_map(|(key, used)| {
+                    (now.duration_since(*used) >= idle).then_some(key.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        if !stale_ws.is_empty() {
+            let mut pools = state.ws_idle.lock().await;
+            let mut last_used = state.ws_idle_last_used.lock().await;
+            for key in stale_ws {
+                pools.remove(&key);
+                last_used.remove(&key);
+            }
+        }
+    }
+}
+
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn readyz(State(state): State<AppState>) -> Response {
+    if state.metrics_is_draining() {
+        return text_response(StatusCode::SERVICE_UNAVAILABLE, "draining");
+    }
+    text_response(StatusCode::OK, "ready")
+}
+
+async fn metrics(State(state): State<AppState>) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
+        .body(Body::from(state.metrics.render(&state)))
+        .unwrap_or_else(|_| text_response(StatusCode::INTERNAL_SERVER_ERROR, "metrics unavailable"))
+}
+
+async fn drain(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let provided = headers
+        .get(EDGE_SECRET_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if !constant_time_eq(provided.as_bytes(), state.cfg.internal_secret.as_bytes()) {
+        return text_response(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    state.draining.store(true, Ordering::Release);
+    text_response(StatusCode::OK, "draining")
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = left.len() ^ right.len();
+    let max_len = left.len().max(right.len());
+    for index in 0..max_len {
+        let left_byte = left.get(index).copied().unwrap_or_default();
+        let right_byte = right.get(index).copied().unwrap_or_default();
+        difference |= usize::from(left_byte ^ right_byte);
+    }
+    difference == 0
 }
 
 async fn handle_openai_edge(
@@ -795,6 +1270,18 @@ async fn handle_openai_edge(
     ws: Option<WebSocketUpgrade>,
     req: Request,
 ) -> Response {
+    if state.metrics_is_draining() {
+        state
+            .metrics
+            .drain_rejections
+            .fetch_add(1, Ordering::Relaxed);
+        state
+            .metrics
+            .rejected_requests
+            .fetch_add(1, Ordering::Relaxed);
+        return text_response(StatusCode::SERVICE_UNAVAILABLE, "edge draining");
+    }
+    let _active_request = state.metrics.begin_request();
     let edge_request_id = Uuid::new_v4().to_string();
     let start = Instant::now();
     let (parts, body) = req.into_parts();
@@ -809,26 +1296,59 @@ async fn handle_openai_edge(
         return handle_openai_ws_edge(state, ws, method, uri, headers).await;
     }
 
+    // Bound request-body residency before reading up to MAX_BODY_BYTES. This is
+    // a non-blocking local permit, so admitted requests add no wait or control
+    // plane round trip before first token.
+    let ingress_permit = match state.ingress_permits.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return overload_response(),
+    };
+    let body_reservation = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(MAX_BODY_BYTES)
+        .max(1);
+    if body_reservation > MAX_BODY_BYTES {
+        return text_response(StatusCode::PAYLOAD_TOO_LARGE, "request body too large");
+    }
+    let _ingress_body_permit = match state
+        .ingress_body_bytes
+        .clone()
+        .try_acquire_many_owned(body_reservation as u32)
+    {
+        Ok(permit) => permit,
+        Err(_) => return overload_response(),
+    };
+
     let body_bytes = match to_bytes(body, MAX_BODY_BYTES).await {
         Ok(bytes) => bytes,
         Err(err) => {
+            state
+                .metrics
+                .prepare_failures
+                .fetch_add(1, Ordering::Relaxed);
             error!("read client body failed: {err}");
             return text_response(StatusCode::BAD_REQUEST, "failed to read request body");
         }
     };
-    let body_json = if body_bytes.is_empty() {
-        Value::Null
-    } else {
-        match serde_json::from_slice::<Value>(&body_bytes) {
-            Ok(v) => v,
-            Err(_) => Value::String(String::from_utf8_lossy(&body_bytes).into_owned()),
-        }
-    };
     let raw_prepare_body = openai_prepare_raw_body(&state, &body_bytes);
-    let prepare_body = if raw_prepare_body.is_some() {
-        Value::Null
+    let (stream, prepare_body) = if raw_prepare_body.is_some() {
+        let stream = serde_json::from_slice::<StreamOnlyRequest>(&body_bytes)
+            .ok()
+            .and_then(|request| request.stream);
+        (stream, Value::Null)
     } else {
-        body_json.clone()
+        let body_json = if body_bytes.is_empty() {
+            Value::Null
+        } else {
+            match serde_json::from_slice::<Value>(&body_bytes) {
+                Ok(value) => value,
+                Err(_) => Value::String(String::from_utf8_lossy(&body_bytes).into_owned()),
+            }
+        };
+        let stream = body_json.get("stream").and_then(Value::as_bool);
+        (stream, body_json)
     };
 
     let prepare = PrepareRequest {
@@ -839,7 +1359,7 @@ async fn handle_openai_edge(
         path: uri.path().to_string(),
         raw_query: uri.query().map(ToOwned::to_owned),
         headers: header_map_to_strings(&headers),
-        stream: body_json.get("stream").and_then(|v| v.as_bool()),
+        stream,
         body: prepare_body,
         body_raw_base64: raw_prepare_body,
         client_ip: client_ip_from_headers(&headers),
@@ -849,6 +1369,7 @@ async fn handle_openai_edge(
     let (plan, prepare_ms) = match call_prepare(&state, &prepare).await {
         Ok(plan) => (plan, prepare_started_at.elapsed().as_millis() as i64),
         Err(err) => {
+            drop(ingress_permit);
             warn!("prepare failed; falling back to Go: {err}");
             if let Err(queue_err) = enqueue_settlement_retry(
                 &state,
@@ -887,6 +1408,11 @@ async fn handle_openai_edge(
     };
 
     if plan.action != "relay" {
+        drop(ingress_permit);
+        state
+            .metrics
+            .fallback_requests
+            .fetch_add(1, Ordering::Relaxed);
         if let Some(reason) = &plan.reason {
             info!("edge fallback_to_go reason={reason}");
         }
@@ -903,6 +1429,7 @@ async fn handle_openai_edge(
     }
 
     let relay_lease_id = plan.lease_id.clone();
+    state.metrics.relay_requests.fetch_add(1, Ordering::Relaxed);
     let relay_account_id = plan.account_id;
     let timing_shared = Arc::new(Mutex::new(timing.clone()));
     match relay_upstream(
@@ -912,13 +1439,27 @@ async fn handle_openai_edge(
         timing,
         Some(timing_shared.clone()),
         true,
+        Some(ingress_permit),
     )
     .await
     {
-        Ok(resp) => resp,
+        Ok(resp) => {
+            if let Some(lease_id) = relay_lease_id.clone() {
+                spawn_payload_commit(
+                    state.clone(),
+                    CommitRequest {
+                        edge_request_id: edge_request_id.clone(),
+                        lease_id: Some(lease_id),
+                        account_id: relay_account_id,
+                    },
+                );
+            }
+            resp
+        }
         Err(err) => {
             error!("relay failed before response commit: {err}");
             let reason = relay_error_fallback_reason(&err);
+            let local_capacity = relay_error_is_local_capacity(&err);
             if let Err(callback_err) = call_abort(
                 &state,
                 AbortRequest {
@@ -927,13 +1468,20 @@ async fn handle_openai_edge(
                     account_id: relay_account_id,
                     reason: format!("{reason}: {err}"),
                     client_disconnected: false,
-                    relay_attempted: true,
-                    fallback_to_go: true,
+                    relay_attempted: !local_capacity,
+                    fallback_to_go: !local_capacity,
                 },
             )
             .await
             {
                 error!("relay failure abort could not be delivered or queued: {callback_err}");
+            }
+            if local_capacity {
+                state
+                    .metrics
+                    .rejected_requests
+                    .fetch_add(1, Ordering::Relaxed);
+                return overload_response();
             }
             let mut fallback_timing = edge_timing_snapshot(&timing_shared);
             fallback_timing.fallback_reason = Some(reason.to_string());
@@ -1039,6 +1587,7 @@ async fn handle_openai_ws_edge(
     headers: HeaderMap,
 ) -> Response {
     ws.on_upgrade(move |socket| async move {
+        let _stream_guard = state.metrics.begin_stream();
         if let Err(err) = relay_ws_session(state, socket, method, uri, headers).await {
             warn!("edge ws session ended with error: {err}");
         }
@@ -1077,9 +1626,16 @@ async fn relay_ws_session(
         client_ip: client_ip_from_headers(&headers),
     };
 
+    let ingress_permit = state
+        .ingress_permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| anyhow::anyhow!("edge ingress capacity exhausted"))?;
+
     let mut plan = match call_prepare(&state, &prepare).await {
         Ok(plan) => plan,
         Err(err) => {
+            drop(ingress_permit);
             warn!("ws prepare failed; proxying to Go: {err}");
             if let Err(queue_err) = enqueue_settlement_retry(
                 &state,
@@ -1099,6 +1655,7 @@ async fn relay_ws_session(
         }
     };
     if plan.action != "relay" {
+        drop(ingress_permit);
         if let Some(reason) = &plan.reason {
             info!("edge ws fallback_to_go reason={reason}");
         }
@@ -1169,6 +1726,7 @@ async fn relay_ws_session(
     let mut last_request_body = tungstenite_message_json(&first_upstream_msg);
     let mut wrote_client_response_for_turn = false;
     upstream_write.send(first_upstream_msg).await?;
+    drop(ingress_permit);
     guard.mark_relay_attempted();
 
     let lease_id = plan.lease_id.clone();
@@ -2253,10 +2811,17 @@ async fn relay_upstream(
     timing: EdgeTiming,
     timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
     allow_initial_queue: bool,
+    mut ingress_permit: Option<OwnedSemaphorePermit>,
 ) -> anyhow::Result<Response> {
     if allow_initial_queue {
-        if let Some(sender) = state.relay_queue_for_plan(&plan)? {
+        if let Some(domain_permit) = state.relay_permit_for_plan(&plan)? {
             let request_body = take_request_body_bytes(&mut plan)?;
+            let queued_bytes = request_body.len().max(1);
+            let queue_bytes_permit = try_reserve_relay_queue_bytes(
+                state.relay_queue_bytes.clone(),
+                state.cfg.queue_max_bytes,
+                queued_bytes,
+            )?;
             let (response_tx, response_rx) = oneshot::channel();
             let job = RelayJob {
                 state: state.clone(),
@@ -2267,8 +2832,14 @@ async fn relay_upstream(
                 timing,
                 timing_shared,
                 response_tx,
+                _domain_permit: domain_permit,
+                _queue_bytes_permit: queue_bytes_permit,
+                _ingress_permit: ingress_permit
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("missing edge ingress permit"))?,
             };
-            sender
+            state
+                .relay_tx
                 .try_send(job)
                 .map_err(|err| anyhow::anyhow!("edge relay queue full or closed: {err}"))?;
             return response_rx
@@ -2276,8 +2847,71 @@ async fn relay_upstream(
                 .map_err(|err| anyhow::anyhow!("edge relay worker dropped response: {err}"))?;
         }
     }
+    let _ingress_permit = ingress_permit;
     let request_body = take_request_body_bytes(&mut plan)?;
     relay_upstream_direct(state, plan, request_body, started_at, timing, timing_shared).await
+}
+
+fn try_reserve_relay_queue_bytes(
+    semaphore: Arc<Semaphore>,
+    max_bytes: usize,
+    queued_bytes: usize,
+) -> anyhow::Result<OwnedSemaphorePermit> {
+    if queued_bytes == 0 || queued_bytes > max_bytes || queued_bytes > u32::MAX as usize {
+        anyhow::bail!("edge relay queue byte budget exhausted");
+    }
+    semaphore
+        .try_acquire_many_owned(queued_bytes as u32)
+        .map_err(|_| anyhow::anyhow!("edge relay queue byte budget exhausted"))
+}
+
+async fn run_relay_executor(state: AppState, receiver: mpsc::Receiver<RelayJob>) {
+    let receiver = Arc::new(tokio::sync::Mutex::new(receiver));
+    for worker_id in 0..state.cfg.global_workers.max(1) {
+        let receiver = receiver.clone();
+        tokio::spawn(async move {
+            loop {
+                let job = {
+                    let mut guard = receiver.lock().await;
+                    guard.recv().await
+                };
+                let Some(job) = job else { break };
+                let _worker_guard = job.state.metrics.begin_relay_work();
+                let mut timing = job.timing;
+                let queue_wait_ms = job.enqueued_at.elapsed().as_millis() as i64;
+                timing.queue_wait_ms = Some(queue_wait_ms);
+                update_edge_timing(job.timing_shared.as_ref(), |shared| {
+                    shared.queue_wait_ms = Some(queue_wait_ms);
+                    shared.retry_count = timing.retry_count;
+                });
+                let result = if job.state.cfg.queue_wait_budget_ms > 0
+                    && queue_wait_ms > job.state.cfg.queue_wait_budget_ms as i64
+                {
+                    retry_after_queue_wait_budget(
+                        job.state,
+                        job.plan,
+                        job.started_at,
+                        timing,
+                        job.timing_shared,
+                        queue_wait_ms,
+                    )
+                    .await
+                } else {
+                    relay_upstream_direct(
+                        job.state,
+                        job.plan,
+                        job.request_body,
+                        job.started_at,
+                        timing,
+                        job.timing_shared,
+                    )
+                    .await
+                };
+                let _ = job.response_tx.send(result);
+            }
+            info!("edge global relay worker stopped worker={worker_id}");
+        });
+    }
 }
 
 async fn relay_upstream_direct(
@@ -2350,7 +2984,9 @@ async fn relay_upstream_direct(
         tokio::select! {
             result = &mut upstream_send => result?,
             _ = tokio::time::sleep(timeout) => {
+                let stream_guard = complete_state.metrics.begin_stream();
                 let early_body_stream = stream! {
+                    let _stream_guard = stream_guard;
                     let guard = ClientDisconnectCompleteGuard::new(
                         complete_state.clone(),
                         started_at,
@@ -2738,6 +3374,7 @@ async fn relay_upstream_direct(
                     next_timing,
                     timing_shared,
                     false,
+                    None,
                 ))
                 .await;
             }
@@ -2795,7 +3432,9 @@ async fn relay_upstream_direct(
         .and_then(|v| v.to_str().ok())
         .map(ToOwned::to_owned);
     drop(plan);
+    let stream_guard = complete_state.metrics.begin_stream();
     let body_stream = stream! {
+        let _stream_guard = stream_guard;
         let guard = ClientDisconnectCompleteGuard::new(
             complete_state.clone(),
             started_at,
@@ -3171,6 +3810,7 @@ async fn retry_after_queue_wait_budget(
         next_timing,
         timing_shared,
         false,
+        None,
     ))
     .await
 }
@@ -3703,6 +4343,41 @@ async fn send_settlement_once<T: Serialize + ?Sized>(
     Ok(())
 }
 
+fn spawn_payload_commit(state: AppState, request: CommitRequest) {
+    if request.lease_id.as_deref().unwrap_or_default().is_empty() {
+        return;
+    }
+    if let Err(err) = state.payload_commit_tx.try_send(request) {
+        warn!("edge payload commit queue full or closed: {err}");
+    }
+}
+
+async fn run_payload_commit_queue(state: AppState, mut receiver: mpsc::Receiver<CommitRequest>) {
+    let semaphore = Arc::new(Semaphore::new(PAYLOAD_COMMIT_CONCURRENCY));
+    while let Some(request) = receiver.recv().await {
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => return,
+        };
+        let commit_state = state.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let _worker_guard = commit_state.metrics.begin_callback_work(true);
+            let edge_request_id = request.edge_request_id.clone();
+            if let Err(err) = retry_with_backoff(
+                PAYLOAD_COMMIT_MAX_ATTEMPTS,
+                Duration::from_millis(10),
+                Duration::from_millis(250),
+                || send_settlement_once(&commit_state, "/internal/edge/openai/commit", &request),
+            )
+            .await
+            {
+                warn!("edge payload commit failed edge_request_id={edge_request_id}: {err}");
+            }
+        });
+    }
+}
+
 async fn send_recover_once(state: &AppState, req: &RecoverRequest) -> anyhow::Result<RecoverAck> {
     let url = format!(
         "{}/internal/edge/openai/recover",
@@ -3812,6 +4487,7 @@ async fn run_settlement_retry_queue(
         let retry_state = state.clone();
         tokio::spawn(async move {
             let _permit = permit;
+            let _worker_guard = retry_state.metrics.begin_callback_work(false);
             run_settlement_retry_job(retry_state, job).await;
         });
     }
@@ -3925,9 +4601,14 @@ async fn fallback_to_go(
     };
     let status = upstream.status();
     let headers = upstream.headers().clone();
-    let stream = upstream
-        .bytes_stream()
-        .map(|item| item.map_err(|err| std::io::Error::other(err.to_string())));
+    let stream_guard = state.metrics.begin_stream();
+    let stream = stream! {
+        let _stream_guard = stream_guard;
+        let mut bytes = upstream.bytes_stream();
+        while let Some(item) = bytes.next().await {
+            yield item.map_err(|err| std::io::Error::other(err.to_string()));
+        }
+    };
     let mut builder = Response::builder().status(status.as_u16());
     copy_response_headers(builder.headers_mut().expect("headers"), &headers);
     builder
@@ -4173,6 +4854,15 @@ fn text_response(status: StatusCode, body: &str) -> Response {
         .status(status)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn overload_response() -> Response {
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::RETRY_AFTER, "1")
+        .body(Body::from("edge capacity exhausted"))
         .unwrap()
 }
 
@@ -4460,7 +5150,14 @@ impl AppState {
     async fn take_ws_idle(&self, plan: &EdgePlan) -> Option<WsIdleConn> {
         let key = ws_idle_key(plan)?;
         let mut pools = self.ws_idle.lock().await;
-        pools.get_mut(&key).and_then(Vec::pop)
+        let item = pools.get_mut(&key).and_then(Vec::pop);
+        if item.is_some() {
+            self.ws_idle_last_used
+                .lock()
+                .await
+                .insert(key, Instant::now());
+        }
+        item
     }
 
     async fn ensure_ws_idle(&self, plan: EdgePlan) {
@@ -4482,15 +5179,23 @@ impl AppState {
             if pools.get(&key).map_or(0, Vec::len) >= self.cfg.ws_idle_per_key {
                 return;
             }
+            if !pools.contains_key(&key) && pools.len() >= self.cfg.max_ws_idle_keys.max(1) {
+                return;
+            }
         }
         let state = self.clone();
         tokio::spawn(async move {
             match connect_ws_for_plan(&plan).await {
                 Ok((socket, request_id)) => {
                     let mut pools = state.ws_idle.lock().await;
-                    let pool = pools.entry(key).or_default();
+                    let pool = pools.entry(key.clone()).or_default();
                     if pool.len() < state.cfg.ws_idle_per_key {
                         pool.push(WsIdleConn { socket, request_id });
+                        state
+                            .ws_idle_last_used
+                            .lock()
+                            .await
+                            .insert(key, Instant::now());
                     }
                 }
                 Err(err) => warn!("edge ws idle preconnect failed: {err}"),
@@ -4498,10 +5203,10 @@ impl AppState {
         });
     }
 
-    fn relay_queue_for_plan(
+    fn relay_permit_for_plan(
         &self,
         plan: &EdgePlan,
-    ) -> anyhow::Result<Option<mpsc::Sender<RelayJob>>> {
+    ) -> anyhow::Result<Option<OwnedSemaphorePermit>> {
         if self.cfg.queue_buffer_size == 0 || self.cfg.per_account_workers == 0 {
             return Ok(None);
         }
@@ -4509,67 +5214,31 @@ impl AppState {
             return Ok(None);
         };
 
-        let mut queues = self
-            .relay_queues
+        let mut domains = self
+            .relay_domains
             .lock()
-            .map_err(|_| anyhow::anyhow!("relay queue map lock poisoned"))?;
-        if let Some(sender) = queues.get(&key) {
-            return Ok(Some(sender.clone()));
+            .map_err(|_| anyhow::anyhow!("relay domain map lock poisoned"))?;
+        let domain = if let Some(domain) = domains.get(&key) {
+            if let Ok(mut last_used) = self.relay_queue_last_used.lock() {
+                last_used.insert(key.clone(), Instant::now());
+            }
+            domain.clone()
+        } else {
+            if domains.len() >= self.cfg.max_relay_domains.max(1) {
+                return Err(anyhow::anyhow!("edge relay domain capacity exhausted"));
+            }
+            let domain = Arc::new(Semaphore::new(self.cfg.per_account_workers.max(1)));
+            domains.insert(key.clone(), domain.clone());
+            if let Ok(mut last_used) = self.relay_queue_last_used.lock() {
+                last_used.insert(key, Instant::now());
+            }
+            domain
+        };
+        drop(domains);
+        match domain.try_acquire_owned() {
+            Ok(permit) => Ok(Some(permit)),
+            Err(_) => Err(anyhow::anyhow!("edge relay domain capacity exhausted")),
         }
-
-        let (sender, receiver) = mpsc::channel::<RelayJob>(self.cfg.queue_buffer_size);
-        let receiver = Arc::new(tokio::sync::Mutex::new(receiver));
-        for worker_id in 0..self.cfg.per_account_workers {
-            let rx = receiver.clone();
-            let queue_key = key.clone();
-            tokio::spawn(async move {
-                loop {
-                    let job = {
-                        let mut guard = rx.lock().await;
-                        guard.recv().await
-                    };
-                    let Some(job) = job else {
-                        break;
-                    };
-                    let mut timing = job.timing;
-                    let queue_wait_ms = job.enqueued_at.elapsed().as_millis() as i64;
-                    timing.queue_wait_ms = Some(queue_wait_ms);
-                    update_edge_timing(job.timing_shared.as_ref(), |shared| {
-                        shared.queue_wait_ms = Some(queue_wait_ms);
-                        shared.retry_count = timing.retry_count;
-                    });
-                    if job.state.cfg.queue_wait_budget_ms > 0
-                        && queue_wait_ms > job.state.cfg.queue_wait_budget_ms as i64
-                    {
-                        let response_tx = job.response_tx;
-                        let result = retry_after_queue_wait_budget(
-                            job.state,
-                            job.plan,
-                            job.started_at,
-                            timing,
-                            job.timing_shared,
-                            queue_wait_ms,
-                        )
-                        .await;
-                        let _ = response_tx.send(result);
-                        continue;
-                    }
-                    let result = relay_upstream_direct(
-                        job.state,
-                        job.plan,
-                        job.request_body,
-                        job.started_at,
-                        timing,
-                        job.timing_shared,
-                    )
-                    .await;
-                    let _ = job.response_tx.send(result);
-                }
-                info!("edge relay worker stopped key={queue_key} worker={worker_id}");
-            });
-        }
-        queues.insert(key, sender.clone());
-        Ok(Some(sender))
     }
 
     fn client_for_proxy(&self, proxy_url: Option<&str>) -> anyhow::Result<Client> {
@@ -4583,13 +5252,22 @@ impl AppState {
             .lock()
             .map_err(|_| anyhow::anyhow!("proxy client pool lock poisoned"))?;
         if let Some(client) = clients.get(proxy_url) {
+            if let Ok(mut last_used) = self.proxy_last_used.lock() {
+                last_used.insert(proxy_url.to_string(), Instant::now());
+            }
             return Ok(client.clone());
+        }
+        if clients.len() >= self.cfg.max_proxy_clients.max(1) {
+            return Err(anyhow::anyhow!("edge proxy client capacity exhausted"));
         }
 
         let client = edge_http_client_builder(&self.cfg)
             .proxy(reqwest::Proxy::all(proxy_url)?)
             .build()?;
         clients.insert(proxy_url.to_string(), client.clone());
+        if let Ok(mut last_used) = self.proxy_last_used.lock() {
+            last_used.insert(proxy_url.to_string(), Instant::now());
+        }
         Ok(client)
     }
 
@@ -4608,6 +5286,10 @@ impl AppState {
             warn!("dynamic upstream warm key map lock poisoned");
             return;
         };
+        if !warm_keys.contains_key(&key) && warm_keys.len() >= self.cfg.max_dynamic_warm_keys.max(1)
+        {
+            return;
+        }
         warm_keys
             .entry(key)
             .and_modify(|item| item.last_seen = Instant::now())
@@ -4631,20 +5313,31 @@ impl EdgeConfig {
             env::var("SUB2API_EDGE_CONTROL_BASE_URL").unwrap_or_else(|_| go_base_url.clone());
         let internal_secret = env::var("SUB2API_EDGE_INTERNAL_SECRET")
             .map_err(|_| anyhow::anyhow!("SUB2API_EDGE_INTERNAL_SECRET is required"))?;
+        if internal_secret.trim().is_empty() {
+            anyhow::bail!("SUB2API_EDGE_INTERNAL_SECRET must not be empty");
+        }
         Ok(Self {
             listen_addr,
             go_base_url,
             control_base_url,
             internal_secret,
-            edge_node_id: env::var("SUB2API_EDGE_NODE_ID")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+            edge_node_id: stable_edge_node_id(),
             prepare_timeout_ms: env_u64("SUB2API_EDGE_PREPARE_TIMEOUT_MS", 1500),
             complete_timeout_ms: env_u64("SUB2API_EDGE_COMPLETE_TIMEOUT_MS", 1500),
-            initial_pool_size: env_usize("SUB2API_EDGE_INITIAL_POOL_SIZE", 10000),
-            queue_buffer_size: env_usize("SUB2API_EDGE_QUEUE_BUFFER_SIZE", 2000),
+            initial_pool_size: env_usize("SUB2API_EDGE_INITIAL_POOL_SIZE", 512),
+            queue_buffer_size: env_usize("SUB2API_EDGE_QUEUE_BUFFER_SIZE", 128),
+            queue_max_bytes: env_usize("SUB2API_EDGE_QUEUE_MAX_BYTES", 64 * 1024 * 1024),
+            ingress_body_max_bytes: env_usize(
+                "SUB2API_EDGE_INGRESS_BODY_MAX_BYTES",
+                1024 * 1024 * 1024,
+            )
+            .min(u32::MAX as usize),
+            global_workers: env_usize("SUB2API_EDGE_GLOBAL_WORKERS", 256),
             per_account_workers: env_usize("SUB2API_EDGE_PER_ACCOUNT_WORKERS", 32),
+            max_relay_domains: env_usize("SUB2API_EDGE_MAX_RELAY_DOMAINS", 4096),
+            relay_domain_idle_secs: env_u64("SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS", 300),
+            max_proxy_clients: env_usize("SUB2API_EDGE_MAX_PROXY_CLIENTS", 1024),
+            proxy_client_idle_secs: env_u64("SUB2API_EDGE_PROXY_CLIENT_IDLE_SECS", 300),
             max_idle_conns_per_account: env_usize(
                 "SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT",
                 env_usize("SUB2API_EDGE_MAX_IDLE_PER_HOST", 64),
@@ -4656,6 +5349,9 @@ impl EdgeConfig {
                 256 * 1024,
             ),
             ws_idle_per_key: env_usize("SUB2API_EDGE_WS_IDLE_PER_KEY", 1),
+            max_ws_idle_keys: env_usize("SUB2API_EDGE_MAX_WS_IDLE_KEYS", 1024),
+            ws_idle_ttl_secs: env_u64("SUB2API_EDGE_WS_IDLE_TTL_SECS", 300),
+            drain_timeout_secs: env_u64("SUB2API_EDGE_DRAIN_TIMEOUT_SECS", 1800),
             // P3: 后台上游连接保活。显式配置 URL 后启用；默认关闭，避免代理环境
             // 在没有直连业务时凭空直连上游。
             upstream_warm_url: match env::var("SUB2API_EDGE_UPSTREAM_WARM_URL") {
@@ -4668,8 +5364,27 @@ impl EdgeConfig {
                 "SUB2API_EDGE_UPSTREAM_DYNAMIC_WARM_ACTIVE_SECS",
                 300,
             ),
+            max_dynamic_warm_keys: env_usize("SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS", 4096),
         })
     }
+}
+
+fn stable_edge_node_id() -> Option<String> {
+    non_empty_env("SUB2API_EDGE_NODE_ID")
+        .or_else(|| non_empty_env("HOSTNAME"))
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn non_empty_env(key: &str) -> Option<String> {
+    env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn env_u64(key: &str, default_value: u64) -> u64 {
@@ -4976,6 +5691,14 @@ mod tests {
             None
         );
         assert_eq!(normalize_first_token_timeout_placeholder_ms(None), None);
+    }
+
+    #[test]
+    fn constant_time_eq_matches_bytes_and_lengths() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secret", b"secrex"));
+        assert!(!constant_time_eq(b"secret", b"secret-longer"));
+        assert!(!constant_time_eq(b"", b"x"));
     }
 
     #[test]
@@ -5557,6 +6280,22 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     }
 
     #[test]
+    fn local_capacity_errors_never_fallback_to_go() {
+        for message in [
+            "edge relay queue full or closed",
+            "edge relay queue byte budget exhausted",
+            "edge relay domain capacity exhausted",
+            "edge proxy client capacity exhausted",
+            "queue wait budget exceeded",
+        ] {
+            assert!(relay_error_is_local_capacity(&anyhow::anyhow!(message)));
+        }
+        assert!(!relay_error_is_local_capacity(&anyhow::anyhow!(
+            "upstream connection reset"
+        )));
+    }
+
+    #[test]
     fn ws_failure_state_keeps_policy_failure_without_hiding_later_real_errors() {
         let policy_error = TungsteniteMessage::Text(
             r#"{"type":"error","error":{"message":"Unsupported parameter","param":"prompt_cache_options"}}"#
@@ -5978,5 +6717,16 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             relay_queue_key(&plan).as_deref(),
             Some("42|http://127.0.0.1:7890|api.openai.com|priority")
         );
+    }
+
+    #[test]
+    fn relay_queue_byte_budget_is_bounded_and_released() {
+        let semaphore = Arc::new(Semaphore::new(8));
+        let permit =
+            try_reserve_relay_queue_bytes(semaphore.clone(), 8, 6).expect("reserve queue bytes");
+        assert!(try_reserve_relay_queue_bytes(semaphore.clone(), 8, 3).is_err());
+        assert!(try_reserve_relay_queue_bytes(semaphore.clone(), 8, 9).is_err());
+        drop(permit);
+        assert!(try_reserve_relay_queue_bytes(semaphore, 8, 8).is_ok());
     }
 }

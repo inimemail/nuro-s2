@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/runtimeops"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 )
@@ -83,7 +84,7 @@ var (
 
 	// acquireFirstAvailableAccountSlotScript 按调度器给出的候选顺序，在一次
 	// Redis 往返里抢占第一个有可用容量的账号槽位。
-	// KEYS[i] = concurrency:account:{accountID}
+	// KEYS pairs = concurrency:account:{accountID}, cooldown:account:{accountID}
 	// ARGV[1] = TTL（秒）
 	// ARGV[2] = requestID
 	// ARGV[3...] = 每个 KEYS 对应的 maxConcurrency
@@ -95,15 +96,17 @@ var (
 		local now = tonumber(timeResult[1])
 		local expireBefore = now - ttl
 
-		for i = 1, #KEYS do
+		for i = 1, #KEYS, 2 do
 			local key = KEYS[i]
-			local maxConcurrency = tonumber(ARGV[i + 2])
-			if maxConcurrency ~= nil and maxConcurrency > 0 then
+			local cooldownKey = KEYS[i + 1]
+			local candidateIndex = ((i - 1) / 2) + 1
+			local maxConcurrency = tonumber(ARGV[candidateIndex + 2])
+			if maxConcurrency ~= nil and maxConcurrency > 0 and redis.call('EXISTS', cooldownKey) == 0 then
 				local exists = redis.call('ZSCORE', key, requestID)
 				if exists ~= false and tonumber(exists) > expireBefore then
 					redis.call('ZADD', key, now, requestID)
 					redis.call('EXPIRE', key, ttl)
-					return i
+					return candidateIndex
 				elseif exists ~= false then
 					redis.call('ZREM', key, requestID)
 				end
@@ -112,7 +115,7 @@ var (
 				if count < maxConcurrency then
 					redis.call('ZADD', key, now, requestID)
 					redis.call('EXPIRE', key, ttl)
-					return i
+					return candidateIndex
 				end
 			end
 		end
@@ -239,6 +242,35 @@ var (
 		return 1
 	`)
 
+	refreshSlotScript = redis.NewScript(`
+		local key = KEYS[1]
+		local requestID = ARGV[1]
+		local ttl = tonumber(ARGV[2])
+		if redis.call('ZSCORE', key, requestID) == false then
+			return 0
+		end
+		local timeResult = redis.call('TIME')
+		redis.call('ZADD', key, tonumber(timeResult[1]), requestID)
+		redis.call('EXPIRE', key, ttl)
+		return 1
+	`)
+
+	refreshSlotsScript = redis.NewScript(`
+		local ttl = tonumber(ARGV[1])
+		local timeResult = redis.call('TIME')
+		local now = tonumber(timeResult[1])
+		local refreshed = 0
+		for i = 1, #KEYS do
+			local requestID = ARGV[i + 1]
+			if redis.call('ZSCORE', KEYS[i], requestID) ~= false then
+				redis.call('ZADD', KEYS[i], now, requestID)
+				redis.call('EXPIRE', KEYS[i], ttl)
+				refreshed = refreshed + 1
+			end
+		end
+		return refreshed
+	`)
+
 	// incrementWaitScript - refreshes TTL on each increment to keep queue depth accurate
 	// KEYS[1] = wait queue key
 	// ARGV[1] = maxWait
@@ -342,6 +374,13 @@ type concurrencyCache struct {
 	waitQueueTTLSeconds int // 等待队列过期时间（秒）
 }
 
+func (c *concurrencyCache) SlotTTL() time.Duration {
+	if c == nil || c.slotTTLSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(c.slotTTLSeconds) * time.Second
+}
+
 // NewConcurrencyCache 创建并发控制缓存
 // slotTTLMinutes: 槽位过期时间（分钟），0 或负数使用默认值 15 分钟
 // waitQueueTTLSeconds: 等待队列过期时间（秒），0 或负数使用 slot TTL
@@ -387,9 +426,12 @@ func accountCooldownKey(accountID int64) string {
 // Account slot operations
 
 func (c *concurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
-	key := accountSlotKey(accountID)
-	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取，确保多实例时钟一致
-	result, err := acquireScript.Run(ctx, c.rdb, []string{key}, maxConcurrency, c.slotTTLSeconds, requestID).Int()
+	keys := []string{accountSlotKey(accountID), accountCooldownKey(accountID)}
+	started := time.Now()
+	// The cooldown key is checked in the same atomic claim that adds the slot,
+	// closing the bounded snapshot-staleness window without another round trip.
+	result, err := acquireFirstAvailableAccountSlotScript.Run(ctx, c.rdb, keys, c.slotTTLSeconds, requestID, maxConcurrency).Int()
+	runtimeops.ObserveAdmissionClaim(time.Since(started), err)
 	if err != nil {
 		return false, err
 	}
@@ -410,7 +452,7 @@ func (c *concurrencyCache) AcquireFirstAvailableAccountSlot(ctx context.Context,
 		if candidate.AccountID <= 0 || candidate.MaxConcurrency <= 0 {
 			continue
 		}
-		keys = append(keys, accountSlotKey(candidate.AccountID))
+		keys = append(keys, accountSlotKey(candidate.AccountID), accountCooldownKey(candidate.AccountID))
 		args = append(args, candidate.MaxConcurrency)
 		accountIDs = append(accountIDs, candidate.AccountID)
 	}
@@ -418,7 +460,9 @@ func (c *concurrencyCache) AcquireFirstAvailableAccountSlot(ctx context.Context,
 		return 0, false, nil
 	}
 
+	started := time.Now()
 	result, err := acquireFirstAvailableAccountSlotScript.Run(ctx, c.rdb, keys, args...).Int()
+	runtimeops.ObserveAdmissionClaim(time.Since(started), err)
 	if err != nil {
 		return 0, false, err
 	}
@@ -451,7 +495,9 @@ func (c *concurrencyCache) AcquireFirstAvailableUserAccountSlots(ctx context.Con
 		return 0, false, nil
 	}
 
+	started := time.Now()
 	result, err := acquireFirstAvailableUserAccountSlotsScript.Run(ctx, c.rdb, keys, args...).Int()
+	runtimeops.ObserveAdmissionClaim(time.Since(started), err)
 	if err != nil {
 		return 0, false, err
 	}
@@ -464,6 +510,53 @@ func (c *concurrencyCache) AcquireFirstAvailableUserAccountSlots(ctx context.Con
 func (c *concurrencyCache) ReleaseAccountSlot(ctx context.Context, accountID int64, requestID string) error {
 	key := accountSlotKey(accountID)
 	return c.rdb.ZRem(ctx, key, requestID).Err()
+}
+
+func (c *concurrencyCache) RefreshSlot(ctx context.Context, kind string, entityID int64, requestID string) error {
+	key, err := concurrencySlotKey(kind, entityID)
+	if err != nil {
+		return err
+	}
+	_, err = refreshSlotScript.Run(ctx, c.rdb, []string{key}, requestID, c.slotTTLSeconds).Result()
+	return err
+}
+
+func (c *concurrencyCache) RefreshSlots(ctx context.Context, renewals []service.ConcurrencySlotRenewal) error {
+	const batchSize = 512
+	for start := 0; start < len(renewals); start += batchSize {
+		end := min(start+batchSize, len(renewals))
+		keys := make([]string, 0, end-start)
+		args := make([]any, 1, end-start+1)
+		args[0] = c.slotTTLSeconds
+		for _, renewal := range renewals[start:end] {
+			key, err := concurrencySlotKey(renewal.Kind, renewal.EntityID)
+			if err != nil || renewal.RequestID == "" {
+				continue
+			}
+			keys = append(keys, key)
+			args = append(args, renewal.RequestID)
+		}
+		if len(keys) == 0 {
+			continue
+		}
+		if _, err := refreshSlotsScript.Run(ctx, c.rdb, keys, args...).Result(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func concurrencySlotKey(kind string, entityID int64) (string, error) {
+	switch kind {
+	case "account":
+		return accountSlotKey(entityID), nil
+	case "user":
+		return userSlotKey(entityID), nil
+	case "api_key":
+		return apiKeySlotKey(entityID), nil
+	default:
+		return "", fmt.Errorf("unsupported concurrency slot kind %q", kind)
+	}
 }
 
 func (c *concurrencyCache) GetAccountConcurrency(ctx context.Context, accountID int64) (int, error) {
@@ -517,8 +610,10 @@ func (c *concurrencyCache) GetAccountConcurrencyBatch(ctx context.Context, accou
 
 func (c *concurrencyCache) AcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
 	key := userSlotKey(userID)
+	started := time.Now()
 	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取，确保多实例时钟一致
 	result, err := acquireScript.Run(ctx, c.rdb, []string{key}, maxConcurrency, c.slotTTLSeconds, requestID).Int()
+	runtimeops.ObserveAdmissionClaim(time.Since(started), err)
 	if err != nil {
 		return false, err
 	}

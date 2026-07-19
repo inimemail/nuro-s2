@@ -72,6 +72,7 @@ type openAIEdgeLease struct {
 	requestPayloadHash string
 	channelUsageFields service.ChannelUsageFields
 	promptAudit        *securityaudit.Collector
+	payloadReleased    bool
 	timer              *time.Timer
 }
 
@@ -316,7 +317,7 @@ func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 				continue
 			}
 			var acquired bool
-			accountReleaseFunc, acquired, err = h.concurrencyHelper.TryAcquireAccountSlot(ctx, account.ID, selection.WaitPlan.MaxConcurrency)
+			accountReleaseFunc, acquired, err = h.concurrencyHelper.TryAcquireAccountSlotForPlatform(ctx, account.Platform, account.ID, selection.WaitPlan.MaxConcurrency)
 			if err != nil {
 				return nil, "account_slot_acquire_failed", err
 			}
@@ -670,6 +671,64 @@ func (h *OpenAIGatewayHandler) getOpenAIEdgeLease(leaseID string) *openAIEdgeLea
 	h.openAIEdgeLeaseMu.Lock()
 	defer h.openAIEdgeLeaseMu.Unlock()
 	return h.openAIEdgeLeases[leaseID]
+}
+
+func (h *OpenAIGatewayHandler) releaseOpenAIEdgeRetryPayload(leaseID, edgeRequestID string, accountID int64) (*securityaudit.Collector, string) {
+	if h == nil {
+		return nil, "lease_not_found"
+	}
+	h.openAIEdgeLeaseMu.Lock()
+	defer h.openAIEdgeLeaseMu.Unlock()
+	leaseID = strings.TrimSpace(leaseID)
+	edgeRequestID = strings.TrimSpace(edgeRequestID)
+	if leaseID == "" && edgeRequestID != "" {
+		leaseID = h.openAIEdgeLeaseByRequest[edgeRequestID]
+	}
+	lease := h.openAIEdgeLeases[leaseID]
+	if lease == nil {
+		return nil, "lease_not_found"
+	}
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if edgeRequestID != "" && edgeRequestID != lease.edgeRequestID {
+		return nil, "request_mismatch"
+	}
+	if accountID != 0 && (lease.account == nil || lease.account.ID != accountID) {
+		return nil, "account_mismatch"
+	}
+	if lease.payloadReleased {
+		return nil, "payload_already_released"
+	}
+	lease.forwardBody = nil
+	lease.lastPlan.Body = nil
+	lease.lastPlan.BodyRawBase64 = ""
+	lease.rejectedFields = nil
+	lease.payloadReleased = true
+	promptAudit := lease.promptAudit
+	lease.promptAudit = nil
+	return promptAudit, ""
+}
+
+// OpenAIEdgeCommit drops retry-only payloads once fallback is no longer
+// possible. It deliberately leaves lease, slot, usage and first-token state.
+func (h *OpenAIGatewayHandler) OpenAIEdgeCommit(c *gin.Context) {
+	if !h.requireOpenAIEdgeSecret(c) {
+		return
+	}
+	var req service.OpenAIEdgeCommitRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid commit request"})
+		return
+	}
+	promptAudit, reason := h.releaseOpenAIEdgeRetryPayload(req.LeaseID, req.EdgeRequestID, req.AccountID)
+	if promptAudit != nil && h.promptAuditService != nil {
+		h.promptAuditService.FlushCollector(promptAudit)
+	}
+	if reason != "" && reason != "payload_already_released" {
+		c.JSON(http.StatusConflict, service.OpenAIEdgeAck{OK: false, Reason: reason})
+		return
+	}
+	c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: reason})
 }
 
 func (h *OpenAIGatewayHandler) recoverOpenAIEdgeLeases(edgeNodeID, currentInstanceID string) int {

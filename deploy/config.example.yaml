@@ -363,13 +363,22 @@ gateway:
     complete_timeout_ms: 1500
     lease_ttl_ms: 1800000
     # Edge data-plane pools and queues. Go still owns scheduling decisions; the
-    # Rust edge only queues executable relay plans by account/proxy/upstream host.
-    initial_pool_size: 10000
-    queue_buffer_size: 2000
+    # Rust edge uses one global queue plus per account/proxy/upstream permits.
+    initial_pool_size: 512
+    queue_buffer_size: 128
+    queue_max_bytes: 67108864
+    global_workers: 256
     per_account_workers: 32
+    max_relay_domains: 4096
+    relay_domain_idle_seconds: 300
+    max_proxy_clients: 1024
+    proxy_client_idle_seconds: 300
     max_idle_conns_per_account: 64
     # Number of unused preconnected WSv2 sockets kept per account/header key.
     ws_idle_per_key: 1
+    max_ws_idle_keys: 1024
+    ws_idle_ttl_seconds: 300
+    max_dynamic_warm_keys: 4096
     # Send raw request/plan body bytes through the control protocol so the edge
     # can forward transformed upstream bodies without JSON re-materialization.
     large_payload_passthrough: true
@@ -541,6 +550,18 @@ gateway:
     outbox_backlog_rebuild_rows: 10000
     # 全量重建周期（秒），0 表示禁用
     full_rebuild_interval_seconds: 300
+  # Distributed admission Cells. This is independent from scheduler bucket
+  # ownership. Account assignments are append-only and never hash-ring moved.
+  admission:
+    enabled: false
+    node_id: ""
+    # Comma-separated cell-id=redis://host:port/db entries.
+    openai_cells: "openai-001=redis://127.0.0.1:6380/0"
+    anthropic_cells: "anthropic-001=redis://127.0.0.1:6381/0"
+    escrow_enabled: true
+    escrow_grant_size: 16
+    node_ttl_seconds: 30
+    dead_node_grace_seconds: 900
   # TLS fingerprint simulation / TLS 指纹伪装
   # Default profile "claude_cli_v2" simulates Node.js 20.x
   # 默认模板 "claude_cli_v2" 模拟 Node.js 20.x 指纹

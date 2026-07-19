@@ -154,8 +154,9 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 			return
 		}
 		var acquired bool
-		accountRelease, acquired, err = h.concurrencyHelper.TryAcquireAccountSlot(
+		accountRelease, acquired, err = h.concurrencyHelper.TryAcquireAccountSlotForPlatform(
 			c.Request.Context(),
+			account.Platform,
 			account.ID,
 			selection.WaitPlan.MaxConcurrency,
 		)

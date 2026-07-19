@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sub2api-gateway
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 1800
+      containers:
+        - name: edge-rs
+          env:
+            - name: SUB2API_EDGE_STARTUP_JITTER_MAX_MS
+              value: "15000"
+            - name: SUB2API_EDGE_DRAIN_TIMEOUT_SECS
+              value: "1680"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 18080
+            periodSeconds: 5
+            failureThreshold: 1
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -ec
+                  - >-
+                    wget -q -O /dev/null --post-data=''
+                    --header="X-Sub2API-Edge-Secret: ${SUB2API_EDGE_INTERNAL_SECRET}"
+                    http://127.0.0.1:18080/internal/drain
+        - name: sub2api-go
+          env:
+            - name: SUB2API_STARTUP_JITTER_MAX_MS
+              value: "15000"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 1
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -ec
+                  - >-
+                    wget -q -O /dev/null --post-data=''
+                    --header="X-Sub2API-Edge-Secret: ${GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET}"
+                    http://127.0.0.1:8080/internal/runtime/drain;
+                    sleep "${GO_CONTROL_DRAIN_HOLD_SECONDS:-1740}"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sub2api-gateway
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: sub2api-gateway

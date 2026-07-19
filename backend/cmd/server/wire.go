@@ -82,6 +82,7 @@ func provideCleanup(
 	opsScheduledReport *service.OpsScheduledReportService,
 	opsSystemLogSink *service.OpsSystemLogSink,
 	schedulerSnapshot *service.SchedulerSnapshotService,
+	concurrencyService *service.ConcurrencyService,
 	tokenRefresh *service.TokenRefreshService,
 	accountExpiry *service.AccountExpiryService,
 	proxyExpiry *service.ProxyExpiryService,
@@ -308,6 +309,12 @@ func provideCleanup(
 		}
 
 		infraSteps := []cleanupStep{
+			{"ConcurrencyService", func() error {
+				if concurrencyService != nil {
+					concurrencyService.StopBackgroundWorkers()
+				}
+				return nil
+			}},
 			{"Redis", func() error {
 				if rdb == nil {
 					return nil

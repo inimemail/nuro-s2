@@ -639,7 +639,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}
 		return nil, false, nil
 	}
-	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
+	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency, account.Platform)
 	if acquireErr == nil && result != nil && result.Acquired {
 		if sessionHash != "" {
 			_ = s.service.refreshStickySessionTTL(ctx, req.GroupID, sessionHash, s.service.openAIStickySessionTTLForHash(sessionHash, s.service.openAIWSSessionStickyTTL()))
@@ -1455,7 +1455,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 			compactBlocked = true
 			continue
 		}
-		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
+		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency, fresh.Platform)
 		if acquireErr != nil {
 			return nil, compactBlocked, acquireErr
 		}
@@ -1507,6 +1507,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithArbite
 		candidates = append(candidates, AccountSlotCandidate{
 			AccountID:      fresh.ID,
 			MaxConcurrency: fresh.Concurrency,
+			Platform:       fresh.Platform,
 		})
 	}
 	if len(candidates) == 0 {
@@ -2228,7 +2229,7 @@ func (s *OpenAIGatewayService) selectRequiredOpenAIAccount(
 		return nil, decision, ErrNoAvailableAccounts
 	}
 
-	result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
+	result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency, account.Platform)
 	if err != nil {
 		return nil, decision, err
 	}

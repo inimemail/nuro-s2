@@ -19,9 +19,15 @@ $env:SUB2API_EDGE_INTERNAL_SECRET = "change-me"
 $env:SUB2API_EDGE_NODE_ID = "edge-node-1"
 $env:SUB2API_EDGE_PREPARE_TIMEOUT_MS = "1500"
 $env:SUB2API_EDGE_COMPLETE_TIMEOUT_MS = "1500"
-$env:SUB2API_EDGE_INITIAL_POOL_SIZE = "10000"
-$env:SUB2API_EDGE_QUEUE_BUFFER_SIZE = "2000"
+$env:SUB2API_EDGE_DRAIN_TIMEOUT_SECS = "1800"
+$env:SUB2API_EDGE_INITIAL_POOL_SIZE = "512"
+$env:SUB2API_EDGE_QUEUE_BUFFER_SIZE = "128"
+$env:SUB2API_EDGE_INGRESS_BODY_MAX_BYTES = "1073741824"
+$env:SUB2API_EDGE_QUEUE_MAX_BYTES = "67108864"
+$env:SUB2API_EDGE_GLOBAL_WORKERS = "256"
 $env:SUB2API_EDGE_PER_ACCOUNT_WORKERS = "32"
+$env:SUB2API_EDGE_MAX_RELAY_DOMAINS = "4096"
+$env:SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS = "4096"
 $env:SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT = "64"
 $env:SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS = "150"
 $env:SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH = "true"
@@ -97,9 +103,10 @@ existing Go route so current behavior is preserved.
 When Go returns `relay`, the edge opens the upstream request itself. It keeps
 separate HTTP clients per proxy URL, streams bytes back to the client without
 waiting for the full response, and reports completion metrics back to Go. HTTP
-relay plans are executed through bounded queues keyed by account + proxy +
-upstream host, with prewarmed SSE scratch buffers and raw body bytes preferred
-over JSON re-materialization. Safe Responses WSv2 passthrough can keep unused
+relay plans are submitted to one bounded process-wide executor; account + proxy
+and upstream host domains use lightweight in-flight permits. It uses prewarmed
+SSE scratch buffers and prefers raw body bytes over JSON re-materialization.
+Safe Responses WSv2 passthrough can keep unused
 preconnected upstream sockets per account/header key; sockets that have carried
 a client session are not returned to the idle pool.
 

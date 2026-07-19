@@ -80,6 +80,14 @@ type OpenAIEdgeRetryRequest struct {
 	WroteClientResponse bool            `json:"wrote_client_response"`
 }
 
+// OpenAIEdgeCommitRequest releases retry-only payload copies after the edge
+// has a downstream response. It intentionally does not settle usage or slots.
+type OpenAIEdgeCommitRequest struct {
+	EdgeRequestID string `json:"edge_request_id"`
+	LeaseID       string `json:"lease_id,omitempty"`
+	AccountID     int64  `json:"account_id,omitempty"`
+}
+
 type OpenAIEdgeRetryDecision struct {
 	Action          string          `json:"action"`
 	Reason          string          `json:"reason,omitempty"`
