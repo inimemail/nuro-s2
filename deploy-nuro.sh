@@ -41,6 +41,49 @@ require_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "系统缺少必要命令: $1"
 }
 
+sysctl_min_value() {
+    local key="$1"
+    local minimum="$2"
+    local current
+    current="$(sysctl -n "$key" 2>/dev/null)" || return 1
+    [[ "$current" =~ ^[0-9]+$ ]] || return 1
+    if (( current < minimum )); then
+        sysctl -w "${key}=${minimum}" >/dev/null || return 1
+        current="$minimum"
+    fi
+    echo "$current"
+}
+
+ensure_haproxy_host_capacity() {
+    require_cmd sysctl
+    require_cmd install
+    if (( EUID != 0 )); then
+        die "HAProxy 百万连接部署需要 root 权限调整宿主机文件描述符上限"
+    fi
+
+    local nr_open file_max somaxconn syn_backlog conntrack=""
+    nr_open="$(sysctl_min_value fs.nr_open 4194304)" || die "无法提升 fs.nr_open"
+    file_max="$(sysctl_min_value fs.file-max 8388608)" || die "无法提升 fs.file-max"
+    somaxconn="$(sysctl_min_value net.core.somaxconn 65535)" || die "无法提升 net.core.somaxconn"
+    syn_backlog="$(sysctl_min_value net.ipv4.tcp_max_syn_backlog 262144)" || die "无法提升 TCP SYN backlog"
+    if [[ -e /proc/sys/net/netfilter/nf_conntrack_max ]]; then
+        conntrack="$(sysctl_min_value net.netfilter.nf_conntrack_max 4194304)" || die "无法提升 nf_conntrack_max"
+    fi
+
+    local sysctl_tmp
+    sysctl_tmp="$(mktemp)" || die "无法创建 sysctl 临时文件"
+    {
+        echo "fs.nr_open=${nr_open}"
+        echo "fs.file-max=${file_max}"
+        echo "net.core.somaxconn=${somaxconn}"
+        echo "net.ipv4.tcp_max_syn_backlog=${syn_backlog}"
+        [[ -z "$conntrack" ]] || echo "net.netfilter.nf_conntrack_max=${conntrack}"
+    } > "$sysctl_tmp"
+    install -m 0644 "$sysctl_tmp" /etc/sysctl.d/99-nuro-sub2api-haproxy.conf
+    rm -f "$sysctl_tmp"
+    info "HAProxy 宿主机容量已就绪: nr_open=${nr_open}, file-max=${file_max}"
+}
+
 get_local_ip() {
     hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1"
 }
@@ -624,10 +667,9 @@ create_haproxy_config() {
     local workdir="$1"
     cat > "${workdir}/haproxy.cfg" <<'EOF'
 global
-    # Each proxied connection consumes a client and a server FD. Keep enough
-    # headroom for listeners, health checks, and server-template sockets under
-    # the container's 1,000,000 nofile hard limit.
-    maxconn 490000
+    # One proxied connection consumes a client and a server FD. The container
+    # nofile limit is 3,000,000, leaving headroom above 2 * maxconn.
+    maxconn 1200000
     log stdout format raw local0
 
 defaults
@@ -853,8 +895,10 @@ services:
     restart: unless-stopped
     ulimits:
       nofile:
-        soft: 1000000
-        hard: 1000000
+        soft: 3000000
+        hard: 3000000
+    sysctls:
+      net.ipv4.ip_local_port_range: "1024 65535"
     ports:
       - "\${BIND_HOST:-0.0.0.0}:\${SERVER_PORT:-6182}:8080"
     volumes:
@@ -865,10 +909,11 @@ services:
     networks:
       - nuro-sub2api-network
     healthcheck:
-      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8404/metrics"]
+      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1:8404/metrics"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   autoscaler:
     image: docker:27-cli
@@ -1049,6 +1094,7 @@ compose_build_with_edge_fallback() {
 compose_up_with_edge_fallback() {
     local workdir="$1"
     local dc_cmd="$2"
+    ensure_haproxy_host_capacity
     $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans
 }
 
