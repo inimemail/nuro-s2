@@ -2097,10 +2097,15 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 			firstTokenMs = nil
 		}
 		if realFirstTokenMs := intPointerFromInt64(req.RealFirstTokenMS); successfulTerminal && realFirstTokenMs != nil {
+			guardSampleAtUnixNS := int64(0)
+			if req.GuardSampleAtUnixNS != nil {
+				guardSampleAtUnixNS = *req.GuardSampleAtUnixNS
+			}
 			h.gatewayService.RecordOpenAIFirstTokenTimeoutPlaceholderGuardSample(
 				lease.account,
 				lease.openAIRoutingModel(),
 				*realFirstTokenMs,
+				guardSampleAtUnixNS,
 			)
 		}
 		edgeFallbackReason := stringPointerFromTrimmed(req.EdgeFallbackReason)

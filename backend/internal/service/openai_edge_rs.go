@@ -123,6 +123,7 @@ type OpenAIEdgeCompleteRequest struct {
 	UpstreamFirstByteMS *int64      `json:"upstream_first_byte_ms,omitempty"`
 	FirstTokenMS        *int64      `json:"first_token_ms,omitempty"`
 	RealFirstTokenMS    *int64      `json:"real_first_token_ms,omitempty"`
+	GuardSampleAtUnixNS *int64      `json:"guard_sample_at_unix_ns,omitempty"`
 	FirstClientFlushMS  *int64      `json:"first_client_flush_ms,omitempty"`
 	EdgePrepareMS       *int64      `json:"edge_prepare_ms,omitempty"`
 	EdgeQueueWaitMS     *int64      `json:"edge_queue_wait_ms,omitempty"`

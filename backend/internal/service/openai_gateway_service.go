@@ -5767,31 +5767,35 @@ func (s *OpenAIGatewayService) openAIStreamFirstTokenTimeoutPlaceholderMs(accoun
 	}
 	if account.IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled() {
 		guardMaxMS := account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs()
-		if !s.openaiFirstTokenTimeoutPlaceholderGuard.allow(account.ID, requestedModel, guardMaxMS, time.Now()) {
+		if !s.openaiFirstTokenTimeoutPlaceholderGuard.allow(account.ID, requestedModel, guardMaxMS) {
 			return 0
 		}
 	}
 	return ms
 }
 
-func (s *OpenAIGatewayService) recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account *Account, requestedModel string, realFirstTokenMS int) {
+func (s *OpenAIGatewayService) recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account *Account, requestedModel string, realFirstTokenMS int, recordedAtUnixNS ...int64) {
 	if s == nil || account == nil || realFirstTokenMS <= 0 || !account.IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled() {
 		return
 	}
 	if account.IsImagePoolMode() || isOpenAIImageGenerationModel(requestedModel) {
 		return
 	}
+	recordedAt := int64(0)
+	if len(recordedAtUnixNS) > 0 {
+		recordedAt = recordedAtUnixNS[0]
+	}
 	s.openaiFirstTokenTimeoutPlaceholderGuard.record(
 		account.ID,
 		requestedModel,
 		realFirstTokenMS,
 		account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(),
-		time.Now(),
+		recordedAt,
 	)
 }
 
-func (s *OpenAIGatewayService) RecordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account *Account, requestedModel string, realFirstTokenMS int) {
-	s.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, requestedModel, realFirstTokenMS)
+func (s *OpenAIGatewayService) RecordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account *Account, requestedModel string, realFirstTokenMS int, recordedAtUnixNS int64) {
+	s.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, requestedModel, realFirstTokenMS, recordedAtUnixNS)
 }
 
 func openAIStreamFirstTokenTimeoutTimer(startTime time.Time, timeout time.Duration) (*time.Timer, <-chan time.Time) {

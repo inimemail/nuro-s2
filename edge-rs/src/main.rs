@@ -588,6 +588,8 @@ struct CompleteRequest {
     upstream_first_byte_ms: Option<i64>,
     first_token_ms: Option<i64>,
     real_first_token_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guard_sample_at_unix_ns: Option<i64>,
     first_client_flush_ms: Option<i64>,
     edge_prepare_ms: Option<i64>,
     edge_queue_wait_ms: Option<i64>,
@@ -858,6 +860,7 @@ fn pending_stream_complete_request(
         upstream_first_byte_ms: None,
         first_token_ms: None,
         real_first_token_ms: None,
+        guard_sample_at_unix_ns: None,
         first_client_flush_ms: None,
         edge_prepare_ms,
         edge_queue_wait_ms,
@@ -2048,6 +2051,7 @@ async fn relay_ws_session(
             upstream_first_byte_ms: None,
             first_token_ms: None,
             real_first_token_ms: None,
+            guard_sample_at_unix_ns: None,
             first_client_flush_ms: None,
             edge_prepare_ms: None,
             edge_queue_wait_ms: None,
@@ -3177,6 +3181,7 @@ async fn relay_upstream_direct(
                                 upstream_first_byte_ms: first_byte_ms,
                                 first_token_ms,
                                 real_first_token_ms,
+                                guard_sample_at_unix_ns: None,
                                 first_client_flush_ms: first_flush_ms,
                                 edge_prepare_ms,
                                 edge_queue_wait_ms,
@@ -3256,6 +3261,7 @@ async fn relay_upstream_direct(
                             upstream_first_byte_ms: first_byte_ms,
                             first_token_ms,
                             real_first_token_ms,
+                            guard_sample_at_unix_ns: None,
                             first_client_flush_ms: first_flush_ms,
                             edge_prepare_ms,
                             edge_queue_wait_ms,
@@ -3382,6 +3388,7 @@ async fn relay_upstream_direct(
                         upstream_first_byte_ms: first_byte_ms,
                         first_token_ms,
                         real_first_token_ms,
+                        guard_sample_at_unix_ns: None,
                         first_client_flush_ms: first_flush_ms,
                         edge_prepare_ms,
                         edge_queue_wait_ms,
@@ -3444,6 +3451,7 @@ async fn relay_upstream_direct(
                     upstream_first_byte_ms: None,
                     first_token_ms: None,
                     real_first_token_ms: None,
+                    guard_sample_at_unix_ns: None,
                     first_client_flush_ms: None,
                     edge_prepare_ms: timing.prepare_ms,
                     edge_queue_wait_ms: timing.queue_wait_ms,
@@ -3873,6 +3881,7 @@ async fn relay_upstream_direct(
             upstream_first_byte_ms: first_byte_ms,
             first_token_ms,
             real_first_token_ms,
+            guard_sample_at_unix_ns: None,
             first_client_flush_ms: first_flush_ms,
             edge_prepare_ms,
             edge_queue_wait_ms,
@@ -4688,7 +4697,8 @@ async fn recover_previous_edge_leases(state: AppState) {
     }
 }
 
-async fn call_complete(state: &AppState, req: CompleteRequest) -> anyhow::Result<()> {
+async fn call_complete(state: &AppState, mut req: CompleteRequest) -> anyhow::Result<()> {
+    stamp_complete_guard_sample(&mut req);
     match send_settlement_once(state, "/internal/edge/openai/complete", &req).await {
         Ok(()) => Ok(()),
         Err(err) => {
@@ -4699,6 +4709,16 @@ async fn call_complete(state: &AppState, req: CompleteRequest) -> anyhow::Result
             enqueue_settlement_retry(state, SettlementRetryJob::Complete(Box::new(req)))
         }
     }
+}
+
+fn stamp_complete_guard_sample(req: &mut CompleteRequest) {
+    if req.real_first_token_ms.is_none() || req.guard_sample_at_unix_ns.is_some() {
+        return;
+    }
+    req.guard_sample_at_unix_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_nanos()).ok());
 }
 
 async fn call_abort(state: &AppState, req: AbortRequest) -> anyhow::Result<()> {
@@ -5766,6 +5786,32 @@ mod tests {
             request.terminal_event_type.as_deref(),
             Some("response.incomplete")
         );
+    }
+
+    #[test]
+    fn complete_guard_sample_timestamp_is_stable_across_retries() {
+        let mut request = pending_stream_complete_request(
+            "edge-1".to_string(),
+            Some("lease-1".to_string()),
+            Some(42),
+            None,
+            None,
+            None,
+            None,
+            0,
+        );
+
+        stamp_complete_guard_sample(&mut request);
+        assert_eq!(request.guard_sample_at_unix_ns, None);
+
+        request.real_first_token_ms = Some(95);
+        stamp_complete_guard_sample(&mut request);
+        let recorded_at = request
+            .guard_sample_at_unix_ns
+            .expect("guard completion timestamp");
+
+        stamp_complete_guard_sample(&mut request);
+        assert_eq!(request.guard_sample_at_unix_ns, Some(recorded_at));
     }
 
     #[test]

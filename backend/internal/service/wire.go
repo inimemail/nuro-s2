@@ -214,6 +214,8 @@ func ProvideOpenAIGatewayService(
 	settingService *SettingService,
 	tlsFPProfileService *TLSFingerprintProfileService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	redisClient *redis.Client,
+	db *sql.DB,
 ) *OpenAIGatewayService {
 	svc := NewOpenAIGatewayService(
 		accountRepo,
@@ -240,6 +242,8 @@ func ProvideOpenAIGatewayService(
 		userPlatformQuotaRepo,
 	)
 	svc.SetGrokTokenProvider(grokTokenProvider)
+	svc.SetOpenAIFirstTokenTimeoutPlaceholderGuardRedisClient(redisClient)
+	svc.SetOpenAIFirstTokenTimeoutPlaceholderGuardRetryDB(db)
 	return svc
 }
 
