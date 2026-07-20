@@ -14,6 +14,7 @@ APP_CONTAINER="nuro-sub2api"
 EDGE_CONTAINER="nuro-sub2api-edge-rs"
 POSTGRES_CONTAINER="nuro-sub2api-postgres"
 REDIS_CONTAINER="nuro-sub2api-redis"
+AUTOSCALER_CONTAINER="nuro-sub2api-autoscaler"
 IMAGE_NAME="nuro-sub2api-local:latest"
 EDGE_IMAGE_NAME="nuro-sub2api-edge-rs-local:latest"
 SOURCE_DIR_NAME="source"
@@ -26,6 +27,7 @@ DEFAULT_WEB_PORT="6182"
 CRON_TAG_BEGIN="# NURO_SUB2API_BACKUP_BEGIN"
 CRON_TAG_END="# NURO_SUB2API_BACKUP_END"
 BACKUP_LOG="/var/log/nuro-sub2api_backup.log"
+DEPLOY_EXPECTED_APP_REPLICAS=0
 
 ADMIN_PASS=""
 
@@ -745,7 +747,7 @@ services:
       dockerfile: Dockerfile
     image: ${IMAGE_NAME}
     restart: unless-stopped
-    stop_grace_period: 30m
+    stop_grace_period: 0s
     command: ["/app/paired-entrypoint.sh"]
     ulimits:
       nofile:
@@ -1103,9 +1105,66 @@ compose_build_with_edge_fallback() {
 compose_up_with_edge_fallback() {
     local workdir="$1"
     local dc_cmd="$2"
+    local env_file="${workdir}/.env"
+    local app_ids current_replicas min_replicas desired_replicas
+    local max_replicas min_cpu_per_pair min_memory_mb_per_pair
+    local host_cpus host_memory_mb cpu_limit memory_limit capacity_limit
+
     ensure_haproxy_host_capacity
     remove_legacy_runtime_containers
-    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans
+
+    # Stop the controller before reading the count so it cannot scale while
+    # this replacement is taking its snapshot.
+    if docker container inspect "$AUTOSCALER_CONTAINER" >/dev/null 2>&1; then
+        docker rm -f "$AUTOSCALER_CONTAINER" >/dev/null || die "无法停止 autoscaler"
+    fi
+
+    current_replicas="$(docker ps \
+        --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+        --filter 'label=com.docker.compose.service=app' \
+        --format '{{.ID}}' | awk 'NF { count++ } END { print count + 0 }')"
+    min_replicas="$(read_env_value "$env_file" AUTOSCALE_MIN_REPLICAS)"
+    min_replicas="${min_replicas:-2}"
+    [[ "$min_replicas" =~ ^[1-9][0-9]*$ ]] || min_replicas=2
+    max_replicas="$(read_env_value "$env_file" AUTOSCALE_MAX_REPLICAS)"
+    max_replicas="${max_replicas:-32}"
+    [[ "$max_replicas" =~ ^[1-9][0-9]*$ ]] || max_replicas=32
+    min_cpu_per_pair="$(read_env_value "$env_file" AUTOSCALE_MIN_CPU_PER_PAIR)"
+    min_cpu_per_pair="${min_cpu_per_pair:-4}"
+    [[ "$min_cpu_per_pair" =~ ^[1-9][0-9]*$ ]] || min_cpu_per_pair=4
+    min_memory_mb_per_pair="$(read_env_value "$env_file" AUTOSCALE_MIN_MEMORY_MB_PER_PAIR)"
+    min_memory_mb_per_pair="${min_memory_mb_per_pair:-2048}"
+    [[ "$min_memory_mb_per_pair" =~ ^[1-9][0-9]*$ ]] || min_memory_mb_per_pair=2048
+
+    host_cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || awk '/^processor/ { count++ } END { print count + 0 }' /proc/cpuinfo)"
+    host_memory_mb="$(awk '/MemTotal:/ { print int($2 / 1024); exit }' /proc/meminfo)"
+    [[ "$host_cpus" =~ ^[1-9][0-9]*$ ]] || host_cpus=1
+    [[ "$host_memory_mb" =~ ^[1-9][0-9]*$ ]] || host_memory_mb=1
+    cpu_limit=$((host_cpus * 80 / 100 / min_cpu_per_pair))
+    memory_limit=$((host_memory_mb * 80 / 100 / min_memory_mb_per_pair))
+    (( cpu_limit >= 1 )) || cpu_limit=1
+    (( memory_limit >= 1 )) || memory_limit=1
+    capacity_limit="$max_replicas"
+    (( capacity_limit <= cpu_limit )) || capacity_limit="$cpu_limit"
+    (( capacity_limit <= memory_limit )) || capacity_limit="$memory_limit"
+    (( min_replicas <= capacity_limit )) || min_replicas="$capacity_limit"
+
+    desired_replicas="$current_replicas"
+    (( desired_replicas > 0 )) || desired_replicas="$min_replicas"
+    DEPLOY_EXPECTED_APP_REPLICAS="$desired_replicas"
+
+    # Upgrade policy is intentionally fail-fast: the freshly built image is
+    # ready, so do not let long-lived streams delay replacement for minutes.
+    app_ids="$(docker ps -aq \
+        --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+        --filter 'label=com.docker.compose.service=app')"
+    if [[ -n "$app_ids" ]]; then
+        info "立即替换 ${current_replicas} 个旧 app 副本（不等待长连接排空）..."
+        # Intentional splitting is safe because Docker IDs are hexadecimal tokens.
+        docker rm -f $app_ids >/dev/null || die "无法删除旧 app 副本"
+    fi
+
+    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans --scale "app=${desired_replicas}"
 }
 
 show_access() {
@@ -1133,10 +1192,25 @@ show_access() {
 }
 
 wait_app_ready() {
-    local app_log_container
+    local app_log_container app_healthy haproxy_health expected_replicas
+    expected_replicas="${DEPLOY_EXPECTED_APP_REPLICAS:-1}"
+    if ! [[ "$expected_replicas" =~ ^[1-9][0-9]*$ ]]; then
+        expected_replicas="$(docker ps \
+            --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+            --filter 'label=com.docker.compose.service=app' \
+            --filter status=running \
+            --format '{{.ID}}' | awk 'NF { count++ } END { print count + 0 }')"
+        (( expected_replicas > 0 )) || expected_replicas=1
+    fi
     info "正在等待 ${APP_NAME} 启动 ..."
     for _ in $(seq 1 60); do
-        if docker ps --format '{{.Names}} {{.Status}}' | grep -q '^nuro-sub2api-haproxy .*Up'; then
+        app_healthy="$(docker ps \
+            --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+            --filter 'label=com.docker.compose.service=app' \
+            --filter status=running \
+            --format '{{.Status}}' | awk '/\(healthy\)/ { count++ } END { print count + 0 }')"
+        haproxy_health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' nuro-sub2api-haproxy 2>/dev/null || true)"
+        if (( app_healthy >= expected_replicas )) && [[ "$haproxy_health" == "healthy" ]]; then
             info "${APP_NAME} HAProxy 和成对副本已运行。"
             return 0
         fi
@@ -1229,7 +1303,7 @@ deploy_service() {
     compose_build_with_edge_fallback "$install_path" "$dc_cmd" || die "镜像构建失败"
     compose_up_with_edge_fallback "$install_path" "$dc_cmd" || die "容器启动失败"
 
-    wait_app_ready || true
+    wait_app_ready || die "容器启动失败"
     show_access "$install_path"
 }
 
@@ -1253,7 +1327,7 @@ upgrade_service() {
     compose_build_with_edge_fallback "$workdir" "$dc_cmd" || die "镜像构建失败"
     compose_up_with_edge_fallback "$workdir" "$dc_cmd" || die "容器启动失败"
 
-    wait_app_ready || true
+    wait_app_ready || die "容器启动失败"
     show_access "$workdir"
 }
 
@@ -1273,8 +1347,9 @@ restart_service() {
     [[ -z "$workdir" ]] && { err "未检测到部署环境。"; return; }
 
     cd "$workdir" || return
+    DEPLOY_EXPECTED_APP_REPLICAS=0
     $(docker_compose_cmd) -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml restart
-    wait_app_ready || true
+    wait_app_ready || die "容器启动失败"
     show_access "$workdir"
 }
 
@@ -1493,7 +1568,7 @@ restore_backup() {
         compose_up_with_edge_fallback "$target" "$restore_dc_cmd" || die "容器启动失败"
     fi
 
-    wait_app_ready || true
+    wait_app_ready || die "容器启动失败"
     show_access "$target"
 }
 
