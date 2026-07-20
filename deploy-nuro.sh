@@ -1159,7 +1159,6 @@ compose_up_with_edge_fallback() {
         --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
         --filter 'label=com.docker.compose.service=app')"
     if [[ -n "$app_ids" ]]; then
-        info "立即替换 ${current_replicas} 个旧 app 副本（不等待长连接排空）..."
         # Intentional splitting is safe because Docker IDs are hexadecimal tokens.
         docker rm -f $app_ids >/dev/null || die "无法删除旧 app 副本"
     fi
