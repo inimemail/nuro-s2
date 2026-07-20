@@ -167,6 +167,36 @@ func TestOpenAIPromptCacheCreationOptimization_ForwardCodexBridgeKeepsPassiveReq
 	require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists(), "bridge tool must still be forwarded")
 }
 
+func TestOpenAIPromptCacheCreationOptimization_OAuthEdgeUsesIngressIntentBeforeCachedBodyMutation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(OpenAIParsedRequestBodyKey, map[string]any{
+		"model":  "gpt-5.6-sol",
+		"stream": true,
+		"input":  "write code",
+		"tools": []any{
+			map[string]any{"type": "image_generation"},
+		},
+	})
+	account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, OpenAIPromptCacheCreationOptimizationModeSuppress)
+	account.Credentials["access_token"] = "oauth-token"
+	body := []byte(`{"model":"gpt-5.6-sol","stream":true,"input":"write code"}`)
+
+	plan, err := (&OpenAIGatewayService{cfg: promptCacheBoostTestConfig()}).BuildChatGPTOAuthResponsesEdgePlan(
+		context.Background(), c, account, body,
+	)
+
+	require.NoError(t, err)
+	decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
+	require.NoError(t, err)
+	require.True(t, gjson.GetBytes(decoded, `tools.#(type=="image_generation")`).Exists())
+	require.Equal(t, "explicit", gjson.GetBytes(decoded, "prompt_cache_options.mode").String())
+	require.Equal(t, "24h", gjson.GetBytes(decoded, "prompt_cache_options.ttl").String())
+	require.False(t, gjson.GetBytes(decoded, "prompt_cache_retention").Exists())
+}
+
 func TestOpenAIPromptCacheCreationOptimization_ExplicitResponsesKeepsKeyAndMarksStablePrefix(t *testing.T) {
 	stable := strings.Repeat("stable developer policy ", 260)
 	bodyValue := map[string]any{

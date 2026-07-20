@@ -1195,6 +1195,9 @@ func (s *defaultOpenAIAccountScheduler) sortOpenAIStrictPriorityCandidatesForSes
 		preferSoonestReset = weights.Reset > 0 || s.service.schedulingConfig().PreferSoonestReset
 	}
 	ordered := sortOpenAIStrictPriorityCandidatesWithResetAndSession(pool, preferSoonestReset, sessionHash)
+	if s != nil && IsOpenAIHealthProbeSessionHash(sessionHash) {
+		ordered = prioritizeOpenAIHealthProbeCandidate(ordered, s.stats, time.Now())
+	}
 	return ordered
 }
 
@@ -1212,11 +1215,10 @@ func openAIHealthProbeTopLayer(candidates []openAIAccountCandidateScore) []openA
 		return nil
 	}
 	priority := candidates[0].account.Priority
-	poolMode := candidates[0].account.IsPoolMode()
 	end := 0
 	for end < len(candidates) {
 		account := candidates[end].account
-		if account == nil || account.Priority != priority || account.IsPoolMode() != poolMode {
+		if account == nil || account.Priority != priority {
 			break
 		}
 		end++
@@ -1641,7 +1643,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			MaxConcurrency: account.EffectiveLoadFactor(),
 		})
 	}
-	if groupStrictModelPriorityOnMismatch(schedGroup) && !openAILowestBasePrioritySupportsRequestedModel(baseFiltered, req.RequestedModel) {
+	if groupStrictModelPriorityOnMismatch(schedGroup) && !candidateSetContainsLowestBasePriority(baseFiltered, filtered) {
 		filtered = nil
 	}
 	if len(filtered) == 0 {
@@ -1740,35 +1742,6 @@ func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Ac
 		return false
 	}
 	return s.service.isOpenAIAccountTransportCompatible(account, requiredTransport)
-}
-
-func openAILowestBasePrioritySupportsRequestedModel(baseCandidates []*Account, requestedModel string) bool {
-	if len(baseCandidates) == 0 {
-		return false
-	}
-	if requestedModel == "" {
-		return true
-	}
-	minPriority := 0
-	found := false
-	for _, account := range baseCandidates {
-		if account == nil {
-			continue
-		}
-		if !found || account.Priority < minPriority {
-			minPriority = account.Priority
-			found = true
-		}
-	}
-	if !found {
-		return false
-	}
-	for _, account := range baseCandidates {
-		if account != nil && account.Priority == minPriority && account.IsModelSupported(requestedModel) {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *defaultOpenAIAccountScheduler) shouldIncludeOpenAIAccountInPriorityBase(ctx context.Context, account *Account, requestedModel string) bool {

@@ -231,7 +231,8 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	if originalModel == "" {
 		return nil, fmt.Errorf("missing model in request")
 	}
-	if IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, body) {
+	explicitImageIntent := IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, body)
+	if explicitImageIntent {
 		return nil, fmt.Errorf("image responses require Go")
 	}
 	if previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); previousResponseID != "" {
@@ -271,7 +272,7 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	if err != nil {
 		return nil, err
 	}
-	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, policyModel, upstreamBody)
+	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, policyModel, upstreamBody, explicitImageIntent)
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +402,8 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if originalModel == "" {
 		return nil, fmt.Errorf("missing model in request")
 	}
-	if IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, body) {
+	explicitImageIntent := IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, body)
+	if explicitImageIntent {
 		return nil, fmt.Errorf("image responses require Go")
 	}
 	if previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()); previousResponseID != "" {
@@ -522,7 +524,7 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if err != nil {
 		return nil, err
 	}
-	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, upstreamBody)
+	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, upstreamModel, upstreamBody, explicitImageIntent)
 	if err != nil {
 		return nil, err
 	}
@@ -758,7 +760,8 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 	if previousResponseID := strings.TrimSpace(gjson.GetBytes(firstMessage, "previous_response_id").String()); previousResponseID != "" {
 		return nil, fmt.Errorf("previous_response_id requires Go WS state")
 	}
-	if IsExplicitImageGenerationIntent(openAIResponsesEndpoint, model, firstMessage) {
+	explicitImageIntent := IsExplicitImageGenerationIntent(openAIResponsesEndpoint, model, firstMessage)
+	if explicitImageIntent {
 		return nil, fmt.Errorf("image ws requires Go")
 	}
 	if bytes.Contains(firstMessage, []byte("function_call_output")) {
@@ -782,7 +785,7 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 			firstMessage = isolatedFirst
 		}
 	}
-	optimizedFirst, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, policyModel, firstMessage)
+	optimizedFirst, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, policyModel, firstMessage, explicitImageIntent)
 	if err != nil {
 		return nil, err
 	}

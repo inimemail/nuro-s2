@@ -24,6 +24,21 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func TestShouldCheckOpenAIHealthProbePeersRequiresAcquiredAccountSlot(t *testing.T) {
+	require.False(t, shouldCheckOpenAIHealthProbePeers(true, false, openAIAccountSlotAcquireResult{
+		CapacityMiss: true,
+	}), "a skipped busy account must not decide the selected priority layer's peer count")
+	require.False(t, shouldCheckOpenAIHealthProbePeers(true, true, openAIAccountSlotAcquireResult{
+		Acquired: true,
+	}), "the peer lookup must run at most once")
+	require.False(t, shouldCheckOpenAIHealthProbePeers(false, false, openAIAccountSlotAcquireResult{
+		Acquired: true,
+	}), "ordinary requests must not run health-probe peer lookup")
+	require.True(t, shouldCheckOpenAIHealthProbePeers(true, false, openAIAccountSlotAcquireResult{
+		Acquired: true,
+	}))
+}
+
 func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
 	tests := []struct {
 		name    string

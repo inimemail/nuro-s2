@@ -157,67 +157,16 @@ func (s *OpenAIGatewayService) HasOpenAIHealthProbeAlternativeAccount(ctx contex
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, openAIHealthProbeAlternativeLookupTimeout)
 	defer cancel()
-
-	platform := normalizeOpenAICompatibleRequestPlatform(req.RequestPlatform)
-	accounts, err := s.listSchedulableAccountsForPlatform(lookupCtx, req.GroupID, platform)
-	if err != nil || len(accounts) == 0 {
-		return false
-	}
-
-	var schedGroup *Group
-	if req.GroupID != nil && s.schedulerSnapshot != nil {
-		schedGroup, _ = s.schedulerSnapshot.GetGroupByID(lookupCtx, *req.GroupID)
-	}
-
-	candidates := make([]*Account, 0, len(accounts))
-	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
-	for i := range accounts {
-		account := &accounts[i]
-		if account.ID == current.ID || account.Priority != current.Priority {
-			continue
-		}
-		if _, excluded := req.ExcludedIDs[account.ID]; excluded {
-			continue
-		}
-		if s.schedulerSnapshot != nil {
-			account, err = s.getSchedulableAccount(lookupCtx, account.ID)
-			if err != nil || account == nil || account.Priority != current.Priority {
-				continue
-			}
-		}
-		if !isOpenAIAccountEligibleForRequest(lookupCtx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, platform) {
-			continue
-		}
-		if !parentHealthyForShadow(account, s.parentAccountLookup(lookupCtx)) ||
-			s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIPoolAccountSoftCooling(account) {
-			continue
-		}
-		if schedGroup != nil && schedGroup.RequirePrivacySet && !account.IsPrivacySet() {
-			continue
-		}
-		if req.RequiredTransport != OpenAIUpstreamTransportAny &&
-			req.RequiredTransport != OpenAIUpstreamTransportHTTPSSE &&
-			!s.isOpenAIAccountTransportCompatible(account, req.RequiredTransport) {
-			continue
-		}
-		if !s.latestOpenAIAccountMatchesGroup(lookupCtx, account, req.GroupID) {
-			continue
-		}
-		if req.GroupID != nil && s.needsUpstreamChannelRestrictionCheck(lookupCtx, req.GroupID) &&
-			s.isUpstreamModelRestrictedByChannel(lookupCtx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
-			continue
-		}
-		candidates = append(candidates, account)
-		loadReq = append(loadReq, AccountWithConcurrency{ID: account.ID, MaxConcurrency: account.EffectiveLoadFactor()})
-	}
+	candidates, _ := s.openAIHealthProbePeerCandidates(lookupCtx, current, req)
 	if len(candidates) == 0 {
-		return false
-	}
-	if lookupCtx.Err() != nil {
 		return false
 	}
 	if s.concurrencyService == nil {
 		return true
+	}
+	loadReq := make([]AccountWithConcurrency, 0, len(candidates))
+	for _, account := range candidates {
+		loadReq = append(loadReq, AccountWithConcurrency{ID: account.ID, MaxConcurrency: account.EffectiveLoadFactor()})
 	}
 	type loadResult struct {
 		loadMap map[int64]*AccountLoadInfo
@@ -245,6 +194,91 @@ func (s *OpenAIGatewayService) HasOpenAIHealthProbeAlternativeAccount(ctx contex
 		}
 	}
 	return false
+}
+
+// HasOpenAIHealthProbePeerAccount reports whether the selected priority layer
+// contains another eligible account. The second result is false when the
+// lookup could not be completed, so callers do not mistake a control-plane
+// failure for a single-account layer.
+func (s *OpenAIGatewayService) HasOpenAIHealthProbePeerAccount(ctx context.Context, current *Account, req OpenAIAccountScheduleRequest) (bool, bool) {
+	if s == nil || current == nil {
+		return false, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, openAIHealthProbeAlternativeLookupTimeout)
+	defer cancel()
+	candidates, known := s.openAIHealthProbePeerCandidates(lookupCtx, current, req)
+	return len(candidates) > 0, known
+}
+
+func (s *OpenAIGatewayService) openAIHealthProbePeerCandidates(ctx context.Context, current *Account, req OpenAIAccountScheduleRequest) ([]*Account, bool) {
+	platform := normalizeOpenAICompatibleRequestPlatform(req.RequestPlatform)
+	accounts, err := s.listSchedulableAccountsForPlatform(ctx, req.GroupID, platform)
+	if err != nil || len(accounts) == 0 {
+		return nil, err == nil
+	}
+	complete := true
+
+	var schedGroup *Group
+	if req.GroupID != nil && s.schedulerSnapshot != nil {
+		var groupErr error
+		schedGroup, groupErr = s.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID)
+		if groupErr != nil {
+			complete = false
+			schedGroup = nil
+		}
+	}
+
+	candidates := make([]*Account, 0, len(accounts))
+	for i := range accounts {
+		account := &accounts[i]
+		if account.ID == current.ID || account.Priority != current.Priority {
+			continue
+		}
+		if _, excluded := req.ExcludedIDs[account.ID]; excluded {
+			continue
+		}
+		if s.schedulerSnapshot != nil {
+			var accountErr error
+			account, accountErr = s.getSchedulableAccount(ctx, account.ID)
+			if accountErr != nil {
+				complete = false
+				continue
+			}
+			if account == nil || account.Priority != current.Priority {
+				continue
+			}
+		}
+		if !isOpenAIAccountEligibleForRequest(ctx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, platform) {
+			continue
+		}
+		if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) ||
+			s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIPoolAccountSoftCooling(account) {
+			continue
+		}
+		if schedGroup != nil && schedGroup.RequirePrivacySet && !account.IsPrivacySet() {
+			continue
+		}
+		if req.RequiredTransport != OpenAIUpstreamTransportAny &&
+			req.RequiredTransport != OpenAIUpstreamTransportHTTPSSE &&
+			!s.isOpenAIAccountTransportCompatible(account, req.RequiredTransport) {
+			continue
+		}
+		if !s.latestOpenAIAccountMatchesGroup(ctx, account, req.GroupID) {
+			continue
+		}
+		if req.GroupID != nil && s.needsUpstreamChannelRestrictionCheck(ctx, req.GroupID) &&
+			s.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
+			continue
+		}
+		candidates = append(candidates, account)
+	}
+	if ctx.Err() != nil {
+		return candidates, false
+	}
+	return candidates, complete
 }
 
 func (s *OpenAIGatewayService) ReleaseOpenAIHealthProbeSession(ctx context.Context, groupID *int64, sessionHash string) {

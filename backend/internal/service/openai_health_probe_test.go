@@ -471,6 +471,80 @@ func TestHasOpenAIHealthProbeAlternativeAccountRequiresReliableCapacity(t *testi
 	})
 }
 
+func TestHasOpenAIHealthProbePeerAccountIgnoresTemporaryCapacity(t *testing.T) {
+	groupID := int64(904)
+	current := healthProbeAlternativeAccount(231, 2, groupID)
+	peer := healthProbeAlternativeAccount(232, 2, groupID)
+	req := OpenAIAccountScheduleRequest{
+		GroupID:            &groupID,
+		RequestedModel:     "gpt-5.5",
+		RequiredTransport:  OpenAIUpstreamTransportAny,
+		RequiredCapability: OpenAIEndpointCapabilityChatCompletions,
+		RequestPlatform:    PlatformOpenAI,
+	}
+	cache := schedulerTestConcurrencyCache{loadMap: map[int64]*AccountLoadInfo{
+		peer.ID: {AccountID: peer.ID, LoadRate: 100},
+	}}
+
+	hasPeer, known := healthProbeAlternativeService([]Account{current, peer}, cache).
+		HasOpenAIHealthProbePeerAccount(context.Background(), &current, req)
+	require.True(t, known)
+	require.True(t, hasPeer)
+
+	hasPeer, known = healthProbeAlternativeService([]Account{current}, cache).
+		HasOpenAIHealthProbePeerAccount(context.Background(), &current, req)
+	require.True(t, known)
+	require.False(t, hasPeer)
+}
+
+func TestOpenAIHealthProbePeerLookupKeepsPartialCandidatesWithoutClaimingCompleteness(t *testing.T) {
+	groupID := int64(905)
+	current := healthProbeAlternativeAccount(241, 2, groupID)
+	brokenPeer := healthProbeAlternativeAccount(242, 2, groupID)
+	validPeer := healthProbeAlternativeAccount(243, 2, groupID)
+	accounts := []Account{current, brokenPeer, validPeer}
+	snapshotAccounts := make([]*Account, 0, len(accounts))
+	accountsByID := make(map[int64]*Account, len(accounts))
+	for i := range accounts {
+		account := accounts[i]
+		snapshotAccounts = append(snapshotAccounts, &account)
+		accountsByID[account.ID] = &account
+	}
+	cache := &openAISnapshotCacheStub{
+		snapshotAccounts: snapshotAccounts,
+		accountsByID:     accountsByID,
+		accountErrors: map[int64]error{
+			brokenPeer.ID: errors.New("snapshot refresh failed"),
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerTestOpenAIAccountRepo{accounts: accounts},
+		schedulerSnapshot: &SchedulerSnapshotService{
+			cache:       cache,
+			accountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{current, validPeer}},
+			groupRepo: &schedulerTestGroupRepo{groups: map[int64]*Group{
+				groupID: {ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true},
+			}},
+		},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{loadMap: map[int64]*AccountLoadInfo{
+			validPeer.ID: {AccountID: validPeer.ID, LoadRate: 0},
+		}}),
+	}
+	req := OpenAIAccountScheduleRequest{
+		GroupID:            &groupID,
+		RequestedModel:     "gpt-5.5",
+		RequiredTransport:  OpenAIUpstreamTransportAny,
+		RequiredCapability: OpenAIEndpointCapabilityChatCompletions,
+		RequestPlatform:    PlatformOpenAI,
+	}
+
+	require.True(t, svc.HasOpenAIHealthProbeAlternativeAccount(context.Background(), &current, req),
+		"a valid partial candidate must remain usable for capacity-aware retry")
+	hasPeer, known := svc.HasOpenAIHealthProbePeerAccount(context.Background(), &current, req)
+	require.True(t, hasPeer)
+	require.False(t, known, "partial refresh failures must prevent a single-account conclusion")
+}
+
 func TestHasOpenAIHealthProbeAlternativeAccountDoesNotWarmSchedulingLoadCache(t *testing.T) {
 	groupID := int64(903)
 	current := healthProbeAlternativeAccount(221, 2, groupID)

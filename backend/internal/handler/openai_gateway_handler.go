@@ -79,6 +79,10 @@ type openAIAccountSlotAcquireResult struct {
 	Err          error
 }
 
+func shouldCheckOpenAIHealthProbePeers(healthProbe, peerChecked bool, slotResult openAIAccountSlotAcquireResult) bool {
+	return healthProbe && !peerChecked && slotResult.Acquired
+}
+
 func mergeOpenAIAccountExclusions(sets ...map[int64]struct{}) map[int64]struct{} {
 	var merged map[int64]struct{}
 	for _, set := range sets {
@@ -448,8 +452,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	modelRoutingLockedPriority := -1
 	userSlotHeld := false
 	healthProbeDefaultFallbackStarted := false
-	startHealthProbeDefaultFallback := func(failoverErr *service.UpstreamFailoverError) bool {
-		if !service.ShouldStartOpenAIHealthProbeDefaultFallback(c, failoverErr, healthProbeDefaultFallbackStarted) {
+	healthProbePeerChecked := false
+	activateHealthProbeDefaultFallback := func(reason string) bool {
+		if healthProbeDefaultFallbackStarted {
 			return false
 		}
 		fallbackBody, buildErr := service.BuildOpenAIHealthProbeDefaultFallbackBody(reqModel)
@@ -471,8 +476,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		healthProbeAlternativeByAccount = make(map[int64]bool)
 		lastFailoverErr = nil
 		modelRoutingLockedPriority = -1
-		reqLog.Warn("openai.health_probe_default_fallback_started", zap.String("model", reqModel))
+		reqLog.Warn("openai.health_probe_default_fallback_started", zap.String("model", reqModel), zap.String("reason", reason))
 		return true
+	}
+	startHealthProbeDefaultFallback := func(failoverErr *service.UpstreamFailoverError) bool {
+		if !service.ShouldStartOpenAIHealthProbeDefaultFallback(c, failoverErr, healthProbeDefaultFallbackStarted) {
+			return false
+		}
+		return activateHealthProbeDefaultFallback("dedicated_probe_exhausted")
 	}
 	settleFailover := func(account *service.Account, failoverErr *service.UpstreamFailoverError) bool {
 		sameAccountRetryAccountID = 0
@@ -687,6 +698,22 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
+		// Keep this check after account-slot acquisition. A capacity miss may move
+		// the request to another priority layer, whose peer count can differ.
+		if shouldCheckOpenAIHealthProbePeers(healthProbe, healthProbePeerChecked, slotResult) {
+			healthProbePeerChecked = true
+			hasPeer, known := h.gatewayService.HasOpenAIHealthProbePeerAccount(requestCtx, account, service.OpenAIAccountScheduleRequest{
+				GroupID:            apiKey.GroupID,
+				RequestedModel:     reqModel,
+				RequiredTransport:  service.OpenAIUpstreamTransportAny,
+				RequiredCapability: requiredCapability,
+				RequireCompact:     requireCompact,
+				RequestPlatform:    requestPlatform,
+			})
+			if known && !hasPeer {
+				activateHealthProbeDefaultFallback("single_account_priority_layer")
+			}
+		}
 
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())

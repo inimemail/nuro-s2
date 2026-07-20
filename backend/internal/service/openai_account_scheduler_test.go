@@ -17,6 +17,7 @@ type openAISnapshotCacheStub struct {
 	SchedulerCache
 	snapshotAccounts  []*Account
 	accountsByID      map[int64]*Account
+	accountErrors     map[int64]error
 	lastBucketGroupID int64
 }
 
@@ -291,6 +292,9 @@ func (s *openAISnapshotCacheStub) GetSnapshot(ctx context.Context, bucket Schedu
 }
 
 func (s *openAISnapshotCacheStub) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
+	if err := s.accountErrors[accountID]; err != nil {
+		return nil, err
+	}
 	if s.accountsByID == nil {
 		return nil, nil
 	}
@@ -1125,6 +1129,110 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_ModelMismatchPriorityFa
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no available OpenAI accounts")
+	require.Nil(t, selection)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Zero(t, decision.CandidateCount)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_StrictPriorityUsesFinalCapabilityCandidates(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(101151)
+	accounts := []Account{
+		{
+			ID:          370511,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    1,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gpt-5.1": "gpt-5.1"},
+			},
+			Extra: map[string]any{
+				"openai_responses_supported": false,
+			},
+		},
+		{
+			ID:          370512,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    2,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gpt-5.1": "gpt-5.1"},
+			},
+			Extra: map[string]any{
+				"openai_responses_supported": true,
+			},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	concurrencyCache := schedulerTestConcurrencyCache{
+		acquireResults: map[int64]bool{370512: true},
+		loadMap: map[int64]*AccountLoadInfo{
+			370511: {AccountID: 370511, LoadRate: 0, WaitingCount: 0},
+			370512: {AccountID: 370512, LoadRate: 0, WaitingCount: 0},
+		},
+	}
+	newService := func(strict bool) *OpenAIGatewayService {
+		snapshotCopies := append([]Account(nil), accounts...)
+		freshCopies := append([]Account(nil), accounts...)
+		snapshotAccounts := make([]*Account, 0, len(snapshotCopies))
+		accountsByID := make(map[int64]*Account, len(accounts))
+		for i := range snapshotCopies {
+			snapshotAccounts = append(snapshotAccounts, &snapshotCopies[i])
+		}
+		for i := range freshCopies {
+			accountsByID[freshCopies[i].ID] = &freshCopies[i]
+		}
+		return &OpenAIGatewayService{
+			accountRepo:      schedulerTestOpenAIAccountRepo{accounts: accounts},
+			cache:            &schedulerTestGatewayCache{},
+			cfg:              cfg,
+			rateLimitService: newOpenAIAdvancedSchedulerRateLimitService("true"),
+			schedulerSnapshot: &SchedulerSnapshotService{
+				cache: &openAISnapshotCacheStub{
+					snapshotAccounts: snapshotAccounts,
+					accountsByID:     accountsByID,
+				},
+				groupRepo: &schedulerTestGroupRepo{groups: map[int64]*Group{
+					groupID: {
+						ID:                                 groupID,
+						Platform:                           PlatformOpenAI,
+						Status:                             StatusActive,
+						Hydrated:                           true,
+						StrictModelPriorityOnModelMismatch: strict,
+					},
+				}},
+			},
+			concurrencyService: NewConcurrencyService(concurrencyCache),
+		}
+	}
+
+	selection, _, err := newService(false).SelectAccountWithSchedulerForCapabilityOnPlatform(
+		ctx, &groupID, "", "", "gpt-5.1", nil, OpenAIUpstreamTransportHTTPSSE,
+		OpenAIEndpointCapabilityResponses, false, PlatformOpenAI,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(370512), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	selection, decision, err := newService(true).SelectAccountWithSchedulerForCapabilityOnPlatform(
+		ctx, &groupID, "", "", "gpt-5.1", nil, OpenAIUpstreamTransportHTTPSSE,
+		OpenAIEndpointCapabilityResponses, false, PlatformOpenAI,
+	)
+	require.Error(t, err)
 	require.Nil(t, selection)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 	require.Zero(t, decision.CandidateCount)
@@ -3709,6 +3817,77 @@ func TestPrioritizeOpenAIHealthProbeCandidate_UnknownExplorationDoesNotCrossPrio
 		ordered := prioritizeOpenAIHealthProbeCandidate(candidates, stats, now)
 		require.Equal(t, int64(5253), ordered[0].account.ID)
 	}
+}
+
+func TestPrioritizeOpenAIHealthProbeCandidate_UnknownExplorationCrossesPoolModeAtSamePriority(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	stats.selectionCounter.Store(accountHealthUnknownExploreEvery - 1)
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:         &Account{ID: 5265, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:     accountHealthUnknownMinSamples,
+			ttftSampleCount: accountHealthUnknownMinSamples,
+			healthScore:     1,
+			hasHealthScore:  true,
+		},
+		{
+			account: &Account{
+				ID:       5266,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeAPIKey,
+				Priority: 0,
+				Credentials: map[string]any{
+					"pool_mode": true,
+				},
+			},
+			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:    0,
+			healthScore:    accountHealthUnknownScore,
+			hasHealthScore: true,
+		},
+	}
+
+	ordered := prioritizeOpenAIHealthProbeCandidate(candidates, stats, time.Now())
+	require.Equal(t, int64(5266), ordered[0].account.ID)
+}
+
+func TestBuildStrictPrioritySelectionOrder_HealthProbeUsesProbeExploration(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	stats.selectionCounter.Store(accountHealthUnknownExploreEvery - 1)
+	scheduler := &defaultOpenAIAccountScheduler{stats: stats}
+	candidates := []openAIAccountCandidateScore{
+		{
+			account:         &Account{ID: 5267, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Priority: 0},
+			loadInfo:        &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:     accountHealthUnknownMinSamples,
+			ttftSampleCount: accountHealthUnknownMinSamples,
+			healthScore:     1,
+			hasHealthScore:  true,
+		},
+		{
+			account: &Account{
+				ID:       5268,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeAPIKey,
+				Priority: 0,
+				Credentials: map[string]any{
+					"pool_mode": true,
+				},
+			},
+			loadInfo:       &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
+			sampleCount:    0,
+			healthScore:    accountHealthUnknownScore,
+			hasHealthScore: true,
+		},
+	}
+
+	ordered := scheduler.buildStrictPrioritySelectionOrderForSession(
+		candidates,
+		"gpt-5.6-sol",
+		NewOpenAIHealthProbeSessionHash(),
+	)
+	require.Equal(t, int64(5268), ordered[0].account.ID)
 }
 
 func TestPrioritizeOpenAIHealthProbeCandidate_DegradedRecoveryHasCooldown(t *testing.T) {
