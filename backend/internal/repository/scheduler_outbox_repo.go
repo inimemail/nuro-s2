@@ -136,7 +136,6 @@ func enqueueSchedulerOutbox(ctx context.Context, exec sqlExecutor, eventType str
 func schedulerOutboxEventSupportsDedup(eventType string) bool {
 	switch eventType {
 	case service.SchedulerOutboxEventAccountChanged,
-		service.SchedulerOutboxEventGroupChanged,
 		service.SchedulerOutboxEventFullRebuild:
 		return true
 	default:

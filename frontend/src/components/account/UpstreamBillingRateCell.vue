@@ -117,10 +117,16 @@ const protectedGroups = computed(() => {
         : binding.group && Object.prototype.hasOwnProperty.call(binding.group, 'upstream_billing_guard_max_multiplier')
           ? binding.group
           : undefined
+      const hasRawOverride = Object.prototype.hasOwnProperty.call(binding, 'upstream_billing_guard_override_max_multiplier')
+      const rawOverride = hasRawOverride
+        ? binding.upstream_billing_guard_override_max_multiplier
+        : binding.upstream_billing_guard_max_multiplier
       const limit = policyGroup
         ? (policyGroup.upstream_billing_guard_max_multiplier == null
           ? null
-          : binding.upstream_billing_guard_max_multiplier ?? policyGroup.upstream_billing_guard_max_multiplier)
+          : rawOverride == null
+            ? policyGroup.upstream_billing_guard_max_multiplier
+            : Math.min(rawOverride, policyGroup.upstream_billing_guard_max_multiplier))
         : binding.upstream_billing_guard_max_multiplier
       return { binding, group, limit }
     })

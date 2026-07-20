@@ -145,6 +145,33 @@ func TestAccountUpstreamBillingGuardOverrideCannotRelaxGroupCeiling(t *testing.T
 	require.Equal(t, groupLimit, *limit)
 }
 
+func TestAccountUpstreamBillingGuardOverrideSurvivesGroupLimitRoundTrip(t *testing.T) {
+	groupID := int64(10)
+	groupLimit := 2.0
+	override := 1.5
+	binding := AccountGroup{
+		GroupID: groupID,
+		UpstreamBillingGuardOverrideMaxMultiplier: &override,
+		GroupUpstreamBillingGuardMaxMultiplier:    &groupLimit,
+		GroupPolicyLoaded:                         true,
+	}
+
+	limit, configured := binding.EffectiveUpstreamBillingGuardMaxMultiplier()
+	require.True(t, configured)
+	require.Equal(t, 1.5, *limit)
+
+	groupLimit = 1
+	limit, configured = binding.EffectiveUpstreamBillingGuardMaxMultiplier()
+	require.True(t, configured)
+	require.Equal(t, 1.0, *limit)
+
+	groupLimit = 2
+	limit, configured = binding.EffectiveUpstreamBillingGuardMaxMultiplier()
+	require.True(t, configured)
+	require.Equal(t, 1.5, *limit)
+	require.Equal(t, 1.5, *binding.UpstreamBillingGuardOverrideMaxMultiplier)
+}
+
 func TestAccountUpstreamBillingGuardLoadedNilGroupPolicyDisablesStaleOverride(t *testing.T) {
 	staleEffective := 1.0
 	staleOverride := 0.5

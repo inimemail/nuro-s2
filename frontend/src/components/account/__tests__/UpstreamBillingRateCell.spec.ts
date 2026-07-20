@@ -149,6 +149,25 @@ describe('UpstreamBillingRateCell', () => {
     expect(wrapper.find('[data-testid="upstream-billing-guard-group-10"]').exists()).toBe(false)
   })
 
+  it('uses the refreshed group default when the binding has no explicit override', () => {
+    const account = makeAccount({ observed: 1.5, limit: 2 })
+    account.groups = [{ ...(account.groups?.[0] as any), upstream_billing_guard_max_multiplier: 2 }]
+    account.account_groups = [{
+      ...(account.account_groups?.[0] as any),
+      // This is the stale effective value returned before the group update.
+      upstream_billing_guard_max_multiplier: 1,
+      upstream_billing_guard_override_max_multiplier: null,
+      group: account.groups[0]
+    }]
+
+    const wrapper = mountCell(account)
+
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10"]').attributes('data-guard-state')).toBe('available')
+    expect(wrapper.get('[data-testid="upstream-billing-guard-group-10-details"]').text()).toContain(
+      'admin.accounts.upstreamBilling.guardLimitDetail:{"rate":"2x"}'
+    )
+  })
+
   it('uses a richer account group object when the binding group is shallow', () => {
     const account = makeAccount({ observed: 0.8, limit: 1 })
     account.account_groups = [{
