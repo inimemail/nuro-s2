@@ -716,13 +716,13 @@ backend edge_pool
     http-response set-header Cache-Control "no-cache, no-transform"
     http-response set-header X-Accel-Buffering "no"
     http-check expect status 200
-    server-template edge 1-128 app:18080 check resolvers docker resolve-opts allow-dup-ip init-addr libc,none
+    server-template edge 1-128 app:18080 check resolvers docker init-addr libc,none
 
 backend go_pool
     balance leastconn
     option httpchk GET /readyz
     http-check expect status 200
-    server-template go 1-128 app:8080 check resolvers docker resolve-opts allow-dup-ip init-addr libc,none
+    server-template go 1-128 app:8080 check resolvers docker init-addr libc,none
 
 frontend stats
     bind *:8404

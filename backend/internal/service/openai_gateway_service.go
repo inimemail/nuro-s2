@@ -34,6 +34,7 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
@@ -410,6 +411,7 @@ type OpenAIGatewayService struct {
 	openaiScheduler               OpenAIAccountScheduler
 	openaiWSPassthroughDialer     openAIWSClientDialer
 	openaiAccountStats            *openAIAccountRuntimeStats
+	openaiAccountHealthRedis      *redis.Client
 
 	openaiWSFallbackUntil                        sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockUntil               sync.Map // key: int64(accountID), value: time.Time
@@ -622,11 +624,17 @@ func (s *OpenAIGatewayService) billingDeps() *billingDeps {
 	}
 }
 
-// CloseOpenAIWSPool 关闭 OpenAI WebSocket 连接池的后台 worker 和空闲连接。
+// CloseOpenAIWSPool 关闭 OpenAI WebSocket 连接池及共享健康 worker。
 // 应在应用优雅关闭时调用。
 func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
-	if s != nil && s.openaiWSPool != nil {
+	if s == nil {
+		return
+	}
+	if s.openaiWSPool != nil {
 		s.openaiWSPool.Close()
+	}
+	if s.openaiAccountStats != nil {
+		s.openaiAccountStats.closeSharedHealth()
 	}
 }
 

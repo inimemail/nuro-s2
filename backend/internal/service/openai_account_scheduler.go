@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -148,6 +149,8 @@ type openAIAccountRuntimeStats struct {
 	selectionCounter   atomic.Uint64
 	unknownExploreAt   sync.Map
 	degradedRecoveryAt sync.Map
+	sharedMu           sync.RWMutex
+	shared             *openAIAccountHealthSharedState
 }
 
 type openAIAccountRuntimeStatsKey struct {
@@ -158,11 +161,13 @@ type openAIAccountRuntimeStatsKey struct {
 }
 
 type openAIAccountRuntimeStat struct {
+	mu                sync.Mutex
 	errorRateEWMABits atomic.Uint64
 	ttftEWMABits      atomic.Uint64
 	sampleCount       atomic.Int64
 	ttftSampleCount   atomic.Int64
 	lastUpdatedNano   atomic.Int64
+	sharedVersion     atomic.Int64
 }
 
 func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
@@ -192,6 +197,7 @@ func (s *openAIAccountRuntimeStats) loadOrCreateForKey(key openAIAccountRuntimeS
 		if _, accountLoaded := s.accountIDs.LoadOrStore(key.accountID, struct{}{}); !accountLoaded {
 			s.accountCount.Add(1)
 		}
+		s.loadSharedHealthOnce(key, stat)
 		return stat
 	}
 	existing, _ := actual.(*openAIAccountRuntimeStat)
@@ -248,6 +254,7 @@ func (s *openAIAccountRuntimeStats) reportForKey(key openAIAccountRuntimeStatsKe
 	if stat == nil {
 		return
 	}
+	stat.mu.Lock()
 	stat.sampleCount.Add(1)
 	stat.lastUpdatedNano.Store(time.Now().UnixNano())
 
@@ -276,6 +283,9 @@ func (s *openAIAccountRuntimeStats) reportForKey(key openAIAccountRuntimeStatsKe
 			}
 		}
 	}
+	updatedNano := stat.lastUpdatedNano.Load()
+	stat.mu.Unlock()
+	s.enqueueSharedHealthReport(key, success, firstTokenMs, updatedNano)
 }
 
 func (s *openAIAccountRuntimeStats) snapshot(accountID int64) (errorRate float64, ttft float64, hasTTFT bool) {
@@ -1915,8 +1925,25 @@ func (s *OpenAIGatewayService) getOpenAIAccountRuntimeStats() *openAIAccountRunt
 		if s.openaiAccountStats == nil {
 			s.openaiAccountStats = newOpenAIAccountRuntimeStats()
 		}
+		s.openaiAccountStats.setSharedRedisClient(s.openaiAccountHealthRedis)
 	})
+	if s.openaiAccountStats != nil {
+		s.openaiAccountStats.setSharedRedisClient(s.openaiAccountHealthRedis)
+	}
 	return s.openaiAccountStats
+}
+
+// SetOpenAIAccountHealthRedisClient enables cross-replica sharing of the
+// existing in-memory health samples. It does not change the scoring formula
+// or any request timing metric.
+func (s *OpenAIGatewayService) SetOpenAIAccountHealthRedisClient(client *redis.Client) {
+	if s == nil {
+		return
+	}
+	s.openaiAccountHealthRedis = client
+	if s.openaiAccountStats != nil {
+		s.openaiAccountStats.setSharedRedisClient(client)
+	}
 }
 
 func resetOpenAIAdvancedSchedulerSettingCacheForTest() {

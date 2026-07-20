@@ -243,6 +243,7 @@ func ProvideOpenAIGatewayService(
 	)
 	svc.SetGrokTokenProvider(grokTokenProvider)
 	svc.SetOpenAIFirstTokenTimeoutPlaceholderGuardRedisClient(redisClient)
+	svc.SetOpenAIAccountHealthRedisClient(redisClient)
 	svc.SetOpenAIFirstTokenTimeoutPlaceholderGuardRetryDB(db)
 	return svc
 }
