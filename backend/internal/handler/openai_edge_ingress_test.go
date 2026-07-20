@@ -66,6 +66,20 @@ func TestCopyOpenAIEdgeResponseHeadersSanitizesUpstreamIdentity(t *testing.T) {
 	require.Empty(t, dst.Get("Server"))
 }
 
+func TestCopyOpenAIEdgeResponseHeadersPreservesJSONResponses(t *testing.T) {
+	src := http.Header{
+		"Content-Type":  {"application/json; charset=utf-8"},
+		"Cache-Control": {"private, max-age=0"},
+	}
+	dst := make(http.Header)
+
+	copyOpenAIEdgeResponseHeaders(dst, src)
+
+	require.Equal(t, "application/json; charset=utf-8", dst.Get("Content-Type"))
+	require.Equal(t, "private, max-age=0", dst.Get("Cache-Control"))
+	require.Empty(t, dst.Get("X-Accel-Buffering"))
+}
+
 func TestOpenAIEdgeIngressFallbackHeaderSkipsProxy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &OpenAIGatewayHandler{cfg: &config.Config{}}

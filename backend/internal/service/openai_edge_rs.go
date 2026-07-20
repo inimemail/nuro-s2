@@ -88,6 +88,15 @@ type OpenAIEdgeCommitRequest struct {
 	AccountID     int64  `json:"account_id,omitempty"`
 }
 
+// OpenAIEdgeRenewRequest extends an active data-plane lease. The edge sends
+// these heartbeats while an HTTP/SSE or WebSocket response is still alive so
+// the short crash-recovery TTL does not cap legitimate long-running streams.
+type OpenAIEdgeRenewRequest struct {
+	EdgeRequestID string `json:"edge_request_id"`
+	LeaseID       string `json:"lease_id"`
+	AccountID     int64  `json:"account_id,omitempty"`
+}
+
 type OpenAIEdgeRetryDecision struct {
 	Action          string          `json:"action"`
 	Reason          string          `json:"reason,omitempty"`

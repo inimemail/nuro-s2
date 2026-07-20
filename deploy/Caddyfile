@@ -2,8 +2,8 @@
 api.sub2api.com {
 	# Metrics are scraped from the private Kubernetes Service, never exposed via
 	# the public API hostname.
-	@private_metrics path /metrics
-	respond @private_metrics 404
+	@private_runtime path /metrics /internal/*
+	respond @private_runtime 404
 
         # =========================================================================
 	# 静态资源长期缓存（高优先级，放在最前面）
@@ -98,7 +98,7 @@ api.sub2api.com {
 	# 请求大小限制 (防止大文件攻击)
 	# =========================================================================
 	request_body {
-		max_size 100MB
+		max_size 512MB
 	}
 
 	# =========================================================================

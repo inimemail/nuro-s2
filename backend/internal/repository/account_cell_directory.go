@@ -24,11 +24,33 @@ const (
 	accountCellCatalogKey       = "admission:account-cell:catalog"
 	accountCellPlatformCatalog  = "admission:account-cell:catalog:"
 	accountCellEndpointKey      = "admission:account-cell:endpoints"
+	accountCellPlatformKey      = "admission:account-cell:platforms"
 )
 
 var (
 	ErrAccountCellBusy              = errors.New("account has active admission leases")
 	ErrAccountCellMigrationDisabled = errors.New("online account Cell migration is disabled until owner-Cell quiesce fencing is implemented")
+	ErrAccountCellPlatformConflict  = errors.New("admission Cell is already registered to another platform")
+	ErrAccountCellEndpointConflict  = errors.New("admission Cell endpoint is immutable")
+	registerAccountCellScript       = redis.NewScript(`
+		local existingPlatform = redis.call('HGET', KEYS[4], ARGV[2])
+		if existingPlatform ~= false and existingPlatform ~= ARGV[1] then return -1 end
+		if redis.call('SISMEMBER', KEYS[2], ARGV[2]) == 1 then return -1 end
+		local existingEndpoint = redis.call('HGET', KEYS[3], ARGV[2])
+		if existingEndpoint ~= false and existingEndpoint ~= ARGV[3] then return -2 end
+		redis.call('HSET', KEYS[4], ARGV[2], ARGV[1])
+		redis.call('HSET', KEYS[3], ARGV[2], ARGV[3])
+		redis.call('SADD', KEYS[1], ARGV[2])
+		return 1
+	`)
+	registerAccountCellPlatformScript = redis.NewScript(`
+		local existingPlatform = redis.call('HGET', KEYS[3], ARGV[2])
+		if existingPlatform ~= false and existingPlatform ~= ARGV[1] then return -1 end
+		if redis.call('SISMEMBER', KEYS[2], ARGV[2]) == 1 then return -1 end
+		redis.call('HSET', KEYS[3], ARGV[2], ARGV[1])
+		redis.call('SADD', KEYS[1], ARGV[2])
+		return 1
+	`)
 )
 
 func NewAccountCellDirectory(rdb *redis.Client) *AccountCellDirectory {
@@ -50,7 +72,18 @@ func (d *AccountCellDirectory) RegisterPlatformForNewAccounts(ctx context.Contex
 	if d == nil || d.rdb == nil || platform == "" || cellID == "" {
 		return errors.New("account Cell platform registration is incomplete")
 	}
-	return d.rdb.SAdd(ctx, accountCellPlatformCatalog+platform, cellID).Err()
+	result, err := registerAccountCellPlatformScript.Run(ctx, d.rdb, []string{
+		accountCellPlatformCatalog + platform,
+		accountCellPlatformCatalog + otherAdmissionPlatform(platform),
+		accountCellPlatformKey,
+	}, platform, cellID).Int()
+	if err != nil {
+		return err
+	}
+	if result == -1 {
+		return fmt.Errorf("%w: %s", ErrAccountCellPlatformConflict, cellID)
+	}
+	return nil
 }
 
 // RegisterCell publishes a ready Cell in exactly one platform catalog. The
@@ -63,12 +96,25 @@ func (d *AccountCellDirectory) RegisterCell(ctx context.Context, platform, cellI
 	if d == nil || d.rdb == nil || platform == "" || cellID == "" || endpoint == "" {
 		return errors.New("account cell registration is incomplete")
 	}
-	_, err := d.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.SAdd(ctx, accountCellPlatformCatalog+platform, cellID)
-		pipe.HSet(ctx, accountCellEndpointKey, cellID, endpoint)
+	result, err := registerAccountCellScript.Run(ctx, d.rdb, []string{
+		accountCellPlatformCatalog + platform,
+		accountCellPlatformCatalog + otherAdmissionPlatform(platform),
+		accountCellEndpointKey,
+		accountCellPlatformKey,
+	}, platform, cellID, endpoint).Int()
+	if err != nil {
+		return err
+	}
+	switch result {
+	case -1:
+		return fmt.Errorf("%w: %s", ErrAccountCellPlatformConflict, cellID)
+	case -2:
+		return fmt.Errorf("%w: %s", ErrAccountCellEndpointConflict, cellID)
+	case 1:
 		return nil
-	})
-	return err
+	default:
+		return fmt.Errorf("unexpected account Cell registration result %d", result)
+	}
 }
 
 func (d *AccountCellDirectory) Cells(ctx context.Context, platform string) ([]string, error) {
@@ -112,6 +158,13 @@ func normalizeAdmissionPlatform(platform string) string {
 	default:
 		return ""
 	}
+}
+
+func otherAdmissionPlatform(platform string) string {
+	if platform == "openai" {
+		return "anthropic"
+	}
+	return "openai"
 }
 
 func accountCellAssignmentKey(accountID int64) string {

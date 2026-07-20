@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -22,6 +23,50 @@ func TestAccountCellDirectoryFreezesExistingAssignments(t *testing.T) {
 	}
 	if first != second {
 		t.Fatalf("existing account moved from %q to %q", first, second)
+	}
+}
+
+func TestAccountCellDirectoryRegistrationIsImmutableAndPlatformScoped(t *testing.T) {
+	mr := miniredis.RunT(t)
+	directory := NewAccountCellDirectory(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	ctx := context.Background()
+	if err := directory.RegisterCell(ctx, "openai", "cell-a", "redis://one:6379/0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.RegisterCell(ctx, "openai", "cell-a", "redis://one:6379/0"); err != nil {
+		t.Fatalf("idempotent registration failed: %v", err)
+	}
+	if err := directory.RegisterCell(ctx, "openai", "cell-a", "redis://two:6379/0"); !errors.Is(err, ErrAccountCellEndpointConflict) {
+		t.Fatalf("endpoint overwrite was not rejected: %v", err)
+	}
+	if err := directory.RegisterCell(ctx, "anthropic", "cell-a", "redis://one:6379/0"); !errors.Is(err, ErrAccountCellPlatformConflict) {
+		t.Fatalf("cross-platform registration was not rejected: %v", err)
+	}
+	endpoint, err := directory.Endpoint(ctx, "cell-a")
+	if err != nil || endpoint != "redis://one:6379/0" {
+		t.Fatalf("immutable endpoint changed: endpoint=%q err=%v", endpoint, err)
+	}
+	belongs, err := directory.CellBelongsTo(ctx, "cell-a", "anthropic")
+	if err != nil || belongs {
+		t.Fatalf("Cell leaked into another platform: belongs=%v err=%v", belongs, err)
+	}
+}
+
+func TestAccountCellDirectoryRegistrationRejectsLegacyCrossPlatformEntry(t *testing.T) {
+	mr := miniredis.RunT(t)
+	directory := NewAccountCellDirectory(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	ctx := context.Background()
+	if err := directory.rdb.SAdd(ctx, accountCellPlatformCatalog+"anthropic", "legacy-cell").Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := directory.RegisterCell(ctx, "openai", "legacy-cell", "redis://one:6379/0")
+	if !errors.Is(err, ErrAccountCellPlatformConflict) {
+		t.Fatalf("legacy cross-platform registration was not rejected: %v", err)
+	}
+	belongs, lookupErr := directory.CellBelongsTo(ctx, "legacy-cell", "openai")
+	if lookupErr != nil || belongs {
+		t.Fatalf("legacy Cell leaked into target platform: belongs=%v err=%v", belongs, lookupErr)
 	}
 }
 

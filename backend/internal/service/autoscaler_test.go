@@ -8,21 +8,22 @@ import (
 
 type fakeCellProvider struct{ provisioned, ready string }
 
-func (p *fakeCellProvider) Provision(_ context.Context, cellID string) error {
+func (p *fakeCellProvider) Provision(_ context.Context, cellID string) (ProvisionedAdmissionCell, error) {
 	p.provisioned = cellID
+	return ProvisionedAdmissionCell{ID: cellID, Endpoint: "redis://cell:6379/0"}, nil
+}
+
+func (p *fakeCellProvider) WaitReady(_ context.Context, cell ProvisionedAdmissionCell) error {
+	p.ready = cell.ID
 	return nil
 }
 
-func (p *fakeCellProvider) WaitReady(_ context.Context, cellID string) error {
-	p.ready = cellID
-	return nil
-}
+type fakeCellDirectory struct{ platform, registered, endpoint string }
 
-type fakeCellDirectory struct{ platform, registered string }
-
-func (d *fakeCellDirectory) RegisterPlatformForNewAccounts(_ context.Context, platform, cellID string) error {
+func (d *fakeCellDirectory) RegisterCell(_ context.Context, platform, cellID, endpoint string) error {
 	d.platform = platform
 	d.registered = cellID
+	d.endpoint = endpoint
 	return nil
 }
 
@@ -99,7 +100,7 @@ func TestAdmissionCellControllerRegistersOnlyAfterReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.RequireMigration || provider.provisioned != "openai-003" || provider.ready != "openai-003" || directory.platform != PlatformOpenAI || directory.registered != "openai-003" {
+	if decision.RequireMigration || provider.provisioned != "openai-003" || provider.ready != "openai-003" || directory.platform != PlatformOpenAI || directory.registered != "openai-003" || directory.endpoint == "" {
 		t.Fatalf("unsafe Cell reconcile: decision=%+v provider=%+v directory=%+v", decision, provider, directory)
 	}
 	second, err := controller.Reconcile(context.Background(), AdmissionCellPolicy{}, AdmissionCellSample{

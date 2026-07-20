@@ -151,16 +151,21 @@ type AdmissionCellDecision struct {
 	Reason                       string
 }
 
+type ProvisionedAdmissionCell struct {
+	ID       string
+	Endpoint string
+}
+
 // AdmissionCellProvider is the only infrastructure-specific boundary. A Redis
 // Operator, AWS/GCP/Azure service, or an internal provisioning API implements
 // it without leaking provider logic into admission or scheduling.
 type AdmissionCellProvider interface {
-	Provision(ctx context.Context, cellID string) error
-	WaitReady(ctx context.Context, cellID string) error
+	Provision(ctx context.Context, cellID string) (ProvisionedAdmissionCell, error)
+	WaitReady(ctx context.Context, cell ProvisionedAdmissionCell) error
 }
 
 type AdmissionCellDirectoryRegistrar interface {
-	RegisterPlatformForNewAccounts(ctx context.Context, platform, cellID string) error
+	RegisterCell(ctx context.Context, platform, cellID, endpoint string) error
 }
 
 type AdmissionCellAuditSink interface {
@@ -201,12 +206,22 @@ func (c *AdmissionCellController) Reconcile(ctx context.Context, policy Admissio
 		decision.Reason = "cell_already_registered"
 		return decision, nil
 	}
+	cell := ProvisionedAdmissionCell{}
 	var err error
-	if err = c.Provider.Provision(ctx, cellID); err == nil {
-		err = c.Provider.WaitReady(ctx, cellID)
+	if cell, err = c.Provider.Provision(ctx, cellID); err == nil {
+		cell.ID = strings.TrimSpace(cell.ID)
+		cell.Endpoint = strings.TrimSpace(cell.Endpoint)
+		if cell.ID == "" {
+			cell.ID = cellID
+		}
+		if cell.ID != cellID || cell.Endpoint == "" {
+			err = errors.New("provisioned admission Cell must include the requested ID and a non-empty endpoint")
+		} else {
+			err = c.Provider.WaitReady(ctx, cell)
+		}
 	}
 	if err == nil {
-		err = c.Directory.RegisterPlatformForNewAccounts(ctx, platform, cellID)
+		err = c.Directory.RegisterCell(ctx, platform, cell.ID, cell.Endpoint)
 	}
 	if c.Audit != nil {
 		c.Audit.RecordAdmissionCellDecision(ctx, decision, cellID, err)

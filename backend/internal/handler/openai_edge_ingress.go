@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -114,6 +115,9 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 
 	copyOpenAIEdgeResponseHeaders(c.Writer.Header(), resp.Header)
 	c.Status(resp.StatusCode)
+	// Commit the SSE headers immediately. This removes the extra Go-hop header
+	// delay for systemd deployments where public traffic enters on port 8080.
+	c.Writer.Flush()
 	copyOpenAIEdgeResponseBody(c.Writer, resp.Body)
 	return true
 }
@@ -220,8 +224,11 @@ func addForwardedHeaders(header http.Header, c *gin.Context) {
 
 func copyOpenAIEdgeResponseHeaders(dst, src http.Header) {
 	responseheaders.WriteFilteredHeaders(dst, src, nil)
-	if dst.Get("Content-Type") == "" {
+	mediaType, _, _ := mime.ParseMediaType(src.Get("Content-Type"))
+	if strings.EqualFold(mediaType, "text/event-stream") {
 		dst.Set("Content-Type", "text/event-stream")
+		dst.Set("Cache-Control", "no-cache, no-transform")
+		dst.Set("X-Accel-Buffering", "no")
 	}
 }
 

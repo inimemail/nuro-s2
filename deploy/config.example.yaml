@@ -361,19 +361,20 @@ gateway:
     control_base_url: ""
     prepare_timeout_ms: 1500
     complete_timeout_ms: 1500
-    lease_ttl_ms: 1800000
+    # Short crash-recovery TTL; edge-rs renews active streams every <=30s.
+    lease_ttl_ms: 120000
     # Edge data-plane pools and queues. Go still owns scheduling decisions; the
     # Rust edge uses one global queue plus per account/proxy/upstream permits.
     initial_pool_size: 512
-    queue_buffer_size: 128
-    queue_max_bytes: 67108864
-    global_workers: 256
-    per_account_workers: 32
+    queue_buffer_size: 512
+    queue_max_bytes: 268435456
+    global_workers: 512
+    per_account_workers: 128
     max_relay_domains: 4096
     relay_domain_idle_seconds: 300
     max_proxy_clients: 1024
     proxy_client_idle_seconds: 300
-    max_idle_conns_per_account: 64
+    max_idle_conns_per_account: 128
     # Number of unused preconnected WSv2 sockets kept per account/header key.
     ws_idle_per_key: 1
     max_ws_idle_keys: 1024
@@ -415,7 +416,8 @@ gateway:
   client_idle_ttl_seconds: 900
   # Concurrency slot expiration time (minutes)
   # 并发槽位过期时间（分钟）
-  concurrency_slot_ttl_minutes: 30
+  # Crash recovery bound. Active requests renew at one third of this TTL.
+  concurrency_slot_ttl_minutes: 2
   # Stream data interval timeout (seconds), 0=disable
   # 流数据间隔超时（秒），0=禁用
   stream_data_interval_timeout: 180

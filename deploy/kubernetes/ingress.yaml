@@ -8,6 +8,14 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "1800"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "1800"
+    nginx.ingress.kubernetes.io/proxy-body-size: "512m"
+    # Keep metrics on the private ServiceMonitor path, not the public hostname.
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location = /metrics { return 404; }
+      location ^~ /internal/ { return 404; }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Accept-Encoding "";
+      add_header X-Accel-Buffering "no" always;
 spec:
   rules:
     - host: api.sub2api.com

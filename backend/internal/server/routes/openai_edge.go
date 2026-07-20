@@ -21,6 +21,7 @@ func RegisterOpenAIEdgeRoutes(r *gin.Engine, h *handler.Handlers, cfg *config.Co
 		edge.POST("/prepare", h.OpenAIGateway.OpenAIEdgePrepare)
 		edge.POST("/retry", h.OpenAIGateway.OpenAIEdgeRetry)
 		edge.POST("/commit", h.OpenAIGateway.OpenAIEdgeCommit)
+		edge.POST("/renew", h.OpenAIGateway.OpenAIEdgeRenew)
 		edge.POST("/complete", h.OpenAIGateway.OpenAIEdgeComplete)
 		edge.POST("/abort", h.OpenAIGateway.OpenAIEdgeAbort)
 		edge.POST("/recover", h.OpenAIGateway.OpenAIEdgeRecover)

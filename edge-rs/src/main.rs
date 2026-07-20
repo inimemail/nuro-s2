@@ -51,11 +51,11 @@ const SSE_STRING_INITIAL_CAPACITY: usize = 8192;
 const SSE_STRING_IDLE_MAX_CAPACITY: usize = 64 * 1024;
 const SETTLEMENT_RETRY_CONCURRENCY: usize = 32;
 const PAYLOAD_COMMIT_CONCURRENCY: usize = 64;
+const PAYLOAD_COMMIT_OVERFLOW_CONCURRENCY: usize = 64;
 const PAYLOAD_COMMIT_QUEUE_SIZE: usize = 65_536;
 const PAYLOAD_COMMIT_MAX_ATTEMPTS: usize = 5;
-// Keep settlement delivery alive for roughly the same 30-minute window as the
-// Go lease TTL, so a longer control-plane interruption does not leave slots to
-// expire solely through Redis TTL cleanup.
+// Keep settlement delivery alive across a longer control-plane interruption so
+// delayed usage/account-health callbacks still have a chance to recover.
 const SETTLEMENT_RETRY_MAX_ATTEMPTS: usize = 70;
 const SETTLEMENT_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(50);
 const SETTLEMENT_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
@@ -76,6 +76,7 @@ struct AppState {
     pools: Arc<BufferPools>,
     settlement_retry_tx: mpsc::Sender<SettlementRetryJob>,
     payload_commit_tx: mpsc::Sender<CommitRequest>,
+    payload_commit_overflow: Arc<Semaphore>,
     relay_tx: mpsc::Sender<RelayJob>,
     relay_queue_bytes: Arc<Semaphore>,
     ingress_permits: Arc<Semaphore>,
@@ -103,6 +104,7 @@ struct EdgeMetrics {
     active_relay_workers: AtomicU64,
     active_settlement_workers: AtomicU64,
     active_payload_commit_workers: AtomicU64,
+    lease_renew_failures: AtomicU64,
 }
 
 struct ActiveRequestGuard {
@@ -268,6 +270,7 @@ impl EdgeMetrics {
              # TYPE sub2api_edge_settlement_workers_active gauge\nsub2api_edge_settlement_workers_active {}\n\
              # TYPE sub2api_edge_payload_commit_queue_depth gauge\nsub2api_edge_payload_commit_queue_depth {payload_commit_depth}\n\
              # TYPE sub2api_edge_payload_commit_workers_active gauge\nsub2api_edge_payload_commit_workers_active {}\n\
+             # TYPE sub2api_edge_lease_renew_failures_total counter\nsub2api_edge_lease_renew_failures_total {}\n\
              # TYPE sub2api_edge_proxy_clients gauge\nsub2api_edge_proxy_clients {proxy_clients}\n\
              # TYPE sub2api_edge_dynamic_warm_keys gauge\nsub2api_edge_dynamic_warm_keys {warm_keys}\n\
              # TYPE sub2api_edge_open_fds gauge\nsub2api_edge_open_fds {open_fds}\n\
@@ -285,6 +288,7 @@ impl EdgeMetrics {
             self.active_relay_workers.load(Ordering::Relaxed),
             self.active_settlement_workers.load(Ordering::Relaxed),
             self.active_payload_commit_workers.load(Ordering::Relaxed),
+            self.lease_renew_failures.load(Ordering::Relaxed),
             u64::from(state.metrics_is_draining()),
             prometheus_label(state.cfg.edge_node_id.as_deref().unwrap_or("unknown")),
             prometheus_label(state.edge_instance_id.as_str()),
@@ -378,6 +382,7 @@ struct EdgePlan {
     reason: Option<String>,
     edge_request_id: String,
     lease_id: Option<String>,
+    lease_ttl_ms: Option<u64>,
     account_id: Option<i64>,
     transport: Option<String>,
     response_dialect: Option<String>,
@@ -560,6 +565,13 @@ struct CommitRequest {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct RenewRequest {
+    edge_request_id: String,
+    lease_id: String,
+    account_id: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 struct CompleteRequest {
     edge_request_id: String,
     lease_id: Option<String>,
@@ -704,6 +716,50 @@ struct ClientDisconnectCompleteGuard {
     request: Mutex<CompleteRequest>,
     definitive_failure: AtomicBool,
     done: AtomicBool,
+}
+
+struct LeaseRenewalGuard {
+    stop: Option<oneshot::Sender<()>>,
+}
+
+impl LeaseRenewalGuard {
+    fn start(state: &AppState, plan: &EdgePlan) -> Option<Self> {
+        let lease_id = plan.lease_id.as_deref()?.trim();
+        let ttl_ms = plan.lease_ttl_ms?;
+        if lease_id.is_empty() || ttl_ms == 0 {
+            return None;
+        }
+        let request = RenewRequest {
+            edge_request_id: plan.edge_request_id.clone(),
+            lease_id: lease_id.to_string(),
+            account_id: plan.account_id,
+        };
+        let interval = Duration::from_millis((ttl_ms / 3).clamp(250, 30_000));
+        let renew_state = state.clone();
+        let (stop, mut stopped) = oneshot::channel();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(interval) => {
+                        if let Err(err) = send_renew_once(&renew_state, &request).await {
+                            renew_state.metrics.lease_renew_failures.fetch_add(1, Ordering::Relaxed);
+                            warn!("edge lease renew failed edge_request_id={}: {err}", request.edge_request_id);
+                        }
+                    }
+                    _ = &mut stopped => return,
+                }
+            }
+        });
+        Some(Self { stop: Some(stop) })
+    }
+}
+
+impl Drop for LeaseRenewalGuard {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+    }
 }
 
 impl ClientDisconnectCompleteGuard {
@@ -953,6 +1009,7 @@ async fn main() -> anyhow::Result<()> {
         pools: Arc::new(BufferPools::prewarmed(cfg.initial_pool_size)),
         settlement_retry_tx,
         payload_commit_tx,
+        payload_commit_overflow: Arc::new(Semaphore::new(PAYLOAD_COMMIT_OVERFLOW_CONCURRENCY)),
         relay_tx,
         relay_queue_bytes: Arc::new(Semaphore::new(cfg.queue_max_bytes.max(1))),
         ingress_permits: Arc::new(Semaphore::new(
@@ -1231,6 +1288,19 @@ async fn readyz(State(state): State<AppState>) -> Response {
     if state.metrics_is_draining() {
         return text_response(StatusCode::SERVICE_UNAVAILABLE, "draining");
     }
+    let url = format!("{}/readyz", state.cfg.control_base_url);
+    let control_ready = state
+        .client
+        .get(url)
+        .timeout(Duration::from_millis(
+            state.cfg.prepare_timeout_ms.min(1000),
+        ))
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success());
+    if !control_ready {
+        return text_response(StatusCode::SERVICE_UNAVAILABLE, "control plane unavailable");
+    }
     text_response(StatusCode::OK, "ready")
 }
 
@@ -1303,35 +1373,70 @@ async fn handle_openai_edge(
         Ok(permit) => permit,
         Err(_) => return overload_response(),
     };
-    let body_reservation = headers
+    let content_length = headers
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(MAX_BODY_BYTES)
-        .max(1);
-    if body_reservation > MAX_BODY_BYTES {
+        .and_then(|value| value.parse::<usize>().ok());
+    if content_length.is_some_and(|length| length > MAX_BODY_BYTES) {
         return text_response(StatusCode::PAYLOAD_TOO_LARGE, "request body too large");
     }
-    let _ingress_body_permit = match state
-        .ingress_body_bytes
-        .clone()
-        .try_acquire_many_owned(body_reservation as u32)
-    {
-        Ok(permit) => permit,
-        Err(_) => return overload_response(),
-    };
-
-    let body_bytes = match to_bytes(body, MAX_BODY_BYTES).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            state
-                .metrics
-                .prepare_failures
-                .fetch_add(1, Ordering::Relaxed);
-            error!("read client body failed: {err}");
-            return text_response(StatusCode::BAD_REQUEST, "failed to read request body");
+    let mut ingress_body_permits = Vec::new();
+    let body_bytes = if let Some(length) = content_length {
+        if length > 0 {
+            match state
+                .ingress_body_bytes
+                .clone()
+                .try_acquire_many_owned(length as u32)
+            {
+                Ok(permit) => ingress_body_permits.push(permit),
+                Err(_) => return overload_response(),
+            }
         }
+        match to_bytes(body, MAX_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                state
+                    .metrics
+                    .prepare_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                error!("read client body failed: {err}");
+                return text_response(StatusCode::BAD_REQUEST, "failed to read request body");
+            }
+        }
+    } else {
+        let mut stream = body.into_data_stream();
+        let mut buffered = Vec::new();
+        while let Some(next) = stream.next().await {
+            let chunk = match next {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    state
+                        .metrics
+                        .prepare_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    error!("read chunked client body failed: {err}");
+                    return text_response(StatusCode::BAD_REQUEST, "failed to read request body");
+                }
+            };
+            if buffered.len().saturating_add(chunk.len()) > MAX_BODY_BYTES {
+                return text_response(StatusCode::PAYLOAD_TOO_LARGE, "request body too large");
+            }
+            if !chunk.is_empty() {
+                let permit = match state
+                    .ingress_body_bytes
+                    .clone()
+                    .try_acquire_many_owned(chunk.len() as u32)
+                {
+                    Ok(permit) => permit,
+                    Err(_) => return overload_response(),
+                };
+                ingress_body_permits.push(permit);
+                buffered.extend_from_slice(&chunk);
+            }
+        }
+        Bytes::from(buffered)
     };
+    let _ingress_body_permits = ingress_body_permits;
     let raw_prepare_body = openai_prepare_raw_body(&state, &body_bytes);
     let (stream, prepare_body) = if raw_prepare_body.is_some() {
         let stream = serde_json::from_slice::<StreamOnlyRequest>(&body_bytes)
@@ -1661,6 +1766,7 @@ async fn relay_ws_session(
         }
         return proxy_ws_to_go(state, client_socket, method, uri, headers, first_msg).await;
     }
+    let _lease_renewal_guard = LeaseRenewalGuard::start(&state, &plan);
     let guard = LeaseAbortGuard::new(
         state.clone(),
         plan.edge_request_id.clone(),
@@ -2817,6 +2923,21 @@ async fn relay_upstream(
         if let Some(domain_permit) = state.relay_permit_for_plan(&plan)? {
             let request_body = take_request_body_bytes(&mut plan)?;
             let queued_bytes = request_body.len().max(1);
+            if queued_bytes > state.cfg.queue_max_bytes {
+                let _domain_permit = domain_permit;
+                let _ingress_permit = ingress_permit
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("missing edge ingress permit"))?;
+                return relay_upstream_direct(
+                    state,
+                    plan,
+                    request_body,
+                    started_at,
+                    timing,
+                    timing_shared,
+                )
+                .await;
+            }
             let queue_bytes_permit = try_reserve_relay_queue_bytes(
                 state.relay_queue_bytes.clone(),
                 state.cfg.queue_max_bytes,
@@ -2865,51 +2986,47 @@ fn try_reserve_relay_queue_bytes(
         .map_err(|_| anyhow::anyhow!("edge relay queue byte budget exhausted"))
 }
 
-async fn run_relay_executor(state: AppState, receiver: mpsc::Receiver<RelayJob>) {
-    let receiver = Arc::new(tokio::sync::Mutex::new(receiver));
-    for worker_id in 0..state.cfg.global_workers.max(1) {
-        let receiver = receiver.clone();
+async fn run_relay_executor(state: AppState, mut receiver: mpsc::Receiver<RelayJob>) {
+    let concurrency = Arc::new(Semaphore::new(state.cfg.global_workers.max(1)));
+    while let Some(job) = receiver.recv().await {
+        let permit = match concurrency.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => return,
+        };
         tokio::spawn(async move {
-            loop {
-                let job = {
-                    let mut guard = receiver.lock().await;
-                    guard.recv().await
-                };
-                let Some(job) = job else { break };
-                let _worker_guard = job.state.metrics.begin_relay_work();
-                let mut timing = job.timing;
-                let queue_wait_ms = job.enqueued_at.elapsed().as_millis() as i64;
-                timing.queue_wait_ms = Some(queue_wait_ms);
-                update_edge_timing(job.timing_shared.as_ref(), |shared| {
-                    shared.queue_wait_ms = Some(queue_wait_ms);
-                    shared.retry_count = timing.retry_count;
-                });
-                let result = if job.state.cfg.queue_wait_budget_ms > 0
-                    && queue_wait_ms > job.state.cfg.queue_wait_budget_ms as i64
-                {
-                    retry_after_queue_wait_budget(
-                        job.state,
-                        job.plan,
-                        job.started_at,
-                        timing,
-                        job.timing_shared,
-                        queue_wait_ms,
-                    )
-                    .await
-                } else {
-                    relay_upstream_direct(
-                        job.state,
-                        job.plan,
-                        job.request_body,
-                        job.started_at,
-                        timing,
-                        job.timing_shared,
-                    )
-                    .await
-                };
-                let _ = job.response_tx.send(result);
-            }
-            info!("edge global relay worker stopped worker={worker_id}");
+            let _permit = permit;
+            let _worker_guard = job.state.metrics.begin_relay_work();
+            let mut timing = job.timing;
+            let queue_wait_ms = job.enqueued_at.elapsed().as_millis() as i64;
+            timing.queue_wait_ms = Some(queue_wait_ms);
+            update_edge_timing(job.timing_shared.as_ref(), |shared| {
+                shared.queue_wait_ms = Some(queue_wait_ms);
+                shared.retry_count = timing.retry_count;
+            });
+            let result = if job.state.cfg.queue_wait_budget_ms > 0
+                && queue_wait_ms > job.state.cfg.queue_wait_budget_ms as i64
+            {
+                retry_after_queue_wait_budget(
+                    job.state,
+                    job.plan,
+                    job.started_at,
+                    timing,
+                    job.timing_shared,
+                    queue_wait_ms,
+                )
+                .await
+            } else {
+                relay_upstream_direct(
+                    job.state,
+                    job.plan,
+                    job.request_body,
+                    job.started_at,
+                    timing,
+                    job.timing_shared,
+                )
+                .await
+            };
+            let _ = job.response_tx.send(result);
         });
     }
 }
@@ -2922,6 +3039,7 @@ async fn relay_upstream_direct(
     mut timing: EdgeTiming,
     timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
 ) -> anyhow::Result<Response> {
+    let lease_renewal_guard = LeaseRenewalGuard::start(&state, &plan);
     if timing.relay_start_ms.is_none() {
         timing.relay_start_ms = Some(started_at.elapsed().as_millis() as i64);
     }
@@ -2987,6 +3105,7 @@ async fn relay_upstream_direct(
                 let stream_guard = complete_state.metrics.begin_stream();
                 let early_body_stream = stream! {
                     let _stream_guard = stream_guard;
+                    let _lease_renewal_guard = lease_renewal_guard;
                     let guard = ClientDisconnectCompleteGuard::new(
                         complete_state.clone(),
                         started_at,
@@ -3188,6 +3307,9 @@ async fn relay_upstream_direct(
                             if !sanitized.is_empty() {
                                 yield Ok::<Bytes, std::io::Error>(sanitized);
                             }
+                            if summary.completed_successfully(response_dialect.as_deref()) {
+                                break;
+                            }
                         }
                             Err(err) => {
                                 if summary.completed_successfully(response_dialect.as_deref()) {
@@ -3279,7 +3401,10 @@ async fn relay_upstream_direct(
                 let mut builder = Response::builder().status(StatusCode::OK);
                 let headers = builder.headers_mut().expect("headers");
                 headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
-                headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+                headers.insert(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("no-cache, no-transform"),
+                );
                 headers.insert(HeaderName::from_static("x-accel-buffering"), HeaderValue::from_static("no"));
                 return Ok(builder.body(Body::from_stream(early_body_stream))?);
             }
@@ -3435,6 +3560,7 @@ async fn relay_upstream_direct(
     let stream_guard = complete_state.metrics.begin_stream();
     let body_stream = stream! {
         let _stream_guard = stream_guard;
+        let _lease_renewal_guard = lease_renewal_guard;
         let guard = ClientDisconnectCompleteGuard::new(
             complete_state.clone(),
             started_at,
@@ -3631,6 +3757,9 @@ async fn relay_upstream_direct(
                                     yield Ok::<Bytes, std::io::Error>(sanitized);
                                 }
                             }
+                            if summary.completed_successfully(response_dialect.as_deref()) {
+                                break;
+                            }
                             continue;
                         }
                     }
@@ -3652,6 +3781,9 @@ async fn relay_upstream_direct(
                             );
                         }
                         yield Ok::<Bytes, std::io::Error>(sanitized);
+                    }
+                    if summary.completed_successfully(response_dialect.as_deref()) {
+                        break;
                     }
                 }
                 Err(err) => {
@@ -3828,7 +3960,7 @@ fn low_latency_policy(mode: Option<&str>) -> LowLatencyPolicy {
         },
         "smart" => LowLatencyPolicy {
             enabled: true,
-            barrier: Some(Duration::from_millis(200)),
+            barrier: Some(Duration::from_millis(25)),
         },
         _ => LowLatencyPolicy::default(),
     }
@@ -4348,8 +4480,38 @@ fn spawn_payload_commit(state: AppState, request: CommitRequest) {
         return;
     }
     if let Err(err) = state.payload_commit_tx.try_send(request) {
-        warn!("edge payload commit queue full or closed: {err}");
+        let request = err.into_inner();
+        let overflow_permit = match state.payload_commit_overflow.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                warn!(
+                    "edge payload commit overflow saturated edge_request_id={}; deferring cleanup to settlement",
+                    request.edge_request_id
+                );
+                return;
+            }
+        };
+        warn!("edge payload commit queue full or closed; using direct retry");
+        tokio::spawn(async move {
+            let _overflow_permit = overflow_permit;
+            let _worker_guard = state.metrics.begin_callback_work(true);
+            let edge_request_id = request.edge_request_id.clone();
+            if let Err(err) = retry_with_backoff(
+                PAYLOAD_COMMIT_MAX_ATTEMPTS,
+                Duration::from_millis(10),
+                Duration::from_millis(250),
+                || send_settlement_once(&state, "/internal/edge/openai/commit", &request),
+            )
+            .await
+            {
+                warn!("edge direct payload commit failed edge_request_id={edge_request_id}: {err}");
+            }
+        });
     }
+}
+
+async fn send_renew_once(state: &AppState, request: &RenewRequest) -> anyhow::Result<()> {
+    send_settlement_once(state, "/internal/edge/openai/renew", request).await
 }
 
 async fn run_payload_commit_queue(state: AppState, mut receiver: mpsc::Receiver<CommitRequest>) {
@@ -4754,7 +4916,10 @@ fn write_direct_stream_response_headers(dst: &mut HeaderMap, src: &reqwest::head
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/event-stream"),
     );
-    dst.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    dst.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-transform"),
+    );
     dst.insert(
         HeaderName::from_static("x-accel-buffering"),
         HeaderValue::from_static("no"),
@@ -5325,22 +5490,22 @@ impl EdgeConfig {
             prepare_timeout_ms: env_u64("SUB2API_EDGE_PREPARE_TIMEOUT_MS", 1500),
             complete_timeout_ms: env_u64("SUB2API_EDGE_COMPLETE_TIMEOUT_MS", 1500),
             initial_pool_size: env_usize("SUB2API_EDGE_INITIAL_POOL_SIZE", 512),
-            queue_buffer_size: env_usize("SUB2API_EDGE_QUEUE_BUFFER_SIZE", 128),
-            queue_max_bytes: env_usize("SUB2API_EDGE_QUEUE_MAX_BYTES", 64 * 1024 * 1024),
+            queue_buffer_size: env_usize("SUB2API_EDGE_QUEUE_BUFFER_SIZE", 512),
+            queue_max_bytes: env_usize("SUB2API_EDGE_QUEUE_MAX_BYTES", 256 * 1024 * 1024),
             ingress_body_max_bytes: env_usize(
                 "SUB2API_EDGE_INGRESS_BODY_MAX_BYTES",
-                1024 * 1024 * 1024,
+                2 * 1024 * 1024 * 1024,
             )
             .min(u32::MAX as usize),
-            global_workers: env_usize("SUB2API_EDGE_GLOBAL_WORKERS", 256),
-            per_account_workers: env_usize("SUB2API_EDGE_PER_ACCOUNT_WORKERS", 32),
+            global_workers: env_usize("SUB2API_EDGE_GLOBAL_WORKERS", 512),
+            per_account_workers: env_usize("SUB2API_EDGE_PER_ACCOUNT_WORKERS", 128),
             max_relay_domains: env_usize("SUB2API_EDGE_MAX_RELAY_DOMAINS", 4096),
             relay_domain_idle_secs: env_u64("SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS", 300),
             max_proxy_clients: env_usize("SUB2API_EDGE_MAX_PROXY_CLIENTS", 1024),
             proxy_client_idle_secs: env_u64("SUB2API_EDGE_PROXY_CLIENT_IDLE_SECS", 300),
             max_idle_conns_per_account: env_usize(
                 "SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT",
-                env_usize("SUB2API_EDGE_MAX_IDLE_PER_HOST", 64),
+                env_usize("SUB2API_EDGE_MAX_IDLE_PER_HOST", 128),
             ),
             queue_wait_budget_ms: env_u64("SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS", 150),
             large_payload_passthrough: env_bool("SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH", true),
@@ -5619,7 +5784,7 @@ mod tests {
 
         let smart = low_latency_policy(Some("smart"));
         assert!(smart.enabled);
-        assert_eq!(smart.barrier, Some(Duration::from_millis(200)));
+        assert_eq!(smart.barrier, Some(Duration::from_millis(25)));
 
         let off = low_latency_policy(Some("off"));
         assert!(!off.enabled);
@@ -6494,6 +6659,17 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     }
 
     #[test]
+    fn combined_created_and_completed_chunk_is_terminal() {
+        let mut summary = ChatStreamSummary::default();
+        let observation = summary.observe(
+            b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n",
+        );
+
+        assert!(observation.response_created_boundary_offset.is_some());
+        assert!(summary.completed_successfully(Some("responses")));
+    }
+
+    #[test]
     fn first_token_detection_matches_go_stream_event_semantics() {
         assert!(!json_starts_client_output(&serde_json::json!({
             "type": "response.created"
@@ -6614,6 +6790,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             reason: None,
             edge_request_id: "edge-1".to_string(),
             lease_id: Some("lease-1".to_string()),
+            lease_ttl_ms: Some(120_000),
             account_id: Some(42),
             transport: Some("http2_sse".to_string()),
             response_dialect: Some("responses".to_string()),
@@ -6696,6 +6873,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             reason: None,
             edge_request_id: "edge-1".to_string(),
             lease_id: Some("lease-1".to_string()),
+            lease_ttl_ms: Some(120_000),
             account_id: Some(42),
             transport: Some("http2_sse".to_string()),
             response_dialect: Some("chat_completions".to_string()),

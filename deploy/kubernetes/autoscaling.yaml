@@ -38,12 +38,12 @@ spec:
     - type: prometheus
       metadata:
         serverAddress: http://prometheus.monitoring.svc:9090
-        query: max(sub2api_edge_relay_queue_depth{service="sub2api-gateway"}) / 128
+        query: max(sub2api_edge_relay_queue_depth{service="sub2api-gateway"}) / 512
         threshold: "0.50"
     - type: prometheus
       metadata:
         serverAddress: http://prometheus.monitoring.svc:9090
-        query: max(sub2api_edge_relay_queue_bytes{service="sub2api-gateway"}) / 67108864
+        query: max(sub2api_edge_relay_queue_bytes{service="sub2api-gateway"}) / 268435456
         threshold: "0.80"
     - type: prometheus
       metadata:

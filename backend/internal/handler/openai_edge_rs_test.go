@@ -151,6 +151,31 @@ func TestCancelOpenAIEdgeLeaseByRequestIDReleasesStoredLease(t *testing.T) {
 	}
 }
 
+func TestCancelOpenAIEdgeLeaseRejectsAccountMismatch(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	lease := &openAIEdgeLease{
+		edgeRequestID: "edge-cancel-account",
+		leaseID:       "lease-cancel-account",
+		account:       &service.Account{ID: 202},
+	}
+	if !h.storeOpenAIEdgeLease(lease, time.Minute) {
+		t.Fatal("expected lease to be stored")
+	}
+
+	got, reason := h.cancelOpenAIEdgeLeaseForRequest(lease.leaseID, lease.edgeRequestID, 101, time.Minute)
+	if got != nil || reason != "account_mismatch" {
+		t.Fatalf("cancel result = (%v, %q), want account_mismatch", got, reason)
+	}
+	if h.openAIEdgeLeases[lease.leaseID] != lease || lease.settled {
+		t.Fatal("account mismatch removed or settled the active lease")
+	}
+
+	got, reason = h.cancelOpenAIEdgeLeaseForRequest(lease.leaseID, lease.edgeRequestID, 202, time.Minute)
+	if got != lease || reason != "" {
+		t.Fatalf("matching cancel result = (%v, %q), want stored lease", got, reason)
+	}
+}
+
 func TestStoreOpenAIEdgeLeaseRejectsLatePrepareAfterCancellation(t *testing.T) {
 	h := &OpenAIGatewayHandler{}
 	if lease, reason := h.cancelOpenAIEdgeLeaseForRequest("", "edge-late-1", 0, time.Minute); lease != nil || reason != "" {

@@ -27,7 +27,10 @@ import (
 	"go.uber.org/zap"
 )
 
-const openAIEdgeSecretHeader = "X-Sub2API-Edge-Secret"
+const (
+	openAIEdgeSecretHeader    = "X-Sub2API-Edge-Secret"
+	defaultOpenAIEdgeLeaseTTL = 2 * time.Minute
+)
 
 type openAIEdgeLease struct {
 	mu                 sync.Mutex
@@ -74,6 +77,7 @@ type openAIEdgeLease struct {
 	promptAudit        *securityaudit.Collector
 	payloadReleased    bool
 	timer              *time.Timer
+	timerGeneration    uint64
 }
 
 func (h *OpenAIGatewayHandler) newOpenAIEdgePromptAuditCollector(
@@ -517,7 +521,7 @@ func (h *OpenAIGatewayHandler) markOpenAIEdgeCancelledLocked(edgeRequestID strin
 		return
 	}
 	if ttl <= 0 {
-		ttl = 30 * time.Minute
+		ttl = defaultOpenAIEdgeLeaseTTL
 	}
 	now := time.Now()
 	if h.openAIEdgeCancelled == nil {
@@ -532,7 +536,7 @@ func (h *OpenAIGatewayHandler) storeOpenAIEdgeLease(lease *openAIEdgeLease, ttl 
 		return false
 	}
 	if ttl <= 0 {
-		ttl = 30 * time.Minute
+		ttl = defaultOpenAIEdgeLeaseTTL
 	}
 	edgeRequestID := strings.TrimSpace(lease.edgeRequestID)
 	h.openAIEdgeLeaseMu.Lock()
@@ -557,36 +561,108 @@ func (h *OpenAIGatewayHandler) storeOpenAIEdgeLease(lease *openAIEdgeLease, ttl 
 		h.openAIEdgeLeaseByRequest[edgeRequestID] = lease.leaseID
 	}
 	h.openAIEdgeLeaseMu.Unlock()
-	timer := time.AfterFunc(ttl, func() {
-		expired := false
-		h.openAIEdgeLeaseMu.Lock()
-		current := h.openAIEdgeLeases[lease.leaseID]
-		if current == lease {
-			lease.mu.Lock()
-			if !lease.settled {
-				lease.settled = true
-				delete(h.openAIEdgeLeases, lease.leaseID)
-				if h.openAIEdgeLeaseByRequest[edgeRequestID] == lease.leaseID {
-					delete(h.openAIEdgeLeaseByRequest, edgeRequestID)
-				}
-				expired = true
-			}
-			lease.mu.Unlock()
-		}
-		h.openAIEdgeLeaseMu.Unlock()
-		if expired {
-			lease.release()
-		}
-	})
 	lease.mu.Lock()
 	if lease.settled {
 		lease.mu.Unlock()
-		timer.Stop()
 		return true
 	}
-	lease.timer = timer
+	h.scheduleOpenAIEdgeLeaseExpiryLocked(lease, ttl)
 	lease.mu.Unlock()
 	return true
+}
+
+func (h *OpenAIGatewayHandler) scheduleOpenAIEdgeLeaseExpiryLocked(lease *openAIEdgeLease, ttl time.Duration) {
+	if h == nil || lease == nil {
+		return
+	}
+	if ttl <= 0 {
+		ttl = time.Millisecond
+	}
+	lease.timerGeneration++
+	generation := lease.timerGeneration
+	if lease.timer != nil {
+		lease.timer.Stop()
+	}
+	lease.timer = time.AfterFunc(ttl, func() {
+		h.expireOpenAIEdgeLease(lease, generation)
+	})
+}
+
+func stopOpenAIEdgeLeaseExpiryLocked(lease *openAIEdgeLease) {
+	if lease == nil {
+		return
+	}
+	lease.timerGeneration++
+	if lease.timer != nil {
+		lease.timer.Stop()
+		lease.timer = nil
+	}
+}
+
+func (h *OpenAIGatewayHandler) expireOpenAIEdgeLease(lease *openAIEdgeLease, generation uint64) {
+	if h == nil || lease == nil {
+		return
+	}
+	expired := false
+	h.openAIEdgeLeaseMu.Lock()
+	if h.openAIEdgeLeases[lease.leaseID] == lease {
+		lease.mu.Lock()
+		if !lease.settled && lease.timerGeneration == generation {
+			if remaining := time.Until(lease.expiresAt); remaining > 0 {
+				h.scheduleOpenAIEdgeLeaseExpiryLocked(lease, remaining)
+			} else {
+				lease.settled = true
+				lease.timer = nil
+				delete(h.openAIEdgeLeases, lease.leaseID)
+				if h.openAIEdgeLeaseByRequest[lease.edgeRequestID] == lease.leaseID {
+					delete(h.openAIEdgeLeaseByRequest, lease.edgeRequestID)
+				}
+				expired = true
+			}
+		}
+		lease.mu.Unlock()
+	}
+	h.openAIEdgeLeaseMu.Unlock()
+	if expired {
+		lease.release()
+	}
+}
+
+func (h *OpenAIGatewayHandler) renewOpenAIEdgeLeaseForRequest(leaseID, edgeRequestID string, accountID int64, ttl time.Duration) string {
+	if h == nil || ttl <= 0 {
+		return "lease_not_found"
+	}
+	leaseID = strings.TrimSpace(leaseID)
+	edgeRequestID = strings.TrimSpace(edgeRequestID)
+	h.openAIEdgeLeaseMu.Lock()
+	defer h.openAIEdgeLeaseMu.Unlock()
+	if leaseID == "" || edgeRequestID == "" {
+		return "lease_not_found"
+	}
+	if currentLeaseID := h.openAIEdgeLeaseByRequest[edgeRequestID]; currentLeaseID != leaseID {
+		if currentLeaseID == "" {
+			return "lease_not_found"
+		}
+		return "lease_mismatch"
+	}
+	lease := h.openAIEdgeLeases[leaseID]
+	if lease == nil {
+		return "lease_not_found"
+	}
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if lease.settled {
+		return "lease_not_found"
+	}
+	if lease.edgeRequestID != edgeRequestID {
+		return "request_mismatch"
+	}
+	if accountID != 0 && (lease.account == nil || lease.account.ID != accountID) {
+		return "account_mismatch"
+	}
+	lease.expiresAt = time.Now().Add(ttl)
+	h.scheduleOpenAIEdgeLeaseExpiryLocked(lease, ttl)
+	return ""
 }
 
 func (h *OpenAIGatewayHandler) takeOpenAIEdgeLeaseForRequest(leaseID, edgeRequestID string, accountID int64, verifyAccount bool) (*openAIEdgeLease, string) {
@@ -625,10 +701,11 @@ func (h *OpenAIGatewayHandler) takeOpenAIEdgeLeaseForRequest(leaseID, edgeReques
 		delete(h.openAIEdgeLeaseByRequest, lease.edgeRequestID)
 	}
 	lease.settled = true
+	stopOpenAIEdgeLeaseExpiryLocked(lease)
 	return lease, ""
 }
 
-func (h *OpenAIGatewayHandler) cancelOpenAIEdgeLeaseForRequest(leaseID, edgeRequestID string, _ int64, ttl time.Duration) (*openAIEdgeLease, string) {
+func (h *OpenAIGatewayHandler) cancelOpenAIEdgeLeaseForRequest(leaseID, edgeRequestID string, accountID int64, ttl time.Duration) (*openAIEdgeLease, string) {
 	if h == nil {
 		return nil, ""
 	}
@@ -651,11 +728,15 @@ func (h *OpenAIGatewayHandler) cancelOpenAIEdgeLeaseForRequest(leaseID, edgeRequ
 		if edgeRequestID != "" && edgeRequestID != lease.edgeRequestID {
 			return nil, "request_mismatch"
 		}
+		if accountID != 0 && (lease.account == nil || lease.account.ID != accountID) {
+			return nil, "account_mismatch"
+		}
 		delete(h.openAIEdgeLeases, leaseID)
 		if h.openAIEdgeLeaseByRequest[lease.edgeRequestID] == leaseID {
 			delete(h.openAIEdgeLeaseByRequest, lease.edgeRequestID)
 		}
 		lease.settled = true
+		stopOpenAIEdgeLeaseExpiryLocked(lease)
 		if edgeRequestID == "" {
 			edgeRequestID = lease.edgeRequestID
 		}
@@ -731,6 +812,24 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeCommit(c *gin.Context) {
 	c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: reason})
 }
 
+func (h *OpenAIGatewayHandler) OpenAIEdgeRenew(c *gin.Context) {
+	if !h.requireOpenAIEdgeSecret(c) {
+		return
+	}
+	var req service.OpenAIEdgeRenewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid renew request"})
+		return
+	}
+	ttl := time.Duration(h.openAIEdgeConfig().LeaseTTLMS) * time.Millisecond
+	reason := h.renewOpenAIEdgeLeaseForRequest(req.LeaseID, req.EdgeRequestID, req.AccountID, ttl)
+	if reason != "" {
+		c.JSON(http.StatusConflict, service.OpenAIEdgeAck{OK: false, Reason: reason})
+		return
+	}
+	c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true})
+}
+
 func (h *OpenAIGatewayHandler) recoverOpenAIEdgeLeases(edgeNodeID, currentInstanceID string) int {
 	if h == nil {
 		return 0
@@ -750,6 +849,7 @@ func (h *OpenAIGatewayHandler) recoverOpenAIEdgeLeases(edgeNodeID, currentInstan
 		lease.mu.Lock()
 		if !lease.settled {
 			lease.settled = true
+			stopOpenAIEdgeLeaseExpiryLocked(lease)
 			delete(h.openAIEdgeLeases, leaseID)
 			if h.openAIEdgeLeaseByRequest[lease.edgeRequestID] == leaseID {
 				delete(h.openAIEdgeLeaseByRequest, lease.edgeRequestID)
@@ -949,7 +1049,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	}
 	ttl := time.Duration(cfg.LeaseTTLMS) * time.Millisecond
 	if ttl <= 0 {
-		ttl = 30 * time.Minute
+		ttl = defaultOpenAIEdgeLeaseTTL
 	}
 	plan := prepared.Plan
 	plan.EdgeRequestID = edgeRequestID
@@ -1152,7 +1252,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	}
 	ttl := time.Duration(cfg.LeaseTTLMS) * time.Millisecond
 	if ttl <= 0 {
-		ttl = 30 * time.Minute
+		ttl = defaultOpenAIEdgeLeaseTTL
 	}
 	plan := prepared.Plan
 	plan.EdgeRequestID = edgeRequestID
@@ -1337,7 +1437,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	}
 	ttl := time.Duration(cfg.LeaseTTLMS) * time.Millisecond
 	if ttl <= 0 {
-		ttl = 30 * time.Minute
+		ttl = defaultOpenAIEdgeLeaseTTL
 	}
 	plan := prepared.Plan
 	plan.EdgeRequestID = edgeRequestID

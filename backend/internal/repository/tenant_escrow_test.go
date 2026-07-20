@@ -115,6 +115,25 @@ func TestTenantEscrowGrantDoesNotExpireWhileNodeIsAlive(t *testing.T) {
 	}
 }
 
+func TestTenantEscrowGrantRejectsExpiredNodeLease(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	manager := NewTenantEscrowManager(client, 2*time.Second)
+	ctx := context.Background()
+	epoch, err := manager.RegisterNode(ctx, "node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mr.FastForward(3 * time.Second)
+
+	if _, err := manager.Grant(ctx, "tenant-a", "node-a", epoch, 1, 5); err != ErrEscrowFenced {
+		t.Fatalf("expired node lease was accepted: %v", err)
+	}
+	if client.Exists(ctx, manager.holderKey("tenant-a"), manager.allocatedKey("tenant-a")).Val() != 0 {
+		t.Fatal("expired node created escrow state")
+	}
+}
+
 func TestLocalTenantEscrowReturnsExcessGrantAfterLimitDecrease(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})

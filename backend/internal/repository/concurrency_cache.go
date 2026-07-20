@@ -39,7 +39,7 @@ const (
 	accountCooldownKeyPrefix = "cooldown:account:"
 
 	// 默认槽位过期时间（分钟），可通过配置覆盖
-	defaultSlotTTLMinutes = 15
+	defaultSlotTTLMinutes = 2
 )
 
 var (
@@ -342,30 +342,6 @@ var (
 		end
 		return 1
 	`)
-
-	// startupCleanupScript 清理非当前进程前缀的槽位成员。
-	// KEYS 是有序集合键列表，ARGV[1] 是当前进程前缀，ARGV[2] 是槽位 TTL。
-	// 遍历每个 KEYS[i]，移除前缀不匹配的成员，清空后删 key，否则刷新 EXPIRE。
-	startupCleanupScript = redis.NewScript(`
-		local activePrefix = ARGV[1]
-		local slotTTL = tonumber(ARGV[2])
-		local removed = 0
-		for i = 1, #KEYS do
-			local key = KEYS[i]
-			local members = redis.call('ZRANGE', key, 0, -1)
-			for _, member in ipairs(members) do
-				if string.sub(member, 1, string.len(activePrefix)) ~= activePrefix then
-					removed = removed + redis.call('ZREM', key, member)
-				end
-			end
-			if redis.call('ZCARD', key) == 0 then
-				redis.call('DEL', key)
-			else
-				redis.call('EXPIRE', key, slotTTL)
-			end
-		end
-		return removed
-	`)
 )
 
 type concurrencyCache struct {
@@ -382,7 +358,7 @@ func (c *concurrencyCache) SlotTTL() time.Duration {
 }
 
 // NewConcurrencyCache 创建并发控制缓存
-// slotTTLMinutes: 槽位过期时间（分钟），0 或负数使用默认值 15 分钟
+// slotTTLMinutes: 槽位过期时间（分钟），0 或负数使用默认值 2 分钟
 // waitQueueTTLSeconds: 等待队列过期时间（秒），0 或负数使用 slot TTL
 func NewConcurrencyCache(rdb *redis.Client, slotTTLMinutes int, waitQueueTTLSeconds int) service.ConcurrencyCache {
 	if slotTTLMinutes <= 0 {
@@ -875,26 +851,16 @@ func (c *concurrencyCache) CleanupExpiredAccountSlotKeys(ctx context.Context) er
 }
 
 func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error {
-	if activeRequestPrefix == "" {
-		return nil
-	}
-
-	// 1. 清理有序集合中非当前进程前缀的成员
+	// Process prefixes are unique per gateway instance, not ownership fences.
+	// Removing every foreign prefix would delete live slots from other replicas.
+	// Active slots renew in place, so startup cleanup may only remove members
+	// whose timestamp is older than the shared TTL.
 	slotPatterns := []string{accountSlotKeyPrefix + "*", userSlotKeyPrefix + "*", apiKeySlotKeyPrefix + "*"}
 	for _, pattern := range slotPatterns {
-		if err := c.cleanupSlotsByPattern(ctx, pattern, activeRequestPrefix); err != nil {
+		if err := c.cleanupExpiredSlotKeysByPattern(ctx, pattern); err != nil {
 			return err
 		}
 	}
-
-	// 2. 删除所有等待队列计数器（重启后计数器失效）
-	waitPatterns := []string{accountWaitKeyPrefix + "*", waitQueueKeyPrefix + "*"}
-	for _, pattern := range waitPatterns {
-		if err := c.deleteKeysByPattern(ctx, pattern); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -911,51 +877,6 @@ func (c *concurrencyCache) cleanupExpiredSlotKeysByPattern(ctx context.Context, 
 			_, err := cleanupExpiredSlotKeysScript.Run(ctx, c.rdb, keys, c.slotTTLSeconds).Result()
 			if err != nil {
 				return fmt.Errorf("cleanup expired slots %s: %w", pattern, err)
-			}
-		}
-		cursor = nextCursor
-		if cursor == 0 {
-			break
-		}
-	}
-	return nil
-}
-
-// cleanupSlotsByPattern 扫描匹配 pattern 的有序集合键，批量调用 Lua 脚本清理非当前进程成员。
-func (c *concurrencyCache) cleanupSlotsByPattern(ctx context.Context, pattern, activePrefix string) error {
-	const scanCount = 200
-	var cursor uint64
-	for {
-		keys, nextCursor, err := c.rdb.Scan(ctx, cursor, pattern, scanCount).Result()
-		if err != nil {
-			return fmt.Errorf("scan %s: %w", pattern, err)
-		}
-		if len(keys) > 0 {
-			_, err := startupCleanupScript.Run(ctx, c.rdb, keys, activePrefix, c.slotTTLSeconds).Result()
-			if err != nil {
-				return fmt.Errorf("cleanup slots %s: %w", pattern, err)
-			}
-		}
-		cursor = nextCursor
-		if cursor == 0 {
-			break
-		}
-	}
-	return nil
-}
-
-// deleteKeysByPattern 扫描匹配 pattern 的键并删除。
-func (c *concurrencyCache) deleteKeysByPattern(ctx context.Context, pattern string) error {
-	const scanCount = 200
-	var cursor uint64
-	for {
-		keys, nextCursor, err := c.rdb.Scan(ctx, cursor, pattern, scanCount).Result()
-		if err != nil {
-			return fmt.Errorf("scan %s: %w", pattern, err)
-		}
-		if len(keys) > 0 {
-			if err := c.rdb.Del(ctx, keys...).Err(); err != nil {
-				return fmt.Errorf("del %s: %w", pattern, err)
 			}
 		}
 		cursor = nextCursor

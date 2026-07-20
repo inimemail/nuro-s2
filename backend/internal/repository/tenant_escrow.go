@@ -162,6 +162,7 @@ func (m *TenantEscrowManager) LiveNodes(ctx context.Context) ([]string, error) {
 
 var grantEscrowScript = redis.NewScript(`
 if tostring(redis.call('GET', KEYS[3]) or '') ~= ARGV[2] then return -1 end
+if tostring(redis.call('GET', KEYS[5]) or '') ~= ARGV[2] then return -1 end
 local holder = redis.call('HGET', KEYS[1], ARGV[1])
 local epoch = ARGV[2]
 local requested = tonumber(ARGV[3])
@@ -189,19 +190,10 @@ func (m *TenantEscrowManager) Grant(ctx context.Context, tenantID, nodeID string
 	if requested <= 0 || globalLimit <= 0 {
 		return 0, nil
 	}
-	currentEpoch, err := m.rdb.Get(ctx, m.nodeEpochKey(nodeID)).Uint64()
-	if err != nil {
-		return 0, err
-	}
-	if currentEpoch != epoch {
-		return 0, ErrEscrowFenced
-	}
-	if alive, err := m.NodeAlive(ctx, nodeID, epoch); err != nil {
-		return 0, err
-	} else if !alive {
-		return 0, ErrEscrowFenced
-	}
-	result, err := grantEscrowScript.Run(ctx, m.rdb, []string{m.holderKey(tenantID), m.allocatedKey(tenantID), m.nodeEpochKey(nodeID), m.nodeTenantsKey(nodeID, epoch)}, nodeID, epoch, requested, globalLimit, tenantID).Int()
+	result, err := grantEscrowScript.Run(ctx, m.rdb, []string{
+		m.holderKey(tenantID), m.allocatedKey(tenantID), m.nodeEpochKey(nodeID),
+		m.nodeTenantsKey(nodeID, epoch), m.nodeLeaseKey(nodeID, epoch),
+	}, nodeID, epoch, requested, globalLimit, tenantID).Int()
 	if err != nil {
 		return 0, err
 	}

@@ -21,14 +21,14 @@ $env:SUB2API_EDGE_PREPARE_TIMEOUT_MS = "1500"
 $env:SUB2API_EDGE_COMPLETE_TIMEOUT_MS = "1500"
 $env:SUB2API_EDGE_DRAIN_TIMEOUT_SECS = "1800"
 $env:SUB2API_EDGE_INITIAL_POOL_SIZE = "512"
-$env:SUB2API_EDGE_QUEUE_BUFFER_SIZE = "128"
-$env:SUB2API_EDGE_INGRESS_BODY_MAX_BYTES = "1073741824"
-$env:SUB2API_EDGE_QUEUE_MAX_BYTES = "67108864"
-$env:SUB2API_EDGE_GLOBAL_WORKERS = "256"
-$env:SUB2API_EDGE_PER_ACCOUNT_WORKERS = "32"
+$env:SUB2API_EDGE_QUEUE_BUFFER_SIZE = "512"
+$env:SUB2API_EDGE_INGRESS_BODY_MAX_BYTES = "2147483648"
+$env:SUB2API_EDGE_QUEUE_MAX_BYTES = "268435456"
+$env:SUB2API_EDGE_GLOBAL_WORKERS = "512"
+$env:SUB2API_EDGE_PER_ACCOUNT_WORKERS = "128"
 $env:SUB2API_EDGE_MAX_RELAY_DOMAINS = "4096"
 $env:SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS = "4096"
-$env:SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT = "64"
+$env:SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT = "128"
 $env:SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS = "150"
 $env:SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH = "true"
 $env:SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES = "262144"
@@ -42,8 +42,8 @@ $env:RUST_LOG = "warn"
 cargo run --manifest-path edge-rs/Cargo.toml
 ```
 
-Failed complete/abort callbacks retry in the background for approximately the
-30-minute Go lease TTL. They do not add a request-path round trip.
+Active requests renew their 120-second Go lease in the background. Failed
+complete/abort callbacks retry without adding a request-path round trip.
 
 The Go config must also enable the internal control API:
 
@@ -93,6 +93,7 @@ The edge accepts OpenAI hot-path requests and calls:
 ```text
 POST /internal/edge/openai/prepare
 POST /internal/edge/openai/retry
+POST /internal/edge/openai/renew
 POST /internal/edge/openai/complete
 POST /internal/edge/openai/abort
 ```
