@@ -624,7 +624,10 @@ create_haproxy_config() {
     local workdir="$1"
     cat > "${workdir}/haproxy.cfg" <<'EOF'
 global
-    maxconn 1000000
+    # Each proxied connection consumes a client and a server FD. Keep enough
+    # headroom for listeners, health checks, and server-template sockets under
+    # the container's 1,000,000 nofile hard limit.
+    maxconn 490000
     log stdout format raw local0
 
 defaults
