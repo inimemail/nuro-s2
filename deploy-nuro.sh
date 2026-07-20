@@ -81,7 +81,6 @@ ensure_haproxy_host_capacity() {
     } > "$sysctl_tmp"
     install -m 0644 "$sysctl_tmp" /etc/sysctl.d/99-nuro-sub2api-haproxy.conf
     rm -f "$sysctl_tmp"
-    info "HAProxy 宿主机容量已就绪: nr_open=${nr_open}, file-max=${file_max}"
 }
 
 get_local_ip() {
@@ -169,6 +168,16 @@ remove_dynamic_admission_cells() {
     local ids
     ids="$(docker ps -aq --filter "name=^/${COMPOSE_PROJECT_NAME}-admission-(openai|anthropic)-" 2>/dev/null || true)"
     [[ -z "$ids" ]] || docker rm -f $ids >/dev/null 2>&1 || true
+}
+
+remove_legacy_runtime_containers() {
+    local name
+    for name in "$APP_CONTAINER" "$EDGE_CONTAINER"; do
+        if docker container inspect "$name" >/dev/null 2>&1; then
+            info "移除旧运行容器 ${name}，释放端口给成对副本入口 ..."
+            docker rm -f "$name" >/dev/null || die "无法移除旧运行容器 ${name}"
+        fi
+    done
 }
 
 set_env_value() {
@@ -1095,6 +1104,7 @@ compose_up_with_edge_fallback() {
     local workdir="$1"
     local dc_cmd="$2"
     ensure_haproxy_host_capacity
+    remove_legacy_runtime_containers
     $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans
 }
 
