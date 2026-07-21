@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -18,7 +19,7 @@ import (
 )
 
 func TestGrokFreeCacheRouteV160NativeResponsesIntegration(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -42,8 +43,46 @@ func TestGrokFreeCacheRouteV160NativeResponsesIntegration(t *testing.T) {
 	require.Len(t, gjson.GetBytes(upstream.lastBody, "tools").Array(), 3)
 }
 
+func TestGrokMessagesInvalidEncryptedContentRetriesAtMostOnce(t *testing.T) {
+	setGinTestMode()
+	errorBody := `{"error":{"code":"invalid_encrypted_content","message":"encrypted_content could not decrypt"}}`
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(errorBody)),
+		},
+		{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(errorBody)),
+		},
+	}}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
+			Enabled: false, AllowInsecureHTTP: true,
+		}}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID: 163, Platform: PlatformGrok, Type: AccountTypeAPIKey, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "grok-token", "base_url": "http://upstream.example/v1"},
+	}
+	body := []byte(`{"model":"grok-4.5","max_tokens":16,"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"prior reasoning","signature":"xai-provider-signature"},{"type":"text","text":"prior answer"}]},{"role":"user","content":"continue"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+
+	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+
+	require.Error(t, err)
+	require.Len(t, upstream.bodies, 2, "encrypted-content recovery must issue at most one retry")
+	require.True(t, gjson.GetBytes(upstream.bodies[0], "input.0.encrypted_content").Exists())
+	require.False(t, gjson.GetBytes(upstream.bodies[1], "input.0.encrypted_content").Exists())
+}
+
 func TestGrokFreeCacheRouteV160WSHTTPBridgeIntegration(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},

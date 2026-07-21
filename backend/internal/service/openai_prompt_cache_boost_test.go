@@ -83,7 +83,7 @@ func promptCacheBoostUnsupportedResponse(message string) *http.Response {
 }
 
 func TestOpenAIGatewayService_ForwardPromptCacheBoostInjectsFields(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"gpt-5.5","stream":false,"input":[{"role":"user","content":"hello"}]}`)
 	rec := httptest.NewRecorder()
@@ -109,7 +109,7 @@ func TestOpenAIGatewayService_ForwardPromptCacheBoostInjectsFields(t *testing.T)
 }
 
 func TestOpenAIGatewayService_HealthProbeDoesNotInjectPromptCacheBoostFields(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := healthProbeRequestBody()
 	rec := httptest.NewRecorder()
@@ -138,7 +138,7 @@ func TestOpenAIGatewayService_HealthProbeDoesNotInjectPromptCacheBoostFields(t *
 }
 
 func TestOpenAIGatewayService_UpstreamStrongIsolationKeepsCacheBoostButDropsContinuation(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"gpt-5.5","stream":false,"store":true,"previous_response_id":"resp_leaky","conversation_id":"conv_leaky","input":[{"role":"user","content":"hello"}]}`)
 	rec := httptest.NewRecorder()
@@ -175,7 +175,7 @@ func TestOpenAIGatewayService_UpstreamStrongIsolationKeepsCacheBoostButDropsCont
 }
 
 func TestOpenAIGatewayService_OAuthUpstreamStrongIsolationDropsContinuation(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"gpt-5.5","stream":false,"store":true,"previous_response_id":"resp_leaky","conversation_id":"conv_leaky","input":[{"role":"user","content":"hello"}]}`)
 	rec := httptest.NewRecorder()
@@ -213,7 +213,7 @@ func TestOpenAIGatewayService_OAuthUpstreamStrongIsolationDropsContinuation(t *t
 }
 
 func TestOpenAIUpstreamStrongIsolationWSKeepsPromptCacheKeyButDropsContinuation(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -391,7 +391,7 @@ func TestOpenAIPromptCacheBoost_AffinityStickyTTLUsesRetentionWindow(t *testing.
 }
 
 func TestOpenAIPromptCacheBoost_GroupAffinityUsesAggressiveWhenAvailable(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	ctx := context.Background()
 	groupID := int64(1)
@@ -418,7 +418,7 @@ func TestOpenAIPromptCacheBoost_GroupAffinityUsesAggressiveWhenAvailable(t *test
 }
 
 func TestOpenAIPromptCacheBoost_GroupAffinityUsesUpstreamPriorityWhenAvailable(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	ctx := context.Background()
 	groupID := int64(11)
@@ -452,7 +452,7 @@ func TestOpenAIPromptCacheBoost_GroupAffinityUsesUpstreamPriorityWhenAvailable(t
 }
 
 func TestOpenAIPromptCacheBoost_GroupAffinityUsesOptimizedHashWhenAllUpstreamAccountsSupportIt(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	ctx := context.Background()
 	groupID := int64(111)
@@ -473,7 +473,7 @@ func TestOpenAIPromptCacheBoost_GroupAffinityUsesOptimizedHashWhenAllUpstreamAcc
 }
 
 func TestOpenAIPromptCacheBoost_GroupAffinityKeepsUpstreamHashForMixedKeyOptimizationPool(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	ctx := context.Background()
 	groupID := int64(112)
@@ -497,7 +497,7 @@ func TestOpenAIPromptCacheBoost_GroupAffinityKeepsUpstreamHashForMixedKeyOptimiz
 }
 
 func TestOpenAIPromptCacheBoost_GroupAffinityUsesExplicitPromptCacheKeyForUpstreamPriority(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	ctx := context.Background()
 	groupID := int64(12)
@@ -528,7 +528,7 @@ func TestOpenAIPromptCacheBoost_GroupAffinityUsesExplicitPromptCacheKeyForUpstre
 }
 
 func TestOpenAIPromptCacheBoost_UpstreamPriorityDisabledWhenBoostOrToggleOff(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	ctx := context.Background()
 	groupID := int64(13)
@@ -759,7 +759,7 @@ func TestAccountWriteThrottlePrunesPromptCacheHitRateLogState(t *testing.T) {
 }
 
 func TestOpenAIGatewayService_ForwardPromptCacheBoostUnsupportedRetentionRetries(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"gpt-5.5","stream":false,"input":[{"role":"user","content":"hello"}]}`)
 	rec := httptest.NewRecorder()
@@ -808,7 +808,7 @@ func TestOpenAIPromptCacheBoostUnsupportedAfterCommittedResponseDisablesFutureIn
 }
 
 func TestForwardAsChatCompletions_PromptCacheBoostInjectsFieldsWithoutGeneratedSession(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"shared policy"},{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()
@@ -832,7 +832,7 @@ func TestForwardAsChatCompletions_PromptCacheBoostInjectsFieldsWithoutGeneratedS
 }
 
 func TestForwardAsChatCompletions_ExplicitPromptCacheKeySetsSession(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"gpt-5.5","prompt_cache_key":"client-cache-key","messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()
@@ -855,7 +855,7 @@ func TestForwardAsChatCompletions_ExplicitPromptCacheKeySetsSession(t *testing.T
 }
 
 func TestForwardAsChatCompletions_UpstreamStrongIsolationDoesNotSetSessionForExplicitPromptCacheKey(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"gpt-5.5","prompt_cache_key":"client-cache-key","messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()
@@ -882,7 +882,7 @@ func TestForwardAsChatCompletions_UpstreamStrongIsolationDoesNotSetSessionForExp
 }
 
 func TestForwardAsChatCompletions_PromptCacheBoostUnsupportedRetentionRetries(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"shared policy"},{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()
@@ -912,7 +912,7 @@ func TestForwardAsChatCompletions_PromptCacheBoostUnsupportedRetentionRetries(t 
 }
 
 func TestForwardAsAnthropic_PromptCacheBoostInjectsFieldsWithoutGeneratedSession(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()
@@ -936,7 +936,7 @@ func TestForwardAsAnthropic_PromptCacheBoostInjectsFieldsWithoutGeneratedSession
 }
 
 func TestForwardAsAnthropic_PromptCacheBoostKeepsLargeReplayWithoutAutoSession(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	messages := make([]string, 0, openAICompatAnthropicReplayMaxTailMessages+3)
 	for i := 0; i < openAICompatAnthropicReplayMaxTailMessages+3; i++ {
@@ -968,7 +968,7 @@ func TestForwardAsAnthropic_PromptCacheBoostKeepsLargeReplayWithoutAutoSession(t
 }
 
 func TestForwardAsAnthropic_PromptCacheBoostUnsupportedFieldsRetryWithoutFields(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()

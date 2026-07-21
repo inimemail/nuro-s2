@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsSensitiveKey_TokenBudgetKeysNotRedacted(t *testing.T) {
@@ -92,6 +94,42 @@ func TestSanitizeErrorBodyForStorage_RedactsPlainTextSecrets(t *testing.T) {
 	if !strings.Contains(out, "[REDACTED]") {
 		t.Fatalf("expected redaction marker, got %q", out)
 	}
+}
+
+func TestSanitizeOpsUpstreamErrors_RedactsDuplicateResponseBody(t *testing.T) {
+	t.Parallel()
+
+	entry := &OpsInsertErrorLogInput{UpstreamErrors: []*OpsUpstreamErrorEvent{{
+		UpstreamStatusCode:   502,
+		Message:              "request failed",
+		UpstreamResponseBody: `{"error":{"message":"failed","authorization":"Bearer secret-token","cookie":"session=secret"}}`,
+	}}}
+	require.NoError(t, sanitizeOpsUpstreamErrors(entry))
+	require.NotNil(t, entry.UpstreamErrorsJSON)
+	require.NotContains(t, *entry.UpstreamErrorsJSON, "secret-token")
+	require.NotContains(t, *entry.UpstreamErrorsJSON, "session=secret")
+	require.Contains(t, *entry.UpstreamErrorsJSON, "[REDACTED]")
+}
+
+func TestSanitizeOpsUpstreamErrors_DropsUpstreamURL(t *testing.T) {
+	t.Parallel()
+
+	entry := &OpsInsertErrorLogInput{UpstreamErrors: []*OpsUpstreamErrorEvent{{
+		UpstreamStatusCode: 502,
+		UpstreamURL:        "https://private.example/internal/endpoint",
+		Message:            "request failed",
+	}}}
+	require.NoError(t, sanitizeOpsUpstreamErrors(entry))
+	require.NotNil(t, entry.UpstreamErrorsJSON)
+	require.NotContains(t, *entry.UpstreamErrorsJSON, "private.example")
+	require.NotContains(t, *entry.UpstreamErrorsJSON, "upstream_url")
+}
+
+func TestSanitizeUpstreamErrorMessageForOps_RemovesIdentityURLAndCredentials(t *testing.T) {
+	t.Parallel()
+
+	got := sanitizeUpstreamErrorMessageForOps("request to https://private.example failed Authorization=Bearer secret-token")
+	require.Equal(t, safeUpstreamErrorMessage, got)
 }
 
 func TestShrinkToEssentials_IncludesThinking(t *testing.T) {

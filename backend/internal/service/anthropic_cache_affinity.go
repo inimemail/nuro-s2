@@ -328,6 +328,7 @@ func selectLayeredAccountWithLoadAndAnthropicAffinity(
 			return selected
 		}
 	}
+	candidates = filterByKnownLoadInfoIfPresent(candidates)
 	return selectByLRU(candidates, preferOAuth)
 }
 

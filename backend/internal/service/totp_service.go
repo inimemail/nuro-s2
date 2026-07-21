@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -52,6 +53,45 @@ type stepUpGrantCache interface {
 type SecretEncryptor interface {
 	Encrypt(plaintext string) (string, error)
 	Decrypt(ciphertext string) (string, error)
+}
+
+const storedSecretEncryptionVersion = 1
+
+func encryptStoredSecret(encryptor SecretEncryptor, plaintext string) (string, error) {
+	if encryptor == nil {
+		return "", errors.New("secret encryptor unavailable")
+	}
+	ciphertext, err := encryptor.Encrypt(plaintext)
+	if err != nil {
+		return "", err
+	}
+	return ciphertext, nil
+}
+
+// decryptStoredSecret accepts unversioned ciphertext written by older builds
+// and their plaintext predecessor. New records carry explicit sidecar metadata
+// so corruption or a mismatched key can fail closed without changing the
+// ciphertext wire format used by rollback binaries.
+func decryptStoredSecret(encryptor SecretEncryptor, value string, version int) (plaintext string, legacyPlaintext bool, err error) {
+	if version < 0 || version > storedSecretEncryptionVersion {
+		return "", false, fmt.Errorf("unsupported secret encryption version %d", version)
+	}
+	if version == storedSecretEncryptionVersion {
+		if encryptor == nil {
+			return "", false, errors.New("secret decryptor unavailable")
+		}
+		if value == "" {
+			return "", false, errors.New("encrypted secret payload is empty")
+		}
+		plaintext, err = encryptor.Decrypt(value)
+		return plaintext, false, err
+	}
+	if encryptor != nil {
+		if plaintext, err = encryptor.Decrypt(value); err == nil {
+			return plaintext, false, nil
+		}
+	}
+	return value, true, nil
 }
 
 // TotpSetupSession represents a TOTP setup session

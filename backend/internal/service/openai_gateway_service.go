@@ -624,7 +624,7 @@ func (s *OpenAIGatewayService) billingDeps() *billingDeps {
 	}
 }
 
-// CloseOpenAIWSPool 关闭 OpenAI WebSocket 连接池及共享健康 worker。
+// CloseOpenAIWSPool 关闭 OpenAI WebSocket 连接池及共享健康/首 Token guard worker。
 // 应在应用优雅关闭时调用。
 func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
 	if s == nil {
@@ -636,6 +636,7 @@ func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
 	if s.openaiAccountStats != nil {
 		s.openaiAccountStats.closeSharedHealth()
 	}
+	s.openaiFirstTokenTimeoutPlaceholderGuard.stop()
 }
 
 // InvalidateAgentIdentityWSConnections drops pooled connections after an
@@ -6288,11 +6289,8 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			return
 		}
 		safeTokenPlaceholderSent = true
+		firstTokenTimeoutPlaceholderSent = true
 		clientOutputStarted = true
-		if firstTokenMs == nil {
-			ms := int(time.Since(startTime).Milliseconds())
-			firstTokenMs = &ms
-		}
 		flusher.Flush()
 		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
 	}
@@ -7711,12 +7709,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			return
 		}
 		safeTokenPlaceholderSent = true
+		firstTokenTimeoutPlaceholderSent = true
 		clientOutputStarted = true
 		lastDownstreamWriteAt = time.Now()
-		if firstTokenMs == nil {
-			ms := int(time.Since(startTime).Milliseconds())
-			firstTokenMs = &ms
-		}
 	}
 	writeFirstTokenTimeoutPlaceholder := func() bool {
 		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || firstTokenMs != nil || streamFailoverErr != nil || !atSSEEventBoundary {

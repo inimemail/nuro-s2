@@ -18,7 +18,7 @@
             <span :class="item.dotClass" class="h-1.5 w-1.5 flex-none rounded-full" />
             <span class="truncate">{{ item.name }}</span>
           </span>
-          <div :data-testid="`upstream-billing-guard-group-${item.groupId}-details`" class="pointer-events-none absolute bottom-full left-0 z-[120] mb-1.5 w-64 rounded bg-gray-900 px-3 py-2 text-xs leading-5 text-white opacity-0 shadow-lg transition-opacity group-hover/guard:opacity-100 dark:bg-gray-700">
+          <div :data-testid="`upstream-billing-guard-group-${item.groupId}-details`" class="pointer-events-none absolute bottom-full left-0 z-[120] mb-1.5 w-64 rounded bg-gray-900 px-3 py-2 text-xs leading-5 text-white opacity-0 shadow-lg transition-opacity group-hover/guard:opacity-100 dark:bg-dark-700">
             <div class="font-medium">{{ item.name }}</div>
             <div class="mt-1 text-gray-300">{{ t('admin.accounts.upstreamBilling.currentRateDetail', { rate: displayedRate }) }}</div>
             <div class="text-gray-300">{{ t('admin.accounts.upstreamBilling.guardLimitDetail', { rate: `${item.limit}x` }) }}</div>
@@ -31,10 +31,10 @@
           <span class="inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[10px] leading-4 text-gray-500 dark:bg-dark-600 dark:text-gray-400">
             +{{ hiddenProtectedGroupCount }}
           </span>
-          <div data-testid="upstream-billing-hidden-group-details" class="pointer-events-none absolute bottom-full right-0 z-[120] mb-1.5 w-64 rounded bg-gray-900 px-3 py-2 text-xs leading-5 text-white opacity-0 shadow-lg transition-opacity group-hover/guard-more:opacity-100 dark:bg-gray-700">
+          <div data-testid="upstream-billing-hidden-group-details" class="pointer-events-none absolute bottom-full right-0 z-[120] mb-1.5 w-64 rounded bg-gray-900 px-3 py-2 text-xs leading-5 text-white opacity-0 shadow-lg transition-opacity group-hover/guard-more:opacity-100 dark:bg-dark-700">
             <div class="text-gray-300">{{ t('admin.accounts.upstreamBilling.currentRateDetail', { rate: displayedRate }) }}</div>
             <div class="mb-1 text-gray-400">{{ statusTitle }}</div>
-            <div v-for="item in hiddenProtectedGroups" :key="item.groupId" class="border-t border-gray-700 py-1 first:border-t-0 dark:border-gray-600">
+            <div v-for="item in hiddenProtectedGroups" :key="item.groupId" class="border-t border-gray-700 py-1 first:border-t-0 dark:border-dark-600">
               <div class="flex items-center justify-between gap-3">
                 <span class="truncate">{{ item.name }}</span>
                 <span class="flex-none text-gray-300">{{ item.limit }}x</span>

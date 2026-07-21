@@ -518,6 +518,14 @@ func ProvideBackupService(
 	return svc
 }
 
+func ProvideImageStorageSettingService(repo SettingRepository, encryptor SecretEncryptor, backup *BackupService, factory ImageStorageFactory, cfg *config.Config) *ImageStorageSettingService {
+	fallback := config.ImageStorageConfig{}
+	if cfg != nil {
+		fallback = cfg.ImageStorage
+	}
+	return NewImageStorageSettingService(repo, encryptor, backup, factory, fallback)
+}
+
 // ProvideOpsService constructs OpsService and wires the SettingService-backed quota
 // auto-pause cache sink. Mirrors the SetCleanupReloader pattern: OpsService doesn't
 // hold a *SettingService reference, but wire injects a tiny callback so writes to
@@ -555,7 +563,26 @@ func ProvideOpsService(
 		// a populated cache rather than zero defaults. Best-effort, sync-bounded.
 		settingService.WarmOpenAIQuotaAutoPauseSettings(context.Background())
 	}
+	svc.StartRuntimeSettingsRefresh(context.Background())
 	return svc
+}
+
+func ProvideOpsIngressRejectAggregator(
+	opsRepo OpsRepository,
+	opsService *OpsService,
+	authCacheInvalidationWorker *AuthCacheInvalidationWorker,
+	apiKeyService *APIKeyService,
+) *OpsIngressRejectAggregator {
+	opsService.authCacheInvalidationWorker = authCacheInvalidationWorker
+	opsService.apiKeyService = apiKeyService
+	repo, ok := opsRepo.(OpsIngressRejectRepository)
+	if !ok {
+		return NewOpsIngressRejectAggregator(nil)
+	}
+	a := NewOpsIngressRejectAggregator(repo)
+	a.Start()
+	opsService.SetIngressRejectAggregator(a)
+	return a
 }
 
 // ProvideSettingService wires SettingService with group reader and proxy repo.
@@ -602,6 +629,19 @@ func ProvideAPIKeyService(
 	return svc
 }
 
+// ProvideAuthCacheInvalidationWorker starts the durable cross-instance cache
+// invalidation path. Database triggers enqueue; request authentication never
+// waits for this worker.
+func ProvideAuthCacheInvalidationWorker(
+	repo AuthCacheInvalidationOutboxRepository,
+	cache APIKeyCache,
+	apiKeyService *APIKeyService,
+) *AuthCacheInvalidationWorker {
+	worker := NewAuthCacheInvalidationWorker(repo, cache, apiKeyService)
+	worker.Start()
+	return worker
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	// Core services
@@ -609,6 +649,8 @@ var ProviderSet = wire.NewSet(
 	NewUserService,
 	ProvideAPIKeyService,
 	ProvideAPIKeyAuthCacheInvalidator,
+	ProvideAuthCacheInvalidationWorker,
+	ProvideOpsIngressRejectAggregator,
 	NewGroupService,
 	NewAccountService,
 	NewProxyService,
@@ -649,6 +691,7 @@ var ProviderSet = wire.NewSet(
 	ProvideSettingService,
 	NewDataManagementService,
 	ProvideBackupService,
+	ProvideImageStorageSettingService,
 	ProvideOpsSystemLogSink,
 	ProvideOpsService,
 	ProvideOpsMetricsCollector,

@@ -413,6 +413,31 @@ func TestGrokTokenProviderProbeStillRejectsExpiredAutoPausedAccount(t *testing.T
 	require.ErrorIs(t, err, errOAuthRefreshAccountStateChanged)
 }
 
+func TestGrokTokenProviderManualTestBypassesSchedulingState(t *testing.T) {
+	account := newGrokRefreshCASTestAccount()
+	account.ProxyID = nil
+	account.Schedulable = false
+	resetAt := time.Now().Add(time.Hour)
+	account.RateLimitResetAt = &resetAt
+	account.Credentials["expires_at"] = time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	provider := NewGrokTokenProvider(nil, nil)
+
+	token, err := provider.GetAccessTokenForManualTest(context.Background(), account)
+
+	require.NoError(t, err)
+	require.Equal(t, "old-access", token)
+}
+
+func TestGrokTokenProviderManualTestRejectsMissingConfiguredProxy(t *testing.T) {
+	account := newGrokRefreshCASTestAccount()
+	account.Credentials["expires_at"] = time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	provider := NewGrokTokenProvider(nil, nil)
+
+	_, err := provider.GetAccessTokenForManualTest(context.Background(), account)
+
+	require.ErrorIs(t, err, errGrokOAuthConfiguredProxyMiss)
+}
+
 func TestGrokRefreshErrorRecoveryRejectsProxyChange(t *testing.T) {
 	used := newGrokRefreshCASTestAccount()
 	latest := cloneGrokRefreshTestAccount(used)

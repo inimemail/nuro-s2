@@ -27,6 +27,7 @@ services:
     image: weishaw/sub2api:latest
     container_name: sub2api
     restart: unless-stopped
+    stop_grace_period: 45s
     ulimits:
       nofile:
         soft: 100000
@@ -51,6 +52,11 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8080
       - SERVER_MODE=${SERVER_MODE:-release}
+      - SERVER_READ_HEADER_TIMEOUT=${SERVER_READ_HEADER_TIMEOUT:-10}
+      - SERVER_MAX_HEADER_BYTES=${SERVER_MAX_HEADER_BYTES:-65536}
+      - SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=${SERVER_GRACEFUL_SHUTDOWN_TIMEOUT:-5}
+      - SERVER_TRUSTED_PROXIES=${SERVER_TRUSTED_PROXIES:-}
+      - SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL=${SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL:-false}
       - RUN_MODE=${RUN_MODE:-standard}
 
       # =======================================================================
@@ -138,6 +144,7 @@ services:
       # =======================================================================
       # Security Configuration (URL Allowlist)
       # =======================================================================
+      - SECURITY_FORWARDED_CLIENT_IP_HEADERS=${SECURITY_FORWARDED_CLIENT_IP_HEADERS:-}
       # Enable URL allowlist validation (false to skip allowlist checks)
       - SECURITY_URL_ALLOWLIST_ENABLED=${SECURITY_URL_ALLOWLIST_ENABLED:-false}
       # Allow insecure HTTP URLs when allowlist is disabled (default: false, requires https)
@@ -153,6 +160,7 @@ services:
       # Proxy for accessing GitHub (online updates + pricing data)
       # Examples: http://host:port, socks5://host:port
       - UPDATE_PROXY_URL=${UPDATE_PROXY_URL:-}
+      - UPDATE_GITHUB_TOKEN=${UPDATE_GITHUB_TOKEN:-}
 
       # =======================================================================
       # Image Generation Stream & Concurrency
@@ -225,20 +233,31 @@ services:
     restart: unless-stopped
     ulimits:
       nofile:
-        soft: 100000
-        hard: 100000
+        soft: ${REDIS_NOFILE_LIMIT:-200000}
+        hard: ${REDIS_NOFILE_LIMIT:-200000}
     volumes:
       # Local directory mapping for easy migration
       - ./redis_data:/data:Z
-    command: >
-        sh -c '
-          redis-server
-          --save 60 1
-          --appendonly yes
-          --appendfsync everysec
-          ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
+    command:
+      - sh
+      - -c
+      - |
+        set -- redis-server \
+          --save 60 1 \
+          --appendonly yes \
+          --appendfsync everysec \
+          --maxmemory-policy noeviction \
+          --maxclients ${REDIS_MAX_CLIENTS:-${REDIS_MAXCLIENTS:-100000}} \
+          --tcp-backlog 8192 \
+          --timeout 0 \
+          --hz 20
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          set -- "$$@" --requirepass "$$REDIS_PASSWORD"
+        fi
+        exec "$$@"
     environment:
       - TZ=${TZ:-Asia/Shanghai}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       # REDISCLI_AUTH is used by redis-cli for authentication (safer than -a flag)
       - REDISCLI_AUTH=${REDIS_PASSWORD:-}
     networks:

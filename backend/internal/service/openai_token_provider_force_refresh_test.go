@@ -191,7 +191,7 @@ func TestOpenAITokenProvider_ForceRefreshShadowUsesParentCredentials(t *testing.
 }
 
 func TestOpenAIGatewayService_TryRecoverOpenAIOAuth401KeepsShadowForRetry(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	parentID := int64(9301)
 	parent := &Account{
 		ID:       parentID,
@@ -238,7 +238,7 @@ func TestOpenAIGatewayService_TryRecoverOpenAIOAuth401KeepsShadowForRetry(t *tes
 }
 
 func TestOpenAIGatewayService_TryRecoverOpenAIOAuth401MarksParentOnShadowRefreshFailure(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	parentID := int64(9401)
 	parent := &Account{
 		ID:       parentID,

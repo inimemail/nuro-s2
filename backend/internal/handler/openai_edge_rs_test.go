@@ -1069,6 +1069,13 @@ func TestOpenAIEdgeRetryResponseBodyUnwrapsJSONString(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeSafeErrorMessageRedactsUpstreamIdentityAndCredentials(t *testing.T) {
+	message := openAIEdgeSafeErrorMessage("request to https://private.example failed Authorization=Bearer secret-token")
+	if message != "Upstream request failed" {
+		t.Fatalf("expected generic safe error, got %q", message)
+	}
+}
+
 func TestOpenAIEdgeSuccessfulTerminalRequiresMatchingDialect(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1124,6 +1131,20 @@ func TestOpenAIEdgeCachePolicyCompatibilityFailureIsLeaseScoped(t *testing.T) {
 	}
 	if openAIEdgeCachePolicyCompatibilityFailure(&openAIEdgeLease{cachePolicyEnabled: true}, service.OpenAIEdgeCompleteRequest{ErrorType: "upstream_error"}) {
 		t.Fatal("ordinary upstream failures must remain health samples")
+	}
+}
+
+func TestOpenAIEdgeRealFirstTokenMSPrefersRealSample(t *testing.T) {
+	perceived := int64(25)
+	real := int64(240)
+	got := openAIEdgeRealFirstTokenMS(&perceived, &real)
+	if got == nil || *got != int(real) {
+		t.Fatalf("first token sample = %v, want real sample %d", got, real)
+	}
+
+	got = openAIEdgeRealFirstTokenMS(&perceived, nil)
+	if got == nil || *got != int(perceived) {
+		t.Fatalf("legacy first token sample = %v, want %d", got, perceived)
 	}
 }
 

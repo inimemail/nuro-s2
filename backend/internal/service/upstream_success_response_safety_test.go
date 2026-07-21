@@ -18,7 +18,7 @@ import (
 )
 
 func TestGatewayNonStreamingRejectsEmbeddedErrorSuccess(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
@@ -91,7 +91,7 @@ func TestOpenAIPassthroughResponseRejectsDiagnosticEnvelope(t *testing.T) {
 }
 
 func TestOpenAINonStreamingRejectsDiagnosticEnvelopeWithUsage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -112,7 +112,7 @@ func TestOpenAINonStreamingRejectsDiagnosticEnvelopeWithUsage(t *testing.T) {
 }
 
 func TestOpenAISSEToJSONRejectsDiagnosticTerminalResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -128,7 +128,7 @@ func TestOpenAISSEToJSONRejectsDiagnosticTerminalResponse(t *testing.T) {
 }
 
 func TestOpenAIPassthroughNonStreamingStillConvertsSSE(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -149,7 +149,7 @@ func TestOpenAIPassthroughNonStreamingStillConvertsSSE(t *testing.T) {
 }
 
 func TestOpenAINonStreamingFailedPreservesUsageAndSanitizesResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := `{"id":"resp_failed","object":"response","model":"gpt-test","status":"failed","error":{"type":"server_error","message":"private-provider internal failure"},"usage":{"input_tokens":7,"output_tokens":2}}`
 
 	t.Run("standard", func(t *testing.T) {
@@ -190,7 +190,7 @@ func TestOpenAINonStreamingFailedPreservesUsageAndSanitizesResponse(t *testing.T
 }
 
 func TestOpenAISSEFailedPreservesUsageAndSanitizesResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -210,7 +210,7 @@ func TestOpenAISSEFailedPreservesUsageAndSanitizesResponse(t *testing.T) {
 }
 
 func TestOpenAIStreamingFailureCannotBeOverwrittenByCompleted(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstreamBody := strings.Join([]string{
 		`data: {"type":"response.failed","response":{"id":"resp_failed_first","status":"failed","error":{"type":"invalid_request_error","message":"private-provider failed"},"usage":{"input_tokens":4,"output_tokens":1}}}`,
 		"",
@@ -264,7 +264,7 @@ func TestOpenAIStreamingFailureCannotBeOverwrittenByCompleted(t *testing.T) {
 }
 
 func TestOpenAIStreamingNeutralTerminalCannotBeOverwrittenByCompleted(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstreamBody := strings.Join([]string{
 		`data: {"type":"response.incomplete","response":{"id":"resp_incomplete_first","status":"incomplete","usage":{"input_tokens":4,"output_tokens":1}}}`,
 		"",
@@ -356,7 +356,7 @@ func TestAnthropicStreamRejectsDiagnosticEnvelopeButKeepsMessageStart(t *testing
 }
 
 func TestGatewayAnthropicStreamingDoesNotWriteUpstreamErrorIdentity(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	for _, upstreamBody := range []string{
 		"data: {\"type\":\"error\",\"error\":{\"message\":\"xAI private-provider.example failed\"}}\n\n",
 		"<!DOCTYPE html><title>private-provider.example</title>\n\n",
@@ -387,7 +387,7 @@ func TestGatewayAnthropicStreamingDoesNotWriteUpstreamErrorIdentity(t *testing.T
 }
 
 func TestGatewayAnthropicStreamingKeepsNormalContentURL(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)

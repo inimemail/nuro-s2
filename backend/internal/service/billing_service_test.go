@@ -181,6 +181,55 @@ func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
 	require.InDelta(t, 1.5, pricing.LongContextOutputMultiplier, 1e-12)
 }
 
+func TestGetModelPricing_OpenAIGPT55FallbacksMatchCanonicalPricing(t *testing.T) {
+	svc := newTestBillingService()
+	tests := []struct {
+		model             string
+		input             float64
+		inputPriority     float64
+		output            float64
+		outputPriority    float64
+		cacheRead         float64
+		cacheReadPriority float64
+	}{
+		{"gpt-5.5", 5e-6, 10e-6, 30e-6, 60e-6, 0.5e-6, 1e-6},
+		{"gpt-5.5-2026-04-23", 5e-6, 10e-6, 30e-6, 60e-6, 0.5e-6, 1e-6},
+		{"gpt-5.5-pro", 30e-6, 0, 180e-6, 0, 3e-6, 0},
+		{"gpt-5.5-pro-2026-04-23", 30e-6, 0, 180e-6, 0, 3e-6, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			pricing, err := svc.GetModelPricing(tt.model)
+			require.NoError(t, err)
+			require.InDelta(t, tt.input, pricing.InputPricePerToken, 1e-12)
+			require.InDelta(t, tt.inputPriority, pricing.InputPricePerTokenPriority, 1e-12)
+			require.InDelta(t, tt.output, pricing.OutputPricePerToken, 1e-12)
+			require.InDelta(t, tt.outputPriority, pricing.OutputPricePerTokenPriority, 1e-12)
+			require.InDelta(t, tt.cacheRead, pricing.CacheReadPricePerToken, 1e-12)
+			require.InDelta(t, tt.cacheReadPriority, pricing.CacheReadPricePerTokenPriority, 1e-12)
+			require.Zero(t, pricing.CacheCreationPricePerToken)
+			require.Zero(t, pricing.CacheCreationPricePerTokenPriority)
+			require.Equal(t, 272000, pricing.LongContextInputThreshold)
+			require.InDelta(t, 2.0, pricing.LongContextInputMultiplier, 1e-12)
+			require.InDelta(t, 1.5, pricing.LongContextOutputMultiplier, 1e-12)
+		})
+	}
+}
+
+func TestCalculateCost_GPT55PriorityAndLongContextUseCanonicalRates(t *testing.T) {
+	svc := newTestBillingService()
+	tokens := UsageTokens{InputTokens: 272001, OutputTokens: 10, CacheCreationTokens: 7, CacheReadTokens: 5}
+
+	cost, err := svc.CalculateCostWithServiceTier("gpt-5.5-2026-04-23", tokens, 1, "priority")
+	require.NoError(t, err)
+	require.True(t, cost.LongContextBillingApplied)
+	require.InDelta(t, float64(tokens.InputTokens)*10e-6*2, cost.InputCost, 1e-12)
+	require.InDelta(t, float64(tokens.OutputTokens)*60e-6*1.5, cost.OutputCost, 1e-12)
+	require.InDelta(t, float64(tokens.CacheReadTokens)*1e-6*2, cost.CacheReadCost, 1e-12)
+	require.Zero(t, cost.CacheCreationCost)
+}
+
 func TestCalculateCost_ImageInputTokens(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -206,8 +255,8 @@ func TestGetModelPricing_OpenAICompactAliasesFallback(t *testing.T) {
 		cacheRead   float64
 		longContext int
 	}{
-		{model: "gpt5.5", inputPrice: 2.5e-6, outputPrice: 15e-6, cacheRead: 0.25e-6, longContext: 272000},
-		{model: "gpt5.5-pro", inputPrice: 2.5e-6, outputPrice: 15e-6, cacheRead: 0.25e-6, longContext: 272000},
+		{model: "gpt5.5", inputPrice: 5e-6, outputPrice: 30e-6, cacheRead: 0.5e-6, longContext: 272000},
+		{model: "gpt5.5-pro", inputPrice: 30e-6, outputPrice: 180e-6, cacheRead: 3e-6, longContext: 272000},
 		{model: "gpt5.6terra", inputPrice: 2.5e-6, outputPrice: 15e-6, cacheRead: 0.25e-6, longContext: 272000},
 		{model: "openai/gpt5.4", inputPrice: 2.5e-6, outputPrice: 15e-6, cacheRead: 0.25e-6, longContext: 272000},
 		{model: "gpt5.4-mini", inputPrice: 7.5e-7, outputPrice: 4.5e-6, cacheRead: 7.5e-8, longContext: 0},

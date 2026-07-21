@@ -2079,6 +2079,12 @@ func (s *RateLimitService) HandleStreamTimeout(ctx context.Context, account *Acc
 	if account == nil {
 		return false
 	}
+	// Pool failures stay request-local and are handled by failover/soft
+	// cooldown. Never turn a stream timeout into durable account state.
+	if account.IsPoolMode() {
+		slog.Info("pool_mode_stream_timeout_state_skipped", "account_id", account.ID, "model", model)
+		return false
+	}
 
 	// 获取系统设置
 	if s.settingService == nil {
@@ -2131,6 +2137,9 @@ func (s *RateLimitService) HandleStreamTimeout(ctx context.Context, account *Acc
 
 // triggerStreamTimeoutTempUnsched 触发流超时临时不可调度
 func (s *RateLimitService) triggerStreamTimeoutTempUnsched(ctx context.Context, account *Account, settings *StreamTimeoutSettings, model string) bool {
+	if account == nil || account.IsPoolMode() {
+		return false
+	}
 	now := time.Now()
 	until := now.Add(time.Duration(settings.TempUnschedMinutes) * time.Minute)
 
@@ -2176,6 +2185,9 @@ func (s *RateLimitService) triggerStreamTimeoutTempUnsched(ctx context.Context, 
 
 // triggerStreamTimeoutError 触发流超时错误状态
 func (s *RateLimitService) triggerStreamTimeoutError(ctx context.Context, account *Account, model string) bool {
+	if account == nil || account.IsPoolMode() {
+		return false
+	}
 	errorMsg := "Stream data interval timeout (repeated failures) for model: " + model
 
 	s.notifyAccountSchedulingBlocked(account, time.Time{}, "stream_timeout_error")

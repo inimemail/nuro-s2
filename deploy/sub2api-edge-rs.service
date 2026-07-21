@@ -3,6 +3,7 @@ Description=Sub2API OpenAI Rust Edge Data Plane
 Documentation=https://github.com/Wei-Shaw/sub2api
 After=network.target sub2api.service
 Wants=sub2api.service
+PartOf=sub2api.service
 
 [Service]
 Type=simple
@@ -13,6 +14,7 @@ EnvironmentFile=/opt/sub2api/edge-rs.env
 ExecStart=/opt/sub2api/sub2api-edge-rs
 Restart=always
 RestartSec=3
+TimeoutStopSec=35
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sub2api-edge-rs

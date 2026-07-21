@@ -13,8 +13,13 @@ const ContextKeySessionID = "session_id"
 
 func SessionBindingContext(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		trustForwarded := cfg != nil && cfg.TrustForwardedIPForAPIKeyACL()
-		binding := &service.SessionBinding{IP: ip.GetSecurityClientIP(c, trustForwarded), UserAgent: c.Request.UserAgent()}
+		forwardedSettings := config.ForwardedClientIPSettings{Headers: []string{}}
+		if cfg != nil {
+			forwardedSettings = cfg.ForwardedClientIPSettings()
+		}
+		ip.SetForwardedIPSettings(c, forwardedSettings.TrustForwardedIP, forwardedSettings.Headers)
+		userAgent := normalizePersistentText(c.Request.UserAgent(), maxPersistentUserAgentBytes)
+		binding := &service.SessionBinding{IP: ip.GetSecurityClientIP(c, forwardedSettings.TrustForwardedIP), UserAgent: userAgent}
 		c.Request = c.Request.WithContext(service.WithSessionBinding(c.Request.Context(), binding))
 		c.Next()
 	}
@@ -29,7 +34,7 @@ func requestSessionBinding(c *gin.Context) *service.SessionBinding {
 	if c == nil || c.Request == nil {
 		return &service.SessionBinding{}
 	}
-	return &service.SessionBinding{IP: ip.GetTrustedClientIP(c), UserAgent: c.Request.UserAgent()}
+	return &service.SessionBinding{IP: ip.GetTrustedClientIP(c), UserAgent: normalizePersistentText(c.Request.UserAgent(), maxPersistentUserAgentBytes)}
 }
 
 // SecurityClientIP reuses the binding captured before authentication, keeping
@@ -55,7 +60,11 @@ func enforceSessionBinding(c *gin.Context, authService *service.AuthService, set
 	}
 	if auditService != nil {
 		uid := claims.UserID
-		auditService.Record(&service.AuditLog{ActorUserID: &uid, ActorEmail: claims.Email, ActorRole: claims.Role, AuthMethod: service.AuditAuthMethodJWT, Action: service.AuditActionSessionBindingMismatch, Method: c.Request.Method, Path: c.Request.URL.Path, ClientIP: binding.IP, UserAgent: c.Request.UserAgent(), StatusCode: 401})
+		path := c.FullPath()
+		if path == "" {
+			path = c.Request.URL.Path
+		}
+		auditService.Record(&service.AuditLog{ActorUserID: &uid, ActorEmail: claims.Email, ActorRole: claims.Role, AuthMethod: service.AuditAuthMethodJWT, Action: service.AuditActionSessionBindingMismatch, Method: c.Request.Method, Path: path, ClientIP: binding.IP, UserAgent: normalizePersistentText(c.Request.UserAgent(), maxPersistentUserAgentBytes), StatusCode: 401})
 	}
 	AbortWithError(c, 401, "SESSION_BINDING_MISMATCH", "Session network fingerprint changed, please login again")
 	return false

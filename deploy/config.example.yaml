@@ -24,6 +24,15 @@ server:
   # 用于生成邮件中的外部链接（例如：重置密码链接）的前端基础地址
   # Example: "https://example.com"
   frontend_url: ""
+  # Maximum time to receive complete request headers. Does not limit response streams.
+  # 完整读取请求头的最大时间；不限制响应流持续时间。
+  read_header_timeout: 10
+  # Request header limit in bytes (64 KiB); also bounds the HTTP/2 header list.
+  # 请求头上限（字节，默认 64 KiB）；同时约束 HTTP/2 header list。
+  max_header_bytes: 65536
+  # Maximum Go drain time before force-closing active requests during shutdown.
+  # Go 进程关闭时等待现有请求的最长时间；默认快速恢复，超时后强制关闭。
+  graceful_shutdown_timeout: 5
   # Trusted proxies for X-Forwarded-For parsing (CIDR/IP). Empty disables trusted proxies.
   # 信任的代理地址（CIDR/IP 格式），用于解析 X-Forwarded-For 头。留空则禁用代理信任。
   trusted_proxies: []
@@ -83,6 +92,16 @@ cors:
 # 安全配置
 # =============================================================================
 security:
+  # Optional CDN/proxy client-IP headers. They are consulted only when
+  # trust_forwarded_ip_for_api_key_acl is enabled; maximum 16 unique names.
+  # 可选 CDN/反代客户端 IP 请求头；仅在兼容开关开启时生效，最多 16 个。
+  # Environment: SECURITY_FORWARDED_CLIENT_IP_HEADERS=True-Client-IP,X-CDN-Client-IP
+  forwarded_client_ip_headers: []
+  # Example:
+  # forwarded_client_ip_headers:
+  #   - "True-Client-IP"
+  #   - "X-CDN-Client-IP"
+
   url_allowlist:
     # Enable URL allowlist validation (disable to skip all URL checks)
     # 启用 URL 白名单验证（禁用则跳过所有 URL 检查）

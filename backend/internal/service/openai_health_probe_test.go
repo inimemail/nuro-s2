@@ -18,7 +18,7 @@ import (
 )
 
 func TestConfigureOpenAIResponsesHealthProbe(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := healthProbeRequestBody()
 
 	for _, model := range []string{"gpt-5.4", "gpt-5.5", "o4-mini"} {
@@ -82,7 +82,7 @@ func TestConfigureOpenAIResponsesHealthProbe(t *testing.T) {
 }
 
 func TestOpenAIHealthProbeEmptyJSONTriggersRequestLocalFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"id":"resp_empty","object":"response","model":"gpt-5.5","output":[{"type":"reasoning","summary":[]}],"usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16}}`)
 	c, recorder := configuredHealthProbeContext(t)
 	response := &http.Response{
@@ -112,7 +112,7 @@ func TestOpenAIHealthProbeEmptyJSONTriggersRequestLocalFailover(t *testing.T) {
 }
 
 func TestOpenAIHealthProbeEmptySSEResponseTriggersFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	c, recorder := configuredHealthProbeContext(t)
 	response := &http.Response{
 		StatusCode: http.StatusOK,
@@ -136,7 +136,7 @@ func TestOpenAIHealthProbeEmptySSEResponseTriggersFailover(t *testing.T) {
 }
 
 func TestOpenAIHealthProbeNonEmptyResponsePassesThrough(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	c, recorder := configuredHealthProbeContext(t)
 	body := []byte(`{"id":"resp_ok","object":"response","model":"gpt-5.5","output":[{"type":"reasoning","summary":[]},{"type":"message","content":[{"type":"output_text","text":"MONITOR_OK"}]}],"usage":{"input_tokens":12,"output_tokens":2,"total_tokens":14}}`)
 	response := &http.Response{
@@ -368,7 +368,7 @@ func TestBuildOpenAIHealthProbeDefaultFallbackBodyUsesDefaultResponsesShape(t *t
 }
 
 func TestOpenAIHealthProbeDoesNotChangeUnmarkedEmptyResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := healthProbeRequestBody()
 	c, recorder := healthProbeTestContext(body, "")
 	responseBody := []byte(`{"id":"resp_empty","object":"response","model":"gpt-5.5","output":[],"usage":{"input_tokens":4,"output_tokens":0,"total_tokens":4}}`)

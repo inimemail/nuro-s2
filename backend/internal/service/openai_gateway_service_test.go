@@ -251,7 +251,7 @@ func (c stubConcurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts
 }
 
 func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
@@ -296,7 +296,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 }
 
 func TestOpenAIGatewayService_GenerateSessionHash_UsesXXHash64(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
@@ -310,7 +310,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_UsesXXHash64(t *testing.T) {
 }
 
 func TestOpenAIGatewayService_GenerateSessionHash_AttachesLegacyHashToContext(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
@@ -326,7 +326,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_AttachesLegacyHashToContext(t 
 }
 
 func TestOpenAIGatewayService_GenerateExplicitSessionHash_SkipsContentFallback(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	svc := &OpenAIGatewayService{}
 	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat"}`)
 
@@ -361,7 +361,7 @@ func TestOpenAIGatewayService_GenerateExplicitSessionHash_SkipsContentFallback(t
 }
 
 func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
@@ -379,7 +379,7 @@ func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {
 }
 
 func TestOpenAIGatewayService_GenerateSessionHash_ContentFallback(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", nil)
@@ -404,7 +404,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_ContentFallback(t *testing.T) 
 }
 
 func TestOpenAIGatewayService_GenerateSessionHash_ExplicitSignalWinsOverContent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", nil)
@@ -422,7 +422,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_ExplicitSignalWinsOverContent(
 }
 
 func TestOpenAIGatewayService_GenerateSessionHash_EmptyBodyStillEmpty(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", nil)
@@ -1396,7 +1396,7 @@ func TestOpenAISelectAccountWithLoadAwareness_PreferNeverUsed(t *testing.T) {
 }
 
 func TestOpenAIStreamingTimeout(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 1,
@@ -1431,7 +1431,7 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 }
 
 func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErrorEvent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -1463,7 +1463,7 @@ func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErr
 }
 
 func TestOpenAIStreamingReadErrorBeforeOutputReturnsFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -1493,7 +1493,7 @@ func TestOpenAIStreamingReadErrorBeforeOutputReturnsFailover(t *testing.T) {
 }
 
 func TestOpenAIStreamingResponseFailedBeforeOutputReturnsFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -1534,7 +1534,7 @@ func TestOpenAIStreamingResponseFailedBeforeOutputReturnsFailover(t *testing.T) 
 }
 
 func TestOpenAIStreamingOAuthPreambleFlushWritesBeforeFailedEvent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -1580,7 +1580,7 @@ func TestOpenAIStreamingOAuthPreambleFlushWritesBeforeFailedEvent(t *testing.T) 
 }
 
 func TestOpenAIStreamingAPIKeyPreambleFlushWritesBeforeFailedEvent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -1626,7 +1626,7 @@ func TestOpenAIStreamingAPIKeyPreambleFlushWritesBeforeFailedEvent(t *testing.T)
 }
 
 func TestOpenAIStreamingOAuthSSECommentPreflushWritesBeforeFailedEvent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -1672,7 +1672,7 @@ func TestOpenAIStreamingOAuthSSECommentPreflushWritesBeforeFailedEvent(t *testin
 }
 
 func TestOpenAIStreamingAPIKeySSECommentPreflushWritesBeforeFailedEvent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -1718,7 +1718,7 @@ func TestOpenAIStreamingAPIKeySSECommentPreflushWritesBeforeFailedEvent(t *testi
 }
 
 func TestOpenAIStreamingPreambleFlushDoesNotCountCreatedAsFirstToken(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -1762,7 +1762,7 @@ func TestOpenAIStreamingPreambleFlushDoesNotCountCreatedAsFirstToken(t *testing.
 }
 
 func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesEmptyDeltaAfterCreated(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -1776,17 +1776,23 @@ func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesEmptyDeltaAfterCreated(t 
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
 
+	createdBody := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_safe"}}`,
+		"",
+	}, "\n") + "\n"
+	realOutputBody := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_safe","usage":{"input_tokens":1,"output_tokens":1}}}`,
+		"",
+	}, "\n") + "\n"
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
-		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
-			"event: response.created",
-			`data: {"type":"response.created","response":{"id":"resp_safe"}}`,
-			"",
-			`data: {"type":"response.output_text.delta","delta":"ok"}`,
-			"",
-			`data: {"type":"response.completed","response":{"id":"resp_safe","usage":{"input_tokens":1,"output_tokens":1}}}`,
-			"",
-		}, "\n"))),
+		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{
+			{data: createdBody},
+			{delay: 60 * time.Millisecond, data: realOutputBody},
+		}},
 		Header: http.Header{"X-Request-Id": []string{"rid-safe-placeholder"}},
 	}
 	account := &Account{
@@ -1795,7 +1801,9 @@ func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesEmptyDeltaAfterCreated(t 
 		Type:     AccountTypeOAuth,
 		Name:     "acc",
 		Extra: map[string]any{
-			openAIOAuthChatGPTSafeTokenPlaceholderExtraKey: true,
+			openAIOAuthChatGPTSafeTokenPlaceholderExtraKey:                true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      20,
 		},
 	}
 
@@ -1803,10 +1811,12 @@ func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesEmptyDeltaAfterCreated(t 
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, result.firstTokenMs)
+	require.GreaterOrEqual(t, *result.firstTokenMs, 40)
 	body := rec.Body.String()
 	require.Contains(t, body, `"type":"response.created"`)
 	require.Contains(t, body, `"type":"response.output_text.delta","delta":""`)
 	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
+	require.Equal(t, 1, strings.Count(body, `"type":"response.output_text.delta","delta":""`))
 	require.Less(t,
 		strings.Index(body, `"type":"response.created"`),
 		strings.Index(body, `"type":"response.output_text.delta","delta":""`),
@@ -1818,7 +1828,7 @@ func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesEmptyDeltaAfterCreated(t 
 }
 
 func TestOpenAIStreamingSafeTokenPlaceholderDisabledDoesNotInjectEmptyDelta(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -1862,7 +1872,7 @@ func TestOpenAIStreamingSafeTokenPlaceholderDisabledDoesNotInjectEmptyDelta(t *t
 }
 
 func TestOpenAIStreamingFirstTokenTimeoutPlaceholderDoesNotSetFirstToken(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -1918,7 +1928,7 @@ func TestOpenAIStreamingFirstTokenTimeoutPlaceholderDoesNotSetFirstToken(t *test
 }
 
 func TestOpenAIRequestFirstTokenTimeoutPlaceholderWritesBeforeUpstreamResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	svc := &OpenAIGatewayService{}
 
 	rec := httptest.NewRecorder()
@@ -2020,7 +2030,7 @@ func TestOpenAICommittedFirstTokenTimeoutPlaceholderRecordsPoolSoftCooldown(t *t
 }
 
 func TestOpenAIStreamingResponseFailedBeforeOutputCapacityErrorReturnsFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -2061,7 +2071,7 @@ func TestOpenAIStreamingResponseFailedBeforeOutputCapacityErrorReturnsFailover(t
 }
 
 func TestOpenAIStreamingPreambleOnlyMissingTerminalReturnsFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -2097,7 +2107,7 @@ func TestOpenAIStreamingPreambleOnlyMissingTerminalReturnsFailover(t *testing.T)
 }
 
 func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -2137,7 +2147,7 @@ func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
 }
 
 func TestOpenAIStreamingPolicyResponseFailedBeforeOutputPassesThrough(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -2174,7 +2184,7 @@ func TestOpenAIStreamingPolicyResponseFailedBeforeOutputPassesThrough(t *testing
 }
 
 func TestOpenAIStreamingClientDisconnectDrainsUpstreamUsage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -2221,7 +2231,7 @@ func TestOpenAIStreamingClientDisconnectDrainsUpstreamUsage(t *testing.T) {
 }
 
 func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -2255,7 +2265,7 @@ func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T)
 }
 
 func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
@@ -2287,7 +2297,7 @@ func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t 
 }
 
 func TestOpenAIStreamingPassthroughResponseFailedBeforeOutputReturnsFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
@@ -2323,7 +2333,7 @@ func TestOpenAIStreamingPassthroughResponseFailedBeforeOutputReturnsFailover(t *
 }
 
 func TestOpenAIStreamingPassthroughOAuthPreambleFlushWritesBeforeFailedEvent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
@@ -2367,7 +2377,7 @@ func TestOpenAIStreamingPassthroughOAuthPreambleFlushWritesBeforeFailedEvent(t *
 }
 
 func TestOpenAIStreamingPassthroughAPIKeyPreambleFlushWritesBeforeFailedEvent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
@@ -2411,7 +2421,7 @@ func TestOpenAIStreamingPassthroughAPIKeyPreambleFlushWritesBeforeFailedEvent(t 
 }
 
 func TestOpenAIStreamingPassthroughOAuthSSECommentPreflushWritesBeforeFailedEvent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
@@ -2455,7 +2465,7 @@ func TestOpenAIStreamingPassthroughOAuthSSECommentPreflushWritesBeforeFailedEven
 }
 
 func TestOpenAIStreamingPassthroughAPIKeySSECommentPreflushWritesBeforeFailedEvent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
@@ -2499,7 +2509,7 @@ func TestOpenAIStreamingPassthroughAPIKeySSECommentPreflushWritesBeforeFailedEve
 }
 
 func TestOpenAIStreamingPassthroughPreambleFlushDoesNotCountCreatedAsFirstToken(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
@@ -2541,7 +2551,7 @@ func TestOpenAIStreamingPassthroughPreambleFlushDoesNotCountCreatedAsFirstToken(
 }
 
 func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesEmptyDeltaAfterCreated(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
@@ -2553,17 +2563,23 @@ func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesEmptyDeltaAfte
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
 
+	createdBody := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_safe"}}`,
+		"",
+	}, "\n") + "\n"
+	realOutputBody := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_safe","usage":{"input_tokens":1,"output_tokens":1}}}`,
+		"",
+	}, "\n") + "\n"
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
-		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
-			"event: response.created",
-			`data: {"type":"response.created","response":{"id":"resp_safe"}}`,
-			"",
-			`data: {"type":"response.output_text.delta","delta":"ok"}`,
-			"",
-			`data: {"type":"response.completed","response":{"id":"resp_safe","usage":{"input_tokens":1,"output_tokens":1}}}`,
-			"",
-		}, "\n"))),
+		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{
+			{data: createdBody},
+			{delay: 60 * time.Millisecond, data: realOutputBody},
+		}},
 		Header: http.Header{"X-Request-Id": []string{"rid-passthrough-safe-placeholder"}},
 	}
 	account := &Account{
@@ -2572,7 +2588,9 @@ func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesEmptyDeltaAfte
 		Type:     AccountTypeOAuth,
 		Name:     "acc",
 		Extra: map[string]any{
-			openAIOAuthChatGPTSafeTokenPlaceholderExtraKey: true,
+			openAIOAuthChatGPTSafeTokenPlaceholderExtraKey:                true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      20,
 		},
 	}
 
@@ -2580,10 +2598,12 @@ func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesEmptyDeltaAfte
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, result.firstTokenMs)
+	require.GreaterOrEqual(t, *result.firstTokenMs, 40)
 	body := rec.Body.String()
 	require.Contains(t, body, `"type":"response.created"`)
 	require.Contains(t, body, `"type":"response.output_text.delta","delta":""`)
 	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
+	require.Equal(t, 1, strings.Count(body, `"type":"response.output_text.delta","delta":""`))
 	require.Less(t,
 		strings.Index(body, `"type":"response.created"`),
 		strings.Index(body, `"type":"response.output_text.delta","delta":""`),
@@ -2595,7 +2615,7 @@ func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesEmptyDeltaAfte
 }
 
 func TestOpenAIStreamingPassthroughFirstTokenTimeoutPlaceholderDoesNotSetFirstToken(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
@@ -2649,7 +2669,7 @@ func TestOpenAIStreamingPassthroughFirstTokenTimeoutPlaceholderDoesNotSetFirstTo
 }
 
 func TestOpenAIStreamingPassthroughResponseDoneWithoutDoneMarkerStillSucceeds(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
@@ -2686,7 +2706,7 @@ func TestOpenAIStreamingPassthroughResponseDoneWithoutDoneMarkerStillSucceeds(t 
 }
 
 func TestOpenAIStreamingPassthroughResponseIncompleteWithoutDoneMarkerStillSucceeds(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
@@ -2723,7 +2743,7 @@ func TestOpenAIStreamingPassthroughResponseIncompleteWithoutDoneMarkerStillSucce
 }
 
 func TestOpenAIStreamingPassthroughDoneMarkerIsNotResponsesSuccess(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -2741,7 +2761,7 @@ func TestOpenAIStreamingPassthroughDoneMarkerIsNotResponsesSuccess(t *testing.T)
 }
 
 func TestOpenAIStreamingTooLong(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -2781,7 +2801,7 @@ func TestOpenAIStreamingTooLong(t *testing.T) {
 }
 
 func TestOpenAINonStreamingVendorContentTypeDoesNotExposeUpstreamIdentity(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Security: config.SecurityConfig{
 			ResponseHeaders: config.ResponseHeaderConfig{Enabled: false},
@@ -2809,7 +2829,7 @@ func TestOpenAINonStreamingVendorContentTypeDoesNotExposeUpstreamIdentity(t *tes
 }
 
 func TestOpenAINonStreamingContentTypeDefault(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Security: config.SecurityConfig{
 			ResponseHeaders: config.ResponseHeaderConfig{Enabled: false},
@@ -2839,7 +2859,7 @@ func TestOpenAINonStreamingContentTypeDefault(t *testing.T) {
 }
 
 func TestOpenAINonStreamingNonJSON2xxReturnsFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	svc := &OpenAIGatewayService{
 		cfg: &config.Config{},
 		settingService: NewSettingService(&openAIFastPolicyRepoStub{values: map[string]string{
@@ -2882,7 +2902,7 @@ func TestOpenAINonStreamingNonJSON2xxReturnsFailover(t *testing.T) {
 }
 
 func TestOpenAIStreamingHeadersOverride(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Security: config.SecurityConfig{
 			ResponseHeaders: config.ResponseHeaderConfig{Enabled: false},
@@ -2933,7 +2953,7 @@ func TestOpenAIStreamingHeadersOverride(t *testing.T) {
 }
 
 func TestOpenAIStreamingReuseScannerBufferAndStillWorks(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,
@@ -2972,7 +2992,7 @@ func TestOpenAIStreamingReuseScannerBufferAndStillWorks(t *testing.T) {
 }
 
 func TestOpenAIInvalidBaseURLWhenAllowlistDisabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Security: config.SecurityConfig{
 			URLAllowlist: config.URLAllowlistConfig{Enabled: false},
@@ -3108,7 +3128,7 @@ func TestOpenAICodexAutoResetEligibleRequiresSelectedWindowFull(t *testing.T) {
 }
 
 func TestOpenAIResponsesRequestPathSuffix(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 
@@ -3151,7 +3171,7 @@ func TestNormalizeOpenAICompactRequestBodyPreservesCurrentCodexPayloadFields(t *
 }
 
 func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCompactPath(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader([]byte(`{"model":"gpt-5"}`)))
@@ -3169,7 +3189,7 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCompactPath(t *test
 }
 
 func TestOpenAIBuildUpstreamRequestCompactForcesJSONAcceptForOAuth(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader([]byte(`{"model":"gpt-5"}`)))
@@ -3190,7 +3210,7 @@ func TestOpenAIBuildUpstreamRequestCompactForcesJSONAcceptForOAuth(t *testing.T)
 }
 
 func TestOpenAIBuildUpstreamRequestOAuthMessagesBridgeUsesSessionOnly(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	body := []byte(`{"model":"gpt-5.5","prompt_cache_key":"anthropic-metadata-session-1","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"<sub2api-claude-code-todo-guard>"}]},{"type":"message","role":"user","content":"hello"}]}`)
@@ -3213,7 +3233,7 @@ func TestOpenAIBuildUpstreamRequestOAuthMessagesBridgeUsesSessionOnly(t *testing
 }
 
 func TestOpenAIBuildUpstreamRequestPreservesCompactPathForAPIKeyBaseURL(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/responses/compact", bytes.NewReader([]byte(`{"model":"gpt-5"}`)))
@@ -3235,7 +3255,7 @@ func TestOpenAIBuildUpstreamRequestPreservesCompactPathForAPIKeyBaseURL(t *testi
 }
 
 func TestOpenAIBuildUpstreamRequestOAuthOfficialClientOriginatorCompatibility(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	// 上游要求 originator 与最终 User-Agent 首段配套：
 	// originator 一律由最终 UA 推导；推导不出官方身份时整体回退默认 Codex CLI 身份。
@@ -3606,7 +3626,7 @@ func TestExtractCodexFinalResponse_SampleReplay(t *testing.T) {
 }
 
 func TestHandleSSEToJSON_CompletedEventReturnsJSON(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
@@ -3640,7 +3660,7 @@ func TestHandleSSEToJSON_CompletedEventReturnsJSON(t *testing.T) {
 }
 
 func TestHandleNonStreamingResponse_APIKeyFallsBackToSSEBodyWhenContentTypeIsWrong(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -3669,7 +3689,7 @@ func TestHandleNonStreamingResponse_APIKeyFallsBackToSSEBodyWhenContentTypeIsWro
 }
 
 func TestHandleNonStreamingResponse_JSONWithDataTextIsNotSSE(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -3695,7 +3715,7 @@ func TestHandleNonStreamingResponse_JSONWithDataTextIsNotSSE(t *testing.T) {
 }
 
 func TestHandleSSEToJSON_ReconstructsImageGenerationOutputItemDone(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
@@ -3722,7 +3742,7 @@ func TestHandleSSEToJSON_ReconstructsImageGenerationOutputItemDone(t *testing.T)
 }
 
 func TestHandleSSEToJSON_NoTerminalResponseReturnsProtocolError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
@@ -3746,7 +3766,7 @@ func TestHandleSSEToJSON_NoTerminalResponseReturnsProtocolError(t *testing.T) {
 }
 
 func TestHandleSSEToJSON_IncompleteReturnsJSONAndNeutralTerminal(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -3769,7 +3789,7 @@ func TestHandleSSEToJSON_IncompleteReturnsJSONAndNeutralTerminal(t *testing.T) {
 }
 
 func TestHandleSSEToJSON_ResponseFailedReturnsProtocolError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)

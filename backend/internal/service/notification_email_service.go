@@ -491,6 +491,9 @@ func (s *NotificationEmailService) sampleVariables(ctx context.Context, event, l
 	for key, value := range notificationEmailSampleVariables(locale) {
 		variables[key] = value
 	}
+	if event == NotificationEmailEventOpsScheduledReport {
+		addNotificationEmailOpsSummarySampleVariables(variables)
+	}
 	variables["site_name"] = s.siteName(ctx)
 	if variables["unsubscribe_url"] == "" && info.Optional {
 		variables["unsubscribe_url"] = "https://example.com/unsubscribe"
@@ -502,6 +505,33 @@ func (s *NotificationEmailService) runtimeVariables(ctx context.Context, event, 
 	variables := s.sampleVariables(ctx, event, locale)
 	for key, value := range input.Variables {
 		variables[key] = value
+	}
+	if event == NotificationEmailEventOpsScheduledReport {
+		// Runtime sends must never inherit the preview metrics when a caller only
+		// supplies the legacy report_html variable.
+		if _, ok := input.Variables["report_html"]; !ok {
+			variables["report_html"] = ""
+		}
+		if _, ok := input.Variables["report_detail_display"]; !ok {
+			variables["report_detail_display"] = "block"
+		}
+		hasSummaryValues := false
+		for _, placeholder := range notificationEmailOpsSummaryPlaceholders {
+			if _, ok := input.Variables[placeholder]; ok {
+				if placeholder != "report_summary_display" {
+					hasSummaryValues = true
+				}
+				continue
+			}
+			variables[placeholder] = "-"
+		}
+		if _, ok := input.Variables["report_summary_display"]; !ok {
+			if hasSummaryValues {
+				variables["report_summary_display"] = "block"
+			} else {
+				variables["report_summary_display"] = "none"
+			}
+		}
 	}
 	variables["site_name"] = s.siteName(ctx)
 	variables["recipient_email"] = input.RecipientEmail
@@ -884,9 +914,9 @@ func notificationEmailSampleVariables(locale string) map[string]string {
 			"alert_description":   "最近 10 分钟错误率超过阈值",
 			"report_name":         "日报",
 			"report_type":         "daily_summary",
-			"report_start_time":   "2026-05-19 12:00",
-			"report_end_time":     "2026-05-20 12:00",
-			"report_html":         "<h2>日报</h2><p>请求量：1024</p>",
+			"report_start_time":   "2026-07-18T01:00:26Z",
+			"report_end_time":     "2026-07-19T01:00:26Z",
+			"report_html":         "<h2>日报</h2><p>请求量：2,374</p>",
 		}
 	}
 	return map[string]string{
@@ -930,9 +960,9 @@ func notificationEmailSampleVariables(locale string) map[string]string {
 		"alert_description":   "Error rate exceeded threshold in the last 10 minutes.",
 		"report_name":         "Daily summary",
 		"report_type":         "daily_summary",
-		"report_start_time":   "2026-05-19 12:00",
-		"report_end_time":     "2026-05-20 12:00",
-		"report_html":         "<h2>Daily summary</h2><p>Requests: 1024</p>",
+		"report_start_time":   "2026-07-18T01:00:26Z",
+		"report_end_time":     "2026-07-19T01:00:26Z",
+		"report_html":         "<h2>Daily summary</h2><p>Requests: 2,374</p>",
 	}
 }
 

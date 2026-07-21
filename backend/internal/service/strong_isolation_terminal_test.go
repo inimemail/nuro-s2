@@ -44,7 +44,7 @@ func successfulRawChatResponse() *http.Response {
 }
 
 func TestRawChatStrongIsolationFinalTransformAndDisabledNoOp(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"model":"gpt-5.4","stream":false,"messages":[{"role":"user","content":"hi"}],"conversation_id":"conv","session_id":"sess","previous_response_id":"resp","client_metadata":{"private":"value"},"store":true}`)
 
 	for _, tt := range []struct {
@@ -80,7 +80,7 @@ func TestRawChatStrongIsolationFinalTransformAndDisabledNoOp(t *testing.T) {
 }
 
 func TestResponsesChatFallbackKeepsMaxTokenAliasAndStrongIsolation(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"model":"gpt-5.4","input":"hello","stream":false,"max_tokens":123,"store":true,"previous_response_id":"resp-private"}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -99,7 +99,7 @@ func TestResponsesChatFallbackKeepsMaxTokenAliasAndStrongIsolation(t *testing.T)
 }
 
 func TestMessagesStrongIsolationCannotRestoreCompatTurnState(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"model":"gpt-5.5","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -134,7 +134,7 @@ func TestMessagesStrongIsolationCannotRestoreCompatTurnState(t *testing.T) {
 }
 
 func TestOpenAIUpstreamBuilderStrongIsolationHeadersAndDisabledNoOp(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	for _, tt := range []struct {
 		name    string
 		enabled bool
@@ -185,7 +185,7 @@ func assertAnthropicStrongIsolationRequest(t *testing.T, req *http.Request) {
 }
 
 func TestAnthropicStrongIsolationIsFinalForMessagesAndCountTokensBuilders(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"model":"claude-sonnet-4-6","messages":[],"client_metadata":{"private":true},"conversation_id":"conv","session_id":"sess"}`)
 	newContext := func() *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -229,7 +229,7 @@ func TestAnthropicStrongIsolationIsFinalForMessagesAndCountTokensBuilders(t *tes
 }
 
 func TestAnthropicStrongIsolationDisabledIsBodyAndHeaderNoOp(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"model":"claude-sonnet-4-6","messages":[],"client_metadata":{"private":true},"conversation_id":"conv","session_id":"sess"}`)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)

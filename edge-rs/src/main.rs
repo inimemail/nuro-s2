@@ -334,6 +334,7 @@ struct EdgeConfig {
     initial_pool_size: usize,
     queue_buffer_size: usize,
     queue_max_bytes: usize,
+    max_header_bytes: usize,
     ingress_body_max_bytes: usize,
     global_workers: usize,
     per_account_workers: usize,
@@ -1343,6 +1344,16 @@ async fn handle_openai_edge(
     ws: Option<WebSocketUpgrade>,
     req: Request,
 ) -> Response {
+    if request_header_bytes(req.headers()) > state.cfg.max_header_bytes {
+        state
+            .metrics
+            .rejected_requests
+            .fetch_add(1, Ordering::Relaxed);
+        return text_response(
+            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+            "request headers too large",
+        );
+    }
     if state.metrics_is_draining() {
         state
             .metrics
@@ -1605,6 +1616,15 @@ async fn handle_openai_edge(
             .await
         }
     }
+}
+
+fn request_header_bytes(headers: &HeaderMap) -> usize {
+    headers.iter().fold(0usize, |total, (name, value)| {
+        total
+            .saturating_add(name.as_str().len())
+            .saturating_add(value.as_bytes().len())
+            .saturating_add(4)
+    })
 }
 
 async fn call_prepare(state: &AppState, req: &PrepareRequest) -> anyhow::Result<EdgePlan> {
@@ -3730,10 +3750,8 @@ async fn relay_upstream_direct(
                     if safe_token_placeholder && !safe_token_placeholder_sent {
                         if let Some(offset) = observation.response_created_boundary_offset {
                             safe_token_placeholder_sent = true;
-                            if first_token_ms.is_none() {
-                                first_token_ms = Some(started_at.elapsed().as_millis() as i64);
-                                first_token_timeout_timer = None;
-                            }
+                            first_token_timeout_placeholder_sent = true;
+                            first_token_timeout_timer = None;
                             if first_flush_ms.is_none() {
                                 first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
                                 guard.update_stream_snapshot(
@@ -5512,6 +5530,8 @@ impl EdgeConfig {
             initial_pool_size: env_usize("SUB2API_EDGE_INITIAL_POOL_SIZE", 512),
             queue_buffer_size: env_usize("SUB2API_EDGE_QUEUE_BUFFER_SIZE", 512),
             queue_max_bytes: env_usize("SUB2API_EDGE_QUEUE_MAX_BYTES", 256 * 1024 * 1024),
+            max_header_bytes: env_usize("SUB2API_EDGE_MAX_HEADER_BYTES", 64 * 1024)
+                .clamp(8 * 1024, 1024 * 1024),
             ingress_body_max_bytes: env_usize(
                 "SUB2API_EDGE_INGRESS_BODY_MAX_BYTES",
                 2 * 1024 * 1024 * 1024,
@@ -5536,7 +5556,7 @@ impl EdgeConfig {
             ws_idle_per_key: env_usize("SUB2API_EDGE_WS_IDLE_PER_KEY", 1),
             max_ws_idle_keys: env_usize("SUB2API_EDGE_MAX_WS_IDLE_KEYS", 1024),
             ws_idle_ttl_secs: env_u64("SUB2API_EDGE_WS_IDLE_TTL_SECS", 300),
-            drain_timeout_secs: env_u64("SUB2API_EDGE_DRAIN_TIMEOUT_SECS", 1800),
+            drain_timeout_secs: env_u64("SUB2API_EDGE_DRAIN_TIMEOUT_SECS", 30),
             // P3: 后台上游连接保活。显式配置 URL 后启用；默认关闭，避免代理环境
             // 在没有直连业务时凭空直连上游。
             upstream_warm_url: match env::var("SUB2API_EDGE_UPSTREAM_WARM_URL") {
@@ -5655,6 +5675,16 @@ fn b64_value(byte: u8) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_header_bytes_counts_names_values_and_wire_overhead() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-test", HeaderValue::from_static("value"));
+        assert_eq!(
+            request_header_bytes(&headers),
+            "x-test".len() + "value".len() + 4
+        );
+    }
 
     #[tokio::test]
     async fn settlement_retry_recovers_after_transient_failures() {

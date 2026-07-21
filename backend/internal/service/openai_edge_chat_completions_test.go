@@ -58,7 +58,7 @@ func TestOpenAIEdgeRawRelayEligibleForInboundEndpoint(t *testing.T) {
 }
 
 func TestBuildRawResponsesEdgePlanNormalizesStringInput(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
@@ -103,7 +103,7 @@ func TestBuildRawResponsesEdgePlanNormalizesStringInput(t *testing.T) {
 }
 
 func TestBuildRawResponsesEdgePlanNormalizesInputArguments(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
@@ -148,7 +148,7 @@ func TestBuildRawResponsesEdgePlanNormalizesInputArguments(t *testing.T) {
 }
 
 func TestBuildRawResponsesEdgePlanKeepsInputArgumentsStringWhenObjectCompatDisabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
@@ -187,7 +187,7 @@ func TestBuildRawResponsesEdgePlanKeepsInputArgumentsStringWhenObjectCompatDisab
 }
 
 func TestBuildRawResponsesEdgePlanKeepsResponsesBodyUntouchedWhenCompatDisabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
@@ -228,7 +228,7 @@ func TestBuildRawResponsesEdgePlanKeepsResponsesBodyUntouchedWhenCompatDisabled(
 }
 
 func TestOpenAIEdgeAPIKeyPlansApplyHeaderOverrides(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	svc := &OpenAIGatewayService{
 		cfg: &config.Config{
 			Security: config.SecurityConfig{
@@ -372,7 +372,7 @@ func TestScrubOpenAIEdgeStrongIsolationHeaders(t *testing.T) {
 }
 
 func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
@@ -446,7 +446,7 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 }
 
 func TestBuildChatGPTOAuthResponsesEdgePlanNormalizesInputArgumentsWhenCompatEnabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
@@ -488,7 +488,7 @@ func TestBuildChatGPTOAuthResponsesEdgePlanNormalizesInputArgumentsWhenCompatEna
 }
 
 func TestBuildChatGPTOAuthResponsesEdgePlanKeepsInputArgumentsStringWhenCompatDisabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	for _, tc := range []struct {
 		name  string
@@ -531,7 +531,7 @@ func TestBuildChatGPTOAuthResponsesEdgePlanKeepsInputArgumentsStringWhenCompatDi
 }
 
 func TestBuildChatGPTOAuthResponsesEdgePlanAllowsSelfContainedFunctionCallOutput(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)

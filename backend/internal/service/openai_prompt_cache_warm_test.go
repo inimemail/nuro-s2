@@ -284,7 +284,7 @@ func TestOpenAIPromptCacheWarmAvoidanceIgnoresClientRequestErrors(t *testing.T) 
 }
 
 func TestShouldEnhanceOpenAIPromptCacheLongContextRequiresProvenHit(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	now := time.Now()
 	account := promptCacheAdvancedTestAccount(5, 1)
 	warmCache := &promptCacheWarmTestCache{entries: []OpenAIPromptCacheWarmAccount{

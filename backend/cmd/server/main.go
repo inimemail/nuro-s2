@@ -98,6 +98,10 @@ func main() {
 }
 
 func runSetupServer() {
+	cfg, err := config.LoadForBootstrap()
+	if err != nil {
+		log.Fatalf("Failed to load setup server limits: %v", err)
+	}
 	r := gin.New()
 	r.Use(middleware.Recovery())
 	r.Use(middleware.CORS(config.CORSConfig{}))
@@ -113,7 +117,7 @@ func runSetupServer() {
 
 	// Get server address from config.yaml or environment variables (SERVER_HOST, SERVER_PORT)
 	// This allows users to run setup on a different address if needed
-	addr := config.GetServerAddress()
+	addr := cfg.Server.Address()
 	log.Printf("Setup wizard available at http://%s", addr)
 	log.Println("Complete the setup wizard to configure Sub2API")
 
@@ -124,8 +128,9 @@ func runSetupServer() {
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           r,
-		ReadHeaderTimeout: 30 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
+		ReadHeaderTimeout: time.Duration(cfg.Server.ReadHeaderTimeout) * time.Second,
+		IdleTimeout:       time.Duration(cfg.Server.IdleTimeout) * time.Second,
 		Protocols:         protocols,
 	}
 
@@ -183,7 +188,7 @@ func runMainServer() {
 	runtimeops.SetDraining(true)
 	shutdownTimeout := time.Duration(cfg.Server.GracefulShutdownTimeout) * time.Second
 	if shutdownTimeout <= 0 {
-		shutdownTimeout = 30 * time.Minute
+		shutdownTimeout = 5 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()

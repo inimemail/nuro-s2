@@ -15,7 +15,7 @@ target_queue="${AUTOSCALE_TARGET_QUEUE_DEPTH:-128}"
 target_workers="${AUTOSCALE_TARGET_RELAY_WORKERS:-512}"
 upstream_error_ratio_limit="${AUTOSCALE_UPSTREAM_ERROR_RATIO:-0.20}"
 scale_down_seconds="${AUTOSCALE_SCALE_DOWN_SECONDS:-600}"
-drain_seconds="${AUTOSCALE_DRAIN_SECONDS:-1800}"
+drain_seconds="${AUTOSCALE_DRAIN_SECONDS:-30}"
 force_stop_seconds="${AUTOSCALE_FORCE_STOP_SECONDS:-30}"
 state_dir="${AUTOSCALE_STATE_DIR:-/state}"
 state_file="${state_dir}/state"
@@ -177,14 +177,29 @@ create_cell() {
             --label "com.nuro.sub2api.admission.platform=${platform}" \
             --label "com.nuro.sub2api.admission.cell=${cell_id}" \
             --network "$network" --network-alias "admission-${platform}-${suffix}" \
-            --ulimit nofile=100000:100000 \
+            --ulimit "nofile=${REDIS_NOFILE_LIMIT:-200000}:${REDIS_NOFILE_LIMIT:-200000}" \
             -e "REDIS_PASSWORD=${REDIS_PASSWORD:-}" \
             -e "REDISCLI_AUTH=${REDIS_PASSWORD:-}" \
             -e "ADMISSION_CELL_IO_THREADS=${ADMISSION_CELL_IO_THREADS:-8}" \
             -e "ADMISSION_CELL_MAXMEMORY_MB=${cell_target_memory_mb}" \
             -e "ADMISSION_CELL_MAX_CLIENTS=${ADMISSION_CELL_MAX_CLIENTS:-100000}" \
             -v "${volume}:/data" redis:8-alpine sh -ec \
-            'exec redis-server --save "300 10" --appendonly yes --appendfsync everysec --maxmemory "${ADMISSION_CELL_MAXMEMORY_MB}mb" --maxmemory-policy noeviction --maxclients "${ADMISSION_CELL_MAX_CLIENTS}" --tcp-backlog 8192 --timeout 0 --hz 20 --io-threads "${ADMISSION_CELL_IO_THREADS}" --io-threads-do-reads yes ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}' >/dev/null
+            'set -- redis-server \
+                --save "300 10" \
+                --appendonly yes \
+                --appendfsync everysec \
+                --maxmemory "${ADMISSION_CELL_MAXMEMORY_MB}mb" \
+                --maxmemory-policy noeviction \
+                --maxclients "${ADMISSION_CELL_MAX_CLIENTS}" \
+                --tcp-backlog 8192 \
+                --timeout 0 \
+                --hz 20 \
+                --io-threads "${ADMISSION_CELL_IO_THREADS}" \
+                --io-threads-do-reads yes
+             if [ -n "${REDIS_PASSWORD:-}" ]; then
+                 set -- "$@" --requirepass "$REDIS_PASSWORD"
+             fi
+             exec "$@"' >/dev/null
     fi
     for _ in $(seq 1 30); do
         if docker exec "$container" redis-cli ping >/dev/null 2>&1; then

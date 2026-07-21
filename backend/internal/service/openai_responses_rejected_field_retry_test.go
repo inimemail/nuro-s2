@@ -106,7 +106,7 @@ func TestNormalizeOpenAIResponsesRejectedFieldRetryBodyIsExact(t *testing.T) {
 }
 
 func TestOpenAIGatewayServiceRetriesExplicitRejectedResponsesFields(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"model":"gpt-5.5","stream":false,"max_output_tokens":2048,"input":[{"type":"custom_tool_call","namespace":"remove","input":"{}"}]}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)

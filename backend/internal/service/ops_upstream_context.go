@@ -251,7 +251,10 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)
 	ev.UpstreamResponseBody = strings.TrimSpace(ev.UpstreamResponseBody)
 	ev.Kind = strings.TrimSpace(ev.Kind)
-	ev.UpstreamURL = strings.TrimSpace(ev.UpstreamURL)
+	// Never retain the actual upstream host/path in request diagnostics. The
+	// field remains on the compatibility struct for older callers, but ops
+	// context and persisted logs must not expose upstream topology.
+	ev.UpstreamURL = ""
 	ev.Message = strings.TrimSpace(ev.Message)
 	ev.Detail = strings.TrimSpace(ev.Detail)
 	ev.CyberPolicyAnchorType = strings.TrimSpace(ev.CyberPolicyAnchorType)

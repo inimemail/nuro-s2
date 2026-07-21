@@ -165,6 +165,9 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		ops.GET("/user-concurrency", h.Admin.Ops.GetUserConcurrencyStats)
 		ops.GET("/account-availability", h.Admin.Ops.GetAccountAvailability)
 		ops.GET("/realtime-traffic", h.Admin.Ops.GetRealtimeTrafficSummary)
+		ops.GET("/ingress-rejections", h.Admin.Ops.ListIngressRejects)
+		ops.GET("/ingress-rejections/health", h.Admin.Ops.GetIngressRejectHealth)
+		ops.GET("/auth-cache-invalidation/health", h.Admin.Ops.GetAuthCacheInvalidationHealth)
 
 		// Alerts (rules + events)
 		ops.GET("/alert-rules", h.Admin.Ops.ListAlertRules)
@@ -559,6 +562,9 @@ func registerBackupRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp mi
 		backup.GET("/s3-config", h.Admin.Backup.GetS3Config)
 		backup.PUT("/s3-config", gin.HandlerFunc(stepUp), h.Admin.Backup.UpdateS3Config)
 		backup.POST("/s3-config/test", gin.HandlerFunc(stepUp), h.Admin.Backup.TestS3Connection)
+		backup.GET("/image-storage", h.Admin.Backup.GetImageStorageConfig)
+		backup.PUT("/image-storage", gin.HandlerFunc(stepUp), h.Admin.Backup.UpdateImageStorageConfig)
+		backup.POST("/image-storage/test", gin.HandlerFunc(stepUp), h.Admin.Backup.TestImageStorageConnection)
 
 		// 定时备份配置
 		backup.GET("/schedule", h.Admin.Backup.GetSchedule)

@@ -20,7 +20,7 @@ func TestDetectOpenAICyberPolicy(t *testing.T) {
 }
 
 func TestCyberPolicyAnchorPrefersSessionHeader(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
@@ -33,7 +33,7 @@ func TestCyberPolicyAnchorPrefersSessionHeader(t *testing.T) {
 }
 
 func TestCyberPolicySessionBlockRequiresRiskControlEnabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
@@ -58,7 +58,7 @@ func TestCyberPolicySessionBlockRequiresRiskControlEnabled(t *testing.T) {
 }
 
 func TestNonCyberPolicyEventDoesNotReadRiskControlSetting(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
@@ -81,7 +81,7 @@ func TestNonCyberPolicyEventDoesNotReadRiskControlSetting(t *testing.T) {
 }
 
 func TestCyberPolicyHandleEventSetsBlockWhenEnabled(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)

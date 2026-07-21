@@ -204,7 +204,7 @@ func TestReconstructResponseOutputFromSSE_IncludesCustomToolCallInputDelta(t *te
 }
 
 func TestGetOpenAIRequestBodyMap_UsesContextCache(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 
@@ -255,7 +255,7 @@ func TestGetOpenAIRequestBodyMap_ParseErrorWithoutCache(t *testing.T) {
 }
 
 func TestGetOpenAIRequestBodyMap_WriteBackContextCache(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 

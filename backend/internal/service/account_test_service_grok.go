@@ -20,9 +20,24 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 		model = "grok-4.5"
 	}
 	model = account.GetMappedModel(model)
-	token := account.GetGrokAccessToken()
-	if token == "" {
-		return s.sendErrorAndEnd(c, "No Grok access token or API key available")
+	var token string
+	var err error
+	switch account.Type {
+	case AccountTypeOAuth:
+		if s.grokTokenProvider == nil {
+			return s.sendErrorAndEnd(c, "Grok token provider not configured")
+		}
+		token, err = s.grokTokenProvider.GetAccessTokenForManualTest(ctx, account)
+		if err != nil {
+			return s.sendErrorAndEnd(c, "Failed to get Grok access token")
+		}
+	case AccountTypeAPIKey:
+		token = strings.TrimSpace(account.GetGrokAccessToken())
+		if token == "" {
+			return s.sendErrorAndEnd(c, "Grok API key is missing")
+		}
+	default:
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported Grok account type: %s", account.Type))
 	}
 	body, err := json.Marshal(map[string]any{
 		"model":  model,
@@ -34,7 +49,7 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 	}
 	url, err := buildGrokResponsesURL(account, s.cfg)
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok base URL: %s", err))
+		return s.sendErrorAndEnd(c, "Invalid Grok base URL")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -44,6 +59,7 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+token)
 	applyGrokOAuthIdentityHeaders(req.Header, url, account.IsGrokOAuth())
+	account.ApplyHeaderOverrides(req.Header)
 	if account.Proxy != nil {
 		resp, err := s.httpUpstream.DoWithTLS(req, account.Proxy.URL(), account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 		return s.finishGrokTest(c, resp, err, model)
@@ -61,7 +77,7 @@ func firstNonEmptyTestPrompt(value, fallback string) string {
 
 func (s *AccountTestService) finishGrokTest(c *gin.Context, resp *http.Response, err error, model string) error {
 	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok request failed: %s", err))
+		return s.sendErrorAndEnd(c, "Grok request failed")
 	}
 	if resp == nil {
 		return s.sendErrorAndEnd(c, "Grok returned no response")

@@ -30,12 +30,16 @@ const (
 )
 
 var (
-	ErrBackupS3NotConfigured = infraerrors.BadRequest("BACKUP_S3_NOT_CONFIGURED", "backup S3 storage is not configured")
-	ErrBackupNotFound        = infraerrors.NotFound("BACKUP_NOT_FOUND", "backup record not found")
-	ErrBackupInProgress      = infraerrors.Conflict("BACKUP_IN_PROGRESS", "a backup is already in progress")
-	ErrRestoreInProgress     = infraerrors.Conflict("RESTORE_IN_PROGRESS", "a restore is already in progress")
-	ErrBackupRecordsCorrupt  = infraerrors.InternalServer("BACKUP_RECORDS_CORRUPT", "backup records data is corrupted")
-	ErrBackupS3ConfigCorrupt = infraerrors.InternalServer("BACKUP_S3_CONFIG_CORRUPT", "backup S3 config data is corrupted")
+	ErrBackupS3NotConfigured            = infraerrors.BadRequest("BACKUP_S3_NOT_CONFIGURED", "backup S3 storage is not configured")
+	ErrBackupNotFound                   = infraerrors.NotFound("BACKUP_NOT_FOUND", "backup record not found")
+	ErrBackupInProgress                 = infraerrors.Conflict("BACKUP_IN_PROGRESS", "a backup is already in progress")
+	ErrRestoreInProgress                = infraerrors.Conflict("RESTORE_IN_PROGRESS", "a restore is already in progress")
+	ErrBackupRecordsCorrupt             = infraerrors.InternalServer("BACKUP_RECORDS_CORRUPT", "backup records data is corrupted")
+	ErrBackupS3ConfigCorrupt            = infraerrors.InternalServer("BACKUP_S3_CONFIG_CORRUPT", "backup S3 config data is corrupted")
+	ErrSecretEncryptionKeyNotConfigured = infraerrors.BadRequest(
+		"SECRET_ENCRYPTION_KEY_NOT_CONFIGURED",
+		"cannot store an object-storage secret without a fixed TOTP_ENCRYPTION_KEY",
+	)
 )
 
 // ─── 接口定义 ───
@@ -62,13 +66,14 @@ type BackupObjectStoreFactory func(ctx context.Context, cfg *BackupS3Config) (Ba
 
 // BackupS3Config S3 兼容存储配置（支持 Cloudflare R2）
 type BackupS3Config struct {
-	Endpoint        string `json:"endpoint"` // e.g. https://<account_id>.r2.cloudflarestorage.com
-	Region          string `json:"region"`   // R2 用 "auto"
-	Bucket          string `json:"bucket"`
-	AccessKeyID     string `json:"access_key_id"`
-	SecretAccessKey string `json:"secret_access_key,omitempty"` //nolint:revive // field name follows AWS convention
-	Prefix          string `json:"prefix"`                      // S3 key 前缀，如 "backups/"
-	ForcePathStyle  bool   `json:"force_path_style"`
+	Endpoint                string `json:"endpoint"` // e.g. https://<account_id>.r2.cloudflarestorage.com
+	Region                  string `json:"region"`   // R2 用 "auto"
+	Bucket                  string `json:"bucket"`
+	AccessKeyID             string `json:"access_key_id"`
+	SecretAccessKey         string `json:"secret_access_key,omitempty"` //nolint:revive // field name follows AWS convention
+	SecretEncryptionVersion int    `json:"secret_encryption_version,omitempty"`
+	Prefix                  string `json:"prefix"` // S3 key 前缀，如 "backups/"
+	ForcePathStyle          bool   `json:"force_path_style"`
 }
 
 // IsConfigured 检查必要字段是否已配置
@@ -105,19 +110,21 @@ type BackupRecord struct {
 
 // BackupService 数据库备份恢复服务
 type BackupService struct {
-	settingRepo  SettingRepository
-	dbCfg        *config.DatabaseConfig
-	encryptor    SecretEncryptor
-	storeFactory BackupObjectStoreFactory
-	dumper       DBDumper
+	settingRepo             SettingRepository
+	dbCfg                   *config.DatabaseConfig
+	encryptor               SecretEncryptor
+	storeFactory            BackupObjectStoreFactory
+	dumper                  DBDumper
+	encryptionKeyConfigured bool
 
 	opMu      sync.Mutex // 保护 backingUp/restoring 标志
 	backingUp bool
 	restoring bool
 
-	storeMu sync.Mutex // 保护 store/s3Cfg 缓存
-	store   BackupObjectStore
-	s3Cfg   *BackupS3Config
+	storeMu             sync.Mutex // 保护 store/s3Cfg 缓存
+	store               BackupObjectStore
+	s3Cfg               *BackupS3Config
+	s3ConfigInvalidator func()
 
 	recordsMu sync.Mutex // 保护 records 的 load/save 操作
 
@@ -139,15 +146,38 @@ func NewBackupService(
 	dumper DBDumper,
 ) *BackupService {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
+	configured := cfg != nil && cfg.Totp.EncryptionKeyConfigured
 	return &BackupService{
-		settingRepo:  settingRepo,
-		dbCfg:        &cfg.Database,
-		encryptor:    encryptor,
-		storeFactory: storeFactory,
-		dumper:       dumper,
-		bgCtx:        bgCtx,
-		bgCancel:     bgCancel,
+		settingRepo:             settingRepo,
+		dbCfg:                   &cfg.Database,
+		encryptor:               encryptor,
+		storeFactory:            storeFactory,
+		dumper:                  dumper,
+		encryptionKeyConfigured: configured,
+		bgCtx:                   bgCtx,
+		bgCancel:                bgCancel,
 	}
+}
+
+func (s *BackupService) EncryptionKeyConfigured() bool { return s != nil && s.encryptionKeyConfigured }
+
+func (s *BackupService) SetS3ConfigInvalidator(invalidate func()) {
+	if s == nil {
+		return
+	}
+	s.storeMu.Lock()
+	s.s3ConfigInvalidator = invalidate
+	s.storeMu.Unlock()
+}
+
+// LoadS3ConfigForImage exposes the already-decrypted backup credentials only
+// inside the service layer, so image settings can reuse them without persisting
+// a second copy of the secret.
+func (s *BackupService) LoadS3ConfigForImage(ctx context.Context) (*BackupS3Config, error) {
+	if s == nil {
+		return nil, ErrBackupS3NotConfigured
+	}
+	return s.loadS3Config(ctx)
 }
 
 // Start 启动定时备份调度器并清理孤立记录
@@ -200,8 +230,24 @@ func (s *BackupService) recoverStaleRecords() {
 	}
 }
 
-// Stop 停止定时备份并等待活跃操作完成
+const backupFastShutdownTimeout = 5 * time.Second
+
+// Stop 停止定时备份并等待活跃操作完成。
 func (s *BackupService) Stop() {
+	s.stop(false, 5*time.Minute)
+}
+
+// StopFast is used during process termination. New work is rejected, active
+// backup/restore contexts are cancelled immediately, and infrastructure
+// teardown waits only for the bounded cancellation window.
+func (s *BackupService) StopFast() {
+	s.stop(true, backupFastShutdownTimeout)
+}
+
+func (s *BackupService) stop(cancelImmediately bool, timeout time.Duration) {
+	if s == nil {
+		return
+	}
 	s.shuttingDown.Store(true)
 
 	s.cronMu.Lock()
@@ -209,27 +255,24 @@ func (s *BackupService) Stop() {
 		s.cronSched.Stop()
 	}
 	s.cronMu.Unlock()
+	if cancelImmediately && s.bgCancel != nil {
+		s.bgCancel()
+	}
 
-	// 等待活跃备份/恢复完成（最多 5 分钟）
 	done := make(chan struct{})
 	go func() {
 		s.wg.Wait()
 		close(done)
 	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-done:
 		logger.LegacyPrintf("service.backup", "[Backup] all active operations finished")
-	case <-time.After(5 * time.Minute):
-		logger.LegacyPrintf("service.backup", "[Backup] shutdown timeout after 5min, cancelling active operations")
+	case <-timer.C:
+		logger.LegacyPrintf("service.backup", "[Backup] shutdown timeout after %s, cancelling active operations", timeout)
 		if s.bgCancel != nil {
-			s.bgCancel() // 取消所有后台操作
-		}
-		// 给 goroutine 时间响应取消并完成清理
-		select {
-		case <-done:
-			logger.LegacyPrintf("service.backup", "[Backup] active operations cancelled and cleaned up")
-		case <-time.After(10 * time.Second):
-			logger.LegacyPrintf("service.backup", "[Backup] goroutine cleanup timed out")
+			s.bgCancel()
 		}
 	}
 }
@@ -246,23 +289,33 @@ func (s *BackupService) GetS3Config(ctx context.Context) (*BackupS3Config, error
 	}
 	// 脱敏返回
 	cfg.SecretAccessKey = ""
+	cfg.SecretEncryptionVersion = 0
 	return cfg, nil
 }
 
 func (s *BackupService) UpdateS3Config(ctx context.Context, cfg BackupS3Config) (*BackupS3Config, error) {
+	cfg.SecretEncryptionVersion = 0
 	// 如果没提供 secret，保留原有值
 	if cfg.SecretAccessKey == "" {
-		old, _ := s.loadS3Config(ctx)
+		old, err := s.loadStoredS3Config(ctx)
+		if err != nil {
+			return nil, err
+		}
 		if old != nil {
 			cfg.SecretAccessKey = old.SecretAccessKey
+			cfg.SecretEncryptionVersion = old.SecretEncryptionVersion
 		}
 	} else {
+		if !s.encryptionKeyConfigured {
+			return nil, ErrSecretEncryptionKeyNotConfigured
+		}
 		// 加密 SecretAccessKey
-		encrypted, err := s.encryptor.Encrypt(cfg.SecretAccessKey)
+		encrypted, err := encryptStoredSecret(s.encryptor, cfg.SecretAccessKey)
 		if err != nil {
 			return nil, fmt.Errorf("encrypt secret: %w", err)
 		}
 		cfg.SecretAccessKey = encrypted
+		cfg.SecretEncryptionVersion = storedSecretEncryptionVersion
 	}
 
 	data, err := json.Marshal(cfg)
@@ -277,9 +330,14 @@ func (s *BackupService) UpdateS3Config(ctx context.Context, cfg BackupS3Config) 
 	s.storeMu.Lock()
 	s.store = nil
 	s.s3Cfg = nil
+	invalidate := s.s3ConfigInvalidator
 	s.storeMu.Unlock()
+	if invalidate != nil {
+		invalidate()
+	}
 
 	cfg.SecretAccessKey = ""
+	cfg.SecretEncryptionVersion = 0
 	return &cfg, nil
 }
 
@@ -959,23 +1017,34 @@ func (s *BackupService) GetBackupDownloadURL(ctx context.Context, backupID strin
 // ─── 内部方法 ───
 
 func (s *BackupService) loadS3Config(ctx context.Context) (*BackupS3Config, error) {
+	cfg, err := s.loadStoredS3Config(ctx)
+	if err != nil || cfg == nil {
+		return cfg, err
+	}
+	if cfg.SecretAccessKey != "" {
+		decrypted, legacyPlaintext, err := decryptStoredSecret(s.encryptor, cfg.SecretAccessKey, cfg.SecretEncryptionVersion)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt backup S3 secret: %w", err)
+		}
+		if legacyPlaintext {
+			logger.LegacyPrintf("service.backup", "[Backup] using legacy plaintext S3 SecretAccessKey")
+		}
+		cfg.SecretAccessKey = decrypted
+	}
+	return cfg, nil
+}
+
+func (s *BackupService) loadStoredS3Config(ctx context.Context) (*BackupS3Config, error) {
 	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupS3Config)
-	if err != nil || raw == "" {
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
 		return nil, nil //nolint:nilnil // no config is a valid state
 	}
 	var cfg BackupS3Config
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return nil, ErrBackupS3ConfigCorrupt
-	}
-	// 解密 SecretAccessKey
-	if cfg.SecretAccessKey != "" {
-		decrypted, err := s.encryptor.Decrypt(cfg.SecretAccessKey)
-		if err != nil {
-			// 兼容未加密的旧数据：如果解密失败，保持原值
-			logger.LegacyPrintf("service.backup", "[Backup] S3 SecretAccessKey 解密失败（可能是旧的未加密数据）: %v", err)
-		} else {
-			cfg.SecretAccessKey = decrypted
-		}
 	}
 	return &cfg, nil
 }

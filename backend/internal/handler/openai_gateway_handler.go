@@ -39,7 +39,7 @@ type OpenAIGatewayHandler struct {
 	concurrencyHelper        *ConcurrencyHelper
 	imageLimiter             *imageConcurrencyLimiter
 	imageTaskRepo            service.OpenAIImageTaskRepository
-	imageResultUploader      *service.ImageResultUploader
+	imageStorageSettings     *service.ImageStorageSettingService
 	imageTaskStore           *openAIImageTaskStore
 	imageTaskWorkerStop      chan struct{}
 	imageTaskWorkerDone      chan struct{}
@@ -196,7 +196,7 @@ func NewOpenAIGatewayHandler(
 	contentModerationService *service.ContentModerationService,
 	promptAuditService *securityaudit.Service,
 	imageTaskRepo service.OpenAIImageTaskRepository,
-	imageStorage service.ImageStorage,
+	imageStorage *service.ImageStorageSettingService,
 	cfg *config.Config,
 ) *OpenAIGatewayHandler {
 	pingInterval := time.Duration(0)
@@ -227,12 +227,17 @@ func NewOpenAIGatewayHandler(
 		openAIEdgePrepareCache:   newOpenAIEdgePrepareCache(2*time.Second, openAIEdgePrepareCacheMaxEntries),
 		maxAccountSwitches:       maxAccountSwitches,
 		cfg:                      cfg,
-	}
-	if cfg != nil && cfg.ImageStorage.Active() && imageStorage != nil {
-		h.imageResultUploader = service.NewImageResultUploader(imageStorage, cfg.ImageStorage.Prefix, cfg.ImageStorage.MaxImageBytes)
+		imageStorageSettings:     imageStorage,
 	}
 	h.startPersistentImageTaskWorkers()
 	return h
+}
+
+func (h *OpenAIGatewayHandler) currentImageResultUploader() (*service.ImageResultUploader, bool) {
+	if h == nil || h.imageStorageSettings == nil {
+		return nil, false
+	}
+	return h.imageStorageSettings.Resolver()()
 }
 
 // Responses handles OpenAI Responses API endpoint

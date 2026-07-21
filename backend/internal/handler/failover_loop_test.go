@@ -149,7 +149,7 @@ func TestHandleFailoverErrorForAccountHonorsRaceElapsedBudget(t *testing.T) {
 	require.Equal(t, FailoverContinue, action)
 	require.Zero(t, fs.SameAccountRetryCount[account.ID])
 	require.Contains(t, fs.FailedAccountIDs, account.ID)
-	require.Len(t, mock.calls, 1)
+	require.Empty(t, mock.calls, "pool account must not be marked temporarily unschedulable")
 }
 
 func TestHandleFailoverErrorForAccountTracksExactRetryAccount(t *testing.T) {
@@ -179,8 +179,33 @@ func TestHandleFailoverErrorForAccountTracksExactRetryAccount(t *testing.T) {
 	require.Zero(t, fs.pendingSameAccountRetryID())
 	require.Contains(t, fs.FailedAccountIDs, account.ID)
 	require.Equal(t, 1, fs.SwitchCount)
-	require.Len(t, mock.calls, 1)
-	require.Same(t, failoverErr, mock.calls[0].failoverErr)
+	require.Empty(t, mock.calls, "pool account must keep failover state request-local")
+}
+
+func TestHandleFailoverErrorForAccountTempUnschedulesOnlyNonPool(t *testing.T) {
+	failoverErr := newTestFailoverErr(http.StatusBadGateway, true, false)
+
+	nonPool := &service.Account{ID: 46, Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey}
+	nonPoolState := NewFailoverState(3, false)
+	nonPoolState.SameAccountRetryCount[nonPool.ID] = maxSameAccountRetries
+	nonPoolMock := &mockTempUnscheduler{}
+	require.Equal(t, FailoverContinue, nonPoolState.HandleFailoverErrorForAccount(context.Background(), nonPoolMock, nonPool, failoverErr))
+	require.Len(t, nonPoolMock.calls, 1)
+
+	pool := &service.Account{
+		ID:       47,
+		Platform: service.PlatformAnthropic,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":             true,
+			"pool_mode_retry_count": 1,
+		},
+	}
+	poolState := NewFailoverState(3, false)
+	poolState.SameAccountRetryCount[pool.ID] = pool.GetPoolModeRetryCount()
+	poolMock := &mockTempUnscheduler{}
+	require.Equal(t, FailoverContinue, poolState.HandleFailoverErrorForAccount(context.Background(), poolMock, pool, failoverErr))
+	require.Empty(t, poolMock.calls)
 }
 
 func TestFailoverStateRejectsDelayEqualToElapsedBudget(t *testing.T) {
@@ -802,13 +827,14 @@ func TestHandleFailoverError_IntegrationScenario(t *testing.T) {
 		for i := 0; i < maxSameAccountRetries; i++ {
 			action := fs.HandleFailoverError(context.Background(), mock, 100, "openai", retryErr)
 			require.Equal(t, FailoverContinue, action)
+			require.False(t, fs.ForceCacheBilling, "同账号重试期间不应仅因绑定会话强制缓存计费")
 		}
-		require.True(t, fs.ForceCacheBilling, "hasBoundSession=true 应设置 ForceCacheBilling")
 
 		// 2. 账号 100 超过重试上限 → TempUnschedule + 切换
 		action := fs.HandleFailoverError(context.Background(), mock, 100, "openai", retryErr)
 		require.Equal(t, FailoverContinue, action)
 		require.Equal(t, 1, fs.SwitchCount)
+		require.True(t, fs.ForceCacheBilling, "实际切换账号时应设置 ForceCacheBilling")
 		require.Len(t, mock.calls, 1)
 
 		// 3. 账号 200 遇到不可重试错误 → 直接切换

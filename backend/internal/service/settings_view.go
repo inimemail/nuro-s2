@@ -41,6 +41,7 @@ type SystemSettings struct {
 	TurnstileSecretKey           string
 	TurnstileSecretKeyConfigured bool
 	APIKeyACLTrustForwardedIP    bool
+	ForwardedClientIPHeaders     []string
 
 	// LinuxDo Connect OAuth 登录
 	LinuxDoConnectEnabled                bool

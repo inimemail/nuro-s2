@@ -1766,7 +1766,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	failoverErr := &service.UpstreamFailoverError{
 		StatusCode:             status,
 		ResponseBody:           responseBody,
-		Message:                upstreamMsg,
+		Message:                openAIEdgeSafeErrorMessage(upstreamMsg),
 		RetryableOnSameAccount: service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, upstreamMsg, responseBody),
 		SkipPoolSoftCooldown:   modelRoutingError,
 	}
@@ -2063,6 +2063,14 @@ func openAIEdgeRetryResponseBody(req service.OpenAIEdgeRetryRequest) []byte {
 	return append([]byte(nil), req.ResponseBody...)
 }
 
+func openAIEdgeSafeErrorMessage(message string) string {
+	message = service.SanitizeUpstreamErrorMessageForClient(strings.TrimSpace(message))
+	if message == "" {
+		return "Upstream request failed"
+	}
+	return message
+}
+
 func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 	if !h.requireOpenAIEdgeSecret(c) {
 		return
@@ -2092,7 +2100,10 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		neutralOutcome := req.ClientDisconnected || req.CyberBlocked || terminalType == "response.incomplete" ||
 			terminalType == "response.cancelled" || terminalType == "response.canceled"
 		cachePolicyCompatibilityFailure := openAIEdgeCachePolicyCompatibilityFailure(lease, req)
-		firstTokenMs := intPointerFromInt64(req.FirstTokenMS)
+		// Downstream placeholders are flush-only. Prefer the real upstream output
+		// sample for health and persisted TTFT, while retaining compatibility with
+		// older Edge versions that did not report real_first_token_ms.
+		firstTokenMs := openAIEdgeRealFirstTokenMS(req.FirstTokenMS, req.RealFirstTokenMS)
 		if !successfulTerminal {
 			firstTokenMs = nil
 		}
@@ -2146,10 +2157,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 			if statusCode < http.StatusBadRequest {
 				statusCode = http.StatusBadGateway
 			}
-			message := strings.TrimSpace(req.ErrorMessage)
-			if message == "" {
-				message = "Upstream request failed"
-			}
+			message := openAIEdgeSafeErrorMessage(req.ErrorMessage)
 			responseBody := []byte(message)
 			h.gatewayService.HandleOpenAIAccountUpstreamErrorAfterCommittedResponse(
 				c.Request.Context(), lease.account, statusCode, nil, responseBody, lease.openAIRoutingModel(),
@@ -2282,6 +2290,13 @@ func intPointerFromInt64(v *int64) *int {
 	}
 	i := int(*v)
 	return &i
+}
+
+func openAIEdgeRealFirstTokenMS(firstTokenMS, realFirstTokenMS *int64) *int {
+	if real := intPointerFromInt64(realFirstTokenMS); real != nil {
+		return real
+	}
+	return intPointerFromInt64(firstTokenMS)
 }
 
 func stringPointerFromTrimmed(v string) *string {

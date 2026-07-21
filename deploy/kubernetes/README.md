@@ -21,9 +21,11 @@ container on localhost when the frozen Go scheduling contract says so.
 The target values in `autoscaling.yaml` are starting points only and must be
 replaced with measured per-node limits from the load test.
 
-Scale-out is deliberately fast and scale-in is deliberately slow. KEDA sends
-the normal Kubernetes termination signal; the application must stay in
-`draining` until existing SSE/WS streams and internal lease callbacks finish.
+Scale-out is deliberately fast and scale-in only begins after the configured
+stabilization window. KEDA then sends the normal Kubernetes termination signal;
+the application stays in `draining` for a short, bounded window so existing
+SSE/WS streams and internal lease callbacks can finish without delaying
+replacement for many minutes.
 `/internal/runtime/drain` is available for an external drain controller and is
 protected by `X-Sub2API-Edge-Secret`. Edge uses `/internal/drain` with the same
 secret.

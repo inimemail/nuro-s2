@@ -119,6 +119,7 @@ type FailoverState struct {
 	hasBoundSession       bool
 	pendingRetryAccountID int64
 	pendingRetryPlatform  string
+	pendingRetryPoolMode  bool
 	pendingRetryErr       *service.UpstreamFailoverError
 }
 
@@ -153,7 +154,7 @@ func (s *FailoverState) HandleFailoverErrorWithRetryLimit(
 	retryLimit int,
 	failoverErr *service.UpstreamFailoverError,
 ) FailoverAction {
-	return s.handleFailoverErrorWithRetryPlan(ctx, gatewayService, accountID, platform, retryLimit, sameAccountRetryDelay, 0, failoverErr)
+	return s.handleFailoverErrorWithRetryPlan(ctx, gatewayService, accountID, platform, retryLimit, sameAccountRetryDelay, 0, false, failoverErr)
 }
 
 // HandleFailoverErrorForAccount applies the account-level retry count, delay,
@@ -189,6 +190,7 @@ func (s *FailoverState) HandleFailoverErrorForAccount(
 		retryLimit,
 		retryDelay,
 		maxElapsed,
+		account.IsPoolMode(),
 		failoverErr,
 	)
 }
@@ -201,6 +203,7 @@ func (s *FailoverState) handleFailoverErrorWithRetryPlan(
 	retryLimit int,
 	retryDelay time.Duration,
 	retryMaxElapsed time.Duration,
+	poolMode bool,
 	failoverErr *service.UpstreamFailoverError,
 ) FailoverAction {
 	if ctx != nil && ctx.Err() != nil {
@@ -209,16 +212,19 @@ func (s *FailoverState) handleFailoverErrorWithRetryPlan(
 	s.clearPendingSameAccountRetry()
 	s.LastFailoverErr = failoverErr
 
-	// 缓存计费判断
-	if needForceCacheBilling(s.hasBoundSession, failoverErr) {
+	// 同账号重试不算切换账号，粘性会话只在实际切号时强制缓存计费。
+	sameAccountRetry := failoverErr.RetryableOnSameAccount &&
+		s.sameAccountRetryAllowed(accountID, retryLimit, retryDelay, retryMaxElapsed)
+	if needForceCacheBilling(s.hasBoundSession, failoverErr, sameAccountRetry) {
 		s.ForceCacheBilling = true
 	}
 
 	// 同账号重试：对 RetryableOnSameAccount 的临时性错误，先在同一账号上重试
-	if failoverErr.RetryableOnSameAccount && s.sameAccountRetryAllowed(accountID, retryLimit, retryDelay, retryMaxElapsed) {
+	if sameAccountRetry {
 		s.SameAccountRetryCount[accountID]++
 		s.pendingRetryAccountID = accountID
 		s.pendingRetryPlatform = platform
+		s.pendingRetryPoolMode = poolMode
 		s.pendingRetryErr = failoverErr
 		logger.FromContext(ctx).Warn("gateway.failover_same_account_retry",
 			zap.Int64("account_id", accountID),
@@ -233,7 +239,7 @@ func (s *FailoverState) handleFailoverErrorWithRetryPlan(
 	}
 
 	// 同账号重试用尽，执行临时封禁
-	if failoverErr.RetryableOnSameAccount {
+	if failoverErr.RetryableOnSameAccount && !poolMode {
 		gatewayService.TempUnscheduleRetryableError(ctx, accountID, failoverErr)
 	}
 
@@ -278,6 +284,7 @@ func (s *FailoverState) clearPendingSameAccountRetry() {
 	}
 	s.pendingRetryAccountID = 0
 	s.pendingRetryPlatform = ""
+	s.pendingRetryPoolMode = false
 	s.pendingRetryErr = nil
 }
 
@@ -289,9 +296,10 @@ func (s *FailoverState) settleUnavailableSameAccountRetry(ctx context.Context, g
 	}
 	accountID := s.pendingRetryAccountID
 	platform := s.pendingRetryPlatform
+	poolMode := s.pendingRetryPoolMode
 	failoverErr := s.pendingRetryErr
 	s.clearPendingSameAccountRetry()
-	return s.handleFailoverErrorWithRetryPlan(ctx, gatewayService, accountID, platform, 0, 0, 0, failoverErr)
+	return s.handleFailoverErrorWithRetryPlan(ctx, gatewayService, accountID, platform, 0, 0, 0, poolMode, failoverErr)
 }
 
 func (s *FailoverState) sameAccountRetryAllowed(accountID int64, retryLimit int, retryDelay, maxElapsed time.Duration) bool {
@@ -364,9 +372,9 @@ func failoverClientGone(c *gin.Context) bool {
 }
 
 // needForceCacheBilling 判断 failover 时是否需要强制缓存计费。
-// 粘性会话切换账号、或上游明确标记时，将 input_tokens 转为 cache_read 计费。
-func needForceCacheBilling(hasBoundSession bool, failoverErr *service.UpstreamFailoverError) bool {
-	return hasBoundSession || (failoverErr != nil && failoverErr.ForceCacheBilling)
+// 粘性会话实际切换账号、或上游明确标记时，将 input_tokens 转为 cache_read 计费。
+func needForceCacheBilling(hasBoundSession bool, failoverErr *service.UpstreamFailoverError, sameAccountRetry bool) bool {
+	return (hasBoundSession && !sameAccountRetry) || (failoverErr != nil && failoverErr.ForceCacheBilling)
 }
 
 func isOpenAIPoolModelRoutingFailover(account *service.Account, failoverErr *service.UpstreamFailoverError) bool {

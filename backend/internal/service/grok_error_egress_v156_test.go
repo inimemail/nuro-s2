@@ -18,7 +18,7 @@ import (
 )
 
 func TestForwardGrokMediaHTTPErrorDoesNotExposeUpstreamIdentity(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusBadRequest,
 		Header: http.Header{
@@ -58,7 +58,7 @@ func TestForwardGrokMediaHTTPErrorDoesNotExposeUpstreamIdentity(t *testing.T) {
 }
 
 func TestForwardGrokMediaFailedTerminalDoesNotExposeUpstreamIdentity(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -87,7 +87,7 @@ func TestForwardGrokMediaFailedTerminalDoesNotExposeUpstreamIdentity(t *testing.
 }
 
 func TestForwardGrokResponsesHTTPErrorDoesNotExposeUpstreamIdentity(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusBadRequest,
 		Header: http.Header{

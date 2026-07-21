@@ -23,8 +23,8 @@ func TestGetOpsAdvancedSettings_DefaultHidesOpenAITokenStats(t *testing.T) {
 	if !cfg.DisplayAlertEvents {
 		t.Fatalf("DisplayAlertEvents = false, want true by default")
 	}
-	if repo.setCalls != 1 {
-		t.Fatalf("expected defaults to be persisted once, got %d", repo.setCalls)
+	if repo.setCalls != 0 {
+		t.Fatalf("hot-path snapshot must not persist defaults, got %d writes", repo.setCalls)
 	}
 }
 

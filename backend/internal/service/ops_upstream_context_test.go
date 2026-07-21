@@ -1,8 +1,10 @@
 package service
 
 import (
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,4 +27,20 @@ func TestSafeUpstreamURL(t *testing.T) {
 			require.Equal(t, tt.want, safeUpstreamURL(tt.input))
 		})
 	}
+}
+
+func TestAppendOpsUpstreamErrorDropsUpstreamURL(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		UpstreamStatusCode: 502,
+		UpstreamURL:        "https://private.example/internal/endpoint",
+		Message:            "request failed",
+	})
+
+	raw, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := raw.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.Empty(t, events[0].UpstreamURL)
 }

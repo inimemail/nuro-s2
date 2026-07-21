@@ -59,7 +59,8 @@ type AnthropicContentBlock struct {
 	Text string `json:"text,omitempty"`
 
 	// type=thinking
-	Thinking string `json:"thinking,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
 
 	// type=image
 	Source *AnthropicImageSource `json:"source,omitempty"`
@@ -127,9 +128,22 @@ type AnthropicResponse struct {
 	Role         string                  `json:"role"` // "assistant"
 	Content      []AnthropicContentBlock `json:"content"`
 	Model        string                  `json:"model"`
-	StopReason   string                  `json:"stop_reason"`
+	StopReason   *string                 `json:"stop_reason"`
 	StopSequence *string                 `json:"stop_sequence,omitempty"`
 	Usage        AnthropicUsage          `json:"usage"`
+}
+
+// AnthropicStopReasonString returns the stop reason value, or "" when unset/null.
+func AnthropicStopReasonString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// AnthropicStopReasonPtr returns a non-nil pointer for a terminal reason.
+func AnthropicStopReasonPtr(value string) *string {
+	return &value
 }
 
 // AnthropicUsage holds token counts in Anthropic format.
@@ -238,6 +252,9 @@ type ResponsesInputItem struct {
 
 	// type=function_call_output
 	Output string `json:"output,omitempty"`
+
+	// type=reasoning (Grok/Codex encrypted reasoning round-trip)
+	EncryptedContent string `json:"encrypted_content,omitempty"`
 }
 
 // ResponsesContentPart is a typed content part in a Responses message.

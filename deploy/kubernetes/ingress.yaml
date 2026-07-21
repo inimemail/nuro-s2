@@ -12,6 +12,7 @@ metadata:
     # Keep metrics on the private ServiceMonitor path, not the public hostname.
     nginx.ingress.kubernetes.io/server-snippet: |
       location = /metrics { return 404; }
+      location = /internal { return 404; }
       location ^~ /internal/ { return 404; }
     nginx.ingress.kubernetes.io/configuration-snippet: |
       proxy_set_header Accept-Encoding "";

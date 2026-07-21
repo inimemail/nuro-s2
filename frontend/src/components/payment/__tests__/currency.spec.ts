@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { formatPaymentAmount } from '../currency'
 
-describe('formatPaymentAmount', () => {
-  it('uses the currency default fraction digits', () => {
-    expect(formatPaymentAmount(100, 'JPY', 'en-US')).not.toContain('.00')
-    expect(formatPaymentAmount(100, 'KRW', 'en-US')).not.toContain('.00')
-    expect(formatPaymentAmount(100, 'HKD', 'en-US')).toContain('.00')
+import { currencySymbol, normalizePaymentCurrency } from '../currency'
+
+describe('payment currency display', () => {
+  it('keeps configured non-USD currencies distinct', () => {
+    expect(currencySymbol('CNY')).toBe('¥')
+    expect(currencySymbol('EUR')).toBe('€')
+    expect(currencySymbol('HKD')).toBe('HK$')
+    expect(currencySymbol('USD')).toBe('$')
+  })
+
+  it('falls back to the normalized code for unknown currencies', () => {
+    expect(currencySymbol('zar')).toBe('ZAR')
+    expect(normalizePaymentCurrency('invalid')).toBe('CNY')
   })
 })

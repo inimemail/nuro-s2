@@ -17,6 +17,26 @@ export interface BackupScheduleConfig {
   retain_count: number
 }
 
+export interface ImageStorageConfig {
+  enabled: boolean
+  reuse_backup_s3: boolean
+  endpoint: string
+  region: string
+  bucket: string
+  access_key_id: string
+  secret_access_key?: string
+  prefix: string
+  force_path_style: boolean
+  public_base_url: string
+  presign_expiry_hours: number
+  max_download_bytes: number
+}
+
+export interface ImageStorageConfigResponse {
+  config: ImageStorageConfig
+  secret_configured: boolean
+}
+
 export interface BackupRecord {
   id: string
   status: 'pending' | 'running' | 'completed' | 'failed'
@@ -57,6 +77,21 @@ export async function updateS3Config(config: BackupS3Config): Promise<BackupS3Co
 
 export async function testS3Connection(config: BackupS3Config): Promise<TestS3Response> {
   const { data } = await apiClient.post<TestS3Response>('/admin/backups/s3-config/test', config)
+  return data
+}
+
+export async function getImageStorageConfig(): Promise<ImageStorageConfigResponse> {
+  const { data } = await apiClient.get<ImageStorageConfigResponse>('/admin/backups/image-storage')
+  return data
+}
+
+export async function updateImageStorageConfig(config: ImageStorageConfig): Promise<ImageStorageConfig> {
+  const { data } = await apiClient.put<ImageStorageConfig>('/admin/backups/image-storage', config)
+  return data
+}
+
+export async function testImageStorageConnection(config: ImageStorageConfig): Promise<TestS3Response> {
+  const { data } = await apiClient.post<TestS3Response>('/admin/backups/image-storage/test', config)
   return data
 }
 
@@ -106,6 +141,9 @@ export const backupAPI = {
   getS3Config,
   updateS3Config,
   testS3Connection,
+  getImageStorageConfig,
+  updateImageStorageConfig,
+  testImageStorageConnection,
   getSchedule,
   updateSchedule,
   createBackup,

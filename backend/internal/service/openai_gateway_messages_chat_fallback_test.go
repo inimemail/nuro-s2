@@ -19,7 +19,7 @@ import (
 )
 
 func TestForwardAsAnthropic_ForceChatCompletionsRoutesToChatCompletions(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"gpt-5.4","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()
@@ -60,7 +60,7 @@ func TestForwardAsAnthropic_ForceChatCompletionsRoutesToChatCompletions(t *testi
 }
 
 func TestForwardAsAnthropic_ChatFallbackLengthIsIncomplete(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	tests := []struct {
 		name         string
@@ -113,7 +113,7 @@ func TestForwardAsAnthropic_ChatFallbackLengthIsIncomplete(t *testing.T) {
 }
 
 func TestForwardAsAnthropic_ResponsesSupportedAccountStillUsesResponsesEndpoint(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"gpt-5.4","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()
@@ -152,7 +152,7 @@ func TestForwardAsAnthropic_ResponsesSupportedAccountStillUsesResponsesEndpoint(
 }
 
 func TestForwardAsAnthropic_ChatFallbackRejectsDiagnosticSuccessBody(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	body := []byte(`{"model":"gpt-5.4","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()

@@ -39,13 +39,35 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 	ctx := context.Background()
 	user := mustCreateAPIKeyRepoUser(t, ctx, client, "getbykey-auth-dispatch-unit@test.com")
 
+	guardMultiplier := 2.25
+	videoPrice480P := 0.12
+	videoPrice720P := 0.24
+	videoPrice1080P := 0.36
+	webSearchPrice := 0.025
 	group, err := client.Group.Create().
 		SetName("g-auth-dispatch-unit").
 		SetPlatform(service.PlatformOpenAI).
 		SetStatus(service.StatusActive).
 		SetSubscriptionType(service.SubscriptionTypeStandard).
 		SetRateMultiplier(1).
+		SetUpstreamBillingGuardMaxMultiplier(guardMultiplier).
+		SetPeakRateEnabled(true).
+		SetPeakStart("08:00").
+		SetPeakEnd("12:00").
+		SetPeakRateMultiplier(1.5).
+		SetIsExclusive(true).
+		SetAllowBatchImageGeneration(true).
+		SetBatchImageDiscountMultiplier(0.4).
+		SetBatchImageHoldMultiplier(0.7).
+		SetVideoRateIndependent(true).
+		SetVideoRateMultiplier(0.8).
+		SetVideoPrice480p(videoPrice480P).
+		SetVideoPrice720p(videoPrice720P).
+		SetVideoPrice1080p(videoPrice1080P).
+		SetWebSearchPricePerCall(webSearchPrice).
 		SetAllowMessagesDispatch(true).
+		SetRequireOauthOnly(true).
+		SetRequirePrivacySet(true).
 		SetDefaultMappedModel("gpt-5.4").
 		SetMessagesDispatchModelConfig(service.OpenAIMessagesDispatchModelConfig{
 			OpusMappedModel:   "gpt-5.4-nano",
@@ -56,6 +78,8 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 			},
 		}).
 		Save(ctx)
+	require.NoError(t, err)
+	_, err = client.UserAllowedGroup.Create().SetUserID(user.ID).SetGroupID(group.ID).Save(ctx)
 	require.NoError(t, err)
 
 	key := &service.APIKey{
@@ -72,4 +96,18 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 	require.Equal(t, key.Name, got.Name)
 	require.NotNil(t, got.Group)
 	require.Equal(t, group.MessagesDispatchModelConfig, got.Group.MessagesDispatchModelConfig)
+	require.Contains(t, got.User.AllowedGroups, group.ID)
+	require.True(t, got.Group.IsExclusive)
+	require.Equal(t, guardMultiplier, *got.Group.UpstreamBillingGuardMaxMultiplier)
+	require.True(t, got.Group.PeakRateEnabled)
+	require.Equal(t, 1.5, got.Group.PeakRateMultiplier)
+	require.True(t, got.Group.AllowBatchImageGeneration)
+	require.Equal(t, 0.4, got.Group.BatchImageDiscountMultiplier)
+	require.Equal(t, 0.7, got.Group.BatchImageHoldMultiplier)
+	require.True(t, got.Group.VideoRateIndependent)
+	require.Equal(t, 0.8, got.Group.VideoRateMultiplier)
+	require.Equal(t, videoPrice1080P, *got.Group.VideoPrice1080P)
+	require.Equal(t, webSearchPrice, *got.Group.WebSearchPricePerCall)
+	require.True(t, got.Group.RequireOAuthOnly)
+	require.True(t, got.Group.RequirePrivacySet)
 }

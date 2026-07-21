@@ -15,6 +15,7 @@ services:
     image: weishaw/sub2api:latest
     container_name: sub2api
     restart: unless-stopped
+    stop_grace_period: 45s
     ulimits:
       nofile:
         soft: 100000
@@ -37,7 +38,13 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8080
       - SERVER_MODE=${SERVER_MODE:-release}
+      - SERVER_READ_HEADER_TIMEOUT=${SERVER_READ_HEADER_TIMEOUT:-10}
+      - SERVER_MAX_HEADER_BYTES=${SERVER_MAX_HEADER_BYTES:-65536}
+      - SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=${SERVER_GRACEFUL_SHUTDOWN_TIMEOUT:-5}
+      - SERVER_TRUSTED_PROXIES=${SERVER_TRUSTED_PROXIES:-}
+      - SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL=${SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL:-false}
       - RUN_MODE=${RUN_MODE:-standard}
+      - SECURITY_FORWARDED_CLIENT_IP_HEADERS=${SECURITY_FORWARDED_CLIENT_IP_HEADERS:-}
 
       # =======================================================================
       # Database Configuration (PostgreSQL) - Required

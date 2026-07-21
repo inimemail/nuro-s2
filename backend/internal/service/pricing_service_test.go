@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,6 +10,18 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestCanonicalModelPricingSnapshotMatchesV162(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
+	require.NoError(t, err)
+
+	digest := sha256.Sum256(data)
+	require.Equal(t, "3a0ca5300799607e5a7938f2670bedd8dfc861ec3659b0a6dd6662a361d089fc", hex.EncodeToString(digest[:]))
+
+	var entries map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &entries))
+	require.Len(t, entries, 196)
+}
 
 func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {
 	svc := &PricingService{}
@@ -109,13 +123,55 @@ func TestGetModelPricing_OpenAICompactAliasUsesStaticFallback(t *testing.T) {
 
 	got := svc.GetModelPricing("openai/gpt5.5")
 	require.NotNil(t, got)
-	require.InDelta(t, 2.5e-6, got.InputCostPerToken, 1e-12)
-	require.InDelta(t, 1.5e-5, got.OutputCostPerToken, 1e-12)
+	require.InDelta(t, 5e-6, got.InputCostPerToken, 1e-12)
+	require.InDelta(t, 3e-5, got.OutputCostPerToken, 1e-12)
 
 	got = svc.GetModelPricing("openai/gpt5.5-pro")
 	require.NotNil(t, got)
-	require.InDelta(t, 2.5e-6, got.InputCostPerToken, 1e-12)
-	require.InDelta(t, 1.5e-5, got.OutputCostPerToken, 1e-12)
+	require.InDelta(t, 3e-5, got.InputCostPerToken, 1e-12)
+	require.InDelta(t, 1.8e-4, got.OutputCostPerToken, 1e-12)
+}
+
+func TestGetModelPricing_Gpt55UsesExactStaticFallbackWhenRemoteMissing(t *testing.T) {
+	svc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"gpt-5.1-codex": {InputCostPerToken: 1.25e-6},
+		},
+	}
+
+	tests := []struct {
+		model             string
+		input             float64
+		inputPriority     float64
+		output            float64
+		outputPriority    float64
+		cacheRead         float64
+		cacheReadPriority float64
+		mode              string
+	}{
+		{"gpt-5.5", 5e-6, 1e-5, 3e-5, 6e-5, 5e-7, 1e-6, "chat"},
+		{"gpt-5.5-2026-04-23", 5e-6, 1e-5, 3e-5, 6e-5, 5e-7, 1e-6, "chat"},
+		{"gpt-5.5-pro", 3e-5, 0, 1.8e-4, 0, 3e-6, 0, "responses"},
+		{"gpt-5.5-pro-2026-04-23", 3e-5, 0, 1.8e-4, 0, 3e-6, 0, "responses"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := svc.GetModelPricing(tt.model)
+			require.NotNil(t, got)
+			require.InDelta(t, tt.input, got.InputCostPerToken, 1e-12)
+			require.InDelta(t, tt.inputPriority, got.InputCostPerTokenPriority, 1e-12)
+			require.InDelta(t, tt.output, got.OutputCostPerToken, 1e-12)
+			require.InDelta(t, tt.outputPriority, got.OutputCostPerTokenPriority, 1e-12)
+			require.InDelta(t, tt.cacheRead, got.CacheReadInputTokenCost, 1e-12)
+			require.InDelta(t, tt.cacheReadPriority, got.CacheReadInputTokenCostPriority, 1e-12)
+			require.Zero(t, got.CacheCreationInputTokenCost)
+			require.Equal(t, 272000, got.LongContextInputTokenThreshold)
+			require.InDelta(t, 2.0, got.LongContextInputCostMultiplier, 1e-12)
+			require.InDelta(t, 1.5, got.LongContextOutputCostMultiplier, 1e-12)
+			require.Equal(t, tt.mode, got.Mode)
+		})
+	}
 }
 
 func TestGetModelPricing_Gpt56UsesStaticFallbackWhenRemoteMissing(t *testing.T) {

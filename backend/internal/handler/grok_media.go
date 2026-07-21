@@ -44,6 +44,10 @@ func (h *OpenAIGatewayHandler) GrokVideoStatus(c *gin.Context) {
 	h.handleGrokMedia(c, service.GrokMediaEndpointVideoStatus, c.Param("request_id"))
 }
 
+func (h *OpenAIGatewayHandler) GrokVideoContent(c *gin.Context) {
+	h.handleGrokMedia(c, service.GrokMediaEndpointVideoContent, c.Param("request_id"))
+}
+
 func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.GrokMediaEndpoint, requestID string) {
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
@@ -97,7 +101,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
-	if endpoint == service.GrokMediaEndpointVideoStatus && strings.TrimSpace(requestID) == "" {
+	if endpoint.IsVideoLookupRequest() && strings.TrimSpace(requestID) == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "request_id is required")
 		return
 	}
@@ -158,8 +162,8 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		sessionSeed = []byte(requestID)
 	}
 	sessionHash := h.gatewayService.GenerateExplicitSessionHash(c, sessionSeed)
-	if endpoint == service.GrokMediaEndpointVideoStatus {
-		sessionHash = service.GrokMediaVideoRequestSessionHash(requestID)
+	if endpoint.IsVideoLookupRequest() {
+		sessionHash = service.GrokMediaVideoRequestSessionHash(requestID, subject.UserID, apiKey.ID)
 	}
 
 	maxAccountSwitches := h.maxAccountSwitches
@@ -190,7 +194,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, requestModel, false, nil)
 		// A cache-bound status request must stay on its creating account because
 		// the request ID is account-local.
-		if endpoint == service.GrokMediaEndpointVideoStatus && exactVideoStatusRoute {
+		if endpoint.IsVideoLookupRequest() && exactVideoStatusRoute {
 			h.handleFailoverExhausted(c, failoverErr, false)
 			return false
 		}
@@ -225,8 +229,16 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			scheduleDecision      service.OpenAIAccountScheduleDecision
 			exactVideoStatusRoute bool
 		)
-		if endpoint == service.GrokMediaEndpointVideoStatus {
-			selection, exactVideoStatusRoute, err = h.gatewayService.SelectBoundGrokMediaVideoRequestAccount(requestCtx, apiKey.GroupID, requestID)
+		if endpoint.IsVideoLookupRequest() {
+			selection, exactVideoStatusRoute, err = h.gatewayService.SelectBoundGrokMediaVideoRequestAccount(requestCtx, apiKey.GroupID, requestID, subject.UserID, apiKey.ID)
+			if errors.Is(err, service.ErrGrokMediaVideoBindingUnavailable) {
+				h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Video request routing is temporarily unavailable")
+				return
+			}
+			if errors.Is(err, service.ErrGrokMediaVideoRequestNotFound) {
+				h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video request not found")
+				return
+			}
 		}
 		if err == nil && !exactVideoStatusRoute {
 			if sameAccountRetryAccountID > 0 {
@@ -326,7 +338,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 					}
 					continue
 				}
-				if endpoint == service.GrokMediaEndpointVideoStatus && exactVideoStatusRoute {
+				if endpoint.IsVideoLookupRequest() && exactVideoStatusRoute {
 					markOpsRoutingCapacityLimited(c)
 					h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Video status account is busy, please retry later")
 					return
@@ -357,7 +369,10 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.ForwardGrokMedia(requestCtx, c, account, endpoint, requestID, body, contentType)
+			return h.gatewayService.ForwardGrokMediaWithVideoBinding(
+				requestCtx, c, account, endpoint, requestID, body, contentType,
+				service.GrokMediaVideoBinding{GroupID: apiKey.GroupID, UserID: subject.UserID, APIKeyID: apiKey.ID},
+			)
 		}()
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
@@ -369,6 +384,15 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 
 		if err != nil {
+			if errors.Is(err, service.ErrGrokMediaVideoBindingUnavailable) {
+				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, requestModel, true, nil)
+				h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Video request routing could not be persisted; retry later")
+				reqLog.Warn("grok_media.bind_video_request_account_failed",
+					zap.Int64("account_id", account.ID),
+					zap.Error(err),
+				)
+				return
+			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if c.Writer.Size() != writerSizeBeforeForward {
@@ -419,17 +443,8 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			return
 		}
 
-		if endpoint != service.GrokMediaEndpointVideoStatus {
+		if !endpoint.IsVideoLookupRequest() {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, requestModel, true, nil)
-		}
-		if endpoint.IsVideoMutationRequest() && result != nil && strings.TrimSpace(result.ResponseID) != "" {
-			if err := h.gatewayService.BindGrokMediaVideoRequestAccount(requestCtx, apiKey.GroupID, result.ResponseID, account.ID); err != nil {
-				reqLog.Warn("grok_media.bind_video_request_account_failed",
-					zap.Int64("account_id", account.ID),
-					zap.String("request_id", result.ResponseID),
-					zap.Error(err),
-				)
-			}
 		}
 		if shouldRecordGrokMediaUsage(endpoint, requestModel) {
 			recordGrokMediaUsage(c, h, reqLog, apiKey, subject, subscription, account, result, requestModel, body, requestID)

@@ -441,7 +441,7 @@ func (h *OpenAIGatewayHandler) createStandardAsyncImageTask(c *gin.Context, endp
 	if !h.ensureResponsesDependencies(c, requestLogger(c, "handler.openai_gateway.image_tasks.async")) {
 		return
 	}
-	if h.imageTaskRepo == nil || h.imageResultUploader == nil || !h.imageResultUploader.Enabled() {
+	if uploader, enabled := h.currentImageResultUploader(); h.imageTaskRepo == nil || !enabled || uploader == nil || !uploader.Enabled() {
 		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Asynchronous image tasks require configured object storage")
 		return
 	}
@@ -1062,8 +1062,8 @@ func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIIm
 	}
 	statusCode, responseBody := h.runImageTaskRequest(ctx, task.Endpoint, http.Header(task.RequestHeaders), task.RequestBody, apiKey, subject, subscription)
 	if statusCode >= 200 && statusCode < 300 {
-		if h.imageResultUploader != nil && h.imageResultUploader.Enabled() {
-			rewritten, rewriteErr := h.imageResultUploader.Rewrite(ctx, task.ID, responseBody)
+		if uploader, enabled := h.currentImageResultUploader(); enabled && uploader != nil && uploader.Enabled() {
+			rewritten, rewriteErr := uploader.Rewrite(ctx, task.ID, responseBody)
 			if rewriteErr != nil {
 				_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusBadGateway, "failed to store generated image", nil)
 				return

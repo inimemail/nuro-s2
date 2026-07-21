@@ -16,7 +16,7 @@ import (
 )
 
 func TestAntigravityForwardUpstreamSanitizesHTTPError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(nil))
@@ -89,7 +89,7 @@ func TestSanitizeAntigravityUpstreamSSEErrorLine(t *testing.T) {
 }
 
 func TestAntigravityForwardUpstreamRejectsInvalidSuccessfulResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(nil))
@@ -113,7 +113,7 @@ func TestAntigravityForwardUpstreamRejectsInvalidSuccessfulResponse(t *testing.T
 }
 
 func TestAntigravityForwardGeminiSanitizesHTTPErrorUsingGoogleProtocol(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-flash:generateContent", bytes.NewReader(nil))

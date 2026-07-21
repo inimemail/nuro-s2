@@ -378,7 +378,7 @@ func TestAnthropicUpstreamStrongIsolationHeaders(t *testing.T) {
 }
 
 func TestAnthropicBuildUpstreamRequestStrongIsolationStripsClientSessionHeaders(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)

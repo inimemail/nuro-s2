@@ -149,6 +149,10 @@ func TestOpenAIAccountHealthSharedState_CloseStopsWorkers(t *testing.T) {
 	stats := newOpenAIAccountRuntimeStats()
 	shared := newOpenAIAccountHealthSharedState(client, stats, 4)
 	shared.start()
+	require.Eventually(t, func() bool {
+		counts, err := client.PubSubNumSub(context.Background(), openAIAccountHealthSharedChannel).Result()
+		return err == nil && counts[openAIAccountHealthSharedChannel] == 1
+	}, time.Second, 10*time.Millisecond)
 
 	done := make(chan struct{})
 	go func() {
@@ -161,4 +165,25 @@ func TestOpenAIAccountHealthSharedState_CloseStopsWorkers(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("shared health workers did not stop")
 	}
+}
+
+func TestOpenAIAccountHealthSharedState_LoadQueueIsBounded(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	stats := newOpenAIAccountRuntimeStats()
+	shared := newOpenAIAccountHealthSharedState(client, stats, 1)
+	shared.loads = make(chan openAIAccountRuntimeStatsKey, 1)
+	t.Cleanup(shared.close)
+
+	first := openAIAccountRuntimeStatsKey{accountID: 1, kind: "text", model: "gpt-5.5", transport: "http_sse"}
+	second := openAIAccountRuntimeStatsKey{accountID: 2, kind: "text", model: "gpt-5.5", transport: "http_sse"}
+	shared.load(first)
+	shared.load(second)
+
+	require.Len(t, shared.loads, 1)
+	_, firstQueued := shared.loadOnce.Load(openAIAccountHealthRedisKey(first))
+	_, secondQueued := shared.loadOnce.Load(openAIAccountHealthRedisKey(second))
+	require.True(t, firstQueued)
+	require.False(t, secondQueued, "a dropped load must remain retryable")
 }

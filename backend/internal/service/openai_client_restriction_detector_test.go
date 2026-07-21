@@ -25,7 +25,7 @@ func newCodexDetectorTestContext(ua string, originator string) *gin.Context {
 }
 
 func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	t.Run("未开启开关时绕过", func(t *testing.T) {
 		detector := NewOpenAICodexClientRestrictionDetector(nil)
@@ -139,7 +139,7 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 }
 
 func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	const (
 		claudeCodeUA         = "Claude Code/0.5.0 (Macos 15.5; arm64) iTerm2.app (Claude Code; 1.0.4)"
@@ -276,7 +276,7 @@ func TestOpenAICodexClientRestrictionDetector_Detect_AllowedClients(t *testing.T
 }
 
 func TestOpenAICodexClientRestrictionDetector_DetectWithPolicy(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	account := &Account{
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,

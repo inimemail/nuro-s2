@@ -143,19 +143,20 @@ func TestSelectBoundGrokMediaVideoRequestAccount_DoesNotFallbackOnCacheFailure(t
 	cacheErr := errors.New("redis unavailable")
 	svc := &OpenAIGatewayService{cache: &grokMediaCacheErrorStub{err: cacheErr}}
 
-	selection, exact, err := svc.SelectBoundGrokMediaVideoRequestAccount(context.Background(), nil, "video-request-1")
+	selection, exact, err := svc.SelectBoundGrokMediaVideoRequestAccount(context.Background(), nil, "video-request-1", 1, 2)
 	require.Nil(t, selection)
 	require.True(t, exact)
-	require.ErrorIs(t, err, cacheErr)
+	require.ErrorIs(t, err, ErrGrokMediaVideoBindingUnavailable)
+	require.Contains(t, err.Error(), cacheErr.Error())
 }
 
-func TestSelectBoundGrokMediaVideoRequestAccount_AllowsLegacyFallbackOnCacheMiss(t *testing.T) {
+func TestSelectBoundGrokMediaVideoRequestAccount_DeniesUnownedCacheMiss(t *testing.T) {
 	svc := &OpenAIGatewayService{cache: &grokMediaCacheErrorStub{err: redis.Nil}}
 
-	selection, exact, err := svc.SelectBoundGrokMediaVideoRequestAccount(context.Background(), nil, "video-request-2")
-	require.NoError(t, err)
+	selection, exact, err := svc.SelectBoundGrokMediaVideoRequestAccount(context.Background(), nil, "video-request-2", 1, 2)
+	require.ErrorIs(t, err, ErrGrokMediaVideoRequestNotFound)
 	require.Nil(t, selection)
-	require.False(t, exact)
+	require.True(t, exact)
 }
 
 func TestPatchGrokResponsesBodySanitizesComposerCapabilitiesAndPrivateInput(t *testing.T) {
@@ -262,7 +263,7 @@ func TestIsGrokImageGenerationModelV156(t *testing.T) {
 }
 
 func TestGenerateSessionHashUsesGrokConversationHeaderOnlyForGrokGroup(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	c.Request.Header.Set(grokConversationIDHeader, "grok-conversation")
@@ -375,9 +376,9 @@ func TestSelectBoundGrokMediaVideoRequestAccountKeepsOriginalAccount(t *testing.
 		cache:              cache,
 		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
 	}
-	require.NoError(t, svc.BindGrokMediaVideoRequestAccount(context.Background(), &groupID, "video_req_bound", original.ID))
+	require.NoError(t, svc.BindGrokMediaVideoRequestAccount(context.Background(), &groupID, "video_req_bound", 10, 20, original.ID))
 
-	selection, bound, err := svc.SelectBoundGrokMediaVideoRequestAccount(context.Background(), &groupID, "video_req_bound")
+	selection, bound, err := svc.SelectBoundGrokMediaVideoRequestAccount(context.Background(), &groupID, "video_req_bound", 10, 20)
 
 	require.NoError(t, err)
 	require.True(t, bound)
@@ -413,7 +414,7 @@ func TestParseGrokMediaRequestVideoBillingMetadata(t *testing.T) {
 }
 
 func TestOpenAIGatewayService_ForwardGrokMediaOAuthUsesImagineEndpointAndCLIHeaders(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstream := &httpUpstreamRecorder{
 		resp: &http.Response{
 			StatusCode: http.StatusOK,
@@ -463,7 +464,7 @@ func TestOpenAIGatewayService_ForwardGrokMediaOAuthUsesImagineEndpointAndCLIHead
 }
 
 func TestOpenAIGatewayService_ForwardGrokVideoMutationEndpoints(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	tests := []struct {
 		name     string
 		endpoint GrokMediaEndpoint
@@ -502,8 +503,32 @@ func TestOpenAIGatewayService_ForwardGrokVideoMutationEndpoints(t *testing.T) {
 	}
 }
 
+func TestOpenAIGatewayService_GrokVideoBindingFailurePrecedesResponseCommit(t *testing.T) {
+	setGinTestMode()
+	body := []byte(`{"model":"grok-imagine-video","prompt":"continue","duration":6}`)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewBufferString(`{"request_id":"video-bind-failure"}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{ID: 71, Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "api-key"}}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", bytes.NewReader(body))
+
+	result, err := svc.forwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideosGenerations, "", body, "application/json", func(string) error {
+		return errors.New("redis unavailable")
+	})
+
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrGrokMediaVideoBindingUnavailable)
+	require.False(t, recorder.Result().Header.Get("Content-Type") != "" || recorder.Body.Len() > 0)
+	require.False(t, c.Writer.Written())
+}
+
 func TestOpenAIGatewayService_ForwardGrokResponses_UsesGrokUpstream(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstream := &httpUpstreamRecorder{
 		resp: &http.Response{
 			StatusCode: http.StatusOK,
@@ -540,7 +565,7 @@ func TestOpenAIGatewayService_ForwardGrokResponses_UsesGrokUpstream(t *testing.T
 }
 
 func TestOpenAIGatewayService_ForwardGrokResponses_PropagatesStreamTerminal(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstream := &httpUpstreamRecorder{
 		resp: &http.Response{
 			StatusCode: http.StatusOK,
@@ -575,7 +600,7 @@ func TestOpenAIGatewayService_ForwardGrokResponses_PropagatesStreamTerminal(t *t
 }
 
 func TestOpenAIGatewayService_ForwardGrokResponses_429TempUnschedules(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstream := &httpUpstreamRecorder{
 		resp: &http.Response{
 			StatusCode: http.StatusTooManyRequests,
@@ -605,6 +630,39 @@ func TestOpenAIGatewayService_ForwardGrokResponses_429TempUnschedules(t *testing
 	require.Nil(t, result)
 	require.Equal(t, int64(88), repo.rateLimitedAccountID)
 	require.True(t, time.Until(repo.rateLimitResetAt) > 5*time.Second)
+}
+
+func TestGrokPoolUpstreamErrorsDoNotPersistGenericSchedulingState(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		headers    http.Header
+	}{
+		{name: "unauthorized", statusCode: http.StatusUnauthorized},
+		{name: "forbidden", statusCode: http.StatusForbidden},
+		{name: "rate_limited", statusCode: http.StatusTooManyRequests, headers: http.Header{"Retry-After": []string{"7"}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &openAIGrokAccountRepoStub{}
+			svc := &OpenAIGatewayService{accountRepo: repo}
+			account := &Account{
+				ID:          89,
+				Platform:    PlatformGrok,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"pool_mode": true},
+			}
+
+			svc.handleGrokAccountUpstreamError(
+				context.Background(), account, tt.statusCode, tt.headers, []byte(`{"error":{"message":"upstream failure"}}`),
+			)
+
+			require.Zero(t, repo.tempUnschedAccountID)
+			require.Zero(t, repo.rateLimitedAccountID)
+			require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+		})
+	}
 }
 
 type openAIGrokAccountRepoStub struct {

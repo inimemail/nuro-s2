@@ -20,6 +20,8 @@ const (
 	openAIAccountHealthSharedKeyPrefix = "sub2api:openai:health:v1:"
 	openAIAccountHealthSharedTTL       = 10 * time.Minute
 	openAIAccountHealthSharedQueueSize = 4096
+	openAIAccountHealthLoadQueueSize   = 1024
+	openAIAccountHealthLoadWorkers     = 2
 )
 
 var openAIAccountHealthUpdateScript = redis.NewScript(`
@@ -86,6 +88,7 @@ type openAIAccountHealthSharedState struct {
 	client      *redis.Client
 	stats       *openAIAccountRuntimeStats
 	reports     chan openAIAccountHealthSharedReport
+	loads       chan openAIAccountRuntimeStatsKey
 	ctx         context.Context
 	cancel      context.CancelFunc
 	lifecycleMu sync.Mutex
@@ -105,6 +108,7 @@ func newOpenAIAccountHealthSharedState(client *redis.Client, stats *openAIAccoun
 		client:  client,
 		stats:   stats,
 		reports: make(chan openAIAccountHealthSharedReport, queueSize),
+		loads:   make(chan openAIAccountRuntimeStatsKey, openAIAccountHealthLoadQueueSize),
 		ctx:     ctx,
 		cancel:  cancel,
 	}
@@ -197,7 +201,7 @@ func (s *openAIAccountHealthSharedState) start() {
 			s.lifecycleMu.Unlock()
 			return
 		}
-		s.workers.Add(2)
+		s.workers.Add(2 + openAIAccountHealthLoadWorkers)
 		s.lifecycleMu.Unlock()
 		go func() {
 			defer s.workers.Done()
@@ -207,6 +211,12 @@ func (s *openAIAccountHealthSharedState) start() {
 			defer s.workers.Done()
 			s.runSubscriber()
 		}()
+		for range openAIAccountHealthLoadWorkers {
+			go func() {
+				defer s.workers.Done()
+				s.runLoader()
+			}()
+		}
 	})
 }
 
@@ -256,6 +266,7 @@ func (s *openAIAccountHealthSharedState) runPublisher() {
 }
 
 func (s *openAIAccountHealthSharedState) runSubscriber() {
+subscribeLoop:
 	for {
 		if s.ctx.Err() != nil {
 			return
@@ -272,16 +283,26 @@ func (s *openAIAccountHealthSharedState) runSubscriber() {
 			}
 			continue
 		}
-		for message := range pubsub.Channel() {
-			var event openAIAccountHealthSharedEvent
-			if err := json.Unmarshal([]byte(message.Payload), &event); err != nil {
-				continue
+		messages := pubsub.Channel()
+		for {
+			select {
+			case <-s.ctx.Done():
+				_ = pubsub.Close()
+				return
+			case message, ok := <-messages:
+				if !ok {
+					_ = pubsub.Close()
+					if !waitOpenAISharedHealthRetry(s.ctx, time.Second) {
+						return
+					}
+					continue subscribeLoop
+				}
+				var event openAIAccountHealthSharedEvent
+				if err := json.Unmarshal([]byte(message.Payload), &event); err != nil {
+					continue
+				}
+				s.stats.applySharedHealthEvent(event)
 			}
-			s.stats.applySharedHealthEvent(event)
-		}
-		_ = pubsub.Close()
-		if !waitOpenAISharedHealthRetry(s.ctx, time.Second) {
-			return
 		}
 	}
 }
@@ -336,31 +357,43 @@ func (s *openAIAccountHealthSharedState) load(key openAIAccountRuntimeStatsKey) 
 	if _, loaded := s.loadOnce.LoadOrStore(redisKey, struct{}{}); loaded {
 		return
 	}
-	s.lifecycleMu.Lock()
-	if s.closed {
-		s.lifecycleMu.Unlock()
+	select {
+	case <-s.ctx.Done():
+		s.loadOnce.Delete(redisKey)
+	case s.loads <- key:
+	default:
+		s.loadOnce.Delete(redisKey)
+		slog.Debug("openai shared health load queue full")
+	}
+}
+
+func (s *openAIAccountHealthSharedState) runLoader() {
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case key := <-s.loads:
+			s.loadFromRedis(key)
+		}
+	}
+}
+
+func (s *openAIAccountHealthSharedState) loadFromRedis(key openAIAccountRuntimeStatsKey) {
+	redisKey := openAIAccountHealthRedisKey(key)
+	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
+	values, err := s.client.HGetAll(ctx, redisKey).Result()
+	cancel()
+	if err != nil {
 		s.loadOnce.Delete(redisKey)
 		return
 	}
-	s.workers.Add(1)
-	s.lifecycleMu.Unlock()
-	go func() {
-		defer s.workers.Done()
-		ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
-		values, err := s.client.HGetAll(ctx, redisKey).Result()
-		cancel()
-		if err != nil {
-			s.loadOnce.Delete(redisKey)
-			return
-		}
-		if len(values) == 0 {
-			return
-		}
-		event, err := openAIAccountHealthEventFromMap(key, values)
-		if err == nil {
-			s.stats.applySharedHealthEvent(event)
-		}
-	}()
+	if len(values) == 0 {
+		return
+	}
+	event, err := openAIAccountHealthEventFromMap(key, values)
+	if err == nil {
+		s.stats.applySharedHealthEvent(event)
+	}
 }
 
 func (s *openAIAccountRuntimeStats) applySharedHealthEvent(event openAIAccountHealthSharedEvent) {

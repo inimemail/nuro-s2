@@ -40,8 +40,9 @@ func grokBillingSnapshotFromExtra(extra map[string]any) (*xai.BillingSummary, er
 func (f *GrokQuotaFetcher) BuildUsageInfo(account *Account) *UsageInfo {
 	now := time.Now()
 	usage := &UsageInfo{
-		Source:    "passive",
-		UpdatedAt: &now,
+		Source:             "passive",
+		UpdatedAt:          &now,
+		GrokFreeTokenLimit: xai.GrokFreeRolling24hTokenLimit,
 	}
 	if account == nil {
 		usage.ErrorCode = "quota_unknown"

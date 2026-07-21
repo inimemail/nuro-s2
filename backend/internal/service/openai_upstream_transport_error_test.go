@@ -30,7 +30,7 @@ func (r *openAITransportAccountRepoStub) SetTempUnschedulable(_ context.Context,
 }
 
 func newOpenAITransportErrTestContext() (*gin.Context, *httptest.ResponseRecorder) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -53,7 +53,9 @@ func TestHandleOpenAIUpstreamTransportError_PersistentEvictsAndFailsOver(t *test
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 	require.Len(t, repo.tempUnschedCalls, 1)
 	require.Equal(t, int64(4627), repo.tempUnschedCalls[0].accountID)
-	require.Contains(t, repo.tempUnschedCalls[0].reason, "authentication failed")
+	require.Contains(t, repo.tempUnschedCalls[0].reason, safeUpstreamErrorMessage)
+	require.NotContains(t, repo.tempUnschedCalls[0].reason, "authentication failed")
+	require.NotContains(t, repo.tempUnschedCalls[0].reason, "chatgpt.com")
 	require.True(t, repo.tempUnschedCalls[0].until.After(before.Add(openAITransportErrorTempUnschedDuration-time.Second)))
 	require.True(t, repo.tempUnschedCalls[0].until.Before(after.Add(openAITransportErrorTempUnschedDuration+time.Second)))
 	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
@@ -75,6 +77,20 @@ func TestHandleOpenAIUpstreamTransportError_TransientFailsOverWithoutEviction(t 
 	require.Empty(t, repo.tempUnschedCalls)
 	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 	require.Equal(t, 0, rec.Body.Len())
+}
+
+func TestHandleOpenAIUpstreamTransportError_PoolAccountNeverWritesTempUnschedulable(t *testing.T) {
+	repo := &openAITransportAccountRepoStub{}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{ID: 100, Name: "pool", Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true}}
+	c, _ := newOpenAITransportErrTestContext()
+
+	err := svc.handleOpenAIUpstreamTransportError(context.Background(), c, account,
+		errors.New(`dial tcp: connection refused`), false)
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr))
+	require.Empty(t, repo.tempUnschedCalls)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
 
 func TestHandleOpenAIUpstreamTransportError_ContextCanceledNoFailoverNoEviction(t *testing.T) {

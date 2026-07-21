@@ -148,7 +148,7 @@ func TestOpenAIPromptCacheCreationOptimization_UsesIngressIntentBeforeServerTool
 }
 
 func TestOpenAIPromptCacheCreationOptimization_ForwardCodexBridgeKeepsPassiveRequestEligible(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstream := &httpUpstreamRecorder{resp: promptCacheBoostJSONResponse("resp_cache_creation_bridge")}
 	svc := newOpenAIImageGenerationControlTestService(upstream)
 	svc.cfg.Gateway.CodexImageGenerationBridgeEnabled = true
@@ -168,7 +168,7 @@ func TestOpenAIPromptCacheCreationOptimization_ForwardCodexBridgeKeepsPassiveReq
 }
 
 func TestOpenAIPromptCacheCreationOptimization_OAuthEdgeUsesIngressIntentBeforeCachedBodyMutation(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -278,7 +278,7 @@ func TestOpenAIPromptCacheCreationOptimization_PreservesLargeJSONIntegers(t *tes
 }
 
 func TestOpenAIPromptCacheCreationOptimization_ForwardPreservesLargeJSONIntegers(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"instructions":"fixed","seed":9007199254740993,"metadata":{"business_id":18446744073709551615},"input":[{"role":"user","content":"hello"}]}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -489,7 +489,7 @@ func TestOpenAIPromptCacheCreationOptimization_FallbackAccountDoesNotMutateShare
 }
 
 func TestOpenAIPromptCacheCreationOptimization_ForwardRetriesOnceWithoutExplicitFields(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	stable := strings.Repeat("stable developer policy ", 260)
 	bodyValue := map[string]any{
 		"model":  "gpt-5.6-sol",

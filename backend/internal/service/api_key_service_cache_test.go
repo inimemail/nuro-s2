@@ -235,6 +235,7 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 	svc := NewAPIKeyService(nil, nil, nil, nil, nil, nil, &config.Config{})
 	groupID := int64(9)
 	webSearchPricePerCall := 0.025
+	upstreamGuard := 2.0
 	apiKey := &APIKey{
 		ID:      1,
 		UserID:  2,
@@ -243,22 +244,30 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 		Name:    "Audit Key",
 		Status:  StatusActive,
 		User: &User{
-			ID:          2,
-			Status:      StatusActive,
-			Role:        RoleUser,
-			Balance:     10,
-			Concurrency: 3,
+			ID:            2,
+			Status:        StatusActive,
+			Role:          RoleUser,
+			Balance:       10,
+			Concurrency:   3,
+			AllowedGroups: []int64{groupID},
 		},
 		Group: &Group{
-			ID:                    groupID,
-			Name:                  "openai",
-			Platform:              PlatformOpenAI,
-			Status:                StatusActive,
-			SubscriptionType:      SubscriptionTypeStandard,
-			RateMultiplier:        1,
-			WebSearchPricePerCall: &webSearchPricePerCall,
-			AllowMessagesDispatch: true,
-			DefaultMappedModel:    "gpt-5.4",
+			ID:                                groupID,
+			Name:                              "openai",
+			Platform:                          PlatformOpenAI,
+			Status:                            StatusActive,
+			SubscriptionType:                  SubscriptionTypeStandard,
+			RateMultiplier:                    1,
+			UpstreamBillingGuardMaxMultiplier: &upstreamGuard,
+			IsExclusive:                       true,
+			AllowBatchImageGeneration:         true,
+			BatchImageDiscountMultiplier:      0.4,
+			BatchImageHoldMultiplier:          0.7,
+			WebSearchPricePerCall:             &webSearchPricePerCall,
+			AllowMessagesDispatch:             true,
+			RequireOAuthOnly:                  true,
+			RequirePrivacySet:                 true,
+			DefaultMappedModel:                "gpt-5.4",
 			MessagesDispatchModelConfig: OpenAIMessagesDispatchModelConfig{
 				OpusMappedModel:   "gpt-5.4-nano",
 				SonnetMappedModel: "gpt-5.3-codex",
@@ -278,6 +287,14 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 	require.NotNil(t, roundTrip.Group)
 	require.Equal(t, apiKey.Group.MessagesDispatchModelConfig, roundTrip.Group.MessagesDispatchModelConfig)
 	require.Equal(t, apiKey.Group.WebSearchPricePerCall, roundTrip.Group.WebSearchPricePerCall)
+	require.Equal(t, apiKey.User.AllowedGroups, roundTrip.User.AllowedGroups)
+	require.Equal(t, apiKey.Group.IsExclusive, roundTrip.Group.IsExclusive)
+	require.Equal(t, apiKey.Group.AllowBatchImageGeneration, roundTrip.Group.AllowBatchImageGeneration)
+	require.Equal(t, apiKey.Group.UpstreamBillingGuardMaxMultiplier, roundTrip.Group.UpstreamBillingGuardMaxMultiplier)
+	require.Equal(t, apiKey.Group.BatchImageDiscountMultiplier, roundTrip.Group.BatchImageDiscountMultiplier)
+	require.Equal(t, apiKey.Group.BatchImageHoldMultiplier, roundTrip.Group.BatchImageHoldMultiplier)
+	require.Equal(t, apiKey.Group.RequireOAuthOnly, roundTrip.Group.RequireOAuthOnly)
+	require.Equal(t, apiKey.Group.RequirePrivacySet, roundTrip.Group.RequirePrivacySet)
 }
 
 func TestAPIKeyService_GetByKey_IgnoresLegacyAuthCacheSnapshotWithoutMessagesDispatchConfig(t *testing.T) {
@@ -512,9 +529,11 @@ func TestAPIKeyService_InvalidateAuthCacheByKey(t *testing.T) {
 }
 
 func TestAPIKeyService_GetByKey_CachesNegativeOnRepoMiss(t *testing.T) {
+	var repoCalls atomic.Int32
 	cache := &authCacheStub{}
 	repo := &authRepoStub{
 		getByKeyForAuth: func(ctx context.Context, key string) (*APIKey, error) {
+			repoCalls.Add(1)
 			return nil, ErrAPIKeyNotFound
 		},
 	}
@@ -531,7 +550,39 @@ func TestAPIKeyService_GetByKey_CachesNegativeOnRepoMiss(t *testing.T) {
 
 	_, err := svc.GetByKey(context.Background(), "missing")
 	require.ErrorIs(t, err, ErrAPIKeyNotFound)
-	require.Len(t, cache.setAuthKeys, 1)
+	require.Empty(t, cache.setAuthKeys, "attacker-controlled misses must not be written to Redis")
+	svc.authNegativeCacheL1.Wait()
+	_, err = svc.GetByKey(context.Background(), "missing")
+	require.ErrorIs(t, err, ErrAPIKeyNotFound)
+	require.Equal(t, int32(1), repoCalls.Load())
+}
+
+func TestAPIKeyServiceAuthLookupBulkheadReportsRejectedAttempts(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	repo := &authRepoStub{getByKeyForAuth: func(context.Context, string) (*APIKey, error) {
+		close(entered)
+		<-release
+		return nil, ErrAPIKeyNotFound
+	}}
+	svc := NewAPIKeyService(repo, nil, nil, nil, nil, nil, &config.Config{
+		APIKeyAuth: config.APIKeyAuthCacheConfig{LookupConcurrency: 1},
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.GetByKey(context.Background(), "first")
+		done <- err
+	}()
+	<-entered
+	_, err := svc.GetByKey(context.Background(), "second")
+	require.ErrorIs(t, err, ErrAPIKeyAuthOverloaded)
+	metrics := svc.AuthLookupMetrics()
+	require.Equal(t, uint64(2), metrics.Total)
+	require.Equal(t, uint64(1), metrics.Rejected)
+	require.Equal(t, int64(1), metrics.InFlight)
+	require.Equal(t, 1, metrics.Capacity)
+	close(release)
+	require.ErrorIs(t, <-done, ErrAPIKeyNotFound)
 }
 
 func TestAPIKeyService_GetByKey_SingleflightCollapses(t *testing.T) {

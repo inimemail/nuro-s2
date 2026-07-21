@@ -57,6 +57,7 @@ func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 			h.errorResponse(c, status, "upstream_error", "Service temporarily unavailable")
 			return
 		}
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		manifest, err := h.gatewayService.FetchCodexModelsManifest(c.Request.Context(), account, c.Query("client_version"), c.GetHeader("If-None-Match"))
 		if err != nil {

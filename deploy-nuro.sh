@@ -360,7 +360,8 @@ ensure_edge_env_values() {
     ensure_env_value "$env_file" AUTOSCALE_MIN_CPU_PER_PAIR 4
     ensure_env_value "$env_file" AUTOSCALE_MIN_MEMORY_MB_PER_PAIR 2048
     ensure_env_value "$env_file" AUTOSCALE_SCALE_DOWN_SECONDS 600
-    ensure_env_value "$env_file" AUTOSCALE_DRAIN_SECONDS 1800
+    upgrade_env_default_value "$env_file" AUTOSCALE_DRAIN_SECONDS 1800 30
+    ensure_env_value "$env_file" AUTOSCALE_DRAIN_SECONDS 30
     if [[ "$(read_env_value "$env_file" NURO_EDGE_ENABLED)" != "true" ]]; then
         secret="$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET)"
         if [[ -z "$secret" ]]; then
@@ -419,12 +420,15 @@ ensure_edge_env_values() {
     upgrade_env_default_value "$env_file" SUB2API_EDGE_NODE_ID nuro-edge-rs ""
     set_env_value "$env_file" SUB2API_EDGE_PREPARE_TIMEOUT_MS "$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_PREPARE_TIMEOUT_MS)"
     set_env_value "$env_file" SUB2API_EDGE_COMPLETE_TIMEOUT_MS "$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_COMPLETE_TIMEOUT_MS)"
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_DRAIN_TIMEOUT_SECS 1800 30
+    ensure_env_value "$env_file" SUB2API_EDGE_DRAIN_TIMEOUT_SECS 30
     upgrade_env_default_value "$env_file" SUB2API_EDGE_INITIAL_POOL_SIZE 10000 512
     upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 20000 512
     upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 2000 512
     upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 128 512
     upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_MAX_BYTES 67108864 268435456
     ensure_env_value "$env_file" SUB2API_EDGE_QUEUE_MAX_BYTES 268435456
+    ensure_env_value "$env_file" SUB2API_EDGE_MAX_HEADER_BYTES 65536
     upgrade_env_default_value "$env_file" SUB2API_EDGE_INGRESS_BODY_MAX_BYTES 1073741824 2147483648
     ensure_env_value "$env_file" SUB2API_EDGE_INGRESS_BODY_MAX_BYTES 2147483648
     upgrade_env_default_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 256 512
@@ -455,13 +459,25 @@ ensure_edge_env_values() {
 
 ensure_scheduler_env_values() {
     local env_file="$1"
+    local legacy_redis_maxclients
 
     touch "$env_file"
+	ensure_env_value "$env_file" SERVER_TRUSTED_PROXIES ""
+	upgrade_env_default_value "$env_file" SERVER_GRACEFUL_SHUTDOWN_TIMEOUT 1800 5
+	ensure_env_value "$env_file" SERVER_GRACEFUL_SHUTDOWN_TIMEOUT 5
+    ensure_env_value "$env_file" SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL false
+    ensure_env_value "$env_file" SECURITY_FORWARDED_CLIENT_IP_HEADERS ""
     ensure_env_value "$env_file" REDIS_POOL_SIZE 1024
     ensure_env_value "$env_file" REDIS_MIN_IDLE_CONNS 128
     ensure_env_value "$env_file" REDIS_DIAL_TIMEOUT_SECONDS 1
     ensure_env_value "$env_file" REDIS_READ_TIMEOUT_SECONDS 1
     ensure_env_value "$env_file" REDIS_WRITE_TIMEOUT_SECONDS 1
+    legacy_redis_maxclients="$(read_env_value "$env_file" REDIS_MAXCLIENTS)"
+    if [[ -n "$legacy_redis_maxclients" && -z "$(read_env_value "$env_file" REDIS_MAX_CLIENTS)" ]]; then
+        set_env_value "$env_file" REDIS_MAX_CLIENTS "$legacy_redis_maxclients"
+    fi
+    ensure_env_value "$env_file" REDIS_MAX_CLIENTS 100000
+    ensure_env_value "$env_file" REDIS_NOFILE_LIMIT 200000
 
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOAD_BATCH_ENABLED true
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_LOAD_BATCH_CACHE_TTL_MS 200
@@ -525,6 +541,10 @@ COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
 BIND_HOST=0.0.0.0
 SERVER_PORT=${host_port}
 SERVER_MODE=release
+SERVER_READ_HEADER_TIMEOUT=10
+SERVER_MAX_HEADER_BYTES=65536
+SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=5
+SERVER_TRUSTED_PROXIES=
 RUN_MODE=standard
 TZ=Asia/Shanghai
 
@@ -532,12 +552,16 @@ POSTGRES_USER=nuro_sub2api
 POSTGRES_DB=nuro_sub2api
 POSTGRES_PASSWORD=$(generate_secret)
 POSTGRES_MAX_CONNECTIONS=2000
+POSTGRES_SHARED_BUFFERS=1GB
+POSTGRES_EFFECTIVE_CACHE_SIZE=4GB
+POSTGRES_MAINTENANCE_WORK_MEM=128MB
 
 REDIS_PASSWORD=
 REDIS_DB=0
 REDIS_POOL_SIZE=1024
 REDIS_MIN_IDLE_CONNS=128
 REDIS_MAX_CLIENTS=100000
+REDIS_NOFILE_LIMIT=200000
 REDIS_DIAL_TIMEOUT_SECONDS=1
 REDIS_READ_TIMEOUT_SECONDS=1
 REDIS_WRITE_TIMEOUT_SECONDS=1
@@ -561,7 +585,10 @@ SECURITY_URL_ALLOWLIST_ENABLED=false
 SECURITY_URL_ALLOWLIST_ALLOW_INSECURE_HTTP=false
 SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS=false
 SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS=
+SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL=false
+SECURITY_FORWARDED_CLIENT_IP_HEADERS=
 UPDATE_PROXY_URL=
+UPDATE_GITHUB_TOKEN=
 
 GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT=0
 GATEWAY_OPENAI_HTTP2_ENABLED=true
@@ -580,7 +607,7 @@ AUTOSCALE_TARGET_RELAY_WORKERS=512
 AUTOSCALE_MIN_CPU_PER_PAIR=4
 AUTOSCALE_MIN_MEMORY_MB_PER_PAIR=2048
 AUTOSCALE_SCALE_DOWN_SECONDS=600
-AUTOSCALE_DRAIN_SECONDS=1800
+AUTOSCALE_DRAIN_SECONDS=30
 GATEWAY_OPENAI_EDGE_RS_ENABLED=true
 GATEWAY_OPENAI_EDGE_RS_INTERNAL_API_ENABLED=true
 GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET=$(generate_secret)
@@ -606,10 +633,11 @@ SUB2API_EDGE_INTERNAL_SECRET=
 SUB2API_EDGE_NODE_ID=
 SUB2API_EDGE_PREPARE_TIMEOUT_MS=1500
 SUB2API_EDGE_COMPLETE_TIMEOUT_MS=1500
-SUB2API_EDGE_DRAIN_TIMEOUT_SECS=1800
+SUB2API_EDGE_DRAIN_TIMEOUT_SECS=30
 SUB2API_EDGE_INITIAL_POOL_SIZE=512
 SUB2API_EDGE_QUEUE_BUFFER_SIZE=512
 SUB2API_EDGE_QUEUE_MAX_BYTES=268435456
+SUB2API_EDGE_MAX_HEADER_BYTES=65536
 SUB2API_EDGE_INGRESS_BODY_MAX_BYTES=2147483648
 SUB2API_EDGE_GLOBAL_WORKERS=512
 SUB2API_EDGE_PER_ACCOUNT_WORKERS=128
@@ -747,7 +775,10 @@ services:
       dockerfile: Dockerfile
     image: ${IMAGE_NAME}
     restart: unless-stopped
-    stop_grace_period: 0s
+    # paired-entrypoint drains Go/Edge for up to 30s before terminating Go.
+    # Keep a small supervisor margin so Compose does not SIGKILL the pair
+    # before the shutdown ordering and settlement callbacks complete.
+    stop_grace_period: 45s
     command: ["/app/paired-entrypoint.sh"]
     ulimits:
       nofile:
@@ -763,6 +794,10 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8080
       - SERVER_MODE=\${SERVER_MODE:-release}
+      - SERVER_READ_HEADER_TIMEOUT=\${SERVER_READ_HEADER_TIMEOUT:-10}
+      - SERVER_MAX_HEADER_BYTES=\${SERVER_MAX_HEADER_BYTES:-65536}
+      - SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=\${SERVER_GRACEFUL_SHUTDOWN_TIMEOUT:-5}
+      - SERVER_TRUSTED_PROXIES=\${SERVER_TRUSTED_PROXIES:-}
       - RUN_MODE=\${RUN_MODE:-standard}
       - DATABASE_HOST=postgres
       - DATABASE_PORT=5432
@@ -803,7 +838,10 @@ services:
       - SECURITY_URL_ALLOWLIST_ALLOW_INSECURE_HTTP=\${SECURITY_URL_ALLOWLIST_ALLOW_INSECURE_HTTP:-false}
       - SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS=\${SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS:-false}
       - SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS=\${SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS:-}
+      - SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL=\${SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL:-false}
+      - SECURITY_FORWARDED_CLIENT_IP_HEADERS=\${SECURITY_FORWARDED_CLIENT_IP_HEADERS:-}
       - UPDATE_PROXY_URL=\${UPDATE_PROXY_URL:-}
+      - UPDATE_GITHUB_TOKEN=\${UPDATE_GITHUB_TOKEN:-}
       - GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT=\${GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT:-0}
       - GATEWAY_OPENAI_HTTP2_ENABLED=\${GATEWAY_OPENAI_HTTP2_ENABLED:-true}
       - GATEWAY_OPENAI_HTTP2_ALLOW_PROXY_FALLBACK_TO_HTTP1=\${GATEWAY_OPENAI_HTTP2_ALLOW_PROXY_FALLBACK_TO_HTTP1:-true}
@@ -848,10 +886,11 @@ services:
       - SUB2API_EDGE_NODE_ID=
       - SUB2API_EDGE_PREPARE_TIMEOUT_MS=\${SUB2API_EDGE_PREPARE_TIMEOUT_MS:-1500}
       - SUB2API_EDGE_COMPLETE_TIMEOUT_MS=\${SUB2API_EDGE_COMPLETE_TIMEOUT_MS:-1500}
-      - SUB2API_EDGE_DRAIN_TIMEOUT_SECS=\${SUB2API_EDGE_DRAIN_TIMEOUT_SECS:-1800}
+      - SUB2API_EDGE_DRAIN_TIMEOUT_SECS=\${SUB2API_EDGE_DRAIN_TIMEOUT_SECS:-30}
       - SUB2API_EDGE_INITIAL_POOL_SIZE=\${SUB2API_EDGE_INITIAL_POOL_SIZE:-512}
       - SUB2API_EDGE_QUEUE_BUFFER_SIZE=\${SUB2API_EDGE_QUEUE_BUFFER_SIZE:-512}
       - SUB2API_EDGE_QUEUE_MAX_BYTES=\${SUB2API_EDGE_QUEUE_MAX_BYTES:-268435456}
+      - SUB2API_EDGE_MAX_HEADER_BYTES=\${SUB2API_EDGE_MAX_HEADER_BYTES:-65536}
       - SUB2API_EDGE_INGRESS_BODY_MAX_BYTES=\${SUB2API_EDGE_INGRESS_BODY_MAX_BYTES:-2147483648}
       - SUB2API_EDGE_GLOBAL_WORKERS=\${SUB2API_EDGE_GLOBAL_WORKERS:-512}
       - SUB2API_EDGE_PER_ACCOUNT_WORKERS=\${SUB2API_EDGE_PER_ACCOUNT_WORKERS:-128}
@@ -944,10 +983,11 @@ services:
       - AUTOSCALE_TARGET_GO_ACTIVE_PER_PAIR=\${AUTOSCALE_TARGET_GO_ACTIVE_PER_PAIR:-4000}
       - AUTOSCALE_TARGET_RELAY_WORKERS=\${AUTOSCALE_TARGET_RELAY_WORKERS:-512}
       - AUTOSCALE_SCALE_DOWN_SECONDS=\${AUTOSCALE_SCALE_DOWN_SECONDS:-600}
-      - AUTOSCALE_DRAIN_SECONDS=\${AUTOSCALE_DRAIN_SECONDS:-1800}
+      - AUTOSCALE_DRAIN_SECONDS=\${AUTOSCALE_DRAIN_SECONDS:-30}
       - AUTOSCALE_FORCE_STOP_SECONDS=\${AUTOSCALE_FORCE_STOP_SECONDS:-30}
       - AUTOSCALE_UPSTREAM_ERROR_RATIO=\${AUTOSCALE_UPSTREAM_ERROR_RATIO:-0.20}
       - REDIS_PASSWORD=\${REDIS_PASSWORD:-}
+      - REDIS_NOFILE_LIMIT=\${REDIS_NOFILE_LIMIT:-200000}
       - ADMISSION_CELL_AUTOSCALE_ENABLED=\${ADMISSION_CELL_AUTOSCALE_ENABLED:-true}
       - ADMISSION_CELL_MAX_PER_PLATFORM=\${ADMISSION_CELL_MAX_PER_PLATFORM:-8}
       - ADMISSION_CELL_TARGET_OPS=\${ADMISSION_CELL_TARGET_OPS:-50000}
@@ -971,16 +1011,28 @@ services:
     restart: unless-stopped
     ulimits:
       nofile:
-        soft: 100000
-        hard: 100000
-    command: >
-      sh -c '
-        redis-server --save "300 10" --appendonly yes --appendfsync everysec
-        --maxmemory \${ADMISSION_CELL_TARGET_MEMORY_MB:-8192}mb
-        --maxmemory-policy noeviction --tcp-backlog 8192 --timeout 0 --hz 20
-        --maxclients \${REDIS_MAX_CLIENTS:-100000}
-        --io-threads \${REDIS_IO_THREADS:-8} --io-threads-do-reads yes
-        \${REDIS_PASSWORD:+--requirepass "\$REDIS_PASSWORD"}'
+        soft: \${REDIS_NOFILE_LIMIT:-200000}
+        hard: \${REDIS_NOFILE_LIMIT:-200000}
+    command:
+      - sh
+      - -c
+      - |
+        set -- redis-server \\
+          --save "300 10" \\
+          --appendonly yes \\
+          --appendfsync everysec \\
+          --maxmemory \${ADMISSION_CELL_TARGET_MEMORY_MB:-8192}mb \\
+          --maxmemory-policy noeviction \\
+          --tcp-backlog 8192 \\
+          --timeout 0 \\
+          --hz 20 \\
+          --maxclients \${REDIS_MAX_CLIENTS:-100000} \\
+          --io-threads \${REDIS_IO_THREADS:-8} \\
+          --io-threads-do-reads yes
+        if [ -n "\$\$REDIS_PASSWORD" ]; then
+          set -- "\$\$@" --requirepass "\$\$REDIS_PASSWORD"
+        fi
+        exec "\$\$@"
     environment:
       - REDIS_PASSWORD=\${REDIS_PASSWORD:-}
       - REDIS_IO_THREADS=\${REDIS_IO_THREADS:-8}
@@ -1001,16 +1053,28 @@ services:
     restart: unless-stopped
     ulimits:
       nofile:
-        soft: 100000
-        hard: 100000
-    command: >
-      sh -c '
-        redis-server --save "300 10" --appendonly yes --appendfsync everysec
-        --maxmemory \${ADMISSION_CELL_TARGET_MEMORY_MB:-8192}mb
-        --maxmemory-policy noeviction --tcp-backlog 8192 --timeout 0 --hz 20
-        --maxclients \${REDIS_MAX_CLIENTS:-100000}
-        --io-threads \${REDIS_IO_THREADS:-8} --io-threads-do-reads yes
-        \${REDIS_PASSWORD:+--requirepass "\$REDIS_PASSWORD"}'
+        soft: \${REDIS_NOFILE_LIMIT:-200000}
+        hard: \${REDIS_NOFILE_LIMIT:-200000}
+    command:
+      - sh
+      - -c
+      - |
+        set -- redis-server \\
+          --save "300 10" \\
+          --appendonly yes \\
+          --appendfsync everysec \\
+          --maxmemory \${ADMISSION_CELL_TARGET_MEMORY_MB:-8192}mb \\
+          --maxmemory-policy noeviction \\
+          --tcp-backlog 8192 \\
+          --timeout 0 \\
+          --hz 20 \\
+          --maxclients \${REDIS_MAX_CLIENTS:-100000} \\
+          --io-threads \${REDIS_IO_THREADS:-8} \\
+          --io-threads-do-reads yes
+        if [ -n "\$\$REDIS_PASSWORD" ]; then
+          set -- "\$\$@" --requirepass "\$\$REDIS_PASSWORD"
+        fi
+        exec "\$\$@"
     environment:
       - REDIS_PASSWORD=\${REDIS_PASSWORD:-}
       - REDIS_IO_THREADS=\${REDIS_IO_THREADS:-8}
@@ -1029,7 +1093,16 @@ services:
     image: postgres:18-alpine
     container_name: ${POSTGRES_CONTAINER}
     restart: unless-stopped
-    command: ["postgres", "-c", "max_connections=\${POSTGRES_MAX_CONNECTIONS:-2000}"]
+    command:
+      - postgres
+      - -c
+      - max_connections=\${POSTGRES_MAX_CONNECTIONS:-2000}
+      - -c
+      - shared_buffers=\${POSTGRES_SHARED_BUFFERS:-1GB}
+      - -c
+      - effective_cache_size=\${POSTGRES_EFFECTIVE_CACHE_SIZE:-4GB}
+      - -c
+      - maintenance_work_mem=\${POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
     ulimits:
       nofile:
         soft: 100000
@@ -1057,26 +1130,32 @@ services:
     restart: unless-stopped
     ulimits:
       nofile:
-        soft: 100000
-        hard: 100000
+        soft: \${REDIS_NOFILE_LIMIT:-200000}
+        hard: \${REDIS_NOFILE_LIMIT:-200000}
     volumes:
       - ./redis_data:/data:Z
-    command: >
-        sh -c '
-          redis-server
-          --save "300 10"
-          --appendonly yes
-          --appendfsync everysec
-          --maxmemory-policy noeviction
-          --maxclients \${REDIS_MAX_CLIENTS:-100000}
-          --tcp-backlog 8192
-          --timeout 0
-          --hz 20
-          --io-threads \${REDIS_IO_THREADS:-8}
+    command:
+      - sh
+      - -c
+      - |
+        set -- redis-server \\
+          --save "300 10" \\
+          --appendonly yes \\
+          --appendfsync everysec \\
+          --maxmemory-policy noeviction \\
+          --maxclients \${REDIS_MAX_CLIENTS:-100000} \\
+          --tcp-backlog 8192 \\
+          --timeout 0 \\
+          --hz 20 \\
+          --io-threads \${REDIS_IO_THREADS:-8} \\
           --io-threads-do-reads yes
-          \${REDIS_PASSWORD:+--requirepass "\$REDIS_PASSWORD"}'
+        if [ -n "\$\$REDIS_PASSWORD" ]; then
+          set -- "\$\$@" --requirepass "\$\$REDIS_PASSWORD"
+        fi
+        exec "\$\$@"
     environment:
       - TZ=\${TZ:-Asia/Shanghai}
+      - REDIS_PASSWORD=\${REDIS_PASSWORD:-}
       - REDISCLI_AUTH=\${REDIS_PASSWORD:-}
     networks:
       - nuro-sub2api-network

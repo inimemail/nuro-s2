@@ -79,6 +79,26 @@ func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	if cfg.Gateway.Scheduling.SlotCleanupInterval != 30*time.Second {
 		t.Fatalf("SlotCleanupInterval = %v, want 30s", cfg.Gateway.Scheduling.SlotCleanupInterval)
 	}
+	if cfg.Server.ReadHeaderTimeout != 10 {
+		t.Fatalf("ReadHeaderTimeout = %d, want 10", cfg.Server.ReadHeaderTimeout)
+	}
+	if cfg.Server.MaxHeaderBytes != 64*1024 {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", cfg.Server.MaxHeaderBytes, 64*1024)
+	}
+	if cfg.Server.GracefulShutdownTimeout != 5 {
+		t.Fatalf("GracefulShutdownTimeout = %d, want 5", cfg.Server.GracefulShutdownTimeout)
+	}
+}
+
+func TestLoadForwardedClientIPHeadersFromEnvironment(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("SERVER_TRUSTED_PROXIES", "10.0.0.0/8,192.0.2.10")
+	t.Setenv("SECURITY_FORWARDED_CLIENT_IP_HEADERS", "True-Client-IP,X-CDN-Client-IP")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, []string{"10.0.0.0/8", "192.0.2.10"}, cfg.Server.TrustedProxies)
+	require.Equal(t, []string{"True-Client-Ip", "X-Cdn-Client-Ip"}, cfg.Security.ForwardedClientIPHeaders)
 }
 
 func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
@@ -1082,6 +1102,16 @@ func TestValidateConfigErrors(t *testing.T) {
 			name:    "jwt secret required",
 			mutate:  func(c *Config) { c.JWT.Secret = "" },
 			wantErr: "jwt.secret is required",
+		},
+		{
+			name:    "request header timeout lower bound",
+			mutate:  func(c *Config) { c.Server.ReadHeaderTimeout = 0 },
+			wantErr: "server.read_header_timeout",
+		},
+		{
+			name:    "request header bytes lower bound",
+			mutate:  func(c *Config) { c.Server.MaxHeaderBytes = 4096 },
+			wantErr: "server.max_header_bytes",
 		},
 		{
 			name:    "jwt secret min bytes",

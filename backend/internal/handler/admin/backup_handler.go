@@ -10,6 +10,7 @@ import (
 type BackupHandler struct {
 	backupService *service.BackupService
 	userService   *service.UserService
+	imageStorage  *service.ImageStorageSettingService
 }
 
 func NewBackupHandler(backupService *service.BackupService, userService *service.UserService) *BackupHandler {
@@ -17,6 +18,60 @@ func NewBackupHandler(backupService *service.BackupService, userService *service
 		backupService: backupService,
 		userService:   userService,
 	}
+}
+
+func NewBackupHandlerWithImageStorage(backupService *service.BackupService, userService *service.UserService, imageStorage *service.ImageStorageSettingService) *BackupHandler {
+	h := NewBackupHandler(backupService, userService)
+	h.imageStorage = imageStorage
+	return h
+}
+
+func (h *BackupHandler) GetImageStorageConfig(c *gin.Context) {
+	if h.imageStorage == nil {
+		response.Error(c, 503, "Image storage settings unavailable")
+		return
+	}
+	cfg, err := h.imageStorage.Get(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"config": cfg, "secret_configured": h.imageStorage.SecretConfigured(c.Request.Context())})
+}
+
+func (h *BackupHandler) UpdateImageStorageConfig(c *gin.Context) {
+	if h.imageStorage == nil {
+		response.Error(c, 503, "Image storage settings unavailable")
+		return
+	}
+	var req service.ImageStorageSettings
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	cfg, err := h.imageStorage.Update(c.Request.Context(), req)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, cfg)
+}
+
+func (h *BackupHandler) TestImageStorageConnection(c *gin.Context) {
+	if h.imageStorage == nil {
+		response.Error(c, 503, "Image storage settings unavailable")
+		return
+	}
+	var req service.ImageStorageSettings
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if err := h.imageStorage.TestConnection(c.Request.Context(), req); err != nil {
+		response.Success(c, gin.H{"ok": false, "message": "connection failed"})
+		return
+	}
+	response.Success(c, gin.H{"ok": true, "message": "connection successful"})
 }
 
 // ─── S3 配置 ───

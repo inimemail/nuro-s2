@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 type githubReleaseClient struct {
 	httpClient         *http.Client
 	downloadHTTPClient *http.Client
+	updateGitHubToken  string
 }
 
 type githubReleaseClientError struct {
@@ -29,7 +31,7 @@ type githubReleaseClientError struct {
 // 代理配置失败时行为由 allowDirectOnProxyError 控制：
 //   - false（默认）：返回错误占位客户端，禁止回退到直连
 //   - true：回退到直连（仅限管理员显式开启）
-func NewGitHubReleaseClient(proxyURL string, allowDirectOnProxyError bool) service.GitHubReleaseClient {
+func NewGitHubReleaseClient(proxyURL string, allowDirectOnProxyError bool, configuredToken ...string) service.GitHubReleaseClient {
 	// 安全说明：httpclient.GetClient 的错误链（url.Parse / proxyutil）不含明文代理凭据，
 	// 但仍通过 slog 仅在服务端日志记录，不会暴露给 HTTP 响应。
 	sharedClient, err := httpclient.GetClient(httpclient.Options{
@@ -57,10 +59,45 @@ func NewGitHubReleaseClient(proxyURL string, allowDirectOnProxyError bool) servi
 		downloadClient = &http.Client{Timeout: 10 * time.Minute}
 	}
 
-	return &githubReleaseClient{
-		httpClient:         sharedClient,
-		downloadHTTPClient: downloadClient,
+	apiClient := *sharedClient
+	downloadClientCopy := *downloadClient
+	token := strings.TrimSpace(os.Getenv("UPDATE_GITHUB_TOKEN"))
+	if len(configuredToken) > 0 && strings.TrimSpace(configuredToken[0]) != "" {
+		token = strings.TrimSpace(configuredToken[0])
 	}
+	apiClient.CheckRedirect = githubAPICheckRedirect(apiClient.CheckRedirect)
+	return &githubReleaseClient{
+		httpClient:         &apiClient,
+		downloadHTTPClient: &downloadClientCopy,
+		updateGitHubToken:  token,
+	}
+}
+
+func isGitHubAPIURL(u *url.URL) bool {
+	return u != nil && strings.EqualFold(u.Scheme, "https") && u.User == nil && strings.EqualFold(u.Host, "api.github.com")
+}
+func githubAPICheckRedirect(previous func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if !isGitHubAPIURL(req.URL) {
+			req.Header.Del("Authorization")
+		}
+		if previous != nil {
+			return previous(req, via)
+		}
+		return nil
+	}
+}
+func (c *githubReleaseClient) newAPIRequest(ctx context.Context, rawURL string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("User-Agent", "Sub2API-Updater")
+	if c.updateGitHubToken != "" && isGitHubAPIURL(req.URL) {
+		req.Header.Set("Authorization", "Bearer "+c.updateGitHubToken)
+	}
+	return req, nil
 }
 
 func (c *githubReleaseClientError) FetchLatestRelease(ctx context.Context, repo string) (*service.GitHubRelease, error) {
@@ -78,12 +115,10 @@ func (c *githubReleaseClientError) FetchChecksumFile(ctx context.Context, url st
 func (c *githubReleaseClient) FetchLatestRelease(ctx context.Context, repo string) (*service.GitHubRelease, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := c.newAPIRequest(ctx, url)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("User-Agent", "Sub2API-Updater")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

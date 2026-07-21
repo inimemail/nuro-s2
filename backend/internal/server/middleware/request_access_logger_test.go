@@ -112,6 +112,26 @@ func TestRequestLogger_KeepIncomingRequestID(t *testing.T) {
 	}
 }
 
+func TestRequestLoggerBoundsIncomingRequestID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(RequestLogger())
+	router.GET("/t", func(c *gin.Context) {
+		requestID, _ := c.Request.Context().Value(ctxkey.RequestID).(string)
+		if len(requestID) != 36 {
+			t.Fatalf("request_id length=%d", len(requestID))
+		}
+		c.Status(http.StatusOK)
+	})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
+	req.Header.Set(requestIDHeader, strings.Repeat("x", 200))
+	router.ServeHTTP(w, req)
+	if got := w.Header().Get(requestIDHeader); len(got) != 36 {
+		t.Fatalf("response request_id length=%d", len(got))
+	}
+}
+
 func TestLogger_AccessLogIncludesCoreFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	sink := initMiddlewareTestLogger(t)

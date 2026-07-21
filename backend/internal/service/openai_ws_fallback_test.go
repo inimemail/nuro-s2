@@ -154,7 +154,7 @@ func TestResolveOpenAIWSFallbackErrorResponse(t *testing.T) {
 		require.Equal(t, "forbidden", upstreamMessage)
 	})
 
-	t.Run("provider_name_is_ops_only", func(t *testing.T) {
+	t.Run("provider_name_is_redacted_from_all_error_channels", func(t *testing.T) {
 		statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(
 			wrapOpenAIWSFallback("auth_failed", &openAIWSDialError{
 				StatusCode: http.StatusForbidden,
@@ -166,7 +166,8 @@ func TestResolveOpenAIWSFallbackErrorResponse(t *testing.T) {
 		require.Equal(t, "upstream_error", errType)
 		require.Equal(t, "Upstream authentication failed", clientMessage)
 		require.NotContains(t, clientMessage, "xAI")
-		require.Contains(t, upstreamMessage, "xAI")
+		require.Equal(t, safeUpstreamErrorMessage, upstreamMessage)
+		require.NotContains(t, upstreamMessage, "xAI")
 	})
 
 	t.Run("non_fallback_error_not_resolved", func(t *testing.T) {

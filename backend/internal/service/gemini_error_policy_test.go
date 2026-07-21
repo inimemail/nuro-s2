@@ -189,7 +189,7 @@ func TestCheckErrorPolicy_GeminiAccounts(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGeminiErrorPolicyIntegration(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	tests := []struct {
 		name                 string

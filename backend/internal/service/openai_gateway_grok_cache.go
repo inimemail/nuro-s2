@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -13,10 +15,40 @@ import (
 
 const (
 	grokConversationIDHeader        = "X-Grok-Conv-Id"
+	claudeCodeSessionHeader         = "X-Claude-Code-Session-Id"
+	grokClientToolCacheOptInHeader  = "X-Sub2API-Grok-Client-Tool-Cache"
 	grokFreeCacheNativeToolsJSON    = `[{"type":"web_search"},{"type":"x_search"}]`
 	grokFreeCacheDisabledToolChoice = "none"
-	grokFreeRolling24hTokenLimit    = int64(2_000_000)
+	grokClientToolCacheExtraKey     = "grok_client_tool_cache_enabled"
 )
+
+var claudeCodeSessionSuffixPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
+
+func extractClaudeCodeSessionID(c *gin.Context, body []byte) string {
+	if c != nil {
+		if seed := strings.TrimSpace(c.GetHeader(claudeCodeSessionHeader)); seed != "" {
+			return seed
+		}
+	}
+	return extractClaudeCodeSessionIDFromPayload(body)
+}
+
+func extractClaudeCodeSessionIDFromPayload(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	userID := strings.TrimSpace(gjson.GetBytes(body, "metadata.user_id").String())
+	if userID == "" {
+		return ""
+	}
+	if matches := claudeCodeSessionSuffixPattern.FindStringSubmatch(userID); len(matches) >= 2 {
+		return matches[1]
+	}
+	if userID[0] == '{' {
+		return strings.TrimSpace(gjson.Get(userID, "session_id").String())
+	}
+	return ""
+}
 
 // resolveGrokCacheIdentity derives one stable, tenant-isolated routing identity
 // for xAI's server-side prompt cache. The returned value is safe to expose to
@@ -64,14 +96,20 @@ func resolveGrokCacheIdentity(c *gin.Context, body []byte, explicitKey, upstream
 
 func explicitGrokCacheSeed(c *gin.Context, body []byte, explicitKey string) string {
 	seed := ""
-	if c != nil && c.Request != nil {
-		seed = strings.TrimSpace(c.GetHeader("session_id"))
+	if c != nil {
+		seed = extractClaudeCodeSessionID(c, body)
+		if seed == "" {
+			seed = strings.TrimSpace(c.GetHeader("session_id"))
+		}
 		if seed == "" {
 			seed = strings.TrimSpace(c.GetHeader("conversation_id"))
 		}
 		if seed == "" {
 			seed = strings.TrimSpace(c.GetHeader(grokConversationIDHeader))
 		}
+	}
+	if seed == "" && len(body) > 0 {
+		seed = extractClaudeCodeSessionIDFromPayload(body)
 	}
 	if seed == "" && len(body) > 0 {
 		seed = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
@@ -121,7 +159,7 @@ func applyGrokResponsesCacheIdentity(body, intentSourceBody []byte, identity str
 	// Inspect the pre-sanitization source. patchGrokResponsesBody may remove an
 	// unsupported client tool and its tool_choice; that must not turn an
 	// explicit client tool intent into an eligible native-tool request.
-	if gjson.GetBytes(intentSourceBody, "tools").Exists() || gjson.GetBytes(intentSourceBody, "tool_choice").Exists() {
+	if hasGrokResponsesToolIntent(intentSourceBody) {
 		return out, nil
 	}
 	out, err = sjson.SetRawBytes(out, "tools", []byte(grokFreeCacheNativeToolsJSON))
@@ -131,13 +169,40 @@ func applyGrokResponsesCacheIdentity(body, intentSourceBody []byte, identity str
 	return sjson.SetBytes(out, "tool_choice", grokFreeCacheDisabledToolChoice)
 }
 
+func hasGrokResponsesToolIntent(body []byte) bool {
+	if gjson.GetBytes(body, "tools").Exists() || gjson.GetBytes(body, "tool_choice").Exists() {
+		return true
+	}
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return false
+	}
+	for _, item := range input.Array() {
+		if strings.TrimSpace(item.Get("type").String()) != "additional_tools" {
+			continue
+		}
+		tools := item.Get("tools")
+		if !tools.Exists() || !tools.IsArray() || len(tools.Array()) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // applyGrokFreeMessagesFunctionToolCacheRoute enables xAI's cache-capable
 // mixed-tools route for supported Responses/WS/Messages ingress only when the
 // selected account is known to be Free. Native tools become eligible under
 // auto selection, so every caller must preserve the tier and tenant-identity
 // gates rather than applying the route to paid or unknown accounts.
 func applyGrokFreeMessagesFunctionToolCacheRoute(body, intentSourceBody []byte, account *Account, cacheIdentity string) ([]byte, error) {
+	return applyGrokFreeMessagesFunctionToolCacheRouteWithOverride(body, intentSourceBody, account, cacheIdentity, false)
+}
+
+func applyGrokFreeMessagesFunctionToolCacheRouteWithOverride(body, intentSourceBody []byte, account *Account, cacheIdentity string, force bool) ([]byte, error) {
 	if strings.TrimSpace(cacheIdentity) == "" || !isKnownGrokFreeAccount(account) {
+		return body, nil
+	}
+	if enabled, explicit := grokClientToolCacheAccountPolicy(account); !force && explicit && !enabled {
 		return body, nil
 	}
 	intentTools := gjson.GetBytes(intentSourceBody, "tools")
@@ -155,6 +220,67 @@ func applyGrokFreeMessagesFunctionToolCacheRoute(body, intentSourceBody []byte, 
 		return body, nil
 	}
 	return appendMissingGrokFreeCacheNativeTools(body)
+}
+
+// applyGrokFreeRequestToolCacheRoute allows a per-request override for native
+// Responses/Chat/WS ingress. The header is consumed locally and never sent to
+// the upstream account.
+func applyGrokFreeRequestToolCacheRoute(c *gin.Context, body, intentSourceBody []byte, account *Account, cacheIdentity string) ([]byte, error) {
+	enabled, explicit := grokClientToolCacheAccountPolicy(account)
+	requestOptOut := false
+	if c != nil {
+		switch strings.ToLower(strings.TrimSpace(c.GetHeader(grokClientToolCacheOptInHeader))) {
+		case "1", "true", "yes", "on", "prefer-cache":
+			enabled = true
+			explicit = true
+		case "0", "false", "no", "off":
+			enabled = false
+			explicit = true
+			requestOptOut = true
+		}
+	}
+	if !enabled && !explicit && !requestOptOut && isGrokClaudeDesktopResponsesCacheRequest(c) {
+		enabled = true
+	}
+	if !enabled {
+		return body, nil
+	}
+	return applyGrokFreeMessagesFunctionToolCacheRouteWithOverride(body, intentSourceBody, account, cacheIdentity, true)
+}
+
+func grokClientToolCacheAccountPolicy(account *Account) (enabled, explicit bool) {
+	if !isKnownGrokFreeAccount(account) {
+		return false, false
+	}
+	if account.Extra == nil {
+		return true, false
+	}
+	value, exists := account.Extra[grokClientToolCacheExtraKey]
+	if !exists {
+		return true, false
+	}
+	enabled, valid := value.(bool)
+	if !valid {
+		return false, true
+	}
+	return enabled, true
+}
+
+func isGrokClaudeDesktopResponsesCacheRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil || isOpenAIResponsesCompactPath(c) {
+		return false
+	}
+	path := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	if !strings.HasSuffix(path, "/responses") || !claudeCodeUAPattern.MatchString(strings.TrimSpace(c.GetHeader("User-Agent"))) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(c.GetHeader("X-App"))) {
+	case "cli", "cli-bg":
+	default:
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(c.GetHeader("anthropic-client-platform")), "desktop_app") &&
+		strings.TrimSpace(c.GetHeader(claudeCodeSessionHeader)) != ""
 }
 
 func grokFreeCacheFunctionToolsContainReservedName(tools gjson.Result) bool {
@@ -226,7 +352,7 @@ func isKnownGrokFreeAccount(account *Account) bool {
 			}
 		}
 		if snapshot.Tokens != nil && snapshot.Tokens.Limit != nil &&
-			*snapshot.Tokens.Limit == grokFreeRolling24hTokenLimit {
+			xai.IsGrokFreeRolling24hTokenLimit(*snapshot.Tokens.Limit) {
 			inferredFreeSignal = true
 		}
 	}

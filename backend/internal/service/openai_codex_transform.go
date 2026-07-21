@@ -1,12 +1,35 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
+
+const codexCallIDMaxLength = 64
+
+func normalizeCodexCallID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	candidate := id
+	if strings.HasPrefix(id, "call_") {
+		candidate = "fc_" + strings.TrimPrefix(id, "call_")
+	} else if !strings.HasPrefix(id, "fc") {
+		candidate = "fc_" + id
+	}
+	if len(candidate) <= codexCallIDMaxLength {
+		return candidate
+	}
+	digest := sha256.Sum256([]byte("sub2api:codex-call-id:v1:" + candidate))
+	encoded := hex.EncodeToString(digest[:])
+	return "fc_" + encoded[:codexCallIDMaxLength-len("fc_")]
+}
 
 var codexModelMap = map[string]string{
 	"gpt-5.6-sol":                "gpt-5.6-sol",
@@ -81,10 +104,11 @@ type codexTransformResult struct {
 }
 
 type codexOAuthTransformOptions struct {
-	IsCodexCLI              bool
-	IsCompact               bool
-	SkipDefaultInstructions bool
-	PreserveToolCallIDs     bool
+	IsCodexCLI                          bool
+	IsCompact                           bool
+	SkipDefaultInstructions             bool
+	PreserveToolCallIDs                 bool
+	OmitPromotedSystemMessagesFromInput bool
 }
 
 const codexImageGenerationFunctionToolName = "image_gen.imagegen"
@@ -224,7 +248,7 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	}
 
 	// 提取 input 中 role:"system" 消息至 instructions（OAuth 上游不支持 system role）。
-	if extractSystemMessagesFromInput(reqBody) {
+	if extractSystemMessagesFromInput(reqBody, opts.OmitPromotedSystemMessagesFromInput) {
 		result.Modified = true
 	}
 
@@ -1065,11 +1089,10 @@ func extractTextFromContent(content any) string {
 	}
 }
 
-// extractSystemMessagesFromInput scans the input array for items with role=="system",
-// removes them, and merges their content into reqBody["instructions"].
-// If instructions is already non-empty, extracted content is prepended with "\n\n".
-// Returns true if any system messages were extracted.
-func extractSystemMessagesFromInput(reqBody map[string]any) bool {
+// extractSystemMessagesFromInput mirrors system text into instructions. When
+// omitPromoted is true, text-only messages are removed after lossless promotion;
+// mixed content remains in input as a developer message.
+func extractSystemMessagesFromInput(reqBody map[string]any, omitPromoted bool) bool {
 	input, ok := reqBody["input"].([]any)
 	if !ok || len(input) == 0 {
 		return false
@@ -1077,24 +1100,33 @@ func extractSystemMessagesFromInput(reqBody map[string]any) bool {
 
 	var systemTexts []string
 	remaining := make([]any, 0, len(input))
+	modified := false
 
 	for _, item := range input {
 		m, ok := item.(map[string]any)
-		if !ok {
+		if !ok || m["role"] != "system" {
 			remaining = append(remaining, item)
 			continue
 		}
-		if role, _ := m["role"].(string); role != "system" {
-			remaining = append(remaining, item)
-			continue
+		if omitPromoted {
+			if text, lossless := extractLosslessTextFromContent(m["content"]); lossless {
+				if text != "" {
+					systemTexts = append(systemTexts, text)
+				}
+				modified = true
+				continue
+			}
 		}
 		if text := extractTextFromContent(m["content"]); text != "" {
 			systemTexts = append(systemTexts, text)
 		}
+		m["role"] = "developer"
+		remaining = append(remaining, item)
+		modified = true
 	}
 
 	if len(systemTexts) == 0 {
-		return false
+		return modified
 	}
 
 	extracted := strings.Join(systemTexts, "\n\n")
@@ -1105,6 +1137,33 @@ func extractSystemMessagesFromInput(reqBody map[string]any) bool {
 	}
 	reqBody["input"] = remaining
 	return true
+}
+
+func extractLosslessTextFromContent(content any) (string, bool) {
+	switch v := content.(type) {
+	case string:
+		return v, true
+	case []any:
+		var b strings.Builder
+		for _, part := range v {
+			m, ok := part.(map[string]any)
+			if !ok {
+				return "", false
+			}
+			typeName, ok := m["type"].(string)
+			if !ok || (typeName != "text" && typeName != "input_text" && typeName != "output_text") {
+				return "", false
+			}
+			text, ok := m["text"].(string)
+			if !ok {
+				return "", false
+			}
+			_, _ = b.WriteString(text)
+		}
+		return b.String(), true
+	default:
+		return "", false
+	}
 }
 
 func extractPromptLikeInstructionsFromInput(reqBody map[string]any) string {
@@ -1270,13 +1329,7 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 			if opts.PreserveCallIDs {
 				return id
 			}
-			if id == "" || strings.HasPrefix(id, "fc") {
-				return id
-			}
-			if strings.HasPrefix(id, "call_") {
-				return "fc_" + strings.TrimPrefix(id, "call_")
-			}
-			return "fc_" + id
+			return normalizeCodexCallID(id)
 		}
 
 		if typ == "item_reference" {

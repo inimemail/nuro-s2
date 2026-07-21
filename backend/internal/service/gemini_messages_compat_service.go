@@ -1805,6 +1805,7 @@ func sanitizeUpstreamErrorMessage(msg string) string {
 	if msg == "" {
 		return msg
 	}
+	msg = redactOpsPlainTextSecrets(msg)
 
 	// Never return an HTML error page or an endpoint/host extracted from an
 	// upstream error. In particular, CDN 5xx pages can contain the provider's
@@ -1825,7 +1826,7 @@ func sanitizeUpstreamErrorMessage(msg string) string {
 }
 
 func sanitizeUpstreamErrorMessageForOps(msg string) string {
-	return sensitiveQueryParamRegex.ReplaceAllString(strings.TrimSpace(msg), `$1***`)
+	return sanitizeUpstreamErrorMessage(msg)
 }
 
 func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, account *Account, upstreamStatus int, upstreamRequestID string, body []byte) error {

@@ -50,7 +50,7 @@ export interface UpdateResult {
  * Downloads and applies the latest version
  */
 export async function performUpdate(): Promise<UpdateResult> {
-  const { data } = await apiClient.post<UpdateResult>('/admin/system/update')
+  const { data } = await apiClient.post<UpdateResult>('/admin/system/update', undefined, { timeout: 15 * 60 * 1000 })
   return data
 }
 
@@ -58,7 +58,7 @@ export async function performUpdate(): Promise<UpdateResult> {
  * Rollback to previous version
  */
 export async function rollback(): Promise<UpdateResult> {
-  const { data } = await apiClient.post<UpdateResult>('/admin/system/rollback')
+  const { data } = await apiClient.post<UpdateResult>('/admin/system/rollback', undefined, { timeout: 15 * 60 * 1000 })
   return data
 }
 

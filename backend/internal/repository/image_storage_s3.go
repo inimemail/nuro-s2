@@ -16,23 +16,25 @@ type imageStorageS3 struct {
 	presignExpiry time.Duration
 }
 
-func ProvideImageStorage(cfg *config.Config) (service.ImageStorage, error) {
-	if cfg == nil || !cfg.ImageStorage.Active() {
-		return nil, nil
+func ProvideImageStorageFactory(storeFactory service.BackupObjectStoreFactory) service.ImageStorageFactory {
+	return func(ctx context.Context, cfg *config.ImageStorageConfig) (service.ImageStorage, error) {
+		if cfg == nil || !cfg.Active() {
+			return nil, service.ErrImageStorageIncomplete
+		}
+		store, err := storeFactory(ctx, &service.BackupS3Config{
+			Endpoint: cfg.Endpoint, Region: cfg.Region, Bucket: cfg.Bucket,
+			AccessKeyID: cfg.AccessKeyID, SecretAccessKey: cfg.SecretAccessKey,
+			ForcePathStyle: cfg.ForcePathStyle,
+		})
+		if err != nil {
+			return nil, err
+		}
+		expiry := time.Duration(cfg.PresignExpiry) * time.Hour
+		if expiry <= 0 {
+			expiry = 24 * time.Hour
+		}
+		return &imageStorageS3{store: store, publicBaseURL: strings.TrimRight(cfg.PublicBaseURL, "/"), presignExpiry: expiry}, nil
 	}
-	store, err := NewS3BackupStoreFactory()(context.Background(), &service.BackupS3Config{
-		Endpoint: cfg.ImageStorage.Endpoint, Region: cfg.ImageStorage.Region, Bucket: cfg.ImageStorage.Bucket,
-		AccessKeyID: cfg.ImageStorage.AccessKeyID, SecretAccessKey: cfg.ImageStorage.SecretAccessKey,
-		ForcePathStyle: cfg.ImageStorage.ForcePathStyle,
-	})
-	if err != nil {
-		return nil, err
-	}
-	expiry := time.Duration(cfg.ImageStorage.PresignExpiry) * time.Hour
-	if expiry <= 0 {
-		expiry = 24 * time.Hour
-	}
-	return &imageStorageS3{store: store, publicBaseURL: strings.TrimRight(cfg.ImageStorage.PublicBaseURL, "/"), presignExpiry: expiry}, nil
 }
 
 func (s *imageStorageS3) Save(ctx context.Context, key, contentType string, data []byte) (string, error) {

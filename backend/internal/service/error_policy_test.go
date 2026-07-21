@@ -264,6 +264,26 @@ func TestHandleUpstreamError_PoolModeCustomErrorCodesOverride(t *testing.T) {
 	})
 }
 
+func TestStreamTimeoutStateChangesSkipPoolMode(t *testing.T) {
+	repo := &errorPolicyRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := &Account{
+		ID:       32,
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformAnthropic,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+
+	require.False(t, svc.triggerStreamTimeoutTempUnsched(context.Background(), account, &StreamTimeoutSettings{
+		TempUnschedMinutes: 10,
+	}, "claude-test"))
+	require.False(t, svc.triggerStreamTimeoutError(context.Background(), account, "claude-test"))
+	require.Equal(t, 0, repo.tempCalls)
+	require.Equal(t, 0, repo.setErrCalls)
+}
+
 // ---------------------------------------------------------------------------
 // TestApplyErrorPolicy — 4 table-driven cases for the wrapper method
 // ---------------------------------------------------------------------------

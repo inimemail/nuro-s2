@@ -950,6 +950,21 @@
           />
           <GrokBaseUrlPresets @select="grokOAuthBaseUrl = $event" />
         </div>
+        <div class="mt-4 flex items-center justify-between gap-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.grokClientToolCache.title') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.grokClientToolCache.hint') }}</p>
+          </div>
+          <button
+            type="button"
+            data-testid="grok-client-tool-cache-toggle"
+            :aria-label="t('admin.accounts.grokClientToolCache.title')"
+            :class="['relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors', grokClientToolCacheEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600']"
+            @click="grokClientToolCacheEnabled = !grokClientToolCacheEnabled"
+          >
+            <span :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition', grokClientToolCacheEnabled ? 'translate-x-5' : 'translate-x-0']" />
+          </button>
+        </div>
         <div class="mt-4 flex items-center justify-between gap-4">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.headerOverride.title') }}</label>
@@ -4039,6 +4054,8 @@ const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 const grokOAuthCustomBaseUrlEnabled = ref(false)
 const grokOAuthBaseUrl = ref('')
+const GROK_CLIENT_TOOL_CACHE_EXTRA_KEY = 'grok_client_tool_cache_enabled'
+const grokClientToolCacheEnabled = ref(true)
 type GrokMediaEligibilityMode = 'auto' | 'enabled' | 'disabled'
 const grokMediaEligibilityMode = ref<GrokMediaEligibilityMode>('auto')
 const initialGrokMediaEligibilityMode = ref<GrokMediaEligibilityMode>('auto')
@@ -4830,6 +4847,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   mixedScheduling.value = false
   allowOverages.value = false
   const extra = newAccount.extra as Record<string, unknown> | undefined
+  const grokClientToolCacheSetting = extra?.[GROK_CLIENT_TOOL_CACHE_EXTRA_KEY]
+  grokClientToolCacheEnabled.value =
+    newAccount.platform === 'grok' &&
+    newAccount.type === 'oauth' &&
+    (grokClientToolCacheSetting === undefined || grokClientToolCacheSetting === true)
   const mediaEligibilityMode = normalizeGrokMediaEligibilityMode(extra?.grok_media_eligible)
   grokMediaEligibilityMode.value = mediaEligibilityMode
   initialGrokMediaEligibilityMode.value = mediaEligibilityMode
@@ -6114,6 +6136,18 @@ const handleSubmit = async () => {
       }
 
       updatePayload.credentials = newCredentials
+    }
+
+    if (props.account.platform === 'grok' && props.account.type === 'oauth') {
+      const currentExtra = (props.account.extra as Record<string, unknown>) || {}
+      const currentSetting = currentExtra[GROK_CLIENT_TOOL_CACHE_EXTRA_KEY]
+      const currentEffective = currentSetting === undefined || currentSetting === true
+      if (grokClientToolCacheEnabled.value !== currentEffective) {
+        updatePayload.extra = {
+          ...currentExtra,
+          [GROK_CLIENT_TOOL_CACHE_EXTRA_KEY]: grokClientToolCacheEnabled.value
+        }
+      }
     }
 
     // OAuth/SetupToken: persist platform-specific cache boost and isolation settings.

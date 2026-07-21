@@ -30,11 +30,12 @@ type APIKeyAuthSnapshot struct {
 
 // APIKeyAuthUserSnapshot 用户快照
 type APIKeyAuthUserSnapshot struct {
-	ID          int64   `json:"id"`
-	Status      string  `json:"status"`
-	Role        string  `json:"role"`
-	Balance     float64 `json:"balance"`
-	Concurrency int     `json:"concurrency"`
+	ID            int64   `json:"id"`
+	Status        string  `json:"status"`
+	Role          string  `json:"role"`
+	Balance       float64 `json:"balance"`
+	Concurrency   int     `json:"concurrency"`
+	AllowedGroups []int64 `json:"allowed_groups,omitempty"`
 
 	// Balance notification fields (required for CheckBalanceAfterDeduction)
 	Email                      string             `json:"email"`
@@ -55,34 +56,39 @@ type APIKeyAuthUserSnapshot struct {
 
 // APIKeyAuthGroupSnapshot 分组快照
 type APIKeyAuthGroupSnapshot struct {
-	ID                              int64    `json:"id"`
-	Name                            string   `json:"name"`
-	Platform                        string   `json:"platform"`
-	Status                          string   `json:"status"`
-	SubscriptionType                string   `json:"subscription_type"`
-	RateMultiplier                  float64  `json:"rate_multiplier"`
-	PeakRateEnabled                 bool     `json:"peak_rate_enabled"`
-	PeakStart                       string   `json:"peak_start,omitempty"`
-	PeakEnd                         string   `json:"peak_end,omitempty"`
-	PeakRateMultiplier              float64  `json:"peak_rate_multiplier"`
-	DailyLimitUSD                   *float64 `json:"daily_limit_usd,omitempty"`
-	WeeklyLimitUSD                  *float64 `json:"weekly_limit_usd,omitempty"`
-	MonthlyLimitUSD                 *float64 `json:"monthly_limit_usd,omitempty"`
-	AllowImageGeneration            bool     `json:"allow_image_generation"`
-	ImageRateIndependent            bool     `json:"image_rate_independent"`
-	ImageRateMultiplier             float64  `json:"image_rate_multiplier"`
-	ImagePrice1K                    *float64 `json:"image_price_1k,omitempty"`
-	ImagePrice2K                    *float64 `json:"image_price_2k,omitempty"`
-	ImagePrice4K                    *float64 `json:"image_price_4k,omitempty"`
-	VideoRateIndependent            bool     `json:"video_rate_independent"`
-	VideoRateMultiplier             float64  `json:"video_rate_multiplier"`
-	VideoPrice480P                  *float64 `json:"video_price_480p,omitempty"`
-	VideoPrice720P                  *float64 `json:"video_price_720p,omitempty"`
-	VideoPrice1080P                 *float64 `json:"video_price_1080p,omitempty"`
-	WebSearchPricePerCall           *float64 `json:"web_search_price_per_call,omitempty"`
-	ClaudeCodeOnly                  bool     `json:"claude_code_only"`
-	FallbackGroupID                 *int64   `json:"fallback_group_id,omitempty"`
-	FallbackGroupIDOnInvalidRequest *int64   `json:"fallback_group_id_on_invalid_request,omitempty"`
+	ID                                int64    `json:"id"`
+	Name                              string   `json:"name"`
+	Platform                          string   `json:"platform"`
+	IsExclusive                       bool     `json:"is_exclusive"`
+	Status                            string   `json:"status"`
+	SubscriptionType                  string   `json:"subscription_type"`
+	RateMultiplier                    float64  `json:"rate_multiplier"`
+	UpstreamBillingGuardMaxMultiplier *float64 `json:"upstream_billing_guard_max_multiplier,omitempty"`
+	PeakRateEnabled                   bool     `json:"peak_rate_enabled"`
+	PeakStart                         string   `json:"peak_start,omitempty"`
+	PeakEnd                           string   `json:"peak_end,omitempty"`
+	PeakRateMultiplier                float64  `json:"peak_rate_multiplier"`
+	DailyLimitUSD                     *float64 `json:"daily_limit_usd,omitempty"`
+	WeeklyLimitUSD                    *float64 `json:"weekly_limit_usd,omitempty"`
+	MonthlyLimitUSD                   *float64 `json:"monthly_limit_usd,omitempty"`
+	AllowImageGeneration              bool     `json:"allow_image_generation"`
+	AllowBatchImageGeneration         bool     `json:"allow_batch_image_generation"`
+	ImageRateIndependent              bool     `json:"image_rate_independent"`
+	ImageRateMultiplier               float64  `json:"image_rate_multiplier"`
+	ImagePrice1K                      *float64 `json:"image_price_1k,omitempty"`
+	ImagePrice2K                      *float64 `json:"image_price_2k,omitempty"`
+	ImagePrice4K                      *float64 `json:"image_price_4k,omitempty"`
+	BatchImageDiscountMultiplier      float64  `json:"batch_image_discount_multiplier"`
+	BatchImageHoldMultiplier          float64  `json:"batch_image_hold_multiplier"`
+	VideoRateIndependent              bool     `json:"video_rate_independent"`
+	VideoRateMultiplier               float64  `json:"video_rate_multiplier"`
+	VideoPrice480P                    *float64 `json:"video_price_480p,omitempty"`
+	VideoPrice720P                    *float64 `json:"video_price_720p,omitempty"`
+	VideoPrice1080P                   *float64 `json:"video_price_1080p,omitempty"`
+	WebSearchPricePerCall             *float64 `json:"web_search_price_per_call,omitempty"`
+	ClaudeCodeOnly                    bool     `json:"claude_code_only"`
+	FallbackGroupID                   *int64   `json:"fallback_group_id,omitempty"`
+	FallbackGroupIDOnInvalidRequest   *int64   `json:"fallback_group_id_on_invalid_request,omitempty"`
 
 	// Model routing is used by gateway account selection, so it must be part of auth cache snapshot.
 	// Only anthropic groups use these fields; others may leave them empty.
@@ -95,6 +101,8 @@ type APIKeyAuthGroupSnapshot struct {
 
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch              bool                              `json:"allow_messages_dispatch"`
+	RequireOAuthOnly                   bool                              `json:"require_oauth_only"`
+	RequirePrivacySet                  bool                              `json:"require_privacy_set"`
 	DefaultMappedModel                 string                            `json:"default_mapped_model,omitempty"`
 	MessagesDispatchModelConfig        OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
 	ModelsListConfig                   GroupModelsListConfig             `json:"models_list_config,omitempty"`

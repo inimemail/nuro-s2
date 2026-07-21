@@ -27,7 +27,7 @@ func (r *bodyLimitCloseTrackingReadCloser) Close() error {
 }
 
 func TestOpenAIRequestBodyLimitFailoverHTTP413SwitchesAccountsBeforeWrite(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	requestBody := []byte(`{"model":"gpt-5.2","stream":false,"input":"hello"}`)
 
 	for _, passthrough := range []bool{false, true} {
@@ -92,7 +92,7 @@ func TestOpenAIRequestBodyLimitFailoverHTTP413SwitchesAccountsBeforeWrite(t *tes
 }
 
 func TestOpenAIRequestBodyLimitFailoverContextWindow413DoesNotSwitchAccounts(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	requestBody := []byte(`{"model":"gpt-5.2","stream":false,"input":"hello"}`)
 
 	for _, passthrough := range []bool{false, true} {

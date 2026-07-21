@@ -160,7 +160,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	if previousResponseID != "" {
 		logFields = append(logFields,
 			zap.Bool("compat_previous_response_id_attached", true),
-			zap.String("compat_previous_response_id", truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen)),
+			zap.String("compat_previous_response_id_sha256", hashSensitiveValueForLog(previousResponseID)),
 		)
 	}
 	if compatTurnState != "" {
@@ -374,6 +374,41 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
+	// An OAuth account switch can leave Anthropic thinking signatures from the
+	// previous account in the converted Responses input. Retry once on the same
+	// account after removing only the encrypted reasoning item.
+	grokEncryptedContentDirectRetryTried := false
+	if account.Platform == PlatformGrok && resp.StatusCode == http.StatusBadRequest && !grokEncryptedContentStripRetried(ctx) {
+		respBody, readErr := readUpstreamResponseBodyLimited(resp.Body, resolveUpstreamResponseReadLimit(s.cfg))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read Grok encrypted-content error response: %w", readErr)
+		}
+		if isGrokInvalidEncryptedContentResponse(resp.StatusCode, respBody) {
+			retryBody, changed, trimErr := trimGrokInvalidEncryptedContentRetryBody(responsesBody)
+			if trimErr != nil {
+				return nil, fmt.Errorf("prepare Grok encrypted-content retry: %w", trimErr)
+			}
+			if changed {
+				grokEncryptedContentDirectRetryTried = true
+				responsesBody = retryBody
+				retryCtx, releaseRetry := detachUpstreamContext(ctx)
+				upstreamReq, err = buildGrokResponsesRequest(retryCtx, c, account, responsesBody, token, grokCacheIdentity, s.cfg)
+				releaseRetry()
+				if err != nil {
+					return nil, fmt.Errorf("build Grok encrypted-content retry request: %w", err)
+				}
+				resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
+				if err != nil {
+					return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+				}
+			} else {
+				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			}
+		} else {
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		}
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// 8. Handle error response with failover
@@ -393,6 +428,13 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if account.Platform == PlatformGrok && isGrokInvalidEncryptedContentResponse(resp.StatusCode, respBody) &&
+			!grokEncryptedContentDirectRetryTried && !grokEncryptedContentStripRetried(ctx) {
+			if strippedBody, ok := stripAnthropicThinkingSignatures(body); ok {
+				logger.L().Info("openai messages: stripping thinking signatures for Grok retry", zap.Int64("account_id", account.ID))
+				return s.ForwardAsAnthropic(markGrokEncryptedContentStripRetried(ctx), c, account, strippedBody, incomingPromptCacheKey, defaultMappedModel)
+			}
+		}
 		if account.Platform == PlatformGrok {
 			s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 		}
@@ -430,7 +472,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			}
 			logger.L().Info("openai messages: previous_response_id unavailable, retrying without continuation",
 				zap.Int64("account_id", account.ID),
-				zap.String("previous_response_id", truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen)),
+				zap.String("previous_response_id_sha256", hashSensitiveValueForLog(previousResponseID)),
 				zap.String("upstream_model", upstreamModel),
 			)
 			return s.ForwardAsAnthropic(ctx, c, account, body, promptCacheKey, defaultMappedModel)

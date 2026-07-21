@@ -81,6 +81,7 @@ func provideCleanup(
 	opsCleanup *service.OpsCleanupService,
 	opsScheduledReport *service.OpsScheduledReportService,
 	opsSystemLogSink *service.OpsSystemLogSink,
+	opsService *service.OpsService,
 	schedulerSnapshot *service.SchedulerSnapshotService,
 	concurrencyService *service.ConcurrencyService,
 	tokenRefresh *service.TokenRefreshService,
@@ -110,6 +111,9 @@ func provideCleanup(
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	auditLog *service.AuditLogService,
 	promptAudit *securityaudit.Service,
+	authCacheInvalidation *service.AuthCacheInvalidationWorker,
+	ingressRejectAggregator *service.OpsIngressRejectAggregator,
+	apiKeyService *service.APIKeyService,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -122,6 +126,30 @@ func provideCleanup(
 
 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
 		parallelSteps := []cleanupStep{
+			{"OpsIngressRejectAggregator", func() error {
+				if ingressRejectAggregator != nil {
+					ingressRejectAggregator.Stop()
+				}
+				return nil
+			}},
+			{"AuthCacheInvalidationWorker", func() error {
+				if authCacheInvalidation != nil {
+					authCacheInvalidation.Stop()
+				}
+				return nil
+			}},
+			{"AuthCacheInvalidationSubscriber", func() error {
+				if apiKeyService != nil {
+					apiKeyService.StopAuthCacheInvalidationSubscriber()
+				}
+				return nil
+			}},
+			{"OpsRuntimeSettingsRefresh", func() error {
+				if opsService != nil {
+					opsService.StopRuntimeSettingsRefresh()
+				}
+				return nil
+			}},
 			{"PromptAuditService", func() error {
 				if promptAudit != nil {
 					promptAudit.Stop()
@@ -278,7 +306,7 @@ func provideCleanup(
 			}},
 			{"BackupService", func() error {
 				if backupSvc != nil {
-					backupSvc.Stop()
+					backupSvc.StopFast()
 				}
 				return nil
 			}},

@@ -5,14 +5,14 @@ metadata:
 spec:
   template:
     spec:
-      terminationGracePeriodSeconds: 1800
+      terminationGracePeriodSeconds: 45
       containers:
         - name: edge-rs
           env:
             - name: SUB2API_EDGE_STARTUP_JITTER_MAX_MS
               value: "15000"
             - name: SUB2API_EDGE_DRAIN_TIMEOUT_SECS
-              value: "1680"
+              value: "30"
           readinessProbe:
             httpGet:
               path: /readyz
@@ -33,6 +33,8 @@ spec:
           env:
             - name: SUB2API_STARTUP_JITTER_MAX_MS
               value: "15000"
+            - name: SERVER_GRACEFUL_SHUTDOWN_TIMEOUT
+              value: "5"
           readinessProbe:
             httpGet:
               path: /readyz
@@ -49,7 +51,7 @@ spec:
                     wget -q -O /dev/null --post-data=''
                     --header="X-Sub2API-Edge-Secret: ${GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET}"
                     http://127.0.0.1:8080/internal/runtime/drain;
-                    sleep "${GO_CONTROL_DRAIN_HOLD_SECONDS:-1740}"
+                    sleep "${GO_CONTROL_DRAIN_HOLD_SECONDS:-30}"
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

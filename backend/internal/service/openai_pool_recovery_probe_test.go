@@ -976,7 +976,7 @@ func TestAnthropicPoolRecoveryProbe_BedrockPoolUsesBedrockEndpoint(t *testing.T)
 }
 
 func TestAnthropicPoolSoftCooldown_BedrockTransportErrorSoftCooldowns(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	upstream := &openAIPoolProbeHTTPUpstreamRecorder{err: errors.New("dial tcp upstream refused")}
 	svc := &GatewayService{
 		httpUpstream: upstream,

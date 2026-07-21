@@ -1,4 +1,7 @@
+import batchImage from './en/batchImage'
+
 export default {
+  ...batchImage,
   // Home Page
   home: {
     viewOnGithub: 'View on GitHub',
@@ -292,6 +295,9 @@ export default {
     inactive: 'Inactive',
     more: 'More',
     close: 'Close',
+    toggleMenu: 'Toggle menu',
+    userMenu: 'User menu',
+    pageNotFound: 'Page not found',
     enabled: 'Enabled',
     disabled: 'Disabled',
     total: 'Total',
@@ -1537,6 +1543,14 @@ export default {
         testSuccess: 'S3 connection test successful',
         testFailed: 'S3 connection test failed',
         saved: 'S3 configuration saved'
+      },
+      imageStorage: {
+        title: 'Async Image Object Storage',
+        description: 'Store generated images outside Redis. Changes apply immediately without a restart.',
+        enabled: 'Enable async image storage',
+        reuseBackup: 'Reuse backup S3 credentials',
+        publicBaseURL: 'Public base URL (optional)',
+        saved: 'Image storage configuration saved'
       },
       schedule: {
         title: 'Scheduled Backup',
@@ -3862,6 +3876,10 @@ export default {
           official: 'Official API'
         }
       },
+      grokClientToolCache: {
+        title: 'Client tool cache routing',
+        hint: 'Applies only to confirmed Grok Free OAuth accounts. When enabled, client-tool requests may use the cache-capable route; disabling preserves the original tool route.'
+      },
       grokMediaEligibility: {
         title: 'Grok Media Eligibility',
         hint: 'Controls new image/video generation only; chat and existing video task lookups are unaffected. Automatic mode follows authoritative probes, while missing or transient failures preserve existing routing.',
@@ -4490,6 +4508,7 @@ export default {
         passiveSampled: 'Passive',
         activeQuery: 'Query',
         activeQueried: 'Queried',
+        grokFreeQuota24hHint: 'Estimated from local token usage over the rolling 24-hour window ({limit} limit)',
         resetCredits: 'Reset credits'
       },
       tier: {
@@ -5982,7 +6001,14 @@ export default {
           'Choose which client IP is used by API Key allowlists/denylists, admin audit logs, and session IP/UA binding',
         trustForwardedIp: 'Trust forwarded client IP',
         trustForwardedIpHint:
-          'Disabled by default. Enable only when the origin is reachable only through Cloudflare or Nginx reverse proxy. When enabled, API Key IP allowlists/denylists, admin audit logs, and session IP/UA binding use CF-Connecting-IP, X-Real-IP, or X-Forwarded-For, matching the request IP shown in usage records. Toggling this switch changes the IP fingerprint of existing sessions; with session binding enabled they must sign in again.'
+          'Disabled by default. Enable only when the origin is reachable only through a trusted CDN or reverse proxy. When enabled, security checks may use the configured raw client-IP headers. Toggling this switch changes existing session IP fingerprints.',
+        forwardedClientIpHeaders: 'Custom client-IP headers',
+        forwardedClientIpHeadersHint: 'Add CDN or proxy header names to check before the built-in headers.',
+        forwardedClientIpHeadersPlaceholder: 'X-Client-IP',
+        forwardedClientIpHeadersRiskHint: 'Raw forwarded headers can be spoofed when the origin is directly reachable. Restrict origin access before trusting them.',
+        forwardedClientIpHeaderInvalid: 'Enter a valid HTTP header name.',
+        forwardedClientIpHeadersLimit: 'At most {max} custom client-IP headers are allowed.',
+        removeForwardedClientIpHeader: 'Remove {header}'
       },
       linuxdo: {
         title: 'LinuxDo Connect Login',
@@ -7635,6 +7661,7 @@ export default {
       currencyHint: 'Display-only 3-letter ISO code; it does not change billing.',
       subscriptionCnyPayPreviewWithFee: ', {total} after {feeRate}% fee',
       validityDays: 'Validity (days)',
+      validity: 'Validity',
       validityUnit: 'Validity Unit',
       sortOrder: 'Sort Order',
       forSale: 'For Sale',
@@ -7673,6 +7700,7 @@ export default {
       groupRequired: 'Please select a subscription group',
       priceRequired: 'Price must be greater than 0',
       validityDaysRequired: 'Validity days must be greater than 0',
+      validityRequired: 'Validity must be greater than 0',
       groupMissing: 'Missing',
       groupInfo: 'Group Info',
       platform: 'Platform',

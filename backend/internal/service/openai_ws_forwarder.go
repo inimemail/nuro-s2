@@ -290,6 +290,12 @@ func truncateOpenAIWSLogValue(value string, maxLen int) string {
 	if normalized == "-" || maxLen <= 0 {
 		return normalized
 	}
+	// Values using the ID limit are connection, request, response, or
+	// continuation identifiers. Keep them correlatable without persisting the
+	// raw client/upstream identifier in logs.
+	if maxLen == openAIWSIDValueMaxLen {
+		return hashSensitiveValueForLog(normalized)
+	}
 	if len(normalized) <= maxLen {
 		return normalized
 	}
@@ -299,6 +305,13 @@ func truncateOpenAIWSLogValue(value string, maxLen int) string {
 func openAIWSHeaderValueForLog(headers http.Header, key string) string {
 	if headers == nil {
 		return "-"
+	}
+	if strings.EqualFold(key, "session_id") || strings.EqualFold(key, "conversation_id") {
+		value := strings.TrimSpace(headers.Get(key))
+		if value == "" {
+			return "-"
+		}
+		return hashSensitiveValueForLog(value)
 	}
 	return truncateOpenAIWSLogValue(headers.Get(key), openAIWSHeaderValueMaxLen)
 }
@@ -1999,7 +2012,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		normalizeOpenAIWSLogValue(string(decision.Transport)),
 		truncateOpenAIWSLogValue(preferredConnID, openAIWSIDValueMaxLen),
 		previousResponseID != "",
-		truncateOpenAIWSLogValue(sessionHash, 12),
+		hashSensitiveValueForLog(sessionHash),
 		turnState != "",
 		len(turnState),
 		turnMetadata != "",
@@ -2109,7 +2122,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			truncateOpenAIWSLogValue(preferredConnID, openAIWSIDValueMaxLen),
 			lease.Reused(),
 			storeDisabled,
-			truncateOpenAIWSLogValue(sessionHash, 12),
+			hashSensitiveValueForLog(sessionHash),
 			openAIWSHeaderValueForLog(wsHeaders, "session_id"),
 			openAIWSHeaderValueForLog(wsHeaders, "conversation_id"),
 			normalizeOpenAIWSLogValue(sessionResolution.SessionSource),
@@ -2446,7 +2459,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 					reqStream,
 					storeDisabled,
 					lease.Reused(),
-					truncateOpenAIWSLogValue(sessionHash, 12),
+					hashSensitiveValueForLog(sessionHash),
 					openAIWSHeaderValueForLog(wsHeaders, "session_id"),
 					openAIWSHeaderValueForLog(wsHeaders, "conversation_id"),
 					normalizeOpenAIWSLogValue(sessionResolution.SessionSource),
@@ -3200,7 +3213,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			truncateOpenAIWSLogValue(firstPayload.previousResponseID, openAIWSIDValueMaxLen),
 			normalizeOpenAIWSLogValue(firstPreviousResponseIDKind),
 			truncateOpenAIWSLogValue(preferredConnID, openAIWSIDValueMaxLen),
-			truncateOpenAIWSLogValue(sessionHash, 12),
+			hashSensitiveValueForLog(sessionHash),
 			openAIWSHeaderValueForLog(baseAcquireReq.Headers, "session_id"),
 			openAIWSHeaderValueForLog(baseAcquireReq.Headers, "conversation_id"),
 			turnState != "",

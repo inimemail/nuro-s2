@@ -616,10 +616,11 @@ SUB2API_EDGE_INTERNAL_SECRET=${secret}
 SUB2API_EDGE_NODE_ID=sub2api-edge-rs
 SUB2API_EDGE_PREPARE_TIMEOUT_MS=1500
 SUB2API_EDGE_COMPLETE_TIMEOUT_MS=1500
-SUB2API_EDGE_DRAIN_TIMEOUT_SECS=1800
+SUB2API_EDGE_DRAIN_TIMEOUT_SECS=30
 SUB2API_EDGE_INITIAL_POOL_SIZE=512
 SUB2API_EDGE_QUEUE_BUFFER_SIZE=512
 SUB2API_EDGE_QUEUE_MAX_BYTES=268435456
+SUB2API_EDGE_MAX_HEADER_BYTES=65536
 SUB2API_EDGE_INGRESS_BODY_MAX_BYTES=2147483648
 SUB2API_EDGE_GLOBAL_WORKERS=512
 SUB2API_EDGE_PER_ACCOUNT_WORKERS=128
@@ -688,10 +689,57 @@ download_edge_binary() {
     [ -f "$temp_dir/sub2api-edge-rs" ]
 }
 
+github_api_curl() {
+    local arg
+    local expect_value=false
+    local url
+
+    if [ "$#" -lt 1 ]; then
+        echo "github_api_curl requires exactly one GitHub API URL" >&2
+        return 2
+    fi
+    url="${!#}"
+
+    # Keep authenticated invocations constrained to the options used below. In
+    # particular, curl config, --url, and --next could add another destination.
+    for arg in "${@:1:$#-1}"; do
+        if [ "$expect_value" = true ]; then
+            expect_value=false
+            continue
+        fi
+        case "$arg" in
+            -s|--silent)
+                ;;
+            --connect-timeout|--max-time|-o|--output|-w|--write-out)
+                expect_value=true
+                ;;
+            *)
+                echo "Unsafe github_api_curl argument: $arg" >&2
+                return 2
+                ;;
+        esac
+    done
+
+    if [ "$expect_value" = true ] || [[ "$url" != https://api.github.com/* ]]; then
+        echo "github_api_curl requires exactly one GitHub API URL" >&2
+        return 2
+    fi
+
+    if [ -n "${UPDATE_GITHUB_TOKEN:-}" ]; then
+        if [[ "$UPDATE_GITHUB_TOKEN" == *$'\n'* || "$UPDATE_GITHUB_TOKEN" == *$'\r'* || "$UPDATE_GITHUB_TOKEN" == *'"'* || "$UPDATE_GITHUB_TOKEN" == *'\'* ]]; then
+            echo "UPDATE_GITHUB_TOKEN contains unsupported characters" >&2
+            return 2
+        fi
+        printf 'header = "Authorization: Bearer %s"\n' "$UPDATE_GITHUB_TOKEN" | UPDATE_GITHUB_TOKEN= GITHUB_TOKEN= GH_TOKEN= curl -q --globoff --config - "$@"
+    else
+        UPDATE_GITHUB_TOKEN= GITHUB_TOKEN= GH_TOKEN= curl -q --globoff "$@"
+    fi
+}
+
 # Get latest release version
 get_latest_version() {
     print_info "$(msg 'fetching_version')"
-    LATEST_VERSION=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    LATEST_VERSION=$(github_api_curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
 
     if [ -z "$LATEST_VERSION" ]; then
         print_error "$(msg 'failed_get_version')"
@@ -707,7 +755,7 @@ list_versions() {
     print_info "$(msg 'fetching_versions')"
 
     local versions
-    versions=$(curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' | head -20)
+    versions=$(github_api_curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' | head -20)
 
     if [ -z "$versions" ]; then
         print_error "$(msg 'failed_get_version')"
@@ -744,7 +792,7 @@ validate_version() {
 
     # Check if the release exists
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${version}" 2>/dev/null)
+    http_code=$(github_api_curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${version}" 2>/dev/null)
 
     # Check for network errors (empty or non-numeric response)
     if [ -z "$http_code" ] || ! [[ "$http_code" =~ ^[0-9]+$ ]]; then
@@ -922,7 +970,11 @@ ReadWritePaths=/opt/sub2api
 Environment=GIN_MODE=release
 Environment=SERVER_HOST=${SERVER_HOST}
 Environment=SERVER_PORT=${SERVER_PORT}
+Environment=SERVER_READ_HEADER_TIMEOUT=10
+Environment=SERVER_MAX_HEADER_BYTES=65536
+Environment=SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=5
 EnvironmentFile=-/opt/sub2api/edge-rs.env
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target
@@ -940,25 +992,45 @@ ensure_main_service_edge_env() {
         install_service
         return 0
     fi
-    if grep -q '^EnvironmentFile=-/opt/sub2api/edge-rs.env$' "$service_file"; then
-        systemctl daemon-reload
-        return 0
-    fi
 
     local tmp_file
+    local add_edge_env=1
+    local add_read_header_timeout=1
+    local add_max_header_bytes=1
+    local add_graceful_shutdown_timeout=1
+    local add_timeout_stop=1
+    grep -q 'edge-rs\.env' "$service_file" && add_edge_env=0
+    grep -q 'SERVER_READ_HEADER_TIMEOUT=' "$service_file" && add_read_header_timeout=0
+    grep -q 'SERVER_MAX_HEADER_BYTES=' "$service_file" && add_max_header_bytes=0
+    grep -q 'SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=' "$service_file" && add_graceful_shutdown_timeout=0
+    grep -Eq '^[[:space:]]*TimeoutStopSec[[:space:]]*=' "$service_file" && add_timeout_stop=0
+
     tmp_file=$(mktemp)
-    awk '
+    awk \
+        -v add_edge_env="$add_edge_env" \
+        -v add_read_header_timeout="$add_read_header_timeout" \
+        -v add_max_header_bytes="$add_max_header_bytes" \
+        -v add_graceful_shutdown_timeout="$add_graceful_shutdown_timeout" \
+        -v add_timeout_stop="$add_timeout_stop" '
         BEGIN { in_service = 0; added = 0 }
         /^\[Service\]$/ { in_service = 1; print; next }
         /^\[/ && in_service && !added {
-            print "EnvironmentFile=-/opt/sub2api/edge-rs.env"
+            if (add_edge_env) print "EnvironmentFile=-/opt/sub2api/edge-rs.env"
+            if (add_read_header_timeout) print "Environment=SERVER_READ_HEADER_TIMEOUT=10"
+            if (add_max_header_bytes) print "Environment=SERVER_MAX_HEADER_BYTES=65536"
+            if (add_graceful_shutdown_timeout) print "Environment=SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=5"
+            if (add_timeout_stop) print "TimeoutStopSec=15"
             added = 1
             in_service = 0
         }
         { print }
         END {
             if (in_service && !added) {
-                print "EnvironmentFile=-/opt/sub2api/edge-rs.env"
+                if (add_edge_env) print "EnvironmentFile=-/opt/sub2api/edge-rs.env"
+                if (add_read_header_timeout) print "Environment=SERVER_READ_HEADER_TIMEOUT=10"
+                if (add_max_header_bytes) print "Environment=SERVER_MAX_HEADER_BYTES=65536"
+                if (add_graceful_shutdown_timeout) print "Environment=SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=5"
+                if (add_timeout_stop) print "TimeoutStopSec=15"
             }
         }
     ' "$service_file" > "$tmp_file"
@@ -987,6 +1059,7 @@ Description=Sub2API OpenAI Rust Edge Data Plane
 Documentation=https://github.com/Wei-Shaw/sub2api
 After=network.target sub2api.service
 Wants=sub2api.service
+PartOf=sub2api.service
 
 [Service]
 Type=simple
@@ -997,6 +1070,7 @@ EnvironmentFile=/opt/sub2api/edge-rs.env
 ExecStart=/opt/sub2api/sub2api-edge-rs
 Restart=always
 RestartSec=3
+TimeoutStopSec=35
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sub2api-edge-rs

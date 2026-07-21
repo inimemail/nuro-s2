@@ -1,8 +1,18 @@
+{
+	servers {
+		max_header_size 64KB
+		timeouts {
+			read_header 10s
+			idle 2m
+		}
+	}
+}
+
 # 修改为你的域名
 api.sub2api.com {
 	# Metrics are scraped from the private Kubernetes Service, never exposed via
 	# the public API hostname.
-	@private_runtime path /metrics /internal/*
+	@private_runtime path /metrics /internal /internal/*
 	respond @private_runtime 404
 
         # =========================================================================

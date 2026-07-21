@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicfp"
@@ -306,13 +307,7 @@ func parseDebugEnvBool(raw string) bool {
 }
 
 func shortSessionHash(sessionHash string) string {
-	if sessionHash == "" {
-		return ""
-	}
-	if len(sessionHash) <= 8 {
-		return sessionHash
-	}
-	return sessionHash[:8]
+	return hashSensitiveValueForLog(sessionHash)
 }
 
 func redactAuthHeaderValue(v string) string {
@@ -888,14 +883,14 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 		if uid != nil && uid.SessionID != "" {
 			slog.Info("sticky.hash_source",
 				"source", "metadata_user_id",
-				"session_id", uid.SessionID,
-				"device_id", uid.DeviceID,
+				"session_id_sha256", hashSensitiveValueForLog(uid.SessionID),
+				"device_id_sha256", hashSensitiveValueForLog(uid.DeviceID),
 				"is_new_format", uid.IsNewFormat,
 			)
 			return uid.SessionID
 		}
 		slog.Info("sticky.hash_metadata_parse_failed",
-			"metadata_user_id", parsed.MetadataUserID,
+			"metadata_user_id_sha256", hashSensitiveValueForLog(parsed.MetadataUserID),
 			"parsed_nil", uid == nil,
 		)
 	}
@@ -3405,6 +3400,29 @@ func filterByNonPoolModeIfPresent(accounts []accountWithLoad) []accountWithLoad 
 	return result
 }
 
+func filterByKnownLoadInfoIfPresent(accounts []accountWithLoad) []accountWithLoad {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	hasKnown := false
+	for _, candidate := range accounts {
+		if !candidate.loadInfoMissing {
+			hasKnown = true
+			break
+		}
+	}
+	if !hasKnown {
+		return accounts
+	}
+	result := make([]accountWithLoad, 0, len(accounts))
+	for _, candidate := range accounts {
+		if !candidate.loadInfoMissing {
+			result = append(result, candidate)
+		}
+	}
+	return result
+}
+
 // filterByMinLoadRate 过滤出负载率最低的账号集合
 func filterByMinLoadRate(accounts []accountWithLoad) []accountWithLoad {
 	if len(accounts) == 0 {
@@ -3624,6 +3642,9 @@ func selectLayeredAccountWithLoad(accounts []accountWithLoad, healthStats *accou
 	if cfg.PreferSoonestReset {
 		candidates = filterBySoonestReset(candidates, now)
 	}
+	// Do not treat a missing load sample as an idle account. Within the
+	// remaining health layer, preserve the existing LRU selection semantics.
+	candidates = filterByKnownLoadInfoIfPresent(candidates)
 	return selectByLRU(candidates, preferOAuth)
 }
 
@@ -4118,7 +4139,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		if selected != nil {
 			if sessionHash != "" && s.cache != nil {
 				if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
-					logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
+					logger.LegacyPrintf("service.gateway", "set session account failed: session_sha256=%s account_id=%d err=%v", shortSessionHash(sessionHash), selected.ID, err)
 				}
 			}
 			s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected)
@@ -4237,7 +4258,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 	// 4. 建立粘性绑定
 	if sessionHash != "" && s.cache != nil {
 		if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
-			logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
+			logger.LegacyPrintf("service.gateway", "set session account failed: session_sha256=%s account_id=%d err=%v", shortSessionHash(sessionHash), selected.ID, err)
 		}
 	}
 	s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected)
@@ -4385,7 +4406,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		if selected != nil {
 			if sessionHash != "" && s.cache != nil {
 				if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
-					logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
+					logger.LegacyPrintf("service.gateway", "set session account failed: session_sha256=%s account_id=%d err=%v", shortSessionHash(sessionHash), selected.ID, err)
 				}
 			}
 			s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected)
@@ -4505,7 +4526,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 	// 4. 建立粘性绑定
 	if sessionHash != "" && s.cache != nil {
 		if err := s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, selected.ID, stickySessionTTL); err != nil {
-			logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
+			logger.LegacyPrintf("service.gateway", "set session account failed: session_sha256=%s account_id=%d err=%v", shortSessionHash(sessionHash), selected.ID, err)
 		}
 	}
 	s.bindAnthropicCacheAffinitySessionForAccount(ctx, groupID, selected)
@@ -8354,10 +8375,22 @@ func truncateForLog(b []byte, maxBytes int) string {
 	if maxBytes <= 0 {
 		maxBytes = 2048
 	}
-	if len(b) > maxBytes {
-		b = b[:maxBytes]
+	raw := strings.TrimSpace(string(b))
+	if raw == "" {
+		return ""
 	}
-	s := string(b)
+	// Error bodies are diagnostic input, not trusted log content. Redact
+	// credential-shaped fields before truncating so a token cannot be exposed
+	// by being cut after its prefix; then apply the common upstream identity
+	// policy to remove URLs, provider names, IPs, and HTML pages.
+	redacted, _ := sanitizeErrorBodyForStorage(raw, len(raw)+1)
+	s := sanitizeUpstreamErrorMessage(redacted)
+	if len(s) > maxBytes {
+		s = s[:maxBytes]
+		for len(s) > 0 && !utf8.ValidString(s) {
+			s = s[:len(s)-1]
+		}
+	}
 	// 保持一行，避免污染日志格式
 	s = strings.ReplaceAll(s, "\n", "\\n")
 	s = strings.ReplaceAll(s, "\r", "\\r")

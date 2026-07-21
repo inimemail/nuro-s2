@@ -16,7 +16,7 @@ import (
 )
 
 func TestForwardAlphaSearchOAuthPreservesWire(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{
 		"id":"search-session",
 		"model":"gpt-5.6-sol",
@@ -71,7 +71,7 @@ func TestForwardAlphaSearchOAuthPreservesWire(t *testing.T) {
 }
 
 func TestForwardAlphaSearchUsesCustomAPIKeyUpstream(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"id":"search-session","model":"gpt-5.6-sol","commands":{"search_query":[{"q":"news"}]}}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -144,7 +144,7 @@ func TestAlphaSearchCapabilityAllowsCustomUpstreamBeforeSchedulerAcquire(t *test
 }
 
 func TestForwardAlphaSearchUnsafeCustomURLFailsOverWithoutLeakingURL(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"model":"gpt-5.6-sol","commands":{}}`)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/alpha/search", bytes.NewReader(body))
@@ -166,7 +166,7 @@ func TestForwardAlphaSearchUnsafeCustomURLFailsOverWithoutLeakingURL(t *testing.
 }
 
 func TestForwardAlphaSearchReturnsFailoverBeforeWriting(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"id":"search-session","model":"gpt-5.6-sol","commands":{}}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -205,7 +205,7 @@ func TestForwardAlphaSearchReturnsFailoverBeforeWriting(t *testing.T) {
 }
 
 func TestForwardAlphaSearchRejectsHTMLSuccessWithoutExposingIt(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"model":"gpt-5.6-sol","commands":{}}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -233,7 +233,7 @@ func TestForwardAlphaSearchRejectsHTMLSuccessWithoutExposingIt(t *testing.T) {
 }
 
 func TestForwardAlphaSearchRejectsDiagnosticSuccessObject(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"model":"gpt-5.6-sol","commands":{}}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -257,7 +257,7 @@ func TestForwardAlphaSearchRejectsDiagnosticSuccessObject(t *testing.T) {
 }
 
 func TestForwardAlphaSearchRejectsEmptySuccessObjectWithoutBilling(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	body := []byte(`{"model":"gpt-5.6-sol","commands":{}}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)

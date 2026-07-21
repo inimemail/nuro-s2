@@ -1,4 +1,7 @@
+import batchImage from './zh/batchImage'
+
 export default {
+  ...batchImage,
   // Home Page
   home: {
     viewOnGithub: '在 GitHub 上查看',
@@ -292,6 +295,9 @@ export default {
     inactive: '禁用',
     more: '更多',
     close: '关闭',
+    toggleMenu: '切换菜单',
+    userMenu: '用户菜单',
+    pageNotFound: '页面未找到',
     enabled: '已启用',
     disabled: '已禁用',
     total: '总计',
@@ -1558,6 +1564,14 @@ export default {
         testSuccess: 'S3 连接测试成功',
         testFailed: 'S3 连接测试失败',
         saved: 'S3 配置已保存'
+      },
+      imageStorage: {
+        title: '异步生图对象存储',
+        description: '将生成图片存到 Redis 之外，保存后立即生效，无需重启。',
+        enabled: '启用异步生图存储',
+        reuseBackup: '复用备份 S3 凭证',
+        publicBaseURL: '公开访问地址（可选）',
+        saved: '图片存储配置已保存'
       },
       schedule: {
         title: '定时备份',
@@ -3561,6 +3575,7 @@ export default {
         passiveSampled: '被动采样',
         activeQuery: '查询',
         activeQueried: '已主动查询',
+        grokFreeQuota24hHint: '按滚动 24 小时本地 Token 用量估算（限额 {limit}）',
         resetCredits: '重置次数'
       },
       tier: {
@@ -3994,6 +4009,10 @@ export default {
           cli: 'Grok Build CLI',
           official: '官方 API'
         }
+      },
+      grokClientToolCache: {
+        title: '客户端工具缓存路由',
+        hint: '仅对已确认的 Grok Free OAuth 账号生效。开启后，客户端工具请求可使用缓存路由；关闭时保持原始工具语义。'
       },
       grokMediaEligibility: {
         title: 'Grok 媒体调度资格',
@@ -6132,7 +6151,14 @@ export default {
         description: '控制 API Key 白/黑名单、操作审计日志与会话 IP/UA 绑定使用哪个客户端 IP 判断',
         trustForwardedIp: '信任反代传递的客户端 IP',
         trustForwardedIpHint:
-          '默认关闭。仅在源站只允许 Cloudflare 或 Nginx 反代访问时开启；开启后 API Key IP 白/黑名单、操作审计日志与会话 IP/UA 绑定会使用 CF-Connecting-IP、X-Real-IP 或 X-Forwarded-For，与使用记录中的请求 IP 保持一致。切换本开关会改变已登录会话的 IP 指纹，开启会话绑定时现有会话需重新登录。'
+          '默认关闭。仅在源站只允许可信 CDN 或反代访问时开启；开启后安全校验可使用配置的原始客户端 IP 请求头。切换本开关会改变现有会话的 IP 指纹。',
+        forwardedClientIpHeaders: '自定义客户端 IP 请求头',
+        forwardedClientIpHeadersHint: '添加 CDN 或反代请求头名称，解析时优先于内置请求头。',
+        forwardedClientIpHeadersPlaceholder: 'X-Client-IP',
+        forwardedClientIpHeadersRiskHint: '源站可被直接访问时，这些原始请求头可被伪造；请先限制源站访问再信任它们。',
+        forwardedClientIpHeaderInvalid: '请输入有效的 HTTP 请求头名称。',
+        forwardedClientIpHeadersLimit: '自定义客户端 IP 请求头最多允许 {max} 个。',
+        removeForwardedClientIpHeader: '移除 {header}'
       },
       linuxdo: {
         title: 'LinuxDo Connect 登录',
@@ -7804,6 +7830,7 @@ export default {
       currencyHint: '仅用于展示的 ISO 三字母币种码，不改变实际扣款。',
       subscriptionCnyPayPreviewWithFee: '，含 {feeRate}% 手续费后 {total}',
       validityDays: '有效期（天）',
+      validity: '有效期',
       validityUnit: '有效期单位',
       sortOrder: '排序',
       forSale: '上架状态',
@@ -7842,6 +7869,7 @@ export default {
       groupRequired: '请选择订阅分组',
       priceRequired: '价格必须大于 0',
       validityDaysRequired: '有效期天数必须大于 0',
+      validityRequired: '有效期必须大于 0',
       groupMissing: '缺失',
       groupInfo: '分组信息',
       platform: '平台',

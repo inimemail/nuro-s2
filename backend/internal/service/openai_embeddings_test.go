@@ -38,7 +38,7 @@ func TestBuildOpenAIEmbeddingsURL(t *testing.T) {
 }
 
 func TestForwardEmbeddings_APIKeyPassthroughRecordsUsageAndBatchInput(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 
 	reqBody := []byte(`{
 		"model":"nowledge-embedding",
@@ -106,7 +106,7 @@ func TestForwardEmbeddings_APIKeyPassthroughRecordsUsageAndBatchInput(t *testing
 }
 
 func TestForwardEmbeddingsRejectsHTMLSuccessWithoutExposingIt(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	reqBody := []byte(`{"model":"text-embedding-3-small","input":"hello"}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)

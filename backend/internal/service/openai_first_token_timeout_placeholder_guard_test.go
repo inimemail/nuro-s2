@@ -44,9 +44,12 @@ func (h *openAIFirstTokenPlaceholderGuardReadHook) ProcessPipelineHook(next redi
 func newOpenAIFirstTokenPlaceholderGuardTestService(t *testing.T, address string) *OpenAIGatewayService {
 	t.Helper()
 	client := redis.NewClient(&redis.Options{Addr: address})
-	t.Cleanup(func() { _ = client.Close() })
 	svc := &OpenAIGatewayService{}
 	svc.SetOpenAIFirstTokenTimeoutPlaceholderGuardRedisClient(client)
+	t.Cleanup(func() {
+		svc.CloseOpenAIWSPool()
+		_ = client.Close()
+	})
 	return svc
 }
 
@@ -72,10 +75,14 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardRecoversAfterOneFastSample
 
 	require.Equal(t, 100, first.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
 	first.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 20000)
-	require.Zero(t, second.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+	require.Eventually(t, func() bool {
+		return second.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4") == 0
+	}, 3*time.Second, 10*time.Millisecond)
 
 	second.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 800)
-	require.Equal(t, 100, first.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+	require.Eventually(t, func() bool {
+		return first.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4") == 100
+	}, 3*time.Second, 10*time.Millisecond)
 }
 
 func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardRetriesLatestFailedSample(t *testing.T) {
@@ -108,7 +115,9 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardRecoversPersistentRetryAcr
 	second.openaiFirstTokenTimeoutPlaceholderGuard.retryOutbox = &openAIFirstTokenTimeoutPlaceholderGuardOutbox{db: db}
 
 	first.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 20000, 100)
-	require.Zero(t, second.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+	require.Eventually(t, func() bool {
+		return second.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4") == 0
+	}, 3*time.Second, 10*time.Millisecond)
 
 	mock.ExpectExec("INSERT INTO openai_first_token_guard_outbox").
 		WithArgs(sqlmock.AnyArg(), openAIFirstTokenTimeoutPlaceholderGuardKey(1, "gpt-5.4"), 800, int64(200)).
@@ -152,6 +161,23 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardRejectsOlderRetry(t *testi
 	require.True(t, guard.allow(1, "gpt-5.4", 3000))
 }
 
+func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardReconcilesRejectedLocalSample(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	key := openAIFirstTokenTimeoutPlaceholderGuardKey(1, "gpt-5.4")
+	writer := &openAIFirstTokenTimeoutPlaceholderGuard{redisClient: client}
+	t.Cleanup(writer.stop)
+	require.NoError(t, writer.writeSample(openAIFirstTokenTimeoutPlaceholderGuardSample{
+		key: key, realTokenMS: 800, recordedAt: 200,
+	}))
+
+	reader := &openAIFirstTokenTimeoutPlaceholderGuard{redisClient: client}
+	t.Cleanup(reader.stop)
+	reader.record(1, "gpt-5.4", 20000, 3000, 100)
+	require.True(t, reader.allow(1, "gpt-5.4", 3000))
+}
+
 func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardUsesProvidedCompletionTime(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	svc := newOpenAIFirstTokenPlaceholderGuardTestService(t, redisServer.Addr())
@@ -162,12 +188,18 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardUsesProvidedCompletionTime
 	require.Equal(t, 100, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
 }
 
-func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardCoalescesConcurrentReads(t *testing.T) {
+func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardHotPathDoesNotReadRedis(t *testing.T) {
 	redisServer := miniredis.RunT(t)
-	svc := newOpenAIFirstTokenPlaceholderGuardTestService(t, redisServer.Addr())
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	svc := &OpenAIGatewayService{}
+	svc.openaiFirstTokenTimeoutPlaceholderGuard.redisClient = client
+	t.Cleanup(svc.CloseOpenAIWSPool)
 	account := openAIFirstTokenPlaceholderGuardTestAccount()
 	hook := &openAIFirstTokenPlaceholderGuardReadHook{delay: 10 * time.Millisecond}
-	svc.openaiFirstTokenTimeoutPlaceholderGuard.redisClient.AddHook(hook)
+	client.AddHook(hook)
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 800)
+	getCallsBefore := hook.getCalls.Load()
 
 	const readers = 64
 	start := make(chan struct{})
@@ -188,7 +220,7 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardCoalescesConcurrentReads(t
 		require.Equal(t, 100, result)
 	}
 
-	require.LessOrEqual(t, hook.getCalls.Load(), int64(2))
+	require.Equal(t, getCallsBefore, hook.getCalls.Load())
 }
 
 func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardIsScopedByAccountAndModel(t *testing.T) {
@@ -220,12 +252,21 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardUsesCurrentAccountThreshol
 
 func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardExpiresAndFailsOpen(t *testing.T) {
 	redisServer := miniredis.RunT(t)
-	svc := newOpenAIFirstTokenPlaceholderGuardTestService(t, redisServer.Addr())
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	svc := &OpenAIGatewayService{}
+	svc.openaiFirstTokenTimeoutPlaceholderGuard.redisClient = client
+	t.Cleanup(svc.CloseOpenAIWSPool)
 	account := openAIFirstTokenPlaceholderGuardTestAccount()
 
 	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 20000)
 	require.Zero(t, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
-	redisServer.FastForward(openAIFirstTokenTimeoutPlaceholderGuardStateTTL + time.Second)
+	key := openAIFirstTokenTimeoutPlaceholderGuardKey(account.ID, "gpt-5.4")
+	svc.openaiFirstTokenTimeoutPlaceholderGuard.localMu.Lock()
+	sample := svc.openaiFirstTokenTimeoutPlaceholderGuard.localSamples[key]
+	sample.expiresAt = time.Now().Add(-time.Second).UnixNano()
+	svc.openaiFirstTokenTimeoutPlaceholderGuard.localSamples[key] = sample
+	svc.openaiFirstTokenTimeoutPlaceholderGuard.localMu.Unlock()
 	require.Equal(t, 100, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
 
 	redisServer.Close()

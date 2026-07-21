@@ -580,7 +580,9 @@
         <UsageProgressBar
           v-if="grokFreeTokenBar"
           label="24h"
+          :title="t('admin.accounts.usageWindow.grokFreeQuota24hHint', { limit: formatCompactNumber(grokFreeTokenBar.limit) })"
           :utilization="grokFreeTokenBar.utilization"
+          :show-now-when-idle="true"
           color="emerald"
         />
 
@@ -1783,8 +1785,11 @@ const grokIsFree = computed(() => {
 const grokFreeTokenBar = computed(() => {
   const stats = usageInfo.value?.grok_local_usage_24h
   if (!grokIsFree.value || !stats) return null
+  const limit = usageInfo.value?.grok_free_token_limit
+  if (typeof limit !== 'number' || limit <= 0) return null
   return {
-    utilization: Math.min(100, Math.max(0, (stats.tokens / 2_000_000) * 100)),
+    utilization: Math.min(100, Math.max(0, (stats.tokens / limit) * 100)),
+    limit,
     resetsAt: null
   }
 })

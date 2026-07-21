@@ -75,7 +75,10 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
-	if classifyOpenAITransportError(err).Persistent {
+	// Pool accounts use their assignment/lease retry path. A transient or
+	// transport failure must not write account-level temporary unschedulable
+	// state that removes the whole pool from scheduling.
+	if classifyOpenAITransportError(err).Persistent && !account.IsPoolMode() {
 		s.tempUnscheduleOpenAITransportError(ctx, account, safeErr)
 	}
 	return &UpstreamFailoverError{
@@ -86,6 +89,9 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 
 func (s *OpenAIGatewayService) tempUnscheduleOpenAITransportError(ctx context.Context, account *Account, safeErr string) {
 	if s == nil || account == nil {
+		return
+	}
+	if account.IsPoolMode() {
 		return
 	}
 	until := time.Now().Add(openAITransportErrorTempUnschedDuration)

@@ -24,8 +24,10 @@ const (
 
 var (
 	errGrokOAuthRefreshNotConfigured = errors.New("grok oauth refresh is not configured")
+	errGrokOAuthRefreshTokenMissing  = errors.New("grok oauth refresh token is missing")
 	errGrokOAuthAccessTokenMissing   = errors.New("grok oauth access token is missing")
 	errGrokOAuthAccessTokenExpired   = errors.New("grok oauth access token is expired")
+	errGrokOAuthConfiguredProxyMiss  = errors.New("grok oauth configured proxy is missing")
 )
 
 type GrokTokenCache = GeminiTokenCache
@@ -80,6 +82,73 @@ func (p *GrokTokenProvider) GetAccessToken(ctx context.Context, account *Account
 // dynamically cooled-down account while retaining all static account guards.
 func (p *GrokTokenProvider) GetAccessTokenForProbe(ctx context.Context, account *Account) (string, error) {
 	return p.getAccessToken(ctx, account, isEligibleGrokOAuthProbeAccount)
+}
+
+// GetAccessTokenForManualTest bypasses production scheduling eligibility for
+// an administrator's explicit connection test. It never changes scheduling
+// state, while proxy and credential integrity checks still apply.
+func (p *GrokTokenProvider) GetAccessTokenForManualTest(ctx context.Context, account *Account) (string, error) {
+	if account == nil {
+		return "", errors.New("account is nil")
+	}
+	if !account.IsGrokOAuth() {
+		return "", errors.New("not a grok oauth account")
+	}
+	if account.ProxyID != nil && account.Proxy == nil {
+		return "", errGrokOAuthConfiguredProxyMiss
+	}
+
+	accessToken := strings.TrimSpace(account.GetGrokAccessToken())
+	expiresAt := account.GetCredentialAsTime("expires_at")
+	tokenValid := accessToken != "" && expiresAt != nil && time.Now().Before(*expiresAt)
+	if tokenValid && time.Until(*expiresAt) > grokTokenRefreshSkew {
+		return accessToken, nil
+	}
+
+	// SSO imports may intentionally contain a non-renewable access token. Keep
+	// that local behavior usable until its real expiry.
+	if strings.TrimSpace(account.GetGrokRefreshToken()) == "" {
+		if tokenValid {
+			return accessToken, nil
+		}
+		return "", errGrokOAuthRefreshTokenMissing
+	}
+	if p.refreshAPI == nil || p.executor == nil {
+		if tokenValid {
+			return accessToken, nil
+		}
+		return "", errGrokOAuthRefreshNotConfigured
+	}
+
+	// Do not mark this as a production request-path refresh: that marker
+	// intentionally re-applies scheduler eligibility inside RefreshIfNeeded.
+	refreshCtx, cancel := context.WithTimeout(ctx, grokRequestRefreshTimeout)
+	defer cancel()
+	result, err := p.refreshAPI.RefreshIfNeeded(refreshCtx, account, p.executor, grokTokenRefreshSkew)
+	if err != nil {
+		if tokenValid {
+			return accessToken, nil
+		}
+		return "", err
+	}
+	if result != nil && result.LockHeld {
+		if tokenValid {
+			return accessToken, nil
+		}
+		return "", errors.New("token refresh is already in progress on another worker; retry in a few seconds")
+	}
+	if result != nil && result.Account != nil {
+		account = result.Account
+	}
+
+	accessToken = strings.TrimSpace(account.GetGrokAccessToken())
+	if accessToken == "" {
+		return "", errGrokOAuthAccessTokenMissing
+	}
+	if latestExpiry := account.GetCredentialAsTime("expires_at"); latestExpiry != nil && !time.Now().Before(*latestExpiry) {
+		return "", errGrokOAuthAccessTokenExpired
+	}
+	return accessToken, nil
 }
 
 func (p *GrokTokenProvider) getAccessToken(

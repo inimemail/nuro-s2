@@ -16,7 +16,7 @@ import (
 type upstreamContextTestKey string
 
 func TestGatewayService_StreamingReusesScannerBufferAndStillParsesUsage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			StreamDataIntervalTimeout: 0,

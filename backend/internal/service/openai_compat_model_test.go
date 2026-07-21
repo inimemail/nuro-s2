@@ -32,7 +32,7 @@ var openAICompatGinTestModeOnce sync.Once
 
 func setOpenAICompatGinTestMode() {
 	openAICompatGinTestModeOnce.Do(func() {
-		gin.SetMode(gin.TestMode)
+		setGinTestMode()
 	})
 }
 

@@ -46,6 +46,9 @@ type codexModelsManifestUpstreamError struct {
 	err         error
 	retryable   bool
 	taskInvalid bool
+	statusCode  int
+	headers     http.Header
+	body        []byte
 }
 
 func (e *codexModelsManifestUpstreamError) Error() string { return e.err.Error() }
@@ -339,6 +342,9 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 	}
 	manifest, fetchErr := s.fetchCodexModelsManifestUpstream(ctx, request, ifNoneMatch)
 	var upstreamErr *codexModelsManifestUpstreamError
+	if errors.As(fetchErr, &upstreamErr) && upstreamErr.statusCode == http.StatusUnauthorized && !credAccount.IsOpenAIAgentIdentity() {
+		s.handleOpenAIAccountUpstreamError(ctx, account, upstreamErr.statusCode, upstreamErr.headers, upstreamErr.body)
+	}
 	if !credAccount.IsOpenAIAgentIdentity() || agentIdentityTaskRecoveryWasTried(ctx) ||
 		!errors.As(fetchErr, &upstreamErr) || !upstreamErr.taskInvalid {
 		return manifest, fetchErr
@@ -447,15 +453,18 @@ func (s *OpenAIGatewayService) fetchCodexModelsManifestUpstream(ctx context.Cont
 		return &CodexModelsManifest{ETag: resp.Header.Get("ETag"), NotModified: true}, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		taskInvalid := request.credentialAccount != nil && request.credentialAccount.IsOpenAIAgentIdentity() &&
 			isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body)
 		_ = redactAgentIdentitySensitiveBodyForAccount(reqCtx, s.accountRepo, request.credentialAccount, body)
 		return nil, &codexModelsManifestUpstreamError{
 			err: infraerrors.Newf(http.StatusBadGateway, "OPENAI_CODEX_MODELS_UPSTREAM_FAILED", "Codex models manifest upstream returned status %d", resp.StatusCode),
-			retryable: resp.StatusCode == http.StatusTooManyRequests ||
+			retryable: (resp.StatusCode == http.StatusUnauthorized && !request.useAPIKeyUpstream) || resp.StatusCode == http.StatusTooManyRequests ||
 				(resp.StatusCode >= http.StatusInternalServerError && resp.StatusCode < 600),
 			taskInvalid: taskInvalid,
+			statusCode:  resp.StatusCode,
+			headers:     resp.Header.Clone(),
+			body:        body,
 		}
 	}
 
@@ -466,6 +475,9 @@ func (s *OpenAIGatewayService) fetchCodexModelsManifestUpstream(ctx context.Cont
 			retryable: isRetryableCodexModelsManifestTransportError(err),
 		}
 	}
+	if request.useAPIKeyUpstream {
+		body = convertOpenAIModelListToCodexManifest(body)
+	}
 	if err := validateCodexModelsManifestEnvelope(body); err != nil {
 		return nil, &codexModelsManifestUpstreamError{
 			err:       infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_INVALID_RESPONSE", "Codex models manifest response is invalid"),
@@ -473,6 +485,40 @@ func (s *OpenAIGatewayService) fetchCodexModelsManifestUpstream(ctx context.Cont
 		}
 	}
 	return &CodexModelsManifest{Body: body, ETag: resp.Header.Get("ETag")}, nil
+}
+
+func convertOpenAIModelListToCodexManifest(body []byte) []byte {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope == nil {
+		return body
+	}
+	if _, ok := envelope["models"]; ok {
+		return body
+	}
+	raw, ok := envelope["data"]
+	if !ok {
+		return body
+	}
+	var entries []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return body
+	}
+	models := make([]map[string]string, 0, len(entries))
+	for _, entry := range entries {
+		if id := strings.TrimSpace(entry.ID); id != "" {
+			models = append(models, map[string]string{"slug": id})
+		}
+	}
+	if len(models) == 0 {
+		return body
+	}
+	converted, err := json.Marshal(map[string]any{"models": models})
+	if err != nil {
+		return body
+	}
+	return converted
 }
 
 func validateCodexModelsManifestEnvelope(body []byte) error {
