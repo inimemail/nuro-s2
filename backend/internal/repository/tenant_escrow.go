@@ -89,13 +89,22 @@ func (m *TenantEscrowManager) RegisterNode(ctx context.Context, nodeID string) (
 	if err != nil {
 		return 0, fmt.Errorf("allocate escrow node epoch: %w", err)
 	}
-	if err := m.rdb.Set(ctx, m.nodeLeaseKey(nodeID, uint64(epoch)), strconv.FormatInt(epoch, 10), m.nodeTTL).Err(); err != nil {
-		return 0, fmt.Errorf("publish escrow node lease: %w", err)
-	}
-	if err := m.rdb.HSet(ctx, escrowNodeRegistryKey, escrowNodeRegistryField(nodeID, uint64(epoch)), epoch).Err(); err != nil {
+	currentEpoch := uint64(epoch)
+	_, err = m.rdb.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		if currentEpoch > 1 {
+			// Registering the next generation is the exclusive handoff point for a
+			// stable per-replica identity. Revoke the previous lease immediately so
+			// its holder grants can be adopted without waiting for nodeTTL/grace.
+			pipe.Del(ctx, m.nodeLeaseKey(nodeID, currentEpoch-1))
+		}
+		pipe.Set(ctx, m.nodeLeaseKey(nodeID, currentEpoch), strconv.FormatUint(currentEpoch, 10), m.nodeTTL)
+		pipe.HSet(ctx, escrowNodeRegistryKey, escrowNodeRegistryField(nodeID, currentEpoch), currentEpoch)
+		return nil
+	})
+	if err != nil {
 		return 0, fmt.Errorf("register escrow node: %w", err)
 	}
-	return uint64(epoch), nil
+	return currentEpoch, nil
 }
 
 func (m *TenantEscrowManager) Heartbeat(ctx context.Context, nodeID string, epoch uint64) error {
@@ -163,6 +172,26 @@ func (m *TenantEscrowManager) LiveNodes(ctx context.Context) ([]string, error) {
 var grantEscrowScript = redis.NewScript(`
 if tostring(redis.call('GET', KEYS[3]) or '') ~= ARGV[2] then return -1 end
 if tostring(redis.call('GET', KEYS[5]) or '') ~= ARGV[2] then return -1 end
+local allocated = tonumber(redis.call('GET', KEYS[2]) or '0')
+local holders = redis.call('HGETALL', KEYS[1])
+for i = 1, #holders, 2 do
+  local holder_node = holders[i]
+  local holder_value = holders[i + 1]
+  if holder_node ~= ARGV[1] then
+    local holder_sep = string.find(holder_value, ':')
+    if holder_sep ~= nil then
+      local holder_epoch = string.sub(holder_value, 1, holder_sep - 1)
+      local holder_count = tonumber(string.sub(holder_value, holder_sep + 1))
+      local holder_lease = ARGV[6] .. holder_node .. ':' .. holder_epoch
+      if holder_count ~= nil and redis.call('EXISTS', holder_lease) == 0 then
+        redis.call('HDEL', KEYS[1], holder_node)
+        redis.call('SREM', ARGV[7] .. holder_node .. ':' .. holder_epoch, ARGV[5])
+        allocated = allocated - holder_count
+      end
+    end
+  end
+end
+if allocated <= 0 then redis.call('DEL', KEYS[2]); allocated = 0 else redis.call('SET', KEYS[2], allocated) end
 local holder = redis.call('HGET', KEYS[1], ARGV[1])
 local epoch = ARGV[2]
 local requested = tonumber(ARGV[3])
@@ -170,10 +199,31 @@ local limit = tonumber(ARGV[4])
 local current = 0
 if holder ~= false then
   local sep = string.find(holder, ':')
-  if sep == nil or string.sub(holder, 1, sep - 1) ~= epoch then return -1 end
-  current = tonumber(string.sub(holder, sep + 1)) or 0
+  if sep == nil then return -1 end
+  local holder_epoch = string.sub(holder, 1, sep - 1)
+  local parsed_current = tonumber(string.sub(holder, sep + 1))
+  if parsed_current == nil then return -1 end
+  current = parsed_current
+  if holder_epoch ~= epoch then
+    local old_lease = ARGV[6] .. ARGV[1] .. ':' .. holder_epoch
+    if redis.call('EXISTS', old_lease) ~= 0 then return -1 end
+    local old_tenants = ARGV[7] .. ARGV[1] .. ':' .. holder_epoch
+    redis.call('SREM', old_tenants, ARGV[5])
+    if current > limit then
+      local excess = current - limit
+      allocated = allocated - excess
+      if allocated <= 0 then redis.call('DEL', KEYS[2]) else redis.call('SET', KEYS[2], allocated) end
+      current = limit
+    end
+    if current <= 0 then
+      redis.call('HDEL', KEYS[1], ARGV[1])
+      return 0
+    end
+    redis.call('HSET', KEYS[1], ARGV[1], epoch .. ':' .. current)
+    redis.call('SADD', KEYS[4], ARGV[5])
+    return current
+  end
 end
-local allocated = tonumber(redis.call('GET', KEYS[2]) or '0')
 local available = limit - allocated
 if available <= 0 then return 0 end
 local grant = requested
@@ -193,7 +243,7 @@ func (m *TenantEscrowManager) Grant(ctx context.Context, tenantID, nodeID string
 	result, err := grantEscrowScript.Run(ctx, m.rdb, []string{
 		m.holderKey(tenantID), m.allocatedKey(tenantID), m.nodeEpochKey(nodeID),
 		m.nodeTenantsKey(nodeID, epoch), m.nodeLeaseKey(nodeID, epoch),
-	}, nodeID, epoch, requested, globalLimit, tenantID).Int()
+	}, nodeID, epoch, requested, globalLimit, tenantID, escrowNodeLeasePrefix, escrowNodeTenants).Int()
 	if err != nil {
 		return 0, err
 	}
@@ -253,9 +303,9 @@ func (m *TenantEscrowManager) Release(ctx context.Context, tenantID, nodeID stri
 var reclaimEscrowScript = redis.NewScript(`
 if redis.call('EXISTS', KEYS[3]) ~= 0 then return 0 end
 local holder = redis.call('HGET', KEYS[1], ARGV[1])
-if holder == false then return 0 end
+if holder == false then redis.call('SREM', KEYS[4], ARGV[3]); return 0 end
 local sep = string.find(holder, ':')
-if sep == nil or string.sub(holder, 1, sep - 1) ~= ARGV[2] then return 0 end
+if sep == nil or string.sub(holder, 1, sep - 1) ~= ARGV[2] then redis.call('SREM', KEYS[4], ARGV[3]); return 0 end
 local count = tonumber(string.sub(holder, sep + 1)) or 0
 redis.call('HDEL', KEYS[1], ARGV[1])
 redis.call('SREM', KEYS[4], ARGV[3])

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strconv"
@@ -40,13 +41,14 @@ type cellAwareConcurrencyCache struct {
 	directory *AccountCellDirectory
 	cfg       *config.Config
 
-	mu            sync.RWMutex
-	cells         map[string]*concurrencyCache
-	cellPlatforms map[string]string
-	routes        map[int64]*admissionAccountRoute
-	assignments   map[int64]string
-	closed        atomic.Bool
-	escrow        *localTenantEscrow
+	mu             sync.RWMutex
+	cells          map[string]*concurrencyCache
+	cellPlatforms  map[string]string
+	routes         map[int64]*admissionAccountRoute
+	assignments    map[int64]string
+	closed         atomic.Bool
+	escrow         *localTenantEscrow
+	escrowDegraded atomic.Bool
 }
 
 func newCellAwareConcurrencyCache(control *redis.Client, cfg *config.Config, legacy *concurrencyCache) (service.ConcurrencyCache, error) {
@@ -82,14 +84,10 @@ func newCellAwareConcurrencyCache(control *redis.Client, cfg *config.Config, leg
 		_ = cell
 	}
 	if cfg.Gateway.Admission.EscrowEnabled {
-		nodeID := strings.TrimSpace(cfg.Gateway.Admission.NodeID)
-		if nodeID == "" {
-			nodeID, _ = os.Hostname()
-		}
-		nodeID = strings.TrimSpace(nodeID)
+		nodeID := resolveAdmissionEscrowNodeID(cfg.Gateway.Admission.NodeID)
 		if nodeID == "" {
 			c.Close()
-			return nil, errors.New("tenant escrow requires a stable node_id or hostname")
+			return nil, errors.New("tenant escrow requires a per-replica hostname or node_id")
 		}
 		nodeTTL := time.Duration(cfg.Gateway.Admission.NodeTTLSeconds) * time.Second
 		grace := time.Duration(cfg.Gateway.Admission.DeadNodeGraceSeconds) * time.Second
@@ -103,6 +101,22 @@ func newCellAwareConcurrencyCache(control *redis.Client, cfg *config.Config, leg
 		}
 	}
 	return c, nil
+}
+
+func resolveAdmissionEscrowNodeID(configured string) string {
+	configured = strings.TrimSpace(configured)
+	hostname, _ := os.Hostname()
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" || configured == hostname {
+		return configured
+	}
+	if configured == "" {
+		return hostname
+	}
+	// Treat an explicit node ID as a deployment prefix. The container hostname
+	// keeps scaled replicas from sharing one fencing identity, while remaining
+	// stable across a restart so the next epoch can adopt the previous grants.
+	return configured + ":" + hostname
 }
 
 func parseAdmissionCellDefinitions(openAI, anthropic string) ([]admissionCellDefinition, error) {
@@ -356,18 +370,31 @@ func (c *cellAwareConcurrencyCache) AcquireFirstAvailableAccountSlot(ctx context
 }
 
 func (c *cellAwareConcurrencyCache) AcquireFirstAvailableUserAccountSlots(ctx context.Context, userID int64, userMaxConcurrency int, candidates []service.AccountSlotCandidate, userRequestID, accountRequestID string) (int64, bool, error) {
-	if c.escrow != nil {
-		acquired, err := c.escrow.Acquire(ctx, "user:"+strconv.FormatInt(userID, 10), userMaxConcurrency, userRequestID)
-		if err != nil || !acquired {
+	if c.escrow != nil && (c.escrow.Owns(userRequestID) || !c.escrowDegraded.Load()) {
+		acquired := c.escrow.Owns(userRequestID)
+		var err error
+		if !acquired {
+			acquired, err = c.escrow.Acquire(ctx, "user:"+strconv.FormatInt(userID, 10), userMaxConcurrency, userRequestID)
+		}
+		if err == nil {
+			if !acquired {
+				return 0, false, nil
+			}
+			accountID, accountAcquired, accountErr := c.acquireCandidates(ctx, candidates, accountRequestID)
+			if accountErr != nil || !accountAcquired {
+				c.escrow.Release(userRequestID)
+				return 0, false, accountErr
+			}
+			return accountID, true, nil
+		}
+		if !c.degradeEscrow(err) {
 			return 0, false, err
 		}
-		accountID, accountAcquired, accountErr := c.acquireCandidates(ctx, candidates, accountRequestID)
-		if accountErr != nil || !accountAcquired {
-			c.escrow.Release(userRequestID)
-			return 0, false, accountErr
-		}
-		return accountID, true, nil
 	}
+	return c.acquireFirstAvailableUserAccountSlotsLegacy(ctx, userID, userMaxConcurrency, candidates, userRequestID, accountRequestID)
+}
+
+func (c *cellAwareConcurrencyCache) acquireFirstAvailableUserAccountSlotsLegacy(ctx context.Context, userID int64, userMaxConcurrency int, candidates []service.AccountSlotCandidate, userRequestID, accountRequestID string) (int64, bool, error) {
 	userAcquired, err := c.legacy.AcquireUserSlot(ctx, userID, userMaxConcurrency, userRequestID)
 	if err != nil || !userAcquired {
 		return 0, false, err
@@ -392,10 +419,26 @@ func (c *cellAwareConcurrencyCache) ReleaseAccountSlot(ctx context.Context, acco
 }
 
 func (c *cellAwareConcurrencyCache) AcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
-	if c.escrow != nil {
-		return c.escrow.Acquire(ctx, "user:"+strconv.FormatInt(userID, 10), maxConcurrency, requestID)
+	if c.escrow != nil && c.escrow.Owns(requestID) {
+		return true, nil
+	}
+	if c.escrow != nil && !c.escrowDegraded.Load() {
+		acquired, err := c.escrow.Acquire(ctx, "user:"+strconv.FormatInt(userID, 10), maxConcurrency, requestID)
+		if err == nil || !c.degradeEscrow(err) {
+			return acquired, err
+		}
 	}
 	return c.legacy.AcquireUserSlot(ctx, userID, maxConcurrency, requestID)
+}
+
+func (c *cellAwareConcurrencyCache) degradeEscrow(err error) bool {
+	if !errors.Is(err, ErrEscrowFenced) {
+		return false
+	}
+	if c.escrowDegraded.CompareAndSwap(false, true) {
+		slog.Error("tenant escrow fenced; falling back to legacy Redis user concurrency", "error", err)
+	}
+	return true
 }
 
 func (c *cellAwareConcurrencyCache) ReleaseUserSlot(ctx context.Context, userID int64, requestID string) error {
@@ -406,10 +449,17 @@ func (c *cellAwareConcurrencyCache) ReleaseUserSlot(ctx context.Context, userID 
 }
 
 func (c *cellAwareConcurrencyCache) GetUserConcurrency(ctx context.Context, userID int64) (int, error) {
-	if c.escrow != nil {
+	if c.escrow != nil && !c.escrowDegraded.Load() {
 		return c.escrow.InUse("user:" + strconv.FormatInt(userID, 10)), nil
 	}
-	return c.legacy.GetUserConcurrency(ctx, userID)
+	current, err := c.legacy.GetUserConcurrency(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	if c.escrow != nil {
+		current += c.escrow.InUse("user:" + strconv.FormatInt(userID, 10))
+	}
+	return current, nil
 }
 
 func (c *cellAwareConcurrencyCache) RefreshSlot(ctx context.Context, kind string, entityID int64, requestID string) error {
@@ -649,6 +699,24 @@ func (c *cellAwareConcurrencyCache) GetUsersLoadBatch(ctx context.Context, users
 	if c.escrow == nil {
 		return c.legacy.GetUsersLoadBatch(ctx, users)
 	}
+	if c.escrowDegraded.Load() {
+		result, err := c.legacy.GetUsersLoadBatch(ctx, users)
+		if err != nil {
+			return nil, err
+		}
+		for _, user := range users {
+			info := result[user.ID]
+			if info == nil {
+				info = &service.UserLoadInfo{UserID: user.ID}
+				result[user.ID] = info
+			}
+			info.CurrentConcurrency += c.escrow.InUse("user:" + strconv.FormatInt(user.ID, 10))
+			if user.MaxConcurrency > 0 {
+				info.LoadRate = (info.CurrentConcurrency + info.WaitingCount) * 100 / user.MaxConcurrency
+			}
+		}
+		return result, nil
+	}
 	result := make(map[int64]*service.UserLoadInfo, len(users))
 	for _, user := range users {
 		current := c.escrow.InUse("user:" + strconv.FormatInt(user.ID, 10))
@@ -759,6 +827,10 @@ func (e *localTenantEscrow) heartbeat() {
 				e.validTo.Store(time.Now().Add(e.nodeTTL).UnixNano())
 			}
 			cancel()
+			if errors.Is(err, ErrEscrowFenced) {
+				e.validTo.Store(0)
+				return
+			}
 		case <-e.stop:
 			return
 		}

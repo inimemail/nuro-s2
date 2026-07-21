@@ -579,7 +579,7 @@ gateway:
     # Comma-separated cell-id=redis://host:port/db entries.
     openai_cells: "openai-001=redis://127.0.0.1:6380/0"
     anthropic_cells: "anthropic-001=redis://127.0.0.1:6381/0"
-    escrow_enabled: true
+    escrow_enabled: false
     escrow_grant_size: 16
     node_ttl_seconds: 30
     dead_node_grace_seconds: 900

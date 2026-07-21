@@ -2422,7 +2422,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.admission.node_id", "")
 	viper.SetDefault("gateway.admission.openai_cells", "")
 	viper.SetDefault("gateway.admission.anthropic_cells", "")
-	viper.SetDefault("gateway.admission.escrow_enabled", true)
+	viper.SetDefault("gateway.admission.escrow_enabled", false)
 	viper.SetDefault("gateway.admission.escrow_grant_size", 16)
 	viper.SetDefault("gateway.admission.node_ttl_seconds", 30)
 	viper.SetDefault("gateway.admission.dead_node_grace_seconds", 0)

@@ -498,7 +498,7 @@ ensure_scheduler_env_values() {
 	ensure_env_value "$env_file" GATEWAY_ADMISSION_NODE_ID ""
 	ensure_env_value "$env_file" GATEWAY_ADMISSION_OPENAI_CELLS "openai-001=redis://admission-openai-001:6379/0"
 	ensure_env_value "$env_file" GATEWAY_ADMISSION_ANTHROPIC_CELLS "anthropic-001=redis://admission-anthropic-001:6379/0"
-	ensure_env_value "$env_file" GATEWAY_ADMISSION_ESCROW_ENABLED true
+	ensure_env_value "$env_file" GATEWAY_ADMISSION_ESCROW_ENABLED false
 	ensure_env_value "$env_file" GATEWAY_ADMISSION_ESCROW_GRANT_SIZE 16
 	ensure_env_value "$env_file" GATEWAY_ADMISSION_NODE_TTL_SECONDS 30
 	ensure_env_value "$env_file" GATEWAY_ADMISSION_DEAD_NODE_GRACE_SECONDS 900
@@ -681,7 +681,7 @@ GATEWAY_ADMISSION_ENABLED=true
 GATEWAY_ADMISSION_NODE_ID=
 GATEWAY_ADMISSION_OPENAI_CELLS=openai-001=redis://admission-openai-001:6379/0
 GATEWAY_ADMISSION_ANTHROPIC_CELLS=anthropic-001=redis://admission-anthropic-001:6379/0
-GATEWAY_ADMISSION_ESCROW_ENABLED=true
+GATEWAY_ADMISSION_ESCROW_ENABLED=false
 GATEWAY_ADMISSION_ESCROW_GRANT_SIZE=16
 GATEWAY_ADMISSION_NODE_TTL_SECONDS=30
 GATEWAY_ADMISSION_DEAD_NODE_GRACE_SECONDS=900
@@ -917,7 +917,7 @@ services:
       - GATEWAY_ADMISSION_NODE_ID=\${GATEWAY_ADMISSION_NODE_ID:-}
       - GATEWAY_ADMISSION_OPENAI_CELLS=\${GATEWAY_ADMISSION_OPENAI_CELLS:-openai-001=redis://admission-openai-001:6379/0}
       - GATEWAY_ADMISSION_ANTHROPIC_CELLS=\${GATEWAY_ADMISSION_ANTHROPIC_CELLS:-anthropic-001=redis://admission-anthropic-001:6379/0}
-      - GATEWAY_ADMISSION_ESCROW_ENABLED=\${GATEWAY_ADMISSION_ESCROW_ENABLED:-true}
+      - GATEWAY_ADMISSION_ESCROW_ENABLED=\${GATEWAY_ADMISSION_ESCROW_ENABLED:-false}
       - GATEWAY_ADMISSION_ESCROW_GRANT_SIZE=\${GATEWAY_ADMISSION_ESCROW_GRANT_SIZE:-16}
       - GATEWAY_ADMISSION_NODE_TTL_SECONDS=\${GATEWAY_ADMISSION_NODE_TTL_SECONDS:-30}
       - GATEWAY_ADMISSION_DEAD_NODE_GRACE_SECONDS=\${GATEWAY_ADMISSION_DEAD_NODE_GRACE_SECONDS:-900}
@@ -1181,11 +1181,55 @@ compose_build_with_edge_fallback() {
     $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build
 }
 
+revoke_escrow_node_lease() {
+    local node_id="$1"
+    local redis_db="$2"
+
+    docker exec "$REDIS_CONTAINER" sh -c '
+        if [ -z "${REDIS_PASSWORD:-}" ]; then unset REDISCLI_AUTH; fi
+        epoch="$(redis-cli -n "$2" --raw GET "admission:escrow:node-epoch:$1")"
+        [ -z "$epoch" ] || redis-cli -n "$2" DEL "admission:escrow:node-lease:$1:$epoch" >/dev/null
+    ' sh "$node_id" "$redis_db"
+}
+
+revoke_removed_app_escrow_leases() {
+    local env_file="$1"
+    local hostnames="$2"
+    local enabled prefix redis_db hostname node_id
+
+    enabled="$(read_env_value "$env_file" GATEWAY_ADMISSION_ESCROW_ENABLED)"
+    [[ "$enabled" == "true" && -n "$hostnames" ]] || return 0
+    prefix="$(read_env_value "$env_file" GATEWAY_ADMISSION_NODE_ID)"
+    redis_db="$(read_env_value "$env_file" REDIS_DB)"
+    redis_db="${redis_db:-0}"
+
+    while IFS= read -r hostname; do
+        [[ -n "$hostname" ]] || continue
+        if [[ -z "$prefix" || "$prefix" == "$hostname" ]]; then
+            node_id="$hostname"
+        else
+            node_id="${prefix}:${hostname}"
+        fi
+        if ! revoke_escrow_node_lease "$node_id" "$redis_db"; then
+            warn "无法撤销已删除 app 的 Escrow lease，将由 node TTL 自动回收: ${node_id}"
+        fi
+    done <<EOF
+$hostnames
+EOF
+
+    # Before per-replica scoping was introduced, an explicit node_id was used
+    # verbatim by every replica. All old app containers are gone at this point,
+    # so revoking that legacy identity is safe and prevents a one-time TTL wait.
+    if [[ -n "$prefix" ]] && ! revoke_escrow_node_lease "$prefix" "$redis_db"; then
+        warn "无法撤销旧版共享 Escrow lease，将由 node TTL 自动回收: ${prefix}"
+    fi
+}
+
 compose_up_with_edge_fallback() {
     local workdir="$1"
     local dc_cmd="$2"
     local env_file="${workdir}/.env"
-    local app_ids current_replicas min_replicas desired_replicas
+    local app_ids app_hostnames current_replicas min_replicas desired_replicas
     local max_replicas min_cpu_per_pair min_memory_mb_per_pair
     local host_cpus host_memory_mb cpu_limit memory_limit capacity_limit
 
@@ -1238,8 +1282,13 @@ compose_up_with_edge_fallback() {
         --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
         --filter 'label=com.docker.compose.service=app')"
     if [[ -n "$app_ids" ]]; then
+        # Capture the effective per-replica identity before Docker removes it.
+        # Once the process is gone, revoking its lease lets the next request
+        # atomically reclaim the orphaned grants without waiting for node TTL.
+        app_hostnames="$(docker inspect -f '{{.Config.Hostname}}' $app_ids 2>/dev/null || true)"
         # Intentional splitting is safe because Docker IDs are hexadecimal tokens.
         docker rm -f $app_ids >/dev/null || die "无法删除旧 app 副本"
+        revoke_removed_app_escrow_leases "$env_file" "$app_hostnames"
     fi
 
     $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml up -d --remove-orphans --scale "app=${desired_replicas}"

@@ -10,7 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func TestTenantEscrowFencesRestartAndReclaimsDeadNode(t *testing.T) {
+func TestTenantEscrowFencesOldEpochAndHandsGrantsToReplacement(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	manager := NewTenantEscrowManager(client, 2*time.Second)
@@ -27,24 +27,92 @@ func TestTenantEscrowFencesRestartAndReclaimsDeadNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if alive, err := manager.NodeAlive(ctx, "node-a", epoch); err != nil || alive {
+		t.Fatalf("previous generation lease was not revoked: alive=%v err=%v", alive, err)
+	}
 	if _, err := manager.Grant(ctx, "tenant-a", "node-a", epoch, 1, 5); err != ErrEscrowFenced {
 		t.Fatalf("old epoch was accepted: %v", err)
 	}
-	if _, err := manager.Grant(ctx, "tenant-a", "node-a", newEpoch, 1, 5); err != ErrEscrowFenced {
-		t.Fatalf("replacement node reused live grants: %v", err)
+	granted, err = manager.Grant(ctx, "tenant-a", "node-a", newEpoch, 1, 5)
+	if err != nil || granted != 3 {
+		t.Fatalf("replacement did not adopt grants: grant=%d err=%v", granted, err)
 	}
-	// Let the old node lease expire; only then can its grants be reclaimed.
-	mr.FastForward(3 * time.Second)
-	reclaimed, err := manager.ReclaimDeadNode(ctx, "tenant-a", "node-a", epoch)
-	if err != nil || !reclaimed {
-		t.Fatalf("reclaim=%v err=%v", reclaimed, err)
+	if allocated := client.Get(ctx, manager.allocatedKey("tenant-a")).Val(); allocated != "3" {
+		t.Fatalf("handoff changed global allocation: %s", allocated)
 	}
-	if err := manager.Heartbeat(ctx, "node-a", newEpoch); err != nil {
+	if holder := client.HGet(ctx, manager.holderKey("tenant-a"), "node-a").Val(); holder != "2:3" {
+		t.Fatalf("unexpected replacement holder: %s", holder)
+	}
+	if oldTenants := client.SCard(ctx, manager.nodeTenantsKey("node-a", epoch)).Val(); oldTenants != 0 {
+		t.Fatalf("old generation retained tenant membership: %d", oldTenants)
+	}
+	if newTenants := client.SCard(ctx, manager.nodeTenantsKey("node-a", newEpoch)).Val(); newTenants != 1 {
+		t.Fatalf("replacement generation missing tenant membership: %d", newTenants)
+	}
+	if err := manager.Release(ctx, "tenant-a", "node-a", newEpoch, granted); err != nil {
 		t.Fatal(err)
 	}
-	granted, err = manager.Grant(ctx, "tenant-a", "node-a", newEpoch, 1, 5)
-	if err != nil || granted != 1 {
+}
+
+func TestTenantEscrowReplacementHandoffHonorsReducedLimit(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	manager := NewTenantEscrowManager(client, 30*time.Second)
+	ctx := context.Background()
+
+	oldEpoch, err := manager.RegisterNode(ctx, "node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if granted, grantErr := manager.Grant(ctx, "tenant-a", "node-a", oldEpoch, 4, 5); grantErr != nil || granted != 4 {
+		t.Fatalf("old grant=%d err=%v", granted, grantErr)
+	}
+	newEpoch, err := manager.RegisterNode(ctx, "node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted, err := manager.Grant(ctx, "tenant-a", "node-a", newEpoch, 1, 2)
+	if err != nil || granted != 2 {
 		t.Fatalf("replacement grant=%d err=%v", granted, err)
+	}
+	if allocated := client.Get(ctx, manager.allocatedKey("tenant-a")).Val(); allocated != "2" {
+		t.Fatalf("handoff did not return excess allocation: %s", allocated)
+	}
+}
+
+func TestTenantEscrowGrantReclaimsForeignHolderAfterLeaseRevocation(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	manager := NewTenantEscrowManager(client, 30*time.Second)
+	ctx := context.Background()
+
+	deadEpoch, err := manager.RegisterNode(ctx, "dead-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if granted, grantErr := manager.Grant(ctx, "tenant-a", "dead-node", deadEpoch, 5, 5); grantErr != nil || granted != 5 {
+		t.Fatalf("dead-node grant=%d err=%v", granted, grantErr)
+	}
+	if err := client.Del(ctx, manager.nodeLeaseKey("dead-node", deadEpoch)).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	liveEpoch, err := manager.RegisterNode(ctx, "live-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted, err := manager.Grant(ctx, "tenant-a", "live-node", liveEpoch, 1, 5)
+	if err != nil || granted != 1 {
+		t.Fatalf("live-node grant=%d err=%v", granted, err)
+	}
+	if allocated := client.Get(ctx, manager.allocatedKey("tenant-a")).Val(); allocated != "1" {
+		t.Fatalf("dead allocation was not reclaimed: %s", allocated)
+	}
+	if client.HExists(ctx, manager.holderKey("tenant-a"), "dead-node").Val() {
+		t.Fatal("dead holder was not removed")
+	}
+	if oldTenants := client.SCard(ctx, manager.nodeTenantsKey("dead-node", deadEpoch)).Val(); oldTenants != 0 {
+		t.Fatalf("dead node retained tenant membership: %d", oldTenants)
 	}
 }
 
