@@ -546,8 +546,9 @@ gateway:
     local_snapshot_enabled: false
     local_snapshot_ttl_ms: 500
     local_snapshot_max_keys: 4096
-    # Scheduler event bus. Use redis_stream for multi-instance invalidation.
-    # 调度事件总线。多实例本地快照失效建议使用 redis_stream。
+    # Scheduler snapshot event bus. Runtime-clear events always use Redis so
+    # manual recovery remains consistent across application replicas.
+    # 调度快照事件总线。运行态清理始终使用 Redis，确保手动恢复可清理所有应用副本。
     event_bus_enabled: false
     event_bus_backend: local
     # Slot cleanup interval (duration)

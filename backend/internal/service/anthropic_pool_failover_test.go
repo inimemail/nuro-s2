@@ -524,7 +524,7 @@ func TestAdminServiceRuntimeState_UsesCompositeAnthropicPoolBlocker(t *testing.T
 	require.NotNil(t, got.AnthropicPoolSoftCooldownUntil)
 	require.Equal(t, http.StatusServiceUnavailable, got.AnthropicPoolSoftCooldownStatusCode)
 
-	svc.clearAccountRuntimeSchedulingBlock(account.ID)
+	require.NoError(t, svc.clearAccountRuntimeSchedulingBlock(context.Background(), account.ID))
 	got, err = svc.GetAccount(context.Background(), account.ID)
 	require.NoError(t, err)
 	require.Nil(t, got.AnthropicPoolSoftCooldownUntil)

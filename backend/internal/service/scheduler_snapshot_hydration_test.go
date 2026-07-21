@@ -116,6 +116,77 @@ func TestSchedulerSnapshotLocalSnapshot_IgnoresOwnSnapshotUpdatedEvent(t *testin
 	}
 }
 
+func TestSchedulerSnapshotRuntimeClearEventInvokesAllLocalHandlers(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LocalSnapshotEnabled = true
+	cfg.Gateway.Scheduling.LocalSnapshotTTLMS = 1000
+	cfg.Gateway.Scheduling.LocalSnapshotMaxKeys = 16
+	svc := NewSchedulerSnapshotService(nil, nil, nil, nil, cfg, nil)
+	bucket := SchedulerBucket{GroupID: 1, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
+	svc.storeLocalSnapshot(bucket, []Account{{ID: 42}})
+	var cleared []int64
+	svc.RegisterAccountRuntimeClearHandler(func(accountID, generation int64) {
+		cleared = append(cleared, accountID)
+		require.Equal(t, int64(1), generation)
+	})
+	svc.RegisterAccountRuntimeClearHandler(func(accountID, generation int64) {
+		cleared = append(cleared, accountID*10)
+		require.Equal(t, int64(1), generation)
+	})
+
+	svc.handleSchedulerEvent(context.Background(), SchedulerEvent{
+		Type:       SchedulerEventAccountRuntimeCleared,
+		AccountID:  42,
+		Generation: 1,
+		Source:     "other-replica",
+	})
+
+	require.Equal(t, []int64{42, 420}, cleared)
+	_, hit := svc.localSnapshot.Get(bucket, time.Now())
+	require.False(t, hit)
+}
+
+func TestSchedulerSnapshotPublishesRuntimeClearWhenOptionalEventBusIsDisabled(t *testing.T) {
+	cfg := &config.Config{}
+	bus := NewLocalSchedulerEventBus()
+	events, unsubscribe := bus.Subscribe(1)
+	defer unsubscribe()
+	svc := NewSchedulerSnapshotService(nil, nil, nil, nil, cfg, bus)
+
+	generation, err := svc.publishAccountRuntimeClear(context.Background(), 43)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), generation)
+
+	select {
+	case event := <-events:
+		require.Equal(t, SchedulerEventAccountRuntimeCleared, event.Type)
+		require.Equal(t, int64(43), event.AccountID)
+		require.Equal(t, int64(1), event.Generation)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runtime-clear event")
+	}
+}
+
+func TestSchedulerSnapshotIgnoresOrdinaryRedisEventsWhenEventBusIsDisabled(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LocalSnapshotEnabled = true
+	cfg.Gateway.Scheduling.LocalSnapshotTTLMS = 1000
+	cfg.Gateway.Scheduling.LocalSnapshotMaxKeys = 16
+	svc := NewSchedulerSnapshotService(nil, nil, nil, nil, cfg, NewLocalSchedulerEventBus())
+	bucket := SchedulerBucket{GroupID: 2, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
+	svc.storeLocalSnapshot(bucket, []Account{{ID: 44}})
+
+	svc.handleSchedulerEvent(context.Background(), SchedulerEvent{
+		Type:      SchedulerEventAccountUpdated,
+		AccountID: 44,
+		Source:    "redis-runtime-leg",
+	})
+
+	accounts, hit := svc.localSnapshot.Get(bucket, time.Now())
+	require.True(t, hit)
+	require.Len(t, accounts, 1)
+}
+
 func TestSchedulerLocalSnapshot_ClonesMutableAccountFields(t *testing.T) {
 	snapshot := NewSchedulerLocalSnapshot(config.GatewaySchedulingConfig{
 		LocalSnapshotEnabled: true,

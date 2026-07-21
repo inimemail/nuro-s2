@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -29,27 +31,32 @@ type batchSeenKey struct {
 }
 
 type SchedulerSnapshotService struct {
-	cache                SchedulerCache
-	outboxRepo           SchedulerOutboxRepository
-	accountRepo          AccountRepository
-	groupRepo            GroupRepository
-	cfg                  *config.Config
-	localSnapshot        *SchedulerLocalSnapshot
-	eventBus             SchedulerEventBus
-	cellRouter           *SchedulerCellRouter
-	eventSource          string
-	stopCh               chan struct{}
-	stopOnce             sync.Once
-	wg                   sync.WaitGroup
-	fallbackLimit        *fallbackLimiter
-	lagMu                sync.Mutex
-	lagFailures          int
-	fullRebuildRunMu     sync.Mutex
-	fullRebuildStateMu   sync.Mutex
-	fullRebuildRequested uint64
-	fullRebuildCompleted uint64
-	fullRebuildLastErr   error
-	unsubscribe          func()
+	cache                           SchedulerCache
+	outboxRepo                      SchedulerOutboxRepository
+	accountRepo                     AccountRepository
+	groupRepo                       GroupRepository
+	cfg                             *config.Config
+	localSnapshot                   *SchedulerLocalSnapshot
+	eventBus                        SchedulerEventBus
+	cellRouter                      *SchedulerCellRouter
+	eventSource                     string
+	stopCh                          chan struct{}
+	stopOnce                        sync.Once
+	wg                              sync.WaitGroup
+	fallbackLimit                   *fallbackLimiter
+	lagMu                           sync.Mutex
+	lagFailures                     int
+	fullRebuildRunMu                sync.Mutex
+	fullRebuildStateMu              sync.Mutex
+	fullRebuildRequested            uint64
+	fullRebuildCompleted            uint64
+	fullRebuildLastErr              error
+	unsubscribe                     func()
+	runtimeClearMu                  sync.RWMutex
+	runtimeClearHandlers            []func(int64, int64)
+	runtimeClearGenerations         sync.Map // key: int64(accountID), value: int64
+	runtimeClearGenerationCheckedAt sync.Map // key: int64(accountID), value: time.Time
+	runtimeClearGenerationSF        singleflight.Group
 }
 
 func NewSchedulerSnapshotService(
@@ -90,11 +97,11 @@ func NewSchedulerSnapshotService(
 }
 
 func (s *SchedulerSnapshotService) Start() {
-	if s == nil || s.cache == nil {
+	if s == nil {
 		return
 	}
 
-	if s.eventBus != nil && s.localSnapshot != nil {
+	if s.eventBus != nil {
 		events, unsubscribe := s.eventBus.Subscribe(256)
 		s.unsubscribe = unsubscribe
 		s.wg.Add(1)
@@ -102,6 +109,9 @@ func (s *SchedulerSnapshotService) Start() {
 			defer s.wg.Done()
 			s.runEventWorker(events)
 		}()
+	}
+	if s.cache == nil {
+		return
 	}
 
 	// Complete the initial rebuild before the provider returns and the HTTP
@@ -164,8 +174,181 @@ func (s *SchedulerSnapshotService) handleSchedulerEvent(ctx context.Context, eve
 	if event.Source == s.eventSource && event.Type == SchedulerEventSnapshotUpdated {
 		return
 	}
+	if !isSchedulerRuntimeClearEvent(event) &&
+		s.cfg != nil && !s.cfg.Gateway.Scheduling.EventBusEnabled {
+		return
+	}
+	if isSchedulerRuntimeClearEvent(event) && event.AccountID > 0 {
+		if event.Generation <= 0 {
+			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] ignore runtime-clear without generation: account_id=%d source=%s", event.AccountID, event.Source)
+			return
+		}
+		s.noteAccountRuntimeClearGeneration(event.AccountID, event.Generation)
+		s.runtimeClearMu.RLock()
+		handlers := append([]func(int64, int64){}, s.runtimeClearHandlers...)
+		s.runtimeClearMu.RUnlock()
+		for _, handler := range handlers {
+			handler(event.AccountID, event.Generation)
+		}
+	}
 	if s.localSnapshot != nil {
 		s.localSnapshot.ApplyEvent(ctx, event)
+	}
+}
+
+func (s *SchedulerSnapshotService) RegisterAccountRuntimeClearHandler(handler func(int64, int64)) {
+	if s == nil || handler == nil {
+		return
+	}
+	s.runtimeClearMu.Lock()
+	s.runtimeClearHandlers = append(s.runtimeClearHandlers, handler)
+	s.runtimeClearMu.Unlock()
+}
+
+func (s *SchedulerSnapshotService) publishAccountRuntimeClear(ctx context.Context, accountID int64) (int64, error) {
+	if s == nil || accountID <= 0 {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	store, ok := s.eventBus.(SchedulerRuntimeClearGenerationStore)
+	if !ok {
+		return 0, errors.New("scheduler runtime-clear generation store unavailable")
+	}
+	priorCtx, priorCancel := context.WithTimeout(ctx, time.Second)
+	priorGeneration, err := store.LoadAccountRuntimeClearGeneration(priorCtx, accountID)
+	priorCancel()
+	if err != nil {
+		return 0, fmt.Errorf("load account runtime-clear generation: %w", err)
+	}
+	generationCtx, generationCancel := context.WithTimeout(ctx, time.Second)
+	generation, err := store.AdvanceAccountRuntimeClearGeneration(generationCtx, accountID)
+	generationCancel()
+	if err != nil {
+		advanceErr := fmt.Errorf("advance account runtime-clear generation: %w", err)
+		reconcileCtx, reconcileCancel := context.WithTimeout(ctx, time.Second)
+		reconciledGeneration, reconcileErr := store.LoadAccountRuntimeClearGeneration(reconcileCtx, accountID)
+		reconcileCancel()
+		if reconcileErr != nil {
+			return 0, errors.Join(advanceErr, fmt.Errorf("reconcile account runtime-clear generation: %w", reconcileErr))
+		}
+		if reconciledGeneration <= priorGeneration {
+			return 0, advanceErr
+		}
+		generation = reconciledGeneration
+	}
+	s.noteAccountRuntimeClearGeneration(accountID, generation)
+	event := SchedulerEvent{
+		Type:       SchedulerEventAccountRuntimeCleared,
+		AccountID:  accountID,
+		Generation: generation,
+		Reason:     "runtime_clear",
+		At:         time.Now(),
+		Source:     s.eventSource,
+	}
+	var publishErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		publishCtx, publishCancel := context.WithTimeout(ctx, time.Second)
+		publishErr = s.eventBus.Publish(publishCtx, event)
+		publishCancel()
+		if publishErr == nil {
+			return generation, nil
+		}
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return generation, ctx.Err()
+			case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
+			}
+		}
+	}
+	logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] publish runtime-clear failed: account_id=%d generation=%d err=%v", accountID, generation, publishErr)
+	return generation, fmt.Errorf("publish account runtime-clear event: %w", publishErr)
+}
+
+func (s *SchedulerSnapshotService) currentAccountRuntimeClearGeneration(accountID int64) int64 {
+	if s == nil || accountID <= 0 {
+		return 0
+	}
+	local := s.localAccountRuntimeClearGeneration(accountID)
+	store, ok := s.eventBus.(SchedulerRuntimeClearGenerationStore)
+	if !ok {
+		return local
+	}
+	value, err, _ := s.runtimeClearGenerationSF.Do(strconv.FormatInt(accountID, 10), func() (any, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		defer cancel()
+		return store.LoadAccountRuntimeClearGeneration(ctx, accountID)
+	})
+	if err != nil {
+		return s.localAccountRuntimeClearGeneration(accountID)
+	}
+	shared, _ := value.(int64)
+	s.noteAccountRuntimeClearGeneration(accountID, shared)
+	s.runtimeClearGenerationCheckedAt.Store(accountID, time.Now())
+	latestLocal := s.localAccountRuntimeClearGeneration(accountID)
+	if shared > latestLocal {
+		return shared
+	}
+	return latestLocal
+}
+
+func (s *SchedulerSnapshotService) observedAccountRuntimeClearGeneration(accountID int64) int64 {
+	if s == nil || accountID <= 0 {
+		return 0
+	}
+	now := time.Now()
+	for {
+		checked, loaded := s.runtimeClearGenerationCheckedAt.Load(accountID)
+		if !loaded {
+			if _, stored := s.runtimeClearGenerationCheckedAt.LoadOrStore(accountID, now); !stored {
+				break
+			}
+			continue
+		}
+		if checkedAt, valid := checked.(time.Time); valid && now.Sub(checkedAt) < time.Second {
+			return s.localAccountRuntimeClearGeneration(accountID)
+		}
+		if s.runtimeClearGenerationCheckedAt.CompareAndSwap(accountID, checked, now) {
+			break
+		}
+	}
+	return s.currentAccountRuntimeClearGeneration(accountID)
+}
+
+func (s *SchedulerSnapshotService) localAccountRuntimeClearGeneration(accountID int64) int64 {
+	if s == nil || accountID <= 0 {
+		return 0
+	}
+	value, ok := s.runtimeClearGenerations.Load(accountID)
+	if !ok {
+		return 0
+	}
+	generation, _ := value.(int64)
+	return generation
+}
+
+func (s *SchedulerSnapshotService) noteAccountRuntimeClearGeneration(accountID, generation int64) {
+	if s == nil || accountID <= 0 || generation <= 0 {
+		return
+	}
+	s.runtimeClearGenerationCheckedAt.Store(accountID, time.Now())
+	for {
+		current, loaded := s.runtimeClearGenerations.Load(accountID)
+		if !loaded {
+			if _, stored := s.runtimeClearGenerations.LoadOrStore(accountID, generation); !stored {
+				return
+			}
+			continue
+		}
+		currentGeneration, ok := current.(int64)
+		if ok && currentGeneration >= generation {
+			return
+		}
+		if s.runtimeClearGenerations.CompareAndSwap(accountID, current, generation) {
+			return
+		}
 	}
 }
 
@@ -190,6 +373,12 @@ func (s *SchedulerSnapshotService) storeLocalSnapshot(bucket SchedulerBucket, ac
 
 func (s *SchedulerSnapshotService) publishEvent(ctx context.Context, event SchedulerEvent) {
 	if s == nil || s.eventBus == nil {
+		return
+	}
+	// Runtime clears are a correctness event and stay enabled independently of
+	// the optional local-snapshot invalidation bus.
+	if event.Type != SchedulerEventAccountRuntimeCleared &&
+		s.cfg != nil && !s.cfg.Gateway.Scheduling.EventBusEnabled {
 		return
 	}
 	if event.At.IsZero() {

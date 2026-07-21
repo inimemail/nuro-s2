@@ -868,6 +868,9 @@ func NewGatewayService(
 	if path := strings.TrimSpace(os.Getenv(debugGatewayBodyEnv)); path != "" {
 		svc.initDebugGatewayBodyFile(path)
 	}
+	if schedulerSnapshot != nil {
+		schedulerSnapshot.RegisterAccountRuntimeClearHandler(svc.clearAnthropicPoolSoftCooldownBefore)
+	}
 	return svc
 }
 

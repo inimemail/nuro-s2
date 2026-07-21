@@ -13,6 +13,7 @@ import (
 )
 
 const schedulerEventStreamKey = "scheduler:events"
+const schedulerRuntimeClearGenerationKey = "scheduler:runtime_clear_generations"
 
 type redisSchedulerEventBus struct {
 	rdb       *redis.Client
@@ -40,6 +41,7 @@ func (b *redisSchedulerEventBus) Publish(ctx context.Context, event service.Sche
 		"type":       string(event.Type),
 		"bucket":     event.Bucket.String(),
 		"account_id": strconv.FormatInt(event.AccountID, 10),
+		"generation": strconv.FormatInt(event.Generation, 10),
 		"at_unix_ms": strconv.FormatInt(event.At.UnixMilli(), 10),
 		"reason":     event.Reason,
 		"source":     event.Source,
@@ -50,6 +52,24 @@ func (b *redisSchedulerEventBus) Publish(ctx context.Context, event service.Sche
 		Approx: true,
 		Values: values,
 	}).Err()
+}
+
+func (b *redisSchedulerEventBus) AdvanceAccountRuntimeClearGeneration(ctx context.Context, accountID int64) (int64, error) {
+	if b == nil || b.rdb == nil || accountID <= 0 {
+		return 0, nil
+	}
+	return b.rdb.HIncrBy(ctx, schedulerRuntimeClearGenerationKey, strconv.FormatInt(accountID, 10), 1).Result()
+}
+
+func (b *redisSchedulerEventBus) LoadAccountRuntimeClearGeneration(ctx context.Context, accountID int64) (int64, error) {
+	if b == nil || b.rdb == nil || accountID <= 0 {
+		return 0, nil
+	}
+	generation, err := b.rdb.HGet(ctx, schedulerRuntimeClearGenerationKey, strconv.FormatInt(accountID, 10)).Int64()
+	if err == redis.Nil {
+		return 0, nil
+	}
+	return generation, err
 }
 
 func (b *redisSchedulerEventBus) Subscribe(buffer int) (<-chan service.SchedulerEvent, func()) {
@@ -75,7 +95,10 @@ func (b *redisSchedulerEventBus) Subscribe(buffer int) (<-chan service.Scheduler
 
 func (b *redisSchedulerEventBus) runSubscriber(ctx context.Context, out chan<- service.SchedulerEvent) {
 	defer close(out)
-	lastID := "$"
+	lastID, err := b.latestStreamID(ctx)
+	if err != nil {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -101,6 +124,14 @@ func (b *redisSchedulerEventBus) runSubscriber(ctx context.Context, out chan<- s
 				if !ok {
 					continue
 				}
+				if event.Type == service.SchedulerEventAccountRuntimeCleared {
+					select {
+					case out <- event:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
 				select {
 				case out <- event:
 				default:
@@ -112,6 +143,26 @@ func (b *redisSchedulerEventBus) runSubscriber(ctx context.Context, out chan<- s
 	}
 }
 
+func (b *redisSchedulerEventBus) latestStreamID(ctx context.Context) (string, error) {
+	for {
+		messages, err := b.rdb.XRevRangeN(ctx, b.streamKey, "+", "-", 1).Result()
+		if err == nil {
+			if len(messages) == 0 {
+				return "0-0", nil
+			}
+			return messages[0].ID, nil
+		}
+		if err == redis.Nil {
+			return "0-0", nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
 func parseRedisSchedulerEvent(values map[string]any) (service.SchedulerEvent, bool) {
 	eventType := service.SchedulerEventType(redisString(values["type"]))
 	if eventType == "" {
@@ -119,18 +170,20 @@ func parseRedisSchedulerEvent(values map[string]any) (service.SchedulerEvent, bo
 	}
 	bucket, _ := service.ParseSchedulerBucket(redisString(values["bucket"]))
 	accountID, _ := strconv.ParseInt(redisString(values["account_id"]), 10, 64)
+	generation, _ := strconv.ParseInt(redisString(values["generation"]), 10, 64)
 	atUnixMS, _ := strconv.ParseInt(redisString(values["at_unix_ms"]), 10, 64)
 	at := time.Time{}
 	if atUnixMS > 0 {
 		at = time.UnixMilli(atUnixMS)
 	}
 	return service.SchedulerEvent{
-		Type:      eventType,
-		Bucket:    bucket,
-		AccountID: accountID,
-		At:        at,
-		Reason:    redisString(values["reason"]),
-		Source:    redisString(values["source"]),
+		Type:       eventType,
+		Bucket:     bucket,
+		AccountID:  accountID,
+		Generation: generation,
+		At:         at,
+		Reason:     redisString(values["reason"]),
+		Source:     redisString(values["source"]),
 	}, true
 }
 

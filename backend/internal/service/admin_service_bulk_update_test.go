@@ -51,6 +51,16 @@ type bulkUpdateCall struct {
 	Updates AccountBulkUpdate
 }
 
+type failingCrossReplicaRuntimeBlocker struct {
+	runtimeBlockRecorder
+	clears []int64
+}
+
+func (b *failingCrossReplicaRuntimeBlocker) ClearAccountSchedulingBlockAcrossReplicas(_ context.Context, accountID int64) error {
+	b.clears = append(b.clears, accountID)
+	return errors.New("runtime clear unavailable")
+}
+
 func (s *accountRepoStubForBulkUpdate) BulkUpdate(_ context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
 	s.bulkUpdateIDs = append([]int64{}, ids...)
 	s.bulkUpdatePayload = updates
@@ -275,6 +285,32 @@ func TestAdminService_BulkUpdateAccounts_PartialFailureIDs(t *testing.T) {
 	require.ElementsMatch(t, []int64{1, 3}, result.SuccessIDs)
 	require.ElementsMatch(t, []int64{2}, result.FailedIDs)
 	require.Len(t, result.Results, 3)
+}
+
+func TestAdminService_BulkUpdateAccounts_RuntimeClearFailureDoesNotSkipGroupBindings(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	blocker := &failingCrossReplicaRuntimeBlocker{}
+	svc := &adminServiceImpl{
+		accountRepo:    repo,
+		groupRepo:      &groupRepoStubForAdmin{getByID: &Group{ID: 10, Name: "g10"}},
+		runtimeBlocker: blocker,
+	}
+	groupIDs := []int64{10}
+	schedulable := false
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs:            []int64{1, 2},
+		GroupIDs:              &groupIDs,
+		Schedulable:           &schedulable,
+		SkipMixedChannelCheck: true,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, []int64{1, 2}, repo.bindGroupsCalls)
+	require.Equal(t, []int64{1, 2}, blocker.clears)
+	require.Zero(t, result.Success)
+	require.Equal(t, 2, result.Failed)
+	require.ElementsMatch(t, []int64{1, 2}, result.FailedIDs)
 }
 
 func TestAdminService_BulkUpdateAccounts_NilGroupRepoReturnsError(t *testing.T) {

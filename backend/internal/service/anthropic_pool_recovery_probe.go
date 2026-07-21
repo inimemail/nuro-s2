@@ -34,12 +34,20 @@ func (s *GatewayService) maybeStartAnthropicPoolRecoveryProbe(ctx context.Contex
 	if s == nil || account == nil || !isAnthropicPoolAccount(account) {
 		return
 	}
+	if !account.IsActive() || !account.Schedulable {
+		s.clearAnthropicPoolSoftCooldown(account.ID)
+		return
+	}
 	if !account.IsPoolSoftCooldownEnabled() {
 		s.clearAnthropicPoolSoftCooldown(account.ID)
 		return
 	}
 	cooldownUntil, ok := s.anthropicPoolAccountSoftCooldownUntil(account)
 	if !ok || time.Now().Before(cooldownUntil) {
+		return
+	}
+	clearGeneration, ok := accountRuntimeDeadlineGeneration(&s.anthropicPoolSoftCooldownUntil, account.ID, cooldownUntil)
+	if !ok {
 		return
 	}
 	if s.clearAnthropicPoolSoftCooldownIfRecoveryProbeDisabled(ctx, account, requestedModel) {
@@ -58,7 +66,7 @@ func (s *GatewayService) maybeStartAnthropicPoolRecoveryProbe(ctx context.Contex
 		defer s.anthropicPoolRecoveryProbeInFlight.Delete(accountID)
 		probeCtx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		s.runAnthropicPoolRecoveryProbe(probeCtx, &accountCopy, requestedModel, cooldownUntil)
+		s.runAnthropicPoolRecoveryProbe(probeCtx, &accountCopy, requestedModel, cooldownUntil, clearGeneration)
 	}()
 }
 
@@ -115,6 +123,10 @@ func (s *GatewayService) MaybeKickAnthropicPoolRecoveryProbeFromAdminList(ctx co
 	if s == nil || account == nil || !isAnthropicPoolAccount(account) {
 		return
 	}
+	if !account.IsActive() || !account.Schedulable {
+		s.clearAnthropicPoolSoftCooldown(account.ID)
+		return
+	}
 	cooldownUntil, ok := s.anthropicPoolAccountSoftCooldownUntil(account)
 	if !ok || time.Now().Before(cooldownUntil) {
 		return
@@ -133,14 +145,24 @@ func (s *GatewayService) MaybeKickAnthropicPoolRecoveryProbeFromAdminList(ctx co
 	s.maybeStartAnthropicPoolRecoveryProbe(ctx, account, cooldownContext.ProbeModel)
 }
 
-func (s *GatewayService) runAnthropicPoolRecoveryProbe(ctx context.Context, account *Account, requestedModel string, cooldownUntil time.Time) {
-	result := s.probeAnthropicPoolAccountRecovery(ctx, account, requestedModel)
-	if !s.anthropicPoolAccountSoftCooldownMatches(account.ID, cooldownUntil) {
-		loggerLegacyAnthropicPoolRecovery("probe_result_ignored_stale account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
-		return
+func (s *GatewayService) runAnthropicPoolRecoveryProbe(ctx context.Context, account *Account, requestedModel string, cooldownUntil time.Time, generations ...int64) {
+	clearGeneration := int64(0)
+	if len(generations) > 0 {
+		clearGeneration = generations[0]
+	} else {
+		var ok bool
+		clearGeneration, ok = accountRuntimeDeadlineGeneration(&s.anthropicPoolSoftCooldownUntil, account.ID, cooldownUntil)
+		if !ok {
+			return
+		}
 	}
+	result := s.probeAnthropicPoolAccountRecovery(ctx, account, requestedModel)
 	if result.success {
-		s.clearAnthropicPoolSoftCooldown(account.ID)
+		if !deleteAccountRuntimeDeadlineIfMatches(&s.anthropicPoolSoftCooldownUntil, account.ID, cooldownUntil, clearGeneration) {
+			loggerLegacyAnthropicPoolRecovery("probe_result_ignored_stale account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
+			return
+		}
+		s.clearAnthropicPoolSoftCooldownBefore(account.ID, clearGeneration+1)
 		s.anthropicPoolRecoveryProbeFailureCnt.Delete(account.ID)
 		if s.rateLimitService != nil {
 			if _, err := s.rateLimitService.RecoverAccountAfterSuccessfulTest(ctx, account.ID); err != nil {
@@ -153,8 +175,14 @@ func (s *GatewayService) runAnthropicPoolRecoveryProbe(ctx context.Context, acco
 
 	backoff := s.nextAnthropicPoolRecoveryProbeBackoff(ctx, account, result.retryable)
 	until := time.Now().Add(backoff)
-	s.storeAnthropicPoolSoftCooldownUntil(account.ID, until)
-	s.storeAnthropicPoolRecoveryProbeBackoffContext(ctx, account.ID, result)
+	if !replaceAccountRuntimeDeadlineIfMatches(&s.anthropicPoolSoftCooldownUntil, account.ID, cooldownUntil, clearGeneration, until) {
+		loggerLegacyAnthropicPoolRecovery("probe_result_ignored_stale account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
+		return
+	}
+	s.storeAnthropicPoolRecoveryProbeBackoffContext(ctx, account.ID, result, clearGeneration)
+	if latestGeneration := s.currentAccountRuntimeClearGeneration(account.ID); latestGeneration > clearGeneration {
+		s.clearAnthropicPoolSoftCooldownBefore(account.ID, latestGeneration)
+	}
 	if result.err != nil {
 		loggerLegacyAnthropicPoolRecovery("probe_failed account_id=%d endpoint=%s status=%d backoff=%s err=%v", account.ID, result.endpoint, result.statusCode, backoff, result.err)
 	} else {
@@ -357,8 +385,13 @@ func (s *GatewayService) nextAnthropicPoolRecoveryProbeBackoff(ctx context.Conte
 	return backoff
 }
 
-func (s *GatewayService) storeAnthropicPoolRecoveryProbeBackoffContext(ctx context.Context, accountID int64, result anthropicPoolRecoveryProbeResult) {
+func (s *GatewayService) storeAnthropicPoolRecoveryProbeBackoffContext(ctx context.Context, accountID int64, result anthropicPoolRecoveryProbeResult, generations ...int64) {
 	cooldownContext := s.anthropicPoolAccountSoftCooldownContext(accountID)
+	if len(generations) > 0 {
+		cooldownContext.ClearGeneration = generations[0]
+	} else {
+		cooldownContext.ClearGeneration = s.currentAccountRuntimeClearGeneration(accountID)
+	}
 	cooldownContext.LastProbeStatus = result.statusCode
 	cooldownContext.LastProbeReason = truncateString(strings.TrimSpace(firstNonEmptyString(result.message, result.err)), 256)
 	if isAnthropicPoolProbeModelError(result.statusCode, result.message) {

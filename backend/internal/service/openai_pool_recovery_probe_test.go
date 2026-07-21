@@ -26,6 +26,25 @@ type openAIPoolProbeHTTPUpstreamRecorder struct {
 	err          error
 }
 
+type blockingPoolProbeHTTPUpstream struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingPoolProbeHTTPUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	return r.DoWithTLS(req, proxyURL, accountID, accountConcurrency, nil)
+}
+
+func (r *blockingPoolProbeHTTPUpstream) DoWithTLS(_ *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	close(r.started)
+	<-r.release
+	return &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"probe failed"}}`)),
+	}, nil
+}
+
 func (r *openAIPoolProbeHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
 	return r.DoWithTLS(req, proxyURL, accountID, accountConcurrency, nil)
 }
@@ -77,6 +96,114 @@ func openAIPoolRecoveryProbeTestSettingServiceWithValues(t *testing.T, regularEn
 
 type openAIPoolProbeSettingRepoStub struct {
 	values map[string]string
+}
+
+func TestOpenAIPoolRecoveryProbe_AdminListClearsUnschedulableAccountWithoutProbe(t *testing.T) {
+	upstream := &openAIPoolProbeHTTPUpstreamRecorder{}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:          1201,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: false,
+		Credentials: map[string]any{"pool_mode": true, "api_key": "sk-test"},
+	}
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(-time.Second))
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{ProbeModel: "gpt-5.4"})
+	svc.openaiPoolRecoveryProbeAdminKickAt.Store(account.ID, time.Now())
+
+	svc.MaybeKickOpenAIPoolRecoveryProbeFromAdminList(context.Background(), account)
+
+	_, cooling := svc.openAIPoolAccountSoftCooldownUntil(account)
+	require.False(t, cooling)
+	_, hasKickState := svc.openaiPoolRecoveryProbeAdminKickAt.Load(account.ID)
+	require.False(t, hasKickState)
+	require.Empty(t, upstream.path)
+}
+
+func TestAnthropicPoolRecoveryProbe_AdminListClearsInactiveAccountWithoutProbe(t *testing.T) {
+	upstream := &openAIPoolProbeHTTPUpstreamRecorder{}
+	svc := &GatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:          1202,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusDisabled,
+		Schedulable: true,
+		Credentials: map[string]any{"pool_mode": true, "api_key": "sk-test"},
+	}
+	svc.anthropicPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(-time.Second))
+	svc.anthropicPoolSoftCooldownContext.Store(account.ID, anthropicPoolSoftCooldownContext{ProbeModel: "claude-sonnet-4-6"})
+	svc.anthropicPoolRecoveryProbeAdminKick.Store(account.ID, time.Now())
+
+	svc.MaybeKickAnthropicPoolRecoveryProbeFromAdminList(context.Background(), account)
+
+	_, cooling := svc.anthropicPoolAccountSoftCooldownUntil(account)
+	require.False(t, cooling)
+	_, hasKickState := svc.anthropicPoolRecoveryProbeAdminKick.Load(account.ID)
+	require.False(t, hasKickState)
+	require.Empty(t, upstream.path)
+}
+
+func TestOpenAIPoolRecoveryProbe_DoesNotRestoreCooldownAfterAdminClear(t *testing.T) {
+	bus := NewLocalSchedulerEventBus()
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, bus)
+	upstream := &blockingPoolProbeHTTPUpstream{started: make(chan struct{}), release: make(chan struct{})}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream, schedulerSnapshot: snapshot}
+	account := &Account{
+		ID: 1203, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "api_key": "sk-test", "base_url": "https://upstream.example",
+		},
+	}
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{Until: cooldownUntil, ClearGeneration: 0})
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{ProbeKind: "openai", ClearGeneration: 0})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.runOpenAIPoolRecoveryProbe(context.Background(), account, "gpt-5.4", cooldownUntil, 0)
+	}()
+	<-upstream.started
+
+	blocker := NewCompositeAccountRuntimeBlocker(svc, nil, nil, nil)
+	require.NoError(t, blocker.ClearAccountSchedulingBlockAcrossReplicas(context.Background(), account.ID))
+	close(upstream.release)
+	<-done
+
+	_, exists := svc.openaiPoolSoftCooldownUntil.Load(account.ID)
+	require.False(t, exists)
+}
+
+func TestAnthropicPoolRecoveryProbe_DoesNotRestoreCooldownAfterAdminClear(t *testing.T) {
+	bus := NewLocalSchedulerEventBus()
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, bus)
+	upstream := &blockingPoolProbeHTTPUpstream{started: make(chan struct{}), release: make(chan struct{})}
+	svc := &GatewayService{cfg: &config.Config{}, httpUpstream: upstream, schedulerSnapshot: snapshot}
+	account := &Account{
+		ID: 1204, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "api_key": "sk-test", "base_url": "https://upstream.example",
+		},
+	}
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.anthropicPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{Until: cooldownUntil, ClearGeneration: 0})
+	svc.anthropicPoolSoftCooldownContext.Store(account.ID, anthropicPoolSoftCooldownContext{ProbeKind: "messages", ClearGeneration: 0})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.runAnthropicPoolRecoveryProbe(context.Background(), account, "claude-sonnet-4-6", cooldownUntil, 0)
+	}()
+	<-upstream.started
+
+	blocker := NewCompositeAccountRuntimeBlocker(nil, svc, nil, nil)
+	require.NoError(t, blocker.ClearAccountSchedulingBlockAcrossReplicas(context.Background(), account.ID))
+	close(upstream.release)
+	<-done
+
+	_, exists := svc.anthropicPoolSoftCooldownUntil.Load(account.ID)
+	require.False(t, exists)
 }
 
 func (r openAIPoolProbeSettingRepoStub) Get(_ context.Context, key string) (*Setting, error) {

@@ -872,7 +872,7 @@ func (s *OpenAIGatewayService) clearGrokRateLimitRuntimeBlockAfterRecovery(accou
 	// Grok shares only the runtime fast-path map with OpenAI. Do not call the
 	// generic clear method here because it also resets OpenAI pool soft cooldowns.
 	if current, loaded := s.openaiAccountRuntimeBlockUntil.Load(account.ID); loaded {
-		currentUntil, ok := current.(time.Time)
+		currentUntil, _, ok := parseAccountRuntimeDeadline(current)
 		if !ok || currentUntil.After(*account.RateLimitResetAt) ||
 			!s.openaiAccountRuntimeBlockUntil.CompareAndDelete(account.ID, current) {
 			return
@@ -882,8 +882,8 @@ func (s *OpenAIGatewayService) clearGrokRateLimitRuntimeBlockAfterRecovery(accou
 	// A new local block can race with the Redis delete. Reassert it so the
 	// distributed account-slot arbiter cannot miss the newer cooldown.
 	if current, loaded := s.openaiAccountRuntimeBlockUntil.Load(account.ID); loaded {
-		if currentUntil, ok := current.(time.Time); ok && currentUntil.After(time.Now()) {
-			s.storeOpenAIAccountCooldownInRedis(account.ID, currentUntil)
+		if currentUntil, generation, ok := parseAccountRuntimeDeadline(current); ok && currentUntil.After(time.Now()) {
+			s.storeOpenAIAccountCooldownInRedis(account.ID, currentUntil, generation)
 			return
 		}
 	}

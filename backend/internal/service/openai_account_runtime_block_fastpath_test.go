@@ -90,7 +90,7 @@ func TestOpenAIRuntimeBlock_DoesNotShortenExistingBlock(t *testing.T) {
 
 	value, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
 	require.True(t, ok)
-	actualUntil, ok := value.(time.Time)
+	actualUntil, _, ok := parseAccountRuntimeDeadline(value)
 	require.True(t, ok)
 	require.WithinDuration(t, longUntil, actualUntil, time.Second)
 }

@@ -757,7 +757,7 @@ func TestGrokSuccessfulResponseKeepsNewerConcurrentRateLimitBlock(t *testing.T) 
 	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 	value, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
 	require.True(t, ok)
-	actualResetAt, ok := value.(time.Time)
+	actualResetAt, _, ok := parseAccountRuntimeDeadline(value)
 	require.True(t, ok)
 	require.WithinDuration(t, newResetAt, actualResetAt, time.Second)
 }

@@ -659,6 +659,22 @@ func (c *cellAwareConcurrencyCache) ClearAccountCooldown(ctx context.Context, ac
 	return cache.ClearAccountCooldown(ctx, accountID)
 }
 
+func (c *cellAwareConcurrencyCache) SetAccountCooldownGeneration(ctx context.Context, accountID int64, ttl time.Duration, generation int64) error {
+	cache, err := c.accountCache(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return cache.SetAccountCooldownGeneration(ctx, accountID, ttl, generation)
+}
+
+func (c *cellAwareConcurrencyCache) ClearAccountCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error {
+	cache, err := c.accountCache(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return cache.ClearAccountCooldownBeforeGeneration(ctx, accountID, generation)
+}
+
 func (c *cellAwareConcurrencyCache) CleanupExpiredAccountSlots(ctx context.Context, accountID int64) error {
 	cache, err := c.accountCache(ctx, accountID)
 	if err != nil {

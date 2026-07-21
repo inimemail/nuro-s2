@@ -119,23 +119,27 @@ func (s *OpenAIGatewayService) BlockAccountScheduling(account *Account, until ti
 	if blockUntil.IsZero() || !blockUntil.After(now) {
 		blockUntil = now.Add(openAIStopSchedulingBridgeCooldown)
 	}
+	blockDeadline := accountRuntimeDeadline{
+		Until:           blockUntil,
+		ClearGeneration: s.currentAccountRuntimeClearGeneration(account.ID),
+	}
 
 	for {
 		current, loaded := s.openaiAccountRuntimeBlockUntil.Load(account.ID)
 		if !loaded {
-			actual, stored := s.openaiAccountRuntimeBlockUntil.LoadOrStore(account.ID, blockUntil)
+			actual, stored := s.openaiAccountRuntimeBlockUntil.LoadOrStore(account.ID, blockDeadline)
 			if !stored {
-				s.storeOpenAIAccountCooldownInRedis(account.ID, blockUntil)
+				s.storeOpenAIAccountCooldownInRedis(account.ID, blockUntil, blockDeadline.ClearGeneration)
 				s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, account.ID, firstNonEmptyString(reason, "runtime_block"))
 				return
 			}
 			current = actual
 		}
 
-		currentUntil, ok := current.(time.Time)
-		if !ok || currentUntil.IsZero() {
-			if s.openaiAccountRuntimeBlockUntil.CompareAndSwap(account.ID, current, blockUntil) {
-				s.storeOpenAIAccountCooldownInRedis(account.ID, blockUntil)
+		currentUntil, _, ok := parseAccountRuntimeDeadline(current)
+		if !ok {
+			if s.openaiAccountRuntimeBlockUntil.CompareAndSwap(account.ID, current, blockDeadline) {
+				s.storeOpenAIAccountCooldownInRedis(account.ID, blockUntil, blockDeadline.ClearGeneration)
 				s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, account.ID, firstNonEmptyString(reason, "runtime_block"))
 				return
 			}
@@ -144,8 +148,8 @@ func (s *OpenAIGatewayService) BlockAccountScheduling(account *Account, until ti
 		if currentUntil.After(blockUntil) {
 			return
 		}
-		if s.openaiAccountRuntimeBlockUntil.CompareAndSwap(account.ID, current, blockUntil) {
-			s.storeOpenAIAccountCooldownInRedis(account.ID, blockUntil)
+		if s.openaiAccountRuntimeBlockUntil.CompareAndSwap(account.ID, current, blockDeadline) {
+			s.storeOpenAIAccountCooldownInRedis(account.ID, blockUntil, blockDeadline.ClearGeneration)
 			s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, account.ID, firstNonEmptyString(reason, "runtime_block"))
 			return
 		}
@@ -156,24 +160,73 @@ func (s *OpenAIGatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	if s == nil || accountID <= 0 {
 		return
 	}
+	s.clearLocalAccountSchedulingBlock(accountID)
+	s.clearOpenAIAccountCooldownInRedis(accountID)
+}
+
+func (s *OpenAIGatewayService) clearLocalAccountSchedulingBlock(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
 	s.openaiAccountRuntimeBlockUntil.Delete(accountID)
 	s.openaiPoolSoftCooldownUntil.Delete(accountID)
 	s.openaiPoolSoftCooldownContext.Delete(accountID)
 	s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
 	s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
 	s.openaiPoolRecoveryProbeFailureCount.Delete(accountID)
-	s.clearOpenAIAccountCooldownInRedis(accountID)
-	s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, accountID, "runtime_clear")
+	s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
 }
 
-func (s *OpenAIGatewayService) storeOpenAIAccountCooldownInRedis(accountID int64, until time.Time) {
-	if s == nil || s.concurrencyService == nil || accountID <= 0 || until.IsZero() || !until.After(time.Now()) {
+func (s *OpenAIGatewayService) clearLocalAccountSchedulingBlockBefore(accountID, clearGeneration int64) {
+	if s == nil || accountID <= 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := s.concurrencyService.SetAccountCooldown(ctx, accountID, until); err != nil {
-		slog.Warn("openai.account_cooldown_redis_set_failed", "account_id", accountID, "error", err)
+	deleteAccountRuntimeDeadlineBefore(&s.openaiAccountRuntimeBlockUntil, accountID, clearGeneration)
+	if !deleteAccountRuntimeDeadlineBefore(&s.openaiPoolSoftCooldownUntil, accountID, clearGeneration) {
+		return
+	}
+	if value, ok := s.openaiPoolSoftCooldownContext.Load(accountID); ok {
+		cooldownContext, valid := value.(openAIPoolSoftCooldownContext)
+		if !valid || clearGeneration <= 0 || cooldownContext.ClearGeneration < clearGeneration {
+			s.openaiPoolSoftCooldownContext.CompareAndDelete(accountID, value)
+		}
+	}
+	s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
+	s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
+	s.openaiPoolRecoveryProbeFailureCount.Delete(accountID)
+	s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
+}
+
+func (s *OpenAIGatewayService) currentAccountRuntimeClearGeneration(accountID int64) int64 {
+	if s == nil || s.schedulerSnapshot == nil {
+		return 0
+	}
+	return s.schedulerSnapshot.currentAccountRuntimeClearGeneration(accountID)
+}
+
+func (s *OpenAIGatewayService) storeOpenAIAccountCooldownInRedis(accountID int64, until time.Time, generations ...int64) {
+	if s == nil || accountID <= 0 || until.IsZero() || !until.After(time.Now()) {
+		return
+	}
+	if s.concurrencyService != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		var err error
+		if len(generations) > 0 {
+			err = s.concurrencyService.SetAccountCooldownGeneration(ctx, accountID, until, generations[0])
+		} else {
+			err = s.concurrencyService.SetAccountCooldown(ctx, accountID, until)
+		}
+		cancel()
+		if err != nil {
+			slog.Warn("openai.account_cooldown_redis_set_failed", "account_id", accountID, "error", err)
+		}
+	}
+	if len(generations) > 0 && s.schedulerSnapshot != nil {
+		latestGeneration := s.schedulerSnapshot.currentAccountRuntimeClearGeneration(accountID)
+		if latestGeneration > generations[0] {
+			s.clearLocalAccountSchedulingBlockBefore(accountID, latestGeneration)
+			_ = s.clearOpenAIAccountCooldownInRedisBefore(accountID, latestGeneration)
+		}
 	}
 }
 
@@ -188,6 +241,19 @@ func (s *OpenAIGatewayService) clearOpenAIAccountCooldownInRedis(accountID int64
 	}
 }
 
+func (s *OpenAIGatewayService) clearOpenAIAccountCooldownInRedisBefore(accountID, clearGeneration int64) error {
+	if s == nil || s.concurrencyService == nil || accountID <= 0 || clearGeneration <= 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.concurrencyService.ClearAccountCooldownBeforeGeneration(ctx, accountID, clearGeneration); err != nil {
+		slog.Warn("openai.account_cooldown_redis_clear_generation_failed", "account_id", accountID, "generation", clearGeneration, "error", err)
+		return err
+	}
+	return nil
+}
+
 func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) bool {
 	if s == nil || !isOpenAICompatibleSchedulingAccount(account) {
 		return false
@@ -196,8 +262,17 @@ func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) b
 	if !ok {
 		return false
 	}
-	cooldownUntil, ok := value.(time.Time)
-	if !ok || cooldownUntil.IsZero() {
+	if s.schedulerSnapshot != nil {
+		if generation := s.schedulerSnapshot.observedAccountRuntimeClearGeneration(account.ID); generation > 0 {
+			s.clearLocalAccountSchedulingBlockBefore(account.ID, generation)
+		}
+	}
+	value, ok = s.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	if !ok {
+		return false
+	}
+	cooldownUntil, _, ok := parseAccountRuntimeDeadline(value)
+	if !ok {
 		s.openaiAccountRuntimeBlockUntil.Delete(account.ID)
 		return false
 	}
@@ -271,12 +346,14 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 	cooldownContext.Reason = truncateString(strings.TrimSpace(cooldownContext.Reason), 256)
 	cooldownContext.LastProbeReason = truncateString(strings.TrimSpace(cooldownContext.LastProbeReason), 256)
 	cooldown = s.capOpenAIPoolSoftCooldown(ctx, account, cooldown, cooldownContext)
+	clearGeneration := s.currentAccountRuntimeClearGeneration(account.ID)
+	cooldownContext.ClearGeneration = clearGeneration
 	if cooldownContext.ProbeCapability != "" || cooldownContext.ProbeModel != "" || cooldownContext.ProbeKind != "" ||
 		cooldownContext.CooldownSource != "" || cooldownContext.StatusCode > 0 || cooldownContext.Reason != "" ||
 		cooldownContext.LastProbeStatus > 0 || cooldownContext.LastProbeReason != "" {
 		s.openaiPoolSoftCooldownContext.Store(account.ID, cooldownContext)
 	}
-	s.storeOpenAIPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown))
+	s.storeOpenAIPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown), clearGeneration)
 	s.openaiPoolSoftCooldownFailureCount.Delete(account.ID)
 }
 
@@ -355,33 +432,43 @@ func (s *OpenAIGatewayService) capOpenAIPoolSoftCooldown(ctx context.Context, ac
 	return cooldown
 }
 
-func (s *OpenAIGatewayService) storeOpenAIPoolSoftCooldownUntil(accountID int64, until time.Time) {
+func (s *OpenAIGatewayService) storeOpenAIPoolSoftCooldownUntil(accountID int64, until time.Time, generations ...int64) {
 	if s == nil || accountID <= 0 || until.IsZero() {
 		return
 	}
 	now := time.Now()
+	clearGeneration := int64(0)
+	if len(generations) > 0 {
+		clearGeneration = generations[0]
+	} else {
+		clearGeneration = s.currentAccountRuntimeClearGeneration(accountID)
+	}
+	deadline := accountRuntimeDeadline{
+		Until:           until,
+		ClearGeneration: clearGeneration,
+	}
 	for {
 		current, loaded := s.openaiPoolSoftCooldownUntil.Load(accountID)
 		if !loaded {
-			if _, stored := s.openaiPoolSoftCooldownUntil.LoadOrStore(accountID, until); !stored {
-				s.storeOpenAIAccountCooldownInRedis(accountID, until)
+			if _, stored := s.openaiPoolSoftCooldownUntil.LoadOrStore(accountID, deadline); !stored {
+				s.storeOpenAIAccountCooldownInRedis(accountID, until, deadline.ClearGeneration)
 				s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, accountID, "soft_cooldown")
 				return
 			}
 			continue
 		}
-		currentUntil, ok := current.(time.Time)
-		if !ok || currentUntil.IsZero() || !currentUntil.After(now) {
-			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(accountID, current, until) {
-				s.storeOpenAIAccountCooldownInRedis(accountID, until)
+		currentUntil, _, ok := parseAccountRuntimeDeadline(current)
+		if !ok || !currentUntil.After(now) {
+			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(accountID, current, deadline) {
+				s.storeOpenAIAccountCooldownInRedis(accountID, until, deadline.ClearGeneration)
 				s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, accountID, "soft_cooldown")
 				return
 			}
 			continue
 		}
 		if currentUntil.After(until) {
-			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(accountID, current, until) {
-				s.storeOpenAIAccountCooldownInRedis(accountID, until)
+			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(accountID, current, deadline) {
+				s.storeOpenAIAccountCooldownInRedis(accountID, until, deadline.ClearGeneration)
 				s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, accountID, "soft_cooldown")
 				return
 			}
@@ -399,8 +486,17 @@ func (s *OpenAIGatewayService) isOpenAIPoolAccountSoftCooling(account *Account) 
 	if !ok {
 		return false
 	}
-	until, ok := value.(time.Time)
-	if !ok || until.IsZero() {
+	if s.schedulerSnapshot != nil {
+		if generation := s.schedulerSnapshot.observedAccountRuntimeClearGeneration(account.ID); generation > 0 {
+			s.clearLocalAccountSchedulingBlockBefore(account.ID, generation)
+		}
+	}
+	value, ok = s.openaiPoolSoftCooldownUntil.Load(account.ID)
+	if !ok {
+		return false
+	}
+	_, _, ok = parseAccountRuntimeDeadline(value)
+	if !ok {
 		s.openaiPoolSoftCooldownUntil.Delete(account.ID)
 		s.openaiPoolSoftCooldownContext.Delete(account.ID)
 		return false
@@ -435,8 +531,17 @@ func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownUntilByID(accountID 
 	if !ok {
 		return time.Time{}, false
 	}
-	until, ok := value.(time.Time)
-	if !ok || until.IsZero() {
+	if s.schedulerSnapshot != nil {
+		if generation := s.schedulerSnapshot.observedAccountRuntimeClearGeneration(accountID); generation > 0 {
+			s.clearLocalAccountSchedulingBlockBefore(accountID, generation)
+		}
+	}
+	value, ok = s.openaiPoolSoftCooldownUntil.Load(accountID)
+	if !ok {
+		return time.Time{}, false
+	}
+	until, _, ok := parseAccountRuntimeDeadline(value)
+	if !ok {
 		s.openaiPoolSoftCooldownUntil.Delete(accountID)
 		s.openaiPoolSoftCooldownContext.Delete(accountID)
 		return time.Time{}, false
@@ -466,36 +571,25 @@ func (s *OpenAIGatewayService) clampOpenAIPoolSoftCooldownUntil(ctx context.Cont
 		return until
 	}
 	maxUntil := time.Now().Add(maxCooldown)
-	for current := until; ; {
-		if current.IsZero() || !current.After(maxUntil) {
-			return current
-		}
-		if s.openaiPoolSoftCooldownUntil.CompareAndSwap(account.ID, current, maxUntil) {
-			return maxUntil
-		}
+	for {
 		value, ok := s.openaiPoolSoftCooldownUntil.Load(account.ID)
 		if !ok {
 			return time.Time{}
 		}
-		next, ok := value.(time.Time)
-		if !ok || next.IsZero() {
-			s.openaiPoolSoftCooldownUntil.Delete(account.ID)
+		current, generation, valid := parseAccountRuntimeDeadline(value)
+		if !valid {
+			s.openaiPoolSoftCooldownUntil.CompareAndDelete(account.ID, value)
 			s.openaiPoolSoftCooldownContext.Delete(account.ID)
 			return time.Time{}
 		}
-		current = next
+		if !current.After(maxUntil) {
+			return current
+		}
+		clamped := accountRuntimeDeadline{Until: maxUntil, ClearGeneration: generation}
+		if s.openaiPoolSoftCooldownUntil.CompareAndSwap(account.ID, value, clamped) {
+			return maxUntil
+		}
 	}
-}
-
-func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownMatches(accountID int64, expectedUntil time.Time) bool {
-	if expectedUntil.IsZero() {
-		return false
-	}
-	until, ok := s.openAIPoolAccountSoftCooldownUntilByID(accountID)
-	if !ok {
-		return false
-	}
-	return until.Equal(expectedUntil)
 }
 
 func (s *OpenAIGatewayService) isOpenAIPoolAccountSoftCooldownDue(account *Account) bool {

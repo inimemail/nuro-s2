@@ -511,6 +511,9 @@ func NewOpenAIGatewayService(
 	if openAITokenProvider != nil {
 		openAITokenProvider.SetAccountRuntimeBlocker(svc)
 	}
+	if schedulerSnapshot != nil {
+		schedulerSnapshot.RegisterAccountRuntimeClearHandler(svc.clearLocalAccountSchedulingBlockBefore)
+	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
 }

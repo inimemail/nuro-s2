@@ -128,6 +128,11 @@ type AccountCooldownCache interface {
 	ClearAccountCooldown(ctx context.Context, accountID int64) error
 }
 
+type VersionedAccountCooldownCache interface {
+	SetAccountCooldownGeneration(ctx context.Context, accountID int64, ttl time.Duration, generation int64) error
+	ClearAccountCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error
+}
+
 var (
 	requestIDPrefix  = initRequestIDPrefix()
 	requestIDCounter atomic.Uint64
@@ -692,6 +697,32 @@ func (s *ConcurrencyService) ClearAccountCooldown(ctx context.Context, accountID
 		return nil
 	}
 	return cooldownCache.ClearAccountCooldown(ctx, accountID)
+}
+
+func (s *ConcurrencyService) SetAccountCooldownGeneration(ctx context.Context, accountID int64, until time.Time, generation int64) error {
+	if s == nil || s.cache == nil || accountID <= 0 || generation < 0 {
+		return nil
+	}
+	ttl := time.Until(until)
+	if ttl <= 0 {
+		return s.ClearAccountCooldownBeforeGeneration(ctx, accountID, generation+1)
+	}
+	cache, ok := s.cache.(VersionedAccountCooldownCache)
+	if !ok {
+		return s.SetAccountCooldown(ctx, accountID, until)
+	}
+	return cache.SetAccountCooldownGeneration(ctx, accountID, ttl, generation)
+}
+
+func (s *ConcurrencyService) ClearAccountCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error {
+	if s == nil || s.cache == nil || accountID <= 0 || generation <= 0 {
+		return nil
+	}
+	cache, ok := s.cache.(VersionedAccountCooldownCache)
+	if !ok {
+		return s.ClearAccountCooldown(ctx, accountID)
+	}
+	return cache.ClearAccountCooldownBeforeGeneration(ctx, accountID, generation)
 }
 
 // AcquireUserSlot attempts to acquire a concurrency slot for a user.

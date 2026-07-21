@@ -2,8 +2,96 @@ package service
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"time"
 )
+
+type accountRuntimeDeadline struct {
+	Until           time.Time
+	ClearGeneration int64
+}
+
+func parseAccountRuntimeDeadline(value any) (time.Time, int64, bool) {
+	switch deadline := value.(type) {
+	case accountRuntimeDeadline:
+		return deadline.Until, deadline.ClearGeneration, !deadline.Until.IsZero()
+	case time.Time:
+		return deadline, 0, !deadline.IsZero()
+	default:
+		return time.Time{}, 0, false
+	}
+}
+
+func accountRuntimeDeadlineGeneration(values *sync.Map, accountID int64, expectedUntil time.Time) (int64, bool) {
+	if values == nil || accountID <= 0 || expectedUntil.IsZero() {
+		return 0, false
+	}
+	value, ok := values.Load(accountID)
+	if !ok {
+		return 0, false
+	}
+	until, generation, valid := parseAccountRuntimeDeadline(value)
+	return generation, valid && until.Equal(expectedUntil)
+}
+
+func replaceAccountRuntimeDeadlineIfMatches(values *sync.Map, accountID int64, expectedUntil time.Time, expectedGeneration int64, nextUntil time.Time) bool {
+	if values == nil || accountID <= 0 || expectedUntil.IsZero() || nextUntil.IsZero() {
+		return false
+	}
+	for {
+		value, ok := values.Load(accountID)
+		if !ok {
+			return false
+		}
+		until, generation, valid := parseAccountRuntimeDeadline(value)
+		if !valid || !until.Equal(expectedUntil) || generation != expectedGeneration {
+			return false
+		}
+		next := accountRuntimeDeadline{Until: nextUntil, ClearGeneration: expectedGeneration}
+		if values.CompareAndSwap(accountID, value, next) {
+			return true
+		}
+	}
+}
+
+func deleteAccountRuntimeDeadlineIfMatches(values *sync.Map, accountID int64, expectedUntil time.Time, expectedGeneration int64) bool {
+	if values == nil || accountID <= 0 || expectedUntil.IsZero() {
+		return false
+	}
+	for {
+		value, ok := values.Load(accountID)
+		if !ok {
+			return false
+		}
+		until, generation, valid := parseAccountRuntimeDeadline(value)
+		if !valid || !until.Equal(expectedUntil) || generation != expectedGeneration {
+			return false
+		}
+		if values.CompareAndDelete(accountID, value) {
+			return true
+		}
+	}
+}
+
+func deleteAccountRuntimeDeadlineBefore(values *sync.Map, accountID, clearGeneration int64) bool {
+	if values == nil || accountID <= 0 {
+		return false
+	}
+	for {
+		value, ok := values.Load(accountID)
+		if !ok {
+			return true
+		}
+		_, generation, valid := parseAccountRuntimeDeadline(value)
+		if valid && clearGeneration > 0 && generation >= clearGeneration {
+			return false
+		}
+		if values.CompareAndDelete(accountID, value) {
+			return true
+		}
+	}
+}
 
 type CompositeAccountRuntimeBlocker struct {
 	blockers []AccountRuntimeBlocker
@@ -47,6 +135,54 @@ func (b *CompositeAccountRuntimeBlocker) ClearAccountSchedulingBlock(accountID i
 			blocker.ClearAccountSchedulingBlock(accountID)
 		}
 	}
+}
+
+// ClearAccountSchedulingBlockAcrossReplicas is reserved for explicit admin
+// recovery/stop actions. Automatic recovery stays local so a delayed event
+// cannot erase a newer cooldown created on another replica.
+func (b *CompositeAccountRuntimeBlocker) ClearAccountSchedulingBlockAcrossReplicas(ctx context.Context, accountID int64) error {
+	if b == nil || accountID <= 0 {
+		return nil
+	}
+	var snapshot *SchedulerSnapshotService
+	for _, blocker := range b.blockers {
+		switch service := blocker.(type) {
+		case *OpenAIGatewayService:
+			if service != nil && service.schedulerSnapshot != nil {
+				snapshot = service.schedulerSnapshot
+			}
+		case *GatewayService:
+			if snapshot == nil && service != nil && service.schedulerSnapshot != nil {
+				snapshot = service.schedulerSnapshot
+			}
+		}
+	}
+	if snapshot == nil {
+		b.ClearAccountSchedulingBlock(accountID)
+		return nil
+	}
+	generation, err := snapshot.publishAccountRuntimeClear(ctx, accountID)
+	if generation <= 0 {
+		if err != nil {
+			return err
+		}
+		b.ClearAccountSchedulingBlock(accountID)
+		return nil
+	}
+	for _, blocker := range b.blockers {
+		switch service := blocker.(type) {
+		case *OpenAIGatewayService:
+			service.clearLocalAccountSchedulingBlockBefore(accountID, generation)
+			if clearErr := service.clearOpenAIAccountCooldownInRedisBefore(accountID, generation); clearErr != nil {
+				err = errors.Join(err, clearErr)
+			}
+		case *GatewayService:
+			service.clearAnthropicPoolSoftCooldownBefore(accountID, generation)
+		default:
+			blocker.ClearAccountSchedulingBlock(accountID)
+		}
+	}
+	return err
 }
 
 func (b *CompositeAccountRuntimeBlocker) OpenAIPoolSoftCooldownState(accountID int64) OpenAIPoolSoftCooldownState {

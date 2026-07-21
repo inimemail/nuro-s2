@@ -131,7 +131,7 @@ func (s *SchedulerLocalSnapshot) ApplyEvent(_ context.Context, event SchedulerEv
 	switch event.Type {
 	case SchedulerEventSnapshotUpdated, SchedulerEventSnapshotDeleted:
 		s.Delete(event.Bucket)
-	case SchedulerEventAccountUpdated, SchedulerEventAccountDeleted:
+	case SchedulerEventAccountUpdated, SchedulerEventAccountDeleted, SchedulerEventAccountRuntimeCleared:
 		s.Clear()
 	}
 }

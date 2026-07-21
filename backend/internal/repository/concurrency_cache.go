@@ -43,6 +43,34 @@ const (
 )
 
 var (
+	setAccountCooldownGenerationScript = redis.NewScript(`
+		local current = redis.call('GET', KEYS[1])
+		local generation = tonumber(ARGV[1])
+		local currentGeneration = 0
+		if current ~= false and string.sub(current, 1, 2) == 'g:' then
+			currentGeneration = tonumber(string.sub(current, 3)) or 0
+		end
+		if current == false or currentGeneration <= generation then
+			redis.call('SET', KEYS[1], 'g:' .. generation, 'PX', ARGV[2])
+			return 1
+		end
+		return 0
+	`)
+	clearAccountCooldownBeforeGenerationScript = redis.NewScript(`
+		local generation = tonumber(ARGV[1])
+		local current = redis.call('GET', KEYS[1])
+		if current == false then
+			return 0
+		end
+		local currentGeneration = 0
+		if string.sub(current, 1, 2) == 'g:' then
+			currentGeneration = tonumber(string.sub(current, 3)) or 0
+		end
+		if currentGeneration < generation then
+			return redis.call('DEL', KEYS[1])
+		end
+		return 0
+	`)
 	// acquireScript 使用有序集合计数并在未达上限时添加槽位
 	// 使用 Redis TIME 命令获取服务器时间，避免多实例时钟不同步问题
 	// KEYS[1] = 有序集合键 (concurrency:account:{id} / concurrency:user:{id})
@@ -717,6 +745,24 @@ func (c *concurrencyCache) ClearAccountCooldown(ctx context.Context, accountID i
 		return nil
 	}
 	return c.rdb.Del(ctx, accountCooldownKey(accountID)).Err()
+}
+
+func (c *concurrencyCache) SetAccountCooldownGeneration(ctx context.Context, accountID int64, ttl time.Duration, generation int64) error {
+	if accountID <= 0 || ttl <= 0 || generation < 0 {
+		return nil
+	}
+	ttlMillis := ttl.Milliseconds()
+	if ttlMillis <= 0 {
+		ttlMillis = 1
+	}
+	return setAccountCooldownGenerationScript.Run(ctx, c.rdb, []string{accountCooldownKey(accountID)}, generation, ttlMillis).Err()
+}
+
+func (c *concurrencyCache) ClearAccountCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error {
+	if accountID <= 0 || generation <= 0 {
+		return nil
+	}
+	return clearAccountCooldownBeforeGenerationScript.Run(ctx, c.rdb, []string{accountCooldownKey(accountID)}, generation).Err()
 }
 
 func (c *concurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts []service.AccountWithConcurrency) (map[int64]*service.AccountLoadInfo, error) {

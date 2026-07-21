@@ -24,6 +24,7 @@ type anthropicPoolSoftCooldownContext struct {
 	Reason          string
 	LastProbeStatus int
 	LastProbeReason string
+	ClearGeneration int64
 }
 
 func classifyAnthropicPoolFailover(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte, requestedModel string) anthropicPoolFailoverDecision {

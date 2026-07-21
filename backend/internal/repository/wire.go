@@ -73,13 +73,17 @@ func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.Schedu
 }
 
 func ProvideSchedulerEventBus(rdb *redis.Client, cfg *config.Config) service.SchedulerEventBus {
+	// Runtime-clear events must reach every app replica even when the optional
+	// scheduler snapshot event bus is disabled. Redis is already a required
+	// deployment dependency and gives this correctness event cross-process scope.
+	runtimeBus := NewRedisSchedulerEventBus(rdb)
 	if cfg == nil || !cfg.Gateway.Scheduling.EventBusEnabled {
-		return nil
+		return service.NewRuntimeRoutedSchedulerEventBus(nil, runtimeBus)
 	}
 	if strings.TrimSpace(cfg.Gateway.Scheduling.EventBusBackend) == "redis_stream" {
-		return NewRedisSchedulerEventBus(rdb)
+		return runtimeBus
 	}
-	return service.NewLocalSchedulerEventBus()
+	return service.NewRuntimeRoutedSchedulerEventBus(service.NewLocalSchedulerEventBus(), runtimeBus)
 }
 
 // ProviderSet is the Wire provider set for all repositories

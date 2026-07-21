@@ -64,8 +64,10 @@ func (s *GatewayService) MarkAnthropicPoolAccountSoftCooldown(ctx context.Contex
 	cooldownContext.CooldownSource = truncateString(strings.TrimSpace(cooldownContext.CooldownSource), 64)
 	cooldownContext.Reason = truncateString(strings.TrimSpace(cooldownContext.Reason), 256)
 	cooldownContext.LastProbeReason = truncateString(strings.TrimSpace(cooldownContext.LastProbeReason), 256)
+	clearGeneration := s.currentAccountRuntimeClearGeneration(account.ID)
+	cooldownContext.ClearGeneration = clearGeneration
 	s.anthropicPoolSoftCooldownContext.Store(account.ID, cooldownContext)
-	s.storeAnthropicPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown))
+	s.storeAnthropicPoolSoftCooldownUntil(account.ID, time.Now().Add(cooldown), clearGeneration)
 	s.anthropicPoolSoftCooldownFailureCnt.Delete(account.ID)
 }
 
@@ -94,28 +96,40 @@ func (s *GatewayService) configuredAnthropicPoolSoftCooldownMax(ctx context.Cont
 	return maxCooldown
 }
 
-func (s *GatewayService) storeAnthropicPoolSoftCooldownUntil(accountID int64, until time.Time) {
+func (s *GatewayService) storeAnthropicPoolSoftCooldownUntil(accountID int64, until time.Time, generations ...int64) {
 	if s == nil || accountID <= 0 || until.IsZero() {
 		return
 	}
 	now := time.Now()
+	clearGeneration := int64(0)
+	if len(generations) > 0 {
+		clearGeneration = generations[0]
+	} else {
+		clearGeneration = s.currentAccountRuntimeClearGeneration(accountID)
+	}
+	defer func() {
+		if latestGeneration := s.currentAccountRuntimeClearGeneration(accountID); latestGeneration > clearGeneration {
+			s.clearAnthropicPoolSoftCooldownBefore(accountID, latestGeneration)
+		}
+	}()
+	deadline := accountRuntimeDeadline{Until: until, ClearGeneration: clearGeneration}
 	for {
 		current, loaded := s.anthropicPoolSoftCooldownUntil.Load(accountID)
 		if !loaded {
-			if _, stored := s.anthropicPoolSoftCooldownUntil.LoadOrStore(accountID, until); !stored {
+			if _, stored := s.anthropicPoolSoftCooldownUntil.LoadOrStore(accountID, deadline); !stored {
 				return
 			}
 			continue
 		}
-		currentUntil, ok := current.(time.Time)
-		if !ok || currentUntil.IsZero() || !currentUntil.After(now) {
-			if s.anthropicPoolSoftCooldownUntil.CompareAndSwap(accountID, current, until) {
+		currentUntil, _, ok := parseAccountRuntimeDeadline(current)
+		if !ok || !currentUntil.After(now) {
+			if s.anthropicPoolSoftCooldownUntil.CompareAndSwap(accountID, current, deadline) {
 				return
 			}
 			continue
 		}
 		if currentUntil.After(until) {
-			if s.anthropicPoolSoftCooldownUntil.CompareAndSwap(accountID, current, until) {
+			if s.anthropicPoolSoftCooldownUntil.CompareAndSwap(accountID, current, deadline) {
 				return
 			}
 			continue
@@ -159,8 +173,17 @@ func (s *GatewayService) anthropicPoolAccountSoftCooldownUntilByID(accountID int
 	if !ok {
 		return time.Time{}, false
 	}
-	until, ok := value.(time.Time)
-	if !ok || until.IsZero() {
+	if s.schedulerSnapshot != nil {
+		if generation := s.schedulerSnapshot.observedAccountRuntimeClearGeneration(accountID); generation > 0 {
+			s.clearAnthropicPoolSoftCooldownBefore(accountID, generation)
+		}
+	}
+	value, ok = s.anthropicPoolSoftCooldownUntil.Load(accountID)
+	if !ok {
+		return time.Time{}, false
+	}
+	until, _, ok := parseAccountRuntimeDeadline(value)
+	if !ok {
 		s.clearAnthropicPoolSoftCooldown(accountID)
 		return time.Time{}, false
 	}
@@ -188,32 +211,25 @@ func (s *GatewayService) clampAnthropicPoolSoftCooldownUntil(ctx context.Context
 		return until
 	}
 	maxUntil := time.Now().Add(maxCooldown)
-	for current := until; ; {
-		if current.IsZero() || !current.After(maxUntil) {
-			return current
-		}
-		if s.anthropicPoolSoftCooldownUntil.CompareAndSwap(account.ID, current, maxUntil) {
-			return maxUntil
-		}
+	for {
 		value, ok := s.anthropicPoolSoftCooldownUntil.Load(account.ID)
 		if !ok {
 			return time.Time{}
 		}
-		next, ok := value.(time.Time)
-		if !ok || next.IsZero() {
-			s.clearAnthropicPoolSoftCooldown(account.ID)
+		current, generation, valid := parseAccountRuntimeDeadline(value)
+		if !valid {
+			s.anthropicPoolSoftCooldownUntil.CompareAndDelete(account.ID, value)
+			s.anthropicPoolSoftCooldownContext.Delete(account.ID)
 			return time.Time{}
 		}
-		current = next
+		if !current.After(maxUntil) {
+			return current
+		}
+		clamped := accountRuntimeDeadline{Until: maxUntil, ClearGeneration: generation}
+		if s.anthropicPoolSoftCooldownUntil.CompareAndSwap(account.ID, value, clamped) {
+			return maxUntil
+		}
 	}
-}
-
-func (s *GatewayService) anthropicPoolAccountSoftCooldownMatches(accountID int64, expectedUntil time.Time) bool {
-	if expectedUntil.IsZero() {
-		return false
-	}
-	until, ok := s.anthropicPoolAccountSoftCooldownUntilByID(accountID)
-	return ok && until.Equal(expectedUntil)
 }
 
 func (s *GatewayService) isAnthropicPoolAccountSoftCooldownDue(account *Account) bool {
@@ -230,6 +246,33 @@ func (s *GatewayService) clearAnthropicPoolSoftCooldown(accountID int64) {
 	s.anthropicPoolSoftCooldownFailureCnt.Delete(accountID)
 	s.anthropicPoolRecoveryProbeInFlight.Delete(accountID)
 	s.anthropicPoolRecoveryProbeFailureCnt.Delete(accountID)
+	s.anthropicPoolRecoveryProbeAdminKick.Delete(accountID)
+}
+
+func (s *GatewayService) clearAnthropicPoolSoftCooldownBefore(accountID, clearGeneration int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	if !deleteAccountRuntimeDeadlineBefore(&s.anthropicPoolSoftCooldownUntil, accountID, clearGeneration) {
+		return
+	}
+	if value, ok := s.anthropicPoolSoftCooldownContext.Load(accountID); ok {
+		cooldownContext, valid := value.(anthropicPoolSoftCooldownContext)
+		if !valid || clearGeneration <= 0 || cooldownContext.ClearGeneration < clearGeneration {
+			s.anthropicPoolSoftCooldownContext.CompareAndDelete(accountID, value)
+		}
+	}
+	s.anthropicPoolSoftCooldownFailureCnt.Delete(accountID)
+	s.anthropicPoolRecoveryProbeInFlight.Delete(accountID)
+	s.anthropicPoolRecoveryProbeFailureCnt.Delete(accountID)
+	s.anthropicPoolRecoveryProbeAdminKick.Delete(accountID)
+}
+
+func (s *GatewayService) currentAccountRuntimeClearGeneration(accountID int64) int64 {
+	if s == nil || s.schedulerSnapshot == nil {
+		return 0
+	}
+	return s.schedulerSnapshot.currentAccountRuntimeClearGeneration(accountID)
 }
 
 func (s *GatewayService) shouldStartAnthropicPoolSoftCooldown(account *Account) bool {

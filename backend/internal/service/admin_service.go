@@ -3669,7 +3669,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 	}
 	if clearRuntimeBlock {
-		s.clearAccountRuntimeSchedulingBlock(account.ID)
+		if err := s.clearAccountRuntimeSchedulingBlock(ctx, account.ID); err != nil {
+			return nil, fmt.Errorf("clear account %d runtime state: %w", account.ID, err)
+		}
 	}
 
 	// 重新查询以确保返回完整数据（包括正确的 Proxy 关联对象）
@@ -3879,30 +3881,32 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 			}
 		}
 	}
-	if len(input.Credentials) > 0 || (input.Schedulable != nil && !*input.Schedulable) {
-		for _, accountID := range input.AccountIDs {
-			s.clearAccountRuntimeSchedulingBlock(accountID)
-		}
-	}
-
 	// Handle group bindings per account (requires individual operations).
+	clearRuntimeBlock := len(input.Credentials) > 0 || (input.Schedulable != nil && !*input.Schedulable)
 	for _, accountID := range input.AccountIDs {
 		entry := BulkUpdateAccountResult{AccountID: accountID}
+		var entryErr error
 
 		if input.GroupIDs != nil {
 			if err := s.accountRepo.BindGroups(ctx, accountID, *input.GroupIDs); err != nil {
-				entry.Success = false
-				entry.Error = err.Error()
-				result.Failed++
-				result.FailedIDs = append(result.FailedIDs, accountID)
-				result.Results = append(result.Results, entry)
-				continue
+				entryErr = errors.Join(entryErr, fmt.Errorf("bind groups: %w", err))
+			}
+		}
+		if clearRuntimeBlock {
+			if err := s.clearAccountRuntimeSchedulingBlock(ctx, accountID); err != nil {
+				entryErr = errors.Join(entryErr, fmt.Errorf("clear runtime state: %w", err))
 			}
 		}
 
-		entry.Success = true
-		result.Success++
-		result.SuccessIDs = append(result.SuccessIDs, accountID)
+		entry.Success = entryErr == nil
+		if entryErr != nil {
+			entry.Error = entryErr.Error()
+			result.Failed++
+			result.FailedIDs = append(result.FailedIDs, accountID)
+		} else {
+			result.Success++
+			result.SuccessIDs = append(result.SuccessIDs, accountID)
+		}
 		result.Results = append(result.Results, entry)
 	}
 
@@ -4027,7 +4031,9 @@ func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Ac
 	if err := s.accountRepo.ClearTempUnschedulable(ctx, id); err != nil {
 		return nil, err
 	}
-	s.clearAccountRuntimeSchedulingBlock(id)
+	if err := s.clearAccountRuntimeSchedulingBlock(ctx, id); err != nil {
+		return nil, err
+	}
 	return s.accountRepo.GetByID(ctx, id)
 }
 
@@ -4200,7 +4206,9 @@ func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, 
 		return nil, err
 	}
 	if !schedulable {
-		s.clearAccountRuntimeSchedulingBlock(id)
+		if err := s.clearAccountRuntimeSchedulingBlock(ctx, id); err != nil {
+			return nil, err
+		}
 	}
 	updated, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
@@ -4209,11 +4217,17 @@ func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, 
 	return updated, nil
 }
 
-func (s *adminServiceImpl) clearAccountRuntimeSchedulingBlock(accountID int64) {
+func (s *adminServiceImpl) clearAccountRuntimeSchedulingBlock(ctx context.Context, accountID int64) error {
 	if s == nil || s.runtimeBlocker == nil || accountID <= 0 {
-		return
+		return nil
+	}
+	if clearer, ok := s.runtimeBlocker.(interface {
+		ClearAccountSchedulingBlockAcrossReplicas(context.Context, int64) error
+	}); ok {
+		return clearer.ClearAccountSchedulingBlockAcrossReplicas(ctx, accountID)
 	}
 	s.runtimeBlocker.ClearAccountSchedulingBlock(accountID)
+	return nil
 }
 
 // Proxy management implementations

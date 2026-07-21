@@ -29,6 +29,7 @@ type openAIPoolSoftCooldownContext struct {
 	Reason          string
 	LastProbeStatus int
 	LastProbeReason string
+	ClearGeneration int64
 }
 
 func (s *OpenAIGatewayService) newOpenAIPoolRequestFailoverError(
