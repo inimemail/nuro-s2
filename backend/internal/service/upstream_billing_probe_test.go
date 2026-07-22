@@ -451,7 +451,30 @@ func TestUpstreamBillingProbeFailurePreservesGuardState(t *testing.T) {
 	require.Equal(t, "failed", snapshot.Status)
 	require.True(t, repo.account.UpstreamBillingGuardBlocked)
 	require.Nil(t, repo.lastObserved)
-	require.Equal(t, 10*time.Second, snapshot.NextProbeAt.Sub(now))
+	require.Equal(t, 5*time.Second, snapshot.NextProbeAt.Sub(now))
+}
+
+func TestNextUpstreamBillingProbeDelayKeepsAutomaticRetryAtConfiguredInterval(t *testing.T) {
+	require.Equal(t, 5*time.Second, nextUpstreamBillingProbeDelay(1, 1))
+	require.Equal(t, 30*time.Second, nextUpstreamBillingProbeDelay(30, 8))
+	require.Equal(t, 24*time.Hour, nextUpstreamBillingProbeDelay(172800, 20))
+}
+
+func TestNormalizedFailedProbeNextAtClampsLegacyLongBackoff(t *testing.T) {
+	now := time.Date(2026, 7, 17, 0, 0, 10, 0, time.UTC)
+	snapshot := &UpstreamBillingProbeSnapshot{
+		Status:        "failed",
+		LastAttemptAt: now.Add(-6 * time.Second),
+		NextProbeAt:   now.Add(24 * time.Hour),
+		FailureCount:  8,
+	}
+	require.Equal(t, now.Add(-1*time.Second), normalizedUpstreamBillingProbeNextAt(snapshot, 1))
+}
+
+func TestUnsupportedProbeKeepsSlowAutomaticRetry(t *testing.T) {
+	require.Equal(t, 5*time.Minute, nextUpstreamBillingProbeDelayForStatus(5, 1, "unsupported"))
+	require.Equal(t, 10*time.Minute, nextUpstreamBillingProbeDelayForStatus(600, 1, "unsupported"))
+	require.Equal(t, 5*time.Second, nextUpstreamBillingProbeDelayForStatus(1, 8, "failed"))
 }
 
 func TestNormalizeAccountUpdateExtraPreservesProbeRuntimeState(t *testing.T) {

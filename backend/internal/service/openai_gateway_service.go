@@ -429,6 +429,9 @@ type OpenAIGatewayService struct {
 	responseHeaderFilter                         *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle                        *accountWriteThrottle
 	openaiPromptCacheBoostDisabledUntil          sync.Map // key: int64(accountID), value: time.Time
+	openaiPromptCacheBoostRemoteCheckedAt        sync.Map // key: int64(accountID), value: time.Time
+	openaiPromptCacheCreationDisabledUntil       sync.Map // key: int64(accountID), value: time.Time
+	openaiPromptCacheCreationRemoteCheckedAt     sync.Map // key: int64(accountID), value: time.Time
 	openaiPromptCacheBoostGroupAvailabilityCache sync.Map // key: string(group:model), value: promptCacheBoostGroupAvailability
 	openaiCompatSessionResponses                 sync.Map
 	openaiCompatAnthropicDigestSessions          sync.Map
@@ -1642,6 +1645,20 @@ func (s *OpenAIGatewayService) BindStickySession(ctx context.Context, groupID *i
 	return s.setStickySessionAccountID(ctx, groupID, sessionHash, accountID, s.openAIStickySessionTTLForHash(sessionHash, ttl))
 }
 
+// ClaimStickySession binds only when the session is currently unowned. Initial
+// request paths use this to prevent concurrent replicas from overwriting the
+// first selected account; explicit failover paths continue using BindStickySession.
+func (s *OpenAIGatewayService) ClaimStickySession(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
+	if sessionHash == "" || accountID <= 0 {
+		return nil
+	}
+	ttl := openaiStickySessionTTL
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds > 0 {
+		ttl = time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
+	}
+	return s.claimStickySessionAccountID(ctx, groupID, sessionHash, accountID, s.openAIStickySessionTTLForHash(sessionHash, ttl))
+}
+
 // SelectAccount selects an OpenAI account with sticky session support
 func (s *OpenAIGatewayService) SelectAccount(ctx context.Context, groupID *int64, sessionHash string) (*Account, error) {
 	return s.SelectAccountForModel(ctx, groupID, sessionHash, "")
@@ -2183,7 +2200,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 	// 4. 设置粘性会话绑定
 	// Set sticky session binding
 	if sessionHash != "" {
-		_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, selected.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
+		_ = s.claimStickySessionAccountID(ctx, groupID, sessionHash, selected.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
 	}
 
 	return hydrated, nil
@@ -2728,7 +2745,7 @@ openAIGroupGuardFallback:
 					return nil, true, selectErr
 				}
 				if sessionHash != "" && !stickyBusyPreserve {
-					_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
+					_ = s.claimStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
 				}
 				return selection, true, nil
 			}
@@ -2767,7 +2784,7 @@ openAIGroupGuardFallback:
 					return nil, selectErr
 				}
 				if sessionHash != "" && !stickyBusyPreserve {
-					_ = s.setStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
+					_ = s.claimStickySessionAccountID(ctx, groupID, sessionHash, fresh.ID, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
 				}
 				return selection, nil
 			}
@@ -4249,7 +4266,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if !explicitImageIntentKnown && account != nil && account.IsOpenAIPromptCacheCreationOptimizationEnabled() && isOpenAIGPT56Model(upstreamModel) {
 			explicitImageIntent = IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, originalBody)
 		}
-		optimizedBody, optimizationResult, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, upstreamModel, body, explicitImageIntent)
+		optimizedBody, optimizationResult, optimizeErr := s.ApplyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, upstreamModel, body, explicitImageIntent)
 		if optimizeErr != nil {
 			return nil, optimizeErr
 		}
@@ -4581,6 +4598,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if requestFirstTokenPlaceholder.Sent {
 				cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
 					isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
+				if cachePolicyCompatibilityFailure {
+					s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+				}
 				s.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(account, resp.StatusCode, upstreamMsg, respBody, promptCacheBoostKeyInjected, promptCacheBoostRetentionInjected)
 				if resp.StatusCode == http.StatusTooManyRequests {
 					_ = s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody)
@@ -4617,6 +4637,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				continue
 			}
 			if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+				s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
 				releaseOpenAIParsedRequestBody(c)
 				logger.L().Info("openai responses: cache creation optimization unsupported, retrying with the account default request policy",
 					zap.Int64("account_id", account.ID),
@@ -4916,7 +4937,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	body = updatedBody
 	var cacheCreationOptimization openAIPromptCacheCreationOptimizationResult
 	if !isOpenAIResponsesCompactPath(c) {
-		optimizedBody, optimizationResult, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBody(account, policyModel, body)
+		optimizedBody, optimizationResult, optimizeErr := s.ApplyOpenAIPromptCacheCreationOptimizationBody(account, policyModel, body)
 		if optimizeErr != nil {
 			return nil, optimizeErr
 		}
@@ -5079,6 +5100,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			if requestFirstTokenPlaceholder.Sent {
 				cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
 					isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
+				if cachePolicyCompatibilityFailure {
+					s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+				}
 				if resp.StatusCode == http.StatusTooManyRequests {
 					_ = s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody)
 				}
@@ -5110,6 +5134,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				}, fmt.Errorf("passthrough upstream error after first token placeholder: %d message=%s", resp.StatusCode, upstreamMsg)
 			}
 			if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+				s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
 				logger.L().Info("openai passthrough: cache creation optimization unsupported, retrying with the account default request policy",
 					zap.Int64("account_id", account.ID),
 					zap.Int("upstream_status", resp.StatusCode),

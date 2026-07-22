@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 )
 
 const openAIPromptCacheBoostUnsupportedDisableTTL = 10 * time.Minute
+const openAIPromptCacheBoostRemotePollInterval = time.Second
+const openAIPromptCacheBoostDisabledRedisPrefix = "openai:prompt_cache_boost_disabled:v1:"
 
 type openAIPromptCacheBoostDisabledState struct {
 	KeyUntil       time.Time
@@ -111,13 +114,13 @@ func (s *OpenAIGatewayService) openAIPromptCacheBoostDisabledState(accountID int
 		return openAIPromptCacheBoostDisabledState{}
 	}
 	raw, ok := s.openaiPromptCacheBoostDisabledUntil.Load(accountID)
-	if !ok {
-		return openAIPromptCacheBoostDisabledState{}
-	}
-	state, ok := raw.(openAIPromptCacheBoostDisabledState)
-	if !ok {
-		s.openaiPromptCacheBoostDisabledUntil.Delete(accountID)
-		return openAIPromptCacheBoostDisabledState{}
+	state := openAIPromptCacheBoostDisabledState{}
+	if ok {
+		var stateOK bool
+		state, stateOK = raw.(openAIPromptCacheBoostDisabledState)
+		if !stateOK {
+			s.openaiPromptCacheBoostDisabledUntil.Delete(accountID)
+		}
 	}
 	now := time.Now()
 	if !state.KeyUntil.IsZero() && !now.Before(state.KeyUntil) {
@@ -128,9 +131,60 @@ func (s *OpenAIGatewayService) openAIPromptCacheBoostDisabledState(accountID int
 	}
 	if state.KeyUntil.IsZero() && state.RetentionUntil.IsZero() {
 		s.openaiPromptCacheBoostDisabledUntil.Delete(accountID)
+		state = openAIPromptCacheBoostDisabledState{}
+	}
+	if s.openaiAccountHealthRedis != nil && s.shouldPollPromptCacheBoostDisabledState(accountID, now) {
+		remote := s.loadOpenAIPromptCacheBoostDisabledState(accountID)
+		s.openaiPromptCacheBoostRemoteCheckedAt.Store(accountID, now)
+		if remote.KeyUntil.After(state.KeyUntil) {
+			state.KeyUntil = remote.KeyUntil
+		}
+		if remote.RetentionUntil.After(state.RetentionUntil) {
+			state.RetentionUntil = remote.RetentionUntil
+		}
+	}
+	if state.KeyUntil.IsZero() && state.RetentionUntil.IsZero() {
+		s.openaiPromptCacheBoostDisabledUntil.Delete(accountID)
+	} else {
+		s.openaiPromptCacheBoostDisabledUntil.Store(accountID, state)
+	}
+	return state
+}
+
+func (s *OpenAIGatewayService) shouldPollPromptCacheBoostDisabledState(accountID int64, now time.Time) bool {
+	last, ok := s.openaiPromptCacheBoostRemoteCheckedAt.Load(accountID)
+	if !ok {
+		return true
+	}
+	checked, ok := last.(time.Time)
+	return !ok || now.Sub(checked) >= openAIPromptCacheBoostRemotePollInterval
+}
+
+func (s *OpenAIGatewayService) loadOpenAIPromptCacheBoostDisabledState(accountID int64) openAIPromptCacheBoostDisabledState {
+	if s == nil || s.openaiAccountHealthRedis == nil || accountID <= 0 {
 		return openAIPromptCacheBoostDisabledState{}
 	}
-	s.openaiPromptCacheBoostDisabledUntil.Store(accountID, state)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	values, err := s.openaiAccountHealthRedis.HGetAll(ctx, openAIPromptCacheBoostDisabledRedisPrefix+strconv.FormatInt(accountID, 10)).Result()
+	if err != nil {
+		return openAIPromptCacheBoostDisabledState{}
+	}
+	return parseOpenAIPromptCacheBoostDisabledState(values)
+}
+
+func parseOpenAIPromptCacheBoostDisabledState(values map[string]string) openAIPromptCacheBoostDisabledState {
+	var state openAIPromptCacheBoostDisabledState
+	if raw := strings.TrimSpace(values["key"]); raw != "" {
+		if unix, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			state.KeyUntil = time.Unix(unix, 0)
+		}
+	}
+	if raw := strings.TrimSpace(values["retention"]); raw != "" {
+		if unix, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			state.RetentionUntil = time.Unix(unix, 0)
+		}
+	}
 	return state
 }
 
@@ -140,6 +194,15 @@ func (s *OpenAIGatewayService) temporarilyDisableOpenAIPromptCacheBoost(account 
 	}
 	state := s.openAIPromptCacheBoostDisabledState(account.ID)
 	until := time.Now().Add(openAIPromptCacheBoostUnsupportedDisableTTL)
+	if s.openaiAccountHealthRedis != nil {
+		remote := s.loadOpenAIPromptCacheBoostDisabledState(account.ID)
+		if remote.KeyUntil.After(state.KeyUntil) {
+			state.KeyUntil = remote.KeyUntil
+		}
+		if remote.RetentionUntil.After(state.RetentionUntil) {
+			state.RetentionUntil = remote.RetentionUntil
+		}
+	}
 	if disableKey {
 		state.KeyUntil = until
 	}
@@ -148,6 +211,20 @@ func (s *OpenAIGatewayService) temporarilyDisableOpenAIPromptCacheBoost(account 
 	}
 	if !state.KeyUntil.IsZero() || !state.RetentionUntil.IsZero() {
 		s.openaiPromptCacheBoostDisabledUntil.Store(account.ID, state)
+		if s.openaiAccountHealthRedis != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			pipe := s.openaiAccountHealthRedis.TxPipeline()
+			key := openAIPromptCacheBoostDisabledRedisPrefix + strconv.FormatInt(account.ID, 10)
+			if disableKey {
+				pipe.HSet(ctx, key, "key", state.KeyUntil.Unix())
+			}
+			if disableRetention {
+				pipe.HSet(ctx, key, "retention", state.RetentionUntil.Unix())
+			}
+			pipe.Expire(ctx, key, openAIPromptCacheBoostUnsupportedDisableTTL)
+			_, _ = pipe.Exec(ctx)
+			cancel()
+		}
 	}
 }
 

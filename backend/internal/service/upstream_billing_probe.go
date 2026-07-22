@@ -35,6 +35,7 @@ const (
 	upstreamBillingProbeConcurrency            = 16
 	upstreamBillingProbeMaxBackoff             = 24 * time.Hour
 	upstreamBillingProbeMinFailureBackoff      = 5 * time.Second
+	upstreamBillingProbeUnsupportedRetry       = 5 * time.Minute
 	upstreamBillingProbeSettingsPollInterval   = 5 * time.Second
 	upstreamBillingProbeLeaderLockKey          = "upstream:billing:probe:leader"
 )
@@ -334,10 +335,11 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 			continue
 		}
 		snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-		if snapshot == nil || snapshot.NextProbeAt.IsZero() || !now.Before(snapshot.NextProbeAt) {
+		nextProbeAt := normalizedUpstreamBillingProbeNextAt(snapshot, settings.IntervalSeconds)
+		if snapshot == nil || nextProbeAt.IsZero() || !now.Before(nextProbeAt) {
 			nextAt := time.Time{}
-			if snapshot != nil {
-				nextAt = snapshot.NextProbeAt
+			if !nextProbeAt.IsZero() {
+				nextAt = nextProbeAt
 			}
 			due = append(due, dueProbe{accountID: account.ID, nextAt: nextAt})
 		}
@@ -510,8 +512,10 @@ func (s *UpstreamBillingProbeService) probeScheduledAccount(ctx context.Context,
 		if !enabled || !account.IsActive() || !isUpstreamBillingProbeAccount(account) {
 			return nil, nil
 		}
-		if snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra); snapshot != nil && !snapshot.NextProbeAt.IsZero() && s.currentTime().Before(snapshot.NextProbeAt) {
-			return nil, nil
+		if snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra); snapshot != nil {
+			if nextProbeAt := normalizedUpstreamBillingProbeNextAt(snapshot, intervalSeconds); !nextProbeAt.IsZero() && s.currentTime().Before(nextProbeAt) {
+				return nil, nil
+			}
 		}
 		return s.probe(ctx, account, intervalSeconds)
 	})
@@ -637,7 +641,7 @@ func (s *UpstreamBillingProbeService) persistFailure(ctx context.Context, accoun
 		status = "unsupported"
 	}
 	snapshot := &UpstreamBillingProbeSnapshot{
-		Status: status, LastAttemptAt: now, NextProbeAt: now.Add(nextUpstreamBillingProbeDelay(intervalSeconds, failureCount)),
+		Status: status, LastAttemptAt: now, NextProbeAt: now.Add(nextUpstreamBillingProbeDelayForStatus(intervalSeconds, failureCount, status)),
 		FailureCount: failureCount, HTTPStatus: statusCode, LastError: reason,
 	}
 	if previous != nil {
@@ -754,22 +758,37 @@ func decodeUpstreamBillingProbeSnapshot(extra map[string]any) *UpstreamBillingPr
 	return &snapshot
 }
 
-func nextUpstreamBillingProbeDelay(intervalSeconds, failureCount int) time.Duration {
+func nextUpstreamBillingProbeDelay(intervalSeconds, _ int) time.Duration {
 	delay := time.Duration(intervalSeconds) * time.Second
 	if delay < upstreamBillingProbeMinFailureBackoff {
 		delay = upstreamBillingProbeMinFailureBackoff
 	}
-	if failureCount > 0 {
-		shift := failureCount
-		if shift > 5 {
-			shift = 5
-		}
-		delay *= time.Duration(1 << shift)
-	}
+	// Failure count is diagnostic only. Automatic probing always follows the
+	// configured interval so transient upstream errors recover without manual
+	// intervention.
 	if delay > upstreamBillingProbeMaxBackoff {
 		return upstreamBillingProbeMaxBackoff
 	}
 	return delay
+}
+
+func nextUpstreamBillingProbeDelayForStatus(intervalSeconds, failureCount int, status string) time.Duration {
+	delay := nextUpstreamBillingProbeDelay(intervalSeconds, failureCount)
+	if status == "unsupported" && delay < upstreamBillingProbeUnsupportedRetry {
+		return upstreamBillingProbeUnsupportedRetry
+	}
+	return delay
+}
+
+func normalizedUpstreamBillingProbeNextAt(snapshot *UpstreamBillingProbeSnapshot, intervalSeconds int) time.Time {
+	if snapshot == nil {
+		return time.Time{}
+	}
+	nextProbeAt := snapshot.NextProbeAt
+	if snapshot.Status != "ok" && !snapshot.LastAttemptAt.IsZero() {
+		nextProbeAt = snapshot.LastAttemptAt.Add(nextUpstreamBillingProbeDelayForStatus(intervalSeconds, snapshot.FailureCount, snapshot.Status))
+	}
+	return nextProbeAt
 }
 
 func isUpstreamBillingProbeAccount(account *Account) bool {

@@ -287,7 +287,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, policyErr
 	}
 	responsesBody = updatedBody
-	optimizedBody, cacheCreationOptimization, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, responsesBody)
+	optimizedBody, cacheCreationOptimization, optimizeErr := s.ApplyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, responsesBody)
 	if optimizeErr != nil {
 		return nil, optimizeErr
 	}
@@ -392,6 +392,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		if requestFirstTokenPlaceholder.Sent {
 			cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
 				isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
+			if cachePolicyCompatibilityFailure {
+				s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+			}
 			s.RecordOpenAIPromptCacheBoostUnsupportedAfterCommittedResponse(account, resp.StatusCode, upstreamMsg, respBody, promptCacheBoostKeyInjected, promptCacheBoostRetentionInjected)
 			if resp.StatusCode == http.StatusTooManyRequests {
 				_ = s.tryAutoConsumeOpenAICodexResetCredit(ctx, account, resp.Header, respBody)
@@ -426,6 +429,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			return s.ForwardAsChatCompletions(ctx, c, refreshedAccount, body, incomingPromptCacheKey, defaultMappedModel)
 		}
 		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
 			logger.L().Info("openai chat_completions: cache creation optimization unsupported, retrying with the account default request policy",
 				zap.Int64("account_id", account.ID),
 				zap.Int("upstream_status", resp.StatusCode),

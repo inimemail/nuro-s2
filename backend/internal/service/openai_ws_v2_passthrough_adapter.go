@@ -360,7 +360,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 		firstClientMessage = isolatedFirst
 	}
-	optimizedFirst, firstOptimizationResult, optimizationErr := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, capturedSessionModel, firstClientMessage, firstExplicitImageIntent)
+	optimizedFirst, firstOptimizationResult, optimizationErr := s.ApplyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, capturedSessionModel, firstClientMessage, firstExplicitImageIntent)
 	if optimizationErr != nil {
 		return fmt.Errorf("apply prompt cache creation optimization on first ws frame: %w", optimizationErr)
 	}
@@ -548,7 +548,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if policyErr == nil && blocked == nil && (eventType == "" || eventType == "response.create") {
 				var optimizationResult openAIPromptCacheCreationOptimizationResult
 				var optimizationErr error
-				out, optimizationResult, optimizationErr = applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, model, out, explicitImageIntent)
+				out, optimizationResult, optimizationErr = s.ApplyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, model, out, explicitImageIntent)
 				if optimizationErr != nil {
 					return payload, nil, optimizationErr
 				}
@@ -686,10 +686,12 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					if msgType == coderws.MessageText {
 						s.handleOpenAICyberPolicyEvent(c, account, false, handshakeHeaders.Get("x-request-id"), payload, firstClientMessage)
 					}
-					cachePolicyCompatibilityFailure.Store(
-						cacheCreationOptimizationApplied.Load() &&
-							isOpenAIPromptCacheCreationOptimizationUnsupportedError(http.StatusBadRequest, "", payload),
-					)
+					unsupported := cacheCreationOptimizationApplied.Load() &&
+						isOpenAIPromptCacheCreationOptimizationUnsupportedError(http.StatusBadRequest, "", payload)
+					cachePolicyCompatibilityFailure.Store(unsupported)
+					if unsupported {
+						s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+					}
 				}
 				if !wroteDownstream && (eventType == "error" || eventType == "response.failed") {
 					currentBody, _ := lastUpstreamRequest.Load().([]byte)

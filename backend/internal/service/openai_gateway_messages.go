@@ -279,7 +279,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		return nil, policyErr
 	}
 	responsesBody = updatedBody
-	optimizedBody, cacheCreationOptimization, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, responsesBody)
+	optimizedBody, cacheCreationOptimization, optimizeErr := s.ApplyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, responsesBody)
 	if optimizeErr != nil {
 		return nil, optimizeErr
 	}
@@ -442,6 +442,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			return s.ForwardAsAnthropic(ctx, c, refreshedAccount, body, incomingPromptCacheKey, defaultMappedModel)
 		}
 		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
 			logger.L().Info("openai messages: cache creation optimization unsupported, retrying with the account default request policy",
 				zap.Int64("account_id", account.ID),
 				zap.Int("upstream_status", resp.StatusCode),

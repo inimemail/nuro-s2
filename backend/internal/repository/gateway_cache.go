@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +16,63 @@ import (
 
 const stickySessionPrefix = "sticky_session:"
 const openAIPromptCacheWarmPrefix = "openai_prompt_cache_warm:v1:"
+
+var recordOpenAIPromptCacheWarmScript = redis.NewScript(`
+local raw = redis.call('HGET', KEYS[1], ARGV[1])
+if not raw and tonumber(ARGV[4]) == 0 then return 0 end
+local entry = {account_id=tonumber(ARGV[2]), hit_rate_ewma=0.5, samples=0, input_tokens=0, cached_tokens=0, last_success_at=0, last_hit_at=0, avoid_until=0}
+if raw then
+  local ok, decoded = pcall(cjson.decode, raw)
+  if ok and type(decoded) == 'table' then for k, v in pairs(decoded) do entry[k] = v end end
+end
+local input = tonumber(ARGV[3])
+local cached = tonumber(ARGV[4])
+local sample_rate = cached / input
+if tonumber(entry.samples or 0) > 0 or cached > 0 then
+  entry.hit_rate_ewma = tonumber(entry.hit_rate_ewma or 0.5) * 0.75 + sample_rate * 0.25
+end
+entry.account_id = tonumber(ARGV[2])
+entry.samples = tonumber(entry.samples or 0) + 1
+entry.input_tokens = tonumber(entry.input_tokens or 0) + input
+entry.cached_tokens = tonumber(entry.cached_tokens or 0) + cached
+local now = tonumber(ARGV[6])
+entry.last_success_at = now
+if cached > 0 then entry.last_hit_at = now; entry.avoid_until = 0 end
+redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(entry))
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[5]))
+local all = redis.call('HGETALL', KEYS[1])
+local limit = 3
+if #all / 2 > limit then
+  local ranked = {}
+  for i = 1, #all, 2 do
+    local ok, value = pcall(cjson.decode, all[i + 1])
+    local score = -1
+    if ok and type(value) == 'table' and tonumber(value.account_id or 0) > 0 then
+      local confidence = math.min(tonumber(value.samples or 0) / 3, 1)
+      local age_hours = (now - tonumber(value.last_success_at or 0)) / 3600
+      local decay = math.exp(-age_hours * math.log(2) / 12)
+      score = tonumber(value.hit_rate_ewma or 0) * confidence * decay
+    end
+    table.insert(ranked, {field=all[i], score=score})
+  end
+  table.sort(ranked, function(a, b) return a.score > b.score end)
+  for i = limit + 1, #ranked do redis.call('HDEL', KEYS[1], ranked[i].field) end
+end
+return 1
+`)
+
+var avoidOpenAIPromptCacheWarmScript = redis.NewScript(`
+local raw = redis.call('HGET', KEYS[1], ARGV[1])
+if not raw then return 0 end
+local ok, entry = pcall(cjson.decode, raw)
+if not ok or type(entry) ~= 'table' or tonumber(entry.account_id or 0) <= 0 then return 0 end
+local until_unix = tonumber(ARGV[2])
+if until_unix <= tonumber(entry.avoid_until or 0) then return 0 end
+entry.avoid_until = until_unix
+redis.call('HSET', KEYS[1], ARGV[1], cjson.encode(entry))
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+return 1
+`)
 
 type gatewayCache struct {
 	rdb *redis.Client
@@ -41,6 +96,13 @@ func (c *gatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, s
 func (c *gatewayCache) SetSessionAccountID(ctx context.Context, groupID int64, sessionHash string, accountID int64, ttl time.Duration) error {
 	key := buildSessionKey(groupID, sessionHash)
 	return c.rdb.Set(ctx, key, accountID, ttl).Err()
+}
+
+// SetSessionAccountIDIfAbsent claims a sticky binding without allowing
+// concurrent first requests on different replicas to overwrite each other.
+func (c *gatewayCache) SetSessionAccountIDIfAbsent(ctx context.Context, groupID int64, sessionHash string, accountID int64, ttl time.Duration) (bool, error) {
+	key := buildSessionKey(groupID, sessionHash)
+	return c.rdb.SetNX(ctx, key, accountID, ttl).Result()
 }
 
 func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, sessionHash string, ttl time.Duration) error {
@@ -95,39 +157,13 @@ func (c *gatewayCache) RecordOpenAIPromptCacheWarmResult(ctx context.Context, gr
 	}
 	key := buildOpenAIPromptCacheWarmKey(groupID, affinityHash)
 	field := strconv.FormatInt(accountID, 10)
-	entry := service.OpenAIPromptCacheWarmAccount{AccountID: accountID, HitRateEWMA: 0.5}
-	if raw, err := c.rdb.HGet(ctx, key, field).Result(); err == nil {
-		_ = json.Unmarshal([]byte(raw), &entry)
-	} else if err == redis.Nil && cachedTokens == 0 {
-		return nil
-	} else if err != redis.Nil {
-		return err
+	ttlSeconds := int64(ttl / time.Second)
+	if ttlSeconds <= 0 {
+		ttlSeconds = 1
 	}
-	entry.AccountID = accountID
-	sampleRate := float64(cachedTokens) / float64(inputTokens)
-	if entry.Samples > 0 || cachedTokens > 0 {
-		entry.HitRateEWMA = entry.HitRateEWMA*0.75 + sampleRate*0.25
-	}
-	entry.Samples++
-	entry.InputTokens += int64(inputTokens)
-	entry.CachedTokens += int64(cachedTokens)
-	now := time.Now()
-	entry.LastSuccessAt = now.Unix()
-	if cachedTokens > 0 {
-		entry.LastHitAt = now.Unix()
-		entry.AvoidUntil = 0
-	}
-	encoded, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
-	pipe := c.rdb.TxPipeline()
-	pipe.HSet(ctx, key, field, encoded)
-	pipe.Expire(ctx, key, ttl)
-	if _, err = pipe.Exec(ctx); err != nil {
-		return err
-	}
-	return c.pruneOpenAIPromptCacheWarmAccounts(ctx, key, 3)
+	_, err := recordOpenAIPromptCacheWarmScript.Run(ctx, c.rdb, []string{key},
+		field, accountID, inputTokens, cachedTokens, ttlSeconds, time.Now().Unix()).Result()
+	return err
 }
 
 func (c *gatewayCache) AvoidOpenAIPromptCacheWarmAccount(ctx context.Context, groupID int64, affinityHash string, accountID int64, until time.Time, ttl time.Duration) error {
@@ -136,63 +172,10 @@ func (c *gatewayCache) AvoidOpenAIPromptCacheWarmAccount(ctx context.Context, gr
 	}
 	key := buildOpenAIPromptCacheWarmKey(groupID, affinityHash)
 	field := strconv.FormatInt(accountID, 10)
-	raw, err := c.rdb.HGet(ctx, key, field).Result()
-	if err == redis.Nil {
-		return nil
+	ttlSeconds := int64(ttl / time.Second)
+	if ttlSeconds <= 0 {
+		ttlSeconds = 1
 	}
-	if err != nil {
-		return err
-	}
-	var entry service.OpenAIPromptCacheWarmAccount
-	if json.Unmarshal([]byte(raw), &entry) != nil || entry.AccountID <= 0 {
-		return nil
-	}
-	if until.Unix() > entry.AvoidUntil {
-		entry.AvoidUntil = until.Unix()
-	}
-	encoded, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
-	pipe := c.rdb.TxPipeline()
-	pipe.HSet(ctx, key, field, encoded)
-	pipe.Expire(ctx, key, ttl)
-	_, err = pipe.Exec(ctx)
+	_, err := avoidOpenAIPromptCacheWarmScript.Run(ctx, c.rdb, []string{key}, field, until.Unix(), ttlSeconds).Result()
 	return err
-}
-
-func (c *gatewayCache) pruneOpenAIPromptCacheWarmAccounts(ctx context.Context, key string, limit int) error {
-	if limit <= 0 {
-		return nil
-	}
-	values, err := c.rdb.HGetAll(ctx, key).Result()
-	if err != nil || len(values) <= limit {
-		return err
-	}
-	type rankedEntry struct {
-		field string
-		score float64
-	}
-	now := time.Now()
-	ranked := make([]rankedEntry, 0, len(values))
-	for field, raw := range values {
-		var entry service.OpenAIPromptCacheWarmAccount
-		if json.Unmarshal([]byte(raw), &entry) != nil || entry.AccountID <= 0 {
-			ranked = append(ranked, rankedEntry{field: field, score: -1})
-			continue
-		}
-		confidence := math.Min(float64(entry.Samples)/3, 1)
-		age := now.Sub(time.Unix(entry.LastSuccessAt, 0))
-		decay := math.Exp(-age.Hours() * math.Ln2 / 12)
-		ranked = append(ranked, rankedEntry{field: field, score: entry.HitRateEWMA * confidence * decay})
-	}
-	sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
-	fields := make([]string, 0, len(ranked)-limit)
-	for _, item := range ranked[limit:] {
-		fields = append(fields, item.field)
-	}
-	if len(fields) == 0 {
-		return nil
-	}
-	return c.rdb.HDel(ctx, key, fields...).Err()
 }

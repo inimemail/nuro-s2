@@ -1473,7 +1473,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 		}
 		if result != nil && result.Acquired {
 			if req.SessionHash != "" && !req.PreserveStickyBinding {
-				_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
+				_ = s.service.claimStickySessionAccountID(ctx, req.GroupID, req.SessionHash, fresh.ID, s.service.openAIStickySessionTTLForHash(req.SessionHash, s.service.openAIWSSessionStickyTTL()))
 			}
 			return &AccountSelectionResult{
 				Account:     fresh,
@@ -1578,7 +1578,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithArbite
 		return nil, compactBlocked, true, nil
 	}
 	if req.SessionHash != "" && !req.PreserveStickyBinding {
-		_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
+		_ = s.service.claimStickySessionAccountID(ctx, req.GroupID, req.SessionHash, fresh.ID, s.service.openAIStickySessionTTLForHash(req.SessionHash, s.service.openAIWSSessionStickyTTL()))
 	}
 	return &AccountSelectionResult{
 		Account:         fresh,

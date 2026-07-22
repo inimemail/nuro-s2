@@ -710,6 +710,48 @@ func TestOpenAIEdgeRetryCacheCreationCompatibilityStaysOnEdgeRS(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeRetryCommittedCacheCreationCompatibilityRecordsBackoff(t *testing.T) {
+	gatewaySvc := service.NewOpenAIGatewayService(
+		nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	account := &service.Account{
+		ID:       1001,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"openai_prompt_cache_creation_optimization_enabled": true,
+		},
+	}
+	h := &OpenAIGatewayHandler{
+		gatewayService: gatewaySvc,
+		openAIEdgeLeases: map[string]*openAIEdgeLease{
+			"lease-1": {
+				leaseID:            "lease-1",
+				account:            account,
+				cachePolicyApplied: true,
+			},
+		},
+	}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+	errorBody := `{"error":{"message":"Unsupported parameter: prompt_cache_options"}}`
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:             "lease-1",
+		AccountID:           account.ID,
+		UpstreamStatusCode:  http.StatusBadRequest,
+		ErrorMessage:        errorBody,
+		ResponseBody:        json.RawMessage(strconv.Quote(errorBody)),
+		WroteClientResponse: true,
+	})
+
+	if decision.Reason != "client_response_already_written" {
+		t.Fatalf("unexpected decision: action=%q reason=%q", decision.Action, decision.Reason)
+	}
+	if gatewaySvc.IsOpenAIPromptCacheCreationOptimizationRuntimeEnabled(account) {
+		t.Fatal("committed compatibility failure must disable the policy for subsequent requests")
+	}
+}
+
 func TestOpenAIEdgeRetryExplicitRejectedResponsesFieldsStayOnSameLease(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6","stream":true,"max_output_tokens":2048,"input":[{"type":"custom_tool_call","namespace":"tools","input":"{}"}]}`)
 	account := &service.Account{ID: 1001, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}

@@ -72,7 +72,7 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 	if err != nil {
 		return nil, fmt.Errorf("enable stream usage: %w", err)
 	}
-	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, upstreamBody)
+	upstreamBody, cacheCreationOptimization, err := s.ApplyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, upstreamBody)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	if err != nil {
 		return nil, err
 	}
-	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, policyModel, upstreamBody, explicitImageIntent)
+	upstreamBody, cacheCreationOptimization, err := s.ApplyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, policyModel, upstreamBody, explicitImageIntent)
 	if err != nil {
 		return nil, err
 	}
@@ -524,7 +524,7 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if err != nil {
 		return nil, err
 	}
-	upstreamBody, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, upstreamModel, upstreamBody, explicitImageIntent)
+	upstreamBody, cacheCreationOptimization, err := s.ApplyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, upstreamModel, upstreamBody, explicitImageIntent)
 	if err != nil {
 		return nil, err
 	}
@@ -785,7 +785,7 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 			firstMessage = isolatedFirst
 		}
 	}
-	optimizedFirst, cacheCreationOptimization, err := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, policyModel, firstMessage, explicitImageIntent)
+	optimizedFirst, cacheCreationOptimization, err := s.ApplyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, policyModel, firstMessage, explicitImageIntent)
 	if err != nil {
 		return nil, err
 	}

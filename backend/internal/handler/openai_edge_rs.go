@@ -337,7 +337,7 @@ func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 				continue
 			}
 			if bindSticky {
-				if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil && reqLog != nil {
+				if err := h.gatewayService.ClaimStickySession(ctx, groupID, sessionHash, account.ID); err != nil && reqLog != nil {
 					reqLog.Warn("openai_edge.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				}
 			}
@@ -1417,7 +1417,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	if reason := openAIEdgeResponsesWSAccountFallbackReason(account); reason != "" {
 		return fallback(reason)
 	}
-	if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
+	if err := h.gatewayService.ClaimStickySession(c.Request.Context(), apiKey.GroupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai_edge.responses_ws_bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
 	token, _, err := h.gatewayService.GetAccessToken(c.Request.Context(), account)
@@ -1687,9 +1687,6 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	fallback := func(reason string) service.OpenAIEdgeRetryDecision {
 		return service.OpenAIEdgeRetryDecision{Action: service.OpenAIEdgeActionFallbackGo, Reason: reason}
 	}
-	if req.WroteClientResponse {
-		return fallback("client_response_already_written")
-	}
 	lease := h.getOpenAIEdgeLease(req.LeaseID)
 	if lease == nil {
 		return fallback("lease_not_found")
@@ -1702,12 +1699,20 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	if req.AccountID != 0 && req.AccountID != lease.account.ID {
 		return fallback("account_mismatch")
 	}
-	if strings.TrimSpace(req.ErrorType) == "edge_queue_wait_timeout" {
-		return h.openAIEdgeRetrySwitchAccount(c, lease, req, "queue_wait_timeout")
-	}
 	status := req.UpstreamStatusCode
 	responseBody := openAIEdgeRetryResponseBody(req)
 	upstreamMsg := strings.TrimSpace(req.ErrorMessage)
+	if req.WroteClientResponse {
+		if lease.cachePolicyApplied &&
+			service.IsOpenAIPromptCacheCreationOptimizationUnsupportedError(status, upstreamMsg, responseBody) &&
+			h != nil && h.gatewayService != nil {
+			h.gatewayService.RecordOpenAIPromptCacheCreationOptimizationUnsupported(lease.account)
+		}
+		return fallback("client_response_already_written")
+	}
+	if strings.TrimSpace(req.ErrorType) == "edge_queue_wait_timeout" {
+		return h.openAIEdgeRetrySwitchAccount(c, lease, req, "queue_wait_timeout")
+	}
 	if (lease.inboundEndpoint == "/v1/responses" || lease.inboundEndpoint == "/v1/responses:ws") && status == http.StatusBadRequest {
 		currentBody := append([]byte(nil), req.RequestBody...)
 		var bodyErr error
@@ -1737,6 +1742,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		if h == nil || h.gatewayService == nil {
 			return fallback("cache_creation_optimization_retry_dependencies_missing")
 		}
+		h.gatewayService.RecordOpenAIPromptCacheCreationOptimizationUnsupported(lease.account)
 		fallbackAccount := service.OpenAIPromptCacheCreationOptimizationFallbackAccount(lease.account)
 		plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, fallbackAccount, lease.accountReleaseFunc)
 		if err != nil {

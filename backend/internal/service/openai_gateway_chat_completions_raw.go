@@ -111,7 +111,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			return nil, fmt.Errorf("enable stream usage: %w", usageErr)
 		}
 	}
-	optimizedBody, cacheCreationOptimization, optimizeErr := applyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, upstreamBody)
+	optimizedBody, cacheCreationOptimization, optimizeErr := s.ApplyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, upstreamBody)
 	if optimizeErr != nil {
 		return nil, optimizeErr
 	}
@@ -258,6 +258,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			return s.handleChatCompletionsErrorResponseWithoutAccountState(resp, c, account, billingModel)
 		}
 		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
 			logger.L().Info("openai raw chat_completions: cache creation optimization unsupported, retrying with the account default request policy",
 				zap.Int64("account_id", account.ID),
 				zap.Int("upstream_status", resp.StatusCode),

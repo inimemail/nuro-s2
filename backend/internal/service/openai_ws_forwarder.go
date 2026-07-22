@@ -2916,7 +2916,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			promptCacheKey = strings.TrimSpace(gjson.GetBytes(normalized, "prompt_cache_key").String())
 			previousResponseID = ""
 		}
-		optimized, optimizationResult, optimizationErr := applyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, upstreamModel, normalized, imageIntent)
+		optimized, optimizationResult, optimizationErr := s.ApplyOpenAIPromptCacheCreationOptimizationBodyWithExplicitIntent(account, upstreamModel, normalized, imageIntent)
 		if optimizationErr != nil {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", optimizationErr)
 		}
@@ -3508,6 +3508,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				cyberBlocked = decision.Matched
 				cachePolicyCompatibilityFailure = cacheCreationOptimizationApplied &&
 					isOpenAIPromptCacheCreationOptimizationUnsupportedError(http.StatusBadRequest, "", originalUpstreamMessage)
+				if cachePolicyCompatibilityFailure {
+					s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+				}
 			}
 
 			if !clientDisconnected {

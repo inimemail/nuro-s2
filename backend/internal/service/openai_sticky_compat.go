@@ -183,6 +183,43 @@ func (s *OpenAIGatewayService) setStickySessionAccountID(ctx context.Context, gr
 	return nil
 }
 
+type openAIStickySessionClaimer interface {
+	SetSessionAccountIDIfAbsent(ctx context.Context, groupID int64, sessionHash string, accountID int64, ttl time.Duration) (bool, error)
+}
+
+// claimStickySessionAccountID only claims a missing primary binding. Explicit
+// failover and recovery paths continue using setStickySessionAccountID so they
+// can intentionally replace a stale account binding.
+func (s *OpenAIGatewayService) claimStickySessionAccountID(ctx context.Context, groupID *int64, sessionHash string, accountID int64, ttl time.Duration) error {
+	if s == nil || s.cache == nil || accountID <= 0 {
+		return nil
+	}
+	if IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) && !s.isOpenAIPromptCacheBoostAffinityAccountBindable(ctx, sessionHash, accountID) {
+		return nil
+	}
+	primaryKey := s.openAISessionCacheKey(sessionHash)
+	if primaryKey == "" {
+		return nil
+	}
+	claimer, ok := s.cache.(openAIStickySessionClaimer)
+	if !ok {
+		return s.setStickySessionAccountID(ctx, groupID, sessionHash, accountID, ttl)
+	}
+	claimed, err := claimer.SetSessionAccountIDIfAbsent(ctx, derefGroupID(groupID), primaryKey, accountID, ttl)
+	if err != nil || !claimed || !s.openAISessionHashDualWriteOldEnabled() {
+		return err
+	}
+	legacyKey := s.openAILegacySessionCacheKey(ctx, sessionHash)
+	if legacyKey == "" {
+		return nil
+	}
+	_, err = claimer.SetSessionAccountIDIfAbsent(ctx, derefGroupID(groupID), legacyKey, accountID, s.openAIStickyLegacyTTL(ttl))
+	if err == nil {
+		openAIStickyLegacyDualWriteTotal.Add(1)
+	}
+	return err
+}
+
 func (s *OpenAIGatewayService) refreshStickySessionTTL(ctx context.Context, groupID *int64, sessionHash string, ttl time.Duration) error {
 	if s == nil || s.cache == nil {
 		return nil

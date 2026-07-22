@@ -1790,7 +1790,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 		return openAIAccountSlotAcquireResult{Err: err}
 	}
 	if fastAcquired {
-		if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
+		if err := h.gatewayService.ClaimStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
 		return openAIAccountSlotAcquireResult{
@@ -1853,7 +1853,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 
 	// Slot acquired: no longer waiting in queue.
 	releaseWait()
-	if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
+	if err := h.gatewayService.ClaimStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
 	return openAIAccountSlotAcquireResult{
@@ -2230,7 +2230,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
 		currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
-		if err := h.gatewayService.BindStickySession(ctx, apiKey.GroupID, sessionHash, account.ID); err != nil {
+		if err := h.gatewayService.ClaimStickySession(ctx, apiKey.GroupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.websocket_bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
 
