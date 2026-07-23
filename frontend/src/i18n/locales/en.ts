@@ -3827,7 +3827,7 @@ export default {
         'Only applies when race mode is enabled. Default {default}ms, range {min}-{max}ms; after this, same-account racing stops and normal failover/cooldown continues.',
       poolModeRetryCount: 'Same-Account Retries',
       poolModeRetryCountHint:
-        'Only applies in pool mode. Use 0 to disable in-place retry. Default {default}, maximum {max}.',
+        'Only applies in pool mode. Range {min}-{max}; 0 disables in-place retry when upstream race is off. Default {default}.',
       poolModeRetryStatusCodes: 'Retry Status Codes',
       poolModeRetryStatusCodesHint:
         'Comma-separated HTTP status codes (100-599) for pool-mode same-account retries. Matching status codes are still checked against error content; clear user request/configuration errors will not retry. Leave blank to use defaults ({default}).',

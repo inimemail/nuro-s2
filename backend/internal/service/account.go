@@ -1381,9 +1381,10 @@ func (a *Account) MatchesOpenAIImagePoolRequest(ctx context.Context, requestedMo
 }
 
 const (
-	defaultPoolModeRetryCount = 1
-	maxPoolModeRetryCount     = 10
-	maxPoolModeRaceRetryCount = 50
+	defaultPoolModeRetryCount     = 1
+	maxPoolModeRetryCount         = 10
+	defaultPoolModeRaceRetryCount = 20
+	maxPoolModeRaceRetryCount     = 200
 )
 
 const (
@@ -1393,8 +1394,9 @@ const (
 
 const (
 	defaultPoolModeSameAccountRetryDelay = 500 * time.Millisecond
-	minPoolModeSameAccountRetryDelay     = 10 * time.Millisecond
-	maxPoolModeSameAccountRetryDelay     = 5 * time.Second
+	defaultPoolModeRaceRetryDelay        = 10 * time.Millisecond
+	minPoolModeSameAccountRetryDelay     = 1 * time.Millisecond
+	maxPoolModeSameAccountRetryDelay     = 500 * time.Millisecond
 )
 
 const (
@@ -1404,22 +1406,32 @@ const (
 )
 
 // GetPoolModeRetryCount 返回池模式同账号重试次数。
-// 未配置或配置非法时回退为默认值 1；小于 0 按 0 处理；过大则按账号模式截断。
+// 普通池模式默认 1、允许 0-10；抢上游模式默认 20、限制为 1-200。
 func (a *Account) GetPoolModeRetryCount() int {
 	if a == nil || !a.IsPoolMode() || a.Credentials == nil {
 		return defaultPoolModeRetryCount
 	}
+	raceEnabled := a.IsOpenAIUpstreamConcurrencyRaceEnabled()
+	defaultCount := defaultPoolModeRetryCount
+	maxCount := maxPoolModeRetryCount
+	if raceEnabled {
+		defaultCount = defaultPoolModeRaceRetryCount
+		maxCount = maxPoolModeRaceRetryCount
+	}
 	raw, ok := a.Credentials["pool_mode_retry_count"]
 	if !ok || raw == nil {
-		return defaultPoolModeRetryCount
+		return defaultCount
 	}
-	count := parsePoolModeRetryCount(raw)
-	if count < 0 {
+	count, valid := parsePoolModeRetryCount(raw)
+	if !valid {
+		return defaultCount
+	}
+	if raceEnabled {
+		if count < 1 {
+			return 1
+		}
+	} else if count < 0 {
 		return 0
-	}
-	maxCount := maxPoolModeRetryCount
-	if a.IsOpenAIUpstreamConcurrencyRaceEnabled() {
-		maxCount = maxPoolModeRaceRetryCount
 	}
 	if count > maxCount {
 		return maxCount
@@ -1427,24 +1439,24 @@ func (a *Account) GetPoolModeRetryCount() int {
 	return count
 }
 
-func parsePoolModeRetryCount(value any) int {
+func parsePoolModeRetryCount(value any) (int, bool) {
 	switch v := value.(type) {
 	case int:
-		return v
+		return v, true
 	case int64:
-		return int(v)
+		return int(v), true
 	case float64:
-		return int(v)
+		return int(v), true
 	case json.Number:
 		if i, err := v.Int64(); err == nil {
-			return int(i)
+			return int(i), true
 		}
 	case string:
 		if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-			return i
+			return i, true
 		}
 	}
-	return defaultPoolModeRetryCount
+	return 0, false
 }
 
 // GetPoolSoftCooldownErrorThreshold returns how many consecutive failover
@@ -1496,20 +1508,24 @@ func (a *Account) IsOpenAIUpstreamConcurrencyRaceEnabled() bool {
 }
 
 // GetPoolModeSameAccountRetryDelay returns the delay between same-account
-// retries for pool-mode accounts. Missing or invalid values keep the legacy
-// 500ms delay; OpenAI text pool accounts can opt into a shorter per-account
-// delay for upstream concurrency racing.
+// retries for pool-mode accounts. Legacy pool mode keeps the 500ms default;
+// OpenAI text pool race mode uses a 10ms default and a 1-500ms range.
 func (a *Account) GetPoolModeSameAccountRetryDelay() time.Duration {
-	if !a.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+	raceEnabled := a.IsOpenAIUpstreamConcurrencyRaceEnabled()
+	if !raceEnabled {
 		return defaultPoolModeSameAccountRetryDelay
 	}
+	defaultDelay := defaultPoolModeRaceRetryDelay
 	raw, ok := a.Credentials["upstream_concurrency_race_retry_delay_ms"]
 	if !ok || raw == nil {
-		return defaultPoolModeSameAccountRetryDelay
+		return defaultDelay
 	}
-	delayMs := parsePoolModeRetryDelayMillis(raw)
-	if delayMs <= 0 {
-		return defaultPoolModeSameAccountRetryDelay
+	delayMs, valid := parsePoolModeRetryDelayMillis(raw)
+	if !valid {
+		return defaultDelay
+	}
+	if delayMs < 1 {
+		return minPoolModeSameAccountRetryDelay
 	}
 	delay := time.Duration(delayMs) * time.Millisecond
 	if delay < minPoolModeSameAccountRetryDelay {
@@ -1521,24 +1537,24 @@ func (a *Account) GetPoolModeSameAccountRetryDelay() time.Duration {
 	return delay
 }
 
-func parsePoolModeRetryDelayMillis(value any) int {
+func parsePoolModeRetryDelayMillis(value any) (int, bool) {
 	switch v := value.(type) {
 	case int:
-		return v
+		return v, true
 	case int64:
-		return int(v)
+		return int(v), true
 	case float64:
-		return int(v)
+		return int(v), true
 	case json.Number:
 		if i, err := v.Int64(); err == nil {
-			return int(i)
+			return int(i), true
 		}
 	case string:
 		if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-			return i
+			return i, true
 		}
 	}
-	return 0
+	return 0, false
 }
 
 // GetPoolModeSameAccountRetryMaxElapsed returns the total same-account retry
@@ -1552,8 +1568,8 @@ func (a *Account) GetPoolModeSameAccountRetryMaxElapsed() time.Duration {
 	if !ok || raw == nil {
 		return defaultPoolModeSameAccountRetryMaxElapsed
 	}
-	elapsedMs := parsePoolModeRetryDelayMillis(raw)
-	if elapsedMs <= 0 {
+	elapsedMs, valid := parsePoolModeRetryDelayMillis(raw)
+	if !valid || elapsedMs <= 0 {
 		return defaultPoolModeSameAccountRetryMaxElapsed
 	}
 	elapsed := time.Duration(elapsedMs) * time.Millisecond

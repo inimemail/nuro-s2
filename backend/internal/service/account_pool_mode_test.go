@@ -108,7 +108,7 @@ func TestGetPoolModeRetryCount(t *testing.T) {
 					"pool_mode_retry_count":             50,
 				},
 			},
-			expected: maxPoolModeRaceRetryCount,
+			expected: 50,
 		},
 		{
 			name: "race_mode_caps_at_race_max",
@@ -118,10 +118,22 @@ func TestGetPoolModeRetryCount(t *testing.T) {
 				Credentials: map[string]any{
 					"pool_mode":                         true,
 					"upstream_concurrency_race_enabled": true,
-					"pool_mode_retry_count":             99,
+					"pool_mode_retry_count":             999,
 				},
 			},
 			expected: maxPoolModeRaceRetryCount,
+		},
+		{
+			name: "race_mode_missing_retry_count_uses_race_default",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                         true,
+					"upstream_concurrency_race_enabled": true,
+				},
+			},
+			expected: defaultPoolModeRaceRetryCount,
 		},
 		{
 			name: "race_mode_allows_twenty",
@@ -135,6 +147,32 @@ func TestGetPoolModeRetryCount(t *testing.T) {
 				},
 			},
 			expected: 20,
+		},
+		{
+			name: "race_mode_clamps_zero_to_one",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                         true,
+					"upstream_concurrency_race_enabled": true,
+					"pool_mode_retry_count":             0,
+				},
+			},
+			expected: 1,
+		},
+		{
+			name: "race_mode_allows_two_hundred",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                         true,
+					"upstream_concurrency_race_enabled": true,
+					"pool_mode_retry_count":             200,
+				},
+			},
+			expected: 200,
 		},
 		{
 			name: "race_mode_higher_retry_count_requires_openai_apikey",
@@ -160,6 +198,19 @@ func TestGetPoolModeRetryCount(t *testing.T) {
 				},
 			},
 			expected: defaultPoolModeRetryCount,
+		},
+		{
+			name: "race_mode_invalid_value_falls_back_to_race_default",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                         true,
+					"upstream_concurrency_race_enabled": true,
+					"pool_mode_retry_count":             "oops",
+				},
+			},
+			expected: defaultPoolModeRaceRetryCount,
 		},
 	}
 
@@ -240,6 +291,18 @@ func TestGetPoolModeSameAccountRetryDelay(t *testing.T) {
 			expected: maxPoolModeSameAccountRetryDelay,
 		},
 		{
+			name: "race_mode_missing_delay_uses_race_default",
+			account: &Account{
+				Type:     AccountTypeAPIKey,
+				Platform: PlatformOpenAI,
+				Credentials: map[string]any{
+					"pool_mode":                         true,
+					"upstream_concurrency_race_enabled": true,
+				},
+			},
+			expected: defaultPoolModeRaceRetryDelay,
+		},
+		{
 			name: "invalid_delay_falls_back_to_default",
 			account: &Account{
 				Type:     AccountTypeAPIKey,
@@ -250,7 +313,7 @@ func TestGetPoolModeSameAccountRetryDelay(t *testing.T) {
 					"upstream_concurrency_race_retry_delay_ms": "oops",
 				},
 			},
-			expected: defaultPoolModeSameAccountRetryDelay,
+			expected: defaultPoolModeRaceRetryDelay,
 		},
 	}
 

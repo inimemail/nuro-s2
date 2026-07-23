@@ -1800,7 +1800,7 @@
             <input
               v-model.number="poolModeRetryCount"
               type="number"
-              min="0"
+              :min="upstreamConcurrencyRaceEnabled ? 1 : 0"
               :max="poolModeRetryCountMax"
               step="1"
               class="input"
@@ -1808,7 +1808,8 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{
                 t('admin.accounts.poolModeRetryCountHint', {
-                  default: DEFAULT_POOL_MODE_RETRY_COUNT,
+                  default: upstreamConcurrencyRaceEnabled ? DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT : DEFAULT_POOL_MODE_RETRY_COUNT,
+                  min: upstreamConcurrencyRaceEnabled ? 1 : 0,
                   max: poolModeRetryCountMax
                 })
               }}
@@ -2201,7 +2202,7 @@
             <input
               v-model.number="poolModeRetryCount"
               type="number"
-              min="0"
+              :min="upstreamConcurrencyRaceEnabled ? 1 : 0"
               :max="poolModeRetryCountMax"
               step="1"
               class="input"
@@ -2209,7 +2210,8 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{
                 t('admin.accounts.poolModeRetryCountHint', {
-                  default: DEFAULT_POOL_MODE_RETRY_COUNT,
+                  default: upstreamConcurrencyRaceEnabled ? DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT : DEFAULT_POOL_MODE_RETRY_COUNT,
+                  min: upstreamConcurrencyRaceEnabled ? 1 : 0,
                   max: poolModeRetryCountMax
                 })
               }}
@@ -4612,10 +4614,10 @@ const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
 const DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD = 3
 const MAX_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD = 100
 const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 20
-const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 50
-const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 20
-const MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 10
-const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 5000
+const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 200
+const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 10
+const MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 1
+const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 500
 const DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 2000
 const MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 500
 const MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 30000
@@ -5473,6 +5475,7 @@ watch(upstreamConcurrencyRaceEnabled, (enabled, previous) => {
       )
     }
     poolModeRetryCount.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
+    upstreamConcurrencyRaceRetryDelayMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
     upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
     return
   }
@@ -6362,8 +6365,8 @@ const normalizeUpstreamConcurrencyRaceRetryCount = (value: number) => {
     return DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
   }
   const normalized = Math.trunc(value)
-  if (normalized < 0) {
-    return 0
+  if (normalized < 1) {
+    return 1
   }
   if (normalized > MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT) {
     return MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT

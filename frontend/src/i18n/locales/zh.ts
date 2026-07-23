@@ -3964,7 +3964,7 @@ export default {
       upstreamConcurrencyRaceMaxElapsedMs: '总抢占耗时上限（ms）',
       upstreamConcurrencyRaceMaxElapsedMsHint: '仅抢上游开启时生效。默认 {default}ms，范围 {min}-{max}ms；超过后停止同账号抢占并进入正常切号/冷却流程。',
       poolModeRetryCount: '同账号重试次数',
-      poolModeRetryCountHint: '仅在池模式下生效。0 表示不原地重试；默认 {default}，最大 {max}。',
+      poolModeRetryCountHint: '仅在池模式下生效。范围 {min}-{max}；关闭抢上游时 0 表示不原地重试，默认 {default}。',
       poolModeRetryStatusCodes: '同账号重试状态码',
       poolModeRetryStatusCodesHint: '仅在池模式下生效。以英文逗号分隔的 HTTP 状态码（100-599）。命中后仍会结合错误内容判断；明确的用户请求/配置问题不会重试。留空使用默认值（{default}）。',
       customErrorCodes: '自定义错误码',
