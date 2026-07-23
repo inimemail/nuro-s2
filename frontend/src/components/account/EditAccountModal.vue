@@ -471,7 +471,7 @@
                     type="number"
                     min="0"
                     :max="item.defaultLimit ?? undefined"
-                    step="0.01"
+                    step="0.001"
                     class="input py-1.5 text-xs"
                     :placeholder="t('admin.accounts.upstreamBilling.inheritPlaceholder')"
                     :aria-label="t('admin.accounts.upstreamBilling.overrideLabel', { group: item.group.name })"

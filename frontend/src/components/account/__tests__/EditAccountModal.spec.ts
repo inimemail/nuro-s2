@@ -484,11 +484,12 @@ describe('EditAccountModal', () => {
 
     const wrapper = mountModal(account, [group])
     const override = wrapper.get('input[aria-label="admin.accounts.upstreamBilling.overrideLabel"]')
-    await override.setValue('1.25')
+    expect(override.attributes('step')).toBe('0.001')
+    await override.setValue('0.065')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_group_limits).toEqual({ '10': 1.25 })
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_group_limits).toEqual({ '10': 0.065 })
   })
 
   it('does not submit an unchanged account protection switch during an unrelated edit', async () => {

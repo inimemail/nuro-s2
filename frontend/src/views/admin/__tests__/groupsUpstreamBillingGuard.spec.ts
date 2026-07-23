@@ -15,6 +15,7 @@ const groupsViewSource = readFileSync(resolve(currentDir, '../GroupsView.vue'), 
 describe('groups upstream billing guard', () => {
   it('keeps zero and finite OpenAI thresholds', () => {
     expect(buildUpstreamBillingGuardLimitPayload('openai', 0)).toBe(0)
+    expect(buildUpstreamBillingGuardLimitPayload('openai', '0.065')).toBe(0.065)
     expect(buildUpstreamBillingGuardLimitPayload('openai', '1.5')).toBe(1.5)
   })
 
@@ -33,5 +34,7 @@ describe('groups upstream billing guard', () => {
     expect(groupsViewSource).toContain("v-if=\"editForm.platform === 'openai'\"")
     expect(groupsViewSource).toContain('data-testid="create-group-upstream-billing-guard-limit"')
     expect(groupsViewSource).toContain('data-testid="edit-group-upstream-billing-guard-limit"')
+    expect(groupsViewSource).toMatch(/step="0\.001"[\s\S]*data-testid="create-group-upstream-billing-guard-limit"/)
+    expect(groupsViewSource).toMatch(/step="0\.001"[\s\S]*data-testid="edit-group-upstream-billing-guard-limit"/)
   })
 })
