@@ -135,6 +135,18 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 			Headers:         headers,
 			BodyRawBase64:   EncodeOpenAIEdgeRawBody(upstreamBody),
 			ProxyURL:        proxyURL,
+			SSECommentPreflush: s.openAIStreamSSECommentPreflushEnabled(
+				account,
+				originalModel,
+			),
+			PreambleFlush: s.openAIStreamPreambleFlushEnabled(
+				account,
+				originalModel,
+			),
+			SafeTokenPlaceholder: s.openAIStreamSafeTokenPlaceholderEnabled(
+				account,
+				originalModel,
+			),
 			FirstTokenTimeoutPlaceholderMS: s.openAIStreamFirstTokenTimeoutPlaceholderMs(
 				account,
 				originalModel,
@@ -351,6 +363,14 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 			Headers:         headers,
 			BodyRawBase64:   EncodeOpenAIEdgeRawBody(upstreamBody),
 			ProxyURL:        proxyURL,
+			SSECommentPreflush: s.openAIStreamSSECommentPreflushEnabled(
+				account,
+				originalModel,
+			),
+			PreambleFlush: s.openAIStreamPreambleFlushEnabled(
+				account,
+				originalModel,
+			),
 			SafeTokenPlaceholder: s.openAIStreamSafeTokenPlaceholderEnabled(
 				account,
 				originalModel,
@@ -565,6 +585,14 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 			Headers:         headers,
 			BodyRawBase64:   EncodeOpenAIEdgeRawBody(upstreamBody),
 			ProxyURL:        proxyURL,
+			SSECommentPreflush: s.openAIStreamSSECommentPreflushEnabled(
+				account,
+				originalModel,
+			),
+			PreambleFlush: s.openAIStreamPreambleFlushEnabled(
+				account,
+				originalModel,
+			),
 			SafeTokenPlaceholder: s.openAIStreamSafeTokenPlaceholderEnabled(
 				account,
 				originalModel,

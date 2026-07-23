@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -20,6 +21,22 @@ func edgePlanHeaderValue(headers map[string]string, name string) string {
 		}
 	}
 	return ""
+}
+
+func TestOpenAIEdgePlanAlwaysSerializesPreambleFlushFlag(t *testing.T) {
+	payload, err := json.Marshal(OpenAIEdgePlan{
+		Action:        OpenAIEdgeActionRelay,
+		EdgeRequestID: "edge-compat",
+	})
+	if err != nil {
+		t.Fatalf("marshal edge plan: %v", err)
+	}
+	if !gjson.GetBytes(payload, "preamble_flush").Exists() {
+		t.Fatalf("expected explicit preamble_flush=false in serialized plan: %s", payload)
+	}
+	if gjson.GetBytes(payload, "preamble_flush").Bool() {
+		t.Fatal("expected zero-value preamble_flush to serialize as false")
+	}
 }
 
 func TestOpenAIEdgeRawRelayEligibleForInboundEndpoint(t *testing.T) {
@@ -54,6 +71,111 @@ func TestOpenAIEdgeRawRelayEligibleForInboundEndpoint(t *testing.T) {
 	}
 	if got := OpenAIEdgeRawUpstreamEndpointForInbound(rawResponsesAccount, "/v1/responses"); got != "/v1/responses" {
 		t.Fatalf("expected responses upstream endpoint, got %q", got)
+	}
+}
+
+func TestBuildRawChatCompletionsEdgePlanCarriesConfiguredFirstTokenPlaceholders(t *testing.T) {
+	setGinTestMode()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+
+	account := &Account{
+		ID:          462,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-api-key", "base_url": "https://api.openai.com"},
+		Extra: map[string]any{
+			openai_compat.ExtraKeyResponsesSupported:                false,
+			openAIAPIKeySSECommentPreflushExtraKey:                  true,
+			openAIAPIKeyPreambleFlushExtraKey:                       true,
+			openAIAPIKeySafeTokenPlaceholderExtraKey:                true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:      137,
+		},
+	}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+			},
+		},
+	}
+
+	plan, err := svc.BuildRawChatCompletionsEdgePlan(
+		context.Background(),
+		c,
+		account,
+		[]byte(`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`),
+		"",
+	)
+	if err != nil {
+		t.Fatalf("build raw chat edge plan: %v", err)
+	}
+	if !plan.Plan.SafeTokenPlaceholder {
+		t.Fatal("expected APIKey safe token placeholder setting to reach edge plan")
+	}
+	if !plan.Plan.SSECommentPreflush {
+		t.Fatal("expected APIKey SSE comment preflush setting to reach edge plan")
+	}
+	if !plan.Plan.PreambleFlush {
+		t.Fatal("expected APIKey preamble flush setting to reach edge plan")
+	}
+	if got := plan.Plan.FirstTokenTimeoutPlaceholderMS; got != 137 {
+		t.Fatalf("expected configured timeout placeholder 137ms, got %d", got)
+	}
+}
+
+func TestBuildRawResponsesEdgePlanCarriesConfiguredFirstTokenPlaceholders(t *testing.T) {
+	setGinTestMode()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+
+	account := &Account{
+		ID:          463,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-api-key", "base_url": "https://api.openai.com"},
+		Extra: map[string]any{
+			"openai_passthrough":                                         true,
+			openai_compat.ExtraKeyResponsesSupported:                     true,
+			openAIAPIKeySSECommentPreflushExtraKey:                       true,
+			openAIAPIKeyPreambleFlushExtraKey:                            true,
+			openAIAPIKeySafeTokenPlaceholderExtraKey:                     true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:           137,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
+		},
+	}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+			},
+		},
+	}
+
+	plan, err := svc.BuildRawResponsesEdgePlan(
+		context.Background(),
+		c,
+		account,
+		[]byte(`{"model":"gpt-5","stream":true,"input":"hi"}`),
+	)
+	if err != nil {
+		t.Fatalf("build raw responses edge plan: %v", err)
+	}
+	if !plan.Plan.SafeTokenPlaceholder {
+		t.Fatal("expected APIKey safe token placeholder setting to reach responses edge plan")
+	}
+	if !plan.Plan.SSECommentPreflush {
+		t.Fatal("expected APIKey SSE comment preflush setting to reach responses edge plan")
+	}
+	if !plan.Plan.PreambleFlush {
+		t.Fatal("expected APIKey preamble flush setting to reach responses edge plan")
+	}
+	if got := plan.Plan.FirstTokenTimeoutPlaceholderMS; got != 137 {
+		t.Fatalf("expected configured timeout placeholder 137ms, got %d", got)
 	}
 }
 
@@ -389,8 +511,12 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 			"chatgpt_account_id": "chatgpt-account",
 		},
 		Extra: map[string]any{
-			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
-			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      1000,
+			openAIOAuthChatGPTSSECommentPreflushExtraKey:                       true,
+			openAIOAuthChatGPTPreambleFlushExtraKey:                            true,
+			openAIOAuthChatGPTSafeTokenPlaceholderExtraKey:                     true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:           137,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
 		},
 	}
 	body := []byte(`{"model":"gpt-5","stream":true,"prompt_cache_key":"turn-1","input":[{"role":"user","content":"hi"}]}`)
@@ -405,7 +531,16 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 	if plan.Plan.UpstreamURL != chatgptCodexURL {
 		t.Fatalf("unexpected upstream url: %q", plan.Plan.UpstreamURL)
 	}
-	if got := plan.Plan.FirstTokenTimeoutPlaceholderMS; got != 1000 {
+	if !plan.Plan.SafeTokenPlaceholder {
+		t.Fatal("expected OAuth safe token placeholder setting to reach edge plan")
+	}
+	if !plan.Plan.SSECommentPreflush {
+		t.Fatal("expected OAuth SSE comment preflush setting to reach edge plan")
+	}
+	if !plan.Plan.PreambleFlush {
+		t.Fatal("expected OAuth preamble flush setting to reach edge plan")
+	}
+	if got := plan.Plan.FirstTokenTimeoutPlaceholderMS; got != 137 {
 		t.Fatalf("unexpected first token timeout placeholder ms: %d", got)
 	}
 	if got := plan.Plan.Headers["Authorization"]; got != "Bearer oauth-token" {

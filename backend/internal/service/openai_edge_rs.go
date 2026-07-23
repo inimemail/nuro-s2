@@ -60,6 +60,18 @@ type OpenAIEdgePlan struct {
 	// configured timeout when upstream has not produced a real first token.
 	// It must not be reported as first_token_ms.
 	FirstTokenTimeoutPlaceholderMS int `json:"first_token_timeout_placeholder_ms,omitempty"`
+	// SSECommentPreflush mirrors the account-level APIKey/OAuth setting that
+	// sends an SSE comment before upstream data so the downstream can commit the
+	// response body earlier. It is deliberately optional for old edge binaries.
+	SSECommentPreflush bool `json:"sse_comment_preflush,omitempty"`
+	// PreambleFlush controls whether Responses preamble events
+	// (response.created/response.in_progress) are sent before a real output
+	// event. It is separate from SSECommentPreflush, which emits a local SSE
+	// comment instead of forwarding an upstream event.
+	// Keep the bool on the wire even when disabled. Rust edge-rs defaults a
+	// missing field to the legacy immediate-flush behavior for older control
+	// planes, so an explicit false is required to enable preamble buffering.
+	PreambleFlush bool `json:"preamble_flush"`
 	// PromptCacheCreationOptimizationMode carries the account policy for edge-rs
 	// WS turns. Applied reports whether the current outgoing body was rewritten.
 	PromptCacheCreationOptimizationMode    string `json:"prompt_cache_creation_optimization_mode,omitempty"`

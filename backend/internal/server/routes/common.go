@@ -3,6 +3,7 @@ package routes
 import (
 	"crypto/subtle"
 	"fmt"
+	"net"
 	"net/http"
 	"runtime"
 	"strings"
@@ -27,6 +28,10 @@ func RegisterCommonRoutes(r *gin.Engine, cfg *config.Config) {
 		c.JSON(http.StatusOK, gin.H{"status": "ready"})
 	})
 	r.GET("/metrics", func(c *gin.Context) {
+		if !runtimeMetricsRequestAllowed(c, cfg) {
+			c.Status(http.StatusNotFound)
+			return
+		}
 		snapshot := runtimeops.Current()
 		var memory runtime.MemStats
 		runtime.ReadMemStats(&memory)
@@ -99,4 +104,41 @@ func RegisterCommonRoutes(r *gin.Engine, cfg *config.Config) {
 			},
 		})
 	})
+}
+
+func runtimeMetricsRequestAllowed(c *gin.Context, cfg *config.Config) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(c.Request.RemoteAddr))
+	if err == nil {
+		if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+			// A direct loopback/private ServiceMonitor scrape has no forwarding
+			// headers. Requests arriving through any reverse proxy do, including a
+			// proxy bound to loopback, and must authenticate: otherwise every public
+			// caller would appear to come from the proxy's trusted address.
+			if (ip.IsLoopback() || ip.IsPrivate()) && !runtimeMetricsRequestHasForwardingHeaders(c.Request) {
+				return true
+			}
+		}
+	}
+
+	secret := ""
+	if cfg != nil {
+		secret = strings.TrimSpace(cfg.Gateway.OpenAIEdgeRS.InternalSecret)
+	}
+	provided := strings.TrimSpace(c.GetHeader("X-Sub2API-Edge-Secret"))
+	return secret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(secret)) == 1
+}
+
+func runtimeMetricsRequestHasForwardingHeaders(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Real-IP", "CF-Connecting-IP"} {
+		if strings.TrimSpace(r.Header.Get(name)) != "" {
+			return true
+		}
+	}
+	return false
 }

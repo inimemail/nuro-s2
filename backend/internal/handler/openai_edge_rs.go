@@ -2283,6 +2283,9 @@ func openAIEdgeAbortReasonIsNeutral(reason string) bool {
 		strings.Contains(reason, "edge relay queue full") ||
 		strings.Contains(reason, "queue wait budget") ||
 		strings.Contains(reason, "queue_wait_timeout") ||
+		strings.Contains(reason, "edge proxy client capacity exhausted") ||
+		strings.Contains(reason, "edge_transient_proxy_client_build_failed") ||
+		strings.Contains(reason, "edge_upstream_client_build_failed") ||
 		strings.Contains(reason, "retry_failure_already_recorded") ||
 		strings.Contains(reason, "prepare_failed") ||
 		strings.Contains(reason, "ws_prepare_failed") ||

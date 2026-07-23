@@ -1,3 +1,5 @@
+mod http_lane_pool;
+
 use std::{
     collections::HashMap,
     env,
@@ -23,6 +25,10 @@ use axum::{
 };
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use http_lane_pool::{
+    build_standalone_client, is_capacity_error, is_legacy_fallback_error, HttpLanePool,
+    HttpLanePoolConfig, LaneGuard, LaneRequest,
+};
 use reqwest::{Client, ClientBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,7 +42,7 @@ use tokio_tungstenite::{
     },
     MaybeTlsStream, WebSocketStream,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 const EDGE_SECRET_HEADER: &str = "X-Sub2API-Edge-Secret";
@@ -66,13 +72,14 @@ struct AppState {
     cfg: Arc<EdgeConfig>,
     edge_instance_id: Arc<String>,
     client: Client,
-    clients_by_proxy: Arc<Mutex<HashMap<String, Client>>>,
+    clients_by_proxy: Arc<Mutex<HashMap<String, Arc<ProxyClientEntry>>>>,
+    http_lane_pool: Arc<HttpLanePool>,
+    transient_proxy_permits: Arc<Semaphore>,
     relay_domains: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     relay_queue_last_used: Arc<Mutex<HashMap<String, Instant>>>,
-    warm_keys: Arc<Mutex<HashMap<String, WarmKeyState>>>,
+    warm_keys: Arc<Mutex<HashMap<DynamicWarmKey, WarmKeyState>>>,
     ws_idle: Arc<tokio::sync::Mutex<HashMap<String, Vec<WsIdleConn>>>>,
     ws_idle_last_used: Arc<tokio::sync::Mutex<HashMap<String, Instant>>>,
-    proxy_last_used: Arc<Mutex<HashMap<String, Instant>>>,
     pools: Arc<BufferPools>,
     settlement_retry_tx: mpsc::Sender<SettlementRetryJob>,
     payload_commit_tx: mpsc::Sender<CommitRequest>,
@@ -105,6 +112,19 @@ struct EdgeMetrics {
     active_settlement_workers: AtomicU64,
     active_payload_commit_workers: AtomicU64,
     lease_renew_failures: AtomicU64,
+    upstream_attempts: AtomicU64,
+    upstream_connect_errors: AtomicU64,
+    upstream_responses: AtomicU64,
+    upstream_5xx: AtomicU64,
+    upstream_429: AtomicU64,
+    upstream_http1_responses: AtomicU64,
+    upstream_http2_responses: AtomicU64,
+    retry_attempts: AtomicU64,
+    transient_proxy_active: AtomicU64,
+    transient_proxy_waiters: AtomicU64,
+    transient_proxy_total: AtomicU64,
+    transient_proxy_wait_micros: AtomicU64,
+    transient_proxy_wait_count: AtomicU64,
 }
 
 struct ActiveRequestGuard {
@@ -122,6 +142,46 @@ struct ActiveRelayWorkerGuard {
 struct ActiveCallbackWorkerGuard {
     metrics: Arc<EdgeMetrics>,
     payload_commit: bool,
+}
+
+struct TransientProxyWaitGuard {
+    metrics: Arc<EdgeMetrics>,
+    started_at: Instant,
+}
+
+/// A lease on a cached proxy client. The map entry is only evicted after all
+/// leases have been released, so a long-lived SSE cannot leave an orphaned
+/// Client (and its sockets) behind the configured proxy-client cap.
+struct ProxyClientEntry {
+    client: Client,
+    active: AtomicU64,
+    last_used: Mutex<Instant>,
+}
+
+struct ProxyClientLease {
+    entry: Arc<ProxyClientEntry>,
+}
+
+struct ProxyClientSelection {
+    client: Client,
+    lease: Option<ProxyClientLease>,
+}
+
+struct TransientProxyGuard {
+    permit: Option<OwnedSemaphorePermit>,
+    metrics: Arc<EdgeMetrics>,
+}
+
+enum UpstreamClientGuard {
+    Legacy,
+    LegacyProxy(Option<ProxyClientLease>),
+    Lane(LaneGuard),
+    Transient(TransientProxyGuard),
+}
+
+struct SelectedUpstreamClient {
+    client: Client,
+    guard: UpstreamClientGuard,
 }
 
 impl Drop for ActiveStreamGuard {
@@ -152,6 +212,135 @@ impl Drop for ActiveCallbackWorkerGuard {
             &self.metrics.active_settlement_workers
         };
         counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Drop for TransientProxyWaitGuard {
+    fn drop(&mut self) {
+        self.metrics
+            .transient_proxy_waiters
+            .fetch_sub(1, Ordering::Relaxed);
+        self.metrics.transient_proxy_wait_micros.fetch_add(
+            self.started_at.elapsed().as_micros().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        self.metrics
+            .transient_proxy_wait_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl ProxyClientEntry {
+    fn touch(&self) {
+        if let Ok(mut last_used) = self.last_used.lock() {
+            *last_used = Instant::now();
+        }
+    }
+}
+
+impl ProxyClientLease {
+    fn new(entry: Arc<ProxyClientEntry>) -> Self {
+        entry.active.fetch_add(1, Ordering::Relaxed);
+        entry.touch();
+        Self { entry }
+    }
+}
+
+impl ProxyClientSelection {
+    fn leased(entry: Arc<ProxyClientEntry>) -> Self {
+        let lease = ProxyClientLease::new(Arc::clone(&entry));
+        Self {
+            client: entry.client.clone(),
+            lease: Some(lease),
+        }
+    }
+
+    fn legacy(entry: &Arc<ProxyClientEntry>) -> Self {
+        // The pre-lane proxy cache only refreshed its lookup timestamp. The
+        // returned Client clone kept an in-flight request alive independently
+        // if the cache entry was reaped later.
+        entry.touch();
+        Self {
+            client: entry.client.clone(),
+            lease: None,
+        }
+    }
+}
+
+impl Drop for ProxyClientLease {
+    fn drop(&mut self) {
+        // Publish the fresh idle timestamp before the last lease exposes an
+        // active count of zero. Otherwise the reaper could observe zero with
+        // the old timestamp and evict a client at the exact request boundary.
+        self.entry.touch();
+        self.entry.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl TransientProxyGuard {
+    fn new(permit: OwnedSemaphorePermit, metrics: Arc<EdgeMetrics>) -> Self {
+        metrics
+            .transient_proxy_active
+            .fetch_add(1, Ordering::Relaxed);
+        metrics
+            .transient_proxy_total
+            .fetch_add(1, Ordering::Relaxed);
+        Self {
+            permit: Some(permit),
+            metrics,
+        }
+    }
+
+    fn release(&mut self) {
+        if self.permit.take().is_some() {
+            self.metrics
+                .transient_proxy_active
+                .fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Drop for TransientProxyGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+async fn acquire_transient_proxy_guard(
+    metrics: Arc<EdgeMetrics>,
+    permits: Arc<Semaphore>,
+) -> anyhow::Result<TransientProxyGuard> {
+    let wait_guard = metrics.begin_transient_proxy_wait();
+    let permit = permits
+        .acquire_owned()
+        .await
+        .map_err(|_| anyhow::anyhow!("transient proxy client capacity closed"))?;
+    drop(wait_guard);
+    Ok(TransientProxyGuard::new(permit, metrics))
+}
+
+impl UpstreamClientGuard {
+    fn mark_headers(&mut self, version: http::Version) {
+        if let Self::Lane(guard) = self {
+            guard.mark_headers(Some(version));
+        }
+    }
+
+    fn mark_stream_open(&mut self) {
+        if let Self::Lane(guard) = self {
+            guard.mark_stream_open();
+        }
+    }
+
+    fn release(&mut self) {
+        match self {
+            Self::Lane(guard) => guard.release(),
+            Self::Transient(guard) => guard.release(),
+            Self::Legacy | Self::LegacyProxy(None) => {}
+            Self::LegacyProxy(lease) => {
+                lease.take();
+            }
+        }
     }
 }
 
@@ -188,6 +377,47 @@ impl EdgeMetrics {
         ActiveCallbackWorkerGuard {
             metrics: Arc::clone(self),
             payload_commit,
+        }
+    }
+
+    fn begin_transient_proxy_wait(self: &Arc<Self>) -> TransientProxyWaitGuard {
+        self.transient_proxy_waiters.fetch_add(1, Ordering::Relaxed);
+        TransientProxyWaitGuard {
+            metrics: Arc::clone(self),
+            started_at: Instant::now(),
+        }
+    }
+
+    fn record_upstream_attempt(&self, retry_count: i64) {
+        self.upstream_attempts.fetch_add(1, Ordering::Relaxed);
+        if retry_count > 0 {
+            self.retry_attempts.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_upstream_send_error(&self, error: &reqwest::Error) {
+        if error.is_connect() {
+            self.upstream_connect_errors.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_upstream_response(&self, status: StatusCode, version: http::Version) {
+        self.upstream_responses.fetch_add(1, Ordering::Relaxed);
+        if status.is_server_error() {
+            self.upstream_5xx.fetch_add(1, Ordering::Relaxed);
+        }
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            self.upstream_429.fetch_add(1, Ordering::Relaxed);
+        }
+        if version == http::Version::HTTP_2 {
+            self.upstream_http2_responses
+                .fetch_add(1, Ordering::Relaxed);
+        } else if matches!(
+            version,
+            http::Version::HTTP_09 | http::Version::HTTP_10 | http::Version::HTTP_11
+        ) {
+            self.upstream_http1_responses
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -250,7 +480,8 @@ impl EdgeMetrics {
             .saturating_sub(state.payload_commit_tx.capacity());
         let open_fds = linux_open_fd_count();
         let max_fds = linux_max_open_files();
-        format!(
+        let lane = state.http_lane_pool.snapshot();
+        let mut output = format!(
             "# TYPE sub2api_edge_active_requests gauge\nsub2api_edge_active_requests {active}\n\
              # TYPE sub2api_edge_active_streams gauge\nsub2api_edge_active_streams {active_streams}\n\
              # TYPE sub2api_edge_accepted_requests counter\nsub2api_edge_accepted_requests {}\n\
@@ -293,7 +524,85 @@ impl EdgeMetrics {
             prometheus_label(state.cfg.edge_node_id.as_deref().unwrap_or("unknown")),
             prometheus_label(state.edge_instance_id.as_str()),
             state.cfg.global_workers,
-        )
+        );
+        output.push_str(&format!(
+            "# TYPE sub2api_edge_upstream_attempts_total counter\nsub2api_edge_upstream_attempts_total {}\n\
+             # TYPE sub2api_edge_upstream_connect_errors_total counter\nsub2api_edge_upstream_connect_errors_total {}\n\
+             # TYPE sub2api_edge_upstream_responses_total counter\nsub2api_edge_upstream_responses_total {}\n\
+             # TYPE sub2api_edge_upstream_5xx_total counter\nsub2api_edge_upstream_5xx_total {}\n\
+             # TYPE sub2api_edge_upstream_429_total counter\nsub2api_edge_upstream_429_total {}\n\
+             # TYPE sub2api_edge_retry_attempts_total counter\nsub2api_edge_retry_attempts_total {}\n\
+             # TYPE sub2api_edge_upstream_responses_by_http_version_total counter\nsub2api_edge_upstream_responses_by_http_version_total{{version=\"h1\"}} {}\n\
+             sub2api_edge_upstream_responses_by_http_version_total{{version=\"h2\"}} {}\n\
+             # TYPE sub2api_edge_upstream_lane_pool_enabled gauge\nsub2api_edge_upstream_lane_pool_enabled {}\n\
+             # TYPE sub2api_edge_upstream_lane_pools gauge\nsub2api_edge_upstream_lane_pools {}\n\
+             # TYPE sub2api_edge_upstream_client_lanes gauge\nsub2api_edge_upstream_client_lanes {}\n\
+             # TYPE sub2api_edge_upstream_lane_inflight gauge\nsub2api_edge_upstream_lane_inflight {}\n\
+             # TYPE sub2api_edge_upstream_lane_awaiting_headers gauge\nsub2api_edge_upstream_lane_awaiting_headers {}\n\
+             # TYPE sub2api_edge_upstream_lane_open_streams gauge\nsub2api_edge_upstream_lane_open_streams {}\n\
+             # TYPE sub2api_edge_upstream_lane_pools_under_pressure gauge\nsub2api_edge_upstream_lane_pools_under_pressure {}\n\
+             # HELP sub2api_edge_upstream_lane_pools_at_cap_pressure Pools at their protocol/global lane cap with sustained high-water response-header pressure.\n\
+             # TYPE sub2api_edge_upstream_lane_pools_at_cap_pressure gauge\nsub2api_edge_upstream_lane_pools_at_cap_pressure {}\n\
+             # TYPE sub2api_edge_upstream_lane_pools_overflowing gauge\nsub2api_edge_upstream_lane_pools_overflowing {}\n\
+             # TYPE sub2api_edge_upstream_lane_overflow_active gauge\nsub2api_edge_upstream_lane_overflow_active {}\n\
+             # TYPE sub2api_edge_upstream_lane_overflow_total counter\nsub2api_edge_upstream_lane_overflow_total {}\n\
+             # TYPE sub2api_edge_upstream_lane_expansions_total counter\nsub2api_edge_upstream_lane_expansions_total {}\n\
+             # TYPE sub2api_edge_upstream_lane_shrinks_total counter\nsub2api_edge_upstream_lane_shrinks_total {}\n\
+             # TYPE sub2api_edge_upstream_lane_expansion_failures_total counter\nsub2api_edge_upstream_lane_expansion_failures_total {}\n\
+             # TYPE sub2api_edge_upstream_lane_capacity_exhaustions_total counter\nsub2api_edge_upstream_lane_capacity_exhaustions_total {}\n\
+             # TYPE sub2api_edge_upstream_lane_legacy_fallbacks_total counter\nsub2api_edge_upstream_lane_legacy_fallbacks_total {}\n\
+             # HELP sub2api_edge_upstream_lane_expansion_waiters Background lane-expansion timers currently pending; business requests do not wait on these timers.\n\
+             # TYPE sub2api_edge_upstream_lane_expansion_waiters gauge\nsub2api_edge_upstream_lane_expansion_waiters {}\n\
+             # HELP sub2api_edge_upstream_lane_expansion_delay_seconds Background pressure/cooldown timer duration; not business-request or HTTP/2 checkout wait.\n\
+             # TYPE sub2api_edge_upstream_lane_expansion_delay_seconds summary\nsub2api_edge_upstream_lane_expansion_delay_seconds_sum {:.6}\n\
+             sub2api_edge_upstream_lane_expansion_delay_seconds_count {}\n\
+             # TYPE sub2api_edge_upstream_lane_protocol_lanes gauge\nsub2api_edge_upstream_lane_protocol_lanes{{version=\"unknown\"}} {}\n\
+             sub2api_edge_upstream_lane_protocol_lanes{{version=\"h1\"}} {}\n\
+             sub2api_edge_upstream_lane_protocol_lanes{{version=\"h2\"}} {}\n\
+             # TYPE sub2api_edge_transient_proxy_active gauge\nsub2api_edge_transient_proxy_active {}\n\
+             # TYPE sub2api_edge_transient_proxy_waiters gauge\nsub2api_edge_transient_proxy_waiters {}\n\
+             # TYPE sub2api_edge_transient_proxy_limit gauge\nsub2api_edge_transient_proxy_limit {}\n\
+             # TYPE sub2api_edge_transient_proxy_total counter\nsub2api_edge_transient_proxy_total {}\n\
+             # TYPE sub2api_edge_transient_proxy_wait_seconds summary\nsub2api_edge_transient_proxy_wait_seconds_sum {:.6}\n\
+             sub2api_edge_transient_proxy_wait_seconds_count {}\n",
+            self.upstream_attempts.load(Ordering::Relaxed),
+            self.upstream_connect_errors.load(Ordering::Relaxed),
+            self.upstream_responses.load(Ordering::Relaxed),
+            self.upstream_5xx.load(Ordering::Relaxed),
+            self.upstream_429.load(Ordering::Relaxed),
+            self.retry_attempts.load(Ordering::Relaxed),
+            self.upstream_http1_responses.load(Ordering::Relaxed),
+            self.upstream_http2_responses.load(Ordering::Relaxed),
+            u64::from(lane.enabled),
+            lane.keys,
+            lane.lanes,
+            lane.inflight,
+            lane.awaiting_headers,
+            lane.open_streams,
+            lane.pools_under_pressure,
+            lane.pools_at_cap_pressure,
+            lane.pools_overflowing,
+            lane.overflow_active,
+            lane.overflow_total,
+            lane.expansions_total,
+            lane.shrinks_total,
+            lane.expansion_failures_total,
+            lane.capacity_exhaustions_total,
+            lane.legacy_fallbacks_total,
+            lane.expansion_waiters,
+            lane.expansion_delay_micros_total as f64 / 1_000_000.0,
+            lane.expansion_delay_count,
+            lane.unknown_lanes,
+            lane.http1_lanes,
+            lane.http2_lanes,
+            self.transient_proxy_active.load(Ordering::Relaxed),
+            self.transient_proxy_waiters.load(Ordering::Relaxed),
+            state.cfg.transient_proxy_max_active,
+            self.transient_proxy_total.load(Ordering::Relaxed),
+            self.transient_proxy_wait_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+            self.transient_proxy_wait_count.load(Ordering::Relaxed),
+        ));
+        output
     }
 }
 
@@ -343,6 +652,7 @@ struct EdgeConfig {
     max_proxy_clients: usize,
     proxy_client_idle_secs: u64,
     max_idle_conns_per_account: usize,
+    transient_proxy_max_active: usize,
     queue_wait_budget_ms: u64,
     large_payload_passthrough: bool,
     large_payload_threshold_bytes: usize,
@@ -385,6 +695,7 @@ struct EdgePlan {
     lease_id: Option<String>,
     lease_ttl_ms: Option<u64>,
     account_id: Option<i64>,
+    account_type: Option<String>,
     transport: Option<String>,
     response_dialect: Option<String>,
     upstream_url: Option<String>,
@@ -394,6 +705,14 @@ struct EdgePlan {
     proxy_url: Option<String>,
     low_latency_mode: Option<String>,
     lane: Option<String>,
+    /// Account-level SSE comment preflush. Plans produced by older control
+    /// planes omit this field, which must retain the legacy wire behavior.
+    #[serde(default)]
+    sse_comment_preflush: bool,
+    /// Forward Responses preamble events immediately instead of buffering them
+    /// until the first non-preamble output event.
+    #[serde(default = "default_preamble_flush")]
+    preamble_flush: bool,
     #[serde(default)]
     safe_token_placeholder: bool,
     first_token_timeout_placeholder_ms: Option<u64>,
@@ -401,6 +720,13 @@ struct EdgePlan {
     prompt_cache_creation_optimization_model: Option<String>,
     #[serde(default)]
     prompt_cache_creation_optimization_applied: bool,
+}
+
+fn default_preamble_flush() -> bool {
+    // Before this field existed, edge-rs forwarded Responses preamble events
+    // immediately. Keep that wire behavior for plans from an older control
+    // plane; new Go plans always serialize an explicit bool.
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -426,7 +752,7 @@ struct RelayJob {
     response_tx: oneshot::Sender<anyhow::Result<Response>>,
     _domain_permit: OwnedSemaphorePermit,
     _queue_bytes_permit: OwnedSemaphorePermit,
-    _ingress_permit: OwnedSemaphorePermit,
+    ingress_permit: OwnedSemaphorePermit,
 }
 
 #[derive(Clone, Debug)]
@@ -435,6 +761,13 @@ struct WarmKeyState {
     warm_url: String,
     last_seen: Instant,
     failures: u32,
+    warming: bool,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct DynamicWarmKey {
+    proxy: String,
+    warm_url: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -444,6 +777,14 @@ struct EdgeTiming {
     relay_start_ms: Option<i64>,
     fallback_reason: Option<String>,
     retry_count: i64,
+}
+
+struct RelayAttemptContext {
+    started_at: Instant,
+    timing: EdgeTiming,
+    timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
+    relay_attempted_marker: Option<Arc<AtomicBool>>,
+    ingress_permit: Option<OwnedSemaphorePermit>,
 }
 
 fn update_edge_timing(
@@ -475,6 +816,14 @@ fn relay_error_fallback_reason(err: &anyhow::Error) -> &'static str {
     }
     if message.contains("edge relay queue full") {
         return "edge_relay_queue_full";
+    }
+    if message.contains("edge transient proxy client build failed") {
+        return "edge_transient_proxy_client_build_failed";
+    }
+    if message.contains("invalid upstream proxy")
+        || message.contains("could not build upstream HTTP client")
+    {
+        return "edge_upstream_client_build_failed";
     }
     "relay_error_before_commit"
 }
@@ -896,12 +1245,12 @@ impl Drop for ClientDisconnectCompleteGuard {
                 self.started_at.elapsed().as_millis() as i64,
             );
         }
-        let state = self.state.clone();
-        tokio::spawn(async move {
-            if let Err(err) = call_complete(&state, request).await {
-                error!("complete callback could not be delivered or queued: {err}");
-            }
-        });
+        stamp_complete_guard_sample(&mut request);
+        if let Err(err) =
+            enqueue_settlement_retry(&self.state, SettlementRetryJob::Complete(Box::new(request)))
+        {
+            error!("dropped-stream complete callback could not be queued: {err}");
+        }
     }
 }
 
@@ -930,8 +1279,16 @@ impl LeaseAbortGuard {
         self.relay_attempted.store(true, Ordering::SeqCst);
     }
 
+    fn relay_attempted_marker(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.relay_attempted)
+    }
+
     fn mark_done(&self) {
         self.done.store(true, Ordering::SeqCst);
+    }
+
+    fn set_client_disconnected(&mut self, client_disconnected: bool) {
+        self.client_disconnected = client_disconnected;
     }
 }
 
@@ -959,7 +1316,6 @@ impl Drop for LeaseAbortGuard {
         if self.done.load(Ordering::SeqCst) {
             return;
         }
-        let state = self.state.clone();
         let req = lease_abort_request(
             &self.edge_request_id,
             self.lease_id.as_deref(),
@@ -968,11 +1324,9 @@ impl Drop for LeaseAbortGuard {
             self.client_disconnected,
             self.relay_attempted.load(Ordering::SeqCst),
         );
-        tokio::spawn(async move {
-            if let Err(err) = call_abort(&state, req).await {
-                error!("abort callback could not be delivered or queued: {err}");
-            }
-        });
+        if let Err(err) = enqueue_settlement_retry(&self.state, SettlementRetryJob::Abort(req)) {
+            error!("dropped-request abort callback could not be queued: {err}");
+        }
     }
 }
 
@@ -996,6 +1350,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let client = edge_http_client_builder(&cfg).build()?;
+    let http_lane_pool = HttpLanePool::new(HttpLanePoolConfig::from_env());
     let (settlement_retry_tx, settlement_retry_rx) = mpsc::channel(cfg.queue_buffer_size.max(1024));
     let (payload_commit_tx, payload_commit_rx) = mpsc::channel(PAYLOAD_COMMIT_QUEUE_SIZE);
     let (relay_tx, relay_rx) = mpsc::channel(cfg.queue_buffer_size.max(128));
@@ -1004,12 +1359,13 @@ async fn main() -> anyhow::Result<()> {
         edge_instance_id: Arc::new(Uuid::new_v4().to_string()),
         client,
         clients_by_proxy: Arc::new(Mutex::new(HashMap::new())),
+        http_lane_pool,
+        transient_proxy_permits: Arc::new(Semaphore::new(cfg.transient_proxy_max_active.max(1))),
         relay_domains: Arc::new(Mutex::new(HashMap::new())),
         relay_queue_last_used: Arc::new(Mutex::new(HashMap::new())),
         warm_keys: Arc::new(Mutex::new(HashMap::new())),
         ws_idle: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         ws_idle_last_used: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        proxy_last_used: Arc::new(Mutex::new(HashMap::new())),
         pools: Arc::new(BufferPools::prewarmed(cfg.initial_pool_size)),
         settlement_retry_tx,
         payload_commit_tx,
@@ -1047,8 +1403,8 @@ async fn main() -> anyhow::Result<()> {
 
     info!("sub2api-edge-rs listening on {}", cfg.listen_addr);
 
-    // P3: 启动后台上游连接保活（仅当显式配置了 warm url）。这里使用直连 client，
-    // 代理环境不要默认开启，避免保活出口不同于真实业务出口。
+    // P3: 启动后台上游连接保活（仅当显式配置了 warm url）。该流量只走
+    // legacy client，不创建、扩容或刷新业务 lane 的空闲时间。
     if let Some(warm_url) = cfg.upstream_warm_url.clone() {
         let interval_secs = cfg.upstream_warm_interval_secs.max(30);
         tokio::spawn(async move {
@@ -1118,24 +1474,30 @@ fn edge_http_client_builder(cfg: &EdgeConfig) -> ClientBuilder {
         .pool_max_idle_per_host(cfg.max_idle_conns_per_account)
 }
 
-// run_upstream_keep_warm 周期性地向上游 origin 发一个轻量请求，保持 reqwest
-// 的 TCP+TLS+h2 连接常驻连接池，使真实请求能复用热连接、省一次握手 RTT。
-// 复用同一个 client（与真实请求共享连接池），不带鉴权；上游返回 401/405 均可接受，
-// 目的只在于保活连接。全程不触碰任何业务路径。
+async fn send_upstream_keep_warm(
+    client: Client,
+    warm_url: String,
+    force_identity_encoding: bool,
+) -> anyhow::Result<()> {
+    let mut request = client.get(warm_url);
+    if force_identity_encoding {
+        request = request.header(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("identity"),
+        );
+    }
+    let response = request.timeout(Duration::from_secs(10)).send().await?;
+    let _ = response.status();
+    Ok(())
+}
+
+// Preserve the legacy explicit keep-warm behavior. Adaptive lanes remain cold
+// until a business request uses them and never receive synthetic warm traffic.
 async fn run_upstream_keep_warm(client: Client, warm_url: String, interval_secs: u64) {
     let interval = Duration::from_secs(interval_secs);
     loop {
-        let send = client
-            .get(&warm_url)
-            .timeout(Duration::from_secs(10))
-            .send();
-        match send.await {
-            Ok(resp) => {
-                let _ = resp.status();
-            }
-            Err(err) => {
-                warn!("upstream keep-warm request failed: {err}");
-            }
+        if let Err(err) = send_upstream_keep_warm(client.clone(), warm_url.clone(), false).await {
+            warn!("upstream keep-warm request failed: {err}");
         }
         tokio::time::sleep(interval).await;
     }
@@ -1156,48 +1518,79 @@ async fn run_dynamic_upstream_keep_warm(state: AppState) {
                 }
             };
             warm_keys.retain(|_, item| now.duration_since(item.last_seen) <= active_window);
-            warm_keys.values().cloned().collect::<Vec<_>>()
+            warm_keys
+                .iter()
+                .map(|(key, item)| (key.clone(), item.clone()))
+                .collect::<Vec<_>>()
         };
-        for item in keys {
+        for (warm_key, item) in keys {
+            if item.warming {
+                continue;
+            }
             if item.failures >= 3 && item.failures % 3 != 0 {
                 if let Ok(mut warm_keys) = state.warm_keys.lock() {
-                    if let Some(current) = warm_keys
-                        .get_mut(&dynamic_warm_key(item.proxy_url.as_deref(), &item.warm_url))
-                    {
+                    if let Some(current) = warm_keys.get_mut(&warm_key) {
                         current.failures = current.failures.saturating_add(1);
                     }
                 }
                 continue;
             }
-            let client = match state.client_for_proxy(item.proxy_url.as_deref()) {
-                Ok(client) => client,
+
+            let should_start = match state.warm_keys.lock() {
+                Ok(mut warm_keys) => {
+                    if let Some(current) = warm_keys.get_mut(&warm_key) {
+                        if current.warming {
+                            false
+                        } else {
+                            current.warming = true;
+                            true
+                        }
+                    } else {
+                        false
+                    }
+                }
+                Err(_) => {
+                    warn!("dynamic upstream warm key map lock poisoned");
+                    false
+                }
+            };
+            if !should_start {
+                continue;
+            }
+
+            let selection = match if state.http_lane_pool.enabled() {
+                // Lane-enabled deployments use an active lease even for the
+                // legacy keep-warm Client. This prevents the proxy reaper from
+                // orphaning an in-flight warm connection while retaining the
+                // exact legacy path when the emergency flag is disabled.
+                state.client_for_proxy(item.proxy_url.as_deref())
+            } else {
+                state.legacy_client_for_proxy(item.proxy_url.as_deref())
+            } {
+                Ok(selection) => selection,
                 Err(err) => {
                     warn!("dynamic upstream warm client failed: {err}");
+                    if let Ok(mut warm_keys) = state.warm_keys.lock() {
+                        if let Some(current) = warm_keys.get_mut(&warm_key) {
+                            current.warming = false;
+                        }
+                    }
                     continue;
                 }
             };
             let warm_url = item.warm_url.clone();
-            let warm_key = dynamic_warm_key(item.proxy_url.as_deref(), &warm_url);
             let state_for_update = state.clone();
             tokio::spawn(async move {
-                let result = client
-                    .get(&warm_url)
-                    .header(
-                        header::ACCEPT_ENCODING,
-                        HeaderValue::from_static("identity"),
-                    )
-                    .timeout(Duration::from_secs(10))
-                    .send()
-                    .await;
+                let ProxyClientSelection { client, lease } = selection;
+                let _proxy_lease = lease;
+                let result = send_upstream_keep_warm(client, warm_url, true).await;
                 let Ok(mut warm_keys) = state_for_update.warm_keys.lock() else {
                     return;
                 };
                 if let Some(current) = warm_keys.get_mut(&warm_key) {
+                    current.warming = false;
                     match result {
-                        Ok(resp) => {
-                            let _ = resp.status();
-                            current.failures = 0;
-                        }
+                        Ok(()) => current.failures = 0,
                         Err(err) => {
                             current.failures = current.failures.saturating_add(1);
                             warn!("dynamic upstream keep-warm request failed: {err}");
@@ -1214,6 +1607,7 @@ async fn run_edge_resource_reaper(state: AppState) {
     loop {
         tokio::time::sleep(interval).await;
         let now = Instant::now();
+        state.http_lane_pool.reap();
 
         if let (Ok(mut queues), Ok(mut last_used)) = (
             state.relay_domains.lock(),
@@ -1236,30 +1630,22 @@ async fn run_edge_resource_reaper(state: AppState) {
             }
         }
 
-        if let (Ok(mut clients), Ok(mut last_used)) =
-            (state.clients_by_proxy.lock(), state.proxy_last_used.lock())
-        {
+        if let Ok(mut clients) = state.clients_by_proxy.lock() {
             let idle = Duration::from_secs(state.cfg.proxy_client_idle_secs.max(60));
-            let mut stale = last_used
+            let stale = clients
                 .iter()
-                .filter_map(|(key, used)| {
-                    (now.duration_since(*used) >= idle).then_some(key.clone())
+                .filter_map(|(key, entry)| {
+                    let inactive = entry.active.load(Ordering::Acquire) == 0;
+                    let last_used = entry
+                        .last_used
+                        .lock()
+                        .map(|used| now.duration_since(*used) >= idle)
+                        .unwrap_or(false);
+                    (inactive && last_used).then_some(key.clone())
                 })
                 .collect::<Vec<_>>();
-            while clients.len().saturating_sub(stale.len()) > state.cfg.max_proxy_clients.max(1) {
-                if let Some((key, _)) = last_used
-                    .iter()
-                    .filter(|(key, _)| !stale.iter().any(|item| item == *key))
-                    .min_by_key(|(_, used)| *used)
-                {
-                    stale.push(key.clone());
-                } else {
-                    break;
-                }
-            }
             for key in stale {
                 clients.remove(&key);
-                last_used.remove(&key);
             }
         }
 
@@ -1790,7 +2176,7 @@ async fn relay_ws_session(
         return proxy_ws_to_go(state, client_socket, method, uri, headers, first_msg).await;
     }
     let _lease_renewal_guard = LeaseRenewalGuard::start(&state, &plan);
-    let guard = LeaseAbortGuard::new(
+    let mut guard = LeaseAbortGuard::new(
         state.clone(),
         plan.edge_request_id.clone(),
         plan.lease_id.clone(),
@@ -1798,11 +2184,13 @@ async fn relay_ws_session(
         "ws_session_dropped",
         true,
     );
+    // Setup failures are upstream/plan failures, not downstream disconnects.
+    guard.set_client_disconnected(false);
     if plan.transport.as_deref() != Some("ws_v2") {
-        if let Err(callback_err) = call_abort(
+        let abort_result = call_abort(
             &state,
             AbortRequest {
-                edge_request_id,
+                edge_request_id: edge_request_id.clone(),
                 lease_id: plan.lease_id.clone(),
                 account_id: plan.account_id,
                 reason: "unsupported_ws_transport".to_string(),
@@ -1811,11 +2199,16 @@ async fn relay_ws_session(
                 fallback_to_go: false,
             },
         )
-        .await
-        {
+        .await;
+        if let Err(callback_err) = abort_result {
             error!(
                 "unsupported ws transport abort could not be delivered or queued: {callback_err}"
             );
+        } else {
+            // `call_abort` returns Ok both for a direct acknowledgement and
+            // for a successfully queued retry. If queueing also failed, keep
+            // the guard alive so its Drop path gets one more delivery chance.
+            guard.mark_done();
         }
         anyhow::bail!("unsupported ws transport");
     }
@@ -1824,10 +2217,10 @@ async fn relay_ws_session(
         .as_deref()
         .is_some_and(|v| !v.trim().is_empty())
     {
-        if let Err(callback_err) = call_abort(
+        let abort_result = call_abort(
             &state,
             AbortRequest {
-                edge_request_id,
+                edge_request_id: edge_request_id.clone(),
                 lease_id: plan.lease_id.clone(),
                 account_id: plan.account_id,
                 reason: "ws_proxy_not_supported".to_string(),
@@ -1836,13 +2229,18 @@ async fn relay_ws_session(
                 fallback_to_go: false,
             },
         )
-        .await
-        {
+        .await;
+        if let Err(callback_err) = abort_result {
             error!("invalid ws plan abort could not be delivered or queued: {callback_err}");
+        } else {
+            guard.mark_done();
         }
         anyhow::bail!("ws proxy is not supported by edge yet");
     }
 
+    // Setup failures are upstream failures, not downstream disconnects. Once
+    // the first upstream message is sent, an unexpected task drop is treated
+    // as a client disconnect unless the normal completion path says otherwise.
     let idle_conn = state.take_ws_idle(&plan).await;
     let (upstream_socket, upstream_request_id) = if let Some(conn) = idle_conn {
         (conn.socket, conn.request_id)
@@ -1857,6 +2255,7 @@ async fn relay_ws_session(
     upstream_write.send(first_upstream_msg).await?;
     drop(ingress_permit);
     guard.mark_relay_attempted();
+    guard.set_client_disconnected(true);
 
     let lease_id = plan.lease_id.clone();
     let account_id = plan.account_id;
@@ -2053,6 +2452,7 @@ async fn relay_ws_session(
         }
     }
 
+    guard.set_client_disconnected(client_disconnected);
     call_complete(
         &state,
         CompleteRequest {
@@ -2949,18 +3349,34 @@ async fn relay_upstream(
             let queued_bytes = request_body.len().max(1);
             if queued_bytes > state.cfg.queue_max_bytes {
                 let _domain_permit = domain_permit;
-                let _ingress_permit = ingress_permit
+                let ingress_permit = ingress_permit
                     .take()
                     .ok_or_else(|| anyhow::anyhow!("missing edge ingress permit"))?;
-                return relay_upstream_direct(
+                // This request bypasses the worker, so keep an abort guard
+                // around the direct future until a response is committed.
+                let lease_abort_guard = LeaseAbortGuard::new(
+                    state.clone(),
+                    plan.edge_request_id.clone(),
+                    plan.lease_id.clone(),
+                    plan.account_id,
+                    "http_request_dropped_before_response",
+                    true,
+                );
+                let result = relay_upstream_direct(
                     state,
                     plan,
                     request_body,
-                    started_at,
-                    timing,
-                    timing_shared,
+                    RelayAttemptContext {
+                        started_at,
+                        timing,
+                        timing_shared,
+                        relay_attempted_marker: Some(lease_abort_guard.relay_attempted_marker()),
+                        ingress_permit: Some(ingress_permit),
+                    },
                 )
                 .await;
+                lease_abort_guard.mark_done();
+                return result;
             }
             let queue_bytes_permit = try_reserve_relay_queue_bytes(
                 state.relay_queue_bytes.clone(),
@@ -2979,7 +3395,7 @@ async fn relay_upstream(
                 response_tx,
                 _domain_permit: domain_permit,
                 _queue_bytes_permit: queue_bytes_permit,
-                _ingress_permit: ingress_permit
+                ingress_permit: ingress_permit
                     .take()
                     .ok_or_else(|| anyhow::anyhow!("missing edge ingress permit"))?,
             };
@@ -2992,9 +3408,39 @@ async fn relay_upstream(
                 .map_err(|err| anyhow::anyhow!("edge relay worker dropped response: {err}"))?;
         }
     }
-    let _ingress_permit = ingress_permit;
+    let ingress_permit = ingress_permit;
     let request_body = take_request_body_bytes(&mut plan)?;
-    relay_upstream_direct(state, plan, request_body, started_at, timing, timing_shared).await
+    let lease_abort_guard = if allow_initial_queue {
+        Some(LeaseAbortGuard::new(
+            state.clone(),
+            plan.edge_request_id.clone(),
+            plan.lease_id.clone(),
+            plan.account_id,
+            "http_request_dropped_before_response",
+            true,
+        ))
+    } else {
+        None
+    };
+    let result = relay_upstream_direct(
+        state,
+        plan,
+        request_body,
+        RelayAttemptContext {
+            started_at,
+            timing,
+            timing_shared,
+            relay_attempted_marker: lease_abort_guard
+                .as_ref()
+                .map(LeaseAbortGuard::relay_attempted_marker),
+            ingress_permit,
+        },
+    )
+    .await;
+    if let Some(lease_abort_guard) = lease_abort_guard {
+        lease_abort_guard.mark_done();
+    }
+    result
 }
 
 fn try_reserve_relay_queue_bytes(
@@ -3019,38 +3465,82 @@ async fn run_relay_executor(state: AppState, mut receiver: mpsc::Receiver<RelayJ
         };
         tokio::spawn(async move {
             let _permit = permit;
-            let _worker_guard = job.state.metrics.begin_relay_work();
-            let mut timing = job.timing;
-            let queue_wait_ms = job.enqueued_at.elapsed().as_millis() as i64;
-            timing.queue_wait_ms = Some(queue_wait_ms);
-            update_edge_timing(job.timing_shared.as_ref(), |shared| {
+            let RelayJob {
+                state: job_state,
+                plan: job_plan,
+                request_body: job_request_body,
+                started_at: job_started_at,
+                enqueued_at: job_enqueued_at,
+                timing: mut job_timing,
+                timing_shared: job_timing_shared,
+                mut response_tx,
+                _domain_permit,
+                _queue_bytes_permit,
+                ingress_permit,
+            } = job;
+            let _worker_guard = job_state.metrics.begin_relay_work();
+            let lease_abort_guard = LeaseAbortGuard::new(
+                job_state.clone(),
+                job_plan.edge_request_id.clone(),
+                job_plan.lease_id.clone(),
+                job_plan.account_id,
+                "http_request_dropped_before_response",
+                true,
+            );
+            let relay_attempted_marker = lease_abort_guard.relay_attempted_marker();
+            let retry_relay_attempted_marker = Arc::clone(&relay_attempted_marker);
+            let queue_wait_ms = job_enqueued_at.elapsed().as_millis() as i64;
+            job_timing.queue_wait_ms = Some(queue_wait_ms);
+            update_edge_timing(job_timing_shared.as_ref(), |shared| {
                 shared.queue_wait_ms = Some(queue_wait_ms);
-                shared.retry_count = timing.retry_count;
+                shared.retry_count = job_timing.retry_count;
             });
-            let result = if job.state.cfg.queue_wait_budget_ms > 0
-                && queue_wait_ms > job.state.cfg.queue_wait_budget_ms as i64
-            {
-                retry_after_queue_wait_budget(
-                    job.state,
-                    job.plan,
-                    job.started_at,
-                    timing,
-                    job.timing_shared,
-                    queue_wait_ms,
-                )
-                .await
-            } else {
-                relay_upstream_direct(
-                    job.state,
-                    job.plan,
-                    job.request_body,
-                    job.started_at,
-                    timing,
-                    job.timing_shared,
-                )
-                .await
+            let result_future = async move {
+                if job_state.cfg.queue_wait_budget_ms > 0
+                    && queue_wait_ms > job_state.cfg.queue_wait_budget_ms as i64
+                {
+                    retry_after_queue_wait_budget(
+                        job_state,
+                        job_plan,
+                        queue_wait_ms,
+                        RelayAttemptContext {
+                            started_at: job_started_at,
+                            timing: job_timing,
+                            timing_shared: job_timing_shared,
+                            relay_attempted_marker: Some(retry_relay_attempted_marker),
+                            ingress_permit: Some(ingress_permit),
+                        },
+                    )
+                    .await
+                } else {
+                    relay_upstream_direct(
+                        job_state,
+                        job_plan,
+                        job_request_body,
+                        RelayAttemptContext {
+                            started_at: job_started_at,
+                            timing: job_timing,
+                            timing_shared: job_timing_shared,
+                            relay_attempted_marker: Some(relay_attempted_marker),
+                            ingress_permit: Some(ingress_permit),
+                        },
+                    )
+                    .await
+                }
             };
-            let _ = job.response_tx.send(result);
+            tokio::pin!(result_future);
+            tokio::select! {
+                result = &mut result_future => {
+                    if response_tx.send(result).is_ok() {
+                        lease_abort_guard.mark_done();
+                    }
+                }
+                _ = response_tx.closed() => {
+                    // The caller has gone away. Dropping the relay future here
+                    // releases any lane/transient permit it may be waiting on;
+                    // LeaseAbortGuard below also settles the control-plane lease.
+                }
+            }
         });
     }
 }
@@ -3059,10 +3549,15 @@ async fn relay_upstream_direct(
     state: AppState,
     plan: EdgePlan,
     request_body: Vec<u8>,
-    started_at: Instant,
-    mut timing: EdgeTiming,
-    timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
+    context: RelayAttemptContext,
 ) -> anyhow::Result<Response> {
+    let RelayAttemptContext {
+        started_at,
+        mut timing,
+        timing_shared,
+        relay_attempted_marker,
+        ingress_permit,
+    } = context;
     let lease_renewal_guard = LeaseRenewalGuard::start(&state, &plan);
     if timing.relay_start_ms.is_none() {
         timing.relay_start_ms = Some(started_at.elapsed().as_millis() as i64);
@@ -3095,17 +3590,6 @@ async fn relay_upstream_direct(
         }
     }
 
-    let upstream_client = state.client_for_proxy(plan.proxy_url.as_deref())?;
-    let mut req = upstream_client.post(upstream_url);
-    if let Some(headers) = &plan.headers {
-        for (k, v) in headers {
-            req = req.header(k, v);
-        }
-    }
-    req = req.header(
-        header::ACCEPT_ENCODING,
-        HeaderValue::from_static("identity"),
-    );
     let edge_request_id = plan.edge_request_id.clone();
     let lease_id = plan.lease_id.clone();
     let account_id = plan.account_id;
@@ -3115,37 +3599,102 @@ async fn relay_upstream_direct(
     let edge_fallback_reason = timing.fallback_reason.clone();
     let edge_retry_count = timing.retry_count;
     let complete_state = state.clone();
+    let sse_comment_preflush = plan.sse_comment_preflush;
+    let preamble_flush = plan.preamble_flush;
     let safe_token_placeholder = plan.safe_token_placeholder;
     let cache_creation_policy_applied = plan.prompt_cache_creation_optimization_applied;
     let first_token_timeout_placeholder =
         normalize_first_token_timeout_placeholder_ms(plan.first_token_timeout_placeholder_ms);
     let response_dialect = plan.response_dialect.clone();
+    let send_state = state.clone();
+    let send_url = upstream_url.clone();
+    let send_proxy_url = plan.proxy_url.clone();
+    let send_lane = plan.lane.clone();
+    let send_account_id = plan.account_id;
+    let send_account_type = plan.account_type.clone();
+    let send_retry_count = timing.retry_count;
+    let send_headers = plan.headers.clone();
     let header_start = Instant::now();
-    let mut upstream_send = Box::pin(req.body(request_body).send());
-    let upstream = if let Some(timeout) = first_token_timeout_placeholder {
+    let mut upstream_send = Box::pin(async move {
+        // Client/lane selection is part of the header and placeholder race.
+        // A resource-bounded proxy-capacity wait therefore cannot move an account's
+        // configured first-token placeholder past its request-relative limit.
+        let mut selected = send_state
+            .upstream_client_for_plan(
+                send_account_id,
+                send_account_type.as_deref(),
+                send_proxy_url.as_deref(),
+                &send_url,
+                send_lane.as_deref(),
+            )
+            .await?;
+        let mut request = selected.client.post(&send_url);
+        if let Some(headers) = &send_headers {
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+        }
+        request = request.header(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("identity"),
+        );
+        send_state.metrics.record_upstream_attempt(send_retry_count);
+        let response_future = request.body(request_body).send();
+        if let Some(marker) = &relay_attempted_marker {
+            marker.store(true, Ordering::SeqCst);
+        }
+        let response = match response_future.await {
+            Ok(response) => response,
+            Err(error) => {
+                send_state.metrics.record_upstream_send_error(&error);
+                selected.guard.release();
+                return Err(anyhow::Error::from(error));
+            }
+        };
+        let mut upstream_client_guard = selected.guard;
+        let version = response.version();
+        upstream_client_guard.mark_headers(version);
+        send_state
+            .metrics
+            .record_upstream_response(response.status(), version);
+        Ok::<_, anyhow::Error>((response, upstream_client_guard, ingress_permit))
+    });
+    let (upstream, mut upstream_client_guard, ingress_permit) = if let Some(timeout) =
+        first_token_timeout_placeholder
+    {
         tokio::select! {
             result = &mut upstream_send => result?,
+            // Match the Go request-header race and the pre-lane Edge path:
+            // this account setting starts when the upstream request is sent,
+            // so local admission or relay queue time cannot consume it.
             _ = tokio::time::sleep(timeout) => {
                 let stream_guard = complete_state.metrics.begin_stream();
+                // Construct this before building the body stream. Axum may
+                // drop a response body after committing headers but before
+                // polling it; keeping the completion guard outside the
+                // generator ensures that cancellation still settles the
+                // lease instead of waiting for its TTL.
+                let complete_guard = ClientDisconnectCompleteGuard::new(
+                    complete_state.clone(),
+                    started_at,
+                    pending_stream_complete_request(
+                        edge_request_id.clone(),
+                        lease_id.clone(),
+                        account_id,
+                        edge_prepare_ms,
+                        edge_queue_wait_ms,
+                        edge_relay_start_ms,
+                        edge_fallback_reason.clone(),
+                        edge_retry_count,
+                    ),
+                );
                 let early_body_stream = stream! {
                     let _stream_guard = stream_guard;
                     let _lease_renewal_guard = lease_renewal_guard;
-                    let guard = ClientDisconnectCompleteGuard::new(
-                        complete_state.clone(),
-                        started_at,
-                        pending_stream_complete_request(
-                            edge_request_id.clone(),
-                            lease_id.clone(),
-                            account_id,
-                            edge_prepare_ms,
-                            edge_queue_wait_ms,
-                            edge_relay_start_ms,
-                            edge_fallback_reason.clone(),
-                            edge_retry_count,
-                        ),
-                    );
+                    let guard = complete_guard;
                     let mut first_byte_ms: Option<i64> = None;
-                    let first_flush_ms: Option<i64> = Some(started_at.elapsed().as_millis() as i64);
+                    let first_flush_ms: Option<i64> =
+                        Some(started_at.elapsed().as_millis() as i64);
                     let mut first_token_ms: Option<i64> = None;
                     let mut real_first_token_ms: Option<i64> = None;
                     let mut success = true;
@@ -3157,11 +3706,34 @@ async fn relay_upstream_direct(
                     response_dialect.as_deref(),
                 );
                 let mut sanitizer = OpenAIStreamSanitizer::new(response_dialect.as_deref());
+                // Older Go plans did not carry `preamble_flush`; their Edge
+                // behavior was to forward Responses preamble events
+                // immediately. The plan decoder defaults that field to true,
+                // while an explicit false enables this gate.
+                let mut preamble_gate = SsePreambleGate::new(
+                    preamble_flush || response_dialect.as_deref() != Some("responses"),
+                );
+                    // Commit an account-requested SSE preflush before the
+                    // timeout placeholder. This branch is reached only when
+                    // the configured timeout wins the header race, so the
+                    // comment and placeholder share the same response start.
+                    if sse_comment_preflush {
+                        // A local preflush is already client-visible, so it
+                        // also releases any upstream preamble held by the
+                        // account-level gate.
+                        for output in preamble_gate.force() {
+                            yield Ok::<Bytes, std::io::Error>(output);
+                        }
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b":\n\n"));
+                    }
                     let placeholder =
                         openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &summary);
+                    for output in preamble_gate.force() {
+                        yield Ok::<Bytes, std::io::Error>(output);
+                    }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
 
-                    let upstream = match upstream_send.await {
+                    let (upstream, mut upstream_client_guard, ingress_permit) = match upstream_send.await {
                         Ok(upstream) => upstream,
                         Err(err) => {
                             success = false;
@@ -3220,6 +3792,11 @@ async fn relay_upstream_direct(
                         }
                     };
 
+                    // The response headers end the bounded pre-response phase.
+                    // Until this point the body-owned future retains the ingress
+                    // permit even when a timeout placeholder was already sent.
+                    drop(ingress_permit);
+
                     upstream_header_ms = Some(header_start.elapsed().as_millis() as i64);
                     let status = upstream.status();
                     upstream_status_code = Some(status.as_u16());
@@ -3235,6 +3812,7 @@ async fn relay_upstream_direct(
                             .await
                             .map(|b| String::from_utf8_lossy(&b).into_owned())
                             .unwrap_or_default();
+                        upstream_client_guard.release();
                         let cyber_blocked = json_text_is_cyber_policy(&error_body);
                         let message = "Upstream request failed";
                         error_message = Some(message.to_string());
@@ -3299,6 +3877,7 @@ async fn relay_upstream_direct(
                         return;
                     }
 
+                upstream_client_guard.mark_stream_open();
                 let mut bytes_stream = upstream.bytes_stream();
                 while let Some(next) = bytes_stream.next().await {
                     match next {
@@ -3330,8 +3909,12 @@ async fn relay_upstream_direct(
                                 summary.failed,
                             );
                             let sanitized = sanitizer.push(&chunk);
-                            if !sanitized.is_empty() {
-                                yield Ok::<Bytes, std::io::Error>(sanitized);
+                            for output in preamble_gate.accept(
+                                sanitized,
+                                observation.starts_client_output,
+                                summary.failed,
+                            ) {
+                                yield Ok::<Bytes, std::io::Error>(output);
                             }
                             if summary.completed_successfully(response_dialect.as_deref()) {
                                 break;
@@ -3361,9 +3944,18 @@ async fn relay_upstream_direct(
                         }
                     }
 
+                drop(bytes_stream);
+                upstream_client_guard.release();
                 let tail = sanitizer.finish();
-                if !tail.is_empty() {
-                    yield Ok::<Bytes, std::io::Error>(tail);
+                let tail_starts_output = !tail.is_empty();
+                for output in preamble_gate.accept(tail, tail_starts_output, summary.failed) {
+                    yield Ok::<Bytes, std::io::Error>(output);
+                }
+                // A response may legitimately complete without a text delta.
+                // Never discard sanitized created/completed events merely
+                // because account-level preamble flush was disabled.
+                for output in preamble_gate.force() {
+                    yield Ok::<Bytes, std::io::Error>(output);
                 }
                 if summary.failed {
                     success = false;
@@ -3452,6 +4044,7 @@ async fn relay_upstream_direct(
             .await
             .map(|b| String::from_utf8_lossy(&b).into_owned())
             .unwrap_or_default();
+        upstream_client_guard.release();
         if json_text_is_cyber_policy(&error_body) {
             if let Err(callback_err) = call_complete(
                 &state,
@@ -3527,7 +4120,7 @@ async fn relay_upstream_direct(
                     next_timing,
                     timing_shared,
                     false,
-                    None,
+                    ingress_permit,
                 ))
                 .await;
             }
@@ -3578,6 +4171,10 @@ async fn relay_upstream_direct(
         }
         anyhow::bail!("retry decision requested Go fallback: {reason}");
     }
+    // A successful response header ends the bounded pre-response phase. The
+    // lane/proxy guard below continues to cover the complete SSE body.
+    drop(ingress_permit);
+    upstream_client_guard.mark_stream_open();
     let mut bytes_stream = upstream.bytes_stream();
 
     let upstream_request_id = headers
@@ -3586,23 +4183,28 @@ async fn relay_upstream_direct(
         .map(ToOwned::to_owned);
     drop(plan);
     let stream_guard = complete_state.metrics.begin_stream();
+    // See the early-placeholder path above. Constructing the guard outside
+    // the async stream covers a response body that is dropped before its
+    // first poll, when code inside `stream!` would never run.
+    let complete_guard = ClientDisconnectCompleteGuard::new(
+        complete_state.clone(),
+        started_at,
+        pending_stream_complete_request(
+            edge_request_id.clone(),
+            lease_id.clone(),
+            account_id,
+            edge_prepare_ms,
+            edge_queue_wait_ms,
+            edge_relay_start_ms,
+            edge_fallback_reason.clone(),
+            edge_retry_count,
+        ),
+    );
     let body_stream = stream! {
+        let mut upstream_client_guard = upstream_client_guard;
         let _stream_guard = stream_guard;
         let _lease_renewal_guard = lease_renewal_guard;
-        let guard = ClientDisconnectCompleteGuard::new(
-            complete_state.clone(),
-            started_at,
-            pending_stream_complete_request(
-                edge_request_id.clone(),
-                lease_id.clone(),
-                account_id,
-                edge_prepare_ms,
-                edge_queue_wait_ms,
-                edge_relay_start_ms,
-                edge_fallback_reason.clone(),
-                edge_retry_count,
-            ),
-        );
+        let guard = complete_guard;
         let mut first_byte_ms: Option<i64> = None;
         let mut first_flush_ms: Option<i64> = None;
         let mut first_token_ms: Option<i64> = None;
@@ -3617,6 +4219,12 @@ async fn relay_upstream_direct(
             response_dialect.as_deref(),
         );
         let mut sanitizer = OpenAIStreamSanitizer::new(response_dialect.as_deref());
+        // Keep legacy Chat behavior unchanged. Only Responses preamble
+        // events are held when the account disabled preamble flush; a missing
+        // field is decoded as true for compatibility with older Go plans.
+        let mut preamble_gate = SsePreambleGate::new(
+            preamble_flush || response_dialect.as_deref() != Some("responses"),
+        );
         summary.request_id = upstream_request_id;
         guard.update_stream_snapshot(
             &summary,
@@ -3631,16 +4239,25 @@ async fn relay_upstream_direct(
             false,
         );
 
-        if low_latency_policy.enabled && low_latency_policy.barrier.is_none() {
+        if sse_comment_preflush
+            || (low_latency_policy.enabled && low_latency_policy.barrier.is_none())
+        {
             first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
             bootstrap_comment_sent = true;
+            for output in preamble_gate.force() {
+                yield Ok::<Bytes, std::io::Error>(output);
+            }
             yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b":\n\n"));
         }
 
-        let mut bootstrap_timer = low_latency_policy
-            .barrier
-            .map(tokio::time::sleep)
-            .map(Box::pin);
+        let mut bootstrap_timer = if sse_comment_preflush {
+            None
+        } else {
+            low_latency_policy
+                .barrier
+                .map(tokio::time::sleep)
+                .map(Box::pin)
+        };
         let mut first_token_timeout_timer = first_token_timeout_placeholder
             .map(|timeout| tokio::time::sleep(delay_until_elapsed(started_at, timeout)))
             .map(Box::pin);
@@ -3684,6 +4301,9 @@ async fn relay_upstream_direct(
                         Some(status.as_u16()),
                         false,
                     );
+                    for output in preamble_gate.force() {
+                        yield Ok::<Bytes, std::io::Error>(output);
+                    }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b":\n\n"));
                     continue;
                 }
@@ -3708,6 +4328,9 @@ async fn relay_upstream_direct(
                         Some(status.as_u16()),
                         false,
                     );
+                    for output in preamble_gate.force() {
+                        yield Ok::<Bytes, std::io::Error>(output);
+                    }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
                     continue;
                 }
@@ -3770,17 +4393,29 @@ async fn relay_upstream_direct(
                             let offset = offset.min(chunk.len());
                             if offset > 0 {
                                 let sanitized = sanitizer.push(&chunk.slice(..offset));
-                                if !sanitized.is_empty() {
-                                    yield Ok::<Bytes, std::io::Error>(sanitized);
+                                for output in preamble_gate.accept(sanitized, false, false) {
+                                    yield Ok::<Bytes, std::io::Error>(output);
                                 }
                             }
-                            let placeholder =
-                                openai_responses_safe_token_placeholder_frame(summary.response_id.as_deref());
+                            // The local placeholder is client-visible and
+                            // therefore releases any buffered Responses
+                            // preamble before it is emitted.
+                            for output in preamble_gate.force() {
+                                yield Ok::<Bytes, std::io::Error>(output);
+                            }
+                            let placeholder = openai_stream_timeout_placeholder_frame(
+                                response_dialect.as_deref(),
+                                &summary,
+                            );
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
                             if offset < chunk.len() {
                                 let sanitized = sanitizer.push(&chunk.slice(offset..));
-                                if !sanitized.is_empty() {
-                                    yield Ok::<Bytes, std::io::Error>(sanitized);
+                                for output in preamble_gate.accept(
+                                    sanitized,
+                                    observation.starts_client_output,
+                                    summary.failed,
+                                ) {
+                                    yield Ok::<Bytes, std::io::Error>(output);
                                 }
                             }
                             if summary.completed_successfully(response_dialect.as_deref()) {
@@ -3789,8 +4424,20 @@ async fn relay_upstream_direct(
                             continue;
                         }
                     }
-                    let sanitized = sanitizer.push(&chunk);
-                    if !sanitized.is_empty() {
+                    // Native Chat Completions streams do not emit
+                    // `response.created`. When the account opted into the
+                    // safe placeholder, mirror the Go path at the first
+                    // valid chat chunk instead. With the flag off this branch
+                    // is skipped and the upstream bytes remain unchanged.
+                    if safe_token_placeholder
+                        && response_dialect.as_deref() == Some("chat_completions")
+                        && !safe_token_placeholder_sent
+                        && !summary.failed
+                        && observation.starts_client_output
+                    {
+                        safe_token_placeholder_sent = true;
+                        first_token_timeout_placeholder_sent = true;
+                        first_token_timeout_timer = None;
                         if first_flush_ms.is_none() {
                             first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
                             guard.update_stream_snapshot(
@@ -3806,7 +4453,37 @@ async fn relay_upstream_direct(
                                 summary.failed,
                             );
                         }
-                        yield Ok::<Bytes, std::io::Error>(sanitized);
+                        let placeholder = openai_chat_safe_token_placeholder_frame(
+                            summary.response_id.as_deref(),
+                            summary.model.as_deref(),
+                        );
+                        for output in preamble_gate.force() {
+                            yield Ok::<Bytes, std::io::Error>(output);
+                        }
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
+                    }
+                    let sanitized = sanitizer.push(&chunk);
+                    for output in preamble_gate.accept(
+                        sanitized,
+                        observation.starts_client_output,
+                        summary.failed,
+                    ) {
+                        if first_flush_ms.is_none() {
+                            first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
+                            guard.update_stream_snapshot(
+                                &summary,
+                                success,
+                                error_message.clone(),
+                                Some(upstream_header_ms),
+                                first_byte_ms,
+                                first_token_ms,
+                                real_first_token_ms,
+                                first_flush_ms,
+                                Some(status.as_u16()),
+                                summary.failed,
+                            );
+                        }
+                        yield Ok::<Bytes, std::io::Error>(output);
                     }
                     if summary.completed_successfully(response_dialect.as_deref()) {
                         break;
@@ -3830,14 +4507,20 @@ async fn relay_upstream_direct(
                         Some(status.as_u16()),
                         true,
                     );
+                    for output in preamble_gate.force() {
+                        yield Ok::<Bytes, std::io::Error>(output);
+                    }
                     yield Err(std::io::Error::other(err.to_string()));
                     break;
                 }
             }
         }
 
+        drop(bytes_stream);
+        upstream_client_guard.release();
         let tail = sanitizer.finish();
-        if !tail.is_empty() {
+        let tail_starts_output = !tail.is_empty();
+        for output in preamble_gate.accept(tail, tail_starts_output, summary.failed) {
             if first_flush_ms.is_none() {
                 first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
                 guard.update_stream_snapshot(
@@ -3853,7 +4536,28 @@ async fn relay_upstream_direct(
                     summary.failed,
                 );
             }
-            yield Ok::<Bytes, std::io::Error>(tail);
+            yield Ok::<Bytes, std::io::Error>(output);
+        }
+        // Preserve a tokenless but otherwise valid Responses stream. Without
+        // this final drain, disabling preamble flush could drop every upstream
+        // event when no output delta was produced.
+        for output in preamble_gate.force() {
+            if first_flush_ms.is_none() {
+                first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
+                guard.update_stream_snapshot(
+                    &summary,
+                    success,
+                    error_message.clone(),
+                    Some(upstream_header_ms),
+                    first_byte_ms,
+                    first_token_ms,
+                    real_first_token_ms,
+                    first_flush_ms,
+                    Some(status.as_u16()),
+                    summary.failed,
+                );
+            }
+            yield Ok::<Bytes, std::io::Error>(output);
         }
         if summary.failed {
             success = false;
@@ -3924,11 +4628,16 @@ async fn relay_upstream_direct(
 async fn retry_after_queue_wait_budget(
     state: AppState,
     plan: EdgePlan,
-    started_at: Instant,
-    timing: EdgeTiming,
-    timing_shared: Option<Arc<Mutex<EdgeTiming>>>,
     queue_wait_ms: i64,
+    context: RelayAttemptContext,
 ) -> anyhow::Result<Response> {
+    let RelayAttemptContext {
+        started_at,
+        timing,
+        timing_shared,
+        relay_attempted_marker,
+        ingress_permit,
+    } = context;
     let decision = call_retry(
         &state,
         RetryRequest {
@@ -3962,6 +4671,9 @@ async fn retry_after_queue_wait_budget(
         shared.retry_count = next_timing.retry_count;
         shared.queue_wait_ms = next_timing.queue_wait_ms;
     });
+    if let Some(relay_attempted_marker) = relay_attempted_marker {
+        relay_attempted_marker.store(true, Ordering::SeqCst);
+    }
     Box::pin(relay_upstream(
         state,
         next_plan,
@@ -3969,7 +4681,7 @@ async fn retry_after_queue_wait_budget(
         next_timing,
         timing_shared,
         false,
-        None,
+        ingress_permit,
     ))
     .await
 }
@@ -4124,6 +4836,75 @@ impl OpenAIStreamSanitizer {
             ));
         }
         Bytes::from(output)
+    }
+}
+
+/// Gates Responses preamble events until the first client-visible output when
+/// the account has not enabled preamble flush. Chat Completions has no
+/// Responses preamble, so its observations pass through immediately. The
+/// bounded buffer prevents a malformed upstream from retaining unbounded
+/// preamble data while still preserving the legacy fail-open behavior.
+struct SsePreambleGate {
+    released: bool,
+    pending: Vec<Bytes>,
+    pending_bytes: usize,
+}
+
+const SSE_PREAMBLE_BUFFER_MAX_BYTES: usize = 1024 * 1024;
+
+impl SsePreambleGate {
+    fn new(flush_preamble: bool) -> Self {
+        Self {
+            released: flush_preamble,
+            pending: Vec::new(),
+            pending_bytes: 0,
+        }
+    }
+
+    /// Accept sanitized bytes and return chunks that are now safe to emit.
+    /// `starts_client_output` comes from the dialect-aware stream summary;
+    /// `force` is used for a local comment/placeholder or a sanitized error.
+    fn accept(&mut self, bytes: Bytes, starts_client_output: bool, force: bool) -> Vec<Bytes> {
+        if !self.released && !starts_client_output && !force {
+            if !bytes.is_empty() {
+                let exceeds_limit = self
+                    .pending_bytes
+                    .checked_add(bytes.len())
+                    .is_none_or(|size| size > SSE_PREAMBLE_BUFFER_MAX_BYTES);
+                if exceeds_limit {
+                    // Do not let an unbounded sequence of preamble events pin
+                    // memory. Releasing the buffered bytes preserves the
+                    // stream rather than dropping upstream output.
+                    self.released = true;
+                    return self.release_with(bytes);
+                }
+                self.pending_bytes += bytes.len();
+                self.pending.push(bytes);
+            }
+            return Vec::new();
+        }
+        self.released = true;
+        self.release_with(bytes)
+    }
+
+    fn force(&mut self) -> Vec<Bytes> {
+        self.accept(Bytes::new(), false, true)
+    }
+
+    fn release_with(&mut self, bytes: Bytes) -> Vec<Bytes> {
+        let mut output = Vec::with_capacity(self.pending.len() + usize::from(!bytes.is_empty()));
+        if !self.pending.is_empty() {
+            let mut combined = Vec::with_capacity(self.pending_bytes);
+            for pending in self.pending.drain(..) {
+                combined.extend_from_slice(&pending);
+            }
+            self.pending_bytes = 0;
+            output.push(Bytes::from(combined));
+        }
+        if !bytes.is_empty() {
+            output.push(bytes);
+        }
+        output
     }
 }
 
@@ -4654,8 +5435,11 @@ async fn run_settlement_retry_job(state: AppState, job: SettlementRetryJob) {
     )
     .await
     {
+        Ok(1) => debug!(
+            "{kind} callback delivered from bounded queue edge_request_id={edge_request_id}"
+        ),
         Ok(attempts) => warn!(
-            "{kind} callback recovered after {attempts} retry attempts edge_request_id={edge_request_id}"
+            "{kind} callback recovered after {attempts} queued attempts edge_request_id={edge_request_id}"
         ),
         Err(err) => error!(
             "{kind} callback retries exhausted edge_request_id={edge_request_id}: {err}"
@@ -4906,12 +5690,16 @@ fn upstream_origin_warm_url(upstream_url: Option<&str>) -> Option<String> {
     Some(out)
 }
 
-fn dynamic_warm_key(proxy_url: Option<&str>, warm_url: &str) -> String {
+fn dynamic_warm_key(proxy_url: Option<&str>, warm_url: &str) -> DynamicWarmKey {
     let proxy = proxy_url
         .map(str::trim)
         .filter(|v| !v.is_empty())
-        .unwrap_or("-");
-    format!("{proxy}|{warm_url}")
+        .unwrap_or_default()
+        .to_string();
+    DynamicWarmKey {
+        proxy,
+        warm_url: warm_url.to_string(),
+    }
 }
 
 fn ws_idle_key(plan: &EdgePlan) -> Option<String> {
@@ -5444,34 +6232,216 @@ impl AppState {
         }
     }
 
-    fn client_for_proxy(&self, proxy_url: Option<&str>) -> anyhow::Result<Client> {
+    fn client_for_proxy(&self, proxy_url: Option<&str>) -> anyhow::Result<ProxyClientSelection> {
         let proxy_url = proxy_url.map(str::trim).filter(|v| !v.is_empty());
         let Some(proxy_url) = proxy_url else {
-            return Ok(self.client.clone());
+            return Ok(ProxyClientSelection {
+                client: self.client.clone(),
+                lease: None,
+            });
         };
 
         let mut clients = self
             .clients_by_proxy
             .lock()
             .map_err(|_| anyhow::anyhow!("proxy client pool lock poisoned"))?;
-        if let Some(client) = clients.get(proxy_url) {
-            if let Ok(mut last_used) = self.proxy_last_used.lock() {
-                last_used.insert(proxy_url.to_string(), Instant::now());
+        if let Some(entry) = clients.get(proxy_url) {
+            return Ok(ProxyClientSelection::leased(Arc::clone(entry)));
+        }
+        if clients.len() >= self.cfg.max_proxy_clients.max(1) {
+            let now = Instant::now();
+            let idle = Duration::from_secs(self.cfg.proxy_client_idle_secs.max(60));
+            let stale = clients
+                .iter()
+                .filter_map(|(key, entry)| {
+                    let inactive = entry.active.load(Ordering::Acquire) == 0;
+                    let last_used = entry
+                        .last_used
+                        .lock()
+                        .map(|used| now.duration_since(*used) >= idle)
+                        .unwrap_or(false);
+                    (inactive && last_used).then_some(key.clone())
+                })
+                .collect::<Vec<_>>();
+            for key in stale {
+                clients.remove(&key);
             }
-            return Ok(client.clone());
         }
         if clients.len() >= self.cfg.max_proxy_clients.max(1) {
             return Err(anyhow::anyhow!("edge proxy client capacity exhausted"));
         }
 
+        let proxy = reqwest::Proxy::all(proxy_url)
+            .map_err(|_| anyhow::anyhow!("invalid upstream proxy configuration"))?;
         let client = edge_http_client_builder(&self.cfg)
-            .proxy(reqwest::Proxy::all(proxy_url)?)
-            .build()?;
-        clients.insert(proxy_url.to_string(), client.clone());
-        if let Ok(mut last_used) = self.proxy_last_used.lock() {
-            last_used.insert(proxy_url.to_string(), Instant::now());
+            .proxy(proxy)
+            .build()
+            .map_err(|_| anyhow::anyhow!("could not build upstream HTTP client"))?;
+        let entry = Arc::new(ProxyClientEntry {
+            client: client.clone(),
+            active: AtomicU64::new(0),
+            last_used: Mutex::new(Instant::now()),
+        });
+        clients.insert(proxy_url.to_string(), Arc::clone(&entry));
+        Ok(ProxyClientSelection::leased(entry))
+    }
+
+    /// Emergency rollback path for the lane-pool feature flag. Keep this
+    /// selection deliberately equivalent to the pre-lane implementation: a
+    /// cached proxy client is reused while capacity is available, and a full
+    /// cache returns the same local capacity error. The bounded transient
+    /// proxy path is only reachable while lane pooling is enabled.
+    fn legacy_client_for_proxy(
+        &self,
+        proxy_url: Option<&str>,
+    ) -> anyhow::Result<ProxyClientSelection> {
+        let proxy_url = proxy_url.map(str::trim).filter(|v| !v.is_empty());
+        let Some(proxy_url) = proxy_url else {
+            return Ok(ProxyClientSelection {
+                client: self.client.clone(),
+                lease: None,
+            });
+        };
+
+        let mut clients = self
+            .clients_by_proxy
+            .lock()
+            .map_err(|_| anyhow::anyhow!("proxy client pool lock poisoned"))?;
+        if let Some(entry) = clients.get(proxy_url) {
+            return Ok(ProxyClientSelection::legacy(entry));
         }
-        Ok(client)
+        if clients.len() >= self.cfg.max_proxy_clients.max(1) {
+            return Err(anyhow::anyhow!("edge proxy client capacity exhausted"));
+        }
+
+        let proxy = reqwest::Proxy::all(proxy_url)
+            .map_err(|_| anyhow::anyhow!("invalid upstream proxy configuration"))?;
+        let client = edge_http_client_builder(&self.cfg)
+            .proxy(proxy)
+            .build()
+            .map_err(|_| anyhow::anyhow!("could not build upstream HTTP client"))?;
+        let entry = Arc::new(ProxyClientEntry {
+            client: client.clone(),
+            active: AtomicU64::new(0),
+            last_used: Mutex::new(Instant::now()),
+        });
+        clients.insert(proxy_url.to_string(), Arc::clone(&entry));
+        Ok(ProxyClientSelection::legacy(&entry))
+    }
+
+    async fn acquire_transient_proxy_guard(&self) -> anyhow::Result<TransientProxyGuard> {
+        acquire_transient_proxy_guard(
+            Arc::clone(&self.metrics),
+            Arc::clone(&self.transient_proxy_permits),
+        )
+        .await
+    }
+
+    /// Resource-bounded legacy client selection used while lane pooling is
+    /// enabled. Account types that are not lane-eligible still need the cached
+    /// proxy lease/transient fallback; otherwise a long SSE can outlive a
+    /// reaped map entry and repeated proxy churn can bypass the Client/FD cap.
+    async fn bounded_legacy_client_for_proxy(
+        &self,
+        proxy_url: Option<&str>,
+    ) -> anyhow::Result<SelectedUpstreamClient> {
+        let proxy_url = proxy_url.map(str::trim).filter(|value| !value.is_empty());
+        let Some(proxy_url) = proxy_url else {
+            return Ok(SelectedUpstreamClient {
+                client: self.client.clone(),
+                guard: UpstreamClientGuard::Legacy,
+            });
+        };
+
+        match self.client_for_proxy(Some(proxy_url)) {
+            Ok(ProxyClientSelection { client, lease }) => {
+                return Ok(SelectedUpstreamClient {
+                    client,
+                    guard: UpstreamClientGuard::LegacyProxy(lease),
+                });
+            }
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("edge proxy client capacity exhausted") => {}
+            Err(error) => return Err(error),
+        }
+
+        let transient_guard = self
+            .acquire_transient_proxy_guard()
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("edge transient proxy client capacity closed: {error}")
+            })?;
+        // A request-scoped client is already bounded by the semaphore. Keep
+        // its own idle pool at one connection as well; inheriting the legacy
+        // 128-connection setting would multiply the FD ceiling by the number
+        // of transient permits.
+        let client = build_standalone_client(Some(proxy_url), 1).map_err(|error| {
+            anyhow::anyhow!("edge transient proxy client build failed: {error}")
+        })?;
+        Ok(SelectedUpstreamClient {
+            client,
+            guard: UpstreamClientGuard::Transient(transient_guard),
+        })
+    }
+
+    async fn upstream_client_for_plan(
+        &self,
+        account_id: Option<i64>,
+        account_type: Option<&str>,
+        proxy_url: Option<&str>,
+        upstream_url: &str,
+        lane: Option<&str>,
+    ) -> anyhow::Result<SelectedUpstreamClient> {
+        // This is a process-start feature flag, so the emergency-off path is
+        // intentionally decided before constructing any lane-pool key. It
+        // must return to the old direct/proxy Client behavior, including its
+        // old bounded cached-proxy capacity error, without transient clients.
+        if !self.http_lane_pool.enabled() {
+            let ProxyClientSelection { client, lease } = self.legacy_client_for_proxy(proxy_url)?;
+            return Ok(SelectedUpstreamClient {
+                client,
+                guard: UpstreamClientGuard::LegacyProxy(lease),
+            });
+        }
+        let request = LaneRequest {
+            account_id,
+            proxy_url,
+            origin_url: upstream_url,
+            lane,
+        };
+        let pool_eligible = self.http_lane_pool.enabled()
+            && self
+                .http_lane_pool
+                .can_pool_for_account_type(request, account_type);
+        if !pool_eligible {
+            return self.bounded_legacy_client_for_proxy(proxy_url).await;
+        }
+        match self.http_lane_pool.acquire(request).await {
+            Ok(selection) => {
+                return Ok(SelectedUpstreamClient {
+                    client: selection.client,
+                    guard: UpstreamClientGuard::Lane(selection.guard),
+                });
+            }
+            Err(error) if is_capacity_error(&error) => {
+                self.http_lane_pool.record_legacy_fallback();
+            }
+            Err(error) if is_legacy_fallback_error(&error) => {
+                self.http_lane_pool.record_legacy_fallback();
+            }
+            Err(_error) => {
+                // A lane is an optimization layer. If its local registry or
+                // client builder cannot serve this request, keep the Go-selected
+                // account/plan and use the existing legacy client instead of
+                // re-entering Go scheduling.
+                self.http_lane_pool.record_legacy_fallback();
+                debug!("upstream lane selection failed; using legacy client");
+            }
+        }
+
+        self.bounded_legacy_client_for_proxy(proxy_url).await
     }
 
     fn record_dynamic_warm_key(&self, plan: &EdgePlan) {
@@ -5501,6 +6471,7 @@ impl AppState {
                 warm_url,
                 last_seen: Instant::now(),
                 failures: 0,
+                warming: false,
             });
     }
 }
@@ -5547,6 +6518,8 @@ impl EdgeConfig {
                 "SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT",
                 env_usize("SUB2API_EDGE_MAX_IDLE_PER_HOST", 128),
             ),
+            transient_proxy_max_active: env_usize("SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE", 32)
+                .clamp(1, 4096),
             queue_wait_budget_ms: env_u64("SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS", 150),
             large_payload_passthrough: env_bool("SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH", true),
             large_payload_threshold_bytes: env_usize(
@@ -5684,6 +6657,115 @@ mod tests {
             request_header_bytes(&headers),
             "x-test".len() + "value".len() + 4
         );
+    }
+
+    #[test]
+    fn proxy_client_lease_keeps_entry_active_and_refreshes_idle_time_on_drop() {
+        let entry = Arc::new(ProxyClientEntry {
+            client: Client::new(),
+            active: AtomicU64::new(0),
+            last_used: Mutex::new(Instant::now() - Duration::from_secs(3_600)),
+        });
+        let lease = ProxyClientLease::new(Arc::clone(&entry));
+        assert_eq!(entry.active.load(Ordering::Acquire), 1);
+
+        *entry.last_used.lock().unwrap() = Instant::now() - Duration::from_secs(3_600);
+        drop(lease);
+
+        assert_eq!(entry.active.load(Ordering::Acquire), 0);
+        assert!(entry.last_used.lock().unwrap().elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn legacy_proxy_selection_does_not_pin_cache_entry() {
+        let entry = Arc::new(ProxyClientEntry {
+            client: Client::new(),
+            active: AtomicU64::new(0),
+            last_used: Mutex::new(Instant::now() - Duration::from_secs(3_600)),
+        });
+
+        let legacy = ProxyClientSelection::legacy(&entry);
+        assert!(legacy.lease.is_none());
+        assert_eq!(entry.active.load(Ordering::Acquire), 0);
+        assert!(entry.last_used.lock().unwrap().elapsed() < Duration::from_secs(1));
+        drop(legacy);
+        assert_eq!(entry.active.load(Ordering::Acquire), 0);
+
+        let leased = ProxyClientSelection::leased(Arc::clone(&entry));
+        assert!(leased.lease.is_some());
+        assert_eq!(entry.active.load(Ordering::Acquire), 1);
+        drop(leased);
+        assert_eq!(entry.active.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn transient_proxy_permit_wait_is_bounded_and_cancellable() {
+        let metrics = Arc::new(EdgeMetrics::default());
+        let permits = Arc::new(Semaphore::new(1));
+        let first = acquire_transient_proxy_guard(Arc::clone(&metrics), Arc::clone(&permits))
+            .await
+            .expect("first transient proxy permit");
+        assert_eq!(metrics.transient_proxy_active.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.transient_proxy_waiters.load(Ordering::Relaxed), 0);
+
+        let wait_metrics = Arc::clone(&metrics);
+        let wait_permits = Arc::clone(&permits);
+        let waiter =
+            tokio::spawn(
+                async move { acquire_transient_proxy_guard(wait_metrics, wait_permits).await },
+            );
+        tokio::time::timeout(Duration::from_millis(100), async {
+            while metrics.transient_proxy_waiters.load(Ordering::Relaxed) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("second request enters bounded wait");
+        waiter.abort();
+        let _ = waiter.await;
+        tokio::task::yield_now().await;
+        assert_eq!(metrics.transient_proxy_waiters.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.transient_proxy_active.load(Ordering::Relaxed), 1);
+
+        drop(first);
+        assert_eq!(metrics.transient_proxy_active.load(Ordering::Relaxed), 0);
+        let next = acquire_transient_proxy_guard(Arc::clone(&metrics), Arc::clone(&permits))
+            .await
+            .expect("permit is reusable after cancellation");
+        assert_eq!(metrics.transient_proxy_active.load(Ordering::Relaxed), 1);
+        drop(next);
+        assert_eq!(metrics.transient_proxy_active.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn transient_proxy_permit_waits_until_capacity_is_released() {
+        let metrics = Arc::new(EdgeMetrics::default());
+        let permits = Arc::new(Semaphore::new(1));
+        let first = acquire_transient_proxy_guard(Arc::clone(&metrics), Arc::clone(&permits))
+            .await
+            .expect("first transient proxy permit");
+
+        let wait_metrics = Arc::clone(&metrics);
+        let wait_permits = Arc::clone(&permits);
+        let mut waiter =
+            tokio::spawn(
+                async move { acquire_transient_proxy_guard(wait_metrics, wait_permits).await },
+            );
+        assert!(tokio::time::timeout(Duration::from_millis(5), &mut waiter)
+            .await
+            .is_err());
+        assert_eq!(metrics.transient_proxy_waiters.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.transient_proxy_active.load(Ordering::Relaxed), 1);
+        drop(first);
+        let second = tokio::time::timeout(Duration::from_millis(100), waiter)
+            .await
+            .expect("waiter resumes when capacity is released")
+            .expect("waiter task")
+            .expect("second transient proxy permit");
+        assert_eq!(metrics.transient_proxy_waiters.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.transient_proxy_active.load(Ordering::Relaxed), 1);
+        drop(second);
+        assert_eq!(metrics.transient_proxy_active.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -5885,6 +6967,71 @@ mod tests {
             summary
                 .observe(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n")
                 .starts_client_output
+        );
+    }
+
+    #[test]
+    fn sse_preamble_gate_buffers_until_client_output_when_disabled() {
+        let mut gate = SsePreambleGate::new(false);
+        assert!(gate
+            .accept(Bytes::from_static(b"created\n\n"), false, false)
+            .is_empty());
+
+        let released = gate.accept(Bytes::from_static(b"delta\n\n"), true, false);
+        assert_eq!(released.len(), 2);
+        assert_eq!(released[0], Bytes::from_static(b"created\n\n"));
+        assert_eq!(released[1], Bytes::from_static(b"delta\n\n"));
+        assert!(gate.force().is_empty(), "released bytes must not repeat");
+    }
+
+    #[test]
+    fn sse_preamble_gate_flushes_immediately_when_enabled() {
+        let mut gate = SsePreambleGate::new(true);
+        let output = gate.accept(Bytes::from_static(b"created\n\n"), false, false);
+        assert_eq!(output, vec![Bytes::from_static(b"created\n\n")]);
+    }
+
+    #[test]
+    fn sse_preamble_gate_force_releases_pending_without_marking_token() {
+        let mut gate = SsePreambleGate::new(false);
+        assert!(gate
+            .accept(Bytes::from_static(b"created\n\n"), false, false)
+            .is_empty());
+        let output = gate.force();
+        assert_eq!(output, vec![Bytes::from_static(b"created\n\n")]);
+        // A subsequent empty accept remains released; callers can emit a
+        // local placeholder separately without treating the preamble as a
+        // real token event.
+        assert!(gate.accept(Bytes::new(), false, false).is_empty());
+    }
+
+    #[test]
+    fn sse_preamble_gate_preserves_tokenless_completed_stream_at_end() {
+        let mut gate = SsePreambleGate::new(false);
+        assert!(gate
+            .accept(Bytes::from_static(b"created\n\n"), false, false)
+            .is_empty());
+        assert!(gate
+            .accept(Bytes::from_static(b"completed\n\n"), false, false)
+            .is_empty());
+
+        let output = gate.force();
+        assert_eq!(
+            output,
+            vec![Bytes::from_static(b"created\n\ncompleted\n\n")]
+        );
+        assert!(gate.force().is_empty(), "final drain must be idempotent");
+    }
+
+    #[test]
+    fn sse_preamble_gate_fails_open_at_bounded_buffer_size() {
+        let mut gate = SsePreambleGate::new(false);
+        let oversized = Bytes::from(vec![b'x'; SSE_PREAMBLE_BUFFER_MAX_BYTES + 1]);
+        let output = gate.accept(oversized.clone(), false, false);
+        assert_eq!(output, vec![oversized]);
+        assert_eq!(
+            gate.accept(Bytes::from_static(b"next"), false, false),
+            vec![Bytes::from_static(b"next")]
         );
     }
 
@@ -6534,6 +7681,32 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         assert!(!relay_error_is_local_capacity(&anyhow::anyhow!(
             "upstream connection reset"
         )));
+        assert!(!relay_error_is_local_capacity(&anyhow::anyhow!(
+            "edge transient proxy client build failed: invalid proxy"
+        )));
+    }
+
+    #[test]
+    fn transient_proxy_build_failures_keep_distinct_reason() {
+        assert_eq!(
+            relay_error_fallback_reason(&anyhow::anyhow!(
+                "edge transient proxy client build failed: invalid proxy"
+            )),
+            "edge_transient_proxy_client_build_failed"
+        );
+        assert!(!relay_error_is_local_capacity(&anyhow::anyhow!(
+            "edge transient proxy client build failed: invalid proxy"
+        )));
+        for message in [
+            "invalid upstream proxy configuration",
+            "could not build upstream HTTP client",
+        ] {
+            assert_eq!(
+                relay_error_fallback_reason(&anyhow::anyhow!(message)),
+                "edge_upstream_client_build_failed"
+            );
+            assert!(!relay_error_is_local_capacity(&anyhow::anyhow!(message)));
+        }
     }
 
     #[test]
@@ -6868,6 +8041,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             lease_id: Some("lease-1".to_string()),
             lease_ttl_ms: Some(120_000),
             account_id: Some(42),
+            account_type: None,
             transport: Some("http2_sse".to_string()),
             response_dialect: Some("responses".to_string()),
             upstream_url: Some("https://api.openai.com/v1/responses".to_string()),
@@ -6877,6 +8051,8 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             proxy_url: None,
             low_latency_mode: None,
             lane: None,
+            sse_comment_preflush: false,
+            preamble_flush: false,
             safe_token_placeholder: false,
             first_token_timeout_placeholder_ms: None,
             prompt_cache_creation_optimization_mode: None,
@@ -6925,11 +8101,30 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
 
     #[test]
     fn decode_edge_plan_accepts_plan_envelope() {
-        let body = br#"{"plan":{"action":"fallback_go","reason":"edge_disabled","edge_request_id":"edge-1"}}"#;
+        let body = br#"{"plan":{"action":"fallback_go","reason":"edge_disabled","edge_request_id":"edge-1","account_type":"apikey"}}"#;
         let plan = decode_edge_plan(body).expect("plan envelope");
         assert_eq!(plan.action, "fallback_go");
         assert_eq!(plan.reason.as_deref(), Some("edge_disabled"));
         assert_eq!(plan.edge_request_id, "edge-1");
+        assert_eq!(plan.account_type.as_deref(), Some("apikey"));
+    }
+
+    #[test]
+    fn edge_plan_sse_comment_preflush_is_optional_and_decodes() {
+        let legacy = br#"{"action":"relay","edge_request_id":"edge-legacy"}"#;
+        let legacy_plan = decode_edge_plan(legacy).expect("legacy edge plan");
+        assert!(!legacy_plan.sse_comment_preflush);
+        assert!(legacy_plan.preamble_flush);
+
+        let enabled =
+            br#"{"action":"relay","edge_request_id":"edge-preflush","sse_comment_preflush":true}"#;
+        let enabled_plan = decode_edge_plan(enabled).expect("preflush edge plan");
+        assert!(enabled_plan.sse_comment_preflush);
+
+        let buffered =
+            br#"{"action":"relay","edge_request_id":"edge-buffered","preamble_flush":false}"#;
+        let buffered_plan = decode_edge_plan(buffered).expect("buffered edge plan");
+        assert!(!buffered_plan.preamble_flush);
     }
 
     #[test]
@@ -6951,6 +8146,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             lease_id: Some("lease-1".to_string()),
             lease_ttl_ms: Some(120_000),
             account_id: Some(42),
+            account_type: None,
             transport: Some("http2_sse".to_string()),
             response_dialect: Some("chat_completions".to_string()),
             upstream_url: Some("https://api.openai.com/v1/chat/completions".to_string()),
@@ -6960,6 +8156,8 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             proxy_url: Some("http://127.0.0.1:7890".to_string()),
             low_latency_mode: None,
             lane: Some("priority".to_string()),
+            sse_comment_preflush: false,
+            preamble_flush: false,
             safe_token_placeholder: false,
             first_token_timeout_placeholder_ms: None,
             prompt_cache_creation_optimization_mode: None,
@@ -6971,6 +8169,16 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             relay_queue_key(&plan).as_deref(),
             Some("42|http://127.0.0.1:7890|api.openai.com|priority")
         );
+    }
+
+    #[test]
+    fn dynamic_warm_keys_keep_legacy_proxy_origin_sharing() {
+        let warm_url = "https://api.openai.com/";
+        let proxy = Some(" http://127.0.0.1:7890 ");
+        let key = dynamic_warm_key(proxy, warm_url);
+        assert_eq!(key, dynamic_warm_key(proxy, warm_url));
+        assert_eq!(key.proxy, "http://127.0.0.1:7890");
+        assert_eq!(key.warm_url, warm_url);
     }
 
     #[test]

@@ -399,6 +399,37 @@ gateway:
     max_ws_idle_keys: 1024
     ws_idle_ttl_seconds: 300
     max_dynamic_warm_keys: 4096
+    # Upstream client-lane controls are deployment environment variables read
+    # directly by edge-rs, not Go YAML fields. A client lane is an independent
+    # reqwest Client/pool, not a guaranteed one-to-one physical TCP/H2
+    # connection. Building a lane does not connect, and enabling these knobs
+    # does not add a new prewarm request; connection establishment remains lazy.
+    #
+    # SUB2API_EDGE_UPSTREAM_LANE_POOL_ENABLED=true
+    # Only positive-account APIKey HTTP/SSE relay plans use the lane pool;
+    # OAuth, WebSocket, missing-account, and legacy plans keep the old client.
+    # SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT=32
+    # SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER=24
+    # SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS=250
+    # SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX=2
+    # SUB2API_EDGE_UPSTREAM_LANE_MAX=4
+    # SUB2API_EDGE_UPSTREAM_LANE_IDLE_SECS=300
+    # SUB2API_EDGE_UPSTREAM_POOL_IDLE_SECS=1200
+    # SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS=1024
+    # SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES=2048
+    # SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE=32
+    # AUTOSCALE_UPSTREAM_LANE_PRESSURE_ENABLED=true
+    # Independent autoscaler error guards (deployment environment only):
+    # AUTOSCALE_GO_5XX_RATIO_LIMIT=0.20
+    # AUTOSCALE_EDGE_CONNECT_ERROR_RATIO_LIMIT=0.10
+    # AUTOSCALE_EDGE_5XX_RATIO_LIMIT=0.20
+    # AUTOSCALE_EDGE_429_RATIO_LIMIT=0 (observe-only until calibrated)
+    # AUTOSCALE_EDGE_RETRIES_PER_REQUEST_LIMIT=0
+    # AUTOSCALE_ERROR_MIN_SAMPLES=20
+    # AUTOSCALE_UPSTREAM_ERROR_RATIO=0.20 is retained for compatibility. When
+    # AUTOSCALE_GO_5XX_RATIO_LIMIT is absent during upgrade, its existing value
+    # seeds the new Go 5xx limit. A retries-per-request limit of 0 is
+    # observe-only and does not suppress scaling.
     # Send raw request/plan body bytes through the control protocol so the edge
     # can forward transformed upstream bodies without JSON re-materialization.
     large_payload_passthrough: true

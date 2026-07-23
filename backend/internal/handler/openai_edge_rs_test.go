@@ -1194,7 +1194,15 @@ func TestOpenAIEdgeAbortReasonAlreadyRecordedDoesNotReportAnotherFailure(t *test
 	if !openAIEdgeAbortReasonIsNeutral("retry_failure_already_recorded: max_account_switches_exhausted") {
 		t.Fatal("failure-recorded retry abort must not add a second health failure")
 	}
-	for _, reason := range []string{"prepare_failed", "ws_prepare_failed", "unsupported_ws_transport", "ws_proxy_not_supported"} {
+	for _, reason := range []string{
+		"prepare_failed",
+		"ws_prepare_failed",
+		"unsupported_ws_transport",
+		"ws_proxy_not_supported",
+		"edge proxy client capacity exhausted",
+		"edge_transient_proxy_client_build_failed",
+		"edge_upstream_client_build_failed",
+	} {
 		if !openAIEdgeAbortReasonIsNeutral(reason) {
 			t.Fatalf("local edge abort %q must not penalize account health", reason)
 		}
