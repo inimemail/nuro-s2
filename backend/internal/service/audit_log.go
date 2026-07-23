@@ -84,7 +84,7 @@ func auditNormalizeBodyKey(key string) string {
 var auditBodySensitiveExactKeys = func() map[string]struct{} {
 	builtin := []string{
 		"code", "codes", "pin", "cvv", "authorization", "cookie", "x-api-key", "key",
-		"proxy_key", "custom_key", "state", "nonce",
+		"proxy_key", "custom_key", "session", "state", "nonce",
 	}
 	set := make(map[string]struct{}, len(builtin)+len(SensitiveCredentialKeys)+16)
 	for _, key := range builtin {

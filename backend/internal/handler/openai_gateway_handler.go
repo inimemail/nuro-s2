@@ -435,6 +435,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			sessionHash = h.gatewayService.GenerateSessionHash(c, sessionHashBody)
 		}
 	}
+	if apiKey.Group != nil {
+		if policyBody, changed := service.ApplyOpenAIReasoningEffortPolicy(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings); changed {
+			body = policyBody
+			forwardBodyForResponses = newOpenAIModelMappedBodyCache(body, h.gatewayService.ReplaceModelInBody)
+		}
+	}
 	requireCompact := isOpenAIRemoteCompactPath(c)
 
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
@@ -1252,6 +1258,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	sessionHash := h.gatewayService.GeneratePromptCacheBoostAffinitySessionHashForGroupWithMapped(c.Request.Context(), c, apiKey.GroupID, body, reqModel, affinityBody, affinityModel)
 	if sessionHash == "" {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
+	}
+	if apiKey.Group != nil {
+		body, _ = service.ApplyOpenAIReasoningEffortPolicy(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings)
 	}
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 	sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(sessionHash, promptCacheKey, reqModel, body)

@@ -23,7 +23,7 @@ type AccountGroup struct {
 	GroupID int64 `json:"group_id,omitempty"`
 	// Priority holds the value of the "priority" field.
 	Priority int `json:"priority,omitempty"`
-	// 上游倍率保护上限；NULL 表示此账号在该分组不限制
+	// 账号-分组上游倍率保护覆盖值；NULL 表示继承分组默认值
 	UpstreamBillingGuardMaxMultiplier *float64 `json:"upstream_billing_guard_max_multiplier,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`

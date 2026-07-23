@@ -46,8 +46,10 @@ func ProvideAdminHandlers(
 	totpService *service.TotpService,
 	userService *service.UserService,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
+	ollamaCloudUsage *service.OllamaCloudUsageService,
 ) *AdminHandlers {
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
+	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
 	userHandler.SetStepUpServices(totpService, userService)
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,

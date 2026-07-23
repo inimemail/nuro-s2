@@ -3,6 +3,7 @@ mod http_lane_pool;
 use std::{
     collections::HashMap,
     env,
+    fmt::Display,
     future::{pending, Future},
     net::SocketAddr,
     pin::Pin,
@@ -720,6 +721,17 @@ struct EdgePlan {
     prompt_cache_creation_optimization_model: Option<String>,
     #[serde(default)]
     prompt_cache_creation_optimization_applied: bool,
+    // Older Go control planes do not include reasoning policy fields.
+    #[serde(default)]
+    max_reasoning_effort: Option<String>,
+    #[serde(default)]
+    reasoning_effort_mappings: Vec<ReasoningEffortMapping>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ReasoningEffortMapping {
+    from: String,
+    to: String,
 }
 
 fn default_preamble_flush() -> bool {
@@ -927,6 +939,8 @@ struct CompleteRequest {
     lease_id: Option<String>,
     account_id: Option<i64>,
     success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_class: Option<String>,
     client_disconnected: bool,
     request_id: Option<String>,
     response_id: Option<String>,
@@ -1011,6 +1025,7 @@ struct AbortRequest {
     lease_id: Option<String>,
     account_id: Option<i64>,
     reason: String,
+    failure_class: String,
     client_disconnected: bool,
     relay_attempted: bool,
     fallback_to_go: bool,
@@ -1095,7 +1110,7 @@ impl LeaseRenewalGuard {
                     _ = tokio::time::sleep(interval) => {
                         if let Err(err) = send_renew_once(&renew_state, &request).await {
                             renew_state.metrics.lease_renew_failures.fetch_add(1, Ordering::Relaxed);
-                            warn!("edge lease renew failed edge_request_id={}: {err}", request.edge_request_id);
+                            warn!("edge lease renew failed edge_request_id={}: {}", request.edge_request_id, safe_edge_error(&err));
                         }
                     }
                     _ = &mut stopped => return,
@@ -1163,6 +1178,8 @@ impl ClientDisconnectCompleteGuard {
         request.upstream_status_code = upstream_status_code;
         request.terminal_event_type = summary.terminal_event_type(None);
         request.cyber_blocked = summary.cyber_blocked;
+        request.failure_class =
+            classify_stream_failure_with_status(success, false, summary, upstream_status_code);
         if definitive_failure {
             self.definitive_failure.store(true, Ordering::SeqCst);
         }
@@ -1176,6 +1193,7 @@ impl ClientDisconnectCompleteGuard {
 fn mark_complete_request_client_disconnected(request: &mut CompleteRequest, duration_ms: i64) {
     request.success = false;
     request.client_disconnected = true;
+    request.failure_class = Some("client_cancelled".to_string());
     request.duration_ms = duration_ms;
     request.first_token_ms = None;
     request.real_first_token_ms = None;
@@ -1199,6 +1217,7 @@ fn pending_stream_complete_request(
         lease_id,
         account_id,
         success: false,
+        failure_class: Some("upstream_disconnect".to_string()),
         client_disconnected: false,
         request_id: None,
         response_id: None,
@@ -1225,6 +1244,36 @@ fn pending_stream_complete_request(
     }
 }
 
+fn classify_stream_failure(
+    success: bool,
+    client_disconnected: bool,
+    summary: &ChatStreamSummary,
+) -> Option<String> {
+    if success {
+        return None;
+    }
+    if client_disconnected {
+        return Some("client_cancelled".to_string());
+    }
+    if summary.failed {
+        return Some("upstream_error".to_string());
+    }
+    Some("upstream_disconnect".to_string())
+}
+
+fn classify_stream_failure_with_status(
+    success: bool,
+    client_disconnected: bool,
+    summary: &ChatStreamSummary,
+    upstream_status_code: Option<u16>,
+) -> Option<String> {
+    if !success && !client_disconnected && upstream_status_code.is_some_and(|status| status >= 400)
+    {
+        return Some("upstream_error".to_string());
+    }
+    classify_stream_failure(success, client_disconnected, summary)
+}
+
 impl Drop for ClientDisconnectCompleteGuard {
     fn drop(&mut self) {
         if self.done.load(Ordering::SeqCst) {
@@ -1249,7 +1298,10 @@ impl Drop for ClientDisconnectCompleteGuard {
         if let Err(err) =
             enqueue_settlement_retry(&self.state, SettlementRetryJob::Complete(Box::new(request)))
         {
-            error!("dropped-stream complete callback could not be queued: {err}");
+            error!(
+                "dropped-stream complete callback could not be queued: {}",
+                safe_edge_error(&err)
+            );
         }
     }
 }
@@ -1300,14 +1352,41 @@ fn lease_abort_request(
     client_disconnected: bool,
     relay_attempted: bool,
 ) -> AbortRequest {
+    let failure_class = classify_edge_abort_failure(reason, client_disconnected);
     AbortRequest {
         edge_request_id: edge_request_id.to_string(),
         lease_id: lease_id.map(str::to_string),
         account_id,
         reason: reason.to_string(),
+        failure_class: failure_class.to_string(),
         client_disconnected,
         relay_attempted,
         fallback_to_go: false,
+    }
+}
+
+fn classify_edge_abort_failure(reason: &str, client_disconnected: bool) -> &'static str {
+    if client_disconnected {
+        return "client_cancelled";
+    }
+    let reason = reason.to_ascii_lowercase();
+    if reason.contains("queue") && reason.contains("timeout") {
+        "queue_timeout"
+    } else if reason.contains("capacity")
+        || reason.contains("permit")
+        || reason.contains("overload")
+        || reason.contains("queue full")
+    {
+        "local_capacity_rejected"
+    } else if reason.contains("prepare")
+        || reason.contains("unsupported_ws")
+        || reason.contains("proxy_not_supported")
+    {
+        "prepare_failed"
+    } else if reason.contains("retry") {
+        "retry_exhausted"
+    } else {
+        "abort_failed"
     }
 }
 
@@ -1325,7 +1404,10 @@ impl Drop for LeaseAbortGuard {
             self.relay_attempted.load(Ordering::SeqCst),
         );
         if let Err(err) = enqueue_settlement_retry(&self.state, SettlementRetryJob::Abort(req)) {
-            error!("dropped-request abort callback could not be queued: {err}");
+            error!(
+                "dropped-request abort callback could not be queued: {}",
+                safe_edge_error(&err)
+            );
         }
     }
 }
@@ -1497,7 +1579,10 @@ async fn run_upstream_keep_warm(client: Client, warm_url: String, interval_secs:
     let interval = Duration::from_secs(interval_secs);
     loop {
         if let Err(err) = send_upstream_keep_warm(client.clone(), warm_url.clone(), false).await {
-            warn!("upstream keep-warm request failed: {err}");
+            warn!(
+                "upstream keep-warm request failed: {}",
+                safe_edge_error(&err)
+            );
         }
         tokio::time::sleep(interval).await;
     }
@@ -1569,7 +1654,10 @@ async fn run_dynamic_upstream_keep_warm(state: AppState) {
             } {
                 Ok(selection) => selection,
                 Err(err) => {
-                    warn!("dynamic upstream warm client failed: {err}");
+                    warn!(
+                        "dynamic upstream warm client failed: {}",
+                        safe_edge_error(&err)
+                    );
                     if let Ok(mut warm_keys) = state.warm_keys.lock() {
                         if let Some(current) = warm_keys.get_mut(&warm_key) {
                             current.warming = false;
@@ -1593,7 +1681,10 @@ async fn run_dynamic_upstream_keep_warm(state: AppState) {
                         Ok(()) => current.failures = 0,
                         Err(err) => {
                             current.failures = current.failures.saturating_add(1);
-                            warn!("dynamic upstream keep-warm request failed: {err}");
+                            warn!(
+                                "dynamic upstream keep-warm request failed: {}",
+                                safe_edge_error(&err)
+                            );
                         }
                     }
                 }
@@ -1799,7 +1890,7 @@ async fn handle_openai_edge(
                     .metrics
                     .prepare_failures
                     .fetch_add(1, Ordering::Relaxed);
-                error!("read client body failed: {err}");
+                error!("read client body failed: {}", safe_edge_error(&err));
                 return text_response(StatusCode::BAD_REQUEST, "failed to read request body");
             }
         }
@@ -1814,7 +1905,7 @@ async fn handle_openai_edge(
                         .metrics
                         .prepare_failures
                         .fetch_add(1, Ordering::Relaxed);
-                    error!("read chunked client body failed: {err}");
+                    error!("read chunked client body failed: {}", safe_edge_error(&err));
                     return text_response(StatusCode::BAD_REQUEST, "failed to read request body");
                 }
             };
@@ -1875,7 +1966,10 @@ async fn handle_openai_edge(
         Ok(plan) => (plan, prepare_started_at.elapsed().as_millis() as i64),
         Err(err) => {
             drop(ingress_permit);
-            warn!("prepare failed; falling back to Go: {err}");
+            warn!(
+                "prepare failed; falling back to Go: {}",
+                safe_edge_error(&err)
+            );
             if let Err(queue_err) = enqueue_settlement_retry(
                 &state,
                 SettlementRetryJob::Abort(AbortRequest {
@@ -1883,12 +1977,16 @@ async fn handle_openai_edge(
                     lease_id: None,
                     account_id: None,
                     reason: "prepare_failed".to_string(),
+                    failure_class: "prepare_failed".to_string(),
                     client_disconnected: false,
                     relay_attempted: false,
                     fallback_to_go: true,
                 }),
             ) {
-                error!("prepare cancellation could not be queued: {queue_err}");
+                error!(
+                    "prepare cancellation could not be queued: {}",
+                    safe_edge_error(&queue_err)
+                );
             }
             let mut timing = EdgeTiming {
                 prepare_ms: Some(prepare_started_at.elapsed().as_millis() as i64),
@@ -1919,7 +2017,7 @@ async fn handle_openai_edge(
             .fallback_requests
             .fetch_add(1, Ordering::Relaxed);
         if let Some(reason) = &plan.reason {
-            info!("edge fallback_to_go reason={reason}");
+            info!("edge fallback_to_go reason={}", safe_edge_error(&reason));
         }
         return fallback_to_go(
             state,
@@ -1962,7 +2060,10 @@ async fn handle_openai_edge(
             resp
         }
         Err(err) => {
-            error!("relay failed before response commit: {err}");
+            error!(
+                "relay failed before response commit: {}",
+                safe_edge_error(&err)
+            );
             let reason = relay_error_fallback_reason(&err);
             let local_capacity = relay_error_is_local_capacity(&err);
             if let Err(callback_err) = call_abort(
@@ -1972,6 +2073,12 @@ async fn handle_openai_edge(
                     lease_id: relay_lease_id,
                     account_id: relay_account_id,
                     reason: format!("{reason}: {err}"),
+                    failure_class: if local_capacity {
+                        "local_capacity_rejected"
+                    } else {
+                        "abort_failed"
+                    }
+                    .to_string(),
                     client_disconnected: false,
                     relay_attempted: !local_capacity,
                     fallback_to_go: !local_capacity,
@@ -1979,7 +2086,10 @@ async fn handle_openai_edge(
             )
             .await
             {
-                error!("relay failure abort could not be delivered or queued: {callback_err}");
+                error!(
+                    "relay failure abort could not be delivered or queued: {}",
+                    safe_edge_error(&callback_err)
+                );
             }
             if local_capacity {
                 state
@@ -2068,10 +2178,46 @@ fn response_body_preview(body: &[u8]) -> String {
     preview = redact_json_secret_field(preview, "api-key");
     preview = redact_json_secret_field(preview, "x-api-key");
     preview = redact_json_secret_field(preview, "openai-api-key");
+    preview = redact_json_secret_field(preview, "api_key");
+    preview = redact_json_secret_field(preview, "access_token");
+    preview = redact_json_secret_field(preview, "refresh_token");
+    preview = redact_json_secret_field(preview, "cookie");
+    preview = redact_json_secret_field(preview, "set-cookie");
+    preview = redact_json_secret_field(preview, "upstream_url");
+    preview = redact_json_secret_field(preview, "proxy_url");
+    let lower = preview.to_ascii_lowercase();
+    if lower.contains("http://")
+        || lower.contains("https://")
+        || lower.contains("ws://")
+        || lower.contains("wss://")
+        || lower.contains("<!doctype")
+        || lower.contains("<html")
+        || (lower.contains("authorization")
+            && (lower.contains("bearer") || lower.contains("basic")))
+        || lower.contains("api-key")
+        || lower.contains("api_key")
+        || lower.contains("access_token")
+        || lower.contains("refresh_token")
+        || lower.contains("set-cookie")
+        || lower.contains("cookie")
+        || lower.contains("cloudflare")
+        || lower.contains("chatgpt")
+        || lower.contains("openai")
+        || lower.contains("anthropic")
+        || lower.contains("claude")
+        || lower.contains("grok")
+        || lower.contains("x.ai")
+    {
+        return "[redacted upstream error]".to_string();
+    }
     if body.len() > MAX_PREVIEW {
         preview.push_str("...");
     }
     preview
+}
+
+fn safe_edge_error<E: Display>(error: E) -> String {
+    response_body_preview(error.to_string().as_bytes())
 }
 
 fn redact_json_secret_field(mut text: String, key: &str) -> String {
@@ -2103,7 +2249,10 @@ async fn handle_openai_ws_edge(
     ws.on_upgrade(move |socket| async move {
         let _stream_guard = state.metrics.begin_stream();
         if let Err(err) = relay_ws_session(state, socket, method, uri, headers).await {
-            warn!("edge ws session ended with error: {err}");
+            warn!(
+                "edge ws session ended with error: {}",
+                safe_edge_error(&err)
+            );
         }
     })
 }
@@ -2150,7 +2299,10 @@ async fn relay_ws_session(
         Ok(plan) => plan,
         Err(err) => {
             drop(ingress_permit);
-            warn!("ws prepare failed; proxying to Go: {err}");
+            warn!(
+                "ws prepare failed; proxying to Go: {}",
+                safe_edge_error(&err)
+            );
             if let Err(queue_err) = enqueue_settlement_retry(
                 &state,
                 SettlementRetryJob::Abort(AbortRequest {
@@ -2158,12 +2310,16 @@ async fn relay_ws_session(
                     lease_id: None,
                     account_id: None,
                     reason: "ws_prepare_failed".to_string(),
+                    failure_class: "prepare_failed".to_string(),
                     client_disconnected: false,
                     relay_attempted: false,
                     fallback_to_go: true,
                 }),
             ) {
-                error!("ws prepare cancellation could not be queued: {queue_err}");
+                error!(
+                    "ws prepare cancellation could not be queued: {}",
+                    safe_edge_error(&queue_err)
+                );
             }
             return proxy_ws_to_go(state, client_socket, method, uri, headers, first_msg).await;
         }
@@ -2171,7 +2327,7 @@ async fn relay_ws_session(
     if plan.action != "relay" {
         drop(ingress_permit);
         if let Some(reason) = &plan.reason {
-            info!("edge ws fallback_to_go reason={reason}");
+            info!("edge ws fallback_to_go reason={}", safe_edge_error(&reason));
         }
         return proxy_ws_to_go(state, client_socket, method, uri, headers, first_msg).await;
     }
@@ -2194,6 +2350,7 @@ async fn relay_ws_session(
                 lease_id: plan.lease_id.clone(),
                 account_id: plan.account_id,
                 reason: "unsupported_ws_transport".to_string(),
+                failure_class: "prepare_failed".to_string(),
                 client_disconnected: false,
                 relay_attempted: false,
                 fallback_to_go: false,
@@ -2224,6 +2381,7 @@ async fn relay_ws_session(
                 lease_id: plan.lease_id.clone(),
                 account_id: plan.account_id,
                 reason: "ws_proxy_not_supported".to_string(),
+                failure_class: "prepare_failed".to_string(),
                 client_disconnected: false,
                 relay_attempted: false,
                 fallback_to_go: false,
@@ -2231,7 +2389,10 @@ async fn relay_ws_session(
         )
         .await;
         if let Err(callback_err) = abort_result {
-            error!("invalid ws plan abort could not be delivered or queued: {callback_err}");
+            error!(
+                "invalid ws plan abort could not be delivered or queued: {}",
+                safe_edge_error(&callback_err)
+            );
         } else {
             guard.mark_done();
         }
@@ -2293,10 +2454,12 @@ async fn relay_ws_session(
                                 break;
                             }
                         };
-                        let (upstream_msg, turn_policy_applied) = apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
+                        let (upstream_msg, turn_policy_applied) = apply_openai_ws_request_policies_tracked(
                             upstream_msg,
                             plan.prompt_cache_creation_optimization_mode.as_deref(),
                             &mut prompt_cache_creation_optimization_model,
+                            plan.max_reasoning_effort.as_deref(),
+                            &plan.reasoning_effort_mappings,
                         );
                         if let Some(applied) = turn_policy_applied {
                             cache_creation_policy_applied_for_turn = applied;
@@ -2460,6 +2623,7 @@ async fn relay_ws_session(
             lease_id,
             account_id,
             success,
+            failure_class: classify_stream_failure(success, client_disconnected, &summary),
             client_disconnected,
             request_id: summary.request_id.clone(),
             response_id: summary.response_id.clone(),
@@ -2637,13 +2801,28 @@ fn apply_openai_prompt_cache_creation_optimization_ws_message(
 // The optional bool is present only for response.create frames and reports
 // whether this exact turn was rewritten. This keeps account enablement separate
 // from per-turn application when a WS session changes models.
+#[cfg(test)]
 fn apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
     msg: TungsteniteMessage,
     mode: Option<&str>,
     session_model: &mut Option<String>,
 ) -> (TungsteniteMessage, Option<bool>) {
+    apply_openai_ws_request_policies_tracked(msg, mode, session_model, None, &[])
+}
+
+fn apply_openai_ws_request_policies_tracked(
+    msg: TungsteniteMessage,
+    mode: Option<&str>,
+    session_model: &mut Option<String>,
+    max_reasoning_effort: Option<&str>,
+    reasoning_effort_mappings: &[ReasoningEffortMapping],
+) -> (TungsteniteMessage, Option<bool>) {
     let normalized_mode = mode.unwrap_or_default().trim().to_ascii_lowercase();
-    if normalized_mode != "reduce" && normalized_mode != "suppress" {
+    let cache_policy_enabled = normalized_mode == "reduce" || normalized_mode == "suppress";
+    let reasoning_policy_enabled = max_reasoning_effort
+        .is_some_and(|value| !value.trim().is_empty())
+        || !reasoning_effort_mappings.is_empty();
+    if !cache_policy_enabled && !reasoning_policy_enabled {
         return (msg, None);
     }
     let (mut value, original) = match msg {
@@ -2681,12 +2860,32 @@ fn apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
         .and_then(Value::as_str)
         .or(session_model.as_deref())
         .unwrap_or_default();
-    if !is_openai_gpt56_model(model) || is_openai_ws_image_generation_intent(&value) {
-        return (original.into_message(), Some(false));
+    // A reasoning-only policy still needs to clear the previous turn's cache
+    // flag; otherwise a later settlement can inherit stale cache billing state.
+    let mut cache_policy_applied = if cache_policy_enabled {
+        None
+    } else {
+        Some(false)
+    };
+    let mut changed = false;
+    if cache_policy_enabled {
+        if !is_openai_gpt56_model(model) || is_openai_ws_image_generation_intent(&value) {
+            cache_policy_applied = Some(false);
+        } else {
+            apply_openai_prompt_cache_creation_optimization_value(&mut value, &normalized_mode);
+            cache_policy_applied = Some(true);
+            changed = true;
+        }
     }
-
-    apply_openai_prompt_cache_creation_optimization_value(&mut value, &normalized_mode);
-    original.with_updated_value(&value)
+    changed |= apply_openai_reasoning_effort_policy_value(
+        &mut value,
+        max_reasoning_effort,
+        reasoning_effort_mappings,
+    );
+    if !changed {
+        return (original.into_message(), cache_policy_applied);
+    }
+    original.with_updated_value(&value, cache_policy_applied)
 }
 
 enum OpenAIWSJSONFrame {
@@ -2702,18 +2901,102 @@ impl OpenAIWSJSONFrame {
         }
     }
 
-    fn with_updated_value(self, value: &Value) -> (TungsteniteMessage, Option<bool>) {
+    fn with_updated_value(
+        self,
+        value: &Value,
+        policy_applied: Option<bool>,
+    ) -> (TungsteniteMessage, Option<bool>) {
         match self {
             Self::Text(text) => match serde_json::to_string(value) {
-                Ok(updated) => (TungsteniteMessage::Text(updated), Some(true)),
-                Err(_) => (TungsteniteMessage::Text(text), Some(false)),
+                Ok(updated) => (TungsteniteMessage::Text(updated), policy_applied),
+                Err(_) => (
+                    TungsteniteMessage::Text(text),
+                    policy_applied.map(|_| false),
+                ),
             },
             Self::Binary(bytes) => match serde_json::to_vec(value) {
-                Ok(updated) => (TungsteniteMessage::Binary(updated), Some(true)),
-                Err(_) => (TungsteniteMessage::Binary(bytes), Some(false)),
+                Ok(updated) => (TungsteniteMessage::Binary(updated), policy_applied),
+                Err(_) => (
+                    TungsteniteMessage::Binary(bytes),
+                    policy_applied.map(|_| false),
+                ),
             },
         }
     }
+}
+
+fn normalize_openai_reasoning_effort(value: &str) -> Option<&'static str> {
+    match value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', '_', ' '], "")
+        .as_str()
+    {
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" | "extrahigh" => Some("xhigh"),
+        "max" => Some("max"),
+        _ => None,
+    }
+}
+
+fn openai_reasoning_effort_rank(value: &str) -> Option<u8> {
+    match normalize_openai_reasoning_effort(value)? {
+        "minimal" => Some(1),
+        "low" => Some(2),
+        "medium" => Some(3),
+        "high" => Some(4),
+        "xhigh" => Some(5),
+        "max" => Some(6),
+        _ => None,
+    }
+}
+
+fn apply_openai_reasoning_effort_policy_value(
+    value: &mut Value,
+    max_effort: Option<&str>,
+    mappings: &[ReasoningEffortMapping],
+) -> bool {
+    let max_rank = max_effort.and_then(openai_reasoning_effort_rank);
+    let Some(request) = value.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    for path in [["reasoning", "effort"], ["reasoning_effort", ""]] {
+        let field = if path[1].is_empty() {
+            request.get_mut(path[0])
+        } else {
+            request
+                .get_mut(path[0])
+                .and_then(Value::as_object_mut)
+                .and_then(|nested| nested.get_mut(path[1]))
+        };
+        let Some(field) = field else { continue };
+        let Some(original) = field.as_str().map(str::trim) else {
+            continue;
+        };
+        let Some(canonical) = normalize_openai_reasoning_effort(original) else {
+            continue;
+        };
+        let mut effective = mappings
+            .iter()
+            .find(|mapping| normalize_openai_reasoning_effort(&mapping.from) == Some(canonical))
+            .and_then(|mapping| normalize_openai_reasoning_effort(&mapping.to))
+            .unwrap_or(canonical);
+        if let (Some(limit), Some(rank)) = (max_rank, openai_reasoning_effort_rank(effective)) {
+            if rank > limit {
+                effective = normalize_openai_reasoning_effort(max_effort.unwrap_or_default())
+                    .unwrap_or(effective);
+            }
+        }
+        if effective != original {
+            *field = Value::String(effective.to_string());
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn apply_openai_prompt_cache_creation_optimization_value(value: &mut Value, mode: &str) {
@@ -3762,6 +4045,7 @@ async fn relay_upstream_direct(
                                 lease_id: lease_id.clone(),
                                 account_id,
                                 success,
+                                failure_class: Some("upstream_error".to_string()),
                                 client_disconnected: false,
                                 request_id: summary.request_id.clone(),
                                 response_id: summary.response_id.clone(),
@@ -3848,6 +4132,7 @@ async fn relay_upstream_direct(
                             lease_id: lease_id.clone(),
                             account_id,
                             success,
+                            failure_class: Some("upstream_error".to_string()),
                             client_disconnected: false,
                             request_id: summary.request_id.clone(),
                             response_id: summary.response_id.clone(),
@@ -3989,6 +4274,7 @@ async fn relay_upstream_direct(
                         lease_id: lease_id.clone(),
                         account_id,
                         success,
+                        failure_class: classify_stream_failure(success, false, &summary),
                         client_disconnected: false,
                         request_id,
                         response_id,
@@ -4053,6 +4339,7 @@ async fn relay_upstream_direct(
                     lease_id: plan.lease_id.clone(),
                     account_id: plan.account_id,
                     success: false,
+                    failure_class: Some("upstream_error".to_string()),
                     client_disconnected: false,
                     request_id: upstream_request_id,
                     response_id: None,
@@ -4080,7 +4367,10 @@ async fn relay_upstream_direct(
             )
             .await
             {
-                error!("cyber completion could not be delivered or queued: {callback_err}");
+                error!(
+                    "cyber completion could not be delivered or queued: {}",
+                    safe_edge_error(&callback_err)
+                );
             }
             return Ok(openai_error_response(
                 StatusCode::FORBIDDEN,
@@ -4141,6 +4431,7 @@ async fn relay_upstream_direct(
                     lease_id: plan.lease_id.clone(),
                     account_id: plan.account_id,
                     reason,
+                    failure_class: "retry_exhausted".to_string(),
                     client_disconnected: false,
                     relay_attempted: true,
                     fallback_to_go: false,
@@ -4148,7 +4439,10 @@ async fn relay_upstream_direct(
             )
             .await
             {
-                error!("retry abort could not be delivered or queued: {callback_err}");
+                error!(
+                    "retry abort could not be delivered or queued: {}",
+                    safe_edge_error(&callback_err)
+                );
             }
             return Ok(openai_error_response(
                 StatusCode::from_u16(decision.status_code.unwrap_or(400))
@@ -4592,6 +4886,7 @@ async fn relay_upstream_direct(
             lease_id,
             account_id,
             success,
+            failure_class: classify_stream_failure(success, false, &summary),
             client_disconnected: false,
             request_id,
             response_id,
@@ -5312,7 +5607,10 @@ fn spawn_payload_commit(state: AppState, request: CommitRequest) {
             )
             .await
             {
-                warn!("edge direct payload commit failed edge_request_id={edge_request_id}: {err}");
+                warn!(
+                    "edge direct payload commit failed edge_request_id={edge_request_id}: {}",
+                    safe_edge_error(&err)
+                );
             }
         });
     }
@@ -5342,7 +5640,10 @@ async fn run_payload_commit_queue(state: AppState, mut receiver: mpsc::Receiver<
             )
             .await
             {
-                warn!("edge payload commit failed edge_request_id={edge_request_id}: {err}");
+                warn!(
+                    "edge payload commit failed edge_request_id={edge_request_id}: {}",
+                    safe_edge_error(&err)
+                );
             }
         });
     }
@@ -6189,7 +6490,7 @@ impl AppState {
                             .insert(key, Instant::now());
                     }
                 }
-                Err(err) => warn!("edge ws idle preconnect failed: {err}"),
+                Err(err) => warn!("edge ws idle preconnect failed: {}", safe_edge_error(&err)),
             }
         });
     }
@@ -6859,6 +7160,24 @@ mod tests {
         ));
 
         assert_eq!(nested.usage.cache_creation_input_tokens, 9);
+    }
+
+    #[test]
+    fn stream_failure_class_distinguishes_http_error_from_disconnect() {
+        let summary = ChatStreamSummary::default();
+
+        assert_eq!(
+            classify_stream_failure_with_status(false, false, &summary, Some(502)).as_deref(),
+            Some("upstream_error")
+        );
+        assert_eq!(
+            classify_stream_failure_with_status(false, false, &summary, Some(200)).as_deref(),
+            Some("upstream_disconnect")
+        );
+        assert_eq!(
+            classify_stream_failure_with_status(false, true, &summary, Some(502)).as_deref(),
+            Some("client_cancelled")
+        );
     }
 
     #[test]
@@ -8058,6 +8377,8 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             prompt_cache_creation_optimization_mode: None,
             prompt_cache_creation_optimization_model: None,
             prompt_cache_creation_optimization_applied: false,
+            max_reasoning_effort: None,
+            reasoning_effort_mappings: Vec::new(),
         };
 
         let first = edge_plan_ws_first_message(
@@ -8129,12 +8450,20 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
 
     #[test]
     fn response_body_preview_redacts_secret_headers() {
-        let body = br#"{"headers":{"authorization":"Bearer secret","api-key":"sk-secret","x-api-key":"x-secret"}}"#;
+        let body = br#"{"headers":{"authorization":"Bearer secret","api-key":"sk-secret","x-api-key":"x-secret","cookie":"session=secret","upstream_url":"https://upstream.example","proxy_url":"http://proxy.example"}}"#;
         let preview = response_body_preview(body);
-        assert!(preview.contains("\"authorization\":\"[redacted]\""));
-        assert!(preview.contains("\"api-key\":\"[redacted]\""));
-        assert!(preview.contains("\"x-api-key\":\"[redacted]\""));
+        assert_eq!(preview, "[redacted upstream error]");
         assert!(!preview.contains("secret"));
+        assert!(!preview.contains("upstream.example"));
+        assert!(!preview.contains("proxy.example"));
+    }
+
+    #[test]
+    fn response_body_preview_redacts_upstream_urls_and_html() {
+        let preview = response_body_preview(
+            br#"<html><body>proxy https://private.example/internal OpenAI error</body></html>"#,
+        );
+        assert_eq!(preview, "[redacted upstream error]");
     }
 
     #[test]
@@ -8163,6 +8492,8 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             prompt_cache_creation_optimization_mode: None,
             prompt_cache_creation_optimization_model: None,
             prompt_cache_creation_optimization_applied: false,
+            max_reasoning_effort: None,
+            reasoning_effort_mappings: Vec::new(),
         };
 
         assert_eq!(
@@ -8179,6 +8510,96 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         assert_eq!(key, dynamic_warm_key(proxy, warm_url));
         assert_eq!(key.proxy, "http://127.0.0.1:7890");
         assert_eq!(key.warm_url, warm_url);
+    }
+
+    #[test]
+    fn reasoning_policy_maps_then_caps_without_adding_omitted_fields() {
+        let mappings = vec![ReasoningEffortMapping {
+            from: "max".to_string(),
+            to: "xhigh".to_string(),
+        }];
+        let mut value = serde_json::json!({"reasoning": {"effort": "max"}});
+        assert!(apply_openai_reasoning_effort_policy_value(
+            &mut value,
+            Some("medium"),
+            &mappings,
+        ));
+        assert_eq!(
+            value.pointer("/reasoning/effort").and_then(Value::as_str),
+            Some("medium")
+        );
+
+        let mut omitted = serde_json::json!({"model": "gpt-5.6"});
+        assert!(!apply_openai_reasoning_effort_policy_value(
+            &mut omitted,
+            Some("low"),
+            &[],
+        ));
+        assert!(omitted.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn reasoning_only_ws_policy_clears_previous_cache_flag() {
+        let payload = TungsteniteMessage::Text(
+            r#"{"type":"response.create","model":"gpt-5.6","reasoning_effort":"high"}"#.to_string(),
+        );
+        let (updated, cache_applied) =
+            apply_openai_ws_request_policies_tracked(payload, None, &mut None, Some("medium"), &[]);
+        assert_eq!(cache_applied, Some(false));
+        let TungsteniteMessage::Text(text) = updated else {
+            panic!("expected text frame");
+        };
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value.get("reasoning_effort").and_then(Value::as_str),
+            Some("medium")
+        );
+    }
+
+    #[test]
+    fn ws_reasoning_policy_preserves_text_and_binary_frame_types() {
+        let mappings = vec![ReasoningEffortMapping {
+            from: "max".to_string(),
+            to: "high".to_string(),
+        }];
+        let payload = br#"{"type":"response.create","model":"gpt-5.6","reasoning_effort":"max"}"#;
+
+        for original in [
+            TungsteniteMessage::Text(String::from_utf8(payload.to_vec()).unwrap()),
+            TungsteniteMessage::Binary(payload.to_vec()),
+        ] {
+            let is_text = matches!(original, TungsteniteMessage::Text(_));
+            let (updated, cache_applied) = apply_openai_ws_request_policies_tracked(
+                original,
+                Some("reduce"),
+                &mut None,
+                Some("medium"),
+                &mappings,
+            );
+            assert_eq!(cache_applied, Some(true));
+            let bytes = match updated {
+                TungsteniteMessage::Text(text) => {
+                    assert!(is_text);
+                    text.into_bytes()
+                }
+                TungsteniteMessage::Binary(bytes) => {
+                    assert!(!is_text);
+                    bytes
+                }
+                _ => panic!("unexpected frame type"),
+            };
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                value.get("reasoning_effort").and_then(Value::as_str),
+                Some("medium")
+            );
+            assert_eq!(
+                value
+                    .pointer("/prompt_cache_options/ttl")
+                    .and_then(Value::as_str),
+                Some("24h")
+            );
+        }
     }
 
     #[test]

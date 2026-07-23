@@ -31,3 +31,25 @@ func TestNormalizeOpenAIPassthroughOAuthBody_CompactRemovesUnsupportedUser(t *te
 	require.False(t, gjson.GetBytes(normalized, "stream").Exists())
 	require.False(t, gjson.GetBytes(normalized, "store").Exists())
 }
+
+func TestNormalizeOpenAIPassthroughOAuthBody_NormalizesInput(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{name: "string", body: `{"input":"hello"}`, want: 1},
+		{name: "blank string", body: `{"input":""}`, want: 1},
+		{name: "object", body: `{"input":{"type":"message","role":"user","content":"hello"}}`, want: 1},
+		{name: "array unchanged", body: `{"input":[{"type":"message"}]}`, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized, _, err := normalizeOpenAIPassthroughOAuthBody([]byte(tt.body), false)
+			require.NoError(t, err)
+			input := gjson.GetBytes(normalized, "input")
+			require.True(t, input.IsArray())
+			require.Len(t, input.Array(), tt.want)
+		})
+	}
+}

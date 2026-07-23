@@ -130,6 +130,9 @@ func (a *Alipay) CreatePayment(ctx context.Context, req payment.CreatePaymentReq
 		returnURL = req.ReturnURL
 	}
 
+	if req.IsMobile && req.AlipayMobilePrecreate {
+		return a.createPrecreateTrade(ctx, client, req, notifyURL)
+	}
 	if req.IsMobile {
 		return a.createWapTrade(client, req, notifyURL, returnURL)
 	}

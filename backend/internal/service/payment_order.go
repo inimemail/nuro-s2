@@ -439,11 +439,12 @@ func (s *PaymentService) invokeProvider(ctx context.Context, order *dbent.Paymen
 		return nil, err
 	}
 	providerReq := buildProviderCreatePaymentRequest(CreateOrderRequest{
-		PaymentType: req.PaymentType,
-		OpenID:      req.OpenID,
-		ClientIP:    req.ClientIP,
-		IsMobile:    req.IsMobile,
-		ReturnURL:   providerReturnURL,
+		PaymentType:           req.PaymentType,
+		OpenID:                req.OpenID,
+		ClientIP:              req.ClientIP,
+		IsMobile:              req.IsMobile,
+		AlipayMobilePrecreate: cfg.AlipayMobilePrecreateDeepLink,
+		ReturnURL:             providerReturnURL,
 	}, sel, outTradeNo, payAmountStr, subject)
 	pr, err := prov.CreatePayment(ctx, providerReq)
 	if err != nil {
@@ -498,16 +499,18 @@ func removePostgresTextNUL(value string) string {
 }
 
 func buildProviderCreatePaymentRequest(req CreateOrderRequest, sel *payment.InstanceSelection, orderID, amount, subject string) payment.CreatePaymentRequest {
+	alipayPrecreate := req.AlipayMobilePrecreate && sel != nil && payment.GetBasePaymentType(sel.ProviderKey) == payment.TypeAlipay
 	return payment.CreatePaymentRequest{
-		OrderID:            orderID,
-		Amount:             amount,
-		PaymentType:        req.PaymentType,
-		Subject:            subject,
-		ReturnURL:          req.ReturnURL,
-		OpenID:             strings.TrimSpace(req.OpenID),
-		ClientIP:           req.ClientIP,
-		IsMobile:           req.IsMobile,
-		InstanceSubMethods: selectedInstanceSupportedTypes(sel),
+		OrderID:               orderID,
+		Amount:                amount,
+		PaymentType:           req.PaymentType,
+		Subject:               subject,
+		ReturnURL:             req.ReturnURL,
+		OpenID:                strings.TrimSpace(req.OpenID),
+		ClientIP:              req.ClientIP,
+		IsMobile:              req.IsMobile,
+		AlipayMobilePrecreate: alipayPrecreate,
+		InstanceSubMethods:    selectedInstanceSupportedTypes(sel),
 	}
 }
 

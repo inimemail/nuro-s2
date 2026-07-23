@@ -209,6 +209,8 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldModelsListConfig,
 				group.FieldStrictModelPriorityOnModelMismatch,
 				group.FieldRpmLimit,
+				group.FieldMaxReasoningEffort,
+				group.FieldReasoningEffortMappings,
 			)
 		}).
 		Only(ctx)
@@ -967,6 +969,8 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		ModelsListConfig:                   g.ModelsListConfig,
 		StrictModelPriorityOnModelMismatch: g.StrictModelPriorityOnModelMismatch,
 		RPMLimit:                           g.RpmLimit,
+		MaxReasoningEffort:                 g.MaxReasoningEffort,
+		ReasoningEffortMappings:            g.ReasoningEffortMappings,
 		CreatedAt:                          g.CreatedAt,
 		UpdatedAt:                          g.UpdatedAt,
 	}

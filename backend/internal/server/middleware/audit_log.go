@@ -78,8 +78,9 @@ var auditActionOverrides = map[string]string{
 }
 
 var auditBodyOmittedRoutes = map[string]struct{}{
-	"POST /api/v1/admin/accounts/import/codex-session": {},
-	"POST /api/v1/admin/accounts/data":                 {},
+	"PUT /api/v1/admin/accounts/:id/ollama-cloud-usage/session": {},
+	"POST /api/v1/admin/accounts/import/codex-session":          {},
+	"POST /api/v1/admin/accounts/data":                          {},
 }
 
 func SkipAudit(c *gin.Context) { c.Set(auditContextSkip, true) }

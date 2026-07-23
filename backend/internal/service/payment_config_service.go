@@ -37,6 +37,7 @@ const (
 	SettingCancelWindowUnit         = "CANCEL_RATE_LIMIT_UNIT"
 	SettingCancelWindowMode         = "CANCEL_RATE_LIMIT_WINDOW_MODE"
 	SettingAlipayForceQRCode        = "ALIPAY_FORCE_QRCODE"
+	SettingAlipayMobilePrecreate    = "ALIPAY_MOBILE_PRECREATE_DEEP_LINK"
 )
 
 // Default values for payment configuration settings.
@@ -73,7 +74,8 @@ type PaymentConfig struct {
 	CancelRateLimitMode    string `json:"cancel_rate_limit_window_mode"`
 
 	// Force Alipay mobile users to use QR code instead of mobile redirect
-	AlipayForceQRCode bool `json:"alipay_force_qrcode"`
+	AlipayForceQRCode             bool `json:"alipay_force_qrcode"`
+	AlipayMobilePrecreateDeepLink bool `json:"alipay_mobile_precreate_deep_link"`
 }
 
 // UpdatePaymentConfigRequest contains fields to update payment configuration.
@@ -103,7 +105,8 @@ type UpdatePaymentConfigRequest struct {
 	CancelRateLimitMode    *string `json:"cancel_rate_limit_window_mode"`
 
 	// Force Alipay mobile users to use QR code instead of mobile redirect
-	AlipayForceQRCode *bool `json:"alipay_force_qrcode"`
+	AlipayForceQRCode             *bool `json:"alipay_force_qrcode"`
+	AlipayMobilePrecreateDeepLink *bool `json:"alipay_mobile_precreate_deep_link"`
 
 	VisibleMethodAlipaySource  *string `json:"payment_visible_method_alipay_source"`
 	VisibleMethodWxpaySource   *string `json:"payment_visible_method_wxpay_source"`
@@ -216,6 +219,7 @@ func (s *PaymentConfigService) GetPaymentConfig(ctx context.Context) (*PaymentCo
 		SettingCancelRateLimitOn, SettingCancelRateLimitMax,
 		SettingCancelWindowSize, SettingCancelWindowUnit, SettingCancelWindowMode,
 		SettingAlipayForceQRCode,
+		SettingAlipayMobilePrecreate,
 		SettingPaymentVisibleMethodAlipayEnabled, SettingPaymentVisibleMethodAlipaySource,
 		SettingPaymentVisibleMethodWxpayEnabled, SettingPaymentVisibleMethodWxpaySource,
 	}
@@ -253,7 +257,8 @@ func (s *PaymentConfigService) parsePaymentConfig(vals map[string]string) *Payme
 		CancelRateLimitUnit:    vals[SettingCancelWindowUnit],
 		CancelRateLimitMode:    vals[SettingCancelWindowMode],
 
-		AlipayForceQRCode: vals[SettingAlipayForceQRCode] == "true",
+		AlipayForceQRCode:             vals[SettingAlipayForceQRCode] == "true",
+		AlipayMobilePrecreateDeepLink: vals[SettingAlipayMobilePrecreate] == "true",
 	}
 	if cfg.LoadBalanceStrategy == "" {
 		cfg.LoadBalanceStrategy = payment.DefaultLoadBalanceStrategy
@@ -339,6 +344,7 @@ func (s *PaymentConfigService) UpdatePaymentConfig(ctx context.Context, req Upda
 		SettingCancelWindowUnit:                  derefStr(req.CancelRateLimitUnit),
 		SettingCancelWindowMode:                  derefStr(req.CancelRateLimitMode),
 		SettingAlipayForceQRCode:                 formatBoolOrEmpty(req.AlipayForceQRCode),
+		SettingAlipayMobilePrecreate:             formatBoolOrEmpty(req.AlipayMobilePrecreateDeepLink),
 		SettingPaymentVisibleMethodAlipaySource:  derefStr(req.VisibleMethodAlipaySource),
 		SettingPaymentVisibleMethodWxpaySource:   derefStr(req.VisibleMethodWxpaySource),
 		SettingPaymentVisibleMethodAlipayEnabled: formatBoolOrEmpty(req.VisibleMethodAlipayEnabled),

@@ -632,6 +632,21 @@ func TestOpenAIGatewayService_ForwardGrokResponses_429TempUnschedules(t *testing
 	require.True(t, time.Until(repo.rateLimitResetAt) > 5*time.Second)
 }
 
+func TestHandleGrokAccountUpstreamError402TempUnschedulesAPIKeyAccount(t *testing.T) {
+	repo := &openAIGrokAccountRepoStub{}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{ID: 402, Platform: PlatformGrok, Type: AccountTypeAPIKey}
+
+	svc.handleGrokAccountUpstreamError(
+		context.Background(), account, http.StatusPaymentRequired, nil, []byte(`{"error":{"message":"payment required"}}`),
+	)
+
+	require.Equal(t, account.ID, repo.tempUnschedAccountID)
+	require.Equal(t, "grok payment required", repo.tempUnschedReason)
+	require.WithinDuration(t, time.Now().Add(30*time.Minute), repo.tempUnschedUntil, time.Second)
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
 func TestGrokPoolUpstreamErrorsDoNotPersistGenericSchedulingState(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -639,6 +654,7 @@ func TestGrokPoolUpstreamErrorsDoNotPersistGenericSchedulingState(t *testing.T) 
 		headers    http.Header
 	}{
 		{name: "unauthorized", statusCode: http.StatusUnauthorized},
+		{name: "payment_required", statusCode: http.StatusPaymentRequired},
 		{name: "forbidden", statusCode: http.StatusForbidden},
 		{name: "rate_limited", statusCode: http.StatusTooManyRequests, headers: http.Header{"Retry-After": []string{"7"}}},
 	}

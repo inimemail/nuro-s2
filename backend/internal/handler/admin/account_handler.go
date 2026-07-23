@@ -61,6 +61,12 @@ type AccountHandler struct {
 	rpmCache                service.RPMCache
 	tokenCacheInvalidator   service.TokenCacheInvalidator
 	upstreamBillingProbe    *service.UpstreamBillingProbeService
+	ollamaCloudUsage        *service.OllamaCloudUsageService
+}
+
+// SetOllamaCloudUsageService attaches the opt-in background usage service.
+func (h *AccountHandler) SetOllamaCloudUsageService(s *service.OllamaCloudUsageService) {
+	h.ollamaCloudUsage = s
 }
 
 // NewAccountHandler creates a new admin account handler

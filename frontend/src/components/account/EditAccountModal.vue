@@ -3575,6 +3575,8 @@
       </div>
 
       <!-- Group Selection - 仅标准模式显示 -->
+      <OllamaCloudUsageSettings v-if="account" :account="account" />
+
       <GroupSelector
         v-if="!authStore.isSimpleMode"
         v-model="form.group_ids"
@@ -3666,6 +3668,7 @@ import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import PromptCacheCreationOptimizationControl from '@/components/account/PromptCacheCreationOptimizationControl.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
+import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
 import {
   applyHeaderOverride,
   applyGrokOAuthBaseURL,

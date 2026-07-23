@@ -748,7 +748,7 @@ func (s *OpenAIGatewayService) hasHigherPriorityOpenAIAccountAvailable(
 		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, platform) {
 			continue
 		}
-		if s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIPoolAccountSoftCooling(account) {
+		if s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIProxyStreamQuarantined(account) || s.isOpenAIPoolAccountSoftCooling(account) {
 			continue
 		}
 		if requiredTransport != OpenAIUpstreamTransportAny &&
@@ -815,7 +815,7 @@ func (s *OpenAIGatewayService) hasSamePriorityNonPoolOpenAIAccountAvailable(
 		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, platform) {
 			continue
 		}
-		if s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIPoolAccountSoftCooling(account) {
+		if s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIProxyStreamQuarantined(account) || s.isOpenAIPoolAccountSoftCooling(account) {
 			continue
 		}
 		if requiredTransport != OpenAIUpstreamTransportAny &&

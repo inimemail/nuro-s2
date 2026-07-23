@@ -255,7 +255,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "event: ") {
+		if _, ok := extractOpenAISSEEventLine(line); !ok {
 			continue
 		}
 
@@ -264,11 +264,11 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 			break
 		}
 		dataLine := scanner.Text()
-		if !strings.HasPrefix(dataLine, "data: ") {
+		payload, ok := extractOpenAISSEDataLine(dataLine)
+		if !ok {
 			invalidStream = true
 			continue
 		}
-		payload := dataLine[6:]
 
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
@@ -467,7 +467,7 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	invalidStream := false
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "event: ") {
+		if _, ok := extractOpenAISSEEventLine(line); !ok {
 			continue
 		}
 
@@ -476,11 +476,11 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 			break
 		}
 		dataLine := scanner.Text()
-		if !strings.HasPrefix(dataLine, "data: ") {
+		payload, ok := extractOpenAISSEDataLine(dataLine)
+		if !ok {
 			invalidStream = true
 			continue
 		}
-		payload := dataLine[6:]
 
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {

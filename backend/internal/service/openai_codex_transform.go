@@ -10,7 +10,16 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
-const codexCallIDMaxLength = 64
+const (
+	codexCallIDMaxLength = 64
+	codexCallIDPrefix    = "fc_"
+)
+
+func compactCodexCallID(id string) string {
+	digest := sha256.Sum256([]byte("sub2api:codex-call-id:v1:" + id))
+	encoded := hex.EncodeToString(digest[:])
+	return codexCallIDPrefix + encoded[:codexCallIDMaxLength-len(codexCallIDPrefix)]
+}
 
 func normalizeCodexCallID(id string) string {
 	id = strings.TrimSpace(id)
@@ -26,9 +35,7 @@ func normalizeCodexCallID(id string) string {
 	if len(candidate) <= codexCallIDMaxLength {
 		return candidate
 	}
-	digest := sha256.Sum256([]byte("sub2api:codex-call-id:v1:" + candidate))
-	encoded := hex.EncodeToString(digest[:])
-	return "fc_" + encoded[:codexCallIDMaxLength-len("fc_")]
+	return compactCodexCallID(candidate)
 }
 
 var codexModelMap = map[string]string{
@@ -1327,6 +1334,9 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		// 若 item_reference 指向 legacy call_* 标识，则仅修正该引用本身。
 		fixCallIDPrefix := func(id string) string {
 			if opts.PreserveCallIDs {
+				if len(id) > codexCallIDMaxLength {
+					return compactCodexCallID(id)
+				}
 				return id
 			}
 			return normalizeCodexCallID(id)

@@ -208,6 +208,8 @@ func groupFromServiceBase(g *service.Group) Group {
 		RequirePrivacySet:                  g.RequirePrivacySet,
 		StrictModelPriorityOnModelMismatch: g.StrictModelPriorityOnModelMismatch,
 		RPMLimit:                           g.RPMLimit,
+		MaxReasoningEffort:                 g.MaxReasoningEffort,
+		ReasoningEffortMappings:            g.ReasoningEffortMappings,
 		CreatedAt:                          g.CreatedAt,
 		UpdatedAt:                          g.UpdatedAt,
 	}
@@ -218,6 +220,12 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		return nil
 	}
 	redactedCreds, credsStatus := RedactCredentials(a.Credentials)
+	cleanExtra := make(map[string]any, len(a.Extra))
+	for key, value := range a.Extra {
+		if key != service.OllamaCloudUsageSessionExtraKey {
+			cleanExtra[key] = value
+		}
+	}
 	out := &Account{
 		ID:                                     a.ID,
 		Name:                                   a.Name,
@@ -226,7 +234,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		Type:                                   a.Type,
 		Credentials:                            redactedCreds,
 		CredentialsStatus:                      credsStatus,
-		Extra:                                  a.Extra,
+		Extra:                                  cleanExtra,
 		ProxyID:                                a.ProxyID,
 		ProxyFallbackOriginID:                  a.ProxyFallbackOriginID,
 		ProxyFallbackOriginName:                a.ProxyFallbackOriginName,

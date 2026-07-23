@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 16 // v16: hydrate complete authorization and billing fields
+const apiKeyAuthSnapshotVersion = 17 // v17: include group reasoning effort policy
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -415,6 +415,8 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			ModelsListConfig:                   apiKey.Group.ModelsListConfig,
 			StrictModelPriorityOnModelMismatch: apiKey.Group.StrictModelPriorityOnModelMismatch,
 			RPMLimit:                           apiKey.Group.RPMLimit,
+			MaxReasoningEffort:                 apiKey.Group.MaxReasoningEffort,
+			ReasoningEffortMappings:            apiKey.Group.ReasoningEffortMappings,
 		}
 	}
 	return snapshot
@@ -505,6 +507,8 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			ModelsListConfig:                   snapshot.Group.ModelsListConfig,
 			StrictModelPriorityOnModelMismatch: snapshot.Group.StrictModelPriorityOnModelMismatch,
 			RPMLimit:                           snapshot.Group.RPMLimit,
+			MaxReasoningEffort:                 snapshot.Group.MaxReasoningEffort,
+			ReasoningEffortMappings:            snapshot.Group.ReasoningEffortMappings,
 		}
 	}
 	s.compileAPIKeyIPRules(apiKey)

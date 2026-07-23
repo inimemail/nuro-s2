@@ -107,6 +107,44 @@ type openAIAccountSchedulerMetrics struct {
 	loadSkewMilliTotal     atomic.Int64
 }
 
+// openAISelectionFilterStats is request-local diagnostics. It intentionally
+// contains only bounded reason counters; account IDs, platform names and
+// multiplier values never leave the scheduler.
+type openAISelectionFilterStats struct {
+	pool    int
+	reasons map[string]int
+}
+
+func (s *openAISelectionFilterStats) exclude(reason string) {
+	if s == nil || reason == "" {
+		return
+	}
+	if s.reasons == nil {
+		s.reasons = make(map[string]int, 4)
+	}
+	s.reasons[reason]++
+}
+
+func (s openAISelectionFilterStats) summary(extra string) string {
+	parts := make([]string, 0, len(s.reasons))
+	for reason, count := range s.reasons {
+		parts = append(parts, reason+"="+strconv.Itoa(count))
+	}
+	sort.Strings(parts)
+	result := "pool=" + strconv.Itoa(s.pool)
+	if len(parts) > 0 {
+		result += ", filtered=" + strings.Join(parts, " ")
+	}
+	if extra != "" {
+		result += ", " + extra
+	}
+	return result
+}
+
+func logOpenAISelectionFilterStats(stats openAISelectionFilterStats, extra string) {
+	slog.Warn("openai scheduler selection exhausted", "summary", stats.summary(extra))
+}
+
 type openAIAccountLoadPlan struct {
 	allCandidates             []openAIAccountCandidateScore
 	candidates                []openAIAccountCandidateScore
@@ -480,6 +518,12 @@ func (s *defaultOpenAIAccountScheduler) Select(
 				selection = nil
 			}
 		}
+		if selection != nil && selection.Account != nil && s.service.isOpenAIProxyStreamQuarantined(selection.Account) {
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			selection = nil
+		}
 		if selection != nil && selection.Account != nil {
 			if !s.service.latestOpenAIAccountMatchesGroup(ctx, selection.Account, req.GroupID) {
 				if selection.ReleaseFunc != nil {
@@ -594,7 +638,14 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	if account.IsUpstreamBillingGuardBlockedForGroup(req.GroupID) {
-		return nil, false, nil
+		// A group-scoped multiplier guard is reversible. Keep the existing
+		// affinity binding while allowing this request to try another account.
+		return nil, true, nil
+	}
+	if s.service.isOpenAIProxyStreamQuarantined(account) {
+		// Proxy quarantine is process-local and short lived; replacing the
+		// sticky key would make recovery lose the original cache affinity.
+		return nil, true, nil
 	}
 	if IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash) &&
 		!s.service.isOpenAIPromptCacheBoostAffinityHashUsableForAccount(sessionHash, account) {
@@ -603,15 +654,28 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}
 		return nil, false, nil
 	}
-	if shouldClearStickySession(account, req.RequestedModel) ||
-		!isOpenAICompatibleRequestPlatformAccount(account, req.RequestPlatform) ||
-		!account.IsSchedulable() {
+	if !isOpenAICompatibleRequestPlatformAccount(account, req.RequestPlatform) {
 		if sessionHash != "" {
 			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		}
 		return nil, false, nil
 	}
-	if !s.isAccountRequestCompatible(ctx, account, req) {
+	if openAIStickyAccountTemporarilyUnavailable(s.service, account, req.GroupID) {
+		return nil, true, nil
+	}
+	if shouldClearStickySession(account, req.RequestedModel) || !account.IsSchedulable() {
+		if sessionHash != "" {
+			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		}
+		return nil, false, nil
+	}
+	if compatible, reason := s.isAccountRequestCompatibleReason(ctx, account, req); !compatible {
+		if openAIStickyCompatibilityFailureIsTemporary(reason) {
+			return nil, true, nil
+		}
+		if sessionHash != "" {
+			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		}
 		return nil, false, nil
 	}
 	if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
@@ -620,11 +684,15 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}
 		return nil, false, nil
 	}
+	stickyAccount := account
 	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
 	if account != nil && account.IsUpstreamBillingGuardBlockedForGroup(req.GroupID) {
-		return nil, false, nil
+		return nil, true, nil
 	}
 	if account == nil || !s.service.latestOpenAIAccountMatchesGroup(ctx, account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+		if account == nil && openAIStickyAccountTemporarilyUnavailable(s.service, stickyAccount, req.GroupID) {
+			return nil, true, nil
+		}
 		if sessionHash != "" {
 			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		}
@@ -661,6 +729,36 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}, false, nil
 	}
 	return nil, acquireErr == nil, nil
+}
+
+func openAIStickyCompatibilityFailureIsTemporary(reason string) bool {
+	switch reason {
+	case "runtime_blocked", "proxy_stream_quarantined", "shadow_parent_unhealthy":
+		return true
+	default:
+		return strings.HasPrefix(reason, "quota_auto_pause")
+	}
+}
+
+func openAIStickyAccountTemporarilyUnavailable(s *OpenAIGatewayService, account *Account, groupID *int64) bool {
+	if account == nil {
+		return false
+	}
+	if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
+		return true
+	}
+	if s != nil && (s.isOpenAIProxyStreamQuarantined(account) ||
+		s.isOpenAIAccountRuntimeBlocked(account) ||
+		// An expired cooldown is still a recovery-probe candidate. Do not let a
+		// sticky lookup bypass that probe; the normal candidate path owns the
+		// clear/allow decision.
+		s.isOpenAIPoolAccountSoftCooling(account)) {
+		return true
+	}
+	now := time.Now()
+	return (account.OverloadUntil != nil && now.Before(*account.OverloadUntil)) ||
+		(account.RateLimitResetAt != nil && now.Before(*account.RateLimitResetAt)) ||
+		(account.TempUnschedulableUntil != nil && now.Before(*account.TempUnschedulableUntil))
 }
 
 func openAIStickyAccountMatchesGroup(account *Account, groupID *int64) bool {
@@ -1597,6 +1695,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, 0, 0, 0, err
 	}
 	if len(accounts) == 0 {
+		logOpenAISelectionFilterStats(openAISelectionFilterStats{}, "empty_pool")
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false)
 	}
 
@@ -1609,17 +1708,29 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	baseFiltered := make([]*Account, 0, len(accounts))
 	filtered := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
+	filterStats := openAISelectionFilterStats{pool: len(accounts)}
 	for i := range accounts {
 		account := &accounts[i]
 		if req.ExcludedIDs != nil {
 			if _, excluded := req.ExcludedIDs[account.ID]; excluded {
+				filterStats.exclude("excluded")
 				continue
 			}
 		}
-		if !account.IsSchedulable() || !isOpenAICompatibleRequestPlatformAccount(account, req.RequestPlatform) {
+		if !account.IsSchedulable() {
+			filterStats.exclude("not_schedulable")
+			continue
+		}
+		if !isOpenAICompatibleRequestPlatformAccount(account, req.RequestPlatform) {
+			filterStats.exclude("platform_mismatch")
 			continue
 		}
 		if s.service.isOpenAIAccountRuntimeBlocked(account) {
+			filterStats.exclude("runtime_blocked")
+			continue
+		}
+		if s.service.isOpenAIProxyStreamQuarantined(account) {
+			filterStats.exclude("proxy_stream_quarantined")
 			continue
 		}
 		// require_privacy_set: 跳过 privacy 未设置的账号并标记异常
@@ -1627,24 +1738,30 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			s.service.BlockAccountScheduling(account, time.Time{}, "privacy_not_set")
 			_ = s.service.accountRepo.SetError(ctx, account.ID,
 				fmt.Sprintf("Privacy not set, required by group [%s]", schedGroup.Name))
+			filterStats.exclude("privacy_not_set")
 			continue
 		}
 		if !openAIAccountMatchesLockedPriority(account, req.LockedPriority) {
+			filterStats.exclude("locked_priority")
 			continue
 		}
 		if s != nil && s.service != nil && !parentHealthyForShadow(account, s.service.parentAccountLookup(ctx)) {
+			filterStats.exclude("shadow_parent_unhealthy")
 			continue
 		}
 		if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
+			filterStats.exclude("quota_auto_pause")
 			continue
 		}
 		if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+			filterStats.exclude("transport_incompatible")
 			continue
 		}
 		if s.shouldIncludeOpenAIAccountInPriorityBase(ctx, account, req.RequestedModel) {
 			baseFiltered = append(baseFiltered, account)
 		}
-		if !s.isAccountRequestCompatible(ctx, account, req) {
+		if compatible, reason := s.isAccountRequestCompatibleReason(ctx, account, req); !compatible {
+			filterStats.exclude(reason)
 			continue
 		}
 		filtered = append(filtered, account)
@@ -1657,6 +1774,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		filtered = nil
 	}
 	if len(filtered) == 0 {
+		logOpenAISelectionFilterStats(filterStats, "filtered_empty")
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false)
 	}
 
@@ -1773,34 +1891,49 @@ func (s *defaultOpenAIAccountScheduler) shouldIncludeOpenAIAccountInPriorityBase
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) bool {
+	compatible, _ := s.isAccountRequestCompatibleReason(ctx, account, req)
+	return compatible
+}
+
+func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) (bool, string) {
 	if account == nil {
-		return false
+		return false, "account_nil"
 	}
 	if !openAIAccountMatchesLockedPriority(account, req.LockedPriority) {
-		return false
+		return false, "locked_priority"
 	}
 	if s != nil && s.service != nil && s.service.isOpenAIAccountRuntimeBlocked(account) {
-		return false
+		return false, "runtime_blocked"
+	}
+	if s != nil && s.service != nil && s.service.isOpenAIProxyStreamQuarantined(account) {
+		return false, "proxy_stream_quarantined"
 	}
 	if s != nil && s.service != nil && !parentHealthyForShadow(account, s.service.parentAccountLookup(ctx)) {
-		return false
+		return false, "shadow_parent_unhealthy"
 	}
 	// Quota auto-pause must be evaluated during the initial filter too. Without it the
 	// TopK candidate pool can be filled with paused accounts and the later fresh/DB
 	// rechecks won't reach healthy accounts that fell outside TopK — manifesting as
 	// "no available accounts" even though healthy ones exist.
-	if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
-		return false
+	if paused, decision := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
+		reason := "quota_auto_pause"
+		if decision.window != "" {
+			reason += "_" + decision.window
+		}
+		return false, reason
 	}
 	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
-		return false
+		return false, "model_not_supported"
 	}
 	if req.GroupID != nil && s != nil && s.service != nil &&
 		s.service.needsUpstreamChannelRestrictionCheck(ctx, req.GroupID) &&
 		s.service.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
-		return false
+		return false, "channel_upstream_restricted"
 	}
-	return accountSupportsOpenAICapabilities(ctx, account, req.RequestedModel, req.RequiredCapability, req.RequiredImageCapability)
+	if !accountSupportsOpenAICapabilities(ctx, account, req.RequestedModel, req.RequiredCapability, req.RequiredImageCapability) {
+		return false, "capability_mismatch"
+	}
+	return true, ""
 }
 
 func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {
@@ -2202,6 +2335,7 @@ func (s *OpenAIGatewayService) selectRequiredOpenAIAccount(
 		!s.isOpenAIAccountTransportCompatible(account, requiredTransport) ||
 		!accountSupportsOpenAICapabilities(ctx, account, requestedModel, requiredCapability, requiredImageCapability) ||
 		s.isOpenAIAccountRuntimeBlocked(account) ||
+		s.isOpenAIProxyStreamQuarantined(account) ||
 		!s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
 		return nil, decision, ErrNoAvailableAccounts
 	}

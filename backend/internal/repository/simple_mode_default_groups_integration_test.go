@@ -33,6 +33,49 @@ func TestEnsureSimpleModeDefaultGroups_CreatesMissingDefaults(t *testing.T) {
 	assertGroupExists(service.PlatformGemini + "-default")
 	assertGroupExists(service.PlatformAntigravity + "-default-1")
 	assertGroupExists(service.PlatformAntigravity + "-default-2")
+
+	grokDefault, err := client.Group.Query().
+		Where(group.NameEQ(service.PlatformGrok+"-default"), group.DeletedAtIsNil()).
+		Only(seedCtx)
+	require.NoError(t, err)
+	require.True(t, grokDefault.AllowImageGeneration)
+}
+
+func TestEnsureSimpleModeDefaultGroups_BackfillsOnlyManagedGrokDefault(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	client := tx.Client()
+	seedCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	managed, err := client.Group.Create().
+		SetName(service.PlatformGrok + "-default").
+		SetDescription(simpleModeDefaultGroupDescription).
+		SetPlatform(service.PlatformGrok).
+		SetStatus(service.StatusActive).
+		SetSubscriptionType(service.SubscriptionTypeStandard).
+		SetRateMultiplier(1).
+		SetAllowImageGeneration(false).
+		Save(seedCtx)
+	require.NoError(t, err)
+	custom, err := client.Group.Create().
+		SetName("custom-grok-no-images-" + time.Now().Format(time.RFC3339Nano)).
+		SetDescription("user managed").
+		SetPlatform(service.PlatformGrok).
+		SetStatus(service.StatusActive).
+		SetSubscriptionType(service.SubscriptionTypeStandard).
+		SetRateMultiplier(1).
+		SetAllowImageGeneration(false).
+		Save(seedCtx)
+	require.NoError(t, err)
+
+	require.NoError(t, ensureSimpleModeDefaultGroups(seedCtx, client))
+	managed, err = client.Group.Get(seedCtx, managed.ID)
+	require.NoError(t, err)
+	require.True(t, managed.AllowImageGeneration)
+	custom, err = client.Group.Get(seedCtx, custom.ID)
+	require.NoError(t, err)
+	require.False(t, custom.AllowImageGeneration)
 }
 
 func TestEnsureSimpleModeDefaultGroups_IgnoresSoftDeletedGroups(t *testing.T) {

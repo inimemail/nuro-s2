@@ -442,6 +442,12 @@ gateway:
     fallback_error_threshold: 2
     fallback_window_seconds: 60
     fallback_ttl_seconds: 600
+  openai_proxy_stream_circuit:
+    enabled: true
+    failure_threshold: 2
+    window_seconds: 60
+    ttl_seconds: 600
+    max_entries: 4096
   # HTTP upstream connection pool settings (HTTP/2 + multi-proxy scenario defaults)
   # HTTP 上游连接池配置（HTTP/2 + 多代理场景默认值）
   # Max idle connections across all hosts
@@ -974,6 +980,8 @@ database:
 # Redis 配置
 # =============================================================================
 redis:
+  # Optional Redis ACL username. Empty preserves password-only authentication.
+  username: ""
   # Redis host address
   # Redis 主机地址
   host: "localhost"

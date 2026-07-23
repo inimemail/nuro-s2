@@ -203,6 +203,12 @@ func (s *OpenAIGatewayService) claimStickySessionAccountID(ctx context.Context, 
 	}
 	claimer, ok := s.cache.(openAIStickySessionClaimer)
 	if !ok {
+		// Preserve the binding even for legacy cache implementations that do not
+		// expose an atomic SETNX helper. Production Redis caches implement the
+		// interface above, so this compatibility read is off the hot path there.
+		if existing, getErr := s.getStickySessionAccountID(ctx, groupID, sessionHash); getErr == nil && existing > 0 {
+			return nil
+		}
 		return s.setStickySessionAccountID(ctx, groupID, sessionHash, accountID, ttl)
 	}
 	claimed, err := claimer.SetSessionAccountIDIfAbsent(ctx, derefGroupID(groupID), primaryKey, accountID, ttl)

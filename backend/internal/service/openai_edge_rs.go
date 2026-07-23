@@ -74,9 +74,11 @@ type OpenAIEdgePlan struct {
 	PreambleFlush bool `json:"preamble_flush"`
 	// PromptCacheCreationOptimizationMode carries the account policy for edge-rs
 	// WS turns. Applied reports whether the current outgoing body was rewritten.
-	PromptCacheCreationOptimizationMode    string `json:"prompt_cache_creation_optimization_mode,omitempty"`
-	PromptCacheCreationOptimizationModel   string `json:"prompt_cache_creation_optimization_model,omitempty"`
-	PromptCacheCreationOptimizationApplied bool   `json:"prompt_cache_creation_optimization_applied,omitempty"`
+	PromptCacheCreationOptimizationMode    string                   `json:"prompt_cache_creation_optimization_mode,omitempty"`
+	PromptCacheCreationOptimizationModel   string                   `json:"prompt_cache_creation_optimization_model,omitempty"`
+	PromptCacheCreationOptimizationApplied bool                     `json:"prompt_cache_creation_optimization_applied,omitempty"`
+	MaxReasoningEffort                     string                   `json:"max_reasoning_effort,omitempty"`
+	ReasoningEffortMappings                []ReasoningEffortMapping `json:"reasoning_effort_mappings,omitempty"`
 }
 
 type OpenAIEdgeRetryRequest struct {
@@ -124,6 +126,7 @@ type OpenAIEdgeCompleteRequest struct {
 	LeaseID             string      `json:"lease_id,omitempty"`
 	AccountID           int64       `json:"account_id,omitempty"`
 	Success             bool        `json:"success"`
+	FailureClass        string      `json:"failure_class,omitempty"`
 	ClientDisconnected  bool        `json:"client_disconnected,omitempty"`
 	RequestID           string      `json:"request_id,omitempty"`
 	ResponseID          string      `json:"response_id,omitempty"`
@@ -154,6 +157,7 @@ type OpenAIEdgeAbortRequest struct {
 	LeaseID            string `json:"lease_id,omitempty"`
 	AccountID          int64  `json:"account_id,omitempty"`
 	Reason             string `json:"reason,omitempty"`
+	FailureClass       string `json:"failure_class,omitempty"`
 	ClientDisconnected bool   `json:"client_disconnected,omitempty"`
 	RelayAttempted     bool   `json:"relay_attempted,omitempty"`
 	FallbackToGo       bool   `json:"fallback_to_go,omitempty"`

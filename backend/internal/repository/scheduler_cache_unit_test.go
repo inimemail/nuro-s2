@@ -336,3 +336,56 @@ func TestSchedulerCacheWriteAccountsDeletesStaleUnencodableAccount(t *testing.T)
 	_, err = client.Get(context.Background(), metaKey).Result()
 	require.ErrorIs(t, err, redis.Nil)
 }
+
+func TestSchedulerCacheLastUsedSideKeyIsMonotonic(t *testing.T) {
+	miniRedis := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: miniRedis.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cache := newSchedulerCacheWithChunkSizes(client, 128, 256).(*schedulerCache)
+	ctx := context.Background()
+	base := time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC)
+	account := &service.Account{ID: 401, Platform: service.PlatformOpenAI, LastUsedAt: &base}
+	require.NoError(t, cache.SetAccount(ctx, account))
+
+	newer := base.Add(time.Minute)
+	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{account.ID: newer}))
+	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{account.ID: base.Add(-time.Minute)}))
+
+	got, err := cache.GetAccount(ctx, account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.NotNil(t, got.LastUsedAt)
+	require.Equal(t, newer, *got.LastUsedAt)
+}
+
+func TestSchedulerCacheLastUsedDoesNotRecreateDeletedAccount(t *testing.T) {
+	miniRedis := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: miniRedis.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cache := newSchedulerCacheWithChunkSizes(client, 128, 256).(*schedulerCache)
+	ctx := context.Background()
+	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{402: time.Now().UTC()}))
+
+	exists, err := client.Exists(ctx, schedulerLastUsedKey("402")).Result()
+	require.NoError(t, err)
+	require.Zero(t, exists)
+}
+
+func TestSchedulerCacheDeleteAccountRemovesLastUsedSideKey(t *testing.T) {
+	miniRedis := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: miniRedis.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cache := newSchedulerCacheWithChunkSizes(client, 128, 256).(*schedulerCache)
+	ctx := context.Background()
+	account := &service.Account{ID: 403, Platform: service.PlatformOpenAI}
+	require.NoError(t, cache.SetAccount(ctx, account))
+	require.NoError(t, cache.UpdateLastUsed(ctx, map[int64]time.Time{account.ID: time.Now().UTC()}))
+	require.NoError(t, cache.DeleteAccount(ctx, account.ID))
+
+	exists, err := client.Exists(ctx, schedulerAccountKey("403"), schedulerAccountMetaKey("403"), schedulerLastUsedKey("403")).Result()
+	require.NoError(t, err)
+	require.Zero(t, exists)
+}

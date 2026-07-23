@@ -490,6 +490,30 @@ export interface PaginationConfig {
 
 export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok'
 
+export interface OllamaCloudUsageWindow {
+  used_percent: number
+  reset_text?: string
+}
+export interface OllamaCloudUsageSnapshot {
+  status: string
+  data?: { plan?: string; five_hour?: OllamaCloudUsageWindow; seven_day?: OllamaCloudUsageWindow; models?: Array<{ model: string; window: string; requests: number }> }
+  fetched_at?: string
+  last_attempt_at: string
+  next_refresh_at: string
+  failure_count?: number
+  http_status?: number
+  last_error?: string
+}
+export interface OllamaCloudUsageState {
+  account_id: number
+  eligible: boolean
+  configured: boolean
+  auto_refresh_enabled: boolean
+  encryption_key_configured: boolean
+  snapshot?: OllamaCloudUsageSnapshot
+}
+export interface OllamaCloudUsageSettings { enabled: boolean; interval_minutes: number }
+
 export type SubscriptionType = 'standard' | 'subscription'
 
 export interface OpenAIMessagesDispatchModelConfig {
@@ -497,6 +521,11 @@ export interface OpenAIMessagesDispatchModelConfig {
   sonnet_mapped_model?: string
   haiku_mapped_model?: string
   exact_model_mappings?: Record<string, string>
+}
+
+export interface ReasoningEffortMapping {
+  from: string
+  to: string
 }
 
 export interface Group {
@@ -507,6 +536,8 @@ export interface Group {
   rate_multiplier: number
   upstream_billing_guard_max_multiplier?: number | null
   rpm_limit?: number // Group-level RPM cap (0 = unlimited); overrides user-level rpm_limit when set
+  max_reasoning_effort?: string
+  reasoning_effort_mappings?: ReasoningEffortMapping[]
   is_exclusive: boolean
   status: 'active' | 'inactive'
   subscription_type: SubscriptionType
@@ -681,6 +712,8 @@ export interface CreateGroupRequest {
   model_routing?: Record<string, number[]> | null
   model_routing_enabled?: boolean
   rpm_limit?: number
+  max_reasoning_effort?: string
+  reasoning_effort_mappings?: ReasoningEffortMapping[]
   require_oauth_only?: boolean
   require_privacy_set?: boolean
   strict_model_priority_on_model_mismatch?: boolean
@@ -731,6 +764,8 @@ export interface UpdateGroupRequest {
   model_routing?: Record<string, number[]> | null
   model_routing_enabled?: boolean
   rpm_limit?: number
+  max_reasoning_effort?: string
+  reasoning_effort_mappings?: ReasoningEffortMapping[]
   require_oauth_only?: boolean
   require_privacy_set?: boolean
   strict_model_priority_on_model_mismatch?: boolean

@@ -142,6 +142,8 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 		ModelsListConfig:                   GroupModelsListConfig{Enabled: source.ModelsListConfig.Enabled, Models: append([]string(nil), source.ModelsListConfig.Models...)},
 		StrictModelPriorityOnModelMismatch: source.StrictModelPriorityOnModelMismatch,
 		RPMLimit:                           source.RPMLimit,
+		MaxReasoningEffort:                 source.MaxReasoningEffort,
+		ReasoningEffortMappings:            append([]ReasoningEffortMapping(nil), source.ReasoningEffortMappings...),
 	}
 }
 
@@ -172,6 +174,7 @@ func (s *adminServiceImpl) DuplicateGroup(ctx context.Context, id int64, actorSc
 		return nil, errors.New("group duplicate repository is not configured")
 	}
 	duplicate := cloneGroupForDuplicate(source, duplicateGroupOperationID(id, actorScope, operationKey))
+	sanitizeGroupReasoningEffortPolicy(duplicate)
 	for copyNumber := 1; ; copyNumber++ {
 		duplicate.Name = duplicateGroupName(source.Name, copyNumber)
 		duplicate.ID = 0

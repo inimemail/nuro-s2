@@ -2403,3 +2403,12 @@ func TestUpdate_MappingConflict(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "MAPPING_PATTERN_CONFLICT")
 }
+
+func TestChannelPricingNormalizesClaudeDotsAndHyphens(t *testing.T) {
+	pricing := &ChannelModelPricing{Models: []string{"claude-sonnet-4-6", "claude-opus-4.*"}}
+	cache := newEmptyChannelCache()
+	expandPricingToCache(cache, &Channel{ModelPricing: []ChannelModelPricing{*pricing}}, 7, PlatformAnthropic)
+
+	require.NotNil(t, lookupPricingAcrossPlatforms(cache, 7, PlatformAnthropic, "claude-sonnet-4.6"))
+	require.NotNil(t, lookupPricingAcrossPlatforms(cache, 7, PlatformAnthropic, "claude-opus-4.7"))
+}

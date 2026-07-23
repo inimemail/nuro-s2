@@ -1307,6 +1307,96 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_PoolSoftCooldownFallsFo
 	require.Equal(t, 2, decision.CandidateCount)
 }
 
+func TestOpenAIGatewayService_LegacySchedulerProxyQuarantinePreservesSticky(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10117)
+	primaryProxyID := int64(501)
+	backupProxyID := int64(502)
+	accounts := []Account{
+		{
+			ID: 37071, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1,
+			GroupIDs: []int64{groupID}, ProxyID: &primaryProxyID,
+		},
+		{
+			ID: 37072, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 2,
+			GroupIDs: []int64{groupID}, ProxyID: &backupProxyID,
+		},
+	}
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{
+		"openai:proxy_quarantine_sticky": 37071,
+	}}
+	circuit := newOpenAIProxyStreamCircuit(openAIProxyStreamCircuitSettings{
+		enabled: true, failureThreshold: 1, failureWindow: time.Minute,
+		quarantineTTL: time.Minute, maxEntries: 8,
+	})
+	circuit.recordFailure(primaryProxyID, time.Now())
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:       cache,
+		cfg: &config.Config{Gateway: config.GatewayConfig{
+			Scheduling: config.GatewaySchedulingConfig{LoadBatchEnabled: false},
+		}},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	svc.openaiProxyStreamCircuit = circuit
+	svc.openaiProxyStreamCircuitOnce.Do(func() {})
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", "proxy_quarantine_sticky", "gpt-5.1", nil,
+		OpenAIUpstreamTransportAny, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(37072), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, int64(37071), cache.sessionBindings["openai:proxy_quarantine_sticky"])
+}
+
+func TestOpenAIGatewayService_LegacySchedulerSoftCooldownPreservesSticky(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10118)
+	accounts := []Account{
+		{
+			ID: 37081, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1,
+			GroupIDs: []int64{groupID}, Credentials: map[string]any{"pool_mode": true},
+		},
+		{
+			ID: 37082, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 2,
+			GroupIDs: []int64{groupID},
+		},
+	}
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{
+		"openai:soft_cooldown_sticky": 37081,
+	}}
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:       cache,
+		cfg: &config.Config{Gateway: config.GatewayConfig{
+			Scheduling: config.GatewaySchedulingConfig{LoadBatchEnabled: true},
+		}},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	svc.openaiPoolSoftCooldownUntil.Store(int64(37081), time.Now().Add(time.Minute))
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", "soft_cooldown_sticky", "gpt-5.1", nil,
+		OpenAIUpstreamTransportAny, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(37082), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, int64(37081), cache.sessionBindings["openai:soft_cooldown_sticky"])
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_UsesCandidateSlotArbiter(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

@@ -2226,6 +2226,13 @@ export default {
         rpmLimit: 'Requests Per Minute (RPM)',
         rpmLimitPlaceholder: '0 = unlimited',
         rpmLimitHint: 'Max requests per minute for each user in this group; 0 = unlimited. Once set, it takes over per-user rate limiting in this group (overrides the user-level rpm_limit fallback).'
+        ,maxReasoningEffort: 'Maximum reasoning effort'
+        ,maxReasoningEffortUnlimited: 'Unlimited'
+        ,maxReasoningEffortHint: 'Only applies to OpenAI groups; requests above this level are capped.'
+        ,reasoningEffortFrom: 'From'
+        ,reasoningEffortTo: 'To'
+        ,addReasoningEffortMapping: 'Add reasoning mapping'
+        ,reasoningEffortMappingInvalid: 'Reasoning mappings must use supported values with unique non-empty source levels.'
       },
       enterGroupName: 'Enter group name',
       optionalDescription: 'Optional description',
@@ -6445,6 +6452,8 @@ export default {
         cancelRateLimitWindowModeFixed: 'Fixed',
         alipayForceQRCode: 'Force Alipay QR Code',
         alipayForceQRCodeHint: 'When enabled, mobile Alipay users always see a QR code instead of being redirected to the mobile payment page',
+        alipayMobilePrecreate: 'Alipay mobile app deep link',
+        alipayMobilePrecreateHint: 'Use official precreate QR payload on mobile so the Alipay app can open it directly',
         helpText: 'Help Text',
         helpImageUrl: 'Help Image URL',
         manageProviders: 'Manage Providers',

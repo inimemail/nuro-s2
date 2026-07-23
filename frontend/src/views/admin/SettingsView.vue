@@ -143,6 +143,13 @@
                       {{ adminApiKeyMasked }}
                     </code>
                   </div>
+                  <div>
+                    <label class="input-label">{{ t("admin.settings.payment.alipayMobilePrecreate") }}</label>
+                    <div class="flex items-center gap-2">
+                      <input v-model="form.payment_alipay_mobile_precreate_deep_link" type="checkbox" class="h-4 w-4" />
+                      <span class="text-sm text-gray-500 dark:text-gray-400">{{ t("admin.settings.payment.alipayMobilePrecreateHint") }}</span>
+                    </div>
+                  </div>
                   <div class="flex gap-2">
                     <button
                       type="button"
@@ -8219,6 +8226,7 @@ const form = reactive<SettingsForm>({
   payment_cancel_rate_limit_unit: "day",
   payment_cancel_rate_limit_window_mode: "rolling",
   payment_alipay_force_qrcode: false,
+  payment_alipay_mobile_precreate_deep_link: false,
   table_default_page_size: tablePageSizeDefault,
   table_page_size_options: [10, 20, 50, 100],
   custom_menu_items: [] as Array<{
@@ -9764,6 +9772,7 @@ async function saveSettings() {
       payment_cancel_rate_limit_window_mode:
         form.payment_cancel_rate_limit_window_mode,
       payment_alipay_force_qrcode: form.payment_alipay_force_qrcode,
+      payment_alipay_mobile_precreate_deep_link: form.payment_alipay_mobile_precreate_deep_link,
       openai_advanced_scheduler_enabled: form.openai_advanced_scheduler_enabled,
       // 余额、订阅到期与账号限额通知
       balance_low_notify_enabled: form.balance_low_notify_enabled,

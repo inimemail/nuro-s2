@@ -405,12 +405,14 @@ type OpenAIGatewayService struct {
 	openaiWSStateStoreOnce        sync.Once
 	openaiAccountStatsOnce        sync.Once
 	openaiSchedulerOnce           sync.Once
+	openaiProxyStreamCircuitOnce  sync.Once
 	openaiWSPassthroughDialerOnce sync.Once
 	openaiWSPool                  *openAIWSConnPool
 	openaiWSStateStore            OpenAIWSStateStore
 	openaiScheduler               OpenAIAccountScheduler
 	openaiWSPassthroughDialer     openAIWSClientDialer
 	openaiAccountStats            *openAIAccountRuntimeStats
+	openaiProxyStreamCircuit      *openAIProxyStreamCircuit
 	openaiAccountHealthRedis      *redis.Client
 
 	openaiWSFallbackUntil                        sync.Map // key: int64(accountID), value: time.Time
@@ -2237,6 +2239,12 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
 		return nil
 	}
+	// Pool soft-cooldown, runtime block and the process-local proxy circuit are
+	// reversible. Keep the sticky binding so cache affinity can recover after
+	// the temporary condition clears; this request falls through normally.
+	if openAIStickyAccountTemporarilyUnavailable(s, account, groupID) {
+		return nil
+	}
 
 	// 检查账号是否需要清理粘性会话
 	// Check if sticky session should be cleared
@@ -2251,12 +2259,19 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		return nil
 	}
 	if s.isOpenAIAccountRuntimeBlocked(account) {
-		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		// Runtime blocks are reversible; preserve the original sticky binding so
+		// recovery does not lose cache affinity.
 		return nil
 	}
+	stickyAccount := account
 	account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
 	if account == nil {
-		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		if !openAIStickyAccountTemporarilyUnavailable(s, stickyAccount, groupID) {
+			_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		}
+		return nil
+	}
+	if openAIStickyAccountTemporarilyUnavailable(s, account, groupID) {
 		return nil
 	}
 	if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
@@ -2520,6 +2535,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					stickyBusyPreserve = true
 					goto openAIGroupGuardFallback
 				}
+				if openAIStickyAccountTemporarilyUnavailable(s, account, groupID) {
+					stickyBusyPreserve = true
+					goto openAIGroupGuardFallback
+				}
 				isPromptCacheAffinity := IsOpenAIPromptCacheBoostAffinitySessionHash(sessionHash)
 				clearSticky := shouldClearStickySession(account, requestedModel)
 				if clearSticky {
@@ -2534,12 +2553,15 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				}
 				if !clearSticky && openAIAccountMatchesLockedPriority(account, lockedPriority) &&
 					isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform) {
+					stickyAccount := account
 					account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
 					if account == nil {
-						if sessionHash != "" {
+						if sessionHash != "" && !openAIStickyAccountTemporarilyUnavailable(s, stickyAccount, groupID) {
 							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						}
 					} else if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
+						stickyBusyPreserve = true
+					} else if openAIStickyAccountTemporarilyUnavailable(s, account, groupID) {
 						stickyBusyPreserve = true
 					} else if !s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
 						if sessionHash != "" {
@@ -2619,6 +2641,9 @@ openAIGroupGuardFallback:
 			continue
 		}
 		if s.isOpenAIAccountRuntimeBlocked(acc) {
+			continue
+		}
+		if s.isOpenAIProxyStreamQuarantined(acc) {
 			continue
 		}
 		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel, requireCompact) {
@@ -3040,6 +3065,9 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 	if s.isOpenAIAccountRuntimeBlocked(fresh) {
 		return nil
 	}
+	if s.isOpenAIProxyStreamQuarantined(fresh) {
+		return nil
+	}
 	return fresh
 }
 
@@ -3067,6 +3095,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 			return nil
 		}
 		if s.isOpenAIAccountRuntimeBlocked(account) {
+			return nil
+		}
+		if s.isOpenAIProxyStreamQuarantined(account) {
 			return nil
 		}
 		return account
@@ -3102,6 +3133,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		return nil
 	}
 	if s.isOpenAIAccountRuntimeBlocked(latest) {
+		return nil
+	}
+	if s.isOpenAIProxyStreamQuarantined(latest) {
 		return nil
 	}
 	return latest
@@ -6605,6 +6639,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 passthroughScanDone:
 	if err := passthroughDocumentScanner.Err(); err != nil {
 		if terminalEventType != "" && !sawFailedEvent {
+			if neutralTerminalEventType == "" && !clientDisconnected {
+				s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
+			}
 			commitFirstTokenTimeoutGuardSample()
 			return resultWithUsage(), nil
 		}
@@ -6629,6 +6666,7 @@ passthroughScanDone:
 		if clientDisconnected {
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete after disconnect: %w", err)
 		}
+		s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamDisconnect, true, false, err)
 		logger.LegacyPrintf("service.openai_gateway",
 			"[OpenAI passthrough] 流读取异常中断: account=%d request_id=%s err=%v",
 			account.ID,
@@ -6650,7 +6688,11 @@ passthroughScanDone:
 			return resultWithUsage(),
 				s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, nil, "OpenAI stream ended before a terminal event")
 		}
+		s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamDisconnect, true, false, errors.New("stream ended before terminal event"))
 		return resultWithUsage(), errors.New("stream usage incomplete: missing terminal event")
+	}
+	if !clientDisconnected && terminalEventType != "" && !sawFailedEvent && neutralTerminalEventType == "" {
+		s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
 	}
 	commitFirstTokenTimeoutGuardSample()
 
@@ -6685,6 +6727,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 			OpenAIUsage: usage, usage: usage,
 			responseID: extractOpenAIResponseIDFromJSONBytes(body), terminalEventType: "response.failed",
 		}, errors.New("upstream response failed")
+	}
+	if account != nil && account.IsGrok() {
+		body, err = restoreGrokClientToolPayload(c, body)
+		if err != nil {
+			return nil, fmt.Errorf("restore Grok client tool response: %w", err)
+		}
 	}
 	if failoverErr := s.newOpenAIPoolEmbeddedFailoverError(ctx, c, account, resp, body, mappedModel, true); failoverErr != nil {
 		return nil, failoverErr
@@ -6867,6 +6915,13 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 	if !responseOK {
 		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream terminal event did not include a response object")
 	}
+	if account != nil && account.IsGrok() && isOpenAIResponsesCompactPath(c) {
+		converted, convertErr := convertGrokResponseToOpenAICompact(finalResponse)
+		if convertErr != nil {
+			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream compact response could not be converted")
+		}
+		finalResponse = converted
+	}
 	if openAIPassthroughResponseIsUnsafe(finalResponse) {
 		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, safeUpstreamErrorMessage)
 	}
@@ -6893,6 +6948,13 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
 	body = s.correctToolCallsInResponseBody(body)
+	if account != nil && account.IsGrok() {
+		restoredGrokBody, grokErr := restoreGrokClientToolPayload(c, body)
+		if grokErr != nil {
+			return nil, fmt.Errorf("restore Grok client tool response: %w", grokErr)
+		}
+		body = restoredGrokBody
+	}
 	restoredBody, restoreErr := restoreOpenAIResponsesNamespacePayload(c, body)
 	if restoreErr != nil {
 		return nil, fmt.Errorf("restore OpenAI namespace response: %w", restoreErr)
@@ -7813,6 +7875,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					"OpenAI stream ended before a terminal event",
 				)
 			}
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamDisconnect, true, false, errors.New("stream ended before terminal event"))
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete: missing terminal event")
 		}
 		if sawFailedEvent && !sawCyberPolicyEvent {
@@ -7829,6 +7892,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			}
 		}
 		commitFirstTokenTimeoutGuardSample()
+		if !clientDisconnected && !sawFailedEvent && neutralTerminalEventType == "" {
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
+		}
 		return resultWithUsage(), nil
 	}
 	handleScanErr := func(scanErr error) (*openaiStreamingResult, error, bool) {
@@ -7836,6 +7902,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			return nil, nil, false
 		}
 		if terminalEventType != "" && !sawFailedEvent {
+			if neutralTerminalEventType == "" && !clientDisconnected {
+				s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
+			}
 			logger.LegacyPrintf("service.openai_gateway", "Upstream scan ended after terminal event: %v", scanErr)
 			commitFirstTokenTimeoutGuardSample()
 			return resultWithUsage(), nil, true
@@ -7864,6 +7933,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		if clientDisconnected {
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete after disconnect: %w", scanErr), true
 		}
+		s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamDisconnect, true, false, scanErr)
 		sendErrorEvent("stream_read_error")
 		return resultWithUsage(), fmt.Errorf("stream read error: %w", scanErr), true
 	}
@@ -7963,6 +8033,13 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				dataBytes = restoredData
 				data = string(restoredData)
 				line = "data: " + data
+			}
+			if account != nil && account.IsGrok() {
+				if restoredData, restoreErr := restoreGrokClientToolPayload(c, dataBytes); restoreErr == nil {
+					dataBytes = restoredData
+					data = string(restoredData)
+					line = "data: " + data
+				}
 			}
 			startsFirstToken := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
 			startsRealOutput := openAIStreamDataStartsRealOutput(data, eventType)
@@ -8455,9 +8532,32 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 		return OpenAIUsage{}, false
 	}
 	if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, "usage")); ok {
+		mergeHostedImageGenToolUsage(gjson.GetBytes(body, "tool_usage.image_gen"), &usage)
 		return usage, true
 	}
-	return openAIUsageFromGJSON(gjson.GetBytes(body, "response.usage"))
+	if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, "response.usage")); ok {
+		mergeHostedImageGenToolUsage(gjson.GetBytes(body, "response.tool_usage.image_gen"), &usage)
+		return usage, true
+	}
+	return OpenAIUsage{}, false
+}
+
+func mergeHostedImageGenToolUsage(imageGen gjson.Result, usage *OpenAIUsage) {
+	if usage == nil || !imageGen.Exists() || !imageGen.IsObject() {
+		return
+	}
+	if usage.ImageOutputTokens == 0 {
+		usage.ImageOutputTokens = firstPositiveGJSONInt(
+			imageGen.Get("output_tokens_details.image_tokens"),
+			imageGen.Get("completion_tokens_details.image_tokens"),
+		)
+	}
+	if usage.ImageInputTokens == 0 {
+		usage.ImageInputTokens = firstPositiveGJSONInt(
+			imageGen.Get("input_tokens_details.image_tokens"),
+			imageGen.Get("prompt_tokens_details.image_tokens"),
+		)
+	}
 }
 
 func isOpenAISuccessJSONResponse(resp *http.Response, body []byte) bool {
@@ -8569,6 +8669,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if isEventStreamResponse(resp.Header) {
 		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
 	}
+	if account != nil && account.IsGrok() && isOpenAIResponsesCompactPath(c) {
+		body, err = convertGrokResponseToOpenAICompact(body)
+		if err != nil {
+			return nil, fmt.Errorf("convert Grok compact response: %w", err)
+		}
+	}
 	if openAIResponseTerminalEventTypeFromBody(body) == "response.failed" {
 		usageValue, _ := extractOpenAIUsageFromJSONBytes(body)
 		upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
@@ -8627,6 +8733,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	// Replace model in response if needed
 	if originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
+	}
+	if account != nil && account.IsGrok() {
+		body, err = restoreGrokClientToolPayload(c, body)
+		if err != nil {
+			return nil, fmt.Errorf("restore Grok client tool response: %w", err)
+		}
 	}
 	body, err = restoreOpenAIResponsesNamespacePayload(c, body)
 	if err != nil {
@@ -8713,6 +8825,13 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 	if !responseOK {
 		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream terminal event did not include a response object")
 	}
+	if account != nil && account.IsGrok() && isOpenAIResponsesCompactPath(c) {
+		converted, convertErr := convertGrokResponseToOpenAICompact(finalResponse)
+		if convertErr != nil {
+			return nil, s.writeOpenAINonStreamingProtocolError(resp, c, "Upstream compact response could not be converted")
+		}
+		finalResponse = converted
+	}
 	if openAIPassthroughResponseIsUnsafe(finalResponse) {
 		return nil, s.writeOpenAINonStreamingProtocolError(resp, c, safeUpstreamErrorMessage)
 	}
@@ -8737,6 +8856,13 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
 	}
 	body = s.correctToolCallsInResponseBody(body)
+	if account != nil && account.IsGrok() {
+		restoredGrokBody, grokErr := restoreGrokClientToolPayload(c, body)
+		if grokErr != nil {
+			return nil, fmt.Errorf("restore Grok client tool response: %w", grokErr)
+		}
+		body = restoredGrokBody
+	}
 	restoredBody, restoreErr := restoreOpenAIResponsesNamespacePayload(c, body)
 	if restoreErr != nil {
 		return nil, fmt.Errorf("restore OpenAI namespace response: %w", restoreErr)
@@ -10478,6 +10604,25 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 		}
 		normalized = next
 		changed = true
+	}
+
+	if input := gjson.GetBytes(normalized, "input"); input.Exists() {
+		switch {
+		case input.Type == gjson.String:
+			next, err := sjson.SetBytes(normalized, "input", openAIResponsesInputListFromString(input.String()))
+			if err != nil {
+				return body, false, fmt.Errorf("normalize passthrough body input string: %w", err)
+			}
+			normalized = next
+			changed = true
+		case input.Type == gjson.JSON && !input.IsArray():
+			next, err := sjson.SetRawBytes(normalized, "input", []byte("["+input.Raw+"]"))
+			if err != nil {
+				return body, false, fmt.Errorf("normalize passthrough body input object: %w", err)
+			}
+			normalized = next
+			changed = true
+		}
 	}
 
 	if compact {

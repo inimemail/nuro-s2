@@ -1176,6 +1176,25 @@ func TestOpenAIEdgeCachePolicyCompatibilityFailureIsLeaseScoped(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeCircuitObservesDisconnectEvenWithIncompleteTerminal(t *testing.T) {
+	req := service.OpenAIEdgeCompleteRequest{
+		FailureClass:       "upstream_disconnect",
+		TerminalEventType:  "response.incomplete",
+		ClientDisconnected: false,
+	}
+	if !openAIEdgeShouldRecordCircuitOutcome(req, false, false) {
+		t.Fatal("an upstream disconnect must reach the proxy circuit even with an incomplete terminal event")
+	}
+	req.ClientDisconnected = true
+	if openAIEdgeShouldRecordCircuitOutcome(req, false, false) {
+		t.Fatal("client cancellation must remain neutral for the proxy circuit")
+	}
+	req.ClientDisconnected = false
+	if openAIEdgeShouldRecordCircuitOutcome(req, false, true) {
+		t.Fatal("cache policy compatibility fallback must remain neutral for the proxy circuit")
+	}
+}
+
 func TestOpenAIEdgeRealFirstTokenMSPrefersRealSample(t *testing.T) {
 	perceived := int64(25)
 	real := int64(240)
