@@ -9,7 +9,7 @@ import (
 )
 
 const openAIPromptCacheExplicitMinStaticBytes = 4 * 1024
-const openAIPromptCacheCreationOptimizationTTL = "24h"
+const openAIPromptCacheCreationOptimizationTTL = "30m"
 
 type openAIPromptCacheCreationOptimizationResult struct {
 	Applied                     bool
@@ -117,11 +117,16 @@ func applyOpenAIPromptCacheCreationOptimizationMapWithExplicitIntent(
 	result.Applied = true
 	result.RemovedPromptCacheRetention = removeOpenAIPromptCacheRetention(request)
 	removeOpenAIPromptCacheBreakpoints(request)
-	request["prompt_cache_options"] = map[string]any{
+	mode := account.OpenAIPromptCacheCreationOptimizationMode()
+	promptCacheOptions := map[string]any{
 		"mode": "explicit",
 		"ttl":  openAIPromptCacheCreationOptimizationTTL,
 	}
-	if account.OpenAIPromptCacheCreationOptimizationMode() == OpenAIPromptCacheCreationOptimizationModeReduce {
+	if mode == OpenAIPromptCacheCreationOptimizationModeSuppress {
+		delete(promptCacheOptions, "ttl")
+	}
+	request["prompt_cache_options"] = promptCacheOptions
+	if mode == OpenAIPromptCacheCreationOptimizationModeReduce {
 		if messages, ok := request["messages"].([]any); ok {
 			result.BreakpointInserted = insertOpenAIChatStablePrefixBreakpoint(request, messages)
 		} else if input, ok := request["input"].([]any); ok {

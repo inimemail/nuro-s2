@@ -49,6 +49,7 @@ func TestOpenAIPromptCacheCreationOptimization_IsolatedPerAccount(t *testing.T) 
 	require.True(t, enabledResult.Applied)
 	require.NotEqual(t, body, enabledBody)
 	require.Equal(t, "explicit", gjson.GetBytes(enabledBody, "prompt_cache_options.mode").String())
+	require.False(t, gjson.GetBytes(enabledBody, "prompt_cache_options.ttl").Exists())
 
 	disabledBody, disabledResult, err := applyOpenAIPromptCacheCreationOptimizationBody(disabledAccount, "gpt-5.6-sol", body)
 	require.NoError(t, err)
@@ -70,7 +71,7 @@ func TestOpenAIPromptCacheCreationOptimization_DefaultModeAReducesCacheCreation(
 	require.False(t, result.BreakpointInserted)
 	require.False(t, gjson.GetBytes(updated, "prompt_cache_retention").Exists())
 	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
-	require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
+	require.Equal(t, "30m", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
 }
 
 func TestOpenAIPromptCacheCreationOptimization_NonGPT56IsNoOp(t *testing.T) {
@@ -105,7 +106,8 @@ func TestOpenAIPromptCacheCreationOptimization_PassiveImageNamespaceStillApplies
 	require.NoError(t, err)
 	require.True(t, result.Applied)
 	require.False(t, gjson.GetBytes(updated, "prompt_cache_retention").Exists())
-	require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
+	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
+	require.False(t, gjson.GetBytes(updated, "prompt_cache_options.ttl").Exists())
 }
 
 func TestOpenAIPromptCacheCreationOptimization_UsesIngressIntentBeforeServerToolInjection(t *testing.T) {
@@ -122,6 +124,7 @@ func TestOpenAIPromptCacheCreationOptimization_UsesIngressIntentBeforeServerTool
 	require.NoError(t, err)
 	require.True(t, result.Applied)
 	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
+	require.False(t, gjson.GetBytes(updated, "prompt_cache_options.ttl").Exists())
 	require.True(t, gjson.GetBytes(updated, `tools.#(type=="image_generation")`).Exists())
 
 	textBody := []byte(`{"model":"gpt-5.6-sol","input":"draw it"}`)
@@ -193,7 +196,7 @@ func TestOpenAIPromptCacheCreationOptimization_OAuthEdgeUsesIngressIntentBeforeC
 	require.NoError(t, err)
 	require.True(t, gjson.GetBytes(decoded, `tools.#(type=="image_generation")`).Exists())
 	require.Equal(t, "explicit", gjson.GetBytes(decoded, "prompt_cache_options.mode").String())
-	require.Equal(t, "24h", gjson.GetBytes(decoded, "prompt_cache_options.ttl").String())
+	require.False(t, gjson.GetBytes(decoded, "prompt_cache_options.ttl").Exists())
 	require.False(t, gjson.GetBytes(decoded, "prompt_cache_retention").Exists())
 }
 
@@ -226,7 +229,7 @@ func TestOpenAIPromptCacheCreationOptimization_ExplicitResponsesKeepsKeyAndMarks
 	require.Equal(t, "keep-this-key", got["prompt_cache_key"])
 	require.NotContains(t, got, "prompt_cache_retention")
 	require.Equal(t, "explicit", got["prompt_cache_options"].(map[string]any)["mode"])
-	require.Equal(t, "24h", got["prompt_cache_options"].(map[string]any)["ttl"])
+	require.Equal(t, "30m", got["prompt_cache_options"].(map[string]any)["ttl"])
 	input := got["input"].([]any)
 	developerParts := input[0].(map[string]any)["content"].([]any)
 	require.Equal(t, "explicit", developerParts[0].(map[string]any)["prompt_cache_breakpoint"].(map[string]any)["mode"])
@@ -236,7 +239,7 @@ func TestOpenAIPromptCacheCreationOptimization_ExplicitResponsesKeepsKeyAndMarks
 
 func TestOpenAIPromptCacheCreationOptimization_SuppressNeverAddsStablePrefixBreakpoint(t *testing.T) {
 	stable := strings.Repeat("stable developer policy ", 260)
-	body := []byte(`{"model":"gpt-5.6-sol","prompt_cache_retention":"24h","input":[{"role":"developer","content":"` + stable + `","prompt_cache_breakpoint":{"mode":"explicit"}},{"role":"user","content":"dynamic"}]}`)
+	body := []byte(`{"model":"gpt-5.6-sol","prompt_cache_retention":"24h","prompt_cache_options":{"mode":"implicit","ttl":"24h"},"input":[{"role":"developer","content":"` + stable + `","prompt_cache_breakpoint":{"mode":"explicit"}},{"role":"user","content":"dynamic"}]}`)
 	account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, OpenAIPromptCacheCreationOptimizationModeSuppress)
 
 	updated, result, err := applyOpenAIPromptCacheCreationOptimizationBody(account, "gpt-5.6-sol", body)
@@ -245,7 +248,7 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressNeverAddsStablePrefixBrea
 	require.True(t, result.Applied)
 	require.False(t, result.BreakpointInserted)
 	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
-	require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
+	require.False(t, gjson.GetBytes(updated, "prompt_cache_options.ttl").Exists())
 	require.False(t, gjson.GetBytes(updated, "prompt_cache_retention").Exists())
 	require.False(t, gjson.GetBytes(updated, "input.0.prompt_cache_breakpoint").Exists())
 	require.False(t, gjson.GetBytes(updated, "input.1.prompt_cache_breakpoint").Exists())
@@ -521,7 +524,7 @@ func TestOpenAIPromptCacheCreationOptimization_ForwardRetriesOnceWithoutExplicit
 	require.NotNil(t, result)
 	require.Len(t, upstream.bodies, 2)
 	require.Equal(t, "explicit", gjson.GetBytes(upstream.bodies[0], "prompt_cache_options.mode").String())
-	require.Equal(t, "24h", gjson.GetBytes(upstream.bodies[0], "prompt_cache_options.ttl").String())
+	require.Equal(t, "30m", gjson.GetBytes(upstream.bodies[0], "prompt_cache_options.ttl").String())
 	require.False(t, gjson.GetBytes(upstream.bodies[0], "prompt_cache_retention").Exists())
 	require.Equal(t, "explicit", gjson.GetBytes(upstream.bodies[0], "input.0.content.0.prompt_cache_breakpoint.mode").String())
 	require.False(t, gjson.GetBytes(upstream.bodies[1], "prompt_cache_options").Exists())
@@ -544,6 +547,7 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressModeStaysOnEdgeRS(t *test
 	decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
 	require.NoError(t, err)
 	require.Equal(t, "explicit", gjson.GetBytes(decoded, "prompt_cache_options.mode").String())
+	require.False(t, gjson.GetBytes(decoded, "prompt_cache_options.ttl").Exists())
 	require.False(t, gjson.GetBytes(decoded, "messages.0.content.0.prompt_cache_breakpoint").Exists())
 	nonGPT56Body := []byte(`{"model":"gpt-5.5","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
 	_, err = svc.BuildRawChatCompletionsEdgePlan(context.Background(), nil, account, nonGPT56Body, "")
@@ -560,6 +564,7 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressModeStaysOnEdgeRS(t *test
 	responsesDecoded, err := base64.StdEncoding.DecodeString(responsesPlan.Plan.BodyRawBase64)
 	require.NoError(t, err)
 	require.Equal(t, "explicit", gjson.GetBytes(responsesDecoded, "prompt_cache_options.mode").String())
+	require.False(t, gjson.GetBytes(responsesDecoded, "prompt_cache_options.ttl").Exists())
 	require.False(t, gjson.GetBytes(responsesDecoded, "input.0.content.0.prompt_cache_breakpoint").Exists())
 
 	account.Type = AccountTypeOAuth
@@ -571,6 +576,7 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressModeStaysOnEdgeRS(t *test
 	oauthDecoded, err := base64.StdEncoding.DecodeString(oauthPlan.Plan.BodyRawBase64)
 	require.NoError(t, err)
 	require.Equal(t, "explicit", gjson.GetBytes(oauthDecoded, "prompt_cache_options.mode").String())
+	require.False(t, gjson.GetBytes(oauthDecoded, "prompt_cache_options.ttl").Exists())
 	require.False(t, gjson.GetBytes(oauthDecoded, "input.0.content.0.prompt_cache_breakpoint").Exists())
 
 	svc.cfg.Gateway.OpenAIWS.Enabled = true
@@ -592,6 +598,7 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressModeStaysOnEdgeRS(t *test
 	wsDecoded, err := base64.StdEncoding.DecodeString(wsPlan.Plan.BodyRawBase64)
 	require.NoError(t, err)
 	require.Equal(t, "explicit", gjson.GetBytes(wsDecoded, "prompt_cache_options.mode").String())
+	require.False(t, gjson.GetBytes(wsDecoded, "prompt_cache_options.ttl").Exists())
 	require.False(t, gjson.GetBytes(wsDecoded, "input.0.content.0.prompt_cache_breakpoint").Exists())
 
 	nonTargetWSBody := []byte(`{"type":"response.create","model":"gpt-5.5","input":[{"role":"user","content":"hello"}]}`)
