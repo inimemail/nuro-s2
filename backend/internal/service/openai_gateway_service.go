@@ -6409,6 +6409,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	defer putSSEScannerBuf64K(scanBuf)
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
 		resultTerminalType := terminalEventType
 		if sawFailedEvent {
@@ -6514,6 +6515,13 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			}
 			s.parseSSEUsageBytes(dataBytes, usage)
+			if downstreamCacheUsageMode != "" && shouldNormalizeOpenAIStreamUsageForDownstream(dataBytes, eventType) {
+				if normalizedData, normalized := normalizeOpenAIDownstreamUsageJSON(dataBytes, downstreamCacheUsageMode); normalized {
+					dataBytes = normalizedData
+					trimmedData = string(normalizedData)
+					line = "data: " + trimmedData
+				}
+			}
 		}
 
 		if _, isData := extractOpenAISSEDataLine(line); !isData {
@@ -6715,7 +6723,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	// Some compatible upstreams answer a non-streaming request with SSE. Detect
 	// that wire format before applying the JSON envelope safety check.
 	if isEventStreamResponse(resp.Header) {
-		return s.handlePassthroughSSEToJSON(resp, c, account, body, originalModel, mappedModel)
+		return s.handlePassthroughSSEToJSON(ctx, resp, c, account, body, originalModel, mappedModel)
 	}
 	if openAIResponseTerminalEventTypeFromBody(body) == "response.failed" {
 		usageValue, _ := extractOpenAIUsageFromJSONBytes(body)
@@ -6780,6 +6788,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 			return nil, failoverErr
 		}
 		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+		body = normalizedBody
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
@@ -6879,7 +6890,7 @@ func openAIPassthroughResponseIsUnsafe(body []byte) bool {
 // response for the passthrough path. It mirrors handleSSEToJSON while
 // preserving passthrough payloads, except compact-only model remapping may
 // rewrite model fields back to the original requested model.
-func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel string, mappedModel string) (*openaiNonStreamingResultPassthrough, error) {
+func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel string, mappedModel string) (*openaiNonStreamingResultPassthrough, error) {
 	bodyText := string(body)
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 	if normalizedPayload, normalized := normalizeCompletedImageGenerationStatus(terminalPayload); normalized {
@@ -6965,6 +6976,9 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
 			return nil, failoverErr
 		}
+	}
+	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+		body = normalizedBody
 	}
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
@@ -7696,6 +7710,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	}
 
 	usage := &OpenAIUsage{}
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
 	responseID := ""
@@ -8041,6 +8056,18 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					line = "data: " + data
 				}
 			}
+			if downstreamCacheUsageMode != "" {
+				// Internal usage observes the upstream frame; only the downstream
+				// copy is normalized for explicitly selected C/D accounts.
+				s.parseSSEUsageBytes(dataBytes, usage)
+				if shouldNormalizeOpenAIStreamUsageForDownstream(dataBytes, eventType) {
+					if normalizedData, normalized := normalizeOpenAIDownstreamUsageJSON(dataBytes, downstreamCacheUsageMode); normalized {
+						dataBytes = normalizedData
+						data = string(normalizedData)
+						line = "data: " + data
+					}
+				}
+			}
 			startsFirstToken := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
 			startsRealOutput := openAIStreamDataStartsRealOutput(data, eventType)
 			startsClientOutput := startsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType, flushPreamble)
@@ -8079,7 +8106,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					firstTokenMs = &ms
 				}
 			}
-			s.parseSSEUsageBytes(dataBytes, usage)
+			if downstreamCacheUsageMode == "" {
+				s.parseSSEUsageBytes(dataBytes, usage)
+			}
 			return
 		}
 
@@ -8667,7 +8696,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	// Some OpenAI-compatible upstreams (including other sub2api instances)
 	// may return SSE even when stream=false was requested.
 	if isEventStreamResponse(resp.Header) {
-		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
+		return s.handleSSEToJSON(ctx, resp, c, account, body, originalModel, mappedModel)
 	}
 	if account != nil && account.IsGrok() && isOpenAIResponsesCompactPath(c) {
 		body, err = convertGrokResponseToOpenAICompact(body)
@@ -8701,13 +8730,13 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	// positives on JSON responses that coincidentally contain "data:" or
 	// "event:" in their text content.
 	if account.Type == AccountTypeOAuth && bodyLooksLikeSSE {
-		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
+		return s.handleSSEToJSON(ctx, resp, c, account, body, originalModel, mappedModel)
 	}
 
 	usageValue, usageOK := extractOpenAIUsageFromJSONBytes(body)
 	if !usageOK {
 		if bodyLooksLikeSSE {
-			return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
+			return s.handleSSEToJSON(ctx, resp, c, account, body, originalModel, mappedModel)
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 && !isOpenAISuccessJSONResponse(resp, body) {
 			return nil, &UpstreamFailoverError{
@@ -8749,6 +8778,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 			return nil, failoverErr
 		}
 	}
+	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+		body = normalizedBody
+	}
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 
@@ -8786,7 +8818,7 @@ func bodyHasSSEFraming(body []byte) bool {
 	return false
 }
 
-func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
+func (s *OpenAIGatewayService) handleSSEToJSON(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
 	bodyText := string(body)
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 	if normalizedPayload, normalized := normalizeCompletedImageGenerationStatus(terminalPayload); normalized {
@@ -8873,6 +8905,9 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
 			return nil, failoverErr
 		}
+	}
+	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+		body = normalizedBody
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 

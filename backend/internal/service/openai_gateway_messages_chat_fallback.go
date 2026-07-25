@@ -76,6 +76,11 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	if normalizedBody, normalized := NormalizeGLMOpenAIReasoningEffort(chatBody, upstreamModel); normalized {
 		chatBody = normalizedBody
 	}
+	optimizedBody, cacheCreationOptimization, optimizeErr := s.ApplyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, chatBody)
+	if optimizeErr != nil {
+		return nil, optimizeErr
+	}
+	chatBody = optimizedBody
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		isolatedBody, isolated, isolationErr := applyOpenAIUpstreamStrongIsolationBody(chatBody, false)
 		if isolationErr != nil {
@@ -157,6 +162,14 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+			logger.L().Info("openai messages chat fallback: cache creation optimization unsupported, retrying with the account default request policy",
+				zap.Int64("account_id", account.ID),
+				zap.Int("upstream_status", resp.StatusCode),
+			)
+			return s.forwardAnthropicViaRawChatCompletions(ctx, c, openAIPromptCacheCreationOptimizationFallbackAccount(account), body, defaultMappedModel)
+		}
 		if s.shouldFailoverOpenAIAccountResponse(ctx, account, resp.StatusCode, upstreamMsg, respBody) {
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
@@ -189,14 +202,16 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsAnthropic(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+		return s.streamChatCompletionsAsAnthropic(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
 	}
-	return s.bufferChatCompletionsAsAnthropic(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+	return s.bufferChatCompletionsAsAnthropic(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
+	ctx context.Context,
 	c *gin.Context,
 	resp *http.Response,
+	account *Account,
 	originalModel string,
 	billingModel string,
 	upstreamModel string,
@@ -226,12 +241,16 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 		return nil, fmt.Errorf("parse chat completions response: %w", err)
 	}
 	responsesResp := apicompat.ChatCompletionsResponseToResponses(&ccResp, originalModel, customTools, toolSearchDeclared, namespaceTools)
-	anthropicResp := apicompat.ResponsesToAnthropic(responsesResp, originalModel)
 
 	usage := OpenAIUsage{}
 	if parsed, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
 		usage = parsed
 	}
+	if responsesResp != nil && responsesResp.Usage != nil {
+		responsesResp.Usage = cloneOpenAIResponsesUsage(responsesResp.Usage)
+		normalizeOpenAIResponsesUsageForDownstream(responsesResp.Usage, openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel))
+	}
+	anthropicResp := apicompat.ResponsesToAnthropic(responsesResp, originalModel)
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
@@ -252,8 +271,10 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 }
 
 func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
+	ctx context.Context,
 	c *gin.Context,
 	resp *http.Response,
+	account *Account,
 	originalModel string,
 	billingModel string,
 	upstreamModel string,
@@ -265,6 +286,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
 	headersWritten := false
 	writeStreamHeaders := func() {
 		if headersWritten {
@@ -398,17 +420,19 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 
 	finalEvents := apicompat.FinalizeChatCompletionsResponsesStream(ccState)
 	terminalEventType := ""
-	for _, rEvent := range finalEvents {
+	for i := range finalEvents {
+		rEvent := &finalEvents[i]
 		if isOpenAICompatResponsesTerminalEvent(rEvent.Type) {
 			terminalEventType = rEvent.Type
 		}
 		if rEvent.Response != nil && rEvent.Response.Usage != nil {
 			usage = copyOpenAIUsageFromResponsesUsage(rEvent.Response.Usage)
 		}
+		normalizeOpenAIResponsesStreamEventForDownstream(rEvent, downstreamCacheUsageMode)
 		if clientDisconnected {
 			continue
 		}
-		for _, aEvt := range apicompat.ResponsesEventToAnthropicEvents(&rEvent, anthropicState) {
+		for _, aEvt := range apicompat.ResponsesEventToAnthropicEvents(rEvent, anthropicState) {
 			sse, err := apicompat.ResponsesAnthropicEventToSSE(aEvt)
 			if err != nil {
 				continue

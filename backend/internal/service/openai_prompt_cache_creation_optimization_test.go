@@ -405,6 +405,10 @@ func TestAccountPromptCacheCreationOptimizationScopeAndMode(t *testing.T) {
 	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeReduce, legacyReduce.OpenAIPromptCacheCreationOptimizationMode())
 	legacySuppress := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, openAIPromptCacheCreationOptimizationLegacySuppress)
 	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeSuppress, legacySuppress.OpenAIPromptCacheCreationOptimizationMode())
+	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeFree,
+		promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeFree).OpenAIPromptCacheCreationOptimizationMode())
+	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeInput125,
+		promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, OpenAIPromptCacheCreationOptimizationModeInput125).OpenAIPromptCacheCreationOptimizationMode())
 
 	imagePool := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeSuppress)
 	imagePool.Credentials["pool_mode"] = true

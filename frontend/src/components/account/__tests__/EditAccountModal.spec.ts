@@ -429,13 +429,28 @@ describe('EditAccountModal', () => {
 
     await wrapper.get('[data-testid="prompt-cache-creation-optimization-toggle"]').trigger('click')
     expect(wrapper.get('[data-testid="prompt-cache-creation-mode-reduce"]').attributes('aria-pressed')).toBe('true')
-    await wrapper.get('[data-testid="prompt-cache-creation-mode-suppress"]').trigger('click')
+    await wrapper.get('[data-testid="prompt-cache-creation-mode-input_125"]').trigger('click')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
     expect(credentials?.openai_prompt_cache_creation_optimization_enabled).toBe(true)
-    expect(credentials?.openai_prompt_cache_creation_optimization_mode).toBe('suppress')
+    expect(credentials?.openai_prompt_cache_creation_optimization_mode).toBe('input_125')
     expect(credentials).not.toHaveProperty('pool_mode')
+  })
+
+  it('loads mode C only for the account that explicitly saved it', async () => {
+    const account = buildAccount()
+    account.credentials.openai_prompt_cache_creation_optimization_enabled = true
+    account.credentials.openai_prompt_cache_creation_optimization_mode = 'free'
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    expect(wrapper.get('[data-testid="prompt-cache-creation-optimization-toggle"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-testid="prompt-cache-creation-mode-free"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-testid="prompt-cache-creation-mode-reduce"]').attributes('aria-pressed')).toBe('false')
   })
 
   it('renders group protection thresholds as read-only account state', async () => {

@@ -112,6 +112,10 @@ type Account struct {
 	headerOverrideCacheRawPtr         uintptr
 	headerOverrideCacheRawLen         int
 	headerOverrideCacheRawSig         uint64
+
+	// Runtime-only: compatibility retry copies preserve C/D downstream usage
+	// presentation while disabling only the unsupported upstream request fields.
+	openAIDownstreamCacheUsageModeOverride string
 }
 
 type OpenAIEndpointCapability string
@@ -164,6 +168,8 @@ const (
 	OpenAIPromptCacheBoostLevelAggressive               = "aggressive"
 	OpenAIPromptCacheCreationOptimizationModeReduce     = "reduce"
 	OpenAIPromptCacheCreationOptimizationModeSuppress   = "suppress"
+	OpenAIPromptCacheCreationOptimizationModeFree       = "free"
+	OpenAIPromptCacheCreationOptimizationModeInput125   = "input_125"
 	openAIPromptCacheCreationOptimizationLegacyReduce   = "retention_first"
 	openAIPromptCacheCreationOptimizationLegacySuppress = "explicit_suppress"
 )
@@ -1249,6 +1255,10 @@ func (a *Account) OpenAIPromptCacheCreationOptimizationMode() string {
 		case OpenAIPromptCacheCreationOptimizationModeSuppress,
 			openAIPromptCacheCreationOptimizationLegacySuppress:
 			return OpenAIPromptCacheCreationOptimizationModeSuppress
+		case OpenAIPromptCacheCreationOptimizationModeFree:
+			return OpenAIPromptCacheCreationOptimizationModeFree
+		case OpenAIPromptCacheCreationOptimizationModeInput125:
+			return OpenAIPromptCacheCreationOptimizationModeInput125
 		case OpenAIPromptCacheCreationOptimizationModeReduce,
 			openAIPromptCacheCreationOptimizationLegacyReduce:
 			return OpenAIPromptCacheCreationOptimizationModeReduce

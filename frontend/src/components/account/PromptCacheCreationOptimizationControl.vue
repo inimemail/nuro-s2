@@ -57,7 +57,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-type PromptCacheCreationOptimizationMode = 'reduce' | 'suppress'
+type PromptCacheCreationOptimizationMode = 'reduce' | 'suppress' | 'free' | 'input_125'
 
 const props = defineProps<{
   enabled: boolean
@@ -82,12 +82,27 @@ const modeOptions: Array<{
   {
     value: 'suppress',
     label: 'admin.accounts.promptCacheCreationOptimizationSuppress'
+  },
+  {
+    value: 'free',
+    label: 'admin.accounts.promptCacheCreationOptimizationFree'
+  },
+  {
+    value: 'input_125',
+    label: 'admin.accounts.promptCacheCreationOptimizationInput125'
   }
 ]
 
-const modeHintKey = computed(() =>
-  props.mode === 'suppress'
-    ? 'admin.accounts.promptCacheCreationOptimizationSuppressHint'
-    : 'admin.accounts.promptCacheCreationOptimizationReduceHint'
-)
+const modeHintKey = computed(() => {
+  switch (props.mode) {
+    case 'suppress':
+      return 'admin.accounts.promptCacheCreationOptimizationSuppressHint'
+    case 'free':
+      return 'admin.accounts.promptCacheCreationOptimizationFreeHint'
+    case 'input_125':
+      return 'admin.accounts.promptCacheCreationOptimizationInput125Hint'
+    default:
+      return 'admin.accounts.promptCacheCreationOptimizationReduceHint'
+  }
+})
 </script>

@@ -529,10 +529,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleAnthropicStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime)
+		result, handleErr = s.handleAnthropicStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, startTime)
 	} else {
 		// Client wants JSON: buffer the streaming response and assemble a JSON reply.
-		result, handleErr = s.handleAnthropicBufferedStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime)
+		result, handleErr = s.handleAnthropicBufferedStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, startTime)
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing
@@ -603,6 +603,7 @@ func (s *OpenAIGatewayService) handleAnthropicErrorResponseWithoutAccountState(
 // This is used when the client requested stream=false but the upstream is always
 // streaming.
 func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
+	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
 	account *Account,
@@ -653,6 +654,10 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	// accumulated delta events so the client receives the full content.
 	acc.SupplementResponseOutput(finalResponse)
 
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
+	if downstreamCacheUsageMode != "" {
+		normalizeOpenAIResponsesUsageForDownstream(finalResponse.Usage, downstreamCacheUsageMode)
+	}
 	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)
 
 	if s.responseHeaderFilter != nil {
@@ -892,6 +897,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 // pattern to send Anthropic ping events during periods of upstream silence,
 // preventing proxy/client timeout disconnections.
 func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
+	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
 	account *Account,
@@ -920,6 +926,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 
 	state := apicompat.NewResponsesEventToAnthropicState()
 	state.Model = originalModel
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
 	var usage OpenAIUsage
 	responseID := ""
 	var firstTokenMs *int
@@ -1045,6 +1052,15 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				streamNonFailoverErr = fmt.Errorf("upstream response failed: %s", errMsg)
 				return true
 			}
+		}
+		if downstreamCacheUsageMode != "" {
+			// The local usage snapshot above remains the unmodified upstream
+			// value. Only the event copy consumed by the downstream converter is
+			// normalized for the explicitly selected account mode.
+			if event.Response != nil {
+				normalizeOpenAIResponsesUsageForDownstream(event.Response.Usage, downstreamCacheUsageMode)
+			}
+			normalizeOpenAIResponsesUsageForDownstream(event.Usage, downstreamCacheUsageMode)
 		}
 
 		// Convert to Anthropic events

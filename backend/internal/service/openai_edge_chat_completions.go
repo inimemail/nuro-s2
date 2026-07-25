@@ -86,6 +86,11 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 		}
 	}
 	cacheCreationMode, cacheCreationModel := openAIEdgePromptCacheCreationOptimizationFields(account, upstreamModel, cacheCreationOptimization)
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
+	downstreamCacheUsageModel := ""
+	if downstreamCacheUsageMode != "" {
+		downstreamCacheUsageModel = upstreamModel
+	}
 
 	apiKey := account.GetOpenAIApiKey()
 	if apiKey == "" {
@@ -154,6 +159,8 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 			PromptCacheCreationOptimizationMode:    cacheCreationMode,
 			PromptCacheCreationOptimizationModel:   cacheCreationModel,
 			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
+			DownstreamCacheUsageMode:               downstreamCacheUsageMode,
+			DownstreamCacheUsageModel:              downstreamCacheUsageModel,
 		},
 		Model:           originalModel,
 		BillingModel:    billingModel,
@@ -298,6 +305,11 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 		}
 	}
 	cacheCreationMode, cacheCreationModel := openAIEdgePromptCacheCreationOptimizationFields(account, policyModel, cacheCreationOptimization)
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, policyModel)
+	downstreamCacheUsageModel := ""
+	if downstreamCacheUsageMode != "" {
+		downstreamCacheUsageModel = policyModel
+	}
 
 	apiKey := account.GetOpenAIApiKey()
 	if apiKey == "" {
@@ -382,6 +394,8 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 			PromptCacheCreationOptimizationMode:    cacheCreationMode,
 			PromptCacheCreationOptimizationModel:   cacheCreationModel,
 			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
+			DownstreamCacheUsageMode:               downstreamCacheUsageMode,
+			DownstreamCacheUsageModel:              downstreamCacheUsageModel,
 		},
 		Model:           originalModel,
 		BillingModel:    originalModel,
@@ -558,6 +572,11 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 		}
 	}
 	cacheCreationMode, cacheCreationModel := openAIEdgePromptCacheCreationOptimizationFields(account, upstreamModel, cacheCreationOptimization)
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
+	downstreamCacheUsageModel := ""
+	if downstreamCacheUsageMode != "" {
+		downstreamCacheUsageModel = upstreamModel
+	}
 
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -604,6 +623,8 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 			PromptCacheCreationOptimizationMode:    cacheCreationMode,
 			PromptCacheCreationOptimizationModel:   cacheCreationModel,
 			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
+			DownstreamCacheUsageMode:               downstreamCacheUsageMode,
+			DownstreamCacheUsageModel:              downstreamCacheUsageModel,
 		},
 		Model:           originalModel,
 		BillingModel:    billingModel,
@@ -826,6 +847,17 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 		cacheCreationMode = account.OpenAIPromptCacheCreationOptimizationMode()
 		cacheCreationModel = policyModel
 	}
+	downstreamCacheUsageMode := ""
+	downstreamCacheUsageModel := ""
+	if !OpenAIImageGenerationIntentFromContext(ctx) {
+		// Carry the account-scoped C/D mode across the WS session even when
+		// the first turn is not GPT-5.6. edge-rs still gates every turn by its
+		// effective model and image intent before rewriting downstream usage.
+		downstreamCacheUsageMode = openAIDownstreamCacheUsageAccountMode(account)
+	}
+	if downstreamCacheUsageMode != "" && isOpenAIGPT56Model(policyModel) {
+		downstreamCacheUsageModel = policyModel
+	}
 
 	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstMessage, "prompt_cache_key").String())
 	isCodexCLI := false
@@ -873,6 +905,8 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 			PromptCacheCreationOptimizationMode:    cacheCreationMode,
 			PromptCacheCreationOptimizationModel:   cacheCreationModel,
 			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
+			DownstreamCacheUsageMode:               downstreamCacheUsageMode,
+			DownstreamCacheUsageModel:              downstreamCacheUsageModel,
 		},
 		Model:           model,
 		BillingModel:    model,

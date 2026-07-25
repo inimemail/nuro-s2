@@ -107,6 +107,11 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 		}
 		return nil, err
 	}
+	optimizedBody, cacheCreationOptimization, optimizeErr := s.ApplyOpenAIPromptCacheCreationOptimizationBody(account, upstreamModel, chatBody)
+	if optimizeErr != nil {
+		return nil, optimizeErr
+	}
+	chatBody = optimizedBody
 	if serviceTier == nil {
 		serviceTier = extractOpenAIServiceTierFromBody(chatBody)
 	}
@@ -209,6 +214,14 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if cacheCreationOptimization.Applied && isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody) {
+			s.RecordOpenAIPromptCacheCreationOptimizationUnsupported(account)
+			logger.L().Info("openai responses chat fallback: cache creation optimization unsupported, retrying with the account default request policy",
+				zap.Int64("account_id", account.ID),
+				zap.Int("upstream_status", resp.StatusCode),
+			)
+			return s.forwardResponsesViaRawChatCompletions(ctx, c, openAIPromptCacheCreationOptimizationFallbackAccount(account), body)
+		}
 		if s.shouldFailoverOpenAIAccountResponse(ctx, account, resp.StatusCode, upstreamMsg, respBody) {
 			upstreamDetail := ""
 			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
@@ -239,7 +252,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+		return s.streamChatCompletionsAsResponses(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
 	}
 	return s.bufferChatCompletionsAsResponses(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
 }
@@ -310,6 +323,10 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	if parsed, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
 		usage = parsed
 	}
+	if responsesResp != nil && responsesResp.Usage != nil {
+		responsesResp.Usage = cloneOpenAIResponsesUsage(responsesResp.Usage)
+		normalizeOpenAIResponsesUsageForDownstream(responsesResp.Usage, openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel))
+	}
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -331,8 +348,10 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 }
 
 func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
+	ctx context.Context,
 	c *gin.Context,
 	resp *http.Response,
+	account *Account,
 	originalModel string,
 	billingModel string,
 	upstreamModel string,
@@ -344,6 +363,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
 	headersWritten := false
 	writeStreamHeaders := func() {
 		if headersWritten {
@@ -473,10 +493,12 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 
 	finalEvents := apicompat.FinalizeChatCompletionsResponsesStream(state)
 	terminalEventType := ""
-	for _, event := range finalEvents {
+	for i := range finalEvents {
+		event := &finalEvents[i]
 		if isOpenAICompatResponsesTerminalEvent(event.Type) {
 			terminalEventType = event.Type
 		}
+		normalizeOpenAIResponsesStreamEventForDownstream(event, downstreamCacheUsageMode)
 	}
 	writeEvents(finalEvents)
 	if !clientDisconnected {

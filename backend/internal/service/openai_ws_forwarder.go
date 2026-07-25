@@ -2197,6 +2197,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 
 	usage := &OpenAIUsage{}
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
 	responseID := ""
@@ -2409,6 +2410,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if openAIWSEventShouldParseUsage(originalEventType) {
 			parseOpenAIWSResponseUsageFromCompletedEvent(originalMessage, usage)
 		}
+		message = normalizeOpenAIWSDownstreamCacheUsage(message, eventType, downstreamCacheUsageMode)
 		imageCounter.AddSSEData(message)
 		if eventType == "error" || eventType == "response.failed" {
 			decision := s.handleOpenAICyberPolicyEvent(
@@ -2746,6 +2748,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		imageInputSize                   string
 		payloadBytes                     int
 		cacheCreationOptimizationApplied bool
+		downstreamCacheUsageMode         string
 	}
 	ingressSessionOriginalModel := ""
 
@@ -2923,6 +2926,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		normalized = optimized
 		promptCacheKey = strings.TrimSpace(gjson.GetBytes(normalized, "prompt_cache_key").String())
 		ingressSessionOriginalModel = originalModel
+		downstreamCacheUsageMode := ""
+		if !imageIntent {
+			downstreamCacheUsageMode = openAIDownstreamCacheUsageMode(account, upstreamModel)
+		}
 
 		return openAIWSClientPayload{
 			payloadRaw:                       normalized,
@@ -2935,6 +2942,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			imageInputSize:                   imageInputSize,
 			payloadBytes:                     len(normalized),
 			cacheCreationOptimizationApplied: optimizationResult.Applied,
+			downstreamCacheUsageMode:         downstreamCacheUsageMode,
 		}, nil
 	}
 
@@ -3325,7 +3333,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 	}
 
-	sendAndRelay := func(turn int, lease *openAIWSConnLease, payload []byte, payloadBytes int, originalModel string, imageBillingModel string, imageSizeTier string, imageInputSize string, cacheCreationOptimizationApplied bool) (*OpenAIForwardResult, error) {
+	sendAndRelay := func(turn int, lease *openAIWSConnLease, payload []byte, payloadBytes int, originalModel string, imageBillingModel string, imageSizeTier string, imageInputSize string, cacheCreationOptimizationApplied bool, downstreamCacheUsageMode string) (*OpenAIForwardResult, error) {
 		if lease == nil {
 			return nil, errors.New("upstream websocket lease is nil")
 		}
@@ -3502,6 +3510,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if openAIWSEventShouldParseUsage(originalEventType) {
 				parseOpenAIWSResponseUsageFromCompletedEvent(originalUpstreamMessage, &usage)
 			}
+			upstreamMessage = normalizeOpenAIWSDownstreamCacheUsage(upstreamMessage, eventType, downstreamCacheUsageMode)
 			imageCounter.AddSSEData(upstreamMessage)
 			if eventType == "error" || eventType == "response.failed" {
 				decision := s.handleOpenAICyberPolicyEvent(c, account, false, lease.HandshakeHeaders().Get("x-request-id"), originalUpstreamMessage, payload)
@@ -3614,6 +3623,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	currentImageInputSize := firstPayload.imageInputSize
 	currentPayloadBytes := firstPayload.payloadBytes
 	currentCacheCreationOptimizationApplied := firstPayload.cacheCreationOptimizationApplied
+	currentDownstreamCacheUsageMode := firstPayload.downstreamCacheUsageMode
 	isStrictAffinityTurn := func(payload []byte) bool {
 		if !storeDisabled {
 			return false
@@ -4128,7 +4138,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 
-		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize, currentCacheCreationOptimizationApplied)
+		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize, currentCacheCreationOptimizationApplied, currentDownstreamCacheUsageMode)
 		if relayErr != nil {
 			lastTurnClean = false
 			if recoverIngressRejectedField(relayErr, turn, connID) {
@@ -4270,6 +4280,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		currentImageInputSize = nextPayload.imageInputSize
 		currentPayloadBytes = nextPayload.payloadBytes
 		currentCacheCreationOptimizationApplied = nextPayload.cacheCreationOptimizationApplied
+		currentDownstreamCacheUsageMode = nextPayload.downstreamCacheUsageMode
 		storeDisabled = s.isOpenAIWSStoreDisabledInRequestRaw(currentPayload, account)
 		if !storeDisabled {
 			unpinSessionConn(sessionConnID)

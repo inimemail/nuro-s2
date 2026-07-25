@@ -122,7 +122,7 @@ func applyOpenAIPromptCacheCreationOptimizationMapWithExplicitIntent(
 		"mode": "explicit",
 		"ttl":  openAIPromptCacheCreationOptimizationTTL,
 	}
-	if mode == OpenAIPromptCacheCreationOptimizationModeSuppress {
+	if mode != OpenAIPromptCacheCreationOptimizationModeReduce {
 		delete(promptCacheOptions, "ttl")
 	}
 	request["prompt_cache_options"] = promptCacheOptions
@@ -141,6 +141,9 @@ func openAIPromptCacheCreationOptimizationFallbackAccount(account *Account) *Acc
 		return nil
 	}
 	fallback := *account
+	if mode := openAIDownstreamCacheUsageMode(account, "gpt-5.6"); mode != "" {
+		fallback.openAIDownstreamCacheUsageModeOverride = mode
+	}
 	if account.Credentials == nil {
 		return &fallback
 	}

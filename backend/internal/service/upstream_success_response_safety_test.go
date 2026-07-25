@@ -120,7 +120,7 @@ func TestOpenAISSEToJSONRejectsDiagnosticTerminalResponse(t *testing.T) {
 	body := []byte("data: {\"type\":\"response.completed\",\"response\":{\"message\":\"private-provider.example failed\",\"usage\":{\"input_tokens\":1}}}\n\n")
 	svc := &OpenAIGatewayService{}
 
-	result, err := svc.handleSSEToJSON(resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, body, "gpt-test", "gpt-test")
+	result, err := svc.handleSSEToJSON(context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, body, "gpt-test", "gpt-test")
 	require.Error(t, err)
 	require.Nil(t, result)
 	require.Contains(t, recorder.Body.String(), safeUpstreamErrorMessage)
@@ -198,7 +198,7 @@ func TestOpenAISSEFailedPreservesUsageAndSanitizesResponse(t *testing.T) {
 	body := []byte("data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed_sse\",\"object\":\"response\",\"model\":\"gpt-test\",\"status\":\"failed\",\"error\":{\"type\":\"server_error\",\"message\":\"private-provider internal failure\"},\"usage\":{\"input_tokens\":9,\"output_tokens\":3}}}\n\n")
 	svc := &OpenAIGatewayService{}
 
-	result, err := svc.handleSSEToJSON(resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, body, "gpt-test", "gpt-test")
+	result, err := svc.handleSSEToJSON(context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI}, body, "gpt-test", "gpt-test")
 	require.Error(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "response.failed", result.terminalEventType)

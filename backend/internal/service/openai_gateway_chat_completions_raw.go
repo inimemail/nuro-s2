@@ -304,7 +304,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 
 	// 8. Forward response
 	if clientStream {
-		return s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
+		return s.streamRawChatCompletions(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
 	}
 	return s.bufferRawChatCompletions(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 }
@@ -316,6 +316,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 // 网关会对上游强制打开 include_usage 以保证计费完整，并原样向下游透传 usage，
 // 让级联代理或下游计费系统也能拿到完整用量。
 func (s *OpenAIGatewayService) streamRawChatCompletions(
+	ctx context.Context,
 	c *gin.Context,
 	resp *http.Response,
 	account *Account,
@@ -328,6 +329,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	requestBodyLen int,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
 
 	headersWritten := false
 	writeStreamHeaders := func() {
@@ -451,6 +453,11 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 						sawTerminal = true
 						terminalEventType = "chat.finish_reason"
 						break
+					}
+				}
+				if downstreamCacheUsageMode != "" && shouldNormalizeOpenAIStreamUsageForDownstream([]byte(trimmedPayload), "") {
+					if normalizedPayload, normalized := normalizeOpenAIDownstreamUsageJSON([]byte(trimmedPayload), downstreamCacheUsageMode); normalized {
+						line = "data: " + string(normalizedPayload)
 					}
 				}
 			}
@@ -637,13 +644,17 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
 		usage = parsedUsage
 	}
+	downstreamBody := respBody
+	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(respBody, ctx, account, upstreamModel); normalized {
+		downstreamBody = normalizedBody
+	}
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
 	c.Writer.Header().Set("Content-Type", responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "application/json"))
 	c.Writer.WriteHeader(http.StatusOK)
-	_, _ = c.Writer.Write(respBody)
+	_, _ = c.Writer.Write(downstreamBody)
 
 	return &OpenAIForwardResult{
 		RequestID:       requestID,

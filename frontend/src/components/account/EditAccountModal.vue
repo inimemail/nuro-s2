@@ -3791,7 +3791,7 @@ const poolSoftCooldownEnabled = ref(true)
 const poolSoftCooldownErrorThreshold = ref(DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD)
 const imagePoolModeEnabled = ref(false)
 const promptCacheBoostEnabled = ref(false)
-type PromptCacheCreationOptimizationMode = 'reduce' | 'suppress'
+type PromptCacheCreationOptimizationMode = 'reduce' | 'suppress' | 'free' | 'input_125'
 const promptCacheCreationOptimizationEnabled = ref(false)
 const promptCacheCreationOptimizationMode = ref<PromptCacheCreationOptimizationMode>('reduce')
 const promptCacheBoostAggressiveEnabled = ref(false)
@@ -3938,8 +3938,12 @@ const loadPromptCacheCreationOptimizationFromCredentials = (
     applicable &&
     credentials.openai_prompt_cache_creation_optimization_enabled === true
   const rawMode = credentials.openai_prompt_cache_creation_optimization_mode
-  promptCacheCreationOptimizationMode.value =
-    rawMode === 'suppress' || rawMode === 'explicit_suppress' ? 'suppress' : 'reduce'
+  if (rawMode === 'free' || rawMode === 'input_125') {
+    promptCacheCreationOptimizationMode.value = rawMode
+  } else {
+    promptCacheCreationOptimizationMode.value =
+      rawMode === 'suppress' || rawMode === 'explicit_suppress' ? 'suppress' : 'reduce'
+  }
 }
 
 const applyPromptCacheCreationOptimizationCredentials = (credentials: Record<string, unknown>) => {

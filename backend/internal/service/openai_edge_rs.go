@@ -77,6 +77,8 @@ type OpenAIEdgePlan struct {
 	PromptCacheCreationOptimizationMode    string                   `json:"prompt_cache_creation_optimization_mode,omitempty"`
 	PromptCacheCreationOptimizationModel   string                   `json:"prompt_cache_creation_optimization_model,omitempty"`
 	PromptCacheCreationOptimizationApplied bool                     `json:"prompt_cache_creation_optimization_applied,omitempty"`
+	DownstreamCacheUsageMode               string                   `json:"downstream_cache_usage_mode,omitempty"`
+	DownstreamCacheUsageModel              string                   `json:"downstream_cache_usage_model,omitempty"`
 	MaxReasoningEffort                     string                   `json:"max_reasoning_effort,omitempty"`
 	ReasoningEffortMappings                []ReasoningEffortMapping `json:"reasoning_effort_mappings,omitempty"`
 }
