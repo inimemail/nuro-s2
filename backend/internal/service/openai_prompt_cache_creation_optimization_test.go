@@ -50,7 +50,7 @@ func TestOpenAIPromptCacheCreationOptimization_IsolatedPerAccount(t *testing.T) 
 	require.True(t, enabledResult.Applied)
 	require.NotEqual(t, body, enabledBody)
 	require.Equal(t, "explicit", gjson.GetBytes(enabledBody, "prompt_cache_options.mode").String())
-	require.False(t, gjson.GetBytes(enabledBody, "prompt_cache_options.ttl").Exists())
+	require.Equal(t, "24h", gjson.GetBytes(enabledBody, "prompt_cache_options.ttl").String())
 
 	disabledBody, disabledResult, err := applyOpenAIPromptCacheCreationOptimizationBody(disabledAccount, "gpt-5.6-sol", body)
 	require.NoError(t, err)
@@ -72,7 +72,7 @@ func TestOpenAIPromptCacheCreationOptimization_DefaultModeAReducesCacheCreation(
 	require.False(t, result.BreakpointInserted)
 	require.False(t, gjson.GetBytes(updated, "prompt_cache_retention").Exists())
 	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
-	require.Equal(t, "30m", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
+	require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
 }
 
 func TestOpenAIPromptCacheCreationOptimization_NonGPT56IsNoOp(t *testing.T) {
@@ -108,7 +108,7 @@ func TestOpenAIPromptCacheCreationOptimization_PassiveImageNamespaceStillApplies
 	require.True(t, result.Applied)
 	require.False(t, gjson.GetBytes(updated, "prompt_cache_retention").Exists())
 	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
-	require.False(t, gjson.GetBytes(updated, "prompt_cache_options.ttl").Exists())
+	require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
 }
 
 func TestOpenAIPromptCacheCreationOptimization_UsesIngressIntentBeforeServerToolInjection(t *testing.T) {
@@ -125,7 +125,7 @@ func TestOpenAIPromptCacheCreationOptimization_UsesIngressIntentBeforeServerTool
 	require.NoError(t, err)
 	require.True(t, result.Applied)
 	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
-	require.False(t, gjson.GetBytes(updated, "prompt_cache_options.ttl").Exists())
+	require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
 	require.True(t, gjson.GetBytes(updated, `tools.#(type=="image_generation")`).Exists())
 
 	textBody := []byte(`{"model":"gpt-5.6-sol","input":"draw it"}`)
@@ -168,6 +168,7 @@ func TestOpenAIPromptCacheCreationOptimization_ForwardCodexBridgeKeepsPassiveReq
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.mode").String())
+	require.Equal(t, "24h", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
 	require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists(), "bridge tool must still be forwarded")
 }
 
@@ -197,7 +198,7 @@ func TestOpenAIPromptCacheCreationOptimization_OAuthEdgeUsesIngressIntentBeforeC
 	require.NoError(t, err)
 	require.True(t, gjson.GetBytes(decoded, `tools.#(type=="image_generation")`).Exists())
 	require.Equal(t, "explicit", gjson.GetBytes(decoded, "prompt_cache_options.mode").String())
-	require.False(t, gjson.GetBytes(decoded, "prompt_cache_options.ttl").Exists())
+	require.Equal(t, "24h", gjson.GetBytes(decoded, "prompt_cache_options.ttl").String())
 	require.False(t, gjson.GetBytes(decoded, "prompt_cache_retention").Exists())
 }
 
@@ -230,7 +231,7 @@ func TestOpenAIPromptCacheCreationOptimization_ExplicitResponsesKeepsKeyAndMarks
 	require.Equal(t, "keep-this-key", got["prompt_cache_key"])
 	require.NotContains(t, got, "prompt_cache_retention")
 	require.Equal(t, "explicit", got["prompt_cache_options"].(map[string]any)["mode"])
-	require.Equal(t, "30m", got["prompt_cache_options"].(map[string]any)["ttl"])
+	require.Equal(t, "24h", got["prompt_cache_options"].(map[string]any)["ttl"])
 	input := got["input"].([]any)
 	developerParts := input[0].(map[string]any)["content"].([]any)
 	require.Equal(t, "explicit", developerParts[0].(map[string]any)["prompt_cache_breakpoint"].(map[string]any)["mode"])
@@ -249,7 +250,7 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressNeverAddsStablePrefixBrea
 	require.True(t, result.Applied)
 	require.False(t, result.BreakpointInserted)
 	require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
-	require.False(t, gjson.GetBytes(updated, "prompt_cache_options.ttl").Exists())
+	require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
 	require.False(t, gjson.GetBytes(updated, "prompt_cache_retention").Exists())
 	require.False(t, gjson.GetBytes(updated, "input.0.prompt_cache_breakpoint").Exists())
 	require.False(t, gjson.GetBytes(updated, "input.1.prompt_cache_breakpoint").Exists())
@@ -303,6 +304,48 @@ func TestOpenAIPromptCacheCreationOptimization_ForwardPreservesLargeJSONIntegers
 	require.Contains(t, string(upstream.lastBody), `"seed":9007199254740993`)
 	require.Contains(t, string(upstream.lastBody), `"business_id":18446744073709551615`)
 	require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.mode").String())
+	require.Equal(t, "24h", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
+}
+
+func TestOpenAIPromptCacheCreationOptimization_ResponsesSynchronousRequestModes(t *testing.T) {
+	setGinTestMode()
+	stable := strings.Repeat("stable developer policy ", 260)
+	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"prompt_cache_retention":"24h","input":[{"role":"developer","content":"` + stable + `"},{"role":"user","content":"hello","prompt_cache_breakpoint":{"mode":"explicit"}}]}`)
+
+	for _, mode := range []string{
+		OpenAIPromptCacheCreationOptimizationModeReduce,
+		OpenAIPromptCacheCreationOptimizationModeSuppress,
+		OpenAIPromptCacheCreationOptimizationModeFree,
+		OpenAIPromptCacheCreationOptimizationModeInput125,
+	} {
+		t.Run(mode, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			upstream := &httpUpstreamRecorder{resp: promptCacheBoostJSONResponse("resp_cache_creation_sync_modes")}
+			svc := &OpenAIGatewayService{cfg: promptCacheBoostTestConfig(), httpUpstream: upstream}
+			account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, mode)
+			account.ID = 905
+			account.Credentials["api_key"] = "sk-test"
+			account.Credentials["base_url"] = "https://api.openai.com/v1"
+
+			result, err := svc.Forward(context.Background(), c, account, body)
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.False(t, result.Stream)
+			require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.mode").String())
+			require.Equal(t, "24h", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
+			require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").Exists())
+			if mode == OpenAIPromptCacheCreationOptimizationModeReduce {
+				require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "input.0.content.0.prompt_cache_breakpoint.mode").String())
+			} else {
+				require.False(t, gjson.GetBytes(upstream.lastBody, "input.0.content.0.prompt_cache_breakpoint").Exists())
+			}
+			require.False(t, gjson.GetBytes(upstream.lastBody, "input.1.prompt_cache_breakpoint").Exists())
+		})
+	}
 }
 
 func TestOpenAIPromptCacheCreationOptimization_RawChatSynchronousRequestModes(t *testing.T) {
@@ -314,10 +357,9 @@ func TestOpenAIPromptCacheCreationOptimization_RawChatSynchronousRequestModes(t 
 		name    string
 		enabled bool
 		mode    string
-		ttl     string
 	}{
 		{name: "disabled", enabled: false, mode: OpenAIPromptCacheCreationOptimizationModeReduce},
-		{name: "A", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeReduce, ttl: "30m"},
+		{name: "A", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeReduce},
 		{name: "B", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeSuppress},
 		{name: "C", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeFree},
 		{name: "D", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeInput125},
@@ -353,12 +395,11 @@ func TestOpenAIPromptCacheCreationOptimization_RawChatSynchronousRequestModes(t 
 				return
 			}
 			require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.mode").String())
+			require.Equal(t, "24h", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
 			require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").Exists())
-			if tc.ttl != "" {
-				require.Equal(t, tc.ttl, gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
+			if tc.mode == OpenAIPromptCacheCreationOptimizationModeReduce {
 				require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "messages.0.content.0.prompt_cache_breakpoint.mode").String())
 			} else {
-				require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").Exists())
 				require.False(t, gjson.GetBytes(upstream.lastBody, "messages.0.content.0.prompt_cache_breakpoint").Exists())
 			}
 			require.False(t, gjson.GetBytes(upstream.lastBody, "messages.1.prompt_cache_breakpoint").Exists())
@@ -375,10 +416,9 @@ func TestOpenAIPromptCacheCreationOptimization_MessagesSynchronousRequestModes(t
 		name    string
 		enabled bool
 		mode    string
-		ttl     string
 	}{
 		{name: "disabled", mode: OpenAIPromptCacheCreationOptimizationModeReduce},
-		{name: "A", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeReduce, ttl: "30m"},
+		{name: "A", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeReduce},
 		{name: "B", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeSuppress},
 		{name: "C", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeFree},
 		{name: "D", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeInput125},
@@ -420,12 +460,11 @@ func TestOpenAIPromptCacheCreationOptimization_MessagesSynchronousRequestModes(t
 				return
 			}
 			require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.mode").String())
+			require.Equal(t, "24h", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
 			require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").Exists())
-			if tc.ttl != "" {
-				require.Equal(t, tc.ttl, gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
+			if tc.mode == OpenAIPromptCacheCreationOptimizationModeReduce {
 				require.Contains(t, string(upstream.lastBody), `"prompt_cache_breakpoint":{"mode":"explicit"}`)
 			} else {
-				require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").Exists())
 				require.NotContains(t, string(upstream.lastBody), `"prompt_cache_breakpoint"`)
 			}
 		})
@@ -656,7 +695,7 @@ func TestOpenAIPromptCacheCreationOptimization_ForwardRetriesOnceWithoutExplicit
 	require.NotNil(t, result)
 	require.Len(t, upstream.bodies, 2)
 	require.Equal(t, "explicit", gjson.GetBytes(upstream.bodies[0], "prompt_cache_options.mode").String())
-	require.Equal(t, "30m", gjson.GetBytes(upstream.bodies[0], "prompt_cache_options.ttl").String())
+	require.Equal(t, "24h", gjson.GetBytes(upstream.bodies[0], "prompt_cache_options.ttl").String())
 	require.False(t, gjson.GetBytes(upstream.bodies[0], "prompt_cache_retention").Exists())
 	require.Equal(t, "explicit", gjson.GetBytes(upstream.bodies[0], "input.0.content.0.prompt_cache_breakpoint.mode").String())
 	require.False(t, gjson.GetBytes(upstream.bodies[1], "prompt_cache_options").Exists())
@@ -679,7 +718,7 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressModeStaysOnEdgeRS(t *test
 	decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
 	require.NoError(t, err)
 	require.Equal(t, "explicit", gjson.GetBytes(decoded, "prompt_cache_options.mode").String())
-	require.False(t, gjson.GetBytes(decoded, "prompt_cache_options.ttl").Exists())
+	require.Equal(t, "24h", gjson.GetBytes(decoded, "prompt_cache_options.ttl").String())
 	require.False(t, gjson.GetBytes(decoded, "messages.0.content.0.prompt_cache_breakpoint").Exists())
 	nonGPT56Body := []byte(`{"model":"gpt-5.5","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
 	_, err = svc.BuildRawChatCompletionsEdgePlan(context.Background(), nil, account, nonGPT56Body, "")
@@ -696,7 +735,7 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressModeStaysOnEdgeRS(t *test
 	responsesDecoded, err := base64.StdEncoding.DecodeString(responsesPlan.Plan.BodyRawBase64)
 	require.NoError(t, err)
 	require.Equal(t, "explicit", gjson.GetBytes(responsesDecoded, "prompt_cache_options.mode").String())
-	require.False(t, gjson.GetBytes(responsesDecoded, "prompt_cache_options.ttl").Exists())
+	require.Equal(t, "24h", gjson.GetBytes(responsesDecoded, "prompt_cache_options.ttl").String())
 	require.False(t, gjson.GetBytes(responsesDecoded, "input.0.content.0.prompt_cache_breakpoint").Exists())
 
 	account.Type = AccountTypeOAuth
@@ -708,7 +747,7 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressModeStaysOnEdgeRS(t *test
 	oauthDecoded, err := base64.StdEncoding.DecodeString(oauthPlan.Plan.BodyRawBase64)
 	require.NoError(t, err)
 	require.Equal(t, "explicit", gjson.GetBytes(oauthDecoded, "prompt_cache_options.mode").String())
-	require.False(t, gjson.GetBytes(oauthDecoded, "prompt_cache_options.ttl").Exists())
+	require.Equal(t, "24h", gjson.GetBytes(oauthDecoded, "prompt_cache_options.ttl").String())
 	require.False(t, gjson.GetBytes(oauthDecoded, "input.0.content.0.prompt_cache_breakpoint").Exists())
 
 	svc.cfg.Gateway.OpenAIWS.Enabled = true
@@ -730,7 +769,7 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressModeStaysOnEdgeRS(t *test
 	wsDecoded, err := base64.StdEncoding.DecodeString(wsPlan.Plan.BodyRawBase64)
 	require.NoError(t, err)
 	require.Equal(t, "explicit", gjson.GetBytes(wsDecoded, "prompt_cache_options.mode").String())
-	require.False(t, gjson.GetBytes(wsDecoded, "prompt_cache_options.ttl").Exists())
+	require.Equal(t, "24h", gjson.GetBytes(wsDecoded, "prompt_cache_options.ttl").String())
 	require.False(t, gjson.GetBytes(wsDecoded, "input.0.content.0.prompt_cache_breakpoint").Exists())
 
 	nonTargetWSBody := []byte(`{"type":"response.create","model":"gpt-5.5","input":[{"role":"user","content":"hello"}]}`)

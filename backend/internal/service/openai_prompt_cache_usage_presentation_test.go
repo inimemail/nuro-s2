@@ -118,7 +118,7 @@ func TestOpenAIPromptCacheCreationOptimization_CDUseBRequestPolicy(t *testing.T)
 		require.NoError(t, err)
 		require.True(t, result.Applied)
 		require.Equal(t, "explicit", gjson.GetBytes(updated, "prompt_cache_options.mode").String())
-		require.False(t, gjson.GetBytes(updated, "prompt_cache_options.ttl").Exists())
+		require.Equal(t, "24h", gjson.GetBytes(updated, "prompt_cache_options.ttl").String())
 		require.False(t, gjson.GetBytes(updated, "prompt_cache_retention").Exists())
 		require.False(t, gjson.GetBytes(updated, "input.0.prompt_cache_breakpoint").Exists())
 	}

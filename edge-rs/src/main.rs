@@ -2833,7 +2833,7 @@ fn edge_plan_ws_first_message(
 }
 
 const OPENAI_PROMPT_CACHE_EXPLICIT_MIN_STATIC_BYTES: usize = 4 * 1024;
-const OPENAI_PROMPT_CACHE_CREATION_OPTIMIZATION_TTL: &str = "30m";
+const OPENAI_PROMPT_CACHE_CREATION_OPTIMIZATION_TTL: &str = "24h";
 
 #[cfg(test)]
 fn apply_openai_prompt_cache_creation_optimization_ws_message(
@@ -3090,15 +3090,13 @@ fn apply_openai_prompt_cache_creation_optimization_value(value: &mut Value, mode
     };
     remove_openai_prompt_cache_breakpoints(request);
     request.remove("prompt_cache_retention");
-    let prompt_cache_options = if mode == "reduce" {
+    request.insert(
+        "prompt_cache_options".to_string(),
         serde_json::json!({
             "mode": "explicit",
             "ttl": OPENAI_PROMPT_CACHE_CREATION_OPTIMIZATION_TTL
-        })
-    } else {
-        serde_json::json!({"mode": "explicit"})
-    };
-    request.insert("prompt_cache_options".to_string(), prompt_cache_options);
+        }),
+    );
     if mode == "reduce" {
         insert_openai_responses_stable_prefix_breakpoint(request);
     }
@@ -8177,7 +8175,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             output
                 .pointer("/prompt_cache_options/ttl")
                 .and_then(Value::as_str),
-            Some("30m")
+            Some("24h")
         );
         assert!(output.get("prompt_cache_retention").is_none());
         assert_eq!(
@@ -8261,7 +8259,12 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 .and_then(Value::as_str),
             Some("explicit")
         );
-        assert!(output.pointer("/prompt_cache_options/ttl").is_none());
+        assert_eq!(
+            output
+                .pointer("/prompt_cache_options/ttl")
+                .and_then(Value::as_str),
+            Some("24h")
+        );
     }
 
     #[test]
@@ -8309,7 +8312,12 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         };
         let output: Value = serde_json::from_str(&output).unwrap();
         assert!(output.get("prompt_cache_retention").is_none());
-        assert!(output.pointer("/prompt_cache_options/ttl").is_none());
+        assert_eq!(
+            output
+                .pointer("/prompt_cache_options/ttl")
+                .and_then(Value::as_str),
+            Some("24h")
+        );
     }
 
     #[test]
@@ -8390,7 +8398,12 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 .and_then(Value::as_str),
             Some("explicit")
         );
-        assert!(output.pointer("/prompt_cache_options/ttl").is_none());
+        assert_eq!(
+            output
+                .pointer("/prompt_cache_options/ttl")
+                .and_then(Value::as_str),
+            Some("24h")
+        );
         assert!(output.get("prompt_cache_retention").is_none());
 
         let mut disabled_model = Some("gpt-5.6-sol".to_string());
@@ -8431,7 +8444,12 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 .and_then(Value::as_str),
             Some("explicit")
         );
-        assert!(create_output.pointer("/prompt_cache_options/ttl").is_none());
+        assert_eq!(
+            create_output
+                .pointer("/prompt_cache_options/ttl")
+                .and_then(Value::as_str),
+            Some("24h")
+        );
         assert!(create_output.get("prompt_cache_retention").is_none());
 
         let update = r#"{"type":"session.update","session":{"model":"gpt-5.5"}}"#;
@@ -9134,7 +9152,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 value
                     .pointer("/prompt_cache_options/ttl")
                     .and_then(Value::as_str),
-                Some("30m")
+                Some("24h")
             );
         }
     }
@@ -9434,7 +9452,12 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                     .and_then(Value::as_str),
                 Some("explicit")
             );
-            assert!(value.pointer("/prompt_cache_options/ttl").is_none());
+            assert_eq!(
+                value
+                    .pointer("/prompt_cache_options/ttl")
+                    .and_then(Value::as_str),
+                Some("24h")
+            );
             assert!(value.get("prompt_cache_retention").is_none());
         }
     }
