@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"math/bits"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -158,36 +159,195 @@ func normalizeOpenAIUsageObjectForDownstream(usage map[string]any, mode string) 
 		[]string{"cache_read_tokens"},
 		[]string{"cached_tokens"},
 	)
-	ordinary := input - cacheRead - creation
-	if ordinary < 0 {
-		ordinary = 0
-	}
+	ordinary := subtractInt64FloorZero(input, cacheRead)
+	ordinary = subtractInt64FloorZero(ordinary, creation)
+	output, outputKey := firstJSONIntWithKey(usage, "output_tokens", "completion_tokens")
 	if mode == OpenAIPromptCacheCreationOptimizationModeInput125 {
-		ordinary = saturatingAddInt64(ordinary, cacheCreationAsInput125(creation))
+		allocation := allocateOpenAIInput125DisplayUsage(ordinary, cacheRead, creation, output, outputKey != "")
+		ordinary = allocation.ordinary
+		cacheRead = allocation.cacheRead
+		creation = allocation.creation
+		if outputKey != "" {
+			usage[outputKey] = allocation.output
+			if alternate := map[string]string{"output_tokens": "completion_tokens", "completion_tokens": "output_tokens"}[outputKey]; alternate != "" {
+				if _, exists := usage[alternate]; exists {
+					usage[alternate] = allocation.output
+				}
+			}
+		}
 	}
+	creation = 0
 	newInput := saturatingAddInt64(ordinary, cacheRead)
+	newInput = saturatingAddInt64(newInput, creation)
 	usage[inputKey] = newInput
 	if alternate := map[string]string{"input_tokens": "prompt_tokens", "prompt_tokens": "input_tokens"}[inputKey]; alternate != "" {
 		if _, exists := usage[alternate]; exists {
 			usage[alternate] = newInput
 		}
 	}
-	zeroOpenAICacheCreationAliases(usage)
+	setOpenAICacheCreationAliases(usage, creation)
+	setOpenAICacheReadAliases(usage, cacheRead, mode == OpenAIPromptCacheCreationOptimizationModeInput125, inputKey)
 	if _, exists := usage["total_tokens"]; exists {
-		output, _ := firstJSONIntWithKey(usage, "output_tokens", "completion_tokens")
+		output, _ = firstJSONIntWithKey(usage, "output_tokens", "completion_tokens")
 		usage["total_tokens"] = saturatingAddInt64(newInput, output)
 	}
 	return true
 }
 
-func cacheCreationAsInput125(tokens int64) int64 {
-	if tokens <= 0 {
+type openAIDownstreamDisplayUsage struct {
+	ordinary  int64
+	cacheRead int64
+	creation  int64
+	output    int64
+}
+
+// allocateOpenAIInput125DisplayUsage hides cache creation and redistributes its
+// GPT-5.6-equivalent cost across regular input, cache read, and a small output share.
+func allocateOpenAIInput125DisplayUsage(ordinary, cacheRead, creation, output int64, allowOutput bool) openAIDownstreamDisplayUsage {
+	allocation := openAIDownstreamDisplayUsage{
+		ordinary:  maxInt64(ordinary, 0),
+		cacheRead: maxInt64(cacheRead, 0),
+		creation:  maxInt64(creation, 0),
+		output:    maxInt64(output, 0),
+	}
+	if allocation.creation <= 0 {
+		return allocation
+	}
+	outputAdd := int64(0)
+	if allowOutput {
+		outputAdd = allocation.creation / 100
+		if outputLimit := allocation.output / 10; outputAdd > outputLimit {
+			outputAdd = outputLimit
+		}
+	}
+	originalInput := saturatingAddInt64(saturatingAddInt64(allocation.ordinary, allocation.cacheRead), allocation.creation)
+	longContext := originalInput > openAIGPT54LongContextInputThreshold
+	outputWeight := int64(120)
+	if longContext {
+		// Long-context pricing multiplies input/cache buckets by 2 and output
+		// by 1.5. In regular-input twentieths, output therefore weighs 90.
+		outputWeight = 90
+	}
+	readAdd, ordinaryAdd := openAIInput125DisplayAdds(allocation.creation, outputAdd, outputWeight)
+	if allowOutput && !longContext {
+		transformedInput := saturatingAddInt64(
+			saturatingAddInt64(allocation.ordinary, allocation.cacheRead),
+			saturatingAddInt64(ordinaryAdd, readAdd),
+		)
+		if transformedInput > openAIGPT54LongContextInputThreshold {
+			excess := transformedInput - openAIGPT54LongContextInputThreshold
+			outputAdd = saturatingAddInt64(outputAdd, ceilMulDivInt64(excess, 20, outputWeight))
+			// Residue rounding can leave only a handful of input tokens above
+			// the boundary. This loop is fixed and never request-size dependent.
+			for range 16 {
+				readAdd, ordinaryAdd = openAIInput125DisplayAdds(allocation.creation, outputAdd, outputWeight)
+				transformedInput = saturatingAddInt64(
+					saturatingAddInt64(allocation.ordinary, allocation.cacheRead),
+					saturatingAddInt64(ordinaryAdd, readAdd),
+				)
+				if transformedInput <= openAIGPT54LongContextInputThreshold {
+					break
+				}
+				outputAdd = saturatingAddInt64(outputAdd, 1)
+			}
+		}
+	}
+	allocation.ordinary = saturatingAddInt64(allocation.ordinary, ordinaryAdd)
+	allocation.cacheRead = saturatingAddInt64(allocation.cacheRead, readAdd)
+	allocation.creation = 0
+	allocation.output = saturatingAddInt64(allocation.output, outputAdd)
+	return allocation
+}
+
+func maxInt64(value, minimum int64) int64 {
+	if value < minimum {
+		return minimum
+	}
+	return value
+}
+
+func openAIInput125DisplayAdds(creation, outputAdd, outputWeight int64) (int64, int64) {
+	readAdd := nearestInt64WithMod10(
+		creation/20,
+		requiredCacheReadResidue(creation, outputAdd, outputWeight),
+	)
+	return readAdd, weightedOpenAIInput125OrdinaryAdd(creation, outputAdd, readAdd, outputWeight)
+}
+
+func requiredCacheReadResidue(creation, outputAdd, outputWeight int64) int64 {
+	// Work modulo 20 before multiplication to avoid overflow.
+	base := ((creation%20)*25 - (outputAdd%20)*(outputWeight%20)) % 20
+	if base < 0 {
+		base += 20
+	}
+	bestResidue, bestDistance := int64(0), int64(math.MaxInt64)
+	for residue := int64(0); residue < 10; residue++ {
+		remaining := (base - 2*residue) % 20
+		if remaining < 0 {
+			remaining += 20
+		}
+		distance := remaining
+		if distance > 10 {
+			distance = 20 - distance
+		}
+		if distance < bestDistance {
+			bestResidue, bestDistance = residue, distance
+		}
+	}
+	return bestResidue
+}
+
+func weightedOpenAIInput125OrdinaryAdd(creation, outputAdd, readAdd, outputWeight int64) int64 {
+	if creation <= 0 {
 		return 0
 	}
-	if tokens > (math.MaxInt64-3)/5 {
+	hi, lo := bits.Mul64(uint64(creation), 25)
+	outputHi, outputLo := bits.Mul64(uint64(maxInt64(outputAdd, 0)), uint64(maxInt64(outputWeight, 0)))
+	lo, borrow := bits.Sub64(lo, outputLo, 0)
+	hi, _ = bits.Sub64(hi, outputHi, borrow)
+	readHi, readLo := bits.Mul64(uint64(maxInt64(readAdd, 0)), 2)
+	lo, borrow = bits.Sub64(lo, readLo, 0)
+	hi, _ = bits.Sub64(hi, readHi, borrow)
+	lo, carry := bits.Add64(lo, 10, 0)
+	hi, _ = bits.Add64(hi, 0, carry)
+	if hi >= 20 {
 		return math.MaxInt64
 	}
-	return (tokens*5 + 3) / 4
+	quotient, _ := bits.Div64(hi, lo, 20)
+	if quotient > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(quotient)
+}
+
+func ceilMulDivInt64(value, multiplier, divisor int64) int64 {
+	if value <= 0 || multiplier <= 0 || divisor <= 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(uint64(value), uint64(multiplier))
+	lo, carry := bits.Add64(lo, uint64(divisor-1), 0)
+	hi, _ = bits.Add64(hi, 0, carry)
+	if hi >= uint64(divisor) {
+		return math.MaxInt64
+	}
+	quotient, _ := bits.Div64(hi, lo, uint64(divisor))
+	if quotient > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(quotient)
+}
+
+func nearestInt64WithMod10(value, residue int64) int64 {
+	if value < 0 {
+		value = 0
+	}
+	residue = ((residue % 10) + 10) % 10
+	up := (residue - value%10 + 10) % 10
+	down := up - 10
+	if value+down >= 0 && -down <= up {
+		return value + down
+	}
+	return value + up
 }
 
 func saturatingAddInt64(a, b int64) int64 {
@@ -203,6 +363,19 @@ func saturatingAddInt64(a, b int64) int64 {
 	return a + b
 }
 
+func subtractInt64FloorZero(value, subtrahend int64) int64 {
+	if value <= 0 {
+		return 0
+	}
+	if subtrahend <= 0 {
+		return value
+	}
+	if subtrahend >= value {
+		return 0
+	}
+	return value - subtrahend
+}
+
 func firstJSONIntWithKey(object map[string]any, keys ...string) (int64, string) {
 	firstValidKey := ""
 	for _, key := range keys {
@@ -210,7 +383,7 @@ func firstJSONIntWithKey(object map[string]any, keys ...string) (int64, string) 
 			if firstValidKey == "" {
 				firstValidKey = key
 			}
-			if value != 0 {
+			if value > 0 {
 				return value, key
 			}
 		}
@@ -255,10 +428,10 @@ func jsonInt64(value any) (int64, bool) {
 	}
 }
 
-func zeroOpenAICacheCreationAliases(usage map[string]any) {
+func setOpenAICacheCreationAliases(usage map[string]any, value int64) {
 	for _, key := range []string{"cache_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens", "cache_creation_tokens"} {
 		if _, exists := usage[key]; exists {
-			usage[key] = int64(0)
+			usage[key] = value
 		}
 	}
 	for _, detailsKey := range []string{"input_tokens_details", "prompt_tokens_details"} {
@@ -268,10 +441,39 @@ func zeroOpenAICacheCreationAliases(usage map[string]any) {
 		}
 		for _, key := range []string{"cache_creation_input_tokens", "cache_write_input_tokens", "cache_write_tokens", "cache_creation_tokens"} {
 			if _, exists := details[key]; exists {
-				details[key] = int64(0)
+				details[key] = value
 			}
 		}
 	}
+}
+
+func setOpenAICacheReadAliases(usage map[string]any, value int64, ensureCanonical bool, inputKey string) {
+	for _, key := range []string{"cache_read_input_tokens", "cache_read_tokens", "cached_tokens"} {
+		if _, exists := usage[key]; exists {
+			usage[key] = value
+		}
+	}
+	for _, detailsKey := range []string{"input_tokens_details", "prompt_tokens_details"} {
+		details, ok := usage[detailsKey].(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, exists := details["cached_tokens"]; exists {
+			details["cached_tokens"] = value
+		}
+	}
+	if !ensureCanonical {
+		return
+	}
+	detailsKey := "input_tokens_details"
+	if inputKey == "prompt_tokens" {
+		detailsKey = "prompt_tokens_details"
+	}
+	if details, ok := usage[detailsKey].(map[string]any); ok {
+		details["cached_tokens"] = value
+		return
+	}
+	usage[detailsKey] = map[string]any{"cached_tokens": value}
 }
 
 func normalizeOpenAIResponsesUsageForDownstream(usage *apicompat.ResponsesUsage, mode string) bool {
@@ -281,21 +483,29 @@ func normalizeOpenAIResponsesUsageForDownstream(usage *apicompat.ResponsesUsage,
 	}
 	cacheRead := 0
 	if usage.InputTokensDetails != nil {
-		cacheRead = usage.InputTokensDetails.CachedTokens
+		cacheRead = max(usage.InputTokensDetails.CachedTokens, 0)
 	}
 	creation := usage.CacheCreationInputTokens
-	ordinary := usage.InputTokens - cacheRead - creation
-	if ordinary < 0 {
-		ordinary = 0
-	}
+	ordinary64 := subtractInt64FloorZero(int64(usage.InputTokens), int64(cacheRead))
+	ordinary64 = subtractInt64FloorZero(ordinary64, int64(creation))
+	ordinary := int(minInt64(ordinary64, math.MaxInt))
 	if mode == OpenAIPromptCacheCreationOptimizationModeInput125 {
-		ordinary = int(minInt64(saturatingAddInt64(int64(ordinary), cacheCreationAsInput125(int64(creation))), math.MaxInt))
+		allocation := allocateOpenAIInput125DisplayUsage(int64(ordinary), int64(cacheRead), int64(creation), int64(usage.OutputTokens), true)
+		ordinary = int(minInt64(allocation.ordinary, math.MaxInt))
+		cacheRead = int(minInt64(allocation.cacheRead, math.MaxInt))
+		creation = int(minInt64(allocation.creation, math.MaxInt))
+		usage.OutputTokens = int(minInt64(allocation.output, math.MaxInt))
+		if usage.InputTokensDetails == nil {
+			usage.InputTokensDetails = &apicompat.ResponsesInputTokensDetails{}
+		}
 	}
-	newInput := minInt64(saturatingAddInt64(int64(ordinary), int64(cacheRead)), math.MaxInt)
+	creation = 0
+	newInput := minInt64(saturatingAddInt64(saturatingAddInt64(int64(ordinary), int64(cacheRead)), int64(creation)), math.MaxInt)
 	usage.InputTokens = int(newInput)
 	usage.TotalTokens = int(minInt64(saturatingAddInt64(newInput, int64(usage.OutputTokens)), math.MaxInt))
-	usage.CacheCreationInputTokens = 0
+	usage.CacheCreationInputTokens = creation
 	if details := usage.InputTokensDetails; details != nil {
+		details.CachedTokens = cacheRead
 		details.CacheCreationInputTokens = 0
 		details.CacheCreationTokens = 0
 		details.CacheWriteInputTokens = 0

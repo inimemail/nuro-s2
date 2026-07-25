@@ -2019,7 +2019,7 @@ async fn handle_openai_edge(
             .fallback_requests
             .fetch_add(1, Ordering::Relaxed);
         if let Some(reason) = &plan.reason {
-            info!("edge fallback_to_go reason={}", safe_edge_error(&reason));
+            info!("edge fallback_to_go reason={}", safe_edge_error(reason));
         }
         return fallback_to_go(
             state,
@@ -2329,7 +2329,7 @@ async fn relay_ws_session(
     if plan.action != "relay" {
         drop(ingress_permit);
         if let Some(reason) = &plan.reason {
-            info!("edge ws fallback_to_go reason={}", safe_edge_error(&reason));
+            info!("edge ws fallback_to_go reason={}", safe_edge_error(reason));
         }
         return proxy_ws_to_go(state, client_socket, method, uri, headers, first_msg).await;
     }
@@ -5465,9 +5465,9 @@ fn normalize_openai_downstream_usage_object(
     }
     let input_tokens = usage.get("input_tokens").and_then(Value::as_i64);
     let prompt_tokens = usage.get("prompt_tokens").and_then(Value::as_i64);
-    let input_key = if input_tokens.is_some_and(|value| value != 0) {
+    let input_key = if input_tokens.is_some_and(|value| value > 0) {
         "input_tokens"
-    } else if prompt_tokens.is_some_and(|value| value != 0) {
+    } else if prompt_tokens.is_some_and(|value| value > 0) {
         "prompt_tokens"
     } else if input_tokens.is_some() {
         "input_tokens"
@@ -5487,14 +5487,47 @@ fn normalize_openai_downstream_usage_object(
             &["cached_tokens"],
         ],
     );
-    let mut ordinary = input
+    let ordinary = input
         .saturating_sub(cache_read)
         .saturating_sub(creation)
         .max(0);
-    if mode == "input_125" {
-        ordinary = ordinary.saturating_add(cache_creation_as_input_125_i64(creation));
-    }
-    let new_input = ordinary.saturating_add(cache_read);
+    let output_tokens = usage.get("output_tokens").and_then(Value::as_i64);
+    let completion_tokens = usage.get("completion_tokens").and_then(Value::as_i64);
+    let output_key = if output_tokens.is_some_and(|value| value > 0) {
+        Some("output_tokens")
+    } else if completion_tokens.is_some_and(|value| value > 0) {
+        Some("completion_tokens")
+    } else if output_tokens.is_some() {
+        Some("output_tokens")
+    } else if completion_tokens.is_some() {
+        Some("completion_tokens")
+    } else {
+        None
+    };
+    let output = output_key
+        .and_then(|key| usage.get(key).and_then(Value::as_i64))
+        .unwrap_or(0)
+        .max(0);
+    let allocation = if mode == "input_125" {
+        allocate_openai_input_125_display_usage(
+            ordinary,
+            cache_read,
+            creation,
+            output,
+            output_key.is_some(),
+        )
+    } else {
+        OpenAiDownstreamDisplayUsage {
+            ordinary,
+            cache_read,
+            creation: 0,
+            output,
+        }
+    };
+    let new_input = allocation
+        .ordinary
+        .saturating_add(allocation.cache_read)
+        .saturating_add(allocation.creation);
     usage.insert(input_key.to_string(), Value::from(new_input));
     let alternate = if input_key == "input_tokens" {
         "prompt_tokens"
@@ -5504,22 +5537,168 @@ fn normalize_openai_downstream_usage_object(
     if usage.contains_key(alternate) {
         usage.insert(alternate.to_string(), Value::from(new_input));
     }
-    zero_openai_cache_creation_aliases(usage);
+    if let Some(output_key) = output_key {
+        usage.insert(output_key.to_string(), Value::from(allocation.output));
+        let alternate = if output_key == "output_tokens" {
+            "completion_tokens"
+        } else {
+            "output_tokens"
+        };
+        if usage.contains_key(alternate) {
+            usage.insert(alternate.to_string(), Value::from(allocation.output));
+        }
+    }
+    set_openai_cache_creation_aliases(usage, allocation.creation);
+    set_openai_cache_read_aliases(usage, allocation.cache_read, mode == "input_125", input_key);
     if usage.contains_key("total_tokens") {
-        let output_tokens = usage.get("output_tokens").and_then(Value::as_i64);
-        let completion_tokens = usage.get("completion_tokens").and_then(Value::as_i64);
-        let output = output_tokens
-            .filter(|value| *value != 0)
-            .or(completion_tokens)
-            .or(output_tokens)
-            .unwrap_or(0)
-            .max(0);
         usage.insert(
             "total_tokens".to_string(),
-            Value::from(new_input.saturating_add(output)),
+            Value::from(new_input.saturating_add(allocation.output)),
         );
     }
     true
+}
+
+#[derive(Clone, Copy)]
+struct OpenAiDownstreamDisplayUsage {
+    ordinary: i64,
+    cache_read: i64,
+    creation: i64,
+    output: i64,
+}
+
+const OPENAI_GPT_56_LONG_CONTEXT_INPUT_THRESHOLD: i64 = 272_000;
+
+fn allocate_openai_input_125_display_usage(
+    ordinary: i64,
+    cache_read: i64,
+    creation: i64,
+    output: i64,
+    allow_output: bool,
+) -> OpenAiDownstreamDisplayUsage {
+    let mut allocation = OpenAiDownstreamDisplayUsage {
+        ordinary: ordinary.max(0),
+        cache_read: cache_read.max(0),
+        creation: creation.max(0),
+        output: output.max(0),
+    };
+    if allocation.creation <= 0 {
+        return allocation;
+    }
+    let mut output_add = 0;
+    if allow_output {
+        output_add = allocation.creation / 100;
+        let output_limit = allocation.output / 10;
+        if output_add > output_limit {
+            output_add = output_limit;
+        }
+    }
+    let original_input = allocation
+        .ordinary
+        .saturating_add(allocation.cache_read)
+        .saturating_add(allocation.creation);
+    let long_context = original_input > OPENAI_GPT_56_LONG_CONTEXT_INPUT_THRESHOLD;
+    // Long-context pricing weighs output at 1.5x while input/cache use 2x.
+    let output_weight = if long_context { 90 } else { 120 };
+    let (mut read_add, mut ordinary_add) =
+        openai_input_125_display_adds(allocation.creation, output_add, output_weight);
+    if allow_output && !long_context {
+        let mut transformed_input = allocation
+            .ordinary
+            .saturating_add(allocation.cache_read)
+            .saturating_add(ordinary_add)
+            .saturating_add(read_add);
+        if transformed_input > OPENAI_GPT_56_LONG_CONTEXT_INPUT_THRESHOLD {
+            let excess = transformed_input - OPENAI_GPT_56_LONG_CONTEXT_INPUT_THRESHOLD;
+            let extra_output = ((excess as u128)
+                .saturating_mul(20)
+                .saturating_add((output_weight - 1) as u128)
+                / output_weight as u128)
+                .min(i64::MAX as u128) as i64;
+            output_add = output_add.saturating_add(extra_output);
+            // Residue rounding can leave a few input tokens above the boundary.
+            // Keep this fixed so work never scales with request size.
+            for _ in 0..16 {
+                (read_add, ordinary_add) =
+                    openai_input_125_display_adds(allocation.creation, output_add, output_weight);
+                transformed_input = allocation
+                    .ordinary
+                    .saturating_add(allocation.cache_read)
+                    .saturating_add(ordinary_add)
+                    .saturating_add(read_add);
+                if transformed_input <= OPENAI_GPT_56_LONG_CONTEXT_INPUT_THRESHOLD {
+                    break;
+                }
+                output_add = output_add.saturating_add(1);
+            }
+        }
+    }
+    allocation.ordinary = allocation.ordinary.saturating_add(ordinary_add);
+    allocation.cache_read = allocation.cache_read.saturating_add(read_add);
+    allocation.creation = 0;
+    allocation.output = allocation.output.saturating_add(output_add);
+    allocation
+}
+
+fn openai_input_125_display_adds(creation: i64, output_add: i64, output_weight: i64) -> (i64, i64) {
+    let read_add = nearest_i64_with_mod10(
+        creation / 20,
+        required_cache_read_residue(creation, output_add, output_weight),
+    );
+    (
+        read_add,
+        weighted_openai_input_125_ordinary_add(creation, output_add, read_add, output_weight),
+    )
+}
+
+fn required_cache_read_residue(creation: i64, output_add: i64, output_weight: i64) -> i64 {
+    // Work modulo 20 before multiplication to avoid overflow.
+    let base = (creation.rem_euclid(20) * 25
+        - output_add.rem_euclid(20) * output_weight.rem_euclid(20))
+    .rem_euclid(20);
+    let mut best_residue = 0;
+    let mut best_distance = i64::MAX;
+    for residue in 0..10 {
+        let mut remaining = (base - 2 * residue) % 20;
+        if remaining < 0 {
+            remaining += 20;
+        }
+        let distance = remaining.min(20 - remaining);
+        if distance < best_distance {
+            best_residue = residue;
+            best_distance = distance;
+        }
+    }
+    best_residue
+}
+
+fn weighted_openai_input_125_ordinary_add(
+    creation: i64,
+    output_add: i64,
+    read_add: i64,
+    output_weight: i64,
+) -> i64 {
+    if creation <= 0 {
+        return 0;
+    }
+    let numerator = (creation as u128)
+        .saturating_mul(25)
+        .saturating_sub((output_add.max(0) as u128).saturating_mul(output_weight.max(0) as u128))
+        .saturating_sub((read_add.max(0) as u128).saturating_mul(2))
+        .saturating_add(10);
+    (numerator / 20).min(i64::MAX as u128) as i64
+}
+
+fn nearest_i64_with_mod10(value: i64, residue: i64) -> i64 {
+    let value = value.max(0);
+    let residue = residue.rem_euclid(10);
+    let up = (residue - value.rem_euclid(10)).rem_euclid(10);
+    let down = up - 10;
+    if value.saturating_add(down) >= 0 && -down <= up {
+        value + down
+    } else {
+        value.saturating_add(up)
+    }
 }
 
 fn first_positive_usage_i64(usage: &serde_json::Map<String, Value>, paths: &[&[&str]]) -> i64 {
@@ -5540,17 +5719,7 @@ fn first_positive_usage_i64(usage: &serde_json::Map<String, Value>, paths: &[&[&
         .unwrap_or(0)
 }
 
-fn cache_creation_as_input_125_i64(tokens: i64) -> i64 {
-    if tokens <= 0 {
-        return 0;
-    }
-    if tokens > (i64::MAX - 3) / 5 {
-        return i64::MAX;
-    }
-    (tokens * 5 + 3) / 4
-}
-
-fn zero_openai_cache_creation_aliases(usage: &mut serde_json::Map<String, Value>) {
+fn set_openai_cache_creation_aliases(usage: &mut serde_json::Map<String, Value>, value: i64) {
     for key in [
         "cache_write_tokens",
         "cache_creation_input_tokens",
@@ -5558,7 +5727,7 @@ fn zero_openai_cache_creation_aliases(usage: &mut serde_json::Map<String, Value>
         "cache_creation_tokens",
     ] {
         if usage.contains_key(key) {
-            usage.insert(key.to_string(), Value::from(0));
+            usage.insert(key.to_string(), Value::from(value));
         }
     }
     for details_key in ["input_tokens_details", "prompt_tokens_details"] {
@@ -5572,9 +5741,50 @@ fn zero_openai_cache_creation_aliases(usage: &mut serde_json::Map<String, Value>
             "cache_creation_tokens",
         ] {
             if details.contains_key(key) {
-                details.insert(key.to_string(), Value::from(0));
+                details.insert(key.to_string(), Value::from(value));
             }
         }
+    }
+}
+
+fn set_openai_cache_read_aliases(
+    usage: &mut serde_json::Map<String, Value>,
+    value: i64,
+    ensure_canonical: bool,
+    input_key: &str,
+) {
+    for key in [
+        "cache_read_input_tokens",
+        "cache_read_tokens",
+        "cached_tokens",
+    ] {
+        if usage.contains_key(key) {
+            usage.insert(key.to_string(), Value::from(value));
+        }
+    }
+    for details_key in ["input_tokens_details", "prompt_tokens_details"] {
+        let Some(details) = usage.get_mut(details_key).and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if details.contains_key("cached_tokens") {
+            details.insert("cached_tokens".to_string(), Value::from(value));
+        }
+    }
+    if !ensure_canonical {
+        return;
+    }
+    let details_key = if input_key == "prompt_tokens" {
+        "prompt_tokens_details"
+    } else {
+        "input_tokens_details"
+    };
+    if let Some(details) = usage.get_mut(details_key).and_then(Value::as_object_mut) {
+        details.insert("cached_tokens".to_string(), Value::from(value));
+    } else {
+        usage.insert(
+            details_key.to_string(),
+            serde_json::json!({"cached_tokens": value}),
+        );
     }
 }
 
@@ -8988,15 +9198,23 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         ));
         assert_eq!(
             input_125.pointer("/usage/prompt_tokens"),
-            Some(&Value::from(5852))
+            Some(&Value::from(5858))
         );
         assert_eq!(
             input_125.pointer("/usage/total_tokens"),
-            Some(&Value::from(5872))
+            Some(&Value::from(5880))
         );
         assert_eq!(
             input_125.pointer("/usage/prompt_tokens_details/cache_creation_tokens"),
             Some(&Value::from(0))
+        );
+        assert_eq!(
+            input_125.pointer("/usage/prompt_tokens_details/cached_tokens"),
+            Some(&Value::from(4756))
+        );
+        assert_eq!(
+            input_125.pointer("/usage/completion_tokens"),
+            Some(&Value::from(22))
         );
     }
 
@@ -9012,6 +9230,147 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             let original = value.clone();
             assert!(!normalize_openai_downstream_cache_usage(&mut value, mode));
             assert_eq!(value, original);
+        }
+    }
+
+    #[test]
+    fn downstream_cache_usage_d_adds_canonical_cache_read_when_upstream_omits_it() {
+        let mut value = serde_json::json!({
+            "usage": {
+                "input_tokens": 988,
+                "output_tokens": 20,
+                "total_tokens": 1008,
+                "cache_read_tokens": 0,
+                "input_tokens_details": {
+                    "cache_creation_tokens": 512
+                }
+            }
+        });
+        assert!(normalize_openai_downstream_cache_usage(
+            &mut value,
+            Some("input_125")
+        ));
+        assert_eq!(
+            value.pointer("/usage/input_tokens"),
+            Some(&Value::from(1122))
+        );
+        assert_eq!(
+            value.pointer("/usage/output_tokens"),
+            Some(&Value::from(22))
+        );
+        assert_eq!(
+            value.pointer("/usage/total_tokens"),
+            Some(&Value::from(1144))
+        );
+        assert_eq!(
+            value.pointer("/usage/input_tokens_details/cached_tokens"),
+            Some(&Value::from(20))
+        );
+        assert_eq!(
+            value.pointer("/usage/cache_read_tokens"),
+            Some(&Value::from(20))
+        );
+        assert_eq!(
+            value.pointer("/usage/input_tokens_details/cache_creation_tokens"),
+            Some(&Value::from(0))
+        );
+    }
+
+    #[test]
+    fn downstream_cache_usage_d_uses_valid_completion_alias_when_output_is_invalid() {
+        for invalid_output in [Value::Null, Value::from(-5)] {
+            let mut value = serde_json::json!({
+                "usage": {
+                    "prompt_tokens": 5724,
+                    "output_tokens": invalid_output,
+                    "completion_tokens": 20,
+                    "total_tokens": 5744,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 4736,
+                        "cache_creation_tokens": 512
+                    }
+                }
+            });
+            assert!(normalize_openai_downstream_cache_usage(
+                &mut value,
+                Some("input_125")
+            ));
+            assert_eq!(
+                value.pointer("/usage/output_tokens"),
+                Some(&Value::from(22))
+            );
+            assert_eq!(
+                value.pointer("/usage/completion_tokens"),
+                Some(&Value::from(22))
+            );
+        }
+    }
+
+    #[test]
+    fn downstream_cache_usage_negative_input_cannot_overflow() {
+        let mut value = serde_json::json!({
+            "usage": {
+                "input_tokens": i64::MIN,
+                "output_tokens": 1,
+                "total_tokens": 0,
+                "input_tokens_details": {
+                    "cached_tokens": 10,
+                    "cache_creation_tokens": 1
+                }
+            }
+        });
+        assert!(normalize_openai_downstream_cache_usage(
+            &mut value,
+            Some("free")
+        ));
+        assert_eq!(value.pointer("/usage/input_tokens"), Some(&Value::from(10)));
+        assert_eq!(value.pointer("/usage/total_tokens"), Some(&Value::from(11)));
+        assert_eq!(
+            value.pointer("/usage/input_tokens_details/cache_creation_tokens"),
+            Some(&Value::from(0))
+        );
+    }
+
+    #[test]
+    fn downstream_cache_usage_d_saturates_without_overflow() {
+        let allocation = allocate_openai_input_125_display_usage(0, 0, i64::MAX, i64::MAX, true);
+        assert_eq!(allocation.ordinary, i64::MAX);
+        assert!(allocation.cache_read > 0);
+        assert_eq!(allocation.creation, 0);
+        assert_eq!(allocation.output, i64::MAX);
+    }
+
+    #[test]
+    fn downstream_cache_usage_d_preserves_long_context_boundary_and_cost() {
+        for (ordinary, cache_read, creation, output, want_long_context) in [
+            (271_000_i64, 488_i64, 512_i64, 20_i64, false),
+            (271_001_i64, 488_i64, 512_i64, 20_i64, true),
+        ] {
+            let allocation = allocate_openai_input_125_display_usage(
+                ordinary, cache_read, creation, output, true,
+            );
+            let displayed_input = allocation
+                .ordinary
+                .saturating_add(allocation.cache_read)
+                .saturating_add(allocation.creation);
+            assert_eq!(
+                displayed_input > OPENAI_GPT_56_LONG_CONTEXT_INPUT_THRESHOLD,
+                want_long_context
+            );
+
+            // GPT-5.6 prices in twentieths of a regular input token. Long
+            // context doubles input/cache and applies 1.5x to output, which
+            // reduces the normalized output weight from 120 to 90.
+            let output_weight = if want_long_context { 90_i128 } else { 120_i128 };
+            let original_cost = i128::from(ordinary) * 20
+                + i128::from(cache_read) * 2
+                + i128::from(creation) * 25
+                + i128::from(output) * output_weight;
+            let displayed_cost = i128::from(allocation.ordinary) * 20
+                + i128::from(allocation.cache_read) * 2
+                + i128::from(allocation.creation) * 25
+                + i128::from(allocation.output) * output_weight;
+            assert_eq!(displayed_cost, original_cost);
         }
     }
 
@@ -9043,7 +9402,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         let ws_value: Value = serde_json::from_str(&ws_text).unwrap();
         assert_eq!(
             ws_value.pointer("/response/usage/input_tokens"),
-            Some(&Value::from(5852))
+            Some(&Value::from(5858))
         );
     }
 

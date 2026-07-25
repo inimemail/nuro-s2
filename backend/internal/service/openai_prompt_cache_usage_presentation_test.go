@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -77,7 +78,7 @@ func TestNormalizeOpenAIWSDownstreamCacheUsage_TerminalOnlyAndByteExactNoOp(t *t
 	}{
 		{OpenAIPromptCacheCreationOptimizationModeSuppress, 5724, 512},
 		{OpenAIPromptCacheCreationOptimizationModeFree, 5212, 0},
-		{OpenAIPromptCacheCreationOptimizationModeInput125, 5852, 0},
+		{OpenAIPromptCacheCreationOptimizationModeInput125, 5858, 0},
 	} {
 		got := normalizeOpenAIWSDownstreamCacheUsage(terminal, "response.completed", tc.mode)
 		downstream, parsed := extractOpenAIUsageFromJSONBytes(got)
@@ -163,7 +164,7 @@ func TestNormalizeOpenAIDownstreamUsageForRequest_DoesNotLeakAcrossAccounts(t *t
 
 	updated, changed := normalizeOpenAIDownstreamUsageForRequest(body, context.Background(), enabledD, "gpt-5.6-terra")
 	require.True(t, changed)
-	require.Equal(t, int64(5852), gjson.GetBytes(updated, "usage.input_tokens").Int())
+	require.Equal(t, int64(5858), gjson.GetBytes(updated, "usage.input_tokens").Int())
 
 	for _, account := range []*Account{disabledD, enabledB} {
 		got, accountChanged := normalizeOpenAIDownstreamUsageForRequest(body, context.Background(), account, "gpt-5.6-terra")
@@ -238,17 +239,123 @@ func TestNormalizeOpenAIDownstreamUsageJSON_CFree(t *testing.T) {
 	require.Equal(t, 476, parsed.InputTokens-parsed.CacheReadInputTokens-parsed.CacheCreationInputTokens)
 }
 
+func TestNormalizeOpenAIDownstreamUsageJSON_CDZeroEveryCreationAlias(t *testing.T) {
+	body := []byte(`{"usage":{"input_tokens":5724,"prompt_tokens":5724,"output_tokens":20,"completion_tokens":20,"total_tokens":5744,"cache_write_tokens":512,"cache_creation_input_tokens":512,"cache_write_input_tokens":512,"cache_creation_tokens":512,"input_tokens_details":{"cached_tokens":4736,"cache_creation_input_tokens":512,"cache_write_input_tokens":512,"cache_write_tokens":512,"cache_creation_tokens":512},"prompt_tokens_details":{"cached_tokens":4736,"cache_creation_input_tokens":512,"cache_write_input_tokens":512,"cache_write_tokens":512,"cache_creation_tokens":512}}}`)
+	paths := []string{
+		"usage.cache_write_tokens",
+		"usage.cache_creation_input_tokens",
+		"usage.cache_write_input_tokens",
+		"usage.cache_creation_tokens",
+		"usage.input_tokens_details.cache_creation_input_tokens",
+		"usage.input_tokens_details.cache_write_input_tokens",
+		"usage.input_tokens_details.cache_write_tokens",
+		"usage.input_tokens_details.cache_creation_tokens",
+		"usage.prompt_tokens_details.cache_creation_input_tokens",
+		"usage.prompt_tokens_details.cache_write_input_tokens",
+		"usage.prompt_tokens_details.cache_write_tokens",
+		"usage.prompt_tokens_details.cache_creation_tokens",
+	}
+	for _, mode := range []string{OpenAIPromptCacheCreationOptimizationModeFree, OpenAIPromptCacheCreationOptimizationModeInput125} {
+		got, changed := normalizeOpenAIDownstreamUsageJSON(body, mode)
+		require.True(t, changed)
+		for _, path := range paths {
+			require.True(t, gjson.GetBytes(got, path).Exists(), "mode=%s path=%s", mode, path)
+			require.Zero(t, gjson.GetBytes(got, path).Int(), "mode=%s path=%s", mode, path)
+		}
+	}
+}
+
 func TestNormalizeOpenAIDownstreamUsageJSON_DInput125(t *testing.T) {
 	body := []byte(`{"usage":{"prompt_tokens":5724,"completion_tokens":20,"total_tokens":5744,"prompt_tokens_details":{"cached_tokens":4736,"cache_creation_tokens":512}}}`)
 	got, changed := normalizeOpenAIDownstreamUsageJSON(body, OpenAIPromptCacheCreationOptimizationModeInput125)
 	require.True(t, changed)
-	require.Equal(t, int64(5852), gjson.GetBytes(got, "usage.prompt_tokens").Int())
-	require.Equal(t, int64(5872), gjson.GetBytes(got, "usage.total_tokens").Int())
-	require.Equal(t, int64(4736), gjson.GetBytes(got, "usage.prompt_tokens_details.cached_tokens").Int())
+	require.Equal(t, int64(5858), gjson.GetBytes(got, "usage.prompt_tokens").Int())
+	require.Equal(t, int64(5880), gjson.GetBytes(got, "usage.total_tokens").Int())
+	require.Equal(t, int64(4756), gjson.GetBytes(got, "usage.prompt_tokens_details.cached_tokens").Int())
+	require.Equal(t, int64(22), gjson.GetBytes(got, "usage.completion_tokens").Int())
 	require.Zero(t, gjson.GetBytes(got, "usage.prompt_tokens_details.cache_creation_tokens").Int())
 	parsed, ok := extractOpenAIUsageFromJSONBytes(got)
 	require.True(t, ok)
-	require.Equal(t, 1116, parsed.InputTokens-parsed.CacheReadInputTokens-parsed.CacheCreationInputTokens)
+	require.Equal(t, 1102, parsed.InputTokens-parsed.CacheReadInputTokens-parsed.CacheCreationInputTokens)
+	require.Equal(t, 4756, parsed.CacheReadInputTokens)
+	require.Equal(t, 22, parsed.OutputTokens)
+}
+
+func TestNormalizeOpenAIDownstreamUsageJSON_DAddsCanonicalCacheReadWhenUpstreamOmitsIt(t *testing.T) {
+	body := []byte(`{"usage":{"input_tokens":988,"output_tokens":20,"total_tokens":1008,"cache_read_tokens":0,"input_tokens_details":{"cache_creation_tokens":512}}}`)
+	got, changed := normalizeOpenAIDownstreamUsageJSON(body, OpenAIPromptCacheCreationOptimizationModeInput125)
+	require.True(t, changed)
+	require.Equal(t, int64(1122), gjson.GetBytes(got, "usage.input_tokens").Int())
+	require.Equal(t, int64(1144), gjson.GetBytes(got, "usage.total_tokens").Int())
+	require.Equal(t, int64(20), gjson.GetBytes(got, "usage.input_tokens_details.cached_tokens").Int())
+	require.Equal(t, int64(20), gjson.GetBytes(got, "usage.cache_read_tokens").Int())
+	require.Equal(t, int64(22), gjson.GetBytes(got, "usage.output_tokens").Int())
+	require.Zero(t, gjson.GetBytes(got, "usage.input_tokens_details.cache_creation_tokens").Int())
+
+	parsed, ok := extractOpenAIUsageFromJSONBytes(got)
+	require.True(t, ok)
+	require.Equal(t, 1102, parsed.InputTokens-parsed.CacheReadInputTokens-parsed.CacheCreationInputTokens)
+	require.Equal(t, 20, parsed.CacheReadInputTokens)
+	require.Equal(t, 22, parsed.OutputTokens)
+}
+
+func TestNormalizeOpenAIDownstreamUsageJSON_DUsesValidCompletionAliasWhenOutputIsInvalid(t *testing.T) {
+	for _, invalidOutput := range []string{"null", "-5"} {
+		body := []byte(`{"usage":{"prompt_tokens":5724,"output_tokens":` + invalidOutput + `,"completion_tokens":20,"total_tokens":5744,"prompt_tokens_details":{"cached_tokens":4736,"cache_creation_tokens":512}}}`)
+		got, changed := normalizeOpenAIDownstreamUsageJSON(body, OpenAIPromptCacheCreationOptimizationModeInput125)
+		require.True(t, changed)
+		require.Equal(t, int64(22), gjson.GetBytes(got, "usage.output_tokens").Int())
+		require.Equal(t, int64(22), gjson.GetBytes(got, "usage.completion_tokens").Int())
+	}
+}
+
+func TestNormalizeOpenAIDownstreamUsageJSON_NegativeInputCannotOverflow(t *testing.T) {
+	body := []byte(`{"usage":{"input_tokens":-9223372036854775808,"output_tokens":1,"total_tokens":0,"input_tokens_details":{"cached_tokens":10,"cache_creation_tokens":1}}}`)
+	got, changed := normalizeOpenAIDownstreamUsageJSON(body, OpenAIPromptCacheCreationOptimizationModeFree)
+	require.True(t, changed)
+	require.Equal(t, int64(10), gjson.GetBytes(got, "usage.input_tokens").Int())
+	require.Equal(t, int64(11), gjson.GetBytes(got, "usage.total_tokens").Int())
+	require.Zero(t, gjson.GetBytes(got, "usage.input_tokens_details.cache_creation_tokens").Int())
+}
+
+func TestAllocateOpenAIInput125DisplayUsage_SaturatesWithoutOverflow(t *testing.T) {
+	allocation := allocateOpenAIInput125DisplayUsage(0, 0, math.MaxInt64, math.MaxInt64, true)
+	require.Equal(t, int64(math.MaxInt64), allocation.ordinary)
+	require.Positive(t, allocation.cacheRead)
+	require.Zero(t, allocation.creation)
+	require.Equal(t, int64(math.MaxInt64), allocation.output)
+}
+
+func TestAllocateOpenAIInput125DisplayUsage_PreservesLongContextBoundaryAndCost(t *testing.T) {
+	billing := NewBillingService(&config.Config{}, nil)
+	for _, tc := range []struct {
+		name     string
+		ordinary int64
+		read     int64
+		creation int64
+		output   int64
+		wantLong bool
+	}{
+		{"at_threshold", 271_000, 488, 512, 20, false},
+		{"above_threshold", 271_001, 488, 512, 20, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			allocation := allocateOpenAIInput125DisplayUsage(tc.ordinary, tc.read, tc.creation, tc.output, true)
+			original, err := billing.CalculateCost("gpt-5.6-terra", UsageTokens{
+				InputTokens: int(tc.ordinary), CacheReadTokens: int(tc.read),
+				CacheCreationTokens: int(tc.creation), OutputTokens: int(tc.output),
+			}, 1)
+			require.NoError(t, err)
+			displayed, err := billing.CalculateCost("gpt-5.6-terra", UsageTokens{
+				InputTokens: int(allocation.ordinary), CacheReadTokens: int(allocation.cacheRead),
+				CacheCreationTokens: int(allocation.creation), OutputTokens: int(allocation.output),
+			}, 1)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantLong, original.LongContextBillingApplied)
+			require.Equal(t, tc.wantLong, displayed.LongContextBillingApplied)
+			require.InDelta(t, original.TotalCost, displayed.TotalCost, 1e-12)
+		})
+	}
 }
 
 func TestNormalizeOpenAIDownstreamUsageJSON_MatchesDownstreamSourceBillingBuckets(t *testing.T) {
@@ -266,8 +373,9 @@ func TestNormalizeOpenAIDownstreamUsageJSON_MatchesDownstreamSourceBillingBucket
 	require.True(t, changed)
 	input125Usage, ok := extractOpenAIUsageFromJSONBytes(input125Body)
 	require.True(t, ok)
-	require.Equal(t, 1116, max(input125Usage.InputTokens-input125Usage.CacheReadInputTokens-input125Usage.CacheCreationInputTokens, 0))
-	require.Equal(t, 4736, input125Usage.CacheReadInputTokens)
+	require.Equal(t, 1102, max(input125Usage.InputTokens-input125Usage.CacheReadInputTokens-input125Usage.CacheCreationInputTokens, 0))
+	require.Equal(t, 4756, input125Usage.CacheReadInputTokens)
+	require.Equal(t, 22, input125Usage.OutputTokens)
 	require.Zero(t, input125Usage.CacheCreationInputTokens)
 }
 
@@ -282,14 +390,14 @@ func TestDownstreamSourceBilling_CIsFreeAndDPreservesGPT56CreationPrice(t *testi
 	}, 1)
 	require.NoError(t, err)
 	input125, err := billing.CalculateCost("gpt-5.6-terra", UsageTokens{
-		InputTokens: 1116, OutputTokens: 20, CacheReadTokens: 4736, CacheCreationTokens: 0,
+		InputTokens: 1102, OutputTokens: 22, CacheReadTokens: 4756, CacheCreationTokens: 0,
 	}, 1)
 	require.NoError(t, err)
 	require.Zero(t, free.CacheCreationCost)
 	require.Zero(t, input125.CacheCreationCost)
 	require.InDelta(t, actual.TotalCost-actual.CacheCreationCost, free.TotalCost, 1e-12)
 	require.InDelta(t, actual.TotalCost, input125.TotalCost, 1e-12,
-		"512 creation tokens at 1.25x must equal 640 regular GPT-5.6 input tokens")
+		"the displayed input and creation buckets must preserve the original creation cost")
 }
 
 func TestNormalizeOpenAIResponsesUsageForDownstream_PreservesOriginalCopy(t *testing.T) {
@@ -309,13 +417,41 @@ func TestNormalizeOpenAIResponsesUsageForDownstream_PreservesOriginalCopy(t *tes
 	require.Equal(t, 512, original.CacheCreationInputTokens)
 }
 
+func TestNormalizeOpenAIResponsesUsageForDownstream_DCreatesMissingDetails(t *testing.T) {
+	usage := &apicompat.ResponsesUsage{
+		InputTokens: 988, OutputTokens: 20, TotalTokens: 1008,
+		CacheCreationInputTokens: 512,
+	}
+	require.True(t, normalizeOpenAIResponsesUsageForDownstream(usage, OpenAIPromptCacheCreationOptimizationModeInput125))
+	require.Equal(t, 1122, usage.InputTokens)
+	require.Equal(t, 22, usage.OutputTokens)
+	require.Equal(t, 1144, usage.TotalTokens)
+	require.Zero(t, usage.CacheCreationInputTokens)
+	require.NotNil(t, usage.InputTokensDetails)
+	require.Equal(t, 20, usage.InputTokensDetails.CachedTokens)
+}
+
+func TestNormalizeOpenAIResponsesUsageForDownstream_ClampsMalformedNegativeBuckets(t *testing.T) {
+	usage := &apicompat.ResponsesUsage{
+		InputTokens: math.MinInt, OutputTokens: 1, TotalTokens: 0,
+		CacheCreationInputTokens: 1,
+		InputTokensDetails:       &apicompat.ResponsesInputTokensDetails{CachedTokens: -10, CacheWriteTokens: 1},
+	}
+	require.True(t, normalizeOpenAIResponsesUsageForDownstream(usage, OpenAIPromptCacheCreationOptimizationModeFree))
+	require.Zero(t, usage.InputTokens)
+	require.Equal(t, 1, usage.TotalTokens)
+	require.Zero(t, usage.CacheCreationInputTokens)
+	require.Zero(t, usage.InputTokensDetails.CachedTokens)
+	require.Zero(t, usage.InputTokensDetails.CacheWriteTokens)
+}
+
 func TestMessagesDownstreamDisplay_UsesAnthropicExclusiveInputSemantics(t *testing.T) {
 	for _, tc := range []struct {
 		mode      string
 		wantInput int
 	}{
 		{OpenAIPromptCacheCreationOptimizationModeFree, 476},
-		{OpenAIPromptCacheCreationOptimizationModeInput125, 1116},
+		{OpenAIPromptCacheCreationOptimizationModeInput125, 1102},
 	} {
 		response := &apicompat.ResponsesResponse{
 			ID: "resp_usage", Model: "gpt-5.6-terra", Status: "completed",
@@ -328,7 +464,13 @@ func TestMessagesDownstreamDisplay_UsesAnthropicExclusiveInputSemantics(t *testi
 		require.True(t, normalizeOpenAIResponsesUsageForDownstream(response.Usage, tc.mode))
 		anthropic := apicompat.ResponsesToAnthropic(response, "gpt-5.6-terra")
 		require.Equal(t, tc.wantInput, anthropic.Usage.InputTokens)
-		require.Equal(t, 4736, anthropic.Usage.CacheReadInputTokens)
-		require.Zero(t, anthropic.Usage.CacheCreationInputTokens)
+		if tc.mode == OpenAIPromptCacheCreationOptimizationModeInput125 {
+			require.Equal(t, 4756, anthropic.Usage.CacheReadInputTokens)
+			require.Equal(t, 22, anthropic.Usage.OutputTokens)
+			require.Zero(t, anthropic.Usage.CacheCreationInputTokens)
+		} else {
+			require.Equal(t, 4736, anthropic.Usage.CacheReadInputTokens)
+			require.Zero(t, anthropic.Usage.CacheCreationInputTokens)
+		}
 	}
 }

@@ -26,7 +26,7 @@ func TestGoStreamingDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.T
 		}{
 			{OpenAIPromptCacheCreationOptimizationModeSuppress, 5724, 512, "B no-op"},
 			{OpenAIPromptCacheCreationOptimizationModeFree, 5212, 0, "C free"},
-			{OpenAIPromptCacheCreationOptimizationModeInput125, 5852, 0, "D input_125"},
+			{OpenAIPromptCacheCreationOptimizationModeInput125, 5858, 0, "D input_125"},
 		} {
 			t.Run(tc.wantInternalMode+map[bool]string{false: "_responses", true: "_raw"}[passthrough], func(t *testing.T) {
 				upstreamBody := strings.Join([]string{
@@ -71,7 +71,12 @@ func TestGoStreamingDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.T
 					}
 				})
 				require.Equal(t, tc.wantInput, downstream.InputTokens)
-				require.Equal(t, 4736, downstream.CacheReadInputTokens)
+				if tc.mode == OpenAIPromptCacheCreationOptimizationModeInput125 {
+					require.Equal(t, 4756, downstream.CacheReadInputTokens)
+					require.Equal(t, 22, downstream.OutputTokens)
+				} else {
+					require.Equal(t, 4736, downstream.CacheReadInputTokens)
+				}
 				require.Equal(t, tc.wantCreation, downstream.CacheCreationInputTokens)
 			})
 		}
@@ -87,7 +92,7 @@ func TestGoNonStreamingDownstreamCacheUsageModes_PreserveInternalTruth(t *testin
 	}{
 		{OpenAIPromptCacheCreationOptimizationModeSuppress, 5724, 512},
 		{OpenAIPromptCacheCreationOptimizationModeFree, 5212, 0},
-		{OpenAIPromptCacheCreationOptimizationModeInput125, 5852, 0},
+		{OpenAIPromptCacheCreationOptimizationModeInput125, 5858, 0},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			body := `{"id":"resp_usage","object":"response","model":"gpt-5.6-terra","status":"completed","output":[],"usage":{"input_tokens":5724,"output_tokens":20,"total_tokens":5744,"input_tokens_details":{"cached_tokens":4736,"cache_creation_tokens":512}}}`
@@ -112,8 +117,240 @@ func TestGoNonStreamingDownstreamCacheUsageModes_PreserveInternalTruth(t *testin
 			downstream, ok := extractOpenAIUsageFromJSONBytes(recorder.Body.Bytes())
 			require.True(t, ok)
 			require.Equal(t, tc.wantInput, downstream.InputTokens)
-			require.Equal(t, 4736, downstream.CacheReadInputTokens)
+			if tc.mode == OpenAIPromptCacheCreationOptimizationModeInput125 {
+				require.Equal(t, 4756, downstream.CacheReadInputTokens)
+				require.Equal(t, 22, downstream.OutputTokens)
+			} else {
+				require.Equal(t, 4736, downstream.CacheReadInputTokens)
+			}
 			require.Equal(t, tc.wantCreation, downstream.CacheCreationInputTokens)
+		})
+	}
+}
+
+func TestCFreeNonStreamingPassthroughAndSSEBridge_ZeroDownstreamCreation(t *testing.T) {
+	setGinTestMode()
+	account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, OpenAIPromptCacheCreationOptimizationModeFree)
+	account.ID = 395
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, toolCorrector: NewCodexToolCorrector()}
+
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		body        string
+		passthrough bool
+	}{
+		{
+			name:        "json_passthrough",
+			contentType: "application/json",
+			body:        `{"id":"resp_usage","object":"response","model":"gpt-5.6-terra","status":"completed","output":[],"usage":{"input_tokens":5724,"output_tokens":20,"total_tokens":5744,"input_tokens_details":{"cached_tokens":4736,"cache_creation_tokens":512}}}`,
+			passthrough: true,
+		},
+		{
+			name:        "sse_to_json",
+			contentType: "text/event-stream",
+			body:        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_usage\",\"object\":\"response\",\"model\":\"gpt-5.6-terra\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":5724,\"output_tokens\":20,\"total_tokens\":5744,\"input_tokens_details\":{\"cached_tokens\":4736,\"cache_creation_tokens\":512}}}}\n\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{tc.contentType}},
+				Body:       io.NopCloser(strings.NewReader(tc.body)),
+			}
+
+			var internal *OpenAIUsage
+			if tc.passthrough {
+				result, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, account, "gpt-5.6-terra", "gpt-5.6-terra")
+				require.NoError(t, err)
+				internal = result.usage
+			} else {
+				result, err := svc.handleNonStreamingResponse(context.Background(), resp, c, account, "gpt-5.6-terra", "gpt-5.6-terra")
+				require.NoError(t, err)
+				internal = result.usage
+			}
+
+			require.NotNil(t, internal)
+			require.Equal(t, 5724, internal.InputTokens)
+			require.Equal(t, 512, internal.CacheCreationInputTokens)
+			downstream, ok := extractOpenAIUsageFromJSONBytes(recorder.Body.Bytes())
+			require.True(t, ok)
+			require.Equal(t, 5212, downstream.InputTokens)
+			require.Equal(t, 4736, downstream.CacheReadInputTokens)
+			require.Zero(t, downstream.CacheCreationInputTokens)
+		})
+	}
+}
+
+func TestResponsesToChatBufferedDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.T) {
+	setGinTestMode()
+	for _, tc := range []struct {
+		mode             string
+		wantInput        int
+		wantOutput       int
+		wantCacheRead    int
+		wantCacheCreated int
+	}{
+		{OpenAIPromptCacheCreationOptimizationModeSuppress, 5724, 20, 4736, 512},
+		{OpenAIPromptCacheCreationOptimizationModeFree, 5212, 20, 4736, 0},
+		{OpenAIPromptCacheCreationOptimizationModeInput125, 5858, 22, 4756, 0},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			upstreamBody := strings.Join([]string{
+				`data: {"type":"response.completed","response":{"id":"resp_usage","object":"response","model":"gpt-5.6-terra","status":"completed","output":[],"usage":{"input_tokens":5724,"output_tokens":20,"total_tokens":5744,"input_tokens_details":{"cached_tokens":4736,"cache_creation_tokens":512}}}}`,
+				"",
+				"data: [DONE]",
+				"",
+			}, "\n")
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+			}
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, tc.mode)
+			svc := &OpenAIGatewayService{}
+
+			result, err := svc.handleChatBufferedStreamingResponse(
+				context.Background(), resp, c, account,
+				"gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra", time.Now(),
+			)
+			require.NoError(t, err)
+			require.Equal(t, 5724, result.Usage.InputTokens)
+			require.Equal(t, 20, result.Usage.OutputTokens)
+			require.Equal(t, 4736, result.Usage.CacheReadInputTokens)
+			require.Equal(t, 512, result.Usage.CacheCreationInputTokens)
+
+			downstream, ok := extractOpenAIUsageFromJSONBytes(recorder.Body.Bytes())
+			require.True(t, ok)
+			require.Equal(t, tc.wantInput, downstream.InputTokens)
+			require.Equal(t, tc.wantOutput, downstream.OutputTokens)
+			require.Equal(t, tc.wantCacheRead, downstream.CacheReadInputTokens)
+			require.Equal(t, tc.wantCacheCreated, downstream.CacheCreationInputTokens)
+		})
+	}
+}
+
+func TestMessagesBufferedCFree_ZeroesDownstreamCreationAndPreservesInternalTruth(t *testing.T) {
+	setGinTestMode()
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"id":"resp_usage","object":"response","model":"gpt-5.6-terra","status":"completed","output":[],"usage":{"input_tokens":5724,"output_tokens":20,"total_tokens":5744,"input_tokens_details":{"cached_tokens":4736,"cache_creation_tokens":512}}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, OpenAIPromptCacheCreationOptimizationModeFree)
+	svc := &OpenAIGatewayService{}
+
+	result, err := svc.handleAnthropicBufferedStreamingResponse(
+		context.Background(), resp, c, account,
+		"gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra", time.Now(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, 5724, result.Usage.InputTokens)
+	require.Equal(t, 4736, result.Usage.CacheReadInputTokens)
+	require.Equal(t, 512, result.Usage.CacheCreationInputTokens)
+	require.Equal(t, int64(476), gjson.GetBytes(recorder.Body.Bytes(), "usage.input_tokens").Int())
+	require.Equal(t, int64(4736), gjson.GetBytes(recorder.Body.Bytes(), "usage.cache_read_input_tokens").Int())
+	require.Zero(t, gjson.GetBytes(recorder.Body.Bytes(), "usage.cache_creation_input_tokens").Int())
+}
+
+func TestResponsesToChatBufferedDownstreamCacheUsage_ExplicitImageIsNoOp(t *testing.T) {
+	setGinTestMode()
+	upstreamBody := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"id":"resp_usage","object":"response","model":"gpt-5.6-terra","status":"completed","output":[],"usage":{"input_tokens":5724,"output_tokens":20,"total_tokens":5744,"input_tokens_details":{"cached_tokens":4736,"cache_creation_tokens":512}}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, OpenAIPromptCacheCreationOptimizationModeFree)
+	svc := &OpenAIGatewayService{}
+
+	result, err := svc.handleChatBufferedStreamingResponse(
+		WithOpenAIImageGenerationIntent(context.Background()), resp, c, account,
+		"gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra", time.Now(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, 512, result.Usage.CacheCreationInputTokens)
+	downstream, ok := extractOpenAIUsageFromJSONBytes(recorder.Body.Bytes())
+	require.True(t, ok)
+	require.Equal(t, 5724, downstream.InputTokens)
+	require.Equal(t, 4736, downstream.CacheReadInputTokens)
+	require.Equal(t, 512, downstream.CacheCreationInputTokens)
+}
+
+func TestResponsesToChatStreamingDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.T) {
+	setGinTestMode()
+	for _, tc := range []struct {
+		mode             string
+		wantInput        int
+		wantOutput       int
+		wantCacheRead    int
+		wantCacheCreated int
+	}{
+		{OpenAIPromptCacheCreationOptimizationModeSuppress, 5724, 20, 4736, 512},
+		{OpenAIPromptCacheCreationOptimizationModeFree, 5212, 20, 4736, 0},
+		{OpenAIPromptCacheCreationOptimizationModeInput125, 5858, 22, 4756, 0},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			upstreamBody := strings.Join([]string{
+				`data: {"type":"response.created","response":{"id":"resp_usage","model":"gpt-5.6-terra"}}`,
+				"",
+				`data: {"type":"response.completed","response":{"id":"resp_usage","object":"response","model":"gpt-5.6-terra","status":"completed","output":[],"usage":{"input_tokens":5724,"output_tokens":20,"total_tokens":5744,"input_tokens_details":{"cached_tokens":4736,"cache_creation_tokens":512}}}}`,
+				"",
+			}, "\n")
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+			}
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, true, tc.mode)
+			svc := &OpenAIGatewayService{}
+
+			result, err := svc.handleChatStreamingResponse(
+				context.Background(), resp, c, account,
+				"gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra", time.Now(), 0,
+			)
+			require.NoError(t, err)
+			require.Equal(t, 5724, result.Usage.InputTokens)
+			require.Equal(t, 20, result.Usage.OutputTokens)
+			require.Equal(t, 4736, result.Usage.CacheReadInputTokens)
+			require.Equal(t, 512, result.Usage.CacheCreationInputTokens)
+
+			var downstream OpenAIUsage
+			forEachOpenAISSEDataPayload(recorder.Body.String(), func(data []byte) {
+				if parsed, ok := extractOpenAIUsageFromJSONBytes(data); ok {
+					downstream = parsed
+				}
+			})
+			require.Equal(t, tc.wantInput, downstream.InputTokens)
+			require.Equal(t, tc.wantOutput, downstream.OutputTokens)
+			require.Equal(t, tc.wantCacheRead, downstream.CacheReadInputTokens)
+			require.Equal(t, tc.wantCacheCreated, downstream.CacheCreationInputTokens)
 		})
 	}
 }
@@ -148,7 +385,7 @@ func TestRawChatDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.T) {
 	}{
 		{OpenAIPromptCacheCreationOptimizationModeSuppress, 5724, 512},
 		{OpenAIPromptCacheCreationOptimizationModeFree, 5212, 0},
-		{OpenAIPromptCacheCreationOptimizationModeInput125, 5852, 0},
+		{OpenAIPromptCacheCreationOptimizationModeInput125, 5858, 0},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, tc.mode)
@@ -172,7 +409,12 @@ func TestRawChatDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.T) {
 					}
 				})
 				require.Equal(t, tc.wantInput, downstream.InputTokens)
-				require.Equal(t, 4736, downstream.CacheReadInputTokens)
+				if tc.mode == OpenAIPromptCacheCreationOptimizationModeInput125 {
+					require.Equal(t, 4756, downstream.CacheReadInputTokens)
+					require.Equal(t, 22, downstream.OutputTokens)
+				} else {
+					require.Equal(t, 4736, downstream.CacheReadInputTokens)
+				}
 				require.Equal(t, tc.wantCreation, downstream.CacheCreationInputTokens)
 			})
 
@@ -208,7 +450,7 @@ func TestChatFallbackDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.
 	}{
 		{OpenAIPromptCacheCreationOptimizationModeSuppress, 5724, 476, 512},
 		{OpenAIPromptCacheCreationOptimizationModeFree, 5212, 476, 0},
-		{OpenAIPromptCacheCreationOptimizationModeInput125, 5852, 1116, 0},
+		{OpenAIPromptCacheCreationOptimizationModeInput125, 5858, 1102, 0},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, true, tc.mode)

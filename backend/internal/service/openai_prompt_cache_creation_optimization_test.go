@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -302,6 +303,133 @@ func TestOpenAIPromptCacheCreationOptimization_ForwardPreservesLargeJSONIntegers
 	require.Contains(t, string(upstream.lastBody), `"seed":9007199254740993`)
 	require.Contains(t, string(upstream.lastBody), `"business_id":18446744073709551615`)
 	require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.mode").String())
+}
+
+func TestOpenAIPromptCacheCreationOptimization_RawChatSynchronousRequestModes(t *testing.T) {
+	setGinTestMode()
+	stable := strings.Repeat("stable system policy ", 260)
+	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"prompt_cache_retention":"24h","messages":[{"role":"system","content":"` + stable + `"},{"role":"user","content":"hello","prompt_cache_breakpoint":{"mode":"explicit"}}]}`)
+
+	tests := []struct {
+		name    string
+		enabled bool
+		mode    string
+		ttl     string
+	}{
+		{name: "disabled", enabled: false, mode: OpenAIPromptCacheCreationOptimizationModeReduce},
+		{name: "A", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeReduce, ttl: "30m"},
+		{name: "B", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeSuppress},
+		{name: "C", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeFree},
+		{name: "D", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeInput125},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"id":"chatcmpl_sync","object":"chat.completion","model":"gpt-5.6-sol","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`,
+				)),
+			}}
+			svc := &OpenAIGatewayService{cfg: promptCacheBoostTestConfig(), httpUpstream: upstream}
+			account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, tc.enabled, tc.mode)
+			account.ID = 903
+			account.Concurrency = 1
+			account.Credentials["api_key"] = "sk-test"
+			account.Credentials["base_url"] = "https://api.openai.com/v1"
+
+			result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.False(t, result.Stream)
+			require.False(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
+			if !tc.enabled {
+				require.Equal(t, body, upstream.lastBody, "disabled synchronous path must be byte-exact")
+				return
+			}
+			require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.mode").String())
+			require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").Exists())
+			if tc.ttl != "" {
+				require.Equal(t, tc.ttl, gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
+				require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "messages.0.content.0.prompt_cache_breakpoint.mode").String())
+			} else {
+				require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").Exists())
+				require.False(t, gjson.GetBytes(upstream.lastBody, "messages.0.content.0.prompt_cache_breakpoint").Exists())
+			}
+			require.False(t, gjson.GetBytes(upstream.lastBody, "messages.1.prompt_cache_breakpoint").Exists())
+		})
+	}
+}
+
+func TestOpenAIPromptCacheCreationOptimization_MessagesSynchronousRequestModes(t *testing.T) {
+	setGinTestMode()
+	stable := strings.Repeat("stable system policy ", 260)
+	body := []byte(`{"model":"gpt-5.6-sol","max_tokens":16,"system":"` + stable + `","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		mode    string
+		ttl     string
+	}{
+		{name: "disabled", mode: OpenAIPromptCacheCreationOptimizationModeReduce},
+		{name: "A", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeReduce, ttl: "30m"},
+		{name: "B", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeSuppress},
+		{name: "C", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeFree},
+		{name: "D", enabled: true, mode: OpenAIPromptCacheCreationOptimizationModeInput125},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+			upstreamBody := strings.Join([]string{
+				`data: {"type":"response.completed","response":{"id":"resp_messages_sync","object":"response","model":"gpt-5.6-sol","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}`,
+				"",
+				"data: [DONE]",
+				"",
+			}, "\n")
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+			}}
+			svc := &OpenAIGatewayService{cfg: promptCacheBoostTestConfig(), httpUpstream: upstream}
+			account := promptCacheCreationOptimizationAccount(AccountTypeAPIKey, tc.enabled, tc.mode)
+			account.ID = 904
+			account.Concurrency = 1
+			account.Credentials["api_key"] = "sk-test"
+			account.Credentials["base_url"] = "https://api.openai.com/v1"
+			account.Extra = map[string]any{
+				openai_compat.ExtraKeyResponsesMode:      string(openai_compat.ResponsesSupportModeAuto),
+				openai_compat.ExtraKeyResponsesSupported: true,
+			}
+
+			result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.False(t, result.Stream, "client-facing Messages response must remain synchronous")
+			if !tc.enabled {
+				require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_options").Exists())
+				require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").Exists())
+				return
+			}
+			require.Equal(t, "explicit", gjson.GetBytes(upstream.lastBody, "prompt_cache_options.mode").String())
+			require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").Exists())
+			if tc.ttl != "" {
+				require.Equal(t, tc.ttl, gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").String())
+				require.Contains(t, string(upstream.lastBody), `"prompt_cache_breakpoint":{"mode":"explicit"}`)
+			} else {
+				require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_options.ttl").Exists())
+				require.NotContains(t, string(upstream.lastBody), `"prompt_cache_breakpoint"`)
+			}
+		})
+	}
 }
 
 func TestOpenAIPromptCacheCreationOptimization_RejectsTrailingJSON(t *testing.T) {

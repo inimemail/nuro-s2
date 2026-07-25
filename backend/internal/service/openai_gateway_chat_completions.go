@@ -500,9 +500,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleChatStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime, len(body), requestFirstTokenPlaceholder)
+		result, handleErr = s.handleChatStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, startTime, len(body), requestFirstTokenPlaceholder)
 	} else {
-		result, handleErr = s.handleChatBufferedStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime)
+		result, handleErr = s.handleChatBufferedStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, startTime)
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing
@@ -593,6 +593,7 @@ func (s *OpenAIGatewayService) handleChatCompletionsErrorResponseWithoutAccountS
 // upstream, finds the terminal event, converts to a Chat Completions JSON
 // response, and writes it to the client.
 func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
+	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
 	account *Account,
@@ -641,6 +642,12 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	// When the terminal event has an empty output array, reconstruct from
 	// accumulated delta events so the client receives the full content.
 	acc.SupplementResponseOutput(finalResponse)
+	if finalResponse.Usage != nil {
+		usageForDownstream := cloneOpenAIResponsesUsage(finalResponse.Usage)
+		if normalizeOpenAIResponsesUsageForDownstream(usageForDownstream, openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)) {
+			finalResponse.Usage = usageForDownstream
+		}
+	}
 
 	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
 
@@ -671,6 +678,7 @@ func shouldForwardAPIKeyChatViaResponses(account *Account) bool {
 // handleChatStreamingResponse reads Responses SSE events from upstream,
 // converts each to Chat Completions SSE chunks, and writes them to the client.
 func (s *OpenAIGatewayService) handleChatStreamingResponse(
+	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
 	account *Account,
@@ -895,6 +903,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			}
 			if event.Response != nil && event.Response.Usage != nil {
 				usage = copyOpenAIUsageFromResponsesUsage(event.Response.Usage)
+			}
+			if downstreamMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel); downstreamMode != "" {
+				normalizeOpenAIResponsesStreamEventForDownstream(&event, downstreamMode)
 			}
 		}
 		if strings.TrimSpace(event.Type) == "response.failed" {

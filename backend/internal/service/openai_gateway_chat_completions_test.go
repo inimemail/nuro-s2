@@ -205,6 +205,7 @@ func TestHandleChatBufferedStreamingResponsePreservesIncompleteTerminal(t *testi
 
 	svc := &OpenAIGatewayService{}
 	result, err := svc.handleChatBufferedStreamingResponse(
+		context.Background(),
 		resp,
 		c,
 		&Account{ID: 1, Platform: PlatformOpenAI},
