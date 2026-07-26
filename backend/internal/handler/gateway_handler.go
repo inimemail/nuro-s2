@@ -627,6 +627,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 			// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 			userAgent := c.GetHeader("User-Agent")
+			sessionID := service.ExtractClientSessionID(c)
 			clientIP := ip.GetClientIP(c)
 			requestPayloadHash := service.HashUsageRequestPayload(body)
 			inboundEndpoint := GetInboundEndpoint(c)
@@ -651,6 +652,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					UpstreamEndpoint:    upstreamEndpoint,
 					UserAgent:           userAgent,
 					IPAddress:           clientIP,
+					SessionID:           sessionID,
 					RequestPayloadHash:  requestPayloadHash,
 					ForceCacheBilling:   fs.ForceCacheBilling,
 					SkipAccountLastUsed: !successfulOutcome,
@@ -1091,6 +1093,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 			// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 			userAgent := c.GetHeader("User-Agent")
+			sessionID := service.ExtractClientSessionID(c)
 			clientIP := ip.GetClientIP(c)
 			requestPayloadHash := service.HashUsageRequestPayload(body)
 			inboundEndpoint := GetInboundEndpoint(c)
@@ -1115,6 +1118,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					UpstreamEndpoint:    upstreamEndpoint,
 					UserAgent:           userAgent,
 					IPAddress:           clientIP,
+					SessionID:           sessionID,
 					RequestPayloadHash:  requestPayloadHash,
 					ForceCacheBilling:   fs.ForceCacheBilling,
 					SkipAccountLastUsed: !successfulOutcome,

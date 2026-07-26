@@ -1414,18 +1414,9 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		if !opts.PreserveReferences {
 			ensureCopy()
 			delete(newItem, "id")
-		} else if isCodexToolCallInputType(typ) {
-			if id, ok := m["id"].(string); ok && id != "" && !strings.HasPrefix(id, "fc") {
-				ensureCopy()
-				delete(newItem, "id")
-			}
-		} else if typ == "message" {
-			// item_* IDs are client-local. Only real msg_* upstream IDs are valid
-			// when a message is replayed as continuation input.
-			if id, ok := m["id"].(string); ok && id != "" && !strings.HasPrefix(id, "msg") {
-				ensureCopy()
-				delete(newItem, "id")
-			}
+		} else if id, ok := m["id"].(string); ok && shouldStripOpenAIResponsesInputItemID(typ, id) {
+			ensureCopy()
+			delete(newItem, "id")
 		}
 
 		filtered = append(filtered, newItem)

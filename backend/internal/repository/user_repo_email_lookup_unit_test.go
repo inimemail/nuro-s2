@@ -10,6 +10,7 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/enttest"
+	dbuser "github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 
@@ -93,6 +94,33 @@ func TestUserRepositoryCreateRejectsNormalizedEmailDuplicate(t *testing.T) {
 		Status:       service.StatusActive,
 	})
 	require.ErrorIs(t, err, service.ErrEmailExists)
+}
+
+func TestUserRepositoryCreateReusesOuterTransaction(t *testing.T) {
+	repo, client := newUserEntRepo(t)
+	ctx := context.Background()
+	tx, err := client.Tx(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	txCtx := dbent.NewTxContext(ctx, tx)
+
+	email := "outer-transaction-create@example.com"
+	user := &service.User{
+		Email:        email,
+		Username:     "outer-transaction",
+		PasswordHash: "hash",
+		Role:         service.RoleUser,
+		Status:       service.StatusActive,
+	}
+	require.NoError(t, repo.CreateWithEmailAliasGuard(txCtx, user))
+	inside, err := tx.Client().User.Query().Where(dbuser.EmailEQ(email)).Exist(txCtx)
+	require.NoError(t, err)
+	require.True(t, inside)
+	require.NoError(t, tx.Rollback())
+
+	outside, err := client.User.Query().Where(dbuser.EmailEQ(email)).Exist(ctx)
+	require.NoError(t, err)
+	require.False(t, outside, "outer rollback must undo guarded user creation")
 }
 
 func TestUserRepositoryUpdateRejectsNormalizedEmailDuplicate(t *testing.T) {

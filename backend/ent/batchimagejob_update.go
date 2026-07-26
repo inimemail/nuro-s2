@@ -28,6 +28,26 @@ func (_u *BatchImageJobUpdate) Where(ps ...predicate.BatchImageJob) *BatchImageJ
 	return _u
 }
 
+// SetSessionID sets the "session_id" field.
+func (_u *BatchImageJobUpdate) SetSessionID(v string) *BatchImageJobUpdate {
+	_u.mutation.SetSessionID(v)
+	return _u
+}
+
+// SetNillableSessionID sets the "session_id" field if the given value is not nil.
+func (_u *BatchImageJobUpdate) SetNillableSessionID(v *string) *BatchImageJobUpdate {
+	if v != nil {
+		_u.SetSessionID(*v)
+	}
+	return _u
+}
+
+// ClearSessionID clears the value of the "session_id" field.
+func (_u *BatchImageJobUpdate) ClearSessionID() *BatchImageJobUpdate {
+	_u.mutation.ClearSessionID()
+	return _u
+}
+
 // SetUserID sets the "user_id" field.
 func (_u *BatchImageJobUpdate) SetUserID(v int64) *BatchImageJobUpdate {
 	_u.mutation.ResetUserID()
@@ -1011,6 +1031,11 @@ func (_u *BatchImageJobUpdate) defaults() {
 
 // check runs all checks and user-defined validators on the builder.
 func (_u *BatchImageJobUpdate) check() error {
+	if v, ok := _u.mutation.SessionID(); ok {
+		if err := batchimagejob.SessionIDValidator(v); err != nil {
+			return &ValidationError{Name: "session_id", err: fmt.Errorf(`ent: validator failed for field "BatchImageJob.session_id": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Provider(); ok {
 		if err := batchimagejob.ProviderValidator(v); err != nil {
 			return &ValidationError{Name: "provider", err: fmt.Errorf(`ent: validator failed for field "BatchImageJob.provider": %w`, err)}
@@ -1105,6 +1130,12 @@ func (_u *BatchImageJobUpdate) sqlSave(ctx context.Context) (_node int, err erro
 				ps[i](selector)
 			}
 		}
+	}
+	if value, ok := _u.mutation.SessionID(); ok {
+		_spec.SetField(batchimagejob.FieldSessionID, field.TypeString, value)
+	}
+	if _u.mutation.SessionIDCleared() {
+		_spec.ClearField(batchimagejob.FieldSessionID, field.TypeString)
 	}
 	if value, ok := _u.mutation.UserID(); ok {
 		_spec.SetField(batchimagejob.FieldUserID, field.TypeInt64, value)
@@ -1400,6 +1431,26 @@ type BatchImageJobUpdateOne struct {
 	fields   []string
 	hooks    []Hook
 	mutation *BatchImageJobMutation
+}
+
+// SetSessionID sets the "session_id" field.
+func (_u *BatchImageJobUpdateOne) SetSessionID(v string) *BatchImageJobUpdateOne {
+	_u.mutation.SetSessionID(v)
+	return _u
+}
+
+// SetNillableSessionID sets the "session_id" field if the given value is not nil.
+func (_u *BatchImageJobUpdateOne) SetNillableSessionID(v *string) *BatchImageJobUpdateOne {
+	if v != nil {
+		_u.SetSessionID(*v)
+	}
+	return _u
+}
+
+// ClearSessionID clears the value of the "session_id" field.
+func (_u *BatchImageJobUpdateOne) ClearSessionID() *BatchImageJobUpdateOne {
+	_u.mutation.ClearSessionID()
+	return _u
 }
 
 // SetUserID sets the "user_id" field.
@@ -2398,6 +2449,11 @@ func (_u *BatchImageJobUpdateOne) defaults() {
 
 // check runs all checks and user-defined validators on the builder.
 func (_u *BatchImageJobUpdateOne) check() error {
+	if v, ok := _u.mutation.SessionID(); ok {
+		if err := batchimagejob.SessionIDValidator(v); err != nil {
+			return &ValidationError{Name: "session_id", err: fmt.Errorf(`ent: validator failed for field "BatchImageJob.session_id": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Provider(); ok {
 		if err := batchimagejob.ProviderValidator(v); err != nil {
 			return &ValidationError{Name: "provider", err: fmt.Errorf(`ent: validator failed for field "BatchImageJob.provider": %w`, err)}
@@ -2509,6 +2565,12 @@ func (_u *BatchImageJobUpdateOne) sqlSave(ctx context.Context) (_node *BatchImag
 				ps[i](selector)
 			}
 		}
+	}
+	if value, ok := _u.mutation.SessionID(); ok {
+		_spec.SetField(batchimagejob.FieldSessionID, field.TypeString, value)
+	}
+	if _u.mutation.SessionIDCleared() {
+		_spec.ClearField(batchimagejob.FieldSessionID, field.TypeString)
 	}
 	if value, ok := _u.mutation.UserID(); ok {
 		_spec.SetField(batchimagejob.FieldUserID, field.TypeInt64, value)

@@ -139,10 +139,12 @@ func TestRateLimitService_HandleUpstreamError_OAuth401SetsTempUnschedulable(t *t
 		invalidator := &tokenCacheInvalidatorRecorder{}
 		service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		service.SetTokenCacheInvalidator(invalidator)
+		sharedExtra := map[string]any{"existing": "keep"}
 		account := &Account{
 			ID:       101,
 			Platform: PlatformAntigravity,
 			Type:     AccountTypeOAuth,
+			Extra:    sharedExtra,
 			Credentials: map[string]any{
 				"refresh_token": "rt-101",
 			},
@@ -157,6 +159,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401SetsTempUnschedulable(t *t
 		require.Equal(t, true, repo.lastExtra[antigravityForceTokenRefreshExtraKey])
 		require.Equal(t, "401_invalid", repo.lastExtra[antigravityForceTokenRefreshReasonExtraKey])
 		require.Equal(t, true, account.Extra[antigravityForceTokenRefreshExtraKey])
+		require.NotContains(t, sharedExtra, antigravityForceTokenRefreshExtraKey, "request mutation must not alter immutable scheduler snapshot data")
 		require.Len(t, invalidator.accounts, 1)
 	})
 }

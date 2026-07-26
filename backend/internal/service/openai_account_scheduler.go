@@ -1597,93 +1597,99 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithArbite
 	}
 
 	compactBlocked := false
-	freshByID := make(map[int64]*Account, maxCandidates)
-	candidates := make([]AccountSlotCandidate, 0, maxCandidates)
-	for i := 0; i < len(selectionOrder) && len(candidates) < maxCandidates; i++ {
-		candidate := selectionOrder[i]
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
+	attempted := false
+	for selectionIndex := 0; selectionIndex < len(selectionOrder); {
+		freshByID := make(map[int64]*Account, maxCandidates)
+		candidates := make([]AccountSlotCandidate, 0, maxCandidates)
+		for selectionIndex < len(selectionOrder) && len(candidates) < maxCandidates {
+			candidate := selectionOrder[selectionIndex]
+			selectionIndex++
+			fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
+				continue
+			}
+			fresh = s.service.recheckSelectedOpenAIAccountForGroup(ctx, fresh, req.GroupID, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
+			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
+				continue
+			}
+			if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
+				compactBlocked = true
+				continue
+			}
+			freshByID[fresh.ID] = fresh
+			candidates = append(candidates, AccountSlotCandidate{
+				AccountID:      fresh.ID,
+				MaxConcurrency: fresh.Concurrency,
+				Platform:       fresh.Platform,
+			})
+		}
+		if len(candidates) == 0 {
 			continue
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountForGroup(ctx, fresh, req.GroupID, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability, req.RequestPlatform)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
-			continue
-		}
-		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
-			compactBlocked = true
-			continue
-		}
-		freshByID[fresh.ID] = fresh
-		candidates = append(candidates, AccountSlotCandidate{
-			AccountID:      fresh.ID,
-			MaxConcurrency: fresh.Concurrency,
-			Platform:       fresh.Platform,
-		})
-	}
-	if len(candidates) == 0 {
-		return nil, compactBlocked, false, nil
-	}
+		attempted = true
 
-	var (
-		accountReleaseFunc func()
-		userReleaseFunc    func()
-		selectedAccountID  int64
-		acquired           bool
-	)
-	if req.UserID > 0 && req.UserConcurrency > 0 {
-		userArbitration, err := s.service.concurrencyService.AcquireFirstAvailableUserAccountSlots(ctx, req.UserID, req.UserConcurrency, candidates)
-		if err != nil {
-			slog.Warn("openai user/account slot arbiter failed, fallback to per-account acquire",
-				"error", err,
-				"candidate_count", len(candidates),
-			)
-			return nil, compactBlocked, false, nil
+		var (
+			accountReleaseFunc func()
+			userReleaseFunc    func()
+			selectedAccountID  int64
+			acquired           bool
+		)
+		if req.UserID > 0 && req.UserConcurrency > 0 {
+			userArbitration, err := s.service.concurrencyService.AcquireFirstAvailableUserAccountSlots(ctx, req.UserID, req.UserConcurrency, candidates)
+			if err != nil {
+				slog.Warn("openai user/account slot arbiter failed",
+					"error", err,
+					"candidate_count", len(candidates),
+				)
+				return nil, compactBlocked, false, nil
+			}
+			if userArbitration == nil {
+				return nil, compactBlocked, false, nil
+			}
+			acquired = userArbitration.Acquired
+			selectedAccountID = userArbitration.AccountID
+			accountReleaseFunc = userArbitration.ReleaseFunc
+			userReleaseFunc = userArbitration.UserReleaseFunc
+		} else {
+			arbitration, err := s.service.concurrencyService.AcquireFirstAvailableAccountSlot(ctx, candidates)
+			if err != nil {
+				slog.Warn("openai account slot arbiter failed, fallback to per-account acquire",
+					"error", err,
+					"candidate_count", len(candidates),
+				)
+				return nil, compactBlocked, false, nil
+			}
+			if arbitration == nil {
+				return nil, compactBlocked, false, nil
+			}
+			acquired = arbitration.Acquired
+			selectedAccountID = arbitration.AccountID
+			accountReleaseFunc = arbitration.ReleaseFunc
 		}
-		if userArbitration == nil {
-			return nil, compactBlocked, false, nil
+		if !acquired || selectedAccountID <= 0 {
+			continue
 		}
-		acquired = userArbitration.Acquired
-		selectedAccountID = userArbitration.AccountID
-		accountReleaseFunc = userArbitration.ReleaseFunc
-		userReleaseFunc = userArbitration.UserReleaseFunc
-	} else {
-		arbitration, err := s.service.concurrencyService.AcquireFirstAvailableAccountSlot(ctx, candidates)
-		if err != nil {
-			slog.Warn("openai account slot arbiter failed, fallback to per-account acquire",
-				"error", err,
-				"candidate_count", len(candidates),
-			)
-			return nil, compactBlocked, false, nil
+		fresh := freshByID[selectedAccountID]
+		if fresh == nil {
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			if userReleaseFunc != nil {
+				userReleaseFunc()
+			}
+			continue
 		}
-		if arbitration == nil {
-			return nil, compactBlocked, false, nil
+		if req.SessionHash != "" && !req.PreserveStickyBinding {
+			_ = s.service.claimStickySessionAccountID(ctx, req.GroupID, req.SessionHash, fresh.ID, s.service.openAIStickySessionTTLForHash(req.SessionHash, s.service.openAIWSSessionStickyTTL()))
 		}
-		acquired = arbitration.Acquired
-		selectedAccountID = arbitration.AccountID
-		accountReleaseFunc = arbitration.ReleaseFunc
+		return &AccountSelectionResult{
+			Account:         fresh,
+			Acquired:        true,
+			ReleaseFunc:     accountReleaseFunc,
+			UserReleaseFunc: userReleaseFunc,
+		}, compactBlocked, true, nil
 	}
-	if !acquired || selectedAccountID <= 0 {
-		return nil, compactBlocked, true, nil
-	}
-	fresh := freshByID[selectedAccountID]
-	if fresh == nil {
-		if accountReleaseFunc != nil {
-			accountReleaseFunc()
-		}
-		if userReleaseFunc != nil {
-			userReleaseFunc()
-		}
-		return nil, compactBlocked, true, nil
-	}
-	if req.SessionHash != "" && !req.PreserveStickyBinding {
-		_ = s.service.claimStickySessionAccountID(ctx, req.GroupID, req.SessionHash, fresh.ID, s.service.openAIStickySessionTTLForHash(req.SessionHash, s.service.openAIWSSessionStickyTTL()))
-	}
-	return &AccountSelectionResult{
-		Account:         fresh,
-		Acquired:        true,
-		ReleaseFunc:     accountReleaseFunc,
-		UserReleaseFunc: userReleaseFunc,
-	}, compactBlocked, true, nil
+	return nil, compactBlocked, attempted, nil
 }
 
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(

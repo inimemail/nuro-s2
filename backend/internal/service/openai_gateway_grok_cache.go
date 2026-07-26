@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +13,24 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+type resolvedTargetPlatformContextKey struct{}
+
+func WithResolvedTargetPlatform(ctx context.Context, platform string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, resolvedTargetPlatformContextKey{}, strings.TrimSpace(platform))
+}
+
+func ResolvedTargetPlatformFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	platform, ok := ctx.Value(resolvedTargetPlatformContextKey{}).(string)
+	platform = strings.TrimSpace(platform)
+	return platform, ok && platform != ""
+}
 
 const (
 	grokConversationIDHeader        = "X-Grok-Conv-Id"
@@ -123,6 +142,11 @@ func explicitGrokCacheSeed(c *gin.Context, body []byte, explicitKey string) stri
 func isGrokRequestContext(c *gin.Context) bool {
 	if c == nil {
 		return false
+	}
+	if c.Request != nil {
+		if platform, ok := ResolvedTargetPlatformFromContext(c.Request.Context()); ok {
+			return platform == PlatformGrok
+		}
 	}
 	v, exists := c.Get("api_key")
 	if !exists {

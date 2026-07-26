@@ -368,7 +368,8 @@ func (s *SchedulerSnapshotService) storeLocalSnapshot(bucket SchedulerBucket, ac
 	if !s.localSnapshotEnabledForBucket(bucket) {
 		return
 	}
-	s.localSnapshot.Set(bucket, accounts, time.Now())
+	useMixed := bucket.Mode == SchedulerModeMixed
+	s.localSnapshot.Set(bucket, filterSnapshotAccountsForBucket(accounts, bucket, useMixed), time.Now())
 }
 
 func (s *SchedulerSnapshotService) publishEvent(ctx context.Context, event SchedulerEvent) {
@@ -406,7 +407,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 
 	if s.localSnapshotEnabledForBucket(bucket) {
 		if accounts, hit := s.localSnapshot.Get(bucket, time.Now()); hit {
-			return filterSnapshotAccountsForBucket(accounts, bucket, useMixed), useMixed, nil
+			return accounts, useMixed, nil
 		}
 	}
 
@@ -416,8 +417,11 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
 			accounts := derefAccounts(cached)
-			s.storeLocalSnapshot(bucket, accounts)
-			return filterSnapshotAccountsForBucket(accounts, bucket, useMixed), useMixed, nil
+			accounts = filterSnapshotAccountsForBucket(accounts, bucket, useMixed)
+			if s.localSnapshotEnabledForBucket(bucket) {
+				s.localSnapshot.Set(bucket, accounts, time.Now())
+			}
+			return accounts, useMixed, nil
 		}
 	}
 

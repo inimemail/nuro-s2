@@ -207,11 +207,12 @@ func TestHandle429_OpenAIPersistsCodexSnapshotImmediately(t *testing.T) {
 func TestHandle429_OpenAISyncsObservedPlanType(t *testing.T) {
 	repo := &openAI429SnapshotRepo{}
 	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	sharedCredentials := map[string]any{"plan_type": "plus"}
 	account := &Account{
 		ID:          124,
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
-		Credentials: map[string]any{"plan_type": "plus"},
+		Credentials: sharedCredentials,
 	}
 	body := []byte(`{"error":{"type":"usage_limit_reached","message":"limit reached","plan_type":"free","resets_at":1777283883}}`)
 
@@ -220,6 +221,7 @@ func TestHandle429_OpenAISyncsObservedPlanType(t *testing.T) {
 	require.Equal(t, []int64{account.ID}, repo.bulkUpdatedIDs)
 	require.Equal(t, "free", repo.bulkUpdatedPayload.Credentials["plan_type"])
 	require.Equal(t, "free", account.Credentials["plan_type"])
+	require.Equal(t, "plus", sharedCredentials["plan_type"], "request mutation must not alter immutable scheduler snapshot data")
 	require.Equal(t, account.ID, repo.rateLimitedID)
 }
 

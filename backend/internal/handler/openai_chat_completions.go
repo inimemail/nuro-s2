@@ -425,6 +425,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 
 		userAgent := c.GetHeader("User-Agent")
+		sessionID := service.ExtractClientSessionID(c)
 		clientIP := ip.GetClientIP(c)
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := resolveRawCCUpstreamEndpoint(c, account)
@@ -443,6 +444,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				UpstreamEndpoint:        upstreamEndpoint,
 				UserAgent:               userAgent,
 				IPAddress:               clientIP,
+				SessionID:               sessionID,
 				PromptCacheAffinityHash: sessionHash,
 				PromptCacheGroupID:      apiKey.GroupID,
 				SkipSuccessSideEffects:  !successfulOutcome,

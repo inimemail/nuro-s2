@@ -101,6 +101,7 @@ var (
 type BatchImageJob struct {
 	ID                int64
 	BatchID           string
+	SessionID         *string
 	UserID            int64
 	APIKeyID          *int64
 	AccountID         *int64
@@ -160,6 +161,7 @@ type BatchImageJob struct {
 
 type CreateBatchImageJobParams struct {
 	BatchID           string
+	SessionID         *string
 	UserID            int64
 	APIKeyID          *int64
 	AccountID         *int64

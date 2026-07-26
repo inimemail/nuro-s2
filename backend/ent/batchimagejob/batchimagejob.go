@@ -15,6 +15,8 @@ const (
 	FieldID = "id"
 	// FieldBatchID holds the string denoting the batch_id field in the database.
 	FieldBatchID = "batch_id"
+	// FieldSessionID holds the string denoting the session_id field in the database.
+	FieldSessionID = "session_id"
 	// FieldUserID holds the string denoting the user_id field in the database.
 	FieldUserID = "user_id"
 	// FieldAPIKeyID holds the string denoting the api_key_id field in the database.
@@ -119,6 +121,7 @@ const (
 var Columns = []string{
 	FieldID,
 	FieldBatchID,
+	FieldSessionID,
 	FieldUserID,
 	FieldAPIKeyID,
 	FieldAccountID,
@@ -182,6 +185,8 @@ func ValidColumn(column string) bool {
 var (
 	// BatchIDValidator is a validator for the "batch_id" field. It is called by the builders before save.
 	BatchIDValidator func(string) error
+	// SessionIDValidator is a validator for the "session_id" field. It is called by the builders before save.
+	SessionIDValidator func(string) error
 	// ProviderValidator is a validator for the "provider" field. It is called by the builders before save.
 	ProviderValidator func(string) error
 	// ModelValidator is a validator for the "model" field. It is called by the builders before save.
@@ -267,6 +272,11 @@ func ByID(opts ...sql.OrderTermOption) OrderOption {
 // ByBatchID orders the results by the batch_id field.
 func ByBatchID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldBatchID, opts...).ToFunc()
+}
+
+// BySessionID orders the results by the session_id field.
+func BySessionID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldSessionID, opts...).ToFunc()
 }
 
 // ByUserID orders the results by the user_id field.

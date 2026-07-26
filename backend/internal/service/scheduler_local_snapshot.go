@@ -78,10 +78,10 @@ func (s *SchedulerLocalSnapshot) Get(bucket SchedulerBucket, now time.Time) ([]A
 		return nil, false
 	}
 	s.hits.Add(1)
-	// Request handling can mutate nested Credentials and Extra values. Return a
-	// fully detached view so one request cannot alter another request's routing,
-	// authentication, or quota state through the shared snapshot.
-	return cloneAccounts(entry.accounts), true
+	// Set owns a fully detached immutable snapshot. Request paths only need their
+	// own Account values for scalar overlays (for example the group-scoped guard
+	// result); nested maps and slices are read-only on scheduler paths.
+	return cloneSchedulerAccountViews(entry.accounts), true
 }
 
 func (s *SchedulerLocalSnapshot) Set(bucket SchedulerBucket, accounts []Account, now time.Time) {
@@ -195,6 +195,17 @@ func cloneAccounts(accounts []Account) []Account {
 		out[i] = cloneSchedulerAccount(accounts[i])
 	}
 	return out
+}
+
+// cloneSchedulerAccountViews creates the request-level COW view. It copies the
+// compact Account structs while retaining immutable nested snapshot data. Any
+// future request path that needs to mutate Credentials, Extra, or a nested
+// collection must explicitly use cloneSchedulerAccount first.
+func cloneSchedulerAccountViews(accounts []Account) []Account {
+	if len(accounts) == 0 {
+		return []Account{}
+	}
+	return append([]Account(nil), accounts...)
 }
 
 func cloneSchedulerAccount(account Account) Account {

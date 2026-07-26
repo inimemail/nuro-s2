@@ -69,10 +69,10 @@ func TestOpenAIProxyStreamCircuitCountsEdgeDisconnectWithoutErrorText(t *testing
 	require.True(t, circuit.isBlocked(12, time.Now()))
 }
 
-func TestOpenAIProxyStreamCircuitIgnoresTerminalUpstreamError(t *testing.T) {
+func TestOpenAIProxyStreamCircuitTerminalUpstreamErrorBreaksConsecutiveDisconnects(t *testing.T) {
 	circuit := newOpenAIProxyStreamCircuit(openAIProxyStreamCircuitSettings{
 		enabled:          true,
-		failureThreshold: 1,
+		failureThreshold: 2,
 		failureWindow:    time.Minute,
 		quarantineTTL:    10 * time.Minute,
 	})
@@ -80,8 +80,24 @@ func TestOpenAIProxyStreamCircuitIgnoresTerminalUpstreamError(t *testing.T) {
 	service.openaiProxyStreamCircuit = circuit
 	service.openaiProxyStreamCircuitOnce.Do(func() {})
 	account := &Account{Platform: PlatformOpenAI, ProxyID: ptrInt64ForCircuit(13)}
+	service.RecordOpenAIEdgeStreamOutcome(account, "upstream_disconnect", true, false, "disconnected")
 	service.RecordOpenAIEdgeStreamOutcome(account, "upstream_error", true, false, "Upstream request failed")
+	service.RecordOpenAIEdgeStreamOutcome(account, "upstream_disconnect", true, false, "disconnected")
 	require.False(t, circuit.isBlocked(13, time.Now()))
+}
+
+func TestOpenAIProxyStreamCircuitTerminalDoesNotCancelActiveQuarantine(t *testing.T) {
+	now := time.Now()
+	circuit := newOpenAIProxyStreamCircuit(openAIProxyStreamCircuitSettings{
+		enabled: true, failureThreshold: 2, failureWindow: time.Minute,
+		quarantineTTL: 10 * time.Minute,
+	})
+	circuit.recordFailure(14, now)
+	circuit.recordFailure(14, now.Add(time.Second))
+	require.True(t, circuit.isBlocked(14, now.Add(2*time.Second)))
+
+	circuit.recordTerminal(14, now.Add(3*time.Second))
+	require.True(t, circuit.isBlocked(14, now.Add(4*time.Second)))
 }
 
 func TestOpenAIProxyStreamCircuitDisabledIsNoop(t *testing.T) {

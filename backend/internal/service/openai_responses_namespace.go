@@ -7,6 +7,8 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const openAIResponsesNamespaceNamesContextKey = "openai_responses_namespace_names"
@@ -26,6 +28,23 @@ func shouldFlattenOpenAIResponsesNamespaces(account *Account, transport OpenAIUp
 		return false
 	}
 	return true
+}
+
+// shouldStripOpenAIResponsesInputNamespaces removes residual direct input item
+// namespaces for OpenAI OAuth and API Key HTTP forwarding. Native WSv2 keeps
+// namespace semantics unless strict passthrough selected the HTTP-compatible
+// payload contract.
+func shouldStripOpenAIResponsesInputNamespaces(account *Account, transport OpenAIUpstreamTransport, passthroughEnabled bool) bool {
+	// The local strict-passthrough contract preserves the payload apart from
+	// its separately documented authentication/store/stream policies. Keep the
+	// upstream compatibility cleanup on transformed HTTP requests only.
+	if passthroughEnabled {
+		return false
+	}
+	if account == nil || (!account.IsOpenAIOAuth() && !account.IsOpenAIApiKey()) {
+		return false
+	}
+	return transport != OpenAIUpstreamTransportResponsesWebsocketV2
 }
 
 func flattenOpenAIResponsesNamespaces(c *gin.Context, body []byte) ([]byte, error) {
@@ -51,6 +70,55 @@ func flattenOpenAIResponsesNamespaces(c *gin.Context, body []byte) ([]byte, erro
 		c.Set(openAIResponsesNamespaceNamesContextKey, names)
 	}
 	return rebuilt, nil
+}
+
+// stripOpenAIResponsesInputNamespaces removes only direct input item
+// namespaces. It keeps nested fields and numeric JSON tokens byte-exact.
+func stripOpenAIResponsesInputNamespaces(body []byte) ([]byte, error) {
+	if !bytes.Contains(body, []byte(`"namespace"`)) {
+		return body, nil
+	}
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body, nil
+	}
+
+	items := make([][]byte, 0)
+	changed := false
+	var stripErr error
+	input.ForEach(func(_, item gjson.Result) bool {
+		itemBody := []byte(item.Raw)
+		if item.IsObject() && item.Get("namespace").Exists() {
+			itemBody, stripErr = sjson.DeleteBytes(itemBody, "namespace")
+			if stripErr != nil {
+				return false
+			}
+			changed = true
+		}
+		items = append(items, itemBody)
+		return true
+	})
+	if stripErr != nil {
+		return body, fmt.Errorf("delete OpenAI input namespace: %w", stripErr)
+	}
+	if !changed {
+		return body, nil
+	}
+
+	rebuilt := make([]byte, 0, len(input.Raw))
+	rebuilt = append(rebuilt, '[')
+	for index, item := range items {
+		if index > 0 {
+			rebuilt = append(rebuilt, ',')
+		}
+		rebuilt = append(rebuilt, item...)
+	}
+	rebuilt = append(rebuilt, ']')
+	stripped, err := sjson.SetRawBytes(body, "input", rebuilt)
+	if err != nil {
+		return body, fmt.Errorf("replace OpenAI input after namespace deletion: %w", err)
+	}
+	return stripped, nil
 }
 
 func restoreOpenAIResponsesNamespacePayload(c *gin.Context, payload []byte) ([]byte, error) {

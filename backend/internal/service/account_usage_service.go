@@ -1815,9 +1815,9 @@ func mergeAccountExtra(account *Account, updates map[string]any) {
 	if account == nil || len(updates) == 0 {
 		return
 	}
-	if account.Extra == nil {
-		account.Extra = make(map[string]any, len(updates))
-	}
+	// Scheduler request views intentionally share immutable nested snapshot
+	// data. Detach the outer map before any request or background path writes.
+	account.Extra = cloneCredentials(account.Extra)
 	for k, v := range updates {
 		account.Extra[k] = v
 	}

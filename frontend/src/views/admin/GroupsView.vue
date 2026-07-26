@@ -598,21 +598,13 @@
           />
           <p class="input-hint">{{ t("admin.groups.form.rpmLimitHint") }}</p>
         </div>
-        <div v-if="createForm.platform === 'openai'" class="border-t border-gray-200 pt-4 dark:border-dark-400">
-          <label class="input-label">{{ t("admin.groups.form.maxReasoningEffort") }}</label>
-          <select v-model="createForm.max_reasoning_effort" class="input">
-            <option value="">{{ t("admin.groups.form.maxReasoningEffortUnlimited") }}</option>
-            <option v-for="value in reasoningEffortValues" :key="value" :value="value">{{ value }}</option>
-          </select>
-          <p class="input-hint">{{ t("admin.groups.form.maxReasoningEffortHint") }}</p>
-          <div v-for="(mapping, index) in createForm.reasoning_effort_mappings" :key="`create-reasoning-${index}`" class="mt-2 grid grid-cols-[1fr_auto_1fr_auto] gap-2">
-            <select v-model="mapping.from" class="input"><option value="">{{ t("admin.groups.form.reasoningEffortFrom") }}</option><option v-for="value in reasoningEffortValues" :key="value" :value="value">{{ value }}</option></select>
-            <span class="self-center">-&gt;</span>
-            <select v-model="mapping.to" class="input"><option value="">{{ t("admin.groups.form.reasoningEffortTo") }}</option><option v-for="value in reasoningEffortValues" :key="value" :value="value">{{ value }}</option></select>
-            <button type="button" class="btn-secondary" @click="createForm.reasoning_effort_mappings.splice(index, 1)">-</button>
-          </div>
-          <button type="button" class="btn-secondary mt-2" @click="createForm.reasoning_effort_mappings.push({ from: '', to: '' })">{{ t("admin.groups.form.addReasoningEffortMapping") }}</button>
-        </div>
+        <GroupReasoningEffortControl
+          v-if="createForm.platform === 'openai'"
+          id-prefix="create-group"
+          v-model:max-reasoning-effort="createForm.max_reasoning_effort"
+          v-model:mappings="createForm.reasoning_effort_mappings"
+          :values="reasoningEffortValues"
+        />
         <div
           v-if="createForm.subscription_type !== 'subscription'"
           data-tour="group-form-exclusive"
@@ -1562,6 +1554,63 @@
           </div>
         </div>
 
+        <div
+          v-if="createForm.platform === 'openai'"
+          class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-400"
+        >
+          <div
+            class="flex flex-col gap-4 rounded-lg border border-emerald-200 bg-emerald-50/60 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-emerald-900/60 dark:bg-emerald-950/20"
+          >
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
+                  <Icon name="shield" size="sm" />
+                </span>
+                <div>
+                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white">
+                    {{ t("admin.groups.openaiLive.title") }}
+                  </h4>
+                  <span
+                    :class="[
+                      'mt-0.5 inline-flex items-center gap-1.5 text-xs font-medium',
+                      liveCapabilityLoading
+                        ? 'text-gray-500 dark:text-gray-400'
+                        : liveCapability?.supported
+                          ? 'text-emerald-700 dark:text-emerald-300'
+                          : 'text-amber-700 dark:text-amber-300',
+                    ]"
+                  >
+                    <span
+                      :class="[
+                        'h-1.5 w-1.5 rounded-full',
+                        liveCapabilityLoading
+                          ? 'animate-pulse bg-gray-400'
+                          : liveCapability?.supported
+                            ? 'bg-emerald-500'
+                            : 'bg-amber-500',
+                      ]"
+                    />
+                    {{ liveCapabilityStatusText }}
+                  </span>
+                </div>
+              </div>
+              <p class="mt-2 max-w-2xl text-xs leading-5 text-gray-600 dark:text-gray-400">
+                {{ t("admin.groups.openaiLive.hint") }}
+              </p>
+            </div>
+            <div class="flex flex-shrink-0 items-center justify-between gap-3 sm:justify-end">
+              <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ createForm.allow_live ? t("common.enabled") : t("common.disabled") }}
+              </span>
+              <Toggle
+                :model-value="createForm.allow_live"
+                :disabled="liveCapabilityLoading"
+                @update:model-value="requestLiveToggle('create', $event)"
+              />
+            </div>
+          </div>
+        </div>
+
         <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
         <div
           v-if="
@@ -2125,21 +2174,13 @@
           />
           <p class="input-hint">{{ t("admin.groups.form.rpmLimitHint") }}</p>
         </div>
-        <div v-if="editForm.platform === 'openai'" class="border-t border-gray-200 pt-4 dark:border-dark-400">
-          <label class="input-label">{{ t("admin.groups.form.maxReasoningEffort") }}</label>
-          <select v-model="editForm.max_reasoning_effort" class="input">
-            <option value="">{{ t("admin.groups.form.maxReasoningEffortUnlimited") }}</option>
-            <option v-for="value in reasoningEffortValues" :key="value" :value="value">{{ value }}</option>
-          </select>
-          <p class="input-hint">{{ t("admin.groups.form.maxReasoningEffortHint") }}</p>
-          <div v-for="(mapping, index) in editForm.reasoning_effort_mappings" :key="`edit-reasoning-${index}`" class="mt-2 grid grid-cols-[1fr_auto_1fr_auto] gap-2">
-            <select v-model="mapping.from" class="input"><option value="">{{ t("admin.groups.form.reasoningEffortFrom") }}</option><option v-for="value in reasoningEffortValues" :key="value" :value="value">{{ value }}</option></select>
-            <span class="self-center">-&gt;</span>
-            <select v-model="mapping.to" class="input"><option value="">{{ t("admin.groups.form.reasoningEffortTo") }}</option><option v-for="value in reasoningEffortValues" :key="value" :value="value">{{ value }}</option></select>
-            <button type="button" class="btn-secondary" @click="editForm.reasoning_effort_mappings.splice(index, 1)">-</button>
-          </div>
-          <button type="button" class="btn-secondary mt-2" @click="editForm.reasoning_effort_mappings.push({ from: '', to: '' })">{{ t("admin.groups.form.addReasoningEffortMapping") }}</button>
-        </div>
+        <GroupReasoningEffortControl
+          v-if="editForm.platform === 'openai'"
+          id-prefix="edit-group"
+          v-model:max-reasoning-effort="editForm.max_reasoning_effort"
+          v-model:mappings="editForm.reasoning_effort_mappings"
+          :values="reasoningEffortValues"
+        />
         <div v-if="editForm.subscription_type !== 'subscription'">
           <div class="mb-1.5 flex items-center gap-1">
             <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -3086,6 +3127,63 @@
           </div>
         </div>
 
+        <div
+          v-if="editForm.platform === 'openai'"
+          class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-400"
+        >
+          <div
+            class="flex flex-col gap-4 rounded-lg border border-emerald-200 bg-emerald-50/60 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-emerald-900/60 dark:bg-emerald-950/20"
+          >
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
+                  <Icon name="shield" size="sm" />
+                </span>
+                <div>
+                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white">
+                    {{ t("admin.groups.openaiLive.title") }}
+                  </h4>
+                  <span
+                    :class="[
+                      'mt-0.5 inline-flex items-center gap-1.5 text-xs font-medium',
+                      liveCapabilityLoading
+                        ? 'text-gray-500 dark:text-gray-400'
+                        : liveCapability?.supported
+                          ? 'text-emerald-700 dark:text-emerald-300'
+                          : 'text-amber-700 dark:text-amber-300',
+                    ]"
+                  >
+                    <span
+                      :class="[
+                        'h-1.5 w-1.5 rounded-full',
+                        liveCapabilityLoading
+                          ? 'animate-pulse bg-gray-400'
+                          : liveCapability?.supported
+                            ? 'bg-emerald-500'
+                            : 'bg-amber-500',
+                      ]"
+                    />
+                    {{ liveCapabilityStatusText }}
+                  </span>
+                </div>
+              </div>
+              <p class="mt-2 max-w-2xl text-xs leading-5 text-gray-600 dark:text-gray-400">
+                {{ t("admin.groups.openaiLive.hint") }}
+              </p>
+            </div>
+            <div class="flex flex-shrink-0 items-center justify-between gap-3 sm:justify-end">
+              <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ editForm.allow_live ? t("common.enabled") : t("common.disabled") }}
+              </span>
+              <Toggle
+                :model-value="editForm.allow_live"
+                :disabled="liveCapabilityLoading"
+                @update:model-value="requestLiveToggle('edit', $event)"
+              />
+            </div>
+          </div>
+        </div>
+
         <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
         <div
           v-if="
@@ -3483,6 +3581,17 @@
       @cancel="showDeleteDialog = false"
     />
 
+    <ConfirmDialog
+      :show="showUnsupportedLiveConfirm"
+      :title="t('admin.groups.openaiLive.unsupportedTitle')"
+      :message="t('admin.groups.openaiLive.unsupportedMessage')"
+      :confirm-text="t('admin.groups.openaiLive.enableAnyway')"
+      :cancel-text="t('common.cancel')"
+      :danger="true"
+      @confirm="confirmUnsupportedLive"
+      @cancel="cancelUnsupportedLive"
+    />
+
     <!-- Sort Order Modal -->
     <BaseDialog
       :show="showSortModal"
@@ -3605,6 +3714,7 @@ import DataTable from "@/components/common/DataTable.vue";
 import Pagination from "@/components/common/Pagination.vue";
 import BaseDialog from "@/components/common/BaseDialog.vue";
 import ConfirmDialog from "@/components/common/ConfirmDialog.vue";
+import Toggle from "@/components/common/Toggle.vue";
 import EmptyState from "@/components/common/EmptyState.vue";
 import Select from "@/components/common/Select.vue";
 import PlatformIcon from "@/components/common/PlatformIcon.vue";
@@ -3612,6 +3722,7 @@ import Icon from "@/components/icons/Icon.vue";
 import GroupRateMultipliersModal from "@/components/admin/group/GroupRateMultipliersModal.vue";
 import GroupRPMOverridesModal from "@/components/admin/group/GroupRPMOverridesModal.vue";
 import GroupCapacityBadge from "@/components/common/GroupCapacityBadge.vue";
+import GroupReasoningEffortControl from "@/components/admin/GroupReasoningEffortControl.vue";
 import { VueDraggable } from "vue-draggable-plus";
 import { createStableObjectKeyResolver } from "@/utils/stableObjectKey";
 import { useKeyedDebouncedSearch } from "@/composables/useKeyedDebouncedSearch";
@@ -3939,6 +4050,16 @@ let abortController: AbortController | null = null;
 const showCreateModal = ref(false);
 const showEditModal = ref(false);
 const showDeleteDialog = ref(false);
+const pendingLiveForm = ref<"create" | "edit" | null>(null);
+const showUnsupportedLiveConfirm = computed(
+  () => pendingLiveForm.value !== null,
+);
+const liveCapability = ref<{ supported: boolean; reason?: string } | null>(null);
+const liveCapabilityLoading = ref(false);
+let liveCapabilityRequest: Promise<{
+  supported: boolean;
+  reason?: string;
+}> | null = null;
 const showSortModal = ref(false);
 const submitting = ref(false);
 const sortSubmitting = ref(false);
@@ -4001,6 +4122,7 @@ const createForm = reactive({
   fallback_group_id_on_invalid_request: null as number | null,
   // Messages dispatch is available to OpenAI-compatible platforms.
   allow_messages_dispatch: false,
+  allow_live: false,
   opus_mapped_model: createMessagesDispatchDefaults.opus_mapped_model,
   sonnet_mapped_model: createMessagesDispatchDefaults.sonnet_mapped_model,
   haiku_mapped_model: createMessagesDispatchDefaults.haiku_mapped_model,
@@ -4349,6 +4471,7 @@ const editForm = reactive({
   fallback_group_id_on_invalid_request: null as number | null,
   // Messages dispatch is available to OpenAI-compatible platforms.
   allow_messages_dispatch: false,
+  allow_live: false,
   default_mapped_model: '',
   opus_mapped_model: editMessagesDispatchDefaults.opus_mapped_model,
   sonnet_mapped_model: editMessagesDispatchDefaults.sonnet_mapped_model,
@@ -4486,6 +4609,76 @@ const deleteConfirmMessage = computed(() => {
   }
   return t("admin.groups.deleteConfirm", { name: deletingGroup.value.name });
 });
+
+const liveCapabilityStatusText = computed(() => {
+  if (liveCapabilityLoading.value) {
+    return t("admin.groups.openaiLive.capabilityChecking");
+  }
+  return liveCapability.value?.supported
+    ? t("admin.groups.openaiLive.capabilityReady")
+    : t("admin.groups.openaiLive.capabilityUnavailable");
+});
+
+const loadLiveCapability = async () => {
+  if (liveCapability.value) return liveCapability.value;
+  if (!liveCapabilityRequest) {
+    liveCapabilityLoading.value = true;
+    liveCapabilityRequest = adminAPI.groups
+      .getLiveCapability()
+      .catch(() => ({ supported: false }))
+      .finally(() => {
+        liveCapabilityLoading.value = false;
+        liveCapabilityRequest = null;
+      });
+  }
+  const capability = await liveCapabilityRequest;
+  liveCapability.value = capability;
+  return capability;
+};
+
+const requestLiveToggle = async (
+  target: "create" | "edit",
+  enabled: boolean,
+) => {
+  const form = target === "create" ? createForm : editForm;
+  if (!enabled) {
+    form.allow_live = false;
+    return;
+  }
+  const capability = await loadLiveCapability();
+  const formIsActive =
+    target === "create"
+      ? showCreateModal.value && createForm.platform === "openai"
+      : showEditModal.value && editForm.platform === "openai";
+  if (!formIsActive) return;
+  if (capability.supported) {
+    form.allow_live = true;
+    return;
+  }
+  pendingLiveForm.value = target;
+};
+
+const confirmUnsupportedLive = () => {
+  if (
+    pendingLiveForm.value === "create" &&
+    showCreateModal.value &&
+    createForm.platform === "openai"
+  ) {
+    createForm.allow_live = true;
+  }
+  if (
+    pendingLiveForm.value === "edit" &&
+    showEditModal.value &&
+    editForm.platform === "openai"
+  ) {
+    editForm.allow_live = true;
+  }
+  pendingLiveForm.value = null;
+};
+
+const cancelUnsupportedLive = () => {
+  pendingLiveForm.value = null;
+};
 
 const loadGroups = async () => {
   if (abortController) {
@@ -4656,6 +4849,7 @@ const openCreateModal = () => {
 };
 
 const closeCreateModal = () => {
+  if (pendingLiveForm.value === "create") pendingLiveForm.value = null;
   showCreateModal.value = false;
   createModelRoutingRules.value.forEach((rule) => {
     accountSearchRunner.clearKey(getCreateRuleSearchKey(rule));
@@ -4694,6 +4888,7 @@ const closeCreateModal = () => {
   createForm.fallback_group_id = null;
   createForm.fallback_group_id_on_invalid_request = null;
   resetMessagesDispatchFormState(createForm);
+  createForm.allow_live = false;
   createForm.require_oauth_only = false;
   createForm.require_privacy_set = false;
   createForm.strict_model_priority_on_model_mismatch = false;
@@ -4875,6 +5070,7 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.allow_messages_dispatch =
     group.allow_messages_dispatch ||
     messagesDispatchFormState.allow_messages_dispatch;
+  editForm.allow_live = group.allow_live ?? false;
   editForm.opus_mapped_model = messagesDispatchFormState.opus_mapped_model;
   editForm.sonnet_mapped_model = messagesDispatchFormState.sonnet_mapped_model;
   editForm.haiku_mapped_model = messagesDispatchFormState.haiku_mapped_model;
@@ -4905,6 +5101,7 @@ const handleEdit = async (group: AdminGroup) => {
 };
 
 const closeEditModal = () => {
+  if (pendingLiveForm.value === "edit") pendingLiveForm.value = null;
   editModelRoutingRules.value.forEach((rule) => {
     accountSearchRunner.clearKey(getEditRuleSearchKey(rule));
   });
@@ -4923,6 +5120,7 @@ const closeEditModal = () => {
   editForm.batch_image_discount_multiplier = 0.5;
   editForm.batch_image_hold_multiplier = 0.6;
   resetMessagesDispatchFormState(editForm);
+  editForm.allow_live = false;
   editForm.strict_model_priority_on_model_mismatch = false;
   resetModelsListState(editModelsListState);
 };
@@ -5148,9 +5346,11 @@ watch(
       createForm.strict_model_priority_on_model_mismatch = false;
     }
     if (newVal !== "openai") {
+      if (pendingLiveForm.value === "create") pendingLiveForm.value = null;
       createForm.upstream_billing_guard_max_multiplier = null;
       createForm.max_reasoning_effort = "";
       createForm.reasoning_effort_mappings = [];
+      createForm.allow_live = false;
     } else {
       createForm.max_reasoning_effort = normalizeReasoningEffortForPlatform(newVal, createForm.max_reasoning_effort);
     }
@@ -5179,9 +5379,11 @@ watch(
       editForm.strict_model_priority_on_model_mismatch = false;
     }
     if (newVal !== "openai") {
+      if (pendingLiveForm.value === "edit") pendingLiveForm.value = null;
       editForm.upstream_billing_guard_max_multiplier = null;
       editForm.max_reasoning_effort = "";
       editForm.reasoning_effort_mappings = [];
+      editForm.allow_live = false;
     } else {
       editForm.max_reasoning_effort = normalizeReasoningEffortForPlatform(newVal, editForm.max_reasoning_effort);
     }
@@ -5256,6 +5458,7 @@ const saveSortOrder = async () => {
 
 onMounted(() => {
   loadGroups();
+  void loadLiveCapability();
   loadModelsListCandidates("create", 0, createForm.platform);
   document.addEventListener("click", handleClickOutside);
 });

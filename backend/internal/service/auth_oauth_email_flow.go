@@ -132,7 +132,7 @@ func (s *AuthService) RegisterOAuthEmailAccount(
 		return nil, nil, err
 	}
 
-	existsEmail, err := s.userRepo.ExistsByEmail(ctx, email)
+	existsEmail, err := s.existsByEmailOrAlias(ctx, email)
 	if err != nil {
 		slog.Error("oauth email register: ExistsByEmail failed", "email", email, "error", err.Error())
 		return nil, nil, ErrServiceUnavailable
@@ -159,7 +159,7 @@ func (s *AuthService) RegisterOAuthEmailAccount(
 		SignupSource: signupSource,
 	}
 
-	if err := s.userRepo.Create(ctx, user); err != nil {
+	if err := s.createUserWithEmailAliasGuard(ctx, user); err != nil {
 		if errors.Is(err, ErrEmailExists) {
 			return nil, nil, ErrEmailExists
 		}
@@ -211,7 +211,7 @@ func (s *AuthService) RegisterVerifiedOAuthEmailAccount(
 		return nil, nil, err
 	}
 
-	existsEmail, err := s.userRepo.ExistsByEmail(ctx, email)
+	existsEmail, err := s.existsByEmailOrAlias(ctx, email)
 	if err != nil {
 		return nil, nil, ErrServiceUnavailable
 	}
@@ -241,7 +241,7 @@ func (s *AuthService) RegisterVerifiedOAuthEmailAccount(
 		SignupSource: signupSource,
 	}
 
-	if err := s.userRepo.Create(ctx, user); err != nil {
+	if err := s.createUserWithEmailAliasGuard(ctx, user); err != nil {
 		if errors.Is(err, ErrEmailExists) {
 			return nil, nil, ErrEmailExists
 		}

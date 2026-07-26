@@ -163,12 +163,23 @@ func (c *openAIProxyStreamCircuit) recordFailure(proxyID int64, now time.Time) (
 	return tripped, entry.blockedUntil
 }
 
-func (c *openAIProxyStreamCircuit) recordSuccess(proxyID int64) {
+// recordTerminal breaks a pre-trip disconnect streak, but an already-open
+// circuit keeps its bounded quarantine TTL. Otherwise a slower in-flight
+// success could immediately undo a quarantine triggered by concurrent calls.
+// This state is circuit-local and never reports a scheduler health sample.
+func (c *openAIProxyStreamCircuit) recordTerminal(proxyID int64, now time.Time) {
 	if c == nil || !c.settings.enabled || proxyID <= 0 {
 		return
 	}
 	c.mu.Lock()
-	delete(c.entries, proxyID)
+	if entry, ok := c.entries[proxyID]; !ok || !now.Before(entry.blockedUntil) {
+		delete(c.entries, proxyID)
+	} else {
+		entry.failureCount = 0
+		entry.windowStart = time.Time{}
+		entry.lastTouched = now
+		c.entries[proxyID] = entry
+	}
 	c.publishLocked()
 	c.mu.Unlock()
 }
@@ -230,7 +241,11 @@ func (s *OpenAIGatewayService) recordOpenAIProxyStreamOutcome(account *Account, 
 		return
 	}
 	if terminalSuccess {
-		circuit.recordSuccess(proxyID)
+		circuit.recordTerminal(proxyID, time.Now())
+		return
+	}
+	if class == OpenAIStreamFailureUpstreamError {
+		circuit.recordTerminal(proxyID, time.Now())
 		return
 	}
 	if class != OpenAIStreamFailureUpstreamDisconnect {

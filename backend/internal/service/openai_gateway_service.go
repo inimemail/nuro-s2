@@ -29,6 +29,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/platform/liveattestation"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/cespare/xxhash/v2"
@@ -400,12 +401,15 @@ type OpenAIGatewayService struct {
 	settingService        *SettingService
 	tlsFPProfileService   *TLSFingerprintProfileService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	liveAttestation       liveattestation.Provider
+	liveAttestationCipher SecretEncryptor
 
 	openaiWSPoolOnce              sync.Once
 	openaiWSStateStoreOnce        sync.Once
 	openaiAccountStatsOnce        sync.Once
 	openaiSchedulerOnce           sync.Once
 	openaiProxyStreamCircuitOnce  sync.Once
+	liveObserverSupervisorOnce    sync.Once
 	openaiWSPassthroughDialerOnce sync.Once
 	openaiWSPool                  *openAIWSConnPool
 	openaiWSStateStore            OpenAIWSStateStore
@@ -413,6 +417,17 @@ type OpenAIGatewayService struct {
 	openaiWSPassthroughDialer     openAIWSClientDialer
 	openaiAccountStats            *openAIAccountRuntimeStats
 	openaiProxyStreamCircuit      *openAIProxyStreamCircuit
+	liveObserverQueue             chan string
+	liveObserverPermits           chan struct{}
+	liveObserverPending           sync.Map
+	liveObserverContext           context.Context
+	liveObserverCancel            context.CancelFunc
+	liveLifecycleMu               sync.Mutex
+	liveCreateWorkers             sync.WaitGroup
+	liveObserverWorkers           sync.WaitGroup
+	liveProxyWorkers              sync.WaitGroup
+	liveProxyPermits              chan struct{}
+	liveObserverStopped           atomic.Bool
 	openaiAccountHealthRedis      *redis.Client
 
 	openaiWSFallbackUntil                        sync.Map // key: int64(accountID), value: time.Time
@@ -507,6 +522,8 @@ func NewOpenAIGatewayService(
 		settingService:        settingService,
 		tlsFPProfileService:   tlsFPProfileService,
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
+		liveAttestation:       liveattestation.NewProvider(),
+		liveAttestationCipher: newLiveAttestationCipher(cfg),
 		responseHeaderFilter:  compileResponseHeaderFilter(cfg),
 		codexSnapshotThrottle: newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
 	}
@@ -3790,6 +3807,28 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, errors.New("openai ws v1 is temporarily unsupported; use ws v2")
 	}
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
+	if shouldStripOpenAIResponsesInputNamespaces(account, wsDecision.Transport, passthroughEnabled) {
+		strippedBody, stripErr := stripOpenAIResponsesInputNamespaces(body)
+		if stripErr != nil {
+			setOpsUpstreamError(c, http.StatusBadRequest, stripErr.Error(), "")
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+				"type": "invalid_request_error", "message": stripErr.Error(), "param": "input",
+			}})
+			return nil, stripErr
+		}
+		body = strippedBody
+		originalBody = strippedBody
+	}
+	if shouldSanitizeOpenAIResponsesInputItemIDs(account, passthroughEnabled) {
+		sanitizedBody, changed, sanitizeErr := sanitizeOpenAIResponsesInputItemIDs(body)
+		if sanitizeErr != nil {
+			return nil, fmt.Errorf("sanitize OpenAI Responses input item IDs: %w", sanitizeErr)
+		}
+		if changed {
+			body = sanitizedBody
+			originalBody = sanitizedBody
+		}
+	}
 	if passthroughEnabled {
 		if isCodexCLI && codexImageGenerationExplicitToolPolicy == codexImageGenerationExplicitToolPolicyStrip {
 			strippedBody, changed, stripErr := stripOpenAIImageGenerationToolsFromRawPayload(body)
@@ -6654,6 +6693,7 @@ passthroughScanDone:
 			return resultWithUsage(), nil
 		}
 		if sawFailedEvent && !sawCyberPolicyEvent {
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -6664,6 +6704,7 @@ passthroughScanDone:
 			return resultWithUsage(), err
 		}
 		if !openAIStreamClientOutputStarted(c, clientOutputStarted) {
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamDisconnect, false, false, err)
 			msg := "OpenAI stream disconnected before completion"
 			if errText := strings.TrimSpace(err.Error()); errText != "" {
 				msg += ": " + errText
@@ -6684,6 +6725,7 @@ passthroughScanDone:
 		return resultWithUsage(), fmt.Errorf("stream read error: %w", err)
 	}
 	if sawFailedEvent && !sawCyberPolicyEvent {
+		s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
 		return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 	}
 	if !clientDisconnected && terminalEventType == "" && ctx.Err() == nil {
@@ -6701,6 +6743,8 @@ passthroughScanDone:
 	}
 	if !clientDisconnected && terminalEventType != "" && !sawFailedEvent && neutralTerminalEventType == "" {
 		s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
+	} else if !clientDisconnected && neutralTerminalEventType != "" {
+		s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
 	}
 	commitFirstTokenTimeoutGuardSample()
 
@@ -7881,6 +7925,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	finalizeStream := func() (*openaiStreamingResult, error) {
 		if terminalEventType == "" {
 			if !openAIStreamClientOutputStarted(c, clientOutputStarted) {
+				s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamDisconnect, false, false, errors.New("stream ended before terminal event"))
 				return resultWithUsage(), s.newOpenAIStreamFailoverError(
 					c,
 					account,
@@ -7894,6 +7939,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete: missing terminal event")
 		}
 		if sawFailedEvent && !sawCyberPolicyEvent {
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 		}
 		if !clientDisconnected {
@@ -7909,6 +7955,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		commitFirstTokenTimeoutGuardSample()
 		if !clientDisconnected && !sawFailedEvent && neutralTerminalEventType == "" {
 			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureNone, openAIStreamClientOutputStarted(c, clientOutputStarted), true, nil)
+		} else if !clientDisconnected && neutralTerminalEventType != "" {
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
 		}
 		return resultWithUsage(), nil
 	}
@@ -7925,6 +7973,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			return resultWithUsage(), nil, true
 		}
 		if sawFailedEvent && !sawCyberPolicyEvent {
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamError, openAIStreamClientOutputStarted(c, clientOutputStarted), false, nil)
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage), true
 		}
 		// 客户端断开/取消请求时，上游读取往往会返回 context canceled。
@@ -7938,6 +7987,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			return resultWithUsage(), scanErr, true
 		}
 		if !openAIStreamClientOutputStarted(c, clientOutputStarted) {
+			s.recordOpenAIProxyStreamOutcome(account, OpenAIStreamFailureUpstreamDisconnect, false, false, scanErr)
 			msg := "OpenAI stream disconnected before completion"
 			if errText := strings.TrimSpace(scanErr.Error()); errText != "" {
 				msg += ": " + errText
@@ -9709,6 +9759,7 @@ type OpenAIRecordUsageInput struct {
 	UpstreamEndpoint        string
 	UserAgent               string // 请求的 User-Agent
 	IPAddress               string // 请求的客户端 IP 地址
+	SessionID               string // 仅用于 usage 关联；不参与 sticky、缓存或调度
 	RequestPayloadHash      string
 	PromptCacheAffinityHash string
 	PromptCacheGroupID      *int64
@@ -9735,6 +9786,7 @@ type CyberPolicyUsageInput struct {
 	UpstreamEndpoint   string
 	UserAgent          string
 	IPAddress          string
+	SessionID          string
 	RequestPayloadHash string
 	APIKeyService      APIKeyQuotaUpdater
 	ChannelUsageFields
@@ -9763,6 +9815,7 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 		UpstreamEndpoint:       in.UpstreamEndpoint,
 		UserAgent:              in.UserAgent,
 		IPAddress:              in.IPAddress,
+		SessionID:              in.SessionID,
 		RequestPayloadHash:     in.RequestPayloadHash,
 		APIKeyService:          in.APIKeyService,
 		ChannelUsageFields:     in.ChannelUsageFields,
@@ -9912,6 +9965,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		APIKeyID:             apiKey.ID,
 		AccountID:            account.ID,
 		RequestID:            requestID,
+		SessionID:            optionalTrimmedStringPtr(input.SessionID),
 		Model:                result.Model,
 		RequestedModel:       requestedModel,
 		UpstreamModel:        optionalNonEqualStringPtr(result.UpstreamModel, result.Model),

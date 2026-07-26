@@ -48,6 +48,7 @@ type BatchImageUserGroupRateRepository interface {
 }
 
 type BatchImageSubmitRequest struct {
+	SessionID        string                 `json:"-"`
 	Model            string                 `json:"model"`
 	TaskName         string                 `json:"task_name"`
 	ParentBatchID    string                 `json:"parent_batch_id"`
@@ -258,6 +259,7 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 	holdAmount := pricingSnapshot.HoldAmount
 	job, err := s.Repo.CreateBatchImageJob(ctx, CreateBatchImageJobParams{
 		BatchID:                 batchID,
+		SessionID:               batchImageOptionalStringPtr(normalized.SessionID),
 		UserID:                  owner.UserID,
 		APIKeyID:                &apiKeyID,
 		AccountID:               &accountID,

@@ -502,11 +502,7 @@ func (s *TokenRefreshService) clearAntigravityForceTokenRefresh(ctx context.Cont
 		)
 		return
 	}
-	if account.Extra != nil {
-		for k, v := range updates {
-			account.Extra[k] = v
-		}
-	}
+	mergeAccountExtra(account, updates)
 	slog.Info("token_refresh.cleared_antigravity_force_refresh",
 		"account_id", account.ID,
 		"outcome", outcome,

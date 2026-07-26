@@ -126,6 +126,7 @@ const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
 	OpenAIEndpointCapabilityAlphaSearch     OpenAIEndpointCapability = "alpha_search"
+	OpenAIEndpointCapabilityLive            OpenAIEndpointCapability = "live"
 	// GrokMediaGeneration filters only new image/video generation requests.
 	// Video status lookups intentionally do not require this capability because
 	// request IDs are account-local and must remain queryable on their owner.
@@ -1949,6 +1950,10 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		if !a.IsOpenAI() && !a.IsGrok() {
 			return false
 		}
+	case OpenAIEndpointCapabilityLive:
+		return a.Platform == PlatformOpenAI &&
+			a.Type == AccountTypeOAuth &&
+			!a.IsOpenAIAgentIdentity()
 	case OpenAIEndpointCapabilityResponses:
 		if !a.IsOpenAI() {
 			return false

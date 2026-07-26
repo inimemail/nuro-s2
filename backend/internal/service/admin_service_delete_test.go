@@ -13,21 +13,24 @@ import (
 )
 
 type userRepoStub struct {
-	user          *User
-	getErr        error
-	createErr     error
-	deleteErr     error
-	exists        bool
-	existsErr     error
-	nextID        int64
-	created       []*User
-	updated       []*User
-	deletedIDs    []int64
-	usersByEmail  map[string]*User
-	getByEmailErr error
-	listUsers     []User
-	listErr       error
-	listFilters   []UserListFilters
+	user           *User
+	getErr         error
+	createErr      error
+	deleteErr      error
+	exists         bool
+	existsErr      error
+	nextID         int64
+	created        []*User
+	updated        []*User
+	deletedIDs     []int64
+	usersByEmail   map[string]*User
+	getByEmailErr  error
+	listUsers      []User
+	listErr        error
+	listFilters    []UserListFilters
+	aliasExists    bool
+	aliasExistsErr error
+	aliasCreateErr error
 }
 
 func (s *userRepoStub) Create(ctx context.Context, user *User) error {
@@ -171,6 +174,17 @@ func (s *userRepoStub) ExistsByEmail(ctx context.Context, email string) (bool, e
 		return false, s.existsErr
 	}
 	return s.exists, nil
+}
+
+func (s *userRepoStub) ExistsByEmailAlias(context.Context, string) (bool, error) {
+	return s.aliasExists, s.aliasExistsErr
+}
+
+func (s *userRepoStub) CreateWithEmailAliasGuard(ctx context.Context, user *User) error {
+	if s.aliasCreateErr != nil {
+		return s.aliasCreateErr
+	}
+	return s.Create(ctx, user)
 }
 
 func (s *userRepoStub) RemoveGroupFromAllowedGroups(ctx context.Context, groupID int64) (int64, error) {

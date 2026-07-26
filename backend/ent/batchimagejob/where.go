@@ -59,6 +59,11 @@ func BatchID(v string) predicate.BatchImageJob {
 	return predicate.BatchImageJob(sql.FieldEQ(FieldBatchID, v))
 }
 
+// SessionID applies equality check predicate on the "session_id" field. It's identical to SessionIDEQ.
+func SessionID(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldEQ(FieldSessionID, v))
+}
+
 // UserID applies equality check predicate on the "user_id" field. It's identical to UserIDEQ.
 func UserID(v int64) predicate.BatchImageJob {
 	return predicate.BatchImageJob(sql.FieldEQ(FieldUserID, v))
@@ -362,6 +367,81 @@ func BatchIDEqualFold(v string) predicate.BatchImageJob {
 // BatchIDContainsFold applies the ContainsFold predicate on the "batch_id" field.
 func BatchIDContainsFold(v string) predicate.BatchImageJob {
 	return predicate.BatchImageJob(sql.FieldContainsFold(FieldBatchID, v))
+}
+
+// SessionIDEQ applies the EQ predicate on the "session_id" field.
+func SessionIDEQ(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldEQ(FieldSessionID, v))
+}
+
+// SessionIDNEQ applies the NEQ predicate on the "session_id" field.
+func SessionIDNEQ(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldNEQ(FieldSessionID, v))
+}
+
+// SessionIDIn applies the In predicate on the "session_id" field.
+func SessionIDIn(vs ...string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldIn(FieldSessionID, vs...))
+}
+
+// SessionIDNotIn applies the NotIn predicate on the "session_id" field.
+func SessionIDNotIn(vs ...string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldNotIn(FieldSessionID, vs...))
+}
+
+// SessionIDGT applies the GT predicate on the "session_id" field.
+func SessionIDGT(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldGT(FieldSessionID, v))
+}
+
+// SessionIDGTE applies the GTE predicate on the "session_id" field.
+func SessionIDGTE(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldGTE(FieldSessionID, v))
+}
+
+// SessionIDLT applies the LT predicate on the "session_id" field.
+func SessionIDLT(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldLT(FieldSessionID, v))
+}
+
+// SessionIDLTE applies the LTE predicate on the "session_id" field.
+func SessionIDLTE(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldLTE(FieldSessionID, v))
+}
+
+// SessionIDContains applies the Contains predicate on the "session_id" field.
+func SessionIDContains(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldContains(FieldSessionID, v))
+}
+
+// SessionIDHasPrefix applies the HasPrefix predicate on the "session_id" field.
+func SessionIDHasPrefix(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldHasPrefix(FieldSessionID, v))
+}
+
+// SessionIDHasSuffix applies the HasSuffix predicate on the "session_id" field.
+func SessionIDHasSuffix(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldHasSuffix(FieldSessionID, v))
+}
+
+// SessionIDIsNil applies the IsNil predicate on the "session_id" field.
+func SessionIDIsNil() predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldIsNull(FieldSessionID))
+}
+
+// SessionIDNotNil applies the NotNil predicate on the "session_id" field.
+func SessionIDNotNil() predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldNotNull(FieldSessionID))
+}
+
+// SessionIDEqualFold applies the EqualFold predicate on the "session_id" field.
+func SessionIDEqualFold(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldEqualFold(FieldSessionID, v))
+}
+
+// SessionIDContainsFold applies the ContainsFold predicate on the "session_id" field.
+func SessionIDContainsFold(v string) predicate.BatchImageJob {
+	return predicate.BatchImageJob(sql.FieldContainsFold(FieldSessionID, v))
 }
 
 // UserIDEQ applies the EQ predicate on the "user_id" field.

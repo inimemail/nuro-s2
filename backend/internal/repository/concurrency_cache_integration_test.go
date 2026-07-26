@@ -558,3 +558,25 @@ func (s *ConcurrencyCacheSuite) TestAcquireFirstAvailableUserAccountSlots_SkipsC
 	require.NoError(s.T(), err)
 	require.Empty(s.T(), userMembers)
 }
+
+func (s *ConcurrencyCacheSuite) TestAcquireFirstAvailableUserAccountSlots_SelectsUnlimitedWithoutAccountSlot() {
+	fastCache, ok := s.cache.(service.UserAccountSlotArbitrationCache)
+	require.True(s.T(), ok)
+
+	userID := int64(930)
+	limitedAccountID := int64(931)
+	unlimitedAccountID := int64(932)
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, accountSlotKey(limitedAccountID), redis.Z{
+		Score: float64(time.Now().Unix()), Member: "busy",
+	}).Err())
+
+	selected, acquired, err := fastCache.AcquireFirstAvailableUserAccountSlots(s.ctx, userID, 1, []service.AccountSlotCandidate{
+		{AccountID: limitedAccountID, MaxConcurrency: 1},
+		{AccountID: unlimitedAccountID, MaxConcurrency: 0},
+	}, "user-unlimited", "account-unlimited")
+	require.NoError(s.T(), err)
+	require.True(s.T(), acquired)
+	require.Equal(s.T(), unlimitedAccountID, selected)
+	require.EqualValues(s.T(), 1, s.rdb.ZCard(s.ctx, userSlotKey(userID)).Val())
+	require.EqualValues(s.T(), 0, s.rdb.ZCard(s.ctx, accountSlotKey(unlimitedAccountID)).Val())
+}

@@ -173,6 +173,9 @@ var grantEscrowScript = redis.NewScript(`
 if tostring(redis.call('GET', KEYS[3]) or '') ~= ARGV[2] then return -1 end
 if tostring(redis.call('GET', KEYS[5]) or '') ~= ARGV[2] then return -1 end
 local allocated = tonumber(redis.call('GET', KEYS[2]) or '0')
+local now = tonumber(redis.call('TIME')[1])
+redis.call('ZREMRANGEBYSCORE', KEYS[6], '-inf', now - 60)
+local live = redis.call('ZCARD', KEYS[6])
 local holders = redis.call('HGETALL', KEYS[1])
 for i = 1, #holders, 2 do
   local holder_node = holders[i]
@@ -224,7 +227,7 @@ if holder ~= false then
     return current
   end
 end
-local available = limit - allocated
+local available = limit - allocated - live
 if available <= 0 then return 0 end
 local grant = requested
 if grant > available then grant = available end
@@ -242,7 +245,7 @@ func (m *TenantEscrowManager) Grant(ctx context.Context, tenantID, nodeID string
 	}
 	result, err := grantEscrowScript.Run(ctx, m.rdb, []string{
 		m.holderKey(tenantID), m.allocatedKey(tenantID), m.nodeEpochKey(nodeID),
-		m.nodeTenantsKey(nodeID, epoch), m.nodeLeaseKey(nodeID, epoch),
+		m.nodeTenantsKey(nodeID, epoch), m.nodeLeaseKey(nodeID, epoch), escrowLiveUserSlotKey(tenantID),
 	}, nodeID, epoch, requested, globalLimit, tenantID, escrowNodeLeasePrefix, escrowNodeTenants).Int()
 	if err != nil {
 		return 0, err
@@ -251,6 +254,10 @@ func (m *TenantEscrowManager) Grant(ctx context.Context, tenantID, nodeID string
 		return 0, ErrEscrowFenced
 	}
 	return result, nil
+}
+
+func escrowLiveUserSlotKey(tenantID string) string {
+	return liveUserSlotKeyPrefix + strings.TrimPrefix(tenantID, "user:")
 }
 
 var releaseEscrowScript = redis.NewScript(`

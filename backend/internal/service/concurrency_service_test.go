@@ -113,6 +113,16 @@ type trackingConcurrencyCache struct {
 	cleanupCalls  int
 }
 
+type closeTrackingConcurrencyCache struct {
+	stubConcurrencyCacheForTest
+	closed atomic.Bool
+}
+
+func (c *closeTrackingConcurrencyCache) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+
 func (c *trackingConcurrencyCache) CleanupStaleProcessSlots(_ context.Context, prefix string) error {
 	c.cleanupCalls++
 	c.cleanupPrefix = prefix
@@ -204,7 +214,9 @@ func TestAcquireAccountSlot_Success(t *testing.T) {
 
 func TestRetryConcurrencySlotReleaseRetriesTransientFailure(t *testing.T) {
 	attempts := 0
-	retryConcurrencySlotRelease("test", 1, "req-1", func(context.Context) error {
+	svc := NewConcurrencyService(&stubConcurrencyCacheForTest{})
+	t.Cleanup(svc.StopBackgroundWorkers)
+	svc.retryConcurrencySlotRelease("test", 1, "req-1", func(context.Context) error {
 		attempts++
 		if attempts < slotReleaseMaxAttempts {
 			return errors.New("temporary redis failure")
@@ -212,6 +224,33 @@ func TestRetryConcurrencySlotReleaseRetriesTransientFailure(t *testing.T) {
 		return nil
 	})
 	require.Equal(t, slotReleaseMaxAttempts, attempts)
+}
+
+func TestStopBackgroundWorkersStopsReleaseRetriesBeforeClosingCache(t *testing.T) {
+	cache := &closeTrackingConcurrencyCache{}
+	svc := NewConcurrencyService(cache)
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	svc.retryConcurrencySlotReleaseInBackground("test", 1, "req-stop", func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		close(finished)
+		return ctx.Err()
+	})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("release retry worker did not start")
+	}
+
+	svc.StopBackgroundWorkers()
+
+	select {
+	case <-finished:
+	default:
+		t.Fatal("release retry was still running when cache closed")
+	}
+	require.True(t, cache.closed.Load())
 }
 
 func TestAcquireFirstAvailableAccountSlot_UsesOptionalCacheAndReleasesSelectedAccount(t *testing.T) {
@@ -255,6 +294,42 @@ func TestAcquireFirstAvailableAccountSlot_UnlimitedCandidateSkipsRedis(t *testin
 	require.True(t, result.Acquired)
 	require.Equal(t, int64(77), result.AccountID)
 	require.Empty(t, cache.candidates)
+}
+
+func TestAcquireFirstAvailableAccountSlot_SelectsUnlimitedAfterBusyLimitedWithoutAccountLease(t *testing.T) {
+	cache := &arbitrationConcurrencyCacheForTest{selectedAccountID: 43, acquired: true}
+	svc := NewConcurrencyService(cache)
+	t.Cleanup(svc.StopBackgroundWorkers)
+
+	result, err := svc.AcquireFirstAvailableAccountSlot(context.Background(), []AccountSlotCandidate{
+		{AccountID: 42, MaxConcurrency: 1},
+		{AccountID: 43, MaxConcurrency: 0},
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.Acquired)
+	require.Equal(t, int64(43), result.AccountID)
+	result.ReleaseFunc()
+	require.Empty(t, cache.releasedAccountIDs)
+}
+
+func TestAcquireFirstAvailableUserAccountSlots_UnlimitedAccountKeepsUserLeaseOnly(t *testing.T) {
+	cache := &arbitrationConcurrencyCacheForTest{userSelectedAccountID: 43, userAcquired: true}
+	svc := NewConcurrencyService(cache)
+	t.Cleanup(svc.StopBackgroundWorkers)
+
+	result, err := svc.AcquireFirstAvailableUserAccountSlots(context.Background(), 7, 1, []AccountSlotCandidate{
+		{AccountID: 42, MaxConcurrency: 1},
+		{AccountID: 43, MaxConcurrency: 0},
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.Acquired)
+	require.Equal(t, int64(43), result.AccountID)
+	result.ReleaseFunc()
+	result.UserReleaseFunc()
+	require.Empty(t, cache.releasedAccountIDs)
+	require.Equal(t, []int64{7}, cache.releasedUserIDs)
 }
 
 func TestAcquireFirstAvailableUserAccountSlots_UsesOptionalCacheAndReleasesBothSlots(t *testing.T) {

@@ -41,37 +41,48 @@ func newUserRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *userRepos
 }
 
 func (r *userRepository) Create(ctx context.Context, userIn *service.User) error {
+	return r.create(ctx, userIn, false)
+}
+
+func (r *userRepository) CreateWithEmailAliasGuard(ctx context.Context, userIn *service.User) error {
+	return r.create(ctx, userIn, true)
+}
+
+func (r *userRepository) create(ctx context.Context, userIn *service.User, guardEmailAlias bool) error {
 	if userIn == nil {
 		return nil
 	}
 
-	// 统一使用 ent 的事务：保证用户与允许分组的更新原子化，
-	// 并避免基于 *sql.Tx 手动构造 ent client 导致的 ExecQuerier 断言错误。
-	tx, err := r.client.Tx(ctx)
-	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
-		return err
-	}
-
+	// Reuse an outer transaction before attempting to open one on the root
+	// client. Context, not the root client's driver, carries cross-layer ent
+	// transactions (for example OAuth signup plus invitation redemption).
+	var tx *dbent.Tx
 	var txClient *dbent.Client
 	txCtx := ctx
-	if err == nil {
+	if existingTx := dbent.TxFromContext(ctx); existingTx != nil {
+		txClient = existingTx.Client()
+	} else if startedTx, err := r.client.Tx(ctx); err == nil {
+		tx = startedTx
 		defer func() { _ = tx.Rollback() }()
 		txClient = tx.Client()
 		txCtx = dbent.NewTxContext(ctx, tx)
+	} else if errors.Is(err, dbent.ErrTxStarted) {
+		// A repository built directly from tx.Client() is already transactional
+		// even when the caller did not attach the Tx to its context.
+		txClient = r.client
 	} else {
-		// 已处于外部事务中（ErrTxStarted），复用当前事务 client 并由调用方负责提交/回滚。
-		if existingTx := dbent.TxFromContext(ctx); existingTx != nil {
-			txClient = existingTx.Client()
-		} else {
-			txClient = r.client
-		}
+		return err
 	}
 
+	lockKeys := []string{normalizedEmailUniquenessLockKey(userIn.Email)}
+	if guardEmailAlias {
+		lockKeys = append(lockKeys, emailAliasUniquenessLockKey(userIn.Email))
+	}
 	releaseEmailLock, err := lockRepositoryScopedKeys(
 		txCtx,
 		txClient,
 		txAwareSQLExecutor(txCtx, r.sql, r.client),
-		normalizedEmailUniquenessLockKey(userIn.Email),
+		lockKeys...,
 	)
 	if err != nil {
 		return err
@@ -80,6 +91,15 @@ func (r *userRepository) Create(ctx context.Context, userIn *service.User) error
 
 	if err := ensureNormalizedEmailAvailableWithClient(txCtx, txClient, 0, userIn.Email); err != nil {
 		return err
+	}
+	if guardEmailAlias {
+		exists, err := existsByEmailAliasWithClient(txCtx, txClient, userIn.Email)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return service.ErrEmailExists
+		}
 	}
 
 	created, err := txClient.User.Create().
@@ -184,25 +204,22 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User) error
 		return nil
 	}
 
-	// 使用 ent 事务包裹用户更新与 allowed_groups 同步，避免跨层事务不一致。
-	tx, err := r.client.Tx(ctx)
-	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
-		return err
-	}
-
+	// Keep user and allowed_groups updates in the caller's transaction when
+	// one is attached to the context.
+	var tx *dbent.Tx
 	var txClient *dbent.Client
 	txCtx := ctx
-	if err == nil {
+	if existingTx := dbent.TxFromContext(ctx); existingTx != nil {
+		txClient = existingTx.Client()
+	} else if startedTx, err := r.client.Tx(ctx); err == nil {
+		tx = startedTx
 		defer func() { _ = tx.Rollback() }()
 		txClient = tx.Client()
 		txCtx = dbent.NewTxContext(ctx, tx)
+	} else if errors.Is(err, dbent.ErrTxStarted) {
+		txClient = r.client
 	} else {
-		// 已处于外部事务中（ErrTxStarted），复用当前事务 client 并由调用方负责提交/回滚。
-		if existingTx := dbent.TxFromContext(ctx); existingTx != nil {
-			txClient = existingTx.Client()
-		} else {
-			txClient = r.client
-		}
+		return err
 	}
 
 	releaseEmailLock, err := lockRepositoryScopedKeys(
@@ -835,6 +852,103 @@ func (r *userRepository) ExistsByEmail(ctx context.Context, email string) (bool,
 	return r.client.User.Query().Where(userEmailLookupPredicate(email)).Exist(ctx)
 }
 
+const emailAliasCandidateLimit = 50
+
+func (r *userRepository) ExistsByEmailAlias(ctx context.Context, email string) (bool, error) {
+	return existsByEmailAliasWithClient(ctx, clientFromContext(ctx, r.client), email)
+}
+
+func existsByEmailAliasWithClient(ctx context.Context, client *dbent.Client, email string) (bool, error) {
+	if client == nil {
+		return false, nil
+	}
+	probes := service.EmailAliasDedupProbes(email)
+	if len(probes) == 0 {
+		return false, nil
+	}
+	preds := make([]predicate.User, 0, 4*len(probes))
+	for _, probe := range probes {
+		base := probe.Local + "@" + probe.Domain
+		plusPattern := escapeLikeWildcards(probe.Local) + "+%@" + escapeLikeWildcards(probe.Domain)
+		if probe.DotInsensitive {
+			preds = append(preds, dotStrippedEmailEQ(base), dotStrippedEmailLike(plusPattern))
+			continue
+		}
+		// Dots are significant outside the Gmail family. Keeping them in the
+		// SQL probe prevents unrelated dot variants from consuming the bounded
+		// candidate set before the real alias is examined.
+		preds = append(preds,
+			normalizedEmailEQ(base),
+			normalizedEmailEQ(base+"."),
+			normalizedEmailLike(plusPattern),
+			normalizedEmailLike(plusPattern+"."),
+		)
+	}
+	candidates, err := client.User.Query().
+		Where(dbuser.Or(preds...)).
+		Limit(emailAliasCandidateLimit).
+		Select(dbuser.FieldEmail).
+		Strings(ctx)
+	if err != nil {
+		return false, err
+	}
+	identity := service.NormalizeEmailForAliasDedup(email)
+	for _, candidate := range candidates {
+		if service.NormalizeEmailForAliasDedup(candidate) == identity {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func dotStrippedEmailExpr(b *entsql.Builder, s *entsql.Selector) *entsql.Builder {
+	return b.WriteString("REPLACE(LOWER(TRIM(").
+		Ident(s.C(dbuser.FieldEmail)).
+		WriteString(")), '.', '')")
+}
+
+func dotStrippedEmailEQ(value string) predicate.User {
+	return predicate.User(func(s *entsql.Selector) {
+		s.Where(entsql.P(func(b *entsql.Builder) {
+			dotStrippedEmailExpr(b, s).WriteString(" = ").Arg(value)
+		}))
+	})
+}
+
+func dotStrippedEmailLike(pattern string) predicate.User {
+	return predicate.User(func(s *entsql.Selector) {
+		s.Where(entsql.P(func(b *entsql.Builder) {
+			dotStrippedEmailExpr(b, s).WriteString(" LIKE ").Arg(pattern).WriteString(` ESCAPE '\'`)
+		}))
+	})
+}
+
+func normalizedEmailExpr(b *entsql.Builder, s *entsql.Selector) *entsql.Builder {
+	return b.WriteString("LOWER(TRIM(").Ident(s.C(dbuser.FieldEmail)).WriteString("))")
+}
+
+func normalizedEmailEQ(value string) predicate.User {
+	return predicate.User(func(s *entsql.Selector) {
+		s.Where(entsql.P(func(b *entsql.Builder) {
+			normalizedEmailExpr(b, s).WriteString(" = ").Arg(value)
+		}))
+	})
+}
+
+func normalizedEmailLike(pattern string) predicate.User {
+	return predicate.User(func(s *entsql.Selector) {
+		s.Where(entsql.P(func(b *entsql.Builder) {
+			normalizedEmailExpr(b, s).WriteString(" LIKE ").Arg(pattern).WriteString(` ESCAPE '\'`)
+		}))
+	})
+}
+
+var likeWildcardEscaper = strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
+
+func escapeLikeWildcards(value string) string {
+	return likeWildcardEscaper.Replace(value)
+}
+
 func ensureNormalizedEmailAvailableWithClient(ctx context.Context, client *dbent.Client, userID int64, email string) error {
 	client = clientFromContext(ctx, client)
 	if client == nil {
@@ -880,6 +994,14 @@ func normalizedEmailUniquenessLockKey(email string) string {
 		return ""
 	}
 	return "users:normalized-email:" + normalized
+}
+
+func emailAliasUniquenessLockKey(email string) string {
+	identity := service.NormalizeEmailForAliasDedup(email)
+	if identity == "" {
+		return ""
+	}
+	return "users:email-alias-identity:" + identity
 }
 
 func (r *userRepository) AddGroupToAllowedGroups(ctx context.Context, userID int64, groupID int64) error {

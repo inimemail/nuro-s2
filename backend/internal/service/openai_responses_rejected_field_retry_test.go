@@ -105,14 +105,13 @@ func TestNormalizeOpenAIResponsesRejectedFieldRetryBodyIsExact(t *testing.T) {
 	})
 }
 
-func TestOpenAIGatewayServiceRetriesExplicitRejectedResponsesFields(t *testing.T) {
+func TestOpenAIGatewayServiceComposesNamespaceStripWithRejectedFieldRetry(t *testing.T) {
 	setGinTestMode()
 	body := []byte(`{"model":"gpt-5.5","stream":false,"max_output_tokens":2048,"input":[{"type":"custom_tool_call","namespace":"remove","input":"{}"}]}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{
-		newRejectedFieldTestResponse(http.StatusBadRequest, `{"error":{"code":"unknown_parameter","param":"input[0].namespace","message":"Unknown parameter: input[0].namespace"}}`),
 		newRejectedFieldTestResponse(http.StatusBadRequest, `{"error":{"code":"unsupported_parameter","param":"max_output_tokens","message":"Unsupported parameter: max_output_tokens"}}`),
 		newRejectedFieldTestResponse(http.StatusOK, `{"output":[],"usage":{"input_tokens":1,"output_tokens":1}}`),
 	}}
@@ -125,10 +124,12 @@ func TestOpenAIGatewayServiceRetriesExplicitRejectedResponsesFields(t *testing.T
 	result, err := svc.Forward(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Len(t, upstream.bodies, 3)
-	require.False(t, gjson.GetBytes(upstream.bodies[1], "input.0.namespace").Exists())
-	require.True(t, gjson.GetBytes(upstream.bodies[1], "max_output_tokens").Exists())
-	require.False(t, gjson.GetBytes(upstream.bodies[2], "max_output_tokens").Exists())
+	require.Len(t, upstream.bodies, 2)
+	for _, forwardedBody := range upstream.bodies {
+		require.False(t, gjson.GetBytes(forwardedBody, "input.0.namespace").Exists())
+	}
+	require.True(t, gjson.GetBytes(upstream.bodies[0], "max_output_tokens").Exists())
+	require.False(t, gjson.GetBytes(upstream.bodies[1], "max_output_tokens").Exists())
 }
 
 func newRejectedFieldTestResponse(status int, body string) *http.Response {

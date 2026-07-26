@@ -325,7 +325,7 @@ func (c *cellAwareConcurrencyCache) AcquireAccountSlot(ctx context.Context, acco
 func (c *cellAwareConcurrencyCache) acquireCandidates(ctx context.Context, candidates []service.AccountSlotCandidate, requestID string) (int64, bool, error) {
 	for start := 0; start < len(candidates); {
 		candidate := candidates[start]
-		if candidate.AccountID <= 0 || candidate.MaxConcurrency <= 0 {
+		if candidate.AccountID <= 0 {
 			start++
 			continue
 		}
@@ -450,7 +450,11 @@ func (c *cellAwareConcurrencyCache) ReleaseUserSlot(ctx context.Context, userID 
 
 func (c *cellAwareConcurrencyCache) GetUserConcurrency(ctx context.Context, userID int64) (int, error) {
 	if c.escrow != nil && !c.escrowDegraded.Load() {
-		return c.escrow.InUse("user:" + strconv.FormatInt(userID, 10)), nil
+		persistent, err := c.legacy.GetUserConcurrency(ctx, userID)
+		if err != nil {
+			return 0, err
+		}
+		return c.escrow.InUse("user:"+strconv.FormatInt(userID, 10)) + persistent, nil
 	}
 	current, err := c.legacy.GetUserConcurrency(ctx, userID)
 	if err != nil {
@@ -715,32 +719,23 @@ func (c *cellAwareConcurrencyCache) GetUsersLoadBatch(ctx context.Context, users
 	if c.escrow == nil {
 		return c.legacy.GetUsersLoadBatch(ctx, users)
 	}
-	if c.escrowDegraded.Load() {
-		result, err := c.legacy.GetUsersLoadBatch(ctx, users)
-		if err != nil {
-			return nil, err
-		}
-		for _, user := range users {
-			info := result[user.ID]
-			if info == nil {
-				info = &service.UserLoadInfo{UserID: user.ID}
-				result[user.ID] = info
-			}
-			info.CurrentConcurrency += c.escrow.InUse("user:" + strconv.FormatInt(user.ID, 10))
-			if user.MaxConcurrency > 0 {
-				info.LoadRate = (info.CurrentConcurrency + info.WaitingCount) * 100 / user.MaxConcurrency
-			}
-		}
-		return result, nil
+	// Ordinary requests are admitted from local escrow, while long-lived Live
+	// reservations remain in the legacy Redis key domain. Merge the existing
+	// batch read with local usage so ops/autoscaling never undercount Live calls.
+	result, err := c.legacy.GetUsersLoadBatch(ctx, users)
+	if err != nil {
+		return nil, err
 	}
-	result := make(map[int64]*service.UserLoadInfo, len(users))
 	for _, user := range users {
-		current := c.escrow.InUse("user:" + strconv.FormatInt(user.ID, 10))
-		load := 0
-		if user.MaxConcurrency > 0 {
-			load = current * 100 / user.MaxConcurrency
+		info := result[user.ID]
+		if info == nil {
+			info = &service.UserLoadInfo{UserID: user.ID}
+			result[user.ID] = info
 		}
-		result[user.ID] = &service.UserLoadInfo{UserID: user.ID, CurrentConcurrency: current, LoadRate: load}
+		info.CurrentConcurrency += c.escrow.InUse("user:" + strconv.FormatInt(user.ID, 10))
+		if user.MaxConcurrency > 0 {
+			info.LoadRate = (info.CurrentConcurrency + info.WaitingCount) * 100 / user.MaxConcurrency
+		}
 	}
 	return result, nil
 }
@@ -750,6 +745,53 @@ func (c *cellAwareConcurrencyCache) TrackAPIKeySlot(ctx context.Context, apiKeyI
 }
 func (c *cellAwareConcurrencyCache) ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error {
 	return c.legacy.ReleaseAPIKeySlot(ctx, apiKeyID, requestID)
+}
+
+func (c *cellAwareConcurrencyCache) AcquireLiveTenantLease(ctx context.Context, userID int64, userMax int, apiKeyID int64, leaseID string) (bool, error) {
+	allocatedKey := ""
+	if c.escrow != nil && c.escrow.manager != nil {
+		if err := c.escrow.returnUnusedForLive(ctx, "user:"+strconv.FormatInt(userID, 10)); err != nil {
+			return false, err
+		}
+		allocatedKey = c.escrow.manager.allocatedKey("user:" + strconv.FormatInt(userID, 10))
+	}
+	return c.legacy.acquireLiveTenantLease(ctx, userID, userMax, apiKeyID, leaseID, allocatedKey)
+}
+
+func (c *cellAwareConcurrencyCache) AcquireLiveAccountLease(ctx context.Context, platform string, accountID int64, accountMax int, leaseID string, replacingRegularSlot bool) (bool, error) {
+	route, err := c.routeForPlatform(ctx, platform, accountID)
+	if err != nil {
+		return false, err
+	}
+	cache := c.legacy
+	if route != nil {
+		cache = route.cache
+	}
+	return cache.AcquireLiveAccountLease(ctx, platform, accountID, accountMax, leaseID, replacingRegularSlot)
+}
+
+func (c *cellAwareConcurrencyCache) RefreshLiveTenantLease(ctx context.Context, userID, apiKeyID int64, leaseID string) (bool, error) {
+	return c.legacy.RefreshLiveTenantLease(ctx, userID, apiKeyID, leaseID)
+}
+
+func (c *cellAwareConcurrencyCache) RefreshLiveAccountLease(ctx context.Context, accountID int64, leaseID string) (bool, error) {
+	cache, err := c.accountCache(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	return cache.RefreshLiveAccountLease(ctx, accountID, leaseID)
+}
+
+func (c *cellAwareConcurrencyCache) ReleaseLiveTenantLease(ctx context.Context, userID, apiKeyID int64, leaseID string) error {
+	return c.legacy.ReleaseLiveTenantLease(ctx, userID, apiKeyID, leaseID)
+}
+
+func (c *cellAwareConcurrencyCache) ReleaseLiveAccountLease(ctx context.Context, accountID int64, leaseID string) error {
+	cache, err := c.accountCache(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return cache.ReleaseLiveAccountLease(ctx, accountID, leaseID)
 }
 func (c *cellAwareConcurrencyCache) GetAPIKeyConcurrencyBatch(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error) {
 	return c.legacy.GetAPIKeyConcurrencyBatch(ctx, apiKeyIDs)
@@ -975,6 +1017,27 @@ func (e *localTenantEscrow) Acquire(ctx context.Context, tenantID string, limit 
 	e.requests[requestID] = tenantID
 	e.requestsMu.Unlock()
 	return true, nil
+}
+
+// returnUnusedForLive gives direct, persistent Live reservations visibility
+// into escrow's global allocation without revoking active local requests.
+func (e *localTenantEscrow) returnUnusedForLive(ctx context.Context, tenantID string) error {
+	if e == nil || e.manager == nil {
+		return nil
+	}
+	state := e.state(tenantID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	unused := state.grants - state.inUse
+	if unused <= 0 {
+		return nil
+	}
+	if err := e.manager.Release(ctx, tenantID, e.nodeID, e.epoch, unused); err != nil {
+		return err
+	}
+	state.grants -= unused
+	state.lastUsed = time.Now()
+	return nil
 }
 
 func (e *localTenantEscrow) Release(requestID string) bool {

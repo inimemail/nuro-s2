@@ -84,6 +84,8 @@ func (s *AntigravityGatewayService) clearCreditsExhausted(ctx context.Context, a
 	if _, exists := rawLimits[creditsExhaustedKey]; !exists {
 		return
 	}
+	account.Extra = cloneCredentials(account.Extra)
+	rawLimits = cloneCredentials(rawLimits)
 	delete(rawLimits, creditsExhaustedKey)
 	account.Extra[modelRateLimitsKey] = rawLimits
 	if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{

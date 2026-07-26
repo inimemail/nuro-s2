@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 )
@@ -95,7 +94,7 @@ func TestCollectSelectionFailureStats(t *testing.T) {
 	}
 }
 
-func TestDiagnoseSelectionFailure_UnschedulableDetail(t *testing.T) {
+func TestDiagnoseSelectionFailure_Unschedulable(t *testing.T) {
 	svc := &GatewayService{}
 	acc := &Account{
 		ID:          7,
@@ -108,12 +107,9 @@ func TestDiagnoseSelectionFailure_UnschedulableDetail(t *testing.T) {
 	if diagnosis.Category != "unschedulable" {
 		t.Fatalf("category=%s want=unschedulable", diagnosis.Category)
 	}
-	if diagnosis.Detail != "generic_unschedulable" {
-		t.Fatalf("detail=%s want=generic_unschedulable", diagnosis.Detail)
-	}
 }
 
-func TestDiagnoseSelectionFailure_ModelRateLimitedDetail(t *testing.T) {
+func TestDiagnoseSelectionFailure_ModelRateLimited(t *testing.T) {
 	svc := &GatewayService{}
 	model := "gpt-5.4"
 	resetAt := time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339)
@@ -134,8 +130,5 @@ func TestDiagnoseSelectionFailure_ModelRateLimitedDetail(t *testing.T) {
 	diagnosis := svc.diagnoseSelectionFailure(context.Background(), acc, model, PlatformOpenAI, map[int64]struct{}{}, false)
 	if diagnosis.Category != "model_rate_limited" {
 		t.Fatalf("category=%s want=model_rate_limited", diagnosis.Category)
-	}
-	if !strings.Contains(diagnosis.Detail, "remaining=") {
-		t.Fatalf("detail=%s want contains remaining=", diagnosis.Detail)
 	}
 }

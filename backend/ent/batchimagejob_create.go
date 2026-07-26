@@ -28,6 +28,20 @@ func (_c *BatchImageJobCreate) SetBatchID(v string) *BatchImageJobCreate {
 	return _c
 }
 
+// SetSessionID sets the "session_id" field.
+func (_c *BatchImageJobCreate) SetSessionID(v string) *BatchImageJobCreate {
+	_c.mutation.SetSessionID(v)
+	return _c
+}
+
+// SetNillableSessionID sets the "session_id" field if the given value is not nil.
+func (_c *BatchImageJobCreate) SetNillableSessionID(v *string) *BatchImageJobCreate {
+	if v != nil {
+		_c.SetSessionID(*v)
+	}
+	return _c
+}
+
 // SetUserID sets the "user_id" field.
 func (_c *BatchImageJobCreate) SetUserID(v int64) *BatchImageJobCreate {
 	_c.mutation.SetUserID(v)
@@ -791,6 +805,11 @@ func (_c *BatchImageJobCreate) check() error {
 			return &ValidationError{Name: "batch_id", err: fmt.Errorf(`ent: validator failed for field "BatchImageJob.batch_id": %w`, err)}
 		}
 	}
+	if v, ok := _c.mutation.SessionID(); ok {
+		if err := batchimagejob.SessionIDValidator(v); err != nil {
+			return &ValidationError{Name: "session_id", err: fmt.Errorf(`ent: validator failed for field "BatchImageJob.session_id": %w`, err)}
+		}
+	}
 	if _, ok := _c.mutation.UserID(); !ok {
 		return &ValidationError{Name: "user_id", err: errors.New(`ent: missing required field "BatchImageJob.user_id"`)}
 	}
@@ -970,6 +989,10 @@ func (_c *BatchImageJobCreate) createSpec() (*BatchImageJob, *sqlgraph.CreateSpe
 	if value, ok := _c.mutation.BatchID(); ok {
 		_spec.SetField(batchimagejob.FieldBatchID, field.TypeString, value)
 		_node.BatchID = value
+	}
+	if value, ok := _c.mutation.SessionID(); ok {
+		_spec.SetField(batchimagejob.FieldSessionID, field.TypeString, value)
+		_node.SessionID = &value
 	}
 	if value, ok := _c.mutation.UserID(); ok {
 		_spec.SetField(batchimagejob.FieldUserID, field.TypeInt64, value)
@@ -1214,6 +1237,24 @@ type (
 		*sql.UpdateSet
 	}
 )
+
+// SetSessionID sets the "session_id" field.
+func (u *BatchImageJobUpsert) SetSessionID(v string) *BatchImageJobUpsert {
+	u.Set(batchimagejob.FieldSessionID, v)
+	return u
+}
+
+// UpdateSessionID sets the "session_id" field to the value that was provided on create.
+func (u *BatchImageJobUpsert) UpdateSessionID() *BatchImageJobUpsert {
+	u.SetExcluded(batchimagejob.FieldSessionID)
+	return u
+}
+
+// ClearSessionID clears the value of the "session_id" field.
+func (u *BatchImageJobUpsert) ClearSessionID() *BatchImageJobUpsert {
+	u.SetNull(batchimagejob.FieldSessionID)
+	return u
+}
 
 // SetUserID sets the "user_id" field.
 func (u *BatchImageJobUpsert) SetUserID(v int64) *BatchImageJobUpsert {
@@ -2095,6 +2136,27 @@ func (u *BatchImageJobUpsertOne) Update(set func(*BatchImageJobUpsert)) *BatchIm
 		set(&BatchImageJobUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetSessionID sets the "session_id" field.
+func (u *BatchImageJobUpsertOne) SetSessionID(v string) *BatchImageJobUpsertOne {
+	return u.Update(func(s *BatchImageJobUpsert) {
+		s.SetSessionID(v)
+	})
+}
+
+// UpdateSessionID sets the "session_id" field to the value that was provided on create.
+func (u *BatchImageJobUpsertOne) UpdateSessionID() *BatchImageJobUpsertOne {
+	return u.Update(func(s *BatchImageJobUpsert) {
+		s.UpdateSessionID()
+	})
+}
+
+// ClearSessionID clears the value of the "session_id" field.
+func (u *BatchImageJobUpsertOne) ClearSessionID() *BatchImageJobUpsertOne {
+	return u.Update(func(s *BatchImageJobUpsert) {
+		s.ClearSessionID()
+	})
 }
 
 // SetUserID sets the "user_id" field.
@@ -3282,6 +3344,27 @@ func (u *BatchImageJobUpsertBulk) Update(set func(*BatchImageJobUpsert)) *BatchI
 		set(&BatchImageJobUpsert{UpdateSet: update})
 	}))
 	return u
+}
+
+// SetSessionID sets the "session_id" field.
+func (u *BatchImageJobUpsertBulk) SetSessionID(v string) *BatchImageJobUpsertBulk {
+	return u.Update(func(s *BatchImageJobUpsert) {
+		s.SetSessionID(v)
+	})
+}
+
+// UpdateSessionID sets the "session_id" field to the value that was provided on create.
+func (u *BatchImageJobUpsertBulk) UpdateSessionID() *BatchImageJobUpsertBulk {
+	return u.Update(func(s *BatchImageJobUpsert) {
+		s.UpdateSessionID()
+	})
+}
+
+// ClearSessionID clears the value of the "session_id" field.
+func (u *BatchImageJobUpsertBulk) ClearSessionID() *BatchImageJobUpsertBulk {
+	return u.Update(func(s *BatchImageJobUpsert) {
+		s.ClearSessionID()
+	})
 }
 
 // SetUserID sets the "user_id" field.

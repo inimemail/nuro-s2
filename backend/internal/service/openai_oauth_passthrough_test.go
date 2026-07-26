@@ -312,7 +312,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamKeepsToolNameAndBodyNormali
 	c.Request.Header.Set("Proxy-Authorization", "Basic abc")
 	c.Request.Header.Set("X-Test", "keep")
 
-	originalBody := []byte(`{"model":"gpt-5.2","stream":true,"store":true,"instructions":"local-test-instructions","input":[{"type":"text","text":"hi"}],"tools":[{"type":"namespace","name":"collaboration","description":"collaboration tools","tools":[{"type":"function","name":"invite","description":"invite user","parameters":{"type":"object"}}]}]}`)
+	originalBody := []byte(`{"model":"gpt-5.2","stream":true,"store":true,"instructions":"local-test-instructions","input":[{"type":"text","text":"hi","namespace":"keep-input-namespace"}],"tools":[{"type":"namespace","name":"collaboration","description":"collaboration tools","tools":[{"type":"function","name":"invite","description":"invite user","parameters":{"type":"object"}}]}]}`)
 
 	upstreamSSE := strings.Join([]string{
 		`data: {"type":"response.output_item.added","item":{"type":"tool_call","tool_calls":[{"function":{"name":"apply_patch"}}]}}`,
@@ -365,6 +365,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_StreamKeepsToolNameAndBodyNormali
 	// 其余关键字段保持原值。
 	require.Equal(t, "gpt-5.2", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.Equal(t, "hi", gjson.GetBytes(upstream.lastBody, "input.0.text").String())
+	require.Equal(t, "keep-input-namespace", gjson.GetBytes(upstream.lastBody, "input.0.namespace").String())
 	// Strict passthrough must not apply the legacy OAuth namespace flattening
 	// compatibility transform. The namespace object and nested tool name stay
 	// byte-semantically intact apart from the documented store/stream changes.

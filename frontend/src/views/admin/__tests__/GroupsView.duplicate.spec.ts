@@ -5,11 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AdminGroup } from '@/types'
 import GroupsView from '@/views/admin/GroupsView.vue'
 
-const { listGroups, duplicateGroup, getUsageSummary, getCapacitySummary, showSuccess, showError } = vi.hoisted(() => ({
+const { listGroups, duplicateGroup, getUsageSummary, getCapacitySummary, getLiveCapability, showSuccess, showError } = vi.hoisted(() => ({
   listGroups: vi.fn(),
   duplicateGroup: vi.fn(),
   getUsageSummary: vi.fn(),
   getCapacitySummary: vi.fn(),
+  getLiveCapability: vi.fn(),
   showSuccess: vi.fn(),
   showError: vi.fn()
 }))
@@ -21,6 +22,7 @@ vi.mock('@/api/admin', () => ({
       duplicate: duplicateGroup,
       getUsageSummary,
       getCapacitySummary,
+      getLiveCapability,
       getModelsListCandidates: vi.fn().mockResolvedValue([]),
       getAll: vi.fn().mockResolvedValue([]),
       create: vi.fn(),
@@ -101,13 +103,14 @@ describe('GroupsView duplicate action', () => {
   beforeEach(() => {
     localStorage.clear()
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    for (const fn of [listGroups, duplicateGroup, getUsageSummary, getCapacitySummary, showSuccess, showError]) {
+    for (const fn of [listGroups, duplicateGroup, getUsageSummary, getCapacitySummary, getLiveCapability, showSuccess, showError]) {
       fn.mockReset()
     }
     listGroups.mockResolvedValue({ items: [sourceGroup], total: 1, page: 1, page_size: 20, pages: 1 })
     duplicateGroup.mockResolvedValue({ ...sourceGroup, id: 43, name: 'Primary (Copy)', status: 'inactive' })
     getUsageSummary.mockResolvedValue([])
     getCapacitySummary.mockResolvedValue([])
+    getLiveCapability.mockResolvedValue({ supported: true })
   })
 
   afterEach(() => vi.restoreAllMocks())

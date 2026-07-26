@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 17 // v17: include group reasoning effort policy
+const apiKeyAuthSnapshotVersion = 18 // v18: include the OpenAI group Live gate
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -408,6 +408,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			MCPXMLInject:                       apiKey.Group.MCPXMLInject,
 			SupportedModelScopes:               apiKey.Group.SupportedModelScopes,
 			AllowMessagesDispatch:              apiKey.Group.AllowMessagesDispatch,
+			AllowLive:                          apiKey.Group.AllowLive,
 			RequireOAuthOnly:                   apiKey.Group.RequireOAuthOnly,
 			RequirePrivacySet:                  apiKey.Group.RequirePrivacySet,
 			DefaultMappedModel:                 apiKey.Group.DefaultMappedModel,
@@ -500,6 +501,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			MCPXMLInject:                       snapshot.Group.MCPXMLInject,
 			SupportedModelScopes:               snapshot.Group.SupportedModelScopes,
 			AllowMessagesDispatch:              snapshot.Group.AllowMessagesDispatch,
+			AllowLive:                          snapshot.Group.AllowLive,
 			RequireOAuthOnly:                   snapshot.Group.RequireOAuthOnly,
 			RequirePrivacySet:                  snapshot.Group.RequirePrivacySet,
 			DefaultMappedModel:                 snapshot.Group.DefaultMappedModel,

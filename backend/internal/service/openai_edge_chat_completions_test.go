@@ -324,7 +324,7 @@ func TestBuildRawResponsesEdgePlanKeepsResponsesBodyUntouchedWhenCompatDisabled(
 			openai_compat.ExtraKeyResponsesSupported: true,
 		},
 	}
-	body := []byte(`{"model":"gpt-5","stream":true,"max_output_tokens":128,"input":"hi"}`)
+	body := []byte(`{"model":"gpt-5","stream":true,"max_output_tokens":128,"input":[{"type":"message","id":"item_local","namespace":"keep","content":"hi"}]}`)
 	svc := &OpenAIGatewayService{
 		cfg: &config.Config{
 			Security: config.SecurityConfig{
@@ -341,8 +341,11 @@ func TestBuildRawResponsesEdgePlanKeepsResponsesBodyUntouchedWhenCompatDisabled(
 	if err != nil {
 		t.Fatalf("decode body_raw_base64: %v", err)
 	}
-	if got := gjson.GetBytes(decoded, "input").String(); got != "hi" {
-		t.Fatalf("expected string input to stay untouched when compat disabled, got %q body=%s", got, string(decoded))
+	if got := gjson.GetBytes(decoded, "input.0.namespace").String(); got != "keep" {
+		t.Fatalf("expected strict passthrough namespace to stay untouched, got %q body=%s", got, string(decoded))
+	}
+	if got := gjson.GetBytes(decoded, "input.0.id").String(); got != "item_local" {
+		t.Fatalf("expected strict passthrough item ID to stay untouched, got %q body=%s", got, string(decoded))
 	}
 	if got := gjson.GetBytes(decoded, "max_output_tokens").Int(); got != 128 {
 		t.Fatalf("expected max_output_tokens to stay untouched when compat disabled, got %d body=%s", got, string(decoded))
@@ -519,7 +522,7 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
 		},
 	}
-	body := []byte(`{"model":"gpt-5","stream":true,"prompt_cache_key":"turn-1","input":[{"role":"user","content":"hi"}]}`)
+	body := []byte(`{"model":"gpt-5","stream":true,"prompt_cache_key":"turn-1","input":[{"role":"user","namespace":"remove","content":{"namespace":"nested","text":"hi"}}]}`)
 
 	plan, err := (&OpenAIGatewayService{}).BuildChatGPTOAuthResponsesEdgePlan(context.Background(), c, account, body)
 	if err != nil {
@@ -575,8 +578,46 @@ func TestBuildChatGPTOAuthResponsesEdgePlan(t *testing.T) {
 	if model := gjson.GetBytes(decoded, "model").String(); model == "" {
 		t.Fatalf("expected encoded body to decode to json: %s", string(decoded))
 	}
+	if gjson.GetBytes(decoded, "input.0.namespace").Exists() {
+		t.Fatalf("expected transformed OAuth edge body to remove direct input namespace: %s", string(decoded))
+	}
+	if got := gjson.GetBytes(decoded, "input.0.content.namespace").String(); got != "nested" {
+		t.Fatalf("expected nested namespace to remain, got %q body=%s", got, string(decoded))
+	}
 	if len(plan.Plan.Body) != 0 {
 		t.Fatalf("expected http edge plan to omit duplicate body, got %s", string(plan.Plan.Body))
+	}
+}
+
+func TestBuildChatGPTOAuthResponsesEdgePlanKeepsStrictPassthroughNamespace(t *testing.T) {
+	setGinTestMode()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+	c.Set("api_key", &APIKey{ID: 42})
+
+	account := &Account{
+		ID:       124,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-account",
+		},
+		Extra: map[string]any{"openai_passthrough": true},
+	}
+	body := []byte(`{"model":"gpt-5","stream":true,"input":[{"role":"user","namespace":"keep","content":"hi"}]}`)
+
+	plan, err := (&OpenAIGatewayService{}).BuildChatGPTOAuthResponsesEdgePlan(context.Background(), c, account, body)
+	if err != nil {
+		t.Fatalf("build strict passthrough OAuth edge plan: %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(plan.Plan.BodyRawBase64)
+	if err != nil {
+		t.Fatalf("decode body_raw_base64: %v", err)
+	}
+	if got := gjson.GetBytes(decoded, "input.0.namespace").String(); got != "keep" {
+		t.Fatalf("expected strict passthrough namespace to remain, got %q body=%s", got, string(decoded))
 	}
 }
 

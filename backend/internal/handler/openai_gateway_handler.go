@@ -365,7 +365,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
-	requestCtx := service.WithOpenAIExplicitImageGenerationIntent(c.Request.Context(), imageIntent)
+	requestCtx := service.WithResolvedTargetPlatform(c.Request.Context(), requestPlatform)
+	requestCtx = service.WithOpenAIExplicitImageGenerationIntent(requestCtx, imageIntent)
 	if healthProbe {
 		var cancelHealthProbe context.CancelFunc
 		requestCtx = service.WithOpenAIHealthProbeRequestContext(requestCtx)
@@ -376,6 +377,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if imageIntent {
 		requestCtx = service.WithOpenAIImageGenerationIntent(requestCtx)
 	}
+	c.Request = c.Request.WithContext(requestCtx)
 	var imageReleaseFunc func()
 	if imageIntent {
 		var imageAcquired bool
@@ -898,6 +900,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 		userAgent := c.GetHeader("User-Agent")
+		sessionID := service.ExtractClientSessionID(c)
 		clientIP := ip.GetClientIP(c)
 		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
@@ -918,6 +921,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				UpstreamEndpoint:        upstreamEndpoint,
 				UserAgent:               userAgent,
 				IPAddress:               clientIP,
+				SessionID:               sessionID,
 				RequestPayloadHash:      requestPayloadHash,
 				PromptCacheAffinityHash: sessionHash,
 				PromptCacheGroupID:      apiKey.GroupID,
@@ -1228,6 +1232,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	requestPlatform := openAICompatibleRequestPlatform(apiKey)
+	c.Request = c.Request.WithContext(service.WithResolvedTargetPlatform(c.Request.Context(), requestPlatform))
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
@@ -1554,6 +1559,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 
 		userAgent := c.GetHeader("User-Agent")
+		sessionID := service.ExtractClientSessionID(c)
 		clientIP := ip.GetClientIP(c)
 		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
@@ -1573,6 +1579,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				UpstreamEndpoint:        upstreamEndpoint,
 				UserAgent:               userAgent,
 				IPAddress:               clientIP,
+				SessionID:               sessionID,
 				RequestPayloadHash:      requestPayloadHash,
 				PromptCacheAffinityHash: sessionHash,
 				PromptCacheGroupID:      apiKey.GroupID,
@@ -1905,6 +1912,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	reqLog.Info("openai.websocket_ingress_started")
 	clientIP := ip.GetClientIP(c)
 	userAgent := strings.TrimSpace(c.GetHeader("User-Agent"))
+	sessionID := service.ExtractClientSessionID(c)
 
 	wsConn, err := coderws.Accept(c.Writer, c.Request, &coderws.AcceptOptions{
 		CompressionMode: coderws.CompressionContextTakeover,
@@ -2407,6 +2415,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 						UpstreamEndpoint:        upstreamEndpoint,
 						UserAgent:               userAgent,
 						IPAddress:               clientIP,
+						SessionID:               sessionID,
 						RequestPayloadHash:      service.HashUsageRequestPayload(firstMessage),
 						PromptCacheAffinityHash: sessionHash,
 						PromptCacheGroupID:      apiKey.GroupID,
@@ -2661,6 +2670,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyUsageIfMarked(
 	}
 	userAgent := ""
 	clientIP := ""
+	sessionID := service.ExtractClientSessionID(c)
 	if c != nil {
 		userAgent = c.GetHeader("User-Agent")
 		clientIP = ip.GetClientIP(c)
@@ -2679,6 +2689,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyUsageIfMarked(
 			UpstreamEndpoint:   upstreamEndpoint,
 			UserAgent:          userAgent,
 			IPAddress:          clientIP,
+			SessionID:          sessionID,
 			RequestPayloadHash: requestPayloadHash,
 			APIKeyService:      h.apiKeyService,
 			ChannelUsageFields: channelFields,

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 const stickySessionPrefix = "sticky_session:"
 const openAIPromptCacheWarmPrefix = "openai_prompt_cache_warm:v1:"
+const liveCallPrefix = "live:call:"
 
 var recordOpenAIPromptCacheWarmScript = redis.NewScript(`
 local raw = redis.call('HGET', KEYS[1], ARGV[1])
@@ -178,4 +180,116 @@ func (c *gatewayCache) AvoidOpenAIPromptCacheWarmAccount(ctx context.Context, gr
 	}
 	_, err := avoidOpenAIPromptCacheWarmScript.Run(ctx, c.rdb, []string{key}, field, until.Unix(), ttlSeconds).Result()
 	return err
+}
+
+var _ service.LiveCallStore = (*gatewayCache)(nil)
+
+var claimLiveControllerScript = redis.NewScript(`
+	local key = KEYS[1]
+	local target = ARGV[1]
+	local owner = ARGV[2]
+	local current = redis.call('HGET', key, 'controller')
+	if current == false or current == 'closed' then return 0 end
+	if target == 'observer' and current ~= 'pending' then return 0 end
+	if target == 'proxy' and current ~= 'pending' and current ~= 'observer' and
+		(current ~= 'proxy' or redis.call('HGET', key, 'controller_owner') ~= owner) then
+		return 0
+	end
+	redis.call('HSET', key, 'controller', target, 'controller_owner', owner)
+	return 1
+`)
+
+var markLiveCallClosedScript = redis.NewScript(`
+	local key = KEYS[1]
+	if redis.call('EXISTS', key) == 0 then return 0 end
+	if redis.call('HGET', key, 'controller') == 'closed' then return 0 end
+	redis.call('HSET', key, 'controller', 'closed', 'controller_owner', '')
+	redis.call('EXPIRE', key, ARGV[1])
+	return 1
+`)
+
+var releaseLiveControllerScript = redis.NewScript(`
+	local key = KEYS[1]
+	local controller = redis.call('HGET', key, 'controller')
+	if (controller ~= 'proxy' and controller ~= 'observer') or
+		redis.call('HGET', key, 'controller_owner') ~= ARGV[1] then
+		return 0
+	end
+	redis.call('HSET', key, 'controller', 'pending', 'controller_owner', '')
+	return 1
+`)
+
+func liveCallKey(callHash string) string {
+	return liveCallPrefix + callHash
+}
+
+func (c *gatewayCache) SaveLiveCall(ctx context.Context, record *service.LiveCallRecord, ttl time.Duration) error {
+	if record == nil || record.CallHash == "" || record.CallID == "" {
+		return fmt.Errorf("invalid live call record")
+	}
+	values := map[string]any{
+		"call_id": record.CallID, "account_id": record.AccountID,
+		"api_key_id": record.APIKeyID, "user_id": record.UserID,
+		"group_id": record.GroupID, "subscription_id": record.SubscriptionID,
+		"lease_id": record.LeaseID, "model": record.Model,
+		"created_at": record.CreatedAt.UnixMilli(), "expires_at": record.ExpiresAt.UnixMilli(),
+		"controller": record.Controller, "controller_owner": record.ControllerOwner,
+		"user_agent": record.UserAgent, "ip_address": record.IPAddress,
+		"inbound_endpoint": record.InboundEndpoint,
+		"attestation":      record.AttestationCiphertext,
+	}
+	key := liveCallKey(record.CallHash)
+	pipe := c.rdb.TxPipeline()
+	pipe.HSet(ctx, key, values)
+	pipe.Expire(ctx, key, ttl)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (c *gatewayCache) GetLiveCall(ctx context.Context, callHash string) (*service.LiveCallRecord, error) {
+	values, err := c.rdb.HGetAll(ctx, liveCallKey(callHash)).Result()
+	if err != nil {
+		return nil, err
+	}
+	if len(values) == 0 {
+		return nil, service.ErrLiveCallNotFound
+	}
+	parseInt := func(field string) int64 {
+		value, _ := strconv.ParseInt(values[field], 10, 64)
+		return value
+	}
+	return &service.LiveCallRecord{
+		CallID: values["call_id"], CallHash: callHash,
+		AccountID: parseInt("account_id"), APIKeyID: parseInt("api_key_id"),
+		UserID: parseInt("user_id"), GroupID: parseInt("group_id"),
+		SubscriptionID: parseInt("subscription_id"), LeaseID: values["lease_id"],
+		Model: values["model"], CreatedAt: time.UnixMilli(parseInt("created_at")),
+		ExpiresAt: time.UnixMilli(parseInt("expires_at")), Controller: values["controller"],
+		ControllerOwner: values["controller_owner"], UserAgent: values["user_agent"],
+		IPAddress: values["ip_address"], InboundEndpoint: values["inbound_endpoint"],
+		AttestationCiphertext: values["attestation"],
+	}, nil
+}
+
+func (c *gatewayCache) ClaimLiveController(ctx context.Context, callHash, controller, owner string) (bool, error) {
+	result, err := claimLiveControllerScript.Run(ctx, c.rdb, []string{liveCallKey(callHash)}, controller, owner).Int()
+	return result == 1, err
+}
+
+func (c *gatewayCache) ReleaseLiveController(ctx context.Context, callHash, owner string) (bool, error) {
+	result, err := releaseLiveControllerScript.Run(ctx, c.rdb, []string{liveCallKey(callHash)}, owner).Int()
+	return result == 1, err
+}
+
+func (c *gatewayCache) GetLiveController(ctx context.Context, callHash string) (string, error) {
+	value, err := c.rdb.HGet(ctx, liveCallKey(callHash), "controller").Result()
+	if errors.Is(err, redis.Nil) {
+		return "", service.ErrLiveCallNotFound
+	}
+	return value, err
+}
+
+func (c *gatewayCache) MarkLiveCallClosed(ctx context.Context, callHash string, ttl time.Duration) (bool, error) {
+	result, err := markLiveCallClosedScript.Run(ctx, c.rdb, []string{liveCallKey(callHash)}, int64(ttl.Seconds())).Int()
+	return result == 1, err
 }

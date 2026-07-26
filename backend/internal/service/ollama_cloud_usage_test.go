@@ -1,11 +1,18 @@
 package service
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestOllamaCloudUsageRefreshWithoutEncryptorFailsClosed(t *testing.T) {
+	svc := &OllamaCloudUsageService{}
+	_, err := svc.refreshAccount(context.Background(), 1, ollamaCloudDefaultIntervalMinutes)
+	require.ErrorIs(t, err, ErrOllamaCloudUsageEncryptionKey)
+}
 
 func TestOllamaCloudUsageEligibilityAndCookieSanitization(t *testing.T) {
 	base := map[string]any{"base_url": "https://ollama.com/v1", "api_key": "ollama-key"}
@@ -38,6 +45,42 @@ func TestOllamaCloudStateNeverReturnsSession(t *testing.T) {
 	state := ollamaCloudState(a, true)
 	require.True(t, state.Configured)
 	require.NotNil(t, state.Snapshot)
+}
+
+func TestOllamaCloudUsageAutoRefreshDueAt(t *testing.T) {
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	fetchedAt := now.Add(-20 * time.Minute)
+	lastUsedAt := now.Add(-30 * time.Second)
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Status:   StatusActive,
+		Credentials: map[string]any{
+			"base_url": "https://ollama.com/v1",
+			"api_key":  "shared-key",
+		},
+		Extra: map[string]any{
+			OllamaCloudUsageSessionExtraKey:     "ciphertext",
+			OllamaCloudUsageAutoRefreshExtraKey: true,
+			OllamaCloudUsageSnapshotExtraKey: OllamaCloudUsageSnapshot{
+				Status: "ok", FetchedAt: &fetchedAt, LastAttemptAt: fetchedAt,
+			},
+		},
+		LastUsedAt: &lastUsedAt,
+	}
+	dueAt, due := ollamaCloudUsageAutoRefreshDueAt(now, account, time.Minute, time.Hour)
+	require.True(t, due)
+	require.Equal(t, lastUsedAt.Add(time.Minute), dueAt)
+
+	recentFetch := now.Add(-5 * time.Minute)
+	account.Extra[OllamaCloudUsageSnapshotExtraKey] = OllamaCloudUsageSnapshot{Status: "ok", FetchedAt: &recentFetch, LastAttemptAt: recentFetch}
+	dueAt, due = ollamaCloudUsageAutoRefreshDueAt(now, account, time.Minute, time.Hour)
+	require.True(t, due)
+	require.Equal(t, recentFetch.Add(OllamaCloudUsageMinFetchInterval), dueAt)
+
+	account.LastUsedAt = &recentFetch
+	_, due = ollamaCloudUsageAutoRefreshDueAt(now, account, time.Minute, time.Hour)
+	require.False(t, due)
 }
 
 func mustOllamaCookie(t *testing.T, raw string) string {

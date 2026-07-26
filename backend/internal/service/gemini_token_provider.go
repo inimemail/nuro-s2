@@ -131,14 +131,12 @@ func (p *GeminiTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		detected = strings.TrimSpace(detected)
 		tierID = strings.TrimSpace(tierID)
 		if detected != "" {
-			if account.Credentials == nil {
-				account.Credentials = make(map[string]any)
-			}
-			account.Credentials["project_id"] = detected
+			credentials := cloneCredentials(account.Credentials)
+			credentials["project_id"] = detected
 			if tierID != "" {
-				account.Credentials["tier_id"] = tierID
+				credentials["tier_id"] = tierID
 			}
-			_ = persistAccountCredentials(ctx, p.accountRepo, account, account.Credentials)
+			_ = persistAccountCredentials(ctx, p.accountRepo, account, credentials)
 		}
 	}
 

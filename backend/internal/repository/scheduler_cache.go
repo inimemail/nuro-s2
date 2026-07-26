@@ -522,10 +522,7 @@ func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any,
 	}
 
 	out := make([]any, 0, len(keys))
-	chunkSize := c.mgetChunkSize
-	if chunkSize <= 0 {
-		chunkSize = defaultSchedulerSnapshotMGetChunkSize
-	}
+	chunkSize := schedulerMGetKeyChunkSize(c.mgetChunkSize, len(keys))
 	for start := 0; start < len(keys); start += chunkSize {
 		end := start + chunkSize
 		if end > len(keys) {
@@ -538,6 +535,24 @@ func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any,
 		out = append(out, part...)
 	}
 	return out, nil
+}
+
+// snapshot_mget_chunk_size historically represented accounts because each
+// account had one metadata key. LastUsedAt adds an adjacent side key, so keep
+// the configured batch size in account units and fetch both values in the same
+// MGET. This preserves the pre-upgrade number of request-path Redis round trips.
+func schedulerMGetKeyChunkSize(configuredAccounts, keyCount int) int {
+	if keyCount <= 0 {
+		return 1
+	}
+	if configuredAccounts <= 0 {
+		configuredAccounts = defaultSchedulerSnapshotMGetChunkSize
+	}
+	accountCount := (keyCount + 1) / 2
+	if configuredAccounts > accountCount {
+		configuredAccounts = accountCount
+	}
+	return max(configuredAccounts*2, 1)
 }
 
 func buildSchedulerMetadataAccount(account service.Account) service.Account {

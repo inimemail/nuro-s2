@@ -939,6 +939,8 @@ type GatewayConfig struct {
 	// OpenAICompactModel: /responses/compact 上游使用的兜底模型。
 	// compact 端点支持模型滞后于普通 /responses 时，可用该配置降级规避上游错误。
 	OpenAICompactModel string `mapstructure:"openai_compact_model"`
+	// Live: ChatGPT Frameless Live session limits.
+	Live GatewayLiveConfig `mapstructure:"live"`
 	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
 	// OpenAIEdgeRS: Rust OpenAI data-plane edge settings. Disabled by default.
@@ -1055,6 +1057,17 @@ type GatewayAdmissionConfig struct {
 	EscrowGrantSize      int    `mapstructure:"escrow_grant_size"`
 	NodeTTLSeconds       int    `mapstructure:"node_ttl_seconds"`
 	DeadNodeGraceSeconds int    `mapstructure:"dead_node_grace_seconds"`
+}
+
+type GatewayLiveConfig struct {
+	// MaxSessionDurationSeconds is a hard bound for one Live call.
+	MaxSessionDurationSeconds int `mapstructure:"max_session_duration_seconds"`
+	// ObserverWorkers bounds local sideband observer tasks.
+	ObserverWorkers int `mapstructure:"observer_workers"`
+	// ObserverQueueSize bounds reconnect and takeover work waiting locally.
+	ObserverQueueSize int `mapstructure:"observer_queue_size"`
+	// ProxyConnections bounds authenticated downstream sideband relays per node.
+	ProxyConnections int `mapstructure:"proxy_connections"`
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -2294,6 +2307,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.openai_compact_model", "gpt-5.4")
+	viper.SetDefault("gateway.live.max_session_duration_seconds", 3600)
+	viper.SetDefault("gateway.live.observer_workers", 128)
+	viper.SetDefault("gateway.live.proxy_connections", 512)
+	viper.SetDefault("gateway.live.observer_queue_size", 1024)
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)
@@ -3075,6 +3092,18 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("gateway.connection_pool_isolation must be one of: %s/%s/%s",
 				ConnectionPoolIsolationProxy, ConnectionPoolIsolationAccount, ConnectionPoolIsolationAccountProxy)
 		}
+	}
+	if c.Gateway.Live.MaxSessionDurationSeconds <= 0 {
+		c.Gateway.Live.MaxSessionDurationSeconds = 3600
+	}
+	if c.Gateway.Live.ObserverWorkers <= 0 {
+		c.Gateway.Live.ObserverWorkers = 128
+	}
+	if c.Gateway.Live.ObserverQueueSize <= 0 {
+		c.Gateway.Live.ObserverQueueSize = 1024
+	}
+	if c.Gateway.Live.ProxyConnections <= 0 {
+		c.Gateway.Live.ProxyConnections = 512
 	}
 	if c.Gateway.ImageConcurrency.MaxConcurrentRequests < 0 {
 		return fmt.Errorf("gateway.image_concurrency.max_concurrent_requests must be non-negative")

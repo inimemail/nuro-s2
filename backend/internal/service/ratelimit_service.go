@@ -255,12 +255,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 				if err := s.accountRepo.UpdateExtra(ctx, account.ID, extraUpdates); err != nil {
 					slog.Warn("antigravity_401_force_refresh_mark_failed", "account_id", account.ID, "error", err)
 				} else {
-					if account.Extra == nil {
-						account.Extra = make(map[string]any, len(extraUpdates))
-					}
-					for k, v := range extraUpdates {
-						account.Extra[k] = v
-					}
+					mergeAccountExtra(account, extraUpdates)
 					slog.Info("antigravity_401_force_refresh_marked", "account_id", account.ID)
 				}
 			}
@@ -1443,9 +1438,7 @@ func persistOpenAI429PlanType(ctx context.Context, repo AccountRepository, accou
 		return
 	}
 
-	if account.Credentials == nil {
-		account.Credentials = make(map[string]any, 1)
-	}
+	account.Credentials = cloneCredentials(account.Credentials)
 	account.Credentials["plan_type"] = planType
 	slog.Info("openai_429_plan_type_synced", "account_id", account.ID, "previous_plan_type", current, "plan_type", planType)
 }

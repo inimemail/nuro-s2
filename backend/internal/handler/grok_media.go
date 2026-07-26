@@ -482,6 +482,7 @@ func recordGrokMediaUsage(
 	requestID string,
 ) {
 	userAgent := c.GetHeader("User-Agent")
+	sessionID := service.ExtractClientSessionID(c)
 	clientIP := ip.GetClientIP(c)
 	payloadForHash := body
 	if len(payloadForHash) == 0 && strings.TrimSpace(requestID) != "" {
@@ -506,6 +507,7 @@ func recordGrokMediaUsage(
 			UpstreamEndpoint:   upstreamEndpoint,
 			UserAgent:          userAgent,
 			IPAddress:          clientIP,
+			SessionID:          sessionID,
 			RequestPayloadHash: service.HashUsageRequestPayload(payloadForHash),
 			APIKeyService:      h.apiKeyService,
 			ChannelUsageFields: channelUsageFields,

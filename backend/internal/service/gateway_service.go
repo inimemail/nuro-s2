@@ -4538,21 +4538,41 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 }
 
 type selectionFailureStats struct {
-	Total              int
-	Eligible           int
-	Excluded           int
-	Unschedulable      int
-	PlatformFiltered   int
-	ModelUnsupported   int
-	ModelRateLimited   int
-	SamplePlatformIDs  []int64
-	SampleMappingIDs   []int64
-	SampleRateLimitIDs []string
+	Total            int
+	Eligible         int
+	Excluded         int
+	Unschedulable    int
+	PlatformFiltered int
+	ModelUnsupported int
+	ModelRateLimited int
 }
 
 type selectionFailureDiagnosis struct {
 	Category string
-	Detail   string
+}
+
+type selectionFailureCounterSet struct {
+	Calls            atomic.Uint64
+	Total            atomic.Uint64
+	Eligible         atomic.Uint64
+	Excluded         atomic.Uint64
+	Unschedulable    atomic.Uint64
+	PlatformFiltered atomic.Uint64
+	ModelUnsupported atomic.Uint64
+	ModelRateLimited atomic.Uint64
+}
+
+var gatewaySelectionFailureCounters selectionFailureCounterSet
+
+func recordSelectionFailureStats(stats selectionFailureStats) {
+	gatewaySelectionFailureCounters.Calls.Add(1)
+	gatewaySelectionFailureCounters.Total.Add(uint64(stats.Total))
+	gatewaySelectionFailureCounters.Eligible.Add(uint64(stats.Eligible))
+	gatewaySelectionFailureCounters.Excluded.Add(uint64(stats.Excluded))
+	gatewaySelectionFailureCounters.Unschedulable.Add(uint64(stats.Unschedulable))
+	gatewaySelectionFailureCounters.PlatformFiltered.Add(uint64(stats.PlatformFiltered))
+	gatewaySelectionFailureCounters.ModelUnsupported.Add(uint64(stats.ModelUnsupported))
+	gatewaySelectionFailureCounters.ModelRateLimited.Add(uint64(stats.ModelRateLimited))
 }
 
 func (s *GatewayService) logDetailedSelectionFailure(
@@ -4566,13 +4586,10 @@ func (s *GatewayService) logDetailedSelectionFailure(
 	allowMixedScheduling bool,
 ) selectionFailureStats {
 	stats := s.collectSelectionFailureStats(ctx, accounts, requestedModel, platform, excludedIDs, allowMixedScheduling)
+	recordSelectionFailureStats(stats)
 	logger.LegacyPrintf(
 		"service.gateway",
-		"[SelectAccountDetailed] group_id=%v model=%s platform=%s session=%s total=%d eligible=%d excluded=%d unschedulable=%d platform_filtered=%d model_unsupported=%d model_rate_limited=%d sample_platform_filtered=%v sample_model_unsupported=%v sample_model_rate_limited=%v",
-		derefGroupID(groupID),
-		requestedModel,
-		platform,
-		shortSessionHash(sessionHash),
+		"[SelectAccountDetailed] no eligible account: total=%d eligible=%d excluded=%d unschedulable=%d platform_filtered=%d model_unsupported=%d model_rate_limited=%d",
 		stats.Total,
 		stats.Eligible,
 		stats.Excluded,
@@ -4580,9 +4597,6 @@ func (s *GatewayService) logDetailedSelectionFailure(
 		stats.PlatformFiltered,
 		stats.ModelUnsupported,
 		stats.ModelRateLimited,
-		stats.SamplePlatformIDs,
-		stats.SampleMappingIDs,
-		stats.SampleRateLimitIDs,
 	)
 	return stats
 }
@@ -4609,14 +4623,10 @@ func (s *GatewayService) collectSelectionFailureStats(
 			stats.Unschedulable++
 		case "platform_filtered":
 			stats.PlatformFiltered++
-			stats.SamplePlatformIDs = appendSelectionFailureSampleID(stats.SamplePlatformIDs, acc.ID)
 		case "model_unsupported":
 			stats.ModelUnsupported++
-			stats.SampleMappingIDs = appendSelectionFailureSampleID(stats.SampleMappingIDs, acc.ID)
 		case "model_rate_limited":
 			stats.ModelRateLimited++
-			remaining := acc.GetRateLimitRemainingTimeWithContext(ctx, requestedModel).Truncate(time.Second)
-			stats.SampleRateLimitIDs = appendSelectionFailureRateSample(stats.SampleRateLimitIDs, acc.ID, remaining)
 		default:
 			stats.Eligible++
 		}
@@ -4634,32 +4644,22 @@ func (s *GatewayService) diagnoseSelectionFailure(
 	allowMixedScheduling bool,
 ) selectionFailureDiagnosis {
 	if acc == nil {
-		return selectionFailureDiagnosis{Category: "unschedulable", Detail: "account_nil"}
+		return selectionFailureDiagnosis{Category: "unschedulable"}
 	}
 	if _, excluded := excludedIDs[acc.ID]; excluded {
 		return selectionFailureDiagnosis{Category: "excluded"}
 	}
 	if !s.isAccountSchedulableForSelection(acc) {
-		return selectionFailureDiagnosis{Category: "unschedulable", Detail: "generic_unschedulable"}
+		return selectionFailureDiagnosis{Category: "unschedulable"}
 	}
 	if isPlatformFilteredForSelection(acc, platform, allowMixedScheduling) {
-		return selectionFailureDiagnosis{
-			Category: "platform_filtered",
-			Detail:   fmt.Sprintf("account_platform=%s requested_platform=%s", acc.Platform, strings.TrimSpace(platform)),
-		}
+		return selectionFailureDiagnosis{Category: "platform_filtered"}
 	}
 	if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
-		return selectionFailureDiagnosis{
-			Category: "model_unsupported",
-			Detail:   fmt.Sprintf("model=%s", requestedModel),
-		}
+		return selectionFailureDiagnosis{Category: "model_unsupported"}
 	}
 	if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
-		remaining := acc.GetRateLimitRemainingTimeWithContext(ctx, requestedModel).Truncate(time.Second)
-		return selectionFailureDiagnosis{
-			Category: "model_rate_limited",
-			Detail:   fmt.Sprintf("remaining=%s", remaining),
-		}
+		return selectionFailureDiagnosis{Category: "model_rate_limited"}
 	}
 	return selectionFailureDiagnosis{Category: "eligible"}
 }
@@ -4678,22 +4678,6 @@ func isPlatformFilteredForSelection(acc *Account, platform string, allowMixedSch
 		return false
 	}
 	return acc.Platform != platform
-}
-
-func appendSelectionFailureSampleID(samples []int64, id int64) []int64 {
-	const limit = 5
-	if len(samples) >= limit {
-		return samples
-	}
-	return append(samples, id)
-}
-
-func appendSelectionFailureRateSample(samples []string, accountID int64, remaining time.Duration) []string {
-	const limit = 5
-	if len(samples) >= limit {
-		return samples
-	}
-	return append(samples, fmt.Sprintf("%d(%s)", accountID, remaining))
 }
 
 func summarizeSelectionFailureStats(stats selectionFailureStats) string {
@@ -9825,6 +9809,7 @@ type RecordUsageInput struct {
 	UpstreamEndpoint    string             // 上游端点（标准化后的上游路径）
 	UserAgent           string             // 请求的 User-Agent
 	IPAddress           string             // 请求的客户端 IP 地址
+	SessionID           string             // 仅用于 usage 关联；不参与 sticky、缓存或调度
 	RequestPayloadHash  string             // 请求体语义哈希，用于降低 request_id 误复用时的静默误去重风险
 	ForceCacheBilling   bool               // 强制缓存计费：将 input_tokens 转为 cache_read 计费（用于粘性会话切换）
 	SkipAccountLastUsed bool               // 仅跳过账号 last_used 成功副作用；用量日志、扣费和配额仍正常结算
@@ -10334,6 +10319,7 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 		UpstreamEndpoint:    input.UpstreamEndpoint,
 		UserAgent:           input.UserAgent,
 		IPAddress:           input.IPAddress,
+		SessionID:           input.SessionID,
 		RequestPayloadHash:  input.RequestPayloadHash,
 		ForceCacheBilling:   input.ForceCacheBilling,
 		SkipAccountLastUsed: input.SkipAccountLastUsed,
@@ -10356,6 +10342,7 @@ type RecordUsageLongContextInput struct {
 	UpstreamEndpoint      string             // 上游端点（标准化后的上游路径）
 	UserAgent             string             // 请求的 User-Agent
 	IPAddress             string             // 请求的客户端 IP 地址
+	SessionID             string             // 仅用于 usage 关联；不参与 sticky、缓存或调度
 	RequestPayloadHash    string             // 请求体语义哈希，用于降低 request_id 误复用时的静默误去重风险
 	LongContextThreshold  int                // 长上下文阈值（如 200000）
 	LongContextMultiplier float64            // 超出阈值部分的倍率（如 2.0）
@@ -10379,6 +10366,7 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 		UpstreamEndpoint:    input.UpstreamEndpoint,
 		UserAgent:           input.UserAgent,
 		IPAddress:           input.IPAddress,
+		SessionID:           input.SessionID,
 		RequestPayloadHash:  input.RequestPayloadHash,
 		ForceCacheBilling:   input.ForceCacheBilling,
 		SkipAccountLastUsed: input.SkipAccountLastUsed,
@@ -10402,6 +10390,7 @@ type recordUsageCoreInput struct {
 	UpstreamEndpoint    string
 	UserAgent           string
 	IPAddress           string
+	SessionID           string
 	RequestPayloadHash  string
 	ForceCacheBilling   bool
 	SkipAccountLastUsed bool
@@ -10690,6 +10679,7 @@ func (s *GatewayService) buildRecordUsageLog(
 		APIKeyID:              apiKey.ID,
 		AccountID:             account.ID,
 		RequestID:             requestID,
+		SessionID:             optionalTrimmedStringPtr(input.SessionID),
 		Model:                 result.Model,
 		RequestedModel:        requestedModel,
 		UpstreamModel:         optionalNonEqualStringPtr(result.UpstreamModel, result.Model),

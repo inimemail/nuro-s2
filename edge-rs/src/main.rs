@@ -2207,8 +2207,19 @@ fn response_body_preview(body: &[u8]) -> String {
         || lower.contains("openai")
         || lower.contains("anthropic")
         || lower.contains("claude")
+        || lower.contains("gemini")
+        || lower.contains("vertex")
         || lower.contains("grok")
         || lower.contains("x.ai")
+        || lower.contains("cloudfront")
+        || lower.contains("fastly")
+        || lower.contains("akamai")
+        || lower.contains("envoy")
+        || lower.contains("nginx")
+        || lower.contains("bedrock")
+        || lower.contains("amazon")
+        || lower.contains("azure")
+        || contains_likely_host_or_ip(&preview)
     {
         return "[redacted upstream error]".to_string();
     }
@@ -2216,6 +2227,52 @@ fn response_body_preview(body: &[u8]) -> String {
         preview.push_str("...");
     }
     preview
+}
+
+fn contains_likely_host_or_ip(text: &str) -> bool {
+    text.split(|ch: char| {
+        ch.is_ascii_whitespace()
+            || matches!(
+                ch,
+                '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '='
+            )
+    })
+    .any(|token| {
+        let token = token
+            .trim_matches(|ch: char| matches!(ch, '.' | ':' | '!' | '?' | '#'))
+            .split('/')
+            .next()
+            .unwrap_or("");
+        let host = token
+            .rsplit_once(':')
+            .filter(|(_, port)| !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()))
+            .map_or(token, |(host, _)| host);
+        if host.parse::<std::net::IpAddr>().is_ok() {
+            return true;
+        }
+        let mut labels = host.split('.');
+        let Some(first) = labels.next() else {
+            return false;
+        };
+        let remaining: Vec<&str> = labels.collect();
+        if first.is_empty() || remaining.is_empty() {
+            return false;
+        }
+        let valid_label = |label: &str| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        };
+        let tld = remaining.last().copied().unwrap_or("");
+        valid_label(first)
+            && remaining.iter().all(|label| valid_label(label))
+            && (2..=24).contains(&tld.len())
+            && tld.bytes().all(|byte| byte.is_ascii_alphabetic())
+    })
 }
 
 fn safe_edge_error<E: Display>(error: E) -> String {
@@ -2473,6 +2530,11 @@ async fn relay_ws_session(
                             plan.max_reasoning_effort.as_deref(),
                             &plan.reasoning_effort_mappings,
                             downstream_cache_usage_mode.is_some(),
+                            // Edge WS plans are strict passthrough plans. The
+                            // transformed Go paths own the v165 item-ID cleanup;
+                            // changing follow-up frames here would violate the
+                            // passthrough byte-preservation contract.
+                            false,
                         );
                         if let Some(applied) = turn_policy_applied {
                             cache_creation_policy_applied_for_turn = applied;
@@ -2854,7 +2916,7 @@ fn apply_openai_prompt_cache_creation_optimization_ws_message_tracked(
     session_model: &mut Option<String>,
 ) -> (TungsteniteMessage, Option<bool>) {
     let (message, applied, _, _) =
-        apply_openai_ws_request_policies_tracked(msg, mode, session_model, None, &[], false);
+        apply_openai_ws_request_policies_tracked(msg, mode, session_model, None, &[], false, false);
     (message, applied)
 }
 
@@ -2865,6 +2927,7 @@ fn apply_openai_ws_request_policies_tracked(
     max_reasoning_effort: Option<&str>,
     reasoning_effort_mappings: &[ReasoningEffortMapping],
     track_downstream_cache_usage: bool,
+    sanitize_response_item_ids: bool,
 ) -> (
     TungsteniteMessage,
     Option<bool>,
@@ -2879,8 +2942,26 @@ fn apply_openai_ws_request_policies_tracked(
     let reasoning_policy_enabled = max_reasoning_effort
         .is_some_and(|value| !value.trim().is_empty())
         || !reasoning_effort_mappings.is_empty();
-    if !cache_policy_enabled && !reasoning_policy_enabled && !track_downstream_cache_usage {
+    if !cache_policy_enabled
+        && !reasoning_policy_enabled
+        && !track_downstream_cache_usage
+        && !sanitize_response_item_ids
+    {
         return (msg, None, None, None);
+    }
+    if sanitize_response_item_ids
+        && !cache_policy_enabled
+        && !reasoning_policy_enabled
+        && !track_downstream_cache_usage
+    {
+        let has_item_id_candidate = match &msg {
+            TungsteniteMessage::Text(text) => contains_json_id_key(text.as_bytes()),
+            TungsteniteMessage::Binary(bytes) => contains_json_id_key(bytes),
+            _ => false,
+        };
+        if !has_item_id_candidate {
+            return (msg, None, None, None);
+        }
     }
     let (mut value, original) = match msg {
         TungsteniteMessage::Text(text) => {
@@ -2913,6 +2994,8 @@ fn apply_openai_ws_request_policies_tracked(
     if event_type != Some("response.create") {
         return (original.into_message(), None, None, None);
     }
+    let mut changed =
+        sanitize_response_item_ids && sanitize_openai_responses_input_item_ids_value(&mut value);
     let model = value
         .get("model")
         .and_then(Value::as_str)
@@ -2928,7 +3011,6 @@ fn apply_openai_ws_request_policies_tracked(
     } else {
         Some(false)
     };
-    let mut changed = false;
     if cache_policy_enabled {
         if !turn_usage_eligible {
             cache_policy_applied = Some(false);
@@ -2953,6 +3035,11 @@ fn apply_openai_ws_request_policies_tracked(
     }
     let (message, applied) = original.with_updated_value(&value, cache_policy_applied);
     (message, applied, turn_model, Some(turn_usage_eligible))
+}
+
+fn contains_json_id_key(bytes: &[u8]) -> bool {
+    const ID_KEY: &[u8] = b"\"id\"";
+    bytes.windows(ID_KEY.len()).any(|window| window == ID_KEY)
 }
 
 fn update_downstream_cache_usage_model_for_ws_turn(
@@ -3100,6 +3187,43 @@ fn apply_openai_prompt_cache_creation_optimization_value(value: &mut Value, mode
     if mode == "reduce" {
         insert_openai_responses_stable_prefix_breakpoint(request);
     }
+}
+
+fn is_openai_responses_tool_call_input_type(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "function_call"
+            | "tool_call"
+            | "local_shell_call"
+            | "tool_search_call"
+            | "custom_tool_call"
+            | "mcp_tool_call"
+    )
+}
+
+fn sanitize_openai_responses_input_item_ids_value(value: &mut Value) -> bool {
+    let Some(input) = value.get_mut("input").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let mut changed = false;
+    for item in input {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        let Some(item_type) = object.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(id) = object.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let invalid = (item_type == "message" && !id.starts_with("msg"))
+            || (is_openai_responses_tool_call_input_type(item_type) && !id.starts_with("fc"));
+        if invalid {
+            object.remove("id");
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn remove_openai_prompt_cache_breakpoints(request: &mut serde_json::Map<String, Value>) {
@@ -9009,6 +9133,21 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     }
 
     #[test]
+    fn response_body_preview_redacts_bare_hosts_ips_and_provider_identity() {
+        for body in [
+            b"dial tcp private.vendor.example:443: connection refused".as_slice(),
+            b"dial tcp 192.0.2.12:443: timeout".as_slice(),
+            b"Vertex backend rejected request".as_slice(),
+        ] {
+            assert_eq!(response_body_preview(body), "[redacted upstream error]");
+        }
+        assert_eq!(
+            response_body_preview(b"temporary transport failure"),
+            "temporary transport failure"
+        );
+    }
+
+    #[test]
     fn relay_queue_key_uses_account_proxy_and_host() {
         let plan = EdgePlan {
             action: "relay".to_string(),
@@ -9095,6 +9234,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 Some("medium"),
                 &[],
                 false,
+                false,
             );
         assert_eq!(cache_applied, Some(false));
         assert_eq!(turn_model.as_deref(), Some("gpt-5.6"));
@@ -9128,6 +9268,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 &mut None,
                 Some("medium"),
                 &mappings,
+                false,
                 false,
             );
             assert_eq!(cache_applied, Some(true));
@@ -9438,6 +9579,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                     None,
                     &[],
                     false,
+                    false,
                 );
             assert_eq!(applied, Some(true));
             assert_eq!(turn_model.as_deref(), Some("gpt-5.6-terra"));
@@ -9476,6 +9618,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 None,
                 &[],
                 false,
+                false,
             );
         assert_eq!(applied, Some(false));
         assert_eq!(turn_model.as_deref(), Some("gpt-5.5"));
@@ -9492,6 +9635,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 &mut session_model,
                 None,
                 &[],
+                false,
                 false,
             );
         assert_eq!(applied, Some(true));
@@ -9558,6 +9702,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 Some("medium"),
                 &[],
                 true,
+                false,
             );
         assert_eq!(cache_applied, Some(false));
         assert_eq!(turn_model.as_deref(), Some("gpt-5.6-terra"));
@@ -9567,10 +9712,154 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             r#"{"type":"response.create","model":"gpt-5.6-terra","tool_choice":{"type":"image_generation"},"input":"draw"}"#.to_string(),
         );
         let (_, cache_applied, turn_model, usage_eligible) =
-            apply_openai_ws_request_policies_tracked(image, None, &mut None, None, &[], true);
+            apply_openai_ws_request_policies_tracked(
+                image,
+                None,
+                &mut None,
+                None,
+                &[],
+                true,
+                false,
+            );
         assert_eq!(cache_applied, Some(false));
         assert_eq!(turn_model.as_deref(), Some("gpt-5.6-terra"));
         assert_eq!(usage_eligible, Some(false));
+    }
+
+    #[test]
+    fn openai_responses_item_id_policy_is_scope_exact() {
+        let mut value: Value = serde_json::from_str(
+            r#"{"tools":[{"namespace":"keep"}],"input":[{"type":"message","id":"item_local","namespace":"remove","content":{"namespace":"nested"}},{"type":"message","id":"msg_real"},{"type":"function_call","id":"item_call"},{"type":"function_call_output","id":"item_output"}]}"#,
+        )
+        .unwrap();
+        assert!(sanitize_openai_responses_input_item_ids_value(&mut value));
+        assert_eq!(
+            value.pointer("/input/0/namespace"),
+            Some(&Value::String("remove".to_string()))
+        );
+        assert_eq!(
+            value.pointer("/input/0/content/namespace"),
+            Some(&Value::String("nested".to_string()))
+        );
+        assert_eq!(
+            value.pointer("/tools/0/namespace"),
+            Some(&Value::String("keep".to_string()))
+        );
+        assert!(value.pointer("/input/0/id").is_none());
+        assert_eq!(
+            value.pointer("/input/1/id"),
+            Some(&Value::String("msg_real".to_string()))
+        );
+        assert!(value.pointer("/input/2/id").is_none());
+        assert_eq!(
+            value.pointer("/input/3/id"),
+            Some(&Value::String("item_output".to_string()))
+        );
+    }
+
+    #[test]
+    fn legacy_json_edge_plan_request_body_is_byte_semantic_noop() {
+        let mut plan: EdgePlan = serde_json::from_value(serde_json::json!({
+            "action": "relay",
+            "edge_request_id": "edge-legacy-json",
+            "account_type": "apikey",
+            "transport": "http2_sse",
+            "response_dialect": "responses",
+            "body": {
+                "input": [{
+                    "type": "message",
+                    "id": "item_local",
+                    "namespace": "keep"
+                }]
+            }
+        }))
+        .expect("legacy edge plan");
+
+        let body = take_request_body_bytes(&mut plan).expect("request body");
+        let value: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            value.pointer("/input/0/id"),
+            Some(&Value::String("item_local".to_string()))
+        );
+        assert_eq!(
+            value.pointer("/input/0/namespace"),
+            Some(&Value::String("keep".to_string()))
+        );
+    }
+
+    #[test]
+    fn ws_item_id_policy_reuses_parse_and_preserves_frame_kind() {
+        let payload = br#"{"type":"response.create","input":[{"type":"message","id":"item_local"},{"type":"function_call","id":"fc_real"}]}"#;
+        for original in [
+            TungsteniteMessage::Text(String::from_utf8(payload.to_vec()).unwrap()),
+            TungsteniteMessage::Binary(payload.to_vec()),
+        ] {
+            let was_text = matches!(original, TungsteniteMessage::Text(_));
+            let (updated, _, _, _) = apply_openai_ws_request_policies_tracked(
+                original,
+                None,
+                &mut None,
+                None,
+                &[],
+                false,
+                true,
+            );
+            let bytes = match updated {
+                TungsteniteMessage::Text(text) => {
+                    assert!(was_text);
+                    text.into_bytes()
+                }
+                TungsteniteMessage::Binary(bytes) => {
+                    assert!(!was_text);
+                    bytes
+                }
+                _ => panic!("unexpected websocket frame"),
+            };
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(value.pointer("/input/0/id").is_none());
+            assert_eq!(
+                value.pointer("/input/1/id"),
+                Some(&Value::String("fc_real".to_string()))
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_ws_item_id_policy_is_byte_exact_noop() {
+        let raw = r#"{"type":"response.create","input":[{"type":"message","id":"item_local"}]}"#;
+        let original = TungsteniteMessage::Text(raw.to_string());
+        let (updated, _, _, _) = apply_openai_ws_request_policies_tracked(
+            original,
+            None,
+            &mut None,
+            None,
+            &[],
+            false,
+            false,
+        );
+        assert_eq!(updated, TungsteniteMessage::Text(raw.to_string()));
+    }
+
+    #[test]
+    fn ws_item_id_only_policy_skips_frames_without_id_candidates() {
+        let raw =
+            r#"{"type":"response.create","input":[{"type":"message","content":"unchanged"}]}"#;
+        assert!(!contains_json_id_key(raw.as_bytes()));
+        let original = TungsteniteMessage::Text(raw.to_string());
+        let (updated, cache_applied, turn_model, usage_eligible) =
+            apply_openai_ws_request_policies_tracked(
+                original,
+                None,
+                &mut None,
+                None,
+                &[],
+                false,
+                true,
+            );
+        assert_eq!(updated, TungsteniteMessage::Text(raw.to_string()));
+        assert_eq!(cache_applied, None);
+        assert_eq!(turn_model, None);
+        assert_eq!(usage_eligible, None);
     }
 
     #[test]

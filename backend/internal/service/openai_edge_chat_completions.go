@@ -436,6 +436,17 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if originalModel == "" {
 		return nil, fmt.Errorf("missing model in request")
 	}
+	if shouldStripOpenAIResponsesInputNamespaces(
+		account,
+		OpenAIUpstreamTransportHTTPSSE,
+		account.IsOpenAIPassthroughEnabled(),
+	) {
+		strippedBody, stripErr := stripOpenAIResponsesInputNamespaces(body)
+		if stripErr != nil {
+			return nil, stripErr
+		}
+		body = strippedBody
+	}
 	explicitImageIntent := IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, body)
 	if explicitImageIntent {
 		return nil, fmt.Errorf("image responses require Go")

@@ -73,6 +73,7 @@ type openAIEdgeLease struct {
 	inboundEndpoint    string
 	upstreamEndpoint   string
 	requestPayloadHash string
+	sessionID          string
 	channelUsageFields service.ChannelUsageFields
 	promptAudit        *securityaudit.Collector
 	payloadReleased    bool
@@ -1104,6 +1105,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		inboundEndpoint:    "/v1/chat/completions",
 		upstreamEndpoint:   service.OpenAIEdgeRawChatUpstreamEndpoint(account),
 		requestPayloadHash: service.HashUsageRequestPayload(req.Body),
+		sessionID:          service.ExtractClientSessionID(c),
 		channelUsageFields: channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
 		promptAudit:        promptAudit,
 	}
@@ -1314,6 +1316,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		inboundEndpoint:    "/v1/responses",
 		upstreamEndpoint:   "/v1/responses",
 		requestPayloadHash: service.HashUsageRequestPayload(req.Body),
+		sessionID:          service.ExtractClientSessionID(c),
 		channelUsageFields: channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
 		promptAudit:        promptAudit,
 	}
@@ -1506,6 +1509,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		inboundEndpoint:    "/v1/responses:ws",
 		upstreamEndpoint:   "wss:/v1/responses",
 		requestPayloadHash: service.HashUsageRequestPayload(req.Body),
+		sessionID:          service.ExtractClientSessionID(c),
 		channelUsageFields: channelMapping.ToUsageFields(reqModel, prepared.UpstreamModel),
 		promptAudit:        promptAudit,
 	}
@@ -2227,6 +2231,7 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 					UserAgent:               lease.userAgent,
 					IPAddress:               lease.clientIP,
 					RequestPayloadHash:      lease.requestPayloadHash,
+					SessionID:               lease.sessionID,
 					PromptCacheAffinityHash: lease.sessionHash,
 					PromptCacheGroupID:      lease.apiKey.GroupID,
 					SkipSuccessSideEffects:  !successfulTerminal,

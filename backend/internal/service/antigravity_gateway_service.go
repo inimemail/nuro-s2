@@ -2848,16 +2848,11 @@ func (s *AntigravityGatewayService) updateAccountModelRateLimitInCache(ctx conte
 		return
 	}
 
-	// 更新账号对象的 Extra 字段
-	if account.Extra == nil {
-		account.Extra = make(map[string]any)
-	}
-
-	limits, _ := account.Extra["model_rate_limits"].(map[string]any)
-	if limits == nil {
-		limits = make(map[string]any)
-		account.Extra["model_rate_limits"] = limits
-	}
+	// Detach both levels from the immutable scheduler snapshot before writing.
+	account.Extra = cloneCredentials(account.Extra)
+	limits, _ := account.Extra[modelRateLimitsKey].(map[string]any)
+	limits = cloneCredentials(limits)
+	account.Extra[modelRateLimitsKey] = limits
 
 	limits[modelKey] = map[string]any{
 		"rate_limited_at":     time.Now().UTC().Format(time.RFC3339),

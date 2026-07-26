@@ -79,6 +79,8 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		zap.Bool("stream", parsed.Stream),
 		zap.Bool("multipart", parsed.Multipart),
 		zap.String("capability", string(parsed.RequiredCapability)),
+		zap.String("img_quality", parsed.Quality),
+		zap.String("img_size", parsed.Size),
 	)
 
 	if h.maybeHandleImagesAsTask(c, parsed.Endpoint, body, parsed, apiKey, subject) {
@@ -419,6 +421,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		}
 
 		userAgent := c.GetHeader("User-Agent")
+		sessionID := service.ExtractClientSessionID(c)
 		clientIP := ip.GetClientIP(c)
 		requestPayloadHash := service.HashUsageRequestPayload(body)
 		if parsed.Multipart {
@@ -444,6 +447,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				UpstreamEndpoint:       upstreamEndpoint,
 				UserAgent:              userAgent,
 				IPAddress:              clientIP,
+				SessionID:              sessionID,
 				RequestPayloadHash:     requestPayloadHash,
 				SkipSuccessSideEffects: !successfulOutcome,
 				APIKeyService:          h.apiKeyService,

@@ -368,6 +368,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 
 		// 6. Record usage
 		userAgent := c.GetHeader("User-Agent")
+		sessionID := service.ExtractClientSessionID(c)
 		clientIP := ip.GetClientIP(c)
 		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
@@ -386,6 +387,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				UpstreamEndpoint:    upstreamEndpoint,
 				UserAgent:           userAgent,
 				IPAddress:           clientIP,
+				SessionID:           sessionID,
 				RequestPayloadHash:  requestPayloadHash,
 				SkipAccountLastUsed: !successfulOutcome,
 				APIKeyService:       h.apiKeyService,

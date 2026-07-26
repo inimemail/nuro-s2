@@ -137,8 +137,9 @@ func (p *AntigravityTokenProvider) GetAccessToken(ctx context.Context, account *
 		if p.shouldAttemptBackfill(account.ID) {
 			p.markBackfillAttempted(account.ID)
 			if projectID, err := p.antigravityOAuthService.FillProjectID(ctx, account, accessToken); err == nil && projectID != "" {
-				account.Credentials["project_id"] = projectID
-				if updateErr := persistAccountCredentials(ctx, p.accountRepo, account, account.Credentials); updateErr != nil {
+				credentials := cloneCredentials(account.Credentials)
+				credentials["project_id"] = projectID
+				if updateErr := persistAccountCredentials(ctx, p.accountRepo, account, credentials); updateErr != nil {
 					slog.Warn("antigravity_project_id_backfill_persist_failed",
 						"account_id", account.ID,
 						"error", updateErr,

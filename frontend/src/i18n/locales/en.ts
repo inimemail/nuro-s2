@@ -927,6 +927,7 @@ export default {
     time: 'Time',
     ws: 'WS',
     cyber: 'Cyber',
+    live: 'Live',
     stream: 'Stream',
     sync: 'Sync',
     unknown: 'Unknown',
@@ -2229,9 +2230,13 @@ export default {
         ,maxReasoningEffort: 'Maximum reasoning effort'
         ,maxReasoningEffortUnlimited: 'Unlimited'
         ,maxReasoningEffortHint: 'Only applies to OpenAI groups; requests above this level are capped.'
+        ,reasoningEffortPolicy: 'Reasoning effort policy'
+        ,reasoningEffortMappings: 'Effort mappings'
+        ,reasoningEffortMappingsEmpty: 'No effort mappings'
         ,reasoningEffortFrom: 'From'
         ,reasoningEffortTo: 'To'
         ,addReasoningEffortMapping: 'Add reasoning mapping'
+        ,removeReasoningEffortMapping: 'Remove reasoning mapping'
         ,reasoningEffortMappingInvalid: 'Reasoning mappings must use supported values with unique non-empty source levels.'
       },
       enterGroupName: 'Enter group name',
@@ -2385,6 +2390,16 @@ export default {
         targetModel: 'Target Model',
         targetModelPlaceholder: 'e.g., gpt-5.4',
         removeExactMapping: 'Remove Exact Mapping'
+      },
+      openaiLive: {
+        title: 'OpenAI Live Sessions',
+        hint: 'Allows this group to use Live session endpoints. Only OpenAI OAuth text accounts are eligible; regular requests, cache policy, and account priority are unchanged.',
+        capabilityChecking: 'Checking this node\'s capability',
+        capabilityReady: 'This node can provide secure attestation',
+        capabilityUnavailable: 'This node cannot run Live sessions',
+        unsupportedTitle: 'OpenAI Live is unsupported on this node',
+        unsupportedMessage: 'This runtime cannot generate the attestation required by Live. You may save the setting for other compatible nodes, but Live requests on this node will fail closed.',
+        enableAnyway: 'Enable anyway'
       },
       invalidRequestFallback: {
         title: 'Invalid Request Fallback Group',
@@ -3804,6 +3819,31 @@ export default {
       promptCacheCreationOptimizationFreeHint: 'Mode C: uses Mode B\'s explicit + 24h upstream policy. This node retains actual cache creation for cost auditing, while downstream usage reports zero creation and removes it from total input so same-source downstreams do not display or bill cache creation. Account-scoped only.',
       promptCacheCreationOptimizationInput125: 'Redistribute Write Cost',
       promptCacheCreationOptimizationInput125Hint: 'Mode D: uses Mode B\'s explicit + 24h upstream policy. Whenever cache creation is present, downstream usage reports zero creation and redistributes its GPT-5.6 price-equivalent cost across regular input, a small output share, and cache reads. Account-scoped only.',
+      ollamaUsageTitle: 'Ollama Cloud Usage',
+      ollamaUsageHint: 'Uses an encrypted web session to refresh official usage in the background after model activity. It never participates in gateway routing.',
+      ollamaSession: 'Ollama web session',
+      ollamaSessionPlaceholder: 'Cookie: name=value',
+      ollamaSaveSession: 'Save session',
+      ollamaRemoveSession: 'Remove',
+      ollamaRefreshNow: 'Refresh now',
+      ollamaAccountAutoRefresh: 'Auto-refresh this account',
+      ollamaBackgroundRefresh: 'Background refresh job',
+      ollamaBackgroundRefreshHint: 'Queries only due accounts and processes at most 20 shared-key groups per cycle.',
+      ollamaMaxWaitMinutes: 'Maximum wait during activity (minutes)',
+      ollamaDebounceMinutes: 'Quiet time after last request (minutes)',
+      ollamaFiveHour: '5-hour usage',
+      ollamaSevenDay: '7-day usage',
+      ollamaFiveHourShort: '5h',
+      ollamaSevenDayShort: '7d',
+      ollamaLastRefresh: 'Last refresh',
+      ollamaNextRefresh: 'Next eligible refresh',
+      ollamaNotConfigured: 'Not configured',
+      ollamaConfigured: 'Configured',
+      ollamaStatusReady: 'Ready',
+      ollamaStatusUnauthorized: 'Session expired',
+      ollamaStatusFailed: 'Refresh failed',
+      ollamaEncryptionRequired: 'A fixed TOTP_ENCRYPTION_KEY is required to store the session safely.',
+      ollamaRequestFailed: 'Ollama Cloud request failed',
       anthropicCacheBoost: 'Anthropic Cache Boost',
       anthropicCacheBoostHint: 'Applies to Anthropic OAuth, Setup Token, or API-key text pools. Optimizes cache_control breakpoints so large-context requests can reuse Anthropic prompt cache more consistently.',
       anthropicCacheBoostAggressiveHint: 'Off keeps the conservative policy. On lowers the static-prefix threshold so more requests with the same system prompt/tools can reuse Anthropic cache_control breakpoints.',
@@ -4909,6 +4949,7 @@ export default {
       targetingSummaryCustom: 'Custom ({groups} groups)',
       timeImmediate: 'Immediate',
       timeNever: 'Never',
+      preview: 'Preview announcement',
       readStatus: 'Read Status',
       eligible: 'Eligible',
       readAt: 'Read at',

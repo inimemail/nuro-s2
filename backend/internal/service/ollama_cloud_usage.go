@@ -25,6 +25,15 @@ const (
 	ollamaCloudSettingsURL              = "https://ollama.com/settings"
 	ollamaCloudMaxBodyBytes             = 512 * 1024
 	ollamaCloudMaxRefreshEntries        = 4096
+	ollamaCloudDefaultIntervalMinutes   = 60
+	ollamaCloudDefaultDebounceMinutes   = 1
+	ollamaCloudMinIntervalMinutes       = 15
+	ollamaCloudMaxIntervalMinutes       = 1440
+	ollamaCloudMinDebounceMinutes       = 1
+	ollamaCloudMaxDebounceMinutes       = 60
+	OllamaCloudUsageMinFetchInterval    = 15 * time.Minute
+	ollamaCloudUsageMaxPerCycle         = 20
+	ollamaCloudUsageWorkers             = 4
 )
 
 var (
@@ -38,6 +47,7 @@ var (
 type OllamaCloudUsageSettings struct {
 	Enabled         bool `json:"enabled"`
 	IntervalMinutes int  `json:"interval_minutes"`
+	DebounceMinutes int  `json:"debounce_minutes"`
 }
 type OllamaCloudUsageWindow struct {
 	UsedPercent float64 `json:"used_percent"`
@@ -76,6 +86,10 @@ type OllamaCloudUsageState struct {
 type ollamaCloudUsageRepository interface {
 	UpdateExtra(context.Context, int64, map[string]any) error
 	BulkUpdate(context.Context, []int64, AccountBulkUpdate) (int64, error)
+}
+
+type ollamaCloudUsageDueRepository interface {
+	ListDueOllamaCloudUsageAccounts(context.Context, time.Time, time.Duration, time.Duration, int) ([]Account, error)
 }
 
 // IsOllamaCloudUsageAccount is intentionally strict: it never changes gateway routing eligibility.
@@ -142,7 +156,7 @@ func (s *OllamaCloudUsageService) run() {
 }
 
 func (s *OllamaCloudUsageService) GetSettings(ctx context.Context) (*OllamaCloudUsageSettings, error) {
-	defaults := &OllamaCloudUsageSettings{IntervalMinutes: 60}
+	defaults := &OllamaCloudUsageSettings{IntervalMinutes: ollamaCloudDefaultIntervalMinutes, DebounceMinutes: ollamaCloudDefaultDebounceMinutes}
 	if s == nil || s.settingService == nil {
 		return defaults, nil
 	}
@@ -159,11 +173,20 @@ func (s *OllamaCloudUsageService) GetSettings(ctx context.Context) (*OllamaCloud
 	if err := json.Unmarshal([]byte(raw), defaults); err != nil {
 		return nil, err
 	}
-	if defaults.IntervalMinutes < 15 {
-		defaults.IntervalMinutes = 15
+	if defaults.IntervalMinutes < ollamaCloudMinIntervalMinutes {
+		defaults.IntervalMinutes = ollamaCloudMinIntervalMinutes
 	}
-	if defaults.IntervalMinutes > 1440 {
-		defaults.IntervalMinutes = 1440
+	if defaults.IntervalMinutes > ollamaCloudMaxIntervalMinutes {
+		defaults.IntervalMinutes = ollamaCloudMaxIntervalMinutes
+	}
+	if defaults.DebounceMinutes < ollamaCloudMinDebounceMinutes {
+		defaults.DebounceMinutes = ollamaCloudDefaultDebounceMinutes
+	}
+	if defaults.DebounceMinutes > ollamaCloudMaxDebounceMinutes {
+		defaults.DebounceMinutes = ollamaCloudMaxDebounceMinutes
+	}
+	if defaults.DebounceMinutes >= defaults.IntervalMinutes {
+		defaults.DebounceMinutes = ollamaCloudDefaultDebounceMinutes
 	}
 	return defaults, nil
 }
@@ -171,8 +194,17 @@ func (s *OllamaCloudUsageService) UpdateSettings(ctx context.Context, v *OllamaC
 	if s == nil || s.settingService == nil || v == nil {
 		return ErrOllamaCloudUsageUnavailable
 	}
-	if v.IntervalMinutes < 15 || v.IntervalMinutes > 1440 {
+	if v.DebounceMinutes == 0 {
+		v.DebounceMinutes = ollamaCloudDefaultDebounceMinutes
+	}
+	if v.IntervalMinutes < ollamaCloudMinIntervalMinutes || v.IntervalMinutes > ollamaCloudMaxIntervalMinutes {
 		return infraerrors.BadRequest("INVALID_OLLAMA_CLOUD_USAGE_INTERVAL", "interval_minutes must be between 15 and 1440")
+	}
+	if v.DebounceMinutes < ollamaCloudMinDebounceMinutes || v.DebounceMinutes > ollamaCloudMaxDebounceMinutes {
+		return infraerrors.BadRequest("INVALID_OLLAMA_CLOUD_USAGE_DEBOUNCE", "debounce_minutes must be between 1 and 60")
+	}
+	if v.DebounceMinutes >= v.IntervalMinutes {
+		return infraerrors.BadRequest("INVALID_OLLAMA_CLOUD_USAGE_DEBOUNCE", "debounce_minutes must be less than interval_minutes")
 	}
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -277,39 +309,40 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 	if err != nil || !settings.Enabled {
 		return err
 	}
-	seen := make(map[int64]struct{})
-	jobs := make([]Account, 0, 20)
-	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic} {
-		accounts, e := s.accountRepo.ListByPlatform(ctx, platform)
-		if e != nil {
-			return e
-		}
-		for i := range accounts {
-			a := accounts[i]
-			if len(jobs) >= 20 || !a.IsActive() || !IsOllamaCloudUsageAccount(&a) || !ollamaCloudAutoRefresh(&a) || !ollamaCloudDue(&a) {
-				continue
-			}
-			if _, ok := seen[a.ID]; ok {
-				continue
-			}
-			seen[a.ID] = struct{}{}
-			jobs = append(jobs, a)
+	dueRepo, ok := s.accountRepo.(ollamaCloudUsageDueRepository)
+	if !ok {
+		return errors.New("Ollama Cloud due-query repository is unavailable")
+	}
+	now := time.Now().UTC()
+	debounce := time.Duration(settings.DebounceMinutes) * time.Minute
+	maxWait := time.Duration(settings.IntervalMinutes) * time.Minute
+	candidates, err := dueRepo.ListDueOllamaCloudUsageAccounts(ctx, now, debounce, maxWait, ollamaCloudUsageMaxPerCycle)
+	if err != nil {
+		return err
+	}
+	jobs := make(chan Account, len(candidates))
+	for i := range candidates {
+		candidate := candidates[i]
+		if dueAt, due := ollamaCloudUsageAutoRefreshDueAt(now, &candidate, debounce, maxWait); due && !now.Before(dueAt) {
+			jobs <- candidate
 		}
 	}
-	sem := make(chan struct{}, 4)
+	close(jobs)
+	workerCount := ollamaCloudUsageWorkers
+	if workerCount > len(jobs) {
+		workerCount = len(jobs)
+	}
 	var wg sync.WaitGroup
-	for i := range jobs {
-		a := jobs[i]
+	for range workerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				return
+			for account := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				_, _ = s.refreshAccount(ctx, account.ID, settings.IntervalMinutes)
 			}
-			defer func() { <-sem }()
-			_, _ = s.refreshAccount(ctx, a.ID, settings.IntervalMinutes)
 		}()
 	}
 	wg.Wait()
@@ -317,6 +350,9 @@ func (s *OllamaCloudUsageService) RunDue(ctx context.Context) error {
 }
 
 func (s *OllamaCloudUsageService) refreshAccount(ctx context.Context, id int64, interval int) (*OllamaCloudUsageSnapshot, error) {
+	if s == nil || !s.encryptionKeyConfigured || s.encryptor == nil {
+		return nil, ErrOllamaCloudUsageEncryptionKey
+	}
 	a, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -423,6 +459,60 @@ func ollamaCloudDue(a *Account) bool {
 		return true
 	}
 	return !time.Now().Before(snap.NextRefreshAt)
+}
+
+func ollamaCloudUsageAutoRefreshDueAt(now time.Time, account *Account, debounce, maxWait time.Duration) (time.Time, bool) {
+	if account == nil || !account.IsActive() || !IsOllamaCloudUsageAccount(account) || !ollamaCloudConfigured(account) || !ollamaCloudAutoRefresh(account) {
+		return time.Time{}, false
+	}
+	if debounce <= 0 {
+		debounce = time.Minute
+	}
+	if maxWait <= 0 {
+		maxWait = time.Hour
+	}
+	var snapshot OllamaCloudUsageSnapshot
+	raw, exists := account.Extra[OllamaCloudUsageSnapshotExtraKey]
+	encoded, err := json.Marshal(raw)
+	if !exists || err != nil || json.Unmarshal(encoded, &snapshot) != nil || snapshot.Status == "" {
+		return time.Time{}, true
+	}
+	minTime := func(left, right time.Time) time.Time {
+		if left.Before(right) {
+			return left
+		}
+		return right
+	}
+	switch snapshot.Status {
+	case "ok":
+		if snapshot.FetchedAt == nil || snapshot.FetchedAt.IsZero() {
+			return time.Time{}, true
+		}
+		fetchedAt := snapshot.FetchedAt.UTC()
+		if account.LastUsedAt == nil || !account.LastUsedAt.After(fetchedAt) {
+			return time.Time{}, false
+		}
+		dueAt := minTime(account.LastUsedAt.UTC().Add(debounce), fetchedAt.Add(maxWait))
+		if floor := fetchedAt.Add(OllamaCloudUsageMinFetchInterval); dueAt.Before(floor) {
+			dueAt = floor
+		}
+		return dueAt, true
+	case "failed", "unauthorized":
+		if snapshot.LastAttemptAt.IsZero() {
+			return time.Time{}, true
+		}
+		lastAttempt := snapshot.LastAttemptAt.UTC()
+		if account.LastUsedAt == nil || !account.LastUsedAt.After(lastAttempt) {
+			return time.Time{}, false
+		}
+		dueAt := minTime(account.LastUsedAt.UTC().Add(debounce), lastAttempt.Add(maxWait))
+		if !snapshot.NextRefreshAt.IsZero() && snapshot.NextRefreshAt.UTC().After(dueAt) {
+			dueAt = snapshot.NextRefreshAt.UTC()
+		}
+		return dueAt, true
+	default:
+		return time.Time{}, true
+	}
 }
 
 var ollamaCookiePair = regexp.MustCompile(`^[^=;\s]+=[^;\r\n]+(?:;\s*[^=;\s]+=[^;\r\n]+)*$`)

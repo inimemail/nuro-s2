@@ -105,6 +105,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			sqlmock.AnyArg(), // billing_tier
 			sqlmock.AnyArg(), // billing_mode
 			sqlmock.AnyArg(), // account_stats_cost
+			sqlmock.AnyArg(), // session_id
 			createdAt,
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(99), createdAt))
@@ -203,6 +204,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			sqlmock.AnyArg(), // billing_tier
 			sqlmock.AnyArg(), // billing_mode
 			sqlmock.AnyArg(), // account_stats_cost
+			sqlmock.AnyArg(), // session_id
 			createdAt,
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(100), createdAt))
@@ -674,10 +676,14 @@ func usageLogScanValuesWithEmptyEdgeMetrics(values ...any) []any {
 	withVideo = append(withVideo, out[:videoInsertAt]...)
 	withVideo = append(withVideo, videoValues...)
 	withVideo = append(withVideo, out[videoInsertAt:]...)
-	if len(withVideo) != len(usageLogInsertArgTypes)+1 {
-		panic(fmt.Sprintf("usage log scan fixture has %d values, want %d", len(withVideo), len(usageLogInsertArgTypes)+1))
+	// session_id is the final nullable column before created_at.
+	withSession := make([]any, 0, len(withVideo)+1)
+	withSession = append(withSession, withVideo[:len(withVideo)-1]...)
+	withSession = append(withSession, sql.NullString{}, withVideo[len(withVideo)-1])
+	if len(withSession) != len(usageLogInsertArgTypes)+1 {
+		panic(fmt.Sprintf("usage log scan fixture has %d values, want %d", len(withSession), len(usageLogInsertArgTypes)+1))
 	}
-	return withVideo
+	return withSession
 }
 
 func (s usageLogScannerStub) Scan(dest ...any) error {

@@ -29,6 +29,7 @@ func (BatchImageJob) Annotations() []schema.Annotation {
 func (BatchImageJob) Fields() []ent.Field {
 	return []ent.Field{
 		field.String("batch_id").MaxLen(64).Immutable(),
+		field.String("session_id").Optional().Nillable().MaxLen(255),
 		field.Int64("user_id"),
 		field.Int64("api_key_id").Optional().Nillable(),
 		field.Int64("account_id").Optional().Nillable(),

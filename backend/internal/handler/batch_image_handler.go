@@ -32,6 +32,7 @@ func (h *BatchImageHandler) Submit(c *gin.Context) {
 		batchImageError(c, service.ErrBatchImageInvalidItems)
 		return
 	}
+	req.SessionID = service.ExtractClientSessionID(c)
 	owner, ok := batchImageOwnerFromContext(c)
 	if !ok {
 		batchImageError(c, infraerrors.New(http.StatusUnauthorized, "API_KEY_REQUIRED", "API key is required"))

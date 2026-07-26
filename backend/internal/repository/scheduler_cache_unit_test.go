@@ -359,6 +359,12 @@ func TestSchedulerCacheLastUsedSideKeyIsMonotonic(t *testing.T) {
 	require.Equal(t, newer, *got.LastUsedAt)
 }
 
+func TestSchedulerMGetChunkSizePreservesAccountBatchSize(t *testing.T) {
+	require.Equal(t, 256, schedulerMGetKeyChunkSize(128, 300))
+	require.Equal(t, 200, schedulerMGetKeyChunkSize(128, 200))
+	require.Equal(t, 256, schedulerMGetKeyChunkSize(0, 300))
+}
+
 func TestSchedulerCacheLastUsedDoesNotRecreateDeletedAccount(t *testing.T) {
 	miniRedis := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: miniRedis.Addr()})

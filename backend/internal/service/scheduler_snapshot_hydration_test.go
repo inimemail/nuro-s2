@@ -187,7 +187,7 @@ func TestSchedulerSnapshotIgnoresOrdinaryRedisEventsWhenEventBusIsDisabled(t *te
 	require.Len(t, accounts, 1)
 }
 
-func TestSchedulerLocalSnapshot_ClonesMutableAccountFields(t *testing.T) {
+func TestSchedulerLocalSnapshot_OwnsInputAndReturnsLightweightViews(t *testing.T) {
 	snapshot := NewSchedulerLocalSnapshot(config.GatewaySchedulingConfig{
 		LocalSnapshotEnabled: true,
 		LocalSnapshotTTLMS:   1000,
@@ -237,14 +237,40 @@ func TestSchedulerLocalSnapshot_ClonesMutableAccountFields(t *testing.T) {
 	if got[0].UpstreamBillingGuardEvaluatedAt == nil || !got[0].UpstreamBillingGuardEvaluatedAt.Equal(evaluatedAt.Add(-time.Hour)) {
 		t.Fatalf("expected billing guard evaluation time clone, got %v", got[0].UpstreamBillingGuardEvaluatedAt)
 	}
-	got[0].Credentials["api_key"] = "request-local"
-	got[0].Credentials["nested"].(map[string]any)["flag"] = "request-local"
-	got[0].Extra["request"] = true
-	got[0].Extra[modelRateLimitsKey].(map[string]any)["gpt"].(map[string]any)["remaining"] = 0
+	got[0].UpstreamBillingGuardGroupBlocked = true
 	again, hit := snapshot.Get(bucket, time.Now())
 	remaining := again[0].Extra[modelRateLimitsKey].(map[string]any)["gpt"].(map[string]any)["remaining"]
-	if !hit || again[0].Credentials["api_key"] != "old" || again[0].Credentials["nested"].(map[string]any)["flag"] != "old" || again[0].Extra["request"] != nil || remaining != 2 {
+	if !hit || again[0].Credentials["api_key"] != "old" || again[0].Credentials["nested"].(map[string]any)["flag"] != "old" || again[0].UpstreamBillingGuardGroupBlocked || remaining != 2 {
 		t.Fatalf("request-local account view contaminated snapshot: %+v", again[0])
+	}
+}
+
+func BenchmarkSchedulerLocalSnapshotGet(b *testing.B) {
+	snapshot := NewSchedulerLocalSnapshot(config.GatewaySchedulingConfig{
+		LocalSnapshotEnabled: true,
+		LocalSnapshotTTLMS:   60000,
+		LocalSnapshotMaxKeys: 16,
+	})
+	bucket := SchedulerBucket{GroupID: 1, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
+	accounts := make([]Account, 1000)
+	for i := range accounts {
+		accounts[i] = Account{
+			ID:          int64(i + 1),
+			Platform:    PlatformOpenAI,
+			Status:      StatusActive,
+			Schedulable: true,
+			Credentials: map[string]any{"api_key": "redacted", "model_mapping": map[string]any{"gpt-5.6": "gpt-5.6"}},
+			Extra:       map[string]any{"nested": map[string]any{"enabled": true}},
+			GroupIDs:    []int64{1},
+		}
+	}
+	snapshot.Set(bucket, accounts, time.Now())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, hit := snapshot.Get(bucket, time.Now()); !hit {
+			b.Fatal("snapshot miss")
+		}
 	}
 }
 
