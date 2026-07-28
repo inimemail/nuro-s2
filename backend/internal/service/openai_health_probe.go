@@ -27,7 +27,7 @@ const (
 	openAIHealthProbeAlternativeLookupTimeout = 500 * time.Millisecond
 	openAIHealthProbeErrorCode                = "monitor_probe_empty_response"
 	openAIHealthProbeUpstreamMessage          = "OpenAI health probe returned 2xx without assistant text"
-	openAIHealthProbeClientMessage            = "OpenAI health probe exhausted available accounts without assistant text"
+	openAIHealthProbeClientMessage            = "Health probe exhausted available accounts without assistant text"
 	openAIHealthProbeInstructions             = "Return exactly MONITOR_OK as plain text."
 	openAIHealthProbeInput                    = "Return exactly MONITOR_OK."
 )

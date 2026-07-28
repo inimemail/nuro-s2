@@ -35,7 +35,12 @@ func (h *PromptAdminHandler) GetConfig(c *gin.Context) {
 	if svc := h.available(c); svc == nil {
 		return
 	} else {
-		response.Success(c, svc.PublicConfig())
+		config, err := svc.PublicConfig()
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.Success(c, config)
 	}
 }
 

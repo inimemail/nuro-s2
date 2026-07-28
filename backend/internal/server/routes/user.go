@@ -15,10 +15,16 @@ func RegisterUserRoutes(
 	jwtAuth middleware.JWTAuthMiddleware,
 	auditLog middleware.AuditLogMiddleware,
 	settingService *service.SettingService,
+	panelRateLimiters ...*middleware.PanelRateLimiter,
 ) {
+	var panelRateLimiter *middleware.PanelRateLimiter
+	if len(panelRateLimiters) > 0 {
+		panelRateLimiter = panelRateLimiters[0]
+	}
 	authenticated := v1.Group("")
 	authenticated.Use(gin.HandlerFunc(jwtAuth))
 	authenticated.Use(middleware.BackendModeUserGuard(settingService))
+	authenticated.Use(panelRateLimiter.Global())
 	authenticated.Use(gin.HandlerFunc(auditLog))
 	{
 		// 用户接口
@@ -33,7 +39,7 @@ func RegisterUserRoutes(
 			user.POST("/account-bindings/email", h.User.BindEmailIdentity)
 			user.DELETE("/account-bindings/:provider", h.User.UnbindIdentity)
 			user.POST("/auth-identities/bind/start", h.User.StartIdentityBinding)
-			user.GET("/api-keys/:id/usage/daily", h.Usage.GetMyAPIKeyDailyUsage)
+			user.GET("/api-keys/:id/usage/daily", panelRateLimiter.Heavy(), h.Usage.GetMyAPIKeyDailyUsage)
 			user.GET("/platform-quotas", h.User.GetMyPlatformQuotas)
 
 			// 通知邮箱管理
@@ -83,6 +89,7 @@ func RegisterUserRoutes(
 
 		// 使用记录
 		usage := authenticated.Group("/usage")
+		usage.Use(panelRateLimiter.Heavy())
 		{
 			usage.GET("", h.Usage.List)
 			usage.GET("/errors", h.Usage.ListErrors)

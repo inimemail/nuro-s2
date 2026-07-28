@@ -314,6 +314,35 @@ func TestPolicyEnforcingFrameConn_FollowupFrameWithoutModelUsesCapturedModel(t *
 	require.Equal(t, "response.create", gjson.GetBytes(payload, "type").String())
 }
 
+func TestApplyOpenAIWSPassthroughUpstreamModelMapsFollowupExactlyOnce(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"channel-model":  "upstream-model",
+				"upstream-model": "must-not-be-applied",
+			},
+		},
+	}
+
+	payload, model := applyOpenAIWSPassthroughUpstreamModel(
+		account,
+		[]byte(`{"type":"response.create","model":"channel-model"}`),
+		"",
+	)
+	require.Equal(t, "upstream-model", model)
+	require.Equal(t, "upstream-model", gjson.GetBytes(payload, "model").String())
+
+	payload, model = applyOpenAIWSPassthroughUpstreamModel(
+		account,
+		[]byte(`{"type":"response.create"}`),
+		"upstream-model",
+	)
+	require.Equal(t, "upstream-model", model)
+	require.Equal(t, "upstream-model", gjson.GetBytes(payload, "model").String())
+}
+
 // TestPolicyEnforcingFrameConn_WithoutCapturedFallbackPolicyMisses pins the
 // inverse: when the wrapper has NO capturedSessionModel fallback (model is
 // empty per-frame and no fallback is wired up), the policy fails to match

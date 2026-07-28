@@ -52,6 +52,9 @@ type openAIEdgeLease struct {
 	cachePolicyEnabled bool
 	cachePolicyApplied bool
 	forwardBody        []byte
+	passthroughSeen    bool
+	crossModeBodyReady bool
+	crossModeBody      []byte
 	lastPlan           service.OpenAIEdgePlan
 	rejectedFieldRetry service.OpenAIResponsesRejectedFieldRetryState
 	rejectedFields     []string
@@ -1087,6 +1090,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
 		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
 		forwardBody:        append([]byte(nil), forwardBody...),
+		passthroughSeen:    account.IsOpenAIPassthroughEnabled(),
 		lastPlan:           plan,
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
@@ -1298,6 +1302,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
 		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
 		forwardBody:        append([]byte(nil), forwardBody...),
+		passthroughSeen:    account.IsOpenAIPassthroughEnabled(),
 		lastPlan:           plan,
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
@@ -1491,6 +1496,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		cachePolicyEnabled: prepared.Plan.PromptCacheCreationOptimizationMode != "",
 		cachePolicyApplied: prepared.Plan.PromptCacheCreationOptimizationApplied,
 		forwardBody:        append([]byte(nil), forwardBody...),
+		passthroughSeen:    account.IsOpenAIPassthroughEnabled(),
 		lastPlan:           plan,
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
@@ -1971,23 +1977,46 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 		prepared *service.OpenAIEdgePreparedChatCompletions
 		err      error
 	)
+	attemptBody := lease.forwardBody
+	currentPassthrough := account != nil && account.IsOpenAIPassthroughEnabled()
+	if lease.passthroughSeen && !currentPassthrough {
+		if !lease.crossModeBodyReady {
+			lease.crossModeBodyReady = true
+			if sanitized, changed, sanitizeErr := service.SanitizeOpenAICrossModeFailoverReasoning(lease.forwardBody); sanitizeErr != nil {
+				requestLogger(c, "handler.openai_edge.reasoning_failover").Warn(
+					"openai_edge.cross_mode_reasoning_sanitize_failed",
+					zap.Error(sanitizeErr),
+				)
+			} else if changed {
+				lease.crossModeBody = sanitized
+			}
+		}
+		if len(lease.crossModeBody) > 0 {
+			attemptBody = lease.crossModeBody
+		}
+	}
 	if lease.inboundEndpoint == "/v1/responses:ws" {
 		token, _, tokenErr := h.gatewayService.GetAccessToken(c.Request.Context(), account)
 		if tokenErr != nil {
 			return service.OpenAIEdgePlan{}, tokenErr
 		}
-		prepared, err = h.gatewayService.BuildResponsesWSEdgePlan(c.Request.Context(), c, account, lease.forwardBody, token)
+		prepared, err = h.gatewayService.BuildResponsesWSEdgePlan(c.Request.Context(), c, account, attemptBody, token)
 	} else if lease.inboundEndpoint == "/v1/responses" {
 		if account.Type == service.AccountTypeOAuth {
-			prepared, err = h.gatewayService.BuildChatGPTOAuthResponsesEdgePlan(c.Request.Context(), c, account, lease.forwardBody)
+			prepared, err = h.gatewayService.BuildChatGPTOAuthResponsesEdgePlan(c.Request.Context(), c, account, attemptBody)
 		} else {
-			prepared, err = h.gatewayService.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, lease.forwardBody)
+			prepared, err = h.gatewayService.BuildRawResponsesEdgePlan(c.Request.Context(), c, account, attemptBody)
 		}
 	} else {
-		prepared, err = h.gatewayService.BuildRawChatCompletionsEdgePlan(c.Request.Context(), c, account, lease.forwardBody, "")
+		prepared, err = h.gatewayService.BuildRawChatCompletionsEdgePlan(c.Request.Context(), c, account, attemptBody, "")
 	}
 	if err != nil {
 		return service.OpenAIEdgePlan{}, err
+	}
+	// Only remember a passthrough transition after a usable relay plan exists.
+	// A local prepare failure must not alter the body of a later account attempt.
+	if currentPassthrough {
+		lease.passthroughSeen = true
 	}
 	plan := prepared.Plan
 	plan, err = applyOpenAIEdgeRejectedFields(plan, lease.rejectedFields)
@@ -2273,11 +2302,20 @@ func openAIEdgeFailureClassIsLocalOrClient(failureClass string) bool {
 }
 
 func openAIEdgeShouldRecordCircuitOutcome(req service.OpenAIEdgeCompleteRequest, successfulTerminal, cachePolicyCompatibilityFailure bool) bool {
+	if req.ClientDisconnected || req.CyberBlocked || cachePolicyCompatibilityFailure || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) {
+		return false
+	}
 	if successfulTerminal {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(req.FailureClass), "upstream_disconnect") &&
-		!req.ClientDisconnected && !req.CyberBlocked && !cachePolicyCompatibilityFailure
+	return strings.EqualFold(strings.TrimSpace(req.FailureClass), "upstream_disconnect")
+}
+
+func openAIEdgeAbortShouldRecordCircuitOutcome(req service.OpenAIEdgeAbortRequest) bool {
+	if !req.RelayAttempted || req.ClientDisconnected || req.FallbackToGo || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || openAIEdgeAbortReasonIsNeutral(req.Reason) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(req.FailureClass), "upstream_disconnect")
 }
 
 func openAIEdgeCachePolicyCompatibilityFailure(lease *openAIEdgeLease, req service.OpenAIEdgeCompleteRequest) bool {
@@ -2310,18 +2348,20 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {
 			// Abort is also a settlement boundary for relay failures that never
 			// reached a terminal event. The circuit itself ignores client/local
 			// classes, while retaining upstream_disconnect observations.
-			h.gatewayService.RecordOpenAIEdgeStreamOutcome(
-				lease.account,
-				req.FailureClass,
-				req.RelayAttempted,
-				false,
-				"",
-			)
+			if openAIEdgeAbortShouldRecordCircuitOutcome(req) {
+				h.gatewayService.RecordOpenAIEdgeStreamOutcome(
+					lease.account,
+					req.FailureClass,
+					req.RelayAttempted,
+					false,
+					"",
+				)
+			}
 		}
 		if openAIEdgeAbortShouldFlushPromptAudit(req) {
 			defer h.flushOpenAIEdgePromptAudit(lease)
 		}
-		if h.gatewayService != nil && lease.account != nil && !req.ClientDisconnected &&
+		if h.gatewayService != nil && lease.account != nil && req.RelayAttempted && !req.ClientDisconnected &&
 			!openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) && !openAIEdgeAbortReasonIsNeutral(req.Reason) {
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
 		}

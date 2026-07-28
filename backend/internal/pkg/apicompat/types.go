@@ -4,7 +4,10 @@
 // formats can be served through a unified gateway.
 package apicompat
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // ---------------------------------------------------------------------------
 // Anthropic Messages API types
@@ -110,7 +113,7 @@ type AnthropicTool struct {
 	Type         string                 `json:"type,omitempty"` // e.g. "web_search_20250305" for server tools
 	Name         string                 `json:"name"`
 	Description  string                 `json:"description,omitempty"`
-	InputSchema  json.RawMessage        `json:"input_schema"` // JSON Schema object
+	InputSchema  json.RawMessage        `json:"input_schema,omitempty"` // JSON Schema object
 	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
 }
 
@@ -251,10 +254,55 @@ type ResponsesInputItem struct {
 	ID        string `json:"id,omitempty"`
 
 	// type=function_call_output
-	Output string `json:"output,omitempty"`
+	Output    string `json:"output,omitempty"`
+	outputRaw json.RawMessage
 
 	// type=reasoning (Grok/Codex encrypted reasoning round-trip)
 	EncryptedContent string `json:"encrypted_content,omitempty"`
+}
+
+func (i *ResponsesInputItem) UnmarshalJSON(data []byte) error {
+	type alias ResponsesInputItem
+	var wire struct {
+		*alias
+		Output json.RawMessage `json:"output"`
+	}
+	*i = ResponsesInputItem{}
+	wire.alias = (*alias)(i)
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	output := bytes.TrimSpace(wire.Output)
+	if len(output) == 0 || bytes.Equal(output, []byte("null")) {
+		return nil
+	}
+	if err := json.Unmarshal(output, &i.Output); err == nil {
+		return nil
+	}
+	i.outputRaw = append([]byte(nil), output...)
+	i.Output = string(output)
+	return nil
+}
+
+func (i ResponsesInputItem) MarshalJSON() ([]byte, error) {
+	type alias ResponsesInputItem
+	var output json.RawMessage
+	if raw := bytes.TrimSpace(i.outputRaw); len(raw) > 0 {
+		output = append(json.RawMessage(nil), raw...)
+	} else if i.Output != "" {
+		encoded, err := json.Marshal(i.Output)
+		if err != nil {
+			return nil, err
+		}
+		output = encoded
+	}
+	return json.Marshal(struct {
+		*alias
+		Output json.RawMessage `json:"output,omitempty"`
+	}{
+		alias:  (*alias)(&i),
+		Output: output,
+	})
 }
 
 // ResponsesContentPart is a typed content part in a Responses message.

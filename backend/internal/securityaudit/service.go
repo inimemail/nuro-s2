@@ -53,6 +53,7 @@ type Service struct {
 	encryptor   service.SecretEncryptor
 
 	config         atomic.Pointer[Config]
+	configTrusted  atomic.Bool
 	featureEnabled atomic.Bool
 	queue          chan auditTask
 
@@ -111,6 +112,8 @@ func (s *Service) Start(parent context.Context) {
 			s.lastError.Store("config_load_failed")
 			cfg := DefaultConfig()
 			s.storeConfig(cfg)
+		} else {
+			s.configTrusted.Store(true)
 		}
 		loadCancel()
 		for workerID := 0; workerID < maxWorkers; workerID++ {

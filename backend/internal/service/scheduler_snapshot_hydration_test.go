@@ -93,6 +93,7 @@ func TestSchedulerSnapshotLocalSnapshot_IgnoresOwnSnapshotUpdatedEvent(t *testin
 		Type:        AccountTypeAPIKey,
 		Status:      StatusActive,
 		Schedulable: true,
+		GroupIDs:    []int64{1},
 	}}
 	svc.storeLocalSnapshot(bucket, accounts)
 
@@ -123,7 +124,7 @@ func TestSchedulerSnapshotRuntimeClearEventInvokesAllLocalHandlers(t *testing.T)
 	cfg.Gateway.Scheduling.LocalSnapshotMaxKeys = 16
 	svc := NewSchedulerSnapshotService(nil, nil, nil, nil, cfg, nil)
 	bucket := SchedulerBucket{GroupID: 1, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
-	svc.storeLocalSnapshot(bucket, []Account{{ID: 42}})
+	svc.storeLocalSnapshot(bucket, []Account{{ID: 42, GroupIDs: []int64{1}}})
 	var cleared []int64
 	svc.RegisterAccountRuntimeClearHandler(func(accountID, generation int64) {
 		cleared = append(cleared, accountID)
@@ -174,7 +175,7 @@ func TestSchedulerSnapshotIgnoresOrdinaryRedisEventsWhenEventBusIsDisabled(t *te
 	cfg.Gateway.Scheduling.LocalSnapshotMaxKeys = 16
 	svc := NewSchedulerSnapshotService(nil, nil, nil, nil, cfg, NewLocalSchedulerEventBus())
 	bucket := SchedulerBucket{GroupID: 2, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
-	svc.storeLocalSnapshot(bucket, []Account{{ID: 44}})
+	svc.storeLocalSnapshot(bucket, []Account{{ID: 44, GroupIDs: []int64{2}}})
 
 	svc.handleSchedulerEvent(context.Background(), SchedulerEvent{
 		Type:      SchedulerEventAccountUpdated,

@@ -20,7 +20,7 @@
           </div>
           <div class="text-right">
             <span class="text-sm font-medium text-gray-900 dark:text-white">
-              ${{ method.amount.toFixed(2) }}
+              {{ formatMoney(method.amount, method.currency) }}
             </span>
             <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">
               ({{ method.count }})
@@ -45,7 +45,7 @@ import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 
 const props = defineProps<{
-  methods: { type: string; amount: number; count: number }[]
+  methods: { type: string; amount: number; count: number; currency?: string }[]
 }>()
 
 const colorMap: Record<string, string> = {
@@ -71,5 +71,9 @@ const maxAmount = computed(() => {
 
 function barWidth(amount: number): number {
   return Math.min((amount / maxAmount.value) * 100, 100)
+}
+
+function formatMoney(value: number, currency = 'USD'): string {
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(value)
 }
 </script>

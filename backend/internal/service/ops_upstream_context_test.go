@@ -44,3 +44,19 @@ func TestAppendOpsUpstreamErrorDropsUpstreamURL(t *testing.T) {
 	require.Len(t, events, 1)
 	require.Empty(t, events[0].UpstreamURL)
 }
+
+func TestAppendOpsUpstreamErrorSanitizesDetailBeforeContextStorage(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		UpstreamStatusCode: 502,
+		Detail:             `{"error":{"message":"request to https://private.example failed","authorization":"Bearer secret-token"}}`,
+	})
+
+	raw, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := raw.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.NotContains(t, events[0].Detail, "private.example")
+	require.NotContains(t, events[0].Detail, "secret-token")
+}

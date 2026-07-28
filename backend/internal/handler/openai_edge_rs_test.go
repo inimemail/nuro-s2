@@ -1193,6 +1193,29 @@ func TestOpenAIEdgeCircuitObservesDisconnectEvenWithIncompleteTerminal(t *testin
 	if openAIEdgeShouldRecordCircuitOutcome(req, false, true) {
 		t.Fatal("cache policy compatibility fallback must remain neutral for the proxy circuit")
 	}
+	req = service.OpenAIEdgeCompleteRequest{Success: true, TerminalEventType: "response.completed", FailureClass: "local_capacity_rejected"}
+	if openAIEdgeShouldRecordCircuitOutcome(req, true, false) {
+		t.Fatal("local capacity must not clear proxy circuit observations")
+	}
+}
+
+func TestOpenAIEdgeAbortCircuitClassificationIsStrict(t *testing.T) {
+	base := service.OpenAIEdgeAbortRequest{FailureClass: "upstream_disconnect", Reason: "upstream_disconnect", RelayAttempted: true}
+	if !openAIEdgeAbortShouldRecordCircuitOutcome(base) {
+		t.Fatal("upstream disconnect abort should reach the proxy circuit")
+	}
+	for _, req := range []service.OpenAIEdgeAbortRequest{
+		{FailureClass: "upstream_disconnect", Reason: "upstream_disconnect", RelayAttempted: false},
+		{FailureClass: "upstream_disconnect", Reason: "client_disconnect", RelayAttempted: true, ClientDisconnected: true},
+		{FailureClass: "upstream_disconnect", Reason: "prepare_failed", RelayAttempted: true},
+		{FailureClass: "client_cancelled", Reason: "client_disconnect", RelayAttempted: true},
+		{FailureClass: "upstream_disconnect", Reason: "retry_failure_already_recorded: exhausted", RelayAttempted: true},
+		{FailureClass: "upstream_disconnect", Reason: "compatibility_fallback_go", RelayAttempted: true, FallbackToGo: true},
+	} {
+		if openAIEdgeAbortShouldRecordCircuitOutcome(req) {
+			t.Fatalf("neutral abort incorrectly reached proxy circuit: %+v", req)
+		}
+	}
 }
 
 func TestOpenAIEdgeRealFirstTokenMSPrefersRealSample(t *testing.T) {

@@ -149,7 +149,11 @@ func TestSavedConfigKeepsPromptHMACStableAcrossServiceInstances(t *testing.T) {
 	if got := second.promptHash("stable prompt"); got != want {
 		t.Fatalf("prompt HMAC changed across instances: got=%q want=%q", got, want)
 	}
-	publicRaw, err := json.Marshal(second.PublicConfig())
+	publicConfig, err := second.PublicConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicRaw, err := json.Marshal(publicConfig)
 	if err != nil {
 		t.Fatal(err)
 	}

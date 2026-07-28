@@ -4933,7 +4933,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 	if account != nil && account.Type == AccountTypeOAuth {
 		if rejectReason := detectOpenAIPassthroughInstructionsRejectReason(reqModel, body); rejectReason != "" {
-			rejectMsg := "OpenAI codex passthrough requires a non-empty instructions field"
+			rejectMsg := "Passthrough requires a non-empty instructions field"
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 			logOpenAIPassthroughInstructionsRejected(ctx, c, account, reqModel, rejectReason, body)
 			c.JSON(http.StatusForbidden, gin.H{
@@ -6200,7 +6200,7 @@ func (s *OpenAIGatewayService) recordOpenAIStreamUpstreamError(
 ) string {
 	message = sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
 	if message == "" {
-		message = "OpenAI upstream response failed"
+		message = safeUpstreamErrorMessage
 	}
 	upstreamStatus := openAIStreamFailedEventSemanticStatus(payload, message)
 	detail := ""
@@ -9968,7 +9968,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		SessionID:            optionalTrimmedStringPtr(input.SessionID),
 		Model:                result.Model,
 		RequestedModel:       requestedModel,
-		UpstreamModel:        optionalNonEqualStringPtr(result.UpstreamModel, result.Model),
+		UpstreamModel:        optionalTrimmedStringPtr(result.UpstreamModel),
 		ServiceTier:          result.ServiceTier,
 		ReasoningEffort:      result.ReasoningEffort,
 		InboundEndpoint:      optionalTrimmedStringPtr(input.InboundEndpoint),

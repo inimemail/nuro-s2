@@ -6846,7 +6846,7 @@ export default {
         saved: 'Overload cooldown settings saved',
         saveFailed: 'Failed to save overload cooldown settings'
       },
-      rateLimit429Cooldown: {
+		rateLimit429Cooldown: {
         title: '429 Default Cooldown',
         description: 'Configure the default account cooldown when upstream returns 429 without an explicit reset time',
         enabled: 'Enable 429 Default Cooldown',
@@ -6855,7 +6855,24 @@ export default {
         cooldownSecondsHint: 'Default cooldown duration (1-7200 seconds); explicit upstream reset times still take precedence',
         saved: '429 default cooldown settings saved',
         saveFailed: 'Failed to save 429 default cooldown settings'
-      },
+		},
+		panelRateLimit: {
+			title: 'Panel API Rate Limiting',
+			description: 'Bound high-frequency panel requests without adding work to the model gateway or first-token path',
+			enabled: 'Enable panel API rate limiting',
+			enabledHint: 'Authenticated calls are counted per account and public calls by trusted client IP; Redis failures fail open',
+			userRpm: 'Requests per account',
+			userRpmHint: 'Total panel API requests allowed per account each minute; 0 means unlimited',
+			heavyRpm: 'Heavy queries',
+			heavyRpmHint: 'Usage and aggregate queries allowed per account each minute; 0 means unlimited',
+			publicIpRpm: 'Public requests per IP',
+			publicIpRpmHint: 'Anonymous endpoint requests per minute; private and loopback proxy hops are ignored',
+			perMinute: 'req/min',
+			exemptAdmin: 'Exempt administrators',
+			exemptAdminHint: 'Keep bulk administration work outside panel rate limits',
+			saved: 'Panel rate limit settings saved',
+			saveFailed: 'Failed to save panel rate limit settings'
+		},
       streamTimeout: {
         title: 'Stream Timeout Handling',
         description: 'Configure account handling strategy when upstream response times out',

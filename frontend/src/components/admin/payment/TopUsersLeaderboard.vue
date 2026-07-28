@@ -27,7 +27,7 @@
           <span class="text-sm text-gray-700 dark:text-gray-300">{{ user.email }}</span>
         </div>
         <span class="text-sm font-medium text-gray-900 dark:text-white">
-          ${{ user.amount.toFixed(2) }}
+          {{ formatMoney(user.amount, user.currency) }}
         </span>
       </div>
     </div>
@@ -40,7 +40,7 @@ import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 
 defineProps<{
-  users: { user_id: number; email: string; amount: number }[]
+  users: { user_id: number; email: string; amount: number; currency?: string }[]
 }>()
 
 function rankClass(idx: number): string {
@@ -48,5 +48,9 @@ function rankClass(idx: number): string {
   if (idx === 1) return 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
   if (idx === 2) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
   return 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'
+}
+
+function formatMoney(value: number, currency = 'USD'): string {
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(value)
 }
 </script>

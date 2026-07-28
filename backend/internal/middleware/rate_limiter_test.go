@@ -60,6 +60,19 @@ func TestRateLimiterFailureModes(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, recorder.Code)
 }
 
+func TestRateLimiterNilRedisFailsOpenWithoutPanic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(NewRateLimiter(nil).Limit("test", 1, time.Second))
+	router.GET("/test", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/test", nil))
+	require.Equal(t, http.StatusNoContent, recorder.Code)
+}
+
 func TestRateLimiterDifferentIPsIndependent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

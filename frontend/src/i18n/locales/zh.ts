@@ -6991,7 +6991,7 @@ export default {
         saved: '过载冷却设置保存成功',
         saveFailed: '保存过载冷却设置失败'
       },
-      rateLimit429Cooldown: {
+		rateLimit429Cooldown: {
         title: '429 默认回避',
         description: '配置上游返回 429 且没有明确重置时间时的默认账号回避策略',
         enabled: '启用 429 默认回避',
@@ -7000,7 +7000,24 @@ export default {
         cooldownSecondsHint: '默认回避持续时间（1-7200 秒）；上游返回明确 reset 时仍优先使用上游时间',
         saved: '429 默认回避设置保存成功',
         saveFailed: '保存 429 默认回避设置失败'
-      },
+		},
+		panelRateLimit: {
+			title: '面板接口限流',
+			description: '限制高频面板请求，保护数据库和统计服务；不进入模型网关与首 Token 调用链',
+			enabled: '启用面板接口限流',
+			enabledHint: '登录接口按用户账号计数，公开接口按可信客户端 IP 计数；Redis 异常时自动放行',
+			userRpm: '每账号请求上限',
+			userRpmHint: '每分钟允许的面板 API 请求总数，0 表示不限制',
+			heavyRpm: '重查询上限',
+			heavyRpmHint: '每分钟允许的用量统计等聚合查询数，0 表示不限制',
+			publicIpRpm: '公开接口每 IP 上限',
+			publicIpRpmHint: '公开设置等匿名接口的每分钟请求数，内网和回环代理地址不计数',
+			perMinute: '次/分钟',
+			exemptAdmin: '管理员豁免',
+			exemptAdminHint: '管理员跳过面板限流，避免批量运维被误拦',
+			saved: '面板接口限流配置已保存',
+			saveFailed: '保存面板接口限流配置失败'
+		},
       streamTimeout: {
         title: '流超时处理',
         description: '配置上游响应超时时的账户处理策略，避免问题账户持续被选中',

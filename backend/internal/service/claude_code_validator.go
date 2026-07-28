@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/tidwall/gjson"
 )
 
 // ClaudeCodeValidator 验证请求是否来自 Claude Code 客户端
@@ -29,6 +30,27 @@ const (
 	claudeCodeBillingHeaderPrefix = "x-anthropic-billing-header"
 	claudeCodeEntrypointMarker    = "cc_entrypoint="
 )
+
+// systemHasBillingAttributionBlock recognizes proxied Claude Code traffic
+// whose gateway replaced the User-Agent but preserved the signed billing
+// attribution block in the request body. Treating it as a third-party client
+// would rewrite the stable system prefix and destroy prompt-cache reuse.
+func systemHasBillingAttributionBlock(body []byte) bool {
+	system := gjson.GetBytes(body, "system")
+	if !system.IsArray() {
+		return false
+	}
+	found := false
+	system.ForEach(func(_, item gjson.Result) bool {
+		text := item.Get("text").String()
+		if strings.HasPrefix(text, claudeCodeBillingHeaderPrefix) && strings.Contains(text, claudeCodeEntrypointMarker) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
 
 // Claude Code 官方 System Prompt 模板
 // 从 claude-relay-service/src/utils/contents.js 提取

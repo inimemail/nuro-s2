@@ -199,14 +199,36 @@ func setOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage
 		c.Set(OpsUpstreamErrorMessageKey, msg)
 	}
 	if detail := strings.TrimSpace(upstreamDetail); detail != "" {
-		c.Set(OpsUpstreamErrorDetailKey, detail)
+		// Keep the request context safe before the later ops persistence pass.
+		// This value can be consumed by failover handlers on the same request.
+		if sanitized := sanitizeOpsUpstreamDetail(detail); sanitized != "" {
+			c.Set(OpsUpstreamErrorDetailKey, sanitized)
+		}
 	}
+}
+
+func sanitizeOpsUpstreamDetail(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return ""
+	}
+	sanitized, _ := sanitizeErrorBodyForStorage(detail, opsMaxStoredErrorBodyBytes)
+	if sanitized == "" {
+		return ""
+	}
+	// Error payloads can still contain a hostname or an HTML diagnostic page
+	// after credential-field redaction. Apply the same client-safe boundary to
+	// the request-scoped diagnostic copy as well.
+	return sanitizeUpstreamErrorMessage(sanitized)
 }
 
 // OpsUpstreamErrorEvent describes one upstream error attempt during a single gateway request.
 // It is stored in ops_error_logs.upstream_errors as a JSON array.
 type OpsUpstreamErrorEvent struct {
-	AtUnixMs int64 `json:"at_unix_ms,omitempty"`
+	AtUnixMs int64  `json:"at_unix_ms,omitempty"`
+	Stage    string `json:"stage,omitempty"`
+	Scope    string `json:"scope,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 
 	// Passthrough 表示本次请求是否命中“原样透传（仅替换认证）”分支。
 	// 该字段用于排障与灰度评估；存入 JSON，不涉及 DB schema 变更。
@@ -256,7 +278,14 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	// context and persisted logs must not expose upstream topology.
 	ev.UpstreamURL = ""
 	ev.Message = strings.TrimSpace(ev.Message)
-	ev.Detail = strings.TrimSpace(ev.Detail)
+	ruleMatchEvent := ev
+	if detail := strings.TrimSpace(ev.Detail); detail != "" {
+		// Keep request-scoped ops context safe even before the persistence
+		// sanitizer runs. Compatibility paths can attach raw upstream JSON here.
+		ev.Detail = sanitizeOpsUpstreamDetail(detail)
+	} else {
+		ev.Detail = ""
+	}
 	ev.CyberPolicyAnchorType = strings.TrimSpace(ev.CyberPolicyAnchorType)
 	ev.CyberPolicyAnchorHash = strings.TrimSpace(ev.CyberPolicyAnchorHash)
 	if ev.Message != "" {
@@ -274,7 +303,9 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	existing = append(existing, &evCopy)
 	c.Set(OpsUpstreamErrorsKey, existing)
 
-	checkSkipMonitoringForUpstreamEvent(c, &evCopy)
+	// Match configured skip-monitoring rules against the original diagnostic
+	// text, while retaining only the sanitized event in request context/logs.
+	checkSkipMonitoringForUpstreamEvent(c, &ruleMatchEvent)
 }
 
 // checkSkipMonitoringForUpstreamEvent checks whether the upstream error event

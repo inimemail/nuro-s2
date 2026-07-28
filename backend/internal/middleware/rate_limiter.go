@@ -2,11 +2,14 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
+
+	ippkg "github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -72,6 +75,44 @@ func NewRateLimiter(redisClient *redis.Client) *RateLimiter {
 	}
 }
 
+type AllowResult struct {
+	Allowed    bool
+	Count      int64
+	RetryAfter time.Duration
+}
+
+func (r *RateLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (AllowResult, error) {
+	if r == nil || r.redis == nil {
+		return AllowResult{}, errors.New("rate limiter redis client is unavailable")
+	}
+	redisKey := r.prefix + key
+	windowMillis := windowTTLMillis(window)
+	count, repaired, err := rateLimitRun(ctx, r.redis, redisKey, windowMillis)
+	if err != nil {
+		return AllowResult{}, err
+	}
+	if repaired {
+		// The key can contain a client IP or authenticated user ID. Keep
+		// operational logs useful without persisting that subject identifier.
+		log.Printf("[RateLimit] ttl repaired: window_ms=%d", windowMillis)
+	}
+	result := AllowResult{Allowed: count <= int64(limit), Count: count}
+	if !result.Allowed {
+		result.RetryAfter = window
+		if ttl, ttlErr := r.redis.PTTL(ctx, redisKey).Result(); ttlErr == nil && ttl > 0 {
+			result.RetryAfter = ttl
+		}
+	}
+	return result, nil
+}
+
+func clientIPForRateLimit(c *gin.Context) string {
+	if resolved := ippkg.GetSecurityClientIP(c, false); resolved != "" {
+		return resolved
+	}
+	return c.ClientIP()
+}
+
 // Limit 返回速率限制中间件
 // key: 限制类型标识
 // limit: 时间窗口内最大请求数
@@ -88,32 +129,20 @@ func (r *RateLimiter) LimitWithOptions(key string, limit int, window time.Durati
 	}
 
 	return func(c *gin.Context) {
-		ip := c.ClientIP()
-		redisKey := r.prefix + key + ":" + ip
-
-		ctx := c.Request.Context()
-
-		windowMillis := windowTTLMillis(window)
-
-		// 使用 Lua 脚本原子操作增加计数并设置过期
-		count, repaired, err := rateLimitRun(ctx, r.redis, redisKey, windowMillis)
+		result, err := r.Allow(c.Request.Context(), key+":"+clientIPForRateLimit(c), limit, window)
 		if err != nil {
-			log.Printf("[RateLimit] redis error: key=%s mode=%s err=%v", redisKey, failureModeLabel(failureMode), err)
+			log.Printf("[RateLimit] redis error: key=%s mode=%s err=%v", r.prefix+key, failureModeLabel(failureMode), err)
 			if failureMode == RateLimitFailClose {
-				abortRateLimit(c)
+				abortRateLimit(c, window)
 				return
 			}
 			// Redis 错误时放行，避免影响正常服务
 			c.Next()
 			return
 		}
-		if repaired {
-			log.Printf("[RateLimit] ttl repaired: key=%s window_ms=%d", redisKey, windowMillis)
-		}
-
 		// 超过限制
-		if count > int64(limit) {
-			abortRateLimit(c)
+		if !result.Allowed {
+			abortRateLimit(c, result.RetryAfter)
 			return
 		}
 
@@ -129,7 +158,14 @@ func windowTTLMillis(window time.Duration) int64 {
 	return ttl
 }
 
-func abortRateLimit(c *gin.Context) {
+func abortRateLimit(c *gin.Context, retryAfter time.Duration) {
+	if retryAfter > 0 {
+		seconds := int64(retryAfter / time.Second)
+		if retryAfter%time.Second > 0 {
+			seconds++
+		}
+		c.Header("Retry-After", strconv.FormatInt(seconds, 10))
+	}
 	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 		"error":   "rate limit exceeded",
 		"message": "Too many requests, please try again later",

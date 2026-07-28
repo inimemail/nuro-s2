@@ -15,20 +15,21 @@ import (
 // ──────────────────────────────────────────────────────────
 
 const (
-	EndpointMessages          = "/v1/messages"
-	EndpointChatCompletions   = "/v1/chat/completions"
-	EndpointEmbeddings        = "/v1/embeddings"
-	EndpointAlphaSearch       = "/v1/alpha/search"
-	EndpointResponses         = "/v1/responses"
-	EndpointResponsesCompact  = "/v1/responses/compact"
-	EndpointImagesGenerations = "/v1/images/generations"
-	EndpointImagesEdits       = "/v1/images/edits"
-	EndpointVideosGenerations = "/v1/videos/generations"
-	EndpointVideosEdits       = "/v1/videos/edits"
-	EndpointVideosExtensions  = "/v1/videos/extensions"
-	EndpointVideos            = "/v1/videos"
-	EndpointVideoStatus       = EndpointVideos
-	EndpointGeminiModels      = "/v1beta/models"
+	EndpointMessages                   = "/v1/messages"
+	EndpointChatCompletions            = "/v1/chat/completions"
+	EndpointEmbeddings                 = "/v1/embeddings"
+	EndpointAlphaSearch                = "/v1/alpha/search"
+	EndpointResponses                  = "/v1/responses"
+	EndpointResponsesCompact           = "/v1/responses/compact"
+	EndpointImagesGenerations          = "/v1/images/generations"
+	EndpointImagesEdits                = "/v1/images/edits"
+	EndpointVideosGenerations          = "/v1/videos/generations"
+	EndpointVideosEdits                = "/v1/videos/edits"
+	EndpointVideosExtensions           = "/v1/videos/extensions"
+	EndpointVideos                     = "/v1/videos"
+	EndpointVideoStatus                = EndpointVideos
+	EndpointGeminiModels               = "/v1beta/models"
+	EndpointAntigravityGenerateContent = "/v1internal:streamGenerateContent"
 )
 
 // gin.Context keys used by the middleware and helpers below.
@@ -223,6 +224,13 @@ func GetInboundEndpoint(c *gin.Context) string {
 // and the account platform. Handlers call this after scheduling an
 // account, passing account.Platform.
 func GetUpstreamEndpoint(c *gin.Context, platform string) string {
+	if c != nil {
+		if value, ok := c.Get("_gateway_actual_upstream_endpoint"); ok {
+			if endpoint, ok := value.(string); ok && strings.TrimSpace(endpoint) != "" {
+				return strings.TrimSpace(endpoint)
+			}
+		}
+	}
 	if actual := service.ActualOpenAIUpstreamEndpoint(c); actual != "" {
 		return actual
 	}
@@ -232,4 +240,14 @@ func GetUpstreamEndpoint(c *gin.Context, platform string) string {
 		rawPath = c.Request.URL.Path
 	}
 	return DeriveUpstreamEndpoint(inbound, rawPath, platform)
+}
+
+func setActualUpstreamEndpoint(c *gin.Context, endpoint string) {
+	if c != nil {
+		c.Set("_gateway_actual_upstream_endpoint", strings.TrimSpace(endpoint))
+	}
+}
+
+func shouldUseAntigravityCompat(account *service.Account) bool {
+	return account != nil && account.Platform == service.PlatformAntigravity && account.Type == service.AccountTypeOAuth
 }

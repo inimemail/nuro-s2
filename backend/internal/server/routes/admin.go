@@ -15,9 +15,15 @@ func RegisterAdminRoutes(
 	adminAuth middleware.AdminAuthMiddleware,
 	auditLog middleware.AuditLogMiddleware,
 	stepUp middleware.StepUpAuthMiddleware,
+	panelRateLimiters ...*middleware.PanelRateLimiter,
 ) {
+	var panelRateLimiter *middleware.PanelRateLimiter
+	if len(panelRateLimiters) > 0 {
+		panelRateLimiter = panelRateLimiters[0]
+	}
 	admin := v1.Group("/admin")
 	admin.Use(gin.HandlerFunc(adminAuth))
+	admin.Use(panelRateLimiter.Global())
 	admin.Use(gin.HandlerFunc(auditLog))
 	{
 		// 仪表盘
@@ -523,6 +529,8 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp 
 		// 429默认回避配置
 		adminSettings.GET("/rate-limit-429-cooldown", h.Admin.Setting.GetRateLimit429CooldownSettings)
 		adminSettings.PUT("/rate-limit-429-cooldown", h.Admin.Setting.UpdateRateLimit429CooldownSettings)
+		adminSettings.GET("/panel-rate-limit", h.Admin.Setting.GetPanelRateLimitSettings)
+		adminSettings.PUT("/panel-rate-limit", h.Admin.Setting.UpdatePanelRateLimitSettings)
 		// 流超时处理配置
 		adminSettings.GET("/stream-timeout", h.Admin.Setting.GetStreamTimeoutSettings)
 		adminSettings.PUT("/stream-timeout", h.Admin.Setting.UpdateStreamTimeoutSettings)

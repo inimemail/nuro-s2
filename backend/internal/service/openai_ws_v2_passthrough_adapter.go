@@ -21,7 +21,8 @@ type openAIWSRejectedFieldRetryContextKey struct{}
 type openAIWSPassthroughInitialHooksDoneContextKey struct{}
 
 type openAIWSClientFrameConn struct {
-	conn *coderws.Conn
+	conn                 *coderws.Conn
+	restoreResponseModel func([]byte) []byte
 }
 
 // openAIWSPolicyEnforcingFrameConn wraps a client-side FrameConn and runs
@@ -95,6 +96,20 @@ func openAIWSPassthroughPolicyModelForFrame(account *Account, payload []byte) st
 	return normalizeOpenAIModelForUpstream(account, account.GetMappedModel(original))
 }
 
+func applyOpenAIWSPassthroughUpstreamModel(account *Account, payload []byte, fallback string) ([]byte, string) {
+	model := openAIWSPassthroughPolicyModelForFrame(account, payload)
+	if model == "" {
+		model = strings.TrimSpace(fallback)
+	}
+	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.create" || model == "" {
+		return payload, model
+	}
+	if strings.TrimSpace(gjson.GetBytes(payload, "model").String()) == model {
+		return payload, model
+	}
+	return ReplaceModelInBody(payload, model), model
+}
+
 // openAIWSPassthroughPolicyModelFromSessionFrame returns the upstream model
 // derived from a session.update frame's session.model field. Returns "" when
 // the frame is not a session.update event or carries no session.model. Used
@@ -130,6 +145,8 @@ func openAIWSPassthroughPolicyModelFromSessionFrame(account *Account, payload []
 type openAIWSPassthroughUsageMeta struct {
 	serviceTier     atomic.Pointer[string]
 	reasoningEffort atomic.Pointer[string]
+	requestModel    atomic.Pointer[string]
+	upstreamModel   atomic.Pointer[string]
 
 	// 仅在 client->upstream filter goroutine 中读写；Load 侧通过上方原子指针同步。
 	sessionRequestModel string
@@ -151,6 +168,7 @@ func (m *openAIWSPassthroughUsageMeta) initFromFirstFrame(policyOutput []byte) {
 	}
 	m.serviceTier.Store(extractOpenAIServiceTierFromBody(policyOutput))
 	m.reasoningEffort.Store(extractOpenAIReasoningEffortFromBody(policyOutput, m.sessionRequestModel))
+	m.storeTurnModels(m.sessionRequestModel, policyOutput)
 }
 
 func (m *openAIWSPassthroughUsageMeta) updateSessionRequestModel(payload []byte) {
@@ -178,6 +196,43 @@ func (m *openAIWSPassthroughUsageMeta) updateFromResponseCreate(policyOutput []b
 	}
 	m.serviceTier.Store(extractOpenAIServiceTierFromBody(policyOutput))
 	m.reasoningEffort.Store(extractOpenAIReasoningEffortFromBody(policyOutput, requestModelForFrame))
+	m.storeTurnModels(requestModelForFrame, policyOutput)
+}
+
+func (m *openAIWSPassthroughUsageMeta) storeTurnModels(requestModel string, upstreamPayload []byte) {
+	if m == nil {
+		return
+	}
+	requestModel = strings.TrimSpace(requestModel)
+	upstreamModel := strings.TrimSpace(gjson.GetBytes(upstreamPayload, "model").String())
+	if upstreamModel == "" {
+		upstreamModel = requestModel
+	}
+	m.requestModel.Store(openAIWSTrimmedStringPtr(requestModel))
+	m.upstreamModel.Store(openAIWSTrimmedStringPtr(upstreamModel))
+}
+
+func (m *openAIWSPassthroughUsageMeta) turnModels(fallback string) (string, string) {
+	requestModel := strings.TrimSpace(fallback)
+	upstreamModel := requestModel
+	if m == nil {
+		return requestModel, upstreamModel
+	}
+	if current := m.requestModel.Load(); current != nil && strings.TrimSpace(*current) != "" {
+		requestModel = strings.TrimSpace(*current)
+	}
+	if current := m.upstreamModel.Load(); current != nil && strings.TrimSpace(*current) != "" {
+		upstreamModel = strings.TrimSpace(*current)
+	}
+	return requestModel, upstreamModel
+}
+
+func openAIWSTrimmedStringPtr(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func applyOpenAIWSPassthroughFrameSessionState(
@@ -237,9 +292,12 @@ func (c *openAIWSClientFrameConn) WriteFrame(ctx context.Context, msgType coderw
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if msgType == coderws.MessageText {
+	if msgType == coderws.MessageText || msgType == coderws.MessageBinary {
 		if normalized, changed := normalizeCompletedImageGenerationStatus(payload); changed {
 			payload = normalized
+		}
+		if c.restoreResponseModel != nil {
+			payload = c.restoreResponseModel(payload)
 		}
 	}
 	return c.conn.Write(ctx, msgType, payload)
@@ -321,14 +379,29 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	// negotiated at session.update time. Without this fallback, an empty
 	// model would miss any admin-configured model whitelist and be silently
 	// passed through, defeating that policy on every frame after the first.
+	initialRequestModel := ""
+	if hooks != nil {
+		initialRequestModel = strings.TrimSpace(hooks.InitialRequestModel)
+	}
+	if initialRequestModel == "" {
+		initialRequestModel = openAIWSPassthroughRequestModelForFrame(firstClientMessage)
+	}
+	if hooks != nil && hooks.MapRequestModel != nil {
+		mappedModel, mapErr := hooks.MapRequestModel(1, initialRequestModel)
+		if mapErr != nil {
+			return mapErr
+		}
+		if mappedModel = strings.TrimSpace(mappedModel); mappedModel != "" {
+			firstClientMessage = s.ReplaceModelInBody(firstClientMessage, mappedModel)
+		}
+	}
 	capturedSessionModel := openAIWSPassthroughPolicyModelForFrame(account, firstClientMessage)
+	if capturedSessionModel != "" && capturedSessionModel != strings.TrimSpace(gjson.GetBytes(firstClientMessage, "model").String()) {
+		firstClientMessage = s.ReplaceModelInBody(firstClientMessage, capturedSessionModel)
+	}
 	firstExplicitImageIntent, firstExplicitImageIntentKnown := OpenAIExplicitImageGenerationIntentFromContext(ctx)
 	if !firstExplicitImageIntentKnown && account.IsOpenAIPromptCacheCreationOptimizationEnabled() && isOpenAIGPT56Model(capturedSessionModel) {
 		firstExplicitImageIntent = IsExplicitImageGenerationIntent(openAIResponsesEndpoint, capturedSessionModel, firstClientMessage)
-	}
-	initialRequestModel := ""
-	if hooks != nil {
-		initialRequestModel = hooks.InitialRequestModel
 	}
 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
 	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
@@ -481,8 +554,19 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 
 	completedTurns := atomic.Int32{}
+	clientFrameConn := &openAIWSClientFrameConn{
+		conn: clientConn,
+		restoreResponseModel: func(payload []byte) []byte {
+			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+			if !openAIWSEventMayContainModel(eventType) {
+				return payload
+			}
+			requestModel, upstreamModel := usageMeta.turnModels("")
+			return replaceOpenAIWSMessageModel(payload, upstreamModel, requestModel)
+		},
+	}
 	policyClientConn := &openAIWSPolicyEnforcingFrameConn{
-		inner: &openAIWSClientFrameConn{conn: clientConn},
+		inner: clientFrameConn,
 		// 注意线程安全：filter 仅在 runClientToUpstream 这一条
 		// goroutine 中被调用（passthrough_relay.go: ReadFrame loop），
 		// capturedSessionModel 的读写都发生在该 goroutine 内，因此无需
@@ -494,18 +578,28 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if !applyOpenAIWSPassthroughFrameSessionState(msgType, payload, account, &capturedSessionModel, usageMeta) {
 				return payload, nil, nil
 			}
-			if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" && hooks != nil {
-				turnNo := int(completedTurns.Load()) + 1
-				if turnNo < 2 {
-					turnNo = 2
-				}
-				requestModel := usageMeta.requestModelForFrame(payload)
-				if requestModel == "" {
-					requestModel = capturedSessionModel
-				}
+			isResponseCreate := strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create"
+			turnNo := int(completedTurns.Load()) + 1
+			if turnNo < 2 {
+				turnNo = 2
+			}
+			requestModelForThisFrame := usageMeta.requestModelForFrame(payload)
+			if requestModelForThisFrame == "" {
+				requestModelForThisFrame = capturedSessionModel
+			}
+			if isResponseCreate && hooks != nil {
 				if hooks.BeforeRequest != nil {
-					if err := hooks.BeforeRequest(turnNo, payload, requestModel); err != nil {
+					if err := hooks.BeforeRequest(turnNo, payload, requestModelForThisFrame); err != nil {
 						return payload, nil, err
+					}
+				}
+				if hooks.MapRequestModel != nil {
+					upstreamModel, err := hooks.MapRequestModel(turnNo, requestModelForThisFrame)
+					if err != nil {
+						return payload, nil, err
+					}
+					if upstreamModel = strings.TrimSpace(upstreamModel); upstreamModel != "" {
+						payload = s.ReplaceModelInBody(payload, upstreamModel)
 					}
 				}
 				if hooks.BeforeTurn != nil {
@@ -521,16 +615,18 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			// → 不带 model 的 response.create fallback 到 gpt-4o" 的
 			// 绕过路径。这里只看 session.update 事件中的 session.model
 			// 字段，response.create 自己的 model 仍然由其本帧字段决定。
-			requestModelForThisFrame := usageMeta.requestModelForFrame(payload)
+			if requestModelForThisFrame == "" {
+				requestModelForThisFrame = usageMeta.requestModelForFrame(payload)
+			}
 			// Per-frame model first; if the client omits "model" on a
 			// follow-up frame (legal in Realtime), fall back to the
 			// session-level model captured from the first frame so the
 			// model whitelist still resolves. An empty model would miss
 			// any whitelist and silently fall back to pass.
-			model := openAIWSPassthroughPolicyModelForFrame(account, payload)
-			if model == "" {
-				model = capturedSessionModel
-			}
+			// Mirror the non-passthrough ingress: channel mapping is applied
+			// by MapRequestModel, then the account-local mapping is resolved
+			// and written exactly once to the upstream frame.
+			payload, model := applyOpenAIWSPassthroughUpstreamModel(account, payload, capturedSessionModel)
 			explicitImageIntent := false
 			if account.IsOpenAIPromptCacheCreationOptimizationEnabled() && isOpenAIGPT56Model(model) {
 				explicitImageIntent = IsExplicitImageGenerationIntent(openAIResponsesEndpoint, model, payload)
@@ -639,6 +735,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			},
 			OnTurnComplete: func(turn openaiwsv2.RelayTurnResult) {
 				turnNo := int(completedTurns.Add(1))
+				turnRequestModel, turnUpstreamModel := usageMeta.turnModels(turn.RequestModel)
 				turnResult := &OpenAIForwardResult{
 					RequestID: turn.RequestID,
 					Usage: OpenAIUsage{
@@ -648,7 +745,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
 						ImageOutputTokens:        turn.Usage.ImageOutputTokens,
 					},
-					Model:                turn.RequestModel,
+					Model:                turnRequestModel,
+					UpstreamModel:        turnUpstreamModel,
 					ServiceTier:          usageMeta.serviceTier.Load(),
 					ReasoningEffort:      usageMeta.reasoningEffort.Load(),
 					Stream:               true,
@@ -769,6 +867,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		CyberBlocked:         relayResult.CyberBlocked,
 		AccountHealthNeutral: cachePolicyCompatibilityFailure.Load(),
 	}
+	result.Model, result.UpstreamModel = usageMeta.turnModels(relayResult.RequestModel)
 
 	turnCount := int(completedTurns.Load())
 	if relayExit == nil {

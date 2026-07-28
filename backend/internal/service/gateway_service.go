@@ -663,6 +663,10 @@ const (
 
 type GatewayFailureReason string
 
+type GatewayFailureStage string
+
+const GatewayFailureStageAccountAuth GatewayFailureStage = "account_auth"
+
 // UpstreamFailoverError indicates an upstream error that should trigger account failover.
 type UpstreamFailoverError struct {
 	StatusCode                int
@@ -680,6 +684,7 @@ type UpstreamFailoverError struct {
 	SkipSchedulePenalty       bool // request-local 探针失败不应降低账号健康调度分
 	Scope                     GatewayFailureScope
 	Reason                    GatewayFailureReason
+	Stage                     GatewayFailureStage
 	NextAccountAction         NextAccountAction
 	ClientStatusCode          int
 	ClientMessage             string
@@ -5756,6 +5761,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	//
 	// 对于非 Claude Code 的第三方客户端（opencode 等），仍然走完整 mimicry。
 	isClaudeCode := IsClaudeCodeClient(ctx) || isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
+	if !isClaudeCode && parsed.MetadataUserID != "" {
+		isClaudeCode = systemHasBillingAttributionBlock(body)
+	}
 	shouldMimicClaudeCode := shouldApplyClaudeCodeOAuthMimicry(account, isClaudeCode)
 
 	if shouldMimicClaudeCode {
@@ -10682,7 +10690,7 @@ func (s *GatewayService) buildRecordUsageLog(
 		SessionID:             optionalTrimmedStringPtr(input.SessionID),
 		Model:                 result.Model,
 		RequestedModel:        requestedModel,
-		UpstreamModel:         optionalNonEqualStringPtr(result.UpstreamModel, result.Model),
+		UpstreamModel:         optionalTrimmedStringPtr(result.UpstreamModel),
 		ReasoningEffort:       result.ReasoningEffort,
 		InboundEndpoint:       optionalTrimmedStringPtr(input.InboundEndpoint),
 		UpstreamEndpoint:      optionalTrimmedStringPtr(input.UpstreamEndpoint),

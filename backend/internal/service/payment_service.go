@@ -154,18 +154,32 @@ type DashboardStats struct {
 	DailySeries    []DailyStats        `json:"daily_series"`
 	PaymentMethods []PaymentMethodStat `json:"payment_methods"`
 	TopUsers       []TopUserStat       `json:"top_users"`
+
+	// Currency-aware fields are additive so older panels can continue to read
+	// the scalar fields during a rolling deployment. Scalar values represent
+	// PrimaryCurrency only; amounts from different currencies are never added.
+	PrimaryCurrency       string             `json:"primary_currency"`
+	Currencies            []string           `json:"currencies"`
+	TodayAmountByCurrency CurrencyAmounts    `json:"today_amount_by_currency"`
+	TotalAmountByCurrency CurrencyAmounts    `json:"total_amount_by_currency"`
+	AvgAmountByCurrency   CurrencyAmounts    `json:"avg_amount_by_currency"`
+	TopUsersByCurrency    TopUsersByCurrency `json:"top_users_by_currency"`
 }
 
+type CurrencyAmounts map[string]float64
+
 type DailyStats struct {
-	Date   string  `json:"date"`
-	Amount float64 `json:"amount"`
-	Count  int     `json:"count"`
+	Date             string          `json:"date"`
+	Amount           float64         `json:"amount"`
+	AmountByCurrency CurrencyAmounts `json:"amount_by_currency"`
+	Count            int             `json:"count"`
 }
 
 type PaymentMethodStat struct {
-	Type   string  `json:"type"`
-	Amount float64 `json:"amount"`
-	Count  int     `json:"count"`
+	Type             string          `json:"type"`
+	Amount           float64         `json:"amount"`
+	AmountByCurrency CurrencyAmounts `json:"amount_by_currency"`
+	Count            int             `json:"count"`
 }
 
 type TopUserStat struct {
@@ -173,6 +187,8 @@ type TopUserStat struct {
 	Email  string  `json:"email"`
 	Amount float64 `json:"amount"`
 }
+
+type TopUsersByCurrency map[string][]TopUserStat
 
 // --- Service ---
 

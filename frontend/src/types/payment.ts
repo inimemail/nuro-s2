@@ -222,4 +222,10 @@ export interface DashboardStats {
   daily_series: { date: string; amount: number; count: number }[]
   payment_methods: { type: string; amount: number; count: number }[]
   top_users: { user_id: number; email: string; amount: number }[]
+  primary_currency?: string
+  currencies?: string[]
+  today_amount_by_currency?: Record<string, number>
+  total_amount_by_currency?: Record<string, number>
+  avg_amount_by_currency?: Record<string, number>
+  top_users_by_currency?: Record<string, { user_id: number; email: string; amount: number }[]>
 }

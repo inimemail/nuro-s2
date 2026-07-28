@@ -11,16 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCanonicalModelPricingSnapshotMatchesV165(t *testing.T) {
+func TestCanonicalModelPricingSnapshotMatchesV166(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
 	require.NoError(t, err)
 
 	digest := sha256.Sum256(data)
-	require.Equal(t, "baa1447500d65e69e67dffbe6d00a76d55eb5ca37a9e1266701fb3695f52532e", hex.EncodeToString(digest[:]))
+	require.Equal(t, "c5af6a63607063ce90e72179c7a0cc4239f8fb37d19e50b57364d5990ef7b8a2", hex.EncodeToString(digest[:]))
 
 	var entries map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(data, &entries))
-	require.Len(t, entries, 197)
+	require.Len(t, entries, 198)
 }
 
 func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {

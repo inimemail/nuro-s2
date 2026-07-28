@@ -2405,10 +2405,16 @@ func TestUpdate_MappingConflict(t *testing.T) {
 }
 
 func TestChannelPricingNormalizesClaudeDotsAndHyphens(t *testing.T) {
-	pricing := &ChannelModelPricing{Models: []string{"claude-sonnet-4-6", "claude-opus-4.*"}}
+	pricing := &ChannelModelPricing{
+		Platform: PlatformAnthropic,
+		Models:   []string{"claude-sonnet-4-6", "claude-opus-4.*"},
+	}
 	cache := newEmptyChannelCache()
 	expandPricingToCache(cache, &Channel{ModelPricing: []ChannelModelPricing{*pricing}}, 7, PlatformAnthropic)
 
 	require.NotNil(t, lookupPricingAcrossPlatforms(cache, 7, PlatformAnthropic, "claude-sonnet-4.6"))
 	require.NotNil(t, lookupPricingAcrossPlatforms(cache, 7, PlatformAnthropic, "claude-opus-4.7"))
+	require.Equal(t, "claude-sonnet-4-6-20260728", normalizeChannelPricingModelName("Claude-Sonnet-4.6-20260728"))
+	require.Equal(t, "gpt-5.6", normalizeChannelPricingModelName(" GPT-5.6 "))
+	require.Nil(t, lookupPricingAcrossPlatforms(cache, 7, PlatformOpenAI, "claude-sonnet-4.6"))
 }

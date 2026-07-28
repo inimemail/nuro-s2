@@ -24,6 +24,32 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func TestOpenAIWSFollowupTurnMappingDoesNotApplyAccountMappingTwice(t *testing.T) {
+	account := &service.Account{
+		Platform: service.PlatformOpenAI,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"client-model":   "upstream-model",
+				"upstream-model": "wrong-second-hop",
+			},
+		},
+	}
+
+	mapping, supported := openAIWSFollowupTurnMapping(account, "client-model")
+	require.True(t, supported)
+	require.Equal(t, "client-model", mapping.MappedModel)
+	require.False(t, mapping.Mapped)
+	require.Equal(t, "upstream-model", account.GetMappedModel(mapping.MappedModel))
+}
+
+func TestOpenAIWSFollowupReusesInitialChannelAliasWithoutLookup(t *testing.T) {
+	initial := service.ChannelMappingResult{Mapped: true, MappedModel: "gpt-5.6"}
+	require.True(t, openAIWSReusesInitialChannelMapping("client-alias", "client-alias", initial))
+	require.True(t, openAIWSReusesInitialChannelMapping("gpt-5.6", "client-alias", initial))
+	require.True(t, openAIWSReusesInitialChannelMapping("", "client-alias", initial))
+	require.False(t, openAIWSReusesInitialChannelMapping("gpt-5.6-mini", "client-alias", initial))
+}
+
 func TestShouldCheckOpenAIHealthProbePeersRequiresAcquiredAccountSlot(t *testing.T) {
 	require.False(t, shouldCheckOpenAIHealthProbePeers(true, false, openAIAccountSlotAcquireResult{
 		CapacityMiss: true,

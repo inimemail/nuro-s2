@@ -141,6 +141,7 @@ func (s *Service) loadConfig(ctx context.Context) error {
 		return err
 	}
 	s.storeConfig(cfg)
+	s.configTrusted.Store(true)
 	return nil
 }
 
@@ -201,6 +202,7 @@ func (s *Service) refreshConfig(ctx context.Context) error {
 	raw, err := s.settingRepo.GetValue(ctx, SettingKeyPromptAuditConfig)
 	if err != nil {
 		if errors.Is(err, service.ErrSettingNotFound) {
+			s.configTrusted.Store(true)
 			return nil
 		}
 		return err
@@ -209,6 +211,11 @@ func (s *Service) refreshConfig(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// A prior startup read may have failed transiently. Once a later refresh
+	// successfully reads and validates the repository-backed config, the
+	// public control-plane endpoint can trust the snapshot again even when the
+	// version is unchanged.
+	s.configTrusted.Store(true)
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
 	current := s.configSnapshot()
@@ -223,7 +230,14 @@ func (s *Service) refreshConfig(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) PublicConfig() PublicConfig {
+func (s *Service) PublicConfig() (PublicConfig, error) {
+	// A repository-backed service must have completed a trusted load before
+	// exposing configuration. Repository-free instances are used by the
+	// handler's disabled-feature path and may be explicitly enabled in tests;
+	// their in-memory default is the only available source of truth.
+	if s == nil || (!s.configTrusted.Load() && s.settingRepo != nil) {
+		return PublicConfig{}, infraerrors.New(503, "PROMPT_AUDIT_CONFIG_UNAVAILABLE", "prompt audit config is temporarily unavailable")
+	}
 	cfg := s.configSnapshot()
 	result := PublicConfig{
 		Enabled: cfg.Enabled, Mode: cfg.Mode, WorkerCount: cfg.WorkerCount,
@@ -246,7 +260,7 @@ func (s *Service) PublicConfig() PublicConfig {
 			AllowedCIDRs: append([]string(nil), ep.AllowedCIDRs...),
 		})
 	}
-	return result
+	return result, nil
 }
 
 func (s *Service) SaveConfig(ctx context.Context, req UpdateConfigRequest) (PublicConfig, error) {
@@ -284,7 +298,8 @@ func (s *Service) SaveConfig(ctx context.Context, req UpdateConfigRequest) (Publ
 		return PublicConfig{}, err
 	}
 	s.storeConfig(cfg)
-	return s.PublicConfig(), nil
+	s.configTrusted.Store(true)
+	return s.PublicConfig()
 }
 
 func (s *Service) buildConfig(req UpdateConfigRequest, current Config) (Config, error) {

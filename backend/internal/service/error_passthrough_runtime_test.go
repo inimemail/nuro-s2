@@ -117,6 +117,8 @@ func TestSanitizeUpstreamErrorMessage_StripsUpstreamIdentity(t *testing.T) {
 		"request rejected by OpenRouter",
 		"Cloudflare edge returned 502",
 		"Anthropic authentication failed",
+		"Google upstream rejected the request",
+		"Antigravity OAuth credential rejected",
 	} {
 		require.Equal(t, safeUpstreamErrorMessage, sanitizeUpstreamErrorMessage(message))
 	}

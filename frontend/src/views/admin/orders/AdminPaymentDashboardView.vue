@@ -42,7 +42,7 @@
                   <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('payment.methods.' + method.type, method.type) }}</span>
                 </div>
                 <div class="text-right">
-                  <span class="text-sm font-medium text-gray-900 dark:text-white">&yen;{{ method.amount.toFixed(2) }}</span>
+                  <span class="text-sm font-medium text-gray-900 dark:text-white">{{ formatMoney(method.amount) }}</span>
                   <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">({{ method.count }})</span>
                 </div>
               </div>
@@ -57,7 +57,7 @@
                   <span :class="['flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold', rankClass(idx)]">{{ idx + 1 }}</span>
                   <span class="text-sm text-gray-700 dark:text-gray-300">{{ user.email }}</span>
                 </div>
-                <span class="text-sm font-medium text-gray-900 dark:text-white">&yen;{{ user.amount.toFixed(2) }}</span>
+                <span class="text-sm font-medium text-gray-900 dark:text-white">{{ formatMoney(user.amount) }}</span>
               </div>
             </div>
           </div>
@@ -102,6 +102,10 @@ function rankClass(idx: number): string {
   if (idx === 1) return 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
   if (idx === 2) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
   return 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'
+}
+
+function formatMoney(value: number): string {
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency: stats.value?.primary_currency || 'CNY' }).format(value)
 }
 
 async function loadDashboard() {

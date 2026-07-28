@@ -19,11 +19,17 @@ func RegisterPaymentRoutes(
 	jwtAuth middleware.JWTAuthMiddleware,
 	adminAuth middleware.AdminAuthMiddleware,
 	settingService *service.SettingService,
+	panelRateLimiters ...*middleware.PanelRateLimiter,
 ) {
+	var panelRateLimiter *middleware.PanelRateLimiter
+	if len(panelRateLimiters) > 0 {
+		panelRateLimiter = panelRateLimiters[0]
+	}
 	// --- User-facing payment endpoints (authenticated) ---
 	authenticated := v1.Group("/payment")
 	authenticated.Use(gin.HandlerFunc(jwtAuth))
 	authenticated.Use(middleware.BackendModeUserGuard(settingService))
+	authenticated.Use(panelRateLimiter.Global())
 	{
 		authenticated.GET("/config", paymentHandler.GetPaymentConfig)
 		authenticated.GET("/checkout-info", paymentHandler.GetCheckoutInfo)
@@ -67,6 +73,7 @@ func RegisterPaymentRoutes(
 	// --- Admin payment endpoints (admin auth) ---
 	adminGroup := v1.Group("/admin/payment")
 	adminGroup.Use(gin.HandlerFunc(adminAuth))
+	adminGroup.Use(panelRateLimiter.Global())
 	{
 		// Dashboard
 		adminGroup.GET("/dashboard", adminPaymentHandler.GetDashboard)

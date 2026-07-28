@@ -37,9 +37,17 @@ func (s *GatewayService) ForwardAsResponses(
 ) (*ForwardResult, error) {
 	startTime := time.Now()
 
+	// Normalize Codex additional_tools and namespace tools only when the request
+	// structurally contains those carriers. Ordinary requests preserve the
+	// original bytes and avoid an extra compatibility decode.
+	adaptedBody, err := adaptResponsesRequestForAnthropic(c, body)
+	if err != nil {
+		return nil, fmt.Errorf("adapt responses tools for anthropic: %w", err)
+	}
+
 	// 1. Parse Responses request
 	var responsesReq apicompat.ResponsesRequest
-	if err := json.Unmarshal(body, &responsesReq); err != nil {
+	if err := json.Unmarshal(adaptedBody, &responsesReq); err != nil {
 		return nil, fmt.Errorf("parse responses request: %w", err)
 	}
 	originalModel := responsesReq.Model
@@ -205,6 +213,86 @@ func (s *GatewayService) ForwardAsResponses(
 	return result, handleErr
 }
 
+func adaptResponsesRequestForAnthropic(c *gin.Context, body []byte) ([]byte, error) {
+	if !responsesRequestNeedsAnthropicToolAdapt(body) {
+		return body, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var requestBody map[string]any
+	if err := decoder.Decode(&requestBody); err != nil {
+		return body, err
+	}
+	changed := false
+	if input, ok := requestBody["input"].([]any); ok {
+		tools, _ := requestBody["tools"].([]any)
+		kept := make([]any, 0, len(input))
+		for _, raw := range input {
+			item, ok := raw.(map[string]any)
+			if !ok || strings.TrimSpace(fmt.Sprint(item["type"])) != "additional_tools" {
+				kept = append(kept, raw)
+				continue
+			}
+			additional, ok := item["tools"].([]any)
+			if !ok {
+				return body, fmt.Errorf("additional_tools.tools must be an array")
+			}
+			tools = append(tools, additional...)
+			changed = true
+		}
+		if changed {
+			requestBody["tools"] = tools
+			requestBody["input"] = kept
+		}
+	}
+	names, namespaceChanged, err := apicompat.FlattenResponsesNamespaces(requestBody)
+	if err != nil {
+		return body, err
+	}
+	if namespaceChanged && c != nil {
+		c.Set(openAIResponsesNamespaceNamesContextKey, names)
+	}
+	if !changed && !namespaceChanged {
+		return body, nil
+	}
+	return json.Marshal(requestBody)
+}
+
+func responsesRequestNeedsAnthropicToolAdapt(body []byte) bool {
+	needsAdapt := false
+	inspectTools := func(tools gjson.Result) bool {
+		if !tools.IsArray() {
+			return true
+		}
+		tools.ForEach(func(_, tool gjson.Result) bool {
+			if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "namespace") {
+				needsAdapt = true
+				return false
+			}
+			return true
+		})
+		return !needsAdapt
+	}
+	if !inspectTools(gjson.GetBytes(body, "tools")) {
+		return true
+	}
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return false
+	}
+	input.ForEach(func(_, item gjson.Result) bool {
+		if !item.IsObject() {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(item.Get("type").String()), "additional_tools") {
+			needsAdapt = true
+			return false
+		}
+		return inspectTools(item.Get("tools"))
+	})
+	return needsAdapt
+}
+
 // ExtractResponsesReasoningEffortFromBody reads Responses API reasoning.effort
 // and normalizes it for usage logging.
 func ExtractResponsesReasoningEffortFromBody(body []byte) *string {
@@ -303,6 +391,13 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 			invalidStream = true
 			continue
 		}
+		// Compatible Anthropic gateways may carry the event type only in the
+		// SSE envelope. Preserve that protocol information before assembling
+		// the buffered response, otherwise message_start/message_stop events
+		// are silently ignored and the bridge reports a false stream failure.
+		if strings.TrimSpace(event.Type) == "" {
+			event.Type = strings.TrimSpace(eventType)
+		}
 		if event.Type == "message_stop" {
 			sawMessageStop = true
 		}
@@ -376,6 +471,10 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if respBytes, err := json.Marshal(responsesResp); err == nil {
 		respBytes = reverseToolNamesIfPresent(c, respBytes)
+		respBytes, err = restoreOpenAIResponsesNamespacePayload(c, respBytes)
+		if err != nil {
+			return nil, fmt.Errorf("restore responses namespace tools: %w", err)
+		}
 		c.Data(http.StatusOK, "application/json; charset=utf-8", respBytes)
 	} else {
 		c.JSON(http.StatusOK, responsesResp)
@@ -461,7 +560,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		// Convert to Responses events
 		events := apicompat.AnthropicEventToResponsesEvents(event, state)
 		for _, evt := range events {
-			sse, err := apicompat.ResponsesEventToSSE(evt)
+			payload, err := json.Marshal(evt)
 			if err != nil {
 				logger.L().Warn("forward_as_responses stream: failed to marshal event",
 					zap.Error(err),
@@ -469,8 +568,14 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				)
 				continue
 			}
-			out := string(reverseToolNamesIfPresent(c, []byte(sse)))
-			if _, err := fmt.Fprint(c.Writer, out); err != nil {
+			payload = reverseToolNamesIfPresent(c, payload)
+			payload, err = restoreOpenAIResponsesNamespacePayload(c, payload)
+			if err != nil {
+				logger.L().Warn("forward_as_responses stream: failed to restore namespace tools", zap.Error(err), zap.String("request_id", requestID))
+				continue
+			}
+			eventType := gjson.GetBytes(payload, "type").String()
+			if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, payload); err != nil {
 				logger.L().Info("forward_as_responses stream: client disconnected",
 					zap.String("request_id", requestID),
 				)
@@ -514,6 +619,12 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			)
 			invalidStream = true
 			continue
+		}
+		// SSE permits the event name to live only in the `event:` field. Some
+		// compatible Anthropic gateways omit the duplicate JSON `type` field;
+		// restore it before conversion so the event is not silently discarded.
+		if strings.TrimSpace(event.Type) == "" {
+			event.Type = strings.TrimSpace(eventType)
 		}
 
 		if processEvent(&event) {

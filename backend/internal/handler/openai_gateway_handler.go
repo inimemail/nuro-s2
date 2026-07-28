@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -53,6 +54,61 @@ type OpenAIGatewayHandler struct {
 	openAIEdgePrepareCache   *openAIEdgePrepareCache
 	maxAccountSwitches       int
 	cfg                      *config.Config
+}
+
+type openAIWSTurnChannelMappingSnapshot struct {
+	turn           int
+	requestedModel string
+	mapping        service.ChannelMappingResult
+}
+
+func openAIWSFollowupTurnMapping(account *service.Account, requestedModel string) (service.ChannelMappingResult, bool) {
+	requestedModel = strings.TrimSpace(requestedModel)
+	mappedModel := requestedModel
+	if account != nil {
+		mappedModel = strings.TrimSpace(account.GetMappedModel(requestedModel))
+	}
+	if mappedModel == "" {
+		mappedModel = requestedModel
+	}
+	supported := account != nil && (account.IsModelSupported(requestedModel) || account.IsModelSupported(mappedModel))
+	// Account-local mapping is applied once by the WS forwarding service after
+	// this hook returns. Keep this bookkeeping result at the client-facing model
+	// so chained mappings (A->B and B->C) cannot be applied twice.
+	return service.ChannelMappingResult{MappedModel: requestedModel}, supported
+}
+
+func openAIWSReusesInitialChannelMapping(requestedModel, initialRequestedModel string, initialMapping service.ChannelMappingResult) bool {
+	requestedModel = strings.TrimSpace(requestedModel)
+	initialRequestedModel = strings.TrimSpace(initialRequestedModel)
+	if requestedModel == "" || requestedModel == initialRequestedModel {
+		return true
+	}
+	initialMappedModel := strings.TrimSpace(initialMapping.MappedModel)
+	return initialMappedModel != "" && requestedModel == initialMappedModel
+}
+
+var errOpenAIWSUnsupportedModelSwitch = errors.New("selected account does not support websocket model switch")
+
+func openAIWSTurnBillingModel(result *service.OpenAIForwardResult, mapping service.ChannelMappingResult, requestedModel, upstreamModel string) string {
+	billingModel := strings.TrimSpace(upstreamModel)
+	if result != nil && strings.TrimSpace(result.BillingModel) != "" {
+		billingModel = strings.TrimSpace(result.BillingModel)
+	}
+	if billingModel == "" {
+		billingModel = strings.TrimSpace(requestedModel)
+	}
+	switch mapping.BillingModelSource {
+	case service.BillingModelSourceRequested:
+		if requestedModel = strings.TrimSpace(requestedModel); requestedModel != "" {
+			billingModel = requestedModel
+		}
+	case service.BillingModelSourceChannelMapped:
+		if mapped := strings.TrimSpace(mapping.MappedModel); mapped != "" {
+			billingModel = mapped
+		}
+	}
+	return billingModel
 }
 
 func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedModel string) string {
@@ -2265,6 +2321,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			zap.Int("candidate_count", scheduleDecision.CandidateCount),
 		)
 
+		var turnChannelMapping atomic.Pointer[openAIWSTurnChannelMappingSnapshot]
+		turnChannelMapping.Store(&openAIWSTurnChannelMappingSnapshot{turn: 1, requestedModel: reqModel, mapping: channelMappingWS})
 		hooks := &service.OpenAIWSIngressHooks{
 			InitialRequestModel: reqModel,
 			BeforeRequest: func(turn int, payload []byte, originalModel string) error {
@@ -2290,6 +2348,48 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, decision.Message, nil)
 				}
 				return nil
+			},
+			MapRequestModel: func(turn int, originalModel string) (string, error) {
+				model := strings.TrimSpace(originalModel)
+				if turn == 1 {
+					// wsFirstMessage may already contain channelMappingWS.MappedModel.
+					// The request-side model for the first turn is still reqModel;
+					// reuse the immutable snapshot and never resolve the channel again
+					// before the first upstream byte.
+					model = reqModel
+				} else if model == "" {
+					model = reqModel
+				}
+				// The initial turn was already resolved before the websocket relay
+				// started. Reuse that immutable snapshot so model bookkeeping does
+				// not add another DB/Redis lookup before the first upstream byte.
+				mapping := channelMappingWS
+				if turn > 1 {
+					if openAIWSReusesInitialChannelMapping(model, reqModel, channelMappingWS) {
+						// Repeated or omitted session model: reuse the immutable first-turn
+						// channel mapping. This preserves aliases without another cache/DB
+						// lookup before the next upstream request.
+						model = reqModel
+					} else {
+						// A genuine model switch stays on the request hot path and uses
+						// only the account-local mapping already present in the snapshot.
+						var supported bool
+						mapping, supported = openAIWSFollowupTurnMapping(account, model)
+						if !supported {
+							return "", service.NewOpenAIWSClientCloseError(
+								coderws.StatusPolicyViolation,
+								"model switch requires reconnect",
+								fmt.Errorf("%w: model %q", errOpenAIWSUnsupportedModelSwitch, model),
+							)
+						}
+					}
+				}
+				mappedModel := strings.TrimSpace(mapping.MappedModel)
+				if mappedModel == "" {
+					mappedModel = model
+				}
+				turnChannelMapping.Store(&openAIWSTurnChannelMappingSnapshot{turn: turn, requestedModel: model, mapping: mapping})
+				return mappedModel, nil
 			},
 			BeforeTurn: func(turn int) error {
 				if turn == 1 {
@@ -2365,10 +2465,41 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if result == nil {
 					return
 				}
+				turnRequestedModel := strings.TrimSpace(result.Model)
+				turnUpstreamModel := strings.TrimSpace(result.UpstreamModel)
+				var turnMapping service.ChannelMappingResult
+				if snapshot := turnChannelMapping.Load(); snapshot != nil && snapshot.turn == turn {
+					turnMapping = snapshot.mapping
+					if turnRequestedModel == "" {
+						turnRequestedModel = snapshot.requestedModel
+					}
+				} else {
+					if turnRequestedModel == "" {
+						turnRequestedModel = reqModel
+					}
+					mapped := strings.TrimSpace(account.GetMappedModel(turnRequestedModel))
+					if mapped == "" {
+						mapped = turnRequestedModel
+					}
+					turnMapping = service.ChannelMappingResult{
+						MappedModel: mapped,
+						Mapped:      mapped != turnRequestedModel,
+					}
+				}
+				if turnUpstreamModel == "" {
+					turnUpstreamModel = strings.TrimSpace(turnMapping.MappedModel)
+				}
+				if turnUpstreamModel == "" {
+					turnUpstreamModel = turnRequestedModel
+				}
+				result.Model = turnRequestedModel
+				result.UpstreamModel = turnUpstreamModel
+				result.BillingModel = openAIWSTurnBillingModel(result, turnMapping, turnRequestedModel, turnUpstreamModel)
+				turnUsageFields := turnMapping.ToUsageFields(turnRequestedModel, turnUpstreamModel)
 				if account.Type == service.AccountTypeOAuth {
 					h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, result.ResponseHeaders)
 				}
-				routingModel := strings.TrimSpace(result.Model)
+				routingModel := turnUpstreamModel
 				if routingModel == "" {
 					routingModel = reqModel
 				}
@@ -2421,7 +2552,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 						PromptCacheGroupID:      apiKey.GroupID,
 						SkipSuccessSideEffects:  !successfulTerminal,
 						APIKeyService:           h.apiKeyService,
-						ChannelUsageFields:      channelMappingWS.ToUsageFields(reqModel, result.UpstreamModel),
+						ChannelUsageFields:      turnUsageFields,
 						CyberBlocked:            cyberBlocked,
 					}); err != nil {
 						reqLog.Error("openai.websocket_record_usage_failed",

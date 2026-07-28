@@ -381,6 +381,7 @@ const buildErrorParams = () => {
     api_key_id: filters.value.api_key_id,
     account_id: filters.value.account_id,
     group_id: filters.value.group_id,
+    request_id: filters.value.request_id,
     model: filters.value.model,
   }
   return Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ''))
@@ -539,7 +540,7 @@ const resetFilters = () => {
   const range = getLast24HoursRangeDates()
   startDate.value = range.start
   endDate.value = range.end
-  filters.value = { start_date: startDate.value, end_date: endDate.value, request_type: undefined, billing_type: null, billing_mode: undefined }
+  filters.value = { start_date: startDate.value, end_date: endDate.value, request_type: undefined, billing_type: null, billing_mode: undefined, request_id: undefined }
   granularity.value = getGranularityForRange(startDate.value, endDate.value)
   applyFilters()
 }

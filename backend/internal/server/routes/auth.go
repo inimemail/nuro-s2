@@ -20,7 +20,12 @@ func RegisterAuthRoutes(
 	auditLog servermiddleware.AuditLogMiddleware,
 	redisClient *redis.Client,
 	settingService *service.SettingService,
+	panelRateLimiters ...*servermiddleware.PanelRateLimiter,
 ) {
+	var panelRateLimiter *servermiddleware.PanelRateLimiter
+	if len(panelRateLimiters) > 0 {
+		panelRateLimiter = panelRateLimiters[0]
+	}
 	// 创建速率限制器
 	rateLimiter := middleware.NewRateLimiter(redisClient)
 
@@ -214,6 +219,7 @@ func RegisterAuthRoutes(
 
 	// 公开设置（无需认证）
 	settings := v1.Group("/settings")
+	settings.Use(panelRateLimiter.PublicIP())
 	{
 		settings.GET("/public", h.Setting.GetPublicSettings)
 		settings.GET("/email-unsubscribe", h.Setting.UnsubscribeNotificationEmail)
@@ -223,6 +229,7 @@ func RegisterAuthRoutes(
 	authenticated := v1.Group("")
 	authenticated.Use(gin.HandlerFunc(jwtAuth))
 	authenticated.Use(servermiddleware.BackendModeUserGuard(settingService))
+	authenticated.Use(panelRateLimiter.Global())
 	{
 		authenticated.GET("/auth/me", h.Auth.GetCurrentUser)
 		// 撤销所有会话（需要认证）

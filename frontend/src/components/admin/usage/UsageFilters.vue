@@ -121,6 +121,28 @@
           </div>
         </div>
 
+        <!-- Request ID Filter -->
+        <div class="w-full sm:w-auto sm:min-w-[220px]">
+          <label class="input-label">{{ t('admin.usage.requestId') }}</label>
+          <div class="relative">
+            <input
+              v-model.trim="filters.request_id"
+              type="text"
+              class="input pr-8 font-mono text-sm"
+              :placeholder="t('admin.usage.requestId')"
+              @keyup.enter="emitChange"
+              @change="emitChange"
+            />
+            <button
+              v-if="filters.request_id"
+              type="button"
+              class="absolute inset-y-0 right-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              :aria-label="t('common.clear')"
+              @click="clearRequestId"
+            >×</button>
+          </div>
+        </div>
+
         <!-- Request Type Filter -->
         <div class="w-full sm:w-auto sm:min-w-[180px]">
           <label class="input-label">{{ t('usage.type') }}</label>
@@ -249,6 +271,11 @@ const billingModeOptions = ref<SelectOption[]>([
 ])
 
 const emitChange = () => emit('change')
+
+const clearRequestId = () => {
+  filters.value.request_id = undefined
+  emitChange()
+}
 
 const debounceUserSearch = () => {
   if (userSearchTimeout) clearTimeout(userSearchTimeout)

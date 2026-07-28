@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -62,10 +63,10 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 	account.ApplyHeaderOverrides(req.Header)
 	if account.Proxy != nil {
 		resp, err := s.httpUpstream.DoWithTLS(req, account.Proxy.URL(), account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
-		return s.finishGrokTest(c, resp, err, model)
+		return s.finishGrokTest(c, account, resp, err, model)
 	}
 	resp, err := s.httpUpstream.DoWithTLS(req, "", account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
-	return s.finishGrokTest(c, resp, err, model)
+	return s.finishGrokTest(c, account, resp, err, model)
 }
 
 func firstNonEmptyTestPrompt(value, fallback string) string {
@@ -75,7 +76,7 @@ func firstNonEmptyTestPrompt(value, fallback string) string {
 	return fallback
 }
 
-func (s *AccountTestService) finishGrokTest(c *gin.Context, resp *http.Response, err error, model string) error {
+func (s *AccountTestService) finishGrokTest(c *gin.Context, account *Account, resp *http.Response, err error, model string) error {
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Grok request failed")
 	}
@@ -84,6 +85,11 @@ func (s *AccountTestService) finishGrokTest(c *gin.Context, resp *http.Response,
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusPaymentRequired && account != nil && s.accountRepo != nil {
+			stateCtx, cancel := openAIAccountStateContext(c.Request.Context())
+			defer cancel()
+			_ = s.accountRepo.SetTempUnschedulable(stateCtx, account.ID, time.Now().Add(30*time.Minute), "grok payment required")
+		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok API returned %d", resp.StatusCode))
 	}
 	c.Writer.Header().Set("Content-Type", "text/event-stream")

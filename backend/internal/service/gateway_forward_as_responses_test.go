@@ -24,6 +24,20 @@ func TestExtractResponsesReasoningEffortFromBody(t *testing.T) {
 	require.Nil(t, ExtractResponsesReasoningEffortFromBody([]byte(`{"model":"claude-sonnet-4.5"}`)))
 }
 
+func TestResponsesRequestNeedsAnthropicToolAdaptIsStructural(t *testing.T) {
+	require.False(t, responsesRequestNeedsAnthropicToolAdapt([]byte(`{"model":"claude-test","input":"mention the key \"namespace\""}`)))
+	require.True(t, responsesRequestNeedsAnthropicToolAdapt([]byte(`{"tools":[{"name":"collaboration","type":"namespace","tools":[]}]}`)))
+	require.True(t, responsesRequestNeedsAnthropicToolAdapt([]byte(`{"input":[{"tools":[],"type":"additional_tools"}]}`)))
+}
+
+func TestAdaptResponsesRequestForAnthropicPreservesOrdinaryBody(t *testing.T) {
+	body := []byte(`{"model":"claude-test","input":"namespace is ordinary prompt text"}`)
+	adapted, err := adaptResponsesRequestForAnthropic(nil, body)
+	require.NoError(t, err)
+	require.Equal(t, body, adapted)
+	require.Equal(t, &body[0], &adapted[0], "ordinary requests must retain the original byte slice")
+}
+
 func TestHandleResponsesBufferedStreamingResponse_PreservesMessageStartCacheUsage(t *testing.T) {
 	t.Parallel()
 	setGinTestMode()
@@ -94,6 +108,68 @@ func TestHandleResponsesStreamingResponse_PreservesMessageStartCacheUsage(t *tes
 	require.Equal(t, 11, result.Usage.CacheReadInputTokens)
 	require.Equal(t, 4, result.Usage.CacheCreationInputTokens)
 	require.Contains(t, rec.Body.String(), `response.completed`)
+}
+
+func TestHandleResponsesStreamingResponseUsesSSEEventNameWhenPayloadOmitsType(t *testing.T) {
+	t.Parallel()
+	setGinTestMode()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	resp := &http.Response{
+		Header: http.Header{"x-request-id": []string{"rid_event_name_only"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`event: message_start`,
+			`data: {"message":{"id":"msg_event_name_only","role":"assistant","content":[],"usage":{"input_tokens":3}}}`,
+			``,
+			`event: content_block_start`,
+			`data: {"index":0,"content_block":{"type":"text","text":"hello"}}`,
+			``,
+			`event: message_delta`,
+			`data: {"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+			``,
+			`event: message_stop`,
+			`data: {}`,
+			``,
+		}, "\n"))),
+	}
+
+	result, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, c, "claude-test", "claude-test", nil, time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 3, result.Usage.InputTokens)
+	require.Equal(t, 2, result.Usage.OutputTokens)
+	require.Contains(t, rec.Body.String(), "response.completed")
+}
+
+func TestHandleResponsesBufferedStreamingResponseUsesSSEEventNameWhenPayloadOmitsType(t *testing.T) {
+	t.Parallel()
+	setGinTestMode()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	resp := &http.Response{
+		Header: http.Header{"x-request-id": []string{"rid_buffered_event_name_only"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`event: message_start`,
+			`data: {"message":{"id":"msg_buffered_event_name_only","role":"assistant","content":[],"usage":{"input_tokens":4}}}`,
+			``,
+			`event: message_delta`,
+			`data: {"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}`,
+			``,
+			`event: message_stop`,
+			`data: {}`,
+			``,
+		}, "\n"))),
+	}
+
+	result, err := (&GatewayService{}).handleResponsesBufferedStreamingResponse(resp, c, "claude-test", "claude-test", nil, time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 4, result.Usage.InputTokens)
+	require.Equal(t, 3, result.Usage.OutputTokens)
+	require.Contains(t, rec.Body.String(), `"msg_buffered_event_name_only"`)
 }
 
 func TestHandleResponsesBufferedStreamingResponse_RejectsMissingMessageStop(t *testing.T) {

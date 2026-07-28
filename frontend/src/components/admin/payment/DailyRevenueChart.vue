@@ -39,7 +39,7 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip,
 const { t } = useI18n()
 
 const props = defineProps<{
-  data: { date: string; amount: number; count: number }[]
+  data: { date: string; amount: number; count: number; amount_by_currency?: Record<string, number> }[]
   loading?: boolean
 }>()
 

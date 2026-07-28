@@ -54,6 +54,7 @@ services:
       - SERVER_TRUSTED_PROXIES=${SERVER_TRUSTED_PROXIES:-}
       - SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL=${SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL:-false}
       - RUN_MODE=${RUN_MODE:-standard}
+      - CONFIG_FILE=${CONFIG_FILE:-}
 
       # =======================================================================
       # Database Configuration (PostgreSQL)

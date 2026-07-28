@@ -274,7 +274,10 @@ type OpenAIWSIngressHooks struct {
 	InitialRequestModel string
 	BeforeTurn          func(turn int) error
 	BeforeRequest       func(turn int, payload []byte, originalModel string) error
-	AfterTurn           func(turn int, result *OpenAIForwardResult, turnErr error)
+	// MapRequestModel resolves the client-facing model for each turn before
+	// account mapping and policy evaluation. It must remain an in-memory lookup.
+	MapRequestModel func(turn int, originalModel string) (string, error)
+	AfterTurn       func(turn int, result *OpenAIForwardResult, turnErr error)
 }
 
 func normalizeOpenAIWSLogValue(value string) string {
@@ -2778,7 +2781,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return rebuilt, nil
 	}
 
-	parseClientPayload := func(raw []byte) (openAIWSClientPayload, error) {
+	parseClientPayload := func(turn int, raw []byte) (openAIWSClientPayload, error) {
 		trimmed := bytes.TrimSpace(raw)
 		if len(trimmed) == 0 {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "empty websocket request payload", nil)
@@ -2847,7 +2850,17 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			normalized = next
 		}
-		upstreamModel := normalizeOpenAIModelForUpstream(account, account.GetMappedModel(originalModel))
+		requestModel := originalModel
+		if hooks != nil && hooks.MapRequestModel != nil {
+			mappedModel, mapErr := hooks.MapRequestModel(turn, originalModel)
+			if mapErr != nil {
+				return openAIWSClientPayload{}, mapErr
+			}
+			if mappedModel = strings.TrimSpace(mappedModel); mappedModel != "" {
+				requestModel = mappedModel
+			}
+		}
+		upstreamModel := normalizeOpenAIModelForUpstream(account, account.GetMappedModel(requestModel))
 		if modelMissing || upstreamModel != originalModel {
 			next, setErr := applyPayloadMutation(normalized, "model", upstreamModel)
 			if setErr != nil {
@@ -2978,7 +2991,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return payload, nil
 	}
 
-	firstPayload, err := parseClientPayload(firstClientMessage)
+	firstPayload, err := parseClientPayload(1, firstClientMessage)
 	if err != nil {
 		return err
 	}
@@ -3095,7 +3108,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			grokCacheIdentity := ""
 			if account.Platform == PlatformGrok {
-				grokCacheIdentity, err = resolveGrokWSCacheIdentity(c, account, grokCacheSeedPayload, currentBridgePayload.originalModel)
+				grokCacheIdentity, err = resolveGrokWSCacheIdentity(c, account, grokCacheSeedPayload, currentBridgePayload.payloadRaw, currentBridgePayload.originalModel)
 				if err != nil {
 					return fmt.Errorf("resolve Grok websocket cache identity: %w", err)
 				}
@@ -3155,7 +3168,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				return fmt.Errorf("read client websocket request: %w", readErr)
 			}
-			nextPayload, parseErr := parseClientPayload(nextClientMessage)
+			nextPayload, parseErr := parseClientPayload(turn+1, nextClientMessage)
 			if parseErr != nil {
 				return parseErr
 			}
@@ -4226,7 +4239,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return fmt.Errorf("read client websocket request: %w", readErr)
 		}
 
-		nextPayload, parseErr := parseClientPayload(nextClientMessage)
+		nextPayload, parseErr := parseClientPayload(turn+1, nextClientMessage)
 		if parseErr != nil {
 			return parseErr
 		}

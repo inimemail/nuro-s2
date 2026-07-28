@@ -418,6 +418,8 @@
             </div>
           </div>
 
+          <PanelRateLimitSettingsCard />
+
           <!-- Stream Timeout Settings -->
           <div class="card">
             <div
@@ -7606,6 +7608,7 @@ import Toggle from "@/components/common/Toggle.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
 import OpenAIFastPolicyUserSelector from "@/views/admin/settings/OpenAIFastPolicyUserSelector.vue";
+import PanelRateLimitSettingsCard from "@/views/admin/settings/PanelRateLimitSettingsCard.vue";
 import {
   defaultFingerprintSignalRows,
   parseFingerprintSignalsToRows,

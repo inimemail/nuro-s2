@@ -640,7 +640,7 @@ func TestClassifyOpsLocalBusinessLimitErrorsExcludedFromSLA(t *testing.T) {
 		{
 			name:        "openai passthrough instructions policy block",
 			errType:     "forbidden_error",
-			message:     "OpenAI codex passthrough requires a non-empty instructions field",
+			message:     "Passthrough requests require a non-empty instructions field",
 			code:        "",
 			status:      http.StatusForbidden,
 			wantErrType: "forbidden_error",
@@ -870,7 +870,7 @@ func TestClassifyOpsUpstreamAuthTextStillCountsForSLA(t *testing.T) {
 		},
 		{
 			name:    "provider passthrough instructions shaped error",
-			message: "OpenAI codex passthrough requires a non-empty instructions field",
+			message: "Passthrough requests require a non-empty instructions field",
 			code:    "403",
 			status:  http.StatusForbidden,
 		},

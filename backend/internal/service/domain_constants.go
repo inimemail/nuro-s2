@@ -382,6 +382,7 @@ const (
 
 	// SettingKeyRateLimit429CooldownSettings stores JSON config for 429 fallback cooldown handling.
 	SettingKeyRateLimit429CooldownSettings = "rate_limit_429_cooldown_settings"
+	SettingKeyPanelRateLimitSettings       = "panel_rate_limit_settings"
 
 	// =========================
 	// Stream Timeout Handling
