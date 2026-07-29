@@ -320,6 +320,7 @@ export default {
     saving: 'Saving...',
     selectedCount: '({count} selected)',
     refresh: 'Refresh',
+    retry: 'Retry',
     autoRefresh: {
       title: 'Auto Refresh',
       enable: 'Enable auto refresh',
@@ -376,6 +377,7 @@ export default {
     groups: 'Groups',
     channels: 'Channels',
     availableChannels: 'Available Channels',
+    modelPlaza: 'Model Plaza',
     batchImages: 'Batch Images',
     subscriptions: 'Subscriptions',
     accounts: 'Accounts',
@@ -443,6 +445,7 @@ export default {
       'This email domain is not allowed. Allowed domains: {suffixes}',
     emailSuffixAllowedMore: 'and {count} more',
     loginSuccess: 'Login successful! Welcome back.',
+    passkey: { or: 'or use a passkey', signIn: 'Sign in with passkey', signingIn: 'Verifying passkey...', failed: 'Passkey sign-in failed. Try again.' },
     accountCreatedSuccess: 'Account created successfully! Welcome to {siteName}.',
     reloginRequired: 'Session expired. Please log in again.',
     turnstileExpired: 'Verification expired, please try again',
@@ -1149,6 +1152,28 @@ export default {
     }
   },
 
+  modelPlaza: {
+    title: 'Model Plaza',
+    description: 'Browse available models, effective prices, and official references by group',
+    empty: 'No model groups are available',
+    loadFailed: 'Failed to load the model plaza. Try again later.',
+    noSearchResult: 'No models match the current filters',
+    anonymousHint: 'Sign in to see exclusive groups and your personal rates.',
+    copyModel: 'Copy model ID',
+    filters: {
+      modelLabel: 'Model', searchPlaceholder: 'Search model IDs', allPlatforms: 'All platforms',
+      allGroups: 'All groups', allAvailability: 'All types', standard: 'Standard', subscription: 'Subscription', exclusive: 'Exclusive'
+    },
+    badges: { exclusive: 'Exclusive', subscription: 'Subscription' },
+    table: {
+      model: 'Model ID', input: 'Your input', output: 'Your output', cache: 'Your cache',
+      officialInput: 'Official input', officialOutput: 'Official output', officialCache: 'Official cache',
+      cacheWrite: 'Write', cacheRead: 'Read', rate: 'Rate',
+      perRequest: 'Per request', perImage: 'Per image', perUnitRequest: '/ request', perUnitImage: '/ image'
+    },
+    nav: { login: 'Sign in', backToDashboard: 'Back to console' }
+  },
+
   affiliate: {
     title: 'Affiliate Rebates',
     description: 'Invite new users and convert your rebate quota into account balance',
@@ -1318,6 +1343,15 @@ export default {
       sendCode: 'Send Code',
       codeSent: 'Verification code sent to your email',
       sendCodeFailed: 'Failed to send verification code'
+    },
+    passkey: {
+      title: 'Passkeys', description: 'Sign in without a password using Face ID, Touch ID, Windows Hello, or a security key.',
+      add: 'Add passkey', continue: 'Create passkey', name: 'Passkey name', namePlaceholder: 'For example: MacBook Touch ID',
+      passwordPlaceholder: 'Enter your current password to confirm', empty: 'No passkeys are registered yet.', synced: 'Synced',
+      createdAt: 'Created {date}', lastUsed: 'Last used {date}', featureDisabled: 'Passkeys have not been enabled by the administrator.', unsupported: 'This browser or device does not support passkeys.',
+      loadFailed: 'Failed to load passkeys.', added: 'Passkey added.', addFailed: 'Failed to add passkey.', renamed: 'Passkey renamed.',
+      renameFailed: 'Failed to rename passkey.', deleteTitle: 'Delete passkey', deleteConfirm: 'Delete “{name}”? It can no longer be used to sign in.',
+      deleted: 'Passkey deleted.', deleteFailed: 'Failed to delete passkey.'
     },
     balanceNotify: {
       title: 'Balance Low Notification',
@@ -5923,6 +5957,13 @@ export default {
           enabled: 'Enable Available Channels',
           enabledHint: 'When off, the sidebar entry is hidden and the endpoint returns an empty list.',
         },
+        modelPlaza: {
+          title: 'Model Plaza', description: 'Publish a focused, filterable view of group models and each user’s effective rates. Its snapshot refreshes only when visited.',
+          enabled: 'Enable Model Plaza', enabledHint: 'When off, navigation is hidden and the endpoint is unavailable.', requireAuth: 'Require sign-in',
+          requireAuthHint: 'When off, anonymous visitors can see public groups. Exclusive groups remain restricted to authorized users.', preview: 'Preview',
+          priceDescription: 'Pricing note', priceDescriptionHint: 'Supports Markdown for units, taxes, or the last pricing update.',
+          priceDescriptionPlaceholder: 'For example: Prices are in USD per 1M tokens.'
+        },
         userErrorRequests: {
           title: 'User Failed Requests',
           description: 'Allow users to view their own failed requests with sanitized details. Disabled by default.',
@@ -6030,6 +6071,9 @@ export default {
           'Please configure TOTP_ENCRYPTION_KEY in environment variables first. Generate a key with: openssl rand -hex 32'
       },
       security: {
+        passkey: 'Passkey sign-in', passkeyHint: 'Allow users to sign in with device biometrics or security keys and manage their passkeys.',
+        passkeyConfigured: 'The WebAuthn relying-party configuration is valid.', passkeyNotConfigured: 'Configure a valid RP ID and allowed HTTPS origins in deployment settings first.',
+        passkeyRPID: 'RP ID', passkeyOrigins: 'Allowed origins', passkeyValueNotConfigured: 'Not configured',
         sessionBinding: 'Session IP/UA Binding',
         sessionBindingHint: 'Disabled by default. When enabled, a session is revoked if its trusted client IP or User-Agent changes.',
         auditRetention: 'Audit Log Retention (days)',

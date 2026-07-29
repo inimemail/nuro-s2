@@ -58,9 +58,11 @@ type Handlers struct {
 	BatchImage       *BatchImageHandler
 	Setting          *SettingHandler
 	Totp             *TotpHandler
+	Passkey          *PasskeyHandler
 	Payment          *PaymentHandler
 	PaymentWebhook   *PaymentWebhookHandler
 	AvailableChannel *AvailableChannelHandler
+	ModelPlaza       *ModelPlazaHandler
 }
 
 // BuildInfo contains build-time information

@@ -42,7 +42,7 @@ func (s *userHandlerRepoStub) GetFirstAdmin(context.Context) (*service.User, err
 	cloned := *s.user
 	return &cloned, nil
 }
-func (s *userHandlerRepoStub) Update(_ context.Context, user *service.User) error {
+func (s *userHandlerRepoStub) Update(_ context.Context, user *service.User, _ service.UserUpdateFields) error {
 	cloned := *user
 	s.user = &cloned
 	return nil
@@ -91,6 +91,12 @@ func (s *userHandlerRepoStub) ListWithFilters(context.Context, pagination.Pagina
 func (s *userHandlerRepoStub) UpdateBalance(context.Context, int64, float64) error { return nil }
 func (s *userHandlerRepoStub) DeductBalance(context.Context, int64, float64) error { return nil }
 func (s *userHandlerRepoStub) UpdateConcurrency(context.Context, int64, int) error { return nil }
+func (s *userHandlerRepoStub) AdjustBalance(context.Context, int64, float64) (service.BalanceChange, error) {
+	panic("unexpected AdjustBalance call")
+}
+func (s *userHandlerRepoStub) SetBalance(context.Context, int64, float64) (service.BalanceChange, error) {
+	panic("unexpected SetBalance call")
+}
 func (s *userHandlerRepoStub) BatchSetConcurrency(context.Context, []int64, int) (int, error) {
 	return 0, nil
 }
@@ -648,7 +654,7 @@ func TestUserHandlerUnbindIdentityRevokesAllUserSessionsWhenAuthServiceConfigure
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, []int64{23}, refreshTokenCache.revokedUserIDs)
-	require.Equal(t, int64(5), repo.user.TokenVersion)
+	require.Equal(t, int64(4), repo.user.TokenVersion)
 }
 
 func TestUserHandlerUnbindIdentityDoesNotRevokeSessionsWhenNothingWasUnbound(t *testing.T) {

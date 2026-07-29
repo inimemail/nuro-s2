@@ -70,6 +70,26 @@ func TestSetupDefaultAdminConcurrency(t *testing.T) {
 	})
 }
 
+func TestNeedsSetupHonorsExplicitBypass(t *testing.T) {
+	for _, value := range []string{"true", "1", "yes", "  TrUe  ", " YeS "} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("DATA_DIR", t.TempDir())
+			t.Setenv("SKIP_SETUP", value)
+			if NeedsSetup() {
+				t.Fatal("NeedsSetup() = true, want false")
+			}
+		})
+	}
+}
+
+func TestNeedsSetupIgnoresUnknownBypassValues(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	t.Setenv("SKIP_SETUP", "enabled")
+	if !NeedsSetup() {
+		t.Fatal("NeedsSetup() = false, want true")
+	}
+}
+
 func TestWriteConfigFileKeepsDefaultUserConcurrency(t *testing.T) {
 	t.Setenv("RUN_MODE", "simple")
 	t.Setenv("DATA_DIR", t.TempDir())

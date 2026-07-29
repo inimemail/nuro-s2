@@ -320,6 +320,7 @@ export default {
     saving: '保存中...',
     selectedCount: '（已选 {count} 个）',
     refresh: '刷新',
+    retry: '重试',
     autoRefresh: {
       title: '自动刷新',
       enable: '启用自动刷新',
@@ -376,6 +377,7 @@ export default {
     groups: '分组管理',
     channels: '渠道管理',
     availableChannels: '可用渠道',
+    modelPlaza: '模型广场',
     batchImages: '批量生图',
     subscriptions: '订阅管理',
     accounts: '账号管理',
@@ -442,6 +444,7 @@ export default {
     emailSuffixNotAllowedWithAllowed: '该邮箱域名不被允许。可用域名：{suffixes}',
     emailSuffixAllowedMore: '等 {count} 项',
     loginSuccess: '登录成功！欢迎回来。',
+    passkey: { or: '或使用 Passkey', signIn: '使用 Passkey 登录', signingIn: '正在验证 Passkey...', failed: 'Passkey 登录失败，请重试。' },
     accountCreatedSuccess: '账户创建成功！欢迎使用 {siteName}。',
     reloginRequired: '会话已过期，请重新登录。',
     turnstileExpired: '验证已过期，请重试',
@@ -1153,6 +1156,28 @@ export default {
     }
   },
 
+  modelPlaza: {
+    title: '模型广场',
+    description: '按分组查看可用模型、实际价格与官方参考价格',
+    empty: '暂无可展示的模型分组',
+    loadFailed: '模型广场加载失败，请稍后重试',
+    noSearchResult: '没有符合当前筛选条件的模型',
+    anonymousHint: '登录后可查看你的专属分组和账号专属倍率。',
+    copyModel: '复制模型 ID',
+    filters: {
+      modelLabel: '模型', searchPlaceholder: '搜索模型 ID', allPlatforms: '全部平台',
+      allGroups: '全部分组', allAvailability: '全部类型', standard: '标准', subscription: '订阅', exclusive: '专属'
+    },
+    badges: { exclusive: '专属', subscription: '订阅' },
+    table: {
+      model: '模型 ID', input: '实付输入', output: '实付输出', cache: '实付缓存',
+      officialInput: '官方输入', officialOutput: '官方输出', officialCache: '官方缓存',
+      cacheWrite: '写', cacheRead: '读', rate: '倍率',
+      perRequest: '按次', perImage: '按图片', perUnitRequest: '/ 次', perUnitImage: '/ 张'
+    },
+    nav: { login: '登录', backToDashboard: '返回控制台' }
+  },
+
   affiliate: {
     title: '邀请返利',
     description: '邀请新用户注册，并将返利额度转入账户余额',
@@ -1322,6 +1347,15 @@ export default {
       sendCode: '发送验证码',
       codeSent: '验证码已发送到您的邮箱',
       sendCodeFailed: '发送验证码失败'
+    },
+    passkey: {
+      title: 'Passkey', description: '使用面容 ID、触控 ID、Windows Hello 或安全密钥免密码登录。',
+      add: '添加 Passkey', continue: '创建 Passkey', name: 'Passkey 名称', namePlaceholder: '例如：MacBook 触控 ID',
+      passwordPlaceholder: '输入当前登录密码以确认', empty: '尚未添加任何 Passkey。', synced: '已同步',
+      createdAt: '创建于 {date}', lastUsed: '上次使用 {date}', featureDisabled: '管理员尚未启用 Passkey 功能。', unsupported: '当前浏览器或设备不支持 Passkey。',
+      loadFailed: '加载 Passkey 失败。', added: 'Passkey 已添加。', addFailed: '添加 Passkey 失败。', renamed: 'Passkey 已重命名。',
+      renameFailed: '重命名 Passkey 失败。', deleteTitle: '删除 Passkey', deleteConfirm: '删除“{name}”？删除后将无法再使用它登录。',
+      deleted: 'Passkey 已删除。', deleteFailed: '删除 Passkey 失败。'
     },
     balanceNotify: {
       title: '余额不足提醒',
@@ -6074,6 +6108,13 @@ export default {
           enabled: '启用可用渠道',
           enabledHint: '关闭后用户端侧边栏入口隐藏，接口返回空数组。',
         },
+        modelPlaza: {
+          title: '模型广场', description: '以独立、可筛选的价格表展示分组模型与用户实际倍率。快照仅在访问页面时按需刷新。',
+          enabled: '启用模型广场', enabledHint: '关闭后入口隐藏且接口不可访问。', requireAuth: '仅登录用户可访问',
+          requireAuthHint: '关闭后匿名访客可查看公开分组；专属分组始终只对获授权用户显示。', preview: '预览',
+          priceDescription: '价格说明', priceDescriptionHint: '支持 Markdown，适合填写计价单位、税费或更新时间。',
+          priceDescriptionPlaceholder: '例如：价格单位为美元 / 1M token。'
+        },
         userErrorRequests: {
           title: '用户失败请求',
           description: '允许用户在用量页查看自己的失败请求和脱敏错误详情。默认关闭。',
@@ -6181,6 +6222,9 @@ export default {
           '请先在环境变量中配置 TOTP_ENCRYPTION_KEY。使用命令 openssl rand -hex 32 生成密钥。'
       },
       security: {
+        passkey: 'Passkey 登录', passkeyHint: '允许用户使用设备生物识别或安全密钥登录和管理 Passkey。',
+        passkeyConfigured: 'WebAuthn 依赖方配置有效。', passkeyNotConfigured: '请先在部署配置中设置有效的 RP ID 和允许的 HTTPS 来源。',
+        passkeyRPID: 'RP ID', passkeyOrigins: '允许来源', passkeyValueNotConfigured: '未配置',
         sessionBinding: '会话 IP/UA 绑定',
         sessionBindingHint: '默认关闭。开启后，可信客户端 IP 或 User-Agent 任一变化都会撤销当前会话。',
         auditRetention: '操作日志保留天数',

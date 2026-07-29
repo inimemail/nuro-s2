@@ -2840,7 +2840,7 @@ func (r *oauthPendingFlowUserRepo) GetFirstAdmin(context.Context) (*service.User
 	panic("unexpected GetFirstAdmin call")
 }
 
-func (r *oauthPendingFlowUserRepo) Update(ctx context.Context, user *service.User) error {
+func (r *oauthPendingFlowUserRepo) Update(ctx context.Context, user *service.User, _ service.UserUpdateFields) error {
 	entity, err := r.client.User.UpdateOneID(user.ID).
 		SetEmail(user.Email).
 		SetUsername(user.Username).
@@ -2863,6 +2863,13 @@ func (r *oauthPendingFlowUserRepo) Update(ctx context.Context, user *service.Use
 	}
 	user.UpdatedAt = entity.UpdatedAt
 	return nil
+}
+
+func (r *oauthPendingFlowUserRepo) AdjustBalance(context.Context, int64, float64) (service.BalanceChange, error) {
+	return service.BalanceChange{}, nil
+}
+func (r *oauthPendingFlowUserRepo) SetBalance(context.Context, int64, float64) (service.BalanceChange, error) {
+	return service.BalanceChange{}, nil
 }
 
 func (r *oauthPendingFlowUserRepo) UpdateUserLastActiveAt(ctx context.Context, userID int64, activeAt time.Time) error {

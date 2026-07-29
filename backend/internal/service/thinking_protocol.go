@@ -23,7 +23,9 @@ func ResolveThinkingProtocol(modelID string) ThinkingProtocol {
 	case strings.HasPrefix(id, "deepseek-"),
 		strings.HasPrefix(id, "kimi-"),
 		strings.HasPrefix(id, "moonshot-"),
-		strings.HasPrefix(id, "glm-"):
+		strings.HasPrefix(id, "glm-"),
+		id == "k3",
+		id == "k3-256k":
 		return ThinkingProtocolPassbackRequired
 	}
 	if strings.HasPrefix(id, "minimax-m") {

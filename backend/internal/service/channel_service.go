@@ -154,6 +154,7 @@ type ChannelService struct {
 	groupRepo            GroupRepository
 	authCacheInvalidator APIKeyAuthCacheInvalidator
 	pricingService       *PricingService // 用于「可用渠道」展示时回落到全局定价；可为 nil（测试场景）
+	plazaInvalidator     func()
 
 	cache   atomic.Value // *channelCache
 	cacheSF singleflight.Group
@@ -170,6 +171,10 @@ func NewChannelService(repo ChannelRepository, groupRepo GroupRepository, authCa
 		pricingService:       pricingService,
 	}
 	return s
+}
+
+func (s *ChannelService) SetModelPlazaInvalidator(invalidate func()) {
+	s.plazaInvalidator = invalidate
 }
 
 // loadCache 加载或返回缓存的渠道数据
@@ -353,6 +358,9 @@ func matchingPlatforms(groupPlatform string) []string {
 	return []string{groupPlatform}
 }
 func (s *ChannelService) invalidateCache() {
+	if s.plazaInvalidator != nil {
+		s.plazaInvalidator()
+	}
 	s.cache.Store((*channelCache)(nil))
 	s.cacheSF.Forget("channel_cache")
 

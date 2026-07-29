@@ -1901,6 +1901,28 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 	return compatible
 }
 
+// openAITextRequestModelSupported narrows passthrough's mapping override to
+// ordinary OpenAI text traffic. The shared Account.IsModelSupported contract
+// remains unchanged for image pools, shadow accounts and compatibility paths.
+func openAITextRequestModelSupported(account *Account, req OpenAIAccountScheduleRequest) bool {
+	if account == nil || req.RequestedModel == "" {
+		return true
+	}
+	requestPlatform := strings.TrimSpace(req.RequestPlatform)
+	openAITextPlatform := requestPlatform == "" || requestPlatform == PlatformOpenAI
+	textPassthrough := account.IsOpenAI() &&
+		(account.IsOpenAIOAuth() || account.IsOpenAIApiKey()) &&
+		account.IsOpenAIPassthroughEnabled() &&
+		!account.IsShadow() && !account.IsImagePoolMode() &&
+		openAITextPlatform &&
+		req.RequiredImageCapability == "" &&
+		req.RequiredCapability == OpenAIEndpointCapabilityChatCompletions
+	if textPassthrough {
+		return true
+	}
+	return account.IsModelSupported(req.RequestedModel)
+}
+
 func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) (bool, string) {
 	if account == nil {
 		return false, "account_nil"
@@ -1928,7 +1950,7 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 		}
 		return false, reason
 	}
-	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
+	if !openAITextRequestModelSupported(account, req) {
 		return false, "model_not_supported"
 	}
 	if req.GroupID != nil && s != nil && s.service != nil &&

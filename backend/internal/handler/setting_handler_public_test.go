@@ -82,6 +82,41 @@ func TestSettingHandler_GetPublicSettings_ExposesForceEmailOnThirdPartySignup(t 
 	require.True(t, resp.Data.ForceEmailOnThirdPartySignup)
 }
 
+func TestSettingHandler_GetPublicSettings_PasskeyRequiresStaticConfiguration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want bool
+	}{
+		{name: "dynamic setting alone stays disabled", cfg: &config.Config{}, want: false},
+		{name: "configured and enabled", cfg: &config.Config{WebAuthn: config.WebAuthnConfig{
+			Enabled: true, RPID: "panel.example.com", RPOrigins: []string{"https://panel.example.com"},
+		}}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &settingHandlerPublicRepoStub{values: map[string]string{service.SettingKeyPasskeyEnabled: "true"}}
+			h := NewSettingHandler(service.NewSettingService(repo, tt.cfg), "test-version")
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/settings/public", nil)
+
+			h.GetPublicSettings(c)
+
+			var resp struct {
+				Data struct {
+					PasskeyEnabled bool `json:"passkey_enabled"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+			require.Equal(t, tt.want, resp.Data.PasskeyEnabled)
+		})
+	}
+}
+
 func TestSettingHandler_GetPublicSettings_ExposesWeChatOAuthModeCapabilities(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := NewSettingHandler(service.NewSettingService(&settingHandlerPublicRepoStub{

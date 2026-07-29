@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 	"github.com/tidwall/gjson"
@@ -67,24 +68,32 @@ type Service struct {
 	configSignal   chan struct{}
 	saveMu         sync.Mutex
 
-	hashKey     atomic.Pointer[[32]byte]
-	stopping    atomic.Bool
-	active      atomic.Int64
-	queued      atomic.Int64
-	queuedBytes atomic.Int64
-	enqueued    atomic.Int64
-	dropped     atomic.Int64
-	processed   atomic.Int64
-	failed      atomic.Int64
-	lastError   atomic.Value
+	hashKey                      atomic.Pointer[[32]byte]
+	stopping                     atomic.Bool
+	active                       atomic.Int64
+	queued                       atomic.Int64
+	queuedBytes                  atomic.Int64
+	enqueued                     atomic.Int64
+	dropped                      atomic.Int64
+	processed                    atomic.Int64
+	failed                       atomic.Int64
+	lastError                    atomic.Value
+	invalidCredentialFingerprint atomic.Value
+	encryptionKeyConfigured      bool
 }
 
-func NewService(settingRepo service.SettingRepository, db *sql.DB, redisClient *redis.Client, encryptor service.SecretEncryptor) *Service {
+func NewService(settingRepo service.SettingRepository, db *sql.DB, redisClient *redis.Client, encryptor service.SecretEncryptor, configs ...*config.Config) *Service {
+	keyConfigured := true
+	if len(configs) > 0 {
+		keyConfigured = configs[0] != nil && configs[0].Totp.EncryptionKeyConfigured
+	}
 	svc := &Service{
 		settingRepo: settingRepo, db: db, redis: redisClient, encryptor: encryptor,
 		queue: make(chan auditTask, 100000), configSignal: make(chan struct{}),
+		encryptionKeyConfigured: keyConfigured,
 	}
 	svc.lastError.Store("")
+	svc.invalidCredentialFingerprint.Store("")
 	hashKey := new([32]byte)
 	if _, err := rand.Read(hashKey[:]); err != nil {
 		slog.Warn("prompt_audit_hash_secret_unavailable", "error_code", "random_source_unavailable")
@@ -169,7 +178,7 @@ func (s *Service) EnabledFast() bool {
 		return false
 	}
 	for i := range cfg.Endpoints {
-		if cfg.Endpoints[i].Enabled {
+		if cfg.Endpoints[i].Enabled && !cfg.Endpoints[i].TokenInvalid {
 			return true
 		}
 	}
@@ -678,6 +687,21 @@ func (s *Service) storeConfig(cfg Config) {
 	clone.Scanners = append([]string(nil), cfg.Scanners...)
 	clone.Endpoints = append([]EndpointConfig(nil), cfg.Endpoints...)
 	s.config.Store(&clone)
+	invalid := make([]string, 0)
+	for i := range clone.Endpoints {
+		if clone.Endpoints[i].TokenInvalid {
+			sum := sha256.Sum256([]byte(clone.Endpoints[i].ID))
+			invalid = append(invalid, hex.EncodeToString(sum[:6]))
+		}
+	}
+	fingerprint := strings.Join(invalid, ",")
+	previous, _ := s.invalidCredentialFingerprint.Load().(string)
+	if fingerprint != previous {
+		s.invalidCredentialFingerprint.Store(fingerprint)
+		if fingerprint != "" {
+			slog.Warn("prompt_audit_config_token_invalid", "error_code", "endpoint_token_undecryptable", "endpoint_id_hashes", fingerprint)
+		}
+	}
 	s.configSignalMu.Lock()
 	close(s.configSignal)
 	s.configSignal = make(chan struct{})

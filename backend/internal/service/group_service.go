@@ -70,6 +70,11 @@ type UpdateGroupRequest struct {
 type GroupService struct {
 	groupRepo            GroupRepository
 	authCacheInvalidator APIKeyAuthCacheInvalidator
+	plazaInvalidator     func()
+}
+
+func (s *GroupService) SetModelPlazaInvalidator(invalidate func()) {
+	s.plazaInvalidator = invalidate
 }
 
 // NewGroupService 创建分组服务实例
@@ -114,6 +119,9 @@ func (s *GroupService) Create(ctx context.Context, req CreateGroupRequest) (*Gro
 
 	if err := s.groupRepo.Create(ctx, group); err != nil {
 		return nil, fmt.Errorf("create group: %w", err)
+	}
+	if s.plazaInvalidator != nil {
+		s.plazaInvalidator()
 	}
 
 	return group, nil
@@ -200,6 +208,9 @@ func (s *GroupService) Update(ctx context.Context, id int64, req UpdateGroupRequ
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByGroupID(ctx, id)
 	}
+	if s.plazaInvalidator != nil {
+		s.plazaInvalidator()
+	}
 
 	return group, nil
 }
@@ -217,6 +228,9 @@ func (s *GroupService) Delete(ctx context.Context, id int64) error {
 	}
 	if err := s.groupRepo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("delete group: %w", err)
+	}
+	if s.plazaInvalidator != nil {
+		s.plazaInvalidator()
 	}
 
 	return nil

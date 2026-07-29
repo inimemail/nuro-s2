@@ -167,6 +167,7 @@ const (
 
 	// TOTP 双因素认证设置
 	SettingKeyTotpEnabled           = "totp_enabled"             // 是否启用 TOTP 2FA 功能
+	SettingKeyPasskeyEnabled        = "passkey_enabled"          // 是否启用 Passkey（还需静态 WebAuthn 配置）
 	SettingKeyAuditLogRetentionDays = "audit_log_retention_days" // 审计日志保留天数，0 表示永久
 	SettingKeySessionBindingEnabled = "session_binding_enabled"  // 登录会话 IP/UA 绑定，默认关闭
 	// SettingKeyUpstreamBillingProbeSettings stores the observation-only upstream billing probe runner config.
@@ -372,6 +373,11 @@ const (
 	// user-facing aggregate view. When false: user endpoint returns an empty list and the
 	// sidebar entry is hidden. Defaults to false (opt-in feature).
 	SettingKeyAvailableChannelsEnabled = "available_channels_enabled"
+
+	// Model Plaza is an opt-in, read-only model and group pricing catalog.
+	SettingKeyModelPlazaEnabled     = "model_plaza_enabled"
+	SettingKeyModelPlazaRequireAuth = "model_plaza_require_auth"
+	SettingKeyModelPlazaDescription = "model_plaza_description"
 
 	// =========================
 	// Overload Cooldown (529)

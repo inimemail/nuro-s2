@@ -112,6 +112,8 @@ security:
       - "api.openai.com"
       - "api.anthropic.com"
       - "api.kimi.com"
+      - "api.moonshot.ai"
+      - "api.moonshot.cn"
       - "open.bigmodel.cn"
       - "api.minimaxi.com"
       - "generativelanguage.googleapis.com"
@@ -1056,6 +1058,18 @@ totp:
   # 双因素认证登录）。
   # Generate with / 生成命令: openssl rand -hex 32
   encryption_key: ""
+
+# =============================================================================
+# WebAuthn / Passkey Configuration
+# WebAuthn / 通行密钥配置
+# =============================================================================
+# Disabled by default. RP ID and origins are security boundaries and must be
+# configured explicitly; they are never inferred from request headers.
+webauthn:
+  enabled: false
+  rp_display_name: "Sub2API"
+  rp_id: ""
+  rp_origins: [] # e.g. ["https://panel.example.com"]
 
 # =============================================================================
 # LinuxDo Connect OAuth Login (SSO)

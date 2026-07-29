@@ -104,6 +104,21 @@ func TestRewriteSystemForNonClaudeCodeWithPromptBlocks_DefaultThreeBlocks(t *tes
 	require.Equal(t, "[System Instructions]\nBe brief", messages.Get("0.content.0.text").String())
 }
 
+func TestRewriteSystemForNonClaudeCodeWithPromptBlocks_PreservesOriginalCacheControl(t *testing.T) {
+	body := []byte(`{"model":"claude-3","system":[{"type":"text","text":"Project rules","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":"hello"}]}`)
+	system := []any{map[string]any{
+		"type":          "text",
+		"text":          "Project rules",
+		"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"},
+	}}
+
+	result := rewriteSystemForNonClaudeCodeWithPromptBlocks(body, system, "", "")
+
+	require.Equal(t, "[System Instructions]\nProject rules", gjson.GetBytes(result, "messages.0.content.0.text").String())
+	require.Equal(t, "ephemeral", gjson.GetBytes(result, "messages.0.content.0.cache_control.type").String())
+	require.Equal(t, "1h", gjson.GetBytes(result, "messages.0.content.0.cache_control.ttl").String())
+}
+
 func TestValidateClaudeOAuthSystemPromptBlocksConfig(t *testing.T) {
 	valid := `[{"enabled":true,"type":"text","text":"{billing_header}"},{"type":"text","text":"x","cache_control":true}]`
 	require.NoError(t, ValidateClaudeOAuthSystemPromptBlocksConfig(valid))

@@ -124,6 +124,11 @@ export const FeatureFlags = {
     mode: 'opt-in',
     label: 'Affiliate',
   }),
+  modelPlaza: defineFlag({
+    key: 'model_plaza_enabled',
+    mode: 'opt-in',
+    label: 'Model Plaza',
+  }),
 } as const
 
 export type RegisteredFeatureFlag = keyof typeof FeatureFlags

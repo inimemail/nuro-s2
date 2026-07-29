@@ -59,6 +59,52 @@ func TestForwardAsAnthropic_ForceChatCompletionsRoutesToChatCompletions(t *testi
 	require.False(t, result.Stream)
 }
 
+func TestForwardAsAnthropicChatFallbackPreservesFinalModelReasoningEffort(t *testing.T) {
+	setGinTestMode()
+
+	tests := []struct {
+		name       string
+		model      string
+		mapped     string
+		effortJSON string
+		wantEffort string
+	}{
+		{name: "GPT56 max", model: "luna", mapped: "gpt-5.6-luna", effortJSON: `,"output_config":{"effort":"max"}`, wantEffort: "max"},
+		{name: "older model max", model: "gpt-5.5", mapped: "gpt-5.5", effortJSON: `,"output_config":{"effort":"max"}`, wantEffort: "xhigh"},
+		{name: "GPT56 high", model: "gpt-5.6-terra", mapped: "gpt-5.6-terra", effortJSON: `,"output_config":{"effort":"high"}`, wantEffort: "high"},
+		{name: "GPT56 default", model: "gpt-5.6-sol", mapped: "gpt-5.6-sol", wantEffort: "medium"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"model":"` + tt.model + `","max_tokens":16,"messages":[{"role":"user","content":"hello"}]` + tt.effortJSON + `,"stream":false}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"id":"chatcmpl_effort","object":"chat.completion","model":"` + tt.mapped + `","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+				)),
+			}}
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+			account := rawChatCompletionsTestAccount()
+			account.Credentials["model_mapping"] = map[string]any{tt.model: tt.mapped}
+			account.Extra = map[string]any{openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceChatCompletions)}
+
+			result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, tt.mapped, gjson.GetBytes(upstream.lastBody, "model").String())
+			require.Equal(t, tt.wantEffort, gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+			require.NotNil(t, result.ReasoningEffort)
+			require.Equal(t, tt.wantEffort, *result.ReasoningEffort)
+		})
+	}
+}
+
 func TestForwardAsAnthropic_ChatFallbackLengthIsIncomplete(t *testing.T) {
 	setGinTestMode()
 

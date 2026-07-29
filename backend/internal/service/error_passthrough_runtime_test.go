@@ -119,6 +119,15 @@ func TestSanitizeUpstreamErrorMessage_StripsUpstreamIdentity(t *testing.T) {
 		"Anthropic authentication failed",
 		"Google upstream rejected the request",
 		"Antigravity OAuth credential rejected",
+		"Kimi gateway overloaded",
+		"Moonshot account rejected the request",
+		"DeepSeek service unavailable",
+		"MiniMax upstream timeout",
+		"BigModel authentication failed",
+		"Zhipu request rejected",
+		"Ollama Cloud returned an internal error",
+		"智谱服务暂时不可用",
+		"月之暗面上游拒绝请求",
 	} {
 		require.Equal(t, safeUpstreamErrorMessage, sanitizeUpstreamErrorMessage(message))
 	}

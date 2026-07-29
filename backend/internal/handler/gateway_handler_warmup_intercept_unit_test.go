@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,15 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFallbackRealisticMsgIDHasAnthropicShape(t *testing.T) {
+	id := fallbackRealisticMsgID(1722222222123456789)
+	require.Len(t, id, 28)
+	require.True(t, strings.HasPrefix(id, "msg_01"))
+	for _, char := range id[len("msg_01"):] {
+		require.True(t, char >= '0' && char <= '9')
+	}
+}
 
 // 目标：严格验证“antigravity 账号通过 /v1/messages 提供 Claude 服务时”，
 // 当账号 credentials.intercept_warmup_requests=true 且请求为 Warmup 时，
@@ -273,7 +283,10 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_MixedScheduli
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Equal(t, "msg_mock_warmup", resp["id"])
+	messageID, ok := resp["id"].(string)
+	require.True(t, ok)
+	require.True(t, strings.HasPrefix(messageID, "msg_01"))
+	require.Len(t, messageID, 28)
 	require.Equal(t, "claude-sonnet-4-5", resp["model"])
 
 	content, ok := resp["content"].([]any)
@@ -362,6 +375,9 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_ForcePlatform
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Equal(t, "msg_mock_warmup", resp["id"])
+	messageID, ok := resp["id"].(string)
+	require.True(t, ok)
+	require.True(t, strings.HasPrefix(messageID, "msg_01"))
+	require.Len(t, messageID, 28)
 	require.Equal(t, "claude-sonnet-4-5", resp["model"])
 }

@@ -17,6 +17,7 @@ var ErrAuditLogNotFound = infraerrors.NotFound("AUDIT_LOG_NOT_FOUND", "audit log
 const (
 	AuditAuthMethodJWT                = "jwt"
 	AuditAuthMethodAdminAPIKey        = "admin_api_key"
+	AuditAuthMethodPasskey            = "passkey"
 	AuditRequestBodyCaptureLimit      = 256 * 1024
 	auditRequestBodyMaxBytes          = 16 * 1024
 	AuditActionLogin                  = "auth.login"

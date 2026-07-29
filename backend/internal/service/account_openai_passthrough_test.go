@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -70,6 +71,102 @@ func TestAccount_IsOpenAIOAuthPassthroughEnabled(t *testing.T) {
 		require.False(t, apiKeyAccount.IsOpenAIOAuthPassthroughEnabled())
 	})
 
+}
+
+func TestOpenAITextRequestModelSupportedKeepsPassthroughBoundaryNarrow(t *testing.T) {
+	parentID := int64(99)
+	base := func() *Account {
+		return &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"legacy-model": "upstream-model"},
+			},
+			Extra: map[string]any{"openai_passthrough": true},
+		}
+	}
+	request := OpenAIAccountScheduleRequest{
+		RequestedModel:     "new-upstream-model",
+		RequiredCapability: OpenAIEndpointCapabilityChatCompletions,
+		RequestPlatform:    PlatformOpenAI,
+	}
+
+	require.True(t, openAITextRequestModelSupported(base(), request), "ordinary text passthrough may ignore a stale local mapping")
+	oauth := base()
+	oauth.Type = AccountTypeOAuth
+	require.True(t, openAITextRequestModelSupported(oauth, request))
+
+	tests := []struct {
+		name   string
+		mutate func(*Account, *OpenAIAccountScheduleRequest)
+	}{
+		{name: "passthrough disabled", mutate: func(account *Account, _ *OpenAIAccountScheduleRequest) { account.Extra = nil }},
+		{name: "shadow account", mutate: func(account *Account, _ *OpenAIAccountScheduleRequest) { account.ParentAccountID = &parentID }},
+		{name: "image pool", mutate: func(account *Account, _ *OpenAIAccountScheduleRequest) {
+			account.Credentials["pool_mode"] = true
+			account.Credentials["image_pool_mode"] = true
+		}},
+		{name: "image capability", mutate: func(_ *Account, req *OpenAIAccountScheduleRequest) {
+			req.RequiredImageCapability = OpenAIImagesCapabilityBasic
+		}},
+		{name: "grok media capability", mutate: func(_ *Account, req *OpenAIAccountScheduleRequest) {
+			req.RequiredCapability = OpenAIEndpointCapabilityGrokMediaGeneration
+		}},
+		{name: "responses capability", mutate: func(_ *Account, req *OpenAIAccountScheduleRequest) {
+			req.RequiredCapability = OpenAIEndpointCapabilityResponses
+		}},
+		{name: "embeddings capability", mutate: func(_ *Account, req *OpenAIAccountScheduleRequest) {
+			req.RequiredCapability = OpenAIEndpointCapabilityEmbeddings
+		}},
+		{name: "alpha search capability", mutate: func(_ *Account, req *OpenAIAccountScheduleRequest) {
+			req.RequiredCapability = OpenAIEndpointCapabilityAlphaSearch
+		}},
+		{name: "live capability", mutate: func(_ *Account, req *OpenAIAccountScheduleRequest) {
+			req.RequiredCapability = OpenAIEndpointCapabilityLive
+		}},
+		{name: "grok request platform", mutate: func(_ *Account, req *OpenAIAccountScheduleRequest) {
+			req.RequestPlatform = PlatformGrok
+		}},
+		{name: "unknown request platform", mutate: func(_ *Account, req *OpenAIAccountScheduleRequest) {
+			req.RequestPlatform = "future-platform"
+		}},
+		{name: "non OpenAI platform", mutate: func(account *Account, _ *OpenAIAccountScheduleRequest) { account.Platform = PlatformAnthropic }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			account := base()
+			req := request
+			test.mutate(account, &req)
+			require.False(t, openAITextRequestModelSupported(account, req))
+		})
+	}
+}
+
+func TestOpenAIAccountEligibilityUsesNarrowPassthroughModelRule(t *testing.T) {
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"legacy-model": "upstream-model"},
+		},
+		Extra: map[string]any{"openai_passthrough": true},
+	}
+
+	require.True(t, isOpenAIAccountEligibleForRequest(
+		context.Background(), account, "new-upstream-model", false,
+		OpenAIEndpointCapabilityChatCompletions, "", PlatformOpenAI,
+	))
+	require.False(t, isOpenAIAccountEligibleForRequest(
+		context.Background(), account, "new-upstream-model", false,
+		OpenAIEndpointCapabilityResponses, "", PlatformOpenAI,
+	))
+	require.False(t, isOpenAIAccountEligibleForRequest(
+		context.Background(), account, "new-upstream-model", false,
+		OpenAIEndpointCapabilityChatCompletions, OpenAIImagesCapabilityBasic, PlatformOpenAI,
+	))
 }
 
 func TestAccount_IsOpenAIResponsesPassthroughCompatEnabled(t *testing.T) {

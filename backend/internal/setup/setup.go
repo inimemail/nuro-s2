@@ -19,6 +19,7 @@ import (
 
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -127,6 +128,15 @@ type adminBootstrapDecision struct {
 	reason       string
 }
 
+func skipSetupEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SKIP_SETUP"))) {
+	case "true", "1", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
 func decideAdminBootstrap(totalUsers, adminUsers int64) adminBootstrapDecision {
 	if adminUsers > 0 {
 		return adminBootstrapDecision{
@@ -149,6 +159,11 @@ func decideAdminBootstrap(totalUsers, adminUsers int64) adminBootstrapDecision {
 // NeedsSetup checks if the system needs initial setup
 // Uses multiple checks to prevent attackers from forcing re-setup by deleting config
 func NeedsSetup() bool {
+	if skipSetupEnabled() {
+		logger.L().Debug("setup.needs_setup_bypassed", zap.String("reason", "skip_setup_enabled"))
+		return false
+	}
+
 	// Check 1: Config file must not exist
 	if _, err := os.Stat(GetConfigFilePath()); !os.IsNotExist(err) {
 		return false // Config exists, no setup needed

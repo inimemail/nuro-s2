@@ -101,3 +101,16 @@ func openAIReasoningEffortToClaudeOutputEffort(effort string) string {
 		return ""
 	}
 }
+
+// openAICompatAnthropicReasoningEffort is applied only after the final
+// upstream model is known. GPT-5.6 accepts Anthropic's original max effort;
+// other models retain the existing converted value.
+func openAICompatAnthropicReasoningEffort(req *apicompat.AnthropicRequest, upstreamModel, convertedEffort string) string {
+	if req == nil || req.OutputConfig == nil || !strings.EqualFold(strings.TrimSpace(req.OutputConfig.Effort), "max") {
+		return convertedEffort
+	}
+	if normalized := normalizeOpenAIReasoningEffortForModel(req.OutputConfig.Effort, upstreamModel); normalized != "" {
+		return normalized
+	}
+	return convertedEffort
+}

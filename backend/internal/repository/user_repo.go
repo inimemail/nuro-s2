@@ -199,8 +199,8 @@ func (r *userRepository) GetByEmail(ctx context.Context, email string) (*service
 	return out, nil
 }
 
-func (r *userRepository) Update(ctx context.Context, userIn *service.User) error {
-	if userIn == nil {
+func (r *userRepository) Update(ctx context.Context, userIn *service.User, fields service.UserUpdateFields) error {
+	if userIn == nil || fields.IsEmpty() {
 		return nil
 	}
 
@@ -222,19 +222,20 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User) error
 		return err
 	}
 
-	releaseEmailLock, err := lockRepositoryScopedKeys(
-		txCtx,
-		txClient,
-		txAwareSQLExecutor(txCtx, r.sql, r.client),
-		normalizedEmailUniquenessLockKey(userIn.Email),
-	)
-	if err != nil {
-		return err
-	}
-	defer releaseEmailLock()
-
-	if err := ensureNormalizedEmailAvailableWithClient(txCtx, txClient, userIn.ID, userIn.Email); err != nil {
-		return err
+	if fields.Email {
+		releaseEmailLock, err := lockRepositoryScopedKeys(
+			txCtx,
+			txClient,
+			txAwareSQLExecutor(txCtx, r.sql, r.client),
+			normalizedEmailUniquenessLockKey(userIn.Email),
+		)
+		if err != nil {
+			return err
+		}
+		defer releaseEmailLock()
+		if err := ensureNormalizedEmailAvailableWithClient(txCtx, txClient, userIn.ID, userIn.Email); err != nil {
+			return err
+		}
 	}
 
 	existing, err := clientFromContext(txCtx, txClient).User.Get(txCtx, userIn.ID)
@@ -243,44 +244,65 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User) error
 	}
 	oldEmail := existing.Email
 
-	updateOp := txClient.User.UpdateOneID(userIn.ID).
-		SetEmail(userIn.Email).
-		SetUsername(userIn.Username).
-		SetNotes(userIn.Notes).
-		SetPasswordHash(userIn.PasswordHash).
-		SetRole(userIn.Role).
-		SetBalance(userIn.Balance).
-		SetFrozenBalance(userIn.FrozenBalance).
-		SetConcurrency(userIn.Concurrency).
-		SetStatus(userIn.Status).
-		SetBalanceNotifyEnabled(userIn.BalanceNotifyEnabled).
-		SetBalanceNotifyThresholdType(userIn.BalanceNotifyThresholdType).
-		SetNillableBalanceNotifyThreshold(userIn.BalanceNotifyThreshold).
-		SetBalanceNotifyExtraEmails(marshalExtraEmails(userIn.BalanceNotifyExtraEmails)).
-		SetTotalRecharged(userIn.TotalRecharged).
-		SetRpmLimit(userIn.RPMLimit)
-	if userIn.SignupSource != "" {
+	updateOp := txClient.User.UpdateOneID(userIn.ID)
+	if fields.Email {
+		updateOp = updateOp.SetEmail(userIn.Email)
+	}
+	if fields.Username {
+		updateOp = updateOp.SetUsername(userIn.Username)
+	}
+	if fields.Notes {
+		updateOp = updateOp.SetNotes(userIn.Notes)
+	}
+	if fields.PasswordHash {
+		updateOp = updateOp.SetPasswordHash(userIn.PasswordHash)
+	}
+	if fields.Role {
+		updateOp = updateOp.SetRole(userIn.Role)
+	}
+	if fields.Concurrency {
+		updateOp = updateOp.SetConcurrency(userIn.Concurrency)
+	}
+	if fields.Status {
+		updateOp = updateOp.SetStatus(userIn.Status)
+	}
+	if fields.RPMLimit {
+		updateOp = updateOp.SetRpmLimit(userIn.RPMLimit)
+	}
+	if fields.BalanceNotifySettings {
+		updateOp = updateOp.SetBalanceNotifyEnabled(userIn.BalanceNotifyEnabled).
+			SetBalanceNotifyThresholdType(userIn.BalanceNotifyThresholdType).
+			SetNillableBalanceNotifyThreshold(userIn.BalanceNotifyThreshold)
+		if userIn.BalanceNotifyThreshold == nil {
+			updateOp = updateOp.ClearBalanceNotifyThreshold()
+		}
+	}
+	if fields.BalanceNotifyExtraEmails {
+		updateOp = updateOp.SetBalanceNotifyExtraEmails(marshalExtraEmails(userIn.BalanceNotifyExtraEmails))
+	}
+	if fields.SignupSource && userIn.SignupSource != "" {
 		updateOp = updateOp.SetSignupSource(userIn.SignupSource)
 	}
-	if userIn.LastLoginAt != nil {
+	if fields.LastLoginAt && userIn.LastLoginAt != nil {
 		updateOp = updateOp.SetLastLoginAt(*userIn.LastLoginAt)
 	}
-	if userIn.LastActiveAt != nil {
+	if fields.LastActiveAt && userIn.LastActiveAt != nil {
 		updateOp = updateOp.SetLastActiveAt(*userIn.LastActiveAt)
-	}
-	if userIn.BalanceNotifyThreshold == nil {
-		updateOp = updateOp.ClearBalanceNotifyThreshold()
 	}
 	updated, err := updateOp.Save(txCtx)
 	if err != nil {
 		return translatePersistenceError(err, service.ErrUserNotFound, service.ErrEmailExists)
 	}
 
-	if err := r.syncUserAllowedGroupsWithClient(txCtx, txClient, updated.ID, userIn.AllowedGroups); err != nil {
-		return err
+	if fields.AllowedGroups {
+		if err := r.syncUserAllowedGroupsWithClient(txCtx, txClient, updated.ID, userIn.AllowedGroups); err != nil {
+			return err
+		}
 	}
-	if err := replaceEmailAuthIdentityWithClient(txCtx, txClient, updated.ID, oldEmail, updated.Email, "user_repo_update"); err != nil {
-		return err
+	if fields.Email {
+		if err := replaceEmailAuthIdentityWithClient(txCtx, txClient, updated.ID, oldEmail, updated.Email, "user_repo_update"); err != nil {
+			return err
+		}
 	}
 
 	if tx != nil {
@@ -776,6 +798,77 @@ func (r *userRepository) DeductBalance(ctx context.Context, id int64, amount flo
 		return service.ErrUserNotFound
 	}
 	return nil
+}
+
+// AdjustBalance is reserved for administrative balance edits. Request billing
+// continues to use DeductBalance and therefore keeps the existing overdraft
+// semantics.
+func (r *userRepository) AdjustBalance(ctx context.Context, id int64, delta float64) (service.BalanceChange, error) {
+	const query = `UPDATE users SET balance = balance + $1, updated_at = NOW()
+		WHERE id = $2 AND deleted_at IS NULL AND balance + $1 >= 0
+		RETURNING balance - $1, balance`
+	change, ok, err := scanBalanceChange(ctx, clientFromContext(ctx, r.client), query, delta, id)
+	if err != nil || ok {
+		return change, err
+	}
+	current, err := r.currentBalance(ctx, id)
+	if err != nil {
+		return service.BalanceChange{}, err
+	}
+	return service.BalanceChange{Old: current, New: current + delta}, service.ErrBalanceNegative
+}
+
+func (r *userRepository) SetBalance(ctx context.Context, id int64, value float64) (service.BalanceChange, error) {
+	if value < 0 {
+		current, err := r.currentBalance(ctx, id)
+		if err != nil {
+			return service.BalanceChange{}, err
+		}
+		return service.BalanceChange{Old: current, New: value}, service.ErrBalanceNegative
+	}
+	const query = `UPDATE users AS u SET balance = $1, updated_at = NOW()
+		FROM (SELECT id, balance FROM users WHERE id = $2 AND deleted_at IS NULL) AS prev
+		WHERE u.id = prev.id AND u.deleted_at IS NULL RETURNING prev.balance, u.balance`
+	change, ok, err := scanBalanceChange(ctx, clientFromContext(ctx, r.client), query, value, id)
+	if err != nil {
+		return service.BalanceChange{}, err
+	}
+	if !ok {
+		return service.BalanceChange{}, service.ErrUserNotFound
+	}
+	return change, nil
+}
+
+func (r *userRepository) currentBalance(ctx context.Context, id int64) (float64, error) {
+	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, `SELECT balance FROM users WHERE id = $1 AND deleted_at IS NULL`, id)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, service.ErrUserNotFound
+	}
+	var balance float64
+	if err := rows.Scan(&balance); err != nil {
+		return 0, err
+	}
+	return balance, rows.Err()
+}
+
+func scanBalanceChange(ctx context.Context, client *dbent.Client, query string, args ...any) (service.BalanceChange, bool, error) {
+	rows, err := client.QueryContext(ctx, query, args...)
+	if err != nil {
+		return service.BalanceChange{}, false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return service.BalanceChange{}, false, rows.Err()
+	}
+	var change service.BalanceChange
+	if err := rows.Scan(&change.Old, &change.New); err != nil {
+		return service.BalanceChange{}, false, err
+	}
+	return change, true, rows.Err()
 }
 
 func (r *userRepository) UpdateConcurrency(ctx context.Context, id int64, amount int) error {

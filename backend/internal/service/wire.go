@@ -49,6 +49,18 @@ func ProvideBatchImageModelPricingResolver(resolver *ModelPricingResolver) *Batc
 	return &BatchImageModelPricingResolver{Resolver: resolver}
 }
 
+func ProvideGroupService(groupRepo GroupRepository, authCacheInvalidator APIKeyAuthCacheInvalidator, plaza *ModelPlazaService) *GroupService {
+	svc := NewGroupService(groupRepo, authCacheInvalidator)
+	svc.SetModelPlazaInvalidator(plaza.Invalidate)
+	return svc
+}
+
+func ProvideChannelService(repo ChannelRepository, groupRepo GroupRepository, authCacheInvalidator APIKeyAuthCacheInvalidator, pricing *PricingService, plaza *ModelPlazaService) *ChannelService {
+	svc := NewChannelService(repo, groupRepo, authCacheInvalidator, pricing)
+	svc.SetModelPlazaInvalidator(plaza.Invalidate)
+	return svc
+}
+
 // ProvideTokenRefreshService creates and starts TokenRefreshService
 func ProvideTokenRefreshService(
 	accountRepo AccountRepository,
@@ -644,6 +656,8 @@ func ProvideAuthCacheInvalidationWorker(
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	NewPasskeyService,
+	NewModelPlazaService,
 	// Core services
 	NewAuthService,
 	NewUserService,
@@ -651,7 +665,7 @@ var ProviderSet = wire.NewSet(
 	ProvideAPIKeyAuthCacheInvalidator,
 	ProvideAuthCacheInvalidationWorker,
 	ProvideOpsIngressRejectAggregator,
-	NewGroupService,
+	ProvideGroupService,
 	NewAccountService,
 	NewProxyService,
 	NewRedeemService,
@@ -735,7 +749,7 @@ var ProviderSet = wire.NewSet(
 	ProvideScheduledTestService,
 	ProvideScheduledTestRunnerService,
 	NewGroupCapacityService,
-	NewChannelService,
+	ProvideChannelService,
 	NewModelPricingResolver,
 	ProvideBatchImageModelPricingResolver,
 	NewBatchImageService,

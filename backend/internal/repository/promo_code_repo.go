@@ -89,11 +89,12 @@ func (r *promoCodeRepository) GetByCodeForUpdate(ctx context.Context, code strin
 
 func (r *promoCodeRepository) Update(ctx context.Context, code *service.PromoCode) error {
 	client := clientFromContext(ctx, r.client)
+	// used_count belongs to the redemption path and is incremented atomically.
+	// Writing an admin edit snapshot here could erase concurrent redemptions.
 	builder := client.PromoCode.UpdateOneID(code.ID).
 		SetCode(code.Code).
 		SetBonusAmount(code.BonusAmount).
 		SetMaxUses(code.MaxUses).
-		SetUsedCount(code.UsedCount).
 		SetStatus(code.Status).
 		SetNotes(code.Notes)
 

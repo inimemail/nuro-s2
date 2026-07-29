@@ -12,23 +12,41 @@ import (
 
 type balanceUserRepoStub struct {
 	*userRepoStub
-	updateErr error
-	updated   []*User
+	adjustErr            error
+	failGetAfterMutation bool
+	changes              []BalanceChange
 }
 
-func (s *balanceUserRepoStub) Update(ctx context.Context, user *User) error {
-	if s.updateErr != nil {
-		return s.updateErr
+func (s *balanceUserRepoStub) GetByID(ctx context.Context, id int64) (*User, error) {
+	if s.failGetAfterMutation && len(s.changes) > 0 {
+		return nil, errors.New("post-mutation read failed")
 	}
-	if user == nil {
-		return nil
+	return s.userRepoStub.GetByID(ctx, id)
+}
+
+func (s *balanceUserRepoStub) AdjustBalance(_ context.Context, _ int64, delta float64) (BalanceChange, error) {
+	return s.apply(func(current float64) float64 { return current + delta })
+}
+
+func (s *balanceUserRepoStub) SetBalance(_ context.Context, _ int64, value float64) (BalanceChange, error) {
+	return s.apply(func(float64) float64 { return value })
+}
+
+func (s *balanceUserRepoStub) apply(next func(float64) float64) (BalanceChange, error) {
+	if s.adjustErr != nil {
+		return BalanceChange{}, s.adjustErr
 	}
-	clone := *user
-	s.updated = append(s.updated, &clone)
-	if s.userRepoStub != nil {
-		s.userRepoStub.user = &clone
+	if s.userRepoStub == nil || s.userRepoStub.user == nil {
+		return BalanceChange{}, ErrUserNotFound
 	}
-	return nil
+	change := BalanceChange{Old: s.userRepoStub.user.Balance}
+	change.New = next(change.Old)
+	if change.New < 0 {
+		return change, ErrBalanceNegative
+	}
+	s.userRepoStub.user.Balance = change.New
+	s.changes = append(s.changes, change)
+	return change, nil
 }
 
 type balanceRedeemRepoStub struct {
@@ -84,6 +102,63 @@ func (s *authCacheInvalidatorStub) InvalidateAuthCacheByUserID(ctx context.Conte
 
 func (s *authCacheInvalidatorStub) InvalidateAuthCacheByGroupID(ctx context.Context, groupID int64) {
 	s.groupIDs = append(s.groupIDs, groupID)
+}
+
+func TestAdminService_UpdateUserBalance_UsesAtomicPrimitives(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		amount    float64
+		want      BalanceChange
+	}{
+		{name: "add", operation: "add", amount: 5, want: BalanceChange{Old: 10, New: 15}},
+		{name: "subtract", operation: "subtract", amount: 4, want: BalanceChange{Old: 10, New: 6}},
+		{name: "set", operation: "set", amount: 2, want: BalanceChange{Old: 10, New: 2}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &balanceUserRepoStub{userRepoStub: &userRepoStub{user: &User{ID: 7, Balance: 10}}}
+			svc := &adminServiceImpl{userRepo: repo, redeemCodeRepo: &balanceRedeemRepoStub{redeemRepoStub: &redeemRepoStub{}}}
+
+			user, err := svc.UpdateUserBalance(context.Background(), 7, tt.amount, tt.operation, "")
+			require.NoError(t, err)
+			require.Equal(t, []BalanceChange{tt.want}, repo.changes)
+			require.Equal(t, tt.want.New, user.Balance)
+		})
+	}
+}
+
+func TestAdminService_UpdateUserBalance_DoesNotDependOnPostMutationRead(t *testing.T) {
+	repo := &balanceUserRepoStub{
+		userRepoStub:         &userRepoStub{user: &User{ID: 7, Balance: 10}},
+		failGetAfterMutation: true,
+	}
+	svc := &adminServiceImpl{userRepo: repo, redeemCodeRepo: &balanceRedeemRepoStub{redeemRepoStub: &redeemRepoStub{}}}
+
+	user, err := svc.UpdateUserBalance(context.Background(), 7, 5, "add", "")
+	require.NoError(t, err)
+	require.Equal(t, 15.0, user.Balance)
+	require.Equal(t, []BalanceChange{{Old: 10, New: 15}}, repo.changes)
+}
+
+func TestAdminService_UpdateUserBalance_RejectsNegativeResult(t *testing.T) {
+	repo := &balanceUserRepoStub{userRepoStub: &userRepoStub{user: &User{ID: 7, Balance: 3}}}
+	svc := &adminServiceImpl{userRepo: repo, redeemCodeRepo: &balanceRedeemRepoStub{redeemRepoStub: &redeemRepoStub{}}}
+
+	_, err := svc.UpdateUserBalance(context.Background(), 7, 4, "subtract", "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "balance cannot be negative")
+	require.Empty(t, repo.changes)
+	require.Equal(t, 3.0, repo.userRepoStub.user.Balance)
+}
+
+func TestAdminService_UpdateUserBalance_RejectsUnknownOperation(t *testing.T) {
+	repo := &balanceUserRepoStub{userRepoStub: &userRepoStub{user: &User{ID: 7, Balance: 10}}}
+	svc := &adminServiceImpl{userRepo: repo, redeemCodeRepo: &balanceRedeemRepoStub{redeemRepoStub: &redeemRepoStub{}}}
+
+	_, err := svc.UpdateUserBalance(context.Background(), 7, 1, "multiply", "")
+	require.Error(t, err)
+	require.Empty(t, repo.changes)
 }
 
 func TestAdminService_UpdateUserBalance_InvalidatesAuthCache(t *testing.T) {

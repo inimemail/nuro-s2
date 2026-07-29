@@ -12,9 +12,9 @@
           </span>
           <span
             class="inline-flex rounded px-2 py-0.5 text-xs font-medium"
-            :class="endpoint.has_token && !endpoint.clear_token ? 'bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300' : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'"
+            :class="credentialInvalid ? 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300' : endpoint.has_token && !endpoint.clear_token ? 'bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300' : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'"
           >
-            {{ endpoint.has_token && !endpoint.clear_token ? copy.tokenConfigured : copy.tokenMissing }}
+            {{ credentialInvalid ? copy.tokenInvalid : endpoint.has_token && !endpoint.clear_token ? copy.tokenConfigured : copy.tokenMissing }}
           </span>
         </div>
         <p v-if="probeResult" class="mt-1 flex items-center gap-1.5 text-xs" :class="probeResult.ok ? 'text-green-700 dark:text-green-300' : 'text-amber-700 dark:text-amber-300'">
@@ -68,7 +68,7 @@
           type="password"
           autocomplete="new-password"
           :disabled="endpoint.clear_token"
-          :placeholder="endpoint.has_token ? copy.tokenKeepPlaceholder : copy.tokenNewPlaceholder"
+          :placeholder="credentialInvalid ? copy.tokenInvalidHint : endpoint.has_token ? copy.tokenKeepPlaceholder : copy.tokenNewPlaceholder"
         />
       </label>
     </div>
@@ -79,7 +79,7 @@
         <span>{{ copy.clearToken }}</span>
       </label>
       <p v-if="endpoint.has_token && !endpoint.token && !endpoint.clear_token" class="text-xs text-gray-500 dark:text-gray-400 sm:ml-auto">
-        {{ copy.probeTokenHint }}
+        {{ credentialInvalid ? copy.tokenInvalidHint : copy.probeTokenHint }}
       </p>
     </div>
 
@@ -119,6 +119,7 @@ defineProps<{
 const emit = defineEmits<{ (event: 'remove'): void; (event: 'probe'): void }>()
 
 const canProbe = computed(() => Boolean(endpoint.value.base_url.trim() && endpoint.value.model.trim()))
+const credentialInvalid = computed(() => endpoint.value.token_status === 'invalid' && !(endpoint.value.token || '').trim() && !endpoint.value.clear_token)
 
 function onClearTokenChange() {
   if (endpoint.value.clear_token) endpoint.value.token = ''

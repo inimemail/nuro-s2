@@ -39,6 +39,7 @@ type EndpointConfig struct {
 	Enabled         bool     `json:"enabled"`
 	AllowPrivate    bool     `json:"allow_private"`
 	AllowedCIDRs    []string `json:"allowed_cidrs,omitempty"`
+	TokenInvalid    bool     `json:"-"`
 }
 
 type Config struct {

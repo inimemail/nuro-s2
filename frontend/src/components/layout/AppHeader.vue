@@ -26,6 +26,15 @@
         <!-- Announcement Bell -->
         <AnnouncementBell v-if="user" />
 
+        <router-link
+          v-if="modelPlazaEnabled"
+          to="/model-plaza?embedded=1"
+          class="hidden items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-dark-400 dark:hover:bg-dark-800 dark:hover:text-white sm:flex"
+        >
+          <Icon name="globe" size="sm" />
+          <span>{{ t('nav.modelPlaza') }}</span>
+        </router-link>
+
         <!-- Docs Link -->
         <a
           v-if="docUrl"
@@ -220,6 +229,7 @@ const user = computed(() => authStore.user)
 const dropdownOpen = ref(false)
 const dropdownRef = ref<HTMLElement | null>(null)
 const contactInfo = computed(() => appStore.contactInfo)
+const modelPlazaEnabled = computed(() => appStore.cachedPublicSettings?.model_plaza_enabled === true)
 const docUrl = computed(() => sanitizeUrl(appStore.docUrl))
 const avatarUrl = computed(() => user.value?.avatar_url?.trim() || '')
 

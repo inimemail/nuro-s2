@@ -132,6 +132,79 @@ func TestApplyOpenAICompatModelNormalization(t *testing.T) {
 	})
 }
 
+func TestOpenAICompatAnthropicReasoningEffortPreservesMaxOnlyForGPT56(t *testing.T) {
+	t.Parallel()
+
+	maxRequest := &apicompat.AnthropicRequest{
+		OutputConfig: &apicompat.AnthropicOutputConfig{Effort: "max"},
+	}
+	require.Equal(t, "max", openAICompatAnthropicReasoningEffort(maxRequest, "gpt-5.6-sol", "xhigh"))
+	require.Equal(t, "max", openAICompatAnthropicReasoningEffort(maxRequest, "openai/gpt-5.6-luna", "xhigh"))
+	require.Equal(t, "xhigh", openAICompatAnthropicReasoningEffort(maxRequest, "gpt-5.5", "xhigh"))
+
+	highRequest := &apicompat.AnthropicRequest{
+		OutputConfig: &apicompat.AnthropicOutputConfig{Effort: "high"},
+	}
+	require.Equal(t, "high", openAICompatAnthropicReasoningEffort(highRequest, "gpt-5.6-terra", "high"))
+	require.Equal(t, "medium", openAICompatAnthropicReasoningEffort(nil, "gpt-5.6-sol", "medium"))
+}
+
+func TestForwardAsAnthropicPreservesMaxForFinalGPT56ResponsesModel(t *testing.T) {
+	t.Parallel()
+	setOpenAICompatGinTestMode()
+
+	tests := []struct {
+		name       string
+		account    *Account
+		model      string
+		mapped     string
+		wantEffort string
+	}{
+		{name: "api key GPT56", account: rawGPT56ResponsesAccount(AccountTypeAPIKey, "luna", "gpt-5.6-luna"), model: "luna", mapped: "gpt-5.6-luna", wantEffort: "max"},
+		{name: "oauth GPT56", account: rawGPT56ResponsesAccount(AccountTypeOAuth, "sol", "gpt-5.6-sol"), model: "sol", mapped: "gpt-5.6-sol", wantEffort: "max"},
+		{name: "older model", account: rawGPT56ResponsesAccount(AccountTypeAPIKey, "gpt-5.5", "gpt-5.5"), model: "gpt-5.5", mapped: "gpt-5.5", wantEffort: "xhigh"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"model":"` + tt.model + `","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"output_config":{"effort":"max"},"stream":false}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			upstream := &httpUpstreamRecorder{resp: openAICompatSSECompletedResponse("resp_gpt56", tt.mapped)}
+			svc := &OpenAIGatewayService{
+				httpUpstream: upstream,
+				cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+			}
+
+			result, err := svc.ForwardAsAnthropic(context.Background(), c, tt.account, body, "", "")
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, tt.mapped, gjson.GetBytes(upstream.lastBody, "model").String())
+			require.Equal(t, tt.wantEffort, gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+			require.NotNil(t, result.ReasoningEffort)
+			require.Equal(t, tt.wantEffort, *result.ReasoningEffort)
+		})
+	}
+}
+
+func rawGPT56ResponsesAccount(accountType, requestedModel, mappedModel string) *Account {
+	credentials := map[string]any{
+		"model_mapping": map[string]any{requestedModel: mappedModel},
+	}
+	account := &Account{ID: 501, Name: "gpt56", Platform: PlatformOpenAI, Type: accountType, Concurrency: 1, Credentials: credentials}
+	if accountType == AccountTypeOAuth {
+		credentials["access_token"] = "oauth-token"
+		credentials["chatgpt_account_id"] = "chatgpt-acc"
+	} else {
+		credentials["api_key"] = "sk-test"
+		credentials["base_url"] = "https://api.example.com/v1"
+		account.Extra = map[string]any{"use_responses_api": true}
+	}
+	return account
+}
+
 func TestForwardAsAnthropic_NormalizesRoutingAndEffortForGpt54XHigh(t *testing.T) {
 	t.Parallel()
 	setOpenAICompatGinTestMode()

@@ -41,7 +41,6 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-
 	response.Success(c, dto.PublicSettings{
 		RegistrationEnabled:              settings.RegistrationEnabled,
 		EmailVerifyEnabled:               settings.EmailVerifyEnabled,
@@ -51,6 +50,7 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		PasswordResetEnabled:             settings.PasswordResetEnabled,
 		InvitationCodeEnabled:            settings.InvitationCodeEnabled,
 		TotpEnabled:                      settings.TotpEnabled,
+		PasskeyEnabled:                   settings.PasskeyEnabled,
 		LoginAgreementEnabled:            settings.LoginAgreementEnabled,
 		LoginAgreementMode:               settings.LoginAgreementMode,
 		LoginAgreementUpdatedAt:          settings.LoginAgreementUpdatedAt,
@@ -94,6 +94,8 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		ChannelMonitorDefaultIntervalSeconds: settings.ChannelMonitorDefaultIntervalSeconds,
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
+		ModelPlazaEnabled:        settings.ModelPlazaEnabled,
+		ModelPlazaRequireAuth:    settings.ModelPlazaRequireAuth,
 
 		AffiliateEnabled: settings.AffiliateEnabled,
 

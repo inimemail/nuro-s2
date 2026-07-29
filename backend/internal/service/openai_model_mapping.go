@@ -60,6 +60,9 @@ func isOpenAIOAuthServableModel(requestedModel string) bool {
 	if model == "" {
 		return true
 	}
+	if model == "k3" || model == "k3-256k" {
+		return false
+	}
 	for _, prefix := range openAIOAuthForeignModelPrefixes {
 		if strings.HasPrefix(model, prefix) {
 			return false

@@ -197,3 +197,18 @@ func TestAuditMiddlewareActionOverrideAndActor(t *testing.T) {
 	require.Equal(t, int64(42), *entry.ActorUserID)
 	require.Equal(t, "actor@example.com", entry.ActorEmail)
 }
+
+func TestPasskeyRoutesNeverCaptureCredentialBodies(t *testing.T) {
+	routes := []string{
+		"POST /api/v1/auth/passkey/login/begin",
+		"POST /api/v1/auth/passkey/login/finish",
+		"POST /api/v1/user/passkeys/register/begin",
+		"POST /api/v1/user/passkeys/register/finish",
+		"PATCH /api/v1/user/passkeys/:id",
+		"DELETE /api/v1/user/passkeys/:id",
+	}
+	for _, route := range routes {
+		_, ok := auditBodyOmittedRoutes[route]
+		require.Truef(t, ok, "passkey route %s must omit audit request bodies", route)
+	}
+}

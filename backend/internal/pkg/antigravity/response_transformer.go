@@ -293,7 +293,7 @@ func (p *NonStreamingProcessor) buildResponse(geminiResp *GeminiResponse, respon
 		respID = geminiResp.ResponseID
 	}
 	if respID == "" {
-		respID = "msg_" + generateRandomID()
+		respID = generateAnthropicMsgID()
 	}
 
 	return &ClaudeResponse{
@@ -371,4 +371,18 @@ func generateRandomID() string {
 		id[i] = chars[int(b)%len(chars)]
 	}
 	return string(id)
+}
+
+func generateAnthropicMsgID() string {
+	const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	const idLen = 22
+	randomBytes := make([]byte, idLen)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "msg_01" + generateRandomID() + generateRandomID()[:10]
+	}
+	b := make([]byte, idLen)
+	for i := range b {
+		b[i] = charset[int(randomBytes[i])%len(charset)]
+	}
+	return "msg_01" + string(b)
 }

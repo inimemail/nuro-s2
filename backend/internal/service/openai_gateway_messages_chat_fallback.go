@@ -52,6 +52,9 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	billingModel := resolveOpenAIForwardModel(account, anthropicReq.Model, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 	responsesReq.Model = upstreamModel
+	if responsesReq.Reasoning != nil {
+		responsesReq.Reasoning.Effort = openAICompatAnthropicReasoningEffort(&anthropicReq, upstreamModel, responsesReq.Reasoning.Effort)
+	}
 	customTools := apicompat.CustomToolNames(responsesReq.Tools)
 	toolSearchDeclared := apicompat.HasToolSearchTool(responsesReq.Tools)
 	namespaceTools := apicompat.NamespaceToolNames(responsesReq.Tools)
@@ -66,7 +69,8 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 		chatReq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
 	}
 
-	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
+	convertedEffort := chatReq.ReasoningEffort
+	reasoningEffort := &convertedEffort
 	serviceTier := extractOpenAIServiceTierFromBody(body)
 
 	chatBody, err := json.Marshal(chatReq)

@@ -62,6 +62,15 @@ func RegisterUserRoutes(
 				totp.POST("/disable", h.Totp.Disable)
 				totp.POST("/step-up", h.Totp.StepUp)
 			}
+
+			passkeys := user.Group("/passkeys")
+			{
+				passkeys.GET("", h.Passkey.List)
+				passkeys.POST("/register/begin", h.Passkey.BeginRegistration)
+				passkeys.POST("/register/finish", h.Passkey.FinishRegistration)
+				passkeys.PATCH("/:id", h.Passkey.Rename)
+				passkeys.DELETE("/:id", h.Passkey.Delete)
+			}
 		}
 
 		// API Key管理

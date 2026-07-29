@@ -56,7 +56,8 @@ func TestSendMockInterceptResponse_MaxTokensOneHaiku(t *testing.T) {
 
 	id, ok := response["id"].(string)
 	require.True(t, ok)
-	require.True(t, strings.HasPrefix(id, "msg_bdrk_"))
+	require.True(t, strings.HasPrefix(id, "msg_01"))
+	require.Len(t, id, 28)
 
 	content, ok := response["content"].([]any)
 	require.True(t, ok)

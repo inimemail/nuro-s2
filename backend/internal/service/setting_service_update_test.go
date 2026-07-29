@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -132,6 +133,32 @@ func TestSettingService_PromptAuditFeatureUpdatePersistsAndRefreshesRuntimeGate(
 	require.Equal(t, "true", repo.updates[SettingKeyPromptAuditEnabled])
 	require.Equal(t, 1, called)
 	require.True(t, enabled)
+}
+
+func TestSettingService_UpdateSettings_ModelPlazaDescriptionLimit(t *testing.T) {
+	t.Run("accepts trimmed description at limit", func(t *testing.T) {
+		repo := &settingUpdateRepoStub{}
+		svc := NewSettingService(repo, &config.Config{})
+
+		description := "  " + strings.Repeat("中", ModelPlazaDescriptionMaxLength) + "  "
+		err := svc.UpdateSettings(context.Background(), &SystemSettings{ModelPlazaDescription: description})
+
+		require.NoError(t, err)
+		require.Equal(t, strings.Repeat("中", ModelPlazaDescriptionMaxLength), repo.updates[SettingKeyModelPlazaDescription])
+	})
+
+	t.Run("rejects description over limit before persistence", func(t *testing.T) {
+		repo := &settingUpdateRepoStub{}
+		svc := NewSettingService(repo, &config.Config{})
+
+		err := svc.UpdateSettings(context.Background(), &SystemSettings{
+			ModelPlazaDescription: strings.Repeat("a", ModelPlazaDescriptionMaxLength+1),
+		})
+
+		require.Error(t, err)
+		require.Equal(t, "MODEL_PLAZA_DESCRIPTION_TOO_LONG", infraerrors.Reason(err))
+		require.Nil(t, repo.updates)
+	})
 }
 
 func (s *defaultSubGroupReaderStub) GetByID(ctx context.Context, id int64) (*Group, error) {

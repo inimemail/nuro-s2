@@ -18,6 +18,8 @@ export { paymentAPI } from './payment'
 export { userGroupsAPI } from './groups'
 export { userChannelsAPI } from './channels'
 export { totpAPI } from './totp'
+export { passkeyAPI, type PasskeyCredentialSummary } from './passkey'
+export { getModelPlaza, type ModelPlazaResponse, type ModelPlazaGroup, type PlazaModel } from './modelPlaza'
 export { default as announcementsAPI } from './announcements'
 export { channelMonitorUserAPI } from './channelMonitor'
 

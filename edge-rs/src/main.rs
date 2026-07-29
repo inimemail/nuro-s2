@@ -2211,6 +2211,15 @@ fn response_body_preview(body: &[u8]) -> String {
         || lower.contains("vertex")
         || lower.contains("grok")
         || lower.contains("x.ai")
+        || lower.contains("kimi")
+        || lower.contains("moonshot")
+        || lower.contains("deepseek")
+        || lower.contains("minimax")
+        || lower.contains("bigmodel")
+        || lower.contains("zhipu")
+        || lower.contains("ollama")
+        || lower.contains("智谱")
+        || lower.contains("月之暗面")
         || lower.contains("cloudfront")
         || lower.contains("fastly")
         || lower.contains("akamai")
@@ -9138,6 +9147,15 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             b"dial tcp private.vendor.example:443: connection refused".as_slice(),
             b"dial tcp 192.0.2.12:443: timeout".as_slice(),
             b"Vertex backend rejected request".as_slice(),
+            b"Kimi gateway overloaded".as_slice(),
+            b"Moonshot account rejected the request".as_slice(),
+            b"DeepSeek service unavailable".as_slice(),
+            b"MiniMax upstream timeout".as_slice(),
+            b"BigModel authentication failed".as_slice(),
+            b"Zhipu request rejected".as_slice(),
+            b"Ollama Cloud returned an internal error".as_slice(),
+            "智谱服务暂时不可用".as_bytes(),
+            "月之暗面上游拒绝请求".as_bytes(),
         ] {
             assert_eq!(response_body_preview(body), "[redacted upstream error]");
         }

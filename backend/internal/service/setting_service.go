@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -762,6 +763,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyPasswordResetEnabled,
 		SettingKeyInvitationCodeEnabled,
 		SettingKeyTotpEnabled,
+		SettingKeyPasskeyEnabled,
 		SettingKeyLoginAgreementEnabled,
 		SettingKeyLoginAgreementMode,
 		SettingKeyLoginAgreementUpdatedAt,
@@ -818,6 +820,8 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyChannelMonitorEnabled,
 		SettingKeyChannelMonitorDefaultIntervalSeconds,
 		SettingKeyAvailableChannelsEnabled,
+		SettingKeyModelPlazaEnabled,
+		SettingKeyModelPlazaRequireAuth,
 		SettingKeyAffiliateEnabled,
 		SettingKeyRiskControlEnabled,
 		SettingKeyPromptAuditEnabled,
@@ -888,6 +892,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		PasswordResetEnabled:             passwordResetEnabled,
 		InvitationCodeEnabled:            settings[SettingKeyInvitationCodeEnabled] == "true",
 		TotpEnabled:                      settings[SettingKeyTotpEnabled] == "true",
+		PasskeyEnabled:                   s.passkeyConfigured() && settings[SettingKeyPasskeyEnabled] == "true",
 		LoginAgreementEnabled:            settings[SettingKeyLoginAgreementEnabled] == "true" && len(loginAgreementDocuments) > 0,
 		LoginAgreementMode:               normalizeLoginAgreementMode(settings[SettingKeyLoginAgreementMode]),
 		LoginAgreementUpdatedAt:          loginAgreementUpdatedAt,
@@ -930,6 +935,8 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		ChannelMonitorDefaultIntervalSeconds: parseChannelMonitorInterval(settings[SettingKeyChannelMonitorDefaultIntervalSeconds]),
 
 		AvailableChannelsEnabled: settings[SettingKeyAvailableChannelsEnabled] == "true",
+		ModelPlazaEnabled:        settings[SettingKeyModelPlazaEnabled] == "true",
+		ModelPlazaRequireAuth:    settings[SettingKeyModelPlazaRequireAuth] != "false",
 
 		AffiliateEnabled: settings[SettingKeyAffiliateEnabled] == "true",
 
@@ -1310,6 +1317,7 @@ type PublicSettingsInjectionPayload struct {
 	PasswordResetEnabled             bool                     `json:"password_reset_enabled"`
 	InvitationCodeEnabled            bool                     `json:"invitation_code_enabled"`
 	TotpEnabled                      bool                     `json:"totp_enabled"`
+	PasskeyEnabled                   bool                     `json:"passkey_enabled"`
 	LoginAgreementEnabled            bool                     `json:"login_agreement_enabled"`
 	LoginAgreementMode               string                   `json:"login_agreement_mode"`
 	LoginAgreementUpdatedAt          string                   `json:"login_agreement_updated_at"`
@@ -1355,6 +1363,8 @@ type PublicSettingsInjectionPayload struct {
 	ChannelMonitorEnabled                bool `json:"channel_monitor_enabled"`
 	ChannelMonitorDefaultIntervalSeconds int  `json:"channel_monitor_default_interval_seconds"`
 	AvailableChannelsEnabled             bool `json:"available_channels_enabled"`
+	ModelPlazaEnabled                    bool `json:"model_plaza_enabled"`
+	ModelPlazaRequireAuth                bool `json:"model_plaza_require_auth"`
 	AffiliateEnabled                     bool `json:"affiliate_enabled"`
 	RiskControlEnabled                   bool `json:"risk_control_enabled"`
 	PromptAuditEnabled                   bool `json:"prompt_audit_enabled"`
@@ -1377,6 +1387,7 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		PasswordResetEnabled:             settings.PasswordResetEnabled,
 		InvitationCodeEnabled:            settings.InvitationCodeEnabled,
 		TotpEnabled:                      settings.TotpEnabled,
+		PasskeyEnabled:                   settings.PasskeyEnabled,
 		LoginAgreementEnabled:            settings.LoginAgreementEnabled,
 		LoginAgreementMode:               settings.LoginAgreementMode,
 		LoginAgreementUpdatedAt:          settings.LoginAgreementUpdatedAt,
@@ -1419,6 +1430,8 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		ChannelMonitorEnabled:                settings.ChannelMonitorEnabled,
 		ChannelMonitorDefaultIntervalSeconds: settings.ChannelMonitorDefaultIntervalSeconds,
 		AvailableChannelsEnabled:             settings.AvailableChannelsEnabled,
+		ModelPlazaEnabled:                    settings.ModelPlazaEnabled,
+		ModelPlazaRequireAuth:                settings.ModelPlazaRequireAuth,
 		AffiliateEnabled:                     settings.AffiliateEnabled,
 		RiskControlEnabled:                   settings.RiskControlEnabled,
 		PromptAuditEnabled:                   settings.PromptAuditEnabled,
@@ -1817,6 +1830,10 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	if err := s.validateDefaultSubscriptionGroups(ctx, settings.DefaultSubscriptions); err != nil {
 		return nil, err
 	}
+	settings.ModelPlazaDescription = strings.TrimSpace(settings.ModelPlazaDescription)
+	if utf8.RuneCountInString(settings.ModelPlazaDescription) > ModelPlazaDescriptionMaxLength {
+		return nil, infraerrors.BadRequest("MODEL_PLAZA_DESCRIPTION_TOO_LONG", "Model plaza description is too long (max 4000 characters)")
+	}
 	normalizedWhitelist, err := NormalizeRegistrationEmailSuffixWhitelist(settings.RegistrationEmailSuffixWhitelist)
 	if err != nil {
 		return nil, infraerrors.BadRequest("INVALID_REGISTRATION_EMAIL_SUFFIX_WHITELIST", err.Error())
@@ -1886,6 +1903,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyFrontendURL] = settings.FrontendURL
 	updates[SettingKeyInvitationCodeEnabled] = strconv.FormatBool(settings.InvitationCodeEnabled)
 	updates[SettingKeyTotpEnabled] = strconv.FormatBool(settings.TotpEnabled)
+	updates[SettingKeyPasskeyEnabled] = strconv.FormatBool(settings.PasskeyEnabled)
 	updates[SettingKeyAuditLogRetentionDays] = strconv.Itoa(settings.AuditLogRetentionDays)
 	updates[SettingKeySessionBindingEnabled] = strconv.FormatBool(settings.SessionBindingEnabled)
 	settings.LoginAgreementMode = normalizeLoginAgreementMode(settings.LoginAgreementMode)
@@ -2104,6 +2122,9 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	// Available channels feature switch
 	updates[SettingKeyAvailableChannelsEnabled] = strconv.FormatBool(settings.AvailableChannelsEnabled)
+	updates[SettingKeyModelPlazaEnabled] = strconv.FormatBool(settings.ModelPlazaEnabled)
+	updates[SettingKeyModelPlazaRequireAuth] = strconv.FormatBool(settings.ModelPlazaRequireAuth)
+	updates[SettingKeyModelPlazaDescription] = settings.ModelPlazaDescription
 
 	// Affiliate (邀请返利) feature switch
 	updates[SettingKeyAffiliateEnabled] = strconv.FormatBool(settings.AffiliateEnabled)
@@ -2974,6 +2995,34 @@ func (s *SettingService) IsTotpEnabled(ctx context.Context) bool {
 	return value == "true"
 }
 
+func (s *SettingService) passkeyConfigured() bool {
+	return s != nil && s.cfg != nil && s.cfg.WebAuthn.Enabled &&
+		strings.TrimSpace(s.cfg.WebAuthn.RPID) != "" && len(s.cfg.WebAuthn.RPOrigins) > 0
+}
+
+// PasskeyEnabled requires both the immutable deployment boundary and the
+// database-backed runtime switch. Store failures fail closed.
+func (s *SettingService) PasskeyEnabled(ctx context.Context) (bool, error) {
+	if !s.passkeyConfigured() {
+		return false, nil
+	}
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyPasskeyEnabled)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("get passkey setting: %w", err)
+	}
+	return value == "true", nil
+}
+
+func (s *SettingService) PasskeyConfiguration() (bool, string, []string) {
+	if !s.passkeyConfigured() {
+		return false, "", []string{}
+	}
+	return true, s.cfg.WebAuthn.RPID, append([]string(nil), s.cfg.WebAuthn.RPOrigins...)
+}
+
 // IsTotpEncryptionKeyConfigured 检查 TOTP 加密密钥是否已手动配置
 // 只有手动配置了密钥才允许在管理后台启用 TOTP 功能
 func (s *SettingService) IsTotpEncryptionKeyConfigured() bool {
@@ -3307,6 +3356,10 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		// Available channels feature (default disabled; opt-in)
 		SettingKeyAvailableChannelsEnabled: "false",
+		SettingKeyPasskeyEnabled:           "false",
+		SettingKeyModelPlazaEnabled:        "false",
+		SettingKeyModelPlazaRequireAuth:    "true",
+		SettingKeyModelPlazaDescription:    "",
 
 		// Affiliate (邀请返利) feature (default disabled; opt-in)
 		SettingKeyAffiliateEnabled: "false",
@@ -3396,6 +3449,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		FrontendURL:                      settings[SettingKeyFrontendURL],
 		InvitationCodeEnabled:            settings[SettingKeyInvitationCodeEnabled] == "true",
 		TotpEnabled:                      settings[SettingKeyTotpEnabled] == "true",
+		PasskeyEnabled:                   settings[SettingKeyPasskeyEnabled] == "true",
 		AuditLogRetentionDays:            parseAuditLogRetentionDays(settings[SettingKeyAuditLogRetentionDays]),
 		SessionBindingEnabled:            settings[SettingKeySessionBindingEnabled] == "true",
 		LoginAgreementEnabled:            settings[SettingKeyLoginAgreementEnabled] == "true",
@@ -3857,6 +3911,9 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// Available channels feature (default: disabled; strict true)
 	result.AvailableChannelsEnabled = settings[SettingKeyAvailableChannelsEnabled] == "true"
+	result.ModelPlazaEnabled = settings[SettingKeyModelPlazaEnabled] == "true"
+	result.ModelPlazaRequireAuth = settings[SettingKeyModelPlazaRequireAuth] != "false"
+	result.ModelPlazaDescription = strings.TrimSpace(settings[SettingKeyModelPlazaDescription])
 
 	// Affiliate (邀请返利) feature (default: disabled; strict true)
 	result.AffiliateEnabled = settings[SettingKeyAffiliateEnabled] == "true"

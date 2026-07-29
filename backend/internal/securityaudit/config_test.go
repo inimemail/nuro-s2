@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	appconfig "github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -187,6 +188,57 @@ func TestProbeReusesStoredTokenOnlyForSameEndpointBinding(t *testing.T) {
 	})
 	if err != nil || encryptor.decrypts != 1 {
 		t.Fatalf("changed binding reused stored token: decrypts=%d err=%v", encryptor.decrypts, err)
+	}
+}
+
+func TestUndecryptableEndpointTokenKeepsConfigVisibleAndInactive(t *testing.T) {
+	cfg := enabledAuditTestConfig("https://guard.example/v1")
+	cfg.Version = 9
+	cfg.Endpoints[0].TokenCiphertext = "persisted-token-canary"
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &auditSettingRepo{values: map[string]string{
+		SettingKeyPromptAuditConfig:          string(raw),
+		service.SettingKeyPromptAuditEnabled: "true",
+	}}
+	svc := NewService(repo, nil, nil, auditEncryptor{}, &appconfig.Config{Totp: appconfig.TotpConfig{EncryptionKeyConfigured: true}})
+	if err = svc.loadConfig(context.Background()); err != nil {
+		t.Fatalf("undecryptable endpoint token rejected the whole config: %v", err)
+	}
+
+	public, err := svc.PublicConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if public.Version != 9 || len(public.Endpoints) != 1 || public.Endpoints[0].TokenStatus != "invalid" || !public.Endpoints[0].HasToken {
+		t.Fatalf("unexpected public config: %+v", public)
+	}
+	encoded, err := json.Marshal(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "persisted-token-canary") {
+		t.Fatalf("public config exposed invalid ciphertext: %s", encoded)
+	}
+	if svc.EnabledFast() {
+		t.Fatal("endpoint with undecryptable token remained active")
+	}
+}
+
+func TestSaveConfigRejectsNewTokenWithoutFixedEncryptionKey(t *testing.T) {
+	svc := NewService(&auditSettingRepo{values: map[string]string{}}, nil, nil, auditEncryptor{}, &appconfig.Config{})
+	_, err := svc.SaveConfig(context.Background(), UpdateConfigRequest{
+		Enabled: true, WorkerCount: 1, QueueCapacity: 8, AllGroups: true,
+		Scanners: defaultScanners, RetentionDays: 7, ExpectedVersion: 1,
+		Endpoints: []UpdateEndpoint{{
+			ID: "guard", Name: "Guard", BaseURL: "https://guard.example", Model: "guard",
+			Token: "fresh-token", TimeoutMS: 1000, Enabled: true,
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "fixed encryption key") {
+		t.Fatalf("expected fixed-key error, got %v", err)
 	}
 }
 

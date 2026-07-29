@@ -313,3 +313,52 @@ func TestJWTAuth_TokenVersionMismatch(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	require.Equal(t, "TOKEN_REVOKED", body.Code)
 }
+
+func TestOptionalJWTAuthOnlySkipsValidationWithoutAuthorization(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	strictCalls := 0
+	strict := JWTAuthMiddleware(func(c *gin.Context) {
+		strictCalls++
+		if c.GetHeader("Authorization") != "Bearer valid" {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		c.Set("strict-authenticated", true)
+		c.Next()
+	})
+	router := gin.New()
+	router.Use(OptionalJWTAuth(strict))
+	router.GET("/plaza", func(c *gin.Context) {
+		authenticated, _ := c.Get("strict-authenticated")
+		c.JSON(http.StatusOK, gin.H{"authenticated": authenticated == true})
+	})
+
+	tests := []struct {
+		name       string
+		header     string
+		wantStatus int
+		wantCalls  int
+		wantBody   string
+	}{
+		{name: "missing header is anonymous", wantStatus: http.StatusOK, wantBody: `"authenticated":false`},
+		{name: "blank header is anonymous", header: "   ", wantStatus: http.StatusOK, wantBody: `"authenticated":false`},
+		{name: "valid token is authenticated", header: "Bearer valid", wantStatus: http.StatusOK, wantCalls: 1, wantBody: `"authenticated":true`},
+		{name: "invalid token fails closed", header: "Bearer invalid", wantStatus: http.StatusUnauthorized, wantCalls: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			strictCalls = 0
+			request := httptest.NewRequest(http.MethodGet, "/plaza", nil)
+			if tt.header != "" {
+				request.Header.Set("Authorization", tt.header)
+			}
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			require.Equal(t, tt.wantStatus, recorder.Code)
+			require.Equal(t, tt.wantCalls, strictCalls)
+			if tt.wantBody != "" {
+				require.Contains(t, recorder.Body.String(), tt.wantBody)
+			}
+		})
+	}
+}

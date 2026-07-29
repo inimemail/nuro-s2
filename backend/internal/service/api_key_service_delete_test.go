@@ -68,7 +68,7 @@ func (s *apiKeyRepoStub) GetByKeyForAuth(ctx context.Context, key string) (*APIK
 	panic("unexpected GetByKeyForAuth call")
 }
 
-func (s *apiKeyRepoStub) Update(ctx context.Context, key *APIKey) error {
+func (s *apiKeyRepoStub) Update(ctx context.Context, key *APIKey, _ APIKeyUpdateFields) error {
 	panic("unexpected Update call")
 }
 

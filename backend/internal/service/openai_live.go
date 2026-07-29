@@ -33,6 +33,8 @@ const (
 	liveUpstreamBodyLimit         = 2 << 20
 )
 
+var liveObserverStoreRetryInterval = time.Second
+
 var (
 	chatGPTLiveCallsURL        = "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas"
 	chatGPTLiveSidebandBaseURL = "wss://chatgpt.com/backend-api/codex"
@@ -785,11 +787,36 @@ func (s *OpenAIGatewayService) observeLiveCall(ctx context.Context, callHash str
 		return
 	}
 	owner := uuid.NewString()
-	claimCtx, claimCancel := liveRedisContext(ctx)
-	claimed, err := store.ClaimLiveController(claimCtx, callHash, LiveControllerObserver, owner)
-	claimCancel()
-	if err != nil || !claimed {
-		return
+	for {
+		claimCtx, claimCancel := liveRedisContext(ctx)
+		claimed, claimErr := store.ClaimLiveController(claimCtx, callHash, LiveControllerObserver, owner)
+		claimCancel()
+		if claimErr == nil && claimed {
+			break
+		}
+		// A timed-out claim may have committed before its response was lost.
+		// Accept only our own fenced ownership; another controller ends this worker.
+		verificationParent := ctx
+		if ctx.Err() != nil {
+			verificationParent = context.Background()
+		}
+		getCtx, getCancel := liveRedisContext(verificationParent)
+		record, getErr := store.GetLiveCall(getCtx, callHash)
+		getCancel()
+		if getErr == nil && record.Controller == LiveControllerObserver && record.ControllerOwner == owner {
+			if ctx.Err() != nil {
+				// The supervisor finalizes this record after the worker returns.
+				// Avoid resuming/finalizing from the release callback as well.
+				return
+			}
+			break
+		}
+		if getErr == nil || errors.Is(getErr, ErrLiveCallNotFound) {
+			return
+		}
+		if !waitForLiveStoreRetry(ctx) {
+			return
+		}
 	}
 	// Return observer ownership to pending on transient Redis/dial/read exits so
 	// the bounded supervisor can enqueue a replacement. Owner fencing makes this
@@ -799,7 +826,16 @@ func (s *OpenAIGatewayService) observeLiveCall(ctx context.Context, callHash str
 		getCtx, getCancel := liveRedisContext(ctx)
 		record, getErr := store.GetLiveCall(getCtx, callHash)
 		getCancel()
-		if getErr != nil || record.Controller != LiveControllerObserver {
+		if errors.Is(getErr, ErrLiveCallNotFound) {
+			return
+		}
+		if getErr != nil {
+			if !waitForLiveStoreRetry(ctx) {
+				return
+			}
+			continue
+		}
+		if record.Controller != LiveControllerObserver || record.ControllerOwner != owner {
 			return
 		}
 		if !time.Now().Before(record.ExpiresAt) {
@@ -897,12 +933,8 @@ func (s *OpenAIGatewayService) runLiveObserverConnection(parent context.Context,
 }
 
 func (s *OpenAIGatewayService) waitForLiveObserverRetry(ctx context.Context, record *LiveCallRecord) bool {
-	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
+	if !waitForLiveStoreRetry(ctx) {
 		return false
-	case <-timer.C:
 	}
 	store, err := s.liveStore()
 	if err != nil {
@@ -911,9 +943,23 @@ func (s *OpenAIGatewayService) waitForLiveObserverRetry(ctx context.Context, rec
 	pollCtx, pollCancel := liveRedisContext(ctx)
 	controller, err := store.GetLiveController(pollCtx, record.CallHash)
 	pollCancel()
+	if err != nil && !errors.Is(err, ErrLiveCallNotFound) {
+		return true
+	}
 	// 过期不在此处判定：返回 true 让调用方回到循环顶部的过期分支，由它 finalize
 	// （写 usage log + 释放租约）。在这里直接返回 false 会让会话静默结束、不留记录。
 	return err == nil && controller == LiveControllerObserver
+}
+
+func waitForLiveStoreRetry(ctx context.Context) bool {
+	timer := time.NewTimer(liveObserverStoreRetryInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (s *OpenAIGatewayService) refreshLiveLease(record *LiveCallRecord) bool {

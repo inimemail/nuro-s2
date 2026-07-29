@@ -1587,6 +1587,43 @@
                 />
               </div>
 
+              <div
+                data-testid="passkey-settings"
+                class="border-t border-gray-100 pt-4 dark:border-dark-700"
+              >
+                <div class="flex items-start justify-between gap-4">
+                  <div>
+                    <label class="font-medium text-gray-900 dark:text-white">
+                      {{ t('admin.settings.security.passkey') }}
+                    </label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      {{ t('admin.settings.security.passkeyHint') }}
+                    </p>
+                  </div>
+                  <Toggle
+                    v-model="form.passkey_enabled"
+                    data-testid="passkey-toggle"
+                    :disabled="!form.passkey_configured"
+                  />
+                </div>
+                <div
+                  class="mt-3 border-l-2 px-3 py-2 text-xs"
+                  :class="form.passkey_configured
+                    ? 'border-emerald-400 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300'
+                    : 'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-300'"
+                >
+                  <p class="font-medium">
+                    {{ form.passkey_configured ? t('admin.settings.security.passkeyConfigured') : t('admin.settings.security.passkeyNotConfigured') }}
+                  </p>
+                  <dl class="mt-2 grid gap-1 font-mono sm:grid-cols-[110px_1fr]">
+                    <dt class="font-sans text-gray-500 dark:text-gray-400">{{ t('admin.settings.security.passkeyRPID') }}</dt>
+                    <dd class="break-all">{{ form.passkey_rp_id || t('admin.settings.security.passkeyValueNotConfigured') }}</dd>
+                    <dt class="font-sans text-gray-500 dark:text-gray-400">{{ t('admin.settings.security.passkeyOrigins') }}</dt>
+                    <dd class="break-all">{{ form.passkey_rp_origins.length ? form.passkey_rp_origins.join(', ') : t('admin.settings.security.passkeyValueNotConfigured') }}</dd>
+                  </dl>
+                </div>
+              </div>
+
               <div class="flex items-center justify-between gap-4 border-t border-gray-100 pt-4 dark:border-dark-700">
                 <div>
                   <label class="font-medium text-gray-900 dark:text-white">{{ t('admin.settings.security.auditRetention') }}</label>
@@ -6102,6 +6139,56 @@
 
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                  {{ t('admin.settings.features.modelPlaza.title') }}
+                </h2>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.modelPlaza.description') }}
+                </p>
+              </div>
+              <router-link
+                v-if="form.model_plaza_enabled"
+                to="/model-plaza?embedded=1"
+                class="btn btn-secondary btn-sm"
+              >
+                <Icon name="externalLink" size="sm" class="mr-1.5" />
+                {{ t('admin.settings.features.modelPlaza.preview') }}
+              </router-link>
+            </div>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <label class="font-medium text-gray-900 dark:text-white">{{ t('admin.settings.features.modelPlaza.enabled') }}</label>
+                <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.modelPlaza.enabledHint') }}</p>
+              </div>
+              <Toggle v-model="form.model_plaza_enabled" />
+            </div>
+            <div class="flex items-center justify-between gap-4 border-t border-gray-100 pt-4 dark:border-dark-700">
+              <div>
+                <label class="font-medium text-gray-900 dark:text-white">{{ t('admin.settings.features.modelPlaza.requireAuth') }}</label>
+                <p class="text-sm text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.modelPlaza.requireAuthHint') }}</p>
+              </div>
+              <Toggle v-model="form.model_plaza_require_auth" :disabled="!form.model_plaza_enabled" />
+            </div>
+            <div class="border-t border-gray-100 pt-4 dark:border-dark-700">
+              <label class="input-label">{{ t('admin.settings.features.modelPlaza.priceDescription') }}</label>
+              <textarea
+                v-model="form.model_plaza_description"
+                rows="4"
+                maxlength="4000"
+                class="input resize-y"
+                :placeholder="t('admin.settings.features.modelPlaza.priceDescriptionPlaceholder')"
+              ></textarea>
+              <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.modelPlaza.priceDescriptionHint') }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
             <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
               {{ t('admin.settings.features.userErrorRequests.title') }}
             </h2>
@@ -8177,6 +8264,10 @@ const form = reactive<SettingsForm>({
   invitation_code_enabled: false,
   password_reset_enabled: false,
   totp_enabled: false,
+  passkey_enabled: false,
+  passkey_configured: false,
+  passkey_rp_id: "",
+  passkey_rp_origins: [],
   audit_log_retention_days: 180,
   session_binding_enabled: false,
   totp_encryption_key_configured: false,
@@ -8408,6 +8499,9 @@ const form = reactive<SettingsForm>({
   channel_monitor_default_interval_seconds: 60,
   // Available Channels feature switch
   available_channels_enabled: false,
+  model_plaza_enabled: false,
+  model_plaza_require_auth: true,
+  model_plaza_description: "",
   // Affiliate (邀请返利) feature switch
   affiliate_enabled: false,
 });
@@ -9546,6 +9640,7 @@ async function saveSettings() {
       invitation_code_enabled: form.invitation_code_enabled,
       password_reset_enabled: form.password_reset_enabled,
       totp_enabled: form.totp_enabled,
+      passkey_enabled: form.passkey_enabled,
       audit_log_retention_days: Number.isFinite(form.audit_log_retention_days) ? form.audit_log_retention_days : 180,
       session_binding_enabled: form.session_binding_enabled,
       login_agreement_enabled: form.login_agreement_enabled,
@@ -9795,6 +9890,9 @@ async function saveSettings() {
         Number(form.channel_monitor_default_interval_seconds) || 60,
       // Available Channels feature switch
       available_channels_enabled: form.available_channels_enabled,
+      model_plaza_enabled: form.model_plaza_enabled,
+      model_plaza_require_auth: form.model_plaza_require_auth,
+      model_plaza_description: form.model_plaza_description,
       // Affiliate (邀请返利) feature switch
       affiliate_enabled: form.affiliate_enabled,
     };

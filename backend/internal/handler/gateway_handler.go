@@ -2148,22 +2148,22 @@ func sendMockInterceptStream(c *gin.Context, model string, interceptType Interce
 
 	switch interceptType {
 	case InterceptTypeSuggestionMode:
-		msgID = "msg_mock_suggestion"
+		msgID = generateRealisticMsgID()
 		outputTokens = 1
 		textDeltas = []string{""} // 空内容
 	default: // InterceptTypeWarmup
-		msgID = "msg_mock_warmup"
+		msgID = generateRealisticMsgID()
 		outputTokens = 2
 		textDeltas = []string{"New", " Conversation"}
 	}
 
 	// Build message_start event with fixed schema.
-	messageStartJSON := `{"type":"message_start","message":{"id":` + strconv.Quote(msgID) + `,"type":"message","role":"assistant","model":` + strconv.Quote(model) + `,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}`
+	messageStartJSON := `{"type":"message_start","message":{"model":` + strconv.Quote(model) + `,"id":` + strconv.Quote(msgID) + `,"type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}`
 
 	// Build events
 	events := []string{
 		`event: message_start` + "\n" + `data: ` + string(messageStartJSON),
-		`event: content_block_start` + "\n" + `data: {"content_block":{"text":"","type":"text"},"index":0,"type":"content_block_start"}`,
+		`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 	}
 
 	// Add text deltas
@@ -2173,7 +2173,7 @@ func sendMockInterceptStream(c *gin.Context, model string, interceptType Interce
 	}
 
 	// Add final events
-	messageDeltaJSON := `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":10,"output_tokens":` + strconv.Itoa(outputTokens) + `}}`
+	messageDeltaJSON := `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"output_tokens":` + strconv.Itoa(outputTokens) + `}}`
 
 	events = append(events,
 		`event: content_block_stop`+"\n"+`data: {"index":0,"type":"content_block_stop"}`,
@@ -2188,20 +2188,23 @@ func sendMockInterceptStream(c *gin.Context, model string, interceptType Interce
 	}
 }
 
-// generateRealisticMsgID 生成仿真的消息 ID（msg_bdrk_XXXXXXX 格式）
-// 格式与 Claude API 真实响应一致，24 位随机字母数字
+// generateRealisticMsgID returns Anthropic's msg_01 + 22 Base62 shape.
 func generateRealisticMsgID() string {
 	const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-	const idLen = 24
+	const idLen = 22
 	randomBytes := make([]byte, idLen)
 	if _, err := rand.Read(randomBytes); err != nil {
-		return fmt.Sprintf("msg_bdrk_%d", time.Now().UnixNano())
+		return fallbackRealisticMsgID(time.Now().UnixNano())
 	}
 	b := make([]byte, idLen)
 	for i := range b {
 		b[i] = charset[int(randomBytes[i])%len(charset)]
 	}
-	return "msg_bdrk_" + string(b)
+	return "msg_01" + string(b)
+}
+
+func fallbackRealisticMsgID(unixNano int64) string {
+	return fmt.Sprintf("msg_01%022d", unixNano)
 }
 
 // sendMockInterceptResponse 发送非流式 mock 响应（用于请求拦截）
@@ -2211,7 +2214,7 @@ func sendMockInterceptResponse(c *gin.Context, model string, interceptType Inter
 
 	switch interceptType {
 	case InterceptTypeSuggestionMode:
-		msgID = "msg_mock_suggestion"
+		msgID = generateRealisticMsgID()
 		text = ""
 		outputTokens = 1
 		stopReason = "end_turn"
@@ -2221,7 +2224,7 @@ func sendMockInterceptResponse(c *gin.Context, model string, interceptType Inter
 		outputTokens = 1
 		stopReason = "max_tokens" // max_tokens=1 探测请求的 stop_reason 应为 max_tokens
 	default: // InterceptTypeWarmup
-		msgID = "msg_mock_warmup"
+		msgID = generateRealisticMsgID()
 		text = "New Conversation"
 		outputTokens = 2
 		stopReason = "end_turn"
@@ -2236,6 +2239,7 @@ func sendMockInterceptResponse(c *gin.Context, model string, interceptType Inter
 		"content":       []gin.H{{"type": "text", "text": text}},
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
+		"stop_details":  nil,
 		"usage": gin.H{
 			"input_tokens":                10,
 			"cache_creation_input_tokens": 0,
@@ -2245,7 +2249,6 @@ func sendMockInterceptResponse(c *gin.Context, model string, interceptType Inter
 				"ephemeral_1h_input_tokens": 0,
 			},
 			"output_tokens": outputTokens,
-			"total_tokens":  10 + outputTokens,
 		},
 	}
 

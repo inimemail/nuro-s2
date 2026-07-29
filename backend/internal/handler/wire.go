@@ -135,9 +135,11 @@ func ProvideHandlers(
 	batchImageHandler *BatchImageHandler,
 	settingHandler *SettingHandler,
 	totpHandler *TotpHandler,
+	passkeyHandler *PasskeyHandler,
 	paymentHandler *PaymentHandler,
 	paymentWebhookHandler *PaymentWebhookHandler,
 	availableChannelHandler *AvailableChannelHandler,
+	modelPlazaHandler *ModelPlazaHandler,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 ) *Handlers {
@@ -156,9 +158,11 @@ func ProvideHandlers(
 		BatchImage:       batchImageHandler,
 		Setting:          settingHandler,
 		Totp:             totpHandler,
+		Passkey:          passkeyHandler,
 		Payment:          paymentHandler,
 		PaymentWebhook:   paymentWebhookHandler,
 		AvailableChannel: availableChannelHandler,
+		ModelPlaza:       modelPlazaHandler,
 	}
 }
 
@@ -177,10 +181,12 @@ var ProviderSet = wire.NewSet(
 	NewOpenAIGatewayHandler,
 	NewBatchImageHandler,
 	NewTotpHandler,
+	NewPasskeyHandler,
 	ProvideSettingHandler,
 	NewPaymentHandler,
 	NewPaymentWebhookHandler,
 	NewAvailableChannelHandler,
+	NewModelPlazaHandler,
 
 	// Admin handlers
 	admin.NewDashboardHandler,

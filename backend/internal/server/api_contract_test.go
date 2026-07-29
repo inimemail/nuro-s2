@@ -717,6 +717,10 @@ func TestAPIContracts(t *testing.T) {
 						"frontend_url": "",
 						"totp_enabled": false,
 						"totp_encryption_key_configured": false,
+						"passkey_enabled": false,
+						"passkey_configured": false,
+						"passkey_rp_id": "",
+						"passkey_rp_origins": [],
 						"login_agreement_enabled": false,
 						"login_agreement_mode": "modal",
 						"login_agreement_updated_at": "2026-03-31",
@@ -927,6 +931,9 @@ func TestAPIContracts(t *testing.T) {
 					"channel_monitor_enabled": true,
 					"channel_monitor_default_interval_seconds": 60,
 					"available_channels_enabled": false,
+					"model_plaza_enabled": false,
+					"model_plaza_require_auth": true,
+					"model_plaza_description": "",
 					"risk_control_enabled": false,
 					"prompt_audit_enabled": false,
 					"affiliate_admin_recharge_enabled": false,
@@ -1022,6 +1029,10 @@ func TestAPIContracts(t *testing.T) {
 						"invitation_code_enabled": false,
 						"totp_enabled": false,
 						"totp_encryption_key_configured": false,
+						"passkey_enabled": false,
+						"passkey_configured": false,
+						"passkey_rp_id": "",
+						"passkey_rp_origins": [],
 						"login_agreement_enabled": false,
 						"login_agreement_mode": "modal",
 						"login_agreement_updated_at": "2026-03-31",
@@ -1194,6 +1205,9 @@ func TestAPIContracts(t *testing.T) {
 					"channel_monitor_enabled": true,
 					"channel_monitor_default_interval_seconds": 60,
 					"available_channels_enabled": false,
+					"model_plaza_enabled": false,
+					"model_plaza_require_auth": true,
+					"model_plaza_description": "",
 					"risk_control_enabled": false,
 					"prompt_audit_enabled": false,
 					"affiliate_admin_recharge_enabled": false,
@@ -1510,7 +1524,7 @@ func (r *stubUserRepo) GetFirstAdmin(ctx context.Context) (*service.User, error)
 	return nil, service.ErrUserNotFound
 }
 
-func (r *stubUserRepo) Update(ctx context.Context, user *service.User) error {
+func (r *stubUserRepo) Update(ctx context.Context, user *service.User, _ service.UserUpdateFields) error {
 	return errors.New("not implemented")
 }
 
@@ -1544,6 +1558,26 @@ func (r *stubUserRepo) UpdateBalance(ctx context.Context, id int64, amount float
 
 func (r *stubUserRepo) DeductBalance(ctx context.Context, id int64, amount float64) error {
 	return errors.New("not implemented")
+}
+
+func (r *stubUserRepo) AdjustBalance(_ context.Context, id int64, delta float64) (service.BalanceChange, error) {
+	user, ok := r.users[id]
+	if !ok {
+		return service.BalanceChange{}, service.ErrUserNotFound
+	}
+	change := service.BalanceChange{Old: user.Balance, New: user.Balance + delta}
+	user.Balance = change.New
+	return change, nil
+}
+
+func (r *stubUserRepo) SetBalance(_ context.Context, id int64, value float64) (service.BalanceChange, error) {
+	user, ok := r.users[id]
+	if !ok {
+		return service.BalanceChange{}, service.ErrUserNotFound
+	}
+	change := service.BalanceChange{Old: user.Balance, New: value}
+	user.Balance = value
+	return change, nil
 }
 
 func (r *stubUserRepo) UpdateConcurrency(ctx context.Context, id int64, amount int) error {
@@ -2201,7 +2235,7 @@ func (r *stubApiKeyRepo) GetByKeyForAuth(ctx context.Context, key string) (*serv
 	return r.GetByKey(ctx, key)
 }
 
-func (r *stubApiKeyRepo) Update(ctx context.Context, key *service.APIKey) error {
+func (r *stubApiKeyRepo) Update(ctx context.Context, key *service.APIKey, _ service.APIKeyUpdateFields) error {
 	if key == nil {
 		return errors.New("nil key")
 	}

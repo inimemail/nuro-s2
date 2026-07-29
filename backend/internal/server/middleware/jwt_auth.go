@@ -15,6 +15,19 @@ func NewJWTAuthMiddleware(authService *service.AuthService, userService *service
 	return JWTAuthMiddleware(jwtAuth(authService, userService, userService))
 }
 
+// OptionalJWTAuth authenticates a supplied bearer token but allows requests
+// without Authorization to continue anonymously. Malformed or invalid tokens
+// still fail closed through the normal JWT middleware.
+func OptionalJWTAuth(required JWTAuthMiddleware) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if strings.TrimSpace(c.GetHeader("Authorization")) == "" {
+			c.Next()
+			return
+		}
+		gin.HandlerFunc(required)(c)
+	}
+}
+
 func ProvideJWTAuthMiddleware(authService *service.AuthService, userService *service.UserService, settingService *service.SettingService, auditService *service.AuditLogService) JWTAuthMiddleware {
 	return JWTAuthMiddleware(jwtAuthWithSecurity(authService, userService, userService, settingService, auditService))
 }

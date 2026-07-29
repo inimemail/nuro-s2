@@ -488,6 +488,12 @@ func (s *BillingService) initFallbackPricing() {
 	}
 
 	// ---- 月之暗面 Kimi（K 系列）----
+	s.fallbackPrices["kimi-k3"] = &ModelPricing{
+		InputPricePerToken:     3e-6,
+		OutputPricePerToken:    15e-6,
+		CacheReadPricePerToken: 0.30e-6,
+		SupportsCacheBreakdown: false,
+	}
 	s.fallbackPrices["kimi-k2.6"] = &ModelPricing{
 		InputPricePerToken:     0.95e-6,
 		OutputPricePerToken:    4e-6,
@@ -687,6 +693,12 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 
 	if strings.Contains(modelLower, "kimi-for-coding") {
 		return s.fallbackPrices["kimi-for-coding"]
+	}
+	// kimi-k3[1m] is client-side context syntax, not a Kimi API model ID.
+	if modelLower == "kimi-k3" || strings.HasSuffix(modelLower, "/kimi-k3") ||
+		modelLower == "k3" || modelLower == "k3-256k" ||
+		strings.HasSuffix(modelLower, "/k3") || strings.HasSuffix(modelLower, "/k3-256k") {
+		return s.fallbackPrices["kimi-k3"]
 	}
 	if strings.Contains(modelLower, "kimi-k2.6") || strings.Contains(modelLower, "kimi-k2-6") {
 		return s.fallbackPrices["kimi-k2.6"]

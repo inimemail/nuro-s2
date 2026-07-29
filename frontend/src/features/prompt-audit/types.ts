@@ -8,7 +8,7 @@ export interface PromptAuditEndpoint {
   timeout_ms: number
   enabled: boolean
   has_token: boolean
-  token_status: 'configured' | 'not_configured' | string
+  token_status: 'configured' | 'not_configured' | 'invalid' | string
   allow_private: boolean
   allowed_cidrs?: string[]
 }

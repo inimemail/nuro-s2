@@ -1816,7 +1816,7 @@ var (
 	upstreamEndpointRegex    = regexp.MustCompile(`(?i)(?:https?|wss?)://[^\s"'<>]+|(?:[a-z0-9-]+\.)+[a-z]{2,24}(?::\d+)?(?:/[^\s"'<>]*)?`)
 	upstreamIPAddressRegex   = regexp.MustCompile(`(?i)(?:\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:/[^\s"'<>]*)?|\[[0-9a-f:]+\](?::\d{1,5})?|\blocalhost(?::\d{1,5})?\b)`)
 	upstreamHTMLTagRegex     = regexp.MustCompile(`(?i)<[[:space:]]*/?[[:space:]]*[a-z][^>]*>`)
-	upstreamIdentityRegex    = regexp.MustCompile(`(?i)(^|[^a-z0-9])(openai|chatgpt|anthropic|claude|gemini|vertex|google|antigravity|grok|xai|x\.ai|groq|openrouter|cloudflare|cloudfront|fastly|akamai|envoy|nginx|bedrock|aws|amazon|azure)([^a-z0-9]|$)`)
+	upstreamIdentityRegex    = regexp.MustCompile(`(?i)(^|[^a-z0-9])(openai|chatgpt|anthropic|claude|gemini|vertex|google|antigravity|grok|xai|x\.ai|groq|openrouter|kimi|moonshot|deepseek|minimax|bigmodel|zhipu|ollama|智谱|月之暗面|cloudflare|cloudfront|fastly|akamai|envoy|nginx|bedrock|aws|amazon|azure)([^a-z0-9]|$)`)
 	retryInRegex             = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
 )
 
@@ -2176,7 +2176,7 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 	}
 	streamWriter := &stickyErrorWriter{writer: c.Writer}
 
-	messageID := "msg_" + randomHex(12)
+	messageID := generateAnthropicMsgID()
 	messageStart := map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
@@ -2526,6 +2526,20 @@ func randomHex(nBytes int) string {
 	b := make([]byte, nBytes)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func generateAnthropicMsgID() string {
+	const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	const idLen = 22
+	randomBytes := make([]byte, idLen)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "msg_01" + randomHex(11)
+	}
+	b := make([]byte, idLen)
+	for i := range b {
+		b[i] = charset[int(randomBytes[i])%len(charset)]
+	}
+	return "msg_01" + string(b)
 }
 
 func (s *GeminiMessagesCompatService) writeClaudeError(c *gin.Context, status int, errType, message string) error {
@@ -3153,7 +3167,7 @@ func convertGeminiToClaudeMessage(geminiResp map[string]any, originalModel strin
 	}
 
 	resp := map[string]any{
-		"id":            "msg_" + randomHex(12),
+		"id":            generateAnthropicMsgID(),
 		"type":          "message",
 		"role":          "assistant",
 		"model":         originalModel,

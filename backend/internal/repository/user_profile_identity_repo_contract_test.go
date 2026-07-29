@@ -482,7 +482,8 @@ func (s *UserProfileIdentityRepoSuite) TestWithUserProfileIdentityTx_AllowsAvata
 		if err != nil {
 			return err
 		}
-		return s.repo.Update(txCtx, model)
+		// The avatar lives in its own table; a no-column user update must be a no-op.
+		return s.repo.Update(txCtx, model, service.UserUpdateFields{})
 	})
 	s.Require().NoError(err)
 

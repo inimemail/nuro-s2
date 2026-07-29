@@ -118,6 +118,7 @@ var ProviderSet = wire.NewSet(
 	NewChannelMonitorRepository,
 	NewChannelMonitorRequestTemplateRepository,
 	NewContentModerationRepository,
+	NewPasskeyRepository,
 	NewAffiliateRepository,
 	NewAuditLogRepository,
 	NewUserPlatformQuotaRepository,     // T14: user × platform quota
@@ -154,6 +155,7 @@ var ProviderSet = wire.NewSet(
 	NewErrorPassthroughCache,
 	NewTLSFingerprintProfileCache,
 	NewContentModerationHashCache,
+	NewPasskeySessionStore,
 
 	// Encryptors
 	NewAESEncryptor,

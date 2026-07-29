@@ -39,6 +39,16 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/model-plaza',
+    name: 'ModelPlaza',
+    component: () => import('@/views/ModelPlazaView.vue'),
+    meta: {
+      requiresAuth: false,
+      title: 'Model Plaza',
+      titleKey: 'modelPlaza.title'
+    }
+  },
+  {
     path: '/login',
     name: 'Login',
     component: () => import('@/views/auth/LoginView.vue'),

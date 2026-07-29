@@ -140,6 +140,7 @@ func (s *Service) loadConfig(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.annotateEndpointCredentialState(&cfg)
 	s.storeConfig(cfg)
 	s.configTrusted.Store(true)
 	return nil
@@ -211,6 +212,7 @@ func (s *Service) refreshConfig(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.annotateEndpointCredentialState(&candidate)
 	// A prior startup read may have failed transiently. Once a later refresh
 	// successfully reads and validates the repository-backed config, the
 	// public control-plane endpoint can trust the snapshot again even when the
@@ -252,6 +254,9 @@ func (s *Service) PublicConfig() (PublicConfig, error) {
 		status := "not_configured"
 		if hasToken {
 			status = "configured"
+			if ep.TokenInvalid {
+				status = "invalid"
+			}
 		}
 		result.Endpoints = append(result.Endpoints, PublicEndpoint{
 			ID: ep.ID, Name: ep.Name, BaseURL: ep.BaseURL, Model: ep.Model,
@@ -297,6 +302,7 @@ func (s *Service) SaveConfig(ctx context.Context, req UpdateConfigRequest) (Publ
 	if err != nil {
 		return PublicConfig{}, err
 	}
+	s.annotateEndpointCredentialState(&cfg)
 	s.storeConfig(cfg)
 	s.configTrusted.Store(true)
 	return s.PublicConfig()
@@ -314,6 +320,9 @@ func (s *Service) buildConfig(req UpdateConfigRequest, current Config) (Config, 
 		Version: current.Version + 1, UpdatedAt: time.Now().UTC(), HashSecret: current.HashSecret,
 	}
 	if strings.TrimSpace(cfg.HashSecret) == "" {
+		if !s.encryptionKeyConfigured {
+			return Config{}, infraerrors.BadRequest("PROMPT_AUDIT_ENCRYPTION_KEY_REQUIRED", "a fixed encryption key is required before saving prompt audit secrets")
+		}
 		secret := make([]byte, 32)
 		if _, err := rand.Read(secret); err != nil {
 			return Config{}, infraerrors.New(500, "PROMPT_AUDIT_HASH_SECRET_FAILED", "failed to protect prompt audit hashes")
@@ -341,6 +350,9 @@ func (s *Service) buildConfig(req UpdateConfigRequest, current Config) (Config, 
 		switch {
 		case input.ClearToken:
 		case strings.TrimSpace(input.Token) != "":
+			if !s.encryptionKeyConfigured {
+				return Config{}, infraerrors.BadRequest("PROMPT_AUDIT_ENCRYPTION_KEY_REQUIRED", "a fixed encryption key is required before saving prompt audit endpoint tokens")
+			}
 			ciphertext, err := s.encryptor.Encrypt(strings.TrimSpace(input.Token))
 			if err != nil {
 				return Config{}, infraerrors.New(500, "PROMPT_AUDIT_TOKEN_ENCRYPT_FAILED", "failed to protect endpoint token")
@@ -358,6 +370,26 @@ func (s *Service) buildConfig(req UpdateConfigRequest, current Config) (Config, 
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func (s *Service) annotateEndpointCredentialState(cfg *Config) {
+	if s == nil || cfg == nil {
+		return
+	}
+	for i := range cfg.Endpoints {
+		ep := &cfg.Endpoints[i]
+		ep.TokenInvalid = false
+		if strings.TrimSpace(ep.TokenCiphertext) == "" {
+			continue
+		}
+		if s.encryptor == nil {
+			ep.TokenInvalid = true
+			continue
+		}
+		if _, err := s.encryptor.Decrypt(ep.TokenCiphertext); err != nil {
+			ep.TokenInvalid = true
+		}
+	}
 }
 
 func (s *Service) saveConfigDB(ctx context.Context, req UpdateConfigRequest) (Config, error) {

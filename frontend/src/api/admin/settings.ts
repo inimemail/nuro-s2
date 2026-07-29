@@ -366,6 +366,10 @@ export interface SystemSettings {
   invitation_code_enabled: boolean;
   totp_enabled: boolean; // TOTP 双因素认证
   totp_encryption_key_configured: boolean; // TOTP 加密密钥是否已配置
+  passkey_enabled: boolean;
+  passkey_configured: boolean;
+  passkey_rp_id: string;
+  passkey_rp_origins: string[];
   audit_log_retention_days: number;
   session_binding_enabled: boolean;
   login_agreement_enabled: boolean;
@@ -640,6 +644,11 @@ export interface SystemSettings {
   // Available Channels feature switch
   available_channels_enabled: boolean;
 
+  // Model Plaza feature switch and public copy
+  model_plaza_enabled: boolean;
+  model_plaza_require_auth: boolean;
+  model_plaza_description: string;
+
   // Affiliate (邀请返利) feature switch
   affiliate_enabled: boolean;
 
@@ -656,6 +665,7 @@ export interface UpdateSettingsRequest {
   frontend_url?: string;
   invitation_code_enabled?: boolean;
   totp_enabled?: boolean; // TOTP 双因素认证
+  passkey_enabled?: boolean;
   audit_log_retention_days?: number;
   session_binding_enabled?: boolean;
   login_agreement_enabled?: boolean;
@@ -902,6 +912,11 @@ export interface UpdateSettingsRequest {
 
   // Available Channels feature switch
   available_channels_enabled?: boolean;
+
+  // Model Plaza
+  model_plaza_enabled?: boolean;
+  model_plaza_require_auth?: boolean;
+  model_plaza_description?: string;
 
   // Affiliate (邀请返利) feature switch
   affiliate_enabled?: boolean;

@@ -181,7 +181,7 @@ func unknownCategoryID(value string) string {
 func (s *Service) scan(ctx context.Context, cfg Config, text string) (scanResult, error) {
 	var lastErr error
 	for _, endpoint := range cfg.Endpoints {
-		if !endpoint.Enabled {
+		if !endpoint.Enabled || endpoint.TokenInvalid {
 			continue
 		}
 		result, err := s.scanEndpoint(ctx, endpoint, cfg.Scanners, text)

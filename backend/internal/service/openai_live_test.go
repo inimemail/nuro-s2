@@ -50,6 +50,8 @@ type liveStoreStub struct {
 	releaseFailures int
 	claimStarted    chan struct{}
 	claimOnce       sync.Once
+	claimCalls      int
+	claimCommitErr  error
 	markFailures    int
 }
 
@@ -222,6 +224,7 @@ func (s *liveStoreStub) ClaimLiveController(ctx context.Context, callHash, contr
 		s.claimOnce.Do(func() { close(s.claimStarted) })
 	}
 	s.mu.Lock()
+	s.claimCalls++
 	if s.record == nil || s.record.CallHash != callHash || s.record.Controller == LiveControllerClosed {
 		s.mu.Unlock()
 		return false, nil
@@ -232,7 +235,12 @@ func (s *liveStoreStub) ClaimLiveController(ctx context.Context, callHash, contr
 	}
 	s.record.Controller = controller
 	s.record.ControllerOwner = owner
+	commitErr := s.claimCommitErr
+	s.claimCommitErr = nil
 	s.mu.Unlock()
+	if commitErr != nil {
+		return false, commitErr
+	}
 	if s.claimStarted != nil && controller == LiveControllerObserver {
 		<-ctx.Done()
 		return false, context.Cause(ctx)
@@ -635,6 +643,9 @@ func TestResumeLiveObserverAfterFastProxyHandoff(t *testing.T) {
 }
 
 func TestObserveLiveCallReleasesOwnershipAfterTransientStoreFailure(t *testing.T) {
+	restoreRetryInterval := liveObserverStoreRetryInterval
+	liveObserverStoreRetryInterval = time.Millisecond
+	t.Cleanup(func() { liveObserverStoreRetryInterval = restoreRetryInterval })
 	record := &LiveCallRecord{
 		CallID: "call-retry", CallHash: "hash-retry", Controller: LiveControllerPending,
 		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
@@ -645,11 +656,36 @@ func TestObserveLiveCallReleasesOwnershipAfterTransientStoreFailure(t *testing.T
 	svc := &OpenAIGatewayService{cache: store}
 	svc.liveObserverPending.Store(record.CallHash, struct{}{})
 
-	svc.observeLiveCall(context.Background(), record.CallHash)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	svc.observeLiveCall(ctx, record.CallHash)
 
 	store.mu.Lock()
 	require.Equal(t, LiveControllerPending, store.record.Controller)
 	require.Empty(t, store.record.ControllerOwner)
+	store.mu.Unlock()
+	svc.liveObserverPending.Delete(record.CallHash)
+}
+
+func TestObserveLiveCallRecognizesTimedOutClaimOwnedBySameWorker(t *testing.T) {
+	restoreRetryInterval := liveObserverStoreRetryInterval
+	liveObserverStoreRetryInterval = time.Millisecond
+	t.Cleanup(func() { liveObserverStoreRetryInterval = restoreRetryInterval })
+	record := &LiveCallRecord{
+		CallID: "call-claim-timeout", CallHash: "hash-claim-timeout", Controller: LiveControllerPending,
+		CreatedAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(-time.Second),
+	}
+	store := &liveStoreStub{claimCommitErr: context.DeadlineExceeded}
+	require.NoError(t, store.SaveLiveCall(context.Background(), record, time.Hour))
+	svc := &OpenAIGatewayService{cache: store}
+	svc.liveObserverPending.Store(record.CallHash, struct{}{})
+
+	svc.observeLiveCall(context.Background(), record.CallHash)
+
+	store.mu.Lock()
+	require.Equal(t, LiveControllerClosed, store.record.Controller, "same-owner verification must continue with the committed claim")
+	require.Empty(t, store.record.ControllerOwner)
+	require.Equal(t, 1, store.claimCalls, "same-owner verification must avoid a second claim")
 	store.mu.Unlock()
 	svc.liveObserverPending.Delete(record.CallHash)
 }
