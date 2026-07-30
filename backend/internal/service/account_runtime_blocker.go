@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const successfulProbeStateRecoveryTimeout = 5 * time.Second
+
 type accountRuntimeDeadline struct {
 	Until           time.Time
 	ClearGeneration int64
@@ -137,9 +139,9 @@ func (b *CompositeAccountRuntimeBlocker) ClearAccountSchedulingBlock(accountID i
 	}
 }
 
-// ClearAccountSchedulingBlockAcrossReplicas is reserved for explicit admin
-// recovery/stop actions. Automatic recovery stays local so a delayed event
-// cannot erase a newer cooldown created on another replica.
+// ClearAccountSchedulingBlockAcrossReplicas advances the shared generation
+// before clearing. Admin and successful-probe recovery use this path so every
+// replica drops old state while cooldowns created at the new generation remain.
 func (b *CompositeAccountRuntimeBlocker) ClearAccountSchedulingBlockAcrossReplicas(ctx context.Context, accountID int64) error {
 	if b == nil || accountID <= 0 {
 		return nil

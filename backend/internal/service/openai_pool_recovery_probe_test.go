@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,6 +30,19 @@ type openAIPoolProbeHTTPUpstreamRecorder struct {
 type blockingPoolProbeHTTPUpstream struct {
 	started chan struct{}
 	release chan struct{}
+}
+
+type recoveryProbeAccountRepo struct {
+	AccountRepository
+	account *Account
+}
+
+func (r *recoveryProbeAccountRepo) GetByID(_ context.Context, accountID int64) (*Account, error) {
+	if r == nil || r.account == nil || r.account.ID != accountID {
+		return nil, ErrAccountNotFound
+	}
+	accountCopy := *r.account
+	return &accountCopy, nil
 }
 
 func (r *blockingPoolProbeHTTPUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
@@ -204,6 +218,249 @@ func TestAnthropicPoolRecoveryProbe_DoesNotRestoreCooldownAfterAdminClear(t *tes
 
 	_, exists := svc.anthropicPoolSoftCooldownUntil.Load(account.ID)
 	require.False(t, exists)
+}
+
+func TestOpenAIPoolRecoveryProbe_SuccessClearsRemoteReplicaCooldown(t *testing.T) {
+	baseBus := NewLocalSchedulerEventBus()
+	remoteSnapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, baseBus)
+	remote := &OpenAIGatewayService{schedulerSnapshot: remoteSnapshot}
+	remoteSnapshot.RegisterAccountRuntimeClearHandler(remote.clearLocalAccountSchedulingBlockBefore)
+	remoteSnapshot.Start()
+	defer remoteSnapshot.Stop()
+	localSnapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, baseBus)
+	account := &Account{
+		ID: 1205, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true,
+		Credentials: map[string]any{
+			"pool_mode": true, "api_key": "sk-test", "base_url": "https://upstream.example",
+		},
+	}
+	rateLimitService := &RateLimitService{accountRepo: &recoveryProbeAccountRepo{account: account}}
+	local := &OpenAIGatewayService{
+		cfg: &config.Config{}, httpUpstream: &openAIPoolProbeHTTPUpstreamRecorder{},
+		schedulerSnapshot: localSnapshot, rateLimitService: rateLimitService,
+	}
+	NewCompositeAccountRuntimeBlocker(local, nil, rateLimitService, nil)
+	cooldownUntil := time.Now().Add(-time.Second)
+	local.openaiPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{Until: cooldownUntil, ClearGeneration: 0})
+	local.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{ProbeKind: "openai", ClearGeneration: 0})
+	remote.openaiPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{Until: time.Now().Add(time.Minute), ClearGeneration: 0})
+	remote.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{
+		StatusCode: http.StatusForbidden, Reason: "insufficient balance", ClearGeneration: 0,
+	})
+
+	local.runOpenAIPoolRecoveryProbe(context.Background(), account, "gpt-5.4", cooldownUntil, 0)
+
+	_, localCooling := local.openaiPoolSoftCooldownUntil.Load(account.ID)
+	require.False(t, localCooling)
+	require.Eventually(t, func() bool {
+		_, remoteCooling := remote.openaiPoolSoftCooldownUntil.Load(account.ID)
+		return !remoteCooling
+	}, time.Second, time.Millisecond)
+	require.Equal(t, int64(1), localSnapshot.localAccountRuntimeClearGeneration(account.ID))
+	require.Equal(t, int64(1), remoteSnapshot.localAccountRuntimeClearGeneration(account.ID))
+}
+
+func TestAnthropicPoolRecoveryProbe_SuccessClearsRemoteReplicaCooldown(t *testing.T) {
+	baseBus := NewLocalSchedulerEventBus()
+	remoteSnapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, baseBus)
+	remote := &GatewayService{schedulerSnapshot: remoteSnapshot}
+	remoteSnapshot.RegisterAccountRuntimeClearHandler(remote.clearAnthropicPoolSoftCooldownBefore)
+	remoteSnapshot.Start()
+	defer remoteSnapshot.Stop()
+	localSnapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, baseBus)
+	account := &Account{
+		ID: 1206, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true,
+		Credentials: map[string]any{
+			"pool_mode": true, "api_key": "sk-test", "base_url": "https://upstream.example",
+		},
+	}
+	rateLimitService := &RateLimitService{accountRepo: &recoveryProbeAccountRepo{account: account}}
+	local := &GatewayService{
+		cfg: &config.Config{}, httpUpstream: &openAIPoolProbeHTTPUpstreamRecorder{},
+		schedulerSnapshot: localSnapshot, rateLimitService: rateLimitService,
+	}
+	NewCompositeAccountRuntimeBlocker(nil, local, rateLimitService, nil)
+	cooldownUntil := time.Now().Add(-time.Second)
+	local.anthropicPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{Until: cooldownUntil, ClearGeneration: 0})
+	local.anthropicPoolSoftCooldownContext.Store(account.ID, anthropicPoolSoftCooldownContext{ProbeKind: "messages", ClearGeneration: 0})
+	remote.anthropicPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{Until: time.Now().Add(time.Minute), ClearGeneration: 0})
+	remote.anthropicPoolSoftCooldownContext.Store(account.ID, anthropicPoolSoftCooldownContext{
+		StatusCode: http.StatusForbidden, Reason: "insufficient balance", ClearGeneration: 0,
+	})
+
+	local.runAnthropicPoolRecoveryProbe(context.Background(), account, "claude-sonnet-4-6", cooldownUntil, 0)
+
+	_, localCooling := local.anthropicPoolSoftCooldownUntil.Load(account.ID)
+	require.False(t, localCooling)
+	require.Eventually(t, func() bool {
+		_, remoteCooling := remote.anthropicPoolSoftCooldownUntil.Load(account.ID)
+		return !remoteCooling
+	}, time.Second, time.Millisecond)
+	require.Equal(t, int64(1), localSnapshot.localAccountRuntimeClearGeneration(account.ID))
+	require.Equal(t, int64(1), remoteSnapshot.localAccountRuntimeClearGeneration(account.ID))
+}
+
+func TestOpenAIPoolRecoveryProbe_PublishFailureRacePreservesNew429Cooldown(t *testing.T) {
+	failingBus := &failingRuntimeClearEventBus{}
+	bus := &callbackRuntimeClearEventBus{
+		SchedulerEventBus:                    failingBus,
+		SchedulerRuntimeClearGenerationStore: failingBus,
+	}
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, bus)
+	account := &Account{
+		ID: 1213, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true,
+		Credentials: map[string]any{
+			"pool_mode": true, "api_key": "sk-test", "base_url": "https://upstream.example",
+		},
+	}
+	rateLimitService := &RateLimitService{accountRepo: &recoveryProbeAccountRepo{account: account}}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{}, httpUpstream: &openAIPoolProbeHTTPUpstreamRecorder{},
+		schedulerSnapshot: snapshot, rateLimitService: rateLimitService,
+	}
+	NewCompositeAccountRuntimeBlocker(svc, nil, rateLimitService, nil)
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{Until: cooldownUntil, ClearGeneration: 0})
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{
+		StatusCode: http.StatusForbidden, Reason: "old balance error", ProbeKind: "openai", ClearGeneration: 0,
+	})
+	var once sync.Once
+	bus.onPublish = func(event SchedulerEvent) {
+		if event.Type != SchedulerEventAccountRuntimeCleared {
+			return
+		}
+		once.Do(func() {
+			svc.MarkOpenAIPoolAccountSoftCooldownWithContext(
+				context.Background(), account, http.StatusTooManyRequests, []byte(`{"error":{"message":"new rate limit"}}`),
+				openAIPoolSoftCooldownContext{StatusCode: http.StatusTooManyRequests, Reason: "new rate limit", ProbeKind: "openai"},
+			)
+		})
+	}
+
+	svc.runOpenAIPoolRecoveryProbe(context.Background(), account, "gpt-5.4", cooldownUntil, 0)
+
+	deadline := mustLoadAccountRuntimeDeadline(t, &svc.openaiPoolSoftCooldownUntil, account.ID)
+	require.Equal(t, int64(1), deadline.ClearGeneration)
+	require.True(t, deadline.Until.After(time.Now()))
+	cooldownContext := svc.openAIPoolAccountSoftCooldownContext(account.ID)
+	require.Equal(t, http.StatusTooManyRequests, cooldownContext.StatusCode)
+	require.Equal(t, "new rate limit", cooldownContext.Reason)
+}
+
+func TestOpenAIPoolRecoveryProbe_StateClearFailureRestoresFencedCooldown(t *testing.T) {
+	bus := &failingRuntimeClearEventBus{}
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, bus)
+	account := &Account{
+		ID: 1207, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true,
+		Credentials: map[string]any{
+			"pool_mode": true, "api_key": "sk-test", "base_url": "https://upstream.example",
+		},
+	}
+	rateLimitService := &RateLimitService{accountRepo: &recoveryProbeAccountRepo{account: account}}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{}, httpUpstream: &openAIPoolProbeHTTPUpstreamRecorder{},
+		schedulerSnapshot: snapshot, rateLimitService: rateLimitService,
+	}
+	NewCompositeAccountRuntimeBlocker(svc, nil, rateLimitService, nil)
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{Until: cooldownUntil, ClearGeneration: 0})
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{ProbeKind: "openai", ClearGeneration: 0})
+
+	svc.runOpenAIPoolRecoveryProbe(context.Background(), account, "gpt-5.4", cooldownUntil, 0)
+
+	value, cooling := svc.openaiPoolSoftCooldownUntil.Load(account.ID)
+	require.True(t, cooling)
+	until, generation, valid := parseAccountRuntimeDeadline(value)
+	require.True(t, valid)
+	require.Equal(t, int64(1), generation)
+	require.True(t, until.After(time.Now()))
+	require.Contains(t, svc.openAIPoolAccountSoftCooldownContext(account.ID).LastProbeReason, "runtime recovery failed")
+}
+
+func TestAnthropicPoolRecoveryProbe_StateClearFailureRestoresFencedCooldown(t *testing.T) {
+	bus := &failingRuntimeClearEventBus{}
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, bus)
+	account := &Account{
+		ID: 1208, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true,
+		Credentials: map[string]any{
+			"pool_mode": true, "api_key": "sk-test", "base_url": "https://upstream.example",
+		},
+	}
+	rateLimitService := &RateLimitService{accountRepo: &recoveryProbeAccountRepo{account: account}}
+	svc := &GatewayService{
+		cfg: &config.Config{}, httpUpstream: &openAIPoolProbeHTTPUpstreamRecorder{},
+		schedulerSnapshot: snapshot, rateLimitService: rateLimitService,
+	}
+	NewCompositeAccountRuntimeBlocker(nil, svc, rateLimitService, nil)
+	cooldownUntil := time.Now().Add(-time.Second)
+	svc.anthropicPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{Until: cooldownUntil, ClearGeneration: 0})
+	svc.anthropicPoolSoftCooldownContext.Store(account.ID, anthropicPoolSoftCooldownContext{ProbeKind: "messages", ClearGeneration: 0})
+
+	svc.runAnthropicPoolRecoveryProbe(context.Background(), account, "claude-sonnet-4-6", cooldownUntil, 0)
+
+	value, cooling := svc.anthropicPoolSoftCooldownUntil.Load(account.ID)
+	require.True(t, cooling)
+	until, generation, valid := parseAccountRuntimeDeadline(value)
+	require.True(t, valid)
+	require.Equal(t, int64(1), generation)
+	require.True(t, until.After(time.Now()))
+	require.Contains(t, svc.anthropicPoolAccountSoftCooldownContext(account.ID).LastProbeReason, "runtime recovery failed")
+}
+
+func TestOpenAIPoolRecoveryProbe_StateClearFailureDoesNotOverwriteNewCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 1209, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	newDeadline := accountRuntimeDeadline{Until: time.Now().Add(30 * time.Second), ClearGeneration: 2}
+	newContext := openAIPoolSoftCooldownContext{
+		StatusCode: http.StatusTooManyRequests, Reason: "new rate limit", ClearGeneration: 2,
+	}
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, newContext)
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, newDeadline)
+
+	svc.restoreOpenAIPoolRecoveryAfterStateClearFailure(
+		account,
+		openAIPoolSoftCooldownContext{StatusCode: http.StatusForbidden, Reason: "old balance error"},
+		openAIPoolRecoveryProbeResult{success: true, statusCode: http.StatusOK},
+		errors.New("runtime clear failed"),
+	)
+
+	require.Equal(t, newDeadline, mustLoadAccountRuntimeDeadline(t, &svc.openaiPoolSoftCooldownUntil, account.ID))
+	require.Equal(t, newContext, svc.openAIPoolAccountSoftCooldownContext(account.ID))
+}
+
+func TestAnthropicPoolRecoveryProbe_StateClearFailureDoesNotOverwriteNewCooldown(t *testing.T) {
+	svc := &GatewayService{}
+	account := &Account{ID: 1210, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+	newDeadline := accountRuntimeDeadline{Until: time.Now().Add(30 * time.Second), ClearGeneration: 2}
+	newContext := anthropicPoolSoftCooldownContext{
+		StatusCode: http.StatusTooManyRequests, Reason: "new rate limit", ClearGeneration: 2,
+	}
+	svc.anthropicPoolSoftCooldownContext.Store(account.ID, newContext)
+	svc.anthropicPoolSoftCooldownUntil.Store(account.ID, newDeadline)
+
+	svc.restoreAnthropicPoolRecoveryAfterStateClearFailure(
+		account,
+		anthropicPoolSoftCooldownContext{StatusCode: http.StatusForbidden, Reason: "old balance error"},
+		anthropicPoolRecoveryProbeResult{success: true, statusCode: http.StatusOK},
+		errors.New("runtime clear failed"),
+	)
+
+	require.Equal(t, newDeadline, mustLoadAccountRuntimeDeadline(t, &svc.anthropicPoolSoftCooldownUntil, account.ID))
+	require.Equal(t, newContext, svc.anthropicPoolAccountSoftCooldownContext(account.ID))
+}
+
+func mustLoadAccountRuntimeDeadline(t *testing.T, values *sync.Map, accountID int64) accountRuntimeDeadline {
+	t.Helper()
+	value, ok := values.Load(accountID)
+	require.True(t, ok)
+	deadline, ok := value.(accountRuntimeDeadline)
+	require.True(t, ok)
+	return deadline
 }
 
 func (r openAIPoolProbeSettingRepoStub) Get(_ context.Context, key string) (*Setting, error) {

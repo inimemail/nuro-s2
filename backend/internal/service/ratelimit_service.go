@@ -130,6 +130,19 @@ func (s *RateLimitService) notifyAccountSchedulingBlockCleared(accountID int64) 
 	s.runtimeBlocker.ClearAccountSchedulingBlock(accountID)
 }
 
+func (s *RateLimitService) notifyAccountSchedulingBlockClearedAcrossReplicas(ctx context.Context, accountID int64) error {
+	if s == nil || s.runtimeBlocker == nil || accountID <= 0 {
+		return nil
+	}
+	if clearer, ok := s.runtimeBlocker.(interface {
+		ClearAccountSchedulingBlockAcrossReplicas(context.Context, int64) error
+	}); ok {
+		return clearer.ClearAccountSchedulingBlockAcrossReplicas(ctx, accountID)
+	}
+	s.runtimeBlocker.ClearAccountSchedulingBlock(accountID)
+	return nil
+}
+
 // ErrorPolicyResult 表示错误策略检查的结果
 type ErrorPolicyResult int
 
@@ -1588,6 +1601,10 @@ func (s *RateLimitService) samplePassiveUsageFromHeaders(ctx context.Context, ac
 
 // ClearRateLimit 清除账号的限流状态
 func (s *RateLimitService) ClearRateLimit(ctx context.Context, accountID int64) error {
+	return s.clearRateLimit(ctx, accountID, true)
+}
+
+func (s *RateLimitService) clearRateLimit(ctx context.Context, accountID int64, notifyRuntimeClear bool) error {
 	if err := s.accountRepo.ClearRateLimit(ctx, accountID); err != nil {
 		return err
 	}
@@ -1607,7 +1624,9 @@ func (s *RateLimitService) ClearRateLimit(ctx context.Context, accountID int64) 
 		}
 	}
 	s.ResetOpenAI403Counter(ctx, accountID)
-	s.notifyAccountSchedulingBlockCleared(accountID)
+	if notifyRuntimeClear {
+		s.notifyAccountSchedulingBlockCleared(accountID)
+	}
 	return nil
 }
 
@@ -1641,7 +1660,10 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 	}
 
 	if hasRecoverableRuntimeState(account) {
-		if err := s.ClearRateLimit(ctx, accountID); err != nil {
+		// Recovery publishes one fenced runtime clear after all durable state is
+		// updated. Avoid an earlier process-local clear that could race a newer
+		// cooldown on this replica.
+		if err := s.clearRateLimit(ctx, accountID, false); err != nil {
 			return nil, err
 		}
 		result.ClearedRateLimit = true
@@ -1649,7 +1671,11 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 	if result.ClearedError || result.ClearedRateLimit {
 		s.ResetOpenAI403Counter(ctx, accountID)
 	}
-	if !result.ClearedRateLimit {
+	if isOpenAICompatibleSchedulingAccount(account) || isAnthropicPoolAccount(account) {
+		if err := s.notifyAccountSchedulingBlockClearedAcrossReplicas(ctx, accountID); err != nil {
+			return result, err
+		}
+	} else {
 		s.notifyAccountSchedulingBlockCleared(accountID)
 	}
 

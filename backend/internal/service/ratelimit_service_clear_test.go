@@ -72,6 +72,17 @@ type recoverTokenInvalidatorStub struct {
 	err      error
 }
 
+type crossReplicaRuntimeBlockRecorder struct {
+	runtimeBlockRecorder
+	clearedAcrossIDs []int64
+	clearAcrossErr   error
+}
+
+func (r *crossReplicaRuntimeBlockRecorder) ClearAccountSchedulingBlockAcrossReplicas(_ context.Context, accountID int64) error {
+	r.clearedAcrossIDs = append(r.clearedAcrossIDs, accountID)
+	return r.clearAcrossErr
+}
+
 func (c *tempUnschedCacheRecorder) SetTempUnsched(ctx context.Context, accountID int64, state *TempUnschedState) error {
 	return nil
 }
@@ -205,6 +216,8 @@ func TestRateLimitService_RecoverAccountAfterSuccessfulTest_ClearsErrorAndRateLi
 	repo := &rateLimitClearRepoStub{
 		getByIDAccount: &Account{
 			ID:                     42,
+			Platform:               PlatformOpenAI,
+			Type:                   AccountTypeAPIKey,
 			Status:                 StatusError,
 			RateLimitedAt:          &now,
 			TempUnschedulableUntil: &now,
@@ -219,7 +232,7 @@ func TestRateLimitService_RecoverAccountAfterSuccessfulTest_ClearsErrorAndRateLi
 		},
 	}
 	cache := &tempUnschedCacheRecorder{}
-	blocker := &runtimeBlockRecorder{}
+	blocker := &crossReplicaRuntimeBlockRecorder{}
 	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, cache)
 	svc.SetAccountRuntimeBlocker(blocker)
 
@@ -236,7 +249,65 @@ func TestRateLimitService_RecoverAccountAfterSuccessfulTest_ClearsErrorAndRateLi
 	require.Equal(t, 1, repo.clearModelRateLimitCalls)
 	require.Equal(t, 1, repo.clearTempUnschedCalls)
 	require.Equal(t, []int64{42}, cache.deletedIDs)
-	require.Equal(t, []int64{42}, blocker.clearedIDs)
+	require.Empty(t, blocker.clearedIDs)
+	require.Equal(t, []int64{42}, blocker.clearedAcrossIDs)
+}
+
+func TestRateLimitService_RecoverAccountState_ClearsRuntimeAcrossReplicasWithoutDurableState(t *testing.T) {
+	repo := &rateLimitClearRepoStub{
+		getByIDAccount: &Account{
+			ID:          8,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Extra:       map[string]any{},
+		},
+	}
+	blocker := &crossReplicaRuntimeBlockRecorder{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.SetAccountRuntimeBlocker(blocker)
+
+	result, err := svc.RecoverAccountState(context.Background(), 8, AccountRecoveryOptions{})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.ClearedError)
+	require.False(t, result.ClearedRateLimit)
+	require.Empty(t, blocker.clearedIDs)
+	require.Equal(t, []int64{8}, blocker.clearedAcrossIDs)
+}
+
+func TestRateLimitService_RecoverAccountState_ReportsCrossReplicaClearFailure(t *testing.T) {
+	repo := &rateLimitClearRepoStub{
+		getByIDAccount: &Account{ID: 10, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true},
+	}
+	blocker := &crossReplicaRuntimeBlockRecorder{clearAcrossErr: errors.New("runtime clear unavailable")}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.SetAccountRuntimeBlocker(blocker)
+
+	result, err := svc.RecoverAccountState(context.Background(), 10, AccountRecoveryOptions{})
+
+	require.ErrorContains(t, err, "runtime clear unavailable")
+	require.NotNil(t, result)
+	require.Empty(t, blocker.clearedIDs)
+	require.Equal(t, []int64{10}, blocker.clearedAcrossIDs)
+}
+
+func TestRateLimitService_RecoverAccountState_OtherPlatformsKeepLocalClear(t *testing.T) {
+	repo := &rateLimitClearRepoStub{
+		getByIDAccount: &Account{ID: 11, Platform: PlatformGemini, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true},
+	}
+	blocker := &crossReplicaRuntimeBlockRecorder{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.SetAccountRuntimeBlocker(blocker)
+
+	result, err := svc.RecoverAccountState(context.Background(), 11, AccountRecoveryOptions{})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, []int64{11}, blocker.clearedIDs)
+	require.Empty(t, blocker.clearedAcrossIDs)
 }
 
 func TestRateLimitService_RecoverAccountAfterSuccessfulTest_NoRecoverableStateIsNoop(t *testing.T) {

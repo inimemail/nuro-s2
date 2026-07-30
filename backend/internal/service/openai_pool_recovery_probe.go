@@ -184,6 +184,7 @@ func (s *OpenAIGatewayService) runOpenAIPoolRecoveryProbe(ctx context.Context, a
 	}
 	result := s.probeOpenAIPoolAccountRecovery(ctx, account, requestedModel)
 	if result.success {
+		cooldownContext := s.openAIPoolAccountSoftCooldownContext(account.ID)
 		if !deleteAccountRuntimeDeadlineIfMatches(&s.openaiPoolSoftCooldownUntil, account.ID, cooldownUntil, clearGeneration) {
 			loggerLegacyOpenAIPoolRecovery("probe_result_ignored_stale account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
 			return
@@ -192,8 +193,13 @@ func (s *OpenAIGatewayService) runOpenAIPoolRecoveryProbe(ctx context.Context, a
 		_ = s.clearOpenAIAccountCooldownInRedisBefore(account.ID, clearGeneration+1)
 		s.openaiPoolRecoveryProbeFailureCount.Delete(account.ID)
 		if s.rateLimitService != nil {
-			if _, err := s.rateLimitService.RecoverAccountAfterSuccessfulTest(ctx, account.ID); err != nil {
+			recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), successfulProbeStateRecoveryTimeout)
+			_, err := s.rateLimitService.RecoverAccountAfterSuccessfulTest(recoveryCtx, account.ID)
+			recoveryCancel()
+			if err != nil {
 				loggerLegacyOpenAIPoolRecovery("recover_state_failed account_id=%d err=%v", account.ID, err)
+				s.restoreOpenAIPoolRecoveryAfterStateClearFailure(account, cooldownContext, result, err)
+				return
 			}
 		}
 		loggerLegacyOpenAIPoolRecovery("probe_success account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
@@ -213,6 +219,38 @@ func (s *OpenAIGatewayService) runOpenAIPoolRecoveryProbe(ctx context.Context, a
 	} else {
 		loggerLegacyOpenAIPoolRecovery("probe_failed account_id=%d endpoint=%s status=%d backoff=%s", account.ID, result.endpoint, result.statusCode, backoff)
 	}
+}
+
+func (s *OpenAIGatewayService) restoreOpenAIPoolRecoveryAfterStateClearFailure(account *Account, cooldownContext openAIPoolSoftCooldownContext, probeResult openAIPoolRecoveryProbeResult, recoveryErr error) {
+	if s == nil || account == nil || recoveryErr == nil {
+		return
+	}
+	clearGeneration := s.currentAccountRuntimeClearGeneration(account.ID)
+	backoffCtx, backoffCancel := context.WithTimeout(context.Background(), time.Second)
+	backoff := s.nextOpenAIPoolRecoveryProbeBackoff(backoffCtx, account, true)
+	backoffCancel()
+	until := time.Now().Add(backoff)
+	cooldownContext.ClearGeneration = clearGeneration
+	cooldownContext.CooldownSource = "probe_backoff"
+	cooldownContext.LastProbeStatus = probeResult.statusCode
+	probeResult.success = false
+	probeResult.retryable = true
+	probeResult.err = fmt.Errorf("runtime recovery failed: %w", recoveryErr)
+	cooldownContext.LastProbeReason = truncateString(sanitizeUpstreamErrorMessage(probeResult.err.Error()), 256)
+	if _, loaded := s.openaiPoolSoftCooldownContext.LoadOrStore(account.ID, cooldownContext); loaded {
+		return
+	}
+	deadline := accountRuntimeDeadline{Until: until, ClearGeneration: clearGeneration}
+	if _, loaded := s.openaiPoolSoftCooldownUntil.LoadOrStore(account.ID, deadline); loaded {
+		s.openaiPoolSoftCooldownContext.CompareAndDelete(account.ID, cooldownContext)
+		return
+	}
+	if latestGeneration := s.currentAccountRuntimeClearGeneration(account.ID); latestGeneration > clearGeneration {
+		s.clearLocalAccountSchedulingBlockBefore(account.ID, latestGeneration)
+		return
+	}
+	s.storeOpenAIAccountCooldownInRedis(account.ID, until, clearGeneration)
+	s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, account.ID, "probe_backoff")
 }
 
 func (s *OpenAIGatewayService) probeOpenAIPoolAccountRecovery(ctx context.Context, account *Account, requestedModel string) openAIPoolRecoveryProbeResult {
