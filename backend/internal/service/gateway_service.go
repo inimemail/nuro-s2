@@ -9392,7 +9392,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 					return nil, &UpstreamFailoverError{
 						StatusCode:             http.StatusBadGateway,
 						ResponseBody:           body,
-						RetryableOnSameAccount: true,
+						RetryableOnSameAccount: account == nil || !account.IsOpenAI() || !account.IsPoolMode() || account.IsPoolModeRetryableStatus(http.StatusBadGateway) || account.IsPoolModeBuiltinRetryEnabled(),
 					}
 				}
 				sendErrorEvent("stream_read_error", disconnectMsg)

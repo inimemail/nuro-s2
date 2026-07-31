@@ -684,6 +684,7 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		"anthropic_upstream_strong_isolation_enabled",
 		"pool_mode_retry_count",
 		"pool_mode_retry_status_codes",
+		"pool_mode_builtin_retry_enabled",
 		"upstream_concurrency_race_enabled",
 		"upstream_concurrency_race_retry_delay_ms",
 		"upstream_concurrency_race_max_elapsed_ms",

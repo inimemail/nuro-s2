@@ -3910,12 +3910,36 @@ export default {
       upstreamConcurrencyRaceMaxElapsedMs: 'Race Elapsed Cap (ms)',
       upstreamConcurrencyRaceMaxElapsedMsHint:
         'Only applies when race mode is enabled. Default {default}ms, range {min}-{max}ms; after this, same-account racing stops and normal failover/cooldown continues.',
+      upstreamConcurrencyRaceRetryCount: 'Race Retry Attempts',
       poolModeRetryCount: 'Same-Account Retries',
       poolModeRetryCountHint:
         'Only applies in pool mode. Range {min}-{max}; 0 disables in-place retry when upstream race is off. Default {default}.',
       poolModeRetryStatusCodes: 'Retry Status Codes',
       poolModeRetryStatusCodesHint:
         'Comma-separated HTTP status codes (100-599) for pool-mode same-account retries. Matching status codes are still checked against error content; clear user request/configuration errors will not retry. Leave blank to use defaults ({default}).',
+      poolModeRetryConditions: 'Same-Account Retry Conditions',
+      poolModeRetryConditionsHint:
+        'Controls only which errors trigger a same-account retry. The retry delay, count, and elapsed cap above remain unchanged.',
+      poolModeRetryHttpStatusCodes: 'HTTP status codes',
+      poolModeRetryStatusCodeRange: 'Add or remove · 100–599',
+      poolModeRetryStatusCodePlaceholder: 'Enter a status code, e.g. 503',
+      poolModeRetryAddStatusCode: 'Add',
+      poolModeRetryRemoveStatusCode: 'Remove status code {code}',
+      poolModeRetryNoStatusCodes: 'No status codes added',
+      poolModeBuiltinRetry: 'Automatically retry transient system errors',
+      poolModeBuiltinRetryHint:
+        'When enabled, connection failures, no response, 408, 5xx, and recognized recoverable processing errors also trigger a same-account retry.',
+      poolModeRetryOverlapHint:
+        '{codes} are covered by both the status-code list and transient-error rule. A duplicate match enters the retry flow only once.',
+      poolModeRetryCode401: 'Invalid credentials',
+      poolModeRetryCode403: 'Forbidden',
+      poolModeRetryCode408: 'Request timeout',
+      poolModeRetryCode429: 'Rate limited',
+      poolModeRetryCode500: 'Server error',
+      poolModeRetryCode502: 'Bad gateway',
+      poolModeRetryCode503: 'Unavailable',
+      poolModeRetryCode504: 'Gateway timeout',
+      poolModeRetryCode529: 'Overloaded',
       customErrorCodes: 'Custom Error Codes',
       customErrorCodesHint: 'Only stop scheduling for selected error codes',
       customErrorCodesWarning:

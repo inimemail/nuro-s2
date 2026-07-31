@@ -1679,6 +1679,24 @@ func (a *Account) IsPoolModeRetryableStatus(statusCode int) bool {
 	return false
 }
 
+// IsPoolModeBuiltinRetryEnabled controls same-account retries for transient
+// failures detected by the system rather than by the configured HTTP status
+// code list. Missing settings preserve the legacy enabled behavior.
+func (a *Account) IsPoolModeBuiltinRetryEnabled() bool {
+	if a == nil || !a.IsPoolMode() || a.Credentials == nil {
+		return false
+	}
+	raw, ok := a.Credentials["pool_mode_builtin_retry_enabled"]
+	if !ok || raw == nil {
+		return true
+	}
+	enabled, ok := raw.(bool)
+	if !ok {
+		return true
+	}
+	return enabled
+}
+
 func (a *Account) GetCustomErrorCodes() []int {
 	if a.Credentials == nil {
 		return nil

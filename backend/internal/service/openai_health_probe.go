@@ -314,10 +314,13 @@ func ApplyOpenAIHealthProbeRetryPolicy(c *gin.Context, account *Account, failove
 		return
 	}
 	retryable := failoverErr.RetryableOnSameAccount
+	emptyResponseRetryable := IsOpenAIHealthProbeEmptyErrorBody(failoverErr.ResponseBody)
 	if account != nil && account.IsPoolMode() {
 		retryable = openAIPoolFailoverRetryableOnSameAccount(account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+		emptyResponseRetryable = emptyResponseRetryable &&
+			(account.IsPoolModeRetryableStatus(failoverErr.StatusCode) || account.IsPoolModeBuiltinRetryEnabled())
 	}
-	failoverErr.RetryableOnSameAccount = IsOpenAIHealthProbeEmptyErrorBody(failoverErr.ResponseBody) || retryable
+	failoverErr.RetryableOnSameAccount = emptyResponseRetryable || retryable
 }
 
 func openAIUpstreamRequestContext(ctx context.Context, c *gin.Context) (context.Context, context.CancelFunc) {

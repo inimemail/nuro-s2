@@ -771,6 +771,7 @@ describe('EditAccountModal', () => {
     expect(wrapper.text()).toContain('admin.accounts.anthropicCacheBoost')
     expect(wrapper.text()).toContain('admin.accounts.promptCacheBoostUpstreamHitPriority')
     expect(wrapper.text()).toContain('admin.accounts.anthropicUpstreamStrongIsolation')
+    expect(wrapper.find('[data-testid="pool-retry-status-codes"]').exists()).toBe(false)
 
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
@@ -783,6 +784,8 @@ describe('EditAccountModal', () => {
     expect(credentials).not.toHaveProperty('prompt_cache_boost_level')
     expect(credentials).not.toHaveProperty('prompt_cache_boost_upstream_hit_priority_enabled')
     expect(credentials).not.toHaveProperty('upstream_strong_isolation_enabled')
+    expect(credentials).not.toHaveProperty('pool_mode_builtin_retry_enabled')
+    expect(credentials).not.toHaveProperty('pool_mode_retry_status_codes')
   })
 
   it('does not expose Anthropic API key cache boost and isolation without pool mode', async () => {
@@ -1038,6 +1041,7 @@ describe('EditAccountModal', () => {
 
     const wrapper = mountModal(account)
 
+    expect(wrapper.get('[data-testid="pool-mode-retry-count-label"]').text()).toBe('admin.accounts.upstreamConcurrencyRaceRetryCount')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
@@ -1045,6 +1049,7 @@ describe('EditAccountModal', () => {
 
     updateAccountMock.mockClear()
     await wrapper.get('[data-testid="upstream-concurrency-race-toggle"]').trigger('click')
+    expect(wrapper.get('[data-testid="pool-mode-retry-count-label"]').text()).toBe('admin.accounts.poolModeRetryCount')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
@@ -1062,6 +1067,34 @@ describe('EditAccountModal', () => {
       upstream_concurrency_race_retry_delay_ms: 10,
       upstream_concurrency_race_max_elapsed_ms: 2000,
       pool_mode_retry_count: 20
+    })
+  })
+
+  it('persists explicit retry status chips and the transient-error switch', async () => {
+    const account = buildAccount()
+    account.credentials = {
+      ...account.credentials,
+      pool_mode: true
+    }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    expect(wrapper.get('[data-testid="pool-retry-status-code-401"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="pool-retry-remove-status-code-401"]').trigger('click')
+    await wrapper.get('[data-testid="pool-retry-status-code-input"]').setValue('503')
+    await wrapper.get('[data-testid="pool-retry-add-status-code"]').trigger('click')
+    await wrapper.get('[data-testid="pool-mode-builtin-retry-toggle"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      pool_mode_retry_status_codes: [403, 429, 503],
+      pool_mode_builtin_retry_enabled: false
     })
   })
 

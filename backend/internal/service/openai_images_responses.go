@@ -1069,7 +1069,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 			StatusCode:             http.StatusBadGateway,
 			ResponseBody:           body,
 			Message:                "upstream did not return image output",
-			RetryableOnSameAccount: true,
+			RetryableOnSameAccount: account == nil || !account.IsPoolMode() || account.IsPoolModeRetryableStatus(http.StatusBadGateway) || account.IsPoolModeBuiltinRetryEnabled(),
 		}
 	}
 	if strings.TrimSpace(firstMeta.Model) == "" {

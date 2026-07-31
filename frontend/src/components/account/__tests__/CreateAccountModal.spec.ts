@@ -248,4 +248,33 @@ describe('CreateAccountModal', () => {
     expect(credentials).not.toHaveProperty('openai_prompt_cache_creation_optimization_enabled')
     expect(credentials).not.toHaveProperty('openai_prompt_cache_creation_optimization_mode')
   })
+
+  it('submits explicit OpenAI pool retry conditions without changing retry timing fields', async () => {
+    const wrapper = mountModal()
+
+    await wrapper.findAll('button').find((button) => button.text().trim() === 'OpenAI')!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('API Key'))!.trigger('click')
+    await flushPromises()
+
+    await wrapper.get('input[data-tour="account-form-name"]').setValue('OpenAI Pool Key')
+    await wrapper.get('input[placeholder="sk-proj-..."]').setValue('sk-test')
+    await wrapper.get('[data-testid="pool-mode-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="pool-retry-remove-status-code-401"]').trigger('click')
+    await wrapper.get('[data-testid="pool-mode-builtin-retry-toggle"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      pool_mode: true,
+      pool_mode_retry_status_codes: [403, 429],
+      pool_mode_builtin_retry_enabled: false
+    })
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).not.toHaveProperty(
+      'upstream_concurrency_race_retry_delay_ms'
+    )
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).not.toHaveProperty(
+      'upstream_concurrency_race_max_elapsed_ms'
+    )
+  })
 })

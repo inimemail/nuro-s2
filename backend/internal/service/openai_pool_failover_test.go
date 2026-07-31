@@ -54,6 +54,67 @@ func TestOpenAIPoolRequestFailoverError_ConnectionError(t *testing.T) {
 	require.True(t, failoverErr.RetryableOnSameAccount)
 }
 
+func TestOpenAIPoolRequestFailoverError_BuiltinRetryDisabled(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       101,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                       true,
+			"pool_mode_retry_status_codes":    []any{},
+			"pool_mode_builtin_retry_enabled": false,
+		},
+	}
+
+	failoverErr := svc.newOpenAIPoolRequestFailoverError(nil, account, nil, errors.New("tls handshake timeout"), false)
+
+	require.NotNil(t, failoverErr)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+}
+
+func TestOpenAIPoolRequestFailoverError_Explicit502OverridesBuiltinDisabled(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       101,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                       true,
+			"pool_mode_retry_status_codes":    []any{float64(http.StatusBadGateway)},
+			"pool_mode_builtin_retry_enabled": false,
+		},
+	}
+
+	failoverErr := svc.newOpenAIPoolRequestFailoverError(nil, account, nil, errors.New("tls handshake timeout"), false)
+
+	require.NotNil(t, failoverErr)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+}
+
+func TestOpenAIPoolRetryConditionsAreMergedWithoutBuiltinOverride(t *testing.T) {
+	account := &Account{
+		ID:       101,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                       true,
+			"pool_mode_retry_status_codes":    []any{float64(http.StatusServiceUnavailable)},
+			"pool_mode_builtin_retry_enabled": false,
+		},
+	}
+
+	require.True(t, openAIPoolFailoverRetryableOnSameAccount(account, http.StatusServiceUnavailable, "temporary outage", nil))
+	require.False(t, openAIPoolFailoverRetryableOnSameAccount(account, http.StatusBadGateway, "temporary outage", nil))
+	require.False(t, openAIPoolFailoverRetryableOnSameAccount(account, http.StatusTooManyRequests, "rate limited", nil))
+
+	account.Credentials["pool_mode_builtin_retry_enabled"] = true
+	require.True(t, openAIPoolFailoverRetryableOnSameAccount(account, http.StatusBadGateway, "temporary outage", nil))
+	// 429 remains authoritative in the explicit status-code list even when the
+	// transient system-error rule is enabled.
+	require.False(t, openAIPoolFailoverRetryableOnSameAccount(account, http.StatusTooManyRequests, "rate limited", nil))
+}
+
 func TestOpenAIPoolRequestFailoverError_NonPoolIgnored(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{

@@ -789,7 +789,9 @@
             </div>
           </div>
           <div v-if="poolModeEnabled" class="mt-3">
-            <label class="input-label">{{ t('admin.accounts.poolModeRetryCount') }}</label>
+            <label class="input-label" data-testid="pool-mode-retry-count-label">
+              {{ t(upstreamConcurrencyRaceEnabled ? 'admin.accounts.upstreamConcurrencyRaceRetryCount' : 'admin.accounts.poolModeRetryCount') }}
+            </label>
             <input
               v-model.number="poolModeRetryCount"
               type="number"
@@ -808,7 +810,13 @@
               }}
             </p>
           </div>
-          <div v-if="poolModeEnabled" class="mt-3">
+          <PoolModeRetryConditions
+            v-if="poolModeEnabled && account.platform === 'openai'"
+            v-model="poolModeRetryStatusCodes"
+            v-model:builtin-transient-enabled="poolModeBuiltinRetryEnabled"
+            :show-builtin-transient="true"
+          />
+          <div v-else-if="poolModeEnabled" class="mt-3">
             <label class="input-label">{{ t('admin.accounts.poolModeRetryStatusCodes') }}</label>
             <input
               v-model="poolModeRetryStatusCodesInput"
@@ -1748,7 +1756,9 @@
             </div>
           </div>
           <div v-if="poolModeEnabled" class="mt-3">
-            <label class="input-label">{{ t('admin.accounts.poolModeRetryCount') }}</label>
+            <label class="input-label" data-testid="pool-mode-retry-count-label">
+              {{ t(upstreamConcurrencyRaceEnabled ? 'admin.accounts.upstreamConcurrencyRaceRetryCount' : 'admin.accounts.poolModeRetryCount') }}
+            </label>
             <input
               v-model.number="poolModeRetryCount"
               type="number"
@@ -3669,6 +3679,7 @@ import PromptCacheCreationOptimizationControl from '@/components/account/PromptC
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
+import PoolModeRetryConditions from '@/components/account/PoolModeRetryConditions.vue'
 import {
   applyHeaderOverride,
   applyGrokOAuthBaseURL,
@@ -3807,7 +3818,9 @@ const upstreamConcurrencyRaceMaxElapsedMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RAC
 const upstreamConcurrencyRaceRetryCountBackup = ref<number | null>(null)
 const syncingAccountState = ref(false)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
+const poolModeRetryStatusCodes = ref<number[]>([...DEFAULT_POOL_MODE_RETRY_STATUS_CODES])
 const poolModeRetryStatusCodesInput = ref('')
+const poolModeBuiltinRetryEnabled = ref(true)
 const isSparkShadowAccount = computed(() => props.account?.parent_account_id != null)
 const poolModeRetryCountMax = computed(() =>
   upstreamConcurrencyRaceEnabled.value
@@ -4025,25 +4038,8 @@ const showUpstreamConcurrencyRaceToggle = computed(() =>
   !isSparkShadowAccount.value && showOpenAIAPIKeyTextStreamToggles.value && poolModeEnabled.value
 )
 
-function parsePoolModeRetryStatusCodes(input: string): number[] {
-  if (!input || !input.trim()) return []
-  const seen = new Set<number>()
-  const out: number[] = []
-  for (const token of input.split(/[,\s]+/)) {
-    const trimmed = token.trim()
-    if (!trimmed) continue
-    const n = Number(trimmed)
-    if (!Number.isFinite(n) || !Number.isInteger(n)) continue
-    if (n < 100 || n > 599) continue
-    if (seen.has(n)) continue
-    seen.add(n)
-    out.push(n)
-  }
-  return out.sort((a, b) => a - b)
-}
-
-function formatPoolModeRetryStatusCodes(value: unknown): string {
-  if (!Array.isArray(value)) return ''
+function normalizePoolModeRetryStatusCodes(value: unknown): number[] {
+  if (!Array.isArray(value)) return [...DEFAULT_POOL_MODE_RETRY_STATUS_CODES]
   const out: number[] = []
   const seen = new Set<number>()
   for (const v of value) {
@@ -4054,7 +4050,17 @@ function formatPoolModeRetryStatusCodes(value: unknown): string {
     seen.add(n)
     out.push(n)
   }
-  return out.sort((a, b) => a - b).join(', ')
+  return out.sort((a, b) => a - b)
+}
+
+function parsePoolModeRetryStatusCodes(input: string): number[] {
+  if (!input || !input.trim()) return []
+  return normalizePoolModeRetryStatusCodes(input.split(/[,\s]+/))
+}
+
+function formatPoolModeRetryStatusCodes(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  return normalizePoolModeRetryStatusCodes(value).join(', ')
 }
 const customErrorCodesEnabled = ref(false)
 const selectedErrorCodes = ref<number[]>([])
@@ -5119,7 +5125,15 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       : normalizePoolModeRetryCount(
         Number(credentials.pool_mode_retry_count ?? DEFAULT_POOL_MODE_RETRY_COUNT)
       )
-    poolModeRetryStatusCodesInput.value = formatPoolModeRetryStatusCodes(credentials.pool_mode_retry_status_codes)
+    if (newAccount.platform === 'openai') {
+      poolModeRetryStatusCodes.value = normalizePoolModeRetryStatusCodes(credentials.pool_mode_retry_status_codes)
+      poolModeBuiltinRetryEnabled.value = credentials.pool_mode_builtin_retry_enabled !== false
+      poolModeRetryStatusCodesInput.value = ''
+    } else {
+      poolModeRetryStatusCodes.value = [...DEFAULT_POOL_MODE_RETRY_STATUS_CODES]
+      poolModeBuiltinRetryEnabled.value = true
+      poolModeRetryStatusCodesInput.value = formatPoolModeRetryStatusCodes(credentials.pool_mode_retry_status_codes)
+    }
 
     // Load custom error codes
     customErrorCodesEnabled.value = credentials.custom_error_codes_enabled === true
@@ -5158,7 +5172,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     imagePoolModeEnabled.value = false
     const retryCount = bedrockCreds.pool_mode_retry_count
     poolModeRetryCount.value = (typeof retryCount === 'number' && retryCount >= 0) ? retryCount : DEFAULT_POOL_MODE_RETRY_COUNT
+    poolModeRetryStatusCodes.value = [...DEFAULT_POOL_MODE_RETRY_STATUS_CODES]
     poolModeRetryStatusCodesInput.value = formatPoolModeRetryStatusCodes(bedrockCreds.pool_mode_retry_status_codes)
+    poolModeBuiltinRetryEnabled.value = true
 
     // Load quota limits for bedrock
     const bedrockExtra = (newAccount.extra as Record<string, unknown>) || {}
@@ -5223,7 +5239,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     upstreamConcurrencyRaceRetryDelayMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
     upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
     poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
+    poolModeRetryStatusCodes.value = [...DEFAULT_POOL_MODE_RETRY_STATUS_CODES]
     poolModeRetryStatusCodesInput.value = ''
+    poolModeBuiltinRetryEnabled.value = true
     customErrorCodesEnabled.value = false
     selectedErrorCodes.value = []
     upstreamConcurrencyRaceRetryCountBackup.value = null
@@ -5952,11 +5970,17 @@ const handleSubmit = async () => {
         newCredentials.pool_mode_retry_count = upstreamConcurrencyRaceEnabled.value
           ? normalizeUpstreamConcurrencyRaceRetryCount(poolModeRetryCount.value)
           : normalizePoolModeRetryCount(poolModeRetryCount.value)
-        const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
-        if (parsedRetryStatusCodes.length > 0) {
-          newCredentials.pool_mode_retry_status_codes = parsedRetryStatusCodes
+        if (props.account.platform === 'openai') {
+          newCredentials.pool_mode_retry_status_codes = [...poolModeRetryStatusCodes.value]
+          newCredentials.pool_mode_builtin_retry_enabled = poolModeBuiltinRetryEnabled.value
         } else {
-          delete newCredentials.pool_mode_retry_status_codes
+          const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
+          if (parsedRetryStatusCodes.length > 0) {
+            newCredentials.pool_mode_retry_status_codes = parsedRetryStatusCodes
+          } else {
+            delete newCredentials.pool_mode_retry_status_codes
+          }
+          delete newCredentials.pool_mode_builtin_retry_enabled
         }
       } else {
         delete newCredentials.pool_mode
@@ -5981,6 +6005,7 @@ const handleSubmit = async () => {
         delete newCredentials.upstream_concurrency_race_retry_count_backup
         delete newCredentials.pool_mode_retry_count
         delete newCredentials.pool_mode_retry_status_codes
+        delete newCredentials.pool_mode_builtin_retry_enabled
       }
       applyCacheBoostAndIsolationCredentials(newCredentials)
       applyPromptCacheCreationOptimizationCredentials(newCredentials)
@@ -6111,12 +6136,14 @@ const handleSubmit = async () => {
         } else {
           delete newCredentials.pool_mode_retry_status_codes
         }
+        delete newCredentials.pool_mode_builtin_retry_enabled
       } else {
         delete newCredentials.pool_mode
         delete newCredentials.pool_soft_cooldown_enabled
         delete newCredentials.pool_soft_cooldown_error_threshold
         delete newCredentials.pool_mode_retry_count
         delete newCredentials.pool_mode_retry_status_codes
+        delete newCredentials.pool_mode_builtin_retry_enabled
       }
 
       // Model mapping

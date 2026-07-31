@@ -65,7 +65,7 @@ func (s *OpenAIGatewayService) newOpenAIPoolRequestFailoverError(
 		StatusCode:             http.StatusBadGateway,
 		ResponseBody:           body,
 		Message:                safeErr,
-		RetryableOnSameAccount: true,
+		RetryableOnSameAccount: account.IsPoolModeRetryableStatus(http.StatusBadGateway) || account.IsPoolModeBuiltinRetryEnabled(),
 	}
 }
 
@@ -226,7 +226,13 @@ func openAIPoolFailoverRetryableOnSameAccount(account *Account, statusCode int, 
 	if account.IsPoolModeRetryableStatus(statusCode) {
 		return true
 	}
-	if statusCode == 0 || statusCode >= 500 || statusCode == http.StatusRequestTimeout || statusCode == http.StatusTooManyRequests {
+	if !account.IsPoolModeBuiltinRetryEnabled() {
+		return false
+	}
+	// 429 is intentionally controlled only by pool_mode_retry_status_codes.
+	// This keeps the explicit status-code list authoritative while the toggle
+	// covers transport failures, timeouts, 5xx, and recognized transient bodies.
+	if statusCode == 0 || statusCode >= 500 || statusCode == http.StatusRequestTimeout {
 		return true
 	}
 	return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)

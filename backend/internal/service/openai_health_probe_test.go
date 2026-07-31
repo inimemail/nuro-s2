@@ -315,6 +315,28 @@ func TestApplyOpenAIHealthProbeRetryPolicyUsesPoolConditionsPlusEmptyResponse(t 
 	}
 }
 
+func TestApplyOpenAIHealthProbeRetryPolicyRespectsDisabledBuiltinRetryForEmptyResponse(t *testing.T) {
+	marked, _ := configuredHealthProbeContext(t)
+	account := &Account{
+		ID:       961,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                       true,
+			"pool_mode_retry_status_codes":    []any{},
+			"pool_mode_builtin_retry_enabled": false,
+		},
+	}
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:   http.StatusBadGateway,
+		ResponseBody: openAIHealthProbeErrorBody(),
+	}
+
+	ApplyOpenAIHealthProbeRetryPolicy(marked, account, failoverErr)
+
+	require.False(t, failoverErr.RetryableOnSameAccount)
+}
+
 func TestApplyOpenAIHealthProbeRetryPolicyDoesNotChangeNormalRequests(t *testing.T) {
 	unmarked, _ := healthProbeTestContext(healthProbeRequestBody(), "")
 	failoverErr := &UpstreamFailoverError{StatusCode: http.StatusConflict, RetryableOnSameAccount: true}

@@ -8797,7 +8797,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           body,
-				RetryableOnSameAccount: true,
+				RetryableOnSameAccount: account == nil || !account.IsPoolMode() || account.IsPoolModeRetryableStatus(resp.StatusCode) || account.IsPoolModeBuiltinRetryEnabled(),
 			}
 		}
 		return nil, fmt.Errorf("parse response: invalid json response")

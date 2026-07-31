@@ -1505,6 +1505,7 @@
             </div>
             <button
               type="button"
+              data-testid="pool-mode-toggle"
               @click="poolModeEnabled = !poolModeEnabled"
               :class="[
                 'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -1796,7 +1797,9 @@
             </div>
           </div>
           <div v-if="poolModeEnabled" class="mt-3">
-            <label class="input-label">{{ t('admin.accounts.poolModeRetryCount') }}</label>
+            <label class="input-label" data-testid="pool-mode-retry-count-label">
+              {{ t(upstreamConcurrencyRaceEnabled ? 'admin.accounts.upstreamConcurrencyRaceRetryCount' : 'admin.accounts.poolModeRetryCount') }}
+            </label>
             <input
               v-model.number="poolModeRetryCount"
               type="number"
@@ -1815,7 +1818,13 @@
               }}
             </p>
           </div>
-          <div v-if="poolModeEnabled" class="mt-3">
+          <PoolModeRetryConditions
+            v-if="poolModeEnabled && form.platform === 'openai'"
+            v-model="poolModeRetryStatusCodes"
+            v-model:builtin-transient-enabled="poolModeBuiltinRetryEnabled"
+            :show-builtin-transient="true"
+          />
+          <div v-else-if="poolModeEnabled" class="mt-3">
             <label class="input-label">{{ t('admin.accounts.poolModeRetryStatusCodes') }}</label>
             <input
               v-model="poolModeRetryStatusCodesInput"
@@ -2133,6 +2142,7 @@
             </div>
             <button
               type="button"
+              data-testid="pool-mode-toggle"
               @click="poolModeEnabled = !poolModeEnabled"
               :class="[
                 'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -2198,7 +2208,9 @@
             </div>
           </div>
           <div v-if="poolModeEnabled" class="mt-3">
-            <label class="input-label">{{ t('admin.accounts.poolModeRetryCount') }}</label>
+            <label class="input-label" data-testid="pool-mode-retry-count-label">
+              {{ t(upstreamConcurrencyRaceEnabled ? 'admin.accounts.upstreamConcurrencyRaceRetryCount' : 'admin.accounts.poolModeRetryCount') }}
+            </label>
             <input
               v-model.number="poolModeRetryCount"
               type="number"
@@ -4442,6 +4454,7 @@ import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import PromptCacheCreationOptimizationControl from '@/components/account/PromptCacheCreationOptimizationControl.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
+import PoolModeRetryConditions from '@/components/account/PoolModeRetryConditions.vue'
 import {
 	applyGrokOAuthBaseURL,
 	applyHeaderOverride,
@@ -4647,7 +4660,9 @@ const upstreamConcurrencyRaceRetryDelayMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RAC
 const upstreamConcurrencyRaceMaxElapsedMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS)
 const upstreamConcurrencyRaceRetryCountBackup = ref<number | null>(null)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
+const poolModeRetryStatusCodes = ref<number[]>([...DEFAULT_POOL_MODE_RETRY_STATUS_CODES])
 const poolModeRetryStatusCodesInput = ref('')
+const poolModeBuiltinRetryEnabled = ref(true)
 const poolModeRetryCountMax = computed(() =>
   upstreamConcurrencyRaceEnabled.value
     ? MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
@@ -4773,6 +4788,7 @@ function parsePoolModeRetryStatusCodes(input: string): number[] {
   }
   return out.sort((a, b) => a - b)
 }
+
 const customErrorCodesEnabled = ref(false)
 const selectedErrorCodes = ref<number[]>([])
 const customErrorCodeInput = ref<number | null>(null)
@@ -5916,7 +5932,9 @@ const resetForm = () => {
   upstreamConcurrencyRaceRetryCountBackup.value = null
   poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
   poolSoftCooldownErrorThreshold.value = DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD
+  poolModeRetryStatusCodes.value = [...DEFAULT_POOL_MODE_RETRY_STATUS_CODES]
   poolModeRetryStatusCodesInput.value = ''
+  poolModeBuiltinRetryEnabled.value = true
   customErrorCodesEnabled.value = false
   selectedErrorCodes.value = []
   customErrorCodeInput.value = null
@@ -6669,9 +6687,14 @@ const handleSubmit = async () => {
     credentials.pool_mode_retry_count = upstreamConcurrencyRaceEnabled.value
       ? normalizeUpstreamConcurrencyRaceRetryCount(poolModeRetryCount.value)
       : normalizePoolModeRetryCount(poolModeRetryCount.value)
-    const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
-    if (parsedRetryStatusCodes.length > 0) {
-      credentials.pool_mode_retry_status_codes = parsedRetryStatusCodes
+    if (form.platform === 'openai') {
+      credentials.pool_mode_retry_status_codes = [...poolModeRetryStatusCodes.value]
+      credentials.pool_mode_builtin_retry_enabled = poolModeBuiltinRetryEnabled.value
+    } else {
+      const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
+      if (parsedRetryStatusCodes.length > 0) {
+        credentials.pool_mode_retry_status_codes = parsedRetryStatusCodes
+      }
     }
   }
   applyPlatformCacheBoostAndIsolationCredentials(credentials)

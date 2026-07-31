@@ -198,6 +198,7 @@ func TestBuildSchedulerMetadataAccount_KeepsConcurrencyRaceRetryControls(t *test
 		Credentials: map[string]any{
 			"pool_mode":                                true,
 			"pool_mode_retry_count":                    7,
+			"pool_mode_builtin_retry_enabled":          false,
 			"upstream_concurrency_race_enabled":        true,
 			"upstream_concurrency_race_retry_delay_ms": 35,
 			"upstream_concurrency_race_max_elapsed_ms": 2500,
@@ -210,6 +211,7 @@ func TestBuildSchedulerMetadataAccount_KeepsConcurrencyRaceRetryControls(t *test
 	require.Equal(t, 7, got.GetPoolModeRetryCount())
 	require.Equal(t, 35, int(got.GetPoolModeSameAccountRetryDelay().Milliseconds()))
 	require.Equal(t, 2500, int(got.GetPoolModeSameAccountRetryMaxElapsed().Milliseconds()))
+	require.False(t, got.IsPoolModeBuiltinRetryEnabled())
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsOpenAILongContextBillingPolicy(t *testing.T) {

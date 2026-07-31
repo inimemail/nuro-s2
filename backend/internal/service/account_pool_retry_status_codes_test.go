@@ -191,3 +191,71 @@ func TestIsPoolModeRetryableStatus_Account(t *testing.T) {
 		})
 	}
 }
+
+func TestIsPoolModeBuiltinRetryEnabled(t *testing.T) {
+	tests := []struct {
+		name     string
+		account  *Account
+		expected bool
+	}{
+		{
+			name:     "nil_account_disabled",
+			account:  nil,
+			expected: false,
+		},
+		{
+			name: "non_pool_account_disabled",
+			account: &Account{
+				Credentials: map[string]any{},
+			},
+			expected: false,
+		},
+		{
+			name: "missing_setting_preserves_legacy_enabled_behavior",
+			account: &Account{
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"pool_mode": true},
+			},
+			expected: true,
+		},
+		{
+			name: "explicit_false_disables_builtin_retry",
+			account: &Account{
+				Type: AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"pool_mode":                       true,
+					"pool_mode_builtin_retry_enabled": false,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "explicit_true_enables_builtin_retry",
+			account: &Account{
+				Type: AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"pool_mode":                       true,
+					"pool_mode_builtin_retry_enabled": true,
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "invalid_setting_preserves_legacy_enabled_behavior",
+			account: &Account{
+				Type: AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"pool_mode":                       true,
+					"pool_mode_builtin_retry_enabled": "false",
+				},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, tt.account.IsPoolModeBuiltinRetryEnabled())
+		})
+	}
+}
