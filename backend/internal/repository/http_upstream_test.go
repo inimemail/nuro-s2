@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -56,6 +57,42 @@ func TestGrokAccessDeniedFallbackIsReplayableAndStripsCLIIdentity(t *testing.T) 
 	require.Empty(t, fallbackHeaders.Get("X-Grok-Client-Version"))
 	require.Empty(t, fallbackHeaders.Get("X-Relay-Secret"))
 	require.Empty(t, fallbackHeaders.Get("X-Relay-Key"))
+}
+
+func TestDoUpstreamWithResponseHeaderDeadlineStopsBeforeHeaders(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	})}
+	req, err := http.NewRequest(http.MethodGet, "https://upstream.invalid", nil)
+	require.NoError(t, err)
+	req = req.WithContext(service.WithHTTPUpstreamResponseHeaderDeadline(req.Context(), time.Now().Add(20*time.Millisecond)))
+
+	_, err = doUpstreamWithResponseHeaderDeadline(client, req)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestDoUpstreamWithResponseHeaderDeadlineDoesNotCancelEstablishedStream(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("data")),
+			Request:    req,
+		}, nil
+	})}
+	req, err := http.NewRequest(http.MethodGet, "https://upstream.invalid", nil)
+	require.NoError(t, err)
+	req = req.WithContext(service.WithHTTPUpstreamResponseHeaderDeadline(req.Context(), time.Now().Add(10*time.Millisecond)))
+
+	resp, err := doUpstreamWithResponseHeaderDeadline(client, req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	time.Sleep(30 * time.Millisecond)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "data", string(body))
 }
 
 func TestGrokAccessDeniedFallbackKeepsOriginalResponseWhenFallbackFails(t *testing.T) {

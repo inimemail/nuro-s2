@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -94,12 +95,16 @@ func TestOpenAIEdgeIngressFallbackHeaderSkipsProxy(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"stream":true}`))
 	req.Header.Set(openAIEdgeFallbackHeader, "1")
+	req.Header.Set(openAIEdgeFallbackReasonHeader, "spoofed")
+	req.Header.Set("X-Sub2API-Edge-Retry-Count", "2")
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = req
 
 	require.False(t, h.tryOpenAIEdgeIngressProxy(c))
 	require.Empty(t, c.Request.Header.Get(openAIEdgeFallbackHeader))
+	require.Nil(t, c.Request.Context().Value(ctxkey.EdgeFallbackReason))
+	require.Nil(t, c.Request.Context().Value(ctxkey.EdgeRetryCount))
 }
 
 func TestOpenAIEdgeIngressFallbackHeadersBecomeContext(t *testing.T) {
@@ -117,6 +122,7 @@ func TestOpenAIEdgeIngressFallbackHeadersBecomeContext(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"stream":true}`))
 	req.Header.Set(openAIEdgeFallbackHeader, "1")
 	req.Header.Set(openAIEdgeFallbackReasonHeader, "prepare_fallback_go")
+	req.Header.Set(openAIEdgeSecretHeader, "secret")
 	req.Header.Set("X-Sub2API-Edge-Prepare-Ms", "12")
 	req.Header.Set("X-Sub2API-Edge-Retry-Count", "2")
 	w := httptest.NewRecorder()
@@ -127,7 +133,37 @@ func TestOpenAIEdgeIngressFallbackHeadersBecomeContext(t *testing.T) {
 	require.Empty(t, c.Request.Header.Get(openAIEdgeFallbackHeader))
 	require.Empty(t, c.Request.Header.Get(openAIEdgeFallbackReasonHeader))
 	require.Empty(t, c.Request.Header.Get("X-Sub2API-Edge-Prepare-Ms"))
+	require.Empty(t, c.Request.Header.Get(openAIEdgeSecretHeader))
 	require.Equal(t, "prepare_fallback_go", c.Request.Context().Value(ctxkey.EdgeFallbackReason))
 	require.Equal(t, int64(12), c.Request.Context().Value(ctxkey.EdgePrepareMs))
 	require.Equal(t, int64(2), c.Request.Context().Value(ctxkey.EdgeRetryCount))
+}
+
+func TestOpenAIEdgeIngressFallbackRestoresContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &OpenAIGatewayHandler{
+		cfg:                     &config.Config{},
+		openAIEdgeContinuations: make(map[string]openAIEdgeContinuationMemory),
+	}
+	h.cfg.Gateway.OpenAIEdgeRS = config.GatewayOpenAIEdgeRSConfig{
+		Enabled: true, InternalAPIEnabled: true, InternalSecret: "secret",
+		Mode: "relay", IngressProxyEnabled: true, ListenAddr: "127.0.0.1:1",
+	}
+	h.saveOpenAIEdgeContinuation(context.Background(), "restore-token", edgeRetryContinuation{
+		Version: 1, SwitchCount: 2, SameAccountRetries: map[int64]int{41: 3},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"stream":true}`))
+	req.Header.Set(openAIEdgeFallbackHeader, "1")
+	req.Header.Set(openAIEdgeSecretHeader, "secret")
+	req.Header.Set(openAIEdgeContinuationHeader, "restore-token")
+	req.Header.Set("X-Sub2API-Edge-Retry-Count", "3")
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = req
+
+	require.False(t, h.tryOpenAIEdgeIngressProxy(c))
+	state := edgeRetryContinuationFromContext(c.Request.Context())
+	require.NotNil(t, state)
+	require.Equal(t, 2, state.SwitchCount)
+	require.Equal(t, 3, state.SameAccountRetries[41])
+	require.Empty(t, c.Request.Header.Get(openAIEdgeContinuationHeader))
 }

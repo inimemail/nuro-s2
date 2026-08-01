@@ -150,6 +150,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
+	if restoredSwitchCount, _ := seedRetryStateFromEdgeContinuation(c.Request.Context(), sameAccountRetryCount, sameAccountRetryStartedAt, failedAccountIDs); restoredSwitchCount > 0 {
+		switchCount = restoredSwitchCount
+	}
 	sameAccountRetryAccountID := int64(0)
 	var sameAccountRetryAccount *service.Account
 	var sameAccountRetryErr *service.UpstreamFailoverError
@@ -310,7 +313,8 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, promptCacheKey, "")
+			forwardCtx := sharedRaceResponseHeaderContext(c.Request.Context(), sameAccountRetryStartedAt)
+			return h.gatewayService.ForwardAsChatCompletions(forwardCtx, c, account, forwardBody, promptCacheKey, "")
 		}()
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()

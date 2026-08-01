@@ -94,4 +94,8 @@ const (
 
 	// EdgeRetryCount stores edge-rs retry/account-switch count for this request.
 	EdgeRetryCount Key = "ctx_edge_retry_count"
+
+	// EdgeRetryContinuation stores the one-time retry state restored from an
+	// authenticated edge-rs fallback. The value is owned by the handler package.
+	EdgeRetryContinuation Key = "ctx_edge_retry_continuation"
 )

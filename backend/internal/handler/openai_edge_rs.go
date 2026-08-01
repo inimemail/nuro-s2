@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/runtimeops"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -1711,8 +1712,11 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeRetry(c *gin.Context) {
 		return
 	}
 	decision := h.openAIEdgeRetryDecision(c, req)
+	h.attachOpenAIEdgeContinuation(c.Request.Context(), req.LeaseID, &decision)
 	c.JSON(http.StatusOK, decision)
 }
+
+const openAIEdgeRaceResponseHeaderTimeoutErrorType = "edge_race_response_header_timeout"
 
 func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req service.OpenAIEdgeRetryRequest) service.OpenAIEdgeRetryDecision {
 	fallback := func(reason string) service.OpenAIEdgeRetryDecision {
@@ -1744,6 +1748,15 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	if strings.TrimSpace(req.ErrorType) == "edge_queue_wait_timeout" {
 		return h.openAIEdgeRetrySwitchAccount(c, lease, req, "queue_wait_timeout")
 	}
+	if strings.TrimSpace(req.ErrorType) == openAIEdgeRaceResponseHeaderTimeoutErrorType {
+		if lease.sameAccountStarted == nil {
+			lease.sameAccountStarted = make(map[int64]time.Time)
+		}
+		if lease.sameAccountStarted[sharedRaceRetryExhaustedKey].IsZero() {
+			lease.sameAccountStarted[sharedRaceRetryExhaustedKey] = time.Now()
+			runtimeops.ObservePreemptionExhausted()
+		}
+	}
 	if (lease.inboundEndpoint == "/v1/responses" || lease.inboundEndpoint == "/v1/responses:ws") && status == http.StatusBadRequest {
 		currentBody := append([]byte(nil), req.RequestBody...)
 		var bodyErr error
@@ -1759,6 +1772,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 				plan := lease.lastPlan
 				plan.Body = nil
 				plan.BodyRawBase64 = service.EncodeOpenAIEdgeRawBody(nextBody)
+				applyOpenAIEdgeRaceResponseHeaderBudget(lease, &plan)
 				lease.lastPlan = plan
 				return service.OpenAIEdgeRetryDecision{
 					Action: service.OpenAIEdgeActionRelay,
@@ -2031,6 +2045,7 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 	}
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
 	plan.Lane = openAIEdgeLaneFromServiceTier(prepared.ServiceTier)
+	applyOpenAIEdgeRaceResponseHeaderBudget(lease, &plan)
 	lease.account = account
 	lease.accountReleaseFunc = release
 	markSameAccountAttemptStart(lease.sameAccountStarted, account, time.Now())
@@ -2044,6 +2059,23 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 	lease.cachePolicyApplied = plan.PromptCacheCreationOptimizationApplied
 	lease.lastPlan = plan
 	return plan, nil
+}
+
+func applyOpenAIEdgeRaceResponseHeaderBudget(lease *openAIEdgeLease, plan *service.OpenAIEdgePlan) {
+	if lease == nil || plan == nil {
+		return
+	}
+	plan.RaceResponseHeaderTimeoutMS = 0
+	deadline, ok := activeSharedRaceDeadline(lease.sameAccountStarted)
+	if !ok {
+		return
+	}
+	remaining := time.Until(deadline)
+	remainingMS := (remaining + time.Millisecond - 1) / time.Millisecond
+	if remainingMS < 1 {
+		remainingMS = 1
+	}
+	plan.RaceResponseHeaderTimeoutMS = int(remainingMS)
 }
 
 func recordOpenAIEdgeRejectedField(lease *openAIEdgeLease, field string) error {

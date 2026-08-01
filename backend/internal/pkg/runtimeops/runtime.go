@@ -12,17 +12,23 @@ import (
 var process = newProcessState()
 
 type processState struct {
-	startedAt        time.Time
-	draining         atomic.Bool
-	activeRequests   atomic.Int64
-	totalRequests    atomic.Uint64
-	rejectedDraining atomic.Uint64
-	serverErrors     atomic.Uint64
-	durationMicros   atomic.Uint64
-	admissionClaims  atomic.Uint64
-	admissionErrors  atomic.Uint64
-	admissionMicros  atomic.Uint64
-	admissionBuckets [8]atomic.Uint64
+	startedAt                time.Time
+	draining                 atomic.Bool
+	activeRequests           atomic.Int64
+	totalRequests            atomic.Uint64
+	rejectedDraining         atomic.Uint64
+	serverErrors             atomic.Uint64
+	durationMicros           atomic.Uint64
+	admissionClaims          atomic.Uint64
+	admissionErrors          atomic.Uint64
+	admissionMicros          atomic.Uint64
+	admissionBuckets         [8]atomic.Uint64
+	preemptionStarted        atomic.Uint64
+	preemptionExhausted      atomic.Uint64
+	edgeContinuationCreated  atomic.Uint64
+	edgeContinuationConsumed atomic.Uint64
+	edgeContinuationExpired  atomic.Uint64
+	edgeContinuationMissing  atomic.Uint64
 }
 
 func newProcessState() *processState {
@@ -30,37 +36,56 @@ func newProcessState() *processState {
 }
 
 type Snapshot struct {
-	StartedAt        time.Time
-	Draining         bool
-	ActiveRequests   int64
-	TotalRequests    uint64
-	RejectedDraining uint64
-	ServerErrors     uint64
-	DurationMicros   uint64
-	AdmissionClaims  uint64
-	AdmissionErrors  uint64
-	AdmissionMicros  uint64
-	AdmissionBuckets [8]uint64
+	StartedAt                time.Time
+	Draining                 bool
+	ActiveRequests           int64
+	TotalRequests            uint64
+	RejectedDraining         uint64
+	ServerErrors             uint64
+	DurationMicros           uint64
+	AdmissionClaims          uint64
+	AdmissionErrors          uint64
+	AdmissionMicros          uint64
+	AdmissionBuckets         [8]uint64
+	PreemptionStarted        uint64
+	PreemptionExhausted      uint64
+	EdgeContinuationCreated  uint64
+	EdgeContinuationConsumed uint64
+	EdgeContinuationExpired  uint64
+	EdgeContinuationMissing  uint64
 }
 
 func Current() Snapshot {
 	snapshot := Snapshot{
-		StartedAt:        process.startedAt,
-		Draining:         process.draining.Load(),
-		ActiveRequests:   process.activeRequests.Load(),
-		TotalRequests:    process.totalRequests.Load(),
-		RejectedDraining: process.rejectedDraining.Load(),
-		ServerErrors:     process.serverErrors.Load(),
-		DurationMicros:   process.durationMicros.Load(),
-		AdmissionClaims:  process.admissionClaims.Load(),
-		AdmissionErrors:  process.admissionErrors.Load(),
-		AdmissionMicros:  process.admissionMicros.Load(),
+		StartedAt:                process.startedAt,
+		Draining:                 process.draining.Load(),
+		ActiveRequests:           process.activeRequests.Load(),
+		TotalRequests:            process.totalRequests.Load(),
+		RejectedDraining:         process.rejectedDraining.Load(),
+		ServerErrors:             process.serverErrors.Load(),
+		DurationMicros:           process.durationMicros.Load(),
+		AdmissionClaims:          process.admissionClaims.Load(),
+		AdmissionErrors:          process.admissionErrors.Load(),
+		AdmissionMicros:          process.admissionMicros.Load(),
+		PreemptionStarted:        process.preemptionStarted.Load(),
+		PreemptionExhausted:      process.preemptionExhausted.Load(),
+		EdgeContinuationCreated:  process.edgeContinuationCreated.Load(),
+		EdgeContinuationConsumed: process.edgeContinuationConsumed.Load(),
+		EdgeContinuationExpired:  process.edgeContinuationExpired.Load(),
+		EdgeContinuationMissing:  process.edgeContinuationMissing.Load(),
 	}
 	for i := range snapshot.AdmissionBuckets {
 		snapshot.AdmissionBuckets[i] = process.admissionBuckets[i].Load()
 	}
 	return snapshot
 }
+
+func ObservePreemptionStarted()        { process.preemptionStarted.Add(1) }
+func ObservePreemptionExhausted()      { process.preemptionExhausted.Add(1) }
+func ObserveEdgeContinuationCreated()  { process.edgeContinuationCreated.Add(1) }
+func ObserveEdgeContinuationConsumed() { process.edgeContinuationConsumed.Add(1) }
+func ObserveEdgeContinuationExpired()  { process.edgeContinuationExpired.Add(1) }
+func ObserveEdgeContinuationMissing()  { process.edgeContinuationMissing.Add(1) }
 
 func ObserveAdmissionClaim(duration time.Duration, err error) {
 	process.admissionClaims.Add(1)

@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
 
@@ -934,6 +935,101 @@ func TestOpenAIEdgeRetryEndpointEligibilityPreservesTransportContracts(t *testin
 	if openAIEdgeRetryAccountEligible(wsAccount, "/v1/responses") {
 		t.Fatal("WS-only OAuth account must not become eligible for raw HTTP Responses retry")
 	}
+}
+
+func TestApplyOpenAIEdgeRaceResponseHeaderBudgetFollowsSwitchAndExhaustion(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	lease := &openAIEdgeLease{sameAccountStarted: map[int64]time.Time{
+		sharedRaceRetryStartedKey:  time.Now(),
+		sharedRaceRetryDeadlineKey: deadline,
+	}}
+	plan := service.OpenAIEdgePlan{}
+
+	applyOpenAIEdgeRaceResponseHeaderBudget(lease, &plan)
+	if plan.RaceResponseHeaderTimeoutMS <= 0 || plan.RaceResponseHeaderTimeoutMS > 1000 {
+		t.Fatalf("switched Edge plan did not inherit remaining race budget: %dms", plan.RaceResponseHeaderTimeoutMS)
+	}
+
+	lease.sameAccountStarted[sharedRaceRetryExhaustedKey] = time.Now()
+	applyOpenAIEdgeRaceResponseHeaderBudget(lease, &plan)
+	if plan.RaceResponseHeaderTimeoutMS != 0 {
+		t.Fatalf("normal Edge failover retained exhausted race budget: %dms", plan.RaceResponseHeaderTimeoutMS)
+	}
+}
+
+func TestApplyOpenAIEdgeRaceResponseHeaderBudgetRefreshesStalePlanTimeout(t *testing.T) {
+	lease := &openAIEdgeLease{sameAccountStarted: map[int64]time.Time{
+		sharedRaceRetryStartedKey:  time.Now().Add(-time.Second),
+		sharedRaceRetryDeadlineKey: time.Now().Add(50 * time.Millisecond),
+	}}
+	plan := service.OpenAIEdgePlan{RaceResponseHeaderTimeoutMS: 1500}
+
+	applyOpenAIEdgeRaceResponseHeaderBudget(lease, &plan)
+	if plan.RaceResponseHeaderTimeoutMS <= 0 || plan.RaceResponseHeaderTimeoutMS > 50 {
+		t.Fatalf("replayed Edge plan retained stale race timeout: %dms", plan.RaceResponseHeaderTimeoutMS)
+	}
+}
+
+func TestOpenAIEdgeRaceResponseHeaderTimeoutExhaustsBudgetAndRecordsAccountFailure(t *testing.T) {
+	cfg := &config.Config{}
+	gatewaySvc := service.NewOpenAIGatewayService(
+		nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	account := &service.Account{
+		ID:          1001,
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"pool_mode":                                true,
+			"pool_mode_retry_count":                    3,
+			"pool_mode_builtin_retry_enabled":          true,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_max_elapsed_ms": 1500,
+		},
+	}
+	lease := &openAIEdgeLease{
+		edgeRequestID:      "edge-race-timeout",
+		leaseID:            "lease-race-timeout",
+		expiresAt:          time.Now().Add(time.Minute),
+		account:            account,
+		apiKey:             &service.APIKey{},
+		maxAccountSwitches: 0,
+		sameAccountRetries: make(map[int64]int),
+		sameAccountStarted: map[int64]time.Time{
+			sharedRaceRetryStartedKey:  time.Now().Add(-200 * time.Millisecond),
+			sharedRaceRetryDeadlineKey: time.Now().Add(time.Second),
+		},
+		failedAccountIDs:   make(map[int64]struct{}),
+		cachePolicyEnabled: true,
+		cachePolicyApplied: true,
+	}
+	h := &OpenAIGatewayHandler{
+		gatewayService:    gatewaySvc,
+		concurrencyHelper: &ConcurrencyHelper{},
+		openAIEdgeLeases: map[string]*openAIEdgeLease{
+			lease.leaseID: lease,
+		},
+	}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:            lease.leaseID,
+		AccountID:          account.ID,
+		UpstreamStatusCode: http.StatusGatewayTimeout,
+		ErrorType:          openAIEdgeRaceResponseHeaderTimeoutErrorType,
+		ErrorMessage:       "upstream response headers exceeded race budget",
+	})
+
+	require.Equal(t, service.OpenAIEdgeActionFallbackGo, decision.Action)
+	require.Equal(t, "max_account_switches_exhausted", decision.Reason)
+	require.True(t, decision.FailureRecorded)
+	require.Contains(t, lease.failedAccountIDs, account.ID, "the timed-out account must be excluded from normal failover")
+	require.False(t, lease.sameAccountStarted[sharedRaceRetryExhaustedKey].IsZero(), "the request race budget must remain exhausted")
+	require.Zero(t, lease.sameAccountRetries[account.ID], "a response-header timeout must not start another same-account retry")
+	require.True(t, lease.cachePolicyEnabled)
+	require.True(t, lease.cachePolicyApplied)
 }
 
 func TestOpenAIEdgeRetryResponsesWSRebuildRetainsTransportAndRejectedFieldRemoval(t *testing.T) {

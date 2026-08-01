@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -421,6 +422,120 @@ func TestPlanSameAccountRetryUsesConfiguredFiftyAttempts(t *testing.T) {
 	require.False(t, retry)
 	require.Equal(t, 50, plan.RetryLimit)
 	require.Equal(t, 50, counts[account.ID])
+}
+
+func TestPlanSameAccountRetrySharesRaceDeadlineAcrossAccounts(t *testing.T) {
+	newAccount := func(id int64, maxElapsed int) *service.Account {
+		return &service.Account{
+			ID: id, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"pool_mode": true, "pool_mode_retry_count": 10,
+				"upstream_concurrency_race_enabled":        true,
+				"upstream_concurrency_race_max_elapsed_ms": maxElapsed,
+			},
+		}
+	}
+	a, b := newAccount(501, 500), newAccount(502, 30000)
+	counts := map[int64]int{}
+	starts := map[int64]time.Time{}
+
+	first, ok := planSameAccountRetry(a, counts, starts, 0)
+	require.True(t, ok)
+	deadline := starts[sharedRaceRetryDeadlineKey]
+	require.False(t, deadline.IsZero())
+
+	second, ok := planSameAccountRetry(b, counts, starts, 0)
+	require.True(t, ok)
+	require.Equal(t, deadline, starts[sharedRaceRetryDeadlineKey], "switching accounts must not extend the request budget")
+	require.Equal(t, 500*time.Millisecond, first.MaxElapsed)
+	require.Equal(t, 30*time.Second, second.MaxElapsed, "account setting is retained for diagnostics only")
+	require.Equal(t, 1, counts[a.ID])
+	require.Equal(t, 1, counts[b.ID])
+
+	starts[sharedRaceRetryDeadlineKey] = time.Now().Add(-time.Millisecond)
+	_, ok = planSameAccountRetry(b, counts, starts, 0)
+	require.False(t, ok)
+	require.Equal(t, 1, counts[b.ID], "an exhausted request budget must prevent new same-account attempts")
+}
+
+func TestPlanSameAccountRetryUsesSharedBudgetForNonRaceSwitchedAccount(t *testing.T) {
+	raceAccount := &service.Account{
+		ID: 511, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "pool_mode_retry_count": 10,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_max_elapsed_ms": 500,
+		},
+	}
+	normalAccount := &service.Account{
+		ID: 512, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "pool_mode_retry_count": 10,
+		},
+	}
+	counts := map[int64]int{}
+	starts := map[int64]time.Time{}
+	_, ok := planSameAccountRetry(raceAccount, counts, starts, 0)
+	require.True(t, ok)
+
+	plan, ok := planSameAccountRetry(normalAccount, counts, starts, 0)
+	require.True(t, ok, "a switched account may retry while the shared window remains active")
+	require.Equal(t, 1, plan.RetryCount)
+
+	starts[sharedRaceRetryDeadlineKey] = time.Now().Add(-time.Millisecond)
+	_, ok = planSameAccountRetry(normalAccount, counts, starts, 0)
+	require.False(t, ok, "a non-race account must not bypass an exhausted shared window")
+}
+
+func TestMarkSameAccountAttemptStartDoesNotStartRaceBudget(t *testing.T) {
+	account := &service.Account{
+		ID: 503, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "upstream_concurrency_race_enabled": true,
+		},
+	}
+	starts := map[int64]time.Time{}
+	markSameAccountAttemptStart(starts, account, time.Now())
+	require.Empty(t, starts)
+}
+
+func TestSharedRaceResponseHeaderContextFollowsActiveBudgetAcrossAccounts(t *testing.T) {
+	deadline := time.Now().Add(time.Second)
+	starts := map[int64]time.Time{
+		sharedRaceRetryStartedKey:  time.Now(),
+		sharedRaceRetryDeadlineKey: deadline,
+	}
+
+	ctx := sharedRaceResponseHeaderContext(context.Background(), starts)
+	got, ok := service.HTTPUpstreamResponseHeaderDeadline(ctx)
+	require.True(t, ok)
+	require.Equal(t, deadline, got, "a switched account must inherit the request-level race deadline")
+}
+
+func TestSharedRaceResponseHeaderContextStopsConstrainingNormalFailover(t *testing.T) {
+	starts := map[int64]time.Time{
+		sharedRaceRetryStartedKey:  time.Now().Add(-time.Second),
+		sharedRaceRetryDeadlineKey: time.Now().Add(-time.Millisecond),
+	}
+
+	ctx := sharedRaceResponseHeaderContext(context.Background(), starts)
+	_, ok := service.HTTPUpstreamResponseHeaderDeadline(ctx)
+	require.False(t, ok)
+	require.False(t, starts[sharedRaceRetryExhaustedKey].IsZero())
+
+	futureDeadline := time.Now().Add(time.Second)
+	starts[sharedRaceRetryDeadlineKey] = futureDeadline
+	ctx = sharedRaceResponseHeaderContext(context.Background(), starts)
+	_, ok = service.HTTPUpstreamResponseHeaderDeadline(ctx)
+	require.False(t, ok, "normal failover must remain unbounded after the race is exhausted")
+}
+
+func TestSeedRetryStateFromMissingEdgeContinuationExhaustsRaceBudget(t *testing.T) {
+	ctx := context.WithValue(context.Background(), ctxkey.EdgeRetryCount, int64(2))
+	starts := map[int64]time.Time{}
+	seedRetryStateFromEdgeContinuation(ctx, map[int64]int{}, starts, map[int64]struct{}{})
+	require.WithinDuration(t, time.Now(), starts[sharedRaceRetryDeadlineKey], 2*time.Second)
+	require.True(t, starts[sharedRaceRetryDeadlineKey].Before(time.Now()))
 }
 
 // ---------------------------------------------------------------------------

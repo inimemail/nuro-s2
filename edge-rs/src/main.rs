@@ -53,6 +53,7 @@ const EDGE_PREPARE_MS_HEADER: &str = "x-sub2api-edge-prepare-ms";
 const EDGE_QUEUE_WAIT_MS_HEADER: &str = "x-sub2api-edge-queue-wait-ms";
 const EDGE_RELAY_START_MS_HEADER: &str = "x-sub2api-edge-relay-start-ms";
 const EDGE_RETRY_COUNT_HEADER: &str = "x-sub2api-edge-retry-count";
+const EDGE_CONTINUATION_HEADER: &str = "x-sub2api-edge-continuation";
 const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 const SSE_STRING_INITIAL_CAPACITY: usize = 8192;
 const SSE_STRING_IDLE_MAX_CAPACITY: usize = 64 * 1024;
@@ -717,6 +718,7 @@ struct EdgePlan {
     #[serde(default)]
     safe_token_placeholder: bool,
     first_token_timeout_placeholder_ms: Option<u64>,
+    race_response_header_timeout_ms: Option<u64>,
     prompt_cache_creation_optimization_mode: Option<String>,
     prompt_cache_creation_optimization_model: Option<String>,
     #[serde(default)]
@@ -791,6 +793,7 @@ struct EdgeTiming {
     relay_start_ms: Option<i64>,
     fallback_reason: Option<String>,
     retry_count: i64,
+    continuation_token: Option<String>,
 }
 
 struct RelayAttemptContext {
@@ -828,6 +831,11 @@ fn relay_error_fallback_reason(err: &anyhow::Error) -> &'static str {
     if message.contains("queue wait budget") || message.contains("edge_queue_wait_timeout") {
         return "queue_wait_budget_fallback_go";
     }
+    if message.contains("race response header budget")
+        || message.contains("edge_race_response_header_timeout")
+    {
+        return "race_response_header_budget_fallback_go";
+    }
     if message.contains("edge relay queue full") {
         return "edge_relay_queue_full";
     }
@@ -840,6 +848,13 @@ fn relay_error_fallback_reason(err: &anyhow::Error) -> &'static str {
         return "edge_upstream_client_build_failed";
     }
     "relay_error_before_commit"
+}
+
+const EDGE_RACE_RESPONSE_HEADER_BUDGET_EXHAUSTED: &str =
+    "edge race response header budget exhausted";
+
+fn is_edge_race_response_header_budget_exhausted(err: &anyhow::Error) -> bool {
+    err.to_string() == EDGE_RACE_RESPONSE_HEADER_BUDGET_EXHAUSTED
 }
 
 fn relay_error_is_local_capacity(err: &anyhow::Error) -> bool {
@@ -899,6 +914,7 @@ impl BufferPools {
 struct RetryDecision {
     action: String,
     reason: Option<String>,
+    continuation_token: Option<String>,
     plan: Option<EdgePlan>,
     #[serde(default)]
     failure_recorded: bool,
@@ -4122,6 +4138,10 @@ async fn relay_upstream_direct(
     };
     let first_token_timeout_placeholder =
         normalize_first_token_timeout_placeholder_ms(plan.first_token_timeout_placeholder_ms);
+    let race_response_header_deadline = plan
+        .race_response_header_timeout_ms
+        .filter(|value| *value > 0)
+        .map(|value| Instant::now() + Duration::from_millis(value));
     let response_dialect = plan.response_dialect.clone();
     let send_state = state.clone();
     let send_url = upstream_url.clone();
@@ -4136,15 +4156,37 @@ async fn relay_upstream_direct(
         // Client/lane selection is part of the header and placeholder race.
         // A resource-bounded proxy-capacity wait therefore cannot move an account's
         // configured first-token placeholder past its request-relative limit.
-        let mut selected = send_state
-            .upstream_client_for_plan(
-                send_account_id,
-                send_account_type.as_deref(),
-                send_proxy_url.as_deref(),
-                &send_url,
-                send_lane.as_deref(),
+        let mut selected = if let Some(deadline) = race_response_header_deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(
+                remaining,
+                send_state.upstream_client_for_plan(
+                    send_account_id,
+                    send_account_type.as_deref(),
+                    send_proxy_url.as_deref(),
+                    &send_url,
+                    send_lane.as_deref(),
+                ),
             )
-            .await?;
+            .await
+            {
+                Ok(Ok(selected)) => selected,
+                Ok(Err(error)) => return Err(error),
+                Err(_) => {
+                    return Err(anyhow::anyhow!(EDGE_RACE_RESPONSE_HEADER_BUDGET_EXHAUSTED));
+                }
+            }
+        } else {
+            send_state
+                .upstream_client_for_plan(
+                    send_account_id,
+                    send_account_type.as_deref(),
+                    send_proxy_url.as_deref(),
+                    &send_url,
+                    send_lane.as_deref(),
+                )
+                .await?
+        };
         let mut request = selected.client.post(&send_url);
         if let Some(headers) = &send_headers {
             for (name, value) in headers {
@@ -4160,12 +4202,33 @@ async fn relay_upstream_direct(
         if let Some(marker) = &relay_attempted_marker {
             marker.store(true, Ordering::SeqCst);
         }
-        let response = match response_future.await {
-            Ok(response) => response,
-            Err(error) => {
-                send_state.metrics.record_upstream_send_error(&error);
+        let response = if let Some(deadline) = race_response_header_deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                drop(response_future);
                 selected.guard.release();
-                return Err(anyhow::Error::from(error));
+                return Err(anyhow::anyhow!(EDGE_RACE_RESPONSE_HEADER_BUDGET_EXHAUSTED));
+            }
+            match tokio::time::timeout(remaining, response_future).await {
+                Ok(Ok(response)) => response,
+                Ok(Err(error)) => {
+                    send_state.metrics.record_upstream_send_error(&error);
+                    selected.guard.release();
+                    return Err(anyhow::Error::from(error));
+                }
+                Err(_) => {
+                    selected.guard.release();
+                    return Err(anyhow::anyhow!(EDGE_RACE_RESPONSE_HEADER_BUDGET_EXHAUSTED));
+                }
+            }
+        } else {
+            match response_future.await {
+                Ok(response) => response,
+                Err(error) => {
+                    send_state.metrics.record_upstream_send_error(&error);
+                    selected.guard.release();
+                    return Err(anyhow::Error::from(error));
+                }
             }
         };
         let mut upstream_client_guard = selected.guard;
@@ -4174,13 +4237,30 @@ async fn relay_upstream_direct(
         send_state
             .metrics
             .record_upstream_response(response.status(), version);
-        Ok::<_, anyhow::Error>((response, upstream_client_guard, ingress_permit))
+        Ok::<_, anyhow::Error>((response, upstream_client_guard))
     });
-    let (upstream, mut upstream_client_guard, ingress_permit) = if let Some(timeout) =
+    let (upstream, mut upstream_client_guard) = if let Some(timeout) =
         first_token_timeout_placeholder
     {
         tokio::select! {
-            result = &mut upstream_send => result?,
+            result = &mut upstream_send => match result {
+                Ok(result) => result,
+                Err(err) if is_edge_race_response_header_budget_exhausted(&err) => {
+                    return retry_after_race_response_header_budget(
+                        state,
+                        plan,
+                        RelayAttemptContext {
+                            started_at,
+                            timing,
+                            timing_shared,
+                            relay_attempted_marker: None,
+                            ingress_permit,
+                        },
+                    )
+                    .await;
+                }
+                Err(err) => return Err(err),
+            },
             // Match the Go request-header race and the pre-lane Edge path:
             // this account setting starts when the upstream request is sent,
             // so local admission or relay queue time cannot consume it.
@@ -4253,7 +4333,7 @@ async fn relay_upstream_direct(
                     }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
 
-                    let (upstream, mut upstream_client_guard, ingress_permit) = match upstream_send.await {
+                    let (upstream, mut upstream_client_guard) = match upstream_send.await {
                         Ok(upstream) => upstream,
                         Err(err) => {
                             success = false;
@@ -4552,7 +4632,24 @@ async fn relay_upstream_direct(
             }
         }
     } else {
-        upstream_send.await?
+        match upstream_send.await {
+            Ok(result) => result,
+            Err(err) if is_edge_race_response_header_budget_exhausted(&err) => {
+                return retry_after_race_response_header_budget(
+                    state,
+                    plan,
+                    RelayAttemptContext {
+                        started_at,
+                        timing,
+                        timing_shared,
+                        relay_attempted_marker: None,
+                        ingress_permit,
+                    },
+                )
+                .await;
+            }
+            Err(err) => return Err(err),
+        }
     };
     let upstream_header_ms = header_start.elapsed().as_millis() as i64;
     let status = upstream.status();
@@ -4637,6 +4734,11 @@ async fn relay_upstream_direct(
         .await?;
 
         if decision.action == "relay" {
+            if let Some(token) = decision.continuation_token.as_deref() {
+                update_edge_timing(timing_shared.as_ref(), |shared| {
+                    shared.continuation_token = Some(token.to_string());
+                });
+            }
             if let Some(next_plan) = decision.plan {
                 let mut next_timing = timing.clone();
                 next_timing.retry_count += 1;
@@ -4697,6 +4799,11 @@ async fn relay_upstream_direct(
         let reason = decision
             .reason
             .unwrap_or_else(|| "retry_fallback_go".to_string());
+        if let Some(token) = decision.continuation_token {
+            update_edge_timing(timing_shared.as_ref(), |shared| {
+                shared.continuation_token = Some(token);
+            });
+        }
         if decision.failure_recorded {
             anyhow::bail!("retry_failure_already_recorded: {reason}");
         }
@@ -5160,6 +5267,69 @@ async fn relay_upstream_direct(
     Ok(builder.body(Body::from_stream(body_stream))?)
 }
 
+async fn retry_after_race_response_header_budget(
+    state: AppState,
+    plan: EdgePlan,
+    context: RelayAttemptContext,
+) -> anyhow::Result<Response> {
+    let RelayAttemptContext {
+        started_at,
+        timing,
+        timing_shared,
+        relay_attempted_marker: _,
+        ingress_permit,
+    } = context;
+    let decision = call_retry(
+        &state,
+        RetryRequest {
+            edge_request_id: plan.edge_request_id.clone(),
+            lease_id: plan.lease_id.clone(),
+            account_id: plan.account_id,
+            upstream_status_code: Some(StatusCode::GATEWAY_TIMEOUT.as_u16()),
+            upstream_request_id: None,
+            error_type: Some("edge_race_response_header_timeout".to_string()),
+            error_message: Some("upstream response headers exceeded race budget".to_string()),
+            request_body: None,
+            response_body: None,
+            wrote_client_response: false,
+        },
+    )
+    .await?;
+    if let Some(token) = decision.continuation_token.as_deref() {
+        update_edge_timing(timing_shared.as_ref(), |shared| {
+            shared.continuation_token = Some(token.to_string());
+        });
+    }
+    if decision.action != "relay" {
+        let reason = decision
+            .reason
+            .unwrap_or_else(|| "race_response_header_budget_fallback_go".to_string());
+        if decision.failure_recorded {
+            anyhow::bail!("retry_failure_already_recorded: {reason}");
+        }
+        anyhow::bail!("race response header budget requested Go fallback: {reason}");
+    }
+    let Some(next_plan) = decision.plan else {
+        anyhow::bail!("race response header retry decision missing relay plan");
+    };
+    let mut next_timing = timing;
+    next_timing.retry_count += 1;
+    update_edge_timing(timing_shared.as_ref(), |shared| {
+        shared.retry_count = next_timing.retry_count;
+        shared.queue_wait_ms = next_timing.queue_wait_ms;
+    });
+    Box::pin(relay_upstream(
+        state,
+        next_plan,
+        started_at,
+        next_timing,
+        timing_shared,
+        false,
+        ingress_permit,
+    ))
+    .await
+}
+
 async fn retry_after_queue_wait_budget(
     state: AppState,
     plan: EdgePlan,
@@ -5191,6 +5361,11 @@ async fn retry_after_queue_wait_budget(
         },
     )
     .await?;
+    if let Some(token) = decision.continuation_token.as_deref() {
+        update_edge_timing(timing_shared.as_ref(), |shared| {
+            shared.continuation_token = Some(token.to_string());
+        });
+    }
     if decision.action != "relay" {
         let reason = decision
             .reason
@@ -6524,6 +6699,7 @@ async fn fallback_to_go(
         }
     }
     req = req.header(EDGE_FALLBACK_HEADER, "1");
+    req = req.header(EDGE_SECRET_HEADER, &state.cfg.internal_secret);
     let reason = reason.trim();
     if !reason.is_empty() {
         req = req.header(EDGE_FALLBACK_REASON_HEADER, reason);
@@ -6539,6 +6715,9 @@ async fn fallback_to_go(
     }
     if timing.retry_count > 0 {
         req = req.header(EDGE_RETRY_COUNT_HEADER, timing.retry_count.to_string());
+    }
+    if let Some(token) = timing.continuation_token.as_deref() {
+        req = req.header(EDGE_CONTINUATION_HEADER, token);
     }
     let upstream = match req.body(body_bytes).send().await {
         Ok(resp) => resp,
@@ -6754,8 +6933,12 @@ fn is_safe_direct_stream_metric_header(name: &str, value: &reqwest::header::Head
 }
 
 fn should_forward_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    if name.starts_with("x-sub2api-edge-") {
+        return false;
+    }
     !matches!(
-        name.to_ascii_lowercase().as_str(),
+        name.as_str(),
         "host"
             | "content-length"
             | "connection"
@@ -6766,7 +6949,6 @@ fn should_forward_header(name: &str) -> bool {
             | "trailer"
             | "transfer-encoding"
             | "upgrade"
-            | "x-sub2api-edge-secret"
     )
 }
 
@@ -8679,6 +8861,22 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     }
 
     #[test]
+    fn race_response_header_budget_error_has_dedicated_fallback_reason() {
+        let error = anyhow::anyhow!(EDGE_RACE_RESPONSE_HEADER_BUDGET_EXHAUSTED);
+        assert!(is_edge_race_response_header_budget_exhausted(&error));
+        assert_eq!(
+            relay_error_fallback_reason(&anyhow::anyhow!(
+                "race response header budget requested Go fallback: upstream_timeout"
+            )),
+            "race_response_header_budget_fallback_go"
+        );
+        assert!(!relay_error_is_local_capacity(&error));
+        assert!(!is_edge_race_response_header_budget_exhausted(
+            &anyhow::anyhow!("edge race response header budget exhausted: wrapped")
+        ));
+    }
+
+    #[test]
     fn transient_proxy_build_failures_keep_distinct_reason() {
         assert_eq!(
             relay_error_fallback_reason(&anyhow::anyhow!(
@@ -8967,6 +9165,8 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         }
         assert!(should_forward_header("authorization"));
         assert!(should_forward_header("accept"));
+        assert!(!should_forward_header("x-sub2api-edge-fallback"));
+        assert!(!should_forward_header("x-sub2api-edge-continuation"));
 
         for name in [
             "connection",
@@ -9047,6 +9247,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             preamble_flush: false,
             safe_token_placeholder: false,
             first_token_timeout_placeholder_ms: None,
+            race_response_header_timeout_ms: None,
             prompt_cache_creation_optimization_mode: None,
             prompt_cache_creation_optimization_model: None,
             prompt_cache_creation_optimization_applied: false,
@@ -9188,6 +9389,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             preamble_flush: false,
             safe_token_placeholder: false,
             first_token_timeout_placeholder_ms: None,
+            race_response_header_timeout_ms: None,
             prompt_cache_creation_optimization_mode: None,
             prompt_cache_creation_optimization_model: None,
             prompt_cache_creation_optimization_applied: false,

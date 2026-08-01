@@ -189,7 +189,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	// 执行请求
 	upstreamStart := time.Now()
 	client := httpClientForUpstreamRequest(entry.client, req)
-	resp, err := client.Do(req)
+	resp, err := doUpstreamWithResponseHeaderDeadline(client, req)
 	if err == nil {
 		resp = performGrokAccessDeniedFallback(client, req, resp)
 	}
@@ -257,7 +257,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 
 	upstreamStart := time.Now()
 	client := httpClientForUpstreamRequest(entry.client, req)
-	resp, err := client.Do(req)
+	resp, err := doUpstreamWithResponseHeaderDeadline(client, req)
 	if err == nil {
 		resp = performGrokAccessDeniedFallback(client, req, resp)
 	}
@@ -290,6 +290,70 @@ func httpClientForUpstreamRequest(client *http.Client, req *http.Request) *http.
 	return &clone
 }
 
+// doUpstreamWithResponseHeaderDeadline uses a cancellable child context only
+// while RoundTrip is waiting for response headers. Once RoundTrip returns a
+// successful response, the timer is stopped and the child context remains
+// alive for the response body, so an SSE stream is never killed by the race
+// budget.
+func doUpstreamWithResponseHeaderDeadline(client *http.Client, req *http.Request) (*http.Response, error) {
+	if client == nil {
+		return nil, errors.New("http client is nil")
+	}
+	if req == nil {
+		return client.Do(req)
+	}
+	deadline, ok := service.HTTPUpstreamResponseHeaderDeadline(req.Context())
+	if !ok {
+		return client.Do(req)
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, context.DeadlineExceeded
+	}
+	requestCtx, cancel := context.WithCancel(req.Context())
+	boundedReq := req.WithContext(requestCtx)
+	var waiting atomic.Bool
+	var timedOut atomic.Bool
+	waiting.Store(true)
+	timer := time.AfterFunc(remaining, func() {
+		if waiting.CompareAndSwap(true, false) {
+			timedOut.Store(true)
+			cancel()
+		}
+	})
+	resp, err := client.Do(boundedReq)
+	if waiting.CompareAndSwap(true, false) {
+		timer.Stop()
+		if err != nil {
+			cancel()
+		}
+	}
+	if timedOut.Load() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, fmt.Errorf("upstream response header budget exhausted: %w", context.DeadlineExceeded)
+	}
+	if err == nil && resp != nil && resp.Body != nil {
+		resp.Body = &contextCancelBody{ReadCloser: resp.Body, cancel: cancel}
+	}
+	return resp, err
+}
+
+type contextCancelBody struct {
+	io.ReadCloser
+	once   sync.Once
+	cancel context.CancelFunc
+}
+
+func (b *contextCancelBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.cancel != nil {
+		b.once.Do(b.cancel)
+	}
+	return err
+}
+
 func performGrokAccessDeniedFallback(client *http.Client, req *http.Request, resp *http.Response) *http.Response {
 	if client == nil || !isGrokCLIAccessDeniedFallbackCandidate(req, resp) {
 		return resp
@@ -302,7 +366,10 @@ func performGrokAccessDeniedFallback(client *http.Client, req *http.Request, res
 	if err != nil {
 		return resp
 	}
-	fallbackResp, err := client.Do(fallbackReq)
+	// The official-host replay is still part of the same upstream attempt. Keep
+	// the request-level header budget across this provider-specific fallback so
+	// a slow second hop cannot bypass the shared race deadline.
+	fallbackResp, err := doUpstreamWithResponseHeaderDeadline(client, fallbackReq)
 	if err != nil || fallbackResp == nil || fallbackResp.StatusCode < http.StatusOK || fallbackResp.StatusCode >= http.StatusMultipleChoices {
 		if fallbackResp != nil && fallbackResp.Body != nil {
 			_ = fallbackResp.Body.Close()

@@ -60,6 +60,10 @@ type OpenAIEdgePlan struct {
 	// configured timeout when upstream has not produced a real first token.
 	// It must not be reported as first_token_ms.
 	FirstTokenTimeoutPlaceholderMS int `json:"first_token_timeout_placeholder_ms,omitempty"`
+	// RaceResponseHeaderTimeoutMS bounds only the response-header wait while the
+	// request-level Edge race budget is active, including switched accounts. A
+	// successful SSE body is never time-limited by it.
+	RaceResponseHeaderTimeoutMS int `json:"race_response_header_timeout_ms,omitempty"`
 	// SSECommentPreflush mirrors the account-level APIKey/OAuth setting that
 	// sends an SSE comment before upstream data so the downstream can commit the
 	// response body earlier. It is deliberately optional for old edge binaries.
@@ -114,13 +118,14 @@ type OpenAIEdgeRenewRequest struct {
 }
 
 type OpenAIEdgeRetryDecision struct {
-	Action          string          `json:"action"`
-	Reason          string          `json:"reason,omitempty"`
-	Plan            *OpenAIEdgePlan `json:"plan,omitempty"`
-	FailureRecorded bool            `json:"failure_recorded,omitempty"`
-	StatusCode      int             `json:"status_code,omitempty"`
-	ErrorType       string          `json:"error_type,omitempty"`
-	ErrorMessage    string          `json:"error_message,omitempty"`
+	Action            string          `json:"action"`
+	Reason            string          `json:"reason,omitempty"`
+	ContinuationToken string          `json:"continuation_token,omitempty"`
+	Plan              *OpenAIEdgePlan `json:"plan,omitempty"`
+	FailureRecorded   bool            `json:"failure_recorded,omitempty"`
+	StatusCode        int             `json:"status_code,omitempty"`
+	ErrorType         string          `json:"error_type,omitempty"`
+	ErrorMessage      string          `json:"error_message,omitempty"`
 }
 
 type OpenAIEdgeCompleteRequest struct {

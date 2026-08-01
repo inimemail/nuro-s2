@@ -72,6 +72,12 @@ func RegisterCommonRoutes(r *gin.Engine, cfg *config.Config) {
 		body += fmt.Sprintf("# TYPE sub2api_go_gc_cycles_total counter\nsub2api_go_gc_cycles_total %d\n", memory.NumGC)
 		body += fmt.Sprintf("# TYPE sub2api_go_gc_pause_seconds_total counter\nsub2api_go_gc_pause_seconds_total %.9f\n", float64(memory.PauseTotalNs)/float64(time.Second))
 		body += fmt.Sprintf("# TYPE sub2api_go_gc_cpu_fraction gauge\nsub2api_go_gc_cpu_fraction %.9f\n", memory.GCCPUFraction)
+		body += fmt.Sprintf("# TYPE sub2api_preemption_started_total counter\nsub2api_preemption_started_total %d\n", snapshot.PreemptionStarted)
+		body += fmt.Sprintf("# TYPE sub2api_preemption_budget_exhausted_total counter\nsub2api_preemption_budget_exhausted_total %d\n", snapshot.PreemptionExhausted)
+		body += fmt.Sprintf("# TYPE sub2api_edge_continuation_created_total counter\nsub2api_edge_continuation_created_total %d\n", snapshot.EdgeContinuationCreated)
+		body += fmt.Sprintf("# TYPE sub2api_edge_continuation_consumed_total counter\nsub2api_edge_continuation_consumed_total %d\n", snapshot.EdgeContinuationConsumed)
+		body += fmt.Sprintf("# TYPE sub2api_edge_continuation_expired_total counter\nsub2api_edge_continuation_expired_total %d\n", snapshot.EdgeContinuationExpired)
+		body += fmt.Sprintf("# TYPE sub2api_edge_continuation_missing_total counter\nsub2api_edge_continuation_missing_total %d\n", snapshot.EdgeContinuationMissing)
 		c.Data(http.StatusOK, "text/plain; version=0.0.4; charset=utf-8", []byte(body))
 	})
 	r.POST("/internal/runtime/drain", func(c *gin.Context) {

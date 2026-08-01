@@ -24,6 +24,7 @@ import (
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
@@ -52,6 +53,9 @@ type OpenAIGatewayHandler struct {
 	openAIEdgeCancelled      map[string]time.Time
 	openAIEdgeCancelledNext  time.Time
 	openAIEdgePrepareCache   *openAIEdgePrepareCache
+	redisClient              *redis.Client
+	openAIEdgeContinuationMu sync.Mutex
+	openAIEdgeContinuations  map[string]openAIEdgeContinuationMemory
 	maxAccountSwitches       int
 	cfg                      *config.Config
 }
@@ -253,6 +257,7 @@ func NewOpenAIGatewayHandler(
 	promptAuditService *securityaudit.Service,
 	imageTaskRepo service.OpenAIImageTaskRepository,
 	imageStorage *service.ImageStorageSettingService,
+	redisClient *redis.Client,
 	cfg *config.Config,
 ) *OpenAIGatewayHandler {
 	pingInterval := time.Duration(0)
@@ -281,6 +286,8 @@ func NewOpenAIGatewayHandler(
 		openAIEdgeLeaseByRequest: make(map[string]string),
 		openAIEdgeCancelled:      make(map[string]time.Time),
 		openAIEdgePrepareCache:   newOpenAIEdgePrepareCache(2*time.Second, openAIEdgePrepareCacheMaxEntries),
+		redisClient:              redisClient,
+		openAIEdgeContinuations:  make(map[string]openAIEdgeContinuationMemory),
 		maxAccountSwitches:       maxAccountSwitches,
 		cfg:                      cfg,
 		imageStorageSettings:     imageStorage,
@@ -510,6 +517,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
+	if restoredSwitchCount, _ := seedRetryStateFromEdgeContinuation(c.Request.Context(), sameAccountRetryCount, sameAccountRetryStartedAt, failedAccountIDs); restoredSwitchCount > 0 {
+		switchCount = restoredSwitchCount
+	}
 	sameAccountRetryAccountID := int64(0)
 	var sameAccountRetryAccount *service.Account
 	var sameAccountRetryErr *service.UpstreamFailoverError
@@ -797,7 +807,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.Forward(requestCtx, c, account, forwardBody)
+			forwardCtx := sharedRaceResponseHeaderContext(requestCtx, sameAccountRetryStartedAt)
+			return h.gatewayService.Forward(forwardCtx, c, account, forwardBody)
 		}()
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
