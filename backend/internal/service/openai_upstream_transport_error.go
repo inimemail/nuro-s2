@@ -81,10 +81,16 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 	if classifyOpenAITransportError(err).Persistent && !account.IsPoolMode() {
 		s.tempUnscheduleOpenAITransportError(ctx, account, safeErr)
 	}
-	return &UpstreamFailoverError{
+	failoverErr := &UpstreamFailoverError{
 		StatusCode:   http.StatusBadGateway,
 		ResponseBody: openAITransportFailoverBody,
 	}
+	if account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		failoverErr.RetryRuleKey, failoverErr.RetryRuleLimit, _ = account.OpenAIUpstreamConcurrencyRaceRetryRule(0)
+		failoverErr.RetryRuleTransport = failoverErr.RetryRuleKey == "transport"
+		failoverErr.RetryableOnSameAccount = failoverErr.RetryRuleKey != "" && failoverErr.RetryRuleLimit > 0
+	}
+	return failoverErr
 }
 
 func (s *OpenAIGatewayService) tempUnscheduleOpenAITransportError(ctx context.Context, account *Account, safeErr string) {

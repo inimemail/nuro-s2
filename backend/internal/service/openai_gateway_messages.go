@@ -508,6 +508,8 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				RetryRuleKey:           decision.RetryRuleKey,
+				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}

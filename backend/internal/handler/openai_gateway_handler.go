@@ -516,8 +516,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	sameAccountRetryRuleCount := make(sameAccountRetryRuleCounts)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
-	if restoredSwitchCount, _ := seedRetryStateFromEdgeContinuation(c.Request.Context(), sameAccountRetryCount, sameAccountRetryStartedAt, failedAccountIDs); restoredSwitchCount > 0 {
+	if restoredSwitchCount, _ := seedRetryStateFromEdgeContinuation(c.Request.Context(), sameAccountRetryCount, sameAccountRetryStartedAt, failedAccountIDs, sameAccountRetryRuleCount); restoredSwitchCount > 0 {
 		switchCount = restoredSwitchCount
 	}
 	sameAccountRetryAccountID := int64(0)
@@ -548,6 +549,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		failedAccountIDs = make(map[int64]struct{})
 		capacitySkippedIDs = make(map[int64]struct{})
 		sameAccountRetryCount = make(map[int64]int)
+		sameAccountRetryRuleCount = make(sameAccountRetryRuleCounts)
 		sameAccountRetryStartedAt = make(map[int64]time.Time)
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
@@ -859,12 +861,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 								healthProbeAlternativeByAccount[account.ID] = hasAlternative
 							}
 							if hasAlternative {
-								retryPlan, retry = planSameAccountRetryWithMaxElapsed(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay, service.OpenAIHealthProbeGrabMaxElapsed)
+								retryPlan, retry = planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, service.OpenAIHealthProbeGrabMaxElapsed, failoverErr)
 							} else {
-								retryPlan, retry = planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay)
+								retryPlan, retry = planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, 0, failoverErr)
 							}
 						} else {
-							retryPlan, retry = planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay)
+							retryPlan, retry = planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, 0, failoverErr)
 						}
 						if retry {
 							sameAccountRetryAccountID = account.ID
@@ -878,6 +880,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 								zap.Duration("retry_delay", retryPlan.Delay),
 								zap.Duration("retry_elapsed", retryPlan.Elapsed),
 								zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
+								zap.String("retry_rule", retryPlan.RuleKey),
+								zap.Int("retry_rule_limit", retryPlan.RuleLimit),
+								zap.Int("retry_rule_count", retryPlan.RuleCount),
 							)
 							select {
 							case <-requestCtx.Done():
@@ -1342,6 +1347,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	sameAccountRetryRuleCount := make(sameAccountRetryRuleCounts)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
 	sameAccountRetryAccountID := int64(0)
 	var sameAccountRetryAccount *service.Account
@@ -1542,7 +1548,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
 						retryDelay := sameAccountRetryDelayForAccount(account)
-						if retryPlan, ok := planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay); ok {
+						if retryPlan, ok := planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, 0, failoverErr); ok {
 							sameAccountRetryAccountID = account.ID
 							sameAccountRetryAccount = account
 							sameAccountRetryErr = failoverErr
@@ -1554,6 +1560,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 								zap.Duration("retry_delay", retryPlan.Delay),
 								zap.Duration("retry_elapsed", retryPlan.Elapsed),
 								zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
+								zap.String("retry_rule", retryPlan.RuleKey),
+								zap.Int("retry_rule_limit", retryPlan.RuleLimit),
+								zap.Int("retry_rule_count", retryPlan.RuleCount),
 							)
 							select {
 							case <-c.Request.Context().Done():
@@ -2139,6 +2148,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	sameAccountRetryRuleCount := make(sameAccountRetryRuleCounts)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
 	sameAccountRetryAccountID := int64(0)
 	var sameAccountRetryAccount *service.Account
@@ -2588,7 +2598,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				releaseAccountSlot()
 				if failoverErr.RetryableOnSameAccount {
 					retryDelay := sameAccountRetryDelayForAccount(account)
-					if retryPlan, ok := planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay); ok {
+					if retryPlan, ok := planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, 0, failoverErr); ok {
 						sameAccountRetryAccountID = account.ID
 						sameAccountRetryAccount = account
 						sameAccountRetryErr = failoverErr
@@ -2600,6 +2610,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 							zap.Duration("retry_delay", retryPlan.Delay),
 							zap.Duration("retry_elapsed", retryPlan.Elapsed),
 							zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
+							zap.String("retry_rule", retryPlan.RuleKey),
+							zap.Int("retry_rule_limit", retryPlan.RuleLimit),
+							zap.Int("retry_rule_count", retryPlan.RuleCount),
 						)
 						if !ensureUserSlotHeld() {
 							return

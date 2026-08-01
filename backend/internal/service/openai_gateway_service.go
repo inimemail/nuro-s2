@@ -4810,6 +4810,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				s.handleFailoverSideEffects(ctx, resp, account, upstreamModel)
 				decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)
 				failoverErr := newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, respBody, upstreamMsg, decision.RetryableOnSameAccount)
+				failoverErr.RetryRuleKey = decision.RetryRuleKey
+				failoverErr.RetryRuleLimit = decision.RetryRuleLimit
 				failoverErr.SkipPoolSoftCooldown = failoverErr.SkipPoolSoftCooldown || decision.SkipSoftCooldown
 				return nil, failoverErr
 			}
@@ -5554,6 +5556,8 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 	})
 	decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, body)
 	failoverErr := newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, body, upstreamMsg, decision.RetryableOnSameAccount)
+	failoverErr.RetryRuleKey = decision.RetryRuleKey
+	failoverErr.RetryRuleLimit = decision.RetryRuleLimit
 	failoverErr.SkipPoolSoftCooldown = failoverErr.SkipPoolSoftCooldown || decision.SkipSoftCooldown
 	return failoverErr
 }
@@ -6282,11 +6286,28 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 		},
 	})
 	decision := s.classifyOpenAIPoolFailover(c.Request.Context(), account, http.StatusBadGateway, message, body)
+	retryableOnSameAccount := decision.RetryableOnSameAccount
+	ruleKey, ruleLimit := decision.RetryRuleKey, decision.RetryRuleLimit
+	if account != nil && account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		// This error is synthesized for a stream that ended before any usable
+		// HTTP response was available. Keep the public 502 shape, but charge the
+		// race-only transport rule rather than the exact 502 HTTP rule.
+		if openAIPoolSameAccountRetryBlockedByRequestContent(http.StatusBadGateway, message, body) {
+			retryableOnSameAccount = false
+			ruleKey, ruleLimit = "", 0
+		} else {
+			ruleKey, ruleLimit, _ = account.OpenAIUpstreamConcurrencyRaceRetryRule(0)
+			retryableOnSameAccount = ruleKey != "" && ruleLimit > 0
+		}
+	}
 	return &UpstreamFailoverError{
 		StatusCode:             http.StatusBadGateway,
 		ResponseBody:           body,
 		Message:                message,
-		RetryableOnSameAccount: decision.RetryableOnSameAccount,
+		RetryableOnSameAccount: retryableOnSameAccount,
+		RetryRuleKey:           ruleKey,
+		RetryRuleLimit:         ruleLimit,
+		RetryRuleTransport:     account != nil && account.IsOpenAIUpstreamConcurrencyRaceEnabled() && ruleKey == "transport",
 		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 	}
 }
@@ -6794,15 +6815,27 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if failoverErr := s.newOpenAIPoolEmbeddedFailoverError(ctx, c, account, resp, body, mappedModel, true); failoverErr != nil {
 		return nil, failoverErr
 	}
-	if statusCode, _, embeddedError := classifyOpenAIEmbeddedUpstreamError(body); embeddedError || openAIPassthroughResponseIsUnsafe(body) {
+	if statusCode, embeddedMessage, embeddedError := classifyOpenAIEmbeddedUpstreamError(body); embeddedError || openAIPassthroughResponseIsUnsafe(body) {
 		if statusCode < http.StatusBadRequest {
 			statusCode = http.StatusBadGateway
 		}
-		return nil, &UpstreamFailoverError{
+		failoverErr := &UpstreamFailoverError{
 			StatusCode:   statusCode,
 			ResponseBody: append([]byte(nil), body...),
 			Message:      safeUpstreamErrorMessage,
 		}
+		// An unsafe/non-JSON body has no reliable upstream HTTP status. In race
+		// mode it must consume the transport rule rather than a synthetic 502 rule.
+		if !embeddedError {
+			annotateOpenAIRaceRetryRule(account, failoverErr, 0)
+		} else {
+			decision := s.classifyOpenAIPoolFailover(ctx, account, statusCode, embeddedMessage, body)
+			failoverErr.RetryableOnSameAccount = decision.RetryableOnSameAccount
+			failoverErr.RetryRuleKey = decision.RetryRuleKey
+			failoverErr.RetryRuleLimit = decision.RetryRuleLimit
+			failoverErr.SkipPoolSoftCooldown = decision.SkipSoftCooldown
+		}
+		return nil, failoverErr
 	}
 
 	usage := &OpenAIUsage{}
@@ -7444,6 +7477,8 @@ func (s *OpenAIGatewayService) handleErrorResponseInternal(
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           body,
 			RetryableOnSameAccount: decision.RetryableOnSameAccount,
+			RetryRuleKey:           decision.RetryRuleKey,
+			RetryRuleLimit:         decision.RetryRuleLimit,
 			SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 		}
 	}
@@ -7562,6 +7597,8 @@ func (s *OpenAIGatewayService) handleCompatErrorResponseInternal(
 			ProbeModel:             strings.TrimSpace(modelForCooldown),
 			ProbeKind:              openAIPoolProbeKindForModel(modelForCooldown),
 			RetryableOnSameAccount: decision.RetryableOnSameAccount,
+			RetryRuleKey:           decision.RetryRuleKey,
+			RetryRuleLimit:         decision.RetryRuleLimit,
 			SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 		}
 	}
@@ -7643,6 +7680,8 @@ func (s *OpenAIGatewayService) handleCompatErrorResponseInternal(
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           body,
 			RetryableOnSameAccount: decision.RetryableOnSameAccount,
+			RetryRuleKey:           decision.RetryRuleKey,
+			RetryRuleLimit:         decision.RetryRuleLimit,
 			SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 		}
 	}
@@ -8794,20 +8833,24 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 			return s.handleSSEToJSON(ctx, resp, c, account, body, originalModel, mappedModel)
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 && !isOpenAISuccessJSONResponse(resp, body) {
-			return nil, &UpstreamFailoverError{
+			failoverErr := &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           body,
 				RetryableOnSameAccount: account == nil || !account.IsPoolMode() || account.IsPoolModeRetryableStatus(resp.StatusCode) || account.IsPoolModeBuiltinRetryEnabled(),
 			}
+			annotateOpenAIRaceRetryRule(account, failoverErr, 0)
+			return nil, failoverErr
 		}
 		return nil, fmt.Errorf("parse response: invalid json response")
 	}
 	if openAIPassthroughResponseIsUnsafe(body) {
-		return nil, &UpstreamFailoverError{
+		failoverErr := &UpstreamFailoverError{
 			StatusCode:   http.StatusBadGateway,
 			ResponseBody: append([]byte(nil), body...),
 			Message:      safeUpstreamErrorMessage,
 		}
+		annotateOpenAIRaceRetryRule(account, failoverErr, 0)
+		return nil, failoverErr
 	}
 	usage := &usageValue
 	if normalizedBody, normalized := normalizeCompletedImageGenerationStatus(body); normalized {

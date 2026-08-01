@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -113,6 +115,117 @@ func TestOpenAIPoolRetryConditionsAreMergedWithoutBuiltinOverride(t *testing.T) 
 	// 429 remains authoritative in the explicit status-code list even when the
 	// transient system-error rule is enabled.
 	require.False(t, openAIPoolFailoverRetryableOnSameAccount(account, http.StatusTooManyRequests, "rate limited", nil))
+}
+
+func TestOpenAIPoolRaceRetryRulesPreferExactStatusOver5xx(t *testing.T) {
+	account := &Account{
+		ID:       108,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "upstream_concurrency_race_enabled": true,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "5xx", "max_retries": 2},
+				map[string]any{"matcher": "502", "max_retries": 1},
+				map[string]any{"matcher": "503", "max_retries": 3},
+				map[string]any{"matcher": "504", "max_retries": 4},
+			},
+		},
+	}
+
+	key, limit, matched := account.OpenAIUpstreamConcurrencyRaceRetryRule(http.StatusBadGateway)
+	require.True(t, matched)
+	require.Equal(t, "502", key)
+	require.Equal(t, 1, limit)
+	key, limit, matched = account.OpenAIUpstreamConcurrencyRaceRetryRule(http.StatusServiceUnavailable)
+	require.True(t, matched)
+	require.Equal(t, "503", key)
+	require.Equal(t, 3, limit)
+	key, limit, matched = account.OpenAIUpstreamConcurrencyRaceRetryRule(http.StatusGatewayTimeout)
+	require.True(t, matched)
+	require.Equal(t, "504", key)
+	require.Equal(t, 4, limit)
+	key, limit, matched = account.OpenAIUpstreamConcurrencyRaceRetryRule(http.StatusHTTPVersionNotSupported)
+	require.True(t, matched)
+	require.Equal(t, "5xx", key)
+	require.Equal(t, 2, limit)
+}
+
+func TestOpenAIPoolRaceExactZeroRuleBlocks5xxFallback(t *testing.T) {
+	account := &Account{
+		ID: 110, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "upstream_concurrency_race_enabled": true,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "5xx", "max_retries": 2},
+				map[string]any{"matcher": "504", "max_retries": 0},
+			},
+		},
+	}
+
+	key, limit, matched := account.OpenAIUpstreamConcurrencyRaceRetryRule(http.StatusGatewayTimeout)
+	require.True(t, matched)
+	require.Equal(t, "504", key)
+	require.Zero(t, limit)
+	require.False(t, OpenAIPoolFailoverRetryableOnSameAccount(account, http.StatusGatewayTimeout, "", nil))
+}
+
+func TestOpenAIPoolRaceTransportRuleRequiresNoHTTPStatus(t *testing.T) {
+	account := &Account{
+		ID: 109, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "upstream_concurrency_race_enabled": true},
+	}
+	key, limit, matched := account.OpenAIUpstreamConcurrencyRaceRetryRule(0)
+	require.True(t, matched)
+	require.Equal(t, "transport", key)
+	require.Equal(t, 1, limit)
+	_, _, matched = account.OpenAIUpstreamConcurrencyRaceRetryRule(http.StatusBadGateway)
+	require.True(t, matched)
+
+	account.Credentials["upstream_concurrency_race_transport_enabled"] = false
+	_, _, matched = account.OpenAIUpstreamConcurrencyRaceRetryRule(0)
+	require.False(t, matched)
+}
+
+func TestOpenAIStreamRaceTransportRuleKeepsClientErrorsNonRetryable(t *testing.T) {
+	setGinTestMode()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                                   true,
+			"upstream_concurrency_race_enabled":           true,
+			"upstream_concurrency_race_transport_enabled": true,
+		},
+	}
+	svc := &OpenAIGatewayService{}
+
+	clientErr := svc.newOpenAIStreamFailoverError(
+		c,
+		account,
+		true,
+		"",
+		nil,
+		"invalid_request_error: missing required parameter model",
+	)
+	require.False(t, clientErr.RetryableOnSameAccount)
+	require.Empty(t, clientErr.RetryRuleKey)
+	require.Zero(t, clientErr.RetryRuleLimit)
+
+	disconnectErr := svc.newOpenAIStreamFailoverError(
+		c,
+		account,
+		true,
+		"",
+		nil,
+		"OpenAI stream disconnected before completion",
+	)
+	require.True(t, disconnectErr.RetryableOnSameAccount)
+	require.Equal(t, "transport", disconnectErr.RetryRuleKey)
+	require.Equal(t, 1, disconnectErr.RetryRuleLimit)
 }
 
 func TestOpenAIPoolRequestFailoverError_NonPoolIgnored(t *testing.T) {

@@ -1025,13 +1025,14 @@ describe('EditAccountModal', () => {
     ])
   })
 
-  it('persists race max elapsed only while upstream concurrency race is enabled', async () => {
+  it('resets race settings while preserving normal pool settings when toggling race mode', async () => {
     const account = buildAccount()
     account.credentials = {
       ...account.credentials,
       pool_mode: true,
-      pool_mode_retry_count: 20,
+      pool_mode_retry_count: 3,
       upstream_concurrency_race_enabled: true,
+      upstream_concurrency_race_retry_count: 20,
       upstream_concurrency_race_retry_delay_ms: 20
     }
     updateAccountMock.mockReset()
@@ -1045,7 +1046,9 @@ describe('EditAccountModal', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.upstream_concurrency_race_max_elapsed_ms).toBe(2000)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.upstream_concurrency_race_max_elapsed_ms).toBe(1500)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.pool_mode_retry_count).toBe(3)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.upstream_concurrency_race_retry_count).toBe(20)
 
     updateAccountMock.mockClear()
     await wrapper.get('[data-testid="upstream-concurrency-race-toggle"]').trigger('click')
@@ -1053,9 +1056,12 @@ describe('EditAccountModal', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty(
-      'upstream_concurrency_race_max_elapsed_ms'
-    )
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      pool_mode_retry_count: 3
+    })
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('upstream_concurrency_race_enabled')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('upstream_concurrency_race_retry_count')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('upstream_concurrency_race_max_elapsed_ms')
 
     updateAccountMock.mockClear()
     await wrapper.get('[data-testid="upstream-concurrency-race-toggle"]').trigger('click')
@@ -1064,9 +1070,32 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
       upstream_concurrency_race_enabled: true,
-      upstream_concurrency_race_retry_delay_ms: 10,
-      upstream_concurrency_race_max_elapsed_ms: 2000,
-      pool_mode_retry_count: 20
+      upstream_concurrency_race_retry_delay_ms: 5,
+      upstream_concurrency_race_max_elapsed_ms: 1500,
+      upstream_concurrency_race_retry_count: 20,
+      pool_mode_retry_count: 3
+    })
+  })
+
+  it('does not treat a legacy race total as the normal pool retry count', async () => {
+    const account = buildAccount()
+    account.credentials = {
+      ...account.credentials,
+      pool_mode: true,
+      pool_mode_retry_count: 20,
+      upstream_concurrency_race_enabled: true
+    }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      pool_mode_retry_count: 1,
+      upstream_concurrency_race_retry_count: 20
     })
   })
 

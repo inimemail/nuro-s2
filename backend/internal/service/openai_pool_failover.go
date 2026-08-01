@@ -16,8 +16,26 @@ const openAIEmbeddedUpstreamErrorBodyLimit = 1 << 20
 type openAIPoolFailoverDecision struct {
 	Failover               bool
 	RetryableOnSameAccount bool
+	RetryRuleKey           string
+	RetryRuleLimit         int
 	ProbeCapability        OpenAIImagesCapability
 	SkipSoftCooldown       bool
+}
+
+// annotateOpenAIRaceRetryRule attaches a rule for failures already known to be
+// retryable. HTTP errors that require body-based filtering must copy the full
+// classifier decision instead, so request/config errors stay non-retryable. A
+// zero status denotes a transport/processing failure even when the public error
+// is represented as a synthetic 502.
+func annotateOpenAIRaceRetryRule(account *Account, failoverErr *UpstreamFailoverError, statusCode int) {
+	if account == nil || failoverErr == nil || !account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		return
+	}
+	key, limit, matched := account.OpenAIUpstreamConcurrencyRaceRetryRule(statusCode)
+	failoverErr.RetryRuleKey = key
+	failoverErr.RetryRuleLimit = limit
+	failoverErr.RetryRuleTransport = statusCode == 0 && key == "transport"
+	failoverErr.RetryableOnSameAccount = matched && key != "" && limit > 0
 }
 
 type openAIPoolSoftCooldownContext struct {
@@ -61,11 +79,19 @@ func (s *OpenAIGatewayService) newOpenAIPoolRequestFailoverError(
 	}
 	appendOpsUpstreamError(c, event)
 	body := openAIUpstreamFailoverErrorBody("Upstream request failed")
+	retryable := account.IsPoolModeRetryableStatus(http.StatusBadGateway) || account.IsPoolModeBuiltinRetryEnabled()
+	ruleKey, ruleLimit, ruleMatched := account.OpenAIUpstreamConcurrencyRaceRetryRule(0)
+	if account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		retryable = ruleMatched && ruleLimit > 0
+	}
 	return &UpstreamFailoverError{
 		StatusCode:             http.StatusBadGateway,
 		ResponseBody:           body,
 		Message:                safeErr,
-		RetryableOnSameAccount: account.IsPoolModeRetryableStatus(http.StatusBadGateway) || account.IsPoolModeBuiltinRetryEnabled(),
+		RetryableOnSameAccount: retryable,
+		RetryRuleKey:           ruleKey,
+		RetryRuleLimit:         ruleLimit,
+		RetryRuleTransport:     ruleMatched && ruleKey == "transport",
 	}
 }
 
@@ -136,6 +162,8 @@ func (s *OpenAIGatewayService) newOpenAIPoolEmbeddedFailoverError(
 		ProbeModel:             strings.TrimSpace(requestedModel),
 		ProbeKind:              openAIPoolProbeKindForModel(requestedModel),
 		RetryableOnSameAccount: decision.RetryableOnSameAccount,
+		RetryRuleKey:           decision.RetryRuleKey,
+		RetryRuleLimit:         decision.RetryRuleLimit,
 		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 	}
 }
@@ -182,6 +210,10 @@ func classifyOpenAIPoolFailoverWithModelLimitProtection(
 	decision := openAIPoolFailoverDecision{
 		RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, statusCode, upstreamMsg, upstreamBody),
 	}
+	if account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		decision.RetryRuleKey, decision.RetryRuleLimit, _ = account.OpenAIUpstreamConcurrencyRaceRetryRule(statusCode)
+		decision.RetryableOnSameAccount = decision.RetryRuleKey != "" && decision.RetryRuleLimit > 0
+	}
 	if isOpenAIPoolImageCapabilityError(statusCode, upstreamMsg, upstreamBody) {
 		decision.Failover = true
 		decision.ProbeCapability = OpenAIImagesCapabilityNative
@@ -215,13 +247,12 @@ func openAIPoolFailoverRetryableOnSameAccount(account *Account, statusCode int, 
 	if account == nil || !account.IsPoolMode() {
 		return false
 	}
-	if isOpenAIPoolUserRequestedModelError(statusCode, upstreamMsg, upstreamBody) ||
-		isOpenAIPoolExplicitClientRequestError(statusCode, upstreamMsg, upstreamBody) ||
-		isOpenAIPoolImageCapabilityError(statusCode, upstreamMsg, upstreamBody) {
+	if openAIPoolSameAccountRetryBlockedByRequestContent(statusCode, upstreamMsg, upstreamBody) {
 		return false
 	}
-	if isOpenAIPoolDownstreamRoutingOrClientConfigError(statusCode, upstreamMsg, upstreamBody) {
-		return false
+	if account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		key, limit, matched := account.OpenAIUpstreamConcurrencyRaceRetryRule(statusCode)
+		return matched && key != "" && limit > 0
 	}
 	if account.IsPoolModeRetryableStatus(statusCode) {
 		return true
@@ -236,6 +267,18 @@ func openAIPoolFailoverRetryableOnSameAccount(account *Account, statusCode int, 
 		return true
 	}
 	return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
+}
+
+func openAIPoolSameAccountRetryBlockedByRequestContent(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if isOpenAIPoolUserRequestedModelError(statusCode, upstreamMsg, upstreamBody) ||
+		isOpenAIPoolExplicitClientRequestError(statusCode, upstreamMsg, upstreamBody) ||
+		isOpenAIPoolImageCapabilityError(statusCode, upstreamMsg, upstreamBody) {
+		return true
+	}
+	if isOpenAIPoolDownstreamRoutingOrClientConfigError(statusCode, upstreamMsg, upstreamBody) {
+		return true
+	}
+	return false
 }
 
 // IsOpenAIPoolModelRoutingError reports upstream model routing/capability

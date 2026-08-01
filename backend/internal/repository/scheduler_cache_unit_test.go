@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -197,11 +198,18 @@ func TestBuildSchedulerMetadataAccount_KeepsConcurrencyRaceRetryControls(t *test
 		Type:     service.AccountTypeAPIKey,
 		Credentials: map[string]any{
 			"pool_mode":                                true,
-			"pool_mode_retry_count":                    7,
+			"pool_mode_retry_count":                    3,
 			"pool_mode_builtin_retry_enabled":          false,
 			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_retry_count":    7,
 			"upstream_concurrency_race_retry_delay_ms": 35,
 			"upstream_concurrency_race_max_elapsed_ms": 2500,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "5xx", "max_retries": 2},
+				map[string]any{"matcher": "504", "max_retries": 4},
+			},
+			"upstream_concurrency_race_transport_enabled":     true,
+			"upstream_concurrency_race_transport_retry_count": 2,
 		},
 	}
 
@@ -211,6 +219,11 @@ func TestBuildSchedulerMetadataAccount_KeepsConcurrencyRaceRetryControls(t *test
 	require.Equal(t, 7, got.GetPoolModeRetryCount())
 	require.Equal(t, 35, int(got.GetPoolModeSameAccountRetryDelay().Milliseconds()))
 	require.Equal(t, 2500, int(got.GetPoolModeSameAccountRetryMaxElapsed().Milliseconds()))
+	key, limit, matched := got.OpenAIUpstreamConcurrencyRaceRetryRule(http.StatusGatewayTimeout)
+	require.True(t, matched)
+	require.Equal(t, "504", key)
+	require.Equal(t, 4, limit)
+	require.Equal(t, 2, got.GetOpenAIUpstreamConcurrencyRaceTransportRetryCount())
 	require.False(t, got.IsPoolModeBuiltinRetryEnabled())
 }
 

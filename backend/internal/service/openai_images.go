@@ -664,6 +664,8 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				RetryRuleKey:           decision.RetryRuleKey,
+				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}
@@ -895,11 +897,13 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(ctx contex
 	}
 	imageCount := extractOpenAIImageCountFromJSONBytes(body)
 	if openAIPassthroughResponseIsUnsafe(body) || imageCount == 0 {
-		return OpenAIUsage{}, 0, nil, &UpstreamFailoverError{
+		failoverErr := &UpstreamFailoverError{
 			StatusCode:   http.StatusBadGateway,
 			ResponseBody: append([]byte(nil), body...),
 			Message:      safeUpstreamErrorMessage,
 		}
+		annotateOpenAIRaceRetryRule(account, failoverErr, 0)
+		return OpenAIUsage{}, 0, nil, failoverErr
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := "application/json"

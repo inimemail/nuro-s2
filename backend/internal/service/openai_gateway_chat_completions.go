@@ -490,6 +490,8 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 				ProbeModel:             strings.TrimSpace(upstreamModel),
 				ProbeKind:              openAIPoolProbeKindForModel(upstreamModel),
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				RetryRuleKey:           decision.RetryRuleKey,
+				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}

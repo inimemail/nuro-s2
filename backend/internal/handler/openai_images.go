@@ -147,6 +147,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	capacitySkippedIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	sameAccountRetryRuleCount := make(sameAccountRetryRuleCounts)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
 	sameAccountRetryAccountID := int64(0)
 	var sameAccountRetryAccount *service.Account
@@ -348,7 +349,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				if errors.As(err, &failoverErr) {
 					if failoverErr.RetryableOnSameAccount {
 						retryDelay := sameAccountRetryDelayForAccount(account)
-						if retryPlan, ok := planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay); ok {
+						if retryPlan, ok := planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, 0, failoverErr); ok {
 							sameAccountRetryAccountID = account.ID
 							sameAccountRetryAccount = account
 							sameAccountRetryErr = failoverErr
@@ -360,6 +361,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 								zap.Duration("retry_delay", retryPlan.Delay),
 								zap.Duration("retry_elapsed", retryPlan.Elapsed),
 								zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
+								zap.String("retry_rule", retryPlan.RuleKey),
+								zap.Int("retry_rule_limit", retryPlan.RuleLimit),
+								zap.Int("retry_rule_count", retryPlan.RuleCount),
 							)
 							select {
 							case <-requestCtx.Done():

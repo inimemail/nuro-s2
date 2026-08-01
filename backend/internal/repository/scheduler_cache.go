@@ -686,8 +686,12 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 		"pool_mode_retry_status_codes",
 		"pool_mode_builtin_retry_enabled",
 		"upstream_concurrency_race_enabled",
+		"upstream_concurrency_race_retry_count",
 		"upstream_concurrency_race_retry_delay_ms",
 		"upstream_concurrency_race_max_elapsed_ms",
+		"upstream_concurrency_race_http_rules",
+		"upstream_concurrency_race_transport_enabled",
+		"upstream_concurrency_race_transport_retry_count",
 		"openai_capabilities",
 	}
 	filtered := make(map[string]any)

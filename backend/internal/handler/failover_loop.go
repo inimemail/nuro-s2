@@ -60,9 +60,35 @@ func sameAccountRetryDelayForAccount(account *service.Account) time.Duration {
 type sameAccountRetryPlan struct {
 	RetryLimit int
 	RetryCount int
+	RuleKey    string
+	RuleLimit  int
+	RuleCount  int
 	Delay      time.Duration
 	Elapsed    time.Duration
 	MaxElapsed time.Duration
+}
+
+// sameAccountRetryRuleCounts keeps status/transport sub-limits separate from
+// the request-level per-account total. It is request-local and bounded by the
+// number of accounts touched by the request.
+type sameAccountRetryRuleCounts map[int64]map[string]int
+
+func resolveSameAccountRaceRetryRule(account *service.Account, failoverErr *service.UpstreamFailoverError) (key string, limit int, matched bool) {
+	if account == nil || failoverErr == nil {
+		return "", 0, false
+	}
+	statusCode := failoverErr.StatusCode
+	// Transport failures may be exposed as a synthetic 502. Only an explicit
+	// transport marker may select the transport rule; a real HTTP 502 must use
+	// the configured exact 502 rule.
+	if failoverErr.RetryRuleTransport && (statusCode == 0 || statusCode == http.StatusBadGateway) {
+		statusCode = 0
+	} else if failoverErr.RetryRuleTransport {
+		// A transport marker from a previous synthetic error must not survive
+		// onto a real HTTP response status.
+		failoverErr.RetryRuleTransport = false
+	}
+	return account.OpenAIUpstreamConcurrencyRaceRetryRule(statusCode)
 }
 
 func markSameAccountAttemptStart(starts map[int64]time.Time, account *service.Account, startedAt time.Time) {
@@ -77,6 +103,17 @@ func markSameAccountAttemptStart(starts map[int64]time.Time, account *service.Ac
 	if _, ok := starts[account.ID]; !ok {
 		starts[account.ID] = startedAt
 	}
+}
+
+// initialSameAccountRetryStart keeps the legacy per-account start timestamp
+// while allowing race mode to start its shared deadline at the first eligible
+// upstream failure instead of charging request preparation time.
+func initialSameAccountRetryStart(account *service.Account, startedAt time.Time) map[int64]time.Time {
+	starts := make(map[int64]time.Time)
+	if account != nil && account.ID != 0 && !account.IsOpenAIUpstreamConcurrencyRaceEnabled() && !startedAt.IsZero() {
+		starts[account.ID] = startedAt
+	}
+	return starts
 }
 
 func activeSharedRaceDeadline(starts map[int64]time.Time) (time.Time, bool) {
@@ -103,11 +140,15 @@ func sharedRaceResponseHeaderContext(ctx context.Context, starts map[int64]time.
 	return service.WithHTTPUpstreamResponseHeaderDeadline(ctx, deadline)
 }
 
-func planSameAccountRetry(account *service.Account, counts map[int64]int, starts map[int64]time.Time, delay time.Duration) (sameAccountRetryPlan, bool) {
-	return planSameAccountRetryWithMaxElapsed(account, counts, starts, delay, 0)
+func planSameAccountRetry(account *service.Account, counts map[int64]int, starts map[int64]time.Time, delay time.Duration, failoverErr ...*service.UpstreamFailoverError) (sameAccountRetryPlan, bool) {
+	return planSameAccountRetryWithRuleCounts(account, counts, nil, starts, delay, 0, failoverErr...)
 }
 
-func planSameAccountRetryWithMaxElapsed(account *service.Account, counts map[int64]int, starts map[int64]time.Time, delay, maxElapsed time.Duration) (sameAccountRetryPlan, bool) {
+func planSameAccountRetryWithMaxElapsed(account *service.Account, counts map[int64]int, starts map[int64]time.Time, delay, maxElapsed time.Duration, failoverErr ...*service.UpstreamFailoverError) (sameAccountRetryPlan, bool) {
+	return planSameAccountRetryWithRuleCounts(account, counts, nil, starts, delay, maxElapsed, failoverErr...)
+}
+
+func planSameAccountRetryWithRuleCounts(account *service.Account, counts map[int64]int, ruleCounts sameAccountRetryRuleCounts, starts map[int64]time.Time, delay, maxElapsed time.Duration, failoverErr ...*service.UpstreamFailoverError) (sameAccountRetryPlan, bool) {
 	plan := sameAccountRetryPlan{Delay: delay}
 	if account == nil || counts == nil {
 		return plan, false
@@ -119,6 +160,46 @@ func planSameAccountRetryWithMaxElapsed(account *service.Account, counts map[int
 	plan.RetryLimit = account.GetPoolModeRetryCount()
 	if counts[accountID] >= plan.RetryLimit {
 		return plan, false
+	}
+	if account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		// Real race callers provide the request-local rule map and the current
+		// upstream error. Keep the nil-map wrapper compatible for non-OpenAI
+		// legacy callers and unit helpers; it is never used by production OpenAI
+		// race paths and therefore cannot bypass their configured sub-limits.
+		if len(failoverErr) == 0 || failoverErr[0] == nil {
+			if ruleCounts != nil {
+				return plan, false
+			}
+		} else {
+			var matched bool
+			plan.RuleKey, plan.RuleLimit, matched = resolveSameAccountRaceRetryRule(account, failoverErr[0])
+			if !matched || plan.RuleKey == "" {
+				return plan, false
+			}
+		}
+		if plan.RuleKey != "" && plan.RuleLimit >= 0 {
+			if ruleCounts == nil {
+				// Legacy callers without a rule map retain the total limit, but
+				// never receive a larger limit than the resolved rule.
+				if counts[accountID] >= plan.RuleLimit {
+					return plan, false
+				}
+			} else {
+				byRule := ruleCounts[accountID]
+				// A restored Edge continuation from an older binary may contain
+				// only the aggregate retry count. Starting fresh per-rule counters
+				// would let an already-consumed exact-status allowance run again.
+				// Fail closed for that account while preserving normal accounts and
+				// new continuations, which always persist rule counters.
+				if counts[accountID] > 0 && len(byRule) == 0 {
+					return plan, false
+				}
+				plan.RuleCount = byRule[plan.RuleKey]
+				if plan.RuleCount >= plan.RuleLimit {
+					return plan, false
+				}
+			}
+		}
 	}
 	plan.MaxElapsed = account.GetPoolModeSameAccountRetryMaxElapsed()
 	if maxElapsed > 0 && plan.MaxElapsed > maxElapsed {
@@ -197,34 +278,43 @@ func planSameAccountRetryWithMaxElapsed(account *service.Account, counts map[int
 	}
 	counts[accountID]++
 	plan.RetryCount = counts[accountID]
+	if plan.RuleKey != "" && ruleCounts != nil {
+		if ruleCounts[accountID] == nil {
+			ruleCounts[accountID] = make(map[string]int)
+		}
+		ruleCounts[accountID][plan.RuleKey]++
+		plan.RuleCount = ruleCounts[accountID][plan.RuleKey]
+	}
 	return plan, true
 }
 
 // FailoverState 跨循环迭代共享的 failover 状态
 type FailoverState struct {
-	SwitchCount            int
-	MaxSwitches            int
-	FailedAccountIDs       map[int64]struct{}
-	SameAccountRetryCount  map[int64]int
-	SameAccountRetryStart  map[int64]time.Time
-	LastFailoverErr        *service.UpstreamFailoverError
-	ForceCacheBilling      bool
-	hasBoundSession        bool
-	pendingRetryAccountID  int64
-	pendingRetryPlatform   string
-	pendingRetryPoolMode   bool
-	pendingRetrySharedRace bool
-	pendingRetryErr        *service.UpstreamFailoverError
+	SwitchCount               int
+	MaxSwitches               int
+	FailedAccountIDs          map[int64]struct{}
+	SameAccountRetryCount     map[int64]int
+	SameAccountRetryRuleCount sameAccountRetryRuleCounts
+	SameAccountRetryStart     map[int64]time.Time
+	LastFailoverErr           *service.UpstreamFailoverError
+	ForceCacheBilling         bool
+	hasBoundSession           bool
+	pendingRetryAccountID     int64
+	pendingRetryPlatform      string
+	pendingRetryPoolMode      bool
+	pendingRetrySharedRace    bool
+	pendingRetryErr           *service.UpstreamFailoverError
 }
 
 // NewFailoverState 创建 failover 状态
 func NewFailoverState(maxSwitches int, hasBoundSession bool) *FailoverState {
 	return &FailoverState{
-		MaxSwitches:           maxSwitches,
-		FailedAccountIDs:      make(map[int64]struct{}),
-		SameAccountRetryCount: make(map[int64]int),
-		SameAccountRetryStart: make(map[int64]time.Time),
-		hasBoundSession:       hasBoundSession,
+		MaxSwitches:               maxSwitches,
+		FailedAccountIDs:          make(map[int64]struct{}),
+		SameAccountRetryCount:     make(map[int64]int),
+		SameAccountRetryRuleCount: make(sameAccountRetryRuleCounts),
+		SameAccountRetryStart:     make(map[int64]time.Time),
+		hasBoundSession:           hasBoundSession,
 	}
 }
 
@@ -275,6 +365,11 @@ func (s *FailoverState) HandleFailoverErrorForAccount(
 		retryLimit = account.GetPoolModeRetryCount()
 		retryDelay = sameAccountRetryDelayForAccount(account)
 		maxElapsed = account.GetPoolModeSameAccountRetryMaxElapsed()
+	}
+	if account.IsOpenAIUpstreamConcurrencyRaceEnabled() && failoverErr != nil && failoverErr.RetryableOnSameAccount {
+		var matched bool
+		failoverErr.RetryRuleKey, failoverErr.RetryRuleLimit, matched = resolveSameAccountRaceRetryRule(account, failoverErr)
+		failoverErr.RetryableOnSameAccount = matched && failoverErr.RetryRuleKey != "" && failoverErr.RetryRuleLimit > 0
 	}
 	sharedRaceBudget := account.IsOpenAIUpstreamConcurrencyRaceEnabled()
 	if s != nil && s.SameAccountRetryStart != nil && !s.SameAccountRetryStart[sharedRaceRetryDeadlineKey].IsZero() {
@@ -328,7 +423,7 @@ func (s *FailoverState) handleFailoverErrorWithRetryPlanAndBudget(
 
 	// 同账号重试不算切换账号，粘性会话只在实际切号时强制缓存计费。
 	sameAccountRetry := failoverErr.RetryableOnSameAccount &&
-		s.sameAccountRetryAllowedWithBudget(accountID, retryLimit, retryDelay, retryMaxElapsed, sharedRaceBudget)
+		s.sameAccountRetryAllowedWithBudget(accountID, retryLimit, retryDelay, retryMaxElapsed, sharedRaceBudget, failoverErr)
 	if needForceCacheBilling(s.hasBoundSession, failoverErr, sameAccountRetry) {
 		s.ForceCacheBilling = true
 	}
@@ -336,6 +431,12 @@ func (s *FailoverState) handleFailoverErrorWithRetryPlanAndBudget(
 	// 同账号重试：对 RetryableOnSameAccount 的临时性错误，先在同一账号上重试
 	if sameAccountRetry {
 		s.SameAccountRetryCount[accountID]++
+		if failoverErr.RetryRuleKey != "" {
+			if s.SameAccountRetryRuleCount[accountID] == nil {
+				s.SameAccountRetryRuleCount[accountID] = make(map[string]int)
+			}
+			s.SameAccountRetryRuleCount[accountID][failoverErr.RetryRuleKey]++
+		}
 		s.pendingRetryAccountID = accountID
 		s.pendingRetryPlatform = platform
 		s.pendingRetryPoolMode = poolMode
@@ -346,6 +447,8 @@ func (s *FailoverState) handleFailoverErrorWithRetryPlanAndBudget(
 			zap.Int("upstream_status", failoverErr.StatusCode),
 			zap.Int("same_account_retry_count", s.SameAccountRetryCount[accountID]),
 			zap.Int("same_account_retry_max", retryLimit),
+			zap.String("retry_rule", failoverErr.RetryRuleKey),
+			zap.Int("retry_rule_limit", failoverErr.RetryRuleLimit),
 		)
 		if !sleepWithContext(ctx, retryDelay) {
 			return FailoverCanceled
@@ -420,12 +523,20 @@ func (s *FailoverState) settleUnavailableSameAccountRetry(ctx context.Context, g
 }
 
 func (s *FailoverState) sameAccountRetryAllowed(accountID int64, retryLimit int, retryDelay, maxElapsed time.Duration) bool {
-	return s.sameAccountRetryAllowedWithBudget(accountID, retryLimit, retryDelay, maxElapsed, false)
+	return s.sameAccountRetryAllowedWithBudget(accountID, retryLimit, retryDelay, maxElapsed, false, nil)
 }
 
-func (s *FailoverState) sameAccountRetryAllowedWithBudget(accountID int64, retryLimit int, retryDelay, maxElapsed time.Duration, sharedRaceBudget bool) bool {
+func (s *FailoverState) sameAccountRetryAllowedWithBudget(accountID int64, retryLimit int, retryDelay, maxElapsed time.Duration, sharedRaceBudget bool, failoverErr *service.UpstreamFailoverError) bool {
 	if retryLimit <= 0 || s.SameAccountRetryCount[accountID] >= retryLimit {
 		return false
+	}
+	if failoverErr != nil && failoverErr.RetryRuleKey != "" && failoverErr.RetryRuleLimit >= 0 {
+		if s.SameAccountRetryRuleCount == nil {
+			s.SameAccountRetryRuleCount = make(sameAccountRetryRuleCounts)
+		}
+		if s.SameAccountRetryRuleCount[accountID] != nil && s.SameAccountRetryRuleCount[accountID][failoverErr.RetryRuleKey] >= failoverErr.RetryRuleLimit {
+			return false
+		}
 	}
 	if s.SameAccountRetryStart == nil {
 		s.SameAccountRetryStart = make(map[int64]time.Time)

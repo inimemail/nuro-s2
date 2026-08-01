@@ -153,6 +153,37 @@ func TestHandleFailoverErrorForAccountHonorsRaceElapsedBudget(t *testing.T) {
 	require.Empty(t, mock.calls, "pool account must not be marked temporarily unschedulable")
 }
 
+func TestHandleFailoverErrorForAccountDoesNotReenableRejectedRaceError(t *testing.T) {
+	account := &service.Account{
+		ID:       44,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                         true,
+			"upstream_concurrency_race_enabled": true,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "503", "max_retries": 3},
+			},
+		},
+	}
+	fs := NewFailoverState(3, false)
+	mock := &mockTempUnscheduler{}
+	// The service classifier has already rejected this as a user/configuration
+	// error. The status rule must only cap eligible errors, not reclassify them.
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode:             http.StatusServiceUnavailable,
+		RetryableOnSameAccount: false,
+		SkipPoolSoftCooldown:   true,
+	}
+
+	action := fs.HandleFailoverErrorForAccount(context.Background(), mock, account, failoverErr)
+
+	require.Equal(t, FailoverContinue, action)
+	require.Zero(t, fs.SameAccountRetryCount[account.ID])
+	require.Contains(t, fs.FailedAccountIDs, account.ID)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+}
+
 func TestHandleFailoverErrorForAccountTracksExactRetryAccount(t *testing.T) {
 	account := &service.Account{
 		ID:       45,
@@ -279,6 +310,7 @@ func TestPlanSameAccountRetryZeroDelayDoesNotReserveElapsedBudget(t *testing.T) 
 		Credentials: map[string]interface{}{
 			"pool_mode":                                true,
 			"pool_mode_retry_count":                    5,
+			"upstream_concurrency_race_retry_count":    5,
 			"upstream_concurrency_race_enabled":        true,
 			"upstream_concurrency_race_max_elapsed_ms": 500,
 		},
@@ -307,6 +339,7 @@ func TestPlanSameAccountRetryRejectsDelayEqualToElapsedBudget(t *testing.T) {
 		Credentials: map[string]interface{}{
 			"pool_mode":                                true,
 			"pool_mode_retry_count":                    5,
+			"upstream_concurrency_race_retry_count":    5,
 			"upstream_concurrency_race_enabled":        true,
 			"upstream_concurrency_race_max_elapsed_ms": 500,
 		},
@@ -332,6 +365,7 @@ func TestPlanSameAccountRetryWithMaxElapsedOnlyShortensConfiguredBudget(t *testi
 		Credentials: map[string]interface{}{
 			"pool_mode":                                true,
 			"pool_mode_retry_count":                    50,
+			"upstream_concurrency_race_retry_count":    50,
 			"upstream_concurrency_race_enabled":        true,
 			"upstream_concurrency_race_max_elapsed_ms": 5000,
 		},
@@ -359,6 +393,7 @@ func TestPlanSameAccountRetryWithMaxElapsedDoesNotExtendSmallerOrUnlimitedBudget
 		Credentials: map[string]interface{}{
 			"pool_mode":                                true,
 			"pool_mode_retry_count":                    5,
+			"upstream_concurrency_race_retry_count":    5,
 			"upstream_concurrency_race_enabled":        true,
 			"upstream_concurrency_race_max_elapsed_ms": 1000,
 		},
@@ -403,6 +438,7 @@ func TestPlanSameAccountRetryUsesConfiguredFiftyAttempts(t *testing.T) {
 		Credentials: map[string]interface{}{
 			"pool_mode":                                true,
 			"pool_mode_retry_count":                    50,
+			"upstream_concurrency_race_retry_count":    50,
 			"upstream_concurrency_race_enabled":        true,
 			"upstream_concurrency_race_max_elapsed_ms": 5000,
 		},
@@ -422,6 +458,156 @@ func TestPlanSameAccountRetryUsesConfiguredFiftyAttempts(t *testing.T) {
 	require.False(t, retry)
 	require.Equal(t, 50, plan.RetryLimit)
 	require.Equal(t, 50, counts[account.ID])
+}
+
+func TestPlanSameAccountRetryUsesIndependentRaceRuleLimits(t *testing.T) {
+	account := &service.Account{
+		ID: 105, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "pool_mode_retry_count": 20,
+			"upstream_concurrency_race_enabled":        true,
+			"upstream_concurrency_race_max_elapsed_ms": 5000,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "5xx", "max_retries": 2},
+				map[string]any{"matcher": "502", "max_retries": 1},
+				map[string]any{"matcher": "503", "max_retries": 3},
+			},
+		},
+	}
+	counts := map[int64]int{}
+	ruleCounts := make(sameAccountRetryRuleCounts)
+	starts := map[int64]time.Time{}
+	for i := 0; i < 1; i++ {
+		err := &service.UpstreamFailoverError{StatusCode: http.StatusBadGateway, RetryableOnSameAccount: true}
+		_, ok := planSameAccountRetryWithRuleCounts(account, counts, ruleCounts, starts, 0, 0, err)
+		require.True(t, ok)
+	}
+	err502 := &service.UpstreamFailoverError{StatusCode: http.StatusBadGateway, RetryableOnSameAccount: true}
+	_, ok := planSameAccountRetryWithRuleCounts(account, counts, ruleCounts, starts, 0, 0, err502)
+	require.False(t, ok)
+	for i := 0; i < 3; i++ {
+		err503 := &service.UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable, RetryableOnSameAccount: true}
+		_, ok := planSameAccountRetryWithRuleCounts(account, counts, ruleCounts, starts, 0, 0, err503)
+		require.True(t, ok)
+	}
+	err503 := &service.UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable, RetryableOnSameAccount: true}
+	_, ok = planSameAccountRetryWithRuleCounts(account, counts, ruleCounts, starts, 0, 0, err503)
+	require.False(t, ok)
+	require.Equal(t, 4, counts[account.ID], "the total counter increments once per accepted retry")
+}
+
+func TestPlanSameAccountRetryRejectsRaceStatusWithoutRule(t *testing.T) {
+	account := &service.Account{
+		ID: 106, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "upstream_concurrency_race_enabled": true,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "503", "max_retries": 3},
+			},
+		},
+	}
+	err := &service.UpstreamFailoverError{StatusCode: http.StatusTooManyRequests, RetryableOnSameAccount: true}
+	_, ok := planSameAccountRetryWithRuleCounts(account, map[int64]int{}, make(sameAccountRetryRuleCounts), map[int64]time.Time{}, 0, 0, err)
+	require.False(t, ok)
+}
+
+func TestPlanSameAccountRetryRequiresErrorForRaceRuleAccounting(t *testing.T) {
+	account := &service.Account{
+		ID: 108, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "upstream_concurrency_race_enabled": true,
+		},
+	}
+	_, ok := planSameAccountRetryWithRuleCounts(
+		account,
+		map[int64]int{},
+		make(sameAccountRetryRuleCounts),
+		map[int64]time.Time{},
+		0,
+		0,
+	)
+	require.False(t, ok)
+}
+
+func TestPlanSameAccountRetryResolvesHTTPRuleForCurrentAccount(t *testing.T) {
+	account := &service.Account{
+		ID: 107, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "upstream_concurrency_race_enabled": true,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "502", "max_retries": 1},
+				map[string]any{"matcher": "503", "max_retries": 3},
+			},
+		},
+	}
+	ruleCounts := sameAccountRetryRuleCounts{
+		account.ID: {"502": 1},
+	}
+	// Simulate metadata produced before an account switch. The current HTTP
+	// status must select this account's 503 rule instead of trusting stale 502.
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode:             http.StatusServiceUnavailable,
+		RetryableOnSameAccount: true,
+		RetryRuleKey:           "502",
+		RetryRuleLimit:         1,
+	}
+
+	plan, ok := planSameAccountRetryWithRuleCounts(account, map[int64]int{}, ruleCounts, map[int64]time.Time{}, 0, 0, failoverErr)
+
+	require.True(t, ok)
+	require.Equal(t, "503", plan.RuleKey)
+	require.Equal(t, 3, plan.RuleLimit)
+}
+
+func TestPlanSameAccountRetryDoesNotTrustStaleTransportMarkerForHTTPStatus(t *testing.T) {
+	account := &service.Account{
+		ID: 111, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "upstream_concurrency_race_enabled": true,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "503", "max_retries": 2},
+			},
+		},
+	}
+	ruleCounts := make(sameAccountRetryRuleCounts)
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode:             http.StatusServiceUnavailable,
+		RetryableOnSameAccount: true,
+		RetryRuleKey:           "transport", // stale metadata from a prior synthetic failure
+		RetryRuleLimit:         1,
+	}
+
+	plan, ok := planSameAccountRetryWithRuleCounts(account, map[int64]int{}, ruleCounts, map[int64]time.Time{}, 0, 0, failoverErr)
+
+	require.True(t, ok)
+	require.Equal(t, "503", plan.RuleKey)
+	require.Equal(t, 2, plan.RuleLimit)
+}
+
+func TestPlanSameAccountRetryDoesNotTreatReal502AsTransport(t *testing.T) {
+	account := &service.Account{
+		ID: 112, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true, "upstream_concurrency_race_enabled": true,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "502", "max_retries": 2},
+				map[string]any{"matcher": "5xx", "max_retries": 3},
+			},
+		},
+	}
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode:             http.StatusBadGateway,
+		RetryableOnSameAccount: true,
+		RetryRuleKey:           "transport",
+		RetryRuleLimit:         1,
+		RetryRuleTransport:     false,
+	}
+
+	plan, ok := planSameAccountRetryWithRuleCounts(account, map[int64]int{}, make(sameAccountRetryRuleCounts), map[int64]time.Time{}, 0, 0, failoverErr)
+
+	require.True(t, ok)
+	require.Equal(t, "502", plan.RuleKey)
+	require.Equal(t, 2, plan.RuleLimit)
 }
 
 func TestPlanSameAccountRetrySharesRaceDeadlineAcrossAccounts(t *testing.T) {
@@ -475,7 +661,10 @@ func TestPlanSameAccountRetryUsesSharedBudgetForNonRaceSwitchedAccount(t *testin
 	}
 	counts := map[int64]int{}
 	starts := map[int64]time.Time{}
-	_, ok := planSameAccountRetry(raceAccount, counts, starts, 0)
+	_, ok := planSameAccountRetry(raceAccount, counts, starts, 0, &service.UpstreamFailoverError{
+		StatusCode:             http.StatusServiceUnavailable,
+		RetryableOnSameAccount: true,
+	})
 	require.True(t, ok)
 
 	plan, ok := planSameAccountRetry(normalAccount, counts, starts, 0)

@@ -316,9 +316,31 @@ func ApplyOpenAIHealthProbeRetryPolicy(c *gin.Context, account *Account, failove
 	retryable := failoverErr.RetryableOnSameAccount
 	emptyResponseRetryable := IsOpenAIHealthProbeEmptyErrorBody(failoverErr.ResponseBody)
 	if account != nil && account.IsPoolMode() {
-		retryable = openAIPoolFailoverRetryableOnSameAccount(account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
-		emptyResponseRetryable = emptyResponseRetryable &&
-			(account.IsPoolModeRetryableStatus(failoverErr.StatusCode) || account.IsPoolModeBuiltinRetryEnabled())
+		if account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+			// Race mode must classify the current probe failure from scratch. In
+			// particular, an empty response is a transport failure even when the
+			// synthesized public status is 502; an older HTTP decision must not
+			// keep the retry enabled after the transport switch is disabled.
+			retryable = false
+			failoverErr.RetryRuleKey = ""
+			failoverErr.RetryRuleLimit = 0
+			failoverErr.RetryRuleTransport = false
+			if emptyResponseRetryable {
+				var matched bool
+				failoverErr.RetryRuleKey, failoverErr.RetryRuleLimit, matched = account.OpenAIUpstreamConcurrencyRaceRetryRule(0)
+				failoverErr.RetryRuleTransport = matched && failoverErr.RetryRuleKey == "transport"
+				retryable = matched && failoverErr.RetryRuleKey != "" && failoverErr.RetryRuleLimit > 0
+			} else {
+				failoverErr.RetryRuleKey, failoverErr.RetryRuleLimit, _ = account.OpenAIUpstreamConcurrencyRaceRetryRule(failoverErr.StatusCode)
+				failoverErr.RetryRuleTransport = false
+				retryable = openAIPoolFailoverRetryableOnSameAccount(account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+			}
+			emptyResponseRetryable = false
+		} else {
+			retryable = openAIPoolFailoverRetryableOnSameAccount(account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+			emptyResponseRetryable = emptyResponseRetryable &&
+				(account.IsPoolModeRetryableStatus(failoverErr.StatusCode) || account.IsPoolModeBuiltinRetryEnabled())
+		}
 	}
 	failoverErr.RetryableOnSameAccount = emptyResponseRetryable || retryable
 }

@@ -145,6 +145,8 @@ func (e *OpenAIImagesUpstreamError) ToFailoverErrorWithModelLimitProtection(acco
 		ResponseBody:           body,
 		Message:                msg,
 		RetryableOnSameAccount: decision.RetryableOnSameAccount,
+		RetryRuleKey:           decision.RetryRuleKey,
+		RetryRuleLimit:         decision.RetryRuleLimit,
 		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 	}
 }
@@ -1065,12 +1067,14 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 			return OpenAIUsage{}, 0, nil, refusalErr
 		}
 		setOpsUpstreamError(c, http.StatusBadGateway, "upstream did not return image output", summarizeOpenAIImagesNoOutputBody(body))
-		return OpenAIUsage{}, 0, nil, &UpstreamFailoverError{
+		failoverErr := &UpstreamFailoverError{
 			StatusCode:             http.StatusBadGateway,
 			ResponseBody:           body,
 			Message:                "upstream did not return image output",
 			RetryableOnSameAccount: account == nil || !account.IsPoolMode() || account.IsPoolModeRetryableStatus(http.StatusBadGateway) || account.IsPoolModeBuiltinRetryEnabled(),
 		}
+		annotateOpenAIRaceRetryRule(account, failoverErr, 0)
+		return OpenAIUsage{}, 0, nil, failoverErr
 	}
 	if strings.TrimSpace(firstMeta.Model) == "" {
 		firstMeta.Model = strings.TrimSpace(fallbackModel)
@@ -1555,6 +1559,8 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				RetryRuleKey:           decision.RetryRuleKey,
+				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}

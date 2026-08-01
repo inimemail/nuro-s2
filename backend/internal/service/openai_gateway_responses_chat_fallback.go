@@ -242,10 +242,14 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 				Detail:             upstreamDetail,
 			})
 			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
-				RetryableOnSameAccount: openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMsg, respBody),
+				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				RetryRuleKey:           decision.RetryRuleKey,
+				RetryRuleLimit:         decision.RetryRuleLimit,
+				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}
 		return s.handleErrorResponse(ctx, resp, c, account, chatBody, billingModel)

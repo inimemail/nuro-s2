@@ -31,15 +31,16 @@ type openAIEdgeContinuationMemory struct {
 // keys and cache policy fields remain owned by the existing Edge lease/handler
 // pipeline and are never serialized here.
 type edgeRetryContinuation struct {
-	Version            int           `json:"version"`
-	EdgeRequestID      string        `json:"edge_request_id"`
-	StartedAtUnixMS    int64         `json:"started_at_unix_ms,omitempty"`
-	DeadlineUnixMS     int64         `json:"deadline_unix_ms,omitempty"`
-	SameAccountRetries map[int64]int `json:"same_account_retries,omitempty"`
-	FailedAccountIDs   []int64       `json:"failed_account_ids,omitempty"`
-	SwitchCount        int           `json:"switch_count,omitempty"`
-	LastAccountID      int64         `json:"last_account_id,omitempty"`
-	BudgetExhausted    bool          `json:"budget_exhausted,omitempty"`
+	Version                int                      `json:"version"`
+	EdgeRequestID          string                   `json:"edge_request_id"`
+	StartedAtUnixMS        int64                    `json:"started_at_unix_ms,omitempty"`
+	DeadlineUnixMS         int64                    `json:"deadline_unix_ms,omitempty"`
+	SameAccountRetries     map[int64]int            `json:"same_account_retries,omitempty"`
+	SameAccountRuleRetries map[int64]map[string]int `json:"same_account_rule_retries,omitempty"`
+	FailedAccountIDs       []int64                  `json:"failed_account_ids,omitempty"`
+	SwitchCount            int                      `json:"switch_count,omitempty"`
+	LastAccountID          int64                    `json:"last_account_id,omitempty"`
+	BudgetExhausted        bool                     `json:"budget_exhausted,omitempty"`
 }
 
 func (h *OpenAIGatewayHandler) attachOpenAIEdgeContinuation(ctx context.Context, leaseID string, decision *service.OpenAIEdgeRetryDecision) {
@@ -73,6 +74,28 @@ func cloneRetryCounts(src map[int64]int) map[int64]int {
 	return dst
 }
 
+func cloneRetryRuleCounts(src sameAccountRetryRuleCounts) map[int64]map[string]int {
+	if len(src) == 0 {
+		return make(map[int64]map[string]int)
+	}
+	dst := make(map[int64]map[string]int, len(src))
+	for id, rules := range src {
+		if id <= 0 || len(rules) == 0 {
+			continue
+		}
+		copyRules := make(map[string]int, len(rules))
+		for key, count := range rules {
+			if strings.TrimSpace(key) != "" && count > 0 {
+				copyRules[key] = count
+			}
+		}
+		if len(copyRules) > 0 {
+			dst[id] = copyRules
+		}
+	}
+	return dst
+}
+
 func (h *OpenAIGatewayHandler) snapshotOpenAIEdgeContinuation(lease *openAIEdgeLease) edgeRetryContinuation {
 	state := edgeRetryContinuation{Version: 1, SameAccountRetries: make(map[int64]int)}
 	if lease == nil {
@@ -90,6 +113,7 @@ func (h *OpenAIGatewayHandler) snapshotOpenAIEdgeContinuationLocked(lease *openA
 	}
 	state.EdgeRequestID = lease.edgeRequestID
 	state.SameAccountRetries = cloneRetryCounts(lease.sameAccountRetries)
+	state.SameAccountRuleRetries = cloneRetryRuleCounts(lease.sameRuleRetries)
 	state.SwitchCount = lease.switchCount
 	state.LastAccountID = 0
 	if lease.account != nil {
@@ -216,7 +240,7 @@ func edgeRetryContinuationFromContext(ctx context.Context) *edgeRetryContinuatio
 	return state
 }
 
-func seedRetryStateFromEdgeContinuation(ctx context.Context, counts map[int64]int, starts map[int64]time.Time, failed map[int64]struct{}) (switchCount int, restored bool) {
+func seedRetryStateFromEdgeContinuation(ctx context.Context, counts map[int64]int, starts map[int64]time.Time, failed map[int64]struct{}, ruleCounts ...sameAccountRetryRuleCounts) (switchCount int, restored bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -232,6 +256,22 @@ func seedRetryStateFromEdgeContinuation(ctx context.Context, counts map[int64]in
 	for id, count := range state.SameAccountRetries {
 		if id > 0 && count > 0 {
 			counts[id] = count
+		}
+	}
+	if len(ruleCounts) > 0 && ruleCounts[0] != nil {
+		for id, rules := range state.SameAccountRuleRetries {
+			if id <= 0 || len(rules) == 0 {
+				continue
+			}
+			copyRules := make(map[string]int, len(rules))
+			for key, count := range rules {
+				if strings.TrimSpace(key) != "" && count > 0 {
+					copyRules[key] = count
+				}
+			}
+			if len(copyRules) > 0 {
+				ruleCounts[0][id] = copyRules
+			}
 		}
 	}
 	for _, id := range state.FailedAccountIDs {

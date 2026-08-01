@@ -324,11 +324,13 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(ctx contex
 				Kind:               "failover",
 				Message:            upstreamMsg,
 			})
-			return nil, &UpstreamFailoverError{
+			failoverErr := &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 			}
+			annotateOpenAIRaceRetryRule(account, failoverErr, resp.StatusCode)
+			return nil, failoverErr
 		}
 		return s.handleChatCompletionsErrorResponseWithoutAccountState(resp, c, account, billingModel)
 	}

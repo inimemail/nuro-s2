@@ -218,6 +218,19 @@ func OpenAIEdgeHTTPStatusRetryable(status int) bool {
 		status == 529
 }
 
+// OpenAIEdgeHTTPStatusRetryableForAccount extends the legacy Edge gate only
+// for race-enabled accounts with an explicit positive retry rule.
+func OpenAIEdgeHTTPStatusRetryableForAccount(account *Account, status int) bool {
+	if OpenAIEdgeHTTPStatusRetryable(status) {
+		return true
+	}
+	if account == nil || !account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		return false
+	}
+	_, limit, matched := account.OpenAIUpstreamConcurrencyRaceRetryRule(status)
+	return matched && limit > 0
+}
+
 // BuildRawResponsesEdgePlan builds an executable edge plan for the narrow
 // native OpenAI Responses passthrough stream path. All account selection,
 // billing, cooling, priority, sticky routing, and slot ownership still happen

@@ -957,6 +957,33 @@ func TestApplyOpenAIEdgeRaceResponseHeaderBudgetFollowsSwitchAndExhaustion(t *te
 	}
 }
 
+func TestInitialSameAccountRetryStartDefersRaceBudget(t *testing.T) {
+	startedAt := time.Now()
+	racingAccount := &service.Account{
+		ID:       1001,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                         true,
+			"upstream_concurrency_race_enabled": true,
+		},
+	}
+
+	racingStarts := initialSameAccountRetryStart(racingAccount, startedAt)
+	require.Empty(t, racingStarts)
+
+	legacyAccount := &service.Account{
+		ID:       1002,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	legacyStarts := initialSameAccountRetryStart(legacyAccount, startedAt)
+	require.Equal(t, startedAt, legacyStarts[legacyAccount.ID])
+}
+
 func TestApplyOpenAIEdgeRaceResponseHeaderBudgetRefreshesStalePlanTimeout(t *testing.T) {
 	lease := &openAIEdgeLease{sameAccountStarted: map[int64]time.Time{
 		sharedRaceRetryStartedKey:  time.Now().Add(-time.Second),

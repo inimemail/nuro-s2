@@ -44,7 +44,9 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 		// trust policy rejects its host. Treat that as request-local ineligibility
 		// so one bad account cannot terminate a mixed-pool search request, and do
 		// not expose the rejected URL or validator diagnostics downstream.
-		return nil, newOpenAIAlphaSearchFailoverError(http.StatusBadGateway, nil, safeUpstreamErrorMessage, false)
+		// This is a configuration/build failure, not a transport failure. In race
+		// mode it must not consume the separate transport retry allowance.
+		return nil, newOpenAIAlphaSearchFailoverErrorForAccount(account, http.StatusBadGateway, nil, safeUpstreamErrorMessage, false, false)
 	}
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -54,7 +56,9 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
-		return nil, newOpenAIAlphaSearchFailoverError(http.StatusBadGateway, nil, safeUpstreamErrorMessage, false)
+		// The request reached the transport layer and failed before an HTTP
+		// response was available, so this is eligible for the race transport rule.
+		return nil, newOpenAIAlphaSearchFailoverErrorForAccount(account, http.StatusBadGateway, nil, safeUpstreamErrorMessage, false, true)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
@@ -66,15 +70,17 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 		if upstreamMessage == "" {
 			upstreamMessage = safeUpstreamErrorMessage
 		}
-		retrySameAccount := account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode)
-		return nil, newOpenAIAlphaSearchFailoverError(resp.StatusCode, respBody, upstreamMessage, retrySameAccount)
+		retrySameAccount := openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMessage, respBody)
+		return nil, newOpenAIAlphaSearchFailoverErrorForAccount(account, resp.StatusCode, respBody, upstreamMessage, retrySameAccount, false)
 	}
 	if !openAIAlphaSearchSuccessResponseIsValid(respBody) {
-		return nil, newOpenAIAlphaSearchFailoverError(
+		return nil, newOpenAIAlphaSearchFailoverErrorForAccount(
+			account,
 			http.StatusBadGateway,
 			openAIUpstreamFailoverErrorBody(safeUpstreamErrorMessage),
 			safeUpstreamErrorMessage,
 			false,
+			true,
 		)
 	}
 	if !account.IsShadow() {
@@ -111,6 +117,33 @@ func newOpenAIAlphaSearchFailoverError(statusCode int, body []byte, message stri
 		SkipStickySessionEviction: true,
 		SkipSchedulePenalty:       true,
 	}
+}
+
+func newOpenAIAlphaSearchFailoverErrorForAccount(
+	account *Account,
+	statusCode int,
+	body []byte,
+	message string,
+	retrySameAccount bool,
+	transportFailure bool,
+) *UpstreamFailoverError {
+	failoverErr := newOpenAIAlphaSearchFailoverError(statusCode, body, message, retrySameAccount)
+	if account == nil || !account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		return failoverErr
+	}
+	if !transportFailure && !retrySameAccount {
+		return failoverErr
+	}
+	ruleStatus := statusCode
+	if transportFailure {
+		ruleStatus = 0
+	}
+	key, limit, matched := account.OpenAIUpstreamConcurrencyRaceRetryRule(ruleStatus)
+	failoverErr.RetryRuleKey = key
+	failoverErr.RetryRuleLimit = limit
+	failoverErr.RetryRuleTransport = transportFailure && key == "transport"
+	failoverErr.RetryableOnSameAccount = matched && key != "" && limit > 0
+	return failoverErr
 }
 
 func (s *OpenAIGatewayService) buildOpenAIAlphaSearchRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string) (*http.Request, error) {

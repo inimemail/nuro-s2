@@ -250,10 +250,12 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 					UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
 					Kind: "failover", Message: upstreamMsg,
 				})
-				return nil, &UpstreamFailoverError{
+				failoverErr := &UpstreamFailoverError{
 					StatusCode: resp.StatusCode, ResponseBody: respBody, Message: upstreamMsg,
 					RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 				}
+				annotateOpenAIRaceRetryRule(account, failoverErr, resp.StatusCode)
+				return nil, failoverErr
 			}
 			return s.handleChatCompletionsErrorResponseWithoutAccountState(resp, c, account, billingModel)
 		}
@@ -293,6 +295,8 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 				ProbeModel:             strings.TrimSpace(upstreamModel),
 				ProbeKind:              openAIPoolProbeKindForModel(upstreamModel),
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				RetryRuleKey:           decision.RetryRuleKey,
+				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}

@@ -62,6 +62,7 @@ type openAIEdgeLease struct {
 	sessionHash        string
 	failedAccountIDs   map[int64]struct{}
 	sameAccountRetries map[int64]int
+	sameRuleRetries    sameAccountRetryRuleCounts
 	sameAccountStarted map[int64]time.Time
 	switchCount        int
 	maxAccountSwitches int
@@ -1096,7 +1097,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
 		sameAccountRetries: make(map[int64]int),
-		sameAccountStarted: map[int64]time.Time{account.ID: createdAt},
+		sameRuleRetries:    make(sameAccountRetryRuleCounts),
+		sameAccountStarted: initialSameAccountRetryStart(account, createdAt),
 		maxAccountSwitches: h.nonImageStreamBootstrapSwitchLimit(true),
 		lockedPriority:     -1,
 		routingModel:       reqModel,
@@ -1308,7 +1310,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
 		sameAccountRetries: make(map[int64]int),
-		sameAccountStarted: map[int64]time.Time{account.ID: createdAt},
+		sameRuleRetries:    make(sameAccountRetryRuleCounts),
+		sameAccountStarted: initialSameAccountRetryStart(account, createdAt),
 		maxAccountSwitches: h.nonImageStreamBootstrapSwitchLimit(true),
 		lockedPriority:     -1,
 		routingModel:       reqModel,
@@ -1502,7 +1505,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		sessionHash:        sessionHash,
 		failedAccountIDs:   make(map[int64]struct{}),
 		sameAccountRetries: make(map[int64]int),
-		sameAccountStarted: map[int64]time.Time{account.ID: createdAt},
+		sameRuleRetries:    make(sameAccountRetryRuleCounts),
+		sameAccountStarted: initialSameAccountRetryStart(account, createdAt),
 		maxAccountSwitches: h.maxAccountSwitches,
 		lockedPriority:     -1,
 		routingModel:       reqModel,
@@ -1800,7 +1804,8 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		}
 	}
 	modelRoutingError := h.openAIEdgeShouldProtectModelRoutingError(c, lease.account, status, upstreamMsg, responseBody)
-	if !service.OpenAIEdgeHTTPStatusRetryable(status) && !modelRoutingError {
+	transportRetryable := status == 0 && lease.account.IsOpenAIUpstreamConcurrencyRaceEnabled() && lease.account.IsOpenAIUpstreamConcurrencyRaceTransportRetryEnabled()
+	if !service.OpenAIEdgeHTTPStatusRetryableForAccount(lease.account, status) && !transportRetryable && !modelRoutingError {
 		return fallback("upstream_status_not_retryable")
 	}
 	if h == nil || h.gatewayService == nil || h.concurrencyHelper == nil {
@@ -1825,7 +1830,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		// Edge retries are intentionally immediate. The upstream attempt and the
 		// Rust -> Go control-plane round trip already consume the elapsed budget;
 		// adding the account delay here would directly increase TTFT.
-		if retryPlan, ok := planSameAccountRetry(lease.account, lease.sameAccountRetries, lease.sameAccountStarted, 0); ok {
+		if retryPlan, ok := planSameAccountRetryWithRuleCounts(lease.account, lease.sameAccountRetries, lease.sameRuleRetries, lease.sameAccountStarted, 0, 0, failoverErr); ok {
 			plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, lease.account, lease.accountReleaseFunc)
 			if err != nil {
 				reqLog.Warn("openai_edge.same_account_retry_plan_failed", zap.Error(err))
@@ -1836,6 +1841,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 				zap.Int("retry_count", retryPlan.RetryCount),
 				zap.Duration("retry_elapsed", retryPlan.Elapsed),
 				zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
+				zap.String("retry_rule", retryPlan.RuleKey),
+				zap.Int("retry_rule_limit", retryPlan.RuleLimit),
+				zap.Int("retry_rule_count", retryPlan.RuleCount),
 			)
 			return service.OpenAIEdgeRetryDecision{
 				Action: service.OpenAIEdgeActionRelay,

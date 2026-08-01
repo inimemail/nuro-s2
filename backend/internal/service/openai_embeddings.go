@@ -140,6 +140,8 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				RetryRuleKey:           decision.RetryRuleKey,
+				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}
@@ -158,11 +160,13 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 		return nil, failoverErr
 	}
 	if openAIPassthroughResponseIsUnsafe(respBody) || !gjson.GetBytes(respBody, "data").IsArray() {
-		return nil, &UpstreamFailoverError{
+		failoverErr := &UpstreamFailoverError{
 			StatusCode:   http.StatusBadGateway,
 			ResponseBody: append([]byte(nil), respBody...),
 			Message:      safeUpstreamErrorMessage,
 		}
+		annotateOpenAIRaceRetryRule(account, failoverErr, 0)
+		return nil, failoverErr
 	}
 
 	writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter)

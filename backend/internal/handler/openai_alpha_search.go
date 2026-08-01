@@ -94,6 +94,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 	capacitySkippedIDs := make(map[int64]struct{})
 	ineligibleAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	sameAccountRetryRuleCount := make(sameAccountRetryRuleCounts)
 	sameAccountRetryStartedAt := make(map[int64]time.Time)
 	sameAccountRetryAccountID := int64(0)
 	var sameAccountRetryAccount *service.Account
@@ -251,7 +252,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		}
 		if failoverErr.RetryableOnSameAccount {
 			retryDelay := sameAccountRetryDelayForAccount(account)
-			if retryPlan, retry := planSameAccountRetry(account, sameAccountRetryCount, sameAccountRetryStartedAt, retryDelay); retry {
+			if retryPlan, retry := planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, 0, failoverErr); retry {
 				sameAccountRetryAccountID = account.ID
 				sameAccountRetryAccount = account
 				sameAccountRetryErr = failoverErr
@@ -263,6 +264,9 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 					zap.Duration("retry_delay", retryPlan.Delay),
 					zap.Duration("retry_elapsed", retryPlan.Elapsed),
 					zap.Duration("retry_max_elapsed", retryPlan.MaxElapsed),
+					zap.String("retry_rule", retryPlan.RuleKey),
+					zap.Int("retry_rule_limit", retryPlan.RuleLimit),
+					zap.Int("retry_rule_count", retryPlan.RuleCount),
 				)
 				if !sleepWithContext(c.Request.Context(), retryPlan.Delay) {
 					return

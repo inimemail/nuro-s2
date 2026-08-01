@@ -270,6 +270,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				ResponseHeaders:        resp.Header.Clone(),
 				Message:                upstreamMsg,
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
+				RetryRuleKey:           decision.RetryRuleKey,
+				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 			}
 		}
@@ -442,6 +444,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 					ResponseHeaders:        resp.Header.Clone(),
 					Message:                errMessage,
 					RetryableOnSameAccount: decision.RetryableOnSameAccount,
+					RetryRuleKey:           decision.RetryRuleKey,
+					RetryRuleLimit:         decision.RetryRuleLimit,
 					SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
 				}
 			}

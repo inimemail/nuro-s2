@@ -793,7 +793,7 @@
               {{ t(upstreamConcurrencyRaceEnabled ? 'admin.accounts.upstreamConcurrencyRaceRetryCount' : 'admin.accounts.poolModeRetryCount') }}
             </label>
             <input
-              v-model.number="poolModeRetryCount"
+              v-model.number="activePoolModeRetryCount"
               type="number"
               :min="upstreamConcurrencyRaceEnabled ? 1 : 0"
               :max="poolModeRetryCountMax"
@@ -810,8 +810,15 @@
               }}
             </p>
           </div>
+          <PoolModeRaceRetryConditions
+            v-if="poolModeEnabled && account.platform === 'openai' && upstreamConcurrencyRaceEnabled"
+            v-model="upstreamConcurrencyRaceRules"
+            v-model:transport-enabled="upstreamConcurrencyRaceTransportEnabled"
+            v-model:transport-retry-count="upstreamConcurrencyRaceTransportRetryCount"
+            :total="upstreamConcurrencyRaceRetryCount"
+          />
           <PoolModeRetryConditions
-            v-if="poolModeEnabled && account.platform === 'openai'"
+            v-else-if="poolModeEnabled && account.platform === 'openai'"
             v-model="poolModeRetryStatusCodes"
             v-model:builtin-transient-enabled="poolModeBuiltinRetryEnabled"
             :show-builtin-transient="true"
@@ -1760,7 +1767,7 @@
               {{ t(upstreamConcurrencyRaceEnabled ? 'admin.accounts.upstreamConcurrencyRaceRetryCount' : 'admin.accounts.poolModeRetryCount') }}
             </label>
             <input
-              v-model.number="poolModeRetryCount"
+              v-model.number="activePoolModeRetryCount"
               type="number"
               :min="upstreamConcurrencyRaceEnabled ? 1 : 0"
               :max="poolModeRetryCountMax"
@@ -3680,6 +3687,7 @@ import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
 import PoolModeRetryConditions from '@/components/account/PoolModeRetryConditions.vue'
+import PoolModeRaceRetryConditions, { type PoolModeRaceRetryRule } from '@/components/account/PoolModeRaceRetryConditions.vue'
 import {
   applyHeaderOverride,
   applyGrokOAuthBaseURL,
@@ -3782,10 +3790,10 @@ const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
 const DEFAULT_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD = 3
 const MAX_POOL_SOFT_COOLDOWN_ERROR_THRESHOLD = 100
-const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 10
+const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 5
 const MIN_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 1
 const MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS = 500
-const DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 2000
+const DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 1500
 const MIN_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 500
 const MAX_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS = 30000
 const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT = 20
@@ -3815,18 +3823,46 @@ const upstreamStrongIsolationEnabled = ref(false)
 const upstreamConcurrencyRaceEnabled = ref(false)
 const upstreamConcurrencyRaceRetryDelayMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
 const upstreamConcurrencyRaceMaxElapsedMs = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS)
-const upstreamConcurrencyRaceRetryCountBackup = ref<number | null>(null)
+const upstreamConcurrencyRaceRetryCount = ref(DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT)
 const syncingAccountState = ref(false)
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const poolModeRetryStatusCodes = ref<number[]>([...DEFAULT_POOL_MODE_RETRY_STATUS_CODES])
 const poolModeRetryStatusCodesInput = ref('')
 const poolModeBuiltinRetryEnabled = ref(true)
+const DEFAULT_UPSTREAM_CONCURRENCY_RACE_RULES: PoolModeRaceRetryRule[] = [
+  { matcher: '401', max_retries: 1 }, { matcher: '403', max_retries: 1 }, { matcher: '408', max_retries: 2 },
+  { matcher: '429', max_retries: 10 }, { matcher: '5xx', max_retries: 2 }, { matcher: '502', max_retries: 1 }, { matcher: '503', max_retries: 3 }
+]
+const upstreamConcurrencyRaceRules = ref<PoolModeRaceRetryRule[]>(DEFAULT_UPSTREAM_CONCURRENCY_RACE_RULES.map(rule => ({ ...rule })))
+const upstreamConcurrencyRaceTransportEnabled = ref(true)
+const upstreamConcurrencyRaceTransportRetryCount = ref(1)
+const activePoolModeRetryCount = computed({
+  get: () => upstreamConcurrencyRaceEnabled.value
+    ? upstreamConcurrencyRaceRetryCount.value
+    : poolModeRetryCount.value,
+  set: (value: number) => {
+    if (upstreamConcurrencyRaceEnabled.value) {
+      upstreamConcurrencyRaceRetryCount.value = value
+    } else {
+      poolModeRetryCount.value = value
+    }
+  }
+})
 const isSparkShadowAccount = computed(() => props.account?.parent_account_id != null)
 const poolModeRetryCountMax = computed(() =>
   upstreamConcurrencyRaceEnabled.value
     ? MAX_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
     : MAX_POOL_MODE_RETRY_COUNT
 )
+
+function resetUpstreamConcurrencyRaceDefaults() {
+  upstreamConcurrencyRaceRules.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RULES.map(rule => ({ ...rule }))
+  upstreamConcurrencyRaceTransportEnabled.value = true
+  upstreamConcurrencyRaceTransportRetryCount.value = 1
+  upstreamConcurrencyRaceRetryCount.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
+  upstreamConcurrencyRaceRetryDelayMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
+  upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
+}
 const showPromptCacheBoostToggle = computed(() =>
   !isSparkShadowAccount.value &&
   (props.account?.platform === 'openai' &&
@@ -4817,8 +4853,6 @@ const buildModelRestrictionMapping = () =>
   buildModelMappingObject('combined', allowedModels.value, modelMappings.value)
 
 const syncFormFromAccount = (newAccount: Account | null) => {
-  syncingAccountState.value = true
-  try {
   if (!newAccount) {
     return
   }
@@ -5109,26 +5143,61 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     )
     imagePoolModeEnabled.value = credentials.image_pool_mode === true
     loadCacheBoostAndIsolationFromCredentials(credentials)
+    syncingAccountState.value = true
     upstreamConcurrencyRaceEnabled.value = credentials.upstream_concurrency_race_enabled === true
+    syncingAccountState.value = false
     upstreamConcurrencyRaceRetryDelayMs.value = normalizeUpstreamConcurrencyRaceRetryDelayMs(
       Number(credentials.upstream_concurrency_race_retry_delay_ms ?? DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS)
     )
-    upstreamConcurrencyRaceMaxElapsedMs.value = upstreamConcurrencyRaceEnabled.value
-      ? normalizeUpstreamConcurrencyRaceMaxElapsedMs(
-        Number(credentials.upstream_concurrency_race_max_elapsed_ms ?? DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS)
+    upstreamConcurrencyRaceMaxElapsedMs.value = normalizeUpstreamConcurrencyRaceMaxElapsedMs(
+      Number(credentials.upstream_concurrency_race_max_elapsed_ms ?? DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS)
+    )
+    const hasIndependentRaceRetryCount = credentials.upstream_concurrency_race_retry_count !== undefined
+    const legacyPoolRetryCount = Number(credentials.pool_mode_retry_count ?? DEFAULT_POOL_MODE_RETRY_COUNT)
+    const legacyNormalRetryCountBackup = Number(credentials.upstream_concurrency_race_retry_count_backup)
+    poolModeRetryCount.value = !hasIndependentRaceRetryCount && Number.isFinite(legacyNormalRetryCountBackup)
+      ? normalizePoolModeRetryCount(legacyNormalRetryCountBackup)
+      : hasIndependentRaceRetryCount
+        ? normalizePoolModeRetryCount(legacyPoolRetryCount)
+        : upstreamConcurrencyRaceEnabled.value
+          ? DEFAULT_POOL_MODE_RETRY_COUNT
+          : normalizePoolModeRetryCount(legacyPoolRetryCount)
+    upstreamConcurrencyRaceRetryCount.value = normalizeUpstreamConcurrencyRaceRetryCount(
+      Number(
+        hasIndependentRaceRetryCount
+          ? credentials.upstream_concurrency_race_retry_count
+          : DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
       )
-      : DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
-    poolModeRetryCount.value = upstreamConcurrencyRaceEnabled.value
-      ? normalizeUpstreamConcurrencyRaceRetryCount(
-        Number(credentials.pool_mode_retry_count ?? DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT)
-      )
-      : normalizePoolModeRetryCount(
-        Number(credentials.pool_mode_retry_count ?? DEFAULT_POOL_MODE_RETRY_COUNT)
-      )
+    )
     if (newAccount.platform === 'openai') {
       poolModeRetryStatusCodes.value = normalizePoolModeRetryStatusCodes(credentials.pool_mode_retry_status_codes)
       poolModeBuiltinRetryEnabled.value = credentials.pool_mode_builtin_retry_enabled !== false
       poolModeRetryStatusCodesInput.value = ''
+      const configuredRaceRules = credentials.upstream_concurrency_race_http_rules
+      if (Array.isArray(configuredRaceRules)) {
+        const seenRaceMatchers = new Set<string>()
+        upstreamConcurrencyRaceRules.value = configuredRaceRules
+          .map((rule): PoolModeRaceRetryRule | null => {
+            if (!rule || typeof rule !== 'object') return null
+            const item = rule as Record<string, unknown>
+            const matcher = String(item.matcher ?? '').trim().toLowerCase()
+            const maxRetries = Number(item.max_retries)
+            if ((!/^\d{3}$/.test(matcher) && matcher !== '5xx') ||
+              (matcher !== '5xx' && (Number(matcher) < 100 || Number(matcher) > 599)) ||
+              !Number.isFinite(maxRetries) || seenRaceMatchers.has(matcher)) return null
+            seenRaceMatchers.add(matcher)
+            return { matcher, max_retries: Math.max(0, Math.min(200, Math.trunc(maxRetries))) }
+          })
+          .filter((rule): rule is PoolModeRaceRetryRule => rule !== null)
+      } else {
+        upstreamConcurrencyRaceRules.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RULES.map(rule => ({ ...rule }))
+      }
+      upstreamConcurrencyRaceTransportEnabled.value = credentials.upstream_concurrency_race_transport_enabled === undefined
+        ? true
+        : credentials.upstream_concurrency_race_transport_enabled !== false
+      upstreamConcurrencyRaceTransportRetryCount.value = Number.isFinite(Number(credentials.upstream_concurrency_race_transport_retry_count))
+        ? Math.max(0, Math.min(200, Math.trunc(Number(credentials.upstream_concurrency_race_transport_retry_count))))
+        : upstreamConcurrencyRaceTransportEnabled.value ? 1 : 0
     } else {
       poolModeRetryStatusCodes.value = [...DEFAULT_POOL_MODE_RETRY_STATUS_CODES]
       poolModeBuiltinRetryEnabled.value = true
@@ -5143,12 +5212,6 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     } else {
       selectedErrorCodes.value = []
     }
-    upstreamConcurrencyRaceRetryCountBackup.value =
-      typeof credentials.upstream_concurrency_race_retry_count_backup === 'number'
-        ? credentials.upstream_concurrency_race_retry_count_backup
-        : upstreamConcurrencyRaceEnabled.value
-          ? DEFAULT_POOL_MODE_RETRY_COUNT
-          : null
   } else if (newAccount.type === 'bedrock' && newAccount.credentials) {
     const bedrockCreds = newAccount.credentials as Record<string, unknown>
     const authMode = (bedrockCreds.auth_mode as string) || 'sigv4'
@@ -5242,14 +5305,14 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     poolModeRetryStatusCodes.value = [...DEFAULT_POOL_MODE_RETRY_STATUS_CODES]
     poolModeRetryStatusCodesInput.value = ''
     poolModeBuiltinRetryEnabled.value = true
+    upstreamConcurrencyRaceRules.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RULES.map(rule => ({ ...rule }))
+    upstreamConcurrencyRaceTransportEnabled.value = true
+    upstreamConcurrencyRaceTransportRetryCount.value = 1
     customErrorCodesEnabled.value = false
     selectedErrorCodes.value = []
-    upstreamConcurrencyRaceRetryCountBackup.value = null
+    upstreamConcurrencyRaceRetryCount.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
   }
   editApiKey.value = ''
-  } finally {
-    syncingAccountState.value = false
-  }
 }
 
 async function loadTLSProfiles() {
@@ -5293,12 +5356,7 @@ watch([poolModeEnabled, () => props.account?.platform], ([enabled, platform]) =>
     upstreamStrongIsolationEnabled.value = false
   }
   if (!enabled || platform !== 'openai') {
-    if (upstreamConcurrencyRaceEnabled.value && upstreamConcurrencyRaceRetryCountBackup.value !== null) {
-      poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
-    }
     upstreamConcurrencyRaceEnabled.value = false
-    upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
-    upstreamConcurrencyRaceRetryCountBackup.value = null
   }
 })
 
@@ -5311,11 +5369,7 @@ watch(imagePoolModeEnabled, (enabled) => {
     promptCacheBoostAggressiveEnabled.value = false
     promptCacheBoostUpstreamHitPriorityEnabled.value = false
     upstreamStrongIsolationEnabled.value = false
-    if (upstreamConcurrencyRaceEnabled.value && upstreamConcurrencyRaceRetryCountBackup.value !== null) {
-      poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
-    }
     upstreamConcurrencyRaceEnabled.value = false
-    upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
     openaiAPIKeyPreambleFlushEnabled.value = false
     openaiAPIKeySSECommentPreflushEnabled.value = false
     openaiAPIKeySafeTokenPlaceholderEnabled.value = false
@@ -5339,17 +5393,7 @@ watch(
       return
     }
     if (enabled) {
-      if (upstreamConcurrencyRaceRetryCountBackup.value === null) {
-        upstreamConcurrencyRaceRetryCountBackup.value = normalizePoolModeRetryCount(poolModeRetryCount.value)
-      }
-      poolModeRetryCount.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_COUNT
-      upstreamConcurrencyRaceRetryDelayMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_RETRY_DELAY_MS
-      upstreamConcurrencyRaceMaxElapsedMs.value = DEFAULT_UPSTREAM_CONCURRENCY_RACE_MAX_ELAPSED_MS
-      return
-    }
-    if (upstreamConcurrencyRaceRetryCountBackup.value !== null) {
-      poolModeRetryCount.value = normalizePoolModeRetryCount(upstreamConcurrencyRaceRetryCountBackup.value)
-      upstreamConcurrencyRaceRetryCountBackup.value = null
+      resetUpstreamConcurrencyRaceDefaults()
     }
   },
   { flush: 'sync' }
@@ -5933,6 +5977,25 @@ const handleSubmit = async () => {
 
       // Add pool mode if enabled
       if (poolModeEnabled.value) {
+        if (props.account.platform === 'openai' && !imagePoolModeEnabled.value && upstreamConcurrencyRaceEnabled.value) {
+          const raceRetryCount = normalizeUpstreamConcurrencyRaceRetryCount(upstreamConcurrencyRaceRetryCount.value)
+          const configuredRuleTotal = upstreamConcurrencyRaceRules.value.reduce(
+            (sum, rule) => sum + Math.max(0, Math.trunc(Number(rule.max_retries) || 0)),
+            0
+          )
+          if (configuredRuleTotal > raceRetryCount) {
+            appStore.showError(t('admin.accounts.upstreamConcurrencyRaceRuleBudgetExceeded'))
+            return
+          }
+          const transportRetryCount = Math.max(
+            0,
+            Math.trunc(Number(upstreamConcurrencyRaceTransportRetryCount.value) || 0)
+          )
+          if (upstreamConcurrencyRaceTransportEnabled.value && transportRetryCount > raceRetryCount) {
+            appStore.showError(t('admin.accounts.upstreamConcurrencyRaceTransportBudgetExceeded'))
+            return
+          }
+        }
         newCredentials.pool_mode = true
         newCredentials.pool_soft_cooldown_enabled = poolSoftCooldownEnabled.value
         if (poolSoftCooldownEnabled.value) {
@@ -5951,25 +6014,33 @@ const handleSubmit = async () => {
           delete newCredentials.upstream_strong_isolation_enabled
         }
         applyCacheBoostAndIsolationCredentials(newCredentials)
-        if (props.account.platform === 'openai' && !imagePoolModeEnabled.value && upstreamConcurrencyRaceEnabled.value) {
-          newCredentials.upstream_concurrency_race_enabled = true
-          newCredentials.upstream_concurrency_race_retry_delay_ms = normalizeUpstreamConcurrencyRaceRetryDelayMs(
-            upstreamConcurrencyRaceRetryDelayMs.value
-          )
-          newCredentials.upstream_concurrency_race_max_elapsed_ms = normalizeUpstreamConcurrencyRaceMaxElapsedMs(
-            upstreamConcurrencyRaceMaxElapsedMs.value
-          )
-          newCredentials.upstream_concurrency_race_retry_count_backup =
-            upstreamConcurrencyRaceRetryCountBackup.value ?? normalizePoolModeRetryCount(poolModeRetryCount.value)
-        } else {
-          delete newCredentials.upstream_concurrency_race_enabled
-          delete newCredentials.upstream_concurrency_race_retry_delay_ms
-          delete newCredentials.upstream_concurrency_race_max_elapsed_ms
+        if (props.account.platform === 'openai') {
+          if (!imagePoolModeEnabled.value && upstreamConcurrencyRaceEnabled.value) {
+            newCredentials.upstream_concurrency_race_enabled = true
+            newCredentials.upstream_concurrency_race_retry_delay_ms = normalizeUpstreamConcurrencyRaceRetryDelayMs(
+              upstreamConcurrencyRaceRetryDelayMs.value
+            )
+            newCredentials.upstream_concurrency_race_max_elapsed_ms = normalizeUpstreamConcurrencyRaceMaxElapsedMs(
+              upstreamConcurrencyRaceMaxElapsedMs.value
+            )
+            newCredentials.upstream_concurrency_race_retry_count = normalizeUpstreamConcurrencyRaceRetryCount(
+              upstreamConcurrencyRaceRetryCount.value
+            )
+            newCredentials.upstream_concurrency_race_http_rules = upstreamConcurrencyRaceRules.value.map(rule => ({ ...rule }))
+            newCredentials.upstream_concurrency_race_transport_enabled = upstreamConcurrencyRaceTransportEnabled.value
+            newCredentials.upstream_concurrency_race_transport_retry_count = Math.max(0, Math.min(200, Math.trunc(upstreamConcurrencyRaceTransportRetryCount.value)))
+          } else {
+            delete newCredentials.upstream_concurrency_race_enabled
+            delete newCredentials.upstream_concurrency_race_retry_count
+            delete newCredentials.upstream_concurrency_race_retry_delay_ms
+            delete newCredentials.upstream_concurrency_race_max_elapsed_ms
+            delete newCredentials.upstream_concurrency_race_http_rules
+            delete newCredentials.upstream_concurrency_race_transport_enabled
+            delete newCredentials.upstream_concurrency_race_transport_retry_count
+          }
           delete newCredentials.upstream_concurrency_race_retry_count_backup
         }
-        newCredentials.pool_mode_retry_count = upstreamConcurrencyRaceEnabled.value
-          ? normalizeUpstreamConcurrencyRaceRetryCount(poolModeRetryCount.value)
-          : normalizePoolModeRetryCount(poolModeRetryCount.value)
+        newCredentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
         if (props.account.platform === 'openai') {
           newCredentials.pool_mode_retry_status_codes = [...poolModeRetryStatusCodes.value]
           newCredentials.pool_mode_builtin_retry_enabled = poolModeBuiltinRetryEnabled.value
@@ -6002,6 +6073,10 @@ const handleSubmit = async () => {
         delete newCredentials.upstream_concurrency_race_enabled
         delete newCredentials.upstream_concurrency_race_retry_delay_ms
         delete newCredentials.upstream_concurrency_race_max_elapsed_ms
+        delete newCredentials.upstream_concurrency_race_retry_count
+        delete newCredentials.upstream_concurrency_race_http_rules
+        delete newCredentials.upstream_concurrency_race_transport_enabled
+        delete newCredentials.upstream_concurrency_race_transport_retry_count
         delete newCredentials.upstream_concurrency_race_retry_count_backup
         delete newCredentials.pool_mode_retry_count
         delete newCredentials.pool_mode_retry_status_codes

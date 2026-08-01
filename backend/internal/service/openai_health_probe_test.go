@@ -337,6 +337,61 @@ func TestApplyOpenAIHealthProbeRetryPolicyRespectsDisabledBuiltinRetryForEmptyRe
 	require.False(t, failoverErr.RetryableOnSameAccount)
 }
 
+func TestApplyOpenAIHealthProbeRetryPolicyUsesRaceTransportRuleExclusivelyForEmptyResponse(t *testing.T) {
+	marked, _ := configuredHealthProbeContext(t)
+	account := &Account{
+		ID:       962,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                                   true,
+			"upstream_concurrency_race_enabled":           true,
+			"upstream_concurrency_race_transport_enabled": false,
+		},
+	}
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:             http.StatusBadGateway,
+		ResponseBody:           openAIHealthProbeErrorBody(),
+		RetryableOnSameAccount: true,
+		RetryRuleKey:           "502",
+		RetryRuleLimit:         1,
+	}
+
+	ApplyOpenAIHealthProbeRetryPolicy(marked, account, failoverErr)
+
+	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.Empty(t, failoverErr.RetryRuleKey)
+	require.Zero(t, failoverErr.RetryRuleLimit)
+}
+
+func TestApplyOpenAIHealthProbeRetryPolicyRefreshesRaceHTTPRuleMetadata(t *testing.T) {
+	marked, _ := configuredHealthProbeContext(t)
+	account := &Account{
+		ID:       963,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                         true,
+			"upstream_concurrency_race_enabled": true,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "503", "max_retries": 3},
+			},
+		},
+	}
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:             http.StatusServiceUnavailable,
+		RetryableOnSameAccount: true,
+		RetryRuleKey:           "transport",
+		RetryRuleLimit:         1,
+	}
+
+	ApplyOpenAIHealthProbeRetryPolicy(marked, account, failoverErr)
+
+	require.True(t, failoverErr.RetryableOnSameAccount)
+	require.Equal(t, "503", failoverErr.RetryRuleKey)
+	require.Equal(t, 3, failoverErr.RetryRuleLimit)
+}
+
 func TestApplyOpenAIHealthProbeRetryPolicyDoesNotChangeNormalRequests(t *testing.T) {
 	unmarked, _ := healthProbeTestContext(healthProbeRequestBody(), "")
 	failoverErr := &UpstreamFailoverError{StatusCode: http.StatusConflict, RetryableOnSameAccount: true}

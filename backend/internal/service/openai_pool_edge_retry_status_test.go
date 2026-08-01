@@ -56,6 +56,23 @@ func TestOpenAIEdgeRetryGateAndClassifierAgree(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeHTTPStatusRetryableForAccountKeepsRaceRulesIsolated(t *testing.T) {
+	normal := poolModeTestAccount(701, 3)
+	require.False(t, OpenAIEdgeHTTPStatusRetryableForAccount(normal, 418))
+	require.False(t, OpenAIEdgeHTTPStatusRetryableForAccount(normal, 520))
+
+	race := poolModeTestAccount(702, 3)
+	race.Credentials["upstream_concurrency_race_enabled"] = true
+	race.Credentials["upstream_concurrency_race_http_rules"] = []any{
+		map[string]any{"matcher": "418", "max_retries": 1},
+		map[string]any{"matcher": "5xx", "max_retries": 2},
+	}
+	require.True(t, OpenAIEdgeHTTPStatusRetryableForAccount(race, 418))
+	require.True(t, OpenAIEdgeHTTPStatusRetryableForAccount(race, 520))
+	require.False(t, OpenAIEdgeHTTPStatusRetryable(418))
+	require.False(t, OpenAIEdgeHTTPStatusRetryable(520))
+}
+
 // TestOpenAIPoolFailoverRetryableOnSameAccount_NonPoolAccount 非池模式账号不应进入同账号重试。
 func TestOpenAIPoolFailoverRetryableOnSameAccount_NonPoolAccount(t *testing.T) {
 	account := &Account{

@@ -1392,10 +1392,11 @@ func (a *Account) MatchesOpenAIImagePoolRequest(ctx context.Context, requestedMo
 }
 
 const (
-	defaultPoolModeRetryCount     = 1
-	maxPoolModeRetryCount         = 10
-	defaultPoolModeRaceRetryCount = 20
-	maxPoolModeRaceRetryCount     = 200
+	defaultPoolModeRetryCount                  = 1
+	maxPoolModeRetryCount                      = 10
+	defaultPoolModeRaceRetryCount              = 20
+	maxPoolModeRaceRetryCount                  = 200
+	openAIUpstreamConcurrencyRaceRetryCountKey = "upstream_concurrency_race_retry_count"
 )
 
 const (
@@ -1405,13 +1406,13 @@ const (
 
 const (
 	defaultPoolModeSameAccountRetryDelay = 500 * time.Millisecond
-	defaultPoolModeRaceRetryDelay        = 10 * time.Millisecond
+	defaultPoolModeRaceRetryDelay        = 5 * time.Millisecond
 	minPoolModeSameAccountRetryDelay     = 1 * time.Millisecond
 	maxPoolModeSameAccountRetryDelay     = 500 * time.Millisecond
 )
 
 const (
-	defaultPoolModeSameAccountRetryMaxElapsed = 2 * time.Second
+	defaultPoolModeSameAccountRetryMaxElapsed = 1500 * time.Millisecond
 	minPoolModeSameAccountRetryMaxElapsed     = 500 * time.Millisecond
 	maxPoolModeSameAccountRetryMaxElapsed     = 30 * time.Second
 )
@@ -1429,7 +1430,11 @@ func (a *Account) GetPoolModeRetryCount() int {
 		defaultCount = defaultPoolModeRaceRetryCount
 		maxCount = maxPoolModeRaceRetryCount
 	}
-	raw, ok := a.Credentials["pool_mode_retry_count"]
+	retryCountKey := "pool_mode_retry_count"
+	if raceEnabled {
+		retryCountKey = openAIUpstreamConcurrencyRaceRetryCountKey
+	}
+	raw, ok := a.Credentials[retryCountKey]
 	if !ok || raw == nil {
 		return defaultCount
 	}
@@ -1520,7 +1525,7 @@ func (a *Account) IsOpenAIUpstreamConcurrencyRaceEnabled() bool {
 
 // GetPoolModeSameAccountRetryDelay returns the delay between same-account
 // retries for pool-mode accounts. Legacy pool mode keeps the 500ms default;
-// OpenAI text pool race mode uses a 10ms default and a 1-500ms range.
+// OpenAI text pool race mode uses a 5ms default and a 1-500ms range.
 func (a *Account) GetPoolModeSameAccountRetryDelay() time.Duration {
 	raceEnabled := a.IsOpenAIUpstreamConcurrencyRaceEnabled()
 	if !raceEnabled {
@@ -1667,6 +1672,10 @@ func (a *Account) GetPoolModeRetryStatusCodes() []int {
 // IsPoolModeRetryableStatus 在账号上下文中判断给定状态码是否应触发同账号重试。
 // 若账号未配置 pool_mode_retry_status_codes，则回退到默认列表。
 func (a *Account) IsPoolModeRetryableStatus(statusCode int) bool {
+	if a != nil && a.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		_, maxRetries, matched := a.GetOpenAIUpstreamConcurrencyRaceHTTPRule(statusCode)
+		return matched && maxRetries > 0
+	}
 	codes := a.GetPoolModeRetryStatusCodes()
 	if codes == nil {
 		return isPoolModeRetryableStatus(statusCode)
@@ -1679,11 +1688,198 @@ func (a *Account) IsPoolModeRetryableStatus(statusCode int) bool {
 	return false
 }
 
+// OpenAIUpstreamConcurrencyRaceHTTPRule describes one race-only retry rule.
+// Matcher is either an exact HTTP status (for example "502") or the single
+// supported family matcher "5xx".
+type OpenAIUpstreamConcurrencyRaceHTTPRule struct {
+	Matcher    string `json:"matcher"`
+	MaxRetries int    `json:"max_retries"`
+}
+
+var defaultOpenAIUpstreamConcurrencyRaceHTTPRules = []OpenAIUpstreamConcurrencyRaceHTTPRule{
+	{Matcher: "401", MaxRetries: 1},
+	{Matcher: "403", MaxRetries: 1},
+	{Matcher: "408", MaxRetries: 2},
+	{Matcher: "429", MaxRetries: 10},
+	{Matcher: "5xx", MaxRetries: 2},
+	{Matcher: "502", MaxRetries: 1},
+	{Matcher: "503", MaxRetries: 3},
+}
+
+const (
+	openAIUpstreamConcurrencyRaceHTTPRulesKey      = "upstream_concurrency_race_http_rules"
+	openAIUpstreamConcurrencyRaceTransportKey      = "upstream_concurrency_race_transport_enabled"
+	openAIUpstreamConcurrencyRaceTransportCountKey = "upstream_concurrency_race_transport_retry_count"
+	maxOpenAIUpstreamConcurrencyRaceRuleRetries    = 200
+)
+
+func normalizeOpenAIUpstreamConcurrencyRaceMatcher(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "5xx" {
+		return raw
+	}
+	if len(raw) != 3 {
+		return ""
+	}
+	for _, ch := range raw {
+		if ch < '0' || ch > '9' {
+			return ""
+		}
+	}
+	code, err := strconv.Atoi(raw)
+	if err != nil || code < 100 || code > 599 {
+		return ""
+	}
+	return raw
+}
+
+func parseOpenAIUpstreamConcurrencyRaceHTTPRules(raw any) ([]OpenAIUpstreamConcurrencyRaceHTTPRule, bool) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+	if len(items) == 0 {
+		return []OpenAIUpstreamConcurrencyRaceHTTPRule{}, true
+	}
+	rules := make([]OpenAIUpstreamConcurrencyRaceHTTPRule, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		matcher, _ := obj["matcher"].(string)
+		matcher = normalizeOpenAIUpstreamConcurrencyRaceMatcher(matcher)
+		if matcher == "" {
+			continue
+		}
+		if _, exists := seen[matcher]; exists {
+			continue
+		}
+		maxRetries, valid := parsePoolModeRetryCount(obj["max_retries"])
+		if !valid {
+			continue
+		}
+		if maxRetries < 0 {
+			maxRetries = 0
+		}
+		if maxRetries > maxOpenAIUpstreamConcurrencyRaceRuleRetries {
+			maxRetries = maxOpenAIUpstreamConcurrencyRaceRuleRetries
+		}
+		seen[matcher] = struct{}{}
+		rules = append(rules, OpenAIUpstreamConcurrencyRaceHTTPRule{Matcher: matcher, MaxRetries: maxRetries})
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].Matcher == "5xx" {
+			return false
+		}
+		if rules[j].Matcher == "5xx" {
+			return true
+		}
+		return rules[i].Matcher < rules[j].Matcher
+	})
+	return rules, len(rules) > 0
+}
+
+// GetOpenAIUpstreamConcurrencyRaceHTTPRules returns configured race rules.
+// Missing/invalid settings use the product defaults; an explicitly empty list
+// disables all HTTP-status retries while preserving the transport switch.
+func (a *Account) GetOpenAIUpstreamConcurrencyRaceHTTPRules() []OpenAIUpstreamConcurrencyRaceHTTPRule {
+	if a == nil || a.Credentials == nil {
+		return append([]OpenAIUpstreamConcurrencyRaceHTTPRule(nil), defaultOpenAIUpstreamConcurrencyRaceHTTPRules...)
+	}
+	raw, exists := a.Credentials[openAIUpstreamConcurrencyRaceHTTPRulesKey]
+	if !exists || raw == nil {
+		return append([]OpenAIUpstreamConcurrencyRaceHTTPRule(nil), defaultOpenAIUpstreamConcurrencyRaceHTTPRules...)
+	}
+	rules, valid := parseOpenAIUpstreamConcurrencyRaceHTTPRules(raw)
+	if !valid {
+		return append([]OpenAIUpstreamConcurrencyRaceHTTPRule(nil), defaultOpenAIUpstreamConcurrencyRaceHTTPRules...)
+	}
+	return rules
+}
+
+// GetOpenAIUpstreamConcurrencyRaceHTTPRule applies exact-match precedence over
+// the 5xx family. The returned key is stable for request-local counters.
+func (a *Account) GetOpenAIUpstreamConcurrencyRaceHTTPRule(statusCode int) (key string, maxRetries int, matched bool) {
+	if statusCode < 100 || statusCode > 599 {
+		return "", 0, false
+	}
+	rules := a.GetOpenAIUpstreamConcurrencyRaceHTTPRules()
+	exact := strconv.Itoa(statusCode)
+	family := ""
+	for _, rule := range rules {
+		if rule.Matcher == exact {
+			return rule.Matcher, rule.MaxRetries, true
+		}
+		if rule.Matcher == "5xx" && statusCode >= 500 {
+			family = rule.Matcher
+			maxRetries = rule.MaxRetries
+		}
+	}
+	if family != "" {
+		return family, maxRetries, true
+	}
+	return "", 0, false
+}
+
+func (a *Account) IsOpenAIUpstreamConcurrencyRaceTransportRetryEnabled() bool {
+	if a == nil || !a.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		return false
+	}
+	raw, ok := a.Credentials[openAIUpstreamConcurrencyRaceTransportKey]
+	if !ok || raw == nil {
+		return true
+	}
+	enabled, ok := raw.(bool)
+	return !ok || enabled
+}
+
+func (a *Account) GetOpenAIUpstreamConcurrencyRaceTransportRetryCount() int {
+	if a == nil || !a.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		return 0
+	}
+	raw, ok := a.Credentials[openAIUpstreamConcurrencyRaceTransportCountKey]
+	if !ok || raw == nil {
+		return 1
+	}
+	count, valid := parsePoolModeRetryCount(raw)
+	if !valid || count < 0 {
+		return 1
+	}
+	if count > maxOpenAIUpstreamConcurrencyRaceRuleRetries {
+		return maxOpenAIUpstreamConcurrencyRaceRuleRetries
+	}
+	return count
+}
+
+// OpenAIUpstreamConcurrencyRaceRetryRule resolves a status/transport failure
+// to a stable rule key and sub-limit. Transport retries are considered only
+// when no usable HTTP status exists (statusCode == 0).
+func (a *Account) OpenAIUpstreamConcurrencyRaceRetryRule(statusCode int) (key string, maxRetries int, matched bool) {
+	if a == nil || !a.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		return "", 0, false
+	}
+	if statusCode == 0 {
+		if !a.IsOpenAIUpstreamConcurrencyRaceTransportRetryEnabled() {
+			return "", 0, false
+		}
+		return "transport", a.GetOpenAIUpstreamConcurrencyRaceTransportRetryCount(), true
+	}
+	return a.GetOpenAIUpstreamConcurrencyRaceHTTPRule(statusCode)
+}
+
 // IsPoolModeBuiltinRetryEnabled controls same-account retries for transient
 // failures detected by the system rather than by the configured HTTP status
 // code list. Missing settings preserve the legacy enabled behavior.
 func (a *Account) IsPoolModeBuiltinRetryEnabled() bool {
 	if a == nil || !a.IsPoolMode() || a.Credentials == nil {
+		return false
+	}
+	// Race mode has its own transport switch and per-status rules. Returning
+	// true here would make legacy OpenAI constructors retry every 5xx and
+	// bypass the configured sub-limits.
+	if a.IsOpenAIUpstreamConcurrencyRaceEnabled() {
 		return false
 	}
 	raw, ok := a.Credentials["pool_mode_builtin_retry_enabled"]

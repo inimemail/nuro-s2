@@ -165,6 +165,35 @@ func TestForwardAlphaSearchUnsafeCustomURLFailsOverWithoutLeakingURL(t *testing.
 	require.NotContains(t, err.Error(), "private.invalid")
 }
 
+func TestForwardAlphaSearchRaceDoesNotRetryURLConfigurationFailure(t *testing.T) {
+	setGinTestMode()
+	body := []byte(`{"model":"gpt-5.6-sol","commands":{}}`)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/alpha/search", bytes.NewReader(body))
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = true
+	cfg.Security.URLAllowlist.UpstreamHosts = []string{"approved.example"}
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: &httpUpstreamRecorder{}}
+	account := &Account{
+		ID: 72, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":                              "sk-test",
+			"pool_mode":                            true,
+			"base_url":                             "https://private.invalid/v1",
+			"upstream_concurrency_race_enabled":    true,
+			"upstream_concurrency_race_http_rules": []any{map[string]any{"matcher": "502", "max_retries": 1}},
+		},
+	}
+
+	result, err := svc.ForwardAlphaSearch(context.Background(), c, account, body)
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.Empty(t, failoverErr.RetryRuleKey)
+	require.Zero(t, failoverErr.RetryRuleLimit)
+}
+
 func TestForwardAlphaSearchReturnsFailoverBeforeWriting(t *testing.T) {
 	setGinTestMode()
 	body := []byte(`{"id":"search-session","model":"gpt-5.6-sol","commands":{}}`)
@@ -202,6 +231,59 @@ func TestForwardAlphaSearchReturnsFailoverBeforeWriting(t *testing.T) {
 	require.Equal(t, openAIPlatformAlphaSearchURL, upstream.lastReq.URL.String())
 	require.False(t, c.Writer.Written())
 	require.Empty(t, recorder.Body.String())
+}
+
+func TestAlphaSearchRaceTransportFailuresUseTransportRule(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                         true,
+			"upstream_concurrency_race_enabled": true,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "502", "max_retries": 0},
+			},
+		},
+	}
+
+	failoverErr := newOpenAIAlphaSearchFailoverErrorForAccount(account, http.StatusBadGateway, nil, "upstream failed", false, true)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+	require.Equal(t, "transport", failoverErr.RetryRuleKey)
+	require.Equal(t, 1, failoverErr.RetryRuleLimit)
+}
+
+func TestAlphaSearchRaceHTTPClientErrorStaysNonRetryable(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                         true,
+			"upstream_concurrency_race_enabled": true,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "503", "max_retries": 3},
+			},
+		},
+	}
+	body := []byte(`{"error":{"message":"No available channel for model gpt-5.6"}}`)
+	retryable := openAIPoolFailoverRetryableOnSameAccount(
+		account,
+		http.StatusServiceUnavailable,
+		"No available channel for model gpt-5.6",
+		body,
+	)
+
+	failoverErr := newOpenAIAlphaSearchFailoverErrorForAccount(
+		account,
+		http.StatusServiceUnavailable,
+		body,
+		"No available channel for model gpt-5.6",
+		retryable,
+		false,
+	)
+
+	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.Empty(t, failoverErr.RetryRuleKey)
+	require.Zero(t, failoverErr.RetryRuleLimit)
 }
 
 func TestForwardAlphaSearchRejectsHTMLSuccessWithoutExposingIt(t *testing.T) {
