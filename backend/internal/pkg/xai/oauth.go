@@ -563,10 +563,27 @@ func BuildVideoURLWithValidator(baseURL, requestID string, validator BaseURLVali
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
 	requestID = strings.TrimSpace(requestID)
-	if requestID == "" {
-		return "", fmt.Errorf("request id is required")
+	if !isSafeRequestID(requestID) {
+		return "", fmt.Errorf("invalid request id")
 	}
-	return validatedBaseURL + "/videos/" + url.PathEscape(requestID), nil
+	return validatedBaseURL + "/videos/" + requestID, nil
+}
+
+func isSafeRequestID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	dotsOnly := true
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if !((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == '_' || b == '.') {
+			return false
+		}
+		if b != '.' {
+			dotsOnly = false
+		}
+	}
+	return !dotsOnly
 }
 
 type TokenResponse struct {

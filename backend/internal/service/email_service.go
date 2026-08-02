@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -10,7 +11,10 @@ import (
 	"html"
 	"log/slog"
 	"math/big"
+	"mime"
+	"mime/quotedprintable"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"net/url"
 	"strconv"
@@ -186,26 +190,91 @@ const smtpIOTimeout = 20 * time.Second
 
 // SendEmailWithConfig 使用指定配置发送邮件
 func (s *EmailService) SendEmailWithConfig(config *SMTPConfig, to, subject, body string) error {
-	// Sanitize all SMTP header fields to prevent header injection (CR/LF removal).
-	to = sanitizeEmailHeader(to)
-	subject = sanitizeEmailHeader(subject)
-
-	from := sanitizeEmailHeader(config.From)
-	if config.FromName != "" {
-		from = fmt.Sprintf("%s <%s>", sanitizeEmailHeader(config.FromName), sanitizeEmailHeader(config.From))
+	message, err := buildSMTPMessage(config, to, subject, body)
+	if err != nil {
+		return err
 	}
-
-	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s",
-		from, to, subject, body)
 
 	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
 	auth := smtp.PlainAuth("", config.Username, config.Password, config.Host)
 
 	if config.UseTLS {
-		return s.sendMailTLS(addr, auth, config.From, to, []byte(msg), config.Host)
+		return s.sendMailTLS(addr, auth, message.envelopeFrom, message.envelopeTo, message.data, config.Host)
 	}
 
-	return s.sendMailPlain(addr, auth, config.From, to, []byte(msg), config.Host)
+	return s.sendMailPlain(addr, auth, message.envelopeFrom, message.envelopeTo, message.data, config.Host)
+}
+
+type smtpMessage struct {
+	envelopeFrom string
+	envelopeTo   string
+	data         []byte
+}
+
+func buildSMTPMessage(config *SMTPConfig, to, subject, body string) (smtpMessage, error) {
+	if config == nil {
+		return smtpMessage{}, fmt.Errorf("missing SMTP configuration")
+	}
+	from, err := parseSMTPAddress(config.From, "from")
+	if err != nil {
+		return smtpMessage{}, err
+	}
+	recipient, err := parseSMTPAddress(to, "recipient")
+	if err != nil {
+		return smtpMessage{}, err
+	}
+	randomID := make([]byte, 16)
+	if _, err := rand.Read(randomID); err != nil {
+		return smtpMessage{}, fmt.Errorf("generate message ID: %w", err)
+	}
+	fromName := sanitizeEmailHeader(config.FromName)
+	if fromName == "" {
+		fromName = sanitizeEmailHeader(from.Name)
+	}
+	fromHeader := formatSMTPHeaderAddress(&mail.Address{Name: fromName, Address: from.Address})
+	toHeader := formatSMTPHeaderAddress(recipient)
+	messageDomain := strings.Trim(strings.TrimSpace(sanitizeEmailHeader(config.Host)), "[]<>")
+	if at := strings.LastIndexByte(from.Address, '@'); at >= 0 && at < len(from.Address)-1 {
+		messageDomain = from.Address[at+1:]
+	}
+	if messageDomain == "" {
+		messageDomain = "localhost"
+	}
+	var message bytes.Buffer
+	fmt.Fprintf(&message, "From: %s\r\nTo: %s\r\nDate: %s\r\nMessage-ID: <%s@%s>\r\nSubject: %s\r\n", fromHeader, toHeader, time.Now().UTC().Format(time.RFC1123Z), hex.EncodeToString(randomID), messageDomain, mime.QEncoding.Encode("UTF-8", sanitizeEmailHeader(subject)))
+	fmt.Fprint(&message, "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n")
+	writer := quotedprintable.NewWriter(&message)
+	if _, err := writer.Write([]byte(body)); err != nil {
+		return smtpMessage{}, fmt.Errorf("encode email body: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return smtpMessage{}, fmt.Errorf("close email body encoder: %w", err)
+	}
+	return smtpMessage{envelopeFrom: from.Address, envelopeTo: recipient.Address, data: message.Bytes()}, nil
+}
+
+func formatSMTPHeaderAddress(address *mail.Address) string {
+	if address == nil {
+		return ""
+	}
+	if address.Name == "" {
+		return address.Address
+	}
+	return address.String()
+}
+
+func parseSMTPAddress(value, field string) (*mail.Address, error) {
+	if strings.ContainsAny(value, "\r\n") {
+		return nil, fmt.Errorf("invalid SMTP %s address: contains a line break", field)
+	}
+	address, err := mail.ParseAddress(strings.TrimSpace(value))
+	if err != nil || strings.TrimSpace(address.Address) == "" {
+		if err == nil {
+			err = fmt.Errorf("address is empty")
+		}
+		return nil, fmt.Errorf("invalid SMTP %s address: %w", field, err)
+	}
+	return address, nil
 }
 
 // sendMailPlain sends mail without TLS using a dialer with timeout.

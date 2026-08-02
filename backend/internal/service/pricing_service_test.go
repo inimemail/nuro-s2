@@ -229,7 +229,7 @@ func TestDefaultPricingIncludesGpt56Series(t *testing.T) {
 		cacheReadPriority     float64
 	}{
 		{"gpt-5.6-sol", 5e-6, 3e-5, 6.25e-6, 5e-7, 1e-5, 6e-5, 1.25e-5, 1e-6},
-		{"gpt-5.6-terra", 2.5e-6, 1.5e-5, 3.125e-6, 2.5e-7, 5e-6, 3e-5, 6.25e-6, 5e-7},
+		{"gpt-5.6-terra", 2e-6, 1.2e-5, 2.5e-6, 2e-7, 4e-6, 2.4e-5, 5e-6, 4e-7},
 		{"gpt-5.6-luna", 1e-6, 6e-6, 1.25e-6, 1e-7, 2e-6, 1.2e-5, 2.5e-6, 2e-7},
 	}
 

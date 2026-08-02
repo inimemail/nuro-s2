@@ -14,6 +14,7 @@ const (
 	defaultOpenAIProxyStreamFailureWindow     = time.Minute
 	defaultOpenAIProxyStreamQuarantineTTL     = 10 * time.Minute
 	defaultOpenAIProxyStreamCircuitMaxEntries = 4096
+	defaultOpenAIProxyStreamFailureCollapse   = 3 * time.Second
 )
 
 // OpenAIStreamFailureClass distinguishes upstream failures from downstream
@@ -39,14 +40,16 @@ type openAIProxyStreamCircuitSettings struct {
 	failureThreshold int
 	failureWindow    time.Duration
 	quarantineTTL    time.Duration
+	collapseInterval time.Duration
 	maxEntries       int
 }
 
 type openAIProxyStreamCircuitEntry struct {
-	failureCount int
-	windowStart  time.Time
-	blockedUntil time.Time
-	lastTouched  time.Time
+	failureCount  int
+	windowStart   time.Time
+	blockedUntil  time.Time
+	lastFailureAt time.Time
+	lastTouched   time.Time
 }
 
 // openAIProxyStreamCircuit is deliberately process-local, bounded and
@@ -68,6 +71,7 @@ func resolveOpenAIProxyStreamCircuitSettings(s *OpenAIGatewayService) openAIProx
 		failureThreshold: defaultOpenAIProxyStreamFailureThreshold,
 		failureWindow:    defaultOpenAIProxyStreamFailureWindow,
 		quarantineTTL:    defaultOpenAIProxyStreamQuarantineTTL,
+		collapseInterval: defaultOpenAIProxyStreamFailureCollapse,
 		maxEntries:       defaultOpenAIProxyStreamCircuitMaxEntries,
 	}
 	if s == nil || s.cfg == nil {
@@ -102,6 +106,9 @@ func newOpenAIProxyStreamCircuit(settings openAIProxyStreamCircuitSettings) *ope
 	}
 	if settings.maxEntries <= 0 {
 		settings.maxEntries = defaultOpenAIProxyStreamCircuitMaxEntries
+	}
+	if settings.collapseInterval < 0 {
+		settings.collapseInterval = 0
 	}
 	circuit := &openAIProxyStreamCircuit{settings: settings, entries: make(map[int64]openAIProxyStreamCircuitEntry)}
 	circuit.blocked.Store(&openAIProxyStreamCircuitSnapshot{blockedUntil: map[int64]time.Time{}})
@@ -151,8 +158,18 @@ func (c *openAIProxyStreamCircuit) recordFailure(proxyID int64, now time.Time) (
 		entry.failureCount = 0
 		entry.windowStart = now
 		entry.blockedUntil = time.Time{}
+		entry.lastFailureAt = time.Time{}
+	}
+	if c.settings.collapseInterval > 0 && !entry.lastFailureAt.IsZero() {
+		elapsed := now.Sub(entry.lastFailureAt)
+		if elapsed >= 0 && elapsed < c.settings.collapseInterval {
+			entry.lastTouched = now
+			c.entries[proxyID] = entry
+			return false, time.Time{}
+		}
 	}
 	entry.failureCount++
+	entry.lastFailureAt = now
 	entry.lastTouched = now
 	tripped := entry.failureCount >= c.settings.failureThreshold
 	if tripped {
@@ -177,6 +194,7 @@ func (c *openAIProxyStreamCircuit) recordTerminal(proxyID int64, now time.Time) 
 	} else {
 		entry.failureCount = 0
 		entry.windowStart = time.Time{}
+		entry.lastFailureAt = time.Time{}
 		entry.lastTouched = now
 		c.entries[proxyID] = entry
 	}

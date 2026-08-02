@@ -25,6 +25,43 @@ func TestOpenAIProxyStreamCircuitTripsAndExpires(t *testing.T) {
 	require.False(t, circuit.isBlocked(7, until))
 }
 
+func TestOpenAIProxyStreamCircuitCollapsesBurstFailures(t *testing.T) {
+	now := time.Unix(1000, 0)
+	circuit := newOpenAIProxyStreamCircuit(openAIProxyStreamCircuitSettings{
+		enabled:          true,
+		failureThreshold: 2,
+		failureWindow:    time.Minute,
+		quarantineTTL:    10 * time.Minute,
+		collapseInterval: 3 * time.Second,
+	})
+
+	tripped, _ := circuit.recordFailure(8, now)
+	require.False(t, tripped)
+	tripped, _ = circuit.recordFailure(8, now.Add(time.Second))
+	require.False(t, tripped, "failures in one burst must count once")
+	tripped, _ = circuit.recordFailure(8, now.Add(4*time.Second))
+	require.True(t, tripped)
+}
+
+func TestOpenAIProxyStreamCircuitDoesNotCollapseAcrossFailureWindow(t *testing.T) {
+	now := time.Unix(1000, 0)
+	circuit := newOpenAIProxyStreamCircuit(openAIProxyStreamCircuitSettings{
+		enabled:          true,
+		failureThreshold: 2,
+		failureWindow:    time.Second,
+		quarantineTTL:    time.Minute,
+		collapseInterval: 3 * time.Second,
+	})
+
+	tripped, _ := circuit.recordFailure(9, now)
+	require.False(t, tripped)
+	tripped, _ = circuit.recordFailure(9, now.Add(1500*time.Millisecond))
+	require.False(t, tripped, "the first failure in a new window must not be collapsed")
+	circuit.mu.Lock()
+	require.Equal(t, 1, circuit.entries[9].failureCount)
+	circuit.mu.Unlock()
+}
+
 func TestOpenAIProxyStreamCircuitIgnoresNonUpstreamFailures(t *testing.T) {
 	circuit := newOpenAIProxyStreamCircuit(openAIProxyStreamCircuitSettings{enabled: true})
 	service := &OpenAIGatewayService{}

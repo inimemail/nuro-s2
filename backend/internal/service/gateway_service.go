@@ -11228,7 +11228,10 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		}
 		targetURL = validatedURL + "/v1/messages/count_tokens?beta=true"
 	}
-	body = sanitizeCountTokensRequestBody(body)
+	// Existing API-key passthrough compatibility keeps max_tokens; some
+	// Anthropic-compatible relays still validate its presence even though the
+	// count_tokens operation does not consume generation limits.
+	body = sanitizeCountTokensRequestBodyPreservingMaxTokens(body)
 
 	// 同 buildUpstreamRequestAnthropicAPIKeyPassthrough：能力维度 sanitize。
 	clientBeta := ""
@@ -11457,15 +11460,27 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 }
 
 func sanitizeCountTokensRequestBody(body []byte) []byte {
+	return sanitizeCountTokensRequestBodyWithOptions(body, false)
+}
+
+func sanitizeCountTokensRequestBodyPreservingMaxTokens(body []byte) []byte {
+	return sanitizeCountTokensRequestBodyWithOptions(body, true)
+}
+
+func sanitizeCountTokensRequestBodyWithOptions(body []byte, preserveMaxTokens bool) []byte {
 	out := body
-	for _, path := range []string{
+	paths := []string{
 		"temperature",
 		"top_p",
 		"top_k",
 		"stream",
 		"stop_sequences",
 		"stop",
-	} {
+	}
+	if !preserveMaxTokens {
+		paths = append(paths, "max_tokens")
+	}
+	for _, path := range paths {
 		if gjson.GetBytes(out, path).Exists() {
 			if next, ok := deleteJSONPathBytes(out, path); ok {
 				out = next

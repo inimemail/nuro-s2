@@ -151,6 +151,7 @@ func TestGetModelPricing_ChineseFallbacks(t *testing.T) {
 	}{
 		{"deepseek-chat", 1.4e-7, 2.8e-7},
 		{"glm-5.1", 1.4e-6, 4.4e-6},
+		{"glm-5.2", 1.4e-6, 4.4e-6},
 		{"kimi-k2.6", 0.95e-6, 4e-6},
 		{"minimax-m2.7-highspeed", 0.60e-6, 2.40e-6},
 		{"doubao-embedding-vision", 0.098e-6, 0},
@@ -257,7 +258,7 @@ func TestGetModelPricing_OpenAICompactAliasesFallback(t *testing.T) {
 	}{
 		{model: "gpt5.5", inputPrice: 5e-6, outputPrice: 30e-6, cacheRead: 0.5e-6, longContext: 272000},
 		{model: "gpt5.5-pro", inputPrice: 30e-6, outputPrice: 180e-6, cacheRead: 3e-6, longContext: 272000},
-		{model: "gpt5.6terra", inputPrice: 2.5e-6, outputPrice: 15e-6, cacheRead: 0.25e-6, longContext: 272000},
+		{model: "gpt5.6terra", inputPrice: 2e-6, outputPrice: 12e-6, cacheRead: 0.2e-6, longContext: 272000},
 		{model: "openai/gpt5.4", inputPrice: 2.5e-6, outputPrice: 15e-6, cacheRead: 0.25e-6, longContext: 272000},
 		{model: "gpt5.4-mini", inputPrice: 7.5e-7, outputPrice: 4.5e-6, cacheRead: 7.5e-8, longContext: 0},
 		{model: "gpt5.3codexspark", inputPrice: 1.5e-6, outputPrice: 12e-6, cacheRead: 0.15e-6, longContext: 0},

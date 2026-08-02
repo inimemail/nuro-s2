@@ -27,8 +27,10 @@ var (
 )
 
 const (
-	claudeCodeBillingHeaderPrefix = "x-anthropic-billing-header"
-	claudeCodeEntrypointMarker    = "cc_entrypoint="
+	claudeCodeSecurityMonitorPromptPrefix = "You are a security monitor for autonomous AI coding agents."
+	claudeCodeSecurityMonitorPromptMinLen = 10_000
+	claudeCodeBillingHeaderPrefix         = "x-anthropic-billing-header"
+	claudeCodeEntrypointMarker            = "cc_entrypoint="
 )
 
 // systemHasBillingAttributionBlock recognizes proxied Claude Code traffic
@@ -176,6 +178,9 @@ func (v *ClaudeCodeValidator) hasClaudeCodeSystemPrompt(body map[string]any) boo
 	if !ok {
 		return false
 	}
+	if isClaudeCodeSecurityMonitorPrompt(systemEntries) {
+		return true
+	}
 
 	// 检查每个 system entry
 	for _, entry := range systemEntries {
@@ -202,6 +207,26 @@ func (v *ClaudeCodeValidator) hasClaudeCodeSystemPrompt(body map[string]any) boo
 	}
 
 	return false
+}
+
+func isClaudeCodeSecurityMonitorPrompt(systemEntries []any) bool {
+	if len(systemEntries) != 1 {
+		return false
+	}
+	entry, ok := systemEntries[0].(map[string]any)
+	if !ok || entry["type"] != "text" {
+		return false
+	}
+	text, ok := entry["text"].(string)
+	if !ok || len(text) < claudeCodeSecurityMonitorPromptMinLen || !strings.HasPrefix(text, claudeCodeSecurityMonitorPromptPrefix) {
+		return false
+	}
+	for _, marker := range []string{"## Threat Model", "- `<transcript>`:", "## HARD BLOCK", "## SOFT BLOCK", "## Classification Process", "## Output Format", "<block>yes</block>", "<block>no</block>"} {
+		if !strings.Contains(text, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 func isMessagesCountTokensPath(path string) bool {

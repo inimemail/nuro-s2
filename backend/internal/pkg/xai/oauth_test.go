@@ -49,3 +49,13 @@ func TestOfficialBaseURLHostsIncludeRegionalAPIEndpoints(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, IsParseableBaseURL("://invalid"))
 }
+
+func TestBuildVideoURLRejectsDotOnlyRequestIDs(t *testing.T) {
+	for _, requestID := range []string{".", "..", "..."} {
+		_, err := BuildVideoURLWithValidator("https://api.x.ai/v1", requestID, nil)
+		require.Error(t, err, requestID)
+	}
+	got, err := BuildVideoURLWithValidator("https://api.x.ai/v1", "video_123.abc", nil)
+	require.NoError(t, err)
+	require.Equal(t, "https://api.x.ai/v1/videos/video_123.abc", got)
+}

@@ -5387,7 +5387,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			targetURL = buildOpenAIResponsesURL(validatedURL)
 		}
 	}
-	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
+	suffix, err := openAIResponsesRequestPathSuffixWithError(c)
+	if err != nil {
+		return nil, err
+	}
+	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, suffix)
 
 	ctx = WithOpsLatencyRecorder(ctx, func(key string, elapsed time.Duration) {
 		SetOpsLatencyMsOnce(c, key, elapsed.Milliseconds())
@@ -7149,7 +7153,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	default:
 		targetURL = openaiPlatformAPIURL
 	}
-	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
+	suffix, err := openAIResponsesRequestPathSuffixWithError(c)
+	if err != nil {
+		return nil, err
+	}
+	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, suffix)
 
 	ctx = WithOpsLatencyRecorder(ctx, func(key string, elapsed time.Duration) {
 		SetOpsLatencyMsOnce(c, key, elapsed.Milliseconds())
@@ -9753,6 +9761,21 @@ func resolveOpenAICompactSessionID(c *gin.Context) string {
 }
 
 func openAIResponsesRequestPathSuffix(c *gin.Context) string {
+	suffix, ok := sanitizedUpstreamPathSuffix(rawOpenAIResponsesRequestPathSuffix(c))
+	if !ok {
+		return ""
+	}
+	return suffix
+}
+
+// IsForwardableOpenAIResponsesRequestPath is used by route middleware to reject
+// malformed subpaths before scheduling or upstream selection.
+func IsForwardableOpenAIResponsesRequestPath(c *gin.Context) bool {
+	_, ok := sanitizedUpstreamPathSuffix(rawOpenAIResponsesRequestPathSuffix(c))
+	return ok
+}
+
+func rawOpenAIResponsesRequestPathSuffix(c *gin.Context) string {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return ""
 	}
@@ -9768,16 +9791,39 @@ func openAIResponsesRequestPathSuffix(c *gin.Context) string {
 	if suffix == "" || suffix == "/" {
 		return ""
 	}
-	if !strings.HasPrefix(suffix, "/") {
-		return ""
-	}
 	return suffix
+}
+
+func openAIResponsesRequestPathSuffixWithError(c *gin.Context) (string, error) {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return "", nil
+	}
+	normalizedPath := strings.TrimRight(strings.TrimSpace(c.Request.URL.Path), "/")
+	if normalizedPath == "" {
+		return "", nil
+	}
+	idx := strings.LastIndex(normalizedPath, "/responses")
+	if idx < 0 {
+		return "", nil
+	}
+	suffix := normalizedPath[idx+len("/responses"):]
+	if suffix == "" || suffix == "/" {
+		return "", nil
+	}
+	validated, ok := sanitizedUpstreamPathSuffix(suffix)
+	if !ok {
+		return "", fmt.Errorf("invalid responses path suffix")
+	}
+	return validated, nil
 }
 
 func appendOpenAIResponsesRequestPathSuffix(baseURL, suffix string) string {
 	trimmedBase := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	trimmedSuffix := strings.TrimSpace(suffix)
 	if trimmedBase == "" || trimmedSuffix == "" {
+		return trimmedBase
+	}
+	if _, ok := sanitizedUpstreamPathSuffix(trimmedSuffix); !ok {
 		return trimmedBase
 	}
 	return trimmedBase + trimmedSuffix
