@@ -5016,7 +5016,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 	body = updatedBody
 	var cacheCreationOptimization openAIPromptCacheCreationOptimizationResult
-	if !isOpenAIResponsesCompactPath(c) {
+	if !isOpenAIResponsesCompactPath(c) && !IsOpenAIResponsesHealthProbe(c) {
 		optimizedBody, optimizationResult, optimizeErr := s.ApplyOpenAIPromptCacheCreationOptimizationBody(account, policyModel, body)
 		if optimizeErr != nil {
 			return nil, optimizeErr
