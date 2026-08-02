@@ -418,8 +418,21 @@ func OpenAIHealthProbeClientMessage() string {
 }
 
 func ShouldStartOpenAIHealthProbeDefaultFallback(c *gin.Context, failoverErr *UpstreamFailoverError, alreadyStarted bool) bool {
-	return !alreadyStarted && IsOpenAIResponsesHealthProbe(c) && failoverErr != nil &&
-		IsOpenAIHealthProbeEmptyErrorBody(failoverErr.ResponseBody)
+	if alreadyStarted || !IsOpenAIResponsesHealthProbe(c) || failoverErr == nil {
+		return false
+	}
+	if IsOpenAIHealthProbeEmptyErrorBody(failoverErr.ResponseBody) {
+		return true
+	}
+	// A dedicated probe may fail with a normal upstream gateway error before
+	// the gateway can produce the probe-specific empty-response marker. Give it
+	// one compatible default Responses attempt after account failover is spent.
+	switch failoverErr.StatusCode {
+	case 0, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func BuildOpenAIHealthProbeDefaultFallbackBody(model string) ([]byte, error) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -414,7 +415,7 @@ func TestApplyOpenAIHealthProbeRetryPolicyPreservesNonPoolDecision(t *testing.T)
 	require.False(t, nonRetryableErr.RetryableOnSameAccount)
 }
 
-func TestOpenAIHealthProbeDefaultFallbackOnlyStartsOnceForEmptyResponse(t *testing.T) {
+func TestOpenAIHealthProbeDefaultFallbackOnlyStartsOnceForEligibleFailures(t *testing.T) {
 	marked, _ := configuredHealthProbeContext(t)
 	marked.Request.Header.Set("X-Custom-Probe", "preserved")
 	originalHeaders := marked.Request.Header.Clone()
@@ -422,7 +423,16 @@ func TestOpenAIHealthProbeDefaultFallbackOnlyStartsOnceForEmptyResponse(t *testi
 
 	require.True(t, ShouldStartOpenAIHealthProbeDefaultFallback(marked, emptyErr, false))
 	require.False(t, ShouldStartOpenAIHealthProbeDefaultFallback(marked, emptyErr, true))
+	for _, statusCode := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 0} {
+		t.Run(fmt.Sprintf("upstream failure %d", statusCode), func(t *testing.T) {
+			require.True(t, ShouldStartOpenAIHealthProbeDefaultFallback(marked, &UpstreamFailoverError{
+				StatusCode:   statusCode,
+				ResponseBody: []byte(`{"error":{"message":"Upstream request failed","type":"upstream_error"}}`),
+			}, false))
+		})
+	}
 	require.False(t, ShouldStartOpenAIHealthProbeDefaultFallback(marked, &UpstreamFailoverError{
+		StatusCode:   http.StatusBadRequest,
 		ResponseBody: []byte(`{"error":{"message":"ordinary upstream error"}}`),
 	}, false))
 
