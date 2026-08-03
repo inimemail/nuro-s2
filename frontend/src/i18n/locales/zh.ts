@@ -3855,7 +3855,7 @@ export default {
           add: '添加阶段',
           stage: '阶段 {stage}',
           placeholder: '补帧阈值',
-          placeholderHint: '1-100000 ms，默认 1000 ms。',
+          placeholderHint: '1-100000 ms，第 1 阶段默认 800 ms。',
           guard: '保护上限',
           guardHint: '必须是大于 0 的整数，不设最大值。',
           remove: '删除阶段',

@@ -398,6 +398,13 @@ func TestAccount_OpenAIFirstTokenTimeoutPlaceholderGuard(t *testing.T) {
 }
 
 func TestAccount_OpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(t *testing.T) {
+	t.Run("uses four stages when no timeout policy has been saved", func(t *testing.T) {
+		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+		}}
+		require.Equal(t, defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(), account.GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages())
+	})
+
 	t.Run("safe placeholder stays independent from disabled timeout placeholder", func(t *testing.T) {
 		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
 			openAIAPIKeySafeTokenPlaceholderExtraKey:                true,

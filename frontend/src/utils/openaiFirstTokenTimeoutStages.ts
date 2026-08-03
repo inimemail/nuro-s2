@@ -12,6 +12,17 @@ const DEFAULT_PLACEHOLDER_MS = 1000
 const DEFAULT_GUARD_MAX_MS = 3000
 const MAX_PLACEHOLDER_MS = 100000
 
+export function createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig(): OpenAIApiKeyFirstTokenTimeoutStageConfig {
+  return {
+    stages: [
+      { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
+      { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
+      { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 },
+      { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 }
+    ]
+  }
+}
+
 function integer(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isInteger(parsed) ? parsed : null
@@ -40,6 +51,9 @@ export function readOpenAIApiKeyFirstTokenTimeoutStageConfig(
   )
   const raw = extra?.openai_apikey_first_token_timeout_placeholder_stages
   if (!Array.isArray(raw) || raw.length < 1 || raw.length > 10) {
+    if (!hasScalarPlaceholder && !hasScalarGuard) {
+      return createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
+    }
     return {
       stages: [{
         stage: 1,

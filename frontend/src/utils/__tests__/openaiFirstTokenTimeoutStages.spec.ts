@@ -5,6 +5,17 @@ import {
 } from '../openaiFirstTokenTimeoutStages'
 
 describe('readOpenAIApiKeyFirstTokenTimeoutStageConfig', () => {
+  it('uses the four-stage default when no timeout policy has been saved', () => {
+    expect(readOpenAIApiKeyFirstTokenTimeoutStageConfig(undefined)).toEqual({
+      stages: [
+        { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
+        { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
+        { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 },
+        { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 }
+      ]
+    })
+  })
+
   it('uses legacy timeout scalars as stage one values after a bulk edit', () => {
     const config = readOpenAIApiKeyFirstTokenTimeoutStageConfig({
       openai_apikey_first_token_timeout_placeholder_stages: [

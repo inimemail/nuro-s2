@@ -3709,7 +3709,7 @@ export default {
           add: 'Add stage',
           stage: 'Stage {stage}',
           placeholder: 'Placeholder',
-          placeholderHint: '1-100000 ms, default 1000 ms.',
+          placeholderHint: '1-100000 ms; stage 1 defaults to 800 ms.',
           guard: 'Guard limit',
           guardHint: 'Must be a positive integer; no configured maximum.',
           remove: 'Remove stage',

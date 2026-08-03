@@ -266,9 +266,14 @@ describe('CreateAccountModal', () => {
     await toggle.trigger('click')
     await toggle.trigger('click')
 
-    expect((wrapper.get('[data-testid="stage-1-placeholder"]').element as HTMLInputElement).value).toBe('1000')
-    expect((wrapper.get('[data-testid="stage-1-guard"]').element as HTMLInputElement).value).toBe('3000')
-    expect(wrapper.find('[data-testid="stage-2-placeholder"]').exists()).toBe(false)
+    expect((wrapper.get('[data-testid="stage-1-placeholder"]').element as HTMLInputElement).value).toBe('800')
+    expect((wrapper.get('[data-testid="stage-1-guard"]').element as HTMLInputElement).value).toBe('5000')
+    expect((wrapper.get('[data-testid="stage-2-placeholder"]').element as HTMLInputElement).value).toBe('3000')
+    expect((wrapper.get('[data-testid="stage-2-guard"]').element as HTMLInputElement).value).toBe('10000')
+    expect((wrapper.get('[data-testid="stage-3-placeholder"]').element as HTMLInputElement).value).toBe('5000')
+    expect((wrapper.get('[data-testid="stage-3-guard"]').element as HTMLInputElement).value).toBe('15000')
+    expect((wrapper.get('[data-testid="stage-4-placeholder"]').element as HTMLInputElement).value).toBe('10000')
+    expect((wrapper.get('[data-testid="stage-4-guard"]').element as HTMLInputElement).value).toBe('30000')
   })
 
   it('submits the API key placeholder maximum with an uncapped guard', async () => {
@@ -281,17 +286,20 @@ describe('CreateAccountModal', () => {
     await wrapper.get('input[data-tour="account-form-name"]').setValue('OpenAI High Timeout Key')
     await wrapper.get('input[placeholder="sk-proj-..."]').setValue('sk-test')
     await wrapper.get('[data-testid="apikey-first-token-timeout-placeholder-toggle"]').trigger('click')
-    await wrapper.get('[data-testid="stage-1-placeholder"]').setValue(100000)
-    await wrapper.get('[data-testid="stage-1-guard"]').setValue(900000)
+    await wrapper.get('[data-testid="stage-4-placeholder"]').setValue(100000)
+    await wrapper.get('[data-testid="stage-4-guard"]').setValue(900000)
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
 
     expect(createAccountMock).toHaveBeenCalledTimes(1)
     expect(createAccountMock.mock.calls[0]?.[0]?.extra).toMatchObject({
-      openai_apikey_first_token_timeout_placeholder_ms: 100000,
-      openai_apikey_first_token_timeout_placeholder_guard_max_ms: 900000,
+      openai_apikey_first_token_timeout_placeholder_ms: 800,
+      openai_apikey_first_token_timeout_placeholder_guard_max_ms: 5000,
       openai_apikey_first_token_timeout_placeholder_stages: [
-        { stage: 1, placeholder_ms: 100000, guard_max_ms: 900000 }
+        { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
+        { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
+        { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 },
+        { stage: 4, placeholder_ms: 100000, guard_max_ms: 900000 }
       ]
     })
   })

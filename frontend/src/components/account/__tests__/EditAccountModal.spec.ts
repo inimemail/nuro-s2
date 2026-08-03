@@ -353,9 +353,14 @@ describe('EditAccountModal', () => {
     await toggle.trigger('click')
     await toggle.trigger('click')
 
-    expect((wrapper.get('[data-testid="stage-1-placeholder"]').element as HTMLInputElement).value).toBe('1000')
-    expect((wrapper.get('[data-testid="stage-1-guard"]').element as HTMLInputElement).value).toBe('3000')
-    expect(wrapper.find('[data-testid="stage-2-placeholder"]').exists()).toBe(false)
+    expect((wrapper.get('[data-testid="stage-1-placeholder"]').element as HTMLInputElement).value).toBe('800')
+    expect((wrapper.get('[data-testid="stage-1-guard"]').element as HTMLInputElement).value).toBe('5000')
+    expect((wrapper.get('[data-testid="stage-2-placeholder"]').element as HTMLInputElement).value).toBe('3000')
+    expect((wrapper.get('[data-testid="stage-2-guard"]').element as HTMLInputElement).value).toBe('10000')
+    expect((wrapper.get('[data-testid="stage-3-placeholder"]').element as HTMLInputElement).value).toBe('5000')
+    expect((wrapper.get('[data-testid="stage-3-guard"]').element as HTMLInputElement).value).toBe('15000')
+    expect((wrapper.get('[data-testid="stage-4-placeholder"]').element as HTMLInputElement).value).toBe('10000')
+    expect((wrapper.get('[data-testid="stage-4-guard"]').element as HTMLInputElement).value).toBe('30000')
   })
 
   it('omits an unchanged Grok media eligibility override', async () => {

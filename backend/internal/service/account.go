@@ -180,15 +180,29 @@ type OpenAIFirstTokenTimeoutPlaceholderStage struct {
 
 const openAIFirstTokenTimeoutPlaceholderMaxStages = 10
 
+func defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages() []OpenAIFirstTokenTimeoutPlaceholderStage {
+	return []OpenAIFirstTokenTimeoutPlaceholderStage{
+		{Stage: 1, PlaceholderMS: 800, GuardMaxMS: 5000},
+		{Stage: 2, PlaceholderMS: 3000, GuardMaxMS: 10000},
+		{Stage: 3, PlaceholderMS: 5000, GuardMaxMS: 15000},
+		{Stage: 4, PlaceholderMS: 10000, GuardMaxMS: 30000},
+	}
+}
+
 // NormalizeOpenAIFirstTokenTimeoutPlaceholderStages validates and canonicalizes a
-// staged API-key policy. A missing stage array is intentionally treated as the
-// legacy single-stage configuration so old accounts remain unchanged.
+// staged API-key policy. Saved legacy scalars remain a single-stage policy;
+// accounts without either representation receive the current default stages.
 func NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(extra map[string]any) ([]OpenAIFirstTokenTimeoutPlaceholderStage, error) {
 	if extra == nil {
 		return nil, nil
 	}
 	raw, exists := extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]
 	if !exists {
+		_, hasPlaceholderScalar := extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey]
+		_, hasGuardScalar := extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey]
+		if !hasPlaceholderScalar && !hasGuardScalar {
+			return defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(), nil
+		}
 		placeholderMS := normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(accountExtraInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey]))
 		guardMaxMS := normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(accountExtraInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey]))
 		if guardMaxMS < placeholderMS {

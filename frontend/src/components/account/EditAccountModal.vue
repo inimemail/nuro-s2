@@ -3696,6 +3696,7 @@ import {
 import { formatDateTime, formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import {
   type OpenAIApiKeyFirstTokenTimeoutStageConfig,
+  createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig,
   readOpenAIApiKeyFirstTokenTimeoutStageConfig,
   validateOpenAIApiKeyFirstTokenTimeoutStageConfig
 } from '@/utils/openaiFirstTokenTimeoutStages'
@@ -4197,21 +4198,11 @@ const openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled = ref(false)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled = ref(true)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS)
-const openaiAPIKeyFirstTokenTimeoutStageConfig = ref<OpenAIApiKeyFirstTokenTimeoutStageConfig>({
-  stages: [{
-    stage: 1,
-    placeholder_ms: OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS,
-    guard_max_ms: OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
-  }]
-})
+const openaiAPIKeyFirstTokenTimeoutStageConfig = ref<OpenAIApiKeyFirstTokenTimeoutStageConfig>(
+  createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
+)
 function resetOpenAIAPIKeyFirstTokenTimeoutStages() {
-  openaiAPIKeyFirstTokenTimeoutStageConfig.value = {
-    stages: [{
-      stage: 1,
-      placeholder_ms: OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS,
-      guard_max_ms: OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
-    }]
-  }
+  openaiAPIKeyFirstTokenTimeoutStageConfig.value = createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
 }
 watch(openaiAPIKeyFirstTokenTimeoutStageConfig, (config) => {
   const first = config.stages[0]
