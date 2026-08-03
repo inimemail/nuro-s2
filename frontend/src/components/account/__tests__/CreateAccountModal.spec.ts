@@ -249,6 +249,28 @@ describe('CreateAccountModal', () => {
     expect(credentials).not.toHaveProperty('openai_prompt_cache_creation_optimization_mode')
   })
 
+  it('resets API key timeout placeholder stages after disabling and enabling again', async () => {
+    const wrapper = mountModal()
+
+    await wrapper.findAll('button').find((button) => button.text().trim() === 'OpenAI')!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('API Key'))!.trigger('click')
+    await flushPromises()
+
+    const toggle = wrapper.get('[data-testid="apikey-first-token-timeout-placeholder-toggle"]')
+    await toggle.trigger('click')
+    await wrapper.get('[data-testid="stage-1-placeholder"]').setValue(1200)
+    await wrapper.get('[data-testid="stage-1-guard"]').setValue(3600)
+    await wrapper.get('[data-testid="add-first-token-stage"]').trigger('click')
+    expect(wrapper.find('[data-testid="stage-2-placeholder"]').exists()).toBe(true)
+
+    await toggle.trigger('click')
+    await toggle.trigger('click')
+
+    expect((wrapper.get('[data-testid="stage-1-placeholder"]').element as HTMLInputElement).value).toBe('1000')
+    expect((wrapper.get('[data-testid="stage-1-guard"]').element as HTMLInputElement).value).toBe('3000')
+    expect(wrapper.find('[data-testid="stage-2-placeholder"]').exists()).toBe(false)
+  })
+
   it('submits explicit OpenAI pool retry conditions without changing retry timing fields', async () => {
     const wrapper = mountModal()
 

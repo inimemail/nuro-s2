@@ -99,6 +99,30 @@ func (g *openAIFirstTokenTimeoutPlaceholderGuard) allow(accountID int64, model s
 	if g == nil || accountID <= 0 || limitMS <= 0 {
 		return true
 	}
+	realTokenMS, ok := g.latestRealTokenMS(accountID, model)
+	return !ok || realTokenMS <= limitMS
+}
+
+func (g *openAIFirstTokenTimeoutPlaceholderGuard) placeholderMS(accountID int64, model string, stages []OpenAIFirstTokenTimeoutPlaceholderStage) int {
+	if len(stages) == 0 {
+		return 0
+	}
+	realTokenMS, ok := g.latestRealTokenMS(accountID, model)
+	if !ok {
+		return stages[0].PlaceholderMS
+	}
+	for _, stage := range stages {
+		if realTokenMS <= stage.GuardMaxMS {
+			return stage.PlaceholderMS
+		}
+	}
+	return 0
+}
+
+func (g *openAIFirstTokenTimeoutPlaceholderGuard) latestRealTokenMS(accountID int64, model string) (int, bool) {
+	if g == nil || accountID <= 0 {
+		return 0, false
+	}
 
 	key := openAIFirstTokenTimeoutPlaceholderGuardKey(accountID, model)
 	now := time.Now().UnixNano()
@@ -106,7 +130,7 @@ func (g *openAIFirstTokenTimeoutPlaceholderGuard) allow(accountID int64, model s
 	sample, ok := g.localSamples[key]
 	g.localMu.RUnlock()
 	if !ok {
-		return true
+		return 0, false
 	}
 	if sample.expiresAt <= now {
 		g.localMu.Lock()
@@ -114,9 +138,9 @@ func (g *openAIFirstTokenTimeoutPlaceholderGuard) allow(accountID int64, model s
 			delete(g.localSamples, key)
 		}
 		g.localMu.Unlock()
-		return true
+		return 0, false
 	}
-	return sample.realTokenMS <= limitMS
+	return sample.realTokenMS, true
 }
 
 func (g *openAIFirstTokenTimeoutPlaceholderGuard) record(accountID int64, model string, realTokenMS int, limitMS int, recordedAt int64) {

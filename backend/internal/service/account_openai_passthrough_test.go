@@ -397,6 +397,83 @@ func TestAccount_OpenAIFirstTokenTimeoutPlaceholderGuard(t *testing.T) {
 	})
 }
 
+func TestAccount_OpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(t *testing.T) {
+	t.Run("safe placeholder stays independent from disabled timeout placeholder", func(t *testing.T) {
+		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
+			openAIAPIKeySafeTokenPlaceholderExtraKey:                true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey: false,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+				map[string]any{"stage": 1, "placeholder_ms": 1000, "guard_max_ms": 3000},
+			},
+		}}
+		require.True(t, account.IsOpenAIAPIKeySafeTokenPlaceholderEnabled())
+		require.Zero(t, account.GetOpenAIFirstTokenTimeoutPlaceholderMs())
+	})
+
+	t.Run("timeout stages do not enable safe placeholder", func(t *testing.T) {
+		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:    true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:         1000,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey: 3000,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+				map[string]any{"stage": 1, "placeholder_ms": 1000, "guard_max_ms": 3000},
+				map[string]any{"stage": 2, "placeholder_ms": 1600, "guard_max_ms": 5000},
+			},
+		}}
+		require.False(t, account.IsOpenAIAPIKeySafeTokenPlaceholderEnabled())
+		require.Equal(t, 1000, account.GetOpenAIFirstTokenTimeoutPlaceholderMs())
+	})
+
+	t.Run("stage one synchronized scalars drive legacy API key getters", func(t *testing.T) {
+		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:    true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:         1000,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey: 3000,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+				map[string]any{"stage": float64(1), "placeholder_ms": float64(1000), "guard_max_ms": float64(3000)},
+				map[string]any{"stage": float64(2), "placeholder_ms": float64(1600), "guard_max_ms": float64(5000)},
+			},
+		}}
+		require.Equal(t, 1000, account.GetOpenAIFirstTokenTimeoutPlaceholderMs())
+		require.Equal(t, 3000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
+		require.Equal(t, 5000, account.getOpenAIFirstTokenTimeoutPlaceholderGuardRecordingMaxMs())
+	})
+
+	t.Run("OAuth ignores API key stages", func(t *testing.T) {
+		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey:    true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:         700,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey: 2400,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+				map[string]any{"stage": 1, "placeholder_ms": 1000, "guard_max_ms": 3000},
+				map[string]any{"stage": 2, "placeholder_ms": 1600, "guard_max_ms": 5000},
+			},
+		}}
+		require.Equal(t, 700, account.GetOpenAIFirstTokenTimeoutPlaceholderMs())
+		require.Equal(t, 2400, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
+	})
+
+	t.Run("rejects invalid ordering", func(t *testing.T) {
+		extra := map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+				map[string]any{"stage": 1, "placeholder_ms": 1000, "guard_max_ms": 3000},
+				map[string]any{"stage": 2, "placeholder_ms": 900, "guard_max_ms": 4000},
+			},
+		}
+		_, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(extra)
+		require.Error(t, err)
+	})
+
+	t.Run("legacy scalars become stage one", func(t *testing.T) {
+		stages, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:         800,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey: 2600,
+		})
+		require.NoError(t, err)
+		require.Equal(t, []OpenAIFirstTokenTimeoutPlaceholderStage{{Stage: 1, PlaceholderMS: 800, GuardMaxMS: 2600}}, stages)
+	})
+}
+
 func TestAccount_IsCodexCLIOnlyEnabled(t *testing.T) {
 	t.Run("OpenAI OAuth 开启", func(t *testing.T) {
 		account := &Account{

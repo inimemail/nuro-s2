@@ -194,6 +194,39 @@ func TestAdminServiceBulkUpdateAccounts_ForwardsExtraRemoveKeys(t *testing.T) {
 	}, repo.bulkUpdatePayload.ExtraRemoveKeys)
 }
 
+func TestAdminServiceBulkUpdateAccounts_FirstTokenTimeoutEditDropsStagedPolicy(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{7},
+		Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:      1200,
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.Contains(t, repo.bulkUpdatePayload.ExtraRemoveKeys, openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey)
+}
+
+func TestAdminServiceBulkUpdateAccounts_SafeTokenEditKeepsStagedTimeoutPolicy(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{7},
+		Extra: map[string]any{
+			openAIAPIKeySafeTokenPlaceholderExtraKey: true,
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.NotContains(t, repo.bulkUpdatePayload.ExtraRemoveKeys, openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey)
+}
+
 func TestAdminServiceBulkUpdateAccounts_LegacyProbeRemovalDisablesProbeAndRateSync(t *testing.T) {
 	repo := &accountRepoStubForBulkUpdate{
 		getByIDsAccounts: []*Account{{ID: 7, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}},

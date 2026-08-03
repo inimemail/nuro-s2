@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -156,6 +158,7 @@ const openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey = "openai_apikey_f
 const openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey = "openai_apikey_first_token_timeout_placeholder_ms"
 const openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey = "openai_apikey_first_token_timeout_placeholder_guard_enabled"
 const openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey = "openai_apikey_first_token_timeout_placeholder_guard_max_ms"
+const openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey = "openai_apikey_first_token_timeout_placeholder_stages"
 
 const openAIFirstTokenTimeoutPlaceholderDefaultMs = 1000
 const openAIFirstTokenTimeoutPlaceholderMinMs = 1
@@ -163,6 +166,141 @@ const openAIFirstTokenTimeoutPlaceholderMaxMs = 3000
 const openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs = 3000
 const openAIFirstTokenTimeoutPlaceholderGuardMinMs = 1
 const openAIFirstTokenTimeoutPlaceholderGuardMaxMs = 30000
+
+// OpenAIFirstTokenTimeoutPlaceholderStage is the API-key-only staged timeout
+// placeholder policy. It is independent from the safe-token placeholder.
+// Stage one remains compatible with the legacy timeout scalar fields. Runtime
+// selection is based on the latest observed real first-token latency.
+type OpenAIFirstTokenTimeoutPlaceholderStage struct {
+	Stage         int `json:"stage"`
+	PlaceholderMS int `json:"placeholder_ms"`
+	GuardMaxMS    int `json:"guard_max_ms"`
+}
+
+const openAIFirstTokenTimeoutPlaceholderMaxStages = 10
+
+// NormalizeOpenAIFirstTokenTimeoutPlaceholderStages validates and canonicalizes a
+// staged API-key policy. A missing stage array is intentionally treated as the
+// legacy single-stage configuration so old accounts remain unchanged.
+func NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(extra map[string]any) ([]OpenAIFirstTokenTimeoutPlaceholderStage, error) {
+	if extra == nil {
+		return nil, nil
+	}
+	raw, exists := extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]
+	if !exists {
+		return []OpenAIFirstTokenTimeoutPlaceholderStage{{
+			Stage:         1,
+			PlaceholderMS: normalizeOpenAIFirstTokenTimeoutPlaceholderMs(accountExtraInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey])),
+			GuardMaxMS:    normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(accountExtraInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey])),
+		}}, nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		if typed, typedOK := raw.([]map[string]any); typedOK {
+			items = make([]any, len(typed))
+			for i := range typed {
+				items[i] = typed[i]
+			}
+		} else {
+			return nil, errors.New("openai_apikey_first_token_timeout_placeholder_stages must be an array")
+		}
+	}
+	if len(items) == 0 || len(items) > openAIFirstTokenTimeoutPlaceholderMaxStages {
+		return nil, errors.New("openai_apikey_first_token_timeout_placeholder_stages must contain 1-10 stages")
+	}
+	stages := make([]OpenAIFirstTokenTimeoutPlaceholderStage, len(items))
+	for i, item := range items {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("stage %d must be an object", i+1)
+		}
+		stage, stageOK := strictInt(obj["stage"])
+		placeholder, placeholderOK := strictInt(obj["placeholder_ms"])
+		guard, guardOK := strictInt(obj["guard_max_ms"])
+		if !stageOK || !placeholderOK || !guardOK {
+			return nil, fmt.Errorf("stage %d fields must be integers", i+1)
+		}
+		// The original scalar fields stay authoritative for stage one. This
+		// preserves existing bulk-edit and rolling-deployment behavior.
+		if i == 0 {
+			if scalar, ok := strictInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey]); ok {
+				placeholder = normalizeOpenAIFirstTokenTimeoutPlaceholderMs(scalar)
+			}
+			if scalar, ok := strictInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey]); ok {
+				guard = normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(scalar)
+			}
+		}
+		if stage != i+1 {
+			return nil, fmt.Errorf("stage numbers must be consecutive starting at 1 (stage %d)", i+1)
+		}
+		if placeholder < openAIFirstTokenTimeoutPlaceholderMinMs || placeholder > openAIFirstTokenTimeoutPlaceholderMaxMs {
+			return nil, fmt.Errorf("stage %d placeholder_ms must be between 1 and 3000", stage)
+		}
+		if guard < openAIFirstTokenTimeoutPlaceholderGuardMinMs || guard > openAIFirstTokenTimeoutPlaceholderGuardMaxMs {
+			return nil, fmt.Errorf("stage %d guard_max_ms must be between 1 and 30000", stage)
+		}
+		if guard < placeholder {
+			return nil, fmt.Errorf("stage %d guard_max_ms must be >= placeholder_ms", stage)
+		}
+		if i > 0 && (placeholder <= stages[i-1].PlaceholderMS || guard <= stages[i-1].GuardMaxMS) {
+			return nil, fmt.Errorf("stage %d values must be greater than stage %d", stage, stage-1)
+		}
+		stages[i] = OpenAIFirstTokenTimeoutPlaceholderStage{Stage: stage, PlaceholderMS: placeholder, GuardMaxMS: guard}
+	}
+	return stages, nil
+}
+
+func strictInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
+			return 0, false
+		}
+		return int(v), true
+	case float32:
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) || float32(int(v)) != v {
+			return 0, false
+		}
+		return int(v), true
+	case json.Number:
+		i, err := strconv.Atoi(string(v))
+		return i, err == nil
+	case string:
+		i, err := strconv.Atoi(strings.TrimSpace(v))
+		return i, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func accountExtraInt(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case float32:
+		return int(v)
+	case json.Number:
+		i, _ := strconv.Atoi(string(v))
+		return i
+	case string:
+		i, _ := strconv.Atoi(strings.TrimSpace(v))
+		return i
+	default:
+		return 0
+	}
+}
 
 const (
 	OpenAIPromptCacheBoostLevelNormal                   = "normal"
@@ -2759,6 +2897,32 @@ func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs() int {
 	default:
 		return openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs
 	}
+}
+
+// GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages returns a validated staged
+// policy. Invalid staged data falls back to the original scalar configuration,
+// so a bad control-plane payload cannot alter the established runtime path.
+func (a *Account) GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages() []OpenAIFirstTokenTimeoutPlaceholderStage {
+	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
+		return nil
+	}
+	stages, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(a.Extra)
+	if err == nil && len(stages) > 0 {
+		return stages
+	}
+	return []OpenAIFirstTokenTimeoutPlaceholderStage{{
+		Stage:         1,
+		PlaceholderMS: a.GetOpenAIFirstTokenTimeoutPlaceholderMs(),
+		GuardMaxMS:    a.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(),
+	}}
+}
+
+func (a *Account) getOpenAIFirstTokenTimeoutPlaceholderGuardRecordingMaxMs() int {
+	stages := a.GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages()
+	if len(stages) > 0 {
+		return stages[len(stages)-1].GuardMaxMS
+	}
+	return a.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs()
 }
 
 func normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(ms int) int {

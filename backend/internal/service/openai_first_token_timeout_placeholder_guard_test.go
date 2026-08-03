@@ -85,6 +85,25 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardRecoversAfterOneFastSample
 	}, 3*time.Second, 10*time.Millisecond)
 }
 
+func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardSelectsStagesAndRecovers(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := openAIFirstTokenPlaceholderGuardTestAccount()
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey] = []any{
+		map[string]any{"stage": 1, "placeholder_ms": 100, "guard_max_ms": 3000},
+		map[string]any{"stage": 2, "placeholder_ms": 200, "guard_max_ms": 5000},
+	}
+
+	require.Equal(t, 100, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 2500)
+	require.Equal(t, 100, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 4000)
+	require.Equal(t, 200, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 6000)
+	require.Zero(t, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 800)
+	require.Equal(t, 100, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+}
+
 func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardRetriesLatestFailedSample(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	svc := newOpenAIFirstTokenPlaceholderGuardTestService(t, redisServer.Addr())

@@ -333,6 +333,31 @@ function mountModal(account = buildAccount(), groups: any[] = [], simpleMode = t
 }
 
 describe('EditAccountModal', () => {
+  it('resets saved API key timeout placeholder stages after disabling and enabling again', async () => {
+    const account = buildAccount()
+    account.extra = {
+      openai_apikey_first_token_timeout_placeholder_enabled: true,
+      openai_apikey_first_token_timeout_placeholder_ms: 1200,
+      openai_apikey_first_token_timeout_placeholder_guard_enabled: true,
+      openai_apikey_first_token_timeout_placeholder_guard_max_ms: 3600,
+      openai_apikey_first_token_timeout_placeholder_stages: [
+        { stage: 1, placeholder_ms: 1200, guard_max_ms: 3600 },
+        { stage: 2, placeholder_ms: 1800, guard_max_ms: 5200 }
+      ]
+    }
+    const wrapper = mountModal(account)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="stage-2-placeholder"]').exists()).toBe(true)
+    const toggle = wrapper.get('[data-testid="apikey-first-token-timeout-placeholder-toggle"]')
+    await toggle.trigger('click')
+    await toggle.trigger('click')
+
+    expect((wrapper.get('[data-testid="stage-1-placeholder"]').element as HTMLInputElement).value).toBe('1000')
+    expect((wrapper.get('[data-testid="stage-1-guard"]').element as HTMLInputElement).value).toBe('3000')
+    expect(wrapper.find('[data-testid="stage-2-placeholder"]').exists()).toBe(false)
+  })
+
   it('omits an unchanged Grok media eligibility override', async () => {
     const account = buildGrokOAuthAccount(false)
     updateAccountMock.mockReset().mockResolvedValue(account)

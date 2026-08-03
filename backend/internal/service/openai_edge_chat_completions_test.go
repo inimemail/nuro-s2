@@ -124,6 +124,38 @@ func TestBuildRawChatCompletionsEdgePlanCarriesConfiguredFirstTokenPlaceholders(
 	if got := plan.Plan.FirstTokenTimeoutPlaceholderMS; got != 137 {
 		t.Fatalf("expected configured timeout placeholder 137ms, got %d", got)
 	}
+
+	account.Extra[openAIAPIKeySafeTokenPlaceholderExtraKey] = false
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey] = 1000
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey] = 3000
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey] = []any{
+		map[string]any{"stage": 1, "placeholder_ms": 1000, "guard_max_ms": 3000},
+		map[string]any{"stage": 2, "placeholder_ms": 1600, "guard_max_ms": 5000},
+	}
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5", 4000)
+	plan, err = svc.BuildRawChatCompletionsEdgePlan(context.Background(), c, account, []byte(`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`), "")
+	if err != nil {
+		t.Fatalf("build staged raw chat edge plan: %v", err)
+	}
+	if plan.Plan.SafeTokenPlaceholder {
+		t.Fatal("timeout stages must not enable safe token placeholder")
+	}
+	if got := plan.Plan.FirstTokenTimeoutPlaceholderMS; got != 1600 {
+		t.Fatalf("expected automatically selected timeout stage 1600ms, got %d", got)
+	}
+
+	account.Extra[openAIAPIKeySafeTokenPlaceholderExtraKey] = true
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey] = false
+	plan, err = svc.BuildRawChatCompletionsEdgePlan(context.Background(), c, account, []byte(`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`), "")
+	if err != nil {
+		t.Fatalf("build safe-only raw chat edge plan: %v", err)
+	}
+	if !plan.Plan.SafeTokenPlaceholder {
+		t.Fatal("safe token placeholder must stay enabled when timeout placeholder is disabled")
+	}
+	if got := plan.Plan.FirstTokenTimeoutPlaceholderMS; got != 0 {
+		t.Fatalf("expected disabled timeout placeholder, got %d", got)
+	}
 }
 
 func TestBuildRawResponsesEdgePlanCarriesConfiguredFirstTokenPlaceholders(t *testing.T) {

@@ -5913,6 +5913,12 @@ func (s *OpenAIGatewayService) openAIStreamFirstTokenTimeoutPlaceholderMs(accoun
 		return 0
 	}
 	if account.IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled() {
+		if account.IsOpenAIApiKey() {
+			stages := account.GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages()
+			if len(stages) > 0 {
+				return s.openaiFirstTokenTimeoutPlaceholderGuard.placeholderMS(account.ID, requestedModel, stages)
+			}
+		}
 		guardMaxMS := account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs()
 		if !s.openaiFirstTokenTimeoutPlaceholderGuard.allow(account.ID, requestedModel, guardMaxMS) {
 			return 0
@@ -5936,7 +5942,7 @@ func (s *OpenAIGatewayService) recordOpenAIFirstTokenTimeoutPlaceholderGuardSamp
 		account.ID,
 		requestedModel,
 		realFirstTokenMS,
-		account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(),
+		account.getOpenAIFirstTokenTimeoutPlaceholderGuardRecordingMaxMs(),
 		recordedAt,
 	)
 }

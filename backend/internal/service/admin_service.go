@@ -3277,6 +3277,35 @@ func reconcileUpstreamBillingProbeEnabled(extra map[string]any, explicit *bool) 
 	return &enabled, nil
 }
 
+func normalizeOpenAIAPIKeyFirstTokenTimeoutStagesExtra(platform, accountType string, extra map[string]any) (map[string]any, error) {
+	if extra == nil {
+		return nil, nil
+	}
+	normalized := maps.Clone(extra)
+	_, stageKeyPresent := normalized[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]
+	if platform != PlatformOpenAI || accountType != AccountTypeAPIKey {
+		delete(normalized, openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey)
+		return normalized, nil
+	}
+	if !stageKeyPresent {
+		return normalized, nil
+	}
+	stages, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(normalized)
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_STAGES", err.Error())
+	}
+	encoded := make([]any, len(stages))
+	for i, stage := range stages {
+		encoded[i] = map[string]any{"stage": stage.Stage, "placeholder_ms": stage.PlaceholderMS, "guard_max_ms": stage.GuardMaxMS}
+	}
+	normalized[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey] = encoded
+	// Stage one is the legacy fallback for old nodes and for guard-disabled
+	// accounts. New nodes select later stages from the existing guard sample.
+	normalized[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey] = stages[0].PlaceholderMS
+	normalized[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey] = stages[0].GuardMaxMS
+	return normalized, nil
+}
+
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
 	requestedProbeEnabled, err := reconcileUpstreamBillingProbeEnabled(input.Extra, input.ProbeEnabled)
 	if err != nil {
@@ -3287,6 +3316,10 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		return nil, err
 	}
 	accountExtra, err = normalizeGrokMediaEligibilityExtra(input.Platform, accountExtra)
+	if err != nil {
+		return nil, err
+	}
+	accountExtra, err = normalizeOpenAIAPIKeyFirstTokenTimeoutStagesExtra(input.Platform, input.Type, accountExtra)
 	if err != nil {
 		return nil, err
 	}
@@ -3479,6 +3512,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return nil, err
 		}
 		normalizedExtra, err = normalizeGrokMediaEligibilityUpdateExtra(account, input, normalizedExtra)
+		if err != nil {
+			return nil, err
+		}
+		normalizedExtra, err = normalizeOpenAIAPIKeyFirstTokenTimeoutStagesExtra(account.Platform, effectiveAccountType, normalizedExtra)
 		if err != nil {
 			return nil, err
 		}
@@ -3877,6 +3914,34 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 			return err
 		}
 	}
+	_, hasStages := updates[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]
+	if hasStages {
+		account, err := s.accountRepo.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
+			return infraerrors.BadRequest("INVALID_OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_STAGES", "staged first-token timeout placeholder policy is only supported for OpenAI API-key accounts")
+		}
+		merged := maps.Clone(account.Extra)
+		if merged == nil {
+			merged = make(map[string]any)
+		}
+		for key, value := range updates {
+			merged[key] = value
+		}
+		normalized, err := normalizeOpenAIAPIKeyFirstTokenTimeoutStagesExtra(account.Platform, account.Type, merged)
+		if err != nil {
+			return err
+		}
+		for _, key := range []string{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey,
+		} {
+			updates[key] = normalized[key]
+		}
+	}
 	if len(updates) == 0 {
 		return nil
 	}
@@ -3904,6 +3969,9 @@ func bulkUpdateDisablesUpstreamBillingProbe(extra map[string]any, removeKeys []s
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
+	if _, exists := input.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]; exists {
+		return nil, infraerrors.BadRequest("OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_STAGES_BULK_UNSUPPORTED", "staged first-token timeout placeholder policy must be edited per account")
+	}
 	requestedProbeEnabled, err := reconcileUpstreamBillingProbeEnabled(input.Extra, input.ProbeEnabled)
 	if err != nil {
 		return nil, err
@@ -3919,6 +3987,44 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 			// generic JSONB removal path so their invariants remain atomic.
 		default:
 			filteredRemoveKeys = append(filteredRemoveKeys, key)
+		}
+	}
+	// Bulk editing uses the original scalar timeout-placeholder controls. Drop
+	// any per-account staged policy so stale later stages cannot silently change
+	// or invalidate the newly applied scalar configuration.
+	bulkEditsFirstTokenTimeoutPlaceholder := false
+	for _, key := range []string{
+		openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey,
+	} {
+		if _, exists := input.Extra[key]; exists {
+			bulkEditsFirstTokenTimeoutPlaceholder = true
+			break
+		}
+	}
+	if !bulkEditsFirstTokenTimeoutPlaceholder {
+		for _, key := range filteredRemoveKeys {
+			switch strings.TrimSpace(key) {
+			case openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey,
+				openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey,
+				openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey,
+				openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey:
+				bulkEditsFirstTokenTimeoutPlaceholder = true
+			}
+		}
+	}
+	if bulkEditsFirstTokenTimeoutPlaceholder {
+		hasStageRemoval := false
+		for _, key := range filteredRemoveKeys {
+			if strings.TrimSpace(key) == openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey {
+				hasStageRemoval = true
+				break
+			}
+		}
+		if !hasStageRemoval {
+			filteredRemoveKeys = append(filteredRemoveKeys, openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey)
 		}
 	}
 	if legacyProbeDisable {
