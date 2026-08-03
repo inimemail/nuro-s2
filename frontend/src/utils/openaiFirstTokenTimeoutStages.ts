@@ -1,7 +1,7 @@
 export interface OpenAIApiKeyFirstTokenTimeoutStage {
   stage: number
-  placeholder_ms: number
-  guard_max_ms: number
+  placeholder_ms: number | null
+  guard_max_ms: number | null
 }
 
 export interface OpenAIApiKeyFirstTokenTimeoutStageConfig {
@@ -10,18 +10,18 @@ export interface OpenAIApiKeyFirstTokenTimeoutStageConfig {
 
 const DEFAULT_PLACEHOLDER_MS = 1000
 const DEFAULT_GUARD_MAX_MS = 3000
-const MAX_PLACEHOLDER_MS = 3000
-const MAX_GUARD_MAX_MS = 30000
+const MAX_PLACEHOLDER_MS = 100000
 
 function integer(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isInteger(parsed) ? parsed : null
 }
 
-function normalizeLegacyScalar(value: unknown, fallback: number, maximum: number): number {
+function normalizeLegacyScalar(value: unknown, fallback: number, maximum?: number): number {
   const parsed = Math.trunc(Number(value))
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback
-  return Math.min(maximum, Math.max(1, parsed))
+  const normalized = Math.max(1, parsed)
+  return maximum === undefined ? normalized : Math.min(maximum, normalized)
 }
 
 export function readOpenAIApiKeyFirstTokenTimeoutStageConfig(
@@ -36,12 +36,17 @@ export function readOpenAIApiKeyFirstTokenTimeoutStageConfig(
   )
   const scalarGuard = normalizeLegacyScalar(
     extra?.openai_apikey_first_token_timeout_placeholder_guard_max_ms,
-    DEFAULT_GUARD_MAX_MS,
-    MAX_GUARD_MAX_MS
+    DEFAULT_GUARD_MAX_MS
   )
   const raw = extra?.openai_apikey_first_token_timeout_placeholder_stages
   if (!Array.isArray(raw) || raw.length < 1 || raw.length > 10) {
-    return { stages: [{ stage: 1, placeholder_ms: scalarPlaceholder, guard_max_ms: scalarGuard }] }
+    return {
+      stages: [{
+        stage: 1,
+        placeholder_ms: scalarPlaceholder,
+        guard_max_ms: Math.max(scalarPlaceholder, scalarGuard)
+      }]
+    }
   }
   const stages = raw.map((value, index) => {
     const item = value && typeof value === 'object' ? value as Record<string, unknown> : {}
@@ -67,12 +72,21 @@ export function validateOpenAIApiKeyFirstTokenTimeoutStageConfig(
   if (config.stages.length < 1 || config.stages.length > 10) return key('countInvalid')
   for (let index = 0; index < config.stages.length; index += 1) {
     const stage = config.stages[index]
-    if (!Number.isInteger(stage.placeholder_ms) || stage.placeholder_ms < 1 || stage.placeholder_ms > 3000) return key('stagePlaceholderInvalid', { stage: index + 1 })
-    if (!Number.isInteger(stage.guard_max_ms) || stage.guard_max_ms < 1 || stage.guard_max_ms > 30000) return key('stageGuardInvalid', { stage: index + 1 })
-    if (stage.guard_max_ms < stage.placeholder_ms) return key('stageGuardBelow', { stage: index + 1 })
+    const placeholder = stage.placeholder_ms
+    const guard = stage.guard_max_ms
+    if (typeof placeholder !== 'number' || !Number.isInteger(placeholder) || placeholder < 1 || placeholder > 100000) return key('stagePlaceholderInvalid', { stage: index + 1 })
+    if (typeof guard !== 'number' || !Number.isSafeInteger(guard) || guard < 1) return key('stageGuardInvalid', { stage: index + 1 })
+    if (guard < placeholder) return key('stageGuardBelow', { stage: index + 1 })
     if (index > 0) {
       const previous = config.stages[index - 1]
-      if (stage.placeholder_ms <= previous.placeholder_ms || stage.guard_max_ms <= previous.guard_max_ms) {
+      const previousPlaceholder = previous.placeholder_ms
+      const previousGuard = previous.guard_max_ms
+      if (
+        typeof previousPlaceholder !== 'number' ||
+        typeof previousGuard !== 'number' ||
+        placeholder <= previousPlaceholder ||
+        guard <= previousGuard
+      ) {
         return key('stageOrderInvalid', { stage: index + 1, previous: index })
       }
     }

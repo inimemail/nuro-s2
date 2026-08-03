@@ -8,14 +8,14 @@
         inputmode="numeric"
         step="1"
         min="1"
-        max="3000"
+        max="100000"
         class="input pr-12 font-mono"
         data-testid="single-placeholder"
         @input="updateStage(0, 'placeholder_ms', $event)"
       />
       <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-gray-400">ms</span>
     </div>
-    <p class="input-hint">{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderMsHint') }}</p>
+    <p class="input-hint">{{ t('admin.accounts.openai.firstTokenTimeoutStages.placeholderHint') }}</p>
   </section>
   <section v-else class="mt-4 border-t border-amber-200/80 pt-4 dark:border-amber-800/70">
     <div class="flex flex-wrap items-start justify-between gap-3">
@@ -60,7 +60,7 @@
               :value="stage.placeholder_ms"
               type="number"
               min="1"
-              max="3000"
+              max="100000"
               class="input h-8 min-w-0 flex-1 text-right text-sm"
               :data-testid="`stage-${stage.stage}-placeholder`"
               @input="updateStage(index, 'placeholder_ms', $event)"
@@ -73,7 +73,6 @@
               :value="stage.guard_max_ms"
               type="number"
               min="1"
-              max="30000"
               class="input h-8 min-w-0 flex-1 text-right text-sm"
               :data-testid="`stage-${stage.stage}-guard`"
               @input="updateStage(index, 'guard_max_ms', $event)"
@@ -123,29 +122,42 @@ const { t } = useI18n()
 
 const stages = computed(() => props.modelValue.stages)
 
+function isIntegerInRange(value: number | null, minimum: number, maximum: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= minimum && value <= maximum
+}
+
+function isPositiveSafeInteger(value: number | null): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+}
+
 const stageErrors = computed(() => stages.value.map((stage, index) => {
   const errors: string[] = []
-  if (!Number.isInteger(stage.placeholder_ms) || stage.placeholder_ms < 1 || stage.placeholder_ms > 3000) errors.push(t('admin.accounts.openai.firstTokenTimeoutStages.placeholderRange'))
-  if (!Number.isInteger(stage.guard_max_ms) || stage.guard_max_ms < 1 || stage.guard_max_ms > 30000) errors.push(t('admin.accounts.openai.firstTokenTimeoutStages.guardRange'))
-  if (stage.guard_max_ms < stage.placeholder_ms) errors.push(t('admin.accounts.openai.firstTokenTimeoutStages.guardBelowPlaceholder'))
+  const placeholder = stage.placeholder_ms
+  const guard = stage.guard_max_ms
+  const placeholderValid = isIntegerInRange(placeholder, 1, 100000)
+  const guardValid = isPositiveSafeInteger(guard)
+  if (!placeholderValid) errors.push(t('admin.accounts.openai.firstTokenTimeoutStages.placeholderRange'))
+  if (!guardValid) errors.push(t('admin.accounts.openai.firstTokenTimeoutStages.guardRange'))
+  if (placeholderValid && guardValid && guard < placeholder) errors.push(t('admin.accounts.openai.firstTokenTimeoutStages.guardBelowPlaceholder'))
   if (index > 0) {
     const previousStages = stages.value.slice(0, index)
-    const placeholderReference = previousStages.reduce((best, item) => item.placeholder_ms > best.placeholder_ms ? item : best)
-    const guardReference = previousStages.reduce((best, item) => item.guard_max_ms > best.guard_max_ms ? item : best)
-    if (stage.placeholder_ms <= placeholderReference.placeholder_ms) errors.push(t('admin.accounts.openai.firstTokenTimeoutStages.placeholderOrder', { stage: placeholderReference.stage }))
-    if (stage.guard_max_ms <= guardReference.guard_max_ms) errors.push(t('admin.accounts.openai.firstTokenTimeoutStages.guardOrder', { stage: guardReference.stage }))
+    const placeholderReference = previousStages
+      .filter((item) => isIntegerInRange(item.placeholder_ms, 1, 100000))
+      .reduce<typeof stage | null>((best, item) => !best || item.placeholder_ms! > best.placeholder_ms! ? item : best, null)
+    const guardReference = previousStages
+      .filter((item) => isPositiveSafeInteger(item.guard_max_ms))
+      .reduce<typeof stage | null>((best, item) => !best || item.guard_max_ms! > best.guard_max_ms! ? item : best, null)
+    if (placeholderValid && placeholderReference && placeholder <= placeholderReference.placeholder_ms!) errors.push(t('admin.accounts.openai.firstTokenTimeoutStages.placeholderOrder', { stage: placeholderReference.stage }))
+    if (guardValid && guardReference && guard <= guardReference.guard_max_ms!) errors.push(t('admin.accounts.openai.firstTokenTimeoutStages.guardOrder', { stage: guardReference.stage }))
   }
   return errors
 }))
 const firstInvalidIndex = computed(() => stageErrors.value.findIndex((errors) => errors.length > 0))
-const canAddStage = computed(() => {
-  if (stages.value.length >= 10 || firstInvalidIndex.value >= 0) return false
-  const previous = stages.value[stages.value.length - 1]
-  return previous.placeholder_ms < 3000 && previous.guard_max_ms < 30000
-})
+const canAddStage = computed(() => stages.value.length < 10)
 
 function updateStage(index: number, field: 'placeholder_ms' | 'guard_max_ms', event: Event) {
-  const value = Number((event.target as HTMLInputElement).value)
+  const rawValue = (event.target as HTMLInputElement).value
+  const value = rawValue === '' ? null : Number(rawValue)
   emit('update:modelValue', {
     stages: stages.value.map((stage, itemIndex) => itemIndex === index ? { ...stage, [field]: value } : { ...stage })
   })
@@ -153,11 +165,8 @@ function updateStage(index: number, field: 'placeholder_ms' | 'guard_max_ms', ev
 
 function addStage() {
   if (stages.value.length >= 10) return
-  const previous = stages.value[stages.value.length - 1]
-  const placeholder = Math.min(3000, Math.max(previous.placeholder_ms + 1, previous.placeholder_ms * 1.25))
-  const guard = Math.min(30000, Math.max(previous.guard_max_ms + 1, previous.guard_max_ms * 1.25))
   emit('update:modelValue', {
-    stages: [...stages.value, { stage: stages.value.length + 1, placeholder_ms: Math.round(placeholder), guard_max_ms: Math.round(guard) }]
+    stages: [...stages.value, { stage: stages.value.length + 1, placeholder_ms: null, guard_max_ms: null }]
   })
 }
 
@@ -171,8 +180,19 @@ function repairFollowingStages() {
   const repaired = stages.value.map((stage) => ({ ...stage }))
   for (let index = 0; index < repaired.length; index += 1) {
     const previous = repaired[index - 1]
-    repaired[index].placeholder_ms = Math.min(3000, Math.max(1, Math.round(repaired[index].placeholder_ms), previous ? previous.placeholder_ms + 1 : 1))
-    repaired[index].guard_max_ms = Math.min(30000, Math.max(repaired[index].placeholder_ms, Math.round(repaired[index].guard_max_ms), previous ? previous.guard_max_ms + 1 : 1))
+    const previousPlaceholder = typeof previous?.placeholder_ms === 'number' ? previous.placeholder_ms : 0
+    const previousGuard = typeof previous?.guard_max_ms === 'number' ? previous.guard_max_ms : 0
+    const draftPlaceholder = repaired[index].placeholder_ms
+    const draftGuard = repaired[index].guard_max_ms
+    const currentPlaceholder = typeof draftPlaceholder === 'number'
+      ? Math.round(draftPlaceholder)
+      : previousPlaceholder + 1
+    const placeholder = Math.min(100000, Math.max(1, currentPlaceholder, previousPlaceholder + (previous ? 1 : 0)))
+    const currentGuard = typeof draftGuard === 'number'
+      ? Math.round(draftGuard)
+      : Math.max(placeholder, previousGuard + 1)
+    repaired[index].placeholder_ms = placeholder
+    repaired[index].guard_max_ms = Math.min(Number.MAX_SAFE_INTEGER, Math.max(placeholder, currentGuard, previousGuard + (previous ? 1 : 0)))
   }
   emit('update:modelValue', { stages: repaired })
 }

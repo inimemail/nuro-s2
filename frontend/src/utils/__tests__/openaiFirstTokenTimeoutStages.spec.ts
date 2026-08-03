@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { readOpenAIApiKeyFirstTokenTimeoutStageConfig } from '../openaiFirstTokenTimeoutStages'
+import {
+  readOpenAIApiKeyFirstTokenTimeoutStageConfig,
+  validateOpenAIApiKeyFirstTokenTimeoutStageConfig
+} from '../openaiFirstTokenTimeoutStages'
 
 describe('readOpenAIApiKeyFirstTokenTimeoutStageConfig', () => {
   it('uses legacy timeout scalars as stage one values after a bulk edit', () => {
@@ -28,14 +31,50 @@ describe('readOpenAIApiKeyFirstTokenTimeoutStageConfig', () => {
     })
   })
 
-  it('normalizes legacy scalar values exactly like the original editor', () => {
+  it('normalizes legacy scalar values into a valid stage', () => {
     const config = readOpenAIApiKeyFirstTokenTimeoutStageConfig({
       openai_apikey_first_token_timeout_placeholder_ms: 9999.8,
       openai_apikey_first_token_timeout_placeholder_guard_max_ms: -1
     })
 
     expect(config).toEqual({
-      stages: [{ stage: 1, placeholder_ms: 3000, guard_max_ms: 3000 }]
+      stages: [{ stage: 1, placeholder_ms: 9999, guard_max_ms: 9999 }]
     })
+  })
+
+  it('accepts the API key placeholder maximum and an uncapped guard', () => {
+    const error = validateOpenAIApiKeyFirstTokenTimeoutStageConfig({
+      stages: [{ stage: 1, placeholder_ms: 100000, guard_max_ms: 900000 }]
+    }, (key) => key)
+
+    expect(error).toBeNull()
+  })
+
+  it('raises a legacy scalar guard to a larger placeholder', () => {
+    const config = readOpenAIApiKeyFirstTokenTimeoutStageConfig({
+      openai_apikey_first_token_timeout_placeholder_ms: 50000,
+      openai_apikey_first_token_timeout_placeholder_guard_max_ms: 3000
+    })
+
+    expect(config.stages[0]).toEqual({ stage: 1, placeholder_ms: 50000, guard_max_ms: 50000 })
+  })
+
+  it('rejects an API key placeholder above 100000ms', () => {
+    const error = validateOpenAIApiKeyFirstTokenTimeoutStageConfig({
+      stages: [{ stage: 1, placeholder_ms: 100001, guard_max_ms: 900000 }]
+    }, (key) => key)
+
+    expect(error).toContain('stagePlaceholderInvalid')
+  })
+
+  it('rejects a newly added blank stage before save', () => {
+    const error = validateOpenAIApiKeyFirstTokenTimeoutStageConfig({
+      stages: [
+        { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
+        { stage: 2, placeholder_ms: null, guard_max_ms: null }
+      ]
+    }, (key) => key)
+
+    expect(error).toContain('stagePlaceholderInvalid')
   })
 })

@@ -156,6 +156,17 @@ func TestBuildRawChatCompletionsEdgePlanCarriesConfiguredFirstTokenPlaceholders(
 	if got := plan.Plan.FirstTokenTimeoutPlaceholderMS; got != 0 {
 		t.Fatalf("expected disabled timeout placeholder, got %d", got)
 	}
+
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey] = true
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey] = 50000
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey] = 200000
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey] = []any{
+		map[string]any{"stage": 1, "placeholder_ms": 50000, "guard_max_ms": 200000},
+	}
+	_, err = svc.BuildRawChatCompletionsEdgePlan(context.Background(), c, account, []byte(`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`), "")
+	if err == nil || !strings.Contains(err.Error(), "requires Go relay") {
+		t.Fatalf("expected high timeout placeholder to require Go relay, got %v", err)
+	}
 }
 
 func TestBuildRawResponsesEdgePlanCarriesConfiguredFirstTokenPlaceholders(t *testing.T) {

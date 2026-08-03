@@ -271,6 +271,31 @@ describe('CreateAccountModal', () => {
     expect(wrapper.find('[data-testid="stage-2-placeholder"]').exists()).toBe(false)
   })
 
+  it('submits the API key placeholder maximum with an uncapped guard', async () => {
+    const wrapper = mountModal()
+
+    await wrapper.findAll('button').find((button) => button.text().trim() === 'OpenAI')!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('API Key'))!.trigger('click')
+    await flushPromises()
+
+    await wrapper.get('input[data-tour="account-form-name"]').setValue('OpenAI High Timeout Key')
+    await wrapper.get('input[placeholder="sk-proj-..."]').setValue('sk-test')
+    await wrapper.get('[data-testid="apikey-first-token-timeout-placeholder-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="stage-1-placeholder"]').setValue(100000)
+    await wrapper.get('[data-testid="stage-1-guard"]').setValue(900000)
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra).toMatchObject({
+      openai_apikey_first_token_timeout_placeholder_ms: 100000,
+      openai_apikey_first_token_timeout_placeholder_guard_max_ms: 900000,
+      openai_apikey_first_token_timeout_placeholder_stages: [
+        { stage: 1, placeholder_ms: 100000, guard_max_ms: 900000 }
+      ]
+    })
+  })
+
   it('submits explicit OpenAI pool retry conditions without changing retry timing fields', async () => {
     const wrapper = mountModal()
 

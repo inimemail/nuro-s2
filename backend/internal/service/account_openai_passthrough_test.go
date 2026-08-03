@@ -304,8 +304,8 @@ func TestAccount_GetOpenAIFirstTokenTimeoutPlaceholderMs(t *testing.T) {
 		require.Equal(t, 1000, account.GetOpenAIFirstTokenTimeoutPlaceholderMs())
 	})
 
-	t.Run("accepts one to three thousand milliseconds", func(t *testing.T) {
-		for _, ms := range []int{1, 100, 200, 999, 1000, 3000} {
+	t.Run("API key accepts one to one hundred thousand milliseconds", func(t *testing.T) {
+		for _, ms := range []int{1, 100, 200, 999, 1000, 3000, 9999, 100000} {
 			account := &Account{
 				Platform: PlatformOpenAI,
 				Type:     AccountTypeAPIKey,
@@ -318,16 +318,16 @@ func TestAccount_GetOpenAIFirstTokenTimeoutPlaceholderMs(t *testing.T) {
 		}
 	})
 
-	t.Run("above max clamps to three thousand milliseconds", func(t *testing.T) {
+	t.Run("API key above max clamps to one hundred thousand milliseconds", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeAPIKey,
 			Extra: map[string]any{
 				openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
-				openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:      9999,
+				openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:      100001,
 			},
 		}
-		require.Equal(t, 3000, account.GetOpenAIFirstTokenTimeoutPlaceholderMs())
+		require.Equal(t, 100000, account.GetOpenAIFirstTokenTimeoutPlaceholderMs())
 	})
 
 	t.Run("non OpenAI account remains disabled", func(t *testing.T) {
@@ -471,6 +471,51 @@ func TestAccount_OpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Equal(t, []OpenAIFirstTokenTimeoutPlaceholderStage{{Stage: 1, PlaceholderMS: 800, GuardMaxMS: 2600}}, stages)
+	})
+
+	t.Run("legacy scalar guard cannot remain below a raised placeholder", func(t *testing.T) {
+		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:    true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:         50000,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey: 3000,
+		}}
+		require.Equal(t, 50000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
+		require.Equal(t, []OpenAIFirstTokenTimeoutPlaceholderStage{{Stage: 1, PlaceholderMS: 50000, GuardMaxMS: 50000}}, account.GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages())
+	})
+
+	t.Run("API key accepts 100000ms placeholder and uncapped guard", func(t *testing.T) {
+		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:    true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:         100000,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey: 900000,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+				map[string]any{"stage": 1, "placeholder_ms": 100000, "guard_max_ms": 900000},
+			},
+		}}
+		require.Equal(t, 100000, account.GetOpenAIFirstTokenTimeoutPlaceholderMs())
+		require.Equal(t, 900000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
+		stages, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(account.Extra)
+		require.NoError(t, err)
+		require.Equal(t, 900000, stages[0].GuardMaxMS)
+	})
+
+	t.Run("API key rejects a staged placeholder above 100000ms", func(t *testing.T) {
+		_, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+				map[string]any{"stage": 1, "placeholder_ms": 100001, "guard_max_ms": 900000},
+			},
+		})
+		require.ErrorContains(t, err, "placeholder_ms must be between 1 and 100000")
+	})
+
+	t.Run("OAuth keeps its original limits", func(t *testing.T) {
+		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey:    true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:         100000,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey: 900000,
+		}}
+		require.Equal(t, 3000, account.GetOpenAIFirstTokenTimeoutPlaceholderMs())
+		require.Equal(t, 30000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
 	})
 }
 

@@ -9,7 +9,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 describe('OpenAIApiKeyFirstTokenTimeoutStages', () => {
-  it('adds a strictly larger automatic stage', async () => {
+  it('adds an empty stage for manual input', async () => {
     const wrapper = mount(OpenAIApiKeyFirstTokenTimeoutStages, {
       props: { modelValue: { stages: [{ stage: 1, placeholder_ms: 1000, guard_max_ms: 3000 }] } },
       global: { stubs: { Icon: true } }
@@ -17,8 +17,44 @@ describe('OpenAIApiKeyFirstTokenTimeoutStages', () => {
     await wrapper.get('[data-testid="add-first-token-stage"]').trigger('click')
     const emitted = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as OpenAIApiKeyFirstTokenTimeoutStageConfig
     expect(emitted.stages).toHaveLength(2)
-    expect(emitted.stages[1].placeholder_ms).toBeGreaterThan(1000)
-    expect(emitted.stages[1].guard_max_ms).toBeGreaterThan(3000)
+    expect(emitted.stages[1]).toEqual({ stage: 2, placeholder_ms: null, guard_max_ms: null })
+  })
+
+  it('allows adding another empty stage after a stage reaches the placeholder maximum', async () => {
+    const wrapper = mount(OpenAIApiKeyFirstTokenTimeoutStages, {
+      props: { modelValue: { stages: [
+        { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
+        { stage: 2, placeholder_ms: 100000, guard_max_ms: 200000 }
+      ] } },
+      global: { stubs: { Icon: true } }
+    })
+
+    expect(wrapper.get('[data-testid="add-first-token-stage"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="add-first-token-stage"]').trigger('click')
+    const emitted = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as OpenAIApiKeyFirstTokenTimeoutStageConfig
+    expect(emitted.stages[2]).toEqual({ stage: 3, placeholder_ms: null, guard_max_ms: null })
+  })
+
+  it('keeps add enabled through stage nine and disables it only at ten stages', async () => {
+    const nineStages: OpenAIApiKeyFirstTokenTimeoutStageConfig = {
+      stages: Array.from({ length: 9 }, (_, index) => ({
+        stage: index + 1,
+        placeholder_ms: index === 0 ? 800 : null,
+        guard_max_ms: index === 0 ? 5000 : null
+      }))
+    }
+    const wrapper = mount(OpenAIApiKeyFirstTokenTimeoutStages, {
+      props: { modelValue: nineStages },
+      global: { stubs: { Icon: true } }
+    })
+
+    expect(wrapper.get('[data-testid="add-first-token-stage"]').attributes('disabled')).toBeUndefined()
+    await wrapper.setProps({
+      modelValue: {
+        stages: [...nineStages.stages, { stage: 10, placeholder_ms: null, guard_max_ms: null }]
+      }
+    })
+    expect(wrapper.get('[data-testid="add-first-token-stage"]').attributes('disabled')).toBeDefined()
   })
 
   it('shows both ordering errors when a later stage is smaller', () => {

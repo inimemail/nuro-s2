@@ -3800,6 +3800,7 @@ const NORMAL_POOL_MODE_RETRY_MAX = 10
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS = 1000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS = 1
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 3000
+const OPENAI_APIKEY_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 100000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS = 3000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS = 1
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MAX_MS = 30000
@@ -4215,8 +4216,8 @@ function resetOpenAIAPIKeyFirstTokenTimeoutStages() {
 watch(openaiAPIKeyFirstTokenTimeoutStageConfig, (config) => {
   const first = config.stages[0]
   if (!first) return
-  openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = first.placeholder_ms
-  openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs.value = first.guard_max_ms
+  if (typeof first.placeholder_ms === 'number') openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = first.placeholder_ms
+  if (typeof first.guard_max_ms === 'number') openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs.value = first.guard_max_ms
 }, { deep: true, immediate: true })
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
@@ -4277,6 +4278,19 @@ function normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(value: unknown): 
     OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MAX_MS,
     Math.max(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS, ms)
   )
+}
+
+function normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(value: unknown): number {
+  const ms = Math.trunc(Number(value))
+  if (!Number.isFinite(ms) || ms <= 0) return OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS
+  return Math.min(OPENAI_APIKEY_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS, ms)
+}
+
+function normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(value: unknown): number {
+  const ms = Math.trunc(Number(value))
+  return Number.isSafeInteger(ms) && ms > 0
+    ? ms
+    : OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
 }
 
 function resetOpenAIFirstTokenTimeoutPlaceholderMs(kind: 'oauth' | 'apikey') {
@@ -5006,12 +5020,12 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       openaiAPIKeySafeTokenPlaceholderEnabled.value = extra?.openai_apikey_safe_token_placeholder_enabled === true
       openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value =
         extra?.openai_apikey_first_token_timeout_placeholder_enabled === true
-      openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = normalizeOpenAIFirstTokenTimeoutPlaceholderMs(
+      openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(
         extra?.openai_apikey_first_token_timeout_placeholder_ms
       )
       openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value =
         extra?.openai_apikey_first_token_timeout_placeholder_guard_enabled !== false
-      openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs.value = normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(
+      openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs.value = normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(
         extra?.openai_apikey_first_token_timeout_placeholder_guard_max_ms
       )
       openaiAPIKeyFirstTokenTimeoutStageConfig.value = readOpenAIApiKeyFirstTokenTimeoutStageConfig(extra)
@@ -6585,12 +6599,12 @@ const handleSubmit = async () => {
         if (!imagePoolModeEnabled.value && openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value) {
           newExtra.openai_apikey_first_token_timeout_placeholder_enabled = true
           newExtra.openai_apikey_first_token_timeout_placeholder_ms =
-            normalizeOpenAIFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
+            normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
           newExtra.openai_apikey_first_token_timeout_placeholder_guard_enabled =
             openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value
           if (openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value) {
             newExtra.openai_apikey_first_token_timeout_placeholder_guard_max_ms =
-              normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(firstTokenStage.guard_max_ms)
+              normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(firstTokenStage.guard_max_ms)
           } else {
             delete newExtra.openai_apikey_first_token_timeout_placeholder_guard_max_ms
           }

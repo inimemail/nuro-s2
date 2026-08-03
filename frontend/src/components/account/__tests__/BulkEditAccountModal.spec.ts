@@ -178,6 +178,45 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.find('#bulk-edit-openai-ws-mode-enabled').exists()).toBe(false)
   })
 
+  it('OpenAI API Key 批量编辑保留高补帧阈值和无上限保护时间', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-openai-apikey-first-token-timeout-placeholder-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-openai-apikey-first-token-timeout-placeholder-toggle').trigger('click')
+    await wrapper.get('[data-testid="bulk-edit-openai-apikey-first-token-timeout-placeholder-ms"]').setValue(100000)
+    await wrapper.get('[data-testid="bulk-edit-openai-apikey-first-token-timeout-placeholder-guard-max-ms"]').setValue(900000)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: {
+        openai_apikey_first_token_timeout_placeholder_enabled: true,
+        openai_apikey_first_token_timeout_placeholder_ms: 100000,
+        openai_apikey_first_token_timeout_placeholder_guard_enabled: true,
+        openai_apikey_first_token_timeout_placeholder_guard_max_ms: 900000
+      }
+    })
+  })
+
+  it('OpenAI API Key 批量编辑拒绝保护时间低于补帧阈值', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey']
+    })
+
+    await wrapper.get('#bulk-edit-openai-apikey-first-token-timeout-placeholder-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-openai-apikey-first-token-timeout-placeholder-toggle').trigger('click')
+    await wrapper.get('[data-testid="bulk-edit-openai-apikey-first-token-timeout-placeholder-ms"]').setValue(50000)
+    await wrapper.get('[data-testid="bulk-edit-openai-apikey-first-token-timeout-placeholder-guard-max-ms"]').setValue(3000)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).not.toHaveBeenCalled()
+  })
+
   it('OpenAI OAuth 批量编辑应提交 codex_cli_only 字段', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],

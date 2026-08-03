@@ -163,6 +163,7 @@ const openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey = "openai_apikey_fi
 const openAIFirstTokenTimeoutPlaceholderDefaultMs = 1000
 const openAIFirstTokenTimeoutPlaceholderMinMs = 1
 const openAIFirstTokenTimeoutPlaceholderMaxMs = 3000
+const openAIAPIKeyFirstTokenTimeoutPlaceholderMaxMs = 100000
 const openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs = 3000
 const openAIFirstTokenTimeoutPlaceholderGuardMinMs = 1
 const openAIFirstTokenTimeoutPlaceholderGuardMaxMs = 30000
@@ -188,10 +189,15 @@ func NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(extra map[string]any) ([]
 	}
 	raw, exists := extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]
 	if !exists {
+		placeholderMS := normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(accountExtraInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey]))
+		guardMaxMS := normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(accountExtraInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey]))
+		if guardMaxMS < placeholderMS {
+			guardMaxMS = placeholderMS
+		}
 		return []OpenAIFirstTokenTimeoutPlaceholderStage{{
 			Stage:         1,
-			PlaceholderMS: normalizeOpenAIFirstTokenTimeoutPlaceholderMs(accountExtraInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey])),
-			GuardMaxMS:    normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(accountExtraInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey])),
+			PlaceholderMS: placeholderMS,
+			GuardMaxMS:    guardMaxMS,
 		}}, nil
 	}
 	items, ok := raw.([]any)
@@ -224,20 +230,20 @@ func NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(extra map[string]any) ([]
 		// preserves existing bulk-edit and rolling-deployment behavior.
 		if i == 0 {
 			if scalar, ok := strictInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey]); ok {
-				placeholder = normalizeOpenAIFirstTokenTimeoutPlaceholderMs(scalar)
+				placeholder = normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(scalar)
 			}
 			if scalar, ok := strictInt(extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey]); ok {
-				guard = normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(scalar)
+				guard = normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(scalar)
 			}
 		}
 		if stage != i+1 {
 			return nil, fmt.Errorf("stage numbers must be consecutive starting at 1 (stage %d)", i+1)
 		}
-		if placeholder < openAIFirstTokenTimeoutPlaceholderMinMs || placeholder > openAIFirstTokenTimeoutPlaceholderMaxMs {
-			return nil, fmt.Errorf("stage %d placeholder_ms must be between 1 and 3000", stage)
+		if placeholder < openAIFirstTokenTimeoutPlaceholderMinMs || placeholder > openAIAPIKeyFirstTokenTimeoutPlaceholderMaxMs {
+			return nil, fmt.Errorf("stage %d placeholder_ms must be between 1 and 100000", stage)
 		}
-		if guard < openAIFirstTokenTimeoutPlaceholderGuardMinMs || guard > openAIFirstTokenTimeoutPlaceholderGuardMaxMs {
-			return nil, fmt.Errorf("stage %d guard_max_ms must be between 1 and 30000", stage)
+		if guard < openAIFirstTokenTimeoutPlaceholderGuardMinMs {
+			return nil, fmt.Errorf("stage %d guard_max_ms must be a positive integer", stage)
 		}
 		if guard < placeholder {
 			return nil, fmt.Errorf("stage %d guard_max_ms must be >= placeholder_ms", stage)
@@ -2829,7 +2835,7 @@ func (a *Account) IsOpenAISafeTokenPlaceholderEnabled() bool {
 }
 
 // GetOpenAIFirstTokenTimeoutPlaceholderMs 返回 OpenAI 流式首 token 超时补帧阈值。
-// 返回 0 表示关闭。启用但配置非法时回落到 1000ms，有效范围 1-3000ms。
+// 返回 0 表示关闭。OAuth 范围为 1-3000ms，API Key 范围为 1-100000ms。
 func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderMs() int {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
 		return 0
@@ -2844,7 +2850,7 @@ func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderMs() int {
 		if !a.getExtraBool(openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey) {
 			return 0
 		}
-		return normalizeOpenAIFirstTokenTimeoutPlaceholderMs(a.getExtraInt(openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey))
+		return normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(a.getExtraInt(openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey))
 	default:
 		return 0
 	}
@@ -2859,6 +2865,16 @@ func normalizeOpenAIFirstTokenTimeoutPlaceholderMs(ms int) int {
 	}
 	if ms > openAIFirstTokenTimeoutPlaceholderMaxMs {
 		return openAIFirstTokenTimeoutPlaceholderMaxMs
+	}
+	return ms
+}
+
+func normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(ms int) int {
+	if ms <= 0 {
+		return openAIFirstTokenTimeoutPlaceholderDefaultMs
+	}
+	if ms > openAIAPIKeyFirstTokenTimeoutPlaceholderMaxMs {
+		return openAIAPIKeyFirstTokenTimeoutPlaceholderMaxMs
 	}
 	return ms
 }
@@ -2880,7 +2896,7 @@ func (a *Account) IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled() bool {
 }
 
 // GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs 返回真实首 token 保护上限。
-// 启用但配置非法时回落到 3000ms，有效范围 1-30000ms。
+// 非法值回落到 3000ms。OAuth 最大 30000ms，API Key 不设业务上限。
 func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs() int {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
 		return openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs
@@ -2891,9 +2907,13 @@ func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs() int {
 			a.getExtraInt(openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey),
 		)
 	case a.IsOpenAIApiKey():
-		return normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(
+		guardMaxMS := normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(
 			a.getExtraInt(openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey),
 		)
+		if placeholderMS := a.GetOpenAIFirstTokenTimeoutPlaceholderMs(); guardMaxMS < placeholderMS {
+			return placeholderMS
+		}
+		return guardMaxMS
 	default:
 		return openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs
 	}
@@ -2934,6 +2954,13 @@ func normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(ms int) int {
 	}
 	if ms > openAIFirstTokenTimeoutPlaceholderGuardMaxMs {
 		return openAIFirstTokenTimeoutPlaceholderGuardMaxMs
+	}
+	return ms
+}
+
+func normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(ms int) int {
+	if ms <= 0 {
+		return openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs
 	}
 	return ms
 }
