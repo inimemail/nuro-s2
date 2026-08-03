@@ -215,6 +215,9 @@
       <template #table>
         <AccountBulkActionsBar
           :selected-ids="selIds"
+          :total-results="pagination.total"
+          :selecting-all="selectingAllResults"
+          :all-results-selected="allResultsSelected"
           @delete="handleBulkDelete"
           @reset-status="handleBulkResetStatus"
           @refresh-token="handleBulkRefreshToken"
@@ -222,6 +225,7 @@
           @edit-filtered="openBulkEditFiltered"
           @clear="clearSelection"
           @select-page="selectPage"
+          @select-all-results="handleSelectAllResults"
           @toggle-schedulable="handleBulkToggleSchedulable"
         />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -517,6 +521,7 @@ import { isImagePoolModeAccount, isPoolModeAccount } from '@/utils/accountPoolMo
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import { accountHomepageUrl } from '@/utils/accountHomepage'
 import { resolveGrokMediaEligibility } from '@/utils/grokMediaEligibility'
+import { fetchAllAccountIds, normalizeAccountSelectionFilters } from '@/utils/accountSelection'
 import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
 
 const CreateAccountModal = defineAsyncComponent(() => import('@/components/account/CreateAccountModal.vue'))
@@ -1042,22 +1047,63 @@ const {
 })
 
 const {
+  selectedSet,
   selectedIds: selIds,
   allVisibleSelected,
   isSelected,
-  setSelectedIds,
-  select,
-  deselect,
-  toggle: toggleSel,
-  clear: clearSelection,
+  setSelectedIds: replaceSelectedIds,
+  select: selectAccount,
+  deselect: deselectAccount,
+  toggle: toggleSelectedAccount,
+  clear: clearSelectedIds,
   removeMany: removeSelectedAccounts,
   toggleVisible,
-  selectVisible: selectPage,
-  batchUpdate
+  selectVisible: selectCurrentPage,
+  batchUpdate: batchUpdateSelection
 } = useTableSelection<Account>({
   rows: accounts,
   getId: (account) => account.id
 })
+
+const selectingAllResults = ref(false)
+const selectedAllResultIDs = ref<Set<number> | null>(null)
+const selectionRequestVersion = ref(0)
+const allResultsSelected = computed(() => {
+  const snapshot = selectedAllResultIDs.value
+  if (
+    !snapshot ||
+    snapshot.size === 0 ||
+    snapshot.size !== selectedSet.value.size ||
+    snapshot.size !== pagination.total
+  ) return false
+  return Array.from(snapshot).every(id => selectedSet.value.has(id))
+})
+
+const invalidateAllResultsSelection = () => {
+  selectionRequestVersion.value++
+  selectingAllResults.value = false
+  selectedAllResultIDs.value = null
+}
+
+const clearSelection = () => {
+  invalidateAllResultsSelection()
+  clearSelectedIds()
+}
+
+const setSelectedIds = (ids: number[]) => {
+  invalidateAllResultsSelection()
+  replaceSelectedIds(ids)
+}
+
+const toggleSel = (id: number) => {
+  invalidateAllResultsSelection()
+  toggleSelectedAccount(id)
+}
+
+const selectPage = () => {
+  invalidateAllResultsSelection()
+  selectCurrentPage()
+}
 
 const swipeVirtualContext: SwipeSelectVirtualContext = {
   getVirtualizer: () => dataTableRef.value?.virtualizer ?? null,
@@ -1067,9 +1113,18 @@ const swipeVirtualContext: SwipeSelectVirtualContext = {
 
 useSwipeSelect(accountTableRef, {
   isSelected,
-  select,
-  deselect,
-  batchUpdate
+  select: (id) => {
+    invalidateAllResultsSelection()
+    selectAccount(id)
+  },
+  deselect: (id) => {
+    invalidateAllResultsSelection()
+    deselectAccount(id)
+  },
+  batchUpdate: (updater) => {
+    invalidateAllResultsSelection()
+    batchUpdateSelection(updater)
+  }
 }, swipeVirtualContext)
 
 const resetAutoRefreshCache = () => {
@@ -1105,6 +1160,7 @@ const reload = async () => {
 }
 
 const debouncedReload = () => {
+  clearSelection()
   hasPendingListSync.value = false
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = true
@@ -1728,9 +1784,38 @@ const openMenu = (a: Account, e: MouseEvent) => {
 }
 const toggleSelectAllVisible = (event: Event) => {
   const target = event.target as HTMLInputElement
+  invalidateAllResultsSelection()
   toggleVisible(target.checked)
 }
-const handleBulkDelete = async () => { if(!confirm(t('common.confirm'))) return; try { await Promise.all(selIds.value.map(id => adminAPI.accounts.delete(id))); clearSelection(); reload() } catch (error) { console.error('Failed to bulk delete accounts:', error) } }
+const handleBulkDelete = async () => {
+  const accountIds = [...selIds.value]
+  if (accountIds.length === 0) return
+  if (!confirm(t('admin.accounts.bulkDeleteConfirm', { count: accountIds.length }))) return
+
+  try {
+    const result = await adminAPI.accounts.batchDelete(accountIds)
+    if (result.failed > 0) {
+      appStore.showError(t('admin.accounts.bulkActions.partialSuccess', {
+        success: result.success,
+        failed: result.failed
+      }))
+      if (result.errors?.length) {
+        const details = result.errors
+          .map(item => `#${item.account_id}: ${item.error}`)
+          .join('; ')
+        appStore.showError(t('admin.accounts.bulkActions.deleteFailureDetails', { details }), 10000)
+      }
+      setSelectedIds(result.failed_ids?.length ? result.failed_ids : accountIds)
+    } else {
+      appStore.showSuccess(t('admin.accounts.bulkActions.deleteSuccess', { count: result.success }))
+      clearSelection()
+    }
+    await reload()
+  } catch (error) {
+    console.error('Failed to bulk delete accounts:', error)
+    appStore.showError(t('admin.accounts.bulkDeleteFailed'))
+  }
+}
 const handleBulkResetStatus = async () => {
   if (!confirm(t('common.confirm'))) return
   try {
@@ -1895,7 +1980,7 @@ const handleBulkToggleSchedulable = async (schedulable: boolean) => {
 const buildBulkEditFilterSnapshot = () => {
   const rawParams = toRaw(params) as Record<string, unknown>
   const sortOrder: AccountSortOrder = rawParams.sort_order === 'desc' ? 'desc' : 'asc'
-  return {
+  return normalizeAccountSelectionFilters({
     platform: typeof rawParams.platform === 'string' ? rawParams.platform : '',
     type: typeof rawParams.type === 'string' ? rawParams.type : '',
     status: typeof rawParams.status === 'string' ? rawParams.status : '',
@@ -1905,6 +1990,32 @@ const buildBulkEditFilterSnapshot = () => {
     pool_mode: typeof rawParams.pool_mode === 'string' ? rawParams.pool_mode : '',
     sort_by: typeof rawParams.sort_by === 'string' ? rawParams.sort_by : '',
     sort_order: sortOrder
+  })
+}
+
+const handleSelectAllResults = async () => {
+  if (selectingAllResults.value || pagination.total === 0) return
+
+  const requestVersion = ++selectionRequestVersion.value
+  const filters = buildBulkEditFilterSnapshot()
+  selectingAllResults.value = true
+  try {
+    const ids = await fetchAllAccountIds(
+      (page, pageSize, requestFilters) => adminAPI.accounts.list(page, pageSize, requestFilters),
+      filters
+    )
+    if (requestVersion !== selectionRequestVersion.value) return
+
+    replaceSelectedIds(ids)
+    selectedAllResultIDs.value = new Set(ids)
+  } catch (error) {
+    if (requestVersion !== selectionRequestVersion.value) return
+    console.error('Failed to select all account results:', error)
+    appStore.showError(t('admin.accounts.bulkActions.selectAllFailed'))
+  } finally {
+    if (requestVersion === selectionRequestVersion.value) {
+      selectingAllResults.value = false
+    }
   }
 }
 

@@ -1069,7 +1069,7 @@ func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIIm
 				return
 			}
 			responseBody = rewritten
-		} else if strings.HasPrefix(task.ID, "imgtask_") && gjson.GetBytes(responseBody, "data.#(b64_json!=\"\").b64_json").Exists() {
+		} else if strings.HasPrefix(task.ID, "imgtask_") && persistentImageResultContainsInlineImage(responseBody) {
 			_ = h.imageTaskRepo.MarkError(ctx, task.DBID, http.StatusServiceUnavailable, "image object storage is unavailable", nil)
 			return
 		}
@@ -1077,6 +1077,18 @@ func (h *OpenAIGatewayHandler) executePersistentImageTask(task *service.OpenAIIm
 		return
 	}
 	_ = h.imageTaskRepo.MarkError(ctx, task.DBID, statusCode, imageTaskErrorMessage(responseBody), safeOpenAIImageTaskErrorResponse(statusCode, imageTaskErrorMessage(responseBody)))
+}
+
+func persistentImageResultContainsInlineImage(body []byte) bool {
+	if gjson.GetBytes(body, "data.#(b64_json!=\"\").b64_json").Exists() {
+		return true
+	}
+	for _, value := range gjson.GetBytes(body, "data.#.url").Array() {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value.String())), "data:image/") {
+			return true
+		}
+	}
+	return false
 }
 
 func validatePersistentImageTaskAPIKey(apiKey *service.APIKey) error {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,4 +39,43 @@ func TestOllamaCloudDueQueryNeverScansWholeAccountPool(t *testing.T) {
 	require.Contains(t, query, "platform in ('openai', 'anthropic')")
 	require.Contains(t, query, "type = 'apikey'")
 	require.NotContains(t, query, "scan")
+}
+
+func TestOllamaCloudUsageGroupIdentityUnchanged(t *testing.T) {
+	currentCredentials := map[string]any{
+		"api_key":  "same-key",
+		"base_url": "https://ollama.com/",
+	}
+	requested := &service.Account{
+		Platform: service.PlatformAnthropic,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "same-key",
+			"base_url": "https://ollama.com/v1",
+		},
+	}
+
+	require.True(t, ollamaCloudUsageGroupIdentityUnchanged(
+		service.PlatformOpenAI,
+		service.AccountTypeAPIKey,
+		currentCredentials,
+		requested,
+	))
+
+	requested.Credentials["api_key"] = "changed-key"
+	require.False(t, ollamaCloudUsageGroupIdentityUnchanged(
+		service.PlatformOpenAI,
+		service.AccountTypeAPIKey,
+		currentCredentials,
+		requested,
+	))
+
+	requested.Credentials["api_key"] = "same-key"
+	requested.Credentials["base_url"] = "https://example.com/v1"
+	require.False(t, ollamaCloudUsageGroupIdentityUnchanged(
+		service.PlatformOpenAI,
+		service.AccountTypeAPIKey,
+		currentCredentials,
+		requested,
+	))
 }

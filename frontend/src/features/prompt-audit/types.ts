@@ -16,6 +16,7 @@ export interface PromptAuditEndpoint {
 export interface PromptAuditConfig {
   enabled: boolean
   mode: PromptAuditMode
+  blocking_latest_turn_only: boolean
   worker_count: number
   queue_capacity: number
   all_groups: boolean
@@ -43,6 +44,7 @@ export interface PromptAuditEndpointUpdate {
 
 export interface PromptAuditConfigUpdate {
   enabled: boolean
+  blocking_latest_turn_only: boolean
   worker_count: number
   queue_capacity: number
   all_groups: boolean
@@ -137,6 +139,7 @@ export interface PromptAuditEndpointForm extends PromptAuditEndpointUpdate {
 
 export interface PromptAuditConfigForm {
   enabled: boolean
+  blocking_latest_turn_only: boolean
   worker_count: number
   queue_capacity: number
   all_groups: boolean

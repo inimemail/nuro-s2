@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"maps"
 	"reflect"
 	"testing"
 
@@ -44,6 +45,7 @@ type accountRepoStubForBulkUpdate struct {
 	}
 	shadowsByParent map[int64][]*Account
 	updateCalls     []*Account
+	createdAccount  *Account
 }
 
 type bulkUpdateCall struct {
@@ -87,6 +89,87 @@ func (s *accountRepoStubForBulkUpdate) Update(_ context.Context, account *Accoun
 	return nil
 }
 
+func (s *accountRepoStubForBulkUpdate) Create(_ context.Context, account *Account) error {
+	copied := *account
+	copied.Extra = maps.Clone(account.Extra)
+	s.createdAccount = &copied
+	return nil
+}
+
+func TestAdminServiceCreateAccount_AcceptsLegacyProbeFlagInExtra(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	created, err := svc.CreateAccount(context.Background(), &CreateAccountInput{
+		Name:                 "legacy-probe",
+		Platform:             PlatformAnthropic,
+		Type:                 AccountTypeAPIKey,
+		Credentials:          map[string]any{"api_key": "test-key"},
+		Extra:                map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		SkipDefaultGroupBind: true,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, repo.createdAccount)
+	require.Equal(t, true, created.Extra[UpstreamBillingProbeEnabledExtraKey])
+}
+
+func TestAdminServiceCreateAccount_RejectsConflictingProbeFlags(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+	enabled := false
+
+	created, err := svc.CreateAccount(context.Background(), &CreateAccountInput{
+		Name:                 "conflicting-probe",
+		Platform:             PlatformOpenAI,
+		Type:                 AccountTypeAPIKey,
+		Credentials:          map[string]any{"api_key": "test-key"},
+		Extra:                map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		ProbeEnabled:         &enabled,
+		SkipDefaultGroupBind: true,
+	})
+
+	require.Nil(t, created)
+	require.Error(t, err)
+	require.Nil(t, repo.createdAccount)
+}
+
+func TestAdminServiceBulkUpdateAccounts_AcceptsLegacyProbeFlagInExtra(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{{ID: 7, Platform: PlatformGemini, Type: AccountTypeAPIKey}},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{7},
+		Extra: map[string]any{
+			UpstreamBillingProbeEnabledExtraKey: true,
+			"feature":                           true,
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.Equal(t, true, repo.bulkUpdatePayload.Extra[UpstreamBillingProbeEnabledExtraKey])
+	require.Equal(t, true, repo.bulkUpdatePayload.Extra["feature"])
+}
+
+func TestAdminServiceBulkUpdateAccounts_RejectsConflictingProbeFlags(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+	enabled := false
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs:   []int64{7},
+		Extra:        map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		ProbeEnabled: &enabled,
+	})
+
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Empty(t, repo.bulkUpdateCalls)
+}
+
 func TestAdminServiceBulkUpdateAccounts_ForwardsExtraRemoveKeys(t *testing.T) {
 	repo := &accountRepoStubForBulkUpdate{}
 	svc := &adminServiceImpl{accountRepo: repo}
@@ -109,6 +192,45 @@ func TestAdminServiceBulkUpdateAccounts_ForwardsExtraRemoveKeys(t *testing.T) {
 		"codex_image_generation_bridge_enabled",
 		"codex_image_generation_explicit_tool_policy",
 	}, repo.bulkUpdatePayload.ExtraRemoveKeys)
+}
+
+func TestAdminServiceBulkUpdateAccounts_LegacyProbeRemovalDisablesProbeAndRateSync(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{{ID: 7, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{7},
+		ExtraRemoveKeys: []string{
+			UpstreamBillingProbeEnabledExtraKey,
+			UpstreamBillingRateSyncEnabledExtraKey,
+			UpstreamBillingProbeExtraKey,
+			"codex_image_generation_bridge",
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.Equal(t, false, repo.bulkUpdatePayload.Extra[UpstreamBillingProbeEnabledExtraKey])
+	require.Equal(t, false, repo.bulkUpdatePayload.Extra[UpstreamBillingRateSyncEnabledExtraKey])
+	require.Equal(t, []string{"codex_image_generation_bridge"}, repo.bulkUpdatePayload.ExtraRemoveKeys)
+}
+
+func TestAdminServiceBulkUpdateAccounts_RejectsLegacyProbeRemovalWithExplicitEnable(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+	enabled := true
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs:      []int64{7},
+		ProbeEnabled:    &enabled,
+		ExtraRemoveKeys: []string{UpstreamBillingProbeEnabledExtraKey},
+	})
+
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Empty(t, repo.bulkUpdateCalls)
 }
 
 func TestAdminServiceBulkUpdateAccounts_SanitizesShadowUnsafeFields(t *testing.T) {

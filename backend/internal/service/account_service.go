@@ -81,6 +81,29 @@ type AccountRepository interface {
 	ResetQuotaUsed(ctx context.Context, id int64) error
 }
 
+type AccountBillingSettingsRepository interface {
+	UpdateWithAccountBillingSettings(
+		ctx context.Context,
+		account *Account,
+		probeEnabled *bool,
+		rateSyncEnabled *bool,
+		rateMultiplier *float64,
+	) error
+}
+
+type AccountGroupBillingSettingsRepository interface {
+	UpdateAccountWithGroupConfigAndBillingSettings(
+		ctx context.Context,
+		account *Account,
+		groupIDs *[]int64,
+		guardLimits *map[int64]float64,
+		propagateProxyToShadows bool,
+		probeEnabled *bool,
+		rateSyncEnabled *bool,
+		rateMultiplier *float64,
+	) error
+}
+
 // AccountBulkUpdate describes the fields that can be updated in a bulk operation.
 // Nil pointers mean "do not change".
 type AccountBulkUpdate struct {

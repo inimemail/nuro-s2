@@ -1166,7 +1166,7 @@ export default {
     copyModel: '复制模型 ID',
     filters: {
       modelLabel: '模型', searchPlaceholder: '搜索模型 ID', allPlatforms: '全部平台',
-      allGroups: '全部分组', allAvailability: '全部类型', standard: '标准', subscription: '订阅', exclusive: '专属'
+      allGroups: '全部分组', allAvailability: '全部类型', standard: '标准', subscription: '订阅', exclusive: '专属', clear: '清除筛选'
     },
     badges: { exclusive: '专属', subscription: '订阅' },
     table: {
@@ -2312,7 +2312,7 @@ export default {
         rateMultiplierHint: '1.0 = 标准费率，0.5 = 半价，2.0 = 双倍',
         upstreamBillingGuardLimit: '上游倍率保护上限',
         upstreamBillingGuardUnlimited: '留空表示不保护',
-        upstreamBillingGuardHint: '仅作用于已开启倍率保护的 OpenAI API Key 账号；超过上限时只暂停该账号在本分组的调度，回落后自动恢复。',
+        upstreamBillingGuardHint: '作用于已开启倍率保护的五平台 API Key 账号；超过上限时只暂停该账号在本分组的调度，回落后自动恢复。',
         upstreamBillingGuardInvalid: '上游倍率保护上限必须是大于或等于 0 的数字',
         rpmLimit: '每分钟请求数 (RPM)',
         rpmLimitPlaceholder: '0 表示不限制',
@@ -2764,6 +2764,8 @@ export default {
       modeOffDesc: '不执行内容审计，也不会写入审核记录。',
       baseUrl: 'OpenAI Base URL',
       model: '模型名',
+      proxy: '代理服务器',
+      proxyHint: '可选：通过 IP 管理中的代理发送内容审核请求；留空使用直连。',
       apiKey: 'OpenAI API Key',
       apiKeys: 'OpenAI API Keys',
       apiKeyCount: '{count} 个 Key',
@@ -3391,6 +3393,10 @@ export default {
         intervalMinutes: '探测周期（分钟）',
         autoProbe: '自动探测',
         autoProbeHint: '启用后按全局周期探测此账号；全局探测关闭时不会执行。',
+        syncRate: '自动同步账号倍率',
+        syncRateHint: '探测成功后将上游声明的基准倍率写回账号倍率；开启后账号倍率由系统托管。',
+        syncRateManagedHint: '账号倍率由上游探测自动同步，关闭自动同步后才可手工修改。',
+        syncedRate: '已自动同步 {rate}x',
         autoProbeDisabled: '自动探测已关闭',
         globalProbeDisabled: '全局自动探测已关闭',
         manualProbe: '立即探测上游倍率',
@@ -3693,8 +3699,13 @@ export default {
       bulkSchedulablePartial: '部分调度更新成功：成功 {success} 个，失败 {failed} 个',
       bulkSchedulableResultUnknown: '批量调度结果不完整，请稍后重试或刷新列表',
       bulkActions: {
+        title: '账号批量操作',
         selected: '已选择 {count} 个账号',
+        selectedAll: '已选择全部 {count} 个筛选结果',
         selectCurrentPage: '本页全选',
+        selectAllResults: '选择全部 {count} 个筛选结果',
+        selectingAll: '正在选择全部结果...',
+        selectAllFailed: '无法选择全部筛选结果，请刷新列表后重试',
         clear: '清除选择',
         edit: '批量编辑账号',
         delete: '批量删除',
@@ -3704,7 +3715,9 @@ export default {
         refreshToken: '批量刷新令牌',
         resetStatusSuccess: '已成功重置 {count} 个账号状态',
         refreshTokenSuccess: '已成功刷新 {count} 个账号令牌',
-        partialSuccess: '操作部分完成：{success} 成功，{failed} 失败'
+        deleteSuccess: '已成功删除 {count} 个账号',
+        partialSuccess: '操作部分完成：{success} 成功，{failed} 失败',
+        deleteFailureDetails: '删除失败明细：{details}'
       },
       bulkEdit: {
         title: '批量编辑账号',
@@ -6644,6 +6657,8 @@ export default {
           '自定义首页内容，支持 Markdown/HTML。如果输入的是链接（以 http:// 或 https:// 开头），则会使用该链接作为 iframe 的 src 属性，这允许你设置任意网页作为首页。设置后首页的状态信息将不再显示。',
         homeContentIframeWarning:
           '⚠️ iframe 模式提示：部分网站设置了 X-Frame-Options 或 CSP 安全策略，禁止被嵌入到 iframe 中。如果页面显示空白或报错，请确认目标网站允许被嵌入，或考虑使用 HTML 模式自行构建页面内容。',
+        compactHome: '精简首页预设',
+        compactHomeHint: '仅显示站点身份、导航和登录/控制台入口；自定义首页内容优先。',
         hideCcsImportButton: '隐藏 CCS 导入按钮',
         hideCcsImportButtonHint: '启用后将在 API Keys 页面隐藏"导入 CCS"按钮'
       },

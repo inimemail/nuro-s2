@@ -161,14 +161,31 @@ func TestAdminServiceCreateOpenAIGroupAllowsZeroUpstreamGuardLimit(t *testing.T)
 	require.Zero(t, *group.UpstreamBillingGuardMaxMultiplier)
 }
 
-func TestAdminServiceRejectsUpstreamGuardLimitForNonOpenAIGroup(t *testing.T) {
+func TestAdminServiceAllowsUpstreamGuardLimitForAnthropicGroup(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+	limit := 1.5
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                              "anthropic",
+		Platform:                          PlatformAnthropic,
+		RateMultiplier:                    1,
+		UpstreamBillingGuardMaxMultiplier: &limit,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, group.UpstreamBillingGuardMaxMultiplier)
+	require.Equal(t, limit, *group.UpstreamBillingGuardMaxMultiplier)
+}
+
+func TestAdminServiceRejectsUpstreamGuardLimitForUnsupportedGroup(t *testing.T) {
 	repo := &groupRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: repo}
 	limit := 1.5
 
 	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
-		Name:                              "anthropic",
-		Platform:                          PlatformAnthropic,
+		Name:                              "unsupported",
+		Platform:                          "unsupported",
 		RateMultiplier:                    1,
 		UpstreamBillingGuardMaxMultiplier: &limit,
 	})

@@ -78,7 +78,7 @@ defineEmits<{
 }>()
 
 const { t } = useI18n()
-const eligible = computed(() => props.account.platform === 'openai' && props.account.type === 'apikey')
+const eligible = computed(() => props.account.type === 'apikey')
 const snapshot = computed<UpstreamBillingProbeSnapshot | undefined>(
   () => props.account.extra?.upstream_billing_probe
 )

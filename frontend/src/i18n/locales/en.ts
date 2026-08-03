@@ -1162,7 +1162,7 @@ export default {
     copyModel: 'Copy model ID',
     filters: {
       modelLabel: 'Model', searchPlaceholder: 'Search model IDs', allPlatforms: 'All platforms',
-      allGroups: 'All groups', allAvailability: 'All types', standard: 'Standard', subscription: 'Subscription', exclusive: 'Exclusive'
+      allGroups: 'All groups', allAvailability: 'All types', standard: 'Standard', subscription: 'Subscription', exclusive: 'Exclusive', clear: 'Clear filters'
     },
     badges: { exclusive: 'Exclusive', subscription: 'Subscription' },
     table: {
@@ -2254,7 +2254,7 @@ export default {
         rateMultiplier: 'Rate Multiplier',
         upstreamBillingGuardLimit: 'Upstream Rate Guard Limit',
         upstreamBillingGuardUnlimited: 'Blank means unprotected',
-        upstreamBillingGuardHint: 'Applies only to OpenAI API Key accounts with protection enabled. This account is paused only in this group and recovers automatically when the rate falls.',
+        upstreamBillingGuardHint: 'Applies to protected API Key accounts on all five platforms. The account is paused only in this group and recovers automatically when the rate falls.',
         upstreamBillingGuardInvalid: 'The upstream rate guard limit must be a number greater than or equal to 0',
         status: 'Status',
         exclusive: 'Exclusive Group',
@@ -2688,6 +2688,8 @@ export default {
       modeOffDesc: 'Content moderation is disabled and no audit records are written.',
       baseUrl: 'OpenAI Base URL',
       model: 'Model',
+      proxy: 'Proxy server',
+      proxyHint: 'Optional: route moderation requests through a proxy from IP Management; empty uses a direct connection.',
       apiKey: 'OpenAI API Key',
       apiKeys: 'OpenAI API Keys',
       apiKeyCount: '{count} keys',
@@ -3367,6 +3369,10 @@ export default {
         intervalMinutes: 'Probe interval (minutes)',
         autoProbe: 'Auto probe',
         autoProbeHint: 'Probe this account on the global interval when global probing is enabled.',
+        syncRate: 'Sync account rate automatically',
+        syncRateHint: 'Write the upstream declared base rate to this account after a successful probe. The rate is system-managed while enabled.',
+        syncRateManagedHint: 'This rate is managed by upstream probing. Disable automatic sync to edit it manually.',
+        syncedRate: 'Auto-synced {rate}x',
         autoProbeDisabled: 'Automatic probing is off',
         globalProbeDisabled: 'Global automatic probing is off',
         manualProbe: 'Probe upstream rate now',
@@ -3545,8 +3551,13 @@ export default {
       bulkSchedulablePartial: 'Scheduling updated partially: {success} succeeded, {failed} failed',
       bulkSchedulableResultUnknown: 'Bulk scheduling result incomplete. Please retry or refresh.',
       bulkActions: {
+        title: 'Account bulk actions',
         selected: '{count} account(s) selected',
+        selectedAll: 'All {count} filtered account(s) selected',
         selectCurrentPage: 'Select this page',
+        selectAllResults: 'Select all {count} filtered results',
+        selectingAll: 'Selecting all results...',
+        selectAllFailed: 'Could not select all filtered results. Refresh the list and try again.',
         clear: 'Clear selection',
         edit: 'Bulk Edit',
         delete: 'Bulk Delete',
@@ -3556,7 +3567,9 @@ export default {
         refreshToken: 'Refresh Token',
         resetStatusSuccess: 'Successfully reset {count} account(s) status',
         refreshTokenSuccess: 'Successfully refreshed {count} account(s) token',
-        partialSuccess: 'Partially completed: {success} succeeded, {failed} failed'
+        deleteSuccess: 'Successfully deleted {count} account(s)',
+        partialSuccess: 'Partially completed: {success} succeeded, {failed} failed',
+        deleteFailureDetails: 'Delete failure details: {details}'
       },
       bulkEdit: {
         title: 'Bulk Edit Accounts',
@@ -6501,6 +6514,8 @@ export default {
         homeContentPlaceholder: 'Enter custom content for the home page. Supports Markdown & HTML. If a URL is entered, it will be displayed as an iframe.',
         homeContentHint: 'Customize the home page content. Supports Markdown/HTML. If you enter a URL (starting with http:// or https://), it will be used as an iframe src to embed an external page. When set, the default status information will no longer be displayed.',
         homeContentIframeWarning: '⚠️ iframe mode note: Some websites have X-Frame-Options or CSP security policies that prevent embedding in iframes. If the page appears blank or shows an error, please verify the target website allows embedding, or consider using HTML mode to build your own content.',
+        compactHome: 'Compact home preset',
+        compactHomeHint: 'Show only site identity, navigation, and the login/dashboard entry. Custom home content still takes priority.',
         hideCcsImportButton: 'Hide CCS Import Button',
         hideCcsImportButtonHint: 'When enabled, the "Import to CCS" button will be hidden on the API Keys page'
       },

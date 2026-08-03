@@ -571,7 +571,7 @@
           />
           <p class="input-hint">{{ t("admin.groups.rateMultiplierHint") }}</p>
         </div>
-        <div v-if="createForm.platform === 'openai'">
+        <div v-if="isUpstreamBillingGuardPlatform(createForm.platform)">
           <label class="input-label">{{
             t("admin.groups.form.upstreamBillingGuardLimit")
           }}</label>
@@ -2147,7 +2147,7 @@
             data-tour="group-form-multiplier"
           />
         </div>
-        <div v-if="editForm.platform === 'openai'">
+        <div v-if="isUpstreamBillingGuardPlatform(editForm.platform)">
           <label class="input-label">{{
             t("admin.groups.form.upstreamBillingGuardLimit")
           }}</label>
@@ -3735,7 +3735,10 @@ import {
   resetMessagesDispatchFormState,
   type MessagesDispatchMappingRow,
 } from "./groupsMessagesDispatch";
-import { buildUpstreamBillingGuardLimitPayload } from "./groupsUpstreamBillingGuard";
+import {
+  buildUpstreamBillingGuardLimitPayload,
+  isUpstreamBillingGuardPlatform,
+} from "./groupsUpstreamBillingGuard";
 import {
   buildModelsListConfig,
   createModelsListState as createInitialModelsListState,
@@ -4939,7 +4942,7 @@ const handleCreateGroup = async () => {
     createForm.platform,
     createForm.upstream_billing_guard_max_multiplier,
   );
-  if (createForm.platform === "openai" && guardLimit === undefined) {
+  if (isUpstreamBillingGuardPlatform(createForm.platform) && guardLimit === undefined) {
     appStore.showError(t("admin.groups.form.upstreamBillingGuardInvalid"));
     return;
   }
@@ -5136,7 +5139,7 @@ const handleUpdateGroup = async () => {
     editForm.platform,
     editForm.upstream_billing_guard_max_multiplier,
   );
-  if (editForm.platform === "openai" && guardLimit === undefined) {
+  if (isUpstreamBillingGuardPlatform(editForm.platform) && guardLimit === undefined) {
     appStore.showError(t("admin.groups.form.upstreamBillingGuardInvalid"));
     return;
   }
@@ -5144,7 +5147,6 @@ const handleUpdateGroup = async () => {
     appStore.showError(t("admin.groups.form.reasoningEffortMappingInvalid"));
     return;
   }
-
   submitting.value = true;
   try {
     // 转换 fallback_group_id: null -> 0 (后端使用 0 表示清除)
@@ -5347,7 +5349,6 @@ watch(
     }
     if (newVal !== "openai") {
       if (pendingLiveForm.value === "create") pendingLiveForm.value = null;
-      createForm.upstream_billing_guard_max_multiplier = null;
       createForm.max_reasoning_effort = "";
       createForm.reasoning_effort_mappings = [];
       createForm.allow_live = false;
@@ -5380,7 +5381,6 @@ watch(
     }
     if (newVal !== "openai") {
       if (pendingLiveForm.value === "edit") pendingLiveForm.value = null;
-      editForm.upstream_billing_guard_max_multiplier = null;
       editForm.max_reasoning_effort = "";
       editForm.reasoning_effort_mappings = [];
       editForm.allow_live = false;

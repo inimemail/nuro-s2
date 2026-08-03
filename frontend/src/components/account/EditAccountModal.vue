@@ -2114,8 +2114,40 @@
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
-          <input v-model.number="form.rate_multiplier" type="number" min="0" step="0.001" class="input" />
-          <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
+          <input
+            v-model.number="form.rate_multiplier"
+            type="number"
+            min="0"
+            step="0.001"
+            class="input disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="account-rate-multiplier"
+            :disabled="upstreamBillingRateSyncEnabled"
+          />
+          <p class="input-hint">
+            {{ t(upstreamBillingRateSyncEnabled ? 'admin.accounts.upstreamBilling.syncRateManagedHint' : 'admin.accounts.billingRateMultiplierHint') }}
+          </p>
+          <div v-if="showUpstreamBillingProbeConfig" class="mt-3 flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <p class="text-xs font-medium text-gray-700 dark:text-gray-200">
+                {{ t('admin.accounts.upstreamBilling.syncRate') }}
+              </p>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.upstreamBilling.syncRateHint') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              data-testid="upstream-billing-rate-sync"
+              :aria-label="t('admin.accounts.upstreamBilling.syncRate')"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-none rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500',
+                upstreamBillingRateSyncEnabled ? 'bg-emerald-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+              @click="toggleUpstreamBillingRateSync"
+            >
+              <span :class="['pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform', upstreamBillingRateSyncEnabled ? 'translate-x-5' : 'translate-x-0']" />
+            </button>
+          </div>
         </div>
       </div>
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -4064,7 +4096,6 @@ const showHeaderOverrideConfig = computed(() =>
 )
 const showUpstreamBillingProbeConfig = computed(() =>
   !isSparkShadowAccount.value &&
-  props.account?.platform === 'openai' &&
   props.account?.type === 'apikey'
 )
 const showGrokMediaEligibilityConfig = computed(() =>
@@ -4116,6 +4147,7 @@ const normalizeGrokMediaEligibilityMode = (value: unknown): GrokMediaEligibility
   return 'auto'
 }
 const upstreamBillingAutoProbeEnabled = ref(false)
+const upstreamBillingRateSyncEnabled = ref(false)
 const upstreamBillingGuardEnabled = ref(false)
 const initialUpstreamBillingGuardEnabled = ref(false)
 const upstreamBillingGuardGroupOverrides = ref<Record<string, number | string | null>>({})
@@ -4738,7 +4770,15 @@ const toggleUpstreamBillingGuard = () => {
 const toggleUpstreamBillingAutoProbe = () => {
   upstreamBillingAutoProbeEnabled.value = !upstreamBillingAutoProbeEnabled.value
   if (!upstreamBillingAutoProbeEnabled.value) {
+    upstreamBillingRateSyncEnabled.value = false
     upstreamBillingGuardEnabled.value = false
+  }
+}
+
+const toggleUpstreamBillingRateSync = () => {
+  upstreamBillingRateSyncEnabled.value = !upstreamBillingRateSyncEnabled.value
+  if (upstreamBillingRateSyncEnabled.value) {
+    upstreamBillingAutoProbeEnabled.value = true
   }
 }
 
@@ -4905,6 +4945,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   grokMediaEligibilityMode.value = mediaEligibilityMode
   initialGrokMediaEligibilityMode.value = mediaEligibilityMode
   upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
+  upstreamBillingRateSyncEnabled.value =
+    upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_rate_sync_enabled === true
   upstreamBillingGuardEnabled.value = newAccount.upstream_billing_guard_enabled === true
   initialUpstreamBillingGuardEnabled.value = upstreamBillingGuardEnabled.value
   const overrides: Record<string, number | string | null> = {}
@@ -6457,7 +6499,7 @@ const handleSubmit = async () => {
 
     // For OpenAI OAuth/SetupToken/API Key accounts, handle passthrough mode in extra
     if (props.account.platform === 'openai' && (props.account.type === 'oauth' || props.account.type === 'setup-token' || props.account.type === 'apikey')) {
-      const currentExtra = (props.account.extra as Record<string, unknown>) || {}
+      const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
       const newExtra: Record<string, unknown> = { ...currentExtra }
       const hadCodexCLIOnlyEnabled = currentExtra.codex_cli_only === true
       if (props.account.type === 'oauth') {
@@ -6584,11 +6626,6 @@ const handleSubmit = async () => {
           delete newExtra.openai_responses_mode
         } else {
           newExtra.openai_responses_mode = openAIResponsesMode.value
-        }
-        if (upstreamBillingAutoProbeEnabled.value) {
-          newExtra.upstream_billing_probe_enabled = true
-        } else {
-          newExtra.upstream_billing_probe_enabled = false
         }
       }
       if (autoPause5hThreshold.value != null && autoPause5hThreshold.value > 0) {
@@ -6723,6 +6760,18 @@ const handleSubmit = async () => {
     }
 
     if (showUpstreamBillingProbeConfig.value) {
+      updatePayload.upstream_billing_probe_enabled = upstreamBillingAutoProbeEnabled.value
+      updatePayload.upstream_billing_rate_sync_enabled = upstreamBillingRateSyncEnabled.value
+      if (upstreamBillingRateSyncEnabled.value) {
+        delete updatePayload.rate_multiplier
+      }
+      if (updatePayload.extra && typeof updatePayload.extra === 'object') {
+        const extra = { ...(updatePayload.extra as Record<string, unknown>) }
+        delete extra.upstream_billing_probe
+        delete extra.upstream_billing_probe_enabled
+        delete extra.upstream_billing_rate_sync_enabled
+        updatePayload.extra = extra
+      }
       if (upstreamBillingGuardEnabled.value && configuredUpstreamBillingGuardGroupCount.value === 0) {
         upstreamBillingGuardEnabled.value = false
       }

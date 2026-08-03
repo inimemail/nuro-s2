@@ -357,7 +357,7 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 }
 
 // ReconcileUpstreamBillingGuardAccounts turns off account master switches that
-// no longer have any protected OpenAI group. Raw account overrides are never
+// no longer have any protected same-platform group. Raw account overrides are never
 // rewritten here; the effective policy applies the group ceiling at read time.
 func (r *groupRepository) ReconcileUpstreamBillingGuardAccounts(ctx context.Context, groupID int64) error {
 	return r.reconcileUpstreamBillingGuardAccounts(ctx, groupID)
@@ -384,9 +384,10 @@ func (r *groupRepository) reconcileUpstreamBillingGuardAccounts(ctx context.Cont
 				SELECT 1
 				FROM account_groups ag2
 				JOIN groups g2 ON g2.id = ag2.group_id AND g2.deleted_at IS NULL
-				WHERE ag2.account_id = a.id
-				  AND g2.platform = 'openai'
-				  AND g2.upstream_billing_guard_max_multiplier IS NOT NULL
+					WHERE ag2.account_id = a.id
+					  AND g2.platform = a.platform
+					  AND g2.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')
+					  AND g2.upstream_billing_guard_max_multiplier IS NOT NULL
 			  )
 			  AND a.deleted_at IS NULL
 			RETURNING a.id
@@ -819,6 +820,84 @@ func (r *groupRepository) DeleteAccountGroupsByGroupID(ctx context.Context, grou
 	return affected, nil
 }
 
+func listAccountIDsBoundToGroup(ctx context.Context, exec sqlExecutor, groupID int64) ([]int64, error) {
+	rows, err := exec.QueryContext(ctx, `
+		SELECT DISTINCT account_id
+		FROM account_groups
+		WHERE group_id = $1
+		ORDER BY account_id
+	`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	accountIDs := make([]int64, 0)
+	for rows.Next() {
+		var accountID int64
+		if err := rows.Scan(&accountID); err != nil {
+			return nil, err
+		}
+		accountIDs = append(accountIDs, accountID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return accountIDs, nil
+}
+
+func reconcileRemovedGroupBillingGuards(ctx context.Context, exec sqlExecutor, accountIDs []int64, groupID int64) error {
+	if len(accountIDs) == 0 {
+		return nil
+	}
+	rows, err := exec.QueryContext(ctx, `
+		UPDATE accounts a
+		SET upstream_billing_guard_enabled = FALSE,
+			upstream_billing_guard_blocked = FALSE,
+			updated_at = NOW()
+		WHERE a.id = ANY($1)
+			AND a.deleted_at IS NULL
+			AND a.type = 'apikey'
+			AND a.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')
+			AND a.upstream_billing_guard_enabled = TRUE
+			AND NOT EXISTS (
+				SELECT 1
+				FROM account_groups ag
+				JOIN groups g ON g.id = ag.group_id AND g.deleted_at IS NULL
+				WHERE ag.account_id = a.id
+					AND g.platform = a.platform
+					AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')
+					AND g.upstream_billing_guard_max_multiplier IS NOT NULL
+			)
+		RETURNING a.id
+	`, pq.Array(accountIDs))
+	if err != nil {
+		return err
+	}
+	disabledIDs := make([]int64, 0)
+	for rows.Next() {
+		var accountID int64
+		if err := rows.Scan(&accountID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		disabledIDs = append(disabledIDs, accountID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	payload := buildSchedulerGroupPayload([]int64{groupID})
+	for _, accountID := range disabledIDs {
+		if err := enqueueSchedulerOutbox(ctx, exec, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
+			logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue removed group guard reconciliation failed: account=%d group=%d err=%v", accountID, groupID, err)
+		}
+	}
+	return nil
+}
+
 func (r *groupRepository) DeleteCascade(ctx context.Context, id int64) ([]int64, error) {
 	g, err := r.client.Group.Query().Where(group.IDEQ(id)).Only(ctx)
 	if err != nil {
@@ -891,6 +970,10 @@ func (r *groupRepository) DeleteCascade(ctx context.Context, id int64) ([]int64,
 			return nil, err
 		}
 	}
+	guardAccountIDs, err := listAccountIDsBoundToGroup(ctx, exec, id)
+	if err != nil {
+		return nil, err
+	}
 
 	// 2. Remove the group id from user_allowed_groups join table.
 	// Legacy users.allowed_groups 列已弃用，不再同步。
@@ -900,6 +983,9 @@ func (r *groupRepository) DeleteCascade(ctx context.Context, id int64) ([]int64,
 
 	// 3. Delete account_groups join rows.
 	if _, err := exec.ExecContext(ctx, "DELETE FROM account_groups WHERE group_id = $1", id); err != nil {
+		return nil, err
+	}
+	if err := reconcileRemovedGroupBillingGuards(ctx, exec, guardAccountIDs, id); err != nil {
 		return nil, err
 	}
 
@@ -930,13 +1016,13 @@ const (
 	// 分组页的"可用"账号数必须与账号仓储的 ListSchedulableByGroupID 过滤口径一致。
 	groupAccountAvailableSQL = `a.deleted_at IS NULL
 				AND a.status = 'active'
-				AND a.schedulable = true
-				AND NOT (
-					a.platform = 'openai'
-					AND a.type = 'apikey'
-					AND a.upstream_billing_guard_enabled = TRUE
-					AND g.platform = 'openai'
-					AND g.upstream_billing_guard_max_multiplier IS NOT NULL
+					AND a.schedulable = true
+					AND NOT (
+						a.platform = g.platform
+						AND a.type = 'apikey'
+						AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')
+						AND a.upstream_billing_guard_enabled = TRUE
+						AND g.upstream_billing_guard_max_multiplier IS NOT NULL
 					AND (
 						COALESCE(a.extra -> 'upstream_billing_probe_enabled', 'false'::jsonb) <> 'true'::jsonb
 						OR COALESCE(

@@ -118,6 +118,14 @@
               </div>
               <Toggle v-model="form.store_pass_events" />
             </div>
+
+            <div class="flex flex-col gap-3 border-t border-gray-100 pt-5 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-between">
+              <div class="min-w-0">
+                <p class="text-sm font-medium text-gray-900 dark:text-white">{{ copy.blockingLatestTurnOnly }}</p>
+                <p class="mt-1 max-w-2xl text-xs text-gray-500 dark:text-gray-400">{{ copy.blockingLatestTurnOnlyHint }}</p>
+              </div>
+              <Toggle v-model="form.blocking_latest_turn_only" />
+            </div>
           </div>
         </section>
 

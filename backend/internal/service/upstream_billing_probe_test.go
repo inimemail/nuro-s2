@@ -26,6 +26,7 @@ type upstreamBillingProbeAccountRepoStub struct {
 	updatedExtra map[string]any
 	lastSnapshot *UpstreamBillingProbeSnapshot
 	lastObserved *float64
+	lastSyncRate *float64
 	guardUpdates []UpstreamBillingGuardSettings
 }
 
@@ -73,7 +74,7 @@ func (r *upstreamBillingProbeConcurrentRepo) FindByExtraField(ctx context.Contex
 	return accounts, nil
 }
 
-func (r *upstreamBillingProbeConcurrentRepo) UpdateUpstreamBillingProbeSnapshot(ctx context.Context, _ *Account, _ *UpstreamBillingProbeSnapshot, _ *float64) (bool, error) {
+func (r *upstreamBillingProbeConcurrentRepo) UpdateUpstreamBillingProbeSnapshot(ctx context.Context, _ *Account, _ *UpstreamBillingProbeSnapshot, _, _ *float64) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -164,9 +165,10 @@ func (r *upstreamBillingProbeAccountRepoStub) UpdateExtra(_ context.Context, _ i
 	return nil
 }
 
-func (r *upstreamBillingProbeAccountRepoStub) UpdateUpstreamBillingProbeSnapshot(_ context.Context, _ *Account, snapshot *UpstreamBillingProbeSnapshot, observed *float64) (bool, error) {
+func (r *upstreamBillingProbeAccountRepoStub) UpdateUpstreamBillingProbeSnapshot(_ context.Context, _ *Account, snapshot *UpstreamBillingProbeSnapshot, observed, syncRate *float64) (bool, error) {
 	r.lastSnapshot = snapshot
 	r.lastObserved = observed
+	r.lastSyncRate = syncRate
 	return false, nil
 }
 
@@ -380,6 +382,48 @@ func TestParseUpstreamBillingProbeResponseSanitizesAndValidates(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestUpstreamBillingProbeIdentitySupportsFiveAPIKeyPlatforms(t *testing.T) {
+	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformGrok, PlatformAntigravity} {
+		require.True(t, IsUpstreamBillingProbeIdentity(platform, AccountTypeAPIKey), platform)
+		require.False(t, IsUpstreamBillingProbeIdentity(platform, AccountTypeOAuth), platform)
+	}
+	require.False(t, IsUpstreamBillingProbeIdentity("unknown", AccountTypeAPIKey))
+}
+
+func TestUpstreamBillingRateSyncIsOptInAndRequiresAutomaticProbe(t *testing.T) {
+	account := &Account{Extra: map[string]any{}}
+	require.False(t, upstreamBillingRateSyncEnabled(account))
+
+	account.Extra[UpstreamBillingRateSyncEnabledExtraKey] = true
+	require.False(t, upstreamBillingRateSyncEnabled(account))
+
+	account.Extra[UpstreamBillingProbeEnabledExtraKey] = true
+	require.True(t, upstreamBillingRateSyncEnabled(account))
+}
+
+func TestUpstreamBillingProbeSyncRateValidatesAndRoundsDeclaredRate(t *testing.T) {
+	value, ok := upstreamBillingProbeSyncRate(map[string]any{"resolved_rate_multiplier": 0.123456})
+	require.True(t, ok)
+	require.Equal(t, 0.1235, value)
+
+	for _, invalid := range []float64{0, -1, 100.0001} {
+		_, ok = upstreamBillingProbeSyncRate(map[string]any{"resolved_rate_multiplier": invalid})
+		require.False(t, ok)
+	}
+}
+
+func TestUpstreamBillingProbeOfficialDomainSuppression(t *testing.T) {
+	for _, target := range []string{
+		"https://api.anthropic.com",
+		"https://generativelanguage.googleapis.com/v1beta",
+		"https://api.x.ai",
+		"https://ollama.com/api",
+	} {
+		require.True(t, upstreamBillingProbeTargetIsOfficialAPI(target), target)
+	}
+	require.False(t, upstreamBillingProbeTargetIsOfficialAPI("https://relay.example.com"))
+}
+
 func TestSafeProbeErrorDoesNotExposeInternalDetails(t *testing.T) {
 	require.Equal(t, "probe_failed", safeProbeError(context.DeadlineExceeded))
 }
@@ -472,8 +516,8 @@ func TestNormalizedFailedProbeNextAtClampsLegacyLongBackoff(t *testing.T) {
 }
 
 func TestUnsupportedProbeKeepsSlowAutomaticRetry(t *testing.T) {
-	require.Equal(t, 5*time.Minute, nextUpstreamBillingProbeDelayForStatus(5, 1, "unsupported"))
-	require.Equal(t, 10*time.Minute, nextUpstreamBillingProbeDelayForStatus(600, 1, "unsupported"))
+	require.Equal(t, 40*time.Second, nextUpstreamBillingProbeDelayForStatus(5, 1, "unsupported"))
+	require.Equal(t, 80*time.Minute, nextUpstreamBillingProbeDelayForStatus(600, 1, "unsupported"))
 	require.Equal(t, 5*time.Second, nextUpstreamBillingProbeDelayForStatus(1, 8, "failed"))
 }
 

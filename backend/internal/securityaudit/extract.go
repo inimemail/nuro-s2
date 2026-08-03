@@ -17,6 +17,10 @@ var auditMessageRoles = map[string]struct{}{
 }
 
 func extractStructuredAuditPrompt(protocol string, body []byte) (string, int) {
+	return extractStructuredAuditPromptWithScope(protocol, body, false)
+}
+
+func extractStructuredAuditPromptWithScope(protocol string, body []byte, latestOnly bool) (string, int) {
 	if len(body) == 0 {
 		return "", 0
 	}
@@ -40,7 +44,7 @@ func extractStructuredAuditPrompt(protocol string, body []byte) (string, int) {
 		collectAuditMessages(root["messages"], &segments)
 		collectAuditGemini(root["contents"], &segments)
 	}
-	return assembleAuditSegments(segments, MaxPromptRunes)
+	return assembleAuditSegmentsWithScope(segments, MaxPromptRunes, latestOnly)
 }
 
 func collectAuditMessages(value any, segments *[]auditTextSegment) {
@@ -191,6 +195,10 @@ func appendAuditSegment(segments *[]auditTextSegment, role string, parts []strin
 }
 
 func assembleAuditSegments(segments []auditTextSegment, limit int) (string, int) {
+	return assembleAuditSegmentsWithScope(segments, limit, false)
+}
+
+func assembleAuditSegmentsWithScope(segments []auditTextSegment, limit int, latestOnly bool) (string, int) {
 	if len(segments) == 0 || limit <= 0 {
 		return "", 0
 	}
@@ -204,6 +212,12 @@ func assembleAuditSegments(segments []auditTextSegment, limit int) (string, int)
 	ordered := make([]auditTextSegment, 0, len(segments))
 	if latestUser >= 0 {
 		ordered = append(ordered, segments[latestUser])
+	}
+	if latestOnly {
+		if latestUser < 0 {
+			return "", len(segments)
+		}
+		return trimPromptRunes(segments[latestUser].text, limit), len(segments)
 	}
 	for i := len(segments) - 1; i >= 0; i-- {
 		if i != latestUser {

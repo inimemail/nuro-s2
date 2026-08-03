@@ -29,6 +29,7 @@ export function displayableUpdatedAt(value: string | null | undefined): string {
 export function configToForm(config: PromptAuditConfig): PromptAuditConfigForm {
   return {
     enabled: config.enabled,
+    blocking_latest_turn_only: config.blocking_latest_turn_only === true,
     worker_count: config.worker_count,
     queue_capacity: config.queue_capacity,
     all_groups: config.all_groups,
@@ -79,6 +80,7 @@ export function endpointToUpdate(endpoint: PromptAuditEndpointForm): PromptAudit
 export function formToUpdate(form: PromptAuditConfigForm): PromptAuditConfigUpdate {
   return {
     enabled: form.enabled,
+    blocking_latest_turn_only: form.blocking_latest_turn_only,
     worker_count: Number(form.worker_count),
     queue_capacity: Number(form.queue_capacity),
     all_groups: form.all_groups,

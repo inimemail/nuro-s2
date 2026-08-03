@@ -166,6 +166,12 @@ func Relay(
 
 	relayCtx, relayCancel := context.WithCancel(ctx)
 	defer relayCancel()
+	// Downstream writes must outlive relay cancellation while a client-close
+	// drain is collecting the upstream terminal usage frame. Tie them to the
+	// request context instead of relayCtx, which is canceled as soon as the
+	// upstream reader exits.
+	clientWriteCtx, clientWriteCancel := context.WithCancel(ctx)
+	defer clientWriteCancel()
 
 	lastActivity := atomic.Int64{}
 	lastActivity.Store(nowFn().UnixNano())
@@ -186,7 +192,7 @@ func Relay(
 		return writeUpstream(msgType, payload)
 	}
 	writeClient := func(msgType coderws.MessageType, payload []byte) error {
-		writeCtx, cancel := context.WithTimeout(relayCtx, writeTimeout)
+		writeCtx, cancel := context.WithTimeout(clientWriteCtx, writeTimeout)
 		defer cancel()
 		return clientConn.WriteFrame(writeCtx, msgType, payload)
 	}

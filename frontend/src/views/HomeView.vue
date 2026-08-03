@@ -1,6 +1,6 @@
 <template>
   <!-- Custom Home Content: Full Page Mode -->
-  <div v-if="homeContent" class="min-h-screen">
+  <div v-if="hasHomeContent" class="min-h-screen">
     <!-- iframe mode -->
     <iframe
       v-if="isHomeContentUrl"
@@ -10,6 +10,61 @@
     ></iframe>
     <!-- HTML mode - SECURITY: homeContent is admin-only setting, XSS risk is acceptable -->
     <div v-else v-html="homeContent"></div>
+  </div>
+
+  <!-- Compact preset: quiet and content-light for deployments that do not
+       want the default marketing-style landing page. -->
+  <div
+    v-else-if="compactHomeEnabled"
+    data-testid="compact-home"
+    class="flex min-h-screen min-w-0 flex-col bg-gray-50 text-gray-900 dark:bg-dark-950 dark:text-white"
+  >
+    <header class="border-b border-gray-200 bg-white px-4 py-4 sm:px-6 dark:border-dark-800 dark:bg-dark-900">
+      <nav class="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-3 sm:gap-4">
+        <div class="flex min-w-0 flex-1 items-center gap-3">
+          <img :src="siteLogo || '/logo.png'" alt="" class="h-9 w-9 shrink-0 rounded-md object-contain" />
+          <span class="min-w-0 truncate text-base font-semibold">{{ siteName }}</span>
+        </div>
+        <div class="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
+          <LocaleSwitcher />
+          <a
+            v-if="docUrl"
+            :href="docUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-dark-400 dark:hover:bg-dark-800 dark:hover:text-white"
+            :title="t('home.viewDocs')"
+          >
+            <Icon name="book" size="md" />
+          </a>
+          <button
+            type="button"
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-dark-400 dark:hover:bg-dark-800 dark:hover:text-white"
+            :title="isDark ? t('home.switchToLight') : t('home.switchToDark')"
+            @click="toggleTheme"
+          >
+            <Icon :name="isDark ? 'sun' : 'moon'" size="md" />
+          </button>
+        </div>
+      </nav>
+    </header>
+    <main class="flex min-w-0 flex-1 items-center justify-center px-4 py-16 sm:px-6">
+      <div class="min-w-0 w-full max-w-2xl text-center">
+        <img :src="siteLogo || '/logo.png'" alt="" class="mx-auto mb-6 h-20 w-20 rounded-md object-contain" />
+        <h1 class="[overflow-wrap:anywhere] text-3xl font-semibold sm:text-4xl">{{ siteName }}</h1>
+        <p v-if="siteSubtitle" class="mx-auto mt-4 max-w-xl whitespace-pre-wrap [overflow-wrap:anywhere] text-base text-gray-600 dark:text-dark-300">{{ siteSubtitle }}</p>
+        <router-link
+          :to="isAuthenticated ? dashboardPath : '/login'"
+          class="mt-8 inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-primary-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-primary-700"
+        >
+          {{ isAuthenticated ? t('home.goToDashboard') : t('home.login') }}
+          <Icon name="arrowRight" size="sm" />
+        </router-link>
+      </div>
+    </main>
+    <footer class="min-w-0 border-t border-gray-200 px-4 py-5 text-center text-sm text-gray-500 [overflow-wrap:anywhere] sm:px-6 dark:border-dark-800 dark:text-dark-400">
+      &copy; {{ currentYear }} {{ siteName }}
+    </footer>
   </div>
 
   <!-- Default Home Page -->
@@ -111,12 +166,12 @@
     </header>
 
     <!-- Main Content -->
-    <main class="relative z-10 flex-1 px-6 py-16">
-      <div class="mx-auto max-w-6xl">
+    <main class="relative z-10 min-w-0 flex-1 px-6 py-16">
+      <div class="mx-auto w-full min-w-0 max-w-6xl">
         <!-- Hero Section - Left/Right Layout -->
-        <div class="mb-12 flex flex-col items-center justify-between gap-12 lg:flex-row lg:gap-16">
+        <div class="mb-12 flex min-w-0 flex-col items-center justify-between gap-12 lg:flex-row lg:gap-16">
           <!-- Left: Text Content -->
-          <div class="flex-1 text-center lg:text-left">
+          <div class="min-w-0 flex-1 text-center lg:text-left">
             <h1
               class="mb-4 text-4xl font-bold text-gray-900 dark:text-white md:text-5xl lg:text-6xl"
             >
@@ -139,9 +194,9 @@
           </div>
 
           <!-- Right: Terminal Animation -->
-          <div class="flex flex-1 justify-center lg:justify-end">
-            <div class="terminal-container">
-              <div class="terminal-window">
+          <div class="flex w-full min-w-0 flex-1 justify-center lg:justify-end">
+            <div class="terminal-container w-full max-w-[420px]">
+              <div class="terminal-window w-full">
                 <!-- Window header -->
                 <div class="terminal-header">
                   <div class="terminal-buttons">
@@ -418,6 +473,8 @@ const siteLogo = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.site_
 const siteSubtitle = computed(() => appStore.cachedPublicSettings?.site_subtitle || 'AI API Gateway Platform')
 const docUrl = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.doc_url || appStore.docUrl || ''))
 const homeContent = computed(() => appStore.cachedPublicSettings?.home_content || '')
+const hasHomeContent = computed(() => homeContent.value.trim().length > 0)
+const compactHomeEnabled = computed(() => appStore.cachedPublicSettings?.compact_home_enabled === true)
 
 // Check if homeContent is a URL (for iframe display)
 const isHomeContentUrl = computed(() => {
@@ -482,7 +539,6 @@ onMounted(() => {
 
 /* Terminal Window */
 .terminal-window {
-  width: 420px;
   background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
   border-radius: 14px;
   box-shadow:
@@ -552,6 +608,22 @@ onMounted(() => {
   flex-wrap: wrap;
   opacity: 0;
   animation: line-appear 0.5s ease forwards;
+}
+
+@media (max-width: 480px) {
+  .terminal-header {
+    padding: 10px 12px;
+  }
+
+  .terminal-body {
+    padding: 16px;
+    font-size: 12px;
+    line-height: 1.85;
+  }
+
+  .terminal-title {
+    margin-right: 44px;
+  }
 }
 
 .line-1 {

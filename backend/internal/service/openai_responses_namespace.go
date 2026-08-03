@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
@@ -13,7 +14,7 @@ import (
 
 const openAIResponsesNamespaceNamesContextKey = "openai_responses_namespace_names"
 
-func shouldFlattenOpenAIResponsesNamespaces(account *Account, transport OpenAIUpstreamTransport, passthroughEnabled bool) bool {
+func shouldFlattenOpenAIResponsesNamespaces(account *Account, transport OpenAIUpstreamTransport, passthroughEnabled bool, compactPath bool) bool {
 	// Automatic passthrough promises to preserve the request and response
 	// payloads, with authentication replacement as the only transformation.
 	// Namespace flattening is a compatibility transform for the legacy OAuth
@@ -21,7 +22,10 @@ func shouldFlattenOpenAIResponsesNamespaces(account *Account, transport OpenAIUp
 	if passthroughEnabled {
 		return false
 	}
-	if account == nil || account.Type != AccountTypeOAuth {
+	if account == nil || !account.IsOpenAIOAuth() {
+		return false
+	}
+	if !compactPath && !account.IsOpenAIResponsesFlattenNamespacesEnabled() {
 		return false
 	}
 	if transport == OpenAIUpstreamTransportResponsesWebsocketV2 && !passthroughEnabled {
@@ -74,7 +78,12 @@ func flattenOpenAIResponsesNamespaces(c *gin.Context, body []byte) ([]byte, erro
 
 // stripOpenAIResponsesInputNamespaces removes only direct input item
 // namespaces. It keeps nested fields and numeric JSON tokens byte-exact.
-func stripOpenAIResponsesInputNamespaces(body []byte) ([]byte, error) {
+var openAIResponsesToolCallItemTypes = map[string]bool{
+	"function_call": true, "tool_call": true, "custom_tool_call": true, "mcp_tool_call": true,
+}
+
+func stripOpenAIResponsesInputNamespaces(body []byte, keepNamespaces ...bool) ([]byte, error) {
+	keepToolCallNamespaces := len(keepNamespaces) > 0 && keepNamespaces[0]
 	if !bytes.Contains(body, []byte(`"namespace"`)) {
 		return body, nil
 	}
@@ -88,7 +97,8 @@ func stripOpenAIResponsesInputNamespaces(body []byte) ([]byte, error) {
 	var stripErr error
 	input.ForEach(func(_, item gjson.Result) bool {
 		itemBody := []byte(item.Raw)
-		if item.IsObject() && item.Get("namespace").Exists() {
+		if item.IsObject() && item.Get("namespace").Exists() &&
+			(!keepToolCallNamespaces || !openAIResponsesToolCallItemTypes[strings.ToLower(strings.TrimSpace(item.Get("type").String()))]) {
 			itemBody, stripErr = sjson.DeleteBytes(itemBody, "namespace")
 			if stripErr != nil {
 				return false
@@ -119,6 +129,13 @@ func stripOpenAIResponsesInputNamespaces(body []byte) ([]byte, error) {
 		return body, fmt.Errorf("replace OpenAI input after namespace deletion: %w", err)
 	}
 	return stripped, nil
+}
+
+func clearOpenAIResponsesNamespaceNames(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(openAIResponsesNamespaceNamesContextKey, map[string]apicompat.ResponsesNamespaceName(nil))
 }
 
 func restoreOpenAIResponsesNamespacePayload(c *gin.Context, payload []byte) ([]byte, error) {

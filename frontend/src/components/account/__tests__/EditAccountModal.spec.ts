@@ -471,7 +471,7 @@ describe('EditAccountModal', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.upstream_billing_probe_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_probe_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('upstream_billing_guard_enabled')
     expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('upstream_billing_guard_group_limits')
   })
@@ -523,7 +523,7 @@ describe('EditAccountModal', () => {
     await flushPromises()
 
     expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('upstream_billing_guard_enabled')
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.upstream_billing_probe_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_probe_enabled).toBe(true)
   })
 
   it('disables the protection switch when selected groups have no threshold', async () => {
@@ -603,7 +603,7 @@ describe('EditAccountModal', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.upstream_billing_probe_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_probe_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_enabled).toBe(false)
     expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('upstream_billing_guard_group_limits')
   })
@@ -624,7 +624,7 @@ describe('EditAccountModal', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.upstream_billing_probe_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_probe_enabled).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_enabled).toBe(true)
   })
 
@@ -644,8 +644,50 @@ describe('EditAccountModal', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.upstream_billing_probe_enabled).toBe(false)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_probe_enabled).toBe(false)
     expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_guard_enabled).toBe(false)
+  })
+
+  it('explicitly disables automatic rate sync instead of omitting the setting', async () => {
+    const account = buildAccount()
+    account.extra = {
+      upstream_billing_probe_enabled: true,
+      upstream_billing_rate_sync_enabled: true,
+      upstream_billing_probe: { status: 'ok' }
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="account-rate-multiplier"]').element.disabled).toBe(true)
+    await wrapper.get('[data-testid="upstream-billing-rate-sync"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload?.upstream_billing_probe_enabled).toBe(true)
+    expect(payload?.upstream_billing_rate_sync_enabled).toBe(false)
+    expect(payload?.rate_multiplier).toBe(1)
+    expect(payload?.extra).not.toHaveProperty('upstream_billing_probe')
+    expect(payload?.extra).not.toHaveProperty('upstream_billing_probe_enabled')
+    expect(payload?.extra).not.toHaveProperty('upstream_billing_rate_sync_enabled')
+  })
+
+  it('enables rate sync explicitly and leaves the managed multiplier out of the update', async () => {
+    const account = buildAnthropicAPIKeyAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="upstream-billing-rate-sync"]').trigger('click')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="account-rate-multiplier"]').element.disabled).toBe(true)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload?.upstream_billing_probe_enabled).toBe(true)
+    expect(payload?.upstream_billing_rate_sync_enabled).toBe(true)
+    expect(payload).not.toHaveProperty('rate_multiplier')
   })
 
   it('removes both cache creation optimization credentials when the switch is turned off', async () => {

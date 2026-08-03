@@ -15,6 +15,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestPersistentImageResultContainsInlineImage(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "base64", body: `{"data":[{"b64_json":"aGVsbG8="}]}`, want: true},
+		{name: "data url", body: `{"data":[{"url":"data:image/png;base64,aGVsbG8="}]}`, want: true},
+		{name: "remote url", body: `{"data":[{"url":"https://cdn.example/image.png"}]}`, want: false},
+		{name: "no data", body: `{"status":"ok"}`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, persistentImageResultContainsInlineImage([]byte(tt.body)))
+		})
+	}
+}
+
 func TestOpenAIImageTaskStore_SubmitIsIdempotent(t *testing.T) {
 	store := newOpenAIImageTaskStore(time.Hour)
 	first, created := store.submit("api_key:1", "task-1", "/v1/images/generations", "gpt-image-2")

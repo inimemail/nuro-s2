@@ -43,19 +43,22 @@ type EndpointConfig struct {
 }
 
 type Config struct {
-	Enabled       bool             `json:"enabled"`
-	Mode          Mode             `json:"mode"`
-	WorkerCount   int              `json:"worker_count"`
-	QueueCapacity int              `json:"queue_capacity"`
-	AllGroups     bool             `json:"all_groups"`
-	GroupIDs      []int64          `json:"group_ids"`
-	Scanners      []string         `json:"scanners"`
-	Endpoints     []EndpointConfig `json:"endpoints"`
-	StorePass     bool             `json:"store_pass_events"`
-	RetentionDays int              `json:"retention_days"`
-	Version       int64            `json:"version"`
-	UpdatedAt     time.Time        `json:"updated_at"`
-	HashSecret    string           `json:"hash_secret_ciphertext,omitempty"`
+	Enabled bool `json:"enabled"`
+	Mode    Mode `json:"mode"`
+	// BlockingLatestTurnOnly narrows prompt scope for a future blocking policy.
+	// The local implementation remains asynchronous and never blocks admission.
+	BlockingLatestTurnOnly bool             `json:"blocking_latest_turn_only"`
+	WorkerCount            int              `json:"worker_count"`
+	QueueCapacity          int              `json:"queue_capacity"`
+	AllGroups              bool             `json:"all_groups"`
+	GroupIDs               []int64          `json:"group_ids"`
+	Scanners               []string         `json:"scanners"`
+	Endpoints              []EndpointConfig `json:"endpoints"`
+	StorePass              bool             `json:"store_pass_events"`
+	RetentionDays          int              `json:"retention_days"`
+	Version                int64            `json:"version"`
+	UpdatedAt              time.Time        `json:"updated_at"`
+	HashSecret             string           `json:"hash_secret_ciphertext,omitempty"`
 }
 
 type PublicEndpoint struct {
@@ -72,18 +75,19 @@ type PublicEndpoint struct {
 }
 
 type PublicConfig struct {
-	Enabled       bool             `json:"enabled"`
-	Mode          Mode             `json:"mode"`
-	WorkerCount   int              `json:"worker_count"`
-	QueueCapacity int              `json:"queue_capacity"`
-	AllGroups     bool             `json:"all_groups"`
-	GroupIDs      []int64          `json:"group_ids"`
-	Scanners      []string         `json:"scanners"`
-	Endpoints     []PublicEndpoint `json:"endpoints"`
-	StorePass     bool             `json:"store_pass_events"`
-	RetentionDays int              `json:"retention_days"`
-	Version       int64            `json:"version"`
-	UpdatedAt     time.Time        `json:"updated_at"`
+	Enabled                bool             `json:"enabled"`
+	Mode                   Mode             `json:"mode"`
+	BlockingLatestTurnOnly bool             `json:"blocking_latest_turn_only"`
+	WorkerCount            int              `json:"worker_count"`
+	QueueCapacity          int              `json:"queue_capacity"`
+	AllGroups              bool             `json:"all_groups"`
+	GroupIDs               []int64          `json:"group_ids"`
+	Scanners               []string         `json:"scanners"`
+	Endpoints              []PublicEndpoint `json:"endpoints"`
+	StorePass              bool             `json:"store_pass_events"`
+	RetentionDays          int              `json:"retention_days"`
+	Version                int64            `json:"version"`
+	UpdatedAt              time.Time        `json:"updated_at"`
 }
 
 type UpdateEndpoint struct {
@@ -100,16 +104,17 @@ type UpdateEndpoint struct {
 }
 
 type UpdateConfigRequest struct {
-	Enabled         bool             `json:"enabled"`
-	WorkerCount     int              `json:"worker_count"`
-	QueueCapacity   int              `json:"queue_capacity"`
-	AllGroups       bool             `json:"all_groups"`
-	GroupIDs        []int64          `json:"group_ids"`
-	Scanners        []string         `json:"scanners"`
-	Endpoints       []UpdateEndpoint `json:"endpoints"`
-	StorePass       bool             `json:"store_pass_events"`
-	RetentionDays   int              `json:"retention_days"`
-	ExpectedVersion int64            `json:"expected_version"`
+	Enabled                bool             `json:"enabled"`
+	BlockingLatestTurnOnly bool             `json:"blocking_latest_turn_only"`
+	WorkerCount            int              `json:"worker_count"`
+	QueueCapacity          int              `json:"queue_capacity"`
+	AllGroups              bool             `json:"all_groups"`
+	GroupIDs               []int64          `json:"group_ids"`
+	Scanners               []string         `json:"scanners"`
+	Endpoints              []UpdateEndpoint `json:"endpoints"`
+	StorePass              bool             `json:"store_pass_events"`
+	RetentionDays          int              `json:"retention_days"`
+	ExpectedVersion        int64            `json:"expected_version"`
 }
 
 type Request struct {

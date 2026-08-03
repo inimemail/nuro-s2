@@ -69,6 +69,24 @@ func (s *UserSubscription) HasOneTimeDailyQuota() bool {
 	return !s.ExpiresAt.After(s.StartsAt.AddDate(0, 0, 1))
 }
 
+// HasOneTimeWeeklyQuota and HasOneTimeMonthlyQuota keep a quota window from
+// rolling over for subscriptions whose entire term fits inside that window.
+// This is important for 7-day/30-day plans: their quota is valid for the
+// subscription term, not for an unrelated calendar window after expiry.
+func (s *UserSubscription) HasOneTimeWeeklyQuota() bool {
+	if s == nil || s.StartsAt.IsZero() || s.ExpiresAt.IsZero() {
+		return false
+	}
+	return !s.ExpiresAt.After(s.StartsAt.AddDate(0, 0, 7))
+}
+
+func (s *UserSubscription) HasOneTimeMonthlyQuota() bool {
+	if s == nil || s.StartsAt.IsZero() || s.ExpiresAt.IsZero() {
+		return false
+	}
+	return !s.ExpiresAt.After(s.StartsAt.AddDate(0, 0, 30))
+}
+
 func (s *UserSubscription) NeedsDailyReset() bool {
 	return s.NeedsDailyResetAt(time.Now())
 }
@@ -84,17 +102,66 @@ func (s *UserSubscription) NeedsDailyResetAt(now time.Time) bool {
 }
 
 func (s *UserSubscription) NeedsWeeklyReset() bool {
+	return s.NeedsWeeklyResetAt(time.Now())
+}
+
+func (s *UserSubscription) NeedsWeeklyResetAt(now time.Time) bool {
 	if s.WeeklyWindowStart == nil {
 		return false
 	}
-	return time.Since(*s.WeeklyWindowStart) >= 7*24*time.Hour
+	return !now.Before(s.WeeklyWindowStart.Add(7 * 24 * time.Hour))
 }
 
 func (s *UserSubscription) NeedsMonthlyReset() bool {
+	return s.NeedsMonthlyResetAt(time.Now())
+}
+
+func (s *UserSubscription) NeedsMonthlyResetAt(now time.Time) bool {
 	if s.MonthlyWindowStart == nil {
 		return false
 	}
-	return time.Since(*s.MonthlyWindowStart) >= 30*24*time.Hour
+	return !now.Before(s.MonthlyWindowStart.Add(30 * 24 * time.Hour))
+}
+
+func (s *UserSubscription) canAutomaticallyResetDailyAt(now time.Time) bool {
+	_, ok := s.automaticWindowStartAt(s.DailyWindowStart, 24*time.Hour, now)
+	return !s.HasOneTimeDailyQuota() && ok
+}
+
+func (s *UserSubscription) canAutomaticallyResetWeeklyAt(now time.Time) bool {
+	_, ok := s.automaticWindowStartAt(s.WeeklyWindowStart, 7*24*time.Hour, now)
+	return ok
+}
+
+func (s *UserSubscription) canAutomaticallyResetMonthlyAt(now time.Time) bool {
+	_, ok := s.automaticWindowStartAt(s.MonthlyWindowStart, 30*24*time.Hour, now)
+	return ok
+}
+
+func (s *UserSubscription) automaticWindowStartAt(previous *time.Time, period time.Duration, now time.Time) (time.Time, bool) {
+	if previous == nil {
+		return time.Time{}, false
+	}
+
+	anchor := *previous
+	// Old subscriptions used midnight on the start date for their initial
+	// windows. Translate only that unambiguous legacy value to the real term
+	// start; later midnight values may be intentional manual resets.
+	legacyAnchor := startOfDay(s.StartsAt)
+	if legacyAnchor.Before(s.StartsAt) && anchor.Equal(legacyAnchor) {
+		anchor = s.StartsAt
+	}
+	next := anchor.Add(period)
+	if now.Before(next) || !next.Before(s.ExpiresAt) {
+		return time.Time{}, false
+	}
+
+	periods := now.Sub(anchor) / period
+	lastPeriodBeforeExpiry := (s.ExpiresAt.Sub(anchor) - 1) / period
+	if periods > lastPeriodBeforeExpiry {
+		periods = lastPeriodBeforeExpiry
+	}
+	return anchor.Add(periods * period), true
 }
 
 func (s *UserSubscription) DailyResetTime() *time.Time {
@@ -113,6 +180,10 @@ func (s *UserSubscription) WeeklyResetTime() *time.Time {
 	if s.WeeklyWindowStart == nil {
 		return nil
 	}
+	if s.HasOneTimeWeeklyQuota() {
+		t := s.ExpiresAt
+		return &t
+	}
 	t := s.WeeklyWindowStart.Add(7 * 24 * time.Hour)
 	return &t
 }
@@ -120,6 +191,10 @@ func (s *UserSubscription) WeeklyResetTime() *time.Time {
 func (s *UserSubscription) MonthlyResetTime() *time.Time {
 	if s.MonthlyWindowStart == nil {
 		return nil
+	}
+	if s.HasOneTimeMonthlyQuota() {
+		t := s.ExpiresAt
+		return &t
 	}
 	t := s.MonthlyWindowStart.Add(30 * 24 * time.Hour)
 	return &t

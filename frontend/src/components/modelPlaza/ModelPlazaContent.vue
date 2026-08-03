@@ -20,7 +20,7 @@
       </p>
 
       <div class="sticky top-16 z-20 border-y border-gray-200 bg-gray-50/95 py-3 backdrop-blur dark:border-dark-700 dark:bg-dark-950/95">
-        <div class="grid gap-2 md:grid-cols-[minmax(210px,1fr)_repeat(3,minmax(140px,auto))]">
+        <div class="grid gap-2 md:grid-cols-[minmax(210px,1fr)_repeat(3,minmax(140px,auto))_auto]">
           <label class="relative block">
             <span class="sr-only">{{ t('modelPlaza.filters.modelLabel') }}</span>
             <Icon name="search" size="sm" class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -40,6 +40,17 @@
             <option value="subscription">{{ t('modelPlaza.filters.subscription') }}</option>
             <option value="exclusive">{{ t('modelPlaza.filters.exclusive') }}</option>
           </select>
+          <button
+            v-if="activeFilterCount"
+            type="button"
+            class="btn btn-secondary btn-sm inline-flex h-10 items-center justify-center gap-1.5 whitespace-nowrap"
+            :title="t('modelPlaza.filters.clear')"
+            @click="clearFilters"
+          >
+            <Icon name="x" size="sm" />
+            <span>{{ t('modelPlaza.filters.clear') }}</span>
+            <span class="rounded-full bg-gray-200 px-1.5 text-[11px] dark:bg-dark-700">{{ activeFilterCount }}</span>
+          </button>
         </div>
       </div>
 
@@ -79,7 +90,7 @@
                 <tr v-for="model in group.models" :key="model.name" class="hover:bg-gray-50 dark:hover:bg-dark-800/60">
                   <td class="px-4 py-3">
                     <div class="flex flex-wrap items-center gap-2">
-                      <span class="min-w-0 truncate font-medium text-gray-900 dark:text-white">{{ model.name }}</span>
+                      <span class="min-w-0 max-w-[min(48vw,28rem)] truncate font-medium text-gray-900 dark:text-white" :title="model.name">{{ model.name }}</span>
                       <span v-if="billingMode(model) !== BILLING_MODE_TOKEN" class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-dark-700 dark:text-gray-300">
                         {{ billingModeLabel(model) }}
                       </span>
@@ -167,6 +178,7 @@ const platform = ref('all')
 const groupId = ref('all')
 const availability = ref('all')
 const search = ref('')
+const activeFilterCount = computed(() => [search.value.trim(), platform.value !== 'all' ? platform.value : '', groupId.value !== 'all' ? groupId.value : '', availability.value !== 'all' ? availability.value : ''].filter(Boolean).length)
 const descriptionHtml = computed(() => {
   const source = props.response?.description?.trim()
   return source ? DOMPurify.sanitize(marked.parse(source) as string) : ''
@@ -174,6 +186,12 @@ const descriptionHtml = computed(() => {
 const platforms = computed(() => [...new Set((props.response?.groups ?? []).map(group => group.platform).filter(Boolean))].sort())
 const groupOptions = computed(() => (props.response?.groups ?? []).filter(group => platform.value === 'all' || group.platform === platform.value))
 watch(platform, () => { groupId.value = 'all' })
+function clearFilters(): void {
+  search.value = ''
+  platform.value = 'all'
+  groupId.value = 'all'
+  availability.value = 'all'
+}
 const filteredGroups = computed(() => {
   const query = search.value.trim().toLowerCase()
   return (props.response?.groups ?? [])

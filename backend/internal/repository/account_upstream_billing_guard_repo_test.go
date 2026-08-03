@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
 	"github.com/DATA-DOG/go-sqlmock"
+	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
@@ -21,8 +24,8 @@ type unexpectedSchedulerCache struct {
 func TestUpdateUpstreamBillingProbeEnabledRefreshesBindingGuards(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := newAccountRepositoryWithSQL(nil, db, nil)
-	mock.ExpectExec(`(?s)UPDATE accounts.*#- '\{upstream_billing_probe,next_probe_at\}'.*upstream_billing_guard_enabled = FALSE`).
-		WithArgs(sqlmock.AnyArg(), int64(7), service.PlatformOpenAI, service.AccountTypeAPIKey, false).
+	mock.ExpectExec(`(?s)UPDATE accounts.*#- '\{upstream_billing_probe,next_probe_at\}'.*platform IN.*AND type = \$3.*AND \(\$4 = TRUE OR upstream_billing_guard_enabled = FALSE\)`).
+		WithArgs(sqlmock.AnyArg(), int64(7), service.AccountTypeAPIKey, false).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`(?s)INSERT INTO scheduler_outbox`).
 		WithArgs(service.SchedulerOutboxEventAccountChanged, sqlmock.AnyArg(), nil, nil, sqlmock.AnyArg()).
@@ -44,11 +47,27 @@ func TestUpdateExtraRejectsMalformedUpstreamBillingProbeEnabled(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestUpdateExtraProbeDisableKeepsUnsupportedPlatformsEligible(t *testing.T) {
+	db, mock := newSQLMock(t)
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	t.Cleanup(func() { _ = client.Close() })
+	repo := newAccountRepositoryWithSQL(client, db, nil)
+	mock.ExpectExec(`(?s)UPDATE accounts.*AND NOT \(platform IN .* AND type = \$3 AND upstream_billing_guard_enabled = TRUE\)`).
+		WithArgs(sqlmock.AnyArg(), int64(7), service.AccountTypeAPIKey).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := repo.UpdateExtra(context.Background(), 7, map[string]any{
+		service.UpstreamBillingProbeEnabledExtraKey: false,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestBulkUpdateGuardsConcurrentProbeDisable(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := newAccountRepositoryWithSQL(nil, db, &unexpectedSchedulerCache{})
-	mock.ExpectExec(`(?s)UPDATE accounts.*extra = .*WHERE id = ANY\(\$2\).*NOT \(platform = \$3 AND type = \$4 AND upstream_billing_guard_enabled = TRUE\)`).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), service.PlatformOpenAI, service.AccountTypeAPIKey).
+	mock.ExpectExec(`(?s)UPDATE accounts.*extra = .*WHERE id = ANY\(\$2\).*AND NOT \(platform IN .* AND type = \$3 AND upstream_billing_guard_enabled = TRUE\)`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), service.AccountTypeAPIKey).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	_, err := repo.BulkUpdate(context.Background(), []int64{7, 8}, service.AccountBulkUpdate{
@@ -83,7 +102,7 @@ func TestUpdateUpstreamBillingProbeSnapshotDoesNotSyncSchedulerWithoutGuardTrans
 	mock.ExpectExec(`(?s)UPDATE accounts.*upstream_billing_guard_blocked`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	changed, err := repo.UpdateUpstreamBillingProbeSnapshot(context.Background(), account, snapshot, nil)
+	changed, err := repo.UpdateUpstreamBillingProbeSnapshot(context.Background(), account, snapshot, nil, nil)
 	require.NoError(t, err)
 	require.False(t, changed)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -153,6 +172,23 @@ func TestUpdateUpstreamBillingGuardGroupLimitsClearsAllPolicies(t *testing.T) {
 
 	err := repo.UpdateUpstreamBillingGuardGroupLimits(context.Background(), 7, map[int64]float64{})
 	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestEnsureEnabledBillingGuardRequiresConfiguredSamePlatformGroup(t *testing.T) {
+	db, mock := newSQLMock(t)
+	account := &service.Account{
+		ID:                          7,
+		Platform:                    service.PlatformAnthropic,
+		Type:                        service.AccountTypeAPIKey,
+		UpstreamBillingGuardEnabled: true,
+	}
+	mock.ExpectQuery(`(?s)SELECT EXISTS.*g\.platform = \$2.*g\.platform IN \('openai', 'anthropic', 'gemini', 'grok', 'antigravity'\).*g\.upstream_billing_guard_max_multiplier IS NOT NULL`).
+		WithArgs(account.ID, account.Platform).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	err := ensureEnabledBillingGuardHasConfiguredGroup(context.Background(), db, account)
+	require.ErrorIs(t, err, service.ErrUpstreamBillingGuardRequiresGroupLimit)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

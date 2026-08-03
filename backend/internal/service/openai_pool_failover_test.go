@@ -228,6 +228,60 @@ func TestOpenAIStreamRaceTransportRuleKeepsClientErrorsNonRetryable(t *testing.T
 	require.Equal(t, 1, disconnectErr.RetryRuleLimit)
 }
 
+func TestOpenAIStreamFailedEventRespectsOrdinaryPoolRetryBoundaries(t *testing.T) {
+	rateLimitPayload := []byte(`{"type":"response.failed","response":{"error":{"type":"rate_limit_error","message":"rate limited"}}}`)
+	capacityPayload := []byte(`{"type":"response.failed","response":{"error":{"code":"server_is_overloaded","message":"The selected model is at capacity"}}}`)
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                       true,
+			"pool_mode_retry_status_codes":    []any{},
+			"pool_mode_builtin_retry_enabled": false,
+		},
+	}
+
+	require.False(t, openAIStreamFailedEventRetryableOnSameAccount(account, rateLimitPayload, "rate limited"))
+	require.False(t, openAIStreamFailedEventRetryableOnSameAccount(account, capacityPayload, "The selected model is at capacity"))
+
+	account.Credentials["pool_mode_builtin_retry_enabled"] = true
+	require.False(t, openAIStreamFailedEventRetryableOnSameAccount(account, rateLimitPayload, "rate limited"), "built-in retry must not re-enable semantic 429")
+	require.True(t, openAIStreamFailedEventRetryableOnSameAccount(account, capacityPayload, "The selected model is at capacity"))
+}
+
+func TestOpenAIStreamRaceUsesHTTPRuleForSemanticFailedEvent(t *testing.T) {
+	setGinTestMode()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                                   true,
+			"upstream_concurrency_race_enabled":           true,
+			"upstream_concurrency_race_transport_enabled": true,
+			"upstream_concurrency_race_http_rules": []any{
+				map[string]any{"matcher": "429", "max_retries": float64(4)},
+				map[string]any{"matcher": "5xx", "max_retries": float64(2)},
+			},
+		},
+	}
+	svc := &OpenAIGatewayService{}
+
+	rateLimitErr := svc.newOpenAIStreamFailoverError(c, account, true, "", []byte(`{"type":"response.failed","response":{"error":{"type":"rate_limit_error","message":"rate limited"}}}`), "rate limited")
+	require.Equal(t, http.StatusTooManyRequests, rateLimitErr.StatusCode)
+	require.Equal(t, "429", rateLimitErr.RetryRuleKey)
+	require.Equal(t, 4, rateLimitErr.RetryRuleLimit)
+	require.False(t, rateLimitErr.RetryRuleTransport)
+
+	capacityErr := svc.newOpenAIStreamFailoverError(c, account, true, "", []byte(`{"type":"response.failed","response":{"error":{"code":"server_is_overloaded","message":"server is overloaded"}}}`), "server is overloaded")
+	require.Equal(t, http.StatusBadGateway, capacityErr.StatusCode)
+	require.Equal(t, "5xx", capacityErr.RetryRuleKey)
+	require.Equal(t, 2, capacityErr.RetryRuleLimit)
+	require.False(t, capacityErr.RetryRuleTransport)
+}
+
 func TestOpenAIPoolRequestFailoverError_NonPoolIgnored(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{

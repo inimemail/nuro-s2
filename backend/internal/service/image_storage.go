@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,25 +55,16 @@ func (u *ImageResultUploader) Rewrite(ctx context.Context, taskID string, result
 	}
 	changed := false
 	for i, item := range items {
-		raw, ok := item["b64_json"]
-		if !ok {
-			continue
-		}
-		var encoded string
-		if err := json.Unmarshal(raw, &encoded); err != nil || strings.TrimSpace(encoded) == "" {
-			return nil, fmt.Errorf("image %d has invalid b64_json", i)
-		}
-		if int64(base64.StdEncoding.DecodedLen(len(encoded))) > u.maxBytes {
-			return nil, fmt.Errorf("image %d exceeds object storage limit", i)
-		}
-		data, err := base64.StdEncoding.DecodeString(encoded)
+		data, contentType, shouldOffload, err := imageResultInlineData(item, u.maxBytes)
 		if err != nil {
-			return nil, fmt.Errorf("decode image %d: %w", i, err)
+			return nil, fmt.Errorf("image %d: %w", i, err)
+		}
+		if !shouldOffload {
+			continue
 		}
 		if int64(len(data)) > u.maxBytes {
 			return nil, fmt.Errorf("image %d exceeds object storage limit", i)
 		}
-		contentType := detectStoredImageContentType(data)
 		key := u.prefix + taskID + "-" + strconv.Itoa(i) + storedImageExtension(contentType)
 		url, err := u.storage.Save(ctx, key, contentType, data)
 		if err != nil {
@@ -90,12 +82,110 @@ func (u *ImageResultUploader) Rewrite(ctx context.Context, taskID string, result
 	return json.Marshal(top)
 }
 
-func detectStoredImageContentType(data []byte) string {
-	contentType := strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0])
-	if strings.HasPrefix(contentType, "image/") {
-		return contentType
+// imageResultInlineData extracts the two inline formats used by OpenAI image
+// task responses: b64_json and data:image/* URLs. Remote URLs are deliberately
+// left untouched because downloading arbitrary upstream content here would
+// turn task completion into a server-side request primitive.
+func imageResultInlineData(item map[string]json.RawMessage, maxBytes int64) ([]byte, string, bool, error) {
+	if raw, ok := item["b64_json"]; ok {
+		var encoded string
+		if err := json.Unmarshal(raw, &encoded); err != nil || strings.TrimSpace(encoded) == "" {
+			return nil, "", false, errors.New("invalid b64_json")
+		}
+		data, err := decodeImageBase64(encoded, maxBytes)
+		if err != nil {
+			return nil, "", false, fmt.Errorf("decode b64_json: %w", err)
+		}
+		contentType, err := validateStoredImageContentType(data)
+		if err != nil {
+			return nil, "", false, fmt.Errorf("validate b64_json: %w", err)
+		}
+		return data, contentType, true, nil
 	}
-	return "image/png"
+	if raw, ok := item["url"]; ok {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, "", false, nil
+		}
+		data, contentType, ok, err := decodeImageDataURL(value, maxBytes)
+		if err != nil {
+			return nil, "", false, err
+		}
+		if ok {
+			contentType, err = validateStoredImageContentType(data)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("validate image data URL: %w", err)
+			}
+		}
+		return data, contentType, ok, nil
+	}
+	return nil, "", false, nil
+}
+
+func decodeImageBase64(encoded string, maxBytes int64) ([]byte, error) {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return nil, errors.New("empty base64 payload")
+	}
+	if maxBytes <= 0 {
+		maxBytes = defaultImageStorageMaxBytes
+	}
+	decode := func(encoding *base64.Encoding) ([]byte, error) {
+		decoder := base64.NewDecoder(encoding, strings.NewReader(encoded))
+		data, err := io.ReadAll(io.LimitReader(decoder, maxBytes+1))
+		if int64(len(data)) > maxBytes {
+			return nil, fmt.Errorf("decoded image exceeds object storage limit of %d bytes", maxBytes)
+		}
+		return data, err
+	}
+	data, err := decode(base64.StdEncoding)
+	if err == nil {
+		return data, nil
+	}
+	// Raw encoding is only valid without padding. Do not trim arbitrary
+	// padding, otherwise malformed values such as "====" become empty data.
+	if strings.Contains(encoded, "=") {
+		return nil, err
+	}
+	return decode(base64.RawStdEncoding)
+}
+
+func decodeImageDataURL(value string, maxBytes int64) ([]byte, string, bool, error) {
+	if !strings.HasPrefix(strings.ToLower(value), "data:image/") {
+		return nil, "", false, nil
+	}
+	comma := strings.IndexByte(value, ',')
+	if comma <= len("data:") {
+		return nil, "", false, errors.New("invalid image data URL")
+	}
+	meta, payload := value[len("data:"):comma], value[comma+1:]
+	parts := strings.Split(meta, ";")
+	contentType := strings.ToLower(strings.TrimSpace(parts[0]))
+	base64Encoded := false
+	for _, part := range parts[1:] {
+		if strings.EqualFold(strings.TrimSpace(part), "base64") {
+			base64Encoded = true
+		}
+	}
+	if !base64Encoded || !strings.HasPrefix(contentType, "image/") {
+		return nil, "", false, errors.New("image data URL must use base64 encoding")
+	}
+	if strings.TrimSpace(payload) == "" {
+		return nil, "", false, errors.New("image data URL has empty payload")
+	}
+	data, err := decodeImageBase64(payload, maxBytes)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("decode data URL: %w", err)
+	}
+	return data, contentType, true, nil
+}
+
+func validateStoredImageContentType(data []byte) (string, error) {
+	contentType := strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0])
+	if !strings.HasPrefix(contentType, "image/") {
+		return "", errors.New("decoded payload is not an image")
+	}
+	return contentType, nil
 }
 
 func storedImageExtension(contentType string) string {

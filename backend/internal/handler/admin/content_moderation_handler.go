@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ type contentModerationConfigRequest struct {
 	Mode                 *string                               `json:"mode"`
 	BaseURL              *string                               `json:"base_url"`
 	Model                *string                               `json:"model"`
+	ProxyID              json.RawMessage                       `json:"proxy_id"`
 	APIKey               *string                               `json:"api_key"`
 	APIKeys              *[]string                             `json:"api_keys"`
 	APIKeysMode          string                                `json:"api_keys_mode"`
@@ -53,16 +55,34 @@ type contentModerationConfigRequest struct {
 }
 
 type contentModerationAPIKeyTestRequest struct {
-	APIKeys   []string `json:"api_keys"`
-	BaseURL   string   `json:"base_url"`
-	Model     string   `json:"model"`
-	TimeoutMS int      `json:"timeout_ms"`
-	Prompt    string   `json:"prompt"`
-	Images    []string `json:"images"`
+	APIKeys   []string        `json:"api_keys"`
+	BaseURL   string          `json:"base_url"`
+	Model     string          `json:"model"`
+	TimeoutMS int             `json:"timeout_ms"`
+	ProxyID   json.RawMessage `json:"proxy_id"`
+	Prompt    string          `json:"prompt"`
+	Images    []string        `json:"images"`
 }
 
 type contentModerationHashRequest struct {
 	InputHash string `json:"input_hash"`
+}
+
+// parseOptionalProxyID keeps PATCH semantics: an omitted field leaves the
+// configured proxy unchanged, while null or 0 explicitly clears it.
+func parseOptionalProxyID(raw json.RawMessage) (*int64, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		id := int64(0)
+		return &id, nil
+	}
+	var id int64
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return nil, err
+	}
+	return &id, nil
 }
 
 func (h *ContentModerationHandler) GetConfig(c *gin.Context) {
@@ -80,11 +100,17 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	proxyID, err := parseOptionalProxyID(req.ProxyID)
+	if err != nil {
+		response.BadRequest(c, "Invalid proxy_id: "+err.Error())
+		return
+	}
 	cfg, err := h.service.UpdateConfig(c.Request.Context(), service.UpdateContentModerationConfigInput{
 		Enabled:              req.Enabled,
 		Mode:                 req.Mode,
 		BaseURL:              req.BaseURL,
 		Model:                req.Model,
+		ProxyID:              proxyID,
 		APIKey:               req.APIKey,
 		APIKeys:              req.APIKeys,
 		APIKeysMode:          req.APIKeysMode,
@@ -125,11 +151,17 @@ func (h *ContentModerationHandler) TestAPIKeys(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	proxyID, err := parseOptionalProxyID(req.ProxyID)
+	if err != nil {
+		response.BadRequest(c, "Invalid proxy_id: "+err.Error())
+		return
+	}
 	result, err := h.service.TestAPIKeys(c.Request.Context(), service.TestContentModerationAPIKeysInput{
 		APIKeys:   req.APIKeys,
 		BaseURL:   req.BaseURL,
 		Model:     req.Model,
 		TimeoutMS: req.TimeoutMS,
+		ProxyID:   proxyID,
 		Prompt:    req.Prompt,
 		Images:    req.Images,
 	})

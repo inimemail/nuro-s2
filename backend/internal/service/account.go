@@ -250,7 +250,7 @@ func (a *Account) IsUpstreamBillingProbeEnabled() bool {
 }
 
 func (a *Account) UpstreamBillingGuardLimitForGroup(groupID *int64) (*float64, bool) {
-	if a == nil || groupID == nil || *groupID <= 0 || a.Platform != PlatformOpenAI || a.Type != AccountTypeAPIKey {
+	if a == nil || groupID == nil || *groupID <= 0 || !IsUpstreamBillingProbeIdentity(a.Platform, a.Type) {
 		return nil, false
 	}
 	for i := range a.AccountGroups {
@@ -258,16 +258,22 @@ func (a *Account) UpstreamBillingGuardLimitForGroup(groupID *int64) (*float64, b
 		if binding.GroupID != *groupID {
 			continue
 		}
+		if binding.Group != nil && binding.Group.Platform != a.Platform {
+			return nil, false
+		}
 		return binding.EffectiveUpstreamBillingGuardMaxMultiplier()
 	}
 	return nil, false
 }
 
 func (a *Account) HasUpstreamBillingGuardGroupLimit() bool {
-	if a == nil || a.Platform != PlatformOpenAI || a.Type != AccountTypeAPIKey {
+	if a == nil || !IsUpstreamBillingProbeIdentity(a.Platform, a.Type) {
 		return false
 	}
 	for i := range a.AccountGroups {
+		if a.AccountGroups[i].Group != nil && a.AccountGroups[i].Group.Platform != a.Platform {
+			continue
+		}
 		if _, configured := a.AccountGroups[i].EffectiveUpstreamBillingGuardMaxMultiplier(); configured {
 			return true
 		}
@@ -2594,6 +2600,17 @@ func (a *Account) IsOpenAIWSForceHTTPEnabled() bool {
 		return false
 	}
 	enabled, ok := a.Extra["openai_ws_force_http"].(bool)
+	return ok && enabled
+}
+
+// IsOpenAIResponsesFlattenNamespacesEnabled enables the legacy namespace
+// flattening compatibility path for OAuth Responses forwarding. By default
+// Codex namespaces are preserved for the native OAuth upstream.
+func (a *Account) IsOpenAIResponsesFlattenNamespacesEnabled() bool {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra["openai_responses_flatten_namespaces"].(bool)
 	return ok && enabled
 }
 

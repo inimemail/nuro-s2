@@ -10,7 +10,7 @@ type AccountGroup struct {
 	// compatibility with old API clients and rolling-upgrade scheduler nodes.
 	UpstreamBillingGuardMaxMultiplier *float64
 	// UpstreamBillingGuardOverrideMaxMultiplier is the raw account x group
-	// override. Nil means inherit the OpenAI group's default limit.
+	// override. Nil means inherit the platform group's default limit.
 	UpstreamBillingGuardOverrideMaxMultiplier *float64
 	// GroupUpstreamBillingGuardMaxMultiplier and GroupPolicyLoaded keep the
 	// group default available after scheduler metadata strips the Group object.
@@ -34,7 +34,7 @@ func (ag *AccountGroup) EffectiveUpstreamBillingGuardMaxMultiplier() (*float64, 
 	var groupLimit *float64
 	switch {
 	case ag.Group != nil:
-		if ag.Group.Platform != PlatformOpenAI {
+		if !IsUpstreamBillingProbeIdentity(ag.Group.Platform, AccountTypeAPIKey) {
 			return nil, false
 		}
 		groupLimit = ag.Group.UpstreamBillingGuardMaxMultiplier

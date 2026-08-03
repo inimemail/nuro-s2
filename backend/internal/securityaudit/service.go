@@ -356,6 +356,8 @@ func (s *Service) processTask(parent context.Context, task auditTask) {
 	configVersion := task.configVersion
 	jobID := task.jobID
 	if !task.recovered {
+		// The local audit pipeline is asynchronous. The blocking-only scope flag
+		// must not narrow observe-mode evidence retained after the response.
 		text, messageCount = extractAuditPrompt(task.request)
 		if text == "" {
 			return
@@ -799,12 +801,19 @@ func promptMessageCount(body []byte) int {
 }
 
 func extractAuditPrompt(req Request) (string, int) {
+	return extractAuditPromptWithScope(req, false)
+}
+
+func extractAuditPromptWithScope(req Request, latestOnly bool) (string, int) {
 	if len(req.PromptTexts) > 0 {
 		parts := make([]string, 0, len(req.PromptTexts))
 		for _, value := range req.PromptTexts {
 			if value = strings.TrimSpace(value); value != "" {
 				parts = append(parts, value)
 			}
+		}
+		if latestOnly && len(parts) > 0 {
+			return trimPromptRunes(parts[len(parts)-1], MaxPromptRunes), len(parts)
 		}
 		return trimPromptRunes(strings.Join(parts, "\n"), MaxPromptRunes), len(parts)
 	}
@@ -822,6 +831,9 @@ func extractAuditPrompt(req Request) (string, int) {
 				return true
 			})
 		}
+		if latestOnly && len(parts) > 0 {
+			return trimPromptRunes(strings.TrimSpace(parts[len(parts)-1]), MaxPromptRunes), len(parts)
+		}
 		return trimPromptRunes(strings.TrimSpace(strings.Join(parts, "\n")), MaxPromptRunes), len(parts)
 	}
 	if req.Protocol == "openai_alpha_search" {
@@ -832,9 +844,12 @@ func extractAuditPrompt(req Request) (string, int) {
 				parts = append(parts, value.String())
 			}
 		}
+		if latestOnly && len(parts) > 0 {
+			return trimPromptRunes(strings.TrimSpace(parts[len(parts)-1]), MaxPromptRunes), len(parts)
+		}
 		return trimPromptRunes(strings.TrimSpace(strings.Join(parts, "\n")), MaxPromptRunes), len(parts)
 	}
-	return extractStructuredAuditPrompt(req.Protocol, req.Body)
+	return extractStructuredAuditPromptWithScope(req.Protocol, req.Body, latestOnly)
 }
 
 func formatInt64(value int64) string {

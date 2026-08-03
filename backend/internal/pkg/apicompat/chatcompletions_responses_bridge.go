@@ -1,6 +1,7 @@
 package apicompat
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,13 @@ import (
 	"strings"
 	"time"
 )
+
+const (
+	toolOutputMediaMarker      = "[Tool output media moved to the following user message]"
+	toolOutputMediaAttribution = "[Tool output media for call %s]"
+)
+
+type toolOutputMediaByCallID map[string][]ChatContentPart
 
 // ResponsesToChatCompletionsRequest converts a Responses API request into a
 // Chat Completions request for upstreams that only implement
@@ -203,15 +211,16 @@ func responsesInputToChatMessages(instructions string, inputRaw json.RawMessage)
 		return nil, fmt.Errorf("parse responses input: %w", err)
 	}
 
-	built, err := buildChatMessagesFromItems(messages, rawItems)
+	built, mediaByCallID, err := buildChatMessagesFromItems(messages, rawItems)
 	if err != nil {
 		return nil, err
 	}
-	return normalizeChatMessages(built), nil
+	return normalizeChatMessagesWithToolOutputMedia(built, mediaByCallID), nil
 }
 
-func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessage) ([]ChatMessage, error) {
+func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessage) ([]ChatMessage, toolOutputMediaByCallID, error) {
 	var pendingReasoning string
+	mediaByCallID := make(toolOutputMediaByCallID)
 	for _, raw := range rawItems {
 		raw = bytesTrimSpace(raw)
 		if len(raw) == 0 || string(raw) == "null" {
@@ -227,7 +236,7 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 				pendingReasoning = ""
 				continue
 			}
-			return nil, fmt.Errorf("parse responses input item: %w", err)
+			return nil, nil, fmt.Errorf("parse responses input item: %w", err)
 		}
 
 		role := chatCompletionsBridgeRole(rawString(item["role"]))
@@ -282,14 +291,23 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 			continue
 		case "function_call_output", "custom_tool_call_output", "tool_search_output":
 			outputRaw := bytesTrimSpace(item["output"])
-			outputText := rawString(outputRaw)
-			if outputText == "" && len(outputRaw) > 0 && string(outputRaw) != "null" && string(outputRaw) != `""` {
-				outputText = string(outputRaw)
+			callID := rawString(item["call_id"])
+			delete(mediaByCallID, callID)
+			outputText, media, rewritten := extractToolOutputMedia(outputRaw)
+			if rewritten {
+				if callID != "" {
+					mediaByCallID[callID] = media
+				}
+			} else {
+				outputText = rawString(outputRaw)
+				if outputText == "" && len(outputRaw) > 0 && string(outputRaw) != "null" && string(outputRaw) != `""` {
+					outputText = string(outputRaw)
+				}
 			}
 			content, _ := json.Marshal(outputText)
 			messages = append(messages, ChatMessage{
 				Role:       "tool",
-				ToolCallID: rawString(item["call_id"]),
+				ToolCallID: callID,
 				Content:    content,
 			})
 			pendingReasoning = ""
@@ -302,7 +320,7 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 		case "input_image":
 			content, err := chatContentFromSingleResponsesPart(itemType, item)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			messages = append(messages, ChatMessage{Role: "user", Content: content})
 			pendingReasoning = ""
@@ -322,7 +340,7 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 		}
 		chatContent, err := responsesContentToChatContent(content, role)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		messages = append(messages, ChatMessage{Role: role, Content: chatContent})
 		if role != "assistant" {
@@ -330,7 +348,127 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 		}
 	}
 
-	return messages, nil
+	return messages, mediaByCallID, nil
+}
+
+func extractToolOutputMedia(outputRaw json.RawMessage) (string, []ChatContentPart, bool) {
+	outputRaw = bytesTrimSpace(outputRaw)
+	if len(outputRaw) == 0 || string(outputRaw) == "null" {
+		return "", nil, false
+	}
+	var outputString string
+	if err := json.Unmarshal(outputRaw, &outputString); err == nil {
+		if isToolOutputImageDataURL(outputString) {
+			return toolOutputMediaMarker, []ChatContentPart{toolOutputImagePart(outputString)}, true
+		}
+		nested, ok := decodeToolOutputJSON([]byte(outputString))
+		if !ok {
+			return "", nil, false
+		}
+		rewritten, media, changed := rewriteToolOutputMediaValue(nested)
+		if !changed {
+			return "", nil, false
+		}
+		encoded, err := json.Marshal(rewritten)
+		if err != nil {
+			return "", nil, false
+		}
+		return string(encoded), media, true
+	}
+	value, ok := decodeToolOutputJSON(outputRaw)
+	if !ok {
+		return "", nil, false
+	}
+	rewritten, media, changed := rewriteToolOutputMediaValue(value)
+	if !changed {
+		return "", nil, false
+	}
+	encoded, err := json.Marshal(rewritten)
+	if err != nil {
+		return "", nil, false
+	}
+	return string(encoded), media, true
+}
+
+func decodeToolOutputJSON(raw []byte) (any, bool) {
+	if !json.Valid(raw) {
+		return nil, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func rewriteToolOutputMediaValue(value any) (any, []ChatContentPart, bool) {
+	switch typed := value.(type) {
+	case []any:
+		var media []ChatContentPart
+		changed := false
+		for i, item := range typed {
+			rewritten, itemMedia, itemChanged := rewriteToolOutputMediaValue(item)
+			if !itemChanged {
+				continue
+			}
+			typed[i] = rewritten
+			media = append(media, itemMedia...)
+			changed = true
+		}
+		return typed, media, changed
+	case map[string]any:
+		if imageURL, ok := recognizedToolOutputImageURL(typed); ok {
+			return map[string]any{"type": "input_text", "text": toolOutputMediaMarker}, []ChatContentPart{toolOutputImagePart(imageURL)}, true
+		}
+		content, ok := typed["content"]
+		if !ok {
+			return typed, nil, false
+		}
+		rewritten, media, changed := rewriteToolOutputMediaValue(content)
+		if !changed {
+			return typed, nil, false
+		}
+		typed["content"] = rewritten
+		return typed, media, true
+	default:
+		return value, nil, false
+	}
+}
+
+func recognizedToolOutputImageURL(value map[string]any) (string, bool) {
+	partType, _ := value["type"].(string)
+	if partType != "input_image" && partType != "image_url" {
+		return "", false
+	}
+	switch imageURL := value["image_url"].(type) {
+	case string:
+		return imageURL, strings.TrimSpace(imageURL) != ""
+	case map[string]any:
+		url, _ := imageURL["url"].(string)
+		return url, strings.TrimSpace(url) != ""
+	default:
+		return "", false
+	}
+}
+
+func isToolOutputImageDataURL(value string) bool {
+	const prefix = "data:image/"
+	const separator = ";base64,"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	separatorIndex := strings.Index(value[len(prefix):], separator)
+	if separatorIndex <= 0 {
+		return false
+	}
+	payloadIndex := len(prefix) + separatorIndex + len(separator)
+	return payloadIndex < len(value) && strings.TrimSpace(value[payloadIndex:]) != ""
+}
+
+func toolOutputImagePart(imageURL string) ChatContentPart {
+	return ChatContentPart{Type: "image_url", ImageURL: &ChatImageURL{URL: imageURL}}
 }
 
 func appendAssistantToolCall(messages []ChatMessage, toolCall ChatToolCall, pendingReasoning string) []ChatMessage {
@@ -345,6 +483,10 @@ func appendAssistantToolCall(messages []ChatMessage, toolCall ChatToolCall, pend
 }
 
 func normalizeChatMessages(messages []ChatMessage) []ChatMessage {
+	return normalizeChatMessagesWithToolOutputMedia(messages, nil)
+}
+
+func normalizeChatMessagesWithToolOutputMedia(messages []ChatMessage, mediaByCallID toolOutputMediaByCallID) []ChatMessage {
 	replies := make(map[string]ChatMessage)
 	for _, m := range messages {
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -382,6 +524,19 @@ func normalizeChatMessages(messages []ChatMessage) []ChatMessage {
 			out = append(out, m)
 			for _, tc := range kept {
 				out = append(out, replies[tc.ID])
+			}
+			var mediaParts []ChatContentPart
+			for _, tc := range kept {
+				media := mediaByCallID[tc.ID]
+				if len(media) == 0 {
+					continue
+				}
+				mediaParts = append(mediaParts, ChatContentPart{Type: "text", Text: fmt.Sprintf(toolOutputMediaAttribution, tc.ID)})
+				mediaParts = append(mediaParts, media...)
+			}
+			if len(mediaParts) > 0 {
+				content, _ := json.Marshal(mediaParts)
+				out = append(out, ChatMessage{Role: "user", Content: content})
 			}
 		default:
 			out = append(out, m)

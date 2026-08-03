@@ -212,6 +212,14 @@ func TestExtractAuditPromptPrioritizesLatestUserWithinLimit(t *testing.T) {
 	}
 }
 
+func TestExtractAuditPromptLatestOnlyScope(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"system","content":"policy"},{"role":"user","content":"old input"},{"role":"assistant","content":"context"},{"role":"user","content":"latest input"}]}`)
+	text, count := extractAuditPromptWithScope(Request{Protocol: "openai_chat_completions", Body: body}, true)
+	if text != "latest input" || count != 4 {
+		t.Fatalf("latest-only extraction=(%q,%d)", text, count)
+	}
+}
+
 func TestRedactPreviewRemovesPostgresUnsafeControlsBeforeRedaction(t *testing.T) {
 	const raw = "before\x00\x01\n\tapi_key=secret-value after"
 	preview := redactPreview(raw)
@@ -533,10 +541,21 @@ func TestProcessTaskEncryptsTransientRedisPayloadAndDeletesIt(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
+	guardPrompt := make(chan string, 1)
 	var releaseOnce sync.Once
 	releaseGuard := func() { releaseOnce.Do(func() { close(release) }) }
 	defer releaseGuard()
 	guard := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || len(payload.Messages) == 0 {
+			guardPrompt <- ""
+		} else {
+			guardPrompt <- payload.Messages[0].Content
+		}
 		close(started)
 		<-release
 		w.Header().Set("Content-Type", "application/json")
@@ -553,20 +572,26 @@ func TestProcessTaskEncryptsTransientRedisPayloadAndDeletesIt(t *testing.T) {
 
 	svc := NewService(nil, db, rdb, auditEncryptor{})
 	svc.SetFeatureEnabled(true)
-	svc.storeConfig(enabledAuditTestConfig(guard.URL))
+	cfg := enabledAuditTestConfig(guard.URL)
+	cfg.BlockingLatestTurnOnly = true
+	svc.storeConfig(cfg)
+	const priorPrompt = "prior-audit-evidence-must-remain-visible"
 	const prompt = "audit-plaintext-must-not-live-in-redis"
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		svc.processTask(context.Background(), auditTask{request: Request{
 			RequestID: "req-1", Protocol: "openai_chat_completions", Stage: "http",
-			Body: []byte(`{"messages":[{"role":"user","content":"` + prompt + `"}]}`),
+			Body: []byte(`{"messages":[{"role":"user","content":"` + priorPrompt + `"},{"role":"user","content":"` + prompt + `"}]}`),
 		}})
 	}()
 	select {
 	case <-started:
 	case <-time.After(3 * time.Second):
 		t.Fatal("guard request did not start")
+	}
+	if audited := <-guardPrompt; !strings.Contains(audited, priorPrompt) || !strings.Contains(audited, prompt) {
+		t.Fatalf("asynchronous audit scope lost transcript evidence: %q", audited)
 	}
 	key := "sub2api:prompt_audit:payload:42"
 	ciphertext, err := mr.Get(key)

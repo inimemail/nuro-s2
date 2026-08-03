@@ -54,6 +54,19 @@ func TestGatewayHandlerSubmitUsageRecordTask_WithoutPoolSyncFallback(t *testing.
 	require.True(t, called.Load())
 }
 
+func TestGatewayHandlerSubmitUsageRecordTask_StoppedPoolSyncFallback(t *testing.T) {
+	pool := newUsageRecordTestPool(t)
+	pool.Stop()
+	h := &GatewayHandler{usageRecordWorkerPool: pool}
+	var called atomic.Bool
+
+	h.submitUsageRecordTask(context.Background(), func(context.Context) {
+		called.Store(true)
+	})
+
+	require.True(t, called.Load())
+}
+
 func TestGatewayHandlerSubmitUsageRecordTask_NilTask(t *testing.T) {
 	h := &GatewayHandler{}
 	require.NotPanics(t, func() {
@@ -105,6 +118,48 @@ func TestOpenAIGatewayHandlerSubmitUsageRecordTask_WithoutPoolSyncFallback(t *te
 	})
 
 	require.True(t, called.Load())
+}
+
+func TestOpenAIGatewayHandlerSubmitUsageRecordTask_StoppedPoolSyncFallback(t *testing.T) {
+	pool := newUsageRecordTestPool(t)
+	pool.Stop()
+	h := &OpenAIGatewayHandler{usageRecordWorkerPool: pool}
+	var called atomic.Bool
+
+	h.submitUsageRecordTask(context.Background(), func(context.Context) {
+		called.Store(true)
+	})
+
+	require.True(t, called.Load())
+}
+
+func TestGatewayHandlerSubmitUsageRecordTask_DropOverflowRemainsDropped(t *testing.T) {
+	pool := service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{
+		WorkerCount:    1,
+		QueueSize:      1,
+		TaskTimeout:    time.Minute,
+		OverflowPolicy: "drop",
+	})
+	t.Cleanup(pool.Stop)
+	h := &GatewayHandler{usageRecordWorkerPool: pool}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	require.Equal(t, service.UsageRecordSubmitModeEnqueued, pool.Submit(func(context.Context) {
+		close(started)
+		<-release
+	}))
+	<-started
+	require.Equal(t, service.UsageRecordSubmitModeEnqueued, pool.Submit(func(context.Context) {
+		<-release
+	}))
+
+	var called atomic.Bool
+	h.submitUsageRecordTask(context.Background(), func(context.Context) {
+		called.Store(true)
+	})
+	require.False(t, called.Load())
 }
 
 func TestOpenAIGatewayHandlerSubmitUsageRecordTask_NilTask(t *testing.T) {

@@ -944,6 +944,60 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
 			}
+			submitGatewayUsage := func(forwardResult *service.ForwardResult) {
+				if forwardResult == nil || !gatewayForwardResultHasBillableUsage(forwardResult) {
+					return
+				}
+				// The worker may run after this failover loop has selected another
+				// account or fallback group. Capture request-local values before
+				// enqueueing so usage can never be attributed to a later attempt.
+				recordAccount := account
+				recordAPIKey := currentAPIKey
+				recordSubscription := currentSubscription
+				recordParsedRequest := *parsedReq
+				recordParsedRequest.Body = append([]byte(nil), parsedReq.Body...)
+				recordBody := append([]byte(nil), body...)
+				recordForwardErr := err
+				recordForceCacheBilling := fs.ForceCacheBilling
+				recordChannelUsageFields := channelMapping.ToUsageFields(reqModel, forwardResult.UpstreamModel)
+				recordUserID := subject.UserID
+				recordAPIKeyID := currentAPIKey.ID
+				recordAccountID := account.ID
+				userAgent := c.GetHeader("User-Agent")
+				sessionID := service.ExtractClientSessionID(c)
+				clientIP := ip.GetClientIP(c)
+				requestPayloadHash := service.HashUsageRequestPayload(recordBody)
+				inboundEndpoint := GetInboundEndpoint(c)
+				upstreamEndpoint := GetUpstreamEndpoint(c, recordAccount.Platform)
+				if forwardResult.ReasoningEffort == nil {
+					forwardResult.ReasoningEffort = service.NormalizeClaudeOutputEffort(recordParsedRequest.OutputEffort)
+				}
+				quotaPlatform := service.QuotaPlatform(c.Request.Context(), recordAPIKey)
+				successfulForward, _ := classifyGatewayForwardResult(forwardResult, recordForwardErr)
+				h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+					if recordErr := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+						Result:              forwardResult,
+						ParsedRequest:       &recordParsedRequest,
+						QuotaPlatform:       quotaPlatform,
+						APIKey:              recordAPIKey,
+						User:                recordAPIKey.User,
+						Account:             recordAccount,
+						Subscription:        recordSubscription,
+						InboundEndpoint:     inboundEndpoint,
+						UpstreamEndpoint:    upstreamEndpoint,
+						UserAgent:           userAgent,
+						IPAddress:           clientIP,
+						SessionID:           sessionID,
+						RequestPayloadHash:  requestPayloadHash,
+						ForceCacheBilling:   recordForceCacheBilling,
+						SkipAccountLastUsed: !successfulForward,
+						APIKeyService:       h.apiKeyService,
+						ChannelUsageFields:  recordChannelUsageFields,
+					}); recordErr != nil {
+						logger.L().With(zap.String("component", "handler.gateway.messages"), zap.Int64("user_id", recordUserID), zap.Int64("api_key_id", recordAPIKeyID), zap.Int64("account_id", recordAccountID)).Error("gateway.record_usage_failed", zap.Error(recordErr))
+					}
+				})
+			}
 			settleForwardError := err != nil && shouldSettleGatewayForwardResultAfterError(c, writerSizeBeforeForward, result)
 			if err != nil && !settleForwardError {
 				// Beta policy block: return 400 immediately, no failover
@@ -1091,50 +1145,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 			}
 
-			// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
-			userAgent := c.GetHeader("User-Agent")
-			sessionID := service.ExtractClientSessionID(c)
-			clientIP := ip.GetClientIP(c)
-			requestPayloadHash := service.HashUsageRequestPayload(body)
-			inboundEndpoint := GetInboundEndpoint(c)
-			upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
-
-			if result.ReasoningEffort == nil {
-				result.ReasoningEffort = service.NormalizeClaudeOutputEffort(parsedReq.OutputEffort)
-			}
-
-			// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
-			quotaPlatform := service.QuotaPlatform(c.Request.Context(), currentAPIKey)
-			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-					Result:              result,
-					ParsedRequest:       parsedReq,
-					QuotaPlatform:       quotaPlatform,
-					APIKey:              currentAPIKey,
-					User:                currentAPIKey.User,
-					Account:             account,
-					Subscription:        currentSubscription,
-					InboundEndpoint:     inboundEndpoint,
-					UpstreamEndpoint:    upstreamEndpoint,
-					UserAgent:           userAgent,
-					IPAddress:           clientIP,
-					SessionID:           sessionID,
-					RequestPayloadHash:  requestPayloadHash,
-					ForceCacheBilling:   fs.ForceCacheBilling,
-					SkipAccountLastUsed: !successfulOutcome,
-					APIKeyService:       h.apiKeyService,
-					ChannelUsageFields:  channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
-				}); err != nil {
-					logger.L().With(
-						zap.String("component", "handler.gateway.messages"),
-						zap.Int64("user_id", subject.UserID),
-						zap.Int64("api_key_id", currentAPIKey.ID),
-						zap.Any("group_id", currentAPIKey.GroupID),
-						zap.String("model", reqModel),
-						zap.Int64("account_id", account.ID),
-					).Error("gateway.record_usage_failed", zap.Error(err))
-				}
-			})
+			submitGatewayUsage(result)
 			return
 		}
 		if !retryWithFallback {
@@ -2361,10 +2372,14 @@ func (h *GatewayHandler) submitUsageRecordTask(parent context.Context, task serv
 	}
 	task = wrapUsageRecordTaskContext(parent, task)
 	if h.usageRecordWorkerPool != nil {
-		h.usageRecordWorkerPool.Submit(task)
-		return
+		if mode := h.usageRecordWorkerPool.Submit(task); mode != service.UsageRecordSubmitModeDroppedStopped {
+			return
+		}
+		logger.L().With(
+			zap.String("component", "handler.gateway.messages"),
+		).Warn("gateway.usage_record_task_stopped_sync_fallback")
 	}
-	// 回退路径：worker 池未注入时同步执行，避免退回到无界 goroutine 模式。
+	// The nil/stopped fallback remains bounded and avoids losing shutdown-window billing.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	defer func() {

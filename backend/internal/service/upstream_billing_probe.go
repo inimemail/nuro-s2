@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,9 +25,10 @@ import (
 )
 
 const (
-	UpstreamBillingProbeExtraKey        = "upstream_billing_probe"
-	UpstreamBillingProbeEnabledExtraKey = "upstream_billing_probe_enabled"
-	UpstreamBillingProbeMaxBatchSize    = 20
+	UpstreamBillingProbeExtraKey           = "upstream_billing_probe"
+	UpstreamBillingProbeEnabledExtraKey    = "upstream_billing_probe_enabled"
+	UpstreamBillingRateSyncEnabledExtraKey = "upstream_billing_rate_sync_enabled"
+	UpstreamBillingProbeMaxBatchSize       = 20
 
 	upstreamBillingProbeDefaultIntervalSeconds = 5
 	upstreamBillingProbeMinIntervalSeconds     = 1
@@ -35,9 +38,17 @@ const (
 	upstreamBillingProbeConcurrency            = 16
 	upstreamBillingProbeMaxBackoff             = 24 * time.Hour
 	upstreamBillingProbeMinFailureBackoff      = 5 * time.Second
-	upstreamBillingProbeUnsupportedRetry       = 5 * time.Minute
+	upstreamBillingProbeUnsupportedDelayFactor = 8
+	upstreamBillingProbeAccountRateScale       = 10000.0
+	upstreamBillingRateSyncMaxMultiplier       = 100.0
 	upstreamBillingProbeSettingsPollInterval   = 5 * time.Second
 	upstreamBillingProbeLeaderLockKey          = "upstream:billing:probe:leader"
+)
+
+const (
+	UpstreamBillingProbeStatusOK          = "ok"
+	UpstreamBillingProbeStatusFailed      = "failed"
+	UpstreamBillingProbeStatusUnsupported = "unsupported"
 )
 
 var (
@@ -45,7 +56,7 @@ var (
 		"UPSTREAM_BILLING_PROBE_UNAVAILABLE", "upstream billing probe is unavailable",
 	)
 	ErrUpstreamBillingProbeAccountInvalid = infraerrors.BadRequest(
-		"UPSTREAM_BILLING_PROBE_ACCOUNT_INVALID", "account is not an OpenAI API key account",
+		"UPSTREAM_BILLING_PROBE_ACCOUNT_INVALID", "account is not a supported API key account",
 	)
 	ErrUpstreamBillingProbeIdentityChanged = infraerrors.Conflict(
 		"UPSTREAM_BILLING_PROBE_IDENTITY_CHANGED", "account identity changed during upstream billing probe; retry the probe",
@@ -54,16 +65,22 @@ var (
 		"UPSTREAM_BILLING_GUARD_REQUIRES_AUTO_PROBE", "enable account automatic billing probe before enabling the rate guard",
 	)
 	ErrUpstreamBillingGuardRequiresGroupLimit = infraerrors.BadRequest(
-		"UPSTREAM_BILLING_GUARD_REQUIRES_GROUP_LIMIT", "upstream billing guard requires at least one bound OpenAI group with a configured limit",
+		"UPSTREAM_BILLING_GUARD_REQUIRES_GROUP_LIMIT", "upstream billing guard requires at least one bound supported-platform group with a configured limit",
 	)
 	ErrInvalidUpstreamBillingGuardGroupLimits = infraerrors.BadRequest(
-		"INVALID_UPSTREAM_BILLING_GUARD_GROUP_LIMITS", "billing guard overrides must target bound OpenAI groups and be finite, non-negative, and no greater than the group limit",
+		"INVALID_UPSTREAM_BILLING_GUARD_GROUP_LIMITS", "billing guard overrides must target bound supported-platform groups and be finite, non-negative, and no greater than the group limit",
 	)
 	ErrUpstreamBillingProbeRequiredByGuard = infraerrors.Conflict(
 		"UPSTREAM_BILLING_PROBE_REQUIRED_BY_GUARD", "disable the upstream billing guard before disabling automatic probe",
 	)
 	ErrInvalidUpstreamBillingProbeEnabled = infraerrors.BadRequest(
 		"INVALID_UPSTREAM_BILLING_PROBE_ENABLED", "upstream_billing_probe_enabled must be a boolean",
+	)
+	ErrUpstreamBillingRateSyncConflict = infraerrors.Conflict(
+		"UPSTREAM_BILLING_RATE_SYNC_CONFLICT", "account rate multiplier cannot be changed while upstream billing rate sync is enabled",
+	)
+	ErrUpstreamBillingRateSyncBulkConflict = infraerrors.Conflict(
+		"UPSTREAM_BILLING_RATE_SYNC_BULK_CONFLICT", "account rate multiplier cannot be changed in bulk while upstream billing rate sync is enabled",
 	)
 )
 
@@ -89,15 +106,16 @@ type UpstreamBillingGuardResult struct {
 }
 
 type UpstreamBillingProbeSnapshot struct {
-	Status        string         `json:"status"`
-	Data          map[string]any `json:"data,omitempty"`
-	ReceivedAt    *time.Time     `json:"received_at,omitempty"`
-	FreshUntil    *time.Time     `json:"fresh_until,omitempty"`
-	LastAttemptAt time.Time      `json:"last_attempt_at"`
-	NextProbeAt   time.Time      `json:"next_probe_at"`
-	FailureCount  int            `json:"failure_count,omitempty"`
-	HTTPStatus    int            `json:"http_status,omitempty"`
-	LastError     string         `json:"last_error,omitempty"`
+	Status               string         `json:"status"`
+	Data                 map[string]any `json:"data,omitempty"`
+	ReceivedAt           *time.Time     `json:"received_at,omitempty"`
+	FreshUntil           *time.Time     `json:"fresh_until,omitempty"`
+	LastAttemptAt        time.Time      `json:"last_attempt_at"`
+	NextProbeAt          time.Time      `json:"next_probe_at"`
+	FailureCount         int            `json:"failure_count,omitempty"`
+	HTTPStatus           int            `json:"http_status,omitempty"`
+	LastError            string         `json:"last_error,omitempty"`
+	SyncedRateMultiplier *float64       `json:"synced_rate_multiplier,omitempty"`
 }
 
 type UpstreamBillingProbeResult struct {
@@ -124,7 +142,7 @@ type upstreamBillingProbeResponse struct {
 }
 
 type upstreamBillingProbeSnapshotWriter interface {
-	UpdateUpstreamBillingProbeSnapshot(context.Context, *Account, *UpstreamBillingProbeSnapshot, *float64) (bool, error)
+	UpdateUpstreamBillingProbeSnapshot(context.Context, *Account, *UpstreamBillingProbeSnapshot, *float64, *float64) (bool, error)
 }
 
 type upstreamBillingProbeEnabledWriter interface {
@@ -554,13 +572,19 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 	if s.accountTestService == nil || s.accountTestService.httpUpstream == nil {
 		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "transport_unavailable")
 	}
-	apiKey := account.GetOpenAIApiKey()
+	apiKey := account.GetCredential("api_key")
 	if apiKey == "" {
 		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "missing_api_key")
 	}
-	baseURL := account.GetOpenAIBaseURL()
-	if baseURL == "" {
-		baseURL = "https://api.openai.com"
+	baseURL := account.GetCredential("base_url")
+	if account.Platform == PlatformOpenAI {
+		if baseURL == "" {
+			baseURL = "https://api.openai.com"
+		}
+	} else if upstreamBillingProbeTargetIsOfficialAPI(baseURL) {
+		// Official provider APIs do not expose the sub2api billing convention.
+		// Avoid periodically sending a real API key to a guaranteed 404 path.
+		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "unsupported")
 	}
 	normalized, err := s.accountTestService.validateUpstreamBaseURL(baseURL)
 	if err != nil {
@@ -579,7 +603,11 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 	if err != nil {
 		return s.persistFailure(ctx, account, intervalSeconds, now, 0, "request_build_failed")
 	}
-	reqCtx := WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileBillingProbe)
+	profile := HTTPUpstreamProfileDefault
+	if account.Platform == PlatformOpenAI {
+		profile = HTTPUpstreamProfileBillingProbe
+	}
+	reqCtx := WithHTTPUpstreamProfile(req.Context(), profile)
 	req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(reqCtx))
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -624,8 +652,33 @@ func (s *UpstreamBillingProbeService) probe(ctx context.Context, account *Accoun
 		Status: "ok", Data: data, ReceivedAt: &receivedAt, FreshUntil: &freshUntil,
 		LastAttemptAt: now, NextProbeAt: now.Add(time.Duration(intervalSeconds) * time.Second), HTTPStatus: resp.StatusCode,
 	}
-	if err := s.updateSnapshot(ctx, account, snapshot, &observedMultiplier); err != nil {
+	var syncRate *float64
+	previousRate := account.BillingRateMultiplier()
+	if upstreamBillingRateSyncEnabled(account) {
+		if value, valid := upstreamBillingProbeSyncRate(data); valid {
+			syncRate = &value
+			snapshot.SyncedRateMultiplier = &value
+		} else {
+			declared, _ := resolveAccountExtraNumber(data, "resolved_rate_multiplier")
+			slog.Warn("upstream_billing_rate_sync_rejected",
+				"source", "upstream_billing_probe",
+				"account_id", account.ID,
+				"declared_resolved_rate_multiplier", declared,
+				"max_rate_multiplier", upstreamBillingRateSyncMaxMultiplier,
+				"current_rate_multiplier", previousRate,
+			)
+		}
+	}
+	if err := s.updateSnapshot(ctx, account, snapshot, &observedMultiplier, syncRate); err != nil {
 		return nil, err
+	}
+	if syncRate != nil {
+		slog.Info("upstream_billing_rate_sync_applied",
+			"source", "upstream_billing_probe",
+			"account_id", account.ID,
+			"old_rate_multiplier", previousRate,
+			"new_rate_multiplier", *syncRate,
+		)
 	}
 	return snapshot, nil
 }
@@ -647,18 +700,18 @@ func (s *UpstreamBillingProbeService) persistFailure(ctx context.Context, accoun
 	if previous != nil {
 		snapshot.Data, snapshot.ReceivedAt, snapshot.FreshUntil = previous.Data, previous.ReceivedAt, previous.FreshUntil
 	}
-	if err := s.updateSnapshot(ctx, account, snapshot, nil); err != nil {
+	if err := s.updateSnapshot(ctx, account, snapshot, nil, nil); err != nil {
 		return nil, err
 	}
 	return snapshot, nil
 }
 
-func (s *UpstreamBillingProbeService) updateSnapshot(ctx context.Context, account *Account, snapshot *UpstreamBillingProbeSnapshot, observedMultiplier *float64) error {
+func (s *UpstreamBillingProbeService) updateSnapshot(ctx context.Context, account *Account, snapshot *UpstreamBillingProbeSnapshot, observedMultiplier, syncRate *float64) error {
 	writer, ok := s.accountRepo.(upstreamBillingProbeSnapshotWriter)
 	if !ok {
 		return ErrUpstreamBillingProbeUnavailable
 	}
-	_, err := writer.UpdateUpstreamBillingProbeSnapshot(ctx, account, snapshot, observedMultiplier)
+	_, err := writer.UpdateUpstreamBillingProbeSnapshot(ctx, account, snapshot, observedMultiplier, syncRate)
 	return err
 }
 
@@ -668,6 +721,18 @@ func billingMultiplierFromProbeData(data map[string]any) (float64, bool) {
 	}
 	value, ok := data["effective_rate_multiplier"].(float64)
 	return value, ok && value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func upstreamBillingProbeSyncRate(data map[string]any) (float64, bool) {
+	value, ok := resolveAccountExtraNumber(data, "resolved_rate_multiplier")
+	if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+	rounded := math.Round(value*upstreamBillingProbeAccountRateScale) / upstreamBillingProbeAccountRateScale
+	if rounded <= 0 || rounded > upstreamBillingRateSyncMaxMultiplier {
+		return 0, false
+	}
+	return rounded, true
 }
 
 func parseUpstreamBillingProbeResponse(body []byte) (map[string]any, error) {
@@ -774,8 +839,11 @@ func nextUpstreamBillingProbeDelay(intervalSeconds, _ int) time.Duration {
 
 func nextUpstreamBillingProbeDelayForStatus(intervalSeconds, failureCount int, status string) time.Duration {
 	delay := nextUpstreamBillingProbeDelay(intervalSeconds, failureCount)
-	if status == "unsupported" && delay < upstreamBillingProbeUnsupportedRetry {
-		return upstreamBillingProbeUnsupportedRetry
+	if status == "unsupported" && delay < upstreamBillingProbeMaxBackoff {
+		delay *= upstreamBillingProbeUnsupportedDelayFactor
+		if delay > upstreamBillingProbeMaxBackoff {
+			return upstreamBillingProbeMaxBackoff
+		}
 	}
 	return delay
 }
@@ -791,8 +859,58 @@ func normalizedUpstreamBillingProbeNextAt(snapshot *UpstreamBillingProbeSnapshot
 	return nextProbeAt
 }
 
+// IsUpstreamBillingProbeIdentity is the single eligibility predicate for the
+// key-scoped /v1/sub2api/billing convention. OAuth and service credentials do
+// not expose a static API key and must never enter this path.
+func IsUpstreamBillingProbeIdentity(platform, accountType string) bool {
+	switch platform {
+	case PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformGrok, PlatformAntigravity:
+		return accountType == AccountTypeAPIKey
+	default:
+		return false
+	}
+}
+
 func isUpstreamBillingProbeAccount(account *Account) bool {
-	return account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey
+	return account != nil && IsUpstreamBillingProbeIdentity(account.Platform, account.Type)
+}
+
+var upstreamBillingProbeOfficialAPIDomains = []string{
+	"anthropic.com",
+	"googleapis.com",
+	"x.ai",
+	"grok.com",
+	"openai.com",
+	"ollama.com",
+}
+
+func upstreamBillingRateSyncEnabled(account *Account) bool {
+	if account == nil || account.Extra == nil || !account.IsUpstreamBillingProbeEnabled() {
+		return false
+	}
+	enabled, ok := account.Extra[UpstreamBillingRateSyncEnabledExtraKey].(bool)
+	return ok && enabled
+}
+
+func upstreamBillingProbeTargetIsOfficialAPI(baseURL string) bool {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return true
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "" {
+		return true
+	}
+	for _, domain := range upstreamBillingProbeOfficialAPIDomains {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *UpstreamBillingProbeService) currentTime() time.Time {

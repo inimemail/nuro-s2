@@ -210,18 +210,29 @@ func (v *ClaudeCodeValidator) hasClaudeCodeSystemPrompt(body map[string]any) boo
 }
 
 func isClaudeCodeSecurityMonitorPrompt(systemEntries []any) bool {
-	if len(systemEntries) != 1 {
-		return false
+	for _, raw := range systemEntries {
+		entry, ok := raw.(map[string]any)
+		if !ok || entry["type"] != "text" {
+			continue
+		}
+		text, ok := entry["text"].(string)
+		if !ok || len(text) < claudeCodeSecurityMonitorPromptMinLen || !strings.HasPrefix(text, claudeCodeSecurityMonitorPromptPrefix) {
+			continue
+		}
+		if hasAllClaudeCodeSecurityMonitorMarkers(text) {
+			return true
+		}
 	}
-	entry, ok := systemEntries[0].(map[string]any)
-	if !ok || entry["type"] != "text" {
-		return false
-	}
-	text, ok := entry["text"].(string)
-	if !ok || len(text) < claudeCodeSecurityMonitorPromptMinLen || !strings.HasPrefix(text, claudeCodeSecurityMonitorPromptPrefix) {
-		return false
-	}
-	for _, marker := range []string{"## Threat Model", "- `<transcript>`:", "## HARD BLOCK", "## SOFT BLOCK", "## Classification Process", "## Output Format", "<block>yes</block>", "<block>no</block>"} {
+	return false
+}
+
+var claudeCodeSecurityMonitorMarkers = []string{
+	"## Threat Model", "- `<transcript>`:", "## HARD BLOCK", "## SOFT BLOCK",
+	"## Classification Process", "## Output Format", "<block>yes</block>", "<block>no</block>",
+}
+
+func hasAllClaudeCodeSecurityMonitorMarkers(text string) bool {
+	for _, marker := range claudeCodeSecurityMonitorMarkers {
 		if !strings.Contains(text, marker) {
 			return false
 		}

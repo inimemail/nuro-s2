@@ -334,6 +334,7 @@ type CreateAccountInput struct {
 	GroupIDs           []int64
 	ExpiresAt          *int64
 	AutoPauseOnExpired *bool
+	ProbeEnabled       *bool
 	// SkipDefaultGroupBind prevents auto-binding to platform default group when GroupIDs is empty.
 	SkipDefaultGroupBind bool
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.
@@ -368,6 +369,8 @@ type UpdateAccountInput struct {
 	UpstreamBillingGuardGroupLimits *map[int64]float64
 	ExpiresAt                       *int64
 	AutoPauseOnExpired              *bool
+	ProbeEnabled                    *bool
+	RateSyncEnabled                 *bool
 	SkipMixedChannelCheck           bool // 跳过混合渠道检查（用户已确认风险）
 }
 
@@ -387,6 +390,7 @@ type BulkUpdateAccountsInput struct {
 	Credentials     map[string]any
 	Extra           map[string]any
 	ExtraRemoveKeys []string
+	ProbeEnabled    *bool
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.
 	// This should only be set when the caller has explicitly confirmed the risk.
 	SkipMixedChannelCheck bool
@@ -2057,10 +2061,10 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	}
 	guardLimit := input.UpstreamBillingGuardMaxMultiplier
 	if guardLimit != nil {
-		if platform != PlatformOpenAI {
+		if !IsUpstreamBillingProbeIdentity(platform, AccountTypeAPIKey) {
 			return nil, infraerrors.BadRequest(
 				"UPSTREAM_BILLING_GUARD_GROUP_PLATFORM_UNSUPPORTED",
-				"upstream billing guard is only supported for openai groups",
+				"upstream billing guard is only supported for API-key billing probe platforms",
 			)
 		}
 		if *guardLimit < 0 || math.IsNaN(*guardLimit) || math.IsInf(*guardLimit, 0) {
@@ -2131,7 +2135,6 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	if err := ValidatePeakRateConfig(subscriptionType, peakRateEnabled, peakStart, peakEnd, peakRateMultiplier); err != nil {
 		return nil, err
 	}
-
 	// 校验降级分组
 	if input.FallbackGroupID != nil {
 		if err := s.validateFallbackGroup(ctx, 0, *input.FallbackGroupID); err != nil {
@@ -2388,10 +2391,10 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.UpstreamBillingGuardMaxMultiplier != nil {
 		guardLimit := *input.UpstreamBillingGuardMaxMultiplier
 		if guardLimit != nil {
-			if group.Platform != PlatformOpenAI {
+			if !IsUpstreamBillingProbeIdentity(group.Platform, AccountTypeAPIKey) {
 				return nil, infraerrors.BadRequest(
 					"UPSTREAM_BILLING_GUARD_GROUP_PLATFORM_UNSUPPORTED",
-					"upstream billing guard is only supported for openai groups",
+					"upstream billing guard is only supported for API-key billing probe platforms",
 				)
 			}
 			if *guardLimit < 0 || math.IsNaN(*guardLimit) || math.IsInf(*guardLimit, 0) {
@@ -2403,7 +2406,7 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		}
 		group.UpstreamBillingGuardMaxMultiplier = guardLimit
 	}
-	if group.Platform != PlatformOpenAI {
+	if !IsUpstreamBillingProbeIdentity(group.Platform, AccountTypeAPIKey) {
 		group.UpstreamBillingGuardMaxMultiplier = nil
 	}
 	if input.RateMultiplier != nil {
@@ -2510,7 +2513,6 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	group.PeakStart = peakStart
 	group.PeakEnd = peakEnd
 	group.PeakRateMultiplier = peakRateMultiplier
-
 	// Claude Code 客户端限制
 	if input.ClaudeCodeOnly != nil {
 		group.ClaudeCodeOnly = *input.ClaudeCodeOnly
@@ -3257,7 +3259,29 @@ func normalizeGrokMediaEligibilityUpdateExtra(account *Account, input *UpdateAcc
 	return normalized, nil
 }
 
+func reconcileUpstreamBillingProbeEnabled(extra map[string]any, explicit *bool) (*bool, error) {
+	raw, exists := extra[UpstreamBillingProbeEnabledExtraKey]
+	if !exists {
+		return explicit, nil
+	}
+	enabled, ok := raw.(bool)
+	if !ok {
+		return nil, ErrInvalidUpstreamBillingProbeEnabled
+	}
+	if explicit != nil && *explicit != enabled {
+		return nil, infraerrors.BadRequest(
+			"CONFLICTING_UPSTREAM_BILLING_PROBE_ENABLED",
+			"conflicting upstream_billing_probe_enabled values",
+		)
+	}
+	return &enabled, nil
+}
+
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	requestedProbeEnabled, err := reconcileUpstreamBillingProbeEnabled(input.Extra, input.ProbeEnabled)
+	if err != nil {
+		return nil, err
+	}
 	accountExtra, err := normalizeOpenAILongContextBillingExtra(input.Platform, input.Extra)
 	if err != nil {
 		return nil, err
@@ -3270,8 +3294,12 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	// client-provided snapshot on create; only the tri-state override is
 	// administrator input.
 	if accountExtra != nil {
+		accountExtra = maps.Clone(accountExtra)
 		delete(accountExtra, GrokBillingSnapshotExtraKey)
 		delete(accountExtra, GrokQuotaSnapshotExtraKey)
+		delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
+		delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
+		delete(accountExtra, UpstreamBillingProbeExtraKey)
 	}
 	// 绑定分组
 	groupIDs := input.GroupIDs
@@ -3311,6 +3339,15 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		Priority:    input.Priority,
 		Status:      StatusActive,
 		Schedulable: true,
+	}
+	if requestedProbeEnabled != nil && *requestedProbeEnabled {
+		if !isUpstreamBillingProbeAccount(account) {
+			return nil, ErrUpstreamBillingProbeAccountInvalid
+		}
+		if account.Extra == nil {
+			account.Extra = make(map[string]any)
+		}
+		account.Extra[UpstreamBillingProbeEnabledExtraKey] = true
 	}
 	// 预计算固定时间重置的下次重置时间
 	if account.Extra != nil {
@@ -3388,7 +3425,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if input.Type != "" {
 		effectiveAccountType = input.Type
 	}
-	guardCapableAccount := account.Platform == PlatformOpenAI && effectiveAccountType == AccountTypeAPIKey
+	requestedProbeEnabledUpdate := input.ProbeEnabled
+	requestedRateSyncEnabledUpdate := input.RateSyncEnabled
+	currentProbeEnabled := account.IsUpstreamBillingProbeEnabled()
+	currentRateSyncEnabled := upstreamBillingRateSyncEnabled(account)
+	guardCapableAccount := IsUpstreamBillingProbeIdentity(account.Platform, effectiveAccountType)
 	hasConfiguredGuardGroup := func(groupIDs []int64) (bool, error) {
 		selected := make(map[int64]struct{}, len(groupIDs))
 		for _, groupID := range groupIDs {
@@ -3402,7 +3443,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 				if loadErr != nil {
 					return false, loadErr
 				}
-				if group != nil && group.Platform == PlatformOpenAI && group.UpstreamBillingGuardMaxMultiplier != nil {
+				if group != nil && group.Platform == account.Platform && IsUpstreamBillingProbeIdentity(group.Platform, AccountTypeAPIKey) && group.UpstreamBillingGuardMaxMultiplier != nil {
 					return true, nil
 				}
 			}
@@ -3421,13 +3462,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if !guardCapableAccount {
 			return nil, ErrUpstreamBillingProbeAccountInvalid
 		}
-		if input.Extra == nil {
-			input.Extra = maps.Clone(account.Extra)
-		}
-		if input.Extra == nil {
-			input.Extra = make(map[string]any)
-		}
-		input.Extra[UpstreamBillingProbeEnabledExtraKey] = true
+		enabled := true
+		requestedProbeEnabledUpdate = &enabled
 	}
 	if !guardCapableAccount {
 		account.UpstreamBillingGuardEnabled = false
@@ -3435,17 +3471,6 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	desiredGuardEnabled := account.UpstreamBillingGuardEnabled
 	if input.UpstreamBillingGuardEnabled != nil {
 		desiredGuardEnabled = guardCapableAccount && *input.UpstreamBillingGuardEnabled
-	}
-	if guardCapableAccount && desiredGuardEnabled && input.Extra != nil {
-		if raw, exists := input.Extra[UpstreamBillingProbeEnabledExtraKey]; exists {
-			probeEnabled, ok := raw.(bool)
-			if !ok {
-				return nil, ErrInvalidUpstreamBillingProbeEnabled
-			}
-			if !probeEnabled {
-				return nil, ErrUpstreamBillingProbeRequiredByGuard
-			}
-		}
 	}
 	var normalizedExtra map[string]any
 	if input.Extra != nil {
@@ -3457,6 +3482,29 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if err != nil {
 			return nil, err
 		}
+		if raw, exists := normalizedExtra[UpstreamBillingProbeEnabledExtraKey]; exists {
+			enabled, ok := raw.(bool)
+			if !ok {
+				return nil, ErrInvalidUpstreamBillingProbeEnabled
+			}
+			if requestedProbeEnabledUpdate != nil && *requestedProbeEnabledUpdate != enabled {
+				return nil, infraerrors.BadRequest("CONFLICTING_UPSTREAM_BILLING_PROBE_ENABLED", "conflicting upstream_billing_probe_enabled values")
+			}
+			requestedProbeEnabledUpdate = &enabled
+		}
+		if raw, exists := normalizedExtra[UpstreamBillingRateSyncEnabledExtraKey]; exists {
+			enabled, ok := raw.(bool)
+			if !ok {
+				return nil, infraerrors.BadRequest("INVALID_UPSTREAM_BILLING_RATE_SYNC_ENABLED", "upstream_billing_rate_sync_enabled must be a boolean")
+			}
+			if requestedRateSyncEnabledUpdate != nil && *requestedRateSyncEnabledUpdate != enabled {
+				return nil, infraerrors.BadRequest("CONFLICTING_UPSTREAM_BILLING_RATE_SYNC_ENABLED", "conflicting upstream_billing_rate_sync_enabled values")
+			}
+			requestedRateSyncEnabledUpdate = &enabled
+		}
+		delete(normalizedExtra, UpstreamBillingProbeEnabledExtraKey)
+		delete(normalizedExtra, UpstreamBillingRateSyncEnabledExtraKey)
+		delete(normalizedExtra, UpstreamBillingProbeExtraKey)
 	}
 	wasOveragesEnabled := account.IsOveragesEnabled()
 	clearRuntimeBlock := false
@@ -3526,6 +3574,57 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 		ComputeQuotaResetAt(account.Extra)
 	}
+	if requestedRateSyncEnabledUpdate != nil && *requestedRateSyncEnabledUpdate {
+		if requestedProbeEnabledUpdate != nil && !*requestedProbeEnabledUpdate {
+			return nil, infraerrors.BadRequest(
+				"UPSTREAM_BILLING_RATE_SYNC_REQUIRES_PROBE",
+				"upstream billing rate sync requires upstream billing probe",
+			)
+		}
+		enabled := true
+		requestedProbeEnabledUpdate = &enabled
+	}
+	if requestedProbeEnabledUpdate != nil && !*requestedProbeEnabledUpdate {
+		disabled := false
+		requestedRateSyncEnabledUpdate = &disabled
+	}
+	effectiveProbeEnabled := currentProbeEnabled
+	if requestedProbeEnabledUpdate != nil {
+		effectiveProbeEnabled = *requestedProbeEnabledUpdate
+	}
+	effectiveRateSyncEnabled := currentRateSyncEnabled
+	if requestedRateSyncEnabledUpdate != nil {
+		effectiveRateSyncEnabled = *requestedRateSyncEnabledUpdate
+	}
+	if !effectiveProbeEnabled {
+		effectiveRateSyncEnabled = false
+	}
+	if !guardCapableAccount {
+		// An identity change away from an eligible API-key account disables its
+		// probe-owned settings. Only reject an explicit attempt to keep either
+		// setting enabled on the ineligible final identity.
+		if (requestedProbeEnabledUpdate != nil && *requestedProbeEnabledUpdate) ||
+			(requestedRateSyncEnabledUpdate != nil && *requestedRateSyncEnabledUpdate) {
+			return nil, ErrUpstreamBillingProbeAccountInvalid
+		}
+		disabled := false
+		requestedProbeEnabledUpdate = &disabled
+		requestedRateSyncEnabledUpdate = &disabled
+		effectiveProbeEnabled = false
+		effectiveRateSyncEnabled = false
+	}
+	if desiredGuardEnabled && !effectiveProbeEnabled {
+		return nil, ErrUpstreamBillingProbeRequiredByGuard
+	}
+	if account.Extra == nil && (requestedProbeEnabledUpdate != nil || requestedRateSyncEnabledUpdate != nil) {
+		account.Extra = make(map[string]any)
+	}
+	if requestedProbeEnabledUpdate != nil {
+		account.Extra[UpstreamBillingProbeEnabledExtraKey] = *requestedProbeEnabledUpdate
+	}
+	if requestedRateSyncEnabledUpdate != nil {
+		account.Extra[UpstreamBillingRateSyncEnabledExtraKey] = *requestedRateSyncEnabledUpdate
+	}
 	if input.ProxyID != nil {
 		clearRuntimeBlock = true
 		// 0 表示清除代理（前端发送 0 而不是 null 来表达清除意图）
@@ -3547,6 +3646,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if input.RateMultiplier != nil {
 		if *input.RateMultiplier < 0 {
 			return nil, errors.New("rate_multiplier must be >= 0")
+		}
+		if effectiveRateSyncEnabled {
+			return nil, ErrUpstreamBillingRateSyncConflict
 		}
 		account.RateMultiplier = input.RateMultiplier
 	}
@@ -3618,14 +3720,14 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			}
 
 			var groupLimit *float64
-			validOpenAIGroup := false
+			validPlatformGroup := false
 			if s.groupRepo != nil {
 				group, loadErr := s.groupRepo.GetByIDLite(ctx, groupID)
 				if loadErr != nil {
 					return nil, loadErr
 				}
-				if group != nil && group.Platform == PlatformOpenAI {
-					validOpenAIGroup = true
+				if group != nil && group.Platform == account.Platform && IsUpstreamBillingProbeIdentity(group.Platform, AccountTypeAPIKey) {
+					validPlatformGroup = true
 					groupLimit = group.UpstreamBillingGuardMaxMultiplier
 				}
 			} else {
@@ -3638,22 +3740,22 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 						// A hydrated group is authoritative, including a non-OpenAI
 						// group or an explicit nil policy. Do not fall through to the
 						// legacy effective field in either case.
-						if binding.Group.Platform == PlatformOpenAI {
-							validOpenAIGroup = true
+						if binding.Group.Platform == account.Platform && IsUpstreamBillingProbeIdentity(binding.Group.Platform, AccountTypeAPIKey) {
+							validPlatformGroup = true
 							groupLimit = binding.Group.UpstreamBillingGuardMaxMultiplier
 						}
 					} else if binding.GroupPolicyLoaded {
-						validOpenAIGroup = true
+						validPlatformGroup = true
 						groupLimit = binding.GroupUpstreamBillingGuardMaxMultiplier
 					} else if binding.UpstreamBillingGuardMaxMultiplier != nil {
 						// Compatibility for unit stubs and pre-upgrade snapshots.
-						validOpenAIGroup = true
+						validPlatformGroup = true
 						groupLimit = binding.UpstreamBillingGuardMaxMultiplier
 					}
 					break
 				}
 			}
-			if !validOpenAIGroup || groupLimit == nil || override > *groupLimit {
+			if !validPlatformGroup || groupLimit == nil || override > *groupLimit {
 				return nil, ErrInvalidUpstreamBillingGuardGroupLimits
 			}
 		}
@@ -3683,20 +3785,45 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			account.UpstreamBillingGuardEnabled = false
 		}
 	}
-	atomicUpdater, supportsAtomicGroupConfig := s.accountRepo.(interface {
-		UpdateAccountWithGroupConfig(context.Context, *Account, *[]int64, *map[int64]float64, bool) error
-	})
 	propagateProxyAtomically := input.ProxyID != nil && !account.IsCredentialShadow()
-	usedAtomicGroupConfig := supportsAtomicGroupConfig &&
-		(input.GroupIDs != nil || input.UpstreamBillingGuardGroupLimits != nil || propagateProxyAtomically)
-	if usedAtomicGroupConfig {
-		if err := atomicUpdater.UpdateAccountWithGroupConfig(
-			ctx, account, input.GroupIDs, input.UpstreamBillingGuardGroupLimits, propagateProxyAtomically,
-		); err != nil {
-			return nil, fmt.Errorf("update account %d group configuration: %w", account.ID, err)
+	needsAtomicGroupConfig := input.GroupIDs != nil || input.UpstreamBillingGuardGroupLimits != nil || propagateProxyAtomically
+	usedAtomicGroupConfig := false
+	if needsAtomicGroupConfig {
+		if updater, ok := s.accountRepo.(AccountGroupBillingSettingsRepository); ok {
+			if err := updater.UpdateAccountWithGroupConfigAndBillingSettings(
+				ctx,
+				account,
+				input.GroupIDs,
+				input.UpstreamBillingGuardGroupLimits,
+				propagateProxyAtomically,
+				requestedProbeEnabledUpdate,
+				requestedRateSyncEnabledUpdate,
+				input.RateMultiplier,
+			); err != nil {
+				return nil, fmt.Errorf("update account %d group billing configuration: %w", account.ID, err)
+			}
+			usedAtomicGroupConfig = true
+		} else if updater, ok := s.accountRepo.(interface {
+			UpdateAccountWithGroupConfig(context.Context, *Account, *[]int64, *map[int64]float64, bool) error
+		}); ok {
+			if err := updater.UpdateAccountWithGroupConfig(
+				ctx, account, input.GroupIDs, input.UpstreamBillingGuardGroupLimits, propagateProxyAtomically,
+			); err != nil {
+				return nil, fmt.Errorf("update account %d group configuration: %w", account.ID, err)
+			}
+			usedAtomicGroupConfig = true
 		}
-	} else if err := s.accountRepo.Update(ctx, account); err != nil {
-		return nil, fmt.Errorf("update account %d: %w", account.ID, err)
+	}
+	if !usedAtomicGroupConfig {
+		if updater, ok := s.accountRepo.(AccountBillingSettingsRepository); ok {
+			if err := updater.UpdateWithAccountBillingSettings(
+				ctx, account, requestedProbeEnabledUpdate, requestedRateSyncEnabledUpdate, input.RateMultiplier,
+			); err != nil {
+				return nil, fmt.Errorf("update account %d billing settings: %w", account.ID, err)
+			}
+		} else if err := s.accountRepo.Update(ctx, account); err != nil {
+			return nil, fmt.Errorf("update account %d: %w", account.ID, err)
+		}
 	}
 	if propagateProxyAtomically && !usedAtomicGroupConfig {
 		if err := propagateAccountProxyToShadows(ctx, s.accountRepo, account.ID, account.ProxyID); err != nil {
@@ -3738,6 +3865,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 // UpdateAccountExtra 仅对 Extra JSONB 做 key 级合并，避免覆盖其它运行态键
 // （如 model_rate_limits / passive_usage_* 等）。
 func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {
+	delete(updates, UpstreamBillingProbeEnabledExtraKey)
+	delete(updates, UpstreamBillingRateSyncEnabledExtraKey)
+	delete(updates, UpstreamBillingProbeExtraKey)
 	if _, exists := updates[openAILongContextBillingEnabledKey]; exists {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
@@ -3774,6 +3904,39 @@ func bulkUpdateDisablesUpstreamBillingProbe(extra map[string]any, removeKeys []s
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
+	requestedProbeEnabled, err := reconcileUpstreamBillingProbeEnabled(input.Extra, input.ProbeEnabled)
+	if err != nil {
+		return nil, err
+	}
+	legacyProbeDisable := false
+	filteredRemoveKeys := make([]string, 0, len(input.ExtraRemoveKeys))
+	for _, key := range input.ExtraRemoveKeys {
+		switch strings.TrimSpace(key) {
+		case UpstreamBillingProbeEnabledExtraKey:
+			legacyProbeDisable = true
+		case UpstreamBillingRateSyncEnabledExtraKey, UpstreamBillingProbeExtraKey:
+			// Probe settings and snapshots are service-owned. Keep them out of the
+			// generic JSONB removal path so their invariants remain atomic.
+		default:
+			filteredRemoveKeys = append(filteredRemoveKeys, key)
+		}
+	}
+	if legacyProbeDisable {
+		if requestedProbeEnabled != nil && *requestedProbeEnabled {
+			return nil, infraerrors.BadRequest(
+				"CONFLICTING_UPSTREAM_BILLING_PROBE_ENABLED",
+				"conflicting upstream_billing_probe_enabled values",
+			)
+		}
+		disabled := false
+		requestedProbeEnabled = &disabled
+	}
+	input.ProbeEnabled = requestedProbeEnabled
+	input.ExtraRemoveKeys = filteredRemoveKeys
+	input.Extra = maps.Clone(input.Extra)
+	delete(input.Extra, UpstreamBillingProbeEnabledExtraKey)
+	delete(input.Extra, UpstreamBillingRateSyncEnabledExtraKey)
+	delete(input.Extra, UpstreamBillingProbeExtraKey)
 	if len(input.AccountIDs) == 0 && input.Filters != nil {
 		accountIDs, err := s.resolveBulkUpdateTargetIDs(ctx, input.Filters)
 		if err != nil {
@@ -3799,18 +3962,17 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
 	_, hasLongContextBillingUpdate := input.Extra[openAILongContextBillingEnabledKey]
-	probeDisableRequested, err := bulkUpdateDisablesUpstreamBillingProbe(input.Extra, input.ExtraRemoveKeys)
-	if err != nil {
-		return nil, err
-	}
+	probeDisableRequested := input.ProbeEnabled != nil && !*input.ProbeEnabled
 
 	// 预加载账号平台信息（混合渠道检查需要）。
 	platformByID := map[int64]string{}
-	if needMixedChannelCheck || hasLongContextBillingUpdate || probeDisableRequested {
+	var cachedTargets []*Account
+	if needMixedChannelCheck || hasLongContextBillingUpdate || input.ProbeEnabled != nil || input.RateMultiplier != nil {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
 		}
+		cachedTargets = accounts
 		for _, account := range accounts {
 			if account != nil {
 				platformByID[account.ID] = account.Platform
@@ -3819,7 +3981,10 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 						return nil, err
 					}
 				}
-				if probeDisableRequested && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey && account.UpstreamBillingGuardEnabled {
+				if input.ProbeEnabled != nil && *input.ProbeEnabled && !isUpstreamBillingProbeAccount(account) {
+					return nil, ErrUpstreamBillingProbeAccountInvalid
+				}
+				if probeDisableRequested && account.UpstreamBillingGuardEnabled {
 					return nil, ErrUpstreamBillingProbeRequiredByGuard
 				}
 			}
@@ -3843,6 +4008,17 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		if *input.RateMultiplier < 0 {
 			return nil, errors.New("rate_multiplier must be >= 0")
 		}
+		syncEnabledCount := 0
+		for _, account := range cachedTargets {
+			if upstreamBillingRateSyncEnabled(account) {
+				syncEnabledCount++
+			}
+		}
+		if syncEnabledCount > 0 {
+			return nil, ErrUpstreamBillingRateSyncBulkConflict.WithMetadata(map[string]string{
+				"count": strconv.Itoa(syncEnabledCount),
+			})
+		}
 	}
 	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
@@ -3853,6 +4029,15 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		Credentials:     input.Credentials,
 		Extra:           input.Extra,
 		ExtraRemoveKeys: input.ExtraRemoveKeys,
+	}
+	if input.ProbeEnabled != nil {
+		if repoUpdates.Extra == nil {
+			repoUpdates.Extra = make(map[string]any)
+		}
+		repoUpdates.Extra[UpstreamBillingProbeEnabledExtraKey] = *input.ProbeEnabled
+		if !*input.ProbeEnabled {
+			repoUpdates.Extra[UpstreamBillingRateSyncEnabledExtraKey] = false
+		}
 	}
 	if input.Name != "" {
 		repoUpdates.Name = &input.Name

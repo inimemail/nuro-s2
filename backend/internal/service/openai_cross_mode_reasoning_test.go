@@ -39,3 +39,24 @@ func TestSanitizeOpenAICrossModeFailoverReasoning_IsNoOpForSafeBodies(t *testing
 		require.Equal(t, original, body)
 	}
 }
+
+func TestTrimOpenAIEncryptedReasoningItems_DropsEncryptedCompactionItems(t *testing.T) {
+	for _, itemType := range []string{"compaction", "compaction_summary"} {
+		t.Run(itemType, func(t *testing.T) {
+			body := map[string]any{"input": []any{
+				map[string]any{"id": "cmp_stale", "type": itemType, "encrypted_content": "gAAA"},
+				map[string]any{"type": "message", "content": "keep"},
+			}}
+
+			require.True(t, trimOpenAIEncryptedReasoningItems(body))
+			items := body["input"].([]any)
+			require.Len(t, items, 1)
+			require.Equal(t, "message", items[0].(map[string]any)["type"])
+		})
+	}
+
+	body := map[string]any{"input": []any{
+		map[string]any{"id": "cmp_plain", "type": "compaction", "summary": []any{}},
+	}}
+	require.False(t, trimOpenAIEncryptedReasoningItems(body))
+}

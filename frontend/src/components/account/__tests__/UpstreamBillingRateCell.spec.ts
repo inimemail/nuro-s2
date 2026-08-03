@@ -103,6 +103,33 @@ describe('UpstreamBillingRateCell', () => {
     expect(wrapper.text()).not.toContain('1x / 1x')
   })
 
+  it('uses the compact rate display for every supported API-key platform', () => {
+    for (const platform of ['openai', 'anthropic', 'gemini', 'grok', 'antigravity'] as const) {
+      const account = makeAccount({ observed: 0.07 })
+      account.platform = platform
+      const wrapper = mountCell(account)
+      expect(wrapper.get('[data-testid="upstream-billing-rate"]').text()).toBe('0.07x')
+      expect(wrapper.find('[data-testid="upstream-billing-rate-sync-source"]').exists()).toBe(false)
+    }
+  })
+
+  it('does not add a second synced-rate line when automatic sync is enabled', () => {
+    const account = makeAccount({ observed: 0.07 })
+    account.extra = {
+      ...account.extra,
+      upstream_billing_rate_sync_enabled: true,
+      upstream_billing_probe: {
+        ...account.extra?.upstream_billing_probe,
+        synced_rate_multiplier: 0.07
+      }
+    }
+
+    const wrapper = mountCell(account)
+
+    expect(wrapper.get('[data-testid="upstream-billing-rate"]').text()).toBe('0.07x')
+    expect(wrapper.find('[data-testid="upstream-billing-rate-sync-source"]').exists()).toBe(false)
+  })
+
   it('marks a group yellow when the observed multiplier exceeds its limit', () => {
     const wrapper = mountCell(makeAccount({ observed: 1.01, limit: 1 }))
 

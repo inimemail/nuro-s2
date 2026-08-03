@@ -242,7 +242,7 @@ func (s *Service) PublicConfig() (PublicConfig, error) {
 	}
 	cfg := s.configSnapshot()
 	result := PublicConfig{
-		Enabled: cfg.Enabled, Mode: cfg.Mode, WorkerCount: cfg.WorkerCount,
+		Enabled: cfg.Enabled, Mode: cfg.Mode, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly, WorkerCount: cfg.WorkerCount,
 		QueueCapacity: cfg.QueueCapacity, AllGroups: cfg.AllGroups,
 		GroupIDs: append([]int64(nil), cfg.GroupIDs...), Scanners: append([]string(nil), cfg.Scanners...),
 		StorePass: cfg.StorePass, RetentionDays: cfg.RetentionDays, Version: cfg.Version,
@@ -313,7 +313,7 @@ func (s *Service) buildConfig(req UpdateConfigRequest, current Config) (Config, 
 		return Config{}, infraerrors.Conflict("PROMPT_AUDIT_CONFIG_CONFLICT", "prompt audit config changed; reload and retry")
 	}
 	cfg := Config{
-		Enabled: req.Enabled, Mode: ModeOff, WorkerCount: req.WorkerCount,
+		Enabled: req.Enabled, Mode: ModeOff, BlockingLatestTurnOnly: req.BlockingLatestTurnOnly, WorkerCount: req.WorkerCount,
 		QueueCapacity: req.QueueCapacity, AllGroups: req.AllGroups,
 		GroupIDs: append([]int64(nil), req.GroupIDs...), Scanners: append([]string(nil), req.Scanners...),
 		StorePass: req.StorePass, RetentionDays: req.RetentionDays,

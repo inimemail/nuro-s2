@@ -870,6 +870,26 @@
           />
           <p class="input-hint">{{ t('admin.accounts.upstream.apiKeyHint') }}</p>
         </div>
+        <div class="flex flex-col gap-3 border-t border-gray-200 pt-4 dark:border-dark-600 sm:flex-row sm:items-center sm:justify-between">
+          <div class="min-w-0">
+            <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.autoProbe') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.upstreamBilling.autoProbeHint') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="upstream-billing-auto-probe-antigravity"
+            :aria-label="t('admin.accounts.upstreamBilling.autoProbe')"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-none rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              upstreamBillingAutoProbeEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+            @click="upstreamBillingAutoProbeEnabled = !upstreamBillingAutoProbeEnabled"
+          >
+            <span :class="['pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform', upstreamBillingAutoProbeEnabled ? 'translate-x-5' : 'translate-x-0']" />
+          </button>
+        </div>
       </div>
 
       <!-- Vertex Service Account -->
@@ -1176,6 +1196,27 @@
             "
           />
           <p class="input-hint">{{ apiKeyHint }}</p>
+        </div>
+
+        <div class="flex flex-col gap-3 border-t border-gray-200 pt-4 dark:border-dark-600 sm:flex-row sm:items-center sm:justify-between">
+          <div class="min-w-0">
+            <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.autoProbe') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.upstreamBilling.autoProbeHint') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="upstream-billing-auto-probe"
+            :aria-label="t('admin.accounts.upstreamBilling.autoProbe')"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-none rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              upstreamBillingAutoProbeEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+            @click="upstreamBillingAutoProbeEnabled = !upstreamBillingAutoProbeEnabled"
+          >
+            <span :class="['pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform', upstreamBillingAutoProbeEnabled ? 'translate-x-5' : 'translate-x-0']" />
+          </button>
         </div>
 
         <div
@@ -4860,6 +4901,7 @@ const applyGrokOAuthUpstreamConfig = (credentials: Record<string, unknown>) => {
 }
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
+const upstreamBillingAutoProbeEnabled = ref(true)
 const openaiPassthroughEnabled = ref(false)
 const openAILongContextBillingEnabled = ref(false)
 const openAILongContextBillingTouched = ref(false)
@@ -5956,6 +5998,7 @@ const resetForm = () => {
   headerOverrideRows.value = []
   interceptWarmupRequests.value = false
   autoPauseOnExpired.value = true
+  upstreamBillingAutoProbeEnabled.value = true
   openaiPassthroughEnabled.value = false
   openAILongContextBillingEnabled.value = false
   openAILongContextBillingTouched.value = false
@@ -6756,6 +6799,7 @@ const handleSubmit = async () => {
     ...form,
     group_ids: form.group_ids,
     extra,
+    upstream_billing_probe_enabled: upstreamBillingAutoProbeEnabled.value,
     auto_pause_on_expired: autoPauseOnExpired.value
   })
 }
@@ -6887,6 +6931,7 @@ const createAccountAndFinish = async (
     rate_multiplier: form.rate_multiplier,
     group_ids: form.group_ids,
     expires_at: form.expires_at,
+    upstream_billing_probe_enabled: type === 'apikey' ? upstreamBillingAutoProbeEnabled.value : undefined,
     auto_pause_on_expired: autoPauseOnExpired.value
   })
 }

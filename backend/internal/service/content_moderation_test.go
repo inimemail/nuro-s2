@@ -26,6 +26,62 @@ func (f contentModerationRoundTripFunc) RoundTrip(req *http.Request) (*http.Resp
 	return f(req)
 }
 
+type contentModerationTestProxyRepo struct {
+	ProxyRepository
+	proxy *Proxy
+	err   error
+}
+
+func (r *contentModerationTestProxyRepo) GetByID(context.Context, int64) (*Proxy, error) {
+	return r.proxy, r.err
+}
+
+func TestContentModerationProxyRejectsInactiveAndExpiredProxy(t *testing.T) {
+	now := time.Now()
+	expiredAt := now.Add(-time.Minute)
+	for _, testCase := range []struct {
+		name  string
+		proxy *Proxy
+	}{
+		{name: "inactive", proxy: &Proxy{ID: 7, Status: StatusDisabled, Protocol: "http", Host: "127.0.0.1", Port: 8080}},
+		{name: "expired", proxy: &Proxy{ID: 7, Status: StatusActive, ExpiresAt: &expiredAt, Protocol: "http", Host: "127.0.0.1", Port: 8080}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, &contentModerationTestProxyRepo{proxy: testCase.proxy})
+			_, err := svc.resolveModerationProxyURL(context.Background(), 7)
+			require.ErrorContains(t, err, "inactive or expired")
+		})
+	}
+}
+
+func TestContentModerationProxyCacheDoesNotOutliveProxyExpiry(t *testing.T) {
+	expiresAt := time.Now().Add(10 * time.Second)
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, &contentModerationTestProxyRepo{
+		proxy: &Proxy{
+			ID: 7, Status: StatusActive, ExpiresAt: &expiresAt,
+			Protocol: "http", Host: "127.0.0.1", Port: 8080,
+		},
+	})
+
+	_, err := svc.resolveModerationProxyURL(context.Background(), 7)
+	require.NoError(t, err)
+	cached := svc.moderationProxyCache.Load()
+	require.NotNil(t, cached)
+	require.Equal(t, expiresAt, cached.expiresAt)
+}
+
+func TestContentModerationConfigRejectsUnavailableProxy(t *testing.T) {
+	cfg := defaultContentModerationConfig()
+	proxyID := int64(7)
+	cfg.ProxyID = &proxyID
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, &contentModerationTestProxyRepo{
+		proxy: &Proxy{ID: proxyID, Status: StatusDisabled},
+	})
+
+	err := svc.validateConfig(context.Background(), cfg)
+	require.ErrorContains(t, err, "代理服务器不可用")
+}
+
 func (r *contentModerationTestSettingRepo) Get(ctx context.Context, key string) (*Setting, error) {
 	if value, ok := r.values[key]; ok {
 		return &Setting{Key: key, Value: value}, nil
