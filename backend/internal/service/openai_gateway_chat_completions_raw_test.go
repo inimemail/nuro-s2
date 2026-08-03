@@ -220,6 +220,145 @@ func TestForwardAsRawChatCompletions_ForcesStreamUsageUpstreamAndPassesUsageDown
 	require.Contains(t, rec.Body.String(), "data: [DONE]")
 }
 
+func TestForwardAsRawChatCompletions_StagedTimeoutPlaceholderDoesNotChangePanelTTFT(t *testing.T) {
+	setGinTestMode()
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_raw_staged_placeholder"}},
+		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{
+			{delay: 40 * time.Millisecond, data: `data: {"id":"chatcmpl_stage","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n"},
+			{delay: 40 * time.Millisecond, data: strings.Join([]string{
+				`data: {"id":"chatcmpl_stage","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}`,
+				"",
+				`data: {"id":"chatcmpl_stage","object":"chat.completion.chunk","model":"gpt-5.4","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`,
+				"",
+				"data: [DONE]",
+				"",
+			}, "\n")},
+		}},
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{
+		openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:           20,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: true,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey:   100,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+			map[string]any{"stage": 1, "placeholder_ms": 20, "guard_max_ms": 100},
+		},
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.FirstTokenMs)
+	require.GreaterOrEqual(t, *result.FirstTokenMs, 70, "panel TTFT must use the real content chunk, not the timeout placeholder or role chunk")
+	responseBody := rec.Body.String()
+	require.Contains(t, responseBody, `"content":""`)
+	require.Contains(t, responseBody, `"content":"ok"`)
+	require.Less(t, strings.Index(responseBody, `"content":""`), strings.Index(responseBody, `"content":"ok"`))
+}
+
+func TestForwardAsRawChatCompletions_UsesLaterTimeoutStage(t *testing.T) {
+	setGinTestMode()
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{
+			{delay: 15 * time.Millisecond, data: `data: {"id":"chatcmpl_stage2","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n"},
+			{delay: 55 * time.Millisecond, data: strings.Join([]string{
+				`data: {"id":"chatcmpl_stage2","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}`,
+				"",
+				"data: [DONE]",
+				"",
+			}, "\n")},
+		}},
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{
+		openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:           20,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: true,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey:   50,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+			map[string]any{"stage": 1, "placeholder_ms": 20, "guard_max_ms": 50},
+			map[string]any{"stage": 2, "placeholder_ms": 40, "guard_max_ms": 100},
+			map[string]any{"stage": 3, "placeholder_ms": 60, "guard_max_ms": 200},
+		},
+	}
+	// A prior real sample above stage 1's protection limit must select stage 2.
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 80)
+	require.Equal(t, 40, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.FirstTokenMs)
+	responseBody := rec.Body.String()
+	require.Contains(t, responseBody, `"content":""`)
+	require.Contains(t, responseBody, `"content":"ok"`)
+	require.Less(t, strings.Index(responseBody, `"content":""`), strings.Index(responseBody, `"content":"ok"`))
+}
+
+func TestForwardAsRawChatCompletions_PausedStageStillReportsRealPanelTTFT(t *testing.T) {
+	setGinTestMode()
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{
+			{data: `data: {"id":"chatcmpl_paused","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n"},
+			{delay: 30 * time.Millisecond, data: strings.Join([]string{
+				`data: {"id":"chatcmpl_paused","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}`,
+				"",
+				"data: [DONE]",
+				"",
+			}, "\n")},
+		}},
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{
+		openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:           20,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: true,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey:   100,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+			map[string]any{"stage": 1, "placeholder_ms": 20, "guard_max_ms": 100},
+		},
+	}
+	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 200)
+	require.Zero(t, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.FirstTokenMs)
+	require.GreaterOrEqual(t, *result.FirstTokenMs, 20, "paused staging must not make the panel use the earlier role chunk")
+	require.NotContains(t, rec.Body.String(), `"content":""`)
+	require.Contains(t, rec.Body.String(), `"content":"ok"`)
+}
+
 func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentNonStreaming(t *testing.T) {
 	setGinTestMode()
 

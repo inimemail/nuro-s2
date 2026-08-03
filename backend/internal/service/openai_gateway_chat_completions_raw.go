@@ -214,8 +214,37 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
+	var requestFirstTokenPlaceholder openAIRequestFirstTokenPlaceholderState
+	doUpstream := func() (*http.Response, error) {
+		return s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
+	}
+	var resp *http.Response
+	if clientStream {
+		resp, requestFirstTokenPlaceholder, _, err = s.doOpenAIUpstreamWithFirstTokenTimeoutPlaceholder(
+			c,
+			account,
+			originalModel,
+			startTime,
+			openAIRequestFirstTokenPlaceholderDialectChatCompletions,
+			doUpstream,
+		)
+	} else {
+		resp, err = doUpstream()
+	}
 	if err != nil {
+		if requestFirstTokenPlaceholder.Sent {
+			_ = s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, http.StatusBadGateway, openAITransportFailoverBody, upstreamModel, err.Error())
+			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", "Upstream request failed")
+			return &OpenAIForwardResult{
+				Usage:         OpenAIUsage{},
+				Model:         originalModel,
+				BillingModel:  billingModel,
+				UpstreamModel: upstreamModel,
+				Stream:        true,
+				Duration:      time.Since(startTime),
+			}, fmt.Errorf("raw chat_completions upstream request failed after first token placeholder: %w", err)
+		}
 		if failoverErr := s.newOpenAIPoolRequestFailoverError(c, account, upstreamReq, err, false); failoverErr != nil {
 			return nil, failoverErr
 		}
@@ -242,6 +271,20 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if requestFirstTokenPlaceholder.Sent {
+			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, upstreamModel, upstreamMsg)
+			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", "Upstream request failed")
+			return &OpenAIForwardResult{
+				RequestID:     resp.Header.Get("x-request-id"),
+				Usage:         OpenAIUsage{},
+				Model:         originalModel,
+				BillingModel:  billingModel,
+				UpstreamModel: upstreamModel,
+				Stream:        true,
+				Duration:      time.Since(startTime),
+			}, fmt.Errorf("raw chat_completions upstream error after first token placeholder: %d message=%s", resp.StatusCode, upstreamMsg)
+		}
 		if account.Platform == PlatformGrok {
 			s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			if s.shouldFailoverUpstreamError(resp.StatusCode) {
@@ -308,7 +351,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 
 	// 8. Forward response
 	if clientStream {
-		return s.streamRawChatCompletions(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
+		return s.streamRawChatCompletions(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body), requestFirstTokenPlaceholder)
 	}
 	return s.bufferRawChatCompletions(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 }
@@ -331,11 +374,12 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	serviceTier *string,
 	startTime time.Time,
 	requestBodyLen int,
+	requestFirstTokenPlaceholder openAIRequestFirstTokenPlaceholderState,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
 
-	headersWritten := false
+	headersWritten := requestFirstTokenPlaceholder.Sent
 	writeStreamHeaders := func() {
 		if headersWritten {
 			return
@@ -360,8 +404,12 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 
 	var usage OpenAIUsage
 	var firstTokenMs *int
+	var realFirstTokenMs *int
 	clientDisconnected := false
 	clientOutputStarted := false
+	firstTokenTimeoutPlaceholder := s.openAIStreamFirstTokenTimeoutPlaceholder(account, originalModel)
+	reportRealFirstToken := account != nil && account.IsOpenAIApiKey() && account.IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled()
+	firstTokenTimeoutPlaceholderSent := requestFirstTokenPlaceholder.Sent
 	streamFailed := false
 	sawTerminal := false
 	terminalEventType := ""
@@ -375,6 +423,10 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			// compatible upstream appends [DONE] afterwards.
 			resultTerminal = "error"
 		}
+		reportedFirstTokenMs := firstTokenMs
+		if reportRealFirstToken && realFirstTokenMs != nil {
+			reportedFirstTokenMs = realFirstTokenMs
+		}
 		return &OpenAIForwardResult{
 			RequestID:         requestID,
 			Usage:             usage,
@@ -387,7 +439,22 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			TerminalEventType: resultTerminal,
 			ClientDisconnect:  clientDisconnected,
 			Duration:          time.Since(startTime),
-			FirstTokenMs:      firstTokenMs,
+			FirstTokenMs:      reportedFirstTokenMs,
+		}
+	}
+	writeFirstTokenTimeoutPlaceholder := func() {
+		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || realFirstTokenMs != nil || clientDisconnected {
+			return
+		}
+		state := writeOpenAIRequestFirstTokenTimeoutPlaceholder(
+			c,
+			startTime,
+			originalModel,
+			openAIRequestFirstTokenPlaceholderDialectChatCompletions,
+		)
+		if state.Sent {
+			firstTokenTimeoutPlaceholderSent = true
+			headersWritten = true
 		}
 	}
 
@@ -426,14 +493,43 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	type rawChatScanEvent struct {
+		line string
+		err  error
+		done bool
+	}
+	scanEvents := make(chan rawChatScanEvent, 1)
+	go func() {
+		for scanner.Scan() {
+			scanEvents <- rawChatScanEvent{line: scanner.Text()}
+		}
+		scanEvents <- rawChatScanEvent{err: scanner.Err(), done: true}
+	}()
+	firstTokenTimeoutTimer, firstTokenTimeoutCh := openAIStreamFirstTokenTimeoutTimer(startTime, firstTokenTimeoutPlaceholder)
+	if firstTokenTimeoutTimer != nil {
+		defer firstTokenTimeoutTimer.Stop()
+	}
+	var scanErr error
+	for {
+		var event rawChatScanEvent
+		select {
+		case <-firstTokenTimeoutCh:
+			firstTokenTimeoutCh = nil
+			writeFirstTokenTimeoutPlaceholder()
+			continue
+		case event = <-scanEvents:
+		}
+		if event.done {
+			scanErr = event.err
+			break
+		}
+		line := event.line
 		var unsafe bool
 		line, unsafe = sanitizeOpenAIRawChatSSELineWithState(line, &upstreamSSEState)
 		if unsafe {
 			streamFailed = true
 		}
-		if line == "" && strings.TrimSpace(scanner.Text()) != "" {
+		if line == "" && strings.TrimSpace(event.line) != "" {
 			continue
 		}
 		refusalDetector.ObserveSSELine(line)
@@ -450,6 +546,11 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				if firstTokenMs == nil && !usageOnlyChunk {
 					elapsed := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &elapsed
+				}
+				if realFirstTokenMs == nil && openAIChatCompletionsChunkStartsRealOutput(trimmedPayload) {
+					elapsed := int(time.Since(startTime).Milliseconds())
+					realFirstTokenMs = &elapsed
+					firstTokenTimeoutCh = nil
 				}
 				for _, choice := range gjson.Get(trimmedPayload, "choices").Array() {
 					finishReason := choice.Get("finish_reason")
@@ -475,11 +576,11 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	if scanErr != nil {
 		streamFailed = true
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		if !errors.Is(scanErr, context.Canceled) && !errors.Is(scanErr, context.DeadlineExceeded) {
 			logger.L().Warn("openai chat_completions raw: stream read error",
-				zap.Error(err),
+				zap.Error(scanErr),
 				zap.String("request_id", requestID),
 			)
 		}
@@ -508,8 +609,36 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	if streamFailed || !sawTerminal {
 		return resultWithUsage(), s.newOpenAIStreamFailoverError(c, account, false, requestID, nil, "Upstream request failed")
 	}
+	if realFirstTokenMs != nil {
+		s.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, originalModel, *realFirstTokenMs)
+	}
 
 	return resultWithUsage(), nil
+}
+
+func openAIChatCompletionsChunkStartsRealOutput(payload string) bool {
+	if strings.TrimSpace(payload) == "" || !gjson.Valid(payload) {
+		return false
+	}
+	for _, choice := range gjson.Get(payload, "choices").Array() {
+		delta := choice.Get("delta")
+		if !delta.Exists() || !delta.IsObject() {
+			continue
+		}
+		for _, field := range []string{"content", "reasoning_content", "reasoning"} {
+			value := delta.Get(field)
+			if value.Exists() && strings.TrimSpace(value.String()) != "" {
+				return true
+			}
+		}
+		if toolCalls := delta.Get("tool_calls"); toolCalls.Exists() && toolCalls.IsArray() && len(toolCalls.Array()) > 0 {
+			return true
+		}
+		if functionCall := delta.Get("function_call"); functionCall.Exists() && functionCall.IsObject() {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeOpenAIRawChatSSELine(line string) string {

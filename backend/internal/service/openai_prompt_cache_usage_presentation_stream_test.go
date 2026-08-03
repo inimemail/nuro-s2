@@ -396,7 +396,7 @@ func TestRawChatDownstreamCacheUsageModes_PreserveInternalTruth(t *testing.T) {
 				c, _ := gin.CreateTestContext(recorder)
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 				resp := cacheUsageChatStreamResponse()
-				result, err := svc.streamRawChatCompletions(context.Background(), c, resp, account, "gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra", nil, nil, time.Now(), 1)
+				result, err := svc.streamRawChatCompletions(context.Background(), c, resp, account, "gpt-5.6-terra", "gpt-5.6-terra", "gpt-5.6-terra", nil, nil, time.Now(), 1, openAIRequestFirstTokenPlaceholderState{})
 				require.NoError(t, err)
 				require.Equal(t, 5724, result.Usage.InputTokens)
 				require.Equal(t, 4736, result.Usage.CacheReadInputTokens)
