@@ -115,6 +115,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			account,
 			failoverErr,
 			h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+			apiKey.Group,
 		)
 		// Alpha Search remains request-local: do not alter shared health,
 		// cooldown, prompt-cache, or sticky-session state.

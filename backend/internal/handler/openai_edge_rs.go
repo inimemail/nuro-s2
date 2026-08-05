@@ -1882,6 +1882,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeShouldProtectModelRoutingError(c *gin.C
 	if account == nil || !account.IsPoolMode() {
 		return false
 	}
+	if service.IsOpenAIPoolAccountModelCapabilityError(status, upstreamMsg, responseBody) {
+		return true
+	}
 	if h != nil && h.gatewayService != nil && !h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()) {
 		return false
 	}
@@ -1929,7 +1932,11 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 	routingModel := lease.openAIRoutingModel()
 	responseBody := openAIEdgeRetryResponseBody(req)
 	modelRoutingError := h.openAIEdgeShouldProtectModelRoutingError(c, lease.account, req.UpstreamStatusCode, strings.TrimSpace(req.ErrorMessage), responseBody)
-	if modelRoutingError && lease.lockedPriority < 0 {
+	var group *service.Group
+	if lease.apiKey != nil {
+		group = lease.apiKey.Group
+	}
+	if modelRoutingError && lease.lockedPriority < 0 && !openAIGroupAllowsModelMismatchPriorityFallback(group) {
 		lease.lockedPriority = lease.account.Priority
 	}
 	if successReason == "queue_wait_timeout" {

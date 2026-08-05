@@ -659,11 +659,21 @@ func isOpenAIPoolModelRoutingFailover(account *service.Account, failoverErr *ser
 	if !failoverErr.SkipPoolSoftCooldown {
 		return false
 	}
-	return service.IsOpenAIPoolModelRoutingError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+	return service.IsOpenAIPoolModelRoutingError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody) ||
+		service.IsOpenAIPoolAccountModelCapabilityError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
 }
 
-func lockOpenAIModelRoutingFailoverPriority(current int, account *service.Account, failoverErr *service.UpstreamFailoverError, protectionEnabled bool) int {
-	if current >= 0 || !protectionEnabled || !isOpenAIPoolModelRoutingFailover(account, failoverErr) {
+// openAIGroupAllowsModelMismatchPriorityFallback applies the current group
+// field semantics to the post-failover priority lock. The legacy field name is
+// intentionally preserved: true means lower priority layers may be tried.
+// Missing or non-OpenAI groups keep the default strict behavior.
+func openAIGroupAllowsModelMismatchPriorityFallback(group *service.Group) bool {
+	return group != nil && group.Platform == service.PlatformOpenAI && group.StrictModelPriorityOnModelMismatch
+}
+
+func lockOpenAIModelRoutingFailoverPriority(current int, account *service.Account, failoverErr *service.UpstreamFailoverError, protectionEnabled bool, group *service.Group) int {
+	accountModelCapabilityError := failoverErr != nil && service.IsOpenAIPoolAccountModelCapabilityError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+	if current >= 0 || (!protectionEnabled && !accountModelCapabilityError) || !isOpenAIPoolModelRoutingFailover(account, failoverErr) || openAIGroupAllowsModelMismatchPriorityFallback(group) {
 		return current
 	}
 	return account.Priority

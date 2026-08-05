@@ -426,6 +426,84 @@ func TestClassifyOpenAIPoolFailover_UpstreamModelRoutingProtectionCanBeDisabled(
 	require.False(t, decision.SkipSoftCooldown)
 }
 
+func TestClassifyOpenAIPoolFailover_AccountModelCapabilityErrorSwitchesAccount(t *testing.T) {
+	account := &Account{
+		ID:          120,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := []byte(`{"error":{"message":"model is not available for this account","type":"model_not_found"}}`)
+
+	decision := classifyOpenAIPoolFailover(account, http.StatusNotFound, "model is not available for this account", body)
+
+	require.True(t, decision.Failover)
+	require.False(t, decision.RetryableOnSameAccount)
+	require.True(t, decision.SkipSoftCooldown)
+}
+
+func TestClassifyOpenAIPoolFailover_AccountModelCapability403SwitchesAccount(t *testing.T) {
+	account := &Account{
+		ID:          122,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	message := "model is not available for this account"
+
+	decision := classifyOpenAIPoolFailover(account, http.StatusForbidden, message, []byte(`{"error":{"message":"model is not available for this account"}}`))
+
+	require.True(t, decision.Failover)
+	require.False(t, decision.RetryableOnSameAccount)
+	require.True(t, decision.SkipSoftCooldown)
+}
+
+func TestOpenAIPoolFailoverRetryableOnSameAccount_AccountModelCapabilityIsBlocked(t *testing.T) {
+	account := &Account{
+		ID:          124,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+
+	require.False(t, OpenAIPoolFailoverRetryableOnSameAccount(
+		account,
+		http.StatusForbidden,
+		"model is not available for this account",
+		[]byte(`{"error":{"message":"model is not available for this account"}}`),
+	))
+}
+
+func TestClassifyOpenAIPoolFailover_Generic403ModelErrorDoesNotBecomeModelRoutingError(t *testing.T) {
+	account := &Account{
+		ID:          123,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := []byte(`{"error":{"message":"model not found","type":"model_not_found"}}`)
+
+	require.False(t, isOpenAIPoolModelRoutingError(http.StatusForbidden, "model not found", body))
+	decision := classifyOpenAIPoolFailover(account, http.StatusForbidden, "model not found", body)
+	require.False(t, decision.SkipSoftCooldown)
+}
+
+func TestClassifyOpenAIPoolFailover_GenericModelNotFoundRemainsClientErrorWhenProtectionDisabled(t *testing.T) {
+	account := &Account{
+		ID:          121,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	body := []byte(`{"error":{"message":"model not found","type":"model_not_found"}}`)
+
+	decision := classifyOpenAIPoolFailoverWithModelLimitProtection(account, http.StatusNotFound, "model not found", body, false)
+
+	require.False(t, decision.Failover)
+	require.False(t, decision.RetryableOnSameAccount)
+	require.False(t, decision.SkipSoftCooldown)
+}
+
 func TestClassifyOpenAIPoolFailover_AccountPermissionErrorStillSwitches(t *testing.T) {
 	account := &Account{
 		ID:          109,

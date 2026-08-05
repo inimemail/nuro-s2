@@ -177,6 +177,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			account,
 			failoverErr,
 			h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+			apiKey.Group,
 		)
 		failedAccountIDs[account.ID] = struct{}{}
 		lastFailoverErr = failoverErr

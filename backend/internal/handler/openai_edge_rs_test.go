@@ -1182,6 +1182,22 @@ func TestOpenAIEdgeRetryProtectsPoolModelRouting404(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeProtectsAccountModelCapabilityErrorWithoutGlobalProtection(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+	account := &service.Account{
+		ID:       1002,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	body := []byte(`{"error":{"message":"model is not available for this account"}}`)
+
+	require.True(t, h.openAIEdgeShouldProtectModelRoutingError(c, account, http.StatusNotFound, "model is not available for this account", body))
+}
+
 func TestOpenAIEdgeCompleteRejectsAccountMismatch(t *testing.T) {
 	h := &OpenAIGatewayHandler{
 		cfg: &config.Config{},

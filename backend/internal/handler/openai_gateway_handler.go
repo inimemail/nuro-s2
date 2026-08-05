@@ -585,6 +585,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			account,
 			failoverErr,
 			h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+			apiKey.Group,
 		)
 		failedAccountIDs[account.ID] = struct{}{}
 		lastFailoverErr = failoverErr
@@ -1369,6 +1370,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			account,
 			failoverErr,
 			h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+			apiKey.Group,
 		)
 		failedAccountIDs[account.ID] = struct{}{}
 		lastFailoverErr = failoverErr
@@ -2167,6 +2169,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			account,
 			failoverErr,
 			h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+			apiKey.Group,
 		)
 		failedAccountIDs[account.ID] = struct{}{}
 		lastFailoverErr = failoverErr

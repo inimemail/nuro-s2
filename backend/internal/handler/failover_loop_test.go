@@ -44,6 +44,42 @@ func newTestFailoverErr(statusCode int, retryable, forceBilling bool) *service.U
 	}
 }
 
+func TestLockOpenAIModelRoutingFailoverPriorityHonorsGroupToggle(t *testing.T) {
+	account := &service.Account{
+		ID:          901,
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+		Priority:    2,
+	}
+	failoverErr := &service.UpstreamFailoverError{
+		StatusCode:           http.StatusNotFound,
+		SkipPoolSoftCooldown: true,
+		Message:              `Model "gpt-5.4-mini" is not supported by any configured account in this group`,
+		ResponseBody:         []byte(`{"error":{"message":"Model \"gpt-5.4-mini\" is not supported by any configured account in this group","type":"model_not_found"}}`),
+	}
+
+	openGroup := &service.Group{Platform: service.PlatformOpenAI, StrictModelPriorityOnModelMismatch: true}
+	require.Equal(t, -1, lockOpenAIModelRoutingFailoverPriority(-1, account, failoverErr, true, openGroup))
+
+	strictGroup := &service.Group{Platform: service.PlatformOpenAI}
+	require.Equal(t, account.Priority, lockOpenAIModelRoutingFailoverPriority(-1, account, failoverErr, true, strictGroup))
+	require.Equal(t, account.Priority, lockOpenAIModelRoutingFailoverPriority(-1, account, failoverErr, true, nil))
+
+	nonOpenAIGroup := &service.Group{Platform: service.PlatformAnthropic, StrictModelPriorityOnModelMismatch: true}
+	require.Equal(t, account.Priority, lockOpenAIModelRoutingFailoverPriority(-1, account, failoverErr, true, nonOpenAIGroup))
+	require.Equal(t, -1, lockOpenAIModelRoutingFailoverPriority(-1, account, failoverErr, false, openGroup))
+
+	accountCapabilityErr := &service.UpstreamFailoverError{
+		StatusCode:           http.StatusNotFound,
+		SkipPoolSoftCooldown: true,
+		Message:              "model is not available for this account",
+		ResponseBody:         []byte(`{"error":{"message":"model is not available for this account"}}`),
+	}
+	require.Equal(t, -1, lockOpenAIModelRoutingFailoverPriority(-1, account, accountCapabilityErr, false, openGroup))
+	require.Equal(t, account.Priority, lockOpenAIModelRoutingFailoverPriority(-1, account, accountCapabilityErr, false, strictGroup))
+}
+
 func TestFailoverClientGone(t *testing.T) {
 	t.Run("client cancellation returns 499", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())

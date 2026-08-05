@@ -189,6 +189,18 @@ func classifyOpenAIPoolFailoverWithModelLimitProtection(
 	if account == nil || !account.IsPoolMode() {
 		return openAIPoolFailoverDecision{}
 	}
+	// An explicit account-entitlement response means this pool account cannot
+	// serve the requested model. It is safe to fail over to another account,
+	// but it must not consume same-account retry budget or start a soft
+	// cooldown. Keep generic model_not_found/unsupported-model responses below
+	// as client errors because they may simply mean the caller requested an
+	// invalid model.
+	if isOpenAIPoolAccountModelCapabilityError(statusCode, upstreamMsg, upstreamBody) {
+		return openAIPoolFailoverDecision{
+			Failover:         true,
+			SkipSoftCooldown: true,
+		}
+	}
 	if downstreamModelLimitProtectionEnabled && isOpenAIPoolModelRoutingError(statusCode, upstreamMsg, upstreamBody) {
 		return openAIPoolFailoverDecision{
 			Failover:         true,
@@ -270,7 +282,8 @@ func openAIPoolFailoverRetryableOnSameAccount(account *Account, statusCode int, 
 }
 
 func openAIPoolSameAccountRetryBlockedByRequestContent(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
-	if isOpenAIPoolUserRequestedModelError(statusCode, upstreamMsg, upstreamBody) ||
+	if isOpenAIPoolAccountModelCapabilityError(statusCode, upstreamMsg, upstreamBody) ||
+		isOpenAIPoolUserRequestedModelError(statusCode, upstreamMsg, upstreamBody) ||
 		isOpenAIPoolExplicitClientRequestError(statusCode, upstreamMsg, upstreamBody) ||
 		isOpenAIPoolImageCapabilityError(statusCode, upstreamMsg, upstreamBody) {
 		return true
@@ -320,6 +333,46 @@ func isOpenAIPoolModelRoutingError(statusCode int, upstreamMsg string, upstreamB
 		"no account supports",
 		"no account support",
 	)
+}
+
+func isOpenAIPoolAccountModelCapabilityError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if statusCode != http.StatusBadRequest && statusCode != http.StatusForbidden && statusCode != http.StatusNotFound &&
+		statusCode != http.StatusBadGateway && statusCode != http.StatusServiceUnavailable &&
+		statusCode != http.StatusGatewayTimeout {
+		return false
+	}
+	if isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody) {
+		return false
+	}
+	combined := openAIPoolCombinedErrorText(upstreamMsg, upstreamBody)
+	if combined == "" || !strings.Contains(combined, "model") {
+		return false
+	}
+	return containsAnySubstring(combined,
+		"model is not available for this account",
+		"model is not available to this account",
+		"model not available for this account",
+		"model is unavailable for this account",
+		"model is unavailable on this account",
+		"model unavailable for this account",
+		"model is not enabled for this account",
+		"model is not supported for this account",
+		"model is not supported by this account",
+		"model unsupported for this account",
+		"this account does not support this model",
+		"this account doesn't support this model",
+		"account does not support this model",
+		"account doesn't support this model",
+		"account does not have access to this model",
+		"account doesn't have access to this model",
+	)
+}
+
+// IsOpenAIPoolAccountModelCapabilityError exposes the narrow account-level
+// model entitlement classifier to handler failover paths. Generic model
+// errors intentionally remain private/client-request classifications.
+func IsOpenAIPoolAccountModelCapabilityError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	return isOpenAIPoolAccountModelCapabilityError(statusCode, upstreamMsg, upstreamBody)
 }
 
 func isOpenAIPoolAccountLevelClientError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {

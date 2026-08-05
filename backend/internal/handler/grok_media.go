@@ -205,6 +205,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			account,
 			failoverErr,
 			h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+			apiKey.Group,
 		)
 		failedAccountIDs[account.ID] = struct{}{}
 		lastFailoverErr = failoverErr
