@@ -1704,13 +1704,13 @@
           >
             <div>
               <label class="text-sm text-gray-600 dark:text-gray-400"
-                >严格限制模型不匹配时跨优先级</label
+                >允许模型不匹配时跨优先级</label
               >
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                 {{
                   createForm.strict_model_priority_on_model_mismatch
-                    ? "已启用 — 当前分组最高优先级层不支持模型时，不再调度低优先级账号"
-                    : "未启用 — 高优先级账号不支持模型时仍可调度低优先级支持模型的账号"
+                    ? "已启用 — 高优先级账号不支持模型时，可调度低优先级支持模型的账号"
+                    : "未启用 — 严格按优先级层调度，模型不匹配时不跨到低优先级"
                 }}
               </p>
             </div>
@@ -3277,13 +3277,13 @@
           >
             <div>
               <label class="text-sm text-gray-600 dark:text-gray-400"
-                >严格限制模型不匹配时跨优先级</label
+                >允许模型不匹配时跨优先级</label
               >
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                 {{
                   editForm.strict_model_priority_on_model_mismatch
-                    ? "已启用 — 当前分组最高优先级层不支持模型时，不再调度低优先级账号"
-                    : "未启用 — 高优先级账号不支持模型时仍可调度低优先级支持模型的账号"
+                    ? "已启用 — 高优先级账号不支持模型时，可调度低优先级支持模型的账号"
+                    : "未启用 — 严格按优先级层调度，模型不匹配时不跨到低优先级"
                 }}
               </p>
             </div>

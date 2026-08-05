@@ -3384,8 +3384,11 @@ func candidateSetContainsLowestBasePriority(baseCandidates []*Account, candidate
 	return false
 }
 
+// groupStrictModelPriorityOnMismatch preserves the legacy helper name while
+// applying the current UI semantics: enabled permits model-mismatch fallback
+// across priority layers; disabled keeps the highest eligible layer.
 func groupStrictModelPriorityOnMismatch(group *Group) bool {
-	return group != nil && group.Platform == PlatformOpenAI && group.StrictModelPriorityOnModelMismatch
+	return group != nil && group.Platform == PlatformOpenAI && !group.StrictModelPriorityOnModelMismatch
 }
 
 func filterByNonPoolModeIfPresent(accounts []accountWithLoad) []accountWithLoad {

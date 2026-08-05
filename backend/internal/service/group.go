@@ -81,13 +81,15 @@ type Group struct {
 	SortOrder int
 
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	AllowMessagesDispatch              bool
-	AllowLive                          bool
-	RequireOAuthOnly                   bool // 仅允许非 apikey 类型账号关联（OpenAI/Antigravity/Anthropic/Gemini）
-	RequirePrivacySet                  bool // 调度时仅允许 privacy 已成功设置的账号（OpenAI/Antigravity/Anthropic/Gemini）
-	DefaultMappedModel                 string
-	MessagesDispatchModelConfig        OpenAIMessagesDispatchModelConfig
-	ModelsListConfig                   GroupModelsListConfig
+	AllowMessagesDispatch       bool
+	AllowLive                   bool
+	RequireOAuthOnly            bool // 仅允许非 apikey 类型账号关联（OpenAI/Antigravity/Anthropic/Gemini）
+	RequirePrivacySet           bool // 调度时仅允许 privacy 已成功设置的账号（OpenAI/Antigravity/Anthropic/Gemini）
+	DefaultMappedModel          string
+	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
+	ModelsListConfig            GroupModelsListConfig
+	// Legacy API/database field: true permits model-mismatch fallback to lower
+	// priorities; false keeps the highest eligible priority layer strict.
 	StrictModelPriorityOnModelMismatch bool
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）。

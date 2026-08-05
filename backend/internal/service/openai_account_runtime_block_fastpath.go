@@ -737,12 +737,45 @@ func (s *OpenAIGatewayService) hasHigherPriorityOpenAIAccountAvailable(
 	if err != nil || len(accounts) == 0 {
 		return false
 	}
+	strictPriorityLayer := false
+	requirePrivacySet := false
+	if groupID != nil && s.schedulerSnapshot != nil {
+		if group, groupErr := s.schedulerSnapshot.GetGroupByID(ctx, *groupID); groupErr == nil && group != nil {
+			strictPriorityLayer = groupStrictModelPriorityOnMismatch(group)
+			requirePrivacySet = group.RequirePrivacySet
+		}
+	}
 
 	candidates := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
 	for i := range accounts {
 		account := &accounts[i]
 		if account.ID == current.ID || account.Priority >= current.Priority {
+			continue
+		}
+		if strictPriorityLayer {
+			if !account.IsSchedulable() ||
+				s.isOpenAIAccountRuntimeBlocked(account) ||
+				s.isOpenAIProxyStreamQuarantined(account) ||
+				s.isOpenAIPoolAccountSoftCooling(account) ||
+				(requirePrivacySet && !account.IsPrivacySet()) ||
+				!parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
+				continue
+			}
+			if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
+				continue
+			}
+			if requiredTransport != OpenAIUpstreamTransportAny &&
+				requiredTransport != OpenAIUpstreamTransportHTTPSSE &&
+				!s.isOpenAIAccountTransportCompatible(account, requiredTransport) {
+				continue
+			}
+			if groupID != nil && s.needsUpstreamChannelRestrictionCheck(ctx, groupID) &&
+				s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact) {
+				continue
+			}
+			candidates = append(candidates, account)
+			loadReq = append(loadReq, AccountWithConcurrency{ID: account.ID, MaxConcurrency: account.EffectiveLoadFactor()})
 			continue
 		}
 		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, platform) {

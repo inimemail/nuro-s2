@@ -1126,7 +1126,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_ModelMismatchPriorityFa
 		}
 	}
 
-	selection, decision, err := newService(false).SelectAccountWithSchedulerForCapabilityOnPlatform(
+	selection, decision, err := newService(true).SelectAccountWithSchedulerForCapabilityOnPlatform(
 		ctx,
 		&groupID,
 		"",
@@ -1148,7 +1148,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_ModelMismatchPriorityFa
 		selection.ReleaseFunc()
 	}
 
-	selection, decision, err = newService(true).SelectAccountWithSchedulerForCapabilityOnPlatform(
+	selection, decision, err = newService(false).SelectAccountWithSchedulerForCapabilityOnPlatform(
 		ctx,
 		&groupID,
 		"",
@@ -1166,6 +1166,70 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_ModelMismatchPriorityFa
 	require.Nil(t, selection)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 	require.Zero(t, decision.CandidateCount)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_StickyHonorsModelPriorityToggle(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(101150)
+	accounts := []Account{
+		{
+			ID: 370501, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID},
+			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-4o": "gpt-4o"}},
+		},
+		{
+			ID: 370502, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 2, GroupIDs: []int64{groupID},
+			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.1": "gpt-5.1"}},
+		},
+	}
+	newService := func(allowMismatchFallback bool) (*OpenAIGatewayService, *schedulerTestGatewayCache) {
+		snapshotCopies := append([]Account(nil), accounts...)
+		freshCopies := append([]Account(nil), accounts...)
+		snapshotAccounts := make([]*Account, 0, len(snapshotCopies))
+		accountsByID := make(map[int64]*Account, len(freshCopies))
+		for i := range snapshotCopies {
+			snapshotAccounts = append(snapshotAccounts, &snapshotCopies[i])
+		}
+		for i := range freshCopies {
+			accountsByID[freshCopies[i].ID] = &freshCopies[i]
+		}
+		cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"sticky": 370502}}
+		return &OpenAIGatewayService{
+			accountRepo:      schedulerTestOpenAIAccountRepo{accounts: accounts},
+			cache:            cache,
+			cfg:              &config.Config{},
+			rateLimitService: newOpenAIAdvancedSchedulerRateLimitService("true"),
+			schedulerSnapshot: &SchedulerSnapshotService{
+				cache: &openAISnapshotCacheStub{snapshotAccounts: snapshotAccounts, accountsByID: accountsByID},
+				groupRepo: &schedulerTestGroupRepo{groups: map[int64]*Group{
+					groupID: {
+						ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true,
+						StrictModelPriorityOnModelMismatch: allowMismatchFallback,
+					},
+				}},
+			},
+			concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{
+				loadMap:        map[int64]*AccountLoadInfo{370501: {AccountID: 370501}, 370502: {AccountID: 370502}},
+				acquireResults: map[int64]bool{370502: true},
+			}),
+		}, cache
+	}
+
+	service, _ := newService(true)
+	current := &accounts[1]
+	require.False(t, service.hasHigherPriorityOpenAIAccountAvailable(
+		ctx, &groupID, current, "gpt-5.1", false,
+		OpenAIEndpointCapabilityChatCompletions, "", OpenAIUpstreamTransportHTTPSSE, PlatformOpenAI,
+	))
+
+	service, _ = newService(false)
+	require.True(t, service.hasHigherPriorityOpenAIAccountAvailable(
+		ctx, &groupID, current, "gpt-5.1", false,
+		OpenAIEndpointCapabilityChatCompletions, "", OpenAIUpstreamTransportHTTPSSE, PlatformOpenAI,
+	))
 }
 
 func TestOpenAIGatewayService_SelectAccountWithScheduler_StrictPriorityUsesFinalCapabilityCandidates(t *testing.T) {
@@ -1251,7 +1315,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_StrictPriorityUsesFinal
 		}
 	}
 
-	selection, _, err := newService(false).SelectAccountWithSchedulerForCapabilityOnPlatform(
+	selection, _, err := newService(true).SelectAccountWithSchedulerForCapabilityOnPlatform(
 		ctx, &groupID, "", "", "gpt-5.1", nil, OpenAIUpstreamTransportHTTPSSE,
 		OpenAIEndpointCapabilityResponses, false, PlatformOpenAI,
 	)
@@ -1262,7 +1326,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_StrictPriorityUsesFinal
 		selection.ReleaseFunc()
 	}
 
-	selection, decision, err := newService(true).SelectAccountWithSchedulerForCapabilityOnPlatform(
+	selection, decision, err := newService(false).SelectAccountWithSchedulerForCapabilityOnPlatform(
 		ctx, &groupID, "", "", "gpt-5.1", nil, OpenAIUpstreamTransportHTTPSSE,
 		OpenAIEndpointCapabilityResponses, false, PlatformOpenAI,
 	)

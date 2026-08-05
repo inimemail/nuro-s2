@@ -2287,7 +2287,7 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		require.Equal(t, int64(2), result.Account.ID)
 	})
 
-	t.Run("OpenAI分组开启严格模型优先级后阻止模型不匹配跨优先级", func(t *testing.T) {
+	t.Run("OpenAI分组关闭模型跨优先级后保持严格优先级", func(t *testing.T) {
 		groupID := int64(7001)
 		repo := &mockAccountRepoForPlatform{
 			accounts: []Account{
@@ -2345,14 +2345,14 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 		}
 
 		result, err := newService(false).SelectAccountWithLoadAwareness(ctx, &groupID, "", "gpt-5.1", nil, "", int64(0))
+		require.ErrorIs(t, err, ErrNoAvailableAccounts)
+		require.Nil(t, result)
+
+		result, err = newService(true).SelectAccountWithLoadAwareness(ctx, &groupID, "", "gpt-5.1", nil, "", int64(0))
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.NotNil(t, result.Account)
 		require.Equal(t, int64(12), result.Account.ID)
-
-		result, err = newService(true).SelectAccountWithLoadAwareness(ctx, &groupID, "", "gpt-5.1", nil, "", int64(0))
-		require.ErrorIs(t, err, ErrNoAvailableAccounts)
-		require.Nil(t, result)
 	})
 
 	t.Run("粘性命中-不调用GetByID", func(t *testing.T) {
