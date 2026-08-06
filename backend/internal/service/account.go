@@ -2909,8 +2909,9 @@ func (a *Account) IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled() bool {
 	}
 }
 
-// GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs 返回真实首 token 保护上限。
-// 非法值回落到 3000ms。OAuth 最大 30000ms，API Key 不设业务上限。
+// GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs 返回有效的真实首 token
+// 保护上限。API Key 使用阶段策略时，最后阶段的 guard_max_ms 是有效上限；
+// 旧标量字段仅在没有有效阶段策略时作为兼容配置使用。
 func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs() int {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
 		return openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs
@@ -2921,6 +2922,13 @@ func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs() int {
 			a.getExtraInt(openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey),
 		)
 	case a.IsOpenAIApiKey():
+		// Keep the legacy default when timeout placeholders are disabled. The
+		// staged policy only becomes effective once the placeholder itself is on.
+		if a.GetOpenAIFirstTokenTimeoutPlaceholderMs() > 0 {
+			if stages, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(a.Extra); err == nil && len(stages) > 0 {
+				return stages[len(stages)-1].GuardMaxMS
+			}
+		}
 		guardMaxMS := normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(
 			a.getExtraInt(openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey),
 		)

@@ -104,6 +104,41 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardSelectsStagesAndRecovers(t
 	require.Equal(t, 100, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
 }
 
+func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardSelectsEveryDefaultStage(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := openAIFirstTokenPlaceholderGuardTestAccount()
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey] = 800
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey] = 5000
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey] = []any{
+		map[string]any{"stage": 1, "placeholder_ms": 800, "guard_max_ms": 5000},
+		map[string]any{"stage": 2, "placeholder_ms": 3000, "guard_max_ms": 10000},
+		map[string]any{"stage": 3, "placeholder_ms": 5000, "guard_max_ms": 15000},
+		map[string]any{"stage": 4, "placeholder_ms": 10000, "guard_max_ms": 30000},
+	}
+
+	tests := []struct {
+		name      string
+		realToken int
+		wantMS    int
+	}{
+		{name: "stage 1 at upper bound", realToken: 5000, wantMS: 800},
+		{name: "stage 2 after stage 1", realToken: 5001, wantMS: 3000},
+		{name: "stage 2 at upper bound", realToken: 10000, wantMS: 3000},
+		{name: "stage 3 after stage 2", realToken: 10001, wantMS: 5000},
+		{name: "stage 3 at upper bound", realToken: 15000, wantMS: 5000},
+		{name: "stage 4 after stage 3", realToken: 15001, wantMS: 10000},
+		{name: "stage 4 at upper bound", realToken: 30000, wantMS: 10000},
+		{name: "paused after final guard", realToken: 30001, wantMS: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", tt.realToken)
+			require.Equal(t, tt.wantMS, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+		})
+	}
+}
+
 func TestOpenAIStreamFirstTokenTimeoutPlaceholderGuardRetriesLatestFailedSample(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	svc := newOpenAIFirstTokenPlaceholderGuardTestService(t, redisServer.Addr())

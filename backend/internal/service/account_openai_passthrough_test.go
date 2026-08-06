@@ -379,6 +379,7 @@ func TestAccount_OpenAIFirstTokenTimeoutPlaceholderGuard(t *testing.T) {
 			},
 		}
 		require.False(t, account.IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled())
+		require.Equal(t, 3000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
 	})
 
 	t.Run("guard max clamps to supported range", func(t *testing.T) {
@@ -403,6 +404,7 @@ func TestAccount_OpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(t *testing.T) {
 			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
 		}}
 		require.Equal(t, defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(), account.GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages())
+		require.Equal(t, 30000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
 	})
 
 	t.Run("safe placeholder stays independent from disabled timeout placeholder", func(t *testing.T) {
@@ -431,7 +433,7 @@ func TestAccount_OpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(t *testing.T) {
 		require.Equal(t, 1000, account.GetOpenAIFirstTokenTimeoutPlaceholderMs())
 	})
 
-	t.Run("stage one synchronized scalars drive legacy API key getters", func(t *testing.T) {
+	t.Run("stage one keeps legacy scalars while effective guard uses the final stage", func(t *testing.T) {
 		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
 			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:    true,
 			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:         1000,
@@ -442,7 +444,7 @@ func TestAccount_OpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(t *testing.T) {
 			},
 		}}
 		require.Equal(t, 1000, account.GetOpenAIFirstTokenTimeoutPlaceholderMs())
-		require.Equal(t, 3000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
+		require.Equal(t, 5000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
 		require.Equal(t, 5000, account.getOpenAIFirstTokenTimeoutPlaceholderGuardRecordingMaxMs())
 	})
 

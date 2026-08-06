@@ -4206,9 +4206,10 @@ function resetOpenAIAPIKeyFirstTokenTimeoutStages() {
 }
 watch(openaiAPIKeyFirstTokenTimeoutStageConfig, (config) => {
   const first = config.stages[0]
+  const last = config.stages[config.stages.length - 1]
   if (!first) return
   if (typeof first.placeholder_ms === 'number') openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = first.placeholder_ms
-  if (typeof first.guard_max_ms === 'number') openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs.value = first.guard_max_ms
+  if (typeof last?.guard_max_ms === 'number') openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs.value = last.guard_max_ms
 }, { deep: true, immediate: true })
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
