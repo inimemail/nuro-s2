@@ -4629,6 +4629,49 @@
                 </p>
               </div>
 
+              <div class="border-t border-gray-100 pt-5 dark:border-dark-700">
+                <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div class="min-w-0">
+                    <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
+                      {{ t("admin.settings.gatewayForwarding.openaiCodexVersionTitle") }}
+                    </h3>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.gatewayForwarding.openaiCodexVersionDesc") }}
+                    </p>
+                  </div>
+                  <div class="flex shrink-0 items-center gap-2">
+                    <span class="text-xs font-medium text-gray-600 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayForwarding.openaiCodexAutoSync") }}
+                    </span>
+                    <Toggle v-model="form.openai_codex_version_auto_sync_enabled" />
+                  </div>
+                </div>
+                <div class="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayForwarding.openaiCodexManualVersion") }}
+                    </label>
+                    <input
+                      v-model="form.openai_codex_client_version"
+                      type="text"
+                      class="input w-full font-mono text-sm"
+                      :placeholder="t('admin.settings.gatewayForwarding.openaiCodexManualVersionPlaceholder')"
+                    />
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayForwarding.openaiCodexSyncedVersion") }}
+                    </label>
+                    <div class="flex h-10 items-center rounded-md border border-gray-200 bg-gray-50 px-3 font-mono text-sm text-gray-700 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-200">
+                      {{ form.openai_codex_client_version_synced || t("admin.settings.gatewayForwarding.openaiCodexNotSynced") }}
+                    </div>
+                  </div>
+                </div>
+                <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.gatewayForwarding.openaiCodexVersionPrecedence") }}
+                </p>
+              </div>
+
               <!-- 是否允许在 Claude Code 中使用 Codex 插件（全局开关） -->
               <div class="flex items-center justify-between">
                 <div class="pr-4">
@@ -8489,6 +8532,9 @@ const form = reactive<SettingsForm>({
   low_latency_stream_headers: false,
   antigravity_user_agent_version: "",
   openai_codex_user_agent: "",
+  openai_codex_client_version: "",
+  openai_codex_client_version_synced: "",
+  openai_codex_version_auto_sync_enabled: false,
   openai_allow_claude_code_codex_plugin: false,
   min_codex_version: "",
   max_codex_version: "",
@@ -9839,6 +9885,10 @@ async function saveSettings() {
         form.antigravity_user_agent_version?.trim() || "",
       openai_codex_user_agent:
         form.openai_codex_user_agent?.trim() || "",
+      openai_codex_client_version:
+        form.openai_codex_client_version?.trim() || "",
+      openai_codex_version_auto_sync_enabled:
+        form.openai_codex_version_auto_sync_enabled,
       openai_allow_claude_code_codex_plugin: form.openai_allow_claude_code_codex_plugin,
       min_codex_version: form.min_codex_version?.trim() || "",
       max_codex_version: form.max_codex_version?.trim() || "",

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -10,6 +11,30 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
+
+type subscriptionLookupErrorRepo struct {
+	userSubRepoNoop
+	err error
+}
+
+func (r subscriptionLookupErrorRepo) GetByUserIDAndGroupID(context.Context, int64, int64) (*UserSubscription, error) {
+	return nil, r.err
+}
+
+func TestAssignOrExtendSubscriptionPropagatesLookupFailure(t *testing.T) {
+	lookupErr := errors.New("database unavailable")
+	svc := NewSubscriptionService(
+		&subscriptionGroupRepoStub{group: &Group{ID: 1, SubscriptionType: SubscriptionTypeSubscription}},
+		subscriptionLookupErrorRepo{err: lookupErr},
+		nil, nil, nil,
+	)
+
+	_, reused, err := svc.AssignOrExtendSubscription(context.Background(), &AssignSubscriptionInput{
+		UserID: 1, GroupID: 1, ValidityDays: 30,
+	})
+	require.False(t, reused)
+	require.ErrorIs(t, err, lookupErr)
+}
 
 type groupRepoNoop struct{}
 

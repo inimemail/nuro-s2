@@ -152,20 +152,10 @@ const antigravityUserAgentVersionDBTimeout = 5 * time.Second
 // DefaultOpenAICodexUserAgent OpenAI Codex 默认 User-Agent（用于规避 Cloudflare 对浏览器 UA 的质询）
 const DefaultOpenAICodexUserAgent = "codex-tui/0.144.1 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.144.1)"
 
-// cachedOpenAICodexUserAgent 缓存 OpenAI Codex UA（进程内缓存，60s TTL）
-type cachedOpenAICodexUserAgent struct {
-	value     string
-	expiresAt int64 // unix nano
-}
-
 type cachedOpenAIQuotaAutoPauseSettings struct {
 	settings  OpsOpenAIAccountQuotaAutoPauseSettings
 	expiresAt int64
 }
-
-const openAICodexUserAgentCacheTTL = 60 * time.Second
-const openAICodexUserAgentErrorTTL = 5 * time.Second
-const openAICodexUserAgentDBTimeout = 5 * time.Second
 
 // cachedOpenAIAllowCodexPlugin Codex 插件放行开关缓存（进程内缓存，60s TTL）。
 // IsOpenAIAllowClaudeCodeCodexPluginEnabled 在每个 codex_cli_only 账号的网关请求热路径上被调用，避免每次访问 DB。
@@ -213,8 +203,6 @@ type SettingService struct {
 	webSearchManagerBuilder     WebSearchManagerBuilder
 	antigravityUAVersionCache   atomic.Value // *cachedAntigravityUserAgentVersion
 	antigravityUAVersionSF      singleflight.Group
-	openAICodexUACache          atomic.Value // *cachedOpenAICodexUserAgent
-	openAICodexUASF             singleflight.Group
 	openAIAllowCodexPluginCache atomic.Value // *cachedOpenAIAllowCodexPlugin
 	openAIAllowCodexPluginSF    singleflight.Group
 	codexCLIOnlyPolicyCache     atomic.Value // *cachedCodexCLIOnlyPolicy
@@ -680,6 +668,35 @@ func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *Setti
 	}
 }
 
+func (s *SettingService) codexIdentityEnforcementEnabled() bool {
+	return s != nil && s.cfg != nil && !s.cfg.Gateway.DisableCodexIdentityEnforcement
+}
+
+// RefreshOpenAICodexIdentityRuntime refreshes the immutable process snapshot.
+// It is called during startup, settings writes, and background version sync;
+// request forwarding never calls this method.
+func (s *SettingService) RefreshOpenAICodexIdentityRuntime(ctx context.Context) error {
+	if s == nil || s.settingRepo == nil {
+		publishCodexIdentityRuntime("", "", "", false)
+		return nil
+	}
+	values, err := s.settingRepo.GetMultiple(ctx, []string{
+		SettingKeyOpenAICodexClientVersion,
+		SettingKeyOpenAICodexClientVersionSynced,
+		SettingKeyOpenAICodexUserAgent,
+	})
+	if err != nil {
+		return fmt.Errorf("load openai codex identity runtime: %w", err)
+	}
+	publishCodexIdentityRuntime(
+		values[SettingKeyOpenAICodexClientVersion],
+		values[SettingKeyOpenAICodexClientVersionSynced],
+		values[SettingKeyOpenAICodexUserAgent],
+		s.codexIdentityEnforcementEnabled(),
+	)
+	return nil
+}
+
 // SetDefaultSubscriptionGroupReader injects an optional group reader for default subscription validation.
 func (s *SettingService) SetDefaultSubscriptionGroupReader(reader DefaultSubscriptionGroupReader) {
 	s.defaultSubGroupReader = reader
@@ -1105,50 +1122,8 @@ func (s *SettingService) GetAntigravityUserAgentVersion(ctx context.Context) str
 // GetOpenAICodexUserAgent 返回 OpenAI Codex 上游请求使用的 User-Agent。
 // 后台设置优先；为空时回退到内置默认值。
 func (s *SettingService) GetOpenAICodexUserAgent(ctx context.Context) string {
-	fallback := DefaultOpenAICodexUserAgent
-	if s == nil || s.settingRepo == nil {
-		return fallback
-	}
-	if cached, ok := s.openAICodexUACache.Load().(*cachedOpenAICodexUserAgent); ok && cached != nil {
-		if time.Now().UnixNano() < cached.expiresAt {
-			return cached.value
-		}
-	}
-
-	result, _, _ := s.openAICodexUASF.Do("openai_codex_user_agent", func() (any, error) {
-		if cached, ok := s.openAICodexUACache.Load().(*cachedOpenAICodexUserAgent); ok && cached != nil {
-			if time.Now().UnixNano() < cached.expiresAt {
-				return cached.value, nil
-			}
-		}
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openAICodexUserAgentDBTimeout)
-		defer cancel()
-		value, err := s.settingRepo.GetValue(dbCtx, SettingKeyOpenAICodexUserAgent)
-		if err != nil && !errors.Is(err, ErrSettingNotFound) {
-			slog.Warn("failed to get openai codex user agent setting", "error", err)
-			s.openAICodexUACache.Store(&cachedOpenAICodexUserAgent{
-				value:     fallback,
-				expiresAt: time.Now().Add(openAICodexUserAgentErrorTTL).UnixNano(),
-			})
-			return fallback, nil
-		}
-		ua := strings.TrimSpace(value)
-		if ua == "" {
-			ua = fallback
-		}
-		s.openAICodexUACache.Store(&cachedOpenAICodexUserAgent{
-			value:     ua,
-			expiresAt: time.Now().Add(openAICodexUserAgentCacheTTL).UnixNano(),
-		})
-		return ua, nil
-	})
-	if ua, ok := result.(string); ok && ua != "" {
-		return ua
-	}
-	return fallback
+	_ = ctx
+	return currentCodexIdentityRuntime().browserUserAgent
 }
 
 // IsOpenAIAllowClaudeCodeCodexPluginEnabled 全局开关：是否额外放行 Claude Code 的 Codex 插件（默认关闭）。
@@ -2183,6 +2158,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyLowLatencyStreamHeaders] = strconv.FormatBool(settings.LowLatencyStreamHeaders)
 	updates[SettingKeyAntigravityUserAgentVersion] = antigravity.NormalizeUserAgentVersion(settings.AntigravityUserAgentVersion)
 	updates[SettingKeyOpenAICodexUserAgent] = strings.TrimSpace(settings.OpenAICodexUserAgent)
+	updates[SettingKeyOpenAICodexClientVersion] = NormalizeCodexClientVersion(settings.OpenAICodexClientVersion)
+	updates[SettingKeyOpenAICodexVersionAutoSyncEnabled] = strconv.FormatBool(settings.OpenAICodexVersionAutoSyncEnabled)
 	updates[SettingKeyOpenAIAllowClaudeCodeCodexPlugin] = strconv.FormatBool(settings.OpenAIAllowClaudeCodeCodexPlugin)
 	updates[SettingKeyMinCodexVersion] = strings.TrimSpace(settings.MinCodexVersion)
 	updates[SettingKeyMaxCodexVersion] = strings.TrimSpace(settings.MaxCodexVersion)
@@ -2335,15 +2312,12 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		version:   antigravityUserAgentVersion,
 		expiresAt: time.Now().Add(antigravityUserAgentVersionCacheTTL).UnixNano(),
 	})
-	s.openAICodexUASF.Forget("openai_codex_user_agent")
-	codexUA := strings.TrimSpace(settings.OpenAICodexUserAgent)
-	if codexUA == "" {
-		codexUA = DefaultOpenAICodexUserAgent
-	}
-	s.openAICodexUACache.Store(&cachedOpenAICodexUserAgent{
-		value:     codexUA,
-		expiresAt: time.Now().Add(openAICodexUserAgentCacheTTL).UnixNano(),
-	})
+	publishCodexIdentityRuntime(
+		settings.OpenAICodexClientVersion,
+		settings.OpenAICodexClientVersionSynced,
+		settings.OpenAICodexUserAgent,
+		s.codexIdentityEnforcementEnabled(),
+	)
 	openAIAdvancedSchedulerSettingSF.Forget(openAIAdvancedSchedulerSettingKey)
 	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{
 		enabled:   settings.OpenAIAdvancedSchedulerEnabled,
@@ -3402,6 +3376,9 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyLowLatencyStreamHeaders:                         strconv.FormatBool(s.defaultLowLatencyStreamHeaders()),
 		SettingKeyAntigravityUserAgentVersion:                     "",
 		SettingKeyOpenAICodexUserAgent:                            "",
+		SettingKeyOpenAICodexClientVersion:                        "",
+		SettingKeyOpenAICodexClientVersionSynced:                  "",
+		SettingKeyOpenAICodexVersionAutoSyncEnabled:               "false",
 		SettingKeyMinCodexVersion:                                 "",
 		SettingKeyMaxCodexVersion:                                 "",
 		SettingKeyCodexCLIOnlyBlacklist:                           "",
@@ -4017,6 +3994,9 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.LowLatencyStreamHeaders = result.StreamLowLatencyMode != config.StreamLowLatencyModeOff
 	result.AntigravityUserAgentVersion = antigravity.NormalizeUserAgentVersion(settings[SettingKeyAntigravityUserAgentVersion])
 	result.OpenAICodexUserAgent = strings.TrimSpace(settings[SettingKeyOpenAICodexUserAgent])
+	result.OpenAICodexClientVersion = NormalizeCodexClientVersion(settings[SettingKeyOpenAICodexClientVersion])
+	result.OpenAICodexClientVersionSynced = NormalizeCodexClientVersion(settings[SettingKeyOpenAICodexClientVersionSynced])
+	result.OpenAICodexVersionAutoSyncEnabled = settings[SettingKeyOpenAICodexVersionAutoSyncEnabled] == "true"
 	result.OpenAIAllowClaudeCodeCodexPlugin = settings[SettingKeyOpenAIAllowClaudeCodeCodexPlugin] == "true"
 	result.MinCodexVersion = strings.TrimSpace(settings[SettingKeyMinCodexVersion])
 	result.MaxCodexVersion = strings.TrimSpace(settings[SettingKeyMaxCodexVersion])

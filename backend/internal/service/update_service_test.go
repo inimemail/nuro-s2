@@ -35,6 +35,10 @@ func (s *updateServiceGitHubClientStub) FetchLatestRelease(context.Context, stri
 	return s.release, nil
 }
 
+func (s *updateServiceGitHubClientStub) FetchRecentReleases(context.Context, string, int) ([]*GitHubRelease, error) {
+	return nil, nil
+}
+
 func (s *updateServiceGitHubClientStub) DownloadFile(context.Context, string, string, int64) error {
 	panic("DownloadFile should not be called when no update is available")
 }

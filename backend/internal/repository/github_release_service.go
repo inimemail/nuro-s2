@@ -22,6 +22,9 @@ type githubReleaseClient struct {
 	updateGitHubToken  string
 }
 
+const githubRecentReleasesMaxBytes int64 = 16 << 20
+const githubChecksumMaxBytes int64 = 1 << 20
+
 type githubReleaseClientError struct {
 	err error
 }
@@ -104,6 +107,10 @@ func (c *githubReleaseClientError) FetchLatestRelease(ctx context.Context, repo 
 	return nil, c.err
 }
 
+func (c *githubReleaseClientError) FetchRecentReleases(ctx context.Context, repo string, perPage int) ([]*service.GitHubRelease, error) {
+	return nil, c.err
+}
+
 func (c *githubReleaseClientError) DownloadFile(ctx context.Context, url, dest string, maxSize int64) error {
 	return c.err
 }
@@ -136,6 +143,40 @@ func (c *githubReleaseClient) FetchLatestRelease(ctx context.Context, repo strin
 	}
 
 	return &release, nil
+}
+
+func (c *githubReleaseClient) FetchRecentReleases(ctx context.Context, repo string, perPage int) ([]*service.GitHubRelease, error) {
+	if perPage <= 0 {
+		perPage = 10
+	}
+	if perPage > 100 {
+		perPage = 100
+	}
+	requestURL := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=%d", repo, perPage)
+	req, err := c.newAPIRequest(ctx, requestURL)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, githubRecentReleasesMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(payload)) > githubRecentReleasesMaxBytes {
+		return nil, fmt.Errorf("GitHub releases response exceeds %d bytes", githubRecentReleasesMaxBytes)
+	}
+	var releases []*service.GitHubRelease
+	if err := json.Unmarshal(payload, &releases); err != nil {
+		return nil, err
+	}
+	return releases, nil
 }
 
 func (c *githubReleaseClient) DownloadFile(ctx context.Context, url, dest string, maxSize int64) error {
@@ -202,5 +243,12 @@ func (c *githubReleaseClient) FetchChecksumFile(ctx context.Context, url string)
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, githubChecksumMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > githubChecksumMaxBytes {
+		return nil, fmt.Errorf("checksum response exceeds %d bytes", githubChecksumMaxBytes)
+	}
+	return data, nil
 }

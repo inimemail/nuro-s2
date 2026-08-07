@@ -213,6 +213,9 @@ type SystemSettings struct {
 	LowLatencyStreamHeaders                bool   `json:"low_latency_stream_headers"`
 	AntigravityUserAgentVersion            string `json:"antigravity_user_agent_version"`
 	OpenAICodexUserAgent                   string `json:"openai_codex_user_agent"`
+	OpenAICodexClientVersion               string `json:"openai_codex_client_version"`
+	OpenAICodexClientVersionSynced         string `json:"openai_codex_client_version_synced"`
+	OpenAICodexVersionAutoSyncEnabled      bool   `json:"openai_codex_version_auto_sync_enabled"`
 	OpenAIAllowClaudeCodeCodexPlugin       bool   `json:"openai_allow_claude_code_codex_plugin"`
 	MinCodexVersion                        string `json:"min_codex_version"`
 	MaxCodexVersion                        string `json:"max_codex_version"`

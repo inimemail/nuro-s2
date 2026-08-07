@@ -29,6 +29,8 @@ export interface ModelPlazaGroup {
   peak_end: string
   peak_rate_multiplier: number
   is_exclusive: boolean
+  image_rate_independent: boolean
+  image_rate_multiplier: number
   models: PlazaModel[]
 }
 

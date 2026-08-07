@@ -27,6 +27,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"golang.org/x/mod/semver"
@@ -63,7 +64,7 @@ const (
 	defaultOpenAIHTTP2FallbackTTL            = 10 * time.Minute
 	grokCLIProxyHost                         = "cli-chat-proxy.grok.com"
 	grokOfficialAPIHost                      = "api.x.ai"
-	grokCLIStableVersion                     = "0.2.93"
+	grokCLIStableVersion                     = xai.CLIClientVersion
 	grokCLIVersionOverride                   = "XAI_GROK_CLI_VERSION"
 	grokFallbackBodyLimit                    = 64 << 10
 )

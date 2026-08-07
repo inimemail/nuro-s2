@@ -12,10 +12,23 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type messagesTempUnschedulableRepo struct {
+	stubOpenAIAccountRepo
+	accountID int64
+	until     time.Time
+}
+
+func (r *messagesTempUnschedulableRepo) SetTempUnschedulable(_ context.Context, accountID int64, until time.Time, _ string) error {
+	r.accountID = accountID
+	r.until = until
+	return nil
+}
 
 func buildResponsesFailedSSEStream(errType, errorMessage string) string {
 	failed := fmt.Sprintf(`{"type":"response.failed","response":{"id":"resp_err","object":"response","status":"failed","error":{"type":"%s","message":"%s"},"output":[],"usage":{"input_tokens":10,"output_tokens":0,"total_tokens":10}}}`, errType, errorMessage)
@@ -134,4 +147,39 @@ func TestForwardAsAnthropic_BufferedResponseFailed_Failover(t *testing.T) {
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.True(t, errors.As(err, &failoverErr))
+}
+
+func TestForwardAsAnthropic_TempUnschedulableHTTPErrorFailsOverBeforeCommit(t *testing.T) {
+	setGinTestMode()
+	body := []byte(`{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := []byte(`{"error":{"message":"Our servers are currently overloaded. Please try again later."}}`)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
+	}}
+	repo := &messagesTempUnschedulableRepo{}
+	account := rawChatCompletionsTestAccount()
+	account.Credentials["temp_unschedulable_enabled"] = true
+	account.Credentials["temp_unschedulable_rules"] = []any{map[string]any{
+		"error_code": float64(http.StatusBadRequest), "keywords": []any{"currently overloaded"}, "duration_minutes": float64(1),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream,
+		rateLimitService: NewRateLimitService(repo, nil, nil, nil, nil),
+	}
+
+	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.True(t, failoverErr.ShouldRetryNextAccount())
+	require.Equal(t, account.ID, repo.accountID)
+	require.True(t, repo.until.After(time.Now()))
+	require.False(t, IsResponseCommitted(c))
+	require.Empty(t, rec.Body.String())
 }

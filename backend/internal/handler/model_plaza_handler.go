@@ -36,19 +36,21 @@ type modelPlazaModel struct {
 }
 
 type modelPlazaGroup struct {
-	ID                 int64             `json:"id"`
-	Name               string            `json:"name"`
-	Description        string            `json:"description"`
-	Platform           string            `json:"platform"`
-	SubscriptionType   string            `json:"subscription_type"`
-	RateMultiplier     float64           `json:"rate_multiplier"`
-	UserRateMultiplier *float64          `json:"user_rate_multiplier,omitempty"`
-	PeakRateEnabled    bool              `json:"peak_rate_enabled"`
-	PeakStart          string            `json:"peak_start"`
-	PeakEnd            string            `json:"peak_end"`
-	PeakRateMultiplier float64           `json:"peak_rate_multiplier"`
-	IsExclusive        bool              `json:"is_exclusive"`
-	Models             []modelPlazaModel `json:"models"`
+	ID                   int64             `json:"id"`
+	Name                 string            `json:"name"`
+	Description          string            `json:"description"`
+	Platform             string            `json:"platform"`
+	SubscriptionType     string            `json:"subscription_type"`
+	RateMultiplier       float64           `json:"rate_multiplier"`
+	UserRateMultiplier   *float64          `json:"user_rate_multiplier,omitempty"`
+	PeakRateEnabled      bool              `json:"peak_rate_enabled"`
+	PeakStart            string            `json:"peak_start"`
+	PeakEnd              string            `json:"peak_end"`
+	PeakRateMultiplier   float64           `json:"peak_rate_multiplier"`
+	IsExclusive          bool              `json:"is_exclusive"`
+	ImageRateIndependent bool              `json:"image_rate_independent"`
+	ImageRateMultiplier  float64           `json:"image_rate_multiplier"`
+	Models               []modelPlazaModel `json:"models"`
 }
 
 type modelPlazaResponse struct {
@@ -132,6 +134,7 @@ func modelPlazaGroupDTO(group *service.ModelPlazaGroup, rates map[int64]float64)
 		SubscriptionType: group.SubscriptionType, RateMultiplier: group.RateMultiplier,
 		PeakRateEnabled: group.PeakRateEnabled, PeakStart: group.PeakStart, PeakEnd: group.PeakEnd,
 		PeakRateMultiplier: group.PeakRateMultiplier, IsExclusive: group.IsExclusive, Models: models,
+		ImageRateIndependent: group.ImageRateIndependent, ImageRateMultiplier: group.ImageRateMultiplier,
 	}
 	if rate, ok := rates[group.ID]; ok {
 		result.UserRateMultiplier = &rate

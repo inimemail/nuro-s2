@@ -642,7 +642,7 @@ func buildGrokResponsesRequest(ctx context.Context, c *gin.Context, account *Acc
 const (
 	grokDefaultResponsesModel        = "grok-4.5"
 	grokUpstreamUserAgent            = "sub2api-grok/1.0"
-	grokCLIVersion                   = "0.2.93"
+	grokCLIVersion                   = xai.CLIClientVersion
 	grokRateLimitFallbackCooldown    = 2 * time.Minute
 	grokRateLimitRepeatCooldown      = 10 * time.Minute
 	grokRateLimitSustainedCooldown   = 30 * time.Minute

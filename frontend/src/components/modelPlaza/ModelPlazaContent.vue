@@ -68,6 +68,9 @@
             </div>
             <div class="shrink-0 text-right text-xs text-gray-500 dark:text-gray-400">
               <div>{{ t('modelPlaza.table.rate') }} <span class="font-mono font-semibold text-gray-900 dark:text-white">{{ effectiveRate(group) }}x</span></div>
+              <div v-if="group.image_rate_independent" class="mt-1 text-cyan-700 dark:text-cyan-300">
+                {{ t('modelPlaza.table.perImage') }} <span class="font-mono font-semibold">{{ group.image_rate_multiplier }}x</span>
+              </div>
               <div v-if="group.peak_rate_enabled" class="mt-1 text-amber-600 dark:text-amber-400">{{ group.peak_start }}-{{ group.peak_end }} / {{ group.peak_rate_multiplier }}x</div>
             </div>
           </header>
@@ -125,11 +128,11 @@
                   <td v-else colspan="3" class="px-3 py-3 text-right">
                     <div v-if="requestIntervals(model).length" class="flex flex-wrap justify-end gap-1.5">
                       <span v-for="(interval, index) in requestIntervals(model)" :key="index" class="rounded bg-gray-100 px-2 py-1 font-mono text-xs dark:bg-dark-700">
-                        <span class="mr-1 font-sans text-gray-400">{{ tierLabel(interval) }}</span>{{ paidRequest(interval.per_request_price, group) }} {{ billingUnit(model) }}
+                        <span class="mr-1 font-sans text-gray-400">{{ tierLabel(interval) }}</span>{{ paidRequest(model, interval.per_request_price, group) }} {{ billingUnit(model) }}
                       </span>
                     </div>
                     <template v-else>
-                      <span class="font-mono font-medium">{{ paidRequest(model.pricing?.per_request_price, group) }}</span>
+                      <span class="font-mono font-medium">{{ paidRequest(model, model.pricing?.per_request_price, group) }}</span>
                       <span v-if="model.pricing?.per_request_price != null" class="ml-1 text-xs text-gray-400">{{ billingUnit(model) }}</span>
                     </template>
                   </td>
@@ -222,9 +225,14 @@ function cacheLine(label: string, value: number | null | undefined, group?: Mode
 function billingMode(model: PlazaModel): BillingMode { return model.pricing?.billing_mode || BILLING_MODE_TOKEN }
 function billingModeLabel(model: PlazaModel): string { return billingMode(model) === BILLING_MODE_IMAGE ? t('modelPlaza.table.perImage') : t('modelPlaza.table.perRequest') }
 function billingUnit(model: PlazaModel): string { return billingMode(model) === BILLING_MODE_IMAGE ? t('modelPlaza.table.perUnitImage') : t('modelPlaza.table.perUnitRequest') }
-function paidRequest(value: number | null | undefined, group: ModelPlazaGroup): string {
+function requestRate(model: PlazaModel, group: ModelPlazaGroup): number {
+  return billingMode(model) === BILLING_MODE_IMAGE && group.image_rate_independent
+    ? group.image_rate_multiplier
+    : effectiveRate(group)
+}
+function paidRequest(model: PlazaModel, value: number | null | undefined, group: ModelPlazaGroup): string {
   if (value == null) return '-'
-  return formatScaled(value * effectiveRate(group), 1, 2)
+  return formatScaled(value * requestRate(model, group), 1, 2)
 }
 function tokenIntervals(model: PlazaModel): UserPricingInterval[] { return model.pricing?.intervals ?? [] }
 function requestIntervals(model: PlazaModel): UserPricingInterval[] { return (model.pricing?.intervals ?? []).filter(interval => interval.per_request_price != null) }

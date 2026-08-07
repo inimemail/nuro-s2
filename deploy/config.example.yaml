@@ -226,6 +226,9 @@ gateway:
   #
   # 注意：开启后会影响所有客户端的行为（不仅限于 VS Code / Codex CLI），请谨慎开启。
   force_codex_cli: false
+  # Keep the existing Codex identity pairing behavior by default. Set false
+  # only after validating canonical OAuth identity enforcement in canary.
+  disable_codex_identity_enforcement: true
   # Enable Codex image-generation bridge injection for /openai/v1/responses.
   # 是否为 Codex /responses 请求自动注入 image_generation 工具与桥接指令。
   #

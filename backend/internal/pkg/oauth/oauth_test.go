@@ -4,6 +4,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSessionStore_Stop_Idempotent(t *testing.T) {
@@ -40,4 +42,8 @@ func TestSessionStore_Stop_Concurrent(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("stopCh 未关闭")
 	}
+}
+
+func TestClaudeAuthorizeURLUsesCurrentCAIEndpoint(t *testing.T) {
+	require.Equal(t, "https://claude.com/cai/oauth/authorize", AuthorizeURL)
 }

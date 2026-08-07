@@ -800,6 +800,84 @@ func (r *userRepository) DeductBalance(ctx context.Context, id int64, amount flo
 	return nil
 }
 
+// DeductAvailableBalance atomically deducts min(amount, max(balance, 0)).
+// Refund processing must never deepen an existing deficit or race a concurrent
+// billing deduction into an overdraft.
+func (r *userRepository) DeductAvailableBalance(ctx context.Context, id int64, amount float64) (deducted float64, err error) {
+	if amount < 0 {
+		return 0, fmt.Errorf("deduction amount must be nonnegative")
+	}
+	const updateSQL = `
+		WITH target AS (
+			SELECT id, balance
+			FROM users
+			WHERE id = $2 AND deleted_at IS NULL
+			FOR UPDATE
+		), updated AS (
+			UPDATE users AS u
+			SET balance = target.balance - LEAST($1, GREATEST(target.balance, 0)), updated_at = NOW()
+			FROM target
+			WHERE u.id = target.id AND u.deleted_at IS NULL
+			RETURNING target.balance - u.balance AS deducted
+		)
+		SELECT deducted FROM updated
+	`
+	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, updateSQL, amount, id)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+	if !rows.Next() {
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return 0, rowsErr
+		}
+		return 0, service.ErrUserNotFound
+	}
+	if err := rows.Scan(&deducted); err != nil {
+		return 0, err
+	}
+	return deducted, rows.Err()
+}
+
+// DeductAvailableBalanceExact atomically deducts the requested amount only
+// when the user's current non-negative balance can cover it. A zero result is
+// an insufficient balance (or a concurrently removed user), and no balance
+// is changed. Refunds use this variant when force is not explicitly enabled.
+func (r *userRepository) DeductAvailableBalanceExact(ctx context.Context, id int64, amount float64) (deducted float64, err error) {
+	if amount < 0 {
+		return 0, fmt.Errorf("deduction amount must be nonnegative")
+	}
+	const updateSQL = `
+		UPDATE users
+		SET balance = balance - $1, updated_at = NOW()
+		WHERE id = $2 AND deleted_at IS NULL AND balance >= $1
+		RETURNING $1
+	`
+	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, updateSQL, amount, id)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+	if !rows.Next() {
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return 0, rowsErr
+		}
+		return 0, nil
+	}
+	if err := rows.Scan(&deducted); err != nil {
+		return 0, err
+	}
+	return deducted, rows.Err()
+}
+
 // AdjustBalance is reserved for administrative balance edits. Request billing
 // continues to use DeductBalance and therefore keeps the existing overdraft
 // semantics.

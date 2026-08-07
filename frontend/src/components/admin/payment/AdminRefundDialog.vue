@@ -132,7 +132,7 @@
       </div>
 
       <!-- Force Refund -->
-      <div v-if="requireForce" class="flex items-center gap-2">
+      <div v-if="forceRequired" class="flex items-center gap-2">
         <input
           id="force-refund"
           v-model="form.force"
@@ -153,7 +153,7 @@
         <button
           type="submit"
           form="refund-form"
-          :disabled="submitting || form.amount <= 0 || (requireForce && !form.force)"
+          :disabled="submitting || form.amount <= 0 || (forceRequired && !form.force)"
           class="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:opacity-50 dark:focus:ring-offset-dark-800"
         >
           {{ submitting ? t('common.processing') : t('payment.admin.confirmRefund') }}
@@ -216,6 +216,8 @@ const balanceInsufficient = computed(() => {
   return props.userBalance < props.order.amount
 })
 
+const forceRequired = computed(() => Boolean(props.requireForce && form.deduct_balance))
+
 watch(() => props.show, (val) => {
   if (val && props.order) {
     // For REFUND_REQUESTED / REFUND_PENDING, pre-fill with the requested amount
@@ -236,7 +238,7 @@ function formatDateTime(dateStr: string): string {
 
 function handleSubmit() {
   if (form.amount <= 0 || form.amount > maxRefundable.value) return
-  if (props.requireForce && !form.force) return
+  if (forceRequired.value && !form.force) return
   emit('confirm', { ...form })
 }
 </script>

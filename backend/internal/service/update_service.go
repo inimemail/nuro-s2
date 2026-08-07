@@ -47,6 +47,7 @@ type UpdateCache interface {
 // GitHubReleaseClient 获取 GitHub release 信息的接口
 type GitHubReleaseClient interface {
 	FetchLatestRelease(ctx context.Context, repo string) (*GitHubRelease, error)
+	FetchRecentReleases(ctx context.Context, repo string, perPage int) ([]*GitHubRelease, error)
 	DownloadFile(ctx context.Context, url, dest string, maxSize int64) error
 	FetchChecksumFile(ctx context.Context, url string) ([]byte, error)
 }
@@ -104,6 +105,8 @@ type GitHubRelease struct {
 	PublishedAt string        `json:"published_at"`
 	HTMLURL     string        `json:"html_url"`
 	Assets      []GitHubAsset `json:"assets"`
+	Draft       bool          `json:"draft"`
+	Prerelease  bool          `json:"prerelease"`
 }
 
 type GitHubAsset struct {

@@ -321,6 +321,9 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		LowLatencyStreamHeaders:                         settings.LowLatencyStreamHeaders,
 		AntigravityUserAgentVersion:                     settings.AntigravityUserAgentVersion,
 		OpenAICodexUserAgent:                            settings.OpenAICodexUserAgent,
+		OpenAICodexClientVersion:                        settings.OpenAICodexClientVersion,
+		OpenAICodexClientVersionSynced:                  settings.OpenAICodexClientVersionSynced,
+		OpenAICodexVersionAutoSyncEnabled:               settings.OpenAICodexVersionAutoSyncEnabled,
 		OpenAIAllowClaudeCodeCodexPlugin:                settings.OpenAIAllowClaudeCodeCodexPlugin,
 		MinCodexVersion:                                 settings.MinCodexVersion,
 		MaxCodexVersion:                                 settings.MaxCodexVersion,
@@ -686,6 +689,8 @@ type UpdateSettingsRequest struct {
 	LowLatencyStreamHeaders                *bool   `json:"low_latency_stream_headers"`
 	AntigravityUserAgentVersion            *string `json:"antigravity_user_agent_version"`
 	OpenAICodexUserAgent                   *string `json:"openai_codex_user_agent"`
+	OpenAICodexClientVersion               *string `json:"openai_codex_client_version"`
+	OpenAICodexVersionAutoSyncEnabled      *bool   `json:"openai_codex_version_auto_sync_enabled"`
 	OpenAIAllowClaudeCodeCodexPlugin       *bool   `json:"openai_allow_claude_code_codex_plugin"`
 	MinCodexVersion                        *string `json:"min_codex_version"`
 	MaxCodexVersion                        *string `json:"max_codex_version"`
@@ -1639,6 +1644,14 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			return
 		}
 	}
+	if req.OpenAICodexClientVersion != nil {
+		normalized := service.NormalizeCodexClientVersion(*req.OpenAICodexClientVersion)
+		if strings.TrimSpace(*req.OpenAICodexClientVersion) != "" && normalized == "" {
+			response.Error(c, http.StatusBadRequest, "openai_codex_client_version must be empty or a valid Codex version (e.g. 0.146.0)")
+			return
+		}
+		req.OpenAICodexClientVersion = &normalized
+	}
 	if req.MinCodexVersion != nil {
 		normalized := strings.TrimSpace(*req.MinCodexVersion)
 		req.MinCodexVersion = &normalized
@@ -2039,6 +2052,19 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.OpenAICodexUserAgent
 			}
 			return previousSettings.OpenAICodexUserAgent
+		}(),
+		OpenAICodexClientVersion: func() string {
+			if req.OpenAICodexClientVersion != nil {
+				return *req.OpenAICodexClientVersion
+			}
+			return previousSettings.OpenAICodexClientVersion
+		}(),
+		OpenAICodexClientVersionSynced: previousSettings.OpenAICodexClientVersionSynced,
+		OpenAICodexVersionAutoSyncEnabled: func() bool {
+			if req.OpenAICodexVersionAutoSyncEnabled != nil {
+				return *req.OpenAICodexVersionAutoSyncEnabled
+			}
+			return previousSettings.OpenAICodexVersionAutoSyncEnabled
 		}(),
 		OpenAIAllowClaudeCodeCodexPlugin: func() bool {
 			if req.OpenAIAllowClaudeCodeCodexPlugin != nil {
@@ -2516,6 +2542,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		LowLatencyStreamHeaders:                         updatedSettings.LowLatencyStreamHeaders,
 		AntigravityUserAgentVersion:                     updatedSettings.AntigravityUserAgentVersion,
 		OpenAICodexUserAgent:                            updatedSettings.OpenAICodexUserAgent,
+		OpenAICodexClientVersion:                        updatedSettings.OpenAICodexClientVersion,
+		OpenAICodexClientVersionSynced:                  updatedSettings.OpenAICodexClientVersionSynced,
+		OpenAICodexVersionAutoSyncEnabled:               updatedSettings.OpenAICodexVersionAutoSyncEnabled,
 		OpenAIAllowClaudeCodeCodexPlugin:                updatedSettings.OpenAIAllowClaudeCodeCodexPlugin,
 		MinCodexVersion:                                 updatedSettings.MinCodexVersion,
 		MaxCodexVersion:                                 updatedSettings.MaxCodexVersion,
@@ -3071,6 +3100,12 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.OpenAICodexUserAgent != after.OpenAICodexUserAgent {
 		changed = append(changed, "openai_codex_user_agent")
+	}
+	if before.OpenAICodexClientVersion != after.OpenAICodexClientVersion {
+		changed = append(changed, "openai_codex_client_version")
+	}
+	if before.OpenAICodexVersionAutoSyncEnabled != after.OpenAICodexVersionAutoSyncEnabled {
+		changed = append(changed, "openai_codex_version_auto_sync_enabled")
 	}
 	if before.OpenAIAllowClaudeCodeCodexPlugin != after.OpenAIAllowClaudeCodeCodexPlugin {
 		changed = append(changed, "openai_allow_claude_code_codex_plugin")

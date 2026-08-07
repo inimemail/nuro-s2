@@ -230,6 +230,13 @@ func (s *Stripe) Refund(ctx context.Context, req payment.RefundRequest) (*paymen
 		Amount:        stripe.Int64(amountInMinorUnit),
 		Reason:        stripe.String(string(stripe.RefundReasonRequestedByCustomer)),
 	}
+	refundIdentity := strings.TrimSpace(req.OrderID)
+	if refundIdentity == "" {
+		refundIdentity = strings.TrimSpace(req.TradeNo)
+	}
+	if refundIdentity != "" {
+		params.SetIdempotencyKey(fmt.Sprintf("re-%s-%d", refundIdentity, amountInMinorUnit))
+	}
 	params.Context = ctx
 
 	r, err := s.sc.V1Refunds.Create(ctx, params)

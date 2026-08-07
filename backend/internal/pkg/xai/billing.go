@@ -15,8 +15,9 @@ const (
 	CLITokenAuthHeader     = "x-xai-token-auth"
 	CLITokenAuthValue      = "xai-grok-cli"
 	CLIClientVersionHeader = "x-grok-client-version"
-	// Keep in sync with https://x.ai/cli/stable.
-	CLIClientVersion = "0.2.93"
+	// Keep in sync with https://x.ai/cli/stable. This is the single source for
+	// gateway traffic, OAuth proxy traffic, and background billing probes.
+	CLIClientVersion = "0.2.114"
 	CLIUserAgent     = "grok-pager/" + CLIClientVersion + " grok-shell/" + CLIClientVersion + " (macos; aarch64)"
 
 	BillingWeeklyPath  = "/billing?format=credits"

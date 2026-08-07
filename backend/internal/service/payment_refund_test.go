@@ -4,15 +4,166 @@ package service
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"testing"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
+
+type refundAvailableBalanceRepoStub struct {
+	UserRepository
+	user          *User
+	deducted      float64
+	deductRequest float64
+	deductCalls   int
+	deductInTx    bool
+}
+
+func (r *refundAvailableBalanceRepoStub) GetByID(context.Context, int64) (*User, error) {
+	return r.user, nil
+}
+
+func (r *refundAvailableBalanceRepoStub) DeductAvailableBalance(ctx context.Context, _ int64, amount float64) (float64, error) {
+	r.deductCalls++
+	r.deductInTx = dbent.TxFromContext(ctx) != nil
+	r.deductRequest = amount
+	r.deducted = math.Min(amount, math.Max(r.user.Balance, 0))
+	return r.deducted, nil
+}
+
+func (r *refundAvailableBalanceRepoStub) DeductAvailableBalanceExact(ctx context.Context, _ int64, amount float64) (float64, error) {
+	if r.user.Balance < amount {
+		return 0, nil
+	}
+	r.deductCalls++
+	r.deductInTx = dbent.TxFromContext(ctx) != nil
+	r.deductRequest = amount
+	r.deducted = amount
+	return amount, nil
+}
+
+type refundPartialOnlyBalanceRepoStub struct {
+	UserRepository
+	deductCalls int
+}
+
+func (r *refundPartialOnlyBalanceRepoStub) DeductAvailableBalance(context.Context, int64, float64) (float64, error) {
+	r.deductCalls++
+	return 2, nil
+}
+
+func TestFinalizePendingRefundClaimsOrderBeforeDeduction(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	user, err := client.User.Create().
+		SetEmail("pending-refund@example.com").
+		SetPasswordHash("hash").
+		SetUsername("pending-refund-user").
+		Save(ctx)
+	require.NoError(t, err)
+	order, err := client.PaymentOrder.Create().
+		SetUserID(user.ID).
+		SetUserEmail(user.Email).
+		SetUserName(user.Username).
+		SetAmount(20).
+		SetPayAmount(20).
+		SetFeeRate(0).
+		SetRechargeCode("PENDING-REFUND").
+		SetOutTradeNo("pending-refund-order").
+		SetPaymentTradeNo("pending-refund-trade").
+		SetPaymentType(payment.TypeStripe).
+		SetOrderType(payment.OrderTypeBalance).
+		SetStatus(OrderStatusRefundPending).
+		SetRefundAmount(20).
+		SetExpiresAt(time.Now().Add(time.Hour)).
+		SetClientIP("127.0.0.1").
+		SetSrcHost("api.example.com").
+		Save(ctx)
+	require.NoError(t, err)
+
+	repo := &refundAvailableBalanceRepoStub{user: &User{ID: user.ID, Balance: 20}}
+	svc := &PaymentService{entClient: client, userRepo: repo}
+	plan := &RefundPlan{
+		OrderID: order.ID, Order: order, RefundAmount: 20,
+		BalanceToDeduct: 20, DeductionType: payment.DeductionTypeBalance,
+	}
+
+	result, err := svc.finalizePendingRefundSuccess(ctx, plan)
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, 1, repo.deductCalls)
+	require.True(t, repo.deductInTx, "pending refund deduction must share the order finalization transaction")
+	stored, err := client.PaymentOrder.Get(ctx, order.ID)
+	require.NoError(t, err)
+	require.Equal(t, OrderStatusRefunded, stored.Status)
+	require.Equal(t, 1, client.PaymentAuditLog.Query().
+		Where(paymentauditlog.OrderIDEQ(strconv.FormatInt(order.ID, 10)), paymentauditlog.ActionEQ("REFUND_SUCCESS")).
+		CountX(ctx))
+
+	_, err = svc.finalizePendingRefundSuccess(ctx, plan)
+	require.Error(t, err)
+	require.Equal(t, 1, repo.deductCalls, "a stale second finalization must fail before deduction")
+}
+
+func TestRefundBalanceDeductionRequiresExplicitForce(t *testing.T) {
+	repo := &refundAvailableBalanceRepoStub{user: &User{ID: 7, Balance: 3}}
+	svc := &PaymentService{userRepo: repo}
+	order := &dbent.PaymentOrder{UserID: 7, OrderType: payment.OrderTypeBalance}
+	plan := &RefundPlan{RefundAmount: 5}
+
+	result := svc.prepDeduct(context.Background(), order, plan, false)
+	require.NotNil(t, result)
+	require.True(t, result.RequireForce)
+	require.Zero(t, plan.BalanceToDeduct)
+
+	result = svc.prepDeduct(context.Background(), order, plan, true)
+	require.Nil(t, result)
+	require.Equal(t, 3.0, plan.BalanceToDeduct)
+}
+
+func TestRefundUsesAtomicAvailableBalanceDeductionResult(t *testing.T) {
+	repo := &refundAvailableBalanceRepoStub{user: &User{ID: 7, Balance: 2}}
+	svc := &PaymentService{userRepo: repo}
+
+	deducted, err := svc.deductAvailableBalance(context.Background(), 7, 5)
+	require.NoError(t, err)
+	require.Equal(t, 5.0, repo.deductRequest)
+	require.Equal(t, 2.0, deducted)
+}
+
+func TestFinalizePendingRefundRejectsInsufficientNonForceBalance(t *testing.T) {
+	repo := &refundAvailableBalanceRepoStub{user: &User{ID: 7, Balance: 2}}
+	svc := &PaymentService{userRepo: repo}
+	plan := &RefundPlan{
+		Order:           &dbent.PaymentOrder{UserID: 7},
+		BalanceToDeduct: 5,
+		DeductionType:   payment.DeductionTypeBalance,
+		Force:           false,
+	}
+
+	err := svc.applyRefundFinalDeduction(context.Background(), plan)
+	require.Error(t, err)
+	require.Zero(t, repo.deductCalls)
+	require.Equal(t, 5.0, plan.BalanceToDeduct)
+}
+
+func TestRefundBalanceDeductionDoesNotContinueAfterConcurrentShortfall(t *testing.T) {
+	// Non-force refunds fail closed for adapters that cannot provide the exact
+	// atomic operation. A partial deduction must never reach the gateway.
+	repo := &refundPartialOnlyBalanceRepoStub{}
+	svc := &PaymentService{userRepo: repo}
+
+	deducted, err := svc.deductRefundBalance(context.Background(), 7, 5, true)
+	require.Error(t, err)
+	require.Zero(t, deducted)
+	require.Zero(t, repo.deductCalls)
+}
 
 func TestValidateRefundRequestRejectsLegacyGuessedProviderInstance(t *testing.T) {
 	ctx := context.Background()
@@ -116,6 +267,52 @@ func TestPrepareRefundRejectsLegacyGuessedProviderInstance(t *testing.T) {
 	require.Nil(t, result)
 	require.Error(t, err)
 	require.Equal(t, "REFUND_DISABLED", infraerrors.Reason(err))
+}
+
+func TestPrepDeductBalanceRequiresForceWhenBalanceIsInsufficient(t *testing.T) {
+	tests := []struct {
+		name         string
+		balance      float64
+		force        bool
+		wantDeduct   float64
+		requireForce bool
+	}{
+		{name: "insufficient balance", balance: 40, requireForce: true},
+		{name: "forced insufficient balance", balance: 40, force: true, wantDeduct: 40},
+		{name: "equal balance", balance: 100, wantDeduct: 100},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := &RefundPlan{RefundAmount: 100}
+			svc := &PaymentService{userRepo: &mockUserRepo{getByIDUser: &User{Balance: tt.balance}}}
+			result := svc.prepDeduct(context.Background(), &dbent.PaymentOrder{
+				UserID: 1, OrderType: payment.OrderTypeBalance,
+			}, plan, tt.force)
+			if tt.requireForce {
+				require.NotNil(t, result)
+				require.True(t, result.RequireForce)
+				require.Zero(t, plan.BalanceToDeduct)
+				return
+			}
+			require.Nil(t, result)
+			require.Equal(t, tt.wantDeduct, plan.BalanceToDeduct)
+		})
+	}
+}
+
+func TestDeductAvailableBalanceUsesAtomicRepositoryResult(t *testing.T) {
+	var requested float64
+	svc := &PaymentService{userRepo: &mockUserRepo{
+		deductAvailableBalanceFn: func(_ context.Context, id int64, amount float64) (float64, error) {
+			require.Equal(t, int64(7), id)
+			requested = amount
+			return 25, nil
+		},
+	}}
+	deducted, err := svc.deductAvailableBalance(context.Background(), 7, 100)
+	require.NoError(t, err)
+	require.Equal(t, 100.0, requested)
+	require.Equal(t, 25.0, deducted)
 }
 
 func TestGwRefundRejectsAlipayMerchantIdentitySnapshotMismatch(t *testing.T) {

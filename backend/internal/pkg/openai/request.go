@@ -5,6 +5,13 @@ import (
 	"strings"
 )
 
+const codexUserAgentVersionMaxLen = 64
+
+// Codex versions are emitted into an HTTP header. Keep this validator local
+// to the helper so callers cannot accidentally turn an untrusted setting into
+// header injection, even when they bypass the service-level normalizer.
+var codexUserAgentVersionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.]+)?$`)
+
 // CodexCLIUserAgentPrefixes matches Codex CLI User-Agent patterns
 // Examples: "codex_vscode/1.0.0", "codex_cli_rs/0.1.2"
 var CodexCLIUserAgentPrefixes = []string{
@@ -179,6 +186,68 @@ func PairCodexClientIdentity(userAgent string) (originator string, pairedUA stri
 		return trailer, trailer + ua[slash:], true
 	}
 	return "", "", false
+}
+
+// CodexUserAgentVersion returns the version segment from a Codex-style
+// `{client}/{version}` User-Agent. Invalid shapes return an empty string.
+func CodexUserAgentVersion(userAgent string) string {
+	ua := strings.TrimSpace(userAgent)
+	slash := strings.IndexByte(ua, '/')
+	if slash <= 0 || slash == len(ua)-1 {
+		return ""
+	}
+	rest := ua[slash+1:]
+	if end := strings.IndexAny(rest, " \t("); end >= 0 {
+		rest = rest[:end]
+	}
+	return strings.TrimSpace(rest)
+}
+
+// SetCodexUserAgentVersion rebuilds the leading version segment while
+// preserving the client name and the remaining OS/terminal fingerprint.
+func SetCodexUserAgentVersion(userAgent, version string) string {
+	ua := strings.TrimSpace(userAgent)
+	version = strings.TrimSpace(version)
+	if version == "" || len(version) > codexUserAgentVersionMaxLen || !codexUserAgentVersionPattern.MatchString(version) {
+		return ""
+	}
+	slash := strings.IndexByte(ua, '/')
+	if slash <= 0 {
+		return ""
+	}
+	rest := ua[slash+1:]
+	if strings.TrimSpace(rest) == "" {
+		return ""
+	}
+	rebuilt := ""
+	if end := strings.IndexAny(rest, " \t("); end >= 0 {
+		rebuilt = ua[:slash+1] + version + rest[end:]
+	} else {
+		rebuilt = ua[:slash+1] + version
+	}
+	return rewriteCodexUATrailerVersion(rebuilt, version)
+}
+
+func rewriteCodexUATrailerVersion(userAgent, version string) string {
+	open := strings.LastIndex(userAgent, "(")
+	if open < 0 {
+		return userAgent
+	}
+	rest := userAgent[open+1:]
+	closeIndex := strings.IndexByte(rest, ')')
+	if closeIndex < 0 {
+		return userAgent
+	}
+	inner := rest[:closeIndex]
+	semicolon := strings.IndexByte(inner, ';')
+	if semicolon < 0 {
+		return userAgent
+	}
+	name := strings.TrimSpace(inner[:semicolon])
+	if name == "" || !IsCodexOfficialClientOriginator(name) {
+		return userAgent
+	}
+	return userAgent[:open+1] + name + "; " + version + rest[closeIndex:]
 }
 
 const codexOriginatorMaxLen = 64

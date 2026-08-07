@@ -31,18 +31,20 @@ type ModelPlazaModel struct {
 }
 
 type ModelPlazaGroup struct {
-	ID                 int64
-	Name               string
-	Description        string
-	Platform           string
-	SubscriptionType   string
-	RateMultiplier     float64
-	PeakRateEnabled    bool
-	PeakStart          string
-	PeakEnd            string
-	PeakRateMultiplier float64
-	IsExclusive        bool
-	Models             []ModelPlazaModel
+	ID                   int64
+	Name                 string
+	Description          string
+	Platform             string
+	SubscriptionType     string
+	RateMultiplier       float64
+	PeakRateEnabled      bool
+	PeakStart            string
+	PeakEnd              string
+	PeakRateMultiplier   float64
+	IsExclusive          bool
+	ImageRateIndependent bool
+	ImageRateMultiplier  float64
+	Models               []ModelPlazaModel
 }
 
 type modelPlazaSnapshot struct {
@@ -119,6 +121,7 @@ func (s *ModelPlazaService) build(ctx context.Context) ([]ModelPlazaGroup, error
 	}
 	sort.SliceStable(channels, func(i, j int) bool { return strings.ToLower(channels[i].Name) < strings.ToLower(channels[j].Name) })
 	byGroup := make(map[int64]*ModelPlazaGroup, len(groups))
+	groupEntities := make(map[int64]*Group, len(groups))
 	order := make([]int64, 0, len(groups))
 	for i := range groups {
 		g := &groups[i]
@@ -127,7 +130,9 @@ func (s *ModelPlazaService) build(ctx context.Context) ([]ModelPlazaGroup, error
 			SubscriptionType: g.SubscriptionType, RateMultiplier: g.RateMultiplier,
 			PeakRateEnabled: g.PeakRateEnabled, PeakStart: g.PeakStart, PeakEnd: g.PeakEnd,
 			PeakRateMultiplier: g.PeakRateMultiplier, IsExclusive: g.IsExclusive,
+			ImageRateIndependent: g.ImageRateIndependent, ImageRateMultiplier: g.ImageRateMultiplier,
 		}
+		groupEntities[g.ID] = g
 		order = append(order, g.ID)
 	}
 	modelIndexes := make(map[int64]map[string]int, len(groups))
@@ -137,6 +142,10 @@ func (s *ModelPlazaService) build(ctx context.Context) ([]ModelPlazaGroup, error
 			continue
 		}
 		models := channel.SupportedModels()
+		channelPriced := make([]bool, len(models))
+		for j := range models {
+			channelPriced[j] = models[j].Pricing != nil
+		}
 		fillModelPlazaPricingFallback(models, s.pricing)
 		for _, groupID := range channel.GroupIDs {
 			group, ok := byGroup[groupID]
@@ -153,15 +162,16 @@ func (s *ModelPlazaService) build(ctx context.Context) ([]ModelPlazaGroup, error
 				if model.Platform != group.Platform {
 					continue
 				}
+				pricing := modelPlazaImageDisplayPricing(model.Pricing, groupEntities[groupID], channelPriced[j])
 				key := strings.ToLower(model.Name)
 				if at, found := index[key]; found {
-					if group.Models[at].Pricing == nil && model.Pricing != nil {
-						group.Models[at].Pricing = cloneChannelModelPricing(model.Pricing)
+					if group.Models[at].Pricing == nil && pricing != nil {
+						group.Models[at].Pricing = cloneChannelModelPricing(pricing)
 					}
 					continue
 				}
 				index[key] = len(group.Models)
-				group.Models = append(group.Models, ModelPlazaModel{Name: model.Name, Platform: model.Platform, Pricing: cloneChannelModelPricing(model.Pricing)})
+				group.Models = append(group.Models, ModelPlazaModel{Name: model.Name, Platform: model.Platform, Pricing: cloneChannelModelPricing(pricing)})
 			}
 		}
 	}
@@ -185,6 +195,53 @@ func (s *ModelPlazaService) build(ctx context.Context) ([]ModelPlazaGroup, error
 		return result[i].Name < result[j].Name
 	})
 	return result, nil
+}
+
+// modelPlazaImageDisplayPricing resolves fallback image pricing with the same
+// precedence as settlement. An explicit channel price wins before group image
+// overrides, while group overrides apply to LiteLLM/default fallback pricing.
+func modelPlazaImageDisplayPricing(pricing *ChannelModelPricing, group *Group, channelPriced bool) *ChannelModelPricing {
+	if pricing == nil || group == nil || pricing.BillingMode != BillingModeImage {
+		return pricing
+	}
+	if channelPriced {
+		return pricing
+	}
+	if group.ImagePrice1K == nil && group.ImagePrice2K == nil && group.ImagePrice4K == nil {
+		return pricing
+	}
+	channelTierPrice := func(label string) *float64 {
+		for i := range pricing.Intervals {
+			if strings.EqualFold(pricing.Intervals[i].TierLabel, label) && pricing.Intervals[i].PerRequestPrice != nil {
+				return pricing.Intervals[i].PerRequestPrice
+			}
+		}
+		return pricing.PerRequestPrice
+	}
+	tiers := []struct {
+		label string
+		price *float64
+	}{
+		{label: "1K", price: group.ImagePrice1K},
+		{label: "2K", price: group.ImagePrice2K},
+		{label: "4K", price: group.ImagePrice4K},
+	}
+	clone := cloneChannelModelPricing(pricing)
+	clone.Intervals = make([]PricingInterval, 0, len(tiers))
+	for i := range tiers {
+		price := tiers[i].price
+		if price == nil {
+			price = channelTierPrice(tiers[i].label)
+		}
+		if price == nil {
+			continue
+		}
+		value := *price
+		clone.Intervals = append(clone.Intervals, PricingInterval{
+			TierLabel: tiers[i].label, PerRequestPrice: &value, SortOrder: i,
+		})
+	}
+	return clone
 }
 
 func fillModelPlazaPricingFallback(models []SupportedModel, pricing *PricingService) {

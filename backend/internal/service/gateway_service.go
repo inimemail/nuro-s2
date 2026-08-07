@@ -2691,7 +2691,7 @@ func (s *GatewayService) resolvePlatform(ctx context.Context, groupID *int64, gr
 
 func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
 	if s.schedulerSnapshot != nil {
-		accounts, useMixed, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
+		accounts, useMixed, err := listSchedulableAccountsForRequest(ctx, s.schedulerSnapshot, groupID, platform, hasForcePlatform)
 		if err == nil {
 			slog.Debug("account_scheduling_list_snapshot",
 				"group_id", derefGroupID(groupID),
@@ -3272,7 +3272,7 @@ func (s *GatewayService) checkAndRegisterSession(ctx context.Context, account *A
 
 func (s *GatewayService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {
 	if s.schedulerSnapshot != nil {
-		return s.schedulerSnapshot.GetAccount(ctx, accountID)
+		return getSchedulerAccountForRequest(ctx, s.schedulerSnapshot, accountID)
 	}
 	return s.accountRepo.GetByID(ctx, accountID)
 }
@@ -3281,7 +3281,7 @@ func (s *GatewayService) hydrateSelectedAccount(ctx context.Context, account *Ac
 	if account == nil || s.schedulerSnapshot == nil {
 		return account, nil
 	}
-	hydrated, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
+	hydrated, err := getSchedulerAccountForRequest(ctx, s.schedulerSnapshot, account.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -10604,6 +10604,10 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}, s.billingDeps(), s.usageBillingRepo)
 
 	if billingErr != nil {
+		// Billing did not settle, but request usage remains operationally valuable.
+		// Persist the raw token/cost breakdown without claiming collected revenue.
+		usageLog.ActualCost = 0
+		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
 		return billingErr
 	}
 	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")

@@ -32,7 +32,7 @@ function group(models: PlazaModel[], overrides: Partial<ModelPlazaGroup> = {}): 
   return {
     id: 1, name: 'Primary', description: '', platform: 'anthropic', subscription_type: 'standard',
     rate_multiplier: 0.5, peak_rate_enabled: false, peak_start: '', peak_end: '', peak_rate_multiplier: 1,
-    is_exclusive: false, models, ...overrides
+    is_exclusive: false, image_rate_independent: false, image_rate_multiplier: 1, models, ...overrides
   }
 }
 
@@ -78,6 +78,24 @@ describe('ModelPlazaContent', () => {
     expect(text).toContain('HD')
     expect(text).toContain('$0.04')
     expect(text).not.toContain('$99.00')
+  })
+
+  it('uses the independent image multiplier without changing token pricing', () => {
+    const image = tokenModel({
+      name: 'image-model', official_pricing: null,
+      pricing: {
+        billing_mode: 'image', input_price: null, output_price: null, cache_write_price: null, cache_read_price: null,
+        image_output_price: null, per_request_price: 0.08, intervals: []
+      }
+    })
+    const text = mountContent([group([tokenModel(), image], {
+      rate_multiplier: 2,
+      image_rate_independent: true,
+      image_rate_multiplier: 0.5
+    })]).text()
+    expect(text).toContain('$6.00')
+    expect(text).toContain('$0.04')
+    expect(text).toContain('0.5x')
   })
 
   it('sorts by official output price and copies the exact model name', async () => {

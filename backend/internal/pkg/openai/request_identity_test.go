@@ -84,3 +84,26 @@ func TestPairCodexClientIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestSetCodexUserAgentVersionUpdatesLeadingAndTrailerVersions(t *testing.T) {
+	ua := "codex-tui/0.140.2 (Mac OS X 14.0; arm64) iTerm (codex-tui; 0.140.2)"
+	rebuilt := SetCodexUserAgentVersion(ua, "0.151.0")
+
+	require.Equal(t,
+		"codex-tui/0.151.0 (Mac OS X 14.0; arm64) iTerm (codex-tui; 0.151.0)",
+		rebuilt,
+	)
+	require.Equal(t, "0.151.0", CodexUserAgentVersion(rebuilt))
+	require.Empty(t, SetCodexUserAgentVersion("missing-version-shape", "0.151.0"))
+}
+
+func TestSetCodexUserAgentVersionRejectsUnsafeVersions(t *testing.T) {
+	ua := "codex-tui/0.144.1 (Linux; x86_64) (codex-tui; 0.144.1)"
+	for _, version := range []string{
+		"0.151.0\r\nX-Injected: true",
+		"0.151.0+build.1",
+		"not-a-version",
+	} {
+		require.Empty(t, SetCodexUserAgentVersion(ua, version), version)
+	}
+}

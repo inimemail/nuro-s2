@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -208,6 +209,10 @@ type AssignSubscriptionInput struct {
 	Notes        string
 }
 
+type userSubscriptionForUpdateRepository interface {
+	GetByIDForUpdate(ctx context.Context, id int64) (*UserSubscription, error)
+}
+
 // AssignSubscription 分配订阅给用户（不允许重复分配）
 func (s *SubscriptionService) AssignSubscription(ctx context.Context, input *AssignSubscriptionInput) (*UserSubscription, error) {
 	sub, _, err := s.assignSubscriptionWithReuse(ctx, input)
@@ -236,7 +241,13 @@ func (s *SubscriptionService) AssignOrExtendSubscription(ctx context.Context, in
 	// 查询是否已有订阅
 	existingSub, err := s.userSubRepo.GetByUserIDAndGroupID(ctx, input.UserID, input.GroupID)
 	if err != nil {
-		// 不存在记录是正常情况，其他错误需要返回
+		// Only a definitive not-found means that creation is safe. Database,
+		// timeout, and adapter errors must not be mistaken for an absent
+		// subscription, otherwise a transient failure can create a duplicate or
+		// hide the real outage behind a misleading conflict.
+		if !errors.Is(err, ErrSubscriptionNotFound) && !infraerrors.IsNotFound(err) {
+			return nil, false, fmt.Errorf("look up existing subscription: %w", err)
+		}
 		existingSub = nil
 	}
 
@@ -250,24 +261,7 @@ func (s *SubscriptionService) AssignOrExtendSubscription(ctx context.Context, in
 
 	// 已有订阅，执行续期（在事务中完成所有更新）
 	if existingSub != nil {
-		now := time.Now()
-		var newExpiresAt time.Time
-
-		isExpired := !existingSub.ExpiresAt.After(now)
-		if !isExpired {
-			// 未过期：从当前过期时间累加
-			newExpiresAt = existingSub.ExpiresAt.AddDate(0, 0, validityDays)
-		} else {
-			// 已过期：从当前时间开始计算
-			newExpiresAt = now.AddDate(0, 0, validityDays)
-		}
-
-		// 确保不超过最大过期时间
-		if newExpiresAt.After(MaxExpiresAt) {
-			newExpiresAt = MaxExpiresAt
-		}
-
-		if err := s.updateExistingSubscriptionTerm(ctx, existingSub, input.Notes, now, newExpiresAt, isExpired); err != nil {
+		if err := s.updateExistingSubscriptionTerm(ctx, existingSub.ID, validityDays, input.Notes); err != nil {
 			return nil, false, err
 		}
 
@@ -309,15 +303,37 @@ func (s *SubscriptionService) AssignOrExtendSubscription(ctx context.Context, in
 
 func (s *SubscriptionService) updateExistingSubscriptionTerm(
 	ctx context.Context,
-	existingSub *UserSubscription,
+	subscriptionID int64,
+	validityDays int,
 	notes string,
-	startsAt time.Time,
-	newExpiresAt time.Time,
-	isExpired bool,
 ) error {
 	return s.withSubscriptionUpdateTx(ctx, func(txCtx context.Context) error {
+		var existingSub *UserSubscription
+		var err error
+		if lockingRepo, ok := s.userSubRepo.(userSubscriptionForUpdateRepository); ok {
+			existingSub, err = lockingRepo.GetByIDForUpdate(txCtx, subscriptionID)
+		} else {
+			// Compatibility for test doubles and external repository adapters.
+			// The production repository implements GetByIDForUpdate.
+			existingSub, err = s.userSubRepo.GetByID(txCtx, subscriptionID)
+		}
+		if err != nil {
+			return fmt.Errorf("lock subscription for renewal: %w", err)
+		}
+		now := time.Now()
+		if s.now != nil {
+			now = s.now()
+		}
+		isExpired := !existingSub.ExpiresAt.After(now)
+		newExpiresAt := existingSub.ExpiresAt.AddDate(0, 0, validityDays)
 		if isExpired {
-			renewed := renewedSubscriptionTerm(existingSub, notes, startsAt, newExpiresAt)
+			newExpiresAt = now.AddDate(0, 0, validityDays)
+		}
+		if newExpiresAt.After(MaxExpiresAt) {
+			newExpiresAt = MaxExpiresAt
+		}
+		if isExpired {
+			renewed := renewedSubscriptionTerm(existingSub, notes, now, newExpiresAt)
 			if err := s.userSubRepo.Update(txCtx, renewed); err != nil {
 				return fmt.Errorf("renew expired subscription: %w", err)
 			}
@@ -349,6 +365,12 @@ func (s *SubscriptionService) updateExistingSubscriptionTerm(
 
 func (s *SubscriptionService) withSubscriptionUpdateTx(ctx context.Context, fn func(context.Context) error) error {
 	if s.entClient == nil {
+		return fn(ctx)
+	}
+	// Reuse an outer transaction (for example refund finalization or redeem
+	// flows). Opening a second transaction here would commit the subscription
+	// change independently and break the caller's atomicity guarantee.
+	if dbent.TxFromContext(ctx) != nil {
 		return fn(ctx)
 	}
 

@@ -109,3 +109,47 @@ func TestModelPlazaRepositoryErrorsAreWrapped(t *testing.T) {
 	_, err := svc.List(context.Background())
 	require.ErrorIs(t, err, sentinel)
 }
+
+func TestModelPlazaImagePricingKeepsExplicitChannelPrecedence(t *testing.T) {
+	channel1K := 0.04
+	channelDefault := 0.08
+	group2K := 0.12
+	channels := []Channel{{
+		ID: 1, Name: "image", Status: StatusActive, GroupIDs: []int64{10},
+		ModelPricing: []ChannelModelPricing{{
+			Platform: PlatformOpenAI, Models: []string{"gpt-image"}, BillingMode: BillingModeImage,
+			PerRequestPrice: &channelDefault,
+			Intervals:       []PricingInterval{{TierLabel: "1K", PerRequestPrice: &channel1K}},
+		}},
+	}}
+	groups := []Group{{
+		ID: 10, Name: "images", Platform: PlatformOpenAI,
+		ImageRateIndependent: true, ImageRateMultiplier: 0.5, ImagePrice2K: &group2K,
+	}}
+
+	got, err := newModelPlazaTestService(channels, groups, nil).List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.True(t, got[0].ImageRateIndependent)
+	require.InDelta(t, 0.5, got[0].ImageRateMultiplier, 1e-12)
+	intervals := got[0].Models[0].Pricing.Intervals
+	require.Len(t, intervals, 1)
+	require.InDelta(t, 0.04, *intervals[0].PerRequestPrice, 1e-12, "channel tier wins when group tier is absent")
+	require.InDelta(t, 0.08, *got[0].Models[0].Pricing.PerRequestPrice, 1e-12)
+}
+
+func TestModelPlazaImagePricingAppliesGroupOverridesOnlyToFallbackPricing(t *testing.T) {
+	defaultPrice := 0.08
+	group2K := 0.12
+	pricing := &ChannelModelPricing{
+		BillingMode: BillingModeImage, PerRequestPrice: &defaultPrice,
+	}
+	group := &Group{ImagePrice2K: &group2K}
+
+	got := modelPlazaImageDisplayPricing(pricing, group, false)
+	require.Len(t, got.Intervals, 3)
+	require.InDelta(t, 0.08, *got.Intervals[0].PerRequestPrice, 1e-12)
+	require.InDelta(t, 0.12, *got.Intervals[1].PerRequestPrice, 1e-12)
+	require.InDelta(t, 0.08, *got.Intervals[2].PerRequestPrice, 1e-12)
+	require.Empty(t, pricing.Intervals, "display resolution must not mutate shared pricing")
+}

@@ -132,8 +132,8 @@ describe('ModelDistributionChart', () => {
         modelStats: [],
         enableRankingView: true,
         rankingItems: [
-          { user_id: 1, email: 'alpha@example.com', actual_cost: 12, requests: 10, tokens: 1000 },
-          { user_id: 2, email: 'beta@example.com', actual_cost: 8, requests: 6, tokens: 600 },
+          { user_id: 1, email: 'alpha@example.com', username: 'alpha', actual_cost: 12, requests: 10, tokens: 1000 },
+          { user_id: 2, email: 'beta@example.com', username: '', actual_cost: 8, requests: 6, tokens: 600 },
         ],
         rankingTotalActualCost: 30,
         rankingTotalRequests: 20,
@@ -152,7 +152,7 @@ describe('ModelDistributionChart', () => {
 
     const chartData = JSON.parse(wrapper.find('.chart-data').text())
     expect(chartData.labels).toEqual([
-      '#1 alpha@example.com',
+      '#1 alpha',
       '#2 beta@example.com',
       'Others',
     ])

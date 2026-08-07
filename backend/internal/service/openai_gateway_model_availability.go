@@ -46,7 +46,7 @@ func (s *OpenAIGatewayService) listSchedulableAccountsForPlatform(ctx context.Co
 		return s.listSchedulableAccounts(ctx, groupID)
 	}
 	if s.schedulerSnapshot != nil {
-		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, false)
+		accounts, _, err := listSchedulableAccountsForRequest(ctx, s.schedulerSnapshot, groupID, platform, false)
 		return accounts, err
 	}
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {

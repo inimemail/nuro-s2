@@ -1541,7 +1541,7 @@ func (s *OpenAIGatewayService) openAIPromptCacheBoostAvailabilityForGroup(ctx co
 	}
 	keyOptimizationCompatible := true
 	keyOptimizationSeen := false
-	accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
+	accounts, _, err := listSchedulableAccountsForRequest(ctx, s.schedulerSnapshot, groupID, PlatformOpenAI, false)
 	if err == nil {
 		for i := range accounts {
 			account := &accounts[i]
@@ -2885,7 +2885,7 @@ openAIGroupGuardFallback:
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64) ([]Account, error) {
 	if s.schedulerSnapshot != nil {
-		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
+		accounts, _, err := listSchedulableAccountsForRequest(ctx, s.schedulerSnapshot, groupID, PlatformOpenAI, false)
 		return accounts, err
 	}
 	var accounts []Account
@@ -3125,7 +3125,7 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		return account
 	}
 
-	latest, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
+	latest, err := getSchedulerAccountForRequest(ctx, s.schedulerSnapshot, account.ID)
 	if err != nil || latest == nil {
 		if s.accountRepo == nil {
 			latest = account
@@ -3177,7 +3177,7 @@ func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accoun
 		err     error
 	)
 	if s.schedulerSnapshot != nil {
-		account, err = s.schedulerSnapshot.GetAccount(ctx, accountID)
+		account, err = getSchedulerAccountForRequest(ctx, s.schedulerSnapshot, accountID)
 	} else {
 		account, err = s.accountRepo.GetByID(ctx, accountID)
 	}
@@ -3191,7 +3191,7 @@ func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, accou
 	if account == nil || s.schedulerSnapshot == nil {
 		return account, nil
 	}
-	hydrated, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
+	hydrated, err := getSchedulerAccountForRequest(ctx, s.schedulerSnapshot, account.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -10304,6 +10304,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}()
 
 	if billingErr != nil {
+		// Keep the request trace and upstream cost after a failed billing
+		// transaction, while making the unsettled customer charge explicit.
+		usageLog.ActualCost = 0
+		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
 		return billingErr
 	}
 	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")

@@ -29,6 +29,9 @@ type testTransport struct {
 func (t *testTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Rewrite the URL to point to our test server
 	testURL := t.testServerURL + req.URL.Path
+	if req.URL.RawQuery != "" {
+		testURL += "?" + req.URL.RawQuery
+	}
 	newReq, err := http.NewRequestWithContext(req.Context(), req.Method, testURL, req.Body)
 	if err != nil {
 		return nil, err
@@ -206,6 +209,20 @@ func (s *GitHubReleaseServiceSuite) TestFetchChecksumFile_InvalidURL() {
 	require.Error(s.T(), err, "expected error for invalid URL")
 }
 
+func (s *GitHubReleaseServiceSuite) TestFetchChecksumFile_EnforcesResponseLimit() {
+	s.srv = newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bytes.Repeat([]byte("x"), int(githubChecksumMaxBytes)+1))
+	}))
+	s.client = &githubReleaseClient{
+		httpClient:         &http.Client{Transport: &testTransport{testServerURL: s.srv.URL}},
+		downloadHTTPClient: &http.Client{},
+	}
+
+	_, err := s.client.FetchChecksumFile(context.Background(), s.srv.URL)
+	require.ErrorContains(s.T(), err, "checksum response exceeds")
+}
+
 func (s *GitHubReleaseServiceSuite) TestFetchLatestRelease_Success() {
 	releaseJSON := `{
 		"tag_name": "v1.0.0",
@@ -243,6 +260,25 @@ func (s *GitHubReleaseServiceSuite) TestFetchLatestRelease_Success() {
 	require.Equal(s.T(), "Release 1.0.0", release.Name)
 	require.Len(s.T(), release.Assets, 1)
 	require.Equal(s.T(), "app-linux-amd64.tar.gz", release.Assets[0].Name)
+}
+
+func (s *GitHubReleaseServiceSuite) TestFetchRecentReleases_UsesBoundedPageAndDecodesFlags() {
+	s.srv = newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(s.T(), "/repos/openai/codex/releases", r.URL.Path)
+		require.Equal(s.T(), "30", r.URL.Query().Get("per_page"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"tag_name":"rust-v0.150.0","draft":false,"prerelease":false},{"tag_name":"rust-v0.151.0-alpha.1","prerelease":true}]`))
+	}))
+	s.client = &githubReleaseClient{
+		httpClient:         &http.Client{Transport: &testTransport{testServerURL: s.srv.URL}},
+		downloadHTTPClient: &http.Client{},
+	}
+
+	releases, err := s.client.FetchRecentReleases(context.Background(), "openai/codex", 30)
+	require.NoError(s.T(), err)
+	require.Len(s.T(), releases, 2)
+	require.Equal(s.T(), "rust-v0.150.0", releases[0].TagName)
+	require.True(s.T(), releases[1].Prerelease)
 }
 
 func (s *GitHubReleaseServiceSuite) TestFetchLatestRelease_Non200() {
