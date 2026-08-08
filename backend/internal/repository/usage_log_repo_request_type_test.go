@@ -48,6 +48,8 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			log.Model,
 			log.RequestedModel,
 			sqlmock.AnyArg(), // upstream_model
+			sqlmock.AnyArg(), // upstream_response_model
+			sqlmock.AnyArg(), // upstream_model_mismatch
 			sqlmock.AnyArg(), // group_id
 			sqlmock.AnyArg(), // subscription_id
 			log.InputTokens,
@@ -147,6 +149,8 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			log.Model,
 			log.RequestedModel,
 			sqlmock.AnyArg(),
+			sqlmock.AnyArg(), // upstream_response_model
+			sqlmock.AnyArg(), // upstream_model_mismatch
 			sqlmock.AnyArg(),
 			sqlmock.AnyArg(),
 			log.InputTokens,
@@ -291,7 +295,7 @@ func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
 		CreatedAt:          time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC),
 	})
 
-	const imageSizeArg = 45
+	const imageSizeArg = 47
 	require.Equal(t, sql.NullString{String: imageSize, Valid: true}, prepared.args[imageSizeArg])
 	require.Equal(t, sql.NullString{String: inputSize, Valid: true}, prepared.args[imageSizeArg+1])
 	require.Equal(t, sql.NullString{String: outputSize, Valid: true}, prepared.args[imageSizeArg+2])
@@ -320,7 +324,7 @@ func TestPrepareUsageLogInsert_PersistsLatencyBreakdown(t *testing.T) {
 		CreatedAt:           time.Date(2025, 1, 7, 12, 0, 0, 0, time.UTC),
 	})
 
-	const slotWaitArg = 33
+	const slotWaitArg = 35
 	require.Equal(t, sql.NullInt64{Int64: int64(slotWait), Valid: true}, prepared.args[slotWaitArg])
 	require.Equal(t, sql.NullInt64{Int64: int64(upstreamHeader), Valid: true}, prepared.args[slotWaitArg+1])
 	require.Equal(t, sql.NullInt64{Int64: int64(upstreamFirstByte), Valid: true}, prepared.args[slotWaitArg+2])
@@ -654,7 +658,7 @@ type usageLogScannerStub struct {
 }
 
 func usageLogScanValuesWithEmptyEdgeMetrics(values ...any) []any {
-	const insertAt = 38
+	const insertAt = 40
 	edgeValues := []any{
 		sql.NullInt64{},  // edge_prepare_ms
 		sql.NullInt64{},  // edge_queue_wait_ms
@@ -666,7 +670,7 @@ func usageLogScanValuesWithEmptyEdgeMetrics(values ...any) []any {
 	out = append(out, values[:insertAt]...)
 	out = append(out, edgeValues...)
 	out = append(out, values[insertAt:]...)
-	const videoInsertAt = 51
+	const videoInsertAt = 53
 	videoValues := []any{
 		0,                // video_count
 		sql.NullString{}, // video_resolution
@@ -712,6 +716,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			"gpt-image-2",
 			sql.NullString{Valid: true, String: "gpt-image-2"},
 			sql.NullString{},
+			sql.NullString{},
+			sql.NullBool{},
 			sql.NullInt64{},
 			sql.NullInt64{},
 			0, 0, 0, 0, 0, 0,
@@ -775,6 +781,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			"gpt-5", // model
 			sql.NullString{Valid: true, String: "gpt-5"}, // requested_model
 			sql.NullString{},  // upstream_model
+			sql.NullString{},  // upstream_response_model
+			sql.NullBool{},    // upstream_model_mismatch
 			sql.NullInt64{},   // group_id
 			sql.NullInt64{},   // subscription_id
 			1,                 // input_tokens
@@ -845,6 +853,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			"gpt-5",
 			sql.NullString{Valid: true, String: "gpt-5"},
 			sql.NullString{},
+			sql.NullString{}, // upstream_response_model
+			sql.NullBool{},   // upstream_model_mismatch
 			sql.NullInt64{},
 			sql.NullInt64{},
 			1, 2, 3, 4, 5, 6,
@@ -903,6 +913,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			"gpt-5.4",
 			sql.NullString{Valid: true, String: "gpt-5.4"},
 			sql.NullString{},
+			sql.NullString{}, // upstream_response_model
+			sql.NullBool{},   // upstream_model_mismatch
 			sql.NullInt64{},
 			sql.NullInt64{},
 			1, 2, 3, 4, 5, 6,

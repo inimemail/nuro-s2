@@ -745,19 +745,21 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
 						ImageOutputTokens:        turn.Usage.ImageOutputTokens,
 					},
-					Model:                turnRequestModel,
-					UpstreamModel:        turnUpstreamModel,
-					ServiceTier:          usageMeta.serviceTier.Load(),
-					ReasoningEffort:      usageMeta.reasoningEffort.Load(),
-					Stream:               true,
-					OpenAIWSMode:         true,
-					TerminalEventType:    turn.TerminalEventType,
-					ResponseHeaders:      cloneHeader(handshakeHeaders),
-					Duration:             turn.Duration,
-					FirstTokenMs:         turn.FirstTokenMs,
-					ClientDisconnect:     turn.ClientDisconnected,
-					CyberBlocked:         turn.CyberBlocked,
-					AccountHealthNeutral: cachePolicyCompatibilityFailure.Load(),
+					Model:                         turnRequestModel,
+					UpstreamModel:                 turnUpstreamModel,
+					UpstreamResponseModel:         observedUpstreamResponseModel(c),
+					UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+					ServiceTier:                   usageMeta.serviceTier.Load(),
+					ReasoningEffort:               usageMeta.reasoningEffort.Load(),
+					Stream:                        true,
+					OpenAIWSMode:                  true,
+					TerminalEventType:             turn.TerminalEventType,
+					ResponseHeaders:               cloneHeader(handshakeHeaders),
+					Duration:                      turn.Duration,
+					FirstTokenMs:                  turn.FirstTokenMs,
+					ClientDisconnect:              turn.ClientDisconnected,
+					CyberBlocked:                  turn.CyberBlocked,
+					AccountHealthNeutral:          cachePolicyCompatibilityFailure.Load(),
 				}
 				logOpenAIWSV2Passthrough(
 					"relay_turn_completed account_id=%d turn=%d request_id=%s terminal_event=%s duration_ms=%d first_token_ms=%d input_tokens=%d output_tokens=%d cache_read_tokens=%d",
@@ -780,6 +782,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					return nil
 				}
 				eventType, _, _ := parseOpenAIWSEventEnvelope(payload)
+				if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+					observer.ObserveOpenAI(payload, eventType)
+				}
 				if eventType == "error" || eventType == "response.failed" {
 					if msgType == coderws.MessageText {
 						s.handleOpenAICyberPolicyEvent(c, account, false, handshakeHeaders.Get("x-request-id"), payload, firstClientMessage)

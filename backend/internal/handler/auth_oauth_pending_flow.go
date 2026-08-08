@@ -1994,6 +1994,14 @@ func (h *AuthHandler) ExchangePendingOAuthCompletion(c *gin.Context) {
 			return
 		}
 	}
+	// A non-terminal pending session can carry a target user selected from
+	// untrusted OAuth/email flow state. Do not bind the OAuth identity or apply
+	// profile adoption until the session is either a completed login or an
+	// explicit bind-current-user flow owned by the authenticated user.
+	if !canIssueTokenPair && !strings.EqualFold(strings.TrimSpace(session.Intent), oauthIntentBindCurrentUser) {
+		response.Success(c, payload)
+		return
+	}
 
 	decisionReq := adoptionDecision
 	if !decisionReq.hasDecision() {

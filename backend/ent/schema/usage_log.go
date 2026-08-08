@@ -58,6 +58,15 @@ func (UsageLog) Fields() []ent.Field {
 			MaxLen(100).
 			Optional().
 			Nillable(),
+		// UpstreamResponseModel is the model reported by the upstream response.
+		// It is observational metadata and may be NULL when the upstream omits it.
+		field.String("upstream_response_model").
+			MaxLen(200).
+			Optional().
+			Nillable(),
+		field.Bool("upstream_model_mismatch").
+			Optional().
+			Nillable(),
 		field.Int64("channel_id").Optional().Nillable().Comment("渠道 ID"),
 		field.String("model_mapping_chain").MaxLen(500).Optional().Nillable().Comment("模型映射链"),
 		field.String("billing_tier").MaxLen(50).Optional().Nillable().Comment("计费层级标签"),
@@ -230,6 +239,8 @@ func (UsageLog) Indexes() []ent.Index {
 		index.Fields("created_at"),
 		index.Fields("model"),
 		index.Fields("requested_model"),
+		index.Fields("upstream_response_model"),
+		index.Fields("upstream_model_mismatch"),
 		index.Fields("request_id"),
 		// 复合索引用于时间范围查询
 		index.Fields("user_id", "created_at"),

@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -28,6 +29,7 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	body []byte,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	beginUpstreamResponseModelObservation(c)
 	startTime := time.Now()
 
 	var anthropicReq apicompat.AnthropicRequest
@@ -246,6 +248,9 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 		writeAnthropicError(c, http.StatusBadGateway, "api_error", "Failed to parse upstream response")
 		return nil, fmt.Errorf("parse chat completions response: %w", err)
 	}
+	if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+		observer.ObserveOpenAI(respBody, strings.TrimSpace(gjson.GetBytes(respBody, "type").String()))
+	}
 	responsesResp := apicompat.ChatCompletionsResponseToResponses(&ccResp, originalModel, customTools, toolSearchDeclared, namespaceTools)
 
 	usage := OpenAIUsage{}
@@ -263,16 +268,18 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 	c.JSON(http.StatusOK, anthropicResp)
 
 	return &OpenAIForwardResult{
-		RequestID:         requestID,
-		Usage:             usage,
-		Model:             originalModel,
-		BillingModel:      billingModel,
-		UpstreamModel:     upstreamModel,
-		ReasoningEffort:   reasoningEffort,
-		ServiceTier:       serviceTier,
-		Stream:            false,
-		TerminalEventType: openAIResponseStatusTerminalEventType(responsesResp.Status),
-		Duration:          time.Since(startTime),
+		RequestID:                     requestID,
+		Usage:                         usage,
+		Model:                         originalModel,
+		BillingModel:                  billingModel,
+		UpstreamModel:                 upstreamModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		ReasoningEffort:               reasoningEffort,
+		ServiceTier:                   serviceTier,
+		Stream:                        false,
+		TerminalEventType:             openAIResponseStatusTerminalEventType(responsesResp.Status),
+		Duration:                      time.Since(startTime),
 	}, nil
 }
 
@@ -370,6 +377,9 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 			sawDone = true
 			break
 		}
+		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+			observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
+		}
 		if u := extractCCStreamUsage(payload); u != nil {
 			usage = *u
 		}
@@ -401,17 +411,19 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 			)
 		}
 		return &OpenAIForwardResult{
-			RequestID:        requestID,
-			Usage:            usage,
-			Model:            originalModel,
-			BillingModel:     billingModel,
-			UpstreamModel:    upstreamModel,
-			ReasoningEffort:  reasoningEffort,
-			ServiceTier:      serviceTier,
-			Stream:           true,
-			Duration:         time.Since(startTime),
-			FirstTokenMs:     firstTokenMs,
-			ClientDisconnect: clientDisconnected,
+			RequestID:                     requestID,
+			Usage:                         usage,
+			Model:                         originalModel,
+			BillingModel:                  billingModel,
+			UpstreamModel:                 upstreamModel,
+			UpstreamResponseModel:         observedUpstreamResponseModel(c),
+			UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+			ReasoningEffort:               reasoningEffort,
+			ServiceTier:                   serviceTier,
+			Stream:                        true,
+			Duration:                      time.Since(startTime),
+			FirstTokenMs:                  firstTokenMs,
+			ClientDisconnect:              clientDisconnected,
 		}, fmt.Errorf("stream usage incomplete: %w", err)
 	}
 
@@ -419,6 +431,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 		return &OpenAIForwardResult{
 			RequestID: requestID, Usage: usage, Model: originalModel, BillingModel: billingModel,
 			UpstreamModel: upstreamModel, ReasoningEffort: reasoningEffort, ServiceTier: serviceTier,
+			UpstreamResponseModel: observedUpstreamResponseModel(c), UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
 			Stream: true, Duration: time.Since(startTime), FirstTokenMs: firstTokenMs,
 			ClientDisconnect: clientDisconnected,
 		}, errors.New("upstream chat stream ended before a terminal event")
@@ -454,17 +467,19 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 		c.Writer.Flush()
 	}
 	return &OpenAIForwardResult{
-		RequestID:         requestID,
-		Usage:             usage,
-		Model:             originalModel,
-		BillingModel:      billingModel,
-		UpstreamModel:     upstreamModel,
-		ReasoningEffort:   reasoningEffort,
-		ServiceTier:       serviceTier,
-		Stream:            true,
-		TerminalEventType: terminalEventType,
-		Duration:          time.Since(startTime),
-		FirstTokenMs:      firstTokenMs,
-		ClientDisconnect:  clientDisconnected,
+		RequestID:                     requestID,
+		Usage:                         usage,
+		Model:                         originalModel,
+		BillingModel:                  billingModel,
+		UpstreamModel:                 upstreamModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		ReasoningEffort:               reasoningEffort,
+		ServiceTier:                   serviceTier,
+		Stream:                        true,
+		TerminalEventType:             terminalEventType,
+		Duration:                      time.Since(startTime),
+		FirstTokenMs:                  firstTokenMs,
+		ClientDisconnect:              clientDisconnected,
 	}, nil
 }

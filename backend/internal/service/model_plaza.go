@@ -163,7 +163,7 @@ func (s *ModelPlazaService) build(ctx context.Context) ([]ModelPlazaGroup, error
 					continue
 				}
 				pricing := modelPlazaImageDisplayPricing(model.Pricing, groupEntities[groupID], channelPriced[j])
-				key := strings.ToLower(model.Name)
+				key := strings.ToLower(strings.TrimSpace(model.Platform)) + "\x00" + strings.ToLower(strings.TrimSpace(model.Name))
 				if at, found := index[key]; found {
 					if group.Models[at].Pricing == nil && pricing != nil {
 						group.Models[at].Pricing = cloneChannelModelPricing(pricing)
@@ -184,7 +184,7 @@ func (s *ModelPlazaService) build(ctx context.Context) ([]ModelPlazaGroup, error
 		}
 		sort.SliceStable(group.Models, func(i, j int) bool { return group.Models[i].Name < group.Models[j].Name })
 		for i := range group.Models {
-			group.Models[i].OfficialPricing = s.officialPricing(group.Models[i].Name, official)
+			group.Models[i].OfficialPricing = s.officialPricing(group.Models[i].Platform+"\x00"+group.Models[i].Name, group.Models[i].Name, official)
 		}
 		result = append(result, *group)
 	}
@@ -258,12 +258,12 @@ func fillModelPlazaPricingFallback(models []SupportedModel, pricing *PricingServ
 	}
 }
 
-func (s *ModelPlazaService) officialPricing(model string, memo map[string]*ModelPlazaOfficialPricing) *ModelPlazaOfficialPricing {
-	if cached, ok := memo[model]; ok {
+func (s *ModelPlazaService) officialPricing(key, model string, memo map[string]*ModelPlazaOfficialPricing) *ModelPlazaOfficialPricing {
+	if cached, ok := memo[key]; ok {
 		return cached
 	}
 	if s.pricing == nil {
-		memo[model] = nil
+		memo[key] = nil
 		return nil
 	}
 	var result *ModelPlazaOfficialPricing
@@ -278,7 +278,7 @@ func (s *ModelPlazaService) officialPricing(model string, memo map[string]*Model
 			result = nil
 		}
 	}
-	memo[model] = result
+	memo[key] = result
 	return result
 }
 

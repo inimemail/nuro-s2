@@ -1903,6 +1903,8 @@ func parseOpenAIImageTryAgainCooldown(body []byte) time.Duration {
 
 const upstreamModelNotFoundCooldown = 30 * time.Minute
 const upstreamModelNotFoundReason = "upstream_404_model_not_found"
+const upstreamCodexPlanGatedModelCooldown = 30 * time.Minute
+const upstreamCodexPlanGatedModelReason = "upstream_400_codex_plan_gated_model"
 const tempUnschedBodyMaxBytes = 64 << 10
 const tempUnschedMessageMaxBytes = 2048
 
@@ -1913,7 +1915,10 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 	if !account.ShouldHandleErrorCode(statusCode) {
 		return false
 	}
-	if !isUpstreamModelNotFoundError(statusCode, responseBody) {
+	planGated := account.Platform == PlatformOpenAI &&
+		account.Type == AccountTypeOAuth &&
+		isOpenAICodexPlanGatedModelError(statusCode, responseBody)
+	if !isUpstreamModelNotFoundError(statusCode, responseBody) && !planGated {
 		return false
 	}
 	if account.IsPoolMode() {
@@ -1924,12 +1929,21 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 	if modelKey == "" {
 		return false
 	}
-	resetAt := time.Now().Add(upstreamModelNotFoundCooldown)
-	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, resetAt, upstreamModelNotFoundReason); err != nil {
-		slog.Warn("upstream_model_not_found_set_model_rate_limit_failed", "account_id", account.ID, "model", modelKey, "error", err)
+	if planGated &&
+		!OpenAIImagesEndpointFromContext(ctx) &&
+		(IsGPTImageGenerationModel(requestedModel) || IsGPTImageGenerationModel(modelKey)) {
 		return true
 	}
-	slog.Info("upstream_model_not_found_model_rate_limited", "account_id", account.ID, "model", modelKey, "reset_at", resetAt)
+	cooldown, reason := upstreamModelNotFoundCooldown, upstreamModelNotFoundReason
+	if planGated {
+		cooldown, reason = upstreamCodexPlanGatedModelCooldown, upstreamCodexPlanGatedModelReason
+	}
+	resetAt := time.Now().Add(cooldown)
+	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, resetAt, reason); err != nil {
+		slog.Warn("upstream_model_not_found_set_model_rate_limit_failed", "account_id", account.ID, "model", modelKey, "reason", reason, "error", err)
+		return true
+	}
+	slog.Info("upstream_model_not_found_model_rate_limited", "account_id", account.ID, "model", modelKey, "reason", reason, "reset_at", resetAt)
 	return true
 }
 

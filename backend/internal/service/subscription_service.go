@@ -926,8 +926,8 @@ func (s *SubscriptionService) CheckAndResetWindows(ctx context.Context, sub *Use
 	now := s.currentTime()
 	needsInvalidateCache := false
 
-	// 日窗口重置（24小时）
-	if windowStart, ok := sub.automaticWindowStartAt(sub.DailyWindowStart, 24*time.Hour, now); !sub.HasOneTimeDailyQuota() && ok {
+	// 日窗口按应用时区午夜重置；周/月仍使用滚动窗口。
+	if windowStart, ok := sub.automaticDailyWindowStartAt(sub.DailyWindowStart, now); !sub.HasOneTimeDailyQuota() && ok {
 		if err := s.resetSubscriptionWindow(ctx, subscriptionWindowDaily, sub.ID, sub.DailyWindowStart, windowStart); err != nil {
 			return err
 		}

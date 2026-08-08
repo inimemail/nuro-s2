@@ -327,20 +327,22 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	resultWithUsage := func() *OpenAIForwardResult {
 		imageCount := imageCounter.Count()
 		result := &OpenAIForwardResult{
-			RequestID:         responseID,
-			Usage:             usage,
-			Model:             originalModel,
-			UpstreamModel:     mappedModel,
-			ServiceTier:       extractOpenAIServiceTierFromBody(body),
-			ReasoningEffort:   extractOpenAIReasoningEffortFromBody(body, mappedModel, originalModel),
-			Stream:            reqStream,
-			OpenAIWSMode:      true,
-			TerminalEventType: terminalEventType,
-			ResponseHeaders:   cloneHeader(resp.Header),
-			Duration:          time.Since(turnStart),
-			FirstTokenMs:      firstTokenMs,
-			ClientDisconnect:  clientDisconnected,
-			CyberBlocked:      cyberBlocked,
+			RequestID:                     responseID,
+			Usage:                         usage,
+			Model:                         originalModel,
+			UpstreamModel:                 mappedModel,
+			UpstreamResponseModel:         observedUpstreamResponseModel(c),
+			UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+			ServiceTier:                   extractOpenAIServiceTierFromBody(body),
+			ReasoningEffort:               extractOpenAIReasoningEffortFromBody(body, mappedModel, originalModel),
+			Stream:                        reqStream,
+			OpenAIWSMode:                  true,
+			TerminalEventType:             terminalEventType,
+			ResponseHeaders:               cloneHeader(resp.Header),
+			Duration:                      time.Since(turnStart),
+			FirstTokenMs:                  firstTokenMs,
+			ClientDisconnect:              clientDisconnected,
+			CyberBlocked:                  cyberBlocked,
 		}
 		if replayInput := replayCollector.Items(); len(replayInput) > 0 {
 			result.wsReplayInput = replayInput
@@ -385,6 +387,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			originalUpstreamMessage = normalized
 		}
 		originalEventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(originalUpstreamMessage)
+		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+			observer.ObserveOpenAI(originalUpstreamMessage, originalEventType)
+		}
 		upstreamMessage, eventType, _ := normalizeOpenAIWSUpstreamEventForSafety(originalUpstreamMessage, originalEventType)
 		if responseID == "" && eventResponseID != "" {
 			responseID = eventResponseID

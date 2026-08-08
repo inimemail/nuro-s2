@@ -7,6 +7,19 @@ import (
 
 var upstreamModelNotFoundKeywords = []string{"model not found", "unknown model", "not found"}
 
+// Codex OAuth accounts return a deterministic 400 when the ChatGPT plan does
+// not allow the requested model. Treat this as a model/account capability
+// mismatch, rather than a transient upstream failure.
+const openAICodexPlanGatedModelPhrase = "model is not supported when using codex"
+
+func isOpenAICodexPlanGatedModelError(statusCode int, body []byte) bool {
+	if statusCode != http.StatusBadRequest {
+		return false
+	}
+	normalized := normalizeModelNotFoundBody(body)
+	return normalized != "" && strings.Contains(normalized, openAICodexPlanGatedModelPhrase)
+}
+
 func isUpstreamModelNotFoundError(statusCode int, body []byte) bool {
 	if statusCode != http.StatusNotFound {
 		return false

@@ -1,6 +1,7 @@
 package apicompat
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -137,7 +138,11 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 			// function_call → assistant message with tool_use block
 			input := json.RawMessage("{}")
 			if item.Arguments != "" {
-				input = json.RawMessage(item.Arguments)
+				candidate := bytes.TrimSpace([]byte(item.Arguments))
+				var object map[string]json.RawMessage
+				if json.Valid(candidate) && json.Unmarshal(candidate, &object) == nil && object != nil {
+					input = json.RawMessage(candidate)
+				}
 			}
 			block := AnthropicContentBlock{
 				Type:  "tool_use",
@@ -197,8 +202,12 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 	}
 
 	messages = mergeConsecutiveMessages(messages)
+	messages = sanitizeAnthropicMessages(messages)
 	messages = normalizeAnthropicToolPairing(messages)
 	messages = mergeConsecutiveMessages(messages)
+	if len(messages) == 0 {
+		return nil, nil, fmt.Errorf("responses input contains no convertible messages")
+	}
 
 	var system json.RawMessage
 	if len(systemParts) > 0 {
@@ -206,6 +215,70 @@ func convertResponsesInputToAnthropic(instructions string, inputRaw json.RawMess
 	}
 
 	return system, messages, nil
+}
+
+// sanitizeAnthropicMessages removes Responses-only or malformed content blocks
+// before the request reaches Anthropic. Responses can contain reasoning,
+// provider-specific output items, and partially assembled tool calls that are
+// not legal Messages blocks. Unknown blocks are ignored; valid text/image
+// content is preserved. This is a pure conversion step and does not affect
+// scheduling, caching, or usage accounting.
+func sanitizeAnthropicMessages(messages []AnthropicMessage) []AnthropicMessage {
+	out := make([]AnthropicMessage, 0, len(messages))
+	for _, message := range messages {
+		blocks := parseContentBlocks(message.Content)
+		if blocks == nil {
+			// Anthropic accepts a string or an array of content blocks only.
+			// Preserve neither null/object/invalid JSON content: forwarding it
+			// can make json.Marshal fail later and produce an empty message.
+			continue
+		}
+		kept := make([]AnthropicContentBlock, 0, len(blocks))
+		for _, block := range blocks {
+			switch block.Type {
+			case "text":
+				if strings.TrimSpace(block.Text) != "" {
+					kept = append(kept, block)
+				}
+			case "image":
+				if block.Source != nil && strings.TrimSpace(block.Source.MediaType) != "" && strings.TrimSpace(block.Source.Data) != "" {
+					kept = append(kept, block)
+				}
+			case "tool_use":
+				if strings.TrimSpace(block.ID) != "" && strings.TrimSpace(block.Name) != "" {
+					// Anthropic requires tool_use.input to be a JSON object.
+					// A partially assembled or malformed Responses call must not
+					// poison the whole serialized content array.
+					trimmedInput := bytes.TrimSpace(block.Input)
+					var inputObject map[string]json.RawMessage
+					if len(trimmedInput) == 0 || !json.Valid(trimmedInput) || json.Unmarshal(trimmedInput, &inputObject) != nil || inputObject == nil {
+						block.Input = json.RawMessage(`{}`)
+					}
+					kept = append(kept, block)
+				}
+			case "tool_result":
+				if strings.TrimSpace(block.ToolUseID) != "" {
+					if len(bytes.TrimSpace(block.Content)) > 0 && !json.Valid(block.Content) {
+						fallback, _ := json.Marshal("(invalid tool result)")
+						block.Content = fallback
+					}
+					kept = append(kept, block)
+				}
+			case "thinking":
+				// Responses reasoning items are not valid historical Anthropic
+				// thinking blocks unless a provider signature is present. Drop
+				// unsigned blocks to avoid upstream validation failures.
+				if strings.TrimSpace(block.Signature) != "" && strings.TrimSpace(block.Thinking) != "" {
+					kept = append(kept, block)
+				}
+			}
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		out = append(out, anthropicMessageFromBlocks(message.Role, kept))
+	}
+	return out
 }
 
 func responsesFunctionOutputToAnthropicContent(item ResponsesInputItem) json.RawMessage {

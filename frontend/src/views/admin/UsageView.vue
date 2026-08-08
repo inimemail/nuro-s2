@@ -584,6 +584,7 @@ const exportToExcel = async () => {
     const headers = [
       t('usage.time'), t('admin.usage.user'), t('usage.apiKeyFilter'),
       t('admin.usage.account'), t('usage.model'), t('usage.upstreamModel'), t('usage.reasoningEffort'), t('admin.usage.group'),
+      t('admin.usage.upstreamResponseModel'), t('admin.usage.upstreamModelMismatch'),
       t('usage.inboundEndpoint'), t('usage.upstreamEndpoint'),
       t('usage.type'),
       t('admin.usage.inputTokens'), t('usage.imageInputTokens'), t('admin.usage.outputTokens'), t('usage.imageOutputTokens'),
@@ -604,6 +605,7 @@ const exportToExcel = async () => {
       const rows = (res.items || []).map((log: AdminUsageLog) => [
         log.created_at, log.user?.email || '', log.api_key?.name || '', log.account?.name || '', log.model,
         log.upstream_model || '', formatReasoningEffort(log.reasoning_effort), log.group?.name || '',
+        log.upstream_response_model || '', log.upstream_model_mismatch == null ? '' : (log.upstream_model_mismatch ? t('admin.usage.mismatch') : t('admin.usage.match')),
         log.inbound_endpoint || '', log.upstream_endpoint || '', getRequestTypeLabel(log),
         textInputTokens(log), log.image_input_tokens ?? 0, textOutputTokens(log), log.image_output_tokens ?? 0, log.cache_read_tokens, log.cache_creation_tokens,
         log.input_cost?.toFixed(6) || '0.000000', (log.image_input_cost ?? 0).toFixed(6), log.output_cost?.toFixed(6) || '0.000000', (log.image_output_cost ?? 0).toFixed(6),
@@ -641,6 +643,7 @@ const allColumns = computed(() => [
   { key: 'api_key', label: t('usage.apiKeyFilter'), sortable: false },
   { key: 'account', label: t('admin.usage.account'), sortable: false },
   { key: 'model', label: t('usage.model'), sortable: true },
+  { key: 'upstream_model_audit', label: t('admin.usage.upstreamModelAudit'), sortable: false },
   { key: 'reasoning_effort', label: t('usage.reasoningEffort'), sortable: false },
   { key: 'endpoint', label: t('usage.endpoint'), sortable: false },
   { key: 'group', label: t('admin.usage.group'), sortable: false },

@@ -79,6 +79,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	beginUpstreamResponseModelObservation(c)
 	if account.Platform == PlatformGrok {
 		if account.IsGrokOAuth() {
 			if eligible, reason := grokChatResponsesBridgeEligibility(body); eligible {
@@ -346,12 +347,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, http.StatusBadGateway, openAITransportFailoverBody, upstreamModel, err.Error())
 			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", "Upstream request failed")
 			return &OpenAIForwardResult{
-				Usage:         OpenAIUsage{},
-				Model:         originalModel,
-				BillingModel:  billingModel,
-				UpstreamModel: upstreamModel,
-				Stream:        true,
-				Duration:      time.Since(startTime),
+				Usage:                         OpenAIUsage{},
+				Model:                         originalModel,
+				BillingModel:                  billingModel,
+				UpstreamModel:                 upstreamModel,
+				UpstreamResponseModel:         observedUpstreamResponseModel(c),
+				UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+				Stream:                        true,
+				Duration:                      time.Since(startTime),
 			}, fmt.Errorf("chat_completions upstream request failed after first token placeholder: %w", err)
 		}
 		if failoverErr := s.newOpenAIPoolRequestFailoverError(c, account, upstreamReq, err, false); failoverErr != nil {
@@ -659,14 +662,16 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	c.JSON(http.StatusOK, chatResp)
 
 	return &OpenAIForwardResult{
-		RequestID:         requestID,
-		Usage:             usage,
-		Model:             originalModel,
-		BillingModel:      billingModel,
-		UpstreamModel:     upstreamModel,
-		Stream:            false,
-		TerminalEventType: openAIResponseStatusTerminalEventType(finalResponse.Status),
-		Duration:          time.Since(startTime),
+		RequestID:                     requestID,
+		Usage:                         usage,
+		Model:                         originalModel,
+		BillingModel:                  billingModel,
+		UpstreamModel:                 upstreamModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		Stream:                        false,
+		TerminalEventType:             openAIResponseStatusTerminalEventType(finalResponse.Status),
+		Duration:                      time.Since(startTime),
 	}, nil
 }
 
@@ -873,20 +878,25 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
-			RequestID:         requestID,
-			Usage:             usage,
-			Model:             originalModel,
-			BillingModel:      billingModel,
-			UpstreamModel:     upstreamModel,
-			Stream:            true,
-			TerminalEventType: terminalEventType,
-			ClientDisconnect:  clientDisconnected,
-			Duration:          time.Since(startTime),
-			FirstTokenMs:      firstTokenMs,
+			RequestID:                     requestID,
+			Usage:                         usage,
+			Model:                         originalModel,
+			BillingModel:                  billingModel,
+			UpstreamModel:                 upstreamModel,
+			UpstreamResponseModel:         observedUpstreamResponseModel(c),
+			UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+			Stream:                        true,
+			TerminalEventType:             terminalEventType,
+			ClientDisconnect:              clientDisconnected,
+			Duration:                      time.Since(startTime),
+			FirstTokenMs:                  firstTokenMs,
 		}
 	}
 
 	processDataLine := func(payload string) bool {
+		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+			observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
+		}
 		var event apicompat.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			logger.L().Warn("openai chat_completions stream: failed to parse event",

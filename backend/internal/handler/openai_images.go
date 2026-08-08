@@ -110,7 +110,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	}
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(parsed.Stream, false)))
 
-	requestCtx := service.WithOpenAIImageGenerationIntent(c.Request.Context())
+	requestCtx := service.WithOpenAIImagesEndpoint(service.WithOpenAIImageGenerationIntent(c.Request.Context()))
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(requestCtx, apiKey.GroupID, parsed.Model)
 
 	if h.errorPassthroughService != nil {

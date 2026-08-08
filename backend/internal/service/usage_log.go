@@ -115,6 +115,12 @@ type UsageLog struct {
 	// UpstreamModel is the actual model sent to the upstream provider after mapping.
 	// Nil means no mapping was applied (requested model was used as-is).
 	UpstreamModel *string
+	// UpstreamResponseModel is the model echoed by the upstream response, when
+	// present. It is audit metadata only and is intentionally independent from
+	// the billing model and downstream presentation usage.
+	UpstreamResponseModel *string
+	// UpstreamModelMismatch is nil when no response model was observed.
+	UpstreamModelMismatch *bool
 	// ChannelID 渠道 ID
 	ChannelID *int64
 	// ModelMappingChain 模型映射链，如 "a→b→c"

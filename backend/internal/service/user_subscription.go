@@ -1,6 +1,10 @@
 package service
 
-import "time"
+import (
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+)
 
 const subscriptionDayDuration = 24 * time.Hour
 
@@ -98,7 +102,8 @@ func (s *UserSubscription) NeedsDailyResetAt(now time.Time) bool {
 	if s.HasOneTimeDailyQuota() {
 		return false
 	}
-	return !now.Before(s.DailyWindowStart.Add(24 * time.Hour))
+	_, ok := s.automaticDailyWindowStartAt(s.DailyWindowStart, now)
+	return ok
 }
 
 func (s *UserSubscription) NeedsWeeklyReset() bool {
@@ -124,7 +129,7 @@ func (s *UserSubscription) NeedsMonthlyResetAt(now time.Time) bool {
 }
 
 func (s *UserSubscription) canAutomaticallyResetDailyAt(now time.Time) bool {
-	_, ok := s.automaticWindowStartAt(s.DailyWindowStart, 24*time.Hour, now)
+	_, ok := s.automaticDailyWindowStartAt(s.DailyWindowStart, now)
 	return !s.HasOneTimeDailyQuota() && ok
 }
 
@@ -164,6 +169,25 @@ func (s *UserSubscription) automaticWindowStartAt(previous *time.Time, period ti
 	return anchor.Add(periods * period), true
 }
 
+// automaticDailyWindowStartAt uses the configured application timezone's
+// midnight boundary. Weekly and monthly subscription windows intentionally
+// remain rolling windows and continue through automaticWindowStartAt.
+func (s *UserSubscription) automaticDailyWindowStartAt(previous *time.Time, now time.Time) (time.Time, bool) {
+	if previous == nil || s.HasOneTimeDailyQuota() {
+		return time.Time{}, false
+	}
+	anchor := *previous
+	legacyAnchor := timezone.StartOfDay(s.StartsAt)
+	if legacyAnchor.Before(s.StartsAt) && anchor.Equal(legacyAnchor) {
+		anchor = s.StartsAt
+	}
+	currentDay := timezone.StartOfDay(now)
+	if !currentDay.After(anchor) || !currentDay.Before(s.ExpiresAt) {
+		return time.Time{}, false
+	}
+	return currentDay, true
+}
+
 func (s *UserSubscription) DailyResetTime() *time.Time {
 	if s.DailyWindowStart == nil {
 		return nil
@@ -172,7 +196,7 @@ func (s *UserSubscription) DailyResetTime() *time.Time {
 		t := s.ExpiresAt
 		return &t
 	}
-	t := s.DailyWindowStart.Add(24 * time.Hour)
+	t := timezone.StartOfDay(*s.DailyWindowStart).AddDate(0, 0, 1)
 	return &t
 }
 

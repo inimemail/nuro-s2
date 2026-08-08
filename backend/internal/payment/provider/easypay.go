@@ -390,8 +390,9 @@ func summarizeEasyPayResponse(body []byte) string {
 	if summary == "" {
 		return "<empty>"
 	}
-	if len(summary) > maxEasypayErrorSummary {
-		return summary[:maxEasypayErrorSummary] + "..."
+	runes := []rune(summary)
+	if len(runes) > maxEasypayErrorSummary {
+		return string(runes[:maxEasypayErrorSummary]) + "..."
 	}
 	return summary
 }

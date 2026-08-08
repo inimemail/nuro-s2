@@ -626,14 +626,16 @@ type ForwardResult struct {
 	Model     string
 	// UpstreamModel is the actual upstream model after mapping.
 	// Prefer empty when it is identical to Model; persistence normalizes equal values away as no-op mappings.
-	UpstreamModel    string
-	Stream           bool
-	Duration         time.Duration
-	FirstTokenMs     *int // 首字时间（流式请求）
-	ClientDisconnect bool // 客户端是否在流式传输过程中断开
-	FailedOutcome    bool // 已返回安全错误终态；usage 仍可结算，但不得写成功副作用
-	NeutralOutcome   bool // incomplete/cancelled/policy/client outcome；不写健康成功或失败样本
-	ReasoningEffort  *string
+	UpstreamModel                 string
+	UpstreamResponseModel         string
+	UpstreamResponseModelConflict bool
+	Stream                        bool
+	Duration                      time.Duration
+	FirstTokenMs                  *int // 首字时间（流式请求）
+	ClientDisconnect              bool // 客户端是否在流式传输过程中断开
+	FailedOutcome                 bool // 已返回安全错误终态；usage 仍可结算，但不得写成功副作用
+	NeutralOutcome                bool // incomplete/cancelled/policy/client outcome；不写健康成功或失败样本
+	ReasoningEffort               *string
 
 	// 图片生成计费字段（图片生成模型使用）
 	ImageCount         int    // 生成的图片数量
@@ -5710,6 +5712,7 @@ func shouldApplyClaudeCodeOAuthMimicry(account *Account, isClaudeCode bool) bool
 
 // Forward 转发请求到Claude API
 func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) (*ForwardResult, error) {
+	beginUpstreamResponseModelObservation(c)
 	startTime := time.Now()
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")
@@ -6331,7 +6334,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			return nil, streamErr
 		}
 		if streamErr != nil {
-			if partial := partialStreamUsageResult(resp, streamResult, originalModel, reqModel, startTime, streamErr); partial != nil {
+			if partial := partialStreamUsageResult(c, resp, streamResult, originalModel, reqModel, startTime, streamErr); partial != nil {
 				partial.FailedOutcome = !streamResult.clientDisconnect
 				partial.NeutralOutcome = streamResult.clientDisconnect
 				return partial, streamErr
@@ -6349,14 +6352,16 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}
 
 	result := &ForwardResult{
-		RequestID:        resp.Header.Get("x-request-id"),
-		Usage:            *usage,
-		Model:            originalModel, // 使用原始模型用于计费和日志
-		UpstreamModel:    mappedModel,
-		Stream:           reqStream,
-		Duration:         time.Since(startTime),
-		FirstTokenMs:     firstTokenMs,
-		ClientDisconnect: clientDisconnect,
+		RequestID:                     resp.Header.Get("x-request-id"),
+		Usage:                         *usage,
+		Model:                         originalModel, // 使用原始模型用于计费和日志
+		UpstreamModel:                 mappedModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		Stream:                        reqStream,
+		Duration:                      time.Since(startTime),
+		FirstTokenMs:                  firstTokenMs,
+		ClientDisconnect:              clientDisconnect,
 	}
 	if forwardErr != nil {
 		result.FailedOutcome = !clientDisconnect
@@ -6599,7 +6604,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			return nil, streamErr
 		}
 		if streamErr != nil {
-			if partial := partialStreamUsageResult(resp, streamResult, input.OriginalModel, input.RequestModel, input.StartTime, streamErr); partial != nil {
+			if partial := partialStreamUsageResult(c, resp, streamResult, input.OriginalModel, input.RequestModel, input.StartTime, streamErr); partial != nil {
 				partial.FailedOutcome = !streamResult.clientDisconnect
 				partial.NeutralOutcome = streamResult.clientDisconnect
 				return partial, streamErr
@@ -6620,14 +6625,16 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 
 	result := &ForwardResult{
-		RequestID:        resp.Header.Get("x-request-id"),
-		Usage:            *usage,
-		Model:            input.OriginalModel,
-		UpstreamModel:    input.RequestModel,
-		Stream:           input.RequestStream,
-		Duration:         time.Since(input.StartTime),
-		FirstTokenMs:     firstTokenMs,
-		ClientDisconnect: clientDisconnect,
+		RequestID:                     resp.Header.Get("x-request-id"),
+		Usage:                         *usage,
+		Model:                         input.OriginalModel,
+		UpstreamModel:                 input.RequestModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		Stream:                        input.RequestStream,
+		Duration:                      time.Since(input.StartTime),
+		FirstTokenMs:                  firstTokenMs,
+		ClientDisconnect:              clientDisconnect,
 	}
 	if forwardErr != nil {
 		result.FailedOutcome = !clientDisconnect
@@ -9069,7 +9076,7 @@ func (u *ClaudeUsage) hasObservedTokens() bool {
 // partialStreamUsageResult carries observed upstream usage through an error so
 // the handler can record it. Failover errors deliberately keep a nil result:
 // a later successful account attempt must be billed exactly once.
-func partialStreamUsageResult(resp *http.Response, streamResult *streamingResult, model, upstreamModel string, startTime time.Time, err error) *ForwardResult {
+func partialStreamUsageResult(c *gin.Context, resp *http.Response, streamResult *streamingResult, model, upstreamModel string, startTime time.Time, err error) *ForwardResult {
 	if streamResult == nil || !streamResult.usage.hasObservedTokens() {
 		return nil
 	}
@@ -9082,14 +9089,16 @@ func partialStreamUsageResult(resp *http.Response, streamResult *streamingResult
 		requestID = resp.Header.Get("x-request-id")
 	}
 	return &ForwardResult{
-		RequestID:        requestID,
-		Usage:            *streamResult.usage,
-		Model:            model,
-		UpstreamModel:    upstreamModel,
-		Stream:           true,
-		Duration:         time.Since(startTime),
-		FirstTokenMs:     streamResult.firstTokenMs,
-		ClientDisconnect: streamResult.clientDisconnect,
+		RequestID:                     requestID,
+		Usage:                         *streamResult.usage,
+		Model:                         model,
+		UpstreamModel:                 upstreamModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		Stream:                        true,
+		Duration:                      time.Since(startTime),
+		FirstTokenMs:                  streamResult.firstTokenMs,
+		ClientDisconnect:              streamResult.clientDisconnect,
 	}
 }
 
@@ -9292,6 +9301,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 
 		eventType, _ := event["type"].(string)
+		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+			observer.ObserveAnthropic([]byte(dataLine))
+		}
 		if eventName == "" {
 			eventName = eventType
 		}
@@ -9783,6 +9795,9 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, anthropicTooLargeError)
 	if err != nil {
 		return nil, err
+	}
+	if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+		observer.ObserveAnthropic(body)
 	}
 	if !anthropicSuccessJSONResponseIsValid(body) {
 		return nil, newGatewayUpstreamFailoverError(account, http.StatusBadGateway, body, mappedModel)
@@ -10773,6 +10788,8 @@ func (s *GatewayService) buildRecordUsageLog(
 		Model:                 result.Model,
 		RequestedModel:        requestedModel,
 		UpstreamModel:         optionalTrimmedStringPtr(result.UpstreamModel),
+		UpstreamResponseModel: optionalTrimmedStringPtr(result.UpstreamResponseModel),
+		UpstreamModelMismatch: upstreamModelMismatchWithConflict(upstreamSentModel(result.Model, result.UpstreamModel), result.UpstreamResponseModel, result.UpstreamResponseModelConflict),
 		ReasoningEffort:       result.ReasoningEffort,
 		InboundEndpoint:       optionalTrimmedStringPtr(input.InboundEndpoint),
 		UpstreamEndpoint:      optionalTrimmedStringPtr(input.UpstreamEndpoint),

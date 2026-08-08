@@ -364,6 +364,17 @@ func isOpenAIOAuthInputTokensUnsupported(statusCode int, body []byte) bool {
 	if statusCode == http.StatusNotFound && isOpenAIInputTokensUnsupported(statusCode, body) {
 		return true
 	}
+	// Some OAuth-compatible relays return an HTML 403 page instead of a
+	// structured scope error when /responses/input_tokens is unavailable.
+	// This endpoint has a local estimator fallback, so treat only an explicit
+	// HTML body as unsupported; JSON 403 authentication errors must continue
+	// through the normal account error policy.
+	if statusCode == http.StatusForbidden {
+		trimmed := strings.TrimSpace(strings.ToLower(string(body)))
+		if strings.HasPrefix(trimmed, "<!doctype html") || strings.HasPrefix(trimmed, "<html") {
+			return true
+		}
+	}
 
 	return strings.Contains(msg, "input_tokens") &&
 		(strings.Contains(msg, "not found") ||

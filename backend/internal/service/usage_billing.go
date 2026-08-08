@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -46,9 +47,24 @@ func (c *UsageBillingCommand) Normalize() {
 		return
 	}
 	c.RequestID = strings.TrimSpace(c.RequestID)
+	c.BalanceCost = quantizeUsageBillingAmount(c.BalanceCost)
+	c.SubscriptionCost = quantizeUsageBillingAmount(c.SubscriptionCost)
+	c.APIKeyQuotaCost = quantizeUsageBillingAmount(c.APIKeyQuotaCost)
+	c.APIKeyRateLimitCost = quantizeUsageBillingAmount(c.APIKeyRateLimitCost)
+	c.AccountQuotaCost = quantizeUsageBillingAmount(c.AccountQuotaCost)
 	if strings.TrimSpace(c.RequestFingerprint) == "" {
 		c.RequestFingerprint = buildUsageBillingFingerprint(c)
 	}
+}
+
+func quantizeUsageBillingAmount(value float64) float64 {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value == 0 {
+		return value
+	}
+	// Billing and quota columns use NUMERIC(20,10), and the idempotency
+	// fingerprint also serializes costs to ten decimal places. Keep the same
+	// precision here so normalization cannot silently erase a billable delta.
+	return math.Round(value*1e10) / 1e10
 }
 
 func buildUsageBillingFingerprint(c *UsageBillingCommand) string {

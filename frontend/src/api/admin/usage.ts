@@ -85,6 +85,7 @@ export interface AdminUsageQueryParams extends UsageQueryParams {
   request_id?: string
   exact_total?: boolean
   billing_mode?: string
+  upstream_model_mismatch?: boolean
   sort_by?: string
   sort_order?: 'asc' | 'desc'
 }
@@ -120,6 +121,7 @@ export async function getStats(params: {
   model?: string
   request_type?: UsageRequestType
   stream?: boolean
+  upstream_model_mismatch?: boolean
   period?: string
   start_date?: string
   end_date?: string

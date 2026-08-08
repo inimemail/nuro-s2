@@ -320,3 +320,16 @@ func TestOpsSystemLogSink_HelperFunctions(t *testing.T) {
 		}
 	}
 }
+
+func TestOpsSystemLogSinkFlushBackoffIsBoundedAndExponential(t *testing.T) {
+	sink := &OpsSystemLogSink{flushBackoff: 2 * time.Second, flushBackoffMax: 10 * time.Second}
+	if got := sink.flushBackoffFor(1); got != 2*time.Second {
+		t.Fatalf("first failure backoff = %s", got)
+	}
+	if got := sink.flushBackoffFor(2); got != 4*time.Second {
+		t.Fatalf("second failure backoff = %s", got)
+	}
+	if got := sink.flushBackoffFor(8); got != 10*time.Second {
+		t.Fatalf("bounded backoff = %s", got)
+	}
+}

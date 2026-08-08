@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -34,6 +35,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	beginUpstreamResponseModelObservation(c)
 	if account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
 		return s.forwardAnthropicViaRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
@@ -677,15 +679,17 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	c.JSON(http.StatusOK, anthropicResp)
 
 	return &OpenAIForwardResult{
-		RequestID:         requestID,
-		ResponseID:        finalResponse.ID,
-		Usage:             usage,
-		Model:             originalModel,
-		BillingModel:      billingModel,
-		UpstreamModel:     upstreamModel,
-		Stream:            false,
-		TerminalEventType: openAIResponseStatusTerminalEventType(finalResponse.Status),
-		Duration:          time.Since(startTime),
+		RequestID:                     requestID,
+		ResponseID:                    finalResponse.ID,
+		Usage:                         usage,
+		Model:                         originalModel,
+		BillingModel:                  billingModel,
+		UpstreamModel:                 upstreamModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		Stream:                        false,
+		TerminalEventType:             openAIResponseStatusTerminalEventType(finalResponse.Status),
+		Duration:                      time.Since(startTime),
 	}, nil
 }
 
@@ -973,22 +977,27 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	// resultWithUsage builds the final result snapshot.
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
-			RequestID:         requestID,
-			ResponseID:        responseID,
-			Usage:             usage,
-			Model:             originalModel,
-			BillingModel:      billingModel,
-			UpstreamModel:     upstreamModel,
-			Stream:            true,
-			TerminalEventType: terminalEventType,
-			Duration:          time.Since(startTime),
-			FirstTokenMs:      firstTokenMs,
-			ClientDisconnect:  clientDisconnected,
+			RequestID:                     requestID,
+			ResponseID:                    responseID,
+			Usage:                         usage,
+			Model:                         originalModel,
+			BillingModel:                  billingModel,
+			UpstreamModel:                 upstreamModel,
+			UpstreamResponseModel:         observedUpstreamResponseModel(c),
+			UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+			Stream:                        true,
+			TerminalEventType:             terminalEventType,
+			Duration:                      time.Since(startTime),
+			FirstTokenMs:                  firstTokenMs,
+			ClientDisconnect:              clientDisconnected,
 		}
 	}
 
 	// processDataLine handles a single "data: ..." SSE line from upstream.
 	processDataLine := func(payload string) bool {
+		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+			observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
+		}
 		if firstChunk {
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())

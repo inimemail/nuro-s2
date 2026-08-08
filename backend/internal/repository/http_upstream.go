@@ -51,7 +51,10 @@ const (
 	defaultIdleConnTimeout = 90 * time.Second
 	// defaultResponseHeaderTimeout: 默认等待响应头超时时间（5分钟）
 	// LLM 请求可能排队较久，需要较长超时
-	defaultResponseHeaderTimeout = 300 * time.Second
+	defaultResponseHeaderTimeout       = 300 * time.Second
+	defaultUpstreamDialTimeout         = 10 * time.Second
+	defaultUpstreamDialKeepAlive       = 30 * time.Second
+	defaultUpstreamTLSHandshakeTimeout = 10 * time.Second
 	// defaultMaxUpstreamClients: 默认最大客户端缓存数量
 	// 超出后会淘汰最久未使用的客户端
 	defaultMaxUpstreamClients = 5000
@@ -1283,6 +1286,8 @@ func defaultPoolSettings(cfg *config.Config) poolSettings {
 //   - ResponseHeaderTimeout: 等待响应头超时（不影响流式传输）
 func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMode string) (*http.Transport, error) {
 	transport := &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: defaultUpstreamDialTimeout, KeepAlive: defaultUpstreamDialKeepAlive}).DialContext,
+		TLSHandshakeTimeout:   defaultUpstreamTLSHandshakeTimeout,
 		MaxIdleConns:          settings.maxIdleConns,
 		MaxIdleConnsPerHost:   settings.maxIdleConnsPerHost,
 		MaxConnsPerHost:       settings.maxConnsPerHost,
@@ -1312,7 +1317,7 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 	if proxyURL == nil {
 		// N1: 进程内 DNS 缓存拨号只用于直连上游。HTTP/HTTPS 代理继续使用
 		// Go 标准拨号，保留系统 Happy Eyeballs / 地址排序策略。
-		transport.DialContext = sharedCachedDialer.DialContext
+		transport.DialContext = withUpstreamDialTimeout(sharedCachedDialer.DialContext)
 	}
 	if err := proxyutil.ConfigureTransportProxy(transport, proxyURL); err != nil {
 		return nil, err
@@ -1338,6 +1343,7 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 //   - socks5: SOCKS5 代理，使用 SOCKS5ProxyDialer（SOCKS5 隧道 + utls 握手）
 func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *url.URL, profile *tlsfingerprint.Profile) (*http.Transport, error) {
 	transport := &http.Transport{
+		TLSHandshakeTimeout:   defaultUpstreamTLSHandshakeTimeout,
 		MaxIdleConns:          settings.maxIdleConns,
 		MaxIdleConnsPerHost:   settings.maxIdleConnsPerHost,
 		MaxConnsPerHost:       settings.maxConnsPerHost,
@@ -1356,8 +1362,8 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 		// N1: 注入进程内 DNS 缓存拨号作为底层 TCP 拨号器，省掉冷连接的 DNS 解析。
 		// TLS 握手仍由 utls 按指纹完成，不受影响。
 		slog.Debug("tls_fingerprint_transport_direct")
-		dialer := tlsfingerprint.NewDialer(profile, sharedCachedDialer.DialContext)
-		transport.DialTLSContext = dialer.DialTLSContext
+		dialer := tlsfingerprint.NewDialer(profile, withUpstreamDialTimeout(sharedCachedDialer.DialContext))
+		transport.DialTLSContext = withUpstreamTLSHandshakeTimeout(dialer.DialTLSContext)
 	} else {
 		scheme := strings.ToLower(proxyURL.Scheme)
 		switch scheme {
@@ -1365,12 +1371,12 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 			// SOCKS5 代理：使用 SOCKS5ProxyDialer
 			slog.Debug("tls_fingerprint_transport_socks5", "proxy", proxyURL.Host)
 			socks5Dialer := tlsfingerprint.NewSOCKS5ProxyDialer(profile, proxyURL)
-			transport.DialTLSContext = socks5Dialer.DialTLSContext
+			transport.DialTLSContext = withUpstreamTLSHandshakeTimeout(socks5Dialer.DialTLSContext)
 		case "http", "https":
 			// HTTP/HTTPS 代理：使用 HTTPProxyDialer（CONNECT 隧道）
 			slog.Debug("tls_fingerprint_transport_http_connect", "proxy", proxyURL.Host)
 			httpDialer := tlsfingerprint.NewHTTPProxyDialer(profile, proxyURL)
-			transport.DialTLSContext = httpDialer.DialTLSContext
+			transport.DialTLSContext = withUpstreamTLSHandshakeTimeout(httpDialer.DialTLSContext)
 		default:
 			// 未知代理类型，回退到普通代理配置（无 TLS 指纹）
 			slog.Debug("tls_fingerprint_transport_unknown_scheme_fallback", "scheme", scheme)
@@ -1381,6 +1387,25 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 	}
 
 	return transport, nil
+}
+
+func withUpstreamDialTimeout(base func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialCtx, cancel := context.WithTimeout(ctx, defaultUpstreamDialTimeout)
+		defer cancel()
+		return base(dialCtx, network, addr)
+	}
+}
+
+// withUpstreamTLSHandshakeTimeout is required for DialTLSContext paths. Go's
+// http.Transport does not apply TLSHandshakeTimeout when a custom TLS dialer
+// is installed, so enforce the same bounded handshake window explicitly.
+func withUpstreamTLSHandshakeTimeout(base func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		handshakeCtx, cancel := context.WithTimeout(ctx, defaultUpstreamTLSHandshakeTimeout)
+		defer cancel()
+		return base(handshakeCtx, network, addr)
+	}
 }
 
 // trackedBody 带跟踪功能的响应体包装器

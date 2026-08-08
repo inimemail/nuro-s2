@@ -90,10 +90,11 @@
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-100 dark:divide-dark-800">
-                <tr v-for="model in group.models" :key="model.name" class="hover:bg-gray-50 dark:hover:bg-dark-800/60">
+                <tr v-for="model in group.models" :key="`${model.platform}:${model.name}`" class="hover:bg-gray-50 dark:hover:bg-dark-800/60">
                   <td class="px-4 py-3">
                     <div class="flex flex-wrap items-center gap-2">
                       <span class="min-w-0 max-w-[min(48vw,28rem)] truncate font-medium text-gray-900 dark:text-white" :title="model.name">{{ model.name }}</span>
+                      <span v-if="model.platform && model.platform !== group.platform" class="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] text-gray-500 dark:border-dark-600 dark:text-gray-400">{{ model.platform }}</span>
                       <span v-if="billingMode(model) !== BILLING_MODE_TOKEN" class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-dark-700 dark:text-gray-300">
                         {{ billingModeLabel(model) }}
                       </span>

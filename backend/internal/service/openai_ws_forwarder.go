@@ -2565,6 +2565,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			return nil, errors.New("ws finished without final response")
 		}
 
+		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+			observer.ObserveOpenAI(finalResponse, lastEventType)
+		}
 		if needModelReplace {
 			finalResponse = s.replaceModelInResponseBody(finalResponse, mappedModel, originalModel)
 		}
@@ -2611,22 +2614,24 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	)
 
 	return &OpenAIForwardResult{
-		RequestID:         responseID,
-		Usage:             *usage,
-		Model:             originalModel,
-		UpstreamModel:     mappedModel,
-		ImageCount:        imageCounter.Count(),
-		ImageOutputSizes:  imageCounter.Sizes(),
-		ServiceTier:       extractOpenAIServiceTier(reqBody),
-		ReasoningEffort:   extractOpenAIReasoningEffort(reqBody, mappedModel, originalModel),
-		Stream:            reqStream,
-		OpenAIWSMode:      true,
-		TerminalEventType: lastEventType,
-		ResponseHeaders:   lease.HandshakeHeaders(),
-		Duration:          time.Since(startTime),
-		FirstTokenMs:      firstTokenMs,
-		ClientDisconnect:  clientDisconnected,
-		CyberBlocked:      cyberBlocked,
+		RequestID:                     responseID,
+		Usage:                         *usage,
+		Model:                         originalModel,
+		UpstreamModel:                 mappedModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		ImageCount:                    imageCounter.Count(),
+		ImageOutputSizes:              imageCounter.Sizes(),
+		ServiceTier:                   extractOpenAIServiceTier(reqBody),
+		ReasoningEffort:               extractOpenAIReasoningEffort(reqBody, mappedModel, originalModel),
+		Stream:                        reqStream,
+		OpenAIWSMode:                  true,
+		TerminalEventType:             lastEventType,
+		ResponseHeaders:               lease.HandshakeHeaders(),
+		Duration:                      time.Since(startTime),
+		FirstTokenMs:                  firstTokenMs,
+		ClientDisconnect:              clientDisconnected,
+		CyberBlocked:                  cyberBlocked,
 	}, nil
 }
 
@@ -2656,6 +2661,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	if strings.TrimSpace(token) == "" && !s.isAgentIdentityAccount(ctx, account) {
 		return errors.New("token is empty")
 	}
+	// WS responses are recorded by the ingress handler after this function
+	// returns, so keep the model observer on the request context just like the
+	// HTTP/SSE gateways. This is request-local metadata only.
+	beginUpstreamResponseModelObservation(c)
 	strongIsolationEnabled := account.IsOpenAIUpstreamStrongIsolationEnabled()
 
 	// 预取一次 OpenAI Fast Policy settings，绑定到 ctx，让该 WS session
@@ -3523,6 +3532,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if openAIWSEventShouldParseUsage(originalEventType) {
 				parseOpenAIWSResponseUsageFromCompletedEvent(originalUpstreamMessage, &usage)
 			}
+			if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
+				observer.ObserveOpenAI(originalUpstreamMessage, eventType)
+			}
 			upstreamMessage = normalizeOpenAIWSDownstreamCacheUsage(upstreamMessage, eventType, downstreamCacheUsageMode)
 			imageCounter.AddSSEData(upstreamMessage)
 			if eventType == "error" || eventType == "response.failed" {
@@ -3597,21 +3609,23 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				imageCount := imageCounter.Count()
 				result := &OpenAIForwardResult{
-					RequestID:            responseID,
-					Usage:                usage,
-					Model:                originalModel,
-					UpstreamModel:        mappedModel,
-					ServiceTier:          extractOpenAIServiceTierFromBody(payload),
-					ReasoningEffort:      extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel),
-					Stream:               reqStream,
-					OpenAIWSMode:         true,
-					TerminalEventType:    eventType,
-					ResponseHeaders:      lease.HandshakeHeaders(),
-					Duration:             time.Since(turnStart),
-					FirstTokenMs:         firstTokenMs,
-					ClientDisconnect:     clientDisconnected,
-					CyberBlocked:         cyberBlocked,
-					AccountHealthNeutral: cachePolicyCompatibilityFailure,
+					RequestID:                     responseID,
+					Usage:                         usage,
+					Model:                         originalModel,
+					UpstreamModel:                 mappedModel,
+					UpstreamResponseModel:         observedUpstreamResponseModel(c),
+					UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+					ServiceTier:                   extractOpenAIServiceTierFromBody(payload),
+					ReasoningEffort:               extractOpenAIReasoningEffortFromBody(payload, mappedModel, originalModel),
+					Stream:                        reqStream,
+					OpenAIWSMode:                  true,
+					TerminalEventType:             eventType,
+					ResponseHeaders:               lease.HandshakeHeaders(),
+					Duration:                      time.Since(turnStart),
+					FirstTokenMs:                  firstTokenMs,
+					ClientDisconnect:              clientDisconnected,
+					CyberBlocked:                  cyberBlocked,
+					AccountHealthNeutral:          cachePolicyCompatibilityFailure,
 				}
 				if replayInput := replayCollector.Items(); len(replayInput) > 0 {
 					result.wsReplayInput = replayInput

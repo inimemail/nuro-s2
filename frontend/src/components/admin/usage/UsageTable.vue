@@ -69,6 +69,25 @@
           <span v-else class="font-medium text-gray-900 dark:text-white">{{ row.model }}</span>
         </template>
 
+        <template #cell-upstream_model_audit="{ row }">
+          <div class="max-w-[260px] space-y-1 text-xs">
+            <div class="break-all text-gray-700 dark:text-gray-300">
+              <span class="font-medium text-gray-500 dark:text-gray-400">{{ t('admin.usage.upstreamResponseModel') }}:</span>
+              <span class="ml-1">{{ row.upstream_response_model || '-' }}</span>
+            </div>
+            <span
+              v-if="row.upstream_model_mismatch != null"
+              class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset"
+              :class="row.upstream_model_mismatch
+                ? 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:ring-rose-500/30'
+                : 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30'"
+            >
+              {{ row.upstream_model_mismatch ? t('admin.usage.mismatch') : t('admin.usage.match') }}
+            </span>
+            <span v-else class="text-gray-400 dark:text-gray-500">{{ t('admin.usage.auditUnavailable') }}</span>
+          </div>
+        </template>
+
         <template #cell-reasoning_effort="{ row }">
           <span class="text-sm text-gray-900 dark:text-white">
             {{ formatReasoningEffort(row.reasoning_effort) }}

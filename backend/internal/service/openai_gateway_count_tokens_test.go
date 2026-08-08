@@ -287,3 +287,12 @@ func TestOpenAIInputTokensEncodingForModel(t *testing.T) {
 		})
 	}
 }
+
+func TestIsOpenAIOAuthInputTokensUnsupportedHTML403(t *testing.T) {
+	if !isOpenAIOAuthInputTokensUnsupported(http.StatusForbidden, []byte("<!doctype html><html><body>forbidden</body></html>")) {
+		t.Fatal("HTML 403 should use local input_tokens fallback")
+	}
+	if isOpenAIOAuthInputTokensUnsupported(http.StatusForbidden, []byte(`{"error":{"message":"invalid token"}}`)) {
+		t.Fatal("structured authentication 403 must not be treated as endpoint unsupported")
+	}
+}
