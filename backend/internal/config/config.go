@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -1026,6 +1027,9 @@ type GatewayConfig struct {
 
 	// 是否允许对部分 400 错误触发 failover（默认关闭以避免改变语义）
 	FailoverOn400 bool `mapstructure:"failover_on_400"`
+	// schedulingRuntimeLive holds DB-backed scheduling overrides without racing
+	// request hot paths that read the immutable deployment config.
+	schedulingRuntimeLive *atomic.Pointer[GatewaySchedulingRuntime] `mapstructure:"-"`
 
 	// 账户切换最大次数（遇到上游错误时切换到其他账户的次数上限）
 	MaxAccountSwitches int `mapstructure:"max_account_switches"`
@@ -1056,6 +1060,83 @@ type GatewayConfig struct {
 	// UserMessageQueue: 用户消息串行队列配置
 	// 对 role:"user" 的真实用户消息实施账号级串行化 + RPM 自适应延迟
 	UserMessageQueue UserMessageQueueConfig `mapstructure:"user_message_queue"`
+}
+
+// GatewaySchedulingRuntime contains the small subset of scheduling settings
+// that the admin panel can update without restarting the Go gateway.
+type GatewaySchedulingRuntime struct {
+	UserSlotWaitTimeout     time.Duration
+	FallbackWaitTimeout     time.Duration
+	UserSlotMaxWaitingExtra int
+	RetryAfterMS            int
+}
+
+var schedulingRuntimeInitMu sync.Mutex
+
+func (c *Config) schedulingRuntimePointer() *atomic.Pointer[GatewaySchedulingRuntime] {
+	if c == nil {
+		return nil
+	}
+	if live := c.Gateway.schedulingRuntimeLive; live != nil {
+		return live
+	}
+	schedulingRuntimeInitMu.Lock()
+	defer schedulingRuntimeInitMu.Unlock()
+	if c.Gateway.schedulingRuntimeLive == nil {
+		c.Gateway.schedulingRuntimeLive = &atomic.Pointer[GatewaySchedulingRuntime]{}
+	}
+	return c.Gateway.schedulingRuntimeLive
+}
+
+// GatewayScheduling returns the effective scheduling config, applying any
+// atomically published admin overrides over deployment defaults.
+func (c *Config) GatewayScheduling() GatewaySchedulingConfig {
+	if c == nil {
+		return GatewaySchedulingConfig{}
+	}
+	result := c.Gateway.Scheduling
+	if result.UserSlotWaitTimeout <= 0 && result.UserSlotWaitTimeoutMS > 0 {
+		result.UserSlotWaitTimeout = time.Duration(result.UserSlotWaitTimeoutMS) * time.Millisecond
+	}
+	if result.FallbackWaitTimeout <= 0 && result.FallbackWaitTimeoutMS > 0 {
+		result.FallbackWaitTimeout = time.Duration(result.FallbackWaitTimeoutMS) * time.Millisecond
+	}
+	if pointer := c.schedulingRuntimePointer(); pointer != nil {
+		if live := pointer.Load(); live != nil {
+			if live.UserSlotWaitTimeout > 0 {
+				result.UserSlotWaitTimeout = live.UserSlotWaitTimeout
+			}
+			if live.FallbackWaitTimeout > 0 {
+				result.FallbackWaitTimeout = live.FallbackWaitTimeout
+			}
+			if live.UserSlotMaxWaitingExtra >= 0 {
+				result.UserSlotMaxWaitingExtra = live.UserSlotMaxWaitingExtra
+			}
+			if live.RetryAfterMS > 0 {
+				result.RetryAfterMS = live.RetryAfterMS
+			}
+		}
+	}
+	return result
+}
+
+// RetryAfterHeaderSeconds converts the millisecond admin setting to the
+// whole-second value required by the HTTP Retry-After header.
+func (c GatewaySchedulingConfig) RetryAfterHeaderSeconds() int {
+	if c.RetryAfterMS <= 0 {
+		return 1
+	}
+	return (c.RetryAfterMS-1)/1000 + 1
+}
+
+// SetGatewaySchedulingRuntime publishes admin overrides atomically.
+func (c *Config) SetGatewaySchedulingRuntime(runtime GatewaySchedulingRuntime) {
+	if c == nil {
+		return
+	}
+	if pointer := c.schedulingRuntimePointer(); pointer != nil {
+		pointer.Store(&runtime)
+	}
 }
 
 // GatewayAdmissionConfig configures the optional distributed admission data
@@ -1404,13 +1485,27 @@ type TLSProfileConfig struct {
 
 // GatewaySchedulingConfig accounts scheduling configuration.
 type GatewaySchedulingConfig struct {
+	// 用户并发槽位等待上限。短等待可避免高并发请求长时间占住下游连接。
+	UserSlotWaitTimeout time.Duration `mapstructure:"user_slot_wait_timeout"`
+	// UserSlotWaitTimeoutMS is the explicit millisecond deployment spelling.
+	// It is normalized into UserSlotWaitTimeout during config loading.
+	UserSlotWaitTimeoutMS int `mapstructure:"user_slot_wait_timeout_ms"`
+	// 用户等待队列相对用户并发上限允许的额外请求数。
+	UserSlotMaxWaitingExtra int `mapstructure:"user_slot_max_waiting_extra"`
+	RetryAfterMS            int `mapstructure:"retry_after_ms"`
+	// RetryAfterSeconds is retained only for reading pre-millisecond YAML/env
+	// configurations. It is converted to RetryAfterMS during config loading.
+	RetryAfterSeconds int `mapstructure:"retry_after_seconds"`
 	// 粘性会话排队配置
 	StickySessionMaxWaiting  int           `mapstructure:"sticky_session_max_waiting"`
 	StickySessionWaitTimeout time.Duration `mapstructure:"sticky_session_wait_timeout"`
 
 	// 兜底排队配置
 	FallbackWaitTimeout time.Duration `mapstructure:"fallback_wait_timeout"`
-	FallbackMaxWaiting  int           `mapstructure:"fallback_max_waiting"`
+	// FallbackWaitTimeoutMS is the explicit millisecond deployment spelling.
+	// It is normalized into FallbackWaitTimeout during config loading.
+	FallbackWaitTimeoutMS int `mapstructure:"fallback_wait_timeout_ms"`
+	FallbackMaxWaiting    int `mapstructure:"fallback_max_waiting"`
 
 	// 兜底层账户选择策略: "last_used"(按最后使用时间排序，默认) 或 "random"(随机)
 	FallbackSelectionMode string `mapstructure:"fallback_selection_mode"`
@@ -1854,6 +1949,39 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = cfg.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds
 	}
 
+	// Migrate the legacy seconds-based Retry-After setting when the new
+	// millisecond key is not explicitly configured. The HTTP header itself is
+	// still emitted in whole seconds; only the admin/deployment setting is ms.
+	legacyRetryAfterSeconds := cfg.Gateway.Scheduling.RetryAfterSeconds
+	if legacyRetryAfterSeconds <= 0 {
+		legacyRetryAfterSeconds = viper.GetInt("gateway.scheduling.retry_after_seconds")
+	}
+	newRetryAfterConfigured := viper.InConfig("gateway.scheduling.retry_after_ms") ||
+		strings.TrimSpace(os.Getenv("GATEWAY_SCHEDULING_RETRY_AFTER_MS")) != ""
+	if !newRetryAfterConfigured && legacyRetryAfterSeconds > 0 {
+		if legacyRetryAfterSeconds > 60 {
+			legacyRetryAfterSeconds = 60
+		}
+		cfg.Gateway.Scheduling.RetryAfterMS = legacyRetryAfterSeconds * 1000
+	}
+	cfg.Gateway.Scheduling.RetryAfterSeconds = 0
+
+	// Prefer explicit millisecond spellings for the two queue wait durations.
+	// The duration keys remain supported for existing deployments and are only
+	// used when the corresponding *_ms key is absent.
+	if hasExplicitConfigOrEnv("gateway.scheduling.user_slot_wait_timeout_ms", "GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS") {
+		if cfg.Gateway.Scheduling.UserSlotWaitTimeoutMS > 0 {
+			cfg.Gateway.Scheduling.UserSlotWaitTimeout = time.Duration(cfg.Gateway.Scheduling.UserSlotWaitTimeoutMS) * time.Millisecond
+		}
+	}
+	if hasExplicitConfigOrEnv("gateway.scheduling.fallback_wait_timeout_ms", "GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS") {
+		if cfg.Gateway.Scheduling.FallbackWaitTimeoutMS > 0 {
+			cfg.Gateway.Scheduling.FallbackWaitTimeout = time.Duration(cfg.Gateway.Scheduling.FallbackWaitTimeoutMS) * time.Millisecond
+		}
+	}
+	cfg.Gateway.Scheduling.UserSlotWaitTimeoutMS = 0
+	cfg.Gateway.Scheduling.FallbackWaitTimeoutMS = 0
+
 	// Normalize UMQ mode: 白名单校验，非法值在加载时一次性 warn 并清空
 	if m := cfg.Gateway.UserMessageQueue.Mode; m != "" && m != UMQModeSerialize && m != UMQModeThrottle {
 		slog.Warn("invalid user_message_queue mode, disabling",
@@ -1906,6 +2034,9 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 			"force_remove", cfg.Security.ResponseHeaders.ForceRemove,
 		)
 	}
+	// Allocate the runtime snapshot holder before the server starts serving so
+	// request hot paths never race lazy initialization of the config object.
+	cfg.Gateway.schedulingRuntimeLive = &atomic.Pointer[GatewaySchedulingRuntime]{}
 
 	return &cfg, nil
 }
@@ -2472,8 +2603,13 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
-	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", 30*time.Second)
-	viper.SetDefault("gateway.scheduling.fallback_max_waiting", 100)
+	viper.SetDefault("gateway.scheduling.user_slot_wait_timeout", 200*time.Millisecond)
+	viper.SetDefault("gateway.scheduling.user_slot_wait_timeout_ms", 200)
+	viper.SetDefault("gateway.scheduling.user_slot_max_waiting_extra", 5)
+	viper.SetDefault("gateway.scheduling.retry_after_ms", 1000)
+	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", time.Second)
+	viper.SetDefault("gateway.scheduling.fallback_wait_timeout_ms", 1000)
+	viper.SetDefault("gateway.scheduling.fallback_max_waiting", 30)
 	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "last_used")
 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
 	viper.SetDefault("gateway.scheduling.load_batch_cache_ttl_ms", 200)
@@ -3541,6 +3677,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Scheduling.FallbackWaitTimeout <= 0 {
 		return fmt.Errorf("gateway.scheduling.fallback_wait_timeout must be positive")
+	}
+	if c.Gateway.Scheduling.UserSlotWaitTimeout < time.Millisecond || c.Gateway.Scheduling.UserSlotWaitTimeout > 3*time.Second {
+		return fmt.Errorf("gateway.scheduling.user_slot_wait_timeout must be between 1ms and 3s")
+	}
+	if c.Gateway.Scheduling.UserSlotMaxWaitingExtra < 0 {
+		return fmt.Errorf("gateway.scheduling.user_slot_max_waiting_extra must be non-negative")
+	}
+	if c.Gateway.Scheduling.RetryAfterMS < 1 || c.Gateway.Scheduling.RetryAfterMS > 60000 {
+		return fmt.Errorf("gateway.scheduling.retry_after_ms must be between 1ms and 60000ms")
 	}
 	if c.Gateway.Scheduling.FallbackMaxWaiting <= 0 {
 		return fmt.Errorf("gateway.scheduling.fallback_max_waiting must be positive")

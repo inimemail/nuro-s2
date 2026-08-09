@@ -182,6 +182,11 @@ type SystemSettings struct {
 
 	// 分组隔离
 	AllowUngroupedKeyScheduling                     bool   `json:"allow_ungrouped_key_scheduling"`
+	GatewayUserSlotWaitTimeoutMS                    int    `json:"gateway_user_slot_wait_timeout_ms"`
+	GatewayAccountSlotWaitTimeoutMS                 int    `json:"gateway_account_slot_wait_timeout_ms"`
+	GatewayEdgeQueueWaitBudgetMS                    int    `json:"gateway_edge_queue_wait_budget_ms"`
+	GatewayUserWaitingExtra                         int    `json:"gateway_user_waiting_extra"`
+	GatewayRetryAfterMS                             int    `json:"gateway_retry_after_ms"`
 	OpenAIPoolDownstreamModelLimitProtectionEnabled bool   `json:"openai_pool_downstream_model_limit_protection_enabled"`
 	OpenAIPoolRecoveryProbeEnabled                  bool   `json:"openai_pool_recovery_probe_enabled"`
 	OpenAIPoolRecoveryProbeModel                    string `json:"openai_pool_recovery_probe_model"`

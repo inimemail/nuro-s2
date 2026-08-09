@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -116,7 +118,7 @@ func claudeCodeBodyMapFromContextCache(c *gin.Context) map[string]any {
 // 2. 添加 ±20% 的随机抖动，分散重试时间点
 // 3. 减少 Redis 压力，避免惊群效应
 const (
-	// maxConcurrencyWait 等待并发槽位的最大时间
+	// maxConcurrencyWait 是旧测试/调用方缺失配置时的兼容回退。
 	maxConcurrencyWait = 30 * time.Second
 	// defaultPingInterval 流式响应等待时发送 ping 的默认间隔
 	defaultPingInterval = 10 * time.Second
@@ -158,17 +160,23 @@ type ConcurrencyHelper struct {
 	concurrencyService *service.ConcurrencyService
 	pingFormat         SSEPingFormat
 	pingInterval       time.Duration
+	runtimeConfig      *config.Config
 }
 
 // NewConcurrencyHelper creates a new ConcurrencyHelper
-func NewConcurrencyHelper(concurrencyService *service.ConcurrencyService, pingFormat SSEPingFormat, pingInterval time.Duration) *ConcurrencyHelper {
+func NewConcurrencyHelper(concurrencyService *service.ConcurrencyService, pingFormat SSEPingFormat, pingInterval time.Duration, runtimeConfig ...*config.Config) *ConcurrencyHelper {
 	if pingInterval <= 0 {
 		pingInterval = defaultPingInterval
+	}
+	var cfg *config.Config
+	if len(runtimeConfig) > 0 {
+		cfg = runtimeConfig[0]
 	}
 	return &ConcurrencyHelper{
 		concurrencyService: concurrencyService,
 		pingFormat:         pingFormat,
 		pingInterval:       pingInterval,
+		runtimeConfig:      cfg,
 	}
 }
 
@@ -204,6 +212,26 @@ func (h *ConcurrencyHelper) IncrementWaitCount(ctx context.Context, userID int64
 // DecrementWaitCount decrements the wait count for a user
 func (h *ConcurrencyHelper) DecrementWaitCount(ctx context.Context, userID int64) {
 	h.concurrencyService.DecrementWaitCount(ctx, userID)
+}
+
+func (h *ConcurrencyHelper) userWaitingExtra() int {
+	if h != nil && h.runtimeConfig != nil {
+		if extra := h.runtimeConfig.GatewayScheduling().UserSlotMaxWaitingExtra; extra >= 0 {
+			return extra
+		}
+	}
+	return 5
+}
+
+func (h *ConcurrencyHelper) setRetryAfter(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	seconds := 1
+	if h != nil && h.runtimeConfig != nil {
+		seconds = h.runtimeConfig.GatewayScheduling().RetryAfterHeaderSeconds()
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
 }
 
 // IncrementAccountWaitCount increments the wait count for an account
@@ -340,7 +368,18 @@ func (h *ConcurrencyHelper) AcquireAccountSlotWithWait(c *gin.Context, accountID
 // waitForSlotWithPing waits for a concurrency slot, sending ping events for streaming requests.
 // streamStarted pointer is updated when streaming begins (for proper error handling by caller).
 func (h *ConcurrencyHelper) waitForSlotWithPing(c *gin.Context, slotType string, id int64, maxConcurrency int, isStream bool, streamStarted *bool, platform ...string) (func(), error) {
-	return h.waitForSlotWithPingTimeout(c, slotType, id, maxConcurrency, maxConcurrencyWait, isStream, streamStarted, false, platform...)
+	timeout := maxConcurrencyWait
+	if h != nil && h.runtimeConfig != nil {
+		scheduling := h.runtimeConfig.GatewayScheduling()
+		if slotType == "user" {
+			if configured := scheduling.UserSlotWaitTimeout; configured > 0 {
+				timeout = configured
+			}
+		} else if configured := scheduling.FallbackWaitTimeout; configured > 0 {
+			timeout = configured
+		}
+	}
+	return h.waitForSlotWithPingTimeout(c, slotType, id, maxConcurrency, timeout, isStream, streamStarted, false, platform...)
 }
 
 // waitForSlotWithPingTimeout waits for a concurrency slot with a custom timeout.

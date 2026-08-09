@@ -276,7 +276,7 @@ func NewOpenAIGatewayHandler(
 		errorPassthroughService:  errorPassthroughService,
 		contentModerationService: contentModerationService,
 		promptAuditService:       promptAuditService,
-		concurrencyHelper:        NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
+		concurrencyHelper:        NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval, cfg),
 		imageLimiter:             &imageConcurrencyLimiter{},
 		imageTaskRepo:            imageTaskRepo,
 		imageTaskStore:           newOpenAIImageTaskStore(defaultOpenAIImageTaskRetention),
@@ -1807,13 +1807,14 @@ func (h *OpenAIGatewayHandler) acquireResponsesUserSlot(
 		return wrapReleaseOnDone(ctx, userReleaseFunc), true
 	}
 
-	maxWait := service.CalculateMaxWait(userConcurrency)
+	maxWait := service.CalculateMaxWaitWithExtra(userConcurrency, h.concurrencyHelper.userWaitingExtra())
 	canWait, waitErr := h.concurrencyHelper.IncrementWaitCount(ctx, userID, maxWait)
 	if waitErr != nil {
 		reqLog.Warn("openai.user_wait_counter_increment_failed", zap.Error(waitErr))
 		// 按现有降级语义：等待计数异常时放行后续抢槽流程
 	} else if !canWait {
 		reqLog.Info("openai.user_wait_queue_full", zap.Int("max_wait", maxWait))
+		h.concurrencyHelper.setRetryAfter(c)
 		h.errorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later")
 		return nil, false
 	}
@@ -1906,6 +1907,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 				Reason:       "account_wait_queue_full",
 			}
 		}
+		h.concurrencyHelper.setRetryAfter(c)
 		h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", *streamStarted)
 		return openAIAccountSlotAcquireResult{Err: errors.New("account wait queue full")}
 	}
@@ -2924,6 +2926,13 @@ func (h *OpenAIGatewayHandler) acquireImageGenerationSlotForWS(ctx context.Conte
 // handleConcurrencyError handles concurrency-related acquire errors.
 func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotType string, streamStarted bool) {
 	status, errType, message := concurrencyErrorResponse(err, slotType)
+	if status == http.StatusTooManyRequests {
+		retryAfter := 1
+		if h != nil && h.cfg != nil {
+			retryAfter = h.cfg.GatewayScheduling().RetryAfterHeaderSeconds()
+		}
+		c.Header("Retry-After", strconv.Itoa(retryAfter))
+	}
 	h.handleStreamingAwareError(c, status, errType, message, streamStarted)
 }
 

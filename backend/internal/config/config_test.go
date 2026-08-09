@@ -64,11 +64,17 @@ func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	if cfg.Gateway.Scheduling.StickySessionWaitTimeout != 120*time.Second {
 		t.Fatalf("StickySessionWaitTimeout = %v, want 120s", cfg.Gateway.Scheduling.StickySessionWaitTimeout)
 	}
-	if cfg.Gateway.Scheduling.FallbackWaitTimeout != 30*time.Second {
-		t.Fatalf("FallbackWaitTimeout = %v, want 30s", cfg.Gateway.Scheduling.FallbackWaitTimeout)
+	if cfg.Gateway.Scheduling.FallbackWaitTimeout != time.Second {
+		t.Fatalf("FallbackWaitTimeout = %v, want 1s", cfg.Gateway.Scheduling.FallbackWaitTimeout)
 	}
-	if cfg.Gateway.Scheduling.FallbackMaxWaiting != 100 {
-		t.Fatalf("FallbackMaxWaiting = %d, want 100", cfg.Gateway.Scheduling.FallbackMaxWaiting)
+	if cfg.Gateway.Scheduling.UserSlotWaitTimeout != 200*time.Millisecond {
+		t.Fatalf("UserSlotWaitTimeout = %v, want 200ms", cfg.Gateway.Scheduling.UserSlotWaitTimeout)
+	}
+	if cfg.Gateway.Scheduling.RetryAfterMS != 1000 {
+		t.Fatalf("RetryAfterMS = %d, want 1000", cfg.Gateway.Scheduling.RetryAfterMS)
+	}
+	if cfg.Gateway.Scheduling.FallbackMaxWaiting != 30 {
+		t.Fatalf("FallbackMaxWaiting = %d, want 30", cfg.Gateway.Scheduling.FallbackMaxWaiting)
 	}
 	if !cfg.Gateway.Scheduling.LoadBatchEnabled {
 		t.Fatalf("LoadBatchEnabled = false, want true")
@@ -88,6 +94,46 @@ func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	if cfg.Server.GracefulShutdownTimeout != 5 {
 		t.Fatalf("GracefulShutdownTimeout = %d, want 5", cfg.Server.GracefulShutdownTimeout)
 	}
+}
+
+func TestLoadMillisecondSchedulingEnvironmentOverrides(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS", "350")
+	t.Setenv("GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS", "1250")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, 350*time.Millisecond, cfg.Gateway.Scheduling.UserSlotWaitTimeout)
+	require.Equal(t, 1250*time.Millisecond, cfg.Gateway.Scheduling.FallbackWaitTimeout)
+}
+
+func TestGatewaySchedulingRuntimeOverride(t *testing.T) {
+	cfg := &Config{Gateway: GatewayConfig{Scheduling: GatewaySchedulingConfig{
+		UserSlotWaitTimeout:     500 * time.Millisecond,
+		FallbackWaitTimeout:     2 * time.Second,
+		UserSlotMaxWaitingExtra: 9,
+		RetryAfterMS:            4000,
+	}}}
+
+	initial := cfg.GatewayScheduling()
+	require.Equal(t, 500*time.Millisecond, initial.UserSlotWaitTimeout)
+	require.Equal(t, 2*time.Second, initial.FallbackWaitTimeout)
+	require.Equal(t, 9, initial.UserSlotMaxWaitingExtra)
+	require.Equal(t, 4000, initial.RetryAfterMS)
+	require.Equal(t, 4, initial.RetryAfterHeaderSeconds())
+
+	cfg.SetGatewaySchedulingRuntime(GatewaySchedulingRuntime{
+		UserSlotWaitTimeout:     200 * time.Millisecond,
+		FallbackWaitTimeout:     time.Second,
+		UserSlotMaxWaitingExtra: 5,
+		RetryAfterMS:            1000,
+	})
+	effective := cfg.GatewayScheduling()
+	require.Equal(t, 200*time.Millisecond, effective.UserSlotWaitTimeout)
+	require.Equal(t, time.Second, effective.FallbackWaitTimeout)
+	require.Equal(t, 5, effective.UserSlotMaxWaitingExtra)
+	require.Equal(t, 1000, effective.RetryAfterMS)
+	require.Equal(t, 1, effective.RetryAfterHeaderSeconds())
 }
 
 func TestLoadForwardedClientIPHeadersFromEnvironment(t *testing.T) {

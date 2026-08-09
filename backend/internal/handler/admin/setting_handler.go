@@ -295,6 +295,11 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		MinClaudeCodeVersion:                            settings.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:                            settings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:                     settings.AllowUngroupedKeyScheduling,
+		GatewayUserSlotWaitTimeoutMS:                    settings.GatewayUserSlotWaitTimeoutMS,
+		GatewayAccountSlotWaitTimeoutMS:                 settings.GatewayAccountSlotWaitTimeoutMS,
+		GatewayEdgeQueueWaitBudgetMS:                    settings.GatewayEdgeQueueWaitBudgetMS,
+		GatewayUserWaitingExtra:                         settings.GatewayUserWaitingExtra,
+		GatewayRetryAfterMS:                             settings.GatewayRetryAfterMS,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: settings.OpenAIPoolDownstreamModelLimitProtectionEnabled,
 		OpenAIPoolRecoveryProbeEnabled:                  settings.OpenAIPoolRecoveryProbeEnabled,
 		OpenAIPoolRecoveryProbeModel:                    settings.OpenAIPoolRecoveryProbeModel,
@@ -658,6 +663,11 @@ type UpdateSettingsRequest struct {
 
 	// 分组隔离
 	AllowUngroupedKeyScheduling                     bool    `json:"allow_ungrouped_key_scheduling"`
+	GatewayUserSlotWaitTimeoutMS                    int     `json:"gateway_user_slot_wait_timeout_ms"`
+	GatewayAccountSlotWaitTimeoutMS                 int     `json:"gateway_account_slot_wait_timeout_ms"`
+	GatewayEdgeQueueWaitBudgetMS                    int     `json:"gateway_edge_queue_wait_budget_ms"`
+	GatewayUserWaitingExtra                         *int    `json:"gateway_user_waiting_extra"`
+	GatewayRetryAfterMS                             int     `json:"gateway_retry_after_ms"`
 	OpenAIPoolDownstreamModelLimitProtectionEnabled *bool   `json:"openai_pool_downstream_model_limit_protection_enabled"`
 	OpenAIPoolRecoveryProbeEnabled                  *bool   `json:"openai_pool_recovery_probe_enabled"`
 	OpenAIPoolRecoveryProbeModel                    *string `json:"openai_pool_recovery_probe_model"`
@@ -919,6 +929,22 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 	if req.TablePageSizeOptions == nil {
 		req.TablePageSizeOptions = previousSettings.TablePageSizeOptions
+	}
+	if req.GatewayUserSlotWaitTimeoutMS <= 0 {
+		req.GatewayUserSlotWaitTimeoutMS = previousSettings.GatewayUserSlotWaitTimeoutMS
+	}
+	if req.GatewayAccountSlotWaitTimeoutMS <= 0 {
+		req.GatewayAccountSlotWaitTimeoutMS = previousSettings.GatewayAccountSlotWaitTimeoutMS
+	}
+	if req.GatewayEdgeQueueWaitBudgetMS <= 0 {
+		req.GatewayEdgeQueueWaitBudgetMS = previousSettings.GatewayEdgeQueueWaitBudgetMS
+	}
+	userWaitingExtra := previousSettings.GatewayUserWaitingExtra
+	if req.GatewayUserWaitingExtra != nil {
+		userWaitingExtra = *req.GatewayUserWaitingExtra
+	}
+	if req.GatewayRetryAfterMS <= 0 {
+		req.GatewayRetryAfterMS = previousSettings.GatewayRetryAfterMS
 	}
 	req.SMTPHost = strings.TrimSpace(req.SMTPHost)
 	req.SMTPUsername = strings.TrimSpace(req.SMTPUsername)
@@ -1863,6 +1889,11 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		MinClaudeCodeVersion:                   req.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:                   req.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:            req.AllowUngroupedKeyScheduling,
+		GatewayUserSlotWaitTimeoutMS:           req.GatewayUserSlotWaitTimeoutMS,
+		GatewayAccountSlotWaitTimeoutMS:        req.GatewayAccountSlotWaitTimeoutMS,
+		GatewayEdgeQueueWaitBudgetMS:           req.GatewayEdgeQueueWaitBudgetMS,
+		GatewayUserWaitingExtra:                userWaitingExtra,
+		GatewayRetryAfterMS:                    req.GatewayRetryAfterMS,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: func() bool {
 			if req.OpenAIPoolDownstreamModelLimitProtectionEnabled != nil {
 				return *req.OpenAIPoolDownstreamModelLimitProtectionEnabled
@@ -2515,6 +2546,11 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		MinClaudeCodeVersion:                            updatedSettings.MinClaudeCodeVersion,
 		MaxClaudeCodeVersion:                            updatedSettings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:                     updatedSettings.AllowUngroupedKeyScheduling,
+		GatewayUserSlotWaitTimeoutMS:                    updatedSettings.GatewayUserSlotWaitTimeoutMS,
+		GatewayAccountSlotWaitTimeoutMS:                 updatedSettings.GatewayAccountSlotWaitTimeoutMS,
+		GatewayEdgeQueueWaitBudgetMS:                    updatedSettings.GatewayEdgeQueueWaitBudgetMS,
+		GatewayUserWaitingExtra:                         updatedSettings.GatewayUserWaitingExtra,
+		GatewayRetryAfterMS:                             updatedSettings.GatewayRetryAfterMS,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: updatedSettings.OpenAIPoolDownstreamModelLimitProtectionEnabled,
 		OpenAIPoolRecoveryProbeEnabled:                  updatedSettings.OpenAIPoolRecoveryProbeEnabled,
 		OpenAIPoolRecoveryProbeModel:                    updatedSettings.OpenAIPoolRecoveryProbeModel,
@@ -3004,6 +3040,21 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.AllowUngroupedKeyScheduling != after.AllowUngroupedKeyScheduling {
 		changed = append(changed, "allow_ungrouped_key_scheduling")
+	}
+	if before.GatewayUserSlotWaitTimeoutMS != after.GatewayUserSlotWaitTimeoutMS {
+		changed = append(changed, "gateway_user_slot_wait_timeout_ms")
+	}
+	if before.GatewayAccountSlotWaitTimeoutMS != after.GatewayAccountSlotWaitTimeoutMS {
+		changed = append(changed, "gateway_account_slot_wait_timeout_ms")
+	}
+	if before.GatewayEdgeQueueWaitBudgetMS != after.GatewayEdgeQueueWaitBudgetMS {
+		changed = append(changed, "gateway_edge_queue_wait_budget_ms")
+	}
+	if before.GatewayUserWaitingExtra != after.GatewayUserWaitingExtra {
+		changed = append(changed, "gateway_user_waiting_extra")
+	}
+	if before.GatewayRetryAfterMS != after.GatewayRetryAfterMS {
+		changed = append(changed, "gateway_retry_after_ms")
 	}
 	if before.OpenAIPoolDownstreamModelLimitProtectionEnabled != after.OpenAIPoolDownstreamModelLimitProtectionEnabled {
 		changed = append(changed, "openai_pool_downstream_model_limit_protection_enabled")

@@ -213,16 +213,17 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	subscription, _ := middleware.GetSubscriptionFromContext(c)
 
 	// For Gemini native API, do not send Claude-style ping frames.
-	geminiConcurrency := NewConcurrencyHelper(h.concurrencyHelper.concurrencyService, SSEPingFormatNone, 0)
+	geminiConcurrency := NewConcurrencyHelper(h.concurrencyHelper.concurrencyService, SSEPingFormatNone, 0, h.concurrencyHelper.runtimeConfig)
 
 	// 0) wait queue check
-	maxWait := service.CalculateMaxWait(authSubject.Concurrency)
+	maxWait := service.CalculateMaxWaitWithExtra(authSubject.Concurrency, geminiConcurrency.userWaitingExtra())
 	canWait, err := geminiConcurrency.IncrementWaitCount(c.Request.Context(), authSubject.UserID, maxWait)
 	waitCounted := false
 	if err != nil {
 		reqLog.Warn("gemini.user_wait_counter_increment_failed", zap.Error(err))
 	} else if !canWait {
 		reqLog.Info("gemini.user_wait_queue_full", zap.Int("max_wait", maxWait))
+		geminiConcurrency.setRetryAfter(c)
 		googleError(c, http.StatusTooManyRequests, "Too many pending requests, please retry later")
 		return
 	}
@@ -244,6 +245,13 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	if err != nil {
 		reqLog.Warn("gemini.user_slot_acquire_failed", zap.Error(err))
 		status, _, message := concurrencyErrorResponse(err, "user")
+		if status == http.StatusTooManyRequests {
+			retryAfter := 1
+			if geminiConcurrency.runtimeConfig != nil {
+				retryAfter = geminiConcurrency.runtimeConfig.GatewayScheduling().RetryAfterHeaderSeconds()
+			}
+			c.Header("Retry-After", strconv.Itoa(retryAfter))
+		}
 		googleError(c, status, message)
 		return
 	}
@@ -473,6 +481,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 					zap.Int64("account_id", account.ID),
 					zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 				)
+				geminiConcurrency.setRetryAfter(c)
 				googleError(c, http.StatusTooManyRequests, "Too many pending requests, please retry later")
 				return
 			}
@@ -500,6 +509,13 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				}
 				reqLog.Warn("gemini.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 				status, _, message := concurrencyErrorResponse(err, "account")
+				if status == http.StatusTooManyRequests {
+					retryAfter := 1
+					if geminiConcurrency.runtimeConfig != nil {
+						retryAfter = geminiConcurrency.runtimeConfig.GatewayScheduling().RetryAfterHeaderSeconds()
+					}
+					c.Header("Retry-After", strconv.Itoa(retryAfter))
+				}
 				googleError(c, status, message)
 				return
 			}

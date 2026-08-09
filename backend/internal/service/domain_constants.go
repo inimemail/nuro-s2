@@ -482,6 +482,16 @@ const (
 	SettingKeyEnableClientDatelineNormalization = "enable_client_dateline_normalization"
 	// SettingKeyStreamLowLatencyMode OpenAI 流式低延迟策略：off/smart/aggressive
 	SettingKeyStreamLowLatencyMode = "stream_low_latency_mode"
+	// Gateway concurrency profile. Time values are persisted as integer
+	// milliseconds so the admin UI can edit them without duration parsing.
+	SettingKeyGatewayUserSlotWaitTimeoutMS    = "gateway_user_slot_wait_timeout_ms"
+	SettingKeyGatewayAccountSlotWaitTimeoutMS = "gateway_account_slot_wait_timeout_ms"
+	SettingKeyGatewayEdgeQueueWaitBudgetMS    = "gateway_edge_queue_wait_budget_ms"
+	SettingKeyGatewayUserWaitingExtra         = "gateway_user_waiting_extra"
+	SettingKeyGatewayRetryAfterMS             = "gateway_retry_after_ms"
+	// SettingKeyGatewayRetryAfterSeconds is kept for reading settings saved by
+	// older versions; new writes and API payloads use milliseconds.
+	SettingKeyGatewayRetryAfterSeconds = "gateway_retry_after_seconds"
 	// SettingKeyLowLatencyStreamHeaders 旧版开关；true 兼容映射为 smart
 	SettingKeyLowLatencyStreamHeaders = "low_latency_stream_headers"
 	// SettingKeyAntigravityUserAgentVersion Antigravity 上游 User-Agent 版本号（空值使用环境变量/默认值）

@@ -40,6 +40,13 @@ func SetupRouter(
 	promptAudit *securityaudit.Service,
 ) *gin.Engine {
 	middleware2.SetIngressRejectRecorder(opsService)
+	// Hydrate DB-backed gateway concurrency overrides before the first request.
+	// The request hot path reads cfg directly, so this is a single startup read.
+	if settingService != nil {
+		if _, err := settingService.GetAllSettings(context.Background()); err != nil {
+			log.Printf("Warning: failed to load gateway concurrency settings: %v", err)
+		}
+	}
 	// 缓存 iframe 页面的 origin 列表，用于动态注入 CSP frame-src
 	var cachedFrameOrigins atomic.Pointer[[]string]
 	emptyOrigins := []string{}

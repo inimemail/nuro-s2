@@ -6516,6 +6516,27 @@ export default {
         anthropicPoolSoftCooldownMax: 'Anthropic 最大软冷却秒数',
         anthropicPoolProbeTimeout: 'Anthropic 探测超时秒数'
       },
+      gatewayConcurrency: {
+        title: '并发等待策略',
+        description: '控制高并发时请求在网关内等待槽位的时间，优先保护下游首 token 延迟。',
+        reset: '恢复推荐默认',
+        userWait: '用户槽位等待',
+        userWaitHint: '1-3000ms；超时后快速返回 429，避免连接长时间排队。',
+        accountWait: '账号槽位等待',
+        accountWaitHint: '1-3000ms；用于账号回退路径。',
+        edgeBudget: 'Edge 队列预算',
+        edgeBudgetHint: '1-3000ms；部署 Edge 配置后重启 Edge 生效。',
+        extra: '用户额外等待数',
+        extraHint: '0-50 个等待名额，叠加在用户并发上限之上。',
+        retryAfter: 'Retry-After',
+        retryHint: '1-60000ms；HTTP Retry-After 按协议向上取整为整秒。',
+        edgeRestartHint: '用户/账号等待和 Retry-After 保存后立即对 Go 网关生效；Edge 队列预算需在 Edge 环境设置 SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS 后重启容器。',
+        userWaitRange: '用户槽位等待必须在 1-3000ms 之间。',
+        accountWaitRange: '账号槽位等待必须在 1-3000ms 之间。',
+        edgeBudgetRange: 'Edge 队列预算必须在 1-3000ms 之间。',
+        extraRange: '用户额外等待数必须在 0-50 之间。',
+        retryRange: 'Retry-After 必须在 1-60000ms 之间。'
+      },
       gatewayForwarding: {
         title: '请求转发行为',
         description: '控制请求转发到上游 OAuth 账号时的行为',

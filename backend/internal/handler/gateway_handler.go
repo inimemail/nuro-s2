@@ -155,7 +155,7 @@ func NewGatewayHandler(
 		usageRecordWorkerPool:     usageRecordWorkerPool,
 		errorPassthroughService:   errorPassthroughService,
 		contentModerationService:  contentModerationService,
-		concurrencyHelper:         NewConcurrencyHelper(concurrencyService, SSEPingFormatClaude, pingInterval),
+		concurrencyHelper:         NewConcurrencyHelper(concurrencyService, SSEPingFormatClaude, pingInterval, cfg),
 		userMsgQueueHelper:        umqHelper,
 		maxAccountSwitches:        maxAccountSwitches,
 		maxAccountSwitchesGemini:  maxAccountSwitchesGemini,
@@ -263,7 +263,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 
 	// 0. 检查wait队列是否已满
-	maxWait := service.CalculateMaxWait(subject.Concurrency)
+	maxWait := service.CalculateMaxWaitWithExtra(subject.Concurrency, h.concurrencyHelper.userWaitingExtra())
 	canWait, err := h.concurrencyHelper.IncrementWaitCount(c.Request.Context(), subject.UserID, maxWait)
 	waitCounted := false
 	if err != nil {
@@ -271,6 +271,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		// On error, allow request to proceed
 	} else if !canWait {
 		reqLog.Info("gateway.user_wait_queue_full", zap.Int("max_wait", maxWait))
+		h.concurrencyHelper.setRetryAfter(c)
 		h.errorResponse(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later")
 		return
 	}
@@ -485,6 +486,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 						zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 					)
+					h.concurrencyHelper.setRetryAfter(c)
 					h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", streamStarted)
 					return
 				}
@@ -809,6 +811,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 						zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 					)
+					h.concurrencyHelper.setRetryAfter(c)
 					h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", streamStarted)
 					return
 				}
@@ -1744,6 +1747,13 @@ func (h *GatewayHandler) calculateSubscriptionRemaining(group *service.Group, su
 // handleConcurrencyError handles concurrency-related acquire errors.
 func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotType string, streamStarted bool) {
 	status, errType, message := concurrencyErrorResponse(err, slotType)
+	if status == http.StatusTooManyRequests {
+		retryAfter := 1
+		if h != nil && h.cfg != nil {
+			retryAfter = h.cfg.GatewayScheduling().RetryAfterHeaderSeconds()
+		}
+		c.Header("Retry-After", strconv.Itoa(retryAfter))
+	}
 	h.handleStreamingAwareError(c, status, errType, message, streamStarted)
 }
 

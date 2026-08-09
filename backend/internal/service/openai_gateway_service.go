@@ -3226,7 +3226,7 @@ func (s *OpenAIGatewayService) newAcquiredSelectionResult(ctx context.Context, a
 
 func (s *OpenAIGatewayService) schedulingConfig() config.GatewaySchedulingConfig {
 	if s.cfg != nil {
-		return s.cfg.Gateway.Scheduling
+		return s.cfg.GatewayScheduling()
 	}
 	return config.GatewaySchedulingConfig{
 		StickySessionMaxWaiting:           3,

@@ -193,7 +193,12 @@ type SystemSettings struct {
 	MaxClaudeCodeVersion string
 
 	// 分组隔离：允许未分组 Key 调度（默认 false → 403）
-	AllowUngroupedKeyScheduling bool
+	AllowUngroupedKeyScheduling     bool
+	GatewayUserSlotWaitTimeoutMS    int
+	GatewayAccountSlotWaitTimeoutMS int
+	GatewayEdgeQueueWaitBudgetMS    int
+	GatewayUserWaitingExtra         int
+	GatewayRetryAfterMS             int
 	// OpenAI 池下游模型限流保护：默认开启；开启后模型路由错误不会对下游返回 404/model_not_found。
 	OpenAIPoolDownstreamModelLimitProtectionEnabled bool
 	// OpenAI 池恢复探测：默认开启；关闭后软冷却到期直接恢复调度。

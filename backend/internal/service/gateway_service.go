@@ -2550,7 +2550,7 @@ func removeAccountFromCandidates(candidates []*Account, accountID int64) []*Acco
 
 func (s *GatewayService) schedulingConfig() config.GatewaySchedulingConfig {
 	if s.cfg != nil {
-		return s.cfg.Gateway.Scheduling
+		return s.cfg.GatewayScheduling()
 	}
 	return config.GatewaySchedulingConfig{
 		StickySessionMaxWaiting:           3,

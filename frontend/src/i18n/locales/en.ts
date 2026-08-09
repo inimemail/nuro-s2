@@ -6375,6 +6375,27 @@ export default {
         anthropicPoolSoftCooldownMax: 'Anthropic Max Soft Cooldown Seconds',
         anthropicPoolProbeTimeout: 'Anthropic Probe Timeout Seconds'
       },
+      gatewayConcurrency: {
+        title: 'Concurrency Wait Policy',
+        description: 'Control gateway slot wait budgets under load to protect downstream time to first token.',
+        reset: 'Restore recommended defaults',
+        userWait: 'User slot wait',
+        userWaitHint: '1-3000ms; fail fast with 429 instead of holding the connection.',
+        accountWait: 'Account slot wait',
+        accountWaitHint: '1-3000ms for account fallback paths.',
+        edgeBudget: 'Edge queue budget',
+        edgeBudgetHint: '1-3000ms; restart Edge after deployment changes.',
+        extra: 'Extra user wait slots',
+        extraHint: '0-50 slots added to the user concurrency limit.',
+        retryAfter: 'Retry-After',
+        retryHint: '1-60000ms; HTTP Retry-After is rounded up to whole seconds.',
+        edgeRestartHint: 'User/account waits and Retry-After apply to Go immediately. Set SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS in the Edge environment and restart the Edge container for that value.',
+        userWaitRange: 'User slot wait must be between 1 and 3000ms.',
+        accountWaitRange: 'Account slot wait must be between 1 and 3000ms.',
+        edgeBudgetRange: 'Edge queue budget must be between 1 and 3000ms.',
+        extraRange: 'Extra user wait slots must be between 0 and 50.',
+        retryRange: 'Retry-After must be between 1 and 60000ms.'
+      },
       gatewayForwarding: {
         title: 'Request Forwarding',
         description: 'Control how requests are forwarded to upstream OAuth accounts',

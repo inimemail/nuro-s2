@@ -757,7 +757,21 @@ func (s *SettingService) GetAllSettings(ctx context.Context) (*SystemSettings, e
 		return nil, fmt.Errorf("get all settings: %w", err)
 	}
 
-	return s.parseSettings(settings), nil
+	parsed := s.parseSettings(settings)
+	s.applyGatewayRuntimeSettings(parsed)
+	return parsed, nil
+}
+
+func (s *SettingService) applyGatewayRuntimeSettings(settings *SystemSettings) {
+	if s == nil || s.cfg == nil || settings == nil {
+		return
+	}
+	s.cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
+		UserSlotWaitTimeout:     time.Duration(settings.GatewayUserSlotWaitTimeoutMS) * time.Millisecond,
+		FallbackWaitTimeout:     time.Duration(settings.GatewayAccountSlotWaitTimeoutMS) * time.Millisecond,
+		UserSlotMaxWaitingExtra: settings.GatewayUserWaitingExtra,
+		RetryAfterMS:            settings.GatewayRetryAfterMS,
+	})
 }
 
 // GetFrontendURL 获取前端基础URL（数据库优先，fallback 到配置文件）
@@ -1012,6 +1026,14 @@ func clampInt(v, min, max int) int {
 func parsePositiveIntSetting(raw string, fallback int) int {
 	value, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func parseNonNegativeIntSetting(raw string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 0 {
 		return fallback
 	}
 	return value
@@ -2121,6 +2143,40 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	// 分组隔离
 	updates[SettingKeyAllowUngroupedKeyScheduling] = strconv.FormatBool(settings.AllowUngroupedKeyScheduling)
+	// Older callers submit partial SystemSettings values. Use the recommended
+	// profile for omitted fields while still validating explicit values.
+	if settings.GatewayUserSlotWaitTimeoutMS <= 0 {
+		settings.GatewayUserSlotWaitTimeoutMS = 200
+	}
+	if settings.GatewayAccountSlotWaitTimeoutMS <= 0 {
+		settings.GatewayAccountSlotWaitTimeoutMS = 1000
+	}
+	if settings.GatewayEdgeQueueWaitBudgetMS <= 0 {
+		settings.GatewayEdgeQueueWaitBudgetMS = 200
+	}
+	if settings.GatewayRetryAfterMS <= 0 {
+		settings.GatewayRetryAfterMS = 1000
+	}
+	if settings.GatewayUserSlotWaitTimeoutMS < 1 || settings.GatewayUserSlotWaitTimeoutMS > 3000 {
+		return nil, infraerrors.BadRequest("GATEWAY_USER_SLOT_WAIT_TIMEOUT_INVALID", "gateway user slot wait must be between 1ms and 3000ms")
+	}
+	if settings.GatewayAccountSlotWaitTimeoutMS < 1 || settings.GatewayAccountSlotWaitTimeoutMS > 3000 {
+		return nil, infraerrors.BadRequest("GATEWAY_ACCOUNT_SLOT_WAIT_TIMEOUT_INVALID", "gateway account slot wait must be between 1ms and 3000ms")
+	}
+	if settings.GatewayEdgeQueueWaitBudgetMS < 1 || settings.GatewayEdgeQueueWaitBudgetMS > 3000 {
+		return nil, infraerrors.BadRequest("GATEWAY_EDGE_QUEUE_WAIT_BUDGET_INVALID", "gateway edge queue budget must be between 1ms and 3000ms")
+	}
+	if settings.GatewayUserWaitingExtra < 0 || settings.GatewayUserWaitingExtra > 50 {
+		return nil, infraerrors.BadRequest("GATEWAY_USER_WAITING_EXTRA_INVALID", "gateway extra waiting slots must be between 0 and 50")
+	}
+	if settings.GatewayRetryAfterMS < 1 || settings.GatewayRetryAfterMS > 60000 {
+		return nil, infraerrors.BadRequest("GATEWAY_RETRY_AFTER_INVALID", "gateway Retry-After must be between 1ms and 60000ms")
+	}
+	updates[SettingKeyGatewayUserSlotWaitTimeoutMS] = strconv.Itoa(settings.GatewayUserSlotWaitTimeoutMS)
+	updates[SettingKeyGatewayAccountSlotWaitTimeoutMS] = strconv.Itoa(settings.GatewayAccountSlotWaitTimeoutMS)
+	updates[SettingKeyGatewayEdgeQueueWaitBudgetMS] = strconv.Itoa(settings.GatewayEdgeQueueWaitBudgetMS)
+	updates[SettingKeyGatewayUserWaitingExtra] = strconv.Itoa(settings.GatewayUserWaitingExtra)
+	updates[SettingKeyGatewayRetryAfterMS] = strconv.Itoa(settings.GatewayRetryAfterMS)
 	updates[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled] = strconv.FormatBool(settings.OpenAIPoolDownstreamModelLimitProtectionEnabled)
 	updates[SettingKeyOpenAIPoolRecoveryProbeEnabled] = strconv.FormatBool(settings.OpenAIPoolRecoveryProbeEnabled)
 	updates[SettingKeyOpenAIPoolRecoveryProbeModel] = strings.TrimSpace(settings.OpenAIPoolRecoveryProbeModel)
@@ -2337,6 +2393,14 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	if s.cfg != nil {
 		s.cfg.SetForwardedClientIPSettings(settings.APIKeyACLTrustForwardedIP, settings.ForwardedClientIPHeaders)
 		s.cfg.SetStreamLowLatencyMode(settings.StreamLowLatencyMode)
+		// Gateway concurrency profile is read from cfg on the request hot path,
+		// so admin changes take effect without restarting the Go process.
+		s.cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
+			UserSlotWaitTimeout:     time.Duration(settings.GatewayUserSlotWaitTimeoutMS) * time.Millisecond,
+			FallbackWaitTimeout:     time.Duration(settings.GatewayAccountSlotWaitTimeoutMS) * time.Millisecond,
+			UserSlotMaxWaitingExtra: settings.GatewayUserWaitingExtra,
+			RetryAfterMS:            settings.GatewayRetryAfterMS,
+		})
 	}
 	s.openAIAllowCodexPluginSF.Forget("openai_allow_codex_plugin_enabled")
 	s.openAIAllowCodexPluginCache.Store(&cachedOpenAIAllowCodexPlugin{
@@ -3356,6 +3420,11 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		// 分组隔离（默认不允许未分组 Key 调度）
 		SettingKeyAllowUngroupedKeyScheduling:                     "false",
+		SettingKeyGatewayUserSlotWaitTimeoutMS:                    "200",
+		SettingKeyGatewayAccountSlotWaitTimeoutMS:                 "1000",
+		SettingKeyGatewayEdgeQueueWaitBudgetMS:                    "200",
+		SettingKeyGatewayUserWaitingExtra:                         "5",
+		SettingKeyGatewayRetryAfterMS:                             "1000",
 		SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled: "true",
 		SettingKeyOpenAIPoolRecoveryProbeEnabled:                  "true",
 		SettingKeyOpenAIPoolRecoveryProbeModel:                    openai.DefaultTestModel,
@@ -3914,6 +3983,16 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// 分组隔离
 	result.AllowUngroupedKeyScheduling = settings[SettingKeyAllowUngroupedKeyScheduling] == "true"
+	result.GatewayUserSlotWaitTimeoutMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayUserSlotWaitTimeoutMS], 200), 1, 3000)
+	result.GatewayAccountSlotWaitTimeoutMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayAccountSlotWaitTimeoutMS], 1000), 1, 3000)
+	result.GatewayEdgeQueueWaitBudgetMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayEdgeQueueWaitBudgetMS], 200), 1, 3000)
+	result.GatewayUserWaitingExtra = clampInt(parseNonNegativeIntSetting(settings[SettingKeyGatewayUserWaitingExtra], 5), 0, 50)
+	retryAfterMS := parsePositiveIntSetting(settings[SettingKeyGatewayRetryAfterMS], 1000)
+	if _, configured := settings[SettingKeyGatewayRetryAfterMS]; !configured {
+		legacySeconds := clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayRetryAfterSeconds], 1), 1, 60)
+		retryAfterMS = legacySeconds * 1000
+	}
+	result.GatewayRetryAfterMS = clampInt(retryAfterMS, 1, 60000)
 	result.OpenAIPoolDownstreamModelLimitProtectionEnabled = true
 	if v, ok := settings[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled]; ok && v != "" {
 		result.OpenAIPoolDownstreamModelLimitProtectionEnabled = v == "true"

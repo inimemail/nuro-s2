@@ -560,6 +560,11 @@ export interface SystemSettings {
 
   // 分组隔离
   allow_ungrouped_key_scheduling: boolean;
+  gateway_user_slot_wait_timeout_ms: number;
+  gateway_account_slot_wait_timeout_ms: number;
+  gateway_edge_queue_wait_budget_ms: number;
+  gateway_user_waiting_extra: number;
+  gateway_retry_after_ms: number;
   openai_pool_downstream_model_limit_protection_enabled: boolean;
   openai_pool_recovery_probe_enabled: boolean;
   openai_pool_recovery_probe_model: string;
@@ -838,6 +843,11 @@ export interface UpdateSettingsRequest {
   min_claude_code_version?: string;
   max_claude_code_version?: string;
   allow_ungrouped_key_scheduling?: boolean;
+  gateway_user_slot_wait_timeout_ms?: number;
+  gateway_account_slot_wait_timeout_ms?: number;
+  gateway_edge_queue_wait_budget_ms?: number;
+  gateway_user_waiting_extra?: number;
+  gateway_retry_after_ms?: number;
   openai_pool_downstream_model_limit_protection_enabled?: boolean;
   openai_pool_recovery_probe_enabled?: boolean;
   openai_pool_recovery_probe_model?: string;

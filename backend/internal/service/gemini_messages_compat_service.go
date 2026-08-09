@@ -422,7 +422,7 @@ func (s *GeminiMessagesCompatService) selectBestGeminiCandidate(candidates []*Ac
 
 func (s *GeminiMessagesCompatService) schedulingConfig() config.GatewaySchedulingConfig {
 	if s != nil && s.cfg != nil {
-		return s.cfg.Gateway.Scheduling
+		return s.cfg.GatewayScheduling()
 	}
 	return config.GatewaySchedulingConfig{}
 }

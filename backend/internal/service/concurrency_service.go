@@ -982,12 +982,23 @@ func (s *ConcurrencyService) GetAccountWaitingCount(ctx context.Context, account
 }
 
 // CalculateMaxWait calculates the maximum wait queue size for a user
-// maxWait = userConcurrency + defaultExtraWaitSlots
+// maxWait = userConcurrency + defaultExtraWaitSlots. The legacy helper remains
+// for callers that do not have a config object; gateway handlers use the
+// configurable variant below.
 func CalculateMaxWait(userConcurrency int) int {
+	return CalculateMaxWaitWithExtra(userConcurrency, defaultExtraWaitSlots)
+}
+
+// CalculateMaxWaitWithExtra calculates the user waiting queue size using an
+// explicit extra-slot budget.
+func CalculateMaxWaitWithExtra(userConcurrency, extra int) int {
 	if userConcurrency <= 0 {
 		userConcurrency = 1
 	}
-	return userConcurrency + defaultExtraWaitSlots
+	if extra < 0 {
+		extra = 0
+	}
+	return userConcurrency + extra
 }
 
 // GetAccountsLoadBatch 批量获取账号负载信息。
