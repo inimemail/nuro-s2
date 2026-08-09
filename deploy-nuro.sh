@@ -466,28 +466,28 @@ ensure_edge_env_values() {
     upgrade_env_default_value "$env_file" SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT 8 128
     upgrade_env_default_value "$env_file" SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT 16 128
     upgrade_env_default_value "$env_file" SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT 64 128
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS 150 200
-    ensure_env_value "$env_file" SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS 200
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS 150 50
+    ensure_env_value "$env_file" SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS 50
     if [[ -z "$(read_env_value "$env_file" GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS)" ]]; then
         legacy_user_wait="$(read_env_value "$env_file" GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT)"
         if legacy_user_wait_ms="$(duration_to_ms "$legacy_user_wait")"; then
             set_env_value "$env_file" GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS "$legacy_user_wait_ms"
         fi
     fi
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS 200
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS 100
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_USER_SLOT_MAX_WAITING_EXTRA 5
     if [[ -z "$(read_env_value "$env_file" GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS)" ]]; then
         legacy_fallback_wait="$(read_env_value "$env_file" GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT)"
         if legacy_fallback_wait_ms="$(duration_to_ms "$legacy_fallback_wait")"; then
-            # 30s was the former shipped default; migrate that default to the
-            # recommended 1000ms while preserving explicitly tuned values.
+            # 30s was the former shipped default; migrate that value to the
+            # bounded 1000ms compatibility value while preserving explicit values.
             if [[ "$legacy_fallback_wait_ms" == "30000" ]]; then
                 legacy_fallback_wait_ms=1000
             fi
             set_env_value "$env_file" GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS "$legacy_fallback_wait_ms"
         fi
     fi
-    ensure_env_value "$env_file" GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS 1000
+    ensure_env_value "$env_file" GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS 50
     upgrade_env_default_value "$env_file" GATEWAY_SCHEDULING_FALLBACK_MAX_WAITING 100 30
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_FALLBACK_MAX_WAITING 30
     if [[ -z "$(read_env_value "$env_file" GATEWAY_SCHEDULING_RETRY_AFTER_MS)" ]]; then
@@ -730,10 +730,10 @@ SUB2API_EDGE_UPSTREAM_POOL_IDLE_SECS=1200
 SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS=1024
 SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES=2048
 SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE=32
-SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=200
-GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS=200
+SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=50
+GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS=100
 GATEWAY_SCHEDULING_USER_SLOT_MAX_WAITING_EXTRA=5
-GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS=1000
+GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS=50
 GATEWAY_SCHEDULING_FALLBACK_MAX_WAITING=30
 GATEWAY_SCHEDULING_RETRY_AFTER_MS=1000
 SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH=true
@@ -1006,10 +1006,10 @@ services:
       - SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS=\${SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS:-1024}
       - SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES=\${SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES:-2048}
       - SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE=\${SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE:-32}
-      - SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=\${SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS:-200}
-      - GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS=\${GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS:-200}
+      - SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=\${SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS:-50}
+      - GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS=\${GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS:-100}
       - GATEWAY_SCHEDULING_USER_SLOT_MAX_WAITING_EXTRA=\${GATEWAY_SCHEDULING_USER_SLOT_MAX_WAITING_EXTRA:-5}
-      - GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS=\${GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS:-1000}
+      - GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS=\${GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS:-50}
       - GATEWAY_SCHEDULING_FALLBACK_MAX_WAITING=\${GATEWAY_SCHEDULING_FALLBACK_MAX_WAITING:-30}
       - GATEWAY_SCHEDULING_RETRY_AFTER_MS=\${GATEWAY_SCHEDULING_RETRY_AFTER_MS:-1000}
       - SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH=\${SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH:-true}

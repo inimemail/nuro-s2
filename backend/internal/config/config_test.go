@@ -64,11 +64,11 @@ func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	if cfg.Gateway.Scheduling.StickySessionWaitTimeout != 120*time.Second {
 		t.Fatalf("StickySessionWaitTimeout = %v, want 120s", cfg.Gateway.Scheduling.StickySessionWaitTimeout)
 	}
-	if cfg.Gateway.Scheduling.FallbackWaitTimeout != time.Second {
-		t.Fatalf("FallbackWaitTimeout = %v, want 1s", cfg.Gateway.Scheduling.FallbackWaitTimeout)
+	if cfg.Gateway.Scheduling.FallbackWaitTimeout != 50*time.Millisecond {
+		t.Fatalf("FallbackWaitTimeout = %v, want 50ms", cfg.Gateway.Scheduling.FallbackWaitTimeout)
 	}
-	if cfg.Gateway.Scheduling.UserSlotWaitTimeout != 200*time.Millisecond {
-		t.Fatalf("UserSlotWaitTimeout = %v, want 200ms", cfg.Gateway.Scheduling.UserSlotWaitTimeout)
+	if cfg.Gateway.Scheduling.UserSlotWaitTimeout != 100*time.Millisecond {
+		t.Fatalf("UserSlotWaitTimeout = %v, want 100ms", cfg.Gateway.Scheduling.UserSlotWaitTimeout)
 	}
 	if cfg.Gateway.Scheduling.RetryAfterMS != 1000 {
 		t.Fatalf("RetryAfterMS = %d, want 1000", cfg.Gateway.Scheduling.RetryAfterMS)

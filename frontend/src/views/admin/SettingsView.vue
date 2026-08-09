@@ -4108,9 +4108,14 @@
                     </p>
                   </div>
                 </div>
-                <button type="button" class="btn-secondary inline-flex items-center gap-2 text-sm" @click="resetGatewayConcurrencyDefaults">
+                <button
+                  type="button"
+                  class="btn-ghost btn-icon h-9 w-9 rounded-full border border-sky-200 text-sky-700 transition-transform hover:rotate-[-20deg] hover:bg-sky-100 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-900/40"
+                  :title="t('admin.settings.gatewayConcurrency.reset')"
+                  :aria-label="t('admin.settings.gatewayConcurrency.reset')"
+                  @click="resetGatewayConcurrencyDefaults"
+                >
                   <Icon name="refresh" size="sm" />
-                  {{ t("admin.settings.gatewayConcurrency.reset") }}
                 </button>
               </div>
               <div class="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">
@@ -4129,17 +4134,17 @@
             <div class="grid gap-5 p-6 sm:grid-cols-2 lg:grid-cols-3">
               <div>
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayConcurrency.userWait") }}</label>
-                <input v-model.number="form.gateway_user_slot_wait_timeout_ms" type="number" min="1" max="3000" step="1" class="input w-full" />
+                <input v-model.number="form.gateway_user_slot_wait_timeout_ms" type="number" min="1" max="30000" step="1" class="input w-full" />
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayConcurrency.userWaitHint") }}</p>
               </div>
               <div>
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayConcurrency.accountWait") }}</label>
-                <input v-model.number="form.gateway_account_slot_wait_timeout_ms" type="number" min="1" max="3000" step="1" class="input w-full" />
+                <input v-model.number="form.gateway_account_slot_wait_timeout_ms" type="number" min="1" max="30000" step="1" class="input w-full" />
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayConcurrency.accountWaitHint") }}</p>
               </div>
               <div>
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayConcurrency.edgeBudget") }}</label>
-                <input v-model.number="form.gateway_edge_queue_wait_budget_ms" type="number" min="1" max="3000" step="1" class="input w-full" />
+                <input v-model.number="form.gateway_edge_queue_wait_budget_ms" type="number" min="1" max="30000" step="1" class="input w-full" />
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayConcurrency.edgeBudgetHint") }}</p>
               </div>
               <div>
@@ -8574,9 +8579,9 @@ const form = reactive<SettingsForm>({
   max_claude_code_version: "",
   // 分组隔离
   allow_ungrouped_key_scheduling: false,
-  gateway_user_slot_wait_timeout_ms: 200,
-  gateway_account_slot_wait_timeout_ms: 1000,
-  gateway_edge_queue_wait_budget_ms: 200,
+  gateway_user_slot_wait_timeout_ms: 100,
+  gateway_account_slot_wait_timeout_ms: 50,
+  gateway_edge_queue_wait_budget_ms: 50,
   gateway_user_waiting_extra: 5,
   gateway_retry_after_ms: 1000,
   openai_pool_downstream_model_limit_protection_enabled: true,
@@ -8637,9 +8642,9 @@ const form = reactive<SettingsForm>({
 });
 
 const gatewayConcurrencyDefaults = Object.freeze({
-  gateway_user_slot_wait_timeout_ms: 200,
-  gateway_account_slot_wait_timeout_ms: 1000,
-  gateway_edge_queue_wait_budget_ms: 200,
+  gateway_user_slot_wait_timeout_ms: 100,
+  gateway_account_slot_wait_timeout_ms: 50,
+  gateway_edge_queue_wait_budget_ms: 50,
   gateway_user_waiting_extra: 5,
   gateway_retry_after_ms: 1000,
 });
@@ -8654,15 +8659,15 @@ function validateGatewayConcurrencySettings(): boolean {
   const edgeBudget = Number(form.gateway_edge_queue_wait_budget_ms);
   const extra = Number(form.gateway_user_waiting_extra);
   const retryAfter = Number(form.gateway_retry_after_ms);
-  if (!Number.isInteger(userWait) || userWait < 1 || userWait > 3000) {
+  if (!Number.isInteger(userWait) || userWait < 1 || userWait > 30000) {
     appStore.showError(t("admin.settings.gatewayConcurrency.userWaitRange"));
     return false;
   }
-  if (!Number.isInteger(accountWait) || accountWait < 1 || accountWait > 3000) {
+  if (!Number.isInteger(accountWait) || accountWait < 1 || accountWait > 30000) {
     appStore.showError(t("admin.settings.gatewayConcurrency.accountWaitRange"));
     return false;
   }
-  if (!Number.isInteger(edgeBudget) || edgeBudget < 1 || edgeBudget > 3000) {
+  if (!Number.isInteger(edgeBudget) || edgeBudget < 1 || edgeBudget > 30000) {
     appStore.showError(t("admin.settings.gatewayConcurrency.edgeBudgetRange"));
     return false;
   }

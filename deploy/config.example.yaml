@@ -558,14 +558,14 @@ gateway:
     # Sticky session max waiting queue size
     # 粘性会话最大排队长度
     sticky_session_max_waiting: 3
-    user_slot_wait_timeout_ms: 200
+    user_slot_wait_timeout_ms: 100
     user_slot_max_waiting_extra: 5
     # Sticky session wait timeout (duration)
     # 粘性会话等待超时（时间段）
     sticky_session_wait_timeout: 120s
     # Fallback wait timeout in milliseconds
     # 兜底排队等待超时（毫秒）
-    fallback_wait_timeout_ms: 1000
+    fallback_wait_timeout_ms: 50
     # Fallback max waiting queue size
     # 兜底最大排队长度
     fallback_max_waiting: 30

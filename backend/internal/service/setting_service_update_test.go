@@ -391,6 +391,18 @@ func TestSettingService_ParseSettings_APIKeyACLTrustForwardedIPFallsBackToConfig
 	require.True(t, got.APIKeyACLTrustForwardedIP)
 }
 
+func TestSettingService_ParseSettings_GatewayConcurrencyDefaults(t *testing.T) {
+	svc := NewSettingService(&settingUpdateRepoStub{}, &config.Config{})
+
+	got := svc.parseSettings(map[string]string{})
+
+	require.Equal(t, 100, got.GatewayUserSlotWaitTimeoutMS)
+	require.Equal(t, 50, got.GatewayAccountSlotWaitTimeoutMS)
+	require.Equal(t, 50, got.GatewayEdgeQueueWaitBudgetMS)
+	require.Equal(t, 5, got.GatewayUserWaitingExtra)
+	require.Equal(t, 1000, got.GatewayRetryAfterMS)
+}
+
 func TestSettingService_GetAntigravityUserAgentVersion_Precedence(t *testing.T) {
 	t.Run("后台设置优先", func(t *testing.T) {
 		svc := NewSettingService(&settingAntigravityUARepoStub{values: map[string]string{

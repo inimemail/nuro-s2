@@ -2146,25 +2146,25 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	// Older callers submit partial SystemSettings values. Use the recommended
 	// profile for omitted fields while still validating explicit values.
 	if settings.GatewayUserSlotWaitTimeoutMS <= 0 {
-		settings.GatewayUserSlotWaitTimeoutMS = 200
+		settings.GatewayUserSlotWaitTimeoutMS = 100
 	}
 	if settings.GatewayAccountSlotWaitTimeoutMS <= 0 {
-		settings.GatewayAccountSlotWaitTimeoutMS = 1000
+		settings.GatewayAccountSlotWaitTimeoutMS = 50
 	}
 	if settings.GatewayEdgeQueueWaitBudgetMS <= 0 {
-		settings.GatewayEdgeQueueWaitBudgetMS = 200
+		settings.GatewayEdgeQueueWaitBudgetMS = 50
 	}
 	if settings.GatewayRetryAfterMS <= 0 {
 		settings.GatewayRetryAfterMS = 1000
 	}
-	if settings.GatewayUserSlotWaitTimeoutMS < 1 || settings.GatewayUserSlotWaitTimeoutMS > 3000 {
-		return nil, infraerrors.BadRequest("GATEWAY_USER_SLOT_WAIT_TIMEOUT_INVALID", "gateway user slot wait must be between 1ms and 3000ms")
+	if settings.GatewayUserSlotWaitTimeoutMS < 1 || settings.GatewayUserSlotWaitTimeoutMS > 30000 {
+		return nil, infraerrors.BadRequest("GATEWAY_USER_SLOT_WAIT_TIMEOUT_INVALID", "gateway user slot wait must be between 1ms and 30000ms")
 	}
-	if settings.GatewayAccountSlotWaitTimeoutMS < 1 || settings.GatewayAccountSlotWaitTimeoutMS > 3000 {
-		return nil, infraerrors.BadRequest("GATEWAY_ACCOUNT_SLOT_WAIT_TIMEOUT_INVALID", "gateway account slot wait must be between 1ms and 3000ms")
+	if settings.GatewayAccountSlotWaitTimeoutMS < 1 || settings.GatewayAccountSlotWaitTimeoutMS > 30000 {
+		return nil, infraerrors.BadRequest("GATEWAY_ACCOUNT_SLOT_WAIT_TIMEOUT_INVALID", "gateway account slot wait must be between 1ms and 30000ms")
 	}
-	if settings.GatewayEdgeQueueWaitBudgetMS < 1 || settings.GatewayEdgeQueueWaitBudgetMS > 3000 {
-		return nil, infraerrors.BadRequest("GATEWAY_EDGE_QUEUE_WAIT_BUDGET_INVALID", "gateway edge queue budget must be between 1ms and 3000ms")
+	if settings.GatewayEdgeQueueWaitBudgetMS < 1 || settings.GatewayEdgeQueueWaitBudgetMS > 30000 {
+		return nil, infraerrors.BadRequest("GATEWAY_EDGE_QUEUE_WAIT_BUDGET_INVALID", "gateway edge queue budget must be between 1ms and 30000ms")
 	}
 	if settings.GatewayUserWaitingExtra < 0 || settings.GatewayUserWaitingExtra > 50 {
 		return nil, infraerrors.BadRequest("GATEWAY_USER_WAITING_EXTRA_INVALID", "gateway extra waiting slots must be between 0 and 50")
@@ -3420,9 +3420,9 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		// 分组隔离（默认不允许未分组 Key 调度）
 		SettingKeyAllowUngroupedKeyScheduling:                     "false",
-		SettingKeyGatewayUserSlotWaitTimeoutMS:                    "200",
-		SettingKeyGatewayAccountSlotWaitTimeoutMS:                 "1000",
-		SettingKeyGatewayEdgeQueueWaitBudgetMS:                    "200",
+		SettingKeyGatewayUserSlotWaitTimeoutMS:                    "100",
+		SettingKeyGatewayAccountSlotWaitTimeoutMS:                 "50",
+		SettingKeyGatewayEdgeQueueWaitBudgetMS:                    "50",
 		SettingKeyGatewayUserWaitingExtra:                         "5",
 		SettingKeyGatewayRetryAfterMS:                             "1000",
 		SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled: "true",
@@ -3983,9 +3983,9 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// 分组隔离
 	result.AllowUngroupedKeyScheduling = settings[SettingKeyAllowUngroupedKeyScheduling] == "true"
-	result.GatewayUserSlotWaitTimeoutMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayUserSlotWaitTimeoutMS], 200), 1, 3000)
-	result.GatewayAccountSlotWaitTimeoutMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayAccountSlotWaitTimeoutMS], 1000), 1, 3000)
-	result.GatewayEdgeQueueWaitBudgetMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayEdgeQueueWaitBudgetMS], 200), 1, 3000)
+	result.GatewayUserSlotWaitTimeoutMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayUserSlotWaitTimeoutMS], 100), 1, 30000)
+	result.GatewayAccountSlotWaitTimeoutMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayAccountSlotWaitTimeoutMS], 50), 1, 30000)
+	result.GatewayEdgeQueueWaitBudgetMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayEdgeQueueWaitBudgetMS], 50), 1, 30000)
 	result.GatewayUserWaitingExtra = clampInt(parseNonNegativeIntSetting(settings[SettingKeyGatewayUserWaitingExtra], 5), 0, 50)
 	retryAfterMS := parsePositiveIntSetting(settings[SettingKeyGatewayRetryAfterMS], 1000)
 	if _, configured := settings[SettingKeyGatewayRetryAfterMS]; !configured {

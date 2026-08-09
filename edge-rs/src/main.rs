@@ -7663,7 +7663,7 @@ impl EdgeConfig {
             ),
             transient_proxy_max_active: env_usize("SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE", 32)
                 .clamp(1, 4096),
-            queue_wait_budget_ms: env_u64("SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS", 200),
+            queue_wait_budget_ms: env_u64("SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS", 50),
             large_payload_passthrough: env_bool("SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH", true),
             large_payload_threshold_bytes: env_usize(
                 "SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES",

@@ -2603,12 +2603,12 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
-	viper.SetDefault("gateway.scheduling.user_slot_wait_timeout", 200*time.Millisecond)
-	viper.SetDefault("gateway.scheduling.user_slot_wait_timeout_ms", 200)
+	viper.SetDefault("gateway.scheduling.user_slot_wait_timeout", 100*time.Millisecond)
+	viper.SetDefault("gateway.scheduling.user_slot_wait_timeout_ms", 100)
 	viper.SetDefault("gateway.scheduling.user_slot_max_waiting_extra", 5)
 	viper.SetDefault("gateway.scheduling.retry_after_ms", 1000)
-	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", time.Second)
-	viper.SetDefault("gateway.scheduling.fallback_wait_timeout_ms", 1000)
+	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", 50*time.Millisecond)
+	viper.SetDefault("gateway.scheduling.fallback_wait_timeout_ms", 50)
 	viper.SetDefault("gateway.scheduling.fallback_max_waiting", 30)
 	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "last_used")
 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
@@ -3678,8 +3678,11 @@ func (c *Config) Validate() error {
 	if c.Gateway.Scheduling.FallbackWaitTimeout <= 0 {
 		return fmt.Errorf("gateway.scheduling.fallback_wait_timeout must be positive")
 	}
-	if c.Gateway.Scheduling.UserSlotWaitTimeout < time.Millisecond || c.Gateway.Scheduling.UserSlotWaitTimeout > 3*time.Second {
-		return fmt.Errorf("gateway.scheduling.user_slot_wait_timeout must be between 1ms and 3s")
+	if c.Gateway.Scheduling.UserSlotWaitTimeout < time.Millisecond || c.Gateway.Scheduling.UserSlotWaitTimeout > 30*time.Second {
+		return fmt.Errorf("gateway.scheduling.user_slot_wait_timeout must be between 1ms and 30000ms")
+	}
+	if c.Gateway.Scheduling.FallbackWaitTimeout < time.Millisecond || c.Gateway.Scheduling.FallbackWaitTimeout > 30*time.Second {
+		return fmt.Errorf("gateway.scheduling.fallback_wait_timeout must be between 1ms and 30000ms")
 	}
 	if c.Gateway.Scheduling.UserSlotMaxWaitingExtra < 0 {
 		return fmt.Errorf("gateway.scheduling.user_slot_max_waiting_extra must be non-negative")
