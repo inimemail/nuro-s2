@@ -766,11 +766,16 @@ func (s *SettingService) applyGatewayRuntimeSettings(settings *SystemSettings) {
 	if s == nil || s.cfg == nil || settings == nil {
 		return
 	}
+	openAIHeaderTimeout := time.Duration(0)
+	if settings.GatewayOpenAIResponseHeaderTimeoutEnabled && settings.GatewayOpenAIResponseHeaderTimeoutMS > 0 {
+		openAIHeaderTimeout = time.Duration(settings.GatewayOpenAIResponseHeaderTimeoutMS) * time.Millisecond
+	}
 	s.cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
-		UserSlotWaitTimeout:     time.Duration(settings.GatewayUserSlotWaitTimeoutMS) * time.Millisecond,
-		FallbackWaitTimeout:     time.Duration(settings.GatewayAccountSlotWaitTimeoutMS) * time.Millisecond,
-		UserSlotMaxWaitingExtra: settings.GatewayUserWaitingExtra,
-		RetryAfterMS:            settings.GatewayRetryAfterMS,
+		UserSlotWaitTimeout:         time.Duration(settings.GatewayUserSlotWaitTimeoutMS) * time.Millisecond,
+		FallbackWaitTimeout:         time.Duration(settings.GatewayAccountSlotWaitTimeoutMS) * time.Millisecond,
+		UserSlotMaxWaitingExtra:     settings.GatewayUserWaitingExtra,
+		RetryAfterMS:                settings.GatewayRetryAfterMS,
+		OpenAIResponseHeaderTimeout: &openAIHeaderTimeout,
 	})
 }
 
@@ -1034,6 +1039,22 @@ func parsePositiveIntSetting(raw string, fallback int) int {
 func parseNonNegativeIntSetting(raw string, fallback int) int {
 	value, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
+}
+
+func parseNonNegativeInt64Setting(raw string, fallback int64) int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
+}
+
+func parseGatewayOpenAIResponseHeaderTimeoutMS(raw string, fallback int64) int64 {
+	value := parseNonNegativeInt64Setting(raw, fallback)
+	if value > int64(math.MaxInt64/time.Millisecond) {
 		return fallback
 	}
 	return value
@@ -2160,6 +2181,12 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	if settings.GatewayRetryAfterMS <= 0 {
 		settings.GatewayRetryAfterMS = 1000
 	}
+	if settings.GatewayOpenAIResponseHeaderTimeoutMS < 0 {
+		return nil, infraerrors.BadRequest("GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT_INVALID", "gateway OpenAI response-header timeout must be non-negative")
+	}
+	if settings.GatewayOpenAIResponseHeaderTimeoutMS > int64(math.MaxInt64/time.Millisecond) {
+		return nil, infraerrors.BadRequest("GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT_INVALID", "gateway OpenAI response-header timeout is too large")
+	}
 	if settings.GatewayUserSlotWaitTimeoutMS < 1 || settings.GatewayUserSlotWaitTimeoutMS > 30000 {
 		return nil, infraerrors.BadRequest("GATEWAY_USER_SLOT_WAIT_TIMEOUT_INVALID", "gateway user slot wait must be between 1ms and 30000ms")
 	}
@@ -2184,6 +2211,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyGatewayEdgeGlobalWorkers] = strconv.Itoa(settings.GatewayEdgeGlobalWorkers)
 	updates[SettingKeyGatewayUserWaitingExtra] = strconv.Itoa(settings.GatewayUserWaitingExtra)
 	updates[SettingKeyGatewayRetryAfterMS] = strconv.Itoa(settings.GatewayRetryAfterMS)
+	updates[SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled] = strconv.FormatBool(settings.GatewayOpenAIResponseHeaderTimeoutEnabled)
+	updates[SettingKeyGatewayOpenAIResponseHeaderTimeoutMS] = strconv.FormatInt(settings.GatewayOpenAIResponseHeaderTimeoutMS, 10)
 	updates[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled] = strconv.FormatBool(settings.OpenAIPoolDownstreamModelLimitProtectionEnabled)
 	updates[SettingKeyOpenAIPoolRecoveryProbeEnabled] = strconv.FormatBool(settings.OpenAIPoolRecoveryProbeEnabled)
 	updates[SettingKeyOpenAIPoolRecoveryProbeModel] = strings.TrimSpace(settings.OpenAIPoolRecoveryProbeModel)
@@ -2400,14 +2429,9 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	if s.cfg != nil {
 		s.cfg.SetForwardedClientIPSettings(settings.APIKeyACLTrustForwardedIP, settings.ForwardedClientIPHeaders)
 		s.cfg.SetStreamLowLatencyMode(settings.StreamLowLatencyMode)
-		// Gateway concurrency profile is read from cfg on the request hot path,
-		// so admin changes take effect without restarting the Go process.
-		s.cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
-			UserSlotWaitTimeout:     time.Duration(settings.GatewayUserSlotWaitTimeoutMS) * time.Millisecond,
-			FallbackWaitTimeout:     time.Duration(settings.GatewayAccountSlotWaitTimeoutMS) * time.Millisecond,
-			UserSlotMaxWaitingExtra: settings.GatewayUserWaitingExtra,
-			RetryAfterMS:            settings.GatewayRetryAfterMS,
-		})
+		// Gateway runtime settings are read from cfg on request hot paths, so
+		// admin changes take effect without restarting the Go process.
+		s.applyGatewayRuntimeSettings(settings)
 	}
 	s.openAIAllowCodexPluginSF.Forget("openai_allow_codex_plugin_enabled")
 	s.openAIAllowCodexPluginCache.Store(&cachedOpenAIAllowCodexPlugin{
@@ -3433,6 +3457,8 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyGatewayEdgeGlobalWorkers:                        "9999",
 		SettingKeyGatewayUserWaitingExtra:                         "5",
 		SettingKeyGatewayRetryAfterMS:                             "1000",
+		SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled:       "true",
+		SettingKeyGatewayOpenAIResponseHeaderTimeoutMS:            "30000",
 		SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled: "true",
 		SettingKeyOpenAIPoolRecoveryProbeEnabled:                  "true",
 		SettingKeyOpenAIPoolRecoveryProbeModel:                    openai.DefaultTestModel,
@@ -4002,6 +4028,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		retryAfterMS = legacySeconds * 1000
 	}
 	result.GatewayRetryAfterMS = clampInt(retryAfterMS, 1, 60000)
+	result.GatewayOpenAIResponseHeaderTimeoutEnabled = !isFalseSettingValue(settings[SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled])
+	result.GatewayOpenAIResponseHeaderTimeoutMS = parseGatewayOpenAIResponseHeaderTimeoutMS(settings[SettingKeyGatewayOpenAIResponseHeaderTimeoutMS], 30000)
 	result.OpenAIPoolDownstreamModelLimitProtectionEnabled = true
 	if v, ok := settings[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled]; ok && v != "" {
 		result.OpenAIPoolDownstreamModelLimitProtectionEnabled = v == "true"

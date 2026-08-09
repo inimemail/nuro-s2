@@ -490,6 +490,10 @@ const (
 	SettingKeyGatewayEdgeGlobalWorkers        = "gateway_edge_global_workers"
 	SettingKeyGatewayUserWaitingExtra         = "gateway_user_waiting_extra"
 	SettingKeyGatewayRetryAfterMS             = "gateway_retry_after_ms"
+	// OpenAI upstream response-header protection is separate from the
+	// concurrency wait profile. Zero means unlimited when the protection is on.
+	SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled = "gateway_openai_response_header_timeout_enabled"
+	SettingKeyGatewayOpenAIResponseHeaderTimeoutMS      = "gateway_openai_response_header_timeout_ms"
 	// SettingKeyGatewayRetryAfterSeconds is kept for reading settings saved by
 	// older versions; new writes and API payloads use milliseconds.
 	SettingKeyGatewayRetryAfterSeconds = "gateway_retry_after_seconds"

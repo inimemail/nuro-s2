@@ -6540,6 +6540,18 @@ export default {
         extraRange: '用户额外等待数必须在 0-50 之间。',
         retryRange: 'Retry-After 必须在 1-60000ms 之间。'
       },
+      gatewayOpenAIHeaderTimeout: {
+        title: 'OpenAI 上游响应头保护',
+        description: '独立控制 OpenAI 上游在首 token 前等待响应头的时间，避免异常账号长时间占用请求。',
+        reset: '恢复默认',
+        enabled: '启用超时保护',
+        enabledHint: '关闭后不限制上游响应头等待时间。',
+        timeout: '响应头等待时间',
+        timeoutHint: '单位为 ms；开启后使用此值，填 0 也表示不限制。保存后立即对 Go 网关生效。',
+        unlimited: '不限时',
+        statusHint: '仅影响 OpenAI 上游响应头，不限制已开始的流式传输。',
+        timeoutRange: '响应头等待时间必须是大于等于 0 的安全整数。'
+      },
       gatewayForwarding: {
         title: '请求转发行为',
         description: '控制请求转发到上游 OAuth 账号时的行为',

@@ -188,6 +188,8 @@ type SystemSettings struct {
 	GatewayEdgeGlobalWorkers                        int    `json:"gateway_edge_global_workers"`
 	GatewayUserWaitingExtra                         int    `json:"gateway_user_waiting_extra"`
 	GatewayRetryAfterMS                             int    `json:"gateway_retry_after_ms"`
+	GatewayOpenAIResponseHeaderTimeoutEnabled       bool   `json:"gateway_openai_response_header_timeout_enabled"`
+	GatewayOpenAIResponseHeaderTimeoutMS            int64  `json:"gateway_openai_response_header_timeout_ms"`
 	OpenAIPoolDownstreamModelLimitProtectionEnabled bool   `json:"openai_pool_downstream_model_limit_protection_enabled"`
 	OpenAIPoolRecoveryProbeEnabled                  bool   `json:"openai_pool_recovery_probe_enabled"`
 	OpenAIPoolRecoveryProbeModel                    string `json:"openai_pool_recovery_probe_model"`

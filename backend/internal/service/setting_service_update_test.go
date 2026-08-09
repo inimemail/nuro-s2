@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -402,6 +403,70 @@ func TestSettingService_ParseSettings_GatewayConcurrencyDefaults(t *testing.T) {
 	require.Equal(t, 9999, got.GatewayEdgeGlobalWorkers)
 	require.Equal(t, 5, got.GatewayUserWaitingExtra)
 	require.Equal(t, 1000, got.GatewayRetryAfterMS)
+}
+
+func TestSettingService_ParseSettings_OpenAIHeaderTimeout(t *testing.T) {
+	svc := NewSettingService(&settingUpdateRepoStub{}, &config.Config{})
+
+	defaults := svc.parseSettings(map[string]string{})
+	require.True(t, defaults.GatewayOpenAIResponseHeaderTimeoutEnabled)
+	require.EqualValues(t, 30000, defaults.GatewayOpenAIResponseHeaderTimeoutMS)
+
+	configured := svc.parseSettings(map[string]string{
+		SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled: "true",
+		SettingKeyGatewayOpenAIResponseHeaderTimeoutMS:      "1500",
+	})
+	require.True(t, configured.GatewayOpenAIResponseHeaderTimeoutEnabled)
+	require.EqualValues(t, 1500, configured.GatewayOpenAIResponseHeaderTimeoutMS)
+
+	unlimited := svc.parseSettings(map[string]string{
+		SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled: "false",
+		SettingKeyGatewayOpenAIResponseHeaderTimeoutMS:      "0",
+	})
+	require.False(t, unlimited.GatewayOpenAIResponseHeaderTimeoutEnabled)
+	require.Zero(t, unlimited.GatewayOpenAIResponseHeaderTimeoutMS)
+
+	unsafe := svc.parseSettings(map[string]string{
+		SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled: "true",
+		SettingKeyGatewayOpenAIResponseHeaderTimeoutMS:      "9223372036854775807",
+	})
+	require.EqualValues(t, 30000, unsafe.GatewayOpenAIResponseHeaderTimeoutMS)
+}
+
+func TestSettingService_UpdateSettings_OpenAIHeaderTimeoutRefreshesRuntime(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	cfg := &config.Config{}
+	svc := NewSettingService(repo, cfg)
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		GatewayOpenAIResponseHeaderTimeoutEnabled: true,
+		GatewayOpenAIResponseHeaderTimeoutMS:      1500,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "true", repo.updates[SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled])
+	require.Equal(t, "1500", repo.updates[SettingKeyGatewayOpenAIResponseHeaderTimeoutMS])
+	require.Equal(t, 1500*time.Millisecond, cfg.GatewayOpenAIResponseHeaderTimeout())
+
+	err = svc.UpdateSettings(context.Background(), &SystemSettings{
+		GatewayOpenAIResponseHeaderTimeoutEnabled: false,
+		GatewayOpenAIResponseHeaderTimeoutMS:      1500,
+	})
+	require.NoError(t, err)
+	require.Equal(t, time.Duration(0), cfg.GatewayOpenAIResponseHeaderTimeout())
+
+	err = svc.UpdateSettings(context.Background(), &SystemSettings{
+		GatewayOpenAIResponseHeaderTimeoutEnabled: true,
+		GatewayOpenAIResponseHeaderTimeoutMS:      0,
+	})
+	require.NoError(t, err)
+	require.Equal(t, time.Duration(0), cfg.GatewayOpenAIResponseHeaderTimeout())
+
+	err = svc.UpdateSettings(context.Background(), &SystemSettings{
+		GatewayOpenAIResponseHeaderTimeoutEnabled: true,
+		GatewayOpenAIResponseHeaderTimeoutMS:      -1,
+	})
+	require.Error(t, err)
+	require.Equal(t, "0", repo.updates[SettingKeyGatewayOpenAIResponseHeaderTimeoutMS])
 }
 
 func TestSettingService_UpdateSettings_GatewayEdgeGlobalWorkers(t *testing.T) {

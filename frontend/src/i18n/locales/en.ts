@@ -6399,6 +6399,18 @@ export default {
         extraRange: 'Extra user wait slots must be between 0 and 50.',
         retryRange: 'Retry-After must be between 1 and 60000ms.'
       },
+      gatewayOpenAIHeaderTimeout: {
+        title: 'OpenAI Upstream Header Protection',
+        description: 'Separately bound how long OpenAI upstream requests may wait for response headers before the first token.',
+        reset: 'Restore default',
+        enabled: 'Enable timeout protection',
+        enabledHint: 'When disabled, upstream response-header waiting is unlimited.',
+        timeout: 'Response-header wait time',
+        timeoutHint: 'Milliseconds; used when enabled. 0 also means unlimited. Applies to the Go gateway immediately.',
+        unlimited: 'Unlimited',
+        statusHint: 'Only applies before OpenAI response headers arrive; it does not limit an active stream.',
+        timeoutRange: 'Response-header wait time must be a safe integer greater than or equal to 0.'
+      },
       gatewayForwarding: {
         title: 'Request Forwarding',
         description: 'Control how requests are forwarded to upstream OAuth accounts',

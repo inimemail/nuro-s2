@@ -449,6 +449,36 @@ func (s *HTTPUpstreamSuite) TestOpenAIHeaderTimeoutChangeRebuildsClient() {
 	require.Equal(s.T(), 1800*time.Second, transport.ResponseHeaderTimeout)
 }
 
+func (s *HTTPUpstreamSuite) TestOpenAIHeaderTimeoutRuntimeOverrideUsesMilliseconds() {
+	s.cfg.Gateway = config.GatewayConfig{
+		OpenAIHTTP2:                 config.GatewayOpenAIHTTP2Config{Enabled: true},
+		OpenAIResponseHeaderTimeout: 1800,
+	}
+	runtimeTimeout := 1500 * time.Millisecond
+	s.cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
+		OpenAIResponseHeaderTimeout: &runtimeTimeout,
+	})
+	svc := s.newService()
+	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	require.NoError(s.T(), err)
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Equal(s.T(), runtimeTimeout, transport.ResponseHeaderTimeout)
+
+	// A non-nil zero override explicitly disables the deadline and must also
+	// invalidate the cached client pool entry.
+	unlimited := time.Duration(0)
+	s.cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
+		OpenAIResponseHeaderTimeout: &unlimited,
+	})
+	entryUnlimited, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	require.NoError(s.T(), err)
+	require.NotSame(s.T(), entry, entryUnlimited)
+	transportUnlimited, ok := entryUnlimited.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Zero(s.T(), transportUnlimited.ResponseHeaderTimeout)
+}
+
 func (s *HTTPUpstreamSuite) TestOpenAIHTTP2TimeoutDoesNotActivateProxyFallback() {
 	s.cfg.Gateway = config.GatewayConfig{
 		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{

@@ -1069,6 +1069,10 @@ type GatewaySchedulingRuntime struct {
 	FallbackWaitTimeout     time.Duration
 	UserSlotMaxWaitingExtra int
 	RetryAfterMS            int
+	// OpenAIResponseHeaderTimeout is a DB-backed override for the OpenAI
+	// upstream response-header deadline. A non-nil pointer distinguishes an
+	// explicit zero (unlimited) from an unset runtime override.
+	OpenAIResponseHeaderTimeout *time.Duration
 }
 
 var schedulingRuntimeInitMu sync.Mutex
@@ -1137,6 +1141,23 @@ func (c *Config) SetGatewaySchedulingRuntime(runtime GatewaySchedulingRuntime) {
 	if pointer := c.schedulingRuntimePointer(); pointer != nil {
 		pointer.Store(&runtime)
 	}
+}
+
+// GatewayOpenAIResponseHeaderTimeout returns the effective OpenAI upstream
+// response-header timeout. Admin settings override the deployment value and
+// are read atomically on client-pool lookup, so changing the setting rebuilds
+// affected transports without restarting the process.
+func (c *Config) GatewayOpenAIResponseHeaderTimeout() time.Duration {
+	if c == nil {
+		return 0
+	}
+	timeout := time.Duration(c.Gateway.OpenAIResponseHeaderTimeout) * time.Second
+	if pointer := c.schedulingRuntimePointer(); pointer != nil {
+		if live := pointer.Load(); live != nil && live.OpenAIResponseHeaderTimeout != nil {
+			timeout = *live.OpenAIResponseHeaderTimeout
+		}
+	}
+	return timeout
 }
 
 // GatewayAdmissionConfig configures the optional distributed admission data

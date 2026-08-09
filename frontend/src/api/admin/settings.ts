@@ -566,6 +566,8 @@ export interface SystemSettings {
   gateway_edge_global_workers: number;
   gateway_user_waiting_extra: number;
   gateway_retry_after_ms: number;
+  gateway_openai_response_header_timeout_enabled: boolean;
+  gateway_openai_response_header_timeout_ms: number;
   openai_pool_downstream_model_limit_protection_enabled: boolean;
   openai_pool_recovery_probe_enabled: boolean;
   openai_pool_recovery_probe_model: string;
@@ -850,6 +852,8 @@ export interface UpdateSettingsRequest {
   gateway_edge_global_workers?: number;
   gateway_user_waiting_extra?: number;
   gateway_retry_after_ms?: number;
+  gateway_openai_response_header_timeout_enabled?: boolean;
+  gateway_openai_response_header_timeout_ms?: number;
   openai_pool_downstream_model_limit_protection_enabled?: boolean;
   openai_pool_recovery_probe_enabled?: boolean;
   openai_pool_recovery_probe_model?: string;

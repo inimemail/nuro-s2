@@ -903,8 +903,8 @@ func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, pr
 		return settings
 	}
 	settings.responseHeaderTimeout = 0
-	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIResponseHeaderTimeout > 0 {
-		settings.responseHeaderTimeout = time.Duration(s.cfg.Gateway.OpenAIResponseHeaderTimeout) * time.Second
+	if s != nil && s.cfg != nil {
+		settings.responseHeaderTimeout = s.cfg.GatewayOpenAIResponseHeaderTimeout()
 	}
 	return settings
 }
