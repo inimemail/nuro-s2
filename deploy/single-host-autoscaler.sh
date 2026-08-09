@@ -12,7 +12,7 @@ target_streams="${AUTOSCALE_TARGET_STREAMS_PER_PAIR:-20000}"
 target_rps="${AUTOSCALE_TARGET_RPS_PER_PAIR:-3000}"
 target_go_active="${AUTOSCALE_TARGET_GO_ACTIVE_PER_PAIR:-4000}"
 target_queue="${AUTOSCALE_TARGET_QUEUE_DEPTH:-128}"
-target_workers="${AUTOSCALE_TARGET_RELAY_WORKERS:-512}"
+target_workers="${AUTOSCALE_TARGET_RELAY_WORKERS:-9999}"
 go_5xx_ratio_limit="${AUTOSCALE_GO_5XX_RATIO_LIMIT:-${AUTOSCALE_UPSTREAM_ERROR_RATIO:-0.20}}"
 edge_connect_error_ratio_limit="${AUTOSCALE_EDGE_CONNECT_ERROR_RATIO_LIMIT:-0.10}"
 edge_5xx_ratio_limit="${AUTOSCALE_EDGE_5XX_RATIO_LIMIT:-0.20}"
@@ -155,7 +155,7 @@ if ! valid_positive_integer "$target_queue"; then
 fi
 if ! valid_positive_integer "$target_workers"; then
     mark_invalid_config AUTOSCALE_TARGET_RELAY_WORKERS
-    target_workers=512
+    target_workers=9999
 fi
 if ! valid_nonnegative_integer "$scale_down_seconds"; then
     mark_invalid_config AUTOSCALE_SCALE_DOWN_SECONDS

@@ -1711,14 +1711,20 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 		require.Equal(t, 7200, cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds)
 	})
 
+	t.Run("max_conns_per_account 为 0 表示不限", func(t *testing.T) {
+		cfg := buildValid(t)
+		cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 0
+		require.NoError(t, cfg.Validate())
+	})
+
 	cases := []struct {
 		name    string
 		mutate  func(*Config)
 		wantErr string
 	}{
 		{
-			name:    "max_conns_per_account 必须为正数",
-			mutate:  func(c *Config) { c.Gateway.OpenAIWS.MaxConnsPerAccount = 0 },
+			name:    "max_conns_per_account 不能为负数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.MaxConnsPerAccount = -1 },
 			wantErr: "gateway.openai_ws.max_conns_per_account",
 		},
 		{
@@ -1848,6 +1854,25 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			err := cfg.Validate()
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestValidateConfig_OpenAIEdgeGlobalWorkersRange(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value int
+		want  string
+	}{
+		{name: "zero", value: 0, want: "between 1 and 999999999"},
+		{name: "above maximum", value: 1000000000, want: "between 1 and 999999999"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := buildValid(t)
+			cfg.Gateway.OpenAIEdgeRS.GlobalWorkers = tc.value
+			err := cfg.Validate()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.want)
 		})
 	}
 }

@@ -4118,13 +4118,14 @@
                   <Icon name="refresh" size="sm" />
                 </button>
               </div>
-              <div class="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">
+              <div class="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
                 <div v-for="item in [
                   { label: t('admin.settings.gatewayConcurrency.userWait'), value: `${form.gateway_user_slot_wait_timeout_ms}ms` },
                   { label: t('admin.settings.gatewayConcurrency.accountWait'), value: `${form.gateway_account_slot_wait_timeout_ms}ms` },
                   { label: t('admin.settings.gatewayConcurrency.edgeBudget'), value: `${form.gateway_edge_queue_wait_budget_ms}ms` },
                   { label: t('admin.settings.gatewayConcurrency.extra'), value: String(form.gateway_user_waiting_extra) },
                   { label: t('admin.settings.gatewayConcurrency.retryAfter'), value: `${form.gateway_retry_after_ms}ms` },
+                  { label: t('admin.settings.gatewayConcurrency.globalWorkers'), value: String(form.gateway_edge_global_workers) },
                 ]" :key="item.label" class="rounded-lg border border-white/80 bg-white/70 px-3 py-2 dark:border-dark-600 dark:bg-dark-800/70">
                   <div class="text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ item.label }}</div>
                   <div class="mt-0.5 text-sm font-semibold text-gray-900 dark:text-white">{{ item.value }}</div>
@@ -4157,7 +4158,12 @@
                 <input v-model.number="form.gateway_retry_after_ms" type="number" min="1" max="60000" step="1" class="input w-full" />
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayConcurrency.retryHint") }}</p>
               </div>
-              <div class="flex items-end">
+              <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayConcurrency.globalWorkers") }}</label>
+                <input v-model.number="form.gateway_edge_global_workers" type="number" min="1" max="999999999" step="1" class="input w-full" />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayConcurrency.globalWorkersHint") }}</p>
+              </div>
+              <div class="flex items-end sm:col-span-2 lg:col-span-3">
                 <div class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
                   <Icon name="shield" size="sm" class="mt-0.5 shrink-0" />
                   <span>{{ t("admin.settings.gatewayConcurrency.edgeRestartHint") }}</span>
@@ -8582,6 +8588,7 @@ const form = reactive<SettingsForm>({
   gateway_user_slot_wait_timeout_ms: 100,
   gateway_account_slot_wait_timeout_ms: 50,
   gateway_edge_queue_wait_budget_ms: 50,
+  gateway_edge_global_workers: 9999,
   gateway_user_waiting_extra: 5,
   gateway_retry_after_ms: 1000,
   openai_pool_downstream_model_limit_protection_enabled: true,
@@ -8645,6 +8652,7 @@ const gatewayConcurrencyDefaults = Object.freeze({
   gateway_user_slot_wait_timeout_ms: 100,
   gateway_account_slot_wait_timeout_ms: 50,
   gateway_edge_queue_wait_budget_ms: 50,
+  gateway_edge_global_workers: 9999,
   gateway_user_waiting_extra: 5,
   gateway_retry_after_ms: 1000,
 });
@@ -8657,6 +8665,7 @@ function validateGatewayConcurrencySettings(): boolean {
   const userWait = Number(form.gateway_user_slot_wait_timeout_ms);
   const accountWait = Number(form.gateway_account_slot_wait_timeout_ms);
   const edgeBudget = Number(form.gateway_edge_queue_wait_budget_ms);
+  const globalWorkers = Number(form.gateway_edge_global_workers);
   const extra = Number(form.gateway_user_waiting_extra);
   const retryAfter = Number(form.gateway_retry_after_ms);
   if (!Number.isInteger(userWait) || userWait < 1 || userWait > 30000) {
@@ -8669,6 +8678,10 @@ function validateGatewayConcurrencySettings(): boolean {
   }
   if (!Number.isInteger(edgeBudget) || edgeBudget < 1 || edgeBudget > 30000) {
     appStore.showError(t("admin.settings.gatewayConcurrency.edgeBudgetRange"));
+    return false;
+  }
+  if (!Number.isInteger(globalWorkers) || globalWorkers < 1 || globalWorkers > 999999999) {
+    appStore.showError(t("admin.settings.gatewayConcurrency.globalWorkersRange"));
     return false;
   }
   if (!Number.isInteger(extra) || extra < 0 || extra > 50) {
@@ -9964,6 +9977,7 @@ async function saveSettings() {
       gateway_user_slot_wait_timeout_ms: Math.floor(Number(form.gateway_user_slot_wait_timeout_ms)),
       gateway_account_slot_wait_timeout_ms: Math.floor(Number(form.gateway_account_slot_wait_timeout_ms)),
       gateway_edge_queue_wait_budget_ms: Math.floor(Number(form.gateway_edge_queue_wait_budget_ms)),
+      gateway_edge_global_workers: Math.floor(Number(form.gateway_edge_global_workers)),
       gateway_user_waiting_extra: Math.floor(Number(form.gateway_user_waiting_extra)),
       gateway_retry_after_ms: Math.floor(Number(form.gateway_retry_after_ms)),
       openai_pool_downstream_model_limit_protection_enabled:

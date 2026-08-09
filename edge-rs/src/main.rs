@@ -7651,8 +7651,8 @@ impl EdgeConfig {
                 2 * 1024 * 1024 * 1024,
             )
             .min(u32::MAX as usize),
-            global_workers: env_usize("SUB2API_EDGE_GLOBAL_WORKERS", 512),
-            per_account_workers: env_usize("SUB2API_EDGE_PER_ACCOUNT_WORKERS", 128),
+            global_workers: env_usize("SUB2API_EDGE_GLOBAL_WORKERS", 9999).clamp(1, 999_999_999),
+            per_account_workers: env_usize("SUB2API_EDGE_PER_ACCOUNT_WORKERS", 0),
             max_relay_domains: env_usize("SUB2API_EDGE_MAX_RELAY_DOMAINS", 4096),
             relay_domain_idle_secs: env_u64("SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS", 300),
             max_proxy_clients: env_usize("SUB2API_EDGE_MAX_PROXY_CLIENTS", 1024),

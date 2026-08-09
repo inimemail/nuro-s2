@@ -197,6 +197,7 @@ type SystemSettings struct {
 	GatewayUserSlotWaitTimeoutMS    int
 	GatewayAccountSlotWaitTimeoutMS int
 	GatewayEdgeQueueWaitBudgetMS    int
+	GatewayEdgeGlobalWorkers        int
 	GatewayUserWaitingExtra         int
 	GatewayRetryAfterMS             int
 	// OpenAI 池下游模型限流保护：默认开启；开启后模型路由错误不会对下游返回 404/model_not_found。

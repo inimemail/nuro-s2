@@ -305,11 +305,13 @@ gateway:
     responses_websockets: false
     responses_websockets_v2: true
     # 连接池参数（按账号池化复用）
-    max_conns_per_account: 128
+    # 0 = no fixed per-account connection cap; resource limits remain external.
+    max_conns_per_account: 0
     min_idle_per_account: 4
     max_idle_per_account: 12
-    # 是否按账号并发动态计算连接池上限：
-    # effective_max_conns = min(max_conns_per_account, ceil(account.concurrency * factor))
+    # 是否按账号并发动态计算连接池上限；max_conns_per_account=0 表示不设固定硬上限：
+    # effective_max_conns = ceil(account.concurrency * factor) when the cap is 0,
+    # otherwise min(max_conns_per_account, ceil(account.concurrency * factor)).
     dynamic_max_conns_by_account_concurrency_enabled: true
     # 按账号类型分别设置系数（OAuth / API Key）
     oauth_max_conns_factor: 1.0
@@ -399,8 +401,10 @@ gateway:
     initial_pool_size: 512
     queue_buffer_size: 512
     queue_max_bytes: 268435456
-    global_workers: 512
-    per_account_workers: 128
+    # 1-999999999 per Edge replica; restart Edge after changing the environment value.
+    global_workers: 9999
+    # 0 disables the per-account relay semaphore.
+    per_account_workers: 0
     max_relay_domains: 4096
     relay_domain_idle_seconds: 300
     max_proxy_clients: 1024

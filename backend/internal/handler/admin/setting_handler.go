@@ -298,6 +298,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		GatewayUserSlotWaitTimeoutMS:                    settings.GatewayUserSlotWaitTimeoutMS,
 		GatewayAccountSlotWaitTimeoutMS:                 settings.GatewayAccountSlotWaitTimeoutMS,
 		GatewayEdgeQueueWaitBudgetMS:                    settings.GatewayEdgeQueueWaitBudgetMS,
+		GatewayEdgeGlobalWorkers:                        settings.GatewayEdgeGlobalWorkers,
 		GatewayUserWaitingExtra:                         settings.GatewayUserWaitingExtra,
 		GatewayRetryAfterMS:                             settings.GatewayRetryAfterMS,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: settings.OpenAIPoolDownstreamModelLimitProtectionEnabled,
@@ -666,6 +667,7 @@ type UpdateSettingsRequest struct {
 	GatewayUserSlotWaitTimeoutMS                    int     `json:"gateway_user_slot_wait_timeout_ms"`
 	GatewayAccountSlotWaitTimeoutMS                 int     `json:"gateway_account_slot_wait_timeout_ms"`
 	GatewayEdgeQueueWaitBudgetMS                    int     `json:"gateway_edge_queue_wait_budget_ms"`
+	GatewayEdgeGlobalWorkers                        int     `json:"gateway_edge_global_workers"`
 	GatewayUserWaitingExtra                         *int    `json:"gateway_user_waiting_extra"`
 	GatewayRetryAfterMS                             int     `json:"gateway_retry_after_ms"`
 	OpenAIPoolDownstreamModelLimitProtectionEnabled *bool   `json:"openai_pool_downstream_model_limit_protection_enabled"`
@@ -938,6 +940,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 	if req.GatewayEdgeQueueWaitBudgetMS <= 0 {
 		req.GatewayEdgeQueueWaitBudgetMS = previousSettings.GatewayEdgeQueueWaitBudgetMS
+	}
+	if req.GatewayEdgeGlobalWorkers <= 0 {
+		req.GatewayEdgeGlobalWorkers = previousSettings.GatewayEdgeGlobalWorkers
 	}
 	userWaitingExtra := previousSettings.GatewayUserWaitingExtra
 	if req.GatewayUserWaitingExtra != nil {
@@ -1892,6 +1897,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GatewayUserSlotWaitTimeoutMS:           req.GatewayUserSlotWaitTimeoutMS,
 		GatewayAccountSlotWaitTimeoutMS:        req.GatewayAccountSlotWaitTimeoutMS,
 		GatewayEdgeQueueWaitBudgetMS:           req.GatewayEdgeQueueWaitBudgetMS,
+		GatewayEdgeGlobalWorkers:               req.GatewayEdgeGlobalWorkers,
 		GatewayUserWaitingExtra:                userWaitingExtra,
 		GatewayRetryAfterMS:                    req.GatewayRetryAfterMS,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: func() bool {
@@ -2549,6 +2555,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GatewayUserSlotWaitTimeoutMS:                    updatedSettings.GatewayUserSlotWaitTimeoutMS,
 		GatewayAccountSlotWaitTimeoutMS:                 updatedSettings.GatewayAccountSlotWaitTimeoutMS,
 		GatewayEdgeQueueWaitBudgetMS:                    updatedSettings.GatewayEdgeQueueWaitBudgetMS,
+		GatewayEdgeGlobalWorkers:                        updatedSettings.GatewayEdgeGlobalWorkers,
 		GatewayUserWaitingExtra:                         updatedSettings.GatewayUserWaitingExtra,
 		GatewayRetryAfterMS:                             updatedSettings.GatewayRetryAfterMS,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: updatedSettings.OpenAIPoolDownstreamModelLimitProtectionEnabled,
@@ -3049,6 +3056,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.GatewayEdgeQueueWaitBudgetMS != after.GatewayEdgeQueueWaitBudgetMS {
 		changed = append(changed, "gateway_edge_queue_wait_budget_ms")
+	}
+	if before.GatewayEdgeGlobalWorkers != after.GatewayEdgeGlobalWorkers {
+		changed = append(changed, "gateway_edge_global_workers")
 	}
 	if before.GatewayUserWaitingExtra != after.GatewayUserWaitingExtra {
 		changed = append(changed, "gateway_user_waiting_extra")

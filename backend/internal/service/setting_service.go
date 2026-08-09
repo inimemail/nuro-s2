@@ -2154,6 +2154,9 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	if settings.GatewayEdgeQueueWaitBudgetMS <= 0 {
 		settings.GatewayEdgeQueueWaitBudgetMS = 50
 	}
+	if settings.GatewayEdgeGlobalWorkers <= 0 {
+		settings.GatewayEdgeGlobalWorkers = 9999
+	}
 	if settings.GatewayRetryAfterMS <= 0 {
 		settings.GatewayRetryAfterMS = 1000
 	}
@@ -2166,6 +2169,9 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	if settings.GatewayEdgeQueueWaitBudgetMS < 1 || settings.GatewayEdgeQueueWaitBudgetMS > 30000 {
 		return nil, infraerrors.BadRequest("GATEWAY_EDGE_QUEUE_WAIT_BUDGET_INVALID", "gateway edge queue budget must be between 1ms and 30000ms")
 	}
+	if settings.GatewayEdgeGlobalWorkers < 1 || settings.GatewayEdgeGlobalWorkers > 999999999 {
+		return nil, infraerrors.BadRequest("GATEWAY_EDGE_GLOBAL_WORKERS_INVALID", "gateway edge global concurrency must be between 1 and 999999999")
+	}
 	if settings.GatewayUserWaitingExtra < 0 || settings.GatewayUserWaitingExtra > 50 {
 		return nil, infraerrors.BadRequest("GATEWAY_USER_WAITING_EXTRA_INVALID", "gateway extra waiting slots must be between 0 and 50")
 	}
@@ -2175,6 +2181,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyGatewayUserSlotWaitTimeoutMS] = strconv.Itoa(settings.GatewayUserSlotWaitTimeoutMS)
 	updates[SettingKeyGatewayAccountSlotWaitTimeoutMS] = strconv.Itoa(settings.GatewayAccountSlotWaitTimeoutMS)
 	updates[SettingKeyGatewayEdgeQueueWaitBudgetMS] = strconv.Itoa(settings.GatewayEdgeQueueWaitBudgetMS)
+	updates[SettingKeyGatewayEdgeGlobalWorkers] = strconv.Itoa(settings.GatewayEdgeGlobalWorkers)
 	updates[SettingKeyGatewayUserWaitingExtra] = strconv.Itoa(settings.GatewayUserWaitingExtra)
 	updates[SettingKeyGatewayRetryAfterMS] = strconv.Itoa(settings.GatewayRetryAfterMS)
 	updates[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled] = strconv.FormatBool(settings.OpenAIPoolDownstreamModelLimitProtectionEnabled)
@@ -3423,6 +3430,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyGatewayUserSlotWaitTimeoutMS:                    "100",
 		SettingKeyGatewayAccountSlotWaitTimeoutMS:                 "50",
 		SettingKeyGatewayEdgeQueueWaitBudgetMS:                    "50",
+		SettingKeyGatewayEdgeGlobalWorkers:                        "9999",
 		SettingKeyGatewayUserWaitingExtra:                         "5",
 		SettingKeyGatewayRetryAfterMS:                             "1000",
 		SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled: "true",
@@ -3986,6 +3994,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.GatewayUserSlotWaitTimeoutMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayUserSlotWaitTimeoutMS], 100), 1, 30000)
 	result.GatewayAccountSlotWaitTimeoutMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayAccountSlotWaitTimeoutMS], 50), 1, 30000)
 	result.GatewayEdgeQueueWaitBudgetMS = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayEdgeQueueWaitBudgetMS], 50), 1, 30000)
+	result.GatewayEdgeGlobalWorkers = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayEdgeGlobalWorkers], 9999), 1, 999999999)
 	result.GatewayUserWaitingExtra = clampInt(parseNonNegativeIntSetting(settings[SettingKeyGatewayUserWaitingExtra], 5), 0, 50)
 	retryAfterMS := parsePositiveIntSetting(settings[SettingKeyGatewayRetryAfterMS], 1000)
 	if _, configured := settings[SettingKeyGatewayRetryAfterMS]; !configured {

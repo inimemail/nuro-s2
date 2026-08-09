@@ -307,13 +307,15 @@ ensure_env_value() {
 
 edge_auto_disabled() {
     local env_file="$1"
+    local per_account_workers
     if [[ "$(read_env_value "$env_file" NURO_EDGE_AUTO_DISABLED)" == "true" ]]; then
         return 0
     fi
+    per_account_workers="$(read_env_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS)"
     if [[ "$(read_env_value "$env_file" NURO_EDGE_ENABLED)" == "false" &&
         "$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_MODE)" == "off" &&
         "$(read_env_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE)" == "20000" &&
-        "$(read_env_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS)" == "4" ]]; then
+        "$per_account_workers" =~ ^(4|32|64|128)$ ]]; then
         return 0
     fi
     return 1
@@ -350,6 +352,8 @@ ensure_edge_env_values() {
     local legacy_user_wait_ms
     local legacy_fallback_wait
     local legacy_fallback_wait_ms
+    local legacy_retry_after
+    local legacy_retry_after_ms
 
     touch "$env_file"
     ensure_env_value "$env_file" NURO_EDGE_ENABLED "$NURO_EDGE_ENABLED"
@@ -360,8 +364,9 @@ ensure_edge_env_values() {
     ensure_env_value "$env_file" AUTOSCALE_TARGET_RPS_PER_PAIR 3000
     ensure_env_value "$env_file" AUTOSCALE_TARGET_GO_ACTIVE_PER_PAIR 4000
     ensure_env_value "$env_file" AUTOSCALE_TARGET_QUEUE_DEPTH 128
-    upgrade_env_default_value "$env_file" AUTOSCALE_TARGET_RELAY_WORKERS 256 512
-    ensure_env_value "$env_file" AUTOSCALE_TARGET_RELAY_WORKERS 512
+    upgrade_env_default_value "$env_file" AUTOSCALE_TARGET_RELAY_WORKERS 256 9999
+    upgrade_env_default_value "$env_file" AUTOSCALE_TARGET_RELAY_WORKERS 512 9999
+    ensure_env_value "$env_file" AUTOSCALE_TARGET_RELAY_WORKERS 9999
     ensure_env_value "$env_file" AUTOSCALE_MIN_CPU_PER_PAIR 4
     ensure_env_value "$env_file" AUTOSCALE_MIN_MEMORY_MB_PER_PAIR 2048
     ensure_env_value "$env_file" AUTOSCALE_SCALE_DOWN_SECONDS 600
@@ -454,11 +459,14 @@ ensure_edge_env_values() {
     ensure_env_value "$env_file" SUB2API_EDGE_MAX_HEADER_BYTES 65536
     upgrade_env_default_value "$env_file" SUB2API_EDGE_INGRESS_BODY_MAX_BYTES 1073741824 2147483648
     ensure_env_value "$env_file" SUB2API_EDGE_INGRESS_BODY_MAX_BYTES 2147483648
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 256 512
-    ensure_env_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 512
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 4 128
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 32 128
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 64 128
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 256 9999
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 512 9999
+    ensure_env_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 9999
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 4 0
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 32 0
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 64 0
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 128 0
+    ensure_env_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 0
     ensure_env_value "$env_file" SUB2API_EDGE_MAX_RELAY_DOMAINS 4096
     ensure_env_value "$env_file" SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS 300
     ensure_env_value "$env_file" SUB2API_EDGE_MAX_PROXY_CLIENTS 1024
@@ -492,8 +500,18 @@ ensure_edge_env_values() {
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_FALLBACK_MAX_WAITING 30
     if [[ -z "$(read_env_value "$env_file" GATEWAY_SCHEDULING_RETRY_AFTER_MS)" ]]; then
         legacy_retry_after="$(read_env_value "$env_file" GATEWAY_SCHEDULING_RETRY_AFTER_SECONDS)"
-        if [[ "$legacy_retry_after" =~ ^[0-9]+$ ]] && (( legacy_retry_after > 0 )); then
-            set_env_value "$env_file" GATEWAY_SCHEDULING_RETRY_AFTER_MS "$((legacy_retry_after * 1000))"
+        if [[ "$legacy_retry_after" =~ ^[0-9]+$ ]]; then
+            # Keep legacy migration bounded to the same 1-60s protocol range
+            # used by the Go settings parser; avoid shell arithmetic overflow
+            # for malformed or unexpectedly large historical values.
+            legacy_retry_after_ms="$(awk -v seconds="$legacy_retry_after" 'BEGIN {
+                if (seconds < 1) exit 1
+                if (seconds > 60) seconds = 60
+                printf "%d", seconds * 1000
+            }')" || legacy_retry_after_ms=""
+            if [[ -n "$legacy_retry_after_ms" ]]; then
+                set_env_value "$env_file" GATEWAY_SCHEDULING_RETRY_AFTER_MS "$legacy_retry_after_ms"
+            fi
         fi
     fi
     ensure_env_value "$env_file" GATEWAY_SCHEDULING_RETRY_AFTER_MS 1000
@@ -676,7 +694,7 @@ AUTOSCALE_TARGET_STREAMS_PER_PAIR=20000
 AUTOSCALE_TARGET_RPS_PER_PAIR=3000
 AUTOSCALE_TARGET_GO_ACTIVE_PER_PAIR=4000
 AUTOSCALE_TARGET_QUEUE_DEPTH=128
-AUTOSCALE_TARGET_RELAY_WORKERS=512
+AUTOSCALE_TARGET_RELAY_WORKERS=9999
 AUTOSCALE_MIN_CPU_PER_PAIR=4
 AUTOSCALE_MIN_MEMORY_MB_PER_PAIR=2048
 AUTOSCALE_SCALE_DOWN_SECONDS=600
@@ -712,8 +730,8 @@ SUB2API_EDGE_QUEUE_BUFFER_SIZE=512
 SUB2API_EDGE_QUEUE_MAX_BYTES=268435456
 SUB2API_EDGE_MAX_HEADER_BYTES=65536
 SUB2API_EDGE_INGRESS_BODY_MAX_BYTES=2147483648
-SUB2API_EDGE_GLOBAL_WORKERS=512
-SUB2API_EDGE_PER_ACCOUNT_WORKERS=128
+SUB2API_EDGE_GLOBAL_WORKERS=9999
+SUB2API_EDGE_PER_ACCOUNT_WORKERS=0
 SUB2API_EDGE_MAX_RELAY_DOMAINS=4096
 SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS=300
 SUB2API_EDGE_MAX_PROXY_CLIENTS=1024
@@ -988,8 +1006,8 @@ services:
       - SUB2API_EDGE_QUEUE_MAX_BYTES=\${SUB2API_EDGE_QUEUE_MAX_BYTES:-268435456}
       - SUB2API_EDGE_MAX_HEADER_BYTES=\${SUB2API_EDGE_MAX_HEADER_BYTES:-65536}
       - SUB2API_EDGE_INGRESS_BODY_MAX_BYTES=\${SUB2API_EDGE_INGRESS_BODY_MAX_BYTES:-2147483648}
-      - SUB2API_EDGE_GLOBAL_WORKERS=\${SUB2API_EDGE_GLOBAL_WORKERS:-512}
-      - SUB2API_EDGE_PER_ACCOUNT_WORKERS=\${SUB2API_EDGE_PER_ACCOUNT_WORKERS:-128}
+      - SUB2API_EDGE_GLOBAL_WORKERS=\${SUB2API_EDGE_GLOBAL_WORKERS:-9999}
+      - SUB2API_EDGE_PER_ACCOUNT_WORKERS=\${SUB2API_EDGE_PER_ACCOUNT_WORKERS:-0}
       - SUB2API_EDGE_MAX_RELAY_DOMAINS=\${SUB2API_EDGE_MAX_RELAY_DOMAINS:-4096}
       - SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS=\${SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS:-300}
       - SUB2API_EDGE_MAX_PROXY_CLIENTS=\${SUB2API_EDGE_MAX_PROXY_CLIENTS:-1024}
@@ -1102,7 +1120,7 @@ services:
       - AUTOSCALE_TARGET_RPS_PER_PAIR=\${AUTOSCALE_TARGET_RPS_PER_PAIR:-3000}
       - AUTOSCALE_TARGET_GO_ACTIVE_PER_PAIR=\${AUTOSCALE_TARGET_GO_ACTIVE_PER_PAIR:-4000}
       - AUTOSCALE_TARGET_QUEUE_DEPTH=\${AUTOSCALE_TARGET_QUEUE_DEPTH:-128}
-      - AUTOSCALE_TARGET_RELAY_WORKERS=\${AUTOSCALE_TARGET_RELAY_WORKERS:-512}
+      - AUTOSCALE_TARGET_RELAY_WORKERS=\${AUTOSCALE_TARGET_RELAY_WORKERS:-9999}
       - AUTOSCALE_SCALE_DOWN_SECONDS=\${AUTOSCALE_SCALE_DOWN_SECONDS:-600}
       - AUTOSCALE_DRAIN_SECONDS=\${AUTOSCALE_DRAIN_SECONDS:-30}
       - AUTOSCALE_FORCE_STOP_SECONDS=\${AUTOSCALE_FORCE_STOP_SECONDS:-30}

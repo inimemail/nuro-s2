@@ -487,6 +487,7 @@ const (
 	SettingKeyGatewayUserSlotWaitTimeoutMS    = "gateway_user_slot_wait_timeout_ms"
 	SettingKeyGatewayAccountSlotWaitTimeoutMS = "gateway_account_slot_wait_timeout_ms"
 	SettingKeyGatewayEdgeQueueWaitBudgetMS    = "gateway_edge_queue_wait_budget_ms"
+	SettingKeyGatewayEdgeGlobalWorkers        = "gateway_edge_global_workers"
 	SettingKeyGatewayUserWaitingExtra         = "gateway_user_waiting_extra"
 	SettingKeyGatewayRetryAfterMS             = "gateway_retry_after_ms"
 	// SettingKeyGatewayRetryAfterSeconds is kept for reading settings saved by

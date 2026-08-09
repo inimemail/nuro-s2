@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -756,6 +757,28 @@ func TestOpenAIWSConnPool_EffectiveMaxConnsByAccount(t *testing.T) {
 	require.Equal(t, 8, pool.effectiveMaxConnsByAccount(unlimited), "无限并发应回退到全局硬上限")
 
 	require.Equal(t, 8, pool.effectiveMaxConnsByAccount(nil), "缺少账号上下文应回退到全局硬上限")
+}
+
+func TestOpenAIWSConnPool_UnlimitedHardCapUsesAccountConcurrency(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 0
+	cfg.Gateway.OpenAIWS.DynamicMaxConnsByAccountConcurrencyEnabled = true
+	cfg.Gateway.OpenAIWS.OAuthMaxConnsFactor = 1.0
+
+	pool := newOpenAIWSConnPool(cfg)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 9999}
+	require.Equal(t, 9999, pool.effectiveMaxConnsByAccount(account))
+}
+
+func TestOpenAIWSConnPool_EffectiveMaxConnsSaturatesOnLargeFactor(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 0
+	cfg.Gateway.OpenAIWS.DynamicMaxConnsByAccountConcurrencyEnabled = true
+	cfg.Gateway.OpenAIWS.OAuthMaxConnsFactor = 2.0
+
+	pool := newOpenAIWSConnPool(cfg)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: math.MaxInt}
+	require.Equal(t, math.MaxInt, pool.effectiveMaxConnsByAccount(account))
 }
 
 func TestOpenAIWSConnPool_EffectiveMaxConnsDisabledFallbackHardCap(t *testing.T) {

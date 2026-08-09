@@ -563,6 +563,7 @@ export interface SystemSettings {
   gateway_user_slot_wait_timeout_ms: number;
   gateway_account_slot_wait_timeout_ms: number;
   gateway_edge_queue_wait_budget_ms: number;
+  gateway_edge_global_workers: number;
   gateway_user_waiting_extra: number;
   gateway_retry_after_ms: number;
   openai_pool_downstream_model_limit_protection_enabled: boolean;
@@ -846,6 +847,7 @@ export interface UpdateSettingsRequest {
   gateway_user_slot_wait_timeout_ms?: number;
   gateway_account_slot_wait_timeout_ms?: number;
   gateway_edge_queue_wait_budget_ms?: number;
+  gateway_edge_global_workers?: number;
   gateway_user_waiting_extra?: number;
   gateway_retry_after_ms?: number;
   openai_pool_downstream_model_limit_protection_enabled?: boolean;

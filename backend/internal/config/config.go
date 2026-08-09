@@ -2485,7 +2485,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.http_bridge_threshold_bytes", 15*1024*1024)
 	viper.SetDefault("gateway.openai_ws.responses_websockets", false)
 	viper.SetDefault("gateway.openai_ws.responses_websockets_v2", true)
-	viper.SetDefault("gateway.openai_ws.max_conns_per_account", 128)
+	// 0 means no fixed per-account connection cap; account concurrency and
+	// process/resource limits remain responsible for admission.
+	viper.SetDefault("gateway.openai_ws.max_conns_per_account", 0)
 	viper.SetDefault("gateway.openai_ws.min_idle_per_account", 4)
 	viper.SetDefault("gateway.openai_ws.max_idle_per_account", 12)
 	viper.SetDefault("gateway.openai_ws.dynamic_max_conns_by_account_concurrency_enabled", true)
@@ -2540,8 +2542,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_edge_rs.initial_pool_size", 512)
 	viper.SetDefault("gateway.openai_edge_rs.queue_buffer_size", 512)
 	viper.SetDefault("gateway.openai_edge_rs.queue_max_bytes", 256*1024*1024)
-	viper.SetDefault("gateway.openai_edge_rs.global_workers", 512)
-	viper.SetDefault("gateway.openai_edge_rs.per_account_workers", 128)
+	viper.SetDefault("gateway.openai_edge_rs.global_workers", 9999)
+	// 0 disables the Edge per-account relay semaphore.
+	viper.SetDefault("gateway.openai_edge_rs.per_account_workers", 0)
 	viper.SetDefault("gateway.openai_edge_rs.max_relay_domains", 4096)
 	viper.SetDefault("gateway.openai_edge_rs.relay_domain_idle_seconds", 300)
 	viper.SetDefault("gateway.openai_edge_rs.max_proxy_clients", 1024)
@@ -2607,6 +2610,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.user_slot_wait_timeout_ms", 100)
 	viper.SetDefault("gateway.scheduling.user_slot_max_waiting_extra", 5)
 	viper.SetDefault("gateway.scheduling.retry_after_ms", 1000)
+	// Legacy seconds spelling retained only for migration of old deployments;
+	// the millisecond setting above remains authoritative when configured.
+	viper.SetDefault("gateway.scheduling.retry_after_seconds", 1)
 	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", 50*time.Millisecond)
 	viper.SetDefault("gateway.scheduling.fallback_wait_timeout_ms", 50)
 	viper.SetDefault("gateway.scheduling.fallback_max_waiting", 30)
@@ -3405,8 +3411,8 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {
 		c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds
 	}
-	if c.Gateway.OpenAIWS.MaxConnsPerAccount <= 0 {
-		return fmt.Errorf("gateway.openai_ws.max_conns_per_account must be positive")
+	if c.Gateway.OpenAIWS.MaxConnsPerAccount < 0 {
+		return fmt.Errorf("gateway.openai_ws.max_conns_per_account must be non-negative (0 means unlimited)")
 	}
 	if c.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds < 0 {
 		return fmt.Errorf("gateway.openai_ws.ingress_inter_turn_idle_timeout_seconds must be non-negative")
@@ -3420,7 +3426,7 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIWS.MinIdlePerAccount > c.Gateway.OpenAIWS.MaxIdlePerAccount {
 		return fmt.Errorf("gateway.openai_ws.min_idle_per_account must be <= max_idle_per_account")
 	}
-	if c.Gateway.OpenAIWS.MaxIdlePerAccount > c.Gateway.OpenAIWS.MaxConnsPerAccount {
+	if c.Gateway.OpenAIWS.MaxConnsPerAccount > 0 && c.Gateway.OpenAIWS.MaxIdlePerAccount > c.Gateway.OpenAIWS.MaxConnsPerAccount {
 		return fmt.Errorf("gateway.openai_ws.max_idle_per_account must be <= max_conns_per_account")
 	}
 	if c.Gateway.OpenAIWS.OAuthMaxConnsFactor <= 0 {
@@ -3541,11 +3547,11 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIEdgeRS.QueueMaxBytes <= 0 {
 		return fmt.Errorf("gateway.openai_edge_rs.queue_max_bytes must be positive")
 	}
-	if c.Gateway.OpenAIEdgeRS.GlobalWorkers <= 0 {
-		return fmt.Errorf("gateway.openai_edge_rs.global_workers must be positive")
+	if c.Gateway.OpenAIEdgeRS.GlobalWorkers < 1 || c.Gateway.OpenAIEdgeRS.GlobalWorkers > 999999999 {
+		return fmt.Errorf("gateway.openai_edge_rs.global_workers must be between 1 and 999999999")
 	}
-	if c.Gateway.OpenAIEdgeRS.PerAccountWorkers <= 0 {
-		return fmt.Errorf("gateway.openai_edge_rs.per_account_workers must be positive")
+	if c.Gateway.OpenAIEdgeRS.PerAccountWorkers < 0 {
+		return fmt.Errorf("gateway.openai_edge_rs.per_account_workers must be non-negative (0 disables the per-account limit)")
 	}
 	if c.Gateway.OpenAIEdgeRS.MaxRelayDomains <= 0 || c.Gateway.OpenAIEdgeRS.MaxProxyClients <= 0 {
 		return fmt.Errorf("gateway.openai_edge_rs resource limits must be positive")

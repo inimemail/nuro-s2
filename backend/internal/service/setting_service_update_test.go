@@ -399,8 +399,22 @@ func TestSettingService_ParseSettings_GatewayConcurrencyDefaults(t *testing.T) {
 	require.Equal(t, 100, got.GatewayUserSlotWaitTimeoutMS)
 	require.Equal(t, 50, got.GatewayAccountSlotWaitTimeoutMS)
 	require.Equal(t, 50, got.GatewayEdgeQueueWaitBudgetMS)
+	require.Equal(t, 9999, got.GatewayEdgeGlobalWorkers)
 	require.Equal(t, 5, got.GatewayUserWaitingExtra)
 	require.Equal(t, 1000, got.GatewayRetryAfterMS)
+}
+
+func TestSettingService_UpdateSettings_GatewayEdgeGlobalWorkers(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, &config.Config{})
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{GatewayEdgeGlobalWorkers: 9999})
+	require.NoError(t, err)
+	require.Equal(t, "9999", repo.updates[SettingKeyGatewayEdgeGlobalWorkers])
+
+	err = svc.UpdateSettings(context.Background(), &SystemSettings{GatewayEdgeGlobalWorkers: 1000000000})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "GATEWAY_EDGE_GLOBAL_WORKERS_INVALID")
 }
 
 func TestSettingService_GetAntigravityUserAgentVersion_Precedence(t *testing.T) {

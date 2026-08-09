@@ -1686,8 +1686,13 @@ func (p *openAIWSConnPool) shouldHealthCheckConn(conn *openAIWSConn) bool {
 }
 
 func (p *openAIWSConnPool) maxConnsHardCap() int {
-	if p != nil && p.cfg != nil && p.cfg.Gateway.OpenAIWS.MaxConnsPerAccount > 0 {
-		return p.cfg.Gateway.OpenAIWS.MaxConnsPerAccount
+	if p != nil && p.cfg != nil {
+		if p.cfg.Gateway.OpenAIWS.MaxConnsPerAccount == 0 {
+			return math.MaxInt
+		}
+		if p.cfg.Gateway.OpenAIWS.MaxConnsPerAccount > 0 {
+			return p.cfg.Gateway.OpenAIWS.MaxConnsPerAccount
+		}
 	}
 	return 8
 }
@@ -1748,7 +1753,13 @@ func (p *openAIWSConnPool) effectiveMaxConnsByAccount(account *Account) int {
 	if factor <= 0 {
 		factor = 1.0
 	}
-	effective := int(math.Ceil(float64(account.Concurrency) * factor))
+	scaled := float64(account.Concurrency) * factor
+	// Avoid implementation-dependent float64-to-int overflow when an
+	// unusually large account concurrency or factor is configured.
+	if scaled >= float64(hardCap) {
+		return hardCap
+	}
+	effective := int(math.Ceil(scaled))
 	if effective < 1 {
 		effective = 1
 	}
