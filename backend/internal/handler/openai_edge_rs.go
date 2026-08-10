@@ -928,7 +928,22 @@ func (h *OpenAIGatewayHandler) OpenAIEdgePrepare(c *gin.Context) {
 	if !ok {
 		return
 	}
+	h.applyOpenAIEdgeProtection(&plan)
 	c.JSON(http.StatusOK, plan)
+}
+
+func (h *OpenAIGatewayHandler) applyOpenAIEdgeProtection(plan *service.OpenAIEdgePlan) {
+	if h == nil || h.cfg == nil || plan == nil {
+		return
+	}
+	profile := h.cfg.GatewayEdgeProtection()
+	plan.EdgeProtectionEnabled = profile.EdgeProtectionEnabled
+	plan.EdgeConnectTimeoutMS = profile.EdgeConnectTimeoutMS
+	plan.EdgeResponseHeaderTimeoutMS = profile.EdgeResponseHeaderTimeoutMS
+	plan.EdgeResponseHeaderBudgetMS = profile.EdgeResponseHeaderBudgetMS
+	plan.EdgeBodyIdleTimeoutMS = profile.EdgeBodyIdleTimeoutMS
+	plan.EdgeResponseHeaderMaxAttempts = profile.EdgeResponseHeaderMaxAttempts
+	plan.EdgeResponseHeaderFailover = profile.EdgeResponseHeaderFailover
 }
 
 func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req service.OpenAIEdgePrepareRequest, cfg config.GatewayOpenAIEdgeRSConfig) (service.OpenAIEdgePlan, bool) {
@@ -2060,6 +2075,7 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 	}
 	plan.LowLatencyMode = h.openAIEdgeLowLatencyMode()
 	plan.Lane = openAIEdgeLaneFromServiceTier(prepared.ServiceTier)
+	h.applyOpenAIEdgeProtection(&plan)
 	applyOpenAIEdgeRaceResponseHeaderBudget(lease, &plan)
 	lease.account = account
 	lease.accountReleaseFunc = release

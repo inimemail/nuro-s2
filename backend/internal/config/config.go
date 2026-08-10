@@ -1072,7 +1072,60 @@ type GatewaySchedulingRuntime struct {
 	// OpenAIResponseHeaderTimeout is a DB-backed override for the OpenAI
 	// upstream response-header deadline. A non-nil pointer distinguishes an
 	// explicit zero (unlimited) from an unset runtime override.
-	OpenAIResponseHeaderTimeout *time.Duration
+	OpenAIResponseHeaderTimeout   *time.Duration
+	EdgeProtectionEnabled         bool
+	EdgeConnectTimeoutMS          int
+	EdgeResponseHeaderTimeoutMS   int
+	EdgeResponseHeaderBudgetMS    int
+	EdgeBodyIdleTimeoutMS         int
+	EdgeResponseHeaderMaxAttempts int
+	EdgeResponseHeaderFailover    bool
+	// EdgeProtectionConfigured distinguishes an explicitly published Edge
+	// profile from legacy runtime updates that predate these fields.
+	EdgeProtectionConfigured bool
+}
+
+// GatewayEdgeProtection returns the effective Edge upstream protection profile.
+// Values are atomically overridden by the admin settings service and fall back
+// to the recommended deployment defaults before the first settings load.
+func (c *Config) GatewayEdgeProtection() GatewaySchedulingRuntime {
+	result := GatewaySchedulingRuntime{
+		EdgeProtectionEnabled:         true,
+		EdgeConnectTimeoutMS:          5000,
+		EdgeResponseHeaderTimeoutMS:   15000,
+		EdgeResponseHeaderBudgetMS:    15000,
+		EdgeBodyIdleTimeoutMS:         180000,
+		EdgeResponseHeaderMaxAttempts: 3,
+		EdgeResponseHeaderFailover:    true,
+	}
+	if c == nil {
+		return result
+	}
+	if pointer := c.schedulingRuntimePointer(); pointer != nil {
+		if live := pointer.Load(); live != nil {
+			if !live.EdgeProtectionConfigured && live.EdgeConnectTimeoutMS == 0 && live.EdgeResponseHeaderTimeoutMS == 0 && live.EdgeResponseHeaderBudgetMS == 0 && live.EdgeBodyIdleTimeoutMS == 0 && live.EdgeResponseHeaderMaxAttempts == 0 {
+				return result
+			}
+			if live.EdgeConnectTimeoutMS > 0 {
+				result.EdgeConnectTimeoutMS = live.EdgeConnectTimeoutMS
+			}
+			if live.EdgeResponseHeaderTimeoutMS > 0 {
+				result.EdgeResponseHeaderTimeoutMS = live.EdgeResponseHeaderTimeoutMS
+			}
+			if live.EdgeResponseHeaderBudgetMS > 0 {
+				result.EdgeResponseHeaderBudgetMS = live.EdgeResponseHeaderBudgetMS
+			}
+			if live.EdgeBodyIdleTimeoutMS > 0 {
+				result.EdgeBodyIdleTimeoutMS = live.EdgeBodyIdleTimeoutMS
+			}
+			if live.EdgeResponseHeaderMaxAttempts > 0 {
+				result.EdgeResponseHeaderMaxAttempts = live.EdgeResponseHeaderMaxAttempts
+			}
+			result.EdgeProtectionEnabled = live.EdgeProtectionEnabled
+			result.EdgeResponseHeaderFailover = live.EdgeResponseHeaderFailover
+		}
+	}
+	return result
 }
 
 var schedulingRuntimeInitMu sync.Mutex

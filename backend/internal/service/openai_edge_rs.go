@@ -64,6 +64,15 @@ type OpenAIEdgePlan struct {
 	// request-level Edge race budget is active, including switched accounts. A
 	// successful SSE body is never time-limited by it.
 	RaceResponseHeaderTimeoutMS int `json:"race_response_header_timeout_ms,omitempty"`
+	// Edge upstream protection is request-scoped so admin changes can reach a
+	// long-running Edge process without rebuilding its HTTP client pool.
+	EdgeProtectionEnabled         bool `json:"edge_protection_enabled"`
+	EdgeConnectTimeoutMS          int  `json:"edge_connect_timeout_ms,omitempty"`
+	EdgeResponseHeaderTimeoutMS   int  `json:"edge_response_header_timeout_ms,omitempty"`
+	EdgeResponseHeaderBudgetMS    int  `json:"edge_response_header_budget_ms,omitempty"`
+	EdgeBodyIdleTimeoutMS         int  `json:"edge_body_idle_timeout_ms,omitempty"`
+	EdgeResponseHeaderMaxAttempts int  `json:"edge_response_header_max_attempts,omitempty"`
+	EdgeResponseHeaderFailover    bool `json:"edge_response_header_failover"`
 	// SSECommentPreflush mirrors the account-level APIKey/OAuth setting that
 	// sends an SSE comment before upstream data so the downstream can commit the
 	// response body earlier. It is deliberately optional for old edge binaries.

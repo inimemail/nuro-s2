@@ -494,6 +494,14 @@ const (
 	// concurrency wait profile. Zero means unlimited when the protection is on.
 	SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled = "gateway_openai_response_header_timeout_enabled"
 	SettingKeyGatewayOpenAIResponseHeaderTimeoutMS      = "gateway_openai_response_header_timeout_ms"
+	// Edge upstream protection is independent from the concurrency wait profile.
+	SettingKeyGatewayProtectionEnabled             = "gateway_edge_protection_enabled"
+	SettingKeyGatewayEdgeConnectTimeoutMS          = "gateway_edge_connect_timeout_ms"
+	SettingKeyGatewayEdgeResponseHeaderTimeoutMS   = "gateway_edge_response_header_timeout_ms"
+	SettingKeyGatewayEdgeResponseHeaderBudgetMS    = "gateway_edge_response_header_budget_ms"
+	SettingKeyGatewayEdgeBodyIdleTimeoutMS         = "gateway_edge_body_idle_timeout_ms"
+	SettingKeyGatewayEdgeResponseHeaderMaxAttempts = "gateway_edge_response_header_max_attempts"
+	SettingKeyGatewayEdgeResponseHeaderFailover    = "gateway_edge_response_header_failover"
 	// SettingKeyGatewayRetryAfterSeconds is kept for reading settings saved by
 	// older versions; new writes and API payloads use milliseconds.
 	SettingKeyGatewayRetryAfterSeconds = "gateway_retry_after_seconds"

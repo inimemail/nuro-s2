@@ -202,6 +202,13 @@ type SystemSettings struct {
 	GatewayRetryAfterMS                       int
 	GatewayOpenAIResponseHeaderTimeoutEnabled bool
 	GatewayOpenAIResponseHeaderTimeoutMS      int64
+	GatewayProtectionEnabled                  bool
+	GatewayEdgeConnectTimeoutMS               int
+	GatewayEdgeResponseHeaderTimeoutMS        int
+	GatewayEdgeResponseHeaderBudgetMS         int
+	GatewayEdgeBodyIdleTimeoutMS              int
+	GatewayEdgeResponseHeaderMaxAttempts      int
+	GatewayEdgeResponseHeaderFailover         bool
 	// OpenAI 池下游模型限流保护：默认开启；开启后模型路由错误不会对下游返回 404/model_not_found。
 	OpenAIPoolDownstreamModelLimitProtectionEnabled bool
 	// OpenAI 池恢复探测：默认开启；关闭后软冷却到期直接恢复调度。

@@ -719,6 +719,15 @@ struct EdgePlan {
     safe_token_placeholder: bool,
     first_token_timeout_placeholder_ms: Option<u64>,
     race_response_header_timeout_ms: Option<u64>,
+    #[serde(default)]
+    edge_protection_enabled: bool,
+    edge_connect_timeout_ms: Option<u64>,
+    edge_response_header_timeout_ms: Option<u64>,
+    edge_response_header_budget_ms: Option<u64>,
+    edge_body_idle_timeout_ms: Option<u64>,
+    edge_response_header_max_attempts: Option<u32>,
+    #[serde(default)]
+    edge_response_header_failover: bool,
     prompt_cache_creation_optimization_mode: Option<String>,
     prompt_cache_creation_optimization_model: Option<String>,
     #[serde(default)]
@@ -793,6 +802,7 @@ struct EdgeTiming {
     relay_start_ms: Option<i64>,
     fallback_reason: Option<String>,
     retry_count: i64,
+    header_attempts: u32,
     continuation_token: Option<String>,
 }
 
@@ -835,6 +845,12 @@ fn relay_error_fallback_reason(err: &anyhow::Error) -> &'static str {
         || message.contains("edge_race_response_header_timeout")
     {
         return "race_response_header_budget_fallback_go";
+    }
+    if message.contains("edge response header attempts exhausted") {
+        return "edge_response_header_attempts_exhausted";
+    }
+    if message.contains("upstream body idle timeout") {
+        return "edge_upstream_body_idle_timeout";
     }
     if message.contains("edge relay queue full") {
         return "edge_relay_queue_full";
@@ -4138,6 +4154,29 @@ async fn relay_upstream_direct(
     };
     let first_token_timeout_placeholder =
         normalize_first_token_timeout_placeholder_ms(plan.first_token_timeout_placeholder_ms);
+    let edge_protection_enabled = plan.edge_protection_enabled;
+    let edge_connect_timeout = edge_protection_enabled
+        .then(|| plan.edge_connect_timeout_ms.filter(|value| *value > 0))
+        .flatten()
+        .map(Duration::from_millis);
+    let edge_response_header_timeout = edge_protection_enabled
+        .then(|| {
+            plan.edge_response_header_timeout_ms
+                .filter(|value| *value > 0)
+        })
+        .flatten()
+        .map(Duration::from_millis);
+    let edge_response_header_budget_deadline = edge_protection_enabled
+        .then(|| {
+            plan.edge_response_header_budget_ms
+                .filter(|value| *value > 0)
+        })
+        .flatten()
+        .map(|value| started_at + Duration::from_millis(value));
+    let edge_body_idle_timeout = edge_protection_enabled
+        .then(|| plan.edge_body_idle_timeout_ms.filter(|value| *value > 0))
+        .flatten()
+        .map(Duration::from_millis);
     let race_response_header_deadline = plan
         .race_response_header_timeout_ms
         .filter(|value| *value > 0)
@@ -4153,11 +4192,37 @@ async fn relay_upstream_direct(
     let send_headers = plan.headers.clone();
     let header_start = Instant::now();
     let mut upstream_send = Box::pin(async move {
+        let attempt_started_at = Instant::now();
+        let remaining_budget = || {
+            edge_response_header_budget_deadline
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+        };
+        let attempt_remaining = |limit: Option<Duration>, include_connect: bool| {
+            let mut remaining = limit.unwrap_or(Duration::from_secs(365 * 24 * 60 * 60));
+            if let Some(budget) = remaining_budget() {
+                remaining = remaining.min(budget);
+            }
+            if let Some(race) = race_response_header_deadline {
+                remaining = remaining.min(race.saturating_duration_since(Instant::now()));
+            }
+            if include_connect {
+                if let Some(connect) = edge_connect_timeout {
+                    remaining = remaining.min(connect.saturating_sub(attempt_started_at.elapsed()));
+                }
+            }
+            remaining
+        };
         // Client/lane selection is part of the header and placeholder race.
         // A resource-bounded proxy-capacity wait therefore cannot move an account's
         // configured first-token placeholder past its request-relative limit.
-        let mut selected = if let Some(deadline) = race_response_header_deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+        let mut selected = if race_response_header_deadline.is_some()
+            || edge_response_header_budget_deadline.is_some()
+            || edge_connect_timeout.is_some()
+        {
+            let remaining = attempt_remaining(None, true);
+            if remaining.is_zero() {
+                return Err(anyhow::anyhow!(EDGE_RACE_RESPONSE_HEADER_BUDGET_EXHAUSTED));
+            }
             match tokio::time::timeout(
                 remaining,
                 send_state.upstream_client_for_plan(
@@ -4202,8 +4267,11 @@ async fn relay_upstream_direct(
         if let Some(marker) = &relay_attempted_marker {
             marker.store(true, Ordering::SeqCst);
         }
-        let response = if let Some(deadline) = race_response_header_deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+        let response = if race_response_header_deadline.is_some()
+            || edge_response_header_budget_deadline.is_some()
+            || edge_response_header_timeout.is_some()
+        {
+            let remaining = attempt_remaining(edge_response_header_timeout, false);
             if remaining.is_zero() {
                 drop(response_future);
                 selected.guard.release();
@@ -4245,7 +4313,11 @@ async fn relay_upstream_direct(
         tokio::select! {
             result = &mut upstream_send => match result {
                 Ok(result) => result,
-                Err(err) if is_edge_race_response_header_budget_exhausted(&err) => {
+                Err(err)
+                    if (plan.edge_response_header_failover
+                        || plan.race_response_header_timeout_ms.is_some())
+                        && is_edge_race_response_header_budget_exhausted(&err) =>
+                {
                     return retry_after_race_response_header_budget(
                         state,
                         plan,
@@ -4481,7 +4553,33 @@ async fn relay_upstream_direct(
 
                 upstream_client_guard.mark_stream_open();
                 let mut bytes_stream = upstream.bytes_stream();
-                while let Some(next) = bytes_stream.next().await {
+                loop {
+                    let next = if let Some(idle_timeout) = edge_body_idle_timeout {
+                        match tokio::time::timeout(idle_timeout, bytes_stream.next()).await {
+                            Ok(next) => next,
+                            Err(_) => {
+                                success = false;
+                                error_message = Some("upstream body idle timeout".to_string());
+                                guard.update_stream_snapshot(
+                                    &summary,
+                                    success,
+                                    error_message.clone(),
+                                    upstream_header_ms,
+                                    first_byte_ms,
+                                    first_token_ms,
+                                    real_first_token_ms,
+                                    first_flush_ms,
+                                    upstream_status_code,
+                                    true,
+                                );
+                                yield Err(std::io::Error::other("upstream body idle timeout"));
+                                break;
+                            }
+                        }
+                    } else {
+                        bytes_stream.next().await
+                    };
+                    let Some(next) = next else { break };
                     match next {
                         Ok(chunk) => {
                             if first_byte_ms.is_none() {
@@ -4634,7 +4732,11 @@ async fn relay_upstream_direct(
     } else {
         match upstream_send.await {
             Ok(result) => result,
-            Err(err) if is_edge_race_response_header_budget_exhausted(&err) => {
+            Err(err)
+                if (plan.edge_response_header_failover
+                    || plan.race_response_header_timeout_ms.is_some())
+                    && is_edge_race_response_header_budget_exhausted(&err) =>
+            {
                 return retry_after_race_response_header_budget(
                     state,
                     plan,
@@ -4907,6 +5009,7 @@ async fn relay_upstream_direct(
             BootstrapComment,
             FirstTokenTimeoutPlaceholder,
             Upstream(Option<Result<Bytes, reqwest::Error>>),
+            BodyIdleTimeout,
         }
 
         loop {
@@ -4918,10 +5021,26 @@ async fn relay_upstream_direct(
                     _ = wait_optional_sleep(&mut first_token_timeout_timer), if !first_token_timeout_placeholder_sent && first_token_ms.is_none() => {
                         RelaySelectEvent::FirstTokenTimeoutPlaceholder
                     }
-                    next = bytes_stream.next() => RelaySelectEvent::Upstream(next),
+                    next = async {
+                        if let Some(idle_timeout) = edge_body_idle_timeout {
+                            match tokio::time::timeout(idle_timeout, bytes_stream.next()).await {
+                                Ok(next) => RelaySelectEvent::Upstream(next),
+                                Err(_) => RelaySelectEvent::BodyIdleTimeout,
+                            }
+                        } else {
+                            RelaySelectEvent::Upstream(bytes_stream.next().await)
+                        }
+                    } => next,
                 }
             } else {
-                RelaySelectEvent::Upstream(bytes_stream.next().await)
+                if let Some(idle_timeout) = edge_body_idle_timeout {
+                    match tokio::time::timeout(idle_timeout, bytes_stream.next()).await {
+                        Ok(next) => RelaySelectEvent::Upstream(next),
+                        Err(_) => RelaySelectEvent::BodyIdleTimeout,
+                    }
+                } else {
+                    RelaySelectEvent::Upstream(bytes_stream.next().await)
+                }
             };
             let next = match event {
                 RelaySelectEvent::BootstrapComment => {
@@ -4974,6 +5093,24 @@ async fn relay_upstream_direct(
                     }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
                     continue;
+                }
+                RelaySelectEvent::BodyIdleTimeout => {
+                    success = false;
+                    error_message = Some("upstream body idle timeout".to_string());
+                    guard.update_stream_snapshot(
+                        &summary,
+                        success,
+                        error_message.clone(),
+                        Some(upstream_header_ms),
+                        first_byte_ms,
+                        first_token_ms,
+                        real_first_token_ms,
+                        first_flush_ms,
+                        Some(status.as_u16()),
+                        true,
+                    );
+                    yield Err(std::io::Error::other("upstream body idle timeout"));
+                    break;
                 }
                 RelaySelectEvent::Upstream(next) => next,
             };
@@ -5279,6 +5416,14 @@ async fn retry_after_race_response_header_budget(
         relay_attempted_marker: _,
         ingress_permit,
     } = context;
+    if let Some(max_attempts) = plan
+        .edge_response_header_max_attempts
+        .filter(|value| *value > 0)
+    {
+        if timing.header_attempts.saturating_add(1) >= max_attempts {
+            anyhow::bail!("edge response header attempts exhausted");
+        }
+    }
     let decision = call_retry(
         &state,
         RetryRequest {
@@ -5314,6 +5459,7 @@ async fn retry_after_race_response_header_budget(
     };
     let mut next_timing = timing;
     next_timing.retry_count += 1;
+    next_timing.header_attempts = next_timing.header_attempts.saturating_add(1);
     update_edge_timing(timing_shared.as_ref(), |shared| {
         shared.retry_count = next_timing.retry_count;
         shared.queue_wait_ms = next_timing.queue_wait_ms;
@@ -8870,6 +9016,16 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             )),
             "race_response_header_budget_fallback_go"
         );
+        assert_eq!(
+            relay_error_fallback_reason(&anyhow::anyhow!(
+                "edge response header attempts exhausted"
+            )),
+            "edge_response_header_attempts_exhausted"
+        );
+        assert_eq!(
+            relay_error_fallback_reason(&anyhow::anyhow!("upstream body idle timeout")),
+            "edge_upstream_body_idle_timeout"
+        );
         assert!(!relay_error_is_local_capacity(&error));
         assert!(!is_edge_race_response_header_budget_exhausted(
             &anyhow::anyhow!("edge race response header budget exhausted: wrapped")
@@ -9248,6 +9404,13 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             safe_token_placeholder: false,
             first_token_timeout_placeholder_ms: None,
             race_response_header_timeout_ms: None,
+            edge_protection_enabled: false,
+            edge_connect_timeout_ms: None,
+            edge_response_header_timeout_ms: None,
+            edge_response_header_budget_ms: None,
+            edge_body_idle_timeout_ms: None,
+            edge_response_header_max_attempts: None,
+            edge_response_header_failover: false,
             prompt_cache_creation_optimization_mode: None,
             prompt_cache_creation_optimization_model: None,
             prompt_cache_creation_optimization_applied: false,
@@ -9390,6 +9553,13 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             safe_token_placeholder: false,
             first_token_timeout_placeholder_ms: None,
             race_response_header_timeout_ms: None,
+            edge_protection_enabled: false,
+            edge_connect_timeout_ms: None,
+            edge_response_header_timeout_ms: None,
+            edge_response_header_budget_ms: None,
+            edge_body_idle_timeout_ms: None,
+            edge_response_header_max_attempts: None,
+            edge_response_header_failover: false,
             prompt_cache_creation_optimization_mode: None,
             prompt_cache_creation_optimization_model: None,
             prompt_cache_creation_optimization_applied: false,

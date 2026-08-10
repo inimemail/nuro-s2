@@ -190,6 +190,13 @@ type SystemSettings struct {
 	GatewayRetryAfterMS                             int    `json:"gateway_retry_after_ms"`
 	GatewayOpenAIResponseHeaderTimeoutEnabled       bool   `json:"gateway_openai_response_header_timeout_enabled"`
 	GatewayOpenAIResponseHeaderTimeoutMS            int64  `json:"gateway_openai_response_header_timeout_ms"`
+	GatewayProtectionEnabled                        bool   `json:"gateway_edge_protection_enabled"`
+	GatewayEdgeConnectTimeoutMS                     int    `json:"gateway_edge_connect_timeout_ms"`
+	GatewayEdgeResponseHeaderTimeoutMS              int    `json:"gateway_edge_response_header_timeout_ms"`
+	GatewayEdgeResponseHeaderBudgetMS               int    `json:"gateway_edge_response_header_budget_ms"`
+	GatewayEdgeBodyIdleTimeoutMS                    int    `json:"gateway_edge_body_idle_timeout_ms"`
+	GatewayEdgeResponseHeaderMaxAttempts            int    `json:"gateway_edge_response_header_max_attempts"`
+	GatewayEdgeResponseHeaderFailover               bool   `json:"gateway_edge_response_header_failover"`
 	OpenAIPoolDownstreamModelLimitProtectionEnabled bool   `json:"openai_pool_downstream_model_limit_protection_enabled"`
 	OpenAIPoolRecoveryProbeEnabled                  bool   `json:"openai_pool_recovery_probe_enabled"`
 	OpenAIPoolRecoveryProbeModel                    string `json:"openai_pool_recovery_probe_model"`

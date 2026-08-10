@@ -771,11 +771,19 @@ func (s *SettingService) applyGatewayRuntimeSettings(settings *SystemSettings) {
 		openAIHeaderTimeout = time.Duration(settings.GatewayOpenAIResponseHeaderTimeoutMS) * time.Millisecond
 	}
 	s.cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
-		UserSlotWaitTimeout:         time.Duration(settings.GatewayUserSlotWaitTimeoutMS) * time.Millisecond,
-		FallbackWaitTimeout:         time.Duration(settings.GatewayAccountSlotWaitTimeoutMS) * time.Millisecond,
-		UserSlotMaxWaitingExtra:     settings.GatewayUserWaitingExtra,
-		RetryAfterMS:                settings.GatewayRetryAfterMS,
-		OpenAIResponseHeaderTimeout: &openAIHeaderTimeout,
+		UserSlotWaitTimeout:           time.Duration(settings.GatewayUserSlotWaitTimeoutMS) * time.Millisecond,
+		FallbackWaitTimeout:           time.Duration(settings.GatewayAccountSlotWaitTimeoutMS) * time.Millisecond,
+		UserSlotMaxWaitingExtra:       settings.GatewayUserWaitingExtra,
+		RetryAfterMS:                  settings.GatewayRetryAfterMS,
+		OpenAIResponseHeaderTimeout:   &openAIHeaderTimeout,
+		EdgeProtectionEnabled:         settings.GatewayProtectionEnabled,
+		EdgeConnectTimeoutMS:          settings.GatewayEdgeConnectTimeoutMS,
+		EdgeResponseHeaderTimeoutMS:   settings.GatewayEdgeResponseHeaderTimeoutMS,
+		EdgeResponseHeaderBudgetMS:    settings.GatewayEdgeResponseHeaderBudgetMS,
+		EdgeBodyIdleTimeoutMS:         settings.GatewayEdgeBodyIdleTimeoutMS,
+		EdgeResponseHeaderMaxAttempts: settings.GatewayEdgeResponseHeaderMaxAttempts,
+		EdgeResponseHeaderFailover:    settings.GatewayEdgeResponseHeaderFailover,
+		EdgeProtectionConfigured:      true,
 	})
 }
 
@@ -2181,11 +2189,41 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	if settings.GatewayRetryAfterMS <= 0 {
 		settings.GatewayRetryAfterMS = 1000
 	}
+	if settings.GatewayEdgeConnectTimeoutMS <= 0 {
+		settings.GatewayEdgeConnectTimeoutMS = 5000
+	}
+	if settings.GatewayEdgeResponseHeaderTimeoutMS <= 0 {
+		settings.GatewayEdgeResponseHeaderTimeoutMS = 15000
+	}
+	if settings.GatewayEdgeResponseHeaderBudgetMS <= 0 {
+		settings.GatewayEdgeResponseHeaderBudgetMS = 15000
+	}
+	if settings.GatewayEdgeBodyIdleTimeoutMS <= 0 {
+		settings.GatewayEdgeBodyIdleTimeoutMS = 180000
+	}
+	if settings.GatewayEdgeResponseHeaderMaxAttempts <= 0 {
+		settings.GatewayEdgeResponseHeaderMaxAttempts = 3
+	}
 	if settings.GatewayOpenAIResponseHeaderTimeoutMS < 0 {
 		return nil, infraerrors.BadRequest("GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT_INVALID", "gateway OpenAI response-header timeout must be non-negative")
 	}
 	if settings.GatewayOpenAIResponseHeaderTimeoutMS > int64(math.MaxInt64/time.Millisecond) {
 		return nil, infraerrors.BadRequest("GATEWAY_OPENAI_RESPONSE_HEADER_TIMEOUT_INVALID", "gateway OpenAI response-header timeout is too large")
+	}
+	if settings.GatewayEdgeConnectTimeoutMS < 1 {
+		return nil, infraerrors.BadRequest("GATEWAY_EDGE_CONNECT_TIMEOUT_INVALID", "gateway edge connect timeout must be positive")
+	}
+	if settings.GatewayEdgeResponseHeaderTimeoutMS < 1 {
+		return nil, infraerrors.BadRequest("GATEWAY_EDGE_RESPONSE_HEADER_TIMEOUT_INVALID", "gateway edge response-header timeout must be positive")
+	}
+	if settings.GatewayEdgeResponseHeaderBudgetMS < 1 {
+		return nil, infraerrors.BadRequest("GATEWAY_EDGE_RESPONSE_HEADER_BUDGET_INVALID", "gateway edge response-header budget must be positive")
+	}
+	if settings.GatewayEdgeBodyIdleTimeoutMS < 1 {
+		return nil, infraerrors.BadRequest("GATEWAY_EDGE_BODY_IDLE_TIMEOUT_INVALID", "gateway edge body idle timeout must be positive")
+	}
+	if settings.GatewayEdgeResponseHeaderMaxAttempts < 1 || settings.GatewayEdgeResponseHeaderMaxAttempts > 100 {
+		return nil, infraerrors.BadRequest("GATEWAY_EDGE_RESPONSE_HEADER_ATTEMPTS_INVALID", "gateway edge response-header attempts must be between 1 and 100")
 	}
 	if settings.GatewayUserSlotWaitTimeoutMS < 1 || settings.GatewayUserSlotWaitTimeoutMS > 30000 {
 		return nil, infraerrors.BadRequest("GATEWAY_USER_SLOT_WAIT_TIMEOUT_INVALID", "gateway user slot wait must be between 1ms and 30000ms")
@@ -2213,6 +2251,13 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyGatewayRetryAfterMS] = strconv.Itoa(settings.GatewayRetryAfterMS)
 	updates[SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled] = strconv.FormatBool(settings.GatewayOpenAIResponseHeaderTimeoutEnabled)
 	updates[SettingKeyGatewayOpenAIResponseHeaderTimeoutMS] = strconv.FormatInt(settings.GatewayOpenAIResponseHeaderTimeoutMS, 10)
+	updates[SettingKeyGatewayProtectionEnabled] = strconv.FormatBool(settings.GatewayProtectionEnabled)
+	updates[SettingKeyGatewayEdgeConnectTimeoutMS] = strconv.Itoa(settings.GatewayEdgeConnectTimeoutMS)
+	updates[SettingKeyGatewayEdgeResponseHeaderTimeoutMS] = strconv.Itoa(settings.GatewayEdgeResponseHeaderTimeoutMS)
+	updates[SettingKeyGatewayEdgeResponseHeaderBudgetMS] = strconv.Itoa(settings.GatewayEdgeResponseHeaderBudgetMS)
+	updates[SettingKeyGatewayEdgeBodyIdleTimeoutMS] = strconv.Itoa(settings.GatewayEdgeBodyIdleTimeoutMS)
+	updates[SettingKeyGatewayEdgeResponseHeaderMaxAttempts] = strconv.Itoa(settings.GatewayEdgeResponseHeaderMaxAttempts)
+	updates[SettingKeyGatewayEdgeResponseHeaderFailover] = strconv.FormatBool(settings.GatewayEdgeResponseHeaderFailover)
 	updates[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled] = strconv.FormatBool(settings.OpenAIPoolDownstreamModelLimitProtectionEnabled)
 	updates[SettingKeyOpenAIPoolRecoveryProbeEnabled] = strconv.FormatBool(settings.OpenAIPoolRecoveryProbeEnabled)
 	updates[SettingKeyOpenAIPoolRecoveryProbeModel] = strings.TrimSpace(settings.OpenAIPoolRecoveryProbeModel)
@@ -3459,6 +3504,13 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyGatewayRetryAfterMS:                             "1000",
 		SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled:       "true",
 		SettingKeyGatewayOpenAIResponseHeaderTimeoutMS:            "30000",
+		SettingKeyGatewayProtectionEnabled:                        "true",
+		SettingKeyGatewayEdgeConnectTimeoutMS:                     "5000",
+		SettingKeyGatewayEdgeResponseHeaderTimeoutMS:              "15000",
+		SettingKeyGatewayEdgeResponseHeaderBudgetMS:               "15000",
+		SettingKeyGatewayEdgeBodyIdleTimeoutMS:                    "180000",
+		SettingKeyGatewayEdgeResponseHeaderMaxAttempts:            "3",
+		SettingKeyGatewayEdgeResponseHeaderFailover:               "true",
 		SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled: "true",
 		SettingKeyOpenAIPoolRecoveryProbeEnabled:                  "true",
 		SettingKeyOpenAIPoolRecoveryProbeModel:                    openai.DefaultTestModel,
@@ -4030,6 +4082,13 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.GatewayRetryAfterMS = clampInt(retryAfterMS, 1, 60000)
 	result.GatewayOpenAIResponseHeaderTimeoutEnabled = !isFalseSettingValue(settings[SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled])
 	result.GatewayOpenAIResponseHeaderTimeoutMS = parseGatewayOpenAIResponseHeaderTimeoutMS(settings[SettingKeyGatewayOpenAIResponseHeaderTimeoutMS], 30000)
+	result.GatewayProtectionEnabled = !isFalseSettingValue(settings[SettingKeyGatewayProtectionEnabled])
+	result.GatewayEdgeConnectTimeoutMS = parsePositiveIntSetting(settings[SettingKeyGatewayEdgeConnectTimeoutMS], 5000)
+	result.GatewayEdgeResponseHeaderTimeoutMS = parsePositiveIntSetting(settings[SettingKeyGatewayEdgeResponseHeaderTimeoutMS], 15000)
+	result.GatewayEdgeResponseHeaderBudgetMS = parsePositiveIntSetting(settings[SettingKeyGatewayEdgeResponseHeaderBudgetMS], 15000)
+	result.GatewayEdgeBodyIdleTimeoutMS = parsePositiveIntSetting(settings[SettingKeyGatewayEdgeBodyIdleTimeoutMS], 180000)
+	result.GatewayEdgeResponseHeaderMaxAttempts = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayEdgeResponseHeaderMaxAttempts], 3), 1, 100)
+	result.GatewayEdgeResponseHeaderFailover = !isFalseSettingValue(settings[SettingKeyGatewayEdgeResponseHeaderFailover])
 	result.OpenAIPoolDownstreamModelLimitProtectionEnabled = true
 	if v, ok := settings[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled]; ok && v != "" {
 		result.OpenAIPoolDownstreamModelLimitProtectionEnabled = v == "true"

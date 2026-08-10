@@ -17,6 +17,19 @@ func resetViperWithJWTSecret(t *testing.T) {
 	t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
 }
 
+// buildValid is shared by validation table tests that need a fully loaded
+// baseline config. Some older tests also define a local helper with this name;
+// keeping this package-level fallback avoids scope-dependent compile failures.
+func buildValid(t *testing.T) *Config {
+	t.Helper()
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	return cfg
+}
+
 func TestLoadForBootstrapAllowsMissingJWTSecret(t *testing.T) {
 	viper.Reset()
 	t.Setenv("JWT_SECRET", "")
@@ -134,6 +147,20 @@ func TestGatewaySchedulingRuntimeOverride(t *testing.T) {
 	require.Equal(t, 5, effective.UserSlotMaxWaitingExtra)
 	require.Equal(t, 1000, effective.RetryAfterMS)
 	require.Equal(t, 1, effective.RetryAfterHeaderSeconds())
+}
+
+func TestGatewayEdgeProtectionExplicitRuntimeProfilePreservesDisabledState(t *testing.T) {
+	cfg := &Config{}
+	cfg.SetGatewaySchedulingRuntime(GatewaySchedulingRuntime{
+		EdgeProtectionConfigured:   true,
+		EdgeProtectionEnabled:      false,
+		EdgeResponseHeaderFailover: false,
+	})
+
+	profile := cfg.GatewayEdgeProtection()
+	require.False(t, profile.EdgeProtectionEnabled)
+	require.False(t, profile.EdgeResponseHeaderFailover)
+	require.Equal(t, 5000, profile.EdgeConnectTimeoutMS)
 }
 
 func TestLoadForwardedClientIPHeadersFromEnvironment(t *testing.T) {

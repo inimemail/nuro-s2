@@ -303,6 +303,13 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		GatewayRetryAfterMS:                             settings.GatewayRetryAfterMS,
 		GatewayOpenAIResponseHeaderTimeoutEnabled:       settings.GatewayOpenAIResponseHeaderTimeoutEnabled,
 		GatewayOpenAIResponseHeaderTimeoutMS:            settings.GatewayOpenAIResponseHeaderTimeoutMS,
+		GatewayProtectionEnabled:                        settings.GatewayProtectionEnabled,
+		GatewayEdgeConnectTimeoutMS:                     settings.GatewayEdgeConnectTimeoutMS,
+		GatewayEdgeResponseHeaderTimeoutMS:              settings.GatewayEdgeResponseHeaderTimeoutMS,
+		GatewayEdgeResponseHeaderBudgetMS:               settings.GatewayEdgeResponseHeaderBudgetMS,
+		GatewayEdgeBodyIdleTimeoutMS:                    settings.GatewayEdgeBodyIdleTimeoutMS,
+		GatewayEdgeResponseHeaderMaxAttempts:            settings.GatewayEdgeResponseHeaderMaxAttempts,
+		GatewayEdgeResponseHeaderFailover:               settings.GatewayEdgeResponseHeaderFailover,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: settings.OpenAIPoolDownstreamModelLimitProtectionEnabled,
 		OpenAIPoolRecoveryProbeEnabled:                  settings.OpenAIPoolRecoveryProbeEnabled,
 		OpenAIPoolRecoveryProbeModel:                    settings.OpenAIPoolRecoveryProbeModel,
@@ -674,6 +681,13 @@ type UpdateSettingsRequest struct {
 	GatewayRetryAfterMS                             int     `json:"gateway_retry_after_ms"`
 	GatewayOpenAIResponseHeaderTimeoutEnabled       *bool   `json:"gateway_openai_response_header_timeout_enabled"`
 	GatewayOpenAIResponseHeaderTimeoutMS            *int64  `json:"gateway_openai_response_header_timeout_ms"`
+	GatewayProtectionEnabled                        *bool   `json:"gateway_edge_protection_enabled"`
+	GatewayEdgeConnectTimeoutMS                     int     `json:"gateway_edge_connect_timeout_ms"`
+	GatewayEdgeResponseHeaderTimeoutMS              int     `json:"gateway_edge_response_header_timeout_ms"`
+	GatewayEdgeResponseHeaderBudgetMS               int     `json:"gateway_edge_response_header_budget_ms"`
+	GatewayEdgeBodyIdleTimeoutMS                    int     `json:"gateway_edge_body_idle_timeout_ms"`
+	GatewayEdgeResponseHeaderMaxAttempts            int     `json:"gateway_edge_response_header_max_attempts"`
+	GatewayEdgeResponseHeaderFailover               *bool   `json:"gateway_edge_response_header_failover"`
 	OpenAIPoolDownstreamModelLimitProtectionEnabled *bool   `json:"openai_pool_downstream_model_limit_protection_enabled"`
 	OpenAIPoolRecoveryProbeEnabled                  *bool   `json:"openai_pool_recovery_probe_enabled"`
 	OpenAIPoolRecoveryProbeModel                    *string `json:"openai_pool_recovery_probe_model"`
@@ -962,6 +976,29 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	openAIHeaderTimeoutMS := previousSettings.GatewayOpenAIResponseHeaderTimeoutMS
 	if req.GatewayOpenAIResponseHeaderTimeoutMS != nil {
 		openAIHeaderTimeoutMS = *req.GatewayOpenAIResponseHeaderTimeoutMS
+	}
+	if req.GatewayEdgeConnectTimeoutMS <= 0 {
+		req.GatewayEdgeConnectTimeoutMS = previousSettings.GatewayEdgeConnectTimeoutMS
+	}
+	if req.GatewayEdgeResponseHeaderTimeoutMS <= 0 {
+		req.GatewayEdgeResponseHeaderTimeoutMS = previousSettings.GatewayEdgeResponseHeaderTimeoutMS
+	}
+	if req.GatewayEdgeResponseHeaderBudgetMS <= 0 {
+		req.GatewayEdgeResponseHeaderBudgetMS = previousSettings.GatewayEdgeResponseHeaderBudgetMS
+	}
+	if req.GatewayEdgeBodyIdleTimeoutMS <= 0 {
+		req.GatewayEdgeBodyIdleTimeoutMS = previousSettings.GatewayEdgeBodyIdleTimeoutMS
+	}
+	if req.GatewayEdgeResponseHeaderMaxAttempts <= 0 {
+		req.GatewayEdgeResponseHeaderMaxAttempts = previousSettings.GatewayEdgeResponseHeaderMaxAttempts
+	}
+	edgeProtectionEnabled := previousSettings.GatewayProtectionEnabled
+	if req.GatewayProtectionEnabled != nil {
+		edgeProtectionEnabled = *req.GatewayProtectionEnabled
+	}
+	edgeResponseHeaderFailover := previousSettings.GatewayEdgeResponseHeaderFailover
+	if req.GatewayEdgeResponseHeaderFailover != nil {
+		edgeResponseHeaderFailover = *req.GatewayEdgeResponseHeaderFailover
 	}
 	req.SMTPHost = strings.TrimSpace(req.SMTPHost)
 	req.SMTPUsername = strings.TrimSpace(req.SMTPUsername)
@@ -1914,6 +1951,13 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GatewayRetryAfterMS:                       req.GatewayRetryAfterMS,
 		GatewayOpenAIResponseHeaderTimeoutEnabled: openAIHeaderEnabled,
 		GatewayOpenAIResponseHeaderTimeoutMS:      openAIHeaderTimeoutMS,
+		GatewayProtectionEnabled:                  edgeProtectionEnabled,
+		GatewayEdgeConnectTimeoutMS:               req.GatewayEdgeConnectTimeoutMS,
+		GatewayEdgeResponseHeaderTimeoutMS:        req.GatewayEdgeResponseHeaderTimeoutMS,
+		GatewayEdgeResponseHeaderBudgetMS:         req.GatewayEdgeResponseHeaderBudgetMS,
+		GatewayEdgeBodyIdleTimeoutMS:              req.GatewayEdgeBodyIdleTimeoutMS,
+		GatewayEdgeResponseHeaderMaxAttempts:      req.GatewayEdgeResponseHeaderMaxAttempts,
+		GatewayEdgeResponseHeaderFailover:         edgeResponseHeaderFailover,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: func() bool {
 			if req.OpenAIPoolDownstreamModelLimitProtectionEnabled != nil {
 				return *req.OpenAIPoolDownstreamModelLimitProtectionEnabled
@@ -2574,6 +2618,13 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GatewayRetryAfterMS:                             updatedSettings.GatewayRetryAfterMS,
 		GatewayOpenAIResponseHeaderTimeoutEnabled:       updatedSettings.GatewayOpenAIResponseHeaderTimeoutEnabled,
 		GatewayOpenAIResponseHeaderTimeoutMS:            updatedSettings.GatewayOpenAIResponseHeaderTimeoutMS,
+		GatewayProtectionEnabled:                        updatedSettings.GatewayProtectionEnabled,
+		GatewayEdgeConnectTimeoutMS:                     updatedSettings.GatewayEdgeConnectTimeoutMS,
+		GatewayEdgeResponseHeaderTimeoutMS:              updatedSettings.GatewayEdgeResponseHeaderTimeoutMS,
+		GatewayEdgeResponseHeaderBudgetMS:               updatedSettings.GatewayEdgeResponseHeaderBudgetMS,
+		GatewayEdgeBodyIdleTimeoutMS:                    updatedSettings.GatewayEdgeBodyIdleTimeoutMS,
+		GatewayEdgeResponseHeaderMaxAttempts:            updatedSettings.GatewayEdgeResponseHeaderMaxAttempts,
+		GatewayEdgeResponseHeaderFailover:               updatedSettings.GatewayEdgeResponseHeaderFailover,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: updatedSettings.OpenAIPoolDownstreamModelLimitProtectionEnabled,
 		OpenAIPoolRecoveryProbeEnabled:                  updatedSettings.OpenAIPoolRecoveryProbeEnabled,
 		OpenAIPoolRecoveryProbeModel:                    updatedSettings.OpenAIPoolRecoveryProbeModel,
@@ -3087,6 +3138,27 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.GatewayOpenAIResponseHeaderTimeoutMS != after.GatewayOpenAIResponseHeaderTimeoutMS {
 		changed = append(changed, "gateway_openai_response_header_timeout_ms")
+	}
+	if before.GatewayProtectionEnabled != after.GatewayProtectionEnabled {
+		changed = append(changed, "gateway_edge_protection_enabled")
+	}
+	if before.GatewayEdgeConnectTimeoutMS != after.GatewayEdgeConnectTimeoutMS {
+		changed = append(changed, "gateway_edge_connect_timeout_ms")
+	}
+	if before.GatewayEdgeResponseHeaderTimeoutMS != after.GatewayEdgeResponseHeaderTimeoutMS {
+		changed = append(changed, "gateway_edge_response_header_timeout_ms")
+	}
+	if before.GatewayEdgeResponseHeaderBudgetMS != after.GatewayEdgeResponseHeaderBudgetMS {
+		changed = append(changed, "gateway_edge_response_header_budget_ms")
+	}
+	if before.GatewayEdgeBodyIdleTimeoutMS != after.GatewayEdgeBodyIdleTimeoutMS {
+		changed = append(changed, "gateway_edge_body_idle_timeout_ms")
+	}
+	if before.GatewayEdgeResponseHeaderMaxAttempts != after.GatewayEdgeResponseHeaderMaxAttempts {
+		changed = append(changed, "gateway_edge_response_header_max_attempts")
+	}
+	if before.GatewayEdgeResponseHeaderFailover != after.GatewayEdgeResponseHeaderFailover {
+		changed = append(changed, "gateway_edge_response_header_failover")
 	}
 	if before.OpenAIPoolDownstreamModelLimitProtectionEnabled != after.OpenAIPoolDownstreamModelLimitProtectionEnabled {
 		changed = append(changed, "openai_pool_downstream_model_limit_protection_enabled")

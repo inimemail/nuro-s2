@@ -4247,6 +4247,81 @@
             </div>
           </div>
 
+          <!-- Edge upstream protection -->
+          <div class="card overflow-hidden">
+            <div class="border-b border-gray-100 bg-gradient-to-r from-sky-50 via-white to-emerald-50 px-6 py-5 dark:border-dark-700 dark:from-sky-950/30 dark:via-dark-800 dark:to-emerald-950/20">
+              <div class="flex flex-wrap items-start justify-between gap-4">
+                <div class="flex items-start gap-3">
+                  <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300">
+                    <Icon name="shield" size="md" />
+                  </div>
+                  <div>
+                    <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t("admin.settings.gatewayEdgeProtection.title") }}</h2>
+                    <p class="mt-1 max-w-2xl text-sm text-gray-600 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.description") }}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="btn-ghost btn-icon h-9 w-9 rounded-full border border-sky-200 text-sky-700 transition-transform hover:rotate-[-20deg] hover:bg-sky-100 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-900/40"
+                  :title="t('admin.settings.gatewayEdgeProtection.reset')"
+                  :aria-label="t('admin.settings.gatewayEdgeProtection.reset')"
+                  @click="resetGatewayEdgeProtectionDefaults"
+                >
+                  <Icon name="refresh" size="sm" />
+                </button>
+              </div>
+              <div class="mt-5 flex flex-wrap items-center gap-3">
+                <span class="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold" :class="form.gateway_edge_protection_enabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300' : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300'">
+                  <span class="h-2 w-2 rounded-full" :class="form.gateway_edge_protection_enabled ? 'bg-emerald-500' : 'bg-gray-400'" />
+                  {{ form.gateway_edge_protection_enabled ? t("admin.settings.gatewayEdgeProtection.enabled") : t("admin.settings.gatewayEdgeProtection.disabled") }}
+                </span>
+                <span class="text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.restartHint") }}</span>
+              </div>
+            </div>
+            <div class="grid gap-5 p-6 sm:grid-cols-2 lg:grid-cols-3">
+              <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayEdgeProtection.connectTimeout") }}</label>
+                <input v-model.number="form.gateway_edge_connect_timeout_ms" type="number" min="1" step="1" class="input w-full" />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.connectTimeoutHint") }}</p>
+              </div>
+              <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayEdgeProtection.headerTimeout") }}</label>
+                <input v-model.number="form.gateway_edge_response_header_timeout_ms" type="number" min="1" step="1" class="input w-full" />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.headerTimeoutHint") }}</p>
+              </div>
+              <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayEdgeProtection.headerBudget") }}</label>
+                <input v-model.number="form.gateway_edge_response_header_budget_ms" type="number" min="1" step="1" class="input w-full" />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.headerBudgetHint") }}</p>
+              </div>
+              <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayEdgeProtection.bodyIdleTimeout") }}</label>
+                <input v-model.number="form.gateway_edge_body_idle_timeout_ms" type="number" min="1" step="1" class="input w-full" />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.bodyIdleTimeoutHint") }}</p>
+              </div>
+              <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayEdgeProtection.maxAttempts") }}</label>
+                <input v-model.number="form.gateway_edge_response_header_max_attempts" type="number" min="1" max="100" step="1" class="input w-full" />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.maxAttemptsHint") }}</p>
+              </div>
+              <div class="flex items-end">
+                <div class="flex w-full items-center justify-between gap-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-dark-600 dark:bg-dark-800/70">
+                  <div>
+                    <div class="text-sm font-medium text-gray-700 dark:text-gray-200">{{ t("admin.settings.gatewayEdgeProtection.failover") }}</div>
+                    <div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.failoverHint") }}</div>
+                  </div>
+                  <Toggle v-model="form.gateway_edge_response_header_failover" />
+                </div>
+              </div>
+              <div class="flex items-end sm:col-span-2 lg:col-span-3">
+                <div class="flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/20 dark:text-sky-200">
+                  <Icon name="shield" size="sm" class="mt-0.5 shrink-0" />
+                  <span>{{ t("admin.settings.gatewayEdgeProtection.behaviorHint") }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Gateway Forwarding Behavior -->
           <div class="card">
             <div
@@ -8668,6 +8743,13 @@ const form = reactive<SettingsForm>({
   gateway_retry_after_ms: 1000,
   gateway_openai_response_header_timeout_enabled: true,
   gateway_openai_response_header_timeout_ms: 30000,
+  gateway_edge_protection_enabled: true,
+  gateway_edge_connect_timeout_ms: 5000,
+  gateway_edge_response_header_timeout_ms: 15000,
+  gateway_edge_response_header_budget_ms: 15000,
+  gateway_edge_body_idle_timeout_ms: 180000,
+  gateway_edge_response_header_max_attempts: 3,
+  gateway_edge_response_header_failover: true,
   openai_pool_downstream_model_limit_protection_enabled: true,
   openai_pool_recovery_probe_enabled: true,
   openai_pool_recovery_probe_model: "gpt-5.5",
@@ -8739,12 +8821,26 @@ const gatewayOpenAIHeaderTimeoutDefaults = Object.freeze({
   gateway_openai_response_header_timeout_ms: 30000,
 });
 
+const gatewayEdgeProtectionDefaults = Object.freeze({
+  gateway_edge_protection_enabled: true,
+  gateway_edge_connect_timeout_ms: 5000,
+  gateway_edge_response_header_timeout_ms: 15000,
+  gateway_edge_response_header_budget_ms: 15000,
+  gateway_edge_body_idle_timeout_ms: 180000,
+  gateway_edge_response_header_max_attempts: 3,
+  gateway_edge_response_header_failover: true,
+});
+
 function resetGatewayConcurrencyDefaults(): void {
   Object.assign(form, gatewayConcurrencyDefaults);
 }
 
 function resetGatewayOpenAIHeaderTimeoutDefaults(): void {
   Object.assign(form, gatewayOpenAIHeaderTimeoutDefaults);
+}
+
+function resetGatewayEdgeProtectionDefaults(): void {
+  Object.assign(form, gatewayEdgeProtectionDefaults);
 }
 
 function validateGatewayConcurrencySettings(): boolean {
@@ -8781,6 +8877,23 @@ function validateGatewayConcurrencySettings(): boolean {
   }
   if (!Number.isSafeInteger(openAIHeaderTimeout) || openAIHeaderTimeout < 0) {
     appStore.showError(t("admin.settings.gatewayOpenAIHeaderTimeout.timeoutRange"));
+    return false;
+  }
+  const edgeConnect = Number(form.gateway_edge_connect_timeout_ms);
+  const edgeHeader = Number(form.gateway_edge_response_header_timeout_ms);
+  const edgeHeaderBudget = Number(form.gateway_edge_response_header_budget_ms);
+  const edgeIdle = Number(form.gateway_edge_body_idle_timeout_ms);
+  const edgeAttempts = Number(form.gateway_edge_response_header_max_attempts);
+  if (![edgeConnect, edgeHeader, edgeHeaderBudget].every((value) => Number.isSafeInteger(value) && value >= 1)) {
+    appStore.showError(t("admin.settings.gatewayEdgeProtection.timeoutRange"));
+    return false;
+  }
+  if (!Number.isSafeInteger(edgeIdle) || edgeIdle < 1) {
+    appStore.showError(t("admin.settings.gatewayEdgeProtection.bodyIdleRange"));
+    return false;
+  }
+  if (!Number.isSafeInteger(edgeAttempts) || edgeAttempts < 1 || edgeAttempts > 100) {
+    appStore.showError(t("admin.settings.gatewayEdgeProtection.attemptsRange"));
     return false;
   }
   return true;
@@ -10076,6 +10189,13 @@ async function saveSettings() {
       gateway_openai_response_header_timeout_ms: Math.floor(
         Number(form.gateway_openai_response_header_timeout_ms),
       ),
+      gateway_edge_protection_enabled: form.gateway_edge_protection_enabled,
+      gateway_edge_connect_timeout_ms: Math.floor(Number(form.gateway_edge_connect_timeout_ms)),
+      gateway_edge_response_header_timeout_ms: Math.floor(Number(form.gateway_edge_response_header_timeout_ms)),
+      gateway_edge_response_header_budget_ms: Math.floor(Number(form.gateway_edge_response_header_budget_ms)),
+      gateway_edge_body_idle_timeout_ms: Math.floor(Number(form.gateway_edge_body_idle_timeout_ms)),
+      gateway_edge_response_header_max_attempts: Math.floor(Number(form.gateway_edge_response_header_max_attempts)),
+      gateway_edge_response_header_failover: form.gateway_edge_response_header_failover,
       openai_pool_downstream_model_limit_protection_enabled:
         form.openai_pool_downstream_model_limit_protection_enabled,
       openai_pool_recovery_probe_enabled:

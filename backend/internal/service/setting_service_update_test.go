@@ -403,6 +403,38 @@ func TestSettingService_ParseSettings_GatewayConcurrencyDefaults(t *testing.T) {
 	require.Equal(t, 9999, got.GatewayEdgeGlobalWorkers)
 	require.Equal(t, 5, got.GatewayUserWaitingExtra)
 	require.Equal(t, 1000, got.GatewayRetryAfterMS)
+	require.True(t, got.GatewayProtectionEnabled)
+	require.Equal(t, 5000, got.GatewayEdgeConnectTimeoutMS)
+	require.Equal(t, 15000, got.GatewayEdgeResponseHeaderTimeoutMS)
+	require.Equal(t, 15000, got.GatewayEdgeResponseHeaderBudgetMS)
+	require.Equal(t, 180000, got.GatewayEdgeBodyIdleTimeoutMS)
+	require.Equal(t, 3, got.GatewayEdgeResponseHeaderMaxAttempts)
+	require.True(t, got.GatewayEdgeResponseHeaderFailover)
+}
+
+func TestSettingService_UpdateSettings_EdgeProtectionRefreshesRuntime(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	cfg := &config.Config{}
+	svc := NewSettingService(repo, cfg)
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		GatewayProtectionEnabled:             false,
+		GatewayEdgeConnectTimeoutMS:          2500,
+		GatewayEdgeResponseHeaderTimeoutMS:   7000,
+		GatewayEdgeResponseHeaderBudgetMS:    9000,
+		GatewayEdgeBodyIdleTimeoutMS:         120000,
+		GatewayEdgeResponseHeaderMaxAttempts: 2,
+		GatewayEdgeResponseHeaderFailover:    false,
+	})
+	require.NoError(t, err)
+	profile := cfg.GatewayEdgeProtection()
+	require.False(t, profile.EdgeProtectionEnabled)
+	require.Equal(t, 2500, profile.EdgeConnectTimeoutMS)
+	require.Equal(t, 7000, profile.EdgeResponseHeaderTimeoutMS)
+	require.Equal(t, 9000, profile.EdgeResponseHeaderBudgetMS)
+	require.Equal(t, 120000, profile.EdgeBodyIdleTimeoutMS)
+	require.Equal(t, 2, profile.EdgeResponseHeaderMaxAttempts)
+	require.False(t, profile.EdgeResponseHeaderFailover)
 }
 
 func TestSettingService_ParseSettings_OpenAIHeaderTimeout(t *testing.T) {
