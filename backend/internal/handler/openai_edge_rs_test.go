@@ -767,7 +767,10 @@ func TestOpenAIEdgeRetryExplicitRejectedResponsesFieldsStayOnSameLease(t *testin
 		sameAccountRetries: map[int64]int{},
 		failedAccountIDs:   map[int64]struct{}{},
 	}
-	h := &OpenAIGatewayHandler{openAIEdgeLeases: map[string]*openAIEdgeLease{"lease-1": lease}}
+	h := &OpenAIGatewayHandler{
+		cfg:              &config.Config{},
+		openAIEdgeLeases: map[string]*openAIEdgeLease{"lease-1": lease},
+	}
 	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
 
 	first := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
@@ -778,6 +781,9 @@ func TestOpenAIEdgeRetryExplicitRejectedResponsesFieldsStayOnSameLease(t *testin
 	})
 	if first.Action != service.OpenAIEdgeActionRelay || first.Plan == nil {
 		t.Fatalf("expected same-lease field retry, got action=%q reason=%q", first.Action, first.Reason)
+	}
+	if !first.Plan.EdgeProtectionEnabled || first.Plan.EdgeConnectTimeoutMS != 5000 || first.Plan.EdgeResponseHeaderTimeoutMS != 15000 {
+		t.Fatalf("compatibility retry lost Edge protection: %+v", first.Plan)
 	}
 	firstBody, err := base64.StdEncoding.DecodeString(first.Plan.BodyRawBase64)
 	if err != nil {

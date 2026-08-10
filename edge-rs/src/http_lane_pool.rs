@@ -289,6 +289,7 @@ struct LaneKey {
     proxy: String,
     origin: String,
     lane: String,
+    connect_timeout_ms: u64,
 }
 
 struct LaneState {
@@ -476,7 +477,7 @@ pub struct HttpLanePool {
     expansion_delay_count: AtomicU64,
 }
 
-type ClientFactory = dyn Fn(&str, usize) -> anyhow::Result<Client> + Send + Sync;
+type ClientFactory = dyn Fn(&str, usize, Option<Duration>) -> anyhow::Result<Client> + Send + Sync;
 
 impl HttpLanePool {
     pub fn new(config: HttpLanePoolConfig) -> Arc<Self> {
@@ -539,6 +540,14 @@ impl HttpLanePool {
         self: &Arc<Self>,
         request: LaneRequest<'_>,
     ) -> anyhow::Result<LaneSelection> {
+        self.acquire_with_connect_timeout(request, None).await
+    }
+
+    pub async fn acquire_with_connect_timeout(
+        self: &Arc<Self>,
+        request: LaneRequest<'_>,
+        connect_timeout: Option<Duration>,
+    ) -> anyhow::Result<LaneSelection> {
         if !self.config.enabled {
             anyhow::bail!("http lane pool disabled")
         }
@@ -551,6 +560,9 @@ impl HttpLanePool {
             proxy: canonical_proxy(request.proxy_url)?,
             origin: normalize_origin(request.origin_url)?,
             lane: normalize_lane(request.lane),
+            connect_timeout_ms: connect_timeout
+                .map(|value| value.as_millis().min(u64::MAX as u128) as u64)
+                .unwrap_or(0),
         };
         match self.acquire_step(&key)? {
             AcquireStep::Ready(selection) => Ok(selection),
@@ -585,7 +597,11 @@ impl HttpLanePool {
                     .fetch_add(1, Ordering::Relaxed);
                 return Err(LanePoolCapacityError.into());
             }
-            let client = (self.client_factory)(&key.proxy, self.config.max_idle_per_host)?;
+            let client = (self.client_factory)(
+                &key.proxy,
+                self.config.max_idle_per_host,
+                connect_timeout_from_millis(key.connect_timeout_ms),
+            )?;
             let lane = Arc::new(LaneState::new(client, now));
             let group_epoch = self.next_group_epoch.fetch_add(1, Ordering::Relaxed);
             self.total_lanes.fetch_add(1, Ordering::Relaxed);
@@ -770,7 +786,11 @@ impl HttpLanePool {
 
     fn expand_group_locked(&self, group: &mut LaneGroup, now: u64) {
         group.cancel_expansion_schedule();
-        match (self.client_factory)(&group.key.proxy, self.config.max_idle_per_host) {
+        match (self.client_factory)(
+            &group.key.proxy,
+            self.config.max_idle_per_host,
+            connect_timeout_from_millis(group.key.connect_timeout_ms),
+        ) {
             Ok(client) => {
                 group.lanes.push(Arc::new(LaneState::new(client, now)));
                 self.total_lanes.fetch_add(1, Ordering::Relaxed);
@@ -1087,15 +1107,20 @@ impl Drop for LaneExpansionDelayGuard {
     }
 }
 
-pub fn build_standalone_client(
+pub fn build_standalone_client_with_connect_timeout(
     proxy_url: Option<&str>,
     max_idle_per_host: usize,
+    connect_timeout: Option<Duration>,
 ) -> anyhow::Result<Client> {
     let proxy = canonical_proxy(proxy_url)?;
-    build_client(&proxy, max_idle_per_host)
+    build_client(&proxy, max_idle_per_host, connect_timeout)
 }
 
-fn build_client(proxy: &str, max_idle_per_host: usize) -> anyhow::Result<Client> {
+fn build_client(
+    proxy: &str,
+    max_idle_per_host: usize,
+    connect_timeout: Option<Duration>,
+) -> anyhow::Result<Client> {
     let mut builder = Client::builder()
         .tcp_nodelay(true)
         .http2_adaptive_window(true)
@@ -1104,6 +1129,9 @@ fn build_client(proxy: &str, max_idle_per_host: usize) -> anyhow::Result<Client>
         .http2_keep_alive_while_idle(true)
         .pool_idle_timeout(Duration::from_secs(300))
         .pool_max_idle_per_host(max_idle_per_host.max(1));
+    if let Some(connect_timeout) = connect_timeout.filter(|value| !value.is_zero()) {
+        builder = builder.connect_timeout(connect_timeout);
+    }
     if !proxy.is_empty() {
         let proxy = reqwest::Proxy::all(proxy)
             .map_err(|_| anyhow::anyhow!("invalid upstream proxy configuration"))?;
@@ -1112,6 +1140,10 @@ fn build_client(proxy: &str, max_idle_per_host: usize) -> anyhow::Result<Client>
     builder
         .build()
         .map_err(|_| anyhow::anyhow!("could not build upstream HTTP client"))
+}
+
+fn connect_timeout_from_millis(value: u64) -> Option<Duration> {
+    (value > 0).then(|| Duration::from_millis(value))
 }
 
 fn canonical_proxy(proxy: Option<&str>) -> anyhow::Result<String> {
@@ -1277,6 +1309,27 @@ mod tests {
         let config = HttpLanePoolConfig::default();
         assert!(config.enabled);
         assert_eq!(config.max_idle_per_host, 1);
+    }
+
+    #[tokio::test]
+    async fn connect_timeout_is_part_of_the_client_pool_key() {
+        let pool = HttpLanePool::new(HttpLanePoolConfig::default());
+        let request = LaneRequest {
+            account_id: Some(7),
+            proxy_url: None,
+            origin_url: "https://example.com/v1/responses",
+            lane: None,
+        };
+        let first = pool
+            .acquire_with_connect_timeout(request, Some(Duration::from_millis(100)))
+            .await
+            .unwrap();
+        let second = pool
+            .acquire_with_connect_timeout(request, Some(Duration::from_millis(200)))
+            .await
+            .unwrap();
+        assert_eq!(pool.snapshot().keys, 2);
+        drop((first, second));
     }
 
     #[test]
@@ -1547,6 +1600,7 @@ mod tests {
             proxy: canonical_proxy(None).unwrap(),
             origin: normalize_origin(request.origin_url).unwrap(),
             lane: normalize_lane(None),
+            connect_timeout_ms: 0,
         };
 
         let (group_epoch, stale_generation, current_generation) = {
@@ -1599,6 +1653,7 @@ mod tests {
             proxy: canonical_proxy(None).unwrap(),
             origin: normalize_origin(request.origin_url).unwrap(),
             lane: normalize_lane(None),
+            connect_timeout_ms: 0,
         };
         let (old_epoch, stale_generation) = {
             let mut groups = pool.groups.lock().unwrap();
@@ -2111,13 +2166,15 @@ mod tests {
             }
         });
 
-        let factory: Arc<ClientFactory> = Arc::new(|proxy, max_idle_per_host| {
+        let factory: Arc<ClientFactory> = Arc::new(|proxy, max_idle_per_host, connect_timeout| {
             assert!(proxy.is_empty());
-            Client::builder()
+            let mut builder = Client::builder()
                 .http2_prior_knowledge()
-                .pool_max_idle_per_host(max_idle_per_host.max(1))
-                .build()
-                .map_err(anyhow::Error::from)
+                .pool_max_idle_per_host(max_idle_per_host.max(1));
+            if let Some(connect_timeout) = connect_timeout {
+                builder = builder.connect_timeout(connect_timeout);
+            }
+            builder.build().map_err(anyhow::Error::from)
         });
         let pool = Arc::new(HttpLanePool::with_client_factory(
             HttpLanePoolConfig {

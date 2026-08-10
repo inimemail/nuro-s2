@@ -1767,7 +1767,8 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	if strings.TrimSpace(req.ErrorType) == "edge_queue_wait_timeout" {
 		return h.openAIEdgeRetrySwitchAccount(c, lease, req, "queue_wait_timeout")
 	}
-	if strings.TrimSpace(req.ErrorType) == openAIEdgeRaceResponseHeaderTimeoutErrorType {
+	edgeResponseHeaderTimeout := strings.TrimSpace(req.ErrorType) == openAIEdgeRaceResponseHeaderTimeoutErrorType
+	if edgeResponseHeaderTimeout {
 		if lease.sameAccountStarted == nil {
 			lease.sameAccountStarted = make(map[int64]time.Time)
 		}
@@ -1791,6 +1792,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 				plan := lease.lastPlan
 				plan.Body = nil
 				plan.BodyRawBase64 = service.EncodeOpenAIEdgeRawBody(nextBody)
+				h.applyOpenAIEdgeProtection(&plan)
 				applyOpenAIEdgeRaceResponseHeaderBudget(lease, &plan)
 				lease.lastPlan = plan
 				return service.OpenAIEdgeRetryDecision{
@@ -1838,8 +1840,8 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		StatusCode:             status,
 		ResponseBody:           responseBody,
 		Message:                openAIEdgeSafeErrorMessage(upstreamMsg),
-		RetryableOnSameAccount: service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, upstreamMsg, responseBody),
-		SkipPoolSoftCooldown:   modelRoutingError,
+		RetryableOnSameAccount: !edgeResponseHeaderTimeout && service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, upstreamMsg, responseBody),
+		SkipPoolSoftCooldown:   modelRoutingError || edgeResponseHeaderTimeout,
 	}
 	if failoverErr.RetryableOnSameAccount {
 		// Edge retries are intentionally immediate. The upstream attempt and the
@@ -1868,8 +1870,10 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		}
 	}
 	routingModel := lease.openAIRoutingModel()
-	h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, routingModel, false, nil)
-	h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), lease.apiKey.GroupID, lease.sessionHash, lease.account, failoverErr, routingModel)
+	if !edgeResponseHeaderTimeout {
+		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, routingModel, false, nil)
+		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), lease.apiKey.GroupID, lease.sessionHash, lease.account, failoverErr, routingModel)
+	}
 	h.gatewayService.RecordOpenAIAccountSwitch()
 	lease.failedAccountIDs[lease.account.ID] = struct{}{}
 	if lease.switchCount >= lease.maxAccountSwitches {
