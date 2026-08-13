@@ -135,7 +135,7 @@
           </div>
 
           <!-- Token intervals -->
-          <div class="mt-3">
+          <div v-if="!props.hideTokenIntervals" class="mt-3">
             <div class="flex items-center justify-between">
               <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
                 {{ t('admin.channels.form.intervals', '上下文区间定价（可选）') }}
@@ -194,12 +194,14 @@
           </div>
         </div>
 
-        <!-- Image mode -->
-        <div v-else-if="entry.billing_mode === 'image'">
+        <!-- Image/video mode -->
+        <div v-else-if="entry.billing_mode === 'image' || entry.billing_mode === 'video'">
           <!-- Default image price (per-request, same as per_request mode) -->
           <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
-            {{ t('admin.channels.form.defaultImagePrice', '默认图片价格（未命中层级时使用）') }}
-            <span class="ml-1 font-normal text-gray-400">$</span>
+            {{ entry.billing_mode === 'video'
+              ? t('admin.groups.modelPricing.defaultVideoPrice')
+              : t('admin.channels.form.defaultImagePrice', '默认图片价格（未命中层级时使用）') }}
+            <span class="ml-1 font-normal text-gray-400">{{ entry.billing_mode === 'video' ? '$/s' : '$' }}</span>
           </label>
           <div class="mt-1 w-48">
             <input :value="entry.per_request_price" @input="emitField('per_request_price', ($event.target as HTMLInputElement).value)"
@@ -209,7 +211,9 @@
           <!-- Image tiers -->
           <div class="mt-3 flex items-center justify-between">
             <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
-              {{ t('admin.channels.form.imageTiers', '图片计费层级（按次）') }}
+              {{ entry.billing_mode === 'video'
+                ? t('admin.groups.modelPricing.videoTiers')
+                : t('admin.channels.form.imageTiers', '图片计费层级（按次）') }}
             </label>
             <button type="button" @click="addImageTier" class="text-xs text-primary-600 hover:text-primary-700">
               + {{ t('admin.channels.form.addTier', '添加层级') }}
@@ -248,6 +252,8 @@ const { t } = useI18n()
 const props = defineProps<{
   entry: PricingFormEntry
   platform?: string
+  hideTokenIntervals?: boolean
+  allowVideoMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -261,7 +267,10 @@ const collapsed = ref(props.entry.models.length > 0)
 const billingModeOptions = computed(() => [
   { value: 'token', label: 'Token' },
   { value: 'per_request', label: t('admin.channels.billingMode.perRequest', '按次') },
-  { value: 'image', label: t('admin.channels.billingMode.image', '图片（按次）') }
+  { value: 'image', label: t('admin.channels.billingMode.image', '图片（按次）') },
+  ...(props.allowVideoMode
+    ? [{ value: 'video', label: t('admin.groups.modelPricing.videoPerSecond') }]
+    : [])
 ])
 
 const billingModeLabel = computed(() => {
@@ -286,7 +295,9 @@ function addInterval() {
 
 function addImageTier() {
   const intervals = [...(props.entry.intervals || [])]
-  const labels = ['1K', '2K', '4K', 'HD']
+  const labels = props.entry.billing_mode === 'video'
+    ? ['480p', '720p', '1080p']
+    : ['1K', '2K', '4K', 'HD']
   intervals.push({
     min_tokens: 0, max_tokens: null, tier_label: labels[intervals.length] || '',
     input_price: null, output_price: null, cache_write_price: null,

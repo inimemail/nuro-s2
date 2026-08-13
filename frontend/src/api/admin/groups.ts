@@ -17,6 +17,12 @@ export interface LiveCapability {
   reason?: string
 }
 
+export interface CompositeRoute {
+  endpoint: string
+  target_platform: string
+  enabled: boolean
+}
+
 /**
  * List all groups with pagination
  * @param page - Page number (default: 1)
@@ -85,6 +91,11 @@ export async function getLiveCapability(): Promise<LiveCapability> {
 export async function getById(id: number): Promise<AdminGroup> {
   const { data } = await apiClient.get<AdminGroup>(`/admin/groups/${id}`)
   return data
+}
+
+export async function getCompositeRoutes(id: number): Promise<CompositeRoute[]> {
+  const { data } = await apiClient.get<CompositeRoute[]>(`/admin/groups/${id}/composite-routes`)
+  return data || []
 }
 
 /**
@@ -351,6 +362,7 @@ export const groupsAPI = {
   getByPlatform,
   getLiveCapability,
   getById,
+  getCompositeRoutes,
   getModelsListCandidates,
   create,
   duplicate,

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -65,12 +66,14 @@ func (f *GrokQuotaFetcher) BuildUsageInfo(account *Account) *UsageInfo {
 	}
 	snapshot, err := grokQuotaSnapshotFromExtra(account.Extra)
 	if err != nil || snapshot == nil {
+		applyGrokResolvedSubscriptionTier(usage, account, billing, nil)
 		if billing == nil {
 			usage.ErrorCode = "quota_unknown"
 			usage.Error = "Quota is not available yet"
 		}
 		return usage
 	}
+	applyGrokResolvedSubscriptionTier(usage, account, billing, snapshot)
 
 	if parsedAt, err := time.Parse(time.RFC3339, snapshot.UpdatedAt); err == nil {
 		usage.UpdatedAt = &parsedAt
@@ -111,6 +114,51 @@ func (f *GrokQuotaFetcher) BuildUsageInfo(account *Account) *UsageInfo {
 		usage.ErrorCode = "rate_limited"
 	}
 	return usage
+}
+
+func applyGrokResolvedSubscriptionTier(usage *UsageInfo, account *Account, billing *xai.BillingSummary, snapshot *xai.QuotaSnapshot) {
+	if usage == nil || account == nil {
+		return
+	}
+	if jwtTier := xai.SubscriptionTierFromJWT(account.GetCredential("access_token")); jwtTier != "" {
+		usage.SubscriptionTier = jwtTier
+		usage.SubscriptionTierRaw = jwtTier
+		return
+	}
+	signal := strings.TrimSpace(account.GetCredential("subscription_tier"))
+	if signal == "" && snapshot != nil {
+		signal = strings.TrimSpace(snapshot.SubscriptionTier)
+	}
+	if signal == "" && billing != nil {
+		signal = strings.TrimSpace(billing.Plan)
+	}
+	var monthlyLimit *float64
+	if billing != nil {
+		monthlyLimit = billing.MonthlyLimitCents
+	}
+	if plan := xai.CanonicalGrokPlan(monthlyLimit, signal, snapshot); plan != "" {
+		usage.SubscriptionTier = plan
+		usage.SubscriptionTierRaw = plan
+		return
+	}
+	if usage.SubscriptionTier == "" && signal != "" {
+		usage.SubscriptionTier = signal
+		usage.SubscriptionTierRaw = signal
+	}
+}
+
+func stampGrokQuotaSnapshotForPlan(account *Account, snapshot *xai.QuotaSnapshot, model string) {
+	if snapshot == nil {
+		return
+	}
+	if strings.TrimSpace(snapshot.Model) == "" && strings.TrimSpace(model) != "" {
+		snapshot.Model = xai.ResolveGrokTextResponsesModelID(model)
+	}
+	var previous *xai.QuotaSnapshot
+	if account != nil {
+		previous, _ = grokQuotaSnapshotFromExtra(account.Extra)
+	}
+	snapshot.ApplyGrok45ResponsesPlanSignal(previous)
 }
 
 func grokQuotaSnapshotFromExtra(extra map[string]any) (*xai.QuotaSnapshot, error) {

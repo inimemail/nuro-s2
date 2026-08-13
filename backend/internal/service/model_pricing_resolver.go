@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"log/slog"
+	"strings"
 )
 
 // PricingSource 定价来源标识
 const (
+	PricingSourceGroup    = "group"
 	PricingSourceChannel  = "channel"
 	PricingSourceLiteLLM  = "litellm"
 	PricingSourceFallback = "fallback"
@@ -36,6 +38,8 @@ type ResolvedPricing struct {
 	SupportsCacheBreakdown bool
 
 	channelPricing *ChannelModelPricing
+
+	longContextPricingEnabled bool
 }
 
 // ModelPricingResolver 统一模型定价解析器。
@@ -57,12 +61,25 @@ func NewModelPricingResolver(channelService *ChannelService, billingService *Bil
 type PricingInput struct {
 	Model   string
 	GroupID *int64 // nil 表示不检查渠道
+	Group   *Group
 }
 
 // Resolve 解析模型定价。
 // 1. 获取基础定价（LiteLLM → Fallback）
 // 2. 如果指定了 GroupID，查找渠道定价并覆盖
 func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) *ResolvedPricing {
+	longContextPricingEnabled := input.Group == nil || input.Group.LongContextPricingEnabled
+	if groupPricing := matchGroupModelPricing(input.Group, input.Model); groupPricing != nil {
+		if groupPricing.BillingMode == "" || groupPricing.BillingMode == BillingModeToken {
+			stripped := groupPricing.Clone()
+			stripped.Intervals = nil
+			groupPricing = &stripped
+		}
+		resolved := r.resolveConfiguredPricing(groupPricing, input.Model, PricingSourceGroup)
+		resolved.longContextPricingEnabled = longContextPricingEnabled
+		return resolved
+	}
+
 	var chPricing *ChannelModelPricing
 	if input.GroupID != nil && r.channelService != nil {
 		chPricing = r.channelService.GetChannelModelPricing(ctx, *input.GroupID, input.Model)
@@ -71,12 +88,13 @@ func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) 
 			if mode == "" {
 				mode = BillingModeToken
 			}
-			if mode == BillingModePerRequest || mode == BillingModeImage {
+			if mode == BillingModePerRequest || mode == BillingModeImage || mode == BillingModeVideo {
 				resolved := &ResolvedPricing{
 					Mode:           mode,
 					Source:         PricingSourceChannel,
 					channelPricing: chPricing,
 				}
+				resolved.longContextPricingEnabled = longContextPricingEnabled
 				r.applyRequestTierOverrides(chPricing, resolved)
 				return resolved
 			}
@@ -92,17 +110,77 @@ func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) 
 		Source:                 source,
 		SupportsCacheBreakdown: basePricing != nil && basePricing.SupportsCacheBreakdown,
 	}
+	resolved.longContextPricingEnabled = longContextPricingEnabled
 
 	// 2. 如果有 GroupID，尝试渠道覆盖
 	if chPricing != nil {
 		resolved.Source = PricingSourceChannel
 		resolved.channelPricing = chPricing
 		r.applyTokenOverrides(chPricing, resolved)
-	} else if input.GroupID != nil {
+		if !longContextPricingEnabled {
+			r.applyFirstTokenTier(resolved, chPricing)
+		}
+	} else if input.GroupID != nil && r.channelService != nil {
 		r.applyChannelOverrides(ctx, *input.GroupID, input.Model, resolved)
+		if resolved.Source == PricingSourceChannel && !longContextPricingEnabled {
+			r.applyFirstTokenTier(resolved, resolved.channelPricing)
+		}
 	}
 
 	return resolved
+}
+
+func (r *ModelPricingResolver) resolveConfiguredPricing(config *ChannelModelPricing, model, source string) *ResolvedPricing {
+	mode := config.BillingMode
+	if mode == "" {
+		mode = BillingModeToken
+	}
+	resolved := &ResolvedPricing{Mode: mode, Source: source, channelPricing: config}
+	if mode == BillingModePerRequest || mode == BillingModeImage || mode == BillingModeVideo {
+		r.applyRequestTierOverrides(config, resolved)
+		return resolved
+	}
+	resolved.BasePricing, _ = r.resolveBasePricing(model)
+	resolved.SupportsCacheBreakdown = resolved.BasePricing != nil && resolved.BasePricing.SupportsCacheBreakdown
+	r.applyTokenOverrides(config, resolved)
+	return resolved
+}
+
+func matchGroupModelPricing(group *Group, model string) *ChannelModelPricing {
+	if group == nil {
+		return nil
+	}
+	model = normalizeChannelPricingModelName(model)
+	var wildcard *ChannelModelPricing
+	for i := range group.ModelPricing {
+		entry := &group.ModelPricing[i]
+		for _, pattern := range entry.Models {
+			normalized := normalizeChannelPricingModelName(pattern)
+			if normalized == model {
+				cp := entry.Clone()
+				return &cp
+			}
+			if strings.HasSuffix(normalized, "*") && strings.HasPrefix(model, strings.TrimSuffix(normalized, "*")) && wildcard == nil {
+				cp := entry.Clone()
+				wildcard = &cp
+			}
+		}
+	}
+	return wildcard
+}
+
+func (r *ModelPricingResolver) applyFirstTokenTier(resolved *ResolvedPricing, config *ChannelModelPricing) {
+	if resolved == nil || len(resolved.Intervals) == 0 {
+		return
+	}
+	first := resolved.Intervals[0]
+	for _, interval := range resolved.Intervals[1:] {
+		if interval.MinTokens < first.MinTokens {
+			first = interval
+		}
+	}
+	resolved.BasePricing = intervalToModelPricing(&first, resolved.SupportsCacheBreakdown, config)
+	resolved.Intervals = nil
 }
 
 // resolveBasePricing 从 LiteLLM 或 Fallback 获取基础定价
@@ -133,7 +211,7 @@ func (r *ModelPricingResolver) applyChannelOverrides(ctx context.Context, groupI
 	switch resolved.Mode {
 	case BillingModeToken:
 		r.applyTokenOverrides(chPricing, resolved)
-	case BillingModePerRequest, BillingModeImage:
+	case BillingModePerRequest, BillingModeImage, BillingModeVideo:
 		r.applyRequestTierOverrides(chPricing, resolved)
 	}
 }
@@ -273,19 +351,29 @@ func intervalToModelPricing(iv *PricingInterval, supportsCacheBreakdown bool, ch
 
 // GetRequestTierPrice 根据层级标签获取按次价格
 func (r *ModelPricingResolver) GetRequestTierPrice(resolved *ResolvedPricing, tierLabel string) float64 {
+	price, _ := r.getRequestTierPrice(resolved, tierLabel)
+	return price
+}
+
+func (r *ModelPricingResolver) getRequestTierPrice(resolved *ResolvedPricing, tierLabel string) (float64, bool) {
 	for _, tier := range resolved.RequestTiers {
-		if tier.TierLabel == tierLabel && tier.PerRequestPrice != nil {
-			return *tier.PerRequestPrice
+		if strings.EqualFold(strings.TrimSpace(tier.TierLabel), strings.TrimSpace(tierLabel)) && tier.PerRequestPrice != nil {
+			return *tier.PerRequestPrice, true
 		}
 	}
-	return 0
+	return 0, false
 }
 
 // GetRequestTierPriceByContext 根据 context token 数获取按次价格
 func (r *ModelPricingResolver) GetRequestTierPriceByContext(resolved *ResolvedPricing, totalContextTokens int) float64 {
+	price, _ := r.getRequestTierPriceByContext(resolved, totalContextTokens)
+	return price
+}
+
+func (r *ModelPricingResolver) getRequestTierPriceByContext(resolved *ResolvedPricing, totalContextTokens int) (float64, bool) {
 	iv := FindMatchingInterval(resolved.RequestTiers, totalContextTokens)
 	if iv != nil && iv.PerRequestPrice != nil {
-		return *iv.PerRequestPrice
+		return *iv.PerRequestPrice, true
 	}
-	return 0
+	return 0, false
 }

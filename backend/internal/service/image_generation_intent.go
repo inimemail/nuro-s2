@@ -38,14 +38,28 @@ func GroupAllowsImageGeneration(group *Group) bool {
 	return group == nil || group.AllowImageGeneration
 }
 
+func GroupHasImageGenerationCapability(ctx context.Context, group *Group) bool {
+	if group == nil {
+		return true
+	}
+	if !group.AllowImageGeneration {
+		return false
+	}
+	if group.Platform != PlatformComposite {
+		return true
+	}
+	target, ok := ResolvedTargetPlatformFromContext(ctx)
+	return ok && (target == PlatformOpenAI || target == PlatformGrok)
+}
+
 // GroupAllowsImageGenerationForRequest is the backend capability gate used by
 // Composite groups. The frontend flag is only an additional policy switch;
 // the resolved concrete provider must advertise image support as well.
 func GroupAllowsImageGenerationForRequest(ctx context.Context, group *Group, endpoint, model string, body []byte) bool {
-	if group == nil || !group.AllowImageGeneration {
-		return group == nil
+	if !GroupHasImageGenerationCapability(ctx, group) {
+		return false
 	}
-	if group.Platform != PlatformComposite {
+	if group == nil || group.Platform != PlatformComposite {
 		return true
 	}
 	target, ok := ResolvedTargetPlatformFromContext(ctx)

@@ -326,6 +326,7 @@ func RegisterGatewayRoutes(
 		gateway.DELETE("/custom-voices/:voice_id", customVoiceHandler)
 		gateway.GET("/realtime", h.OpenAIGateway.GrokRealtime)
 		gateway.POST("/web_search", h.OpenAIGateway.GrokWebSearch)
+		gateway.POST("/x_search", h.OpenAIGateway.GrokXSearch)
 		gateway.GET("/image-tasks", func(c *gin.Context) {
 			if getGroupPlatform(c) != service.PlatformOpenAI {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
@@ -447,6 +448,7 @@ func RegisterGatewayRoutes(
 	r.DELETE("/custom-voices/:voice_id", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, customVoiceHandler)
 	r.GET("/realtime", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, h.OpenAIGateway.GrokRealtime)
 	r.POST("/web_search", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, h.OpenAIGateway.GrokWebSearch)
+	r.POST("/x_search", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, h.OpenAIGateway.GrokXSearch)
 	r.GET("/image-tasks", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 		platform := getGroupPlatform(c)
 		if platform != service.PlatformOpenAI && platform != service.PlatformComposite {
@@ -561,6 +563,8 @@ func compositeEndpointForPath(path string) (endpoint, fallbackModel string, rout
 	case strings.HasPrefix(path, "/tts") || strings.HasPrefix(path, "/stt") || strings.HasPrefix(path, "/custom-voices") || strings.HasPrefix(path, "/realtime"):
 		return service.CompositeRouteEndpointVoice, "grok-voice-latest", true
 	case strings.HasPrefix(path, "/web_search"):
+		return service.CompositeRouteEndpointSearch, "grok-4.5", true
+	case strings.HasPrefix(path, "/x_search"):
 		return service.CompositeRouteEndpointSearch, "grok-4.5", true
 	case strings.Contains(path, "/models/"):
 		return service.CompositeRouteEndpointGemini, "", true

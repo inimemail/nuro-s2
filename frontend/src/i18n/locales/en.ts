@@ -2501,6 +2501,19 @@ export default {
         geminiImage: 'Gemini Image',
         hint: 'Select at least one model family'
       }
+      ,modelPricing: {
+        title: 'Group Model Pricing',
+        description: 'Override model billing for this group. Unconfigured models use channel or official pricing.',
+        add: 'Add pricing',
+        longContext: 'Enable long-context tier pricing',
+        longContextHint: 'Enabled by default; disable to skip upstream long-context tiers.',
+        modelsRequired: 'Every pricing entry must include at least one model. Add a model or remove the empty entry.',
+        priceRequired: 'Per-request, image, and video pricing requires a default price or at least one tier.',
+        videoPerSecond: 'Video (per second)',
+        defaultVideoPrice: 'Default video price (when no resolution tier matches)',
+        videoTiers: 'Video resolution pricing',
+        perSecondPrice: 'Price per second'
+      }
     },
 
     // Available Channels (aggregated read-only view)

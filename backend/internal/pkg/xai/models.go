@@ -22,6 +22,7 @@ const (
 )
 
 var defaultModels = []Model{
+	{ID: "grok-4.6", Object: "model", OwnedBy: "xai", DisplayName: "Grok 4.6"},
 	{ID: "grok-4.5", Object: "model", OwnedBy: "xai", DisplayName: "Grok 4.5"},
 	{ID: "grok-4.3", Object: "model", OwnedBy: "xai", DisplayName: "Grok 4.3"},
 	{ID: "grok-3-mini", Object: "model", OwnedBy: "xai", DisplayName: "Grok 3 Mini"},
@@ -42,6 +43,7 @@ var defaultModels = []Model{
 
 var grokTextModelAliases = map[string]string{
 	"grok": "grok-4.5", "grok-latest": "grok-4.5", "grok-4.5-latest": "grok-4.5",
+	"grok-4.6": "grok-4.6", "grok-4.6-latest": "grok-4.6",
 	"grok-4.3-latest": "grok-4.3", "grok-build": "grok-build-0.1", "grok-build-latest": "grok-4.5",
 	"grok-composer": "grok-composer-2.5-fast", "composer-2.5": "grok-composer-2.5-fast",
 	"grok-4.20-reasoning": "grok-4.20-0309-reasoning", "grok-4.20-non-reasoning": "grok-4.20-0309-non-reasoning",

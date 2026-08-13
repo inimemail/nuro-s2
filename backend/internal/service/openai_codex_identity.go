@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/google/uuid"
 )
 
 // codexUpstreamMinVersion 上游 /backend-api/codex 接受的最低 version 头。
@@ -119,6 +120,16 @@ func ensureCodexIdentityHeaders(h http.Header) {
 		h.Set("version", snapshot.version)
 	}
 	h.Set("OpenAI-Beta", "responses=experimental")
+}
+
+// applyOpenAICodexProbeHeaders gives synthetic Responses probes the same
+// protocol identity as the real Codex path without involving scheduler state.
+func applyOpenAICodexProbeHeaders(h http.Header) {
+	if h == nil {
+		return
+	}
+	ensureCodexIdentityHeaders(h)
+	h.Set("X-Codex-Window-ID", uuid.NewString())
 }
 
 // enforceCodexIdentityHeaders 收口 OAuth（ChatGPT 内部接口）出站请求的客户端身份头。

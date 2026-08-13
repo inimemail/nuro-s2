@@ -687,7 +687,9 @@ const customToolInputSchema = `{"type":"object","properties":{"input":{"type":"s
 func responsesToolsToChatTools(tools []ResponsesTool) ([]ChatTool, error) {
 	topLevel := make(map[string]bool)
 	for _, tool := range tools {
-		if (tool.Type == "function" || tool.Type == "custom") && tool.Name != "" {
+		if tool.Type == "x_search" {
+			topLevel["x_search"] = true
+		} else if (tool.Type == "function" || tool.Type == "custom") && tool.Name != "" {
 			topLevel[tool.Name] = true
 		}
 	}
@@ -696,6 +698,8 @@ func responsesToolsToChatTools(tools []ResponsesTool) ([]ChatTool, error) {
 	out := make([]ChatTool, 0, len(tools))
 	for _, tool := range tools {
 		switch tool.Type {
+		case "x_search":
+			out = append(out, ChatTool{Type: "x_search", AllowedXHandles: tool.AllowedXHandles, ExcludedXHandles: tool.ExcludedXHandles, FromDate: tool.FromDate, ToDate: tool.ToDate, EnableImageUnderstanding: tool.EnableImageUnderstanding, EnableVideoUnderstanding: tool.EnableVideoUnderstanding})
 		case "function":
 			out = append(out, ChatTool{Type: "function", Function: &ChatFunction{
 				Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters, Strict: tool.Strict,
@@ -792,6 +796,11 @@ func responsesToolChoiceToChatToolChoice(raw json.RawMessage, declared map[strin
 	}
 	var name string
 	switch rawString(choice["type"]) {
+	case "x_search":
+		if !declared["x_search"] {
+			return nil
+		}
+		return json.RawMessage(`{"type":"x_search"}`)
 	case "tool_search":
 		name = toolSearchProxyName
 	case "function", "custom":

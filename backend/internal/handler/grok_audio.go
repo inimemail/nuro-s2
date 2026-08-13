@@ -90,6 +90,46 @@ func (h *OpenAIGatewayHandler) GrokWebSearch(c *gin.Context) {
 	})
 }
 
+// GrokXSearch exposes xAI's native X search through the same protected
+// scheduler/account/billing path as web_search. The endpoint is intentionally
+// separate so callers cannot silently change the existing web search contract.
+func (h *OpenAIGatewayHandler) GrokXSearch(c *gin.Context) {
+	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	if !ok || !grokTargetForRequest(c, apiKey) {
+		h.errorResponse(c, http.StatusNotFound, "not_found_error", "X search is not supported for this platform")
+		return
+	}
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
+		return
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil || len(body) == 0 {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is required")
+		return
+	}
+	query := strings.TrimSpace(gjson.GetBytes(body, "query").String())
+	if query == "" {
+		query = strings.TrimSpace(gjson.GetBytes(body, "input").String())
+	}
+	if query == "" {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "query is required")
+		return
+	}
+	maxResults := normalizeGrokWebSearchMaxResults(int(gjson.GetBytes(body, "max_results").Int()))
+	h.handleGrokAuxHTTP(c, apiKey, subject, "x_search", body, func(account *service.Account) (*service.OpenAIForwardResult, error) {
+		return h.gatewayService.ForwardGrokXSearch(c.Request.Context(), c, account, body)
+	}, func(result *service.OpenAIForwardResult) {
+		c.JSON(http.StatusOK, gin.H{
+			"query":       query,
+			"results":     extractGrokWebSearchSources(result.ResponseBody, maxResults),
+			"provider":    "grok-native",
+			"max_results": maxResults,
+		})
+	})
+}
+
 func (h *OpenAIGatewayHandler) handleGrokAuxHTTP(c *gin.Context, apiKey *service.APIKey, subject middleware2.AuthSubject, endpoint string, body []byte, forward func(*service.Account) (*service.OpenAIForwardResult, error), onSuccess ...func(*service.OpenAIForwardResult)) {
 	if !h.ensureResponsesDependencies(c, nil) {
 		return
@@ -113,7 +153,7 @@ func (h *OpenAIGatewayHandler) handleGrokAuxHTTP(c *gin.Context, apiKey *service
 	}
 	failed := make(map[int64]struct{})
 	requestedModel := service.DefaultGrokSearchBillingModel
-	if endpoint != "web_search" {
+	if endpoint != "web_search" && endpoint != "x_search" {
 		requestedModel = "grok-voice-latest"
 	}
 	if upstreamModel, ok := service.ResolvedUpstreamModelFromContext(c.Request.Context()); ok {
@@ -204,7 +244,7 @@ func extractGrokWebSearchSources(body []byte, maxResults int) []websearch.Search
 	}
 	output := gjson.GetBytes(body, "output")
 	output.ForEach(func(_, item gjson.Result) bool {
-		if item.Get("type").String() == "web_search_call" {
+		if item.Get("type").String() == "web_search_call" || item.Get("type").String() == "x_search_call" {
 			item.Get("action.sources").ForEach(func(_, source gjson.Result) bool {
 				add(source.Get("url").String(), source.Get("title").String(), source.Get("snippet").String())
 				return true
@@ -337,13 +377,16 @@ func (h *OpenAIGatewayHandler) GrokRealtime(c *gin.Context) {
 	}
 	defer func() { _ = conn.CloseNow() }()
 	started := time.Now()
-	proxyErr := h.gatewayService.ProxyGrokRealtime(c.Request.Context(), conn, selection.Account, token, realtimeModel)
+	audioObserved, proxyErr := h.gatewayService.ProxyGrokRealtime(c.Request.Context(), conn, selection.Account, token, realtimeModel)
 	if proxyErr != nil && !isExpectedGrokRealtimeClose(proxyErr) {
 		_ = conn.Close(coderws.StatusInternalError, "upstream realtime websocket failed")
 		return
 	}
-	result := &service.OpenAIForwardResult{RequestID: service.StableGrokRealtimeBillingRequestID(""), Model: firstNonEmptyString(c.Query("model"), "grok-voice-latest"), UpstreamModel: realtimeModel, Duration: time.Since(started), AudioUsage: &service.AudioUsage{Mode: "realtime", DurationOrUnits: time.Since(started).Minutes()}}
-	h.recordGrokAuxUsage(c, apiKey, selection.Account, subscription, "realtime", []byte(result.Model), result)
+	if audioObserved && time.Since(started) > 0 {
+		elapsed := time.Since(started)
+		result := &service.OpenAIForwardResult{RequestID: service.StableGrokRealtimeBillingRequestID(""), Model: firstNonEmptyString(c.Query("model"), "grok-voice-latest"), UpstreamModel: realtimeModel, Duration: elapsed, AudioUsage: &service.AudioUsage{Mode: "realtime", DurationOrUnits: elapsed.Minutes()}}
+		h.recordGrokAuxUsage(c, apiKey, selection.Account, subscription, "realtime", []byte(result.Model), result)
+	}
 	_ = subject
 }
 

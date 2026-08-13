@@ -2577,6 +2577,19 @@ export default {
         geminiImage: 'Gemini Image',
         hint: '至少选择一个模型系列'
       }
+      ,modelPricing: {
+        title: '分组模型定价',
+        description: '按分组覆盖模型计费；未配置时沿用渠道或官方价格。',
+        add: '添加定价',
+        longContext: '启用长上下文阶梯计费',
+        longContextHint: '默认开启，关闭后不应用上游长上下文阶梯价格。',
+        modelsRequired: '每条定价都必须至少添加一个模型，请补充模型或删除空定价项。',
+        priceRequired: '按次、图片和视频计费必须设置默认价格或至少一个计费层级。',
+        videoPerSecond: '视频（按秒）',
+        defaultVideoPrice: '默认视频价格（未命中分辨率层级时使用）',
+        videoTiers: '视频分辨率计费层级',
+        perSecondPrice: '每秒价格'
+      }
     },
 
     // Available Channels (aggregated read-only view)

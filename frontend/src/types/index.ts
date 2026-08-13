@@ -548,6 +548,31 @@ export interface Group {
   daily_limit_usd: number | null
   weekly_limit_usd: number | null
   monthly_limit_usd: number | null
+  long_context_pricing_enabled?: boolean
+  model_pricing?: Array<{
+    id?: number
+    platform: string
+    models: string[]
+    billing_mode: string
+    input_price: number | null
+    output_price: number | null
+    cache_write_price: number | null
+    cache_read_price: number | null
+    image_input_price: number | null
+    image_output_price: number | null
+    per_request_price: number | null
+    intervals: Array<{
+      min_tokens: number
+      max_tokens: number | null
+      tier_label: string
+      input_price: number | null
+      output_price: number | null
+      cache_write_price: number | null
+      cache_read_price: number | null
+      per_request_price: number | null
+      sort_order: number
+    }>
+  }>
   peak_rate_enabled: boolean
   peak_start: string
   peak_end: string
@@ -692,6 +717,8 @@ export interface CreateGroupRequest {
   daily_limit_usd?: number | null
   weekly_limit_usd?: number | null
   monthly_limit_usd?: number | null
+  long_context_pricing_enabled?: boolean
+  model_pricing?: Group['model_pricing']
   allow_image_generation?: boolean
   image_rate_independent?: boolean
   image_rate_multiplier?: number
@@ -750,6 +777,8 @@ export interface UpdateGroupRequest {
   daily_limit_usd?: number | null
   weekly_limit_usd?: number | null
   monthly_limit_usd?: number | null
+  long_context_pricing_enabled?: boolean
+  model_pricing?: Group['model_pricing']
   allow_image_generation?: boolean
   image_rate_independent?: boolean
   image_rate_multiplier?: number

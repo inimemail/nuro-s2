@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	"github.com/Wei-Shaw/sub2api/ent/user"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 
@@ -194,6 +196,12 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldVideoPrice720p,
 				group.FieldVideoPrice1080p,
 				group.FieldWebSearchPricePerCall,
+				group.FieldSearchPricePer1k,
+				group.FieldAudioRealtimePricePerMin,
+				group.FieldAudioTtsPricePerMillionChars,
+				group.FieldAudioSttPricePerHour,
+				group.FieldLongContextPricingEnabled,
+				group.FieldModelPricing,
 				group.FieldClaudeCodeOnly,
 				group.FieldFallbackGroupID,
 				group.FieldFallbackGroupIDOnInvalidRequest,
@@ -936,6 +944,17 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 	if g == nil {
 		return nil
 	}
+	modelPricing := make([]service.ChannelModelPricing, 0)
+	if len(g.ModelPricing) > 0 {
+		var decoded []service.ChannelModelPricing
+		if err := json.Unmarshal(g.ModelPricing, &decoded); err != nil {
+			// Decode into a temporary value so malformed JSON can never leave a
+			// partially decoded pricing table active in billing paths.
+			logger.LegacyPrintf("repository.group", "invalid group model pricing ignored: group_id=%d err=%v", g.ID, err)
+		} else if decoded != nil {
+			modelPricing = decoded
+		}
+	}
 	return &service.Group{
 		ID:                                 g.ID,
 		Name:                               g.Name,
@@ -975,6 +994,8 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		AudioRealtimePricePerMin:           g.AudioRealtimePricePerMin,
 		AudioTTSPricePerMillionChars:       g.AudioTtsPricePerMillionChars,
 		AudioSTTPricePerHour:               g.AudioSttPricePerHour,
+		LongContextPricingEnabled:          g.LongContextPricingEnabled,
+		ModelPricing:                       modelPricing,
 		DefaultValidityDays:                g.DefaultValidityDays,
 		ClaudeCodeOnly:                     g.ClaudeCodeOnly,
 		FallbackGroupID:                    g.FallbackGroupID,

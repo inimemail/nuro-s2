@@ -314,13 +314,19 @@ type ResponsesContentPart struct {
 
 // ResponsesTool describes a tool in the Responses API.
 type ResponsesTool struct {
-	Type        string          `json:"type"` // "function" | "custom" | "web_search" | "local_shell" etc.
-	Name        string          `json:"name,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
-	Strict      *bool           `json:"strict,omitempty"`
-	Tools       []ResponsesTool `json:"tools,omitempty"`
-	Children    []ResponsesTool `json:"children,omitempty"`
+	Type                     string          `json:"type"` // "function" | "custom" | "web_search" | "local_shell" etc.
+	Name                     string          `json:"name,omitempty"`
+	Description              string          `json:"description,omitempty"`
+	Parameters               json.RawMessage `json:"parameters,omitempty"`
+	Strict                   *bool           `json:"strict,omitempty"`
+	Tools                    []ResponsesTool `json:"tools,omitempty"`
+	Children                 []ResponsesTool `json:"children,omitempty"`
+	AllowedXHandles          []string        `json:"allowed_x_handles,omitempty"`
+	ExcludedXHandles         []string        `json:"excluded_x_handles,omitempty"`
+	FromDate                 string          `json:"from_date,omitempty"`
+	ToDate                   string          `json:"to_date,omitempty"`
+	EnableImageUnderstanding *bool           `json:"enable_image_understanding,omitempty"`
+	EnableVideoUnderstanding *bool           `json:"enable_video_understanding,omitempty"`
 }
 
 func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
@@ -700,8 +706,14 @@ type ChatImageURL struct {
 
 // ChatTool describes a tool available to the model.
 type ChatTool struct {
-	Type     string        `json:"type"` // "function"
-	Function *ChatFunction `json:"function,omitempty"`
+	Type                     string        `json:"type"` // "function" or "x_search"
+	Function                 *ChatFunction `json:"function,omitempty"`
+	AllowedXHandles          []string      `json:"allowed_x_handles,omitempty"`
+	ExcludedXHandles         []string      `json:"excluded_x_handles,omitempty"`
+	FromDate                 string        `json:"from_date,omitempty"`
+	ToDate                   string        `json:"to_date,omitempty"`
+	EnableImageUnderstanding *bool         `json:"enable_image_understanding,omitempty"`
+	EnableVideoUnderstanding *bool         `json:"enable_video_understanding,omitempty"`
 }
 
 // ChatFunction describes a function tool definition.

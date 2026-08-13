@@ -125,6 +125,8 @@ type Group struct {
 	AudioRealtimePricePerMin     *float64                      `json:"audio_realtime_price_per_min"`
 	AudioTTSPricePerMillionChars *float64                      `json:"audio_tts_price_per_million_chars"`
 	AudioSTTPricePerHour         *float64                      `json:"audio_stt_price_per_hour"`
+	LongContextPricingEnabled    bool                          `json:"long_context_pricing_enabled"`
+	ModelPricing                 []service.ChannelModelPricing `json:"model_pricing"`
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool   `json:"claude_code_only"`

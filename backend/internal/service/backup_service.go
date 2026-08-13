@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,9 +30,11 @@ const (
 	settingKeyBackupSchedule = "backup_schedule"
 	settingKeyBackupRecords  = "backup_records"
 
-	maxBackupRecords                 = 100
-	backupObjectCleanupTimeout       = 2 * time.Minute
-	defaultBackupPartSizeBytes int64 = 4 * 1024 * 1024 * 1024
+	maxBackupRecords                   = 100
+	backupObjectCleanupTimeout         = 2 * time.Minute
+	backupScheduledLeaderLockKey       = "backup:scheduled:leader"
+	backupScheduledLeaderLockTTL       = 35 * time.Minute
+	defaultBackupPartSizeBytes   int64 = 4 * 1024 * 1024 * 1024
 )
 
 var (
@@ -161,6 +164,9 @@ type BackupService struct {
 	cronMu      sync.Mutex
 	cronSched   *cron.Cron
 	cronEntryID cron.EntryID
+	lockCache   LeaderLockCache
+	db          *sql.DB
+	instanceID  string
 
 	wg            sync.WaitGroup     // 追踪活跃的备份/恢复 goroutine
 	shuttingDown  atomic.Bool        // 阻止新备份启动
@@ -192,7 +198,15 @@ func NewBackupService(
 		bgCtx:                   bgCtx,
 		bgCancel:                bgCancel,
 		partSizeBytes:           defaultBackupPartSizeBytes,
+		instanceID:              uuid.NewString(),
 	}
+}
+
+func (s *BackupService) SetLeaderLock(lockCache LeaderLockCache, db *sql.DB) {
+	if s == nil {
+		return
+	}
+	s.lockCache, s.db = lockCache, db
 }
 
 func (s *BackupService) EncryptionKeyConfigured() bool { return s != nil && s.encryptionKeyConfigured }
@@ -493,6 +507,12 @@ func (s *BackupService) runScheduledBackup() {
 
 	ctx, cancel := context.WithTimeout(s.bgCtx, 30*time.Minute)
 	defer cancel()
+	release, ok := tryAcquireSingletonLeaderLock(ctx, s.lockCache, s.db, backupScheduledLeaderLockKey, s.instanceID, backupScheduledLeaderLockTTL)
+	if !ok {
+		logger.LegacyPrintf("service.backup", "[Backup] 定时备份跳过: 本实例非 leader")
+		return
+	}
+	defer release()
 
 	// 读取定时备份配置中的过期天数
 	schedule, _ := s.GetSchedule(ctx)

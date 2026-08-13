@@ -192,10 +192,14 @@ func TestChannelClone_Nil(t *testing.T) {
 }
 
 func TestChannelModelPricingClone(t *testing.T) {
+	inputPrice := 1.5
+	intervalInputPrice := 2.5
+	maxTokens := 100
 	original := ChannelModelPricing{
-		Models: []string{"a", "b"},
+		Models:     []string{"a", "b"},
+		InputPrice: &inputPrice,
 		Intervals: []PricingInterval{
-			{MinTokens: 0, TierLabel: "tier1"},
+			{MinTokens: 0, MaxTokens: &maxTokens, TierLabel: "tier1", InputPrice: &intervalInputPrice},
 		},
 	}
 
@@ -207,6 +211,12 @@ func TestChannelModelPricingClone(t *testing.T) {
 
 	cloned.Intervals[0].TierLabel = "hacked"
 	require.Equal(t, "tier1", original.Intervals[0].TierLabel)
+	*cloned.InputPrice = 9
+	*cloned.Intervals[0].InputPrice = 8
+	*cloned.Intervals[0].MaxTokens = 200
+	require.Equal(t, 1.5, *original.InputPrice)
+	require.Equal(t, 2.5, *original.Intervals[0].InputPrice)
+	require.Equal(t, 100, *original.Intervals[0].MaxTokens)
 }
 
 // --- BillingMode.IsValid ---
@@ -220,6 +230,7 @@ func TestBillingModeIsValid(t *testing.T) {
 		{"token", BillingModeToken, true},
 		{"per_request", BillingModePerRequest, true},
 		{"image", BillingModeImage, true},
+		{"video", BillingModeVideo, true},
 		{"empty", BillingMode(""), true},
 		{"unknown", BillingMode("unknown"), false},
 		{"random", BillingMode("xyz"), false},
@@ -434,15 +445,16 @@ func TestValidateIntervals_UnboundedNotLast(t *testing.T) {
 	require.Contains(t, err.Error(), "last")
 }
 
-func TestValidateIntervals_ImageModeAllowsMultipleUnboundedTiers(t *testing.T) {
-	// image / per_request 按 tier_label 匹配，多条 min=0/max=nil 是合法形态。
+func TestValidateIntervals_LabelTierModesAllowMultipleUnboundedTiers(t *testing.T) {
+	// 标签档位按 tier_label 匹配，多条 min=0/max=nil 是合法形态。
 	intervals := []PricingInterval{
-		{MinTokens: 0, MaxTokens: nil, TierLabel: "1K", PerRequestPrice: testPtrFloat64(0.04)},
-		{MinTokens: 0, MaxTokens: nil, TierLabel: "2K", PerRequestPrice: testPtrFloat64(0.06)},
+		{MinTokens: 0, MaxTokens: nil, TierLabel: "720p", PerRequestPrice: testPtrFloat64(0.04)},
+		{MinTokens: 0, MaxTokens: nil, TierLabel: "1080p", PerRequestPrice: testPtrFloat64(0.06)},
 		{MinTokens: 0, MaxTokens: nil, TierLabel: "4K", PerRequestPrice: testPtrFloat64(0.08)},
 	}
 	require.NoError(t, ValidateIntervals(intervals, BillingModeImage))
 	require.NoError(t, ValidateIntervals(intervals, BillingModePerRequest))
+	require.NoError(t, ValidateIntervals(intervals, BillingModeVideo))
 }
 
 func TestValidateIntervals_ImageModeStillRejectsNegativePrice(t *testing.T) {

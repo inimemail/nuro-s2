@@ -63,6 +63,7 @@ func TestDuplicateGroupCopiesForkFieldsAndKeepsSourceIndependent(t *testing.T) {
 	image1K, image2K, image4K := 0.1, 0.2, 0.4
 	video480, video720, video1080 := 0.5, 0.7, 1.0
 	webSearch := 0.03
+	modelInputPrice := 2e-6
 	guardLimit := 1.25
 	fallback, invalidFallback := int64(8), int64(9)
 	source := &Group{
@@ -77,6 +78,10 @@ func TestDuplicateGroupCopiesForkFieldsAndKeepsSourceIndependent(t *testing.T) {
 		VideoRateIndependent: true, VideoRateMultiplier: 1.5,
 		VideoPrice480P: &video480, VideoPrice720P: &video720, VideoPrice1080P: &video1080,
 		WebSearchPricePerCall: &webSearch, ClaudeCodeOnly: true,
+		LongContextPricingEnabled: false,
+		ModelPricing: []ChannelModelPricing{{
+			Platform: PlatformOpenAI, Models: []string{"gpt-5.6"}, BillingMode: BillingModeToken, InputPrice: &modelInputPrice,
+		}},
 		FallbackGroupID: &fallback, FallbackGroupIDOnInvalidRequest: &invalidFallback,
 		ModelRoutingEnabled: true, ModelRouting: map[string][]int64{"gpt-*": {12, 13}}, MCPXMLInject: true,
 		SupportedModelScopes: []string{"responses", "messages"}, SortOrder: 7,
@@ -102,6 +107,8 @@ func TestDuplicateGroupCopiesForkFieldsAndKeepsSourceIndependent(t *testing.T) {
 	require.Equal(t, source.ImagePrice4K, duplicate.ImagePrice4K)
 	require.Equal(t, source.VideoPrice1080P, duplicate.VideoPrice1080P)
 	require.Equal(t, source.WebSearchPricePerCall, duplicate.WebSearchPricePerCall)
+	require.False(t, duplicate.LongContextPricingEnabled)
+	require.Equal(t, source.ModelPricing, duplicate.ModelPricing)
 	require.Equal(t, source.StrictModelPriorityOnModelMismatch, duplicate.StrictModelPriorityOnModelMismatch)
 	require.Equal(t, source.RPMLimit, duplicate.RPMLimit)
 
@@ -109,10 +116,14 @@ func TestDuplicateGroupCopiesForkFieldsAndKeepsSourceIndependent(t *testing.T) {
 	*duplicate.UpstreamBillingGuardMaxMultiplier = 2
 	duplicate.MessagesDispatchModelConfig.ExactModelMappings["gpt-5"] = "changed"
 	duplicate.ModelsListConfig.Models[0] = "changed"
+	duplicate.ModelPricing[0].Models[0] = "changed"
+	*duplicate.ModelPricing[0].InputPrice = 9
 	require.Equal(t, int64(12), source.ModelRouting["gpt-*"][0])
 	require.Equal(t, 1.25, *source.UpstreamBillingGuardMaxMultiplier)
 	require.Equal(t, "gpt-5.6", source.MessagesDispatchModelConfig.ExactModelMappings["gpt-5"])
 	require.Equal(t, "gpt-5.6", source.ModelsListConfig.Models[0])
+	require.Equal(t, "gpt-5.6", source.ModelPricing[0].Models[0])
+	require.Equal(t, 2e-6, *source.ModelPricing[0].InputPrice)
 }
 
 func TestDuplicateGroupRetriesNameCollisionAndRecoversIdempotently(t *testing.T) {

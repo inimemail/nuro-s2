@@ -62,6 +62,8 @@ type Group struct {
 	AudioRealtimePricePerMin     *float64
 	AudioTTSPricePerMillionChars *float64
 	AudioSTTPricePerHour         *float64
+	LongContextPricingEnabled    bool
+	ModelPricing                 []ChannelModelPricing
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool

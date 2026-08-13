@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -32,6 +33,22 @@ func TestGroupEntityToService_PreservesMessagesDispatchModelConfig(t *testing.T)
 	got := groupEntityToService(group)
 	require.NotNil(t, got)
 	require.Equal(t, group.MessagesDispatchModelConfig, got.MessagesDispatchModelConfig)
+}
+
+func TestGroupEntityToService_DropsPartiallyDecodedModelPricing(t *testing.T) {
+	group := &dbent.Group{
+		ID: 2, Name: "corrupt-pricing", Platform: service.PlatformGrok,
+		Status: service.StatusActive, SubscriptionType: service.SubscriptionTypeStandard,
+		RateMultiplier: 1,
+		ModelPricing: json.RawMessage(`[
+			{"models":["grok-4.6"],"billing_mode":"token","input_price":0.000001},
+			{"models":"invalid-shape","billing_mode":"token"}
+		]`),
+	}
+
+	got := groupEntityToService(group)
+	require.NotNil(t, got)
+	require.Empty(t, got.ModelPricing, "a JSON decode error must not activate a valid prefix")
 }
 
 func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_SQLite(t *testing.T) {

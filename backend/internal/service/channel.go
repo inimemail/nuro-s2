@@ -20,7 +20,7 @@ const (
 // IsValid 检查 BillingMode 是否为合法值
 func (m BillingMode) IsValid() bool {
 	switch m {
-	case BillingModeToken, BillingModePerRequest, BillingModeImage, "":
+	case BillingModeToken, BillingModePerRequest, BillingModeImage, BillingModeVideo, "":
 		return true
 	}
 	return false
@@ -179,18 +179,45 @@ func (p *ChannelModelPricing) GetTierByLabel(label string) *PricingInterval {
 	return nil
 }
 
-// Clone 返回 ChannelModelPricing 的拷贝（切片独立，指针字段共享，调用方只读安全）
+// Clone returns a full deep copy so cached pricing and duplicated groups never
+// share mutable price pointers.
 func (p ChannelModelPricing) Clone() ChannelModelPricing {
 	cp := p
+	cp.InputPrice = cloneGroupPointer(p.InputPrice)
+	cp.OutputPrice = cloneGroupPointer(p.OutputPrice)
+	cp.CacheWritePrice = cloneGroupPointer(p.CacheWritePrice)
+	cp.CacheReadPrice = cloneGroupPointer(p.CacheReadPrice)
+	cp.ImageInputPrice = cloneGroupPointer(p.ImageInputPrice)
+	cp.ImageOutputPrice = cloneGroupPointer(p.ImageOutputPrice)
+	cp.PerRequestPrice = cloneGroupPointer(p.PerRequestPrice)
 	if p.Models != nil {
 		cp.Models = make([]string, len(p.Models))
 		copy(cp.Models, p.Models)
 	}
 	if p.Intervals != nil {
 		cp.Intervals = make([]PricingInterval, len(p.Intervals))
-		copy(cp.Intervals, p.Intervals)
+		for i := range p.Intervals {
+			cp.Intervals[i] = p.Intervals[i]
+			cp.Intervals[i].MaxTokens = cloneGroupPointer(p.Intervals[i].MaxTokens)
+			cp.Intervals[i].InputPrice = cloneGroupPointer(p.Intervals[i].InputPrice)
+			cp.Intervals[i].OutputPrice = cloneGroupPointer(p.Intervals[i].OutputPrice)
+			cp.Intervals[i].CacheWritePrice = cloneGroupPointer(p.Intervals[i].CacheWritePrice)
+			cp.Intervals[i].CacheReadPrice = cloneGroupPointer(p.Intervals[i].CacheReadPrice)
+			cp.Intervals[i].PerRequestPrice = cloneGroupPointer(p.Intervals[i].PerRequestPrice)
+		}
 	}
 	return cp
+}
+
+func cloneChannelModelPricingList(source []ChannelModelPricing) []ChannelModelPricing {
+	if source == nil {
+		return nil
+	}
+	out := make([]ChannelModelPricing, len(source))
+	for i := range source {
+		out[i] = source[i].Clone()
+	}
+	return out
 }
 
 // Clone 返回 Channel 的深拷贝
@@ -287,9 +314,10 @@ func deepCopyFeaturesConfig(src map[string]any) map[string]any {
 // mode 决定区间语义：
 //   - BillingModeToken（含空值）：区间是上下文 token 数分段 (min, max]，
 //     按 MinTokens 排序后无重叠，无界区间（MaxTokens=nil）必须是最后一个。
-//   - BillingModePerRequest / BillingModeImage：区间是按 tier_label
-//     (1K/2K/4K 等) 分层，匹配走 label 不依赖 min/max，因此跳过区间重叠
-//     与 last-unlimited 校验，仅做单条字段自洽（min/max/价格非负）检查。
+//   - BillingModePerRequest / BillingModeImage / BillingModeVideo：区间是按
+//     tier_label (1K/2K/4K、720p/1080p 等) 分层，匹配走 label 不依赖
+//     min/max，因此跳过区间重叠与 last-unlimited 校验，仅做单条字段
+//     自洽（min/max/价格非负）检查。
 //
 // 通用规则：MinTokens >= 0；MaxTokens 若非 nil 则 > 0 且 > MinTokens；
 // 所有价格字段 >= 0。
@@ -309,8 +337,8 @@ func ValidateIntervals(intervals []PricingInterval, mode BillingMode) error {
 		}
 	}
 
-	// per_request / image 模式按 tier_label 匹配，不做 token 区间重叠校验
-	if mode == BillingModePerRequest || mode == BillingModeImage {
+	// 标签分层模式按 tier_label 匹配，不做 token 区间重叠校验。
+	if mode == BillingModePerRequest || mode == BillingModeImage || mode == BillingModeVideo {
 		return nil
 	}
 	return validateIntervalOverlap(sorted)

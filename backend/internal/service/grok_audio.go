@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	coderws "github.com/coder/websocket"
@@ -74,14 +75,14 @@ func (s *OpenAIGatewayService) ForwardGrokVoice(ctx context.Context, c *gin.Cont
 	}, nil
 }
 
-func (s *OpenAIGatewayService) ProxyGrokRealtime(ctx context.Context, client *coderws.Conn, account *Account, token, model string) error {
+func (s *OpenAIGatewayService) ProxyGrokRealtime(ctx context.Context, client *coderws.Conn, account *Account, token, model string) (bool, error) {
 	base, err := buildGrokVoiceURL(account, s.cfg, "realtime")
 	if err != nil {
-		return err
+		return false, err
 	}
 	u, err := url.Parse(base)
 	if err != nil {
-		return err
+		return false, err
 	}
 	u.Scheme = "wss"
 	u.RawQuery = "model=" + url.QueryEscape(firstNonEmpty(model, "grok-voice-latest"))
@@ -89,18 +90,22 @@ func (s *OpenAIGatewayService) ProxyGrokRealtime(ctx context.Context, client *co
 	account.ApplyHeaderOverrides(headers)
 	upstream, _, _, err := s.getOpenAIWSPassthroughDialer().Dial(ctx, u.String(), headers, resolveAccountProxyURL(account))
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = upstream.Close() }()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errCh := make(chan error, 2)
+	var audioObserved atomic.Bool
 	go func() {
 		for {
 			msg, readErr := upstream.ReadMessage(ctx)
 			if readErr != nil {
 				errCh <- readErr
 				return
+			}
+			if grokRealtimeEventHasAudio(msg) {
+				audioObserved.Store(true)
 			}
 			if writeErr := client.Write(ctx, coderws.MessageText, msg); writeErr != nil {
 				errCh <- writeErr
@@ -118,6 +123,9 @@ func (s *OpenAIGatewayService) ProxyGrokRealtime(ctx context.Context, client *co
 			if kind != coderws.MessageText && kind != coderws.MessageBinary {
 				continue
 			}
+			if grokRealtimeEventHasAudio(msg) {
+				audioObserved.Store(true)
+			}
 			var raw json.RawMessage
 			if err := json.Unmarshal(msg, &raw); err != nil {
 				errCh <- err
@@ -129,7 +137,25 @@ func (s *OpenAIGatewayService) ProxyGrokRealtime(ctx context.Context, client *co
 			}
 		}
 	}()
-	return <-errCh
+	err = <-errCh
+	return audioObserved.Load(), err
+}
+
+func grokRealtimeEventHasAudio(msg []byte) bool {
+	if !gjson.ValidBytes(msg) {
+		return false
+	}
+	eventType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(msg, "type").String()))
+	if !strings.Contains(eventType, "audio") || strings.Contains(eventType, "transcript") {
+		return false
+	}
+	for _, path := range []string{"audio", "delta", "data"} {
+		value := gjson.GetBytes(msg, path)
+		if value.Type == gjson.String && strings.TrimSpace(value.String()) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func estimateGrokVoiceAudioUsage(endpoint string, reqBody, respBody []byte, elapsed time.Duration) *AudioUsage {
@@ -184,6 +210,14 @@ func StableGrokRealtimeBillingRequestID(id string) string {
 }
 
 func (s *OpenAIGatewayService) ForwardGrokWebSearch(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	return s.forwardGrokNativeSearch(ctx, c, account, body, "web_search")
+}
+
+func (s *OpenAIGatewayService) ForwardGrokXSearch(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	return s.forwardGrokNativeSearch(ctx, c, account, body, "x_search")
+}
+
+func (s *OpenAIGatewayService) forwardGrokNativeSearch(ctx context.Context, c *gin.Context, account *Account, body []byte, toolType string) (*OpenAIForwardResult, error) {
 	if account == nil || account.Platform != PlatformGrok {
 		return nil, fmt.Errorf("grok account is required")
 	}
@@ -197,20 +231,36 @@ func (s *OpenAIGatewayService) ForwardGrokWebSearch(ctx context.Context, c *gin.
 	}
 	query := strings.TrimSpace(gjson.GetBytes(body, "query").String())
 	if query == "" {
+		query = strings.TrimSpace(gjson.GetBytes(body, "input").String())
+	}
+	if query == "" {
 		return nil, fmt.Errorf("query is required")
 	}
 	searchModel := DefaultGrokSearchBillingModel
 	if upstreamModel, ok := ResolvedUpstreamModelFromContext(ctx); ok {
 		searchModel = upstreamModel
 	}
-	searchBody, _ := json.Marshal(map[string]any{
+	tool := map[string]any{"type": toolType}
+	if toolType == "x_search" {
+		for _, key := range []string{"allowed_x_handles", "excluded_x_handles", "from_date", "to_date", "enable_image_understanding", "enable_video_understanding"} {
+			if value := gjson.GetBytes(body, key); value.Exists() {
+				tool[key] = value.Value()
+			}
+		}
+	}
+	include := toolType + "_call.action.sources"
+	searchPayload := map[string]any{
 		"model":   searchModel,
 		"input":   query,
-		"tools":   []map[string]any{{"type": "web_search"}},
-		"include": []string{"web_search_call.action.sources"},
+		"tools":   []map[string]any{tool},
+		"include": []string{include},
 		"store":   false,
 		"stream":  false,
-	})
+	}
+	if toolType == "x_search" {
+		searchPayload["tool_choice"] = "required"
+	}
+	searchBody, _ := json.Marshal(searchPayload)
 	upstreamCtx, release := detachUpstreamContext(ctx)
 	defer release()
 	req, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(searchBody))
@@ -239,8 +289,17 @@ func (s *OpenAIGatewayService) ForwardGrokWebSearch(ctx context.Context, c *gin.
 	if count <= 0 {
 		count = 1
 	}
+	requestID := firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id"))
+	if toolType == "x_search" {
+		if requestID == "" {
+			requestID = generateRequestID()
+		}
+		requestID = "x_search:" + requestID
+	} else {
+		requestID = StableGrokWebSearchBillingRequestID(requestID)
+	}
 	return &OpenAIForwardResult{
-		RequestID:     StableGrokWebSearchBillingRequestID(firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id"))),
+		RequestID:     requestID,
 		Model:         DefaultGrokSearchBillingModel,
 		UpstreamModel: searchModel,
 		Duration:      time.Since(started),

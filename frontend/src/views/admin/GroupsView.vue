@@ -880,9 +880,21 @@
           </div>
         </div>
 
+        <div class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-400">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200">{{ t("admin.groups.modelPricing.title") }}</h4>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.modelPricing.description") }}</p>
+            </div>
+            <button type="button" class="btn btn-secondary" :title="t('admin.groups.modelPricing.add')" @click="addGroupPricing(createForm.model_pricing)"><Icon name="plus" size="sm" /></button>
+          </div>
+          <label class="mt-3 flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300"><input v-model="createForm.long_context_pricing_enabled" type="checkbox" class="mt-0.5 rounded border-gray-300 text-primary-600" /><span><span class="block">{{ t("admin.groups.modelPricing.longContext") }}</span><span class="text-xs text-gray-500">{{ t("admin.groups.modelPricing.longContextHint") }}</span></span></label>
+          <div class="mt-3 space-y-2"><PricingEntryCard v-for="(entry, index) in createForm.model_pricing" :key="index" :entry="entry" :platform="createForm.platform" hide-token-intervals allow-video-mode @update="createForm.model_pricing[index] = $event" @remove="createForm.model_pricing.splice(index, 1)" /></div>
+        </div>
+
         <!-- 图片生成计费配置 -->
         <div
-          v-if="supportsImagePricingPlatform(createForm.platform)"
+          v-if="createSupportsImagePricing"
           class="border-t pt-4"
         >
           <label
@@ -1030,10 +1042,10 @@
             </p>
           </div>
           <div v-if="createForm.platform === 'grok'" class="mt-4 grid grid-cols-1 gap-4 border-t border-gray-200 pt-4 dark:border-dark-400 md:grid-cols-2">
-            <div><label class="input-label">{{ t("admin.groups.grokPricing.searchPer1K") }}</label><input v-model.number="createForm.search_price_per_1k" type="number" step="0.01" min="0" placeholder="10" class="input" /></div>
-            <div><label class="input-label">{{ t("admin.groups.grokPricing.realtimePerMinute") }}</label><input v-model.number="createForm.audio_realtime_price_per_min" type="number" step="0.01" min="0" placeholder="0.10" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.searchPer1K") }}</label><input v-model.number="createForm.search_price_per_1k" type="number" step="0.01" min="0" placeholder="5" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.realtimePerMinute") }}</label><input v-model.number="createForm.audio_realtime_price_per_min" type="number" step="0.01" min="0" placeholder="0.05" class="input" /></div>
             <div><label class="input-label">{{ t("admin.groups.grokPricing.ttsPerMillionChars") }}</label><input v-model.number="createForm.audio_tts_price_per_million_chars" type="number" step="0.01" min="0" placeholder="15" class="input" /></div>
-            <div><label class="input-label">{{ t("admin.groups.grokPricing.sttPerHour") }}</label><input v-model.number="createForm.audio_stt_price_per_hour" type="number" step="0.01" min="0" placeholder="0.36" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.sttPerHour") }}</label><input v-model.number="createForm.audio_stt_price_per_hour" type="number" step="0.01" min="0" placeholder="0.10" class="input" /></div>
             <div class="md:col-span-2"><label class="input-label">{{ t("admin.groups.grokPricing.videoModelPrices") }}</label><textarea v-model="createForm.video_model_prices_json" rows="3" class="input font-mono text-xs" :placeholder="t('admin.groups.grokPricing.videoModelPricesPlaceholder')"></textarea></div>
           </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
@@ -2465,9 +2477,18 @@
           </div>
         </div>
 
+        <div class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-400">
+          <div class="flex items-start justify-between gap-3">
+            <div><h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200">{{ t("admin.groups.modelPricing.title") }}</h4><p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.modelPricing.description") }}</p></div>
+            <button type="button" class="btn btn-secondary" :title="t('admin.groups.modelPricing.add')" @click="addGroupPricing(editForm.model_pricing)"><Icon name="plus" size="sm" /></button>
+          </div>
+          <label class="mt-3 flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300"><input v-model="editForm.long_context_pricing_enabled" type="checkbox" class="mt-0.5 rounded border-gray-300 text-primary-600" /><span><span class="block">{{ t("admin.groups.modelPricing.longContext") }}</span><span class="text-xs text-gray-500">{{ t("admin.groups.modelPricing.longContextHint") }}</span></span></label>
+          <div class="mt-3 space-y-2"><PricingEntryCard v-for="(entry, index) in editForm.model_pricing" :key="index" :entry="entry" :platform="editForm.platform" hide-token-intervals allow-video-mode @update="editForm.model_pricing[index] = $event" @remove="editForm.model_pricing.splice(index, 1)" /></div>
+        </div>
+
         <!-- 图片生成计费配置 -->
         <div
-          v-if="supportsImagePricingPlatform(editForm.platform)"
+          v-if="editSupportsImagePricing"
           class="border-t pt-4"
         >
           <label
@@ -2615,10 +2636,10 @@
             </p>
           </div>
           <div v-if="editForm.platform === 'grok'" class="mt-4 grid grid-cols-1 gap-4 border-t border-gray-200 pt-4 dark:border-dark-400 md:grid-cols-2">
-            <div><label class="input-label">{{ t("admin.groups.grokPricing.searchPer1K") }}</label><input v-model.number="editForm.search_price_per_1k" type="number" step="0.01" min="0" placeholder="10" class="input" /></div>
-            <div><label class="input-label">{{ t("admin.groups.grokPricing.realtimePerMinute") }}</label><input v-model.number="editForm.audio_realtime_price_per_min" type="number" step="0.01" min="0" placeholder="0.10" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.searchPer1K") }}</label><input v-model.number="editForm.search_price_per_1k" type="number" step="0.01" min="0" placeholder="5" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.realtimePerMinute") }}</label><input v-model.number="editForm.audio_realtime_price_per_min" type="number" step="0.01" min="0" placeholder="0.05" class="input" /></div>
             <div><label class="input-label">{{ t("admin.groups.grokPricing.ttsPerMillionChars") }}</label><input v-model.number="editForm.audio_tts_price_per_million_chars" type="number" step="0.01" min="0" placeholder="15" class="input" /></div>
-            <div><label class="input-label">{{ t("admin.groups.grokPricing.sttPerHour") }}</label><input v-model.number="editForm.audio_stt_price_per_hour" type="number" step="0.01" min="0" placeholder="0.36" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.sttPerHour") }}</label><input v-model.number="editForm.audio_stt_price_per_hour" type="number" step="0.01" min="0" placeholder="0.10" class="input" /></div>
             <div class="md:col-span-2"><label class="input-label">{{ t("admin.groups.grokPricing.videoModelPrices") }}</label><textarea v-model="editForm.video_model_prices_json" rows="3" class="input font-mono text-xs" :placeholder="t('admin.groups.grokPricing.videoModelPricesPlaceholder')"></textarea></div>
           </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
@@ -3765,11 +3786,65 @@ import { createModelsListCandidatesTracker } from "./groupsModelsListCandidates"
 import { normalizeSupportedModelScopesForPlatform } from "./groupsSupportedModelScopes";
 import { supportsImagePricingPlatform } from "./groupsImagePricing";
 import { OPENAI_REASONING_EFFORT_VALUES, normalizeReasoningEffortForPlatform, reasoningEffortMappingsToAPI, reasoningEffortMappingsToRows, validateReasoningEffortMappings } from "./groupsReasoningEffort";
+import PricingEntryCard from "@/components/admin/channel/PricingEntryCard.vue";
+import type { PricingFormEntry } from "@/components/admin/channel/types";
+import { apiIntervalsToForm, findModelConflict, formIntervalsToAPI, mTokToPerToken, perTokenToMTok, toNullableNumber, validateIntervals } from "@/components/admin/channel/types";
 
 const { t } = useI18n();
 const appStore = useAppStore();
 const onboardingStore = useOnboardingStore();
 const reasoningEffortValues = OPENAI_REASONING_EFFORT_VALUES;
+const editCompositeImageCapability = ref(false);
+
+const emptyGroupPricing = (): PricingFormEntry => ({
+  models: [], billing_mode: "token", input_price: null, output_price: null,
+  cache_write_price: null, cache_read_price: null, image_input_price: null,
+  image_output_price: null, per_request_price: null, intervals: [],
+});
+const addGroupPricing = (entries: PricingFormEntry[]) => entries.push(emptyGroupPricing());
+const groupPricingFromAPI = (pricing: AdminGroup["model_pricing"]): PricingFormEntry[] =>
+  (pricing || []).map((entry) => ({
+    models: entry.models || [], billing_mode: entry.billing_mode as PricingFormEntry["billing_mode"],
+    input_price: perTokenToMTok(entry.input_price), output_price: perTokenToMTok(entry.output_price),
+    cache_write_price: perTokenToMTok(entry.cache_write_price), cache_read_price: perTokenToMTok(entry.cache_read_price),
+    image_input_price: perTokenToMTok(entry.image_input_price), image_output_price: perTokenToMTok(entry.image_output_price),
+    per_request_price: entry.per_request_price, intervals: apiIntervalsToForm((entry.intervals || []) as any),
+  }));
+const groupPricingToAPI = (pricing: PricingFormEntry[], platform: string) => pricing
+  .map((entry) => ({ platform, models: entry.models, billing_mode: entry.billing_mode,
+    input_price: mTokToPerToken(entry.input_price), output_price: mTokToPerToken(entry.output_price),
+    cache_write_price: mTokToPerToken(entry.cache_write_price), cache_read_price: mTokToPerToken(entry.cache_read_price),
+    image_input_price: mTokToPerToken(entry.image_input_price), image_output_price: mTokToPerToken(entry.image_output_price),
+    per_request_price: toNullableNumber(entry.per_request_price),
+    intervals: entry.billing_mode === "token" ? [] : formIntervalsToAPI(entry.intervals || []),
+  }));
+
+const validateGroupPricing = (pricing: PricingFormEntry[]): string | null => {
+  if (pricing.some((entry) => entry.models.length === 0)) {
+    return t("admin.groups.modelPricing.modelsRequired");
+  }
+  const conflict = findModelConflict(pricing.flatMap((entry) => entry.models));
+  if (conflict) {
+    return t("admin.channels.modelConflict", {
+      model1: conflict[0],
+      model2: conflict[1],
+    });
+  }
+  for (const entry of pricing) {
+    if (
+      entry.billing_mode !== "token" &&
+      (entry.per_request_price === null || entry.per_request_price === "") &&
+      entry.intervals.length === 0
+    ) {
+      return t("admin.groups.modelPricing.priceRequired");
+    }
+    const intervalError = validateIntervals(entry.intervals, entry.billing_mode);
+    if (intervalError) {
+      return `${entry.models.join(", ")}: ${intervalError}`;
+    }
+  }
+  return null;
+};
 
 const ALWAYS_VISIBLE_COLUMNS = new Set(["name", "actions"]);
 const HIDDEN_COLUMNS_KEY = "group-hidden-columns";
@@ -4115,6 +4190,8 @@ const createForm = reactive({
   daily_limit_usd: null as number | null,
   weekly_limit_usd: null as number | null,
   monthly_limit_usd: null as number | null,
+  long_context_pricing_enabled: true,
+  model_pricing: [] as PricingFormEntry[],
   peak_rate_enabled: false,
   peak_start: "",
   peak_end: "",
@@ -4469,6 +4546,8 @@ const editForm = reactive({
   daily_limit_usd: null as number | null,
   weekly_limit_usd: null as number | null,
   monthly_limit_usd: null as number | null,
+  long_context_pricing_enabled: true,
+  model_pricing: [] as PricingFormEntry[],
   peak_rate_enabled: false,
   peak_start: "",
   peak_end: "",
@@ -4523,6 +4602,14 @@ const editForm = reactive({
   max_reasoning_effort: "",
   reasoning_effort_mappings: [] as ReasoningEffortMapping[],
 });
+
+const createSupportsImagePricing = computed(() =>
+  supportsImagePricingPlatform(createForm.platform),
+);
+const editSupportsImagePricing = computed(() =>
+  supportsImagePricingPlatform(editForm.platform) ||
+  (editForm.platform === "composite" && editCompositeImageCapability.value),
+);
 
 type ImagePricingFormState = {
   rate_multiplier: number;
@@ -4910,6 +4997,8 @@ const closeCreateModal = () => {
   createForm.daily_limit_usd = null;
   createForm.weekly_limit_usd = null;
   createForm.monthly_limit_usd = null;
+  createForm.long_context_pricing_enabled = true;
+  createForm.model_pricing = [];
   createForm.peak_rate_enabled = false;
   createForm.peak_start = "";
   createForm.peak_end = "";
@@ -4985,6 +5074,11 @@ const handleCreateGroup = async () => {
     appStore.showError(t("admin.groups.nameRequired"));
     return;
   }
+  const pricingError = validateGroupPricing(createForm.model_pricing);
+  if (pricingError) {
+    appStore.showError(pricingError);
+    return;
+  }
   const guardLimit = buildUpstreamBillingGuardLimitPayload(
     createForm.platform,
     createForm.upstream_billing_guard_max_multiplier,
@@ -5002,6 +5096,7 @@ const handleCreateGroup = async () => {
     // 构建请求数据，包含模型路由配置
     const requestData = {
       ...createForm,
+      model_pricing: groupPricingToAPI(createForm.model_pricing, createForm.platform),
       upstream_billing_guard_max_multiplier: guardLimit,
       daily_limit_usd: normalizeOptionalLimit(
         createForm.daily_limit_usd as number | string | null,
@@ -5092,6 +5187,20 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.name = group.name;
   editForm.description = group.description || "";
   editForm.platform = group.platform;
+  editCompositeImageCapability.value = false;
+  if (group.platform === "composite") {
+    try {
+      const routes = await adminAPI.groups.getCompositeRoutes(group.id);
+      editCompositeImageCapability.value = routes.some(
+        (route) =>
+          route.enabled &&
+          (route.endpoint === "images" || route.endpoint === "any") &&
+          (route.target_platform === "openai" || route.target_platform === "grok"),
+      );
+    } catch {
+      editCompositeImageCapability.value = false;
+    }
+  }
   editForm.rate_multiplier = group.rate_multiplier;
   editForm.upstream_billing_guard_max_multiplier =
     group.upstream_billing_guard_max_multiplier ?? null;
@@ -5101,6 +5210,8 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.daily_limit_usd = group.daily_limit_usd;
   editForm.weekly_limit_usd = group.weekly_limit_usd;
   editForm.monthly_limit_usd = group.monthly_limit_usd;
+  editForm.long_context_pricing_enabled = group.long_context_pricing_enabled ?? true;
+  editForm.model_pricing = groupPricingFromAPI(group.model_pricing);
   editForm.allow_image_generation = group.allow_image_generation ?? false;
   editForm.image_rate_independent = group.image_rate_independent ?? false;
   editForm.image_rate_multiplier = group.image_rate_multiplier ?? 1;
@@ -5176,6 +5287,9 @@ const closeEditModal = () => {
   editingGroup.value = null;
   editModelRoutingRules.value = [];
   editForm.copy_accounts_from_group_ids = [];
+  editForm.long_context_pricing_enabled = true;
+  editForm.model_pricing = [];
+  editCompositeImageCapability.value = false;
   editForm.peak_rate_enabled = false;
   editForm.peak_start = "";
   editForm.peak_end = "";
@@ -5202,6 +5316,11 @@ const handleUpdateGroup = async () => {
     appStore.showError(t("admin.groups.nameRequired"));
     return;
   }
+  const pricingError = validateGroupPricing(editForm.model_pricing);
+  if (pricingError) {
+    appStore.showError(pricingError);
+    return;
+  }
 
   const guardLimit = buildUpstreamBillingGuardLimitPayload(
     editForm.platform,
@@ -5220,6 +5339,7 @@ const handleUpdateGroup = async () => {
     // 转换 fallback_group_id: null -> 0 (后端使用 0 表示清除)
     const payload = {
       ...editForm,
+      model_pricing: groupPricingToAPI(editForm.model_pricing, editForm.platform),
       upstream_billing_guard_max_multiplier: guardLimit,
       daily_limit_usd: normalizeOptionalLimit(
         editForm.daily_limit_usd as number | string | null,

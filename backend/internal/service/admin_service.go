@@ -237,6 +237,8 @@ type CreateGroupInput struct {
 	AudioRealtimePricePerMin     *float64
 	AudioTTSPricePerMillionChars *float64
 	AudioSTTPricePerHour         *float64
+	LongContextPricingEnabled    *bool
+	ModelPricing                 []ChannelModelPricing
 	ClaudeCodeOnly               bool   // 仅允许 Claude Code 客户端
 	FallbackGroupID              *int64 // 降级分组 ID
 	// 无效请求兜底分组 ID（仅 anthropic 平台使用）
@@ -302,6 +304,8 @@ type UpdateGroupInput struct {
 	AudioRealtimePricePerMin     *float64
 	AudioTTSPricePerMillionChars *float64
 	AudioSTTPricePerHour         *float64
+	LongContextPricingEnabled    *bool
+	ModelPricing                 *[]ChannelModelPricing
 	ClaudeCodeOnly               *bool  // 仅允许 Claude Code 客户端
 	FallbackGroupID              *int64 // 降级分组 ID
 	// 无效请求兜底分组 ID（仅 anthropic 平台使用）
@@ -619,28 +623,31 @@ var ErrRPMStatusUnavailable = infraerrors.New(http.StatusNotImplemented, "RPM_ST
 
 // adminServiceImpl implements AdminService
 type adminServiceImpl struct {
-	userRepo             UserRepository
-	userLimitRepo        userBatchLimitRepository
-	groupRepo            GroupRepository
-	groupDuplicateRepo   AdminGroupDuplicateRepository
-	accountRepo          AccountRepository
-	proxyRepo            ProxyRepository
-	apiKeyRepo           APIKeyRepository
-	redeemCodeRepo       RedeemCodeRepository
-	userGroupRateRepo    UserGroupRateRepository
-	userRPMCache         UserRPMCache
-	billingCacheService  *BillingCacheService
-	proxyProber          ProxyExitInfoProber
-	proxyLatencyCache    ProxyLatencyCache
-	authCacheInvalidator APIKeyAuthCacheInvalidator
-	entClient            *dbent.Client // 用于开启数据库事务
-	settingService       *SettingService
-	affiliateService     AffiliateRebateAccruer
-	defaultSubAssigner   DefaultSubscriptionAssigner
-	userSubRepo          UserSubscriptionRepository
-	privacyClientFactory PrivacyClientFactory
-	runtimeBlocker       AccountRuntimeBlocker
+	userRepo                UserRepository
+	userLimitRepo           userBatchLimitRepository
+	groupRepo               GroupRepository
+	groupDuplicateRepo      AdminGroupDuplicateRepository
+	accountRepo             AccountRepository
+	proxyRepo               ProxyRepository
+	apiKeyRepo              APIKeyRepository
+	redeemCodeRepo          RedeemCodeRepository
+	userGroupRateRepo       UserGroupRateRepository
+	userRPMCache            UserRPMCache
+	billingCacheService     *BillingCacheService
+	proxyProber             ProxyExitInfoProber
+	proxyLatencyCache       ProxyLatencyCache
+	authCacheInvalidator    APIKeyAuthCacheInvalidator
+	entClient               *dbent.Client // 用于开启数据库事务
+	settingService          *SettingService
+	affiliateService        AffiliateRebateAccruer
+	defaultSubAssigner      DefaultSubscriptionAssigner
+	userSubRepo             UserSubscriptionRepository
+	privacyClientFactory    PrivacyClientFactory
+	runtimeBlocker          AccountRuntimeBlocker
+	channelCacheInvalidator ChannelCacheInvalidator
 }
+
+type ChannelCacheInvalidator interface{ InvalidateCache() }
 
 type AffiliateRebateAccruer interface {
 	AccrueInviteRebate(ctx context.Context, inviteeUserID int64, baseRechargeAmount float64) (float64, error)
@@ -671,29 +678,31 @@ func NewAdminService(
 	userSubRepo UserSubscriptionRepository,
 	privacyClientFactory PrivacyClientFactory,
 	runtimeBlocker AccountRuntimeBlocker,
+	channelCacheInvalidator ChannelCacheInvalidator,
 ) AdminService {
 	return &adminServiceImpl{
-		userRepo:             userRepo,
-		userLimitRepo:        userBatchLimitRepositoryFrom(userRepo),
-		groupRepo:            groupRepo,
-		groupDuplicateRepo:   adminGroupDuplicateRepositoryFrom(groupRepo),
-		accountRepo:          accountRepo,
-		proxyRepo:            proxyRepo,
-		apiKeyRepo:           apiKeyRepo,
-		redeemCodeRepo:       redeemCodeRepo,
-		userGroupRateRepo:    userGroupRateRepo,
-		userRPMCache:         userRPMCache,
-		billingCacheService:  billingCacheService,
-		proxyProber:          proxyProber,
-		proxyLatencyCache:    proxyLatencyCache,
-		authCacheInvalidator: authCacheInvalidator,
-		entClient:            entClient,
-		settingService:       settingService,
-		affiliateService:     affiliateService,
-		defaultSubAssigner:   defaultSubAssigner,
-		userSubRepo:          userSubRepo,
-		privacyClientFactory: privacyClientFactory,
-		runtimeBlocker:       runtimeBlocker,
+		userRepo:                userRepo,
+		userLimitRepo:           userBatchLimitRepositoryFrom(userRepo),
+		groupRepo:               groupRepo,
+		groupDuplicateRepo:      adminGroupDuplicateRepositoryFrom(groupRepo),
+		accountRepo:             accountRepo,
+		proxyRepo:               proxyRepo,
+		apiKeyRepo:              apiKeyRepo,
+		redeemCodeRepo:          redeemCodeRepo,
+		userGroupRateRepo:       userGroupRateRepo,
+		userRPMCache:            userRPMCache,
+		billingCacheService:     billingCacheService,
+		proxyProber:             proxyProber,
+		proxyLatencyCache:       proxyLatencyCache,
+		authCacheInvalidator:    authCacheInvalidator,
+		entClient:               entClient,
+		settingService:          settingService,
+		affiliateService:        affiliateService,
+		defaultSubAssigner:      defaultSubAssigner,
+		userSubRepo:             userSubRepo,
+		privacyClientFactory:    privacyClientFactory,
+		runtimeBlocker:          runtimeBlocker,
+		channelCacheInvalidator: channelCacheInvalidator,
 	}
 }
 
@@ -717,6 +726,7 @@ func ProvideAdminService(
 	userSubRepo UserSubscriptionRepository,
 	privacyClientFactory PrivacyClientFactory,
 	runtimeBlocker *CompositeAccountRuntimeBlocker,
+	channelCacheInvalidator ChannelCacheInvalidator,
 ) AdminService {
 	return NewAdminService(
 		userRepo,
@@ -738,6 +748,7 @@ func ProvideAdminService(
 		userSubRepo,
 		privacyClientFactory,
 		runtimeBlocker,
+		channelCacheInvalidator,
 	)
 }
 
@@ -2069,6 +2080,10 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	if platform == "" {
 		platform = PlatformAnthropic
 	}
+	modelPricing, err := normalizeGroupModelPricing(platform, input.ModelPricing)
+	if err != nil {
+		return nil, err
+	}
 	guardLimit := input.UpstreamBillingGuardMaxMultiplier
 	if guardLimit != nil {
 		if !IsUpstreamBillingProbeIdentity(platform, AccountTypeAPIKey) {
@@ -2213,6 +2228,10 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		return nil, infraerrors.Newf(http.StatusBadRequest, "INVALID_REASONING_EFFORT_MAPPING", "%v", err)
 	}
 
+	longContextPricingEnabled := true
+	if input.LongContextPricingEnabled != nil {
+		longContextPricingEnabled = *input.LongContextPricingEnabled
+	}
 	group := &Group{
 		Name:                               input.Name,
 		Description:                        input.Description,
@@ -2249,6 +2268,8 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		AudioRealtimePricePerMin:           audioRealtimePricePerMin,
 		AudioTTSPricePerMillionChars:       audioTTSPricePerMillionChars,
 		AudioSTTPricePerHour:               audioSTTPricePerHour,
+		LongContextPricingEnabled:          longContextPricingEnabled,
+		ModelPricing:                       modelPricing,
 		ClaudeCodeOnly:                     input.ClaudeCodeOnly,
 		FallbackGroupID:                    input.FallbackGroupID,
 		FallbackGroupIDOnInvalidRequest:    fallbackOnInvalidRequest,
@@ -2321,6 +2342,42 @@ func normalizePrice(price *float64) *float64 {
 		return nil
 	}
 	return price
+}
+
+func normalizeGroupModelPricing(platform string, pricing []ChannelModelPricing) ([]ChannelModelPricing, error) {
+	out := make([]ChannelModelPricing, len(pricing))
+	for i := range pricing {
+		out[i] = pricing[i].Clone()
+		out[i].ID = 0
+		out[i].ChannelID = 0
+		// Group pricing is scoped to its owning group. Ignore client-supplied
+		// platform values so it cannot become an implicit cross-provider map.
+		out[i].Platform = platform
+		models := make([]string, 0, len(out[i].Models))
+		for _, model := range out[i].Models {
+			model = normalizeChannelPricingModelName(model)
+			if model != "" {
+				models = append(models, model)
+			}
+		}
+		out[i].Models = models
+		if len(out[i].Models) == 0 {
+			return nil, infraerrors.BadRequest("GROUP_MODEL_PRICING_MODELS_REQUIRED", "group model pricing entry requires at least one model")
+		}
+		if !out[i].BillingMode.IsValid() {
+			return nil, infraerrors.BadRequest("GROUP_MODEL_PRICING_MODE_INVALID", "invalid group model pricing billing mode")
+		}
+		// Group token pricing deliberately has no context tiers. Clear any stale
+		// client payload here as well as in the resolver so hidden data cannot
+		// reappear if the entry is later switched to another billing mode.
+		if out[i].BillingMode == "" || out[i].BillingMode == BillingModeToken {
+			out[i].Intervals = nil
+		}
+	}
+	if err := validatePricingEntries(out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // validateFallbackGroup 校验降级分组的有效性
@@ -2398,6 +2455,7 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 		return nil, err
 	}
 
+	previousPlatform := group.Platform
 	if input.Name != "" {
 		group.Name = input.Name
 	}
@@ -2406,6 +2464,13 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.Platform != "" {
 		group.Platform = input.Platform
+	}
+	if previousPlatform != group.Platform && input.ModelPricing == nil && len(group.ModelPricing) > 0 {
+		modelPricing, normalizeErr := normalizeGroupModelPricing(group.Platform, group.ModelPricing)
+		if normalizeErr != nil {
+			return nil, normalizeErr
+		}
+		group.ModelPricing = modelPricing
 	}
 	if input.UpstreamBillingGuardMaxMultiplier != nil {
 		guardLimit := *input.UpstreamBillingGuardMaxMultiplier
@@ -2439,6 +2504,16 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.Status != "" {
 		group.Status = input.Status
+	}
+	if input.LongContextPricingEnabled != nil {
+		group.LongContextPricingEnabled = *input.LongContextPricingEnabled
+	}
+	if input.ModelPricing != nil {
+		modelPricing, normalizeErr := normalizeGroupModelPricing(group.Platform, *input.ModelPricing)
+		if normalizeErr != nil {
+			return nil, normalizeErr
+		}
+		group.ModelPricing = modelPricing
 	}
 
 	// 订阅相关字段
@@ -2654,6 +2729,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByGroupID(ctx, id)
+	}
+	if previousPlatform != group.Platform && s.channelCacheInvalidator != nil {
+		s.channelCacheInvalidator.InvalidateCache()
 	}
 
 	// 如果指定了复制账号的源分组，同步绑定（替换当前分组的账号）
