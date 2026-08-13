@@ -783,6 +783,11 @@ func (s *RateLimitService) handle403(ctx context.Context, account *Account, upst
 }
 
 func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte) (shouldDisable bool) {
+	// A proxy/CDN HTML page is endpoint/link evidence, not account evidence.
+	// It must not consume the consecutive-account-403 counter either.
+	if isHTMLResponse(responseBody) {
+		return false
+	}
 	msg := buildForbiddenErrorMessage(
 		"Access forbidden (403):",
 		upstreamMsg,

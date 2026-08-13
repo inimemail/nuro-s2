@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 var registrationEmailDomainPattern = regexp.MustCompile(
@@ -18,6 +20,27 @@ func RegistrationEmailSuffix(email string) string {
 		return ""
 	}
 	return "@" + domain
+}
+
+func RegistrationEmailDomain(email string) string {
+	_, domain, ok := splitEmailForPolicy(email)
+	if !ok {
+		return ""
+	}
+	return NormalizeRegistrationEmailDomain(domain)
+}
+
+func NormalizeRegistrationEmailDomain(domain string) string {
+	domain = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(domain, "@")))
+	domain = strings.TrimRight(domain, ".")
+	if domain == "" {
+		return ""
+	}
+	registrable, err := publicsuffix.EffectiveTLDPlusOne(domain)
+	if err != nil {
+		return domain
+	}
+	return registrable
 }
 
 // IsRegistrationEmailSuffixAllowed checks whether an email is allowed by suffix whitelist.
@@ -146,5 +169,6 @@ func splitEmailForPolicy(raw string) (local string, domain string, ok bool) {
 	if !found || local == "" || domain == "" || strings.Contains(domain, "@") {
 		return "", "", false
 	}
-	return local, domain, true
+	domain = strings.TrimRight(domain, ".")
+	return local, domain, domain != ""
 }

@@ -415,6 +415,10 @@ func (s *OpenAIGatewayService) forwardGrokMedia(ctx context.Context, c *gin.Cont
 	if endpoint == GrokMediaEndpointVideoContent {
 		return s.forwardGrokMediaVideoContent(ctx, c, account, token, requestID, startTime)
 	}
+	publicModel := ParseGrokMediaRequest(contentType, body).Model
+	if upstreamModel, ok := ResolvedUpstreamModelFromContext(ctx); ok && endpoint.RequiresRequestBody() {
+		body = ReplaceModelInBody(body, upstreamModel)
+	}
 	targetURL, err := buildGrokMediaURL(account, s.cfg, endpoint, requestID)
 	if err != nil {
 		return nil, err
@@ -469,6 +473,9 @@ func (s *OpenAIGatewayService) forwardGrokMedia(ctx context.Context, c *gin.Cont
 
 	requestIDHeader := firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id"))
 	requestModel := requestInfo.Model
+	if publicModel == "" {
+		publicModel = requestModel
+	}
 	if resp.StatusCode >= 400 {
 		return s.handleGrokMediaErrorResponse(ctx, resp, c, account, requestIDHeader)
 	}
@@ -504,7 +511,7 @@ func (s *OpenAIGatewayService) forwardGrokMedia(ctx context.Context, c *gin.Cont
 		RequestID:            requestIDHeader,
 		ResponseID:           usage.ResponseID,
 		Usage:                usage.Usage,
-		Model:                requestModel,
+		Model:                publicModel,
 		BillingModel:         requestModel,
 		UpstreamModel:        requestModel,
 		ResponseHeaders:      resp.Header.Clone(),

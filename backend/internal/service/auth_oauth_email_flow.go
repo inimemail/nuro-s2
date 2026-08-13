@@ -118,7 +118,7 @@ func (s *AuthService) RegisterOAuthEmailAccount(
 	if isReservedEmail(email) {
 		return nil, nil, ErrEmailReserved
 	}
-	if err := s.validateRegistrationEmailPolicy(ctx, email); err != nil {
+	if err := s.validateRegistrationEmailQuota(ctx, email); err != nil {
 		slog.Error("oauth email register: policy rejected", "email", email, "error", err.Error())
 		return nil, nil, err
 	}
@@ -159,9 +159,12 @@ func (s *AuthService) RegisterOAuthEmailAccount(
 		SignupSource: signupSource,
 	}
 
-	if err := s.createUserWithEmailAliasGuard(ctx, user); err != nil {
+	if err := s.createUserWithRegistrationEmailGuard(ctx, user); err != nil {
 		if errors.Is(err, ErrEmailExists) {
 			return nil, nil, ErrEmailExists
+		}
+		if errors.Is(err, ErrEmailDomainRegistrationLimit) {
+			return nil, nil, ErrEmailDomainRegistrationLimit
 		}
 		slog.Error("oauth email register: userRepo.Create failed", "email", email, "signup_source", signupSource, "error", err.Error())
 		return nil, nil, ErrServiceUnavailable
@@ -201,7 +204,7 @@ func (s *AuthService) RegisterVerifiedOAuthEmailAccount(
 	if isReservedEmail(email) {
 		return nil, nil, ErrEmailReserved
 	}
-	if err := s.validateRegistrationEmailPolicy(ctx, email); err != nil {
+	if err := s.validateRegistrationEmailQuota(ctx, email); err != nil {
 		return nil, nil, err
 	}
 	if strings.TrimSpace(password) == "" {
@@ -241,9 +244,12 @@ func (s *AuthService) RegisterVerifiedOAuthEmailAccount(
 		SignupSource: signupSource,
 	}
 
-	if err := s.createUserWithEmailAliasGuard(ctx, user); err != nil {
+	if err := s.createUserWithRegistrationEmailGuard(ctx, user); err != nil {
 		if errors.Is(err, ErrEmailExists) {
 			return nil, nil, ErrEmailExists
+		}
+		if errors.Is(err, ErrEmailDomainRegistrationLimit) {
+			return nil, nil, ErrEmailDomainRegistrationLimit
 		}
 		return nil, nil, ErrServiceUnavailable
 	}

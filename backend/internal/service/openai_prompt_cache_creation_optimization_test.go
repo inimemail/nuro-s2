@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -783,4 +784,35 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressModeStaysOnEdgeRS(t *test
 	nonTargetWSDecoded, err := base64.StdEncoding.DecodeString(nonTargetWSPlan.Plan.BodyRawBase64)
 	require.NoError(t, err)
 	require.Equal(t, nonTargetWSBody, nonTargetWSDecoded, "the initial non-target frame must remain byte-exact")
+}
+
+func TestBuildResponsesWSEdgePlanIncludesEnabledRoutingHintAfterHeaderSnapshot(t *testing.T) {
+	repo := newRuntimeSettingRepoStub()
+	repo.values[SettingKeyOpenAICodexRoutingHintEnabled] = "true"
+	settings := NewSettingService(repo, &config.Config{})
+	require.NoError(t, settings.RefreshOpenAICodexRoutingHintRuntime(context.Background()))
+
+	account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, false, "")
+	account.Credentials["access_token"] = "oauth-token"
+	account.Concurrency = 1
+	account.Extra = map[string]any{
+		"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+	}
+	cfg := promptCacheBoostTestConfig()
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.OAuthEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModeCtxPool
+	svc := &OpenAIGatewayService{cfg: cfg, settingService: settings}
+	body := []byte(`{"type":"response.create","model":"gpt-5.6-sol","service_tier":"priority","input":"hello"}`)
+
+	plan, err := svc.BuildResponsesWSEdgePlan(context.Background(), nil, account, body, "oauth-token")
+	require.NoError(t, err)
+	require.Equal(t, "model=gpt-5.6-sol;tier=priority", plan.Plan.Headers[http.CanonicalHeaderKey(openAICodexRoutingHintHeader)])
+
+	account.Credentials["upstream_strong_isolation_enabled"] = true
+	isolatedPlan, err := svc.BuildResponsesWSEdgePlan(context.Background(), nil, account, body, "oauth-token")
+	require.NoError(t, err)
+	require.NotContains(t, isolatedPlan.Plan.Headers, http.CanonicalHeaderKey(openAICodexRoutingHintHeader))
 }

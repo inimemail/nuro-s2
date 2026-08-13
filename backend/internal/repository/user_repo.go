@@ -41,14 +41,22 @@ func newUserRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *userRepos
 }
 
 func (r *userRepository) Create(ctx context.Context, userIn *service.User) error {
-	return r.create(ctx, userIn, false)
+	return r.create(ctx, userIn, false, "")
 }
 
 func (r *userRepository) CreateWithEmailAliasGuard(ctx context.Context, userIn *service.User) error {
-	return r.create(ctx, userIn, true)
+	return r.create(ctx, userIn, true, "")
 }
 
-func (r *userRepository) create(ctx context.Context, userIn *service.User, guardEmailAlias bool) error {
+func (r *userRepository) CountUsersByEmailDomain(ctx context.Context, domain string) (int, error) {
+	return countUsersByEmailDomainWithClient(ctx, clientFromContext(ctx, r.client), domain)
+}
+
+func (r *userRepository) CreateWithEmailAliasGuardAndDomainLimit(ctx context.Context, userIn *service.User, domain string) error {
+	return r.create(ctx, userIn, true, service.NormalizeRegistrationEmailDomain(domain))
+}
+
+func (r *userRepository) create(ctx context.Context, userIn *service.User, guardEmailAlias bool, domainLimit string) error {
 	if userIn == nil {
 		return nil
 	}
@@ -78,6 +86,9 @@ func (r *userRepository) create(ctx context.Context, userIn *service.User, guard
 	if guardEmailAlias {
 		lockKeys = append(lockKeys, emailAliasUniquenessLockKey(userIn.Email))
 	}
+	if domainLimit != "" {
+		lockKeys = append(lockKeys, "users:registration-email-domain:"+domainLimit)
+	}
 	releaseEmailLock, err := lockRepositoryScopedKeys(
 		txCtx,
 		txClient,
@@ -88,6 +99,15 @@ func (r *userRepository) create(ctx context.Context, userIn *service.User, guard
 		return err
 	}
 	defer releaseEmailLock()
+	if domainLimit != "" {
+		count, err := countUsersByEmailDomainWithClient(txCtx, txClient, domainLimit)
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			return service.ErrEmailDomainRegistrationLimit
+		}
+	}
 
 	if err := ensureNormalizedEmailAvailableWithClient(txCtx, txClient, 0, userIn.Email); err != nil {
 		return err
@@ -136,6 +156,24 @@ func (r *userRepository) create(ctx context.Context, userIn *service.User, guard
 
 	applyUserEntityToService(userIn, created)
 	return nil
+}
+
+func countUsersByEmailDomainWithClient(ctx context.Context, client *dbent.Client, domain string) (int, error) {
+	domain = service.NormalizeRegistrationEmailDomain(domain)
+	client = clientFromContext(ctx, client)
+	if client == nil || domain == "" {
+		return 0, nil
+	}
+	exact := "%@" + escapeLikeWildcards(domain)
+	subdomain := "%@%." + escapeLikeWildcards(domain)
+	pred := predicate.User(func(s *entsql.Selector) {
+		s.Where(entsql.P(func(b *entsql.Builder) {
+			b.WriteString("(RTRIM(LOWER(TRIM(").Ident(s.C(dbuser.FieldEmail)).WriteString(")), '.') LIKE ").Arg(exact).
+				WriteString(` ESCAPE '\' OR RTRIM(LOWER(TRIM(`).Ident(s.C(dbuser.FieldEmail)).WriteString(")), '.') LIKE ").Arg(subdomain).
+				WriteString(` ESCAPE '\')`)
+		}))
+	})
+	return client.User.Query().Where(pred).Count(ctx)
 }
 
 func (r *userRepository) GetByID(ctx context.Context, id int64) (*service.User, error) {

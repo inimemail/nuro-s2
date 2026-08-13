@@ -279,8 +279,13 @@ type OpenAIForwardResult struct {
 	VideoResolution      string
 	VideoDurationSeconds int
 	WebSearchCalls       int
-	wsReplayInput        []json.RawMessage
-	wsReplayInputExists  bool
+	SearchCount          int
+	AudioUsage           *AudioUsage
+	// ResponseBody is used only by auxiliary native endpoints that normalize
+	// upstream JSON before returning it to the client.
+	ResponseBody        []byte
+	wsReplayInput       []json.RawMessage
+	wsReplayInputExists bool
 }
 
 type OpenAIWSRetryMetricsSnapshot struct {
@@ -3764,6 +3769,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	originalBody := body
 	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
 	originalModel := reqModel
+	if upstreamModel, ok := ResolvedUpstreamModelFromContext(ctx); ok && upstreamModel != reqModel {
+		body = ReplaceModelInBody(body, upstreamModel)
+		reqModel = upstreamModel
+	}
 	explicitImageIntent, explicitImageIntentKnown := OpenAIExplicitImageGenerationIntentFromContext(ctx)
 
 	if account != nil && account.Platform == PlatformGrok {
@@ -5055,7 +5064,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	apiKey := getAPIKeyFromContext(c)
-	if IsExplicitImageGenerationIntent(openAIResponsesEndpoint, reqModel, body) && !GroupAllowsImageGeneration(apiKeyGroup(apiKey)) {
+	if IsExplicitImageGenerationIntent(openAIResponsesEndpoint, reqModel, body) && !GroupAllowsImageGenerationForRequest(ctx, apiKeyGroup(apiKey), openAIResponsesEndpoint, reqModel, body) {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": gin.H{
@@ -5520,6 +5529,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if account.Type == AccountTypeOAuth {
 		enforceCodexIdentityHeaders(req.Header)
 	}
+	if s.settingService != nil {
+		setOpenAICodexRoutingHintFromBody(req.Header, account, body, s.settingService.IsOpenAICodexRoutingHintEnabled(ctx))
+	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
@@ -5694,6 +5706,7 @@ type openaiStreamingResultPassthrough struct {
 	clientDisconnected bool
 	imageCount         int
 	imageOutputSizes   []string
+	searchCount        int
 }
 
 type openaiNonStreamingResultPassthrough struct {
@@ -5703,6 +5716,7 @@ type openaiNonStreamingResultPassthrough struct {
 	terminalEventType string
 	imageCount        int
 	imageOutputSizes  []string
+	searchCount       int
 }
 
 func openAIStreamClientOutputStarted(c *gin.Context, localStarted bool) bool {
@@ -6609,6 +6623,8 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
+	searchCounter := 0
+	streamSearchSeen := make(map[string]struct{})
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
 		resultTerminalType := terminalEventType
 		if sawFailedEvent {
@@ -6624,6 +6640,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			clientDisconnected: clientDisconnected,
 			imageCount:         imageCounter.Count(),
 			imageOutputSizes:   imageCounter.Sizes(),
+			searchCount:        searchCounter,
 		}
 	}
 
@@ -6703,6 +6720,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
 			imageCounter.AddSSEData(dataBytes)
+			searchCounter += countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen)
 			safeTokenPlaceholderPending = safeTokenPlaceholderPending || eventType == "response.created"
 			lineStartsRealOutput := openAIStreamDataStartsRealOutput(trimmedData, eventType)
 			lineStartsFirstToken := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
@@ -7021,6 +7039,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		terminalEventType: openAIResponseTerminalEventTypeFromBody(body),
 		imageCount:        countOpenAIResponseImageOutputsFromJSONBytes(body),
 		imageOutputSizes:  collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
+		searchCount:       countGrokNativeSearchCallsFromJSONBytes(body),
 	}, nil
 }
 
@@ -7213,6 +7232,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(ctx context.Context, r
 		terminalEventType: terminalType,
 		imageCount:        countOpenAIImageOutputsFromSSEBody(bodyText),
 		imageOutputSizes:  collectOpenAIImageOutputSizesFromSSEBody(bodyText),
+		searchCount:       countGrokNativeSearchCallsFromSSEBody(bodyText),
 	}, nil
 }
 
@@ -7394,6 +7414,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 终态收口：originator 必须与最终 User-Agent 首段配套且为官方身份，否则上游可能拒绝。
 	if account.Type == AccountTypeOAuth {
 		enforceCodexIdentityHeaders(req.Header)
+	}
+	if s.settingService != nil {
+		setOpenAICodexRoutingHintFromBody(req.Header, account, body, s.settingService.IsOpenAICodexRoutingHintEnabled(ctx))
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
@@ -7625,6 +7648,13 @@ func (s *OpenAIGatewayService) handleErrorResponseInternal(
 	}
 
 	MarkResponseCommitted(c)
+	if isOpenAIDeterministicClientError(resp.StatusCode) {
+		writeOpenAIUpstreamClientError(c, resp.StatusCode, body, upstreamMsg)
+		if upstreamMsg == "" {
+			return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
+	}
 
 	// Return appropriate error response
 	var errType, errMsg string
@@ -7855,6 +7885,7 @@ type openaiStreamingResult struct {
 	clientDisconnected bool
 	imageCount         int
 	imageOutputSizes   []string
+	searchCount        int
 }
 
 func openAIResponsesTerminalEventType(eventType string) string {
@@ -7895,6 +7926,7 @@ type openaiNonStreamingResult struct {
 	terminalEventType string
 	imageCount        int
 	imageOutputSizes  []string
+	searchCount       int
 }
 
 func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, requestFirstTokenPlaceholderSentOpt ...bool) (*openaiStreamingResult, error) {
@@ -8090,6 +8122,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	}
 
 	needModelReplace := originalModel != mappedModel
+	searchCounter := 0
+	streamSearchSeen := make(map[string]struct{})
 	resultWithUsage := func() *openaiStreamingResult {
 		resultTerminalType := terminalEventType
 		if sawFailedEvent {
@@ -8105,6 +8139,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			clientDisconnected: clientDisconnected,
 			imageCount:         imageCounter.Count(),
 			imageOutputSizes:   imageCounter.Sizes(),
+			searchCount:        searchCounter,
 		}
 	}
 	finalizeStream := func() (*openaiStreamingResult, error) {
@@ -8269,6 +8304,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
 			imageCounter.AddSSEData(dataBytes)
+			searchCounter += countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen)
 			safeTokenPlaceholderPending = safeTokenPlaceholderPending || eventType == "response.created"
 
 			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
@@ -8799,13 +8835,17 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return OpenAIUsage{}, false
 	}
-	if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, "usage")); ok {
-		mergeHostedImageGenToolUsage(gjson.GetBytes(body, "tool_usage.image_gen"), &usage)
-		return usage, true
+	candidates := [][2]string{
+		{"usage", "tool_usage.image_gen"},
+		{"response.usage", "response.tool_usage.image_gen"},
+		{"data.usage", "data.tool_usage.image_gen"},
+		{"data.response.usage", "data.response.tool_usage.image_gen"},
 	}
-	if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, "response.usage")); ok {
-		mergeHostedImageGenToolUsage(gjson.GetBytes(body, "response.tool_usage.image_gen"), &usage)
-		return usage, true
+	for _, candidate := range candidates {
+		if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, candidate[0])); ok {
+			mergeHostedImageGenToolUsage(gjson.GetBytes(body, candidate[1]), &usage)
+			return usage, true
+		}
 	}
 	return OpenAIUsage{}, false
 }
@@ -10438,6 +10478,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	serviceTier string,
 	longContextBillingEnabled bool,
 ) (*CostBreakdown, error) {
+	billingModel := firstUsageBillingModel(billingModels)
 	if result != nil && result.WebSearchCalls > 0 {
 		var groupPrice *float64
 		if apiKey != nil && apiKey.Group != nil {
@@ -10445,7 +10486,24 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 		}
 		return s.billingService.CalculateWebSearchCost(result.WebSearchCalls, groupPrice, webSearchMultiplier), nil
 	}
-	billingModel := firstUsageBillingModel(billingModels)
+	if result != nil && result.SearchCount > 0 {
+		var groupPrice *float64
+		if apiKey != nil && apiKey.Group != nil {
+			groupPrice = apiKey.Group.SearchPricePer1K
+		}
+		searchCost := s.billingService.CalculateSearchCost(result.SearchCount, groupPrice, webSearchMultiplier)
+		if len(billingModels) == 0 || billingModel == "" || (result.Usage.InputTokens == 0 && result.Usage.OutputTokens == 0) {
+			return addUsageSurcharge(searchCost, s.billingService.CalculateAudioCostFromUsage(result.AudioUsage, audioPriceConfigFromAPIKey(apiKey), multiplier)), nil
+		}
+		baseCost, baseErr := s.calculateOpenAIRecordUsageTokenCost(ctx, apiKey, billingModel, multiplier, tokens, serviceTier, longContextBillingEnabled)
+		if baseErr != nil {
+			return nil, baseErr
+		}
+		return addUsageSurcharge(addUsageSurcharge(baseCost, searchCost), s.billingService.CalculateAudioCostFromUsage(result.AudioUsage, audioPriceConfigFromAPIKey(apiKey), multiplier)), nil
+	}
+	if result != nil && result.AudioUsage != nil && result.Usage.InputTokens == 0 && result.Usage.OutputTokens == 0 {
+		return s.billingService.CalculateAudioCostFromUsage(result.AudioUsage, audioPriceConfigFromAPIKey(apiKey), multiplier), nil
+	}
 	if isGrokVideoUsageResult(result, billingModels) {
 		if resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey); resolved == nil || resolved.Mode != BillingModeToken {
 			return s.calculateOpenAIVideoCost(ctx, billingModel, apiKey, result, videoMultiplier), nil

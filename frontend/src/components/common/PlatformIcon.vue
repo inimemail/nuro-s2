@@ -23,6 +23,9 @@
   <svg v-else-if="platform === 'grok'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
     <path d="M4.4 4h3.2l4.5 6.2L16.8 4H20l-6.2 8 6.4 8h-3.3l-4.8-6.2L7.2 20H4l6.4-8L4.4 4z" />
   </svg>
+  <svg v-else-if="platform === 'composite'" :class="sizeClass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M8 8h8v8H8z" /><path d="M4 4h4M16 4h4M4 20h4M16 20h4" /><path d="M4 4l4 4M20 4l-4 4M4 20l4-4M20 20l-4-4" />
+  </svg>
   <!-- Fallback: generic platform icon -->
   <svg v-else :class="sizeClass" fill="currentColor" viewBox="0 0 24 24">
     <path

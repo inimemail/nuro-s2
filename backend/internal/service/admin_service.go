@@ -231,7 +231,12 @@ type CreateGroupInput struct {
 	VideoPrice480P               *float64
 	VideoPrice720P               *float64
 	VideoPrice1080P              *float64
+	VideoModelPrices             map[string]map[string]float64
 	WebSearchPricePerCall        *float64
+	SearchPricePer1K             *float64
+	AudioRealtimePricePerMin     *float64
+	AudioTTSPricePerMillionChars *float64
+	AudioSTTPricePerHour         *float64
 	ClaudeCodeOnly               bool   // 仅允许 Claude Code 客户端
 	FallbackGroupID              *int64 // 降级分组 ID
 	// 无效请求兜底分组 ID（仅 anthropic 平台使用）
@@ -291,7 +296,12 @@ type UpdateGroupInput struct {
 	VideoPrice480P               *float64
 	VideoPrice720P               *float64
 	VideoPrice1080P              *float64
+	VideoModelPrices             map[string]map[string]float64
 	WebSearchPricePerCall        *float64
+	SearchPricePer1K             *float64
+	AudioRealtimePricePerMin     *float64
+	AudioTTSPricePerMillionChars *float64
+	AudioSTTPricePerHour         *float64
 	ClaudeCodeOnly               *bool  // 仅允许 Claude Code 客户端
 	FallbackGroupID              *int64 // 降级分组 ID
 	// 无效请求兜底分组 ID（仅 anthropic 平台使用）
@@ -2093,6 +2103,10 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	videoPrice720P := normalizePrice(input.VideoPrice720P)
 	videoPrice1080P := normalizePrice(input.VideoPrice1080P)
 	webSearchPricePerCall := normalizePrice(input.WebSearchPricePerCall)
+	searchPricePer1K := normalizePrice(input.SearchPricePer1K)
+	audioRealtimePricePerMin := normalizePrice(input.AudioRealtimePricePerMin)
+	audioTTSPricePerMillionChars := normalizePrice(input.AudioTTSPricePerMillionChars)
+	audioSTTPricePerHour := normalizePrice(input.AudioSTTPricePerHour)
 	imageRateMultiplier := 1.0
 	if input.ImageRateMultiplier != nil {
 		if *input.ImageRateMultiplier < 0 {
@@ -2229,7 +2243,12 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		VideoPrice480P:                     videoPrice480P,
 		VideoPrice720P:                     videoPrice720P,
 		VideoPrice1080P:                    videoPrice1080P,
+		VideoModelPrices:                   NormalizeVideoModelPrices(input.VideoModelPrices),
 		WebSearchPricePerCall:              webSearchPricePerCall,
+		SearchPricePer1K:                   searchPricePer1K,
+		AudioRealtimePricePerMin:           audioRealtimePricePerMin,
+		AudioTTSPricePerMillionChars:       audioTTSPricePerMillionChars,
+		AudioSTTPricePerHour:               audioSTTPricePerHour,
 		ClaudeCodeOnly:                     input.ClaudeCodeOnly,
 		FallbackGroupID:                    input.FallbackGroupID,
 		FallbackGroupIDOnInvalidRequest:    fallbackOnInvalidRequest,
@@ -2486,8 +2505,23 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.VideoPrice1080P != nil {
 		group.VideoPrice1080P = normalizePrice(input.VideoPrice1080P)
 	}
+	if input.VideoModelPrices != nil {
+		group.VideoModelPrices = NormalizeVideoModelPrices(input.VideoModelPrices)
+	}
 	if input.WebSearchPricePerCall != nil {
 		group.WebSearchPricePerCall = normalizePrice(input.WebSearchPricePerCall)
+	}
+	if input.SearchPricePer1K != nil {
+		group.SearchPricePer1K = normalizePrice(input.SearchPricePer1K)
+	}
+	if input.AudioRealtimePricePerMin != nil {
+		group.AudioRealtimePricePerMin = normalizePrice(input.AudioRealtimePricePerMin)
+	}
+	if input.AudioTTSPricePerMillionChars != nil {
+		group.AudioTTSPricePerMillionChars = normalizePrice(input.AudioTTSPricePerMillionChars)
+	}
+	if input.AudioSTTPricePerHour != nil {
+		group.AudioSTTPricePerHour = normalizePrice(input.AudioSTTPricePerHour)
 	}
 	peakRateEnabled := group.PeakRateEnabled
 	if input.PeakRateEnabled != nil {

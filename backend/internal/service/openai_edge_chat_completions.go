@@ -895,6 +895,9 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 	if headerErr != nil {
 		return nil, headerErr
 	}
+	if s.settingService != nil {
+		setOpenAICodexRoutingHintFromBody(headers, account, firstMessage, s.settingService.IsOpenAICodexRoutingHintEnabled(ctx))
+	}
 	headerMap := make(map[string]string, len(headers))
 	for key, values := range headers {
 		if len(values) > 0 {

@@ -645,6 +645,13 @@ type ForwardResult struct {
 	ImageOutputSizes   []string
 	ImageSizeSource    string
 	ImageSizeBreakdown map[string]int
+	SearchCount        int
+	AudioUsage         *AudioUsage
+}
+
+type AudioUsage struct {
+	Mode            string
+	DurationOrUnits float64
 }
 
 type GatewayFailureScope string
@@ -1622,6 +1629,13 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 		groupID = resolvedGroupID
 		ctx = s.withGroupContext(ctx, group)
 		platform = group.Platform
+		if platform == PlatformComposite {
+			if target, ok := ResolvedTargetPlatformFromContext(ctx); ok && isCompositeConcretePlatform(target) {
+				platform = target
+			} else {
+				return nil, fmt.Errorf("composite group requires a resolvable target platform")
+			}
+		}
 	} else {
 		// 无分组时只使用原生 anthropic 平台
 		platform = PlatformAnthropic
@@ -2679,6 +2693,12 @@ func (s *GatewayService) resolvePlatform(ctx context.Context, groupID *int64, gr
 		return forcePlatform, true, nil
 	}
 	if group != nil {
+		if group.Platform == PlatformComposite {
+			if target, ok := ResolvedTargetPlatformFromContext(ctx); ok && isCompositeConcretePlatform(target) {
+				return target, true, nil
+			}
+			return "", false, fmt.Errorf("composite group requires a resolvable target platform")
+		}
 		return group.Platform, false, nil
 	}
 	if groupID != nil {
@@ -5770,6 +5790,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	reqModel := parsed.Model
 	reqStream := parsed.Stream
 	originalModel := reqModel
+	if upstreamModel, ok := ResolvedUpstreamModelFromContext(ctx); ok && upstreamModel != reqModel {
+		body = ReplaceModelInBody(body, upstreamModel)
+		reqModel = upstreamModel
+	}
 
 	// === DEBUG: 打印客户端原始请求（headers + body 摘要）===
 	if c != nil {
@@ -9970,6 +9994,9 @@ func QuotaPlatform(ctx context.Context, apiKey *APIKey) string {
 	if fp, ok := ctx.Value(ctxkey.ForcePlatform).(string); ok && fp != "" {
 		return fp
 	}
+	if platform, ok := ResolvedTargetPlatformFromContext(ctx); ok {
+		return platform
+	}
 	return PlatformFromAPIKey(apiKey)
 }
 
@@ -10640,13 +10667,25 @@ func (s *GatewayService) calculateRecordUsageCost(
 	imageMultiplier float64,
 	opts *recordUsageOpts,
 ) *CostBreakdown {
+	if result == nil {
+		return &CostBreakdown{}
+	}
 	// 图片生成计费
 	if result.ImageCount > 0 {
-		return s.calculateImageCost(ctx, result, apiKey, billingModel, imageMultiplier)
+		cost := s.calculateImageCost(ctx, result, apiKey, billingModel, imageMultiplier)
+		return addUsageSurcharge(cost, s.billingService.CalculateAudioCostFromUsage(result.AudioUsage, audioPriceConfigFromAPIKey(apiKey), multiplier))
 	}
 
-	// Token 计费
-	return s.calculateTokenCost(ctx, result, apiKey, billingModel, multiplier, opts)
+	// Token 计费，Voice/Search 作为附加费叠加，不覆盖已有 token 成本。
+	cost := s.calculateTokenCost(ctx, result, apiKey, billingModel, multiplier, opts)
+	if result.SearchCount > 0 {
+		var searchPrice *float64
+		if apiKey != nil && apiKey.Group != nil {
+			searchPrice = apiKey.Group.SearchPricePer1K
+		}
+		cost = addUsageSurcharge(cost, s.billingService.CalculateSearchCost(result.SearchCount, searchPrice, multiplier))
+	}
+	return addUsageSurcharge(cost, s.billingService.CalculateAudioCostFromUsage(result.AudioUsage, audioPriceConfigFromAPIKey(apiKey), multiplier))
 }
 
 // resolveChannelPricing 检查指定模型是否存在渠道级别定价。

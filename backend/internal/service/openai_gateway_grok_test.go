@@ -463,6 +463,29 @@ func TestOpenAIGatewayService_ForwardGrokMediaOAuthUsesImagineEndpointAndCLIHead
 	require.Equal(t, "route-b", getHeaderRaw(upstream.lastReq.Header, "x-media-route"))
 }
 
+func TestOpenAIGatewayService_ForwardGrokMediaUsesResolvedUpstreamModel(t *testing.T) {
+	setGinTestMode()
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewBufferString(`{"data":[{"url":"https://cdn.example/image.png"}]}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{ID: 77, Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "api-key"}}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	body := []byte(`{"model":"public-image","prompt":"draw"}`)
+	ctx := WithResolvedUpstreamModel(context.Background(), "grok-imagine")
+
+	result, err := svc.ForwardGrokMedia(ctx, c, account, GrokMediaEndpointImagesGenerations, "", body, "application/json")
+
+	require.NoError(t, err)
+	require.Equal(t, "public-image", result.Model)
+	require.Equal(t, "grok-imagine-image-quality", result.UpstreamModel)
+	require.Equal(t, "grok-imagine-image-quality", gjson.GetBytes(upstream.lastBody, "model").String())
+}
+
 func TestOpenAIGatewayService_ForwardGrokVideoMutationEndpoints(t *testing.T) {
 	setGinTestMode()
 	tests := []struct {

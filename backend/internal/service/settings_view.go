@@ -12,21 +12,22 @@ func firstNonEmpty(values ...string) string {
 }
 
 type SystemSettings struct {
-	RegistrationEnabled              bool
-	EmailVerifyEnabled               bool
-	RegistrationEmailSuffixWhitelist []string
-	PromoCodeEnabled                 bool
-	PasswordResetEnabled             bool
-	FrontendURL                      string
-	InvitationCodeEnabled            bool
-	TotpEnabled                      bool // TOTP 双因素认证
-	PasskeyEnabled                   bool // Passkey 登录
-	AuditLogRetentionDays            int
-	SessionBindingEnabled            bool
-	LoginAgreementEnabled            bool
-	LoginAgreementMode               string
-	LoginAgreementUpdatedAt          string
-	LoginAgreementDocuments          []LoginAgreementDocument
+	RegistrationEnabled                 bool
+	EmailVerifyEnabled                  bool
+	RegistrationEmailSuffixWhitelist    []string
+	RegistrationEmailDomainQuotaEnabled bool
+	PromoCodeEnabled                    bool
+	PasswordResetEnabled                bool
+	FrontendURL                         string
+	InvitationCodeEnabled               bool
+	TotpEnabled                         bool // TOTP 双因素认证
+	PasskeyEnabled                      bool // Passkey 登录
+	AuditLogRetentionDays               int
+	SessionBindingEnabled               bool
+	LoginAgreementEnabled               bool
+	LoginAgreementMode                  string
+	LoginAgreementUpdatedAt             string
+	LoginAgreementDocuments             []LoginAgreementDocument
 
 	SMTPHost               string
 	SMTPPort               int
@@ -246,6 +247,7 @@ type SystemSettings struct {
 	OpenAICodexClientVersion               string // 管理员固定的 Codex 客户端版本；优先于自动同步值
 	OpenAICodexClientVersionSynced         string // 后台同步到的最新稳定版，只读
 	OpenAICodexVersionAutoSyncEnabled      bool   // 是否每 6 小时同步官方稳定版；默认 false
+	OpenAICodexRoutingHintEnabled          bool   // 是否向 OAuth 上游发送本地路由 hint；默认 false
 	OpenAIAllowClaudeCodeCodexPlugin       bool   // 全局开关：是否额外放行 Claude Code 的 Codex 插件（默认 false）
 	MinCodexVersion                        string
 	MaxCodexVersion                        string

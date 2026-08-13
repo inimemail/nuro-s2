@@ -3,6 +3,8 @@ package service
 import (
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -35,6 +37,30 @@ func grokBaseURLValidator(account *Account, cfg *config.Config) (xai.BaseURLVali
 	default:
 		return nil, fmt.Errorf("unsupported grok account type: %s", account.Type)
 	}
+}
+
+func buildGrokVoiceURL(account *Account, cfg *config.Config, endpoint string) (string, error) {
+	validator, err := grokBaseURLValidator(account, cfg)
+	if err != nil {
+		return "", err
+	}
+	base := account.GetGrokMediaBaseURL()
+	if strings.TrimSpace(base) == "" || isGrokCLIProxyTarget(base) {
+		base = xai.DefaultBaseURL
+	}
+	validated, err := validator(base)
+	if err != nil {
+		return "", err
+	}
+	parts := strings.Split(strings.Trim(strings.TrimSpace(endpoint), "/"), "/")
+	encoded := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "?#\\") {
+			return "", fmt.Errorf("invalid voice endpoint path")
+		}
+		encoded = append(encoded, url.PathEscape(part))
+	}
+	return strings.TrimRight(validated, "/") + "/" + strings.Join(encoded, "/"), nil
 }
 
 func grokConfiguredBaseURLValidator(cfg *config.Config) xai.BaseURLValidator {

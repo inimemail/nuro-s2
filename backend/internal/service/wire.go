@@ -620,6 +620,9 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 	if err := svc.RefreshOpenAICodexIdentityRuntime(context.Background()); err != nil {
 		logger.LegacyPrintf("service.setting", "Warning: load OpenAI Codex identity runtime failed: %v", err)
 	}
+	if err := svc.RefreshOpenAICodexRoutingHintRuntime(context.Background()); err != nil {
+		logger.LegacyPrintf("service.setting", "Warning: load OpenAI Codex routing hint runtime failed: %v", err)
+	}
 	antigravity.SetUserAgentVersionResolver(svc.GetAntigravityUserAgentVersion)
 	return svc
 }
@@ -693,6 +696,7 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementService,
 	ProvideAdminService,
 	NewGatewayService,
+	NewCompositeRouteResolver,
 	ProvideOpenAIGatewayService,
 	NewCompositeAccountRuntimeBlocker,
 	NewOAuthService,

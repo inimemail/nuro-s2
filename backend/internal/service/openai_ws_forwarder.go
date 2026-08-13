@@ -1301,7 +1301,6 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	if strongIsolationEnabled {
 		applyOpenAIUpstreamStrongIsolationHeaderMap(headers)
 	}
-
 	return headers, sessionResolution, nil
 }
 
@@ -2007,6 +2006,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	wsHeaders, sessionResolution, headerErr := s.buildOpenAIWSHeaders(c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
 	if headerErr != nil {
 		return nil, wrapOpenAIWSFallback("auth_failed", headerErr)
+	}
+	if s.settingService != nil {
+		payload, _ := json.Marshal(reqBody)
+		setOpenAICodexRoutingHintFromBody(wsHeaders, account, payload, s.settingService.IsOpenAICodexRoutingHintEnabled(ctx))
 	}
 	logOpenAIWSModeDebug(
 		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v turn_state_len=%d has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
@@ -2878,7 +2881,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			normalized = next
 		}
 		imageIntent := IsExplicitImageGenerationIntent(openAIResponsesEndpoint, originalModel, normalized)
-		if imageIntent && !GroupAllowsImageGeneration(apiKeyGroup(getAPIKeyFromContext(c))) {
+		if imageIntent && !GroupAllowsImageGenerationForRequest(ctx, apiKeyGroup(getAPIKeyFromContext(c)), openAIResponsesEndpoint, originalModel, normalized) {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, ImageGenerationPermissionMessage(), nil)
 		}
 		imageBillingModel := ""
@@ -3190,6 +3193,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	wsHeaders, _, headerErr := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey)
 	if headerErr != nil {
 		return fmt.Errorf("build openai websocket authentication headers: %w", headerErr)
+	}
+	if s.settingService != nil {
+		setOpenAICodexRoutingHintFromBody(wsHeaders, account, firstPayload.payloadRaw, s.settingService.IsOpenAICodexRoutingHintEnabled(ctx))
 	}
 	baseAcquireReq := openAIWSAcquireRequest{
 		Account: account,

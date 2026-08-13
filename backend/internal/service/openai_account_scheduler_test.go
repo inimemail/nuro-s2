@@ -4397,6 +4397,52 @@ func TestDefaultOpenAIAccountScheduler_ReportSwitchAndSnapshot(t *testing.T) {
 	require.Greater(t, snapshot.LoadSkewAvg, 0.0)
 }
 
+func TestLegacySchedulerDiagnosticsAreBoundedAndDoNotAffectSelectionOrder(t *testing.T) {
+	snapshotService := &SchedulerSnapshotService{}
+	snapshotService.snapshotGeneration.Store(17)
+	schedulerAny := newDefaultOpenAIAccountScheduler(&OpenAIGatewayService{
+		schedulerSnapshot: snapshotService,
+	}, nil)
+	scheduler, ok := schedulerAny.(*defaultOpenAIAccountScheduler)
+	require.True(t, ok)
+
+	candidates := []openAIAccountCandidateScore{
+		{account: &Account{ID: 8101}, loadInfo: &AccountLoadInfo{LoadRate: 1}, score: 0.1},
+		{account: &Account{ID: 8102}, loadInfo: &AccountLoadInfo{LoadRate: 2}, score: 0.2},
+		{account: &Account{ID: 8103}, loadInfo: &AccountLoadInfo{LoadRate: 3}, score: 0.3},
+	}
+	req := OpenAIAccountScheduleRequest{SessionHash: "legacy_diagnostics_order", LockedPriority: 7}
+	before := buildOpenAIWeightedSelectionOrder(candidates, req)
+
+	scheduler.metrics.recordLegacyDiagnostics(req, openAISelectionFilterStats{
+		pool: 4,
+		reasons: map[string]int{
+			"excluded":            1,
+			"capability_mismatch": 2,
+		},
+	}, 3)
+	after := buildOpenAIWeightedSelectionOrder(candidates, req)
+
+	require.Equal(t, before, after, "diagnostics must not participate in account ordering")
+	snapshot := scheduler.SnapshotMetrics()
+	require.Equal(t, int64(3), snapshot.LastCandidateCount)
+	require.Equal(t, int64(7), snapshot.LastLockedPriority)
+	require.Equal(t, int64(17), snapshot.SnapshotGeneration)
+	require.Equal(t, int64(1), snapshot.ExclusionsByReason["excluded"])
+	require.Equal(t, int64(2), snapshot.ExclusionsByReason["capability_mismatch"])
+	require.Len(t, snapshot.ExclusionsByReason, 2)
+
+	scheduler.metrics.recordLegacyDiagnostics(
+		OpenAIAccountScheduleRequest{LockedPriority: -1},
+		openAISelectionFilterStats{},
+		0,
+	)
+	empty := scheduler.SnapshotMetrics()
+	require.Zero(t, empty.LastCandidateCount)
+	require.Equal(t, int64(-1), empty.LastLockedPriority)
+	require.Equal(t, snapshot.ExclusionsByReason, empty.ExclusionsByReason)
+}
+
 func TestOpenAIGatewayService_SchedulerWrappersAndDefaults(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

@@ -122,9 +122,15 @@ func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedM
 	return strings.TrimSpace(apiKey.Group.ResolveMessagesDispatchModel(requestedModel))
 }
 
-func openAICompatibleRequestPlatform(apiKey *service.APIKey) string {
+func openAICompatibleRequestPlatform(ctx context.Context, apiKey *service.APIKey) string {
+	if platform, ok := service.ResolvedTargetPlatformFromContext(ctx); ok {
+		return platform
+	}
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.Platform == service.PlatformGrok {
 		return service.PlatformGrok
+	}
+	if apiKey != nil && apiKey.Group != nil && apiKey.Group.Platform == service.PlatformComposite {
+		return service.PlatformComposite
 	}
 	return service.PlatformOpenAI
 }
@@ -422,9 +428,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	requestPlatform := openAICompatibleRequestPlatform(apiKey)
+	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
 	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, body)
-	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
+	if imageIntent && !service.GroupAllowsImageGenerationForRequest(c.Request.Context(), apiKey.Group, "/v1/responses", reqModel, body) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
@@ -1303,7 +1309,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	}
 
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
-	requestPlatform := openAICompatibleRequestPlatform(apiKey)
+	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
 	c.Request = c.Request.WithContext(service.WithResolvedTargetPlatform(c.Request.Context(), requestPlatform))
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
@@ -1362,7 +1368,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if failoverClientGone(c) {
 			return false
 		}
-		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
+		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, routingModel, false, nil)
 		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, sessionHash, account, failoverErr)
 		h.gatewayService.RecordOpenAIAccountSwitch()
 		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
@@ -2047,6 +2053,36 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "model is required in first response.create payload")
 		return
 	}
+	requestPlatform := service.PlatformOpenAI
+	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformComposite {
+		resolver := service.DefaultCompositeRouteResolver()
+		if resolver == nil || apiKey.GroupID == nil {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "Composite model route is not configured")
+			return
+		}
+		decision, resolveErr := resolver.Resolve(ctx, *apiKey.GroupID, reqModel, service.CompositeRouteEndpointResponses)
+		if resolveErr != nil {
+			closeOpenAIClientWS(wsConn, coderws.StatusInternalError, "Composite model route lookup failed")
+			return
+		}
+		if !decision.Matched || decision.TargetPlatform != service.PlatformOpenAI {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "Responses WebSocket is not supported for the resolved platform")
+			return
+		}
+		requestPlatform = decision.TargetPlatform
+		ctx = service.WithResolvedTargetPlatform(ctx, requestPlatform)
+		if strings.TrimSpace(decision.UpstreamModel) != "" {
+			ctx = service.WithResolvedUpstreamModel(ctx, decision.UpstreamModel)
+		}
+	} else {
+		requestPlatform = openAICompatibleRequestPlatform(ctx, apiKey)
+		ctx = service.WithResolvedTargetPlatform(ctx, requestPlatform)
+	}
+	c.Request = c.Request.WithContext(ctx)
+	routingModel := reqModel
+	if upstreamModel, ok := service.ResolvedUpstreamModelFromContext(ctx); ok {
+		routingModel = upstreamModel
+	}
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(firstMessage, "previous_response_id").String())
 	previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
 	if previousResponseID != "" && previousResponseIDKind == service.OpenAIPreviousResponseIDKindMessageID {
@@ -2069,7 +2105,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	}
 
 	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
-	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
+	if imageIntent && !service.GroupAllowsImageGenerationForRequest(ctx, apiKey.Group, "/v1/responses", reqModel, firstMessage) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
 	}
@@ -2209,9 +2245,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		)
 		if sameAccountRetryAccountID > 0 {
 			selection, scheduleDecision, err = h.gatewayService.SelectRequiredAccountForCapabilityOnPlatformLockedPriority(
-				requestCtx, apiKey.GroupID, sameAccountRetryAccountID, reqModel, excludedAccountIDs,
+				requestCtx, apiKey.GroupID, sameAccountRetryAccountID, routingModel, excludedAccountIDs,
 				service.OpenAIUpstreamTransportResponsesWebsocketV2Ingress,
-				requiredCapability, false, service.PlatformOpenAI, modelRoutingLockedPriority,
+				requiredCapability, false, requestPlatform, modelRoutingLockedPriority,
 			)
 		} else {
 			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForCapabilityOnPlatformLockedPriority(
@@ -2219,12 +2255,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				apiKey.GroupID,
 				previousResponseID,
 				sessionHash,
-				reqModel,
+				routingModel,
 				excludedAccountIDs,
 				service.OpenAIUpstreamTransportResponsesWebsocketV2Ingress,
 				requiredCapability,
 				false,
-				service.PlatformOpenAI,
+				requestPlatform,
 				modelRoutingLockedPriority,
 			)
 		}
@@ -2362,7 +2398,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					model = reqModel
 				}
 				currentTurnImageIntent = service.IsExplicitImageGenerationIntent("/v1/responses", model, payload)
-				if currentTurnImageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
+				if currentTurnImageIntent && !service.GroupAllowsImageGenerationForRequest(ctx, apiKey.Group, "/v1/responses", model, payload) {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage(), nil)
 				}
 				if turn == 1 {
@@ -2384,6 +2420,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					model = reqModel
 				} else if model == "" {
 					model = reqModel
+				}
+				if routingModel != reqModel {
+					if model == reqModel {
+						return routingModel, nil
+					}
+					return "", service.NewOpenAIWSClientCloseError(
+						coderws.StatusPolicyViolation,
+						"model switch requires reconnect",
+						fmt.Errorf("%w: model %q", errOpenAIWSUnsupportedModelSwitch, model),
+					)
 				}
 				// The initial turn was already resolved before the websocket relay
 				// started. Reuse that immutable snapshot so model bookkeeping does
@@ -2592,7 +2638,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 
 		// 应用渠道模型映射到 WebSocket 首条消息
 		wsFirstMessage := firstMessage
-		if channelMappingWS.Mapped {
+		if routingModel != reqModel {
+			wsFirstMessage = h.gatewayService.ReplaceModelInBody(firstMessage, routingModel)
+		} else if channelMappingWS.Mapped {
 			wsFirstMessage = h.gatewayService.ReplaceModelInBody(firstMessage, channelMappingWS.MappedModel)
 		}
 

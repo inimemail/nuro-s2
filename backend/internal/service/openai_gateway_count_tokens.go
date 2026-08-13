@@ -370,8 +370,7 @@ func isOpenAIOAuthInputTokensUnsupported(statusCode int, body []byte) bool {
 	// HTML body as unsupported; JSON 403 authentication errors must continue
 	// through the normal account error policy.
 	if statusCode == http.StatusForbidden {
-		trimmed := strings.TrimSpace(strings.ToLower(string(body)))
-		if strings.HasPrefix(trimmed, "<!doctype html") || strings.HasPrefix(trimmed, "<html") {
+		if isHTMLResponse(body) {
 			return true
 		}
 	}

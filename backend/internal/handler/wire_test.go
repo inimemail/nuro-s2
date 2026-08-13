@@ -52,6 +52,7 @@ func TestProvideAdminHandlersWiresUserStepUpDependencies(t *testing.T) {
 		userService,
 		nil, // upstreamBillingProbe
 		nil, // ollamaCloudUsage
+		nil, // compositeRouteHandler
 	)
 
 	require.Same(t, userHandler, handlers.User)

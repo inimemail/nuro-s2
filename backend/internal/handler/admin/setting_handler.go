@@ -159,6 +159,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		RegistrationEnabled:                             settings.RegistrationEnabled,
 		EmailVerifyEnabled:                              settings.EmailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist:                settings.RegistrationEmailSuffixWhitelist,
+		RegistrationEmailDomainQuotaEnabled:             settings.RegistrationEmailDomainQuotaEnabled,
 		PromoCodeEnabled:                                settings.PromoCodeEnabled,
 		PasswordResetEnabled:                            settings.PasswordResetEnabled,
 		FrontendURL:                                     settings.FrontendURL,
@@ -339,6 +340,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		OpenAICodexClientVersion:                        settings.OpenAICodexClientVersion,
 		OpenAICodexClientVersionSynced:                  settings.OpenAICodexClientVersionSynced,
 		OpenAICodexVersionAutoSyncEnabled:               settings.OpenAICodexVersionAutoSyncEnabled,
+		OpenAICodexRoutingHintEnabled:                   settings.OpenAICodexRoutingHintEnabled,
 		OpenAIAllowClaudeCodeCodexPlugin:                settings.OpenAIAllowClaudeCodeCodexPlugin,
 		MinCodexVersion:                                 settings.MinCodexVersion,
 		MaxCodexVersion:                                 settings.MaxCodexVersion,
@@ -476,21 +478,22 @@ func loginAgreementDocumentsToService(items []dto.LoginAgreementDocument) []serv
 // UpdateSettingsRequest 更新设置请求
 type UpdateSettingsRequest struct {
 	// 注册设置
-	RegistrationEnabled              bool                         `json:"registration_enabled"`
-	EmailVerifyEnabled               bool                         `json:"email_verify_enabled"`
-	RegistrationEmailSuffixWhitelist []string                     `json:"registration_email_suffix_whitelist"`
-	PromoCodeEnabled                 bool                         `json:"promo_code_enabled"`
-	PasswordResetEnabled             bool                         `json:"password_reset_enabled"`
-	FrontendURL                      string                       `json:"frontend_url"`
-	InvitationCodeEnabled            bool                         `json:"invitation_code_enabled"`
-	TotpEnabled                      bool                         `json:"totp_enabled"` // TOTP 双因素认证
-	PasskeyEnabled                   *bool                        `json:"passkey_enabled"`
-	AuditLogRetentionDays            *int                         `json:"audit_log_retention_days"`
-	SessionBindingEnabled            *bool                        `json:"session_binding_enabled"`
-	LoginAgreementEnabled            bool                         `json:"login_agreement_enabled"`
-	LoginAgreementMode               string                       `json:"login_agreement_mode"`
-	LoginAgreementUpdatedAt          string                       `json:"login_agreement_updated_at"`
-	LoginAgreementDocuments          []dto.LoginAgreementDocument `json:"login_agreement_documents"`
+	RegistrationEnabled                 bool                         `json:"registration_enabled"`
+	EmailVerifyEnabled                  bool                         `json:"email_verify_enabled"`
+	RegistrationEmailSuffixWhitelist    []string                     `json:"registration_email_suffix_whitelist"`
+	RegistrationEmailDomainQuotaEnabled bool                         `json:"registration_email_domain_quota_enabled"`
+	PromoCodeEnabled                    bool                         `json:"promo_code_enabled"`
+	PasswordResetEnabled                bool                         `json:"password_reset_enabled"`
+	FrontendURL                         string                       `json:"frontend_url"`
+	InvitationCodeEnabled               bool                         `json:"invitation_code_enabled"`
+	TotpEnabled                         bool                         `json:"totp_enabled"` // TOTP 双因素认证
+	PasskeyEnabled                      *bool                        `json:"passkey_enabled"`
+	AuditLogRetentionDays               *int                         `json:"audit_log_retention_days"`
+	SessionBindingEnabled               *bool                        `json:"session_binding_enabled"`
+	LoginAgreementEnabled               bool                         `json:"login_agreement_enabled"`
+	LoginAgreementMode                  string                       `json:"login_agreement_mode"`
+	LoginAgreementUpdatedAt             string                       `json:"login_agreement_updated_at"`
+	LoginAgreementDocuments             []dto.LoginAgreementDocument `json:"login_agreement_documents"`
 
 	// 邮件服务设置
 	SMTPHost     string `json:"smtp_host"`
@@ -721,6 +724,7 @@ type UpdateSettingsRequest struct {
 	OpenAICodexUserAgent                   *string `json:"openai_codex_user_agent"`
 	OpenAICodexClientVersion               *string `json:"openai_codex_client_version"`
 	OpenAICodexVersionAutoSyncEnabled      *bool   `json:"openai_codex_version_auto_sync_enabled"`
+	OpenAICodexRoutingHintEnabled          *bool   `json:"openai_codex_routing_hint_enabled"`
 	OpenAIAllowClaudeCodeCodexPlugin       *bool   `json:"openai_allow_claude_code_codex_plugin"`
 	MinCodexVersion                        *string `json:"min_codex_version"`
 	MaxCodexVersion                        *string `json:"max_codex_version"`
@@ -1799,14 +1803,15 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		// 系统全局 platform quota 默认值（整体替换语义）
 		DefaultPlatformQuotas: req.DefaultPlatformQuotas,
 
-		RegistrationEnabled:              req.RegistrationEnabled,
-		EmailVerifyEnabled:               req.EmailVerifyEnabled,
-		RegistrationEmailSuffixWhitelist: req.RegistrationEmailSuffixWhitelist,
-		PromoCodeEnabled:                 req.PromoCodeEnabled,
-		PasswordResetEnabled:             req.PasswordResetEnabled,
-		FrontendURL:                      req.FrontendURL,
-		InvitationCodeEnabled:            req.InvitationCodeEnabled,
-		TotpEnabled:                      req.TotpEnabled,
+		RegistrationEnabled:                 req.RegistrationEnabled,
+		EmailVerifyEnabled:                  req.EmailVerifyEnabled,
+		RegistrationEmailSuffixWhitelist:    req.RegistrationEmailSuffixWhitelist,
+		RegistrationEmailDomainQuotaEnabled: req.RegistrationEmailDomainQuotaEnabled,
+		PromoCodeEnabled:                    req.PromoCodeEnabled,
+		PasswordResetEnabled:                req.PasswordResetEnabled,
+		FrontendURL:                         req.FrontendURL,
+		InvitationCodeEnabled:               req.InvitationCodeEnabled,
+		TotpEnabled:                         req.TotpEnabled,
 		PasskeyEnabled: func() bool {
 			if req.PasskeyEnabled != nil {
 				return *req.PasskeyEnabled
@@ -2155,6 +2160,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			return previousSettings.OpenAICodexClientVersion
 		}(),
 		OpenAICodexClientVersionSynced: previousSettings.OpenAICodexClientVersionSynced,
+		OpenAICodexRoutingHintEnabled: func() bool {
+			if req.OpenAICodexRoutingHintEnabled != nil {
+				return *req.OpenAICodexRoutingHintEnabled
+			}
+			return previousSettings.OpenAICodexRoutingHintEnabled
+		}(),
 		OpenAICodexVersionAutoSyncEnabled: func() bool {
 			if req.OpenAICodexVersionAutoSyncEnabled != nil {
 				return *req.OpenAICodexVersionAutoSyncEnabled
@@ -2476,6 +2487,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		RegistrationEnabled:                             updatedSettings.RegistrationEnabled,
 		EmailVerifyEnabled:                              updatedSettings.EmailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist:                updatedSettings.RegistrationEmailSuffixWhitelist,
+		RegistrationEmailDomainQuotaEnabled:             updatedSettings.RegistrationEmailDomainQuotaEnabled,
 		PromoCodeEnabled:                                updatedSettings.PromoCodeEnabled,
 		PasswordResetEnabled:                            updatedSettings.PasswordResetEnabled,
 		FrontendURL:                                     updatedSettings.FrontendURL,
@@ -2655,6 +2667,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpenAICodexClientVersion:                        updatedSettings.OpenAICodexClientVersion,
 		OpenAICodexClientVersionSynced:                  updatedSettings.OpenAICodexClientVersionSynced,
 		OpenAICodexVersionAutoSyncEnabled:               updatedSettings.OpenAICodexVersionAutoSyncEnabled,
+		OpenAICodexRoutingHintEnabled:                   updatedSettings.OpenAICodexRoutingHintEnabled,
 		OpenAIAllowClaudeCodeCodexPlugin:                updatedSettings.OpenAIAllowClaudeCodeCodexPlugin,
 		MinCodexVersion:                                 updatedSettings.MinCodexVersion,
 		MaxCodexVersion:                                 updatedSettings.MaxCodexVersion,
@@ -3261,6 +3274,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.OpenAICodexVersionAutoSyncEnabled != after.OpenAICodexVersionAutoSyncEnabled {
 		changed = append(changed, "openai_codex_version_auto_sync_enabled")
+	}
+	if before.OpenAICodexRoutingHintEnabled != after.OpenAICodexRoutingHintEnabled {
+		changed = append(changed, "openai_codex_routing_hint_enabled")
 	}
 	if before.OpenAIAllowClaudeCodeCodexPlugin != after.OpenAIAllowClaudeCodeCodexPlugin {
 		changed = append(changed, "openai_allow_claude_code_codex_plugin")

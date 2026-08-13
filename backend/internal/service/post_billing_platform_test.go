@@ -78,4 +78,12 @@ func TestQuotaPlatform(t *testing.T) {
 			t.Errorf("QuotaPlatform(nil) with force = %q, want %q", got, PlatformAntigravity)
 		}
 	})
+
+	t.Run("resolved composite target overrides group platform", func(t *testing.T) {
+		compositeKey := &APIKey{Group: &Group{Platform: PlatformComposite}}
+		ctx := WithResolvedTargetPlatform(context.Background(), PlatformGrok)
+		if got := QuotaPlatform(ctx, compositeKey); got != PlatformGrok {
+			t.Errorf("QuotaPlatform with resolved target = %q, want %q", got, PlatformGrok)
+		}
+	})
 }

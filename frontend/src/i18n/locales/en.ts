@@ -101,6 +101,7 @@ export default {
       gemini: 'Gemini',
       antigravity: 'Antigravity',
       grok: 'Grok',
+      composite: 'Composite',
       more: 'More'
     },
     // CTA section
@@ -1610,6 +1611,7 @@ export default {
         backupRunning: 'Backup in progress...',
         backupFailed: 'Backup failed',
         restoreRunning: 'Restore in progress...',
+        downloadUnavailable: 'No download URL is available for this backup.',
         restoreFailed: 'Restore failed',
       },
       columns: {
@@ -2385,6 +2387,15 @@ export default {
         pricePerCall: 'Web search price per call (USD/call)',
         pricePerCallHint: 'Leave empty for the default $0.01/call; use 0 for free. The group multiplier is applied.',
         finalPricePreview: 'Current final price: {price}'
+      },
+      grokPricing: {
+        searchPer1K: 'Search ($/1K calls)',
+        realtimePerMinute: 'Realtime ($/min)',
+        ttsPerMillionChars: 'TTS ($/1M chars)',
+        sttPerHour: 'STT ($/hour)',
+        videoModelPrices: 'Video model prices (JSON)',
+        videoModelPricesPlaceholder: '{"grok-imagine-video-1.5-preview":{"480p":0.14,"720p":0.24}}',
+        invalidVideoModelPrices: 'Invalid video model prices JSON.'
       },
       modelsList: {
         title: 'Custom /v1/models Model List',
@@ -6147,6 +6158,8 @@ export default {
           "Only email addresses from the specified domains can register (for example, {'@'}qq.com, {'@'}gmail.com, *.edu.cn)",
         emailSuffixWhitelistPlaceholder: "{'@'}example.com, *.edu.cn",
         emailSuffixWhitelistInputHint: 'Leave empty for no restriction. Use *.edu.cn to match edu.cn and its subdomains.',
+        emailDomainQuota: 'Non-whitelist Domain Quota',
+        emailDomainQuotaHint: 'Off by default. When enabled, each registrable domain outside the whitelist may create one account; whitelisted domains are unaffected.',
         promoCode: 'Promo Code',
         promoCodeHint: 'Allow users to use promo codes during registration',
         invitationCode: 'Invitation Code Registration',
@@ -6496,6 +6509,8 @@ export default {
         openaiCodexSyncedVersion: 'Last synced version',
         openaiCodexNotSynced: 'Not synced',
         openaiCodexVersionPrecedence: 'Precedence: pinned version > last synced version > built-in 0.144.1. Sync is off by default, checks every 6 hours, and never downgrades.',
+        openaiCodexRoutingHint: 'Codex local routing hint',
+        openaiCodexRoutingHintDesc: 'Off by default. When enabled, sends a locally computed hint only to the OpenAI OAuth upstream; it is excluded from scheduling, sticky keys, logs, and downstream responses.',
         openaiAllowClaudeCodeCodexPlugin: "Allow using the Codex plugin in Claude Code",
         openaiAllowClaudeCodeCodexPluginDesc:
           "Global switch; only affects OpenAI OAuth accounts that have 'Codex official clients only' enabled. When on, all such accounts additionally allow requests from the Claude Code Codex plugin (exact match on originator=Claude Code) without per-account config; upstream requests remain pass-through.",

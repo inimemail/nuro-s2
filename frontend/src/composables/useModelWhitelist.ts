@@ -138,6 +138,8 @@ const metaModels = [
 const xaiModels = [
   'grok-4.5',
   'grok-4.3',
+  'grok-3-mini',
+  'grok-3-mini-fast',
   'grok-build-0.1',
   'grok-composer-2.5-fast',
   'grok-4.20-0309-reasoning',
@@ -156,7 +158,8 @@ const xaiModels = [
   'grok-imagine-image',
   'grok-imagine-edit',
   'grok-imagine-video',
-  'grok-imagine-video-1.5'
+  'grok-imagine-video-1.5',
+  'grok-imagine-video-1.5-preview'
 ]
 
 // Cohere

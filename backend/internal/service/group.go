@@ -56,7 +56,12 @@ type Group struct {
 	VideoPrice480P               *float64
 	VideoPrice720P               *float64
 	VideoPrice1080P              *float64
+	VideoModelPrices             map[string]map[string]float64
 	WebSearchPricePerCall        *float64
+	SearchPricePer1K             *float64
+	AudioRealtimePricePerMin     *float64
+	AudioTTSPricePerMillionChars *float64
+	AudioSTTPricePerHour         *float64
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool
@@ -155,6 +160,16 @@ func (g *Group) GetVideoPrice(resolution string) *float64 {
 	default:
 		return g.VideoPrice480P
 	}
+}
+
+func (g *Group) GetVideoPriceForModel(model, resolution string) *float64 {
+	if g == nil {
+		return nil
+	}
+	if price := LookupVideoModelPrice(g.VideoModelPrices, model, resolution); price != nil {
+		return price
+	}
+	return g.GetVideoPrice(resolution)
 }
 
 // IsGroupContextValid reports whether a group from context has the fields required for routing decisions.

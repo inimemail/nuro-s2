@@ -86,6 +86,10 @@ type OpenAIAccountSchedulerMetricsSnapshot struct {
 	AccountSwitchRate        float64
 	LoadSkewAvg              float64
 	RuntimeStatsAccountCount int
+	LastCandidateCount       int64
+	LastLockedPriority       int64
+	SnapshotGeneration       int64
+	ExclusionsByReason       map[string]int64
 }
 
 type OpenAIAccountScheduler interface {
@@ -105,6 +109,29 @@ type openAIAccountSchedulerMetrics struct {
 	accountSwitchTotal     atomic.Int64
 	latencyMsTotal         atomic.Int64
 	loadSkewMilliTotal     atomic.Int64
+	lastCandidateCount     atomic.Int64
+	lastLockedPriority     atomic.Int64
+	exclusionMu            sync.RWMutex
+	exclusionsByReason     map[string]int64
+}
+
+func (m *openAIAccountSchedulerMetrics) recordLegacyDiagnostics(req OpenAIAccountScheduleRequest, stats openAISelectionFilterStats, candidates int) {
+	if m == nil {
+		return
+	}
+	m.lastCandidateCount.Store(int64(candidates))
+	m.lastLockedPriority.Store(int64(req.LockedPriority))
+	if len(stats.reasons) == 0 {
+		return
+	}
+	m.exclusionMu.Lock()
+	if m.exclusionsByReason == nil {
+		m.exclusionsByReason = make(map[string]int64, len(stats.reasons))
+	}
+	for reason, count := range stats.reasons {
+		m.exclusionsByReason[reason] += int64(count)
+	}
+	m.exclusionMu.Unlock()
 }
 
 // openAISelectionFilterStats is request-local diagnostics. It intentionally
@@ -1701,6 +1728,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, 0, 0, 0, err
 	}
 	if len(accounts) == 0 {
+		s.metrics.recordLegacyDiagnostics(req, openAISelectionFilterStats{}, 0)
 		logOpenAISelectionFilterStats(openAISelectionFilterStats{}, "empty_pool")
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false)
 	}
@@ -1780,6 +1808,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		filtered = nil
 	}
 	if len(filtered) == 0 {
+		s.metrics.recordLegacyDiagnostics(req, filterStats, 0)
 		logOpenAISelectionFilterStats(filterStats, "filtered_empty")
 		return nil, 0, 0, 0, noAvailableOpenAISelectionError(req.RequestedModel, false)
 	}
@@ -1794,6 +1823,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	plan := s.buildOpenAIAccountLoadPlan(req, filtered, loadMap)
 	candidateCount := plan.candidateCount
 	topK := plan.topK
+	s.metrics.recordLegacyDiagnostics(req, filterStats, candidateCount)
 	loadSkew := plan.loadSkew
 	selectionOrder := plan.selectionOrder
 	selectionOrder = s.service.prioritizeOpenAIPromptCacheWarmCandidates(ctx, req, selectionOrder)
@@ -2010,7 +2040,20 @@ func (s *defaultOpenAIAccountScheduler) SnapshotMetrics() OpenAIAccountScheduler
 		AccountSwitchTotal:       switchTotal,
 		SchedulerLatencyMsTotal:  latencyTotal,
 		RuntimeStatsAccountCount: s.stats.size(),
+		LastCandidateCount:       s.metrics.lastCandidateCount.Load(),
+		LastLockedPriority:       s.metrics.lastLockedPriority.Load(),
 	}
+	if s.service != nil && s.service.schedulerSnapshot != nil {
+		snapshot.SnapshotGeneration = s.service.schedulerSnapshot.Generation()
+	}
+	s.metrics.exclusionMu.RLock()
+	if len(s.metrics.exclusionsByReason) > 0 {
+		snapshot.ExclusionsByReason = make(map[string]int64, len(s.metrics.exclusionsByReason))
+		for reason, count := range s.metrics.exclusionsByReason {
+			snapshot.ExclusionsByReason[reason] = count
+		}
+	}
+	s.metrics.exclusionMu.RUnlock()
 	if selectTotal > 0 {
 		snapshot.SchedulerLatencyMsAvg = float64(latencyTotal) / float64(selectTotal)
 		snapshot.StickyHitRatio = float64(prevHit+sessionHit) / float64(selectTotal)

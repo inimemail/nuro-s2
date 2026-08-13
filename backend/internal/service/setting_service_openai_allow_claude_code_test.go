@@ -8,16 +8,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type allowClaudeCodeSettingRepoStub struct{ values map[string]string }
+type allowClaudeCodeSettingRepoStub struct {
+	values   map[string]string
+	getCalls int
+}
 
 func (s *allowClaudeCodeSettingRepoStub) Get(ctx context.Context, key string) (*Setting, error) {
 	panic("unused")
 }
 func (s *allowClaudeCodeSettingRepoStub) GetValue(ctx context.Context, key string) (string, error) {
+	s.getCalls++
 	if v, ok := s.values[key]; ok {
 		return v, nil
 	}
 	return "", ErrSettingNotFound
+}
+
+func TestSettingService_IsOpenAIAllowClaudeCodeCodexPluginEnabled_NegativeCache(t *testing.T) {
+	repo := &allowClaudeCodeSettingRepoStub{values: map[string]string{}}
+	svc := NewSettingService(repo, &config.Config{})
+	for i := 0; i < 5; i++ {
+		require.False(t, svc.IsOpenAIAllowClaudeCodeCodexPluginEnabled(context.Background()))
+	}
+	require.Equal(t, 1, repo.getCalls, "明确未配置必须在正常 TTL 内作为有效 false 快照缓存")
 }
 func (s *allowClaudeCodeSettingRepoStub) Set(ctx context.Context, key, value string) error {
 	panic("unused")

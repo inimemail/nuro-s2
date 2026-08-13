@@ -124,6 +124,36 @@ func TestGetOpenAIQuotaAutoPauseSettings_ReadsDefaultsFromOpsAdvancedSettings(t 
 	}
 }
 
+func TestWarmOpenAIQuotaAutoPauseSettings_MissingSettingCachesExplicitDefaults(t *testing.T) {
+	repo := newRuntimeSettingRepoStub()
+	svc := NewSettingService(repo, &config.Config{})
+
+	first := svc.WarmOpenAIQuotaAutoPauseSettings(context.Background())
+	if first.DefaultThreshold5h != 0 || first.DefaultThreshold7d != 0 {
+		t.Fatalf("missing setting = %+v, want explicit disabled defaults", first)
+	}
+	if repo.getValueCalls != 1 {
+		t.Fatalf("repository reads after warm = %d, want 1", repo.getValueCalls)
+	}
+
+	second := svc.GetOpenAIQuotaAutoPauseSettings(context.Background())
+	if second != first {
+		t.Fatalf("cached missing setting = %+v, want %+v", second, first)
+	}
+	if repo.getValueCalls != 1 {
+		t.Fatalf("cached missing setting repeated repository read: got %d, want 1", repo.getValueCalls)
+	}
+
+	cached, _ := svc.openAIQuotaAutoPauseSettingsCache.Load().(*cachedOpenAIQuotaAutoPauseSettings)
+	if cached == nil {
+		t.Fatal("missing setting did not create an explicit cache snapshot")
+	}
+	minimumExpiry := time.Now().Add(openAIQuotaAutoPauseSettingsCacheTTL - time.Second).UnixNano()
+	if cached.expiresAt < minimumExpiry {
+		t.Fatalf("missing setting cache expiry = %d, want at least %d", cached.expiresAt, minimumExpiry)
+	}
+}
+
 // Hot-path invariant: a Get with cold cache must return immediately (zero defaults)
 // rather than blocking on the DB. The async refresher will populate the cache for
 // subsequent calls.
@@ -157,5 +187,36 @@ func TestSetOpenAIQuotaAutoPauseSettings_VisibleImmediately(t *testing.T) {
 	got := svc.GetOpenAIQuotaAutoPauseSettings(context.Background())
 	if got.DefaultThreshold5h != 0.88 || got.DefaultThreshold7d != 0.77 {
 		t.Fatalf("after Set, Get = %+v, want {0.88, 0.77}", got)
+	}
+}
+
+func TestOpenAICodexRoutingHintRuntime_IsCachedAndDefaultOff(t *testing.T) {
+	repo := newRuntimeSettingRepoStub()
+	svc := NewSettingService(repo, &config.Config{})
+
+	if err := svc.RefreshOpenAICodexRoutingHintRuntime(context.Background()); err != nil {
+		t.Fatalf("refresh missing hint setting: %v", err)
+	}
+	if svc.IsOpenAICodexRoutingHintEnabled(context.Background()) {
+		t.Fatal("missing routing hint setting must default to disabled")
+	}
+	if repo.getValueCalls != 1 {
+		t.Fatalf("refresh reads = %d, want 1", repo.getValueCalls)
+	}
+	for range 3 {
+		if svc.IsOpenAICodexRoutingHintEnabled(context.Background()) {
+			t.Fatal("cached default unexpectedly enabled")
+		}
+	}
+	if repo.getValueCalls != 1 {
+		t.Fatalf("hot-path reads = %d, want 1", repo.getValueCalls)
+	}
+
+	repo.values[SettingKeyOpenAICodexRoutingHintEnabled] = "true"
+	if err := svc.RefreshOpenAICodexRoutingHintRuntime(context.Background()); err != nil {
+		t.Fatalf("refresh enabled hint setting: %v", err)
+	}
+	if !svc.IsOpenAICodexRoutingHintEnabled(context.Background()) {
+		t.Fatal("refreshed routing hint setting did not become enabled")
 	}
 }

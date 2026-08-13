@@ -172,6 +172,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	terminalEventType := ""
 	clientDisconnected := false
 	var forwardErr error
+	searchCount := 0
 	if reqStream {
 		maxLineSize := defaultMaxLineSize
 		if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
@@ -190,6 +191,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		responseID = strings.TrimSpace(streamResult.responseID)
 		terminalEventType = streamResult.terminalEventType
 		clientDisconnected = streamResult.clientDisconnected
+		searchCount = streamResult.searchCount
 		forwardErr = streamErr
 	} else {
 		nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
@@ -199,6 +201,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		usage = nonStreamResult.usage
 		responseID = strings.TrimSpace(nonStreamResult.responseID)
 		terminalEventType = nonStreamResult.terminalEventType
+		searchCount = nonStreamResult.searchCount
 	}
 
 	if usage == nil {
@@ -220,6 +223,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		FirstTokenMs:      firstTokenMs,
 		ClientDisconnect:  clientDisconnected,
 	}
+	result.SearchCount = searchCount
 	return result, forwardErr
 }
 

@@ -101,6 +101,7 @@ export default {
       gemini: 'Gemini',
       antigravity: 'Antigravity',
       grok: 'Grok',
+      composite: 'Composite',
       more: '更多'
     },
     // CTA 区块
@@ -1631,6 +1632,7 @@ export default {
         backupRunning: '备份进行中...',
         backupFailed: '备份失败',
         restoreRunning: '恢复进行中...',
+        downloadUnavailable: '该备份暂时没有可用的下载地址。',
         restoreFailed: '恢复失败',
       },
       columns: {
@@ -2467,6 +2469,15 @@ export default {
         pricePerCall: '网页搜索单次价格（USD/次）',
         pricePerCallHint: '留空使用默认 $0.01/次；填写 0 表示免费。实际费用还会乘以分组倍率。',
         finalPricePreview: '当前最终单价：{price}'
+      },
+      grokPricing: {
+        searchPer1K: '搜索（$/1000 次）',
+        realtimePerMinute: 'Realtime（$/分钟）',
+        ttsPerMillionChars: 'TTS（$/100 万字符）',
+        sttPerHour: 'STT（$/小时）',
+        videoModelPrices: '视频模型价格（JSON）',
+        videoModelPricesPlaceholder: '{"grok-imagine-video-1.5-preview":{"480p":0.14,"720p":0.24}}',
+        invalidVideoModelPrices: '视频模型价格 JSON 格式不正确。'
       },
       modelsList: {
         title: '自定义 /v1/models 模型列表',
@@ -6295,6 +6306,8 @@ export default {
           "仅允许使用指定域名的邮箱注册账号（例如 {'@'}qq.com, {'@'}gmail.com, *.edu.cn）",
         emailSuffixWhitelistPlaceholder: "{'@'}example.com, *.edu.cn",
         emailSuffixWhitelistInputHint: '留空则不限制。使用 *.edu.cn 可匹配 edu.cn 及其子域名。',
+        emailDomainQuota: '非白名单邮箱域名配额',
+        emailDomainQuotaHint: '默认关闭。开启后，非白名单邮箱按可注册主域名最多注册一个账号；白名单域名不受此配额影响。',
         promoCode: '优惠码',
         promoCodeHint: '允许用户在注册时使用优惠码',
         invitationCode: '邀请码注册',
@@ -6637,6 +6650,8 @@ export default {
         openaiCodexSyncedVersion: '最近同步版本',
         openaiCodexNotSynced: '尚未同步',
         openaiCodexVersionPrecedence: '生效顺序：手工固定版本 > 最近同步版本 > 内置 0.144.1。自动同步默认关闭，每 6 小时检查一次官方稳定版且不会降级。',
+        openaiCodexRoutingHint: 'Codex 本地路由提示',
+        openaiCodexRoutingHintDesc: '默认关闭。开启后仅向 OpenAI OAuth 上游发送本地计算 hint；不参与调度、粘性 key、日志或下游响应。',
         openaiAllowClaudeCodeCodexPlugin: '允许在 Claude Code 中使用 Codex 插件',
         openaiAllowClaudeCodeCodexPluginDesc:
           '全局开关，仅对已开启「仅允许 Codex 官方客户端」的 OpenAI OAuth 账号生效。开启后，所有此类账号都额外放行通过 Claude Code 的 Codex 插件发起的请求（精确匹配 originator=Claude Code），无需逐账号配置；上游请求仍保持透传。',

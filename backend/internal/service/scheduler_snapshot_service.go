@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -57,6 +58,7 @@ type SchedulerSnapshotService struct {
 	runtimeClearGenerations         sync.Map // key: int64(accountID), value: int64
 	runtimeClearGenerationCheckedAt sync.Map // key: int64(accountID), value: time.Time
 	runtimeClearGenerationSF        singleflight.Group
+	snapshotGeneration              atomic.Int64
 }
 
 func NewSchedulerSnapshotService(
@@ -965,6 +967,7 @@ func (s *SchedulerSnapshotService) rebuildBucket(ctx context.Context, bucket Sch
 		return err
 	}
 	s.storeLocalSnapshot(bucket, accounts)
+	s.snapshotGeneration.Add(1)
 	s.publishEvent(rebuildCtx, SchedulerEvent{
 		Type:   SchedulerEventSnapshotUpdated,
 		Bucket: bucket,
@@ -972,6 +975,15 @@ func (s *SchedulerSnapshotService) rebuildBucket(ctx context.Context, bucket Sch
 	})
 	slog.Debug("[Scheduler] rebuild ok", "bucket", bucket.String(), "reason", reason, "size", len(accounts))
 	return nil
+}
+
+// Generation is a diagnostics-only, process-local monotonic counter. It is
+// deliberately not persisted or consulted by routing decisions.
+func (s *SchedulerSnapshotService) Generation() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.snapshotGeneration.Load()
 }
 
 func filterSchedulerCacheableAccounts(accounts []Account) []Account {

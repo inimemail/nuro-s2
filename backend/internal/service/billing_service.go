@@ -165,6 +165,29 @@ type CostBreakdown struct {
 	LongContextBillingApplied bool
 }
 
+// addUsageSurcharge combines an auxiliary per-request charge with the primary
+// token/media breakdown while preserving the primary billing mode.
+func addUsageSurcharge(base, surcharge *CostBreakdown) *CostBreakdown {
+	if base == nil {
+		base = &CostBreakdown{}
+	}
+	if surcharge == nil {
+		return base
+	}
+	base.InputCost += surcharge.InputCost
+	base.ImageInputCost += surcharge.ImageInputCost
+	base.OutputCost += surcharge.OutputCost
+	base.ImageOutputCost += surcharge.ImageOutputCost
+	base.CacheCreationCost += surcharge.CacheCreationCost
+	base.CacheReadCost += surcharge.CacheReadCost
+	base.TotalCost += surcharge.TotalCost
+	base.ActualCost += surcharge.ActualCost
+	if base.BillingMode == "" {
+		base.BillingMode = surcharge.BillingMode
+	}
+	return base
+}
+
 // ErrModelPricingUnavailable indicates that none of the configured pricing
 // sources can price the requested model.
 var ErrModelPricingUnavailable = errors.New("pricing not found")
@@ -597,6 +620,14 @@ func (s *BillingService) initFallbackPricing() {
 		CacheReadPricePerToken: 0.2e-6,
 		SupportsCacheBreakdown: false,
 	}
+	s.fallbackPrices["grok-3-mini"] = &ModelPricing{
+		InputPricePerToken: 0.30e-6, OutputPricePerToken: 0.50e-6, CacheReadPricePerToken: 0.075e-6,
+		SupportsCacheBreakdown: false,
+	}
+	s.fallbackPrices["grok-3-mini-fast"] = &ModelPricing{
+		InputPricePerToken: 0.60e-6, OutputPricePerToken: 4.00e-6, CacheReadPricePerToken: 0.15e-6,
+		SupportsCacheBreakdown: false,
+	}
 }
 
 // getFallbackPricing 根据模型系列获取回退价格
@@ -783,6 +814,10 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		return s.fallbackPrices["grok-4.3"]
 	case "grok-build", "grok-build-0.1", "grok-composer", "grok-composer-2.5-fast", "composer-2.5":
 		return s.fallbackPrices["grok-build-0.1"]
+	case "grok-3-mini":
+		return s.fallbackPrices["grok-3-mini"]
+	case "grok-3-mini-fast":
+		return s.fallbackPrices["grok-3-mini-fast"]
 	}
 
 	return nil
@@ -1401,9 +1436,10 @@ type ImagePriceConfig struct {
 }
 
 type VideoPriceConfig struct {
-	Price480P  *float64 // 480p 每秒价格（nil 表示使用默认值）
-	Price720P  *float64 // 720p 每秒价格（nil 表示使用默认值）
-	Price1080P *float64 // 1080p 每秒价格（nil 表示使用默认值）
+	Price480P   *float64 // 480p 每秒价格（nil 表示使用默认值）
+	Price720P   *float64 // 720p 每秒价格（nil 表示使用默认值）
+	Price1080P  *float64 // 1080p 每秒价格（nil 表示使用默认值）
+	ModelPrices map[string]map[string]float64
 }
 
 const (
@@ -1497,6 +1533,89 @@ func (s *BillingService) CalculateWebSearchCost(callCount int, groupPrice *float
 	}
 }
 
+// CalculateSearchCost bills native Grok search tool calls per 1,000 calls.
+func (s *BillingService) CalculateSearchCost(callCount int, groupPricePer1k *float64, rateMultiplier float64) *CostBreakdown {
+	if callCount <= 0 {
+		return &CostBreakdown{}
+	}
+	price := 10.0
+	if groupPricePer1k != nil {
+		if *groupPricePer1k < 0 {
+			return &CostBreakdown{}
+		}
+		price = *groupPricePer1k
+	}
+	if rateMultiplier < 0 {
+		rateMultiplier = 0
+	}
+	total := price * float64(callCount) / 1000
+	return &CostBreakdown{TotalCost: total, ActualCost: total * rateMultiplier, BillingMode: string(BillingModePerRequest)}
+}
+
+type audioPriceConfig struct {
+	RealtimePerMin *float64
+	TTSPerMChars   *float64
+	STTPerHour     *float64
+}
+
+func audioPriceConfigFromAPIKey(apiKey *APIKey) *audioPriceConfig {
+	if apiKey == nil || apiKey.Group == nil {
+		return nil
+	}
+	return &audioPriceConfig{
+		RealtimePerMin: apiKey.Group.AudioRealtimePricePerMin,
+		TTSPerMChars:   apiKey.Group.AudioTTSPricePerMillionChars,
+		STTPerHour:     apiKey.Group.AudioSTTPricePerHour,
+	}
+}
+
+const (
+	defaultAudioRealtimePricePerMin     = 0.10
+	defaultAudioTTSPricePerMillionChars = 15.0
+	defaultAudioSTTPricePerHour         = 0.36
+)
+
+func (s *BillingService) CalculateAudioCost(mode string, units float64, cfg *audioPriceConfig, rateMultiplier float64) *CostBreakdown {
+	if units <= 0 {
+		return &CostBreakdown{}
+	}
+	price := 0.0
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "realtime":
+		price = defaultAudioRealtimePricePerMin
+		if cfg != nil && cfg.RealtimePerMin != nil {
+			price = *cfg.RealtimePerMin
+		}
+	case "tts":
+		price = defaultAudioTTSPricePerMillionChars
+		if cfg != nil && cfg.TTSPerMChars != nil {
+			price = *cfg.TTSPerMChars
+		}
+	case "stt":
+		price = defaultAudioSTTPricePerHour
+		if cfg != nil && cfg.STTPerHour != nil {
+			price = *cfg.STTPerHour
+		}
+	default:
+		return &CostBreakdown{}
+	}
+	if price < 0 {
+		price = 0
+	}
+	if rateMultiplier < 0 {
+		rateMultiplier = 0
+	}
+	total := price * units
+	return &CostBreakdown{TotalCost: total, ActualCost: total * rateMultiplier, BillingMode: string(BillingModePerRequest)}
+}
+
+func (s *BillingService) CalculateAudioCostFromUsage(usage *AudioUsage, cfg *audioPriceConfig, rateMultiplier float64) *CostBreakdown {
+	if usage == nil {
+		return &CostBreakdown{}
+	}
+	return s.CalculateAudioCost(usage.Mode, usage.DurationOrUnits, cfg, rateMultiplier)
+}
+
 // getImageUnitPrice 获取图片单价
 func (s *BillingService) getImageUnitPrice(model string, imageSize string, groupConfig *ImagePriceConfig) float64 {
 	// 优先使用分组配置的价格
@@ -1523,6 +1642,9 @@ func (s *BillingService) getImageUnitPrice(model string, imageSize string, group
 
 func (s *BillingService) getVideoUnitPrice(model string, resolution string, groupConfig *VideoPriceConfig) float64 {
 	if groupConfig != nil {
+		if price := LookupVideoModelPrice(groupConfig.ModelPrices, model, resolution); price != nil {
+			return *price
+		}
 		switch resolution {
 		case VideoBillingResolution480P:
 			if groupConfig.Price480P != nil {

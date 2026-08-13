@@ -34,6 +34,7 @@ func RegisterAdminRoutes(
 
 		// 分组管理
 		registerGroupRoutes(admin, h, stepUp)
+		registerCompositeRouteRoutes(admin, h)
 
 		// 账号管理
 		registerAccountRoutes(admin, h, stepUp)
@@ -114,6 +115,18 @@ func RegisterAdminRoutes(
 
 		registerPromptAuditRoutes(admin, h, stepUp)
 	}
+}
+
+func registerCompositeRouteRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h.Admin == nil || h.Admin.CompositeRoute == nil {
+		return
+	}
+	r := admin.Group("/groups/:id/composite-routes")
+	r.GET("", h.Admin.CompositeRoute.List)
+	r.POST("", h.Admin.CompositeRoute.Create)
+	r.POST("/preview", h.Admin.CompositeRoute.Preview)
+	r.PUT("/:route_id", h.Admin.CompositeRoute.Update)
+	r.DELETE("/:route_id", h.Admin.CompositeRoute.Delete)
 }
 
 func registerPromptAuditRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp middleware.StepUpAuthMiddleware) {

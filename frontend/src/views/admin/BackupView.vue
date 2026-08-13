@@ -605,10 +605,20 @@ async function createBackup() {
 async function downloadBackup(id: string) {
   try {
     const result = await backupStepUp.run(() => adminAPI.backup.getDownloadURL(id))
-    const link = document.createElement('a')
-    link.href = result.url
-    link.rel = 'noopener'
-    link.click()
+    const urls = result.parts?.slice().sort((a, b) => a.index - b.index).map((part) => part.url) || []
+    if (result.url) urls.unshift(result.url)
+    if (urls.length === 0) throw new Error(t('admin.backup.operations.downloadUnavailable'))
+    urls.forEach((url, index) => {
+      window.setTimeout(() => {
+        const link = document.createElement('a')
+        link.href = url
+        link.rel = 'noopener'
+        link.download = ''
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+      }, index * 250)
+    })
   } catch (error) {
     if (isStepUpCancelled(error) || reportStepUpBlocked(error)) return
     appStore.showError((error as { message?: string })?.message || t('errors.networkError'))

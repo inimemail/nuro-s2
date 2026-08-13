@@ -39,3 +39,16 @@ func NormalizeVideoBillingResolutionOrDefault(resolution string) string {
 		return VideoBillingResolution480P
 	}
 }
+
+func LookupVideoBillingResolution(resolution string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(resolution)) {
+	case "480", "480p", "sd":
+		return VideoBillingResolution480P, true
+	case "720", "720p", "hd":
+		return VideoBillingResolution720P, true
+	case "1080", "1080p", "full_hd", "full-hd", "fhd":
+		return VideoBillingResolution1080P, true
+	default:
+		return "", false
+	}
+}

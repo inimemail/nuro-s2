@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 
@@ -35,6 +36,28 @@ func ImageGenerationPermissionMessage() string {
 // GroupAllowsImageGeneration preserves ungrouped-key behavior and enforces the flag when a group is present.
 func GroupAllowsImageGeneration(group *Group) bool {
 	return group == nil || group.AllowImageGeneration
+}
+
+// GroupAllowsImageGenerationForRequest is the backend capability gate used by
+// Composite groups. The frontend flag is only an additional policy switch;
+// the resolved concrete provider must advertise image support as well.
+func GroupAllowsImageGenerationForRequest(ctx context.Context, group *Group, endpoint, model string, body []byte) bool {
+	if group == nil || !group.AllowImageGeneration {
+		return group == nil
+	}
+	if group.Platform != PlatformComposite {
+		return true
+	}
+	target, ok := ResolvedTargetPlatformFromContext(ctx)
+	if !ok {
+		return false
+	}
+	switch target {
+	case PlatformOpenAI, PlatformGrok:
+		return IsImageGenerationIntentForPlatform(endpoint, model, body, target)
+	default:
+		return false
+	}
 }
 
 // IsImageGenerationIntent classifies requests that can produce generated images.

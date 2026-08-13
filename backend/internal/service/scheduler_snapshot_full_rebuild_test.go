@@ -20,6 +20,33 @@ type schedulerFullRebuildTestCache struct {
 	lockCalls int
 }
 
+type schedulerGenerationTestCache struct {
+	SchedulerCache
+	setErr error
+}
+
+func (c *schedulerGenerationTestCache) TryLockBucket(context.Context, SchedulerBucket, time.Duration) (bool, error) {
+	return true, nil
+}
+
+func (c *schedulerGenerationTestCache) UnlockBucket(context.Context, SchedulerBucket) error {
+	return nil
+}
+
+func (c *schedulerGenerationTestCache) SetSnapshot(context.Context, SchedulerBucket, []Account) error {
+	return c.setErr
+}
+
+type schedulerGenerationTestRepo struct {
+	AccountRepository
+	accounts []Account
+	err      error
+}
+
+func (r *schedulerGenerationTestRepo) ListSchedulableByGroupIDAndPlatform(context.Context, int64, string) ([]Account, error) {
+	return r.accounts, r.err
+}
+
 type schedulerGroupPolicyRefreshCache struct {
 	SchedulerCache
 	accounts []Account
@@ -74,6 +101,31 @@ func TestSchedulerGroupChangeRefreshesAccountsOutsideSchedulableWindows(t *testi
 	require.Equal(t, int64(7), cache.accounts[0].ID)
 	require.NotNil(t, cache.accounts[0].AccountGroups[0].UpstreamBillingGuardMaxMultiplier)
 	require.Equal(t, limit, *cache.accounts[0].AccountGroups[0].UpstreamBillingGuardMaxMultiplier)
+}
+
+func TestSchedulerSnapshotGenerationAdvancesOnlyAfterSuccessfulSnapshotWrite(t *testing.T) {
+	bucket := SchedulerBucket{GroupID: 10, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
+	repo := &schedulerGenerationTestRepo{accounts: []Account{{
+		ID:          9001,
+		Platform:    PlatformOpenAI,
+		Status:      StatusActive,
+		Schedulable: true,
+	}}}
+	cache := &schedulerGenerationTestCache{}
+	svc := NewSchedulerSnapshotService(cache, nil, repo, nil, nil, nil)
+
+	require.Zero(t, svc.Generation())
+	require.NoError(t, svc.rebuildBucket(context.Background(), bucket, "test_success"))
+	require.Equal(t, int64(1), svc.Generation())
+
+	cache.setErr = errors.New("snapshot write failed")
+	require.Error(t, svc.rebuildBucket(context.Background(), bucket, "test_write_failure"))
+	require.Equal(t, int64(1), svc.Generation())
+
+	cache.setErr = nil
+	repo.err = errors.New("account load failed")
+	require.Error(t, svc.rebuildBucket(context.Background(), bucket, "test_load_failure"))
+	require.Equal(t, int64(1), svc.Generation())
 }
 
 func TestSchedulerInitialRebuildRefreshesAccountsOutsideSchedulableWindows(t *testing.T) {

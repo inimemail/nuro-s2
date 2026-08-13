@@ -1029,6 +1029,13 @@
               {{ t("admin.groups.webSearchPricing.finalPricePreview", { price: createWebSearchFinalPricePreview }) }}
             </p>
           </div>
+          <div v-if="createForm.platform === 'grok'" class="mt-4 grid grid-cols-1 gap-4 border-t border-gray-200 pt-4 dark:border-dark-400 md:grid-cols-2">
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.searchPer1K") }}</label><input v-model.number="createForm.search_price_per_1k" type="number" step="0.01" min="0" placeholder="10" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.realtimePerMinute") }}</label><input v-model.number="createForm.audio_realtime_price_per_min" type="number" step="0.01" min="0" placeholder="0.10" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.ttsPerMillionChars") }}</label><input v-model.number="createForm.audio_tts_price_per_million_chars" type="number" step="0.01" min="0" placeholder="15" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.sttPerHour") }}</label><input v-model.number="createForm.audio_stt_price_per_hour" type="number" step="0.01" min="0" placeholder="0.36" class="input" /></div>
+            <div class="md:col-span-2"><label class="input-label">{{ t("admin.groups.grokPricing.videoModelPrices") }}</label><textarea v-model="createForm.video_model_prices_json" rows="3" class="input font-mono text-xs" :placeholder="t('admin.groups.grokPricing.videoModelPricesPlaceholder')"></textarea></div>
+          </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
             {{ t("admin.groups.imagePricing.modeHint") }}
           </p>
@@ -2607,6 +2614,13 @@
               {{ t("admin.groups.webSearchPricing.finalPricePreview", { price: editWebSearchFinalPricePreview }) }}
             </p>
           </div>
+          <div v-if="editForm.platform === 'grok'" class="mt-4 grid grid-cols-1 gap-4 border-t border-gray-200 pt-4 dark:border-dark-400 md:grid-cols-2">
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.searchPer1K") }}</label><input v-model.number="editForm.search_price_per_1k" type="number" step="0.01" min="0" placeholder="10" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.realtimePerMinute") }}</label><input v-model.number="editForm.audio_realtime_price_per_min" type="number" step="0.01" min="0" placeholder="0.10" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.ttsPerMillionChars") }}</label><input v-model.number="editForm.audio_tts_price_per_million_chars" type="number" step="0.01" min="0" placeholder="15" class="input" /></div>
+            <div><label class="input-label">{{ t("admin.groups.grokPricing.sttPerHour") }}</label><input v-model.number="editForm.audio_stt_price_per_hour" type="number" step="0.01" min="0" placeholder="0.36" class="input" /></div>
+            <div class="md:col-span-2"><label class="input-label">{{ t("admin.groups.grokPricing.videoModelPrices") }}</label><textarea v-model="editForm.video_model_prices_json" rows="3" class="input font-mono text-xs" :placeholder="t('admin.groups.grokPricing.videoModelPricesPlaceholder')"></textarea></div>
+          </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
             {{ t("admin.groups.imagePricing.modeHint") }}
           </p>
@@ -3891,6 +3905,7 @@ const platformOptions = computed(() => [
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
   { value: "grok", label: "Grok" },
+  { value: "composite", label: "Composite" },
 ]);
 
 const platformFilterOptions = computed(() => [
@@ -3900,6 +3915,7 @@ const platformFilterOptions = computed(() => [
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
   { value: "grok", label: "Grok" },
+  { value: "composite", label: "Composite" },
 ]);
 
 const editStatusOptions = computed(() => [
@@ -4116,6 +4132,11 @@ const createForm = reactive({
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
   web_search_price_per_call: null as number | null,
+  search_price_per_1k: null as number | null,
+  audio_realtime_price_per_min: null as number | null,
+  audio_tts_price_per_million_chars: null as number | null,
+  audio_stt_price_per_hour: null as number | null,
+  video_model_prices_json: "",
   allow_batch_image_generation: false,
   batch_image_discount_multiplier: 0.5,
   batch_image_hold_multiplier: 0.6,
@@ -4465,6 +4486,11 @@ const editForm = reactive({
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
   web_search_price_per_call: null as number | null,
+  search_price_per_1k: null as number | null,
+  audio_realtime_price_per_min: null as number | null,
+  audio_tts_price_per_million_chars: null as number | null,
+  audio_stt_price_per_hour: null as number | null,
+  video_model_prices_json: "",
   allow_batch_image_generation: false,
   batch_image_discount_multiplier: 0.5,
   batch_image_hold_multiplier: 0.6,
@@ -4542,6 +4568,22 @@ const formatImagePricePreview = (value: number | string | null | undefined) => {
     return t("admin.groups.imagePricing.notConfigured");
   }
   return `$${price.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
+};
+
+const parseVideoModelPrices = (raw: string) => {
+  const value = raw.trim();
+  if (!value) return {};
+  const parsed = JSON.parse(value) as Record<string, Record<string, number>>;
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new Error("invalid video model prices");
+  }
+  for (const prices of Object.values(parsed)) {
+    if (!prices || Array.isArray(prices) || typeof prices !== "object") throw new Error("invalid video model prices");
+    for (const price of Object.values(prices)) {
+      if (!Number.isFinite(price) || price < 0) throw new Error("invalid video model price");
+    }
+  }
+  return parsed;
 };
 
 const buildImageFinalPricePreview = (form: ImagePricingFormState) => {
@@ -4884,6 +4926,11 @@ const closeCreateModal = () => {
   createForm.video_price_720p = null;
   createForm.video_price_1080p = null;
   createForm.web_search_price_per_call = null;
+  createForm.search_price_per_1k = null;
+  createForm.audio_realtime_price_per_min = null;
+  createForm.audio_tts_price_per_million_chars = null;
+  createForm.audio_stt_price_per_hour = null;
+  createForm.video_model_prices_json = "";
   createForm.allow_batch_image_generation = false;
   createForm.batch_image_discount_multiplier = 0.5;
   createForm.batch_image_hold_multiplier = 0.6;
@@ -4991,7 +5038,18 @@ const handleCreateGroup = async () => {
     requestData.daily_limit_usd = emptyToNull(requestData.daily_limit_usd);
     requestData.weekly_limit_usd = emptyToNull(requestData.weekly_limit_usd);
     requestData.monthly_limit_usd = emptyToNull(requestData.monthly_limit_usd);
+    requestData.search_price_per_1k = emptyToNull(requestData.search_price_per_1k);
+    requestData.audio_realtime_price_per_min = emptyToNull(requestData.audio_realtime_price_per_min);
+    requestData.audio_tts_price_per_million_chars = emptyToNull(requestData.audio_tts_price_per_million_chars);
+    requestData.audio_stt_price_per_hour = emptyToNull(requestData.audio_stt_price_per_hour);
     requestData.web_search_price_per_call = emptyToNull(requestData.web_search_price_per_call);
+    try {
+      (requestData as any).video_model_prices = parseVideoModelPrices(createForm.video_model_prices_json);
+    } catch {
+      appStore.showError(t("admin.groups.grokPricing.invalidVideoModelPrices"));
+      submitting.value = false;
+      return;
+    }
     requestData.image_rate_multiplier = normalizeImageRateMultiplier(
       requestData.image_rate_multiplier,
     );
@@ -5055,6 +5113,11 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.video_price_720p = group.video_price_720p ?? null;
   editForm.video_price_1080p = group.video_price_1080p ?? null;
   editForm.web_search_price_per_call = group.web_search_price_per_call ?? null;
+  editForm.search_price_per_1k = group.search_price_per_1k ?? null;
+  editForm.audio_realtime_price_per_min = group.audio_realtime_price_per_min ?? null;
+  editForm.audio_tts_price_per_million_chars = group.audio_tts_price_per_million_chars ?? null;
+  editForm.audio_stt_price_per_hour = group.audio_stt_price_per_hour ?? null;
+  editForm.video_model_prices_json = JSON.stringify(group.video_model_prices ?? {}, null, 2);
   editForm.allow_batch_image_generation = group.allow_batch_image_generation ?? false;
   editForm.batch_image_discount_multiplier =
     group.batch_image_discount_multiplier ?? 0.5;
@@ -5118,6 +5181,11 @@ const closeEditModal = () => {
   editForm.peak_end = "";
   editForm.peak_rate_multiplier = 1;
   editForm.web_search_price_per_call = null;
+  editForm.search_price_per_1k = null;
+  editForm.audio_realtime_price_per_min = null;
+  editForm.audio_tts_price_per_million_chars = null;
+  editForm.audio_stt_price_per_hour = null;
+  editForm.video_model_prices_json = "";
   editForm.upstream_billing_guard_max_multiplier = null;
   editForm.allow_batch_image_generation = false;
   editForm.batch_image_discount_multiplier = 0.5;
@@ -5194,6 +5262,19 @@ const handleUpdateGroup = async () => {
     payload.daily_limit_usd = emptyToNull(payload.daily_limit_usd);
     payload.weekly_limit_usd = emptyToNull(payload.weekly_limit_usd);
     payload.monthly_limit_usd = emptyToNull(payload.monthly_limit_usd);
+    const clearablePrice = (value: unknown) =>
+      value === "" || value === null ? -1 : Number(value);
+    payload.search_price_per_1k = clearablePrice(payload.search_price_per_1k);
+    payload.audio_realtime_price_per_min = clearablePrice(payload.audio_realtime_price_per_min);
+    payload.audio_tts_price_per_million_chars = clearablePrice(payload.audio_tts_price_per_million_chars);
+    payload.audio_stt_price_per_hour = clearablePrice(payload.audio_stt_price_per_hour);
+    try {
+      (payload as any).video_model_prices = parseVideoModelPrices(editForm.video_model_prices_json);
+    } catch {
+      appStore.showError(t("admin.groups.grokPricing.invalidVideoModelPrices"));
+      submitting.value = false;
+      return;
+    }
     const webSearchPrice = payload.web_search_price_per_call as
       | number
       | string

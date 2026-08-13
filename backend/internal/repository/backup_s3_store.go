@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -73,6 +74,24 @@ func (s *S3BackupStore) Upload(ctx context.Context, key string, body io.Reader, 
 		return 0, fmt.Errorf("S3 PutObject: %w", err)
 	}
 	return int64(len(data)), nil
+}
+
+func (s *S3BackupStore) UploadFile(ctx context.Context, key, filePath, contentType string) (int64, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return 0, fmt.Errorf("open upload file: %w", err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	size := info.Size()
+	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{Bucket: &s.bucket, Key: &key, Body: f, ContentType: &contentType, ContentLength: &size})
+	if err != nil {
+		return 0, fmt.Errorf("S3 PutObject: %w", err)
+	}
+	return info.Size(), nil
 }
 
 func (s *S3BackupStore) Download(ctx context.Context, key string) (io.ReadCloser, error) {

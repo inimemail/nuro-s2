@@ -131,6 +131,11 @@ type UserRepository interface {
 	DisableTotp(ctx context.Context, userID int64) error
 }
 
+type RegistrationEmailDomainRepository interface {
+	CountUsersByEmailDomain(ctx context.Context, domain string) (int, error)
+	CreateWithEmailAliasGuardAndDomainLimit(ctx context.Context, user *User, domain string) error
+}
+
 type UserAuthIdentityRecord struct {
 	ProviderType    string
 	ProviderKey     string

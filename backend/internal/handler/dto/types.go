@@ -105,21 +105,26 @@ type Group struct {
 	MonthlyLimitUSD  *float64 `json:"monthly_limit_usd"`
 
 	// 图片生成计费配置（仅 antigravity 平台使用）
-	AllowImageGeneration         bool     `json:"allow_image_generation"`
-	AllowBatchImageGeneration    bool     `json:"allow_batch_image_generation"`
-	ImageRateIndependent         bool     `json:"image_rate_independent"`
-	ImageRateMultiplier          float64  `json:"image_rate_multiplier"`
-	ImagePrice1K                 *float64 `json:"image_price_1k"`
-	ImagePrice2K                 *float64 `json:"image_price_2k"`
-	ImagePrice4K                 *float64 `json:"image_price_4k"`
-	BatchImageDiscountMultiplier float64  `json:"batch_image_discount_multiplier"`
-	BatchImageHoldMultiplier     float64  `json:"batch_image_hold_multiplier"`
-	VideoRateIndependent         bool     `json:"video_rate_independent"`
-	VideoRateMultiplier          float64  `json:"video_rate_multiplier"`
-	VideoPrice480P               *float64 `json:"video_price_480p"`
-	VideoPrice720P               *float64 `json:"video_price_720p"`
-	VideoPrice1080P              *float64 `json:"video_price_1080p"`
-	WebSearchPricePerCall        *float64 `json:"web_search_price_per_call"`
+	AllowImageGeneration         bool                          `json:"allow_image_generation"`
+	AllowBatchImageGeneration    bool                          `json:"allow_batch_image_generation"`
+	ImageRateIndependent         bool                          `json:"image_rate_independent"`
+	ImageRateMultiplier          float64                       `json:"image_rate_multiplier"`
+	ImagePrice1K                 *float64                      `json:"image_price_1k"`
+	ImagePrice2K                 *float64                      `json:"image_price_2k"`
+	ImagePrice4K                 *float64                      `json:"image_price_4k"`
+	BatchImageDiscountMultiplier float64                       `json:"batch_image_discount_multiplier"`
+	BatchImageHoldMultiplier     float64                       `json:"batch_image_hold_multiplier"`
+	VideoRateIndependent         bool                          `json:"video_rate_independent"`
+	VideoRateMultiplier          float64                       `json:"video_rate_multiplier"`
+	VideoPrice480P               *float64                      `json:"video_price_480p"`
+	VideoPrice720P               *float64                      `json:"video_price_720p"`
+	VideoPrice1080P              *float64                      `json:"video_price_1080p"`
+	VideoModelPrices             map[string]map[string]float64 `json:"video_model_prices"`
+	WebSearchPricePerCall        *float64                      `json:"web_search_price_per_call"`
+	SearchPricePer1K             *float64                      `json:"search_price_per_1k"`
+	AudioRealtimePricePerMin     *float64                      `json:"audio_realtime_price_per_min"`
+	AudioTTSPricePerMillionChars *float64                      `json:"audio_tts_price_per_million_chars"`
+	AudioSTTPricePerHour         *float64                      `json:"audio_stt_price_per_hour"`
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool   `json:"claude_code_only"`

@@ -467,6 +467,10 @@ func (h *OpenAIGatewayHandler) createStandardAsyncImageTask(c *gin.Context, endp
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "stream=true is not supported for image tasks")
 		return
 	}
+	if !service.GroupAllowsImageGenerationForRequest(c.Request.Context(), apiKey.Group, endpoint, parsed.Model, body) {
+		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
+		return
+	}
 	if hasPromptAuditCollector(c) {
 		capturePromptAuditRequest(c, apiKey, subject, service.ContentModerationProtocolOpenAIImages, parsed.Model, parsed.ModerationBody())
 	}
@@ -659,6 +663,10 @@ func (h *OpenAIGatewayHandler) createImageTask(c *gin.Context, endpoint string) 
 	}
 	if parsed.Stream {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "stream=true is not supported for image tasks")
+		return
+	}
+	if !service.GroupAllowsImageGenerationForRequest(c.Request.Context(), apiKey.Group, endpoint, parsed.Model, body) {
+		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
 	if hasPromptAuditCollector(c) {
@@ -868,6 +876,9 @@ func (h *OpenAIGatewayHandler) submitPersistentImageTask(
 		return nil, false, fmt.Errorf("image task repository is not configured")
 	}
 	requestHeaders := sanitizeImageTaskHeaders(c.Request.Header)
+	if target, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok {
+		requestHeaders[openAIImageTaskResolvedPlatformHeader] = []string{target}
+	}
 	maxQueue := h.imageTaskMaxQueue()
 	task := &service.OpenAIImageTask{
 		ID:              taskID,
@@ -938,6 +949,8 @@ func sanitizeImageTaskHeaders(headers http.Header) map[string][]string {
 	}
 	return out
 }
+
+const openAIImageTaskResolvedPlatformHeader = "X-Sub2API-Image-Task-Resolved-Platform"
 
 func (h *OpenAIGatewayHandler) startPersistentImageTaskWorkers() {
 	if h == nil || h.imageTaskRepo == nil {
@@ -1208,6 +1221,9 @@ func cloneImageTaskContext(parent context.Context, apiKey *service.APIKey, taskI
 		if clientRequestID, _ := parent.Value(ctxkey.ClientRequestID).(string); strings.TrimSpace(clientRequestID) != "" {
 			ctx = context.WithValue(ctx, ctxkey.ClientRequestID, strings.TrimSpace(clientRequestID))
 		}
+		if target, ok := service.ResolvedTargetPlatformFromContext(parent); ok {
+			ctx = service.WithResolvedTargetPlatform(ctx, target)
+		}
 	}
 	if clientRequestID, _ := ctx.Value(ctxkey.ClientRequestID).(string); strings.TrimSpace(clientRequestID) == "" {
 		ctx = context.WithValue(ctx, ctxkey.ClientRequestID, taskID)
@@ -1227,6 +1243,11 @@ func (h *OpenAIGatewayHandler) runImageTaskRequest(
 	subject middleware2.AuthSubject,
 	subscription *service.UserSubscription,
 ) (int, []byte) {
+	if target := strings.TrimSpace(headers.Get(openAIImageTaskResolvedPlatformHeader)); target != "" {
+		ctx = service.WithResolvedTargetPlatform(ctx, target)
+	}
+	headers = headers.Clone()
+	headers.Del(openAIImageTaskResolvedPlatformHeader)
 	rec := httptest.NewRecorder()
 	taskCtx, _ := gin.CreateTestContext(rec)
 	req := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body)).WithContext(ctx)

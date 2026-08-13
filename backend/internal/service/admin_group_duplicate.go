@@ -81,6 +81,21 @@ func cloneGroupModelRouting(value map[string][]int64) map[string][]int64 {
 	return clone
 }
 
+func cloneGroupVideoModelPrices(value map[string]map[string]float64) map[string]map[string]float64 {
+	if value == nil {
+		return nil
+	}
+	clone := make(map[string]map[string]float64, len(value))
+	for model, prices := range value {
+		modelPrices := make(map[string]float64, len(prices))
+		for resolution, price := range prices {
+			modelPrices[resolution] = price
+		}
+		clone[model] = modelPrices
+	}
+	return clone
+}
+
 func cloneGroupMessagesConfig(value OpenAIMessagesDispatchModelConfig) OpenAIMessagesDispatchModelConfig {
 	clone := value
 	if value.ExactModelMappings != nil {
@@ -125,7 +140,12 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 		VideoPrice480P:                     cloneGroupPointer(source.VideoPrice480P),
 		VideoPrice720P:                     cloneGroupPointer(source.VideoPrice720P),
 		VideoPrice1080P:                    cloneGroupPointer(source.VideoPrice1080P),
+		VideoModelPrices:                   cloneGroupVideoModelPrices(source.VideoModelPrices),
 		WebSearchPricePerCall:              cloneGroupPointer(source.WebSearchPricePerCall),
+		SearchPricePer1K:                   cloneGroupPointer(source.SearchPricePer1K),
+		AudioRealtimePricePerMin:           cloneGroupPointer(source.AudioRealtimePricePerMin),
+		AudioTTSPricePerMillionChars:       cloneGroupPointer(source.AudioTTSPricePerMillionChars),
+		AudioSTTPricePerHour:               cloneGroupPointer(source.AudioSTTPricePerHour),
 		ClaudeCodeOnly:                     source.ClaudeCodeOnly,
 		FallbackGroupID:                    cloneGroupPointer(source.FallbackGroupID),
 		FallbackGroupIDOnInvalidRequest:    cloneGroupPointer(source.FallbackGroupIDOnInvalidRequest),
