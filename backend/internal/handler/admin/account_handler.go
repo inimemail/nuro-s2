@@ -182,6 +182,7 @@ var allowedBulkExtraRemoveKeys = map[string]struct{}{
 	"openai_oauth_chatgpt_first_token_timeout_placeholder_ms":            {},
 	"openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled": {},
 	"openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms":  {},
+	"openai_oauth_chatgpt_first_token_timeout_placeholder_stages":        {},
 }
 
 type UpdateCodexAutoResetModeRequest struct {

@@ -1190,6 +1190,12 @@
         </div>
       </div>
 
+      <OpenAIApiKeyFirstTokenTimeoutStages
+        v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled"
+        v-model="openaiOAuthFirstTokenTimeoutStageConfig"
+        :guard-enabled="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabled"
+      />
+
       <!-- OpenAI OAuth Codex CLI only -->
       <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
@@ -2123,7 +2129,7 @@ const openaiOAuthChatGPTSafeTokenPlaceholderEnabled = ref(false)
 const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled = ref(false)
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS = 1000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS = 1
-const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 3000
+const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 100000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS = 3000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS = 1
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MAX_MS = 30000
@@ -2136,6 +2142,13 @@ const openaiAPIKeySafeTokenPlaceholderEnabled = ref(false)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled = ref(false)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled = ref(true)
 const openaiAPIKeyFirstTokenTimeoutStageConfig = ref(createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig())
+const openaiOAuthFirstTokenTimeoutStageConfig = ref(createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig())
+watch(openaiOAuthFirstTokenTimeoutStageConfig, config => {
+  const first = config.stages[0]
+  const last = config.stages[config.stages.length - 1]
+  if (first) openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = first.placeholder_ms ?? OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS
+  if (last) openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMs.value = last.guard_max_ms ?? OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
+}, { deep: true })
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
@@ -2513,20 +2526,27 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
           normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(
             openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMs.value
           )
+        extra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages = openaiOAuthFirstTokenTimeoutStageConfig.value.stages.map((stage, index) => ({ ...stage, stage: index + 1 }))
       } else {
         const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
         updates.extra_remove_keys = [
           ...removeKeys,
           'openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms'
         ]
+        updates.extra_remove_keys = [
+          ...((updates.extra_remove_keys as string[] | undefined) ?? []),
+          'openai_oauth_chatgpt_first_token_timeout_placeholder_stages'
+        ]
       }
     } else {
       const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
       updates.extra_remove_keys = [
         ...removeKeys,
+        'openai_oauth_chatgpt_first_token_timeout_placeholder_enabled',
         'openai_oauth_chatgpt_first_token_timeout_placeholder_ms',
         'openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled',
-        'openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms'
+        'openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms',
+        'openai_oauth_chatgpt_first_token_timeout_placeholder_stages'
       ]
     }
   }
@@ -2925,6 +2945,7 @@ watch(
       openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value = false
       resetOpenAIFirstTokenTimeoutPlaceholderMs('oauth')
       resetOpenAIFirstTokenTimeoutPlaceholderGuard('oauth')
+      openaiOAuthFirstTokenTimeoutStageConfig.value = createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
       openaiAPIKeyPreambleFlushEnabled.value = false
       openaiAPIKeySSECommentPreflushEnabled.value = false
       openaiAPIKeySafeTokenPlaceholderEnabled.value = false

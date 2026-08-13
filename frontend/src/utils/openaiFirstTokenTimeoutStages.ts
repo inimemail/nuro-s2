@@ -78,6 +78,26 @@ export function readOpenAIApiKeyFirstTokenTimeoutStageConfig(
   return { stages }
 }
 
+export type OpenAIOAuthFirstTokenTimeoutStage = OpenAIApiKeyFirstTokenTimeoutStage
+export type OpenAIOAuthFirstTokenTimeoutStageConfig = OpenAIApiKeyFirstTokenTimeoutStageConfig
+
+export function createDefaultOpenAIOAuthFirstTokenTimeoutStageConfig(): OpenAIOAuthFirstTokenTimeoutStageConfig {
+  return createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
+}
+
+export function readOpenAIOAuthFirstTokenTimeoutStageConfig(
+  extra: Record<string, unknown> | undefined
+): OpenAIOAuthFirstTokenTimeoutStageConfig {
+  const mapped = extra && {
+    ...extra,
+    openai_apikey_first_token_timeout_placeholder_ms: extra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms,
+    openai_apikey_first_token_timeout_placeholder_guard_max_ms: extra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms,
+    openai_apikey_first_token_timeout_placeholder_stages: extra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages
+  }
+  const config = readOpenAIApiKeyFirstTokenTimeoutStageConfig(mapped)
+  return config
+}
+
 export function validateOpenAIApiKeyFirstTokenTimeoutStageConfig(
   config: OpenAIApiKeyFirstTokenTimeoutStageConfig,
   translate: (key: string, params?: Record<string, unknown>) => string

@@ -6246,7 +6246,9 @@ fn normalize_first_token_timeout_placeholder_ms(
     account_type: Option<&str>,
 ) -> Option<Duration> {
     let max = if account_type.is_some_and(|value| {
-        value.eq_ignore_ascii_case("apikey") || value.eq_ignore_ascii_case("api_key")
+        value.eq_ignore_ascii_case("oauth")
+            || value.eq_ignore_ascii_case("apikey")
+            || value.eq_ignore_ascii_case("api_key")
     }) {
         100_000
     } else {
@@ -9387,15 +9389,15 @@ mod tests {
             Some(Duration::from_millis(200))
         );
         assert_eq!(
-            normalize_first_token_timeout_placeholder_ms(Some(3000), Some("oauth")),
-            Some(Duration::from_millis(3000))
+            normalize_first_token_timeout_placeholder_ms(Some(100_000), Some("oauth")),
+            Some(Duration::from_millis(100_000))
         );
         assert_eq!(
             normalize_first_token_timeout_placeholder_ms(Some(0), Some("oauth")),
             None
         );
         assert_eq!(
-            normalize_first_token_timeout_placeholder_ms(Some(3001), Some("oauth")),
+            normalize_first_token_timeout_placeholder_ms(Some(100_001), Some("oauth")),
             None
         );
         assert_eq!(

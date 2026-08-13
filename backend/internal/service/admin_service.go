@@ -3395,6 +3395,23 @@ func normalizeOpenAIAPIKeyFirstTokenTimeoutStagesExtra(platform, accountType str
 	}
 	normalized := maps.Clone(extra)
 	_, stageKeyPresent := normalized[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]
+	if platform == PlatformOpenAI && accountType == AccountTypeOAuth {
+		delete(normalized, openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey)
+		if _, oauthStages := normalized[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey]; oauthStages {
+			stages, err := NormalizeOpenAIOAuthFirstTokenTimeoutPlaceholderStages(normalized)
+			if err != nil {
+				return nil, infraerrors.BadRequest("INVALID_OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_STAGES", err.Error())
+			}
+			encoded := make([]any, len(stages))
+			for i, stage := range stages {
+				encoded[i] = map[string]any{"stage": stage.Stage, "placeholder_ms": stage.PlaceholderMS, "guard_max_ms": stage.GuardMaxMS}
+			}
+			normalized[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey] = encoded
+			normalized[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey] = stages[0].PlaceholderMS
+			normalized[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey] = stages[0].GuardMaxMS
+		}
+		return normalized, nil
+	}
 	if platform != PlatformOpenAI || accountType != AccountTypeAPIKey {
 		delete(normalized, openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey)
 		return normalized, nil
@@ -3418,6 +3435,26 @@ func normalizeOpenAIAPIKeyFirstTokenTimeoutStagesExtra(platform, accountType str
 	return normalized, nil
 }
 
+func hasAnyOpenAIFirstTokenTimeoutUpdate(extra map[string]any) bool {
+	for _, key := range []string{
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey,
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey,
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey,
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey,
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey,
+	} {
+		if _, exists := extra[key]; exists {
+			return true
+		}
+	}
+	return false
+}
+
 func hasOpenAIAPIKeyFirstTokenTimeoutUpdate(extra map[string]any) bool {
 	for _, key := range []string{
 		openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey,
@@ -3433,14 +3470,29 @@ func hasOpenAIAPIKeyFirstTokenTimeoutUpdate(extra map[string]any) bool {
 	return false
 }
 
+func hasOpenAIOAuthFirstTokenTimeoutUpdate(extra map[string]any) bool {
+	for _, key := range []string{
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey,
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey,
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey,
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey,
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey,
+	} {
+		if _, exists := extra[key]; exists {
+			return true
+		}
+	}
+	return false
+}
+
 func validateOpenAIAPIKeyFirstTokenTimeoutTarget(account *Account, effectiveType string) error {
-	if account == nil || !hasOpenAIAPIKeyFirstTokenTimeoutUpdate(account.Extra) {
+	if account == nil || !hasAnyOpenAIFirstTokenTimeoutUpdate(account.Extra) {
 		return nil
 	}
-	if account.Platform != PlatformOpenAI || effectiveType != AccountTypeAPIKey || account.IsImagePoolMode() || account.IsCredentialShadow() {
+	if account.Platform != PlatformOpenAI || (effectiveType != AccountTypeAPIKey && effectiveType != AccountTypeOAuth) || account.IsImagePoolMode() || account.IsCredentialShadow() {
 		return infraerrors.BadRequest(
 			"INVALID_OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_STAGES",
-			"first-token timeout placeholder settings are only supported for independent OpenAI API-key text accounts",
+			"first-token timeout placeholder settings are only supported for independent OpenAI OAuth/API-key text accounts",
 		)
 	}
 	return nil
@@ -3658,7 +3710,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	var normalizedExtra map[string]any
 	if input.Extra != nil {
-		if hasOpenAIAPIKeyFirstTokenTimeoutUpdate(input.Extra) {
+		if hasAnyOpenAIFirstTokenTimeoutUpdate(input.Extra) {
 			candidate := *account
 			candidate.Extra = input.Extra
 			if err := validateOpenAIAPIKeyFirstTokenTimeoutTarget(&candidate, effectiveAccountType); err != nil {
@@ -3741,7 +3793,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	// Re-check after applying the candidate credentials. A single update may
 	// turn a normal API-key account into an image-pool account; that final
 	// identity must not accept a policy that the runtime intentionally ignores.
-	if input.Extra != nil && hasOpenAIAPIKeyFirstTokenTimeoutUpdate(input.Extra) {
+	if input.Extra != nil && hasAnyOpenAIFirstTokenTimeoutUpdate(input.Extra) {
 		candidate := *account
 		candidate.Extra = input.Extra
 		if err := validateOpenAIAPIKeyFirstTokenTimeoutTarget(&candidate, account.Type); err != nil {
@@ -4082,7 +4134,7 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 			return err
 		}
 	}
-	if hasOpenAIAPIKeyFirstTokenTimeoutUpdate(updates) {
+	if hasAnyOpenAIFirstTokenTimeoutUpdate(updates) {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
 			return err
@@ -4092,7 +4144,11 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 		if err := validateOpenAIAPIKeyFirstTokenTimeoutTarget(&candidate, account.Type); err != nil {
 			return err
 		}
-		if _, hasStages := updates[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]; hasStages {
+		stageKey := openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey
+		if account.IsOpenAIOAuth() {
+			stageKey = openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey
+		}
+		if _, hasStages := updates[stageKey]; hasStages {
 			merged := maps.Clone(account.Extra)
 			if merged == nil {
 				merged = make(map[string]any)
@@ -4104,11 +4160,11 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 			if err != nil {
 				return err
 			}
-			for _, key := range []string{
-				openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey,
-				openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey,
-				openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey,
-			} {
+			keys := []string{openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey, openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey, openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey}
+			if account.IsOpenAIOAuth() {
+				keys = []string{openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey, openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey, openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey}
+			}
+			for _, key := range keys {
 				updates[key] = normalized[key]
 			}
 		}
@@ -4141,12 +4197,21 @@ func bulkUpdateDisablesUpstreamBillingProbe(extra map[string]any, removeKeys []s
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
 	_, hasStages := input.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]
+	_, hasOAuthStages := input.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey]
 	hasAPIKeyFirstTokenTimeoutUpdate := hasOpenAIAPIKeyFirstTokenTimeoutUpdate(input.Extra)
+	hasOAuthFirstTokenTimeoutUpdate := hasOpenAIOAuthFirstTokenTimeoutUpdate(input.Extra)
 	// Removal-only bulk edits are generic cleanup operations and must remain
 	// valid for accounts that never supported this OpenAI-only policy.
 	hasAPIKeyFirstTokenTimeoutValueUpdate := hasAPIKeyFirstTokenTimeoutUpdate
 	if hasStages {
 		normalized, err := normalizeOpenAIAPIKeyFirstTokenTimeoutStagesExtra(PlatformOpenAI, AccountTypeAPIKey, input.Extra)
+		if err != nil {
+			return nil, err
+		}
+		input.Extra = normalized
+	}
+	if hasOAuthStages {
+		normalized, err := normalizeOpenAIAPIKeyFirstTokenTimeoutStagesExtra(PlatformOpenAI, AccountTypeOAuth, input.Extra)
 		if err != nil {
 			return nil, err
 		}
@@ -4180,7 +4245,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 			break
 		}
 	}
-	if !hasAPIKeyFirstTokenTimeoutUpdate {
+	if !hasAPIKeyFirstTokenTimeoutUpdate && !hasOAuthFirstTokenTimeoutUpdate {
 		for _, key := range filteredRemoveKeys {
 			switch strings.TrimSpace(key) {
 			case openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey,
@@ -4189,7 +4254,25 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 				openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey,
 				openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey:
 				hasAPIKeyFirstTokenTimeoutUpdate = true
+			case openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey,
+				openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey,
+				openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey,
+				openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey,
+				openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey:
+				hasOAuthFirstTokenTimeoutUpdate = true
 			}
+		}
+	}
+	if !hasOAuthStages && hasOAuthFirstTokenTimeoutUpdate {
+		hasStageRemoval := false
+		for _, key := range filteredRemoveKeys {
+			if strings.TrimSpace(key) == openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey {
+				hasStageRemoval = true
+				break
+			}
+		}
+		if !hasStageRemoval {
+			filteredRemoveKeys = append(filteredRemoveKeys, openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey)
 		}
 	}
 	// New clients submit the complete staged policy. Legacy clients only know
@@ -4253,7 +4336,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	// 预加载账号平台信息（混合渠道检查需要）。
 	platformByID := map[int64]string{}
 	var cachedTargets []*Account
-	if needMixedChannelCheck || hasLongContextBillingUpdate || hasAPIKeyFirstTokenTimeoutValueUpdate || input.ProbeEnabled != nil || input.RateMultiplier != nil {
+	if needMixedChannelCheck || hasLongContextBillingUpdate || hasAPIKeyFirstTokenTimeoutValueUpdate || hasOAuthFirstTokenTimeoutUpdate || input.ProbeEnabled != nil || input.RateMultiplier != nil {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
@@ -4266,6 +4349,12 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 					return nil, infraerrors.BadRequest(
 						"INVALID_OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_STAGES",
 						"first-token timeout placeholder settings are only supported for independent OpenAI API-key text accounts",
+					)
+				}
+				if hasOAuthFirstTokenTimeoutUpdate && (account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth || account.IsImagePoolMode() || account.IsCredentialShadow()) {
+					return nil, infraerrors.BadRequest(
+						"INVALID_OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_STAGES",
+						"first-token timeout placeholder settings are only supported for independent OpenAI OAuth text accounts",
 					)
 				}
 				if hasLongContextBillingUpdate && account.Platform == PlatformOpenAI {

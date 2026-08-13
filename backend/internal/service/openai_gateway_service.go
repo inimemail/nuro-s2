@@ -6005,6 +6005,11 @@ func (s *OpenAIGatewayService) openAIStreamFirstTokenTimeoutPlaceholderMs(accoun
 			if len(stages) > 0 {
 				return s.openaiFirstTokenTimeoutPlaceholderGuard.placeholderMS(account.ID, requestedModel, stages)
 			}
+		} else if account.IsOpenAIOAuth() {
+			stages := account.GetOpenAIOAuthFirstTokenTimeoutPlaceholderStages()
+			if len(stages) > 0 {
+				return s.openaiFirstTokenTimeoutPlaceholderGuard.placeholderMS(account.ID, requestedModel, stages)
+			}
 		}
 		guardMaxMS := account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs()
 		if !s.openaiFirstTokenTimeoutPlaceholderGuard.allow(account.ID, requestedModel, guardMaxMS) {

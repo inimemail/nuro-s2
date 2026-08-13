@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -154,6 +155,7 @@ const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey = "openai_oa
 const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey = "openai_oauth_chatgpt_first_token_timeout_placeholder_ms"
 const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey = "openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled"
 const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey = "openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms"
+const openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey = "openai_oauth_chatgpt_first_token_timeout_placeholder_stages"
 const openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey = "openai_apikey_first_token_timeout_placeholder_enabled"
 const openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey = "openai_apikey_first_token_timeout_placeholder_ms"
 const openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey = "openai_apikey_first_token_timeout_placeholder_guard_enabled"
@@ -162,6 +164,9 @@ const openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey = "openai_apikey_fi
 
 const openAIFirstTokenTimeoutPlaceholderDefaultMs = 1000
 const openAIFirstTokenTimeoutPlaceholderMinMs = 1
+
+// Legacy OAuth scalar remains capped at 3000ms; staged OAuth policies use the
+// API-key-compatible 100000ms range through the staged normalizer.
 const openAIFirstTokenTimeoutPlaceholderMaxMs = 3000
 const openAIAPIKeyFirstTokenTimeoutPlaceholderMaxMs = 100000
 const openAIFirstTokenTimeoutPlaceholderGuardDefaultMaxMs = 3000
@@ -266,6 +271,38 @@ func NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(extra map[string]any) ([]
 			return nil, fmt.Errorf("stage %d values must be greater than stage %d", stage, stage-1)
 		}
 		stages[i] = OpenAIFirstTokenTimeoutPlaceholderStage{Stage: stage, PlaceholderMS: placeholder, GuardMaxMS: guard}
+	}
+	return stages, nil
+}
+
+// NormalizeOpenAIOAuthFirstTokenTimeoutPlaceholderStages accepts the same
+// staged policy for OAuth accounts while keeping OAuth's own persisted keys.
+// The legacy OAuth scalar fields remain authoritative for stage one.
+func NormalizeOpenAIOAuthFirstTokenTimeoutPlaceholderStages(extra map[string]any) ([]OpenAIFirstTokenTimeoutPlaceholderStage, error) {
+	if extra == nil {
+		return nil, nil
+	}
+	converted := maps.Clone(extra)
+	// Never allow an API-key staged policy to affect OAuth accounts.
+	delete(converted, openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey)
+	delete(converted, openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey)
+	delete(converted, openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey)
+	_, hasOAuthStages := converted[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey]
+	if !hasOAuthStages {
+		return nil, nil
+	}
+	if raw, ok := converted[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey]; ok {
+		converted[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey] = raw
+	}
+	if raw, ok := converted[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey]; ok {
+		converted[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey] = raw
+	}
+	if raw, ok := converted[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey]; ok {
+		converted[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey] = raw
+	}
+	stages, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(converted)
+	if err != nil {
+		return nil, err
 	}
 	return stages, nil
 }
@@ -2849,7 +2886,8 @@ func (a *Account) IsOpenAISafeTokenPlaceholderEnabled() bool {
 }
 
 // GetOpenAIFirstTokenTimeoutPlaceholderMs 返回 OpenAI 流式首 token 超时补帧阈值。
-// 返回 0 表示关闭。OAuth 范围为 1-3000ms，API Key 范围为 1-100000ms。
+// 返回 0 表示关闭。OAuth 旧标量范围为 1-3000ms；阶段策略与 API Key
+// 一致，支持 1-100000ms。
 func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderMs() int {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
 		return 0
@@ -2918,6 +2956,11 @@ func (a *Account) GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs() int {
 	}
 	switch {
 	case a.IsOpenAIOAuth():
+		if _, explicitStages := a.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey]; explicitStages {
+			if stages, err := NormalizeOpenAIOAuthFirstTokenTimeoutPlaceholderStages(a.Extra); err == nil && len(stages) > 0 {
+				return stages[len(stages)-1].GuardMaxMS
+			}
+		}
 		return normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(
 			a.getExtraInt(openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey),
 		)
@@ -2959,7 +3002,28 @@ func (a *Account) GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages() []OpenAIFi
 	}}
 }
 
+func (a *Account) GetOpenAIOAuthFirstTokenTimeoutPlaceholderStages() []OpenAIFirstTokenTimeoutPlaceholderStage {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+		return nil
+	}
+	stages, err := NormalizeOpenAIOAuthFirstTokenTimeoutPlaceholderStages(a.Extra)
+	if err == nil && len(stages) > 0 {
+		return stages
+	}
+	return []OpenAIFirstTokenTimeoutPlaceholderStage{{
+		Stage:         1,
+		PlaceholderMS: a.GetOpenAIFirstTokenTimeoutPlaceholderMs(),
+		GuardMaxMS:    a.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(),
+	}}
+}
+
 func (a *Account) getOpenAIFirstTokenTimeoutPlaceholderGuardRecordingMaxMs() int {
+	if a.IsOpenAIOAuth() {
+		stages := a.GetOpenAIOAuthFirstTokenTimeoutPlaceholderStages()
+		if len(stages) > 0 {
+			return stages[len(stages)-1].GuardMaxMS
+		}
+	}
 	stages := a.GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages()
 	if len(stages) > 0 {
 		return stages[len(stages)-1].GuardMaxMS
