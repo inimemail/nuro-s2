@@ -111,8 +111,94 @@ type openAIAccountSchedulerMetrics struct {
 	loadSkewMilliTotal     atomic.Int64
 	lastCandidateCount     atomic.Int64
 	lastLockedPriority     atomic.Int64
-	exclusionMu            sync.RWMutex
-	exclusionsByReason     map[string]int64
+	exclusions             openAIExclusionReasonMetrics
+}
+
+type openAIExclusionReasonMetrics struct {
+	excluded                  atomic.Int64
+	notSchedulable            atomic.Int64
+	platformMismatch          atomic.Int64
+	runtimeBlocked            atomic.Int64
+	proxyStreamQuarantined    atomic.Int64
+	privacyNotSet             atomic.Int64
+	lockedPriority            atomic.Int64
+	shadowParentUnhealthy     atomic.Int64
+	quotaAutoPause            atomic.Int64
+	transportIncompatible     atomic.Int64
+	accountNil                atomic.Int64
+	modelNotSupported         atomic.Int64
+	channelUpstreamRestricted atomic.Int64
+	capabilityMismatch        atomic.Int64
+	other                     atomic.Int64
+}
+
+func (m *openAIExclusionReasonMetrics) add(reason string, count int) {
+	if m == nil || count <= 0 {
+		return
+	}
+	target := &m.other
+	switch reason {
+	case "excluded":
+		target = &m.excluded
+	case "not_schedulable":
+		target = &m.notSchedulable
+	case "platform_mismatch":
+		target = &m.platformMismatch
+	case "runtime_blocked":
+		target = &m.runtimeBlocked
+	case "proxy_stream_quarantined":
+		target = &m.proxyStreamQuarantined
+	case "privacy_not_set":
+		target = &m.privacyNotSet
+	case "locked_priority":
+		target = &m.lockedPriority
+	case "shadow_parent_unhealthy":
+		target = &m.shadowParentUnhealthy
+	case "quota_auto_pause":
+		target = &m.quotaAutoPause
+	case "transport_incompatible":
+		target = &m.transportIncompatible
+	case "account_nil":
+		target = &m.accountNil
+	case "model_not_supported":
+		target = &m.modelNotSupported
+	case "channel_upstream_restricted":
+		target = &m.channelUpstreamRestricted
+	case "capability_mismatch":
+		target = &m.capabilityMismatch
+	}
+	target.Add(int64(count))
+}
+
+func (m *openAIExclusionReasonMetrics) snapshot() map[string]int64 {
+	if m == nil {
+		return nil
+	}
+	result := make(map[string]int64, 15)
+	appendNonZero := func(reason string, counter *atomic.Int64) {
+		if value := counter.Load(); value > 0 {
+			result[reason] = value
+		}
+	}
+	appendNonZero("excluded", &m.excluded)
+	appendNonZero("not_schedulable", &m.notSchedulable)
+	appendNonZero("platform_mismatch", &m.platformMismatch)
+	appendNonZero("runtime_blocked", &m.runtimeBlocked)
+	appendNonZero("proxy_stream_quarantined", &m.proxyStreamQuarantined)
+	appendNonZero("privacy_not_set", &m.privacyNotSet)
+	appendNonZero("locked_priority", &m.lockedPriority)
+	appendNonZero("shadow_parent_unhealthy", &m.shadowParentUnhealthy)
+	appendNonZero("quota_auto_pause", &m.quotaAutoPause)
+	appendNonZero("transport_incompatible", &m.transportIncompatible)
+	appendNonZero("account_nil", &m.accountNil)
+	appendNonZero("model_not_supported", &m.modelNotSupported)
+	appendNonZero("channel_upstream_restricted", &m.channelUpstreamRestricted)
+	appendNonZero("capability_mismatch", &m.capabilityMismatch)
+	appendNonZero("other", &m.other)
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func (m *openAIAccountSchedulerMetrics) recordLegacyDiagnostics(req OpenAIAccountScheduleRequest, stats openAISelectionFilterStats, candidates int) {
@@ -124,14 +210,9 @@ func (m *openAIAccountSchedulerMetrics) recordLegacyDiagnostics(req OpenAIAccoun
 	if len(stats.reasons) == 0 {
 		return
 	}
-	m.exclusionMu.Lock()
-	if m.exclusionsByReason == nil {
-		m.exclusionsByReason = make(map[string]int64, len(stats.reasons))
-	}
 	for reason, count := range stats.reasons {
-		m.exclusionsByReason[reason] += int64(count)
+		m.exclusions.add(reason, count)
 	}
-	m.exclusionMu.Unlock()
 }
 
 // openAISelectionFilterStats is request-local diagnostics. It intentionally
@@ -2046,14 +2127,7 @@ func (s *defaultOpenAIAccountScheduler) SnapshotMetrics() OpenAIAccountScheduler
 	if s.service != nil && s.service.schedulerSnapshot != nil {
 		snapshot.SnapshotGeneration = s.service.schedulerSnapshot.Generation()
 	}
-	s.metrics.exclusionMu.RLock()
-	if len(s.metrics.exclusionsByReason) > 0 {
-		snapshot.ExclusionsByReason = make(map[string]int64, len(s.metrics.exclusionsByReason))
-		for reason, count := range s.metrics.exclusionsByReason {
-			snapshot.ExclusionsByReason[reason] = count
-		}
-	}
-	s.metrics.exclusionMu.RUnlock()
+	snapshot.ExclusionsByReason = s.metrics.exclusions.snapshot()
 	if selectTotal > 0 {
 		snapshot.SchedulerLatencyMsAvg = float64(latencyTotal) / float64(selectTotal)
 		snapshot.StickyHitRatio = float64(prevHit+sessionHit) / float64(selectTotal)

@@ -34,3 +34,10 @@ func TestCompositeLocalImageTaskReadsDoNotNeedModelRouting(t *testing.T) {
 		require.False(t, routed, path)
 	}
 }
+
+func TestCompositeGatewayAPIKeyFastPath(t *testing.T) {
+	require.False(t, isCompositeGatewayAPIKey(nil))
+	require.False(t, isCompositeGatewayAPIKey(&service.APIKey{}))
+	require.False(t, isCompositeGatewayAPIKey(&service.APIKey{Group: &service.Group{Platform: service.PlatformOpenAI}}))
+	require.True(t, isCompositeGatewayAPIKey(&service.APIKey{Group: &service.Group{Platform: service.PlatformComposite}}))
+}

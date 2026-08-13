@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -632,4 +633,123 @@ func TestAPIKeyService_GetByKey_SingleflightCollapses(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.Equal(t, int32(1), atomic.LoadInt32(&calls))
+}
+
+func TestAPIKeyAuthSnapshotDetachesAndSharesLargeGroupPricing(t *testing.T) {
+	groupID := int64(29)
+	updatedAt := time.Unix(1_800_000_000, 123)
+	price := 0.125
+	group := &Group{
+		ID:        groupID,
+		Platform:  PlatformOpenAI,
+		Status:    StatusActive,
+		Hydrated:  true,
+		UpdatedAt: updatedAt,
+		VideoModelPrices: map[string]map[string]float64{
+			"grok-imagine-video-1.5": {VideoBillingResolution720P: price},
+		},
+		ModelPricing: []ChannelModelPricing{{
+			Models:          []string{"gpt-5.6"},
+			BillingMode:     BillingModePerRequest,
+			PerRequestPrice: &price,
+		}},
+	}
+	repo := &mockGroupRepoForGateway{groups: map[int64]*Group{groupID: group}}
+	svc := NewAPIKeyService(nil, nil, repo, nil, nil, nil, &config.Config{})
+	apiKey := &APIKey{
+		ID:      1,
+		UserID:  2,
+		GroupID: &groupID,
+		Status:  StatusActive,
+		User:    &User{ID: 2, Status: StatusActive},
+		Group:   group,
+	}
+
+	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.NotNil(t, snapshot.Group)
+	require.True(t, snapshot.Group.HasDetachedPricing)
+	require.Equal(t, updatedAt.UnixNano(), snapshot.Group.DetachedPricingVersion)
+	encoded, err := json.Marshal(snapshot)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "gpt-5.6")
+	require.NotContains(t, string(encoded), "grok-imagine-video-1.5")
+
+	// Simulate another process receiving only the compact Redis snapshot.
+	svc.authGroupPricingCache = sync.Map{}
+	entry := &APIKeyAuthCacheEntry{Snapshot: snapshot}
+	first, used, err := svc.applyAuthCacheEntry(context.Background(), "key-a", entry)
+	require.NoError(t, err)
+	require.True(t, used)
+	second, used, err := svc.applyAuthCacheEntry(context.Background(), "key-b", entry)
+	require.NoError(t, err)
+	require.True(t, used)
+	require.Equal(t, 0, repo.getByIDCalls, "auth pricing hydration must not load unrelated group account statistics")
+	require.Equal(t, 1, repo.getByIDLiteCalls, "large pricing must load once per group, not once per API key")
+	require.Equal(t, group.ModelPricing, first.Group.ModelPricing)
+	require.Equal(t, group.VideoModelPrices, second.Group.VideoModelPrices)
+}
+
+func TestAPIKeyAuthSnapshotRejectsStaleDetachedPricingVersion(t *testing.T) {
+	groupID := int64(30)
+	oldUpdatedAt := time.Unix(1_800_000_000, 100)
+	newUpdatedAt := oldUpdatedAt.Add(time.Second)
+	newPrice := 0.25
+	currentGroup := &Group{
+		ID:        groupID,
+		Platform:  PlatformOpenAI,
+		Status:    StatusActive,
+		Hydrated:  true,
+		UpdatedAt: newUpdatedAt,
+		ModelPricing: []ChannelModelPricing{{
+			Models:          []string{"gpt-5.6"},
+			BillingMode:     BillingModePerRequest,
+			PerRequestPrice: &newPrice,
+		}},
+	}
+	repo := &mockGroupRepoForGateway{groups: map[int64]*Group{groupID: currentGroup}}
+	svc := NewAPIKeyService(nil, nil, repo, nil, nil, nil, &config.Config{})
+	snapshot := &APIKeyAuthSnapshot{
+		Version:  apiKeyAuthSnapshotVersion,
+		APIKeyID: 1,
+		UserID:   2,
+		GroupID:  &groupID,
+		Status:   StatusActive,
+		User:     APIKeyAuthUserSnapshot{ID: 2, Status: StatusActive},
+		Group: &APIKeyAuthGroupSnapshot{
+			ID:                     groupID,
+			Platform:               PlatformOpenAI,
+			Status:                 StatusActive,
+			HasDetachedPricing:     true,
+			DetachedPricingVersion: oldUpdatedAt.UnixNano(),
+		},
+	}
+	apiKey, used, err := svc.applyAuthCacheEntry(context.Background(), "key-stale", &APIKeyAuthCacheEntry{Snapshot: snapshot})
+	require.NoError(t, err)
+	require.False(t, used, "a snapshot from before the group update must be reloaded")
+	require.Nil(t, apiKey)
+	require.Equal(t, 1, repo.getByIDLiteCalls)
+}
+
+func TestAPIKeyAuthSnapshotWithoutDetachedPricingHydratesOncePerGroupVersion(t *testing.T) {
+	groupID := int64(31)
+	group := &Group{
+		ID:        groupID,
+		Platform:  PlatformOpenAI,
+		Status:    StatusActive,
+		Hydrated:  true,
+		UpdatedAt: time.Unix(1_800_000_000, 200),
+	}
+	repo := &mockGroupRepoForGateway{groups: map[int64]*Group{groupID: group}}
+	svc := NewAPIKeyService(nil, nil, repo, nil, nil, nil, &config.Config{})
+	apiKey := &APIKey{ID: 1, UserID: 2, GroupID: &groupID, Status: StatusActive, User: &User{ID: 2, Status: StatusActive}, Group: group}
+	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.NotNil(t, snapshot.Group)
+	require.True(t, snapshot.Group.HasDetachedPricing)
+	require.Equal(t, 0, repo.getByIDLiteCalls)
+
+	got, used, err := svc.applyAuthCacheEntry(context.Background(), "key-no-pricing", &APIKeyAuthCacheEntry{Snapshot: snapshot})
+	require.NoError(t, err)
+	require.True(t, used)
+	require.NotNil(t, got)
+	require.Equal(t, 1, repo.getByIDLiteCalls)
 }

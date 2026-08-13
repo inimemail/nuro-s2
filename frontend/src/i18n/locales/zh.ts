@@ -3850,10 +3850,10 @@ export default {
           '开启后会在流开始时先发送最短 SSE 注释，让下游更早收到响应体；不伪造 token，但上游早期失败时可能无法无感切换账号。',
         oauthChatGPTSafeTokenPlaceholder: 'OAuth/ChatGPT 下游首 Token 安全占位',
         oauthChatGPTSafeTokenPlaceholderDesc:
-          '开启后会在上游 response.created 后注入空文本 delta，让原版 sub2api 等下游面板更早记录首 Token；不产生可见文本，但上游早期失败时可能无法无感切换账号。',
+          '开启后会在上游 response.created 后注入非内容传输进度 delta，让兼容的下游面板更早记录首 Token；不会进入回答文本、思考、工具调用或计费，但上游早期失败时可能无法无感切换账号。',
         oauthChatGPTFirstTokenTimeoutPlaceholder: 'OAuth/ChatGPT 首 Token 超时补帧',
         oauthChatGPTFirstTokenTimeoutPlaceholderDesc:
-          '超时注入空补帧，让下游更早记录首 Token；早期失败和切号兼容性会变差。',
+          '超时后注入非内容传输进度 delta，让兼容的下游面板更早记录首 Token；不会进入回答文本、思考、工具调用或计费，早期失败和切号兼容性会变差。',
         apiKeyPreambleFlush: 'APIKey 首包提前透传',
         apiKeyPreambleFlushDesc:
           '适合 APIKey 接入的上游或中转首包偏慢时开启。会提前向下游透传 response.created / response.in_progress；上游早期失败时可能无法无感切换账号。',
@@ -3862,10 +3862,10 @@ export default {
           '开启后会在流开始时先发送最短 SSE 注释，让下游更早收到响应体；不伪造 token，但上游早期失败时可能无法无感切换账号。',
         apiKeySafeTokenPlaceholder: 'APIKey 下游首 Token 安全占位',
         apiKeySafeTokenPlaceholderDesc:
-          '开启后会在上游 response.created 后注入空文本 delta 或空 chat chunk，让原版 sub2api 等下游面板更早记录首 Token；不产生可见文本，但上游早期失败时可能无法无感切换账号。',
+          '开启后会在上游 response.created 后注入非内容传输进度 delta 或空 chat chunk，让兼容的下游面板更早记录首 Token；不会进入回答文本、思考、工具调用或计费，但上游早期失败时可能无法无感切换账号。',
         apiKeyFirstTokenTimeoutPlaceholder: 'APIKey 首 Token 超时补帧',
         apiKeyFirstTokenTimeoutPlaceholderDesc:
-          '超时注入空补帧，让下游更早记录首 Token；早期失败和切号兼容性会变差。',
+          '超时后注入非内容传输进度 delta 或空 chat chunk，让兼容的下游面板更早记录首 Token；不会进入回答文本、思考、工具调用或计费，早期失败和切号兼容性会变差。',
         firstTokenTimeoutPlaceholderMs: '补帧阈值',
         firstTokenTimeoutPlaceholderMsHint: '1-3000 ms，默认 1000 ms。',
         firstTokenTimeoutPlaceholderGuard: '真实首 Token 保护',

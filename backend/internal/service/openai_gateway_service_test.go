@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/cespare/xxhash/v2"
@@ -1761,7 +1763,7 @@ func TestOpenAIStreamingPreambleFlushDoesNotCountCreatedAsFirstToken(t *testing.
 	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
 }
 
-func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesEmptyDeltaAfterCreated(t *testing.T) {
+func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesTransportProgressAfterCreated(t *testing.T) {
 	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
@@ -1814,20 +1816,20 @@ func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesEmptyDeltaAfterCreated(t 
 	require.GreaterOrEqual(t, *result.firstTokenMs, 40)
 	body := rec.Body.String()
 	require.Contains(t, body, `"type":"response.created"`)
-	require.Contains(t, body, `"type":"response.output_text.delta","delta":""`)
+	require.Contains(t, body, `"type":"response.transport_progress.delta","delta":"in_progress"`)
 	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
-	require.Equal(t, 1, strings.Count(body, `"type":"response.output_text.delta","delta":""`))
+	require.Equal(t, 1, strings.Count(body, `"type":"response.transport_progress.delta","delta":"in_progress"`))
 	require.Less(t,
 		strings.Index(body, `"type":"response.created"`),
-		strings.Index(body, `"type":"response.output_text.delta","delta":""`),
+		strings.Index(body, `"type":"response.transport_progress.delta","delta":"in_progress"`),
 	)
 	require.Less(t,
-		strings.Index(body, `"type":"response.output_text.delta","delta":""`),
+		strings.Index(body, `"type":"response.transport_progress.delta","delta":"in_progress"`),
 		strings.Index(body, `"type":"response.output_text.delta","delta":"ok"`),
 	)
 }
 
-func TestOpenAIStreamingSafeTokenPlaceholderDisabledDoesNotInjectEmptyDelta(t *testing.T) {
+func TestOpenAIStreamingSafeTokenPlaceholderDisabledDoesNotInjectCompatibilityDelta(t *testing.T) {
 	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
@@ -1869,6 +1871,7 @@ func TestOpenAIStreamingSafeTokenPlaceholderDisabledDoesNotInjectEmptyDelta(t *t
 	body := rec.Body.String()
 	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
 	require.NotContains(t, body, `"type":"response.output_text.delta","delta":""`)
+	require.NotContains(t, body, `"type":"response.transport_progress.delta"`)
 }
 
 func TestOpenAIStreamingFirstTokenTimeoutPlaceholderDoesNotSetFirstToken(t *testing.T) {
@@ -1924,7 +1927,7 @@ func TestOpenAIStreamingFirstTokenTimeoutPlaceholderDoesNotSetFirstToken(t *test
 	require.Error(t, err)
 	require.NotNil(t, result)
 	require.Nil(t, result.firstTokenMs)
-	require.Contains(t, rec.Body.String(), `"type":"response.output_text.delta","delta":""`)
+	require.Contains(t, rec.Body.String(), `"type":"response.transport_progress.delta","delta":"in_progress"`)
 }
 
 func TestOpenAIRequestFirstTokenTimeoutPlaceholderWritesBeforeUpstreamResponse(t *testing.T) {
@@ -1967,7 +1970,7 @@ func TestOpenAIRequestFirstTokenTimeoutPlaceholderWritesBeforeUpstreamResponse(t
 	require.NotNil(t, resp)
 	require.True(t, state.Sent)
 	require.GreaterOrEqual(t, elapsed, 100*time.Millisecond)
-	require.Contains(t, rec.Body.String(), `"type":"response.output_text.delta","delta":""`)
+	require.Contains(t, rec.Body.String(), `"type":"response.transport_progress.delta","delta":"in_progress"`)
 	require.True(t, IsResponseCommitted(c))
 }
 
@@ -1994,8 +1997,41 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderDisabledForImagePoolAccount(t *
 func TestOpenAIStreamDataStartsRealOutput(t *testing.T) {
 	require.False(t, openAIStreamDataStartsRealOutput(`{"type":"response.completed"}`, "response.completed"))
 	require.False(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_text.delta","delta":""}`, "response.output_text.delta"))
+	require.False(t, openAIStreamDataStartsRealOutput(`{"type":"response.transport_progress.delta","delta":"in_progress"}`, "response.transport_progress.delta"))
 	require.True(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_text.delta","delta":"hello"}`, "response.output_text.delta"))
 	require.True(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_item.added","item":{"type":"function_call"}}`, "response.output_item.added"))
+}
+
+func TestOpenAIResponsesSafeTokenPlaceholderTriggersDownstreamTTFTWithoutContentPollution(t *testing.T) {
+	frame := openAIResponsesSafeTokenPlaceholderFrame("resp_compat")
+	payload, ok := extractOpenAISSEDataLine(strings.TrimSpace(frame))
+	require.True(t, ok)
+	require.True(t, gjson.Valid(payload))
+
+	eventType := gjson.Get(payload, "type").String()
+	delta := gjson.Get(payload, "delta")
+	compatibleDownstreamStartsFirstToken := strings.HasSuffix(eventType, ".delta") &&
+		delta.Exists() && delta.String() != ""
+	require.True(t, compatibleDownstreamStartsFirstToken)
+	require.False(t, openAIStreamDataStartsRealOutput(payload, eventType))
+	require.Empty(t, gjson.Get(payload, "item_id").String())
+	require.False(t, gjson.Get(payload, "output_index").Exists())
+	require.False(t, gjson.Get(payload, "content_index").Exists())
+	require.False(t, gjson.Get(payload, "usage").Exists())
+
+	var event apicompat.ResponsesStreamEvent
+	require.NoError(t, json.Unmarshal([]byte(payload), &event))
+	state := apicompat.NewResponsesEventToChatState()
+	require.Empty(t, apicompat.ResponsesEventToChatChunks(&event, state))
+
+	acc := apicompat.NewBufferedResponseAccumulator()
+	acc.ProcessEvent(&event)
+	require.False(t, acc.HasContent())
+	require.Empty(t, acc.BuildOutput())
+
+	output, rebuilt := reconstructResponseOutputFromSSE(frame)
+	require.False(t, rebuilt)
+	require.Nil(t, output)
 }
 
 func TestOpenAICommittedFirstTokenTimeoutPlaceholderRecordsPoolSoftCooldown(t *testing.T) {
@@ -2550,7 +2586,7 @@ func TestOpenAIStreamingPassthroughPreambleFlushDoesNotCountCreatedAsFirstToken(
 	require.Contains(t, rec.Body.String(), `"type":"response.created"`)
 }
 
-func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesEmptyDeltaAfterCreated(t *testing.T) {
+func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesTransportProgressAfterCreated(t *testing.T) {
 	setGinTestMode()
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
@@ -2601,15 +2637,15 @@ func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesEmptyDeltaAfte
 	require.GreaterOrEqual(t, *result.firstTokenMs, 40)
 	body := rec.Body.String()
 	require.Contains(t, body, `"type":"response.created"`)
-	require.Contains(t, body, `"type":"response.output_text.delta","delta":""`)
+	require.Contains(t, body, `"type":"response.transport_progress.delta","delta":"in_progress"`)
 	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
-	require.Equal(t, 1, strings.Count(body, `"type":"response.output_text.delta","delta":""`))
+	require.Equal(t, 1, strings.Count(body, `"type":"response.transport_progress.delta","delta":"in_progress"`))
 	require.Less(t,
 		strings.Index(body, `"type":"response.created"`),
-		strings.Index(body, `"type":"response.output_text.delta","delta":""`),
+		strings.Index(body, `"type":"response.transport_progress.delta","delta":"in_progress"`),
 	)
 	require.Less(t,
-		strings.Index(body, `"type":"response.output_text.delta","delta":""`),
+		strings.Index(body, `"type":"response.transport_progress.delta","delta":"in_progress"`),
 		strings.Index(body, `"type":"response.output_text.delta","delta":"ok"`),
 	)
 }
@@ -2665,7 +2701,7 @@ func TestOpenAIStreamingPassthroughFirstTokenTimeoutPlaceholderDoesNotSetFirstTo
 	require.Error(t, err)
 	require.NotNil(t, result)
 	require.Nil(t, result.firstTokenMs)
-	require.Contains(t, rec.Body.String(), `"type":"response.output_text.delta","delta":""`)
+	require.Contains(t, rec.Body.String(), `"type":"response.transport_progress.delta","delta":"in_progress"`)
 }
 
 func TestOpenAIStreamingPassthroughResponseDoneWithoutDoneMarkerStillSucceeds(t *testing.T) {

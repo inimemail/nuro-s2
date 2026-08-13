@@ -29,6 +29,26 @@ func promptCacheCreationOptimizationAccount(accountType string, enabled bool, mo
 	return &Account{Platform: PlatformOpenAI, Type: accountType, Credentials: credentials}
 }
 
+func TestOpenAICodexRoutingHintEligibilitySkipsDisabledAndAPIKeyBodies(t *testing.T) {
+	oauth := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	apiKey := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	strongIsolation := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"upstream_strong_isolation_enabled": true,
+		},
+	}
+	require.False(t, openAICodexRoutingHintEligible(oauth, false))
+	require.False(t, openAICodexRoutingHintEligible(apiKey, true))
+	require.False(t, openAICodexRoutingHintEligible(strongIsolation, true))
+	require.True(t, openAICodexRoutingHintEligible(oauth, true))
+
+	headers := http.Header{openAICodexRoutingHintHeader: []string{"stale"}}
+	setOpenAICodexRoutingHintFromBody(headers, oauth, bytes.Repeat([]byte("not-json"), 1024), false)
+	require.Empty(t, headers.Get(openAICodexRoutingHintHeader))
+}
+
 func TestOpenAIPromptCacheCreationOptimization_DisabledIsByteExactNoOp(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.6-sol","prompt_cache_retention":"24h","input":[{"role":"developer","content":"stable"}]}`)
 	account := promptCacheCreationOptimizationAccount(AccountTypeOAuth, false, "")

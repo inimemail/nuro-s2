@@ -28,6 +28,7 @@ func (s *APIKeyService) InvalidateAuthCacheByGroupID(ctx context.Context, groupI
 	if groupID <= 0 {
 		return
 	}
+	s.authGroupPricingCache.Delete(groupID)
 	keys, err := s.apiKeyRepo.ListKeysByGroupID(ctx, groupID)
 	if err != nil {
 		return

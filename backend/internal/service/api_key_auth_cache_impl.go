@@ -8,13 +8,22 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"strconv"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 19 // v19: include group model pricing
+const apiKeyAuthSnapshotVersion = 20 // v20: detach large group pricing payloads from per-key snapshots
+
+var errAPIKeyAuthGroupPricingVersionChanged = errors.New("API key auth group pricing version changed")
+
+type apiKeyAuthGroupPricingCacheEntry struct {
+	version          int64
+	videoModelPrices map[string]map[string]float64
+	modelPricing     []ChannelModelPricing
+}
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -307,7 +316,7 @@ func (s *APIKeyService) loadAuthCacheEntry(ctx context.Context, key, cacheKey st
 	return entry, nil
 }
 
-func (s *APIKeyService) applyAuthCacheEntry(key string, entry *APIKeyAuthCacheEntry) (*APIKey, bool, error) {
+func (s *APIKeyService) applyAuthCacheEntry(ctx context.Context, key string, entry *APIKeyAuthCacheEntry) (*APIKey, bool, error) {
 	if entry == nil {
 		return nil, false, nil
 	}
@@ -320,7 +329,98 @@ func (s *APIKeyService) applyAuthCacheEntry(key string, entry *APIKeyAuthCacheEn
 	if entry.Snapshot.Version != apiKeyAuthSnapshotVersion {
 		return nil, false, nil
 	}
-	return s.snapshotToAPIKey(key, entry.Snapshot), true, nil
+	apiKey := s.snapshotToAPIKey(key, entry.Snapshot)
+	if err := s.hydrateDetachedAuthGroupPricing(ctx, apiKey, entry.Snapshot.Group); err != nil {
+		if errors.Is(err, errAPIKeyAuthGroupPricingVersionChanged) {
+			return nil, false, nil
+		}
+		return nil, true, err
+	}
+	return apiKey, true, nil
+}
+
+func apiKeyAuthGroupPricingVersion(group *Group) int64 {
+	if group == nil || group.UpdatedAt.IsZero() {
+		return 0
+	}
+	return group.UpdatedAt.UnixNano()
+}
+
+func apiKeyAuthGroupHasDetachedPricing(group *Group) bool {
+	return group != nil && (len(group.VideoModelPrices) > 0 || len(group.ModelPricing) > 0)
+}
+
+func cloneAPIKeyAuthGroupPricing(group *Group) apiKeyAuthGroupPricingCacheEntry {
+	if group == nil {
+		return apiKeyAuthGroupPricingCacheEntry{}
+	}
+	return apiKeyAuthGroupPricingCacheEntry{
+		version:          apiKeyAuthGroupPricingVersion(group),
+		videoModelPrices: cloneGroupVideoModelPrices(group.VideoModelPrices),
+		modelPricing:     cloneChannelModelPricingList(group.ModelPricing),
+	}
+}
+
+func applyAPIKeyAuthGroupPricing(group *Group, pricing apiKeyAuthGroupPricingCacheEntry) {
+	if group == nil {
+		return
+	}
+	// Cached pricing is immutable after publication. Share it across API keys so
+	// authentication does not deep-copy a potentially large table per request.
+	group.VideoModelPrices = pricing.videoModelPrices
+	group.ModelPricing = pricing.modelPricing
+}
+
+func (s *APIKeyService) cacheAPIKeyAuthGroupPricing(group *Group) {
+	if s == nil || group == nil || group.ID <= 0 || !apiKeyAuthGroupHasDetachedPricing(group) {
+		return
+	}
+	s.authGroupPricingCache.Store(group.ID, cloneAPIKeyAuthGroupPricing(group))
+}
+
+func (s *APIKeyService) hydrateDetachedAuthGroupPricing(ctx context.Context, apiKey *APIKey, snapshot *APIKeyAuthGroupSnapshot) error {
+	if s == nil || apiKey == nil || apiKey.Group == nil || snapshot == nil || !snapshot.HasDetachedPricing {
+		return nil
+	}
+	if cached, ok := s.authGroupPricingCache.Load(snapshot.ID); ok {
+		if pricing, valid := cached.(apiKeyAuthGroupPricingCacheEntry); valid && pricing.version == snapshot.DetachedPricingVersion {
+			applyAPIKeyAuthGroupPricing(apiKey.Group, pricing)
+			return nil
+		}
+	}
+	if s.groupRepo == nil {
+		return errors.New("group repository is unavailable for detached auth pricing")
+	}
+	cacheKey := strconv.FormatInt(snapshot.ID, 10) + ":" + strconv.FormatInt(snapshot.DetachedPricingVersion, 10)
+	value, err, _ := s.authGroupPricingSF.Do(cacheKey, func() (any, error) {
+		if cached, ok := s.authGroupPricingCache.Load(snapshot.ID); ok {
+			if pricing, valid := cached.(apiKeyAuthGroupPricingCacheEntry); valid && pricing.version == snapshot.DetachedPricingVersion {
+				return pricing, nil
+			}
+		}
+		// Authentication only needs the group's detached pricing payload here.
+		// Avoid GetByID because it also loads account statistics that are unrelated
+		// to request authentication and add extra queries on a cold group cache.
+		group, loadErr := s.groupRepo.GetByIDLite(ctx, snapshot.ID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		pricing := cloneAPIKeyAuthGroupPricing(group)
+		if pricing.version != snapshot.DetachedPricingVersion {
+			return nil, errAPIKeyAuthGroupPricingVersionChanged
+		}
+		s.authGroupPricingCache.Store(snapshot.ID, pricing)
+		return pricing, nil
+	})
+	if err != nil {
+		return fmt.Errorf("hydrate detached auth group pricing: %w", err)
+	}
+	pricing, ok := value.(apiKeyAuthGroupPricingCacheEntry)
+	if !ok {
+		return errors.New("hydrate detached auth group pricing: unexpected cache value")
+	}
+	applyAPIKeyAuthGroupPricing(apiKey.Group, pricing)
+	return nil
 }
 
 func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) *APIKeyAuthSnapshot {
@@ -369,44 +469,50 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 		// 查询失败或无 override 时留 nil，checkRPM 会回退到 DB 查询
 	}
 	if apiKey.Group != nil {
+		s.cacheAPIKeyAuthGroupPricing(apiKey.Group)
 		snapshot.Group = &APIKeyAuthGroupSnapshot{
-			ID:                                 apiKey.Group.ID,
-			Name:                               apiKey.Group.Name,
-			Platform:                           apiKey.Group.Platform,
-			IsExclusive:                        apiKey.Group.IsExclusive,
-			Status:                             apiKey.Group.Status,
-			SubscriptionType:                   apiKey.Group.SubscriptionType,
-			RateMultiplier:                     apiKey.Group.RateMultiplier,
-			UpstreamBillingGuardMaxMultiplier:  apiKey.Group.UpstreamBillingGuardMaxMultiplier,
-			PeakRateEnabled:                    apiKey.Group.PeakRateEnabled,
-			PeakStart:                          apiKey.Group.PeakStart,
-			PeakEnd:                            apiKey.Group.PeakEnd,
-			PeakRateMultiplier:                 apiKey.Group.PeakRateMultiplier,
-			DailyLimitUSD:                      apiKey.Group.DailyLimitUSD,
-			WeeklyLimitUSD:                     apiKey.Group.WeeklyLimitUSD,
-			MonthlyLimitUSD:                    apiKey.Group.MonthlyLimitUSD,
-			AllowImageGeneration:               apiKey.Group.AllowImageGeneration,
-			AllowBatchImageGeneration:          apiKey.Group.AllowBatchImageGeneration,
-			ImageRateIndependent:               apiKey.Group.ImageRateIndependent,
-			ImageRateMultiplier:                apiKey.Group.ImageRateMultiplier,
-			ImagePrice1K:                       apiKey.Group.ImagePrice1K,
-			ImagePrice2K:                       apiKey.Group.ImagePrice2K,
-			ImagePrice4K:                       apiKey.Group.ImagePrice4K,
-			BatchImageDiscountMultiplier:       apiKey.Group.BatchImageDiscountMultiplier,
-			BatchImageHoldMultiplier:           apiKey.Group.BatchImageHoldMultiplier,
-			VideoRateIndependent:               apiKey.Group.VideoRateIndependent,
-			VideoRateMultiplier:                apiKey.Group.VideoRateMultiplier,
-			VideoPrice480P:                     apiKey.Group.VideoPrice480P,
-			VideoPrice720P:                     apiKey.Group.VideoPrice720P,
-			VideoPrice1080P:                    apiKey.Group.VideoPrice1080P,
-			VideoModelPrices:                   cloneGroupVideoModelPrices(apiKey.Group.VideoModelPrices),
-			WebSearchPricePerCall:              apiKey.Group.WebSearchPricePerCall,
-			SearchPricePer1K:                   apiKey.Group.SearchPricePer1K,
-			AudioRealtimePricePerMin:           apiKey.Group.AudioRealtimePricePerMin,
-			AudioTTSPricePerMillionChars:       apiKey.Group.AudioTTSPricePerMillionChars,
-			AudioSTTPricePerHour:               apiKey.Group.AudioSTTPricePerHour,
-			LongContextPricingEnabled:          apiKey.Group.LongContextPricingEnabled,
-			ModelPricing:                       cloneChannelModelPricingList(apiKey.Group.ModelPricing),
+			ID:                                apiKey.Group.ID,
+			Name:                              apiKey.Group.Name,
+			Platform:                          apiKey.Group.Platform,
+			IsExclusive:                       apiKey.Group.IsExclusive,
+			Status:                            apiKey.Group.Status,
+			SubscriptionType:                  apiKey.Group.SubscriptionType,
+			RateMultiplier:                    apiKey.Group.RateMultiplier,
+			UpstreamBillingGuardMaxMultiplier: apiKey.Group.UpstreamBillingGuardMaxMultiplier,
+			PeakRateEnabled:                   apiKey.Group.PeakRateEnabled,
+			PeakStart:                         apiKey.Group.PeakStart,
+			PeakEnd:                           apiKey.Group.PeakEnd,
+			PeakRateMultiplier:                apiKey.Group.PeakRateMultiplier,
+			DailyLimitUSD:                     apiKey.Group.DailyLimitUSD,
+			WeeklyLimitUSD:                    apiKey.Group.WeeklyLimitUSD,
+			MonthlyLimitUSD:                   apiKey.Group.MonthlyLimitUSD,
+			AllowImageGeneration:              apiKey.Group.AllowImageGeneration,
+			AllowBatchImageGeneration:         apiKey.Group.AllowBatchImageGeneration,
+			ImageRateIndependent:              apiKey.Group.ImageRateIndependent,
+			ImageRateMultiplier:               apiKey.Group.ImageRateMultiplier,
+			ImagePrice1K:                      apiKey.Group.ImagePrice1K,
+			ImagePrice2K:                      apiKey.Group.ImagePrice2K,
+			ImagePrice4K:                      apiKey.Group.ImagePrice4K,
+			BatchImageDiscountMultiplier:      apiKey.Group.BatchImageDiscountMultiplier,
+			BatchImageHoldMultiplier:          apiKey.Group.BatchImageHoldMultiplier,
+			VideoRateIndependent:              apiKey.Group.VideoRateIndependent,
+			VideoRateMultiplier:               apiKey.Group.VideoRateMultiplier,
+			VideoPrice480P:                    apiKey.Group.VideoPrice480P,
+			VideoPrice720P:                    apiKey.Group.VideoPrice720P,
+			VideoPrice1080P:                   apiKey.Group.VideoPrice1080P,
+			WebSearchPricePerCall:             apiKey.Group.WebSearchPricePerCall,
+			SearchPricePer1K:                  apiKey.Group.SearchPricePer1K,
+			AudioRealtimePricePerMin:          apiKey.Group.AudioRealtimePricePerMin,
+			AudioTTSPricePerMillionChars:      apiKey.Group.AudioTTSPricePerMillionChars,
+			AudioSTTPricePerHour:              apiKey.Group.AudioSTTPricePerHour,
+			LongContextPricingEnabled:         apiKey.Group.LongContextPricingEnabled,
+			// The auth query intentionally omits the large pricing columns, so the
+			// compact snapshot cannot determine whether pricing is configured.
+			// Use the group version as the hydration marker to preserve billing
+			// correctness; the per-process group cache and singleflight collapse
+			// the lookup to one read per group/version.
+			HasDetachedPricing:                 apiKeyAuthGroupPricingVersion(apiKey.Group) > 0,
+			DetachedPricingVersion:             apiKeyAuthGroupPricingVersion(apiKey.Group),
 			ClaudeCodeOnly:                     apiKey.Group.ClaudeCodeOnly,
 			FallbackGroupID:                    apiKey.Group.FallbackGroupID,
 			FallbackGroupIDOnInvalidRequest:    apiKey.Group.FallbackGroupIDOnInvalidRequest,
@@ -499,14 +605,12 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			VideoPrice480P:                     snapshot.Group.VideoPrice480P,
 			VideoPrice720P:                     snapshot.Group.VideoPrice720P,
 			VideoPrice1080P:                    snapshot.Group.VideoPrice1080P,
-			VideoModelPrices:                   cloneGroupVideoModelPrices(snapshot.Group.VideoModelPrices),
 			WebSearchPricePerCall:              snapshot.Group.WebSearchPricePerCall,
 			SearchPricePer1K:                   snapshot.Group.SearchPricePer1K,
 			AudioRealtimePricePerMin:           snapshot.Group.AudioRealtimePricePerMin,
 			AudioTTSPricePerMillionChars:       snapshot.Group.AudioTTSPricePerMillionChars,
 			AudioSTTPricePerHour:               snapshot.Group.AudioSTTPricePerHour,
 			LongContextPricingEnabled:          snapshot.Group.LongContextPricingEnabled,
-			ModelPricing:                       cloneChannelModelPricingList(snapshot.Group.ModelPricing),
 			ClaudeCodeOnly:                     snapshot.Group.ClaudeCodeOnly,
 			FallbackGroupID:                    snapshot.Group.FallbackGroupID,
 			FallbackGroupIDOnInvalidRequest:    snapshot.Group.FallbackGroupIDOnInvalidRequest,

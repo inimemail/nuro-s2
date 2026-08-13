@@ -246,6 +246,8 @@ type APIKeyService struct {
 	authLookupTotal           atomic.Uint64
 	authLookupRejected        atomic.Uint64
 	authLookupInFlight        atomic.Int64
+	authGroupPricingCache     sync.Map // groupID -> apiKeyAuthGroupPricingCacheEntry
+	authGroupPricingSF        singleflight.Group
 	invalidAuthAbuse          *invalidAuthAbuseLimiter
 	authInvalidationStart     sync.Once
 	authInvalidationStop      sync.Once
@@ -658,7 +660,7 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 	cacheKey := s.authCacheKey(key)
 
 	if entry, ok := s.getAuthCacheEntry(ctx, cacheKey); ok {
-		if apiKey, used, err := s.applyAuthCacheEntry(key, entry); used {
+		if apiKey, used, err := s.applyAuthCacheEntry(ctx, key, entry); used {
 			if err != nil {
 				return nil, fmt.Errorf("get api key: %w", err)
 			}
@@ -675,7 +677,7 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 			return nil, err
 		}
 		entry, _ := value.(*APIKeyAuthCacheEntry)
-		if apiKey, used, err := s.applyAuthCacheEntry(key, entry); used {
+		if apiKey, used, err := s.applyAuthCacheEntry(ctx, key, entry); used {
 			if err != nil {
 				return nil, fmt.Errorf("get api key: %w", err)
 			}
@@ -687,7 +689,7 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 		if err != nil {
 			return nil, err
 		}
-		if apiKey, used, err := s.applyAuthCacheEntry(key, entry); used {
+		if apiKey, used, err := s.applyAuthCacheEntry(ctx, key, entry); used {
 			if err != nil {
 				return nil, fmt.Errorf("get api key: %w", err)
 			}
@@ -701,6 +703,13 @@ func (s *APIKeyService) GetByKey(ctx context.Context, key string) (*APIKey, erro
 		return nil, fmt.Errorf("get api key: %w", err)
 	}
 	apiKey.Key = key
+	snapshot := s.snapshotFromAPIKey(ctx, apiKey)
+	if snapshot == nil {
+		return nil, fmt.Errorf("get api key: %w", ErrAPIKeyNotFound)
+	}
+	if err := s.hydrateDetachedAuthGroupPricing(ctx, apiKey, snapshot.Group); err != nil {
+		return nil, fmt.Errorf("get api key: %w", err)
+	}
 	s.compileAPIKeyIPRules(apiKey)
 	return apiKey, nil
 }

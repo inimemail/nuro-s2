@@ -36,7 +36,7 @@ func RegisterGatewayRoutes(
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
 	compositeTarget := func(c *gin.Context) {
 		apiKey, ok := middleware.GetAPIKeyFromContext(c)
-		if ok && apiKey != nil && apiKey.Group != nil && apiKey.Group.Platform == service.PlatformComposite && c.Request != nil {
+		if ok && isCompositeGatewayAPIKey(apiKey) && c.Request != nil {
 			if c.Request.Method == http.MethodGet &&
 				strings.EqualFold(strings.TrimSpace(c.GetHeader("Upgrade")), "websocket") &&
 				strings.Contains(c.Request.URL.Path, "responses") {
@@ -523,6 +523,10 @@ func RegisterGatewayRoutes(
 		antigravityV1Beta.POST("/models/*modelAction", h.Gateway.GeminiV1BetaModels)
 	}
 
+}
+
+func isCompositeGatewayAPIKey(apiKey *service.APIKey) bool {
+	return apiKey != nil && apiKey.Group != nil && apiKey.Group.Platform == service.PlatformComposite
 }
 
 // getGroupPlatform extracts the group platform from the API Key stored in context.

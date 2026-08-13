@@ -6035,9 +6035,9 @@ func openAIResponsesSafeTokenPlaceholderFrame(responseID string) string {
 	if responseID == "" {
 		responseID = "resp_placeholder"
 	}
-	return `data: {"type":"response.output_text.delta","delta":"","response_id":` +
+	return `data: {"type":"response.transport_progress.delta","delta":"in_progress","response_id":` +
 		strconv.Quote(responseID) +
-		`,"item_id":"msg_placeholder","output_index":0,"content_index":0}` + "\n\n"
+		`}` + "\n\n"
 }
 
 type openAIRequestFirstTokenPlaceholderDialect string

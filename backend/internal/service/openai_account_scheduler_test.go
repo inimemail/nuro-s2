@@ -4443,6 +4443,28 @@ func TestLegacySchedulerDiagnosticsAreBoundedAndDoNotAffectSelectionOrder(t *tes
 	require.Equal(t, snapshot.ExclusionsByReason, empty.ExclusionsByReason)
 }
 
+func TestLegacySchedulerDiagnosticsConcurrentAtomicCounters(t *testing.T) {
+	metrics := &openAIAccountSchedulerMetrics{}
+	const workers = 64
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			metrics.recordLegacyDiagnostics(OpenAIAccountScheduleRequest{LockedPriority: 3}, openAISelectionFilterStats{
+				reasons: map[string]int{"excluded": 1, "capability_mismatch": 2},
+			}, 5)
+		}()
+	}
+	wg.Wait()
+
+	snapshot := metrics.exclusions.snapshot()
+	require.Equal(t, int64(workers), snapshot["excluded"])
+	require.Equal(t, int64(workers*2), snapshot["capability_mismatch"])
+	require.Equal(t, int64(5), metrics.lastCandidateCount.Load())
+	require.Equal(t, int64(3), metrics.lastLockedPriority.Load())
+}
+
 func TestOpenAIGatewayService_SchedulerWrappersAndDefaults(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

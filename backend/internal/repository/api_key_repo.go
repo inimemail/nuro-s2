@@ -201,7 +201,6 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldAudioTtsPricePerMillionChars,
 				group.FieldAudioSttPricePerHour,
 				group.FieldLongContextPricingEnabled,
-				group.FieldModelPricing,
 				group.FieldClaudeCodeOnly,
 				group.FieldFallbackGroupID,
 				group.FieldFallbackGroupIDOnInvalidRequest,
@@ -220,6 +219,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldRpmLimit,
 				group.FieldMaxReasoningEffort,
 				group.FieldReasoningEffortMappings,
+				group.FieldUpdatedAt,
 			)
 		}).
 		Only(ctx)

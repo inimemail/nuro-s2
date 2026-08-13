@@ -1,12 +1,15 @@
 package service
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestAPIKeyService_RejectsV10AuthSnapshotWithoutModelsListConfig(t *testing.T) {
 	groupID := int64(9)
 	svc := &APIKeyService{}
 
-	apiKey, ok, err := svc.applyAuthCacheEntry("k-legacy-models-list", &APIKeyAuthCacheEntry{
+	apiKey, ok, err := svc.applyAuthCacheEntry(context.Background(), "k-legacy-models-list", &APIKeyAuthCacheEntry{
 		Snapshot: &APIKeyAuthSnapshot{
 			Version:  10,
 			APIKeyID: 1,

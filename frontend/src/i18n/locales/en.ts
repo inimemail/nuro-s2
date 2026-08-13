@@ -3703,10 +3703,10 @@ export default {
           'Sends the shortest SSE comment when the stream starts so downstream clients receive a response body earlier; it does not fake tokens, but early upstream failures may no longer switch accounts transparently.',
         oauthChatGPTSafeTokenPlaceholder: 'OAuth/ChatGPT downstream first-token safe placeholder',
         oauthChatGPTSafeTokenPlaceholderDesc:
-          'After upstream response.created, injects an empty text delta so original sub2api-like downstream dashboards can record first token earlier. It produces no visible text, but early upstream failures may no longer switch accounts transparently.',
+          'After upstream response.created, injects a non-content transport progress delta so compatible downstream dashboards can record first token earlier. It does not enter answer text, reasoning, tool calls, or billing, but early upstream failures may no longer switch accounts transparently.',
         oauthChatGPTFirstTokenTimeoutPlaceholder: 'OAuth/ChatGPT first-token timeout placeholder',
         oauthChatGPTFirstTokenTimeoutPlaceholderDesc:
-          'Injects an empty timeout placeholder so downstream records first token earlier; early failures and account switching compatibility may degrade.',
+          'After the timeout, injects a non-content transport progress delta so compatible downstream dashboards record first token earlier. It does not enter answer text, reasoning, tool calls, or billing; early failures and account switching compatibility may degrade.',
         apiKeyPreambleFlush: 'APIKey early first packet passthrough',
         apiKeyPreambleFlushDesc:
           'Useful when an APIKey upstream or relay has slow first packets. Forwards response.created / response.in_progress earlier; early upstream failures may no longer switch accounts transparently.',
@@ -3715,10 +3715,10 @@ export default {
           'Sends the shortest SSE comment when the stream starts so downstream clients receive a response body earlier; it does not fake tokens, but early upstream failures may no longer switch accounts transparently.',
         apiKeySafeTokenPlaceholder: 'APIKey downstream first-token safe placeholder',
         apiKeySafeTokenPlaceholderDesc:
-          'After upstream response.created, injects an empty text delta or empty chat chunk so original sub2api-like downstream dashboards can record first token earlier. It produces no visible text, but early upstream failures may no longer switch accounts transparently.',
+          'After upstream response.created, injects a non-content transport progress delta or empty chat chunk so compatible downstream dashboards can record first token earlier. It does not enter answer text, reasoning, tool calls, or billing, but early upstream failures may no longer switch accounts transparently.',
         apiKeyFirstTokenTimeoutPlaceholder: 'APIKey first-token timeout placeholder',
         apiKeyFirstTokenTimeoutPlaceholderDesc:
-          'Injects an empty timeout placeholder so downstream records first token earlier; early failures and account switching compatibility may degrade.',
+          'After the timeout, injects a non-content transport progress delta or empty chat chunk so compatible downstream dashboards record first token earlier. It does not enter answer text, reasoning, tool calls, or billing; early failures and account switching compatibility may degrade.',
         firstTokenTimeoutPlaceholderMs: 'Placeholder timeout',
         firstTokenTimeoutPlaceholderMsHint: '1-3000 ms, default 1000 ms.',
         firstTokenTimeoutPlaceholderGuard: 'Real first-token guard',

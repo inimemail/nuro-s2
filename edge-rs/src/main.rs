@@ -6266,7 +6266,7 @@ fn openai_responses_safe_token_placeholder_frame(response_id: Option<&str>) -> S
     let response_id_json =
         serde_json::to_string(response_id).unwrap_or_else(|_| "\"resp_placeholder\"".to_string());
     format!(
-        "data: {{\"type\":\"response.output_text.delta\",\"delta\":\"\",\"response_id\":{},\"item_id\":\"msg_placeholder\",\"output_index\":0,\"content_index\":0}}\n\n",
+        "data: {{\"type\":\"response.transport_progress.delta\",\"delta\":\"in_progress\",\"response_id\":{}}}\n\n",
         response_id_json
     )
 }
@@ -9300,13 +9300,15 @@ mod tests {
     }
 
     #[test]
-    fn safe_token_placeholder_frame_is_empty_output_delta() {
+    fn safe_token_placeholder_frame_is_non_content_transport_progress_delta() {
         let frame = openai_responses_safe_token_placeholder_frame(Some("resp_123"));
         assert!(frame.starts_with("data: "));
         assert!(frame.ends_with("\n\n"));
-        assert!(frame.contains("\"type\":\"response.output_text.delta\""));
-        assert!(frame.contains("\"delta\":\"\""));
+        assert!(frame.contains("\"type\":\"response.transport_progress.delta\""));
+        assert!(frame.contains("\"delta\":\"in_progress\""));
         assert!(frame.contains("\"response_id\":\"resp_123\""));
+        assert!(!frame.contains("output_text"));
+        assert!(!frame.contains("item_id"));
     }
 
     #[test]
@@ -10320,6 +10322,10 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         assert!(json_starts_client_output(&serde_json::json!({
             "type": "response.output_item.added"
         })));
+        assert!(json_starts_client_output(&serde_json::json!({
+            "type": "response.transport_progress.delta",
+            "delta": "in_progress"
+        })));
     }
 
     #[test]
@@ -10338,6 +10344,10 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         assert!(json_starts_real_output(&serde_json::json!({
             "type": "response.output_item.added",
             "item": { "type": "function_call" }
+        })));
+        assert!(!json_starts_real_output(&serde_json::json!({
+            "type": "response.transport_progress.delta",
+            "delta": "in_progress"
         })));
     }
 

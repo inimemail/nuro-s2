@@ -35,7 +35,15 @@ func setOpenAICodexRoutingHint(headers http.Header, account *Account, model, tie
 	headers.Set(openAICodexRoutingHintHeader, hint)
 }
 
+func openAICodexRoutingHintEligible(account *Account, enabled bool) bool {
+	return enabled && account != nil && account.IsOpenAIOAuth() && !account.IsOpenAIUpstreamStrongIsolationEnabled()
+}
+
 func setOpenAICodexRoutingHintFromBody(headers http.Header, account *Account, body []byte, enabled bool) {
+	if !openAICodexRoutingHintEligible(account, enabled) {
+		setOpenAICodexRoutingHint(headers, account, "", "", false)
+		return
+	}
 	fields := gjson.GetManyBytes(body, "model", "service_tier")
 	setOpenAICodexRoutingHint(headers, account, fields[0].String(), fields[1].String(), enabled)
 }

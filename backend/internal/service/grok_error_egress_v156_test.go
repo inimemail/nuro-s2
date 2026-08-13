@@ -112,8 +112,10 @@ func TestForwardGrokResponsesHTTPErrorDoesNotExposeUpstreamIdentity(t *testing.T
 
 	require.Error(t, err)
 	require.Nil(t, result)
-	require.Equal(t, http.StatusBadGateway, recorder.Code)
-	require.Equal(t, safeUpstreamErrorMessage, gjson.GetBytes(recorder.Body.Bytes(), "error.message").String())
+	// Since v175, deterministic upstream request errors keep status 400 while
+	// the response body and identity-bearing headers remain sanitized.
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Equal(t, openAIUpstreamClientErrorFallbackMessage, gjson.GetBytes(recorder.Body.Bytes(), "error.message").String())
 	require.NotContains(t, recorder.Body.String(), "private-provider")
 	require.NotContains(t, recorder.Body.String(), "DOCTYPE")
 	require.Empty(t, recorder.Header().Get("Location"))
