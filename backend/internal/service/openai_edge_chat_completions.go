@@ -965,13 +965,5 @@ func (s *OpenAIGatewayService) checkOpenAIEdgeLocalAccountPolicy(ctx context.Con
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 		return fmt.Errorf("local account policy denied: %s", strings.TrimSpace(restrictionResult.Reason))
 	}
-	// edge-rs keeps the protected legacy 3000ms limit. Larger API-key
-	// placeholder policies must use the Go relay so they are not silently lost.
-	if account != nil && account.IsOpenAIApiKey() {
-		model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
-		if s.openAIStreamFirstTokenTimeoutPlaceholderMs(account, model) > openAIFirstTokenTimeoutPlaceholderMaxMs {
-			return fmt.Errorf("API-key first-token timeout placeholder above %dms requires Go relay", openAIFirstTokenTimeoutPlaceholderMaxMs)
-		}
-	}
 	return nil
 }

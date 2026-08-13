@@ -222,3 +222,25 @@ func TestBulkUpdateAcceptsFilterTargetRequest(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Equal(t, float64(0), resp["code"])
 }
+
+func TestBulkUpdateAcceptsFirstTokenTimeoutStageRemoval(t *testing.T) {
+	adminSvc := newStubAdminService()
+	router := setupAccountMixedChannelRouter(adminSvc)
+
+	body, _ := json.Marshal(map[string]any{
+		"account_ids": []int64{1, 2},
+		"extra_remove_keys": []string{
+			"openai_apikey_first_token_timeout_placeholder_guard_max_ms",
+			"openai_apikey_first_token_timeout_placeholder_stages",
+		},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/bulk-update", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, float64(0), resp["code"])
+}

@@ -134,6 +134,120 @@ func TestAdminServiceCreateAccount_RejectsConflictingProbeFlags(t *testing.T) {
 	require.Nil(t, repo.createdAccount)
 }
 
+func TestAdminServiceCreateAccount_FirstTokenTimeoutRejectsUnsupportedTargets(t *testing.T) {
+	tests := []struct {
+		name  string
+		input *CreateAccountInput
+	}{
+		{name: "OAuth", input: &CreateAccountInput{Platform: PlatformOpenAI, Type: AccountTypeOAuth}},
+		{name: "other platform", input: &CreateAccountInput{Platform: PlatformAnthropic, Type: AccountTypeAPIKey}},
+		{name: "image pool", input: &CreateAccountInput{
+			Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Credentials: map[string]any{"pool_mode": true, "image_pool_mode": true},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.input.Extra = map[string]any{
+				openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+					map[string]any{"stage": 1, "placeholder_ms": 800, "guard_max_ms": 5000},
+				},
+			}
+			repo := &accountRepoStubForBulkUpdate{}
+			svc := &adminServiceImpl{accountRepo: repo}
+			created, err := svc.CreateAccount(context.Background(), tt.input)
+			require.Error(t, err)
+			require.Nil(t, created)
+			require.Nil(t, repo.createdAccount)
+		})
+	}
+}
+
+func TestAdminServiceCreateAccount_FirstTokenTimeoutAcceptsIndependentAPIKey(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+	created, err := svc.CreateAccount(context.Background(), &CreateAccountInput{
+		Name:        "openai-key",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "test-key"},
+		Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+				map[string]any{"stage": 1, "placeholder_ms": 800, "guard_max_ms": 5000},
+			},
+		},
+		SkipDefaultGroupBind: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.Len(t, created.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey], 1)
+}
+
+func TestAdminServiceUpdateAccount_FirstTokenTimeoutRejectsUnsupportedTarget(t *testing.T) {
+	parentID := int64(3)
+	tests := []struct {
+		name    string
+		account *Account
+	}{
+		{name: "OAuth", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth}},
+		{name: "other platform", account: &Account{ID: 7, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}},
+		{name: "image pool", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true, "image_pool_mode": true}}},
+		{name: "credential shadow", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, ParentAccountID: &parentID}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.account.Extra = map[string]any{
+				openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey: 800,
+			}
+			repo := &accountRepoStubForBulkUpdate{getByIDAccounts: map[int64]*Account{7: tt.account}}
+			svc := &adminServiceImpl{accountRepo: repo}
+			updated, err := svc.UpdateAccount(context.Background(), 7, &UpdateAccountInput{Extra: tt.account.Extra})
+			require.Error(t, err)
+			require.Nil(t, updated)
+			require.Empty(t, repo.updateCalls)
+		})
+	}
+}
+
+func TestAdminServiceUpdateAccount_FirstTokenTimeoutRejectsFinalImagePoolIdentity(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{getByIDAccounts: map[int64]*Account{
+		7: {ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "old"}},
+	}}
+	svc := &adminServiceImpl{accountRepo: repo}
+	updated, err := svc.UpdateAccount(context.Background(), 7, &UpdateAccountInput{
+		Credentials: map[string]any{"pool_mode": true, "image_pool_mode": true},
+		Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey: 800,
+		},
+	})
+	require.Error(t, err)
+	require.Nil(t, updated)
+	require.Empty(t, repo.updateCalls)
+}
+
+func TestAdminServiceUpdateAccountExtra_FirstTokenTimeoutRejectsUnsupportedTarget(t *testing.T) {
+	parentID := int64(3)
+	tests := []struct {
+		name    string
+		account *Account
+	}{
+		{name: "OAuth", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth}},
+		{name: "other platform", account: &Account{ID: 7, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}},
+		{name: "image pool", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true, "image_pool_mode": true}}},
+		{name: "credential shadow", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, ParentAccountID: &parentID}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &accountRepoStubForBulkUpdate{getByIDAccounts: map[int64]*Account{7: tt.account}}
+			svc := &adminServiceImpl{accountRepo: repo}
+			err := svc.UpdateAccountExtra(context.Background(), 7, map[string]any{
+				openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey: 800,
+			})
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestAdminServiceBulkUpdateAccounts_AcceptsLegacyProbeFlagInExtra(t *testing.T) {
 	repo := &accountRepoStubForBulkUpdate{
 		getByIDsAccounts: []*Account{{ID: 7, Platform: PlatformGemini, Type: AccountTypeAPIKey}},
@@ -194,8 +308,39 @@ func TestAdminServiceBulkUpdateAccounts_ForwardsExtraRemoveKeys(t *testing.T) {
 	}, repo.bulkUpdatePayload.ExtraRemoveKeys)
 }
 
-func TestAdminServiceBulkUpdateAccounts_FirstTokenTimeoutEditDropsStagedPolicy(t *testing.T) {
-	repo := &accountRepoStubForBulkUpdate{}
+func TestAdminServiceBulkUpdateAccounts_FirstTokenTimeoutStagesAreValidatedAndPreserved(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{{
+		ID:       7,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}}}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{7},
+		Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+				map[string]any{"stage": 1, "placeholder_ms": 800, "guard_max_ms": 5000},
+				map[string]any{"stage": 2, "placeholder_ms": 3000, "guard_max_ms": 10000},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.NotContains(t, repo.bulkUpdatePayload.ExtraRemoveKeys, openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey)
+	require.Equal(t, 800, repo.bulkUpdatePayload.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey])
+	require.Equal(t, 5000, repo.bulkUpdatePayload.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey])
+	require.Len(t, repo.bulkUpdatePayload.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey], 2)
+}
+
+func TestAdminServiceBulkUpdateAccounts_LegacyScalarFirstTokenTimeoutEditDropsStagedPolicy(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{{
+		ID:       7,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}}}
 	svc := &adminServiceImpl{accountRepo: repo}
 
 	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
@@ -209,6 +354,93 @@ func TestAdminServiceBulkUpdateAccounts_FirstTokenTimeoutEditDropsStagedPolicy(t
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Success)
 	require.Contains(t, repo.bulkUpdatePayload.ExtraRemoveKeys, openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey)
+}
+
+func TestAdminServiceBulkUpdateAccounts_FirstTokenTimeoutRemovalOnlyAllowsUnsupportedTargets(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{7},
+		ExtraRemoveKeys: []string{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.ElementsMatch(t, []string{
+		openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey,
+	}, repo.bulkUpdatePayload.ExtraRemoveKeys)
+}
+
+func TestAdminServiceBulkUpdateAccounts_LegacyScalarFirstTokenTimeoutRejectsShadow(t *testing.T) {
+	parentAccountID := int64(3)
+	repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{{
+		ID:              7,
+		Platform:        PlatformOpenAI,
+		Type:            AccountTypeAPIKey,
+		ParentAccountID: &parentAccountID,
+	}}}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{7},
+		Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:      800,
+		},
+	})
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Empty(t, repo.bulkUpdateCalls)
+}
+
+func TestAdminServiceBulkUpdateAccounts_FirstTokenTimeoutStagesRejectUnsupportedTargets(t *testing.T) {
+	parentAccountID := int64(3)
+	tests := []struct {
+		name    string
+		account *Account
+	}{
+		{name: "OAuth", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth}},
+		{name: "other platform", account: &Account{ID: 7, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}},
+		{name: "image pool", account: &Account{
+			ID:       7,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"pool_mode":       true,
+				"image_pool_mode": true,
+			},
+		}},
+		{name: "credential shadow", account: &Account{
+			ID:              7,
+			Platform:        PlatformOpenAI,
+			Type:            AccountTypeAPIKey,
+			ParentAccountID: &parentAccountID,
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{tt.account}}
+			svc := &adminServiceImpl{accountRepo: repo}
+
+			result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+				AccountIDs: []int64{7},
+				Extra: map[string]any{
+					openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+						map[string]any{"stage": 1, "placeholder_ms": 800, "guard_max_ms": 5000},
+					},
+				},
+			})
+
+			require.Error(t, err)
+			require.Nil(t, result)
+			require.Empty(t, repo.bulkUpdateCalls)
+		})
+	}
 }
 
 func TestAdminServiceBulkUpdateAccounts_SafeTokenEditKeepsStagedTimeoutPolicy(t *testing.T) {

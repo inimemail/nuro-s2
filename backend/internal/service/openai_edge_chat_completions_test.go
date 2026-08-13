@@ -163,9 +163,12 @@ func TestBuildRawChatCompletionsEdgePlanCarriesConfiguredFirstTokenPlaceholders(
 	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey] = []any{
 		map[string]any{"stage": 1, "placeholder_ms": 50000, "guard_max_ms": 200000},
 	}
-	_, err = svc.BuildRawChatCompletionsEdgePlan(context.Background(), c, account, []byte(`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`), "")
-	if err == nil || !strings.Contains(err.Error(), "requires Go relay") {
-		t.Fatalf("expected high timeout placeholder to require Go relay, got %v", err)
+	plan, err = svc.BuildRawChatCompletionsEdgePlan(context.Background(), c, account, []byte(`{"model":"gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`), "")
+	if err != nil {
+		t.Fatalf("build high staged raw chat edge plan: %v", err)
+	}
+	if got := plan.Plan.FirstTokenTimeoutPlaceholderMS; got != 50000 {
+		t.Fatalf("expected API-key timeout placeholder 50000ms to stay on edge, got %d", got)
 	}
 }
 

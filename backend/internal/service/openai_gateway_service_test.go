@@ -2002,6 +2002,126 @@ func TestOpenAIStreamDataStartsRealOutput(t *testing.T) {
 	require.True(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_item.added","item":{"type":"function_call"}}`, "response.output_item.added"))
 }
 
+func TestOpenAIStreamDataStartsDownstreamTTFT(t *testing.T) {
+	require.False(t, openAIStreamDataStartsDownstreamTTFT(`{"type":"response.output_item.added"}`))
+	require.False(t, openAIStreamDataStartsDownstreamTTFT(`{"type":"response.content_part.added"}`))
+	require.False(t, openAIStreamDataStartsDownstreamTTFT(`{"type":"response.output_text.delta","delta":""}`))
+	require.False(t, openAIStreamDataStartsDownstreamTTFT(`{"type":"response.output_text.delta","delta":"hello"`), "a truncated frame cannot satisfy the downstream JSON parser")
+	require.False(t, openAIStreamDataStartsDownstreamTTFT(`{"type":"response.output_text.delta","delta":"hello"}junk`), "trailing garbage cannot satisfy the downstream JSON parser")
+	require.False(t, openAIStreamDataStartsDownstreamTTFT(`{"delta":"hello"}`), "an SSE event control line cannot replace the JSON type required by the downstream panel")
+	require.True(t, openAIStreamDataStartsDownstreamTTFT(`{"type":"response.output_text.delta","delta":"hello"}`))
+	require.True(t, openAIStreamDataStartsDownstreamTTFT(`{"type":"response.transport_progress.delta","delta":"in_progress"}`))
+}
+
+func TestOpenAIResponsesTimeoutPlaceholderSurvivesStructuralEvents(t *testing.T) {
+	setGinTestMode()
+	structuralBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_structural","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		"",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","status":"in_progress","content":[]}}`,
+		"",
+		`data: {"type":"response.content_part.added","output_index":0,"content_index":0,"item_id":"msg_1","part":{"type":"output_text","text":""}}`,
+		"",
+	}, "\n") + "\n"
+	realOutputBody := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"msg_1","delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_structural","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	for _, tt := range []struct {
+		name    string
+		forward func(*OpenAIGatewayService, *gin.Context, *http.Response, *Account, time.Time) (*int, error)
+	}{
+		{
+			name: "converted responses relay",
+			forward: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account, started time.Time) (*int, error) {
+				result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, started, "gpt-5.4", "gpt-5.4")
+				if result == nil {
+					return nil, err
+				}
+				return result.firstTokenMs, err
+			},
+		},
+		{
+			name: "passthrough responses relay",
+			forward: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account, started time.Time) (*int, error) {
+				result, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, started, "gpt-5.4", "gpt-5.4")
+				if result == nil {
+					return nil, err
+				}
+				return result.firstTokenMs, err
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{
+					{data: structuralBody},
+					{delay: 60 * time.Millisecond, data: realOutputBody},
+				}},
+			}
+			account := &Account{
+				ID:       1,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeAPIKey,
+				Extra: map[string]any{
+					openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+					openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:           20,
+					openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
+				},
+			}
+
+			firstTokenMS, err := tt.forward(&OpenAIGatewayService{}, c, resp, account, time.Now())
+			require.NoError(t, err)
+			require.NotNil(t, firstTokenMS, "the protected local first-token metric must retain its structural-event behavior")
+			body := rec.Body.String()
+			placeholder := `"type":"response.transport_progress.delta","delta":"in_progress"`
+			realDelta := `"type":"response.output_text.delta"`
+			require.Equal(t, 1, strings.Count(body, placeholder))
+			require.Less(t, strings.Index(body, `"type":"response.content_part.added"`), strings.Index(body, placeholder))
+			require.Less(t, strings.Index(body, placeholder), strings.Index(body, realDelta))
+		})
+	}
+}
+
+func TestOpenAIResponsesRealDeltaCancelsTimeoutPlaceholder(t *testing.T) {
+	setGinTestMode()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_fast"}}`,
+			"",
+			`data: {"type":"response.output_text.delta","delta":"ok"}`,
+			"",
+			`data: {"type":"response.completed","response":{"id":"resp_fast","usage":{"input_tokens":1,"output_tokens":1}}}`,
+			"",
+		}, "\n"))),
+	}
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
+		openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:           200,
+		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
+	}}
+
+	result, err := (&OpenAIGatewayService{}).handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.4", "gpt-5.4")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotContains(t, rec.Body.String(), `"type":"response.transport_progress.delta"`)
+}
+
 func TestOpenAIResponsesSafeTokenPlaceholderTriggersDownstreamTTFTWithoutContentPollution(t *testing.T) {
 	frame := openAIResponsesSafeTokenPlaceholderFrame("resp_compat")
 	payload, ok := extractOpenAISSEDataLine(strings.TrimSpace(frame))

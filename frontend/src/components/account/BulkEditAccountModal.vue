@@ -1491,7 +1491,7 @@
                 v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled"
                 class="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
               >
-                {{ openaiAPIKeyFirstTokenTimeoutPlaceholderMs }} ms
+                {{ openaiAPIKeyFirstTokenTimeoutStageConfig.stages[0]?.placeholder_ms }} ms
               </span>
             </label>
             <button
@@ -1508,29 +1508,6 @@
               />
             </button>
           </div>
-          <div v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled" class="max-w-xs">
-            <div class="relative">
-              <input
-                v-model.number="openaiAPIKeyFirstTokenTimeoutPlaceholderMs"
-                type="number"
-                inputmode="numeric"
-                step="1"
-                :min="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS"
-                :max="OPENAI_APIKEY_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS"
-                class="input pr-12 font-mono"
-                aria-labelledby="bulk-edit-openai-apikey-first-token-timeout-placeholder-label"
-                data-testid="bulk-edit-openai-apikey-first-token-timeout-placeholder-ms"
-                @blur="
-                  openaiAPIKeyFirstTokenTimeoutPlaceholderMs =
-                    normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(openaiAPIKeyFirstTokenTimeoutPlaceholderMs)
-                "
-              />
-              <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-gray-400">
-                ms
-              </span>
-            </div>
-            <p class="input-hint">{{ t('admin.accounts.openai.firstTokenTimeoutStages.placeholderHint') }}</p>
-          </div>
           <div
             v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled"
             class="rounded-md border border-amber-200/80 bg-white/70 p-3 dark:border-amber-800/70 dark:bg-dark-900/40"
@@ -1542,7 +1519,7 @@
                   v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled"
                   class="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
                 >
-                  {{ openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs }} ms
+                  {{ openaiAPIKeyFirstTokenTimeoutStageConfig.stages[openaiAPIKeyFirstTokenTimeoutStageConfig.stages.length - 1]?.guard_max_ms }} ms
                 </span>
               </label>
               <button
@@ -1564,30 +1541,12 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderGuardDesc') }}
             </p>
-            <div v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled" class="mt-3 max-w-xs">
-              <div class="relative">
-                <input
-                  v-model.number="openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs"
-                  type="number"
-                  inputmode="numeric"
-                  step="1"
-                  :min="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS"
-                  class="input pr-12 font-mono"
-                  data-testid="bulk-edit-openai-apikey-first-token-timeout-placeholder-guard-max-ms"
-                  @blur="
-                    openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs =
-                      normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(
-                        openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs
-                      )
-                  "
-                />
-                <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-gray-400">
-                  ms
-                </span>
-              </div>
-              <p class="input-hint">{{ t('admin.accounts.openai.firstTokenTimeoutStages.guardHint') }}</p>
-            </div>
           </div>
+          <OpenAIApiKeyFirstTokenTimeoutStages
+            v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled"
+            v-model="openaiAPIKeyFirstTokenTimeoutStageConfig"
+            :guard-enabled="openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled"
+          />
         </div>
       </div>
 
@@ -1914,6 +1873,7 @@ import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import Icon from '@/components/icons/Icon.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
+import OpenAIApiKeyFirstTokenTimeoutStages from '@/components/account/OpenAIApiKeyFirstTokenTimeoutStages.vue'
 import {
   buildModelMappingObject as buildModelMappingPayload,
   getPresetMappingsByPlatform
@@ -1937,6 +1897,10 @@ import {
   type HeaderOverrideRow
 } from '@/components/account/credentialsBuilder'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
+import {
+  createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig,
+  validateOpenAIApiKeyFirstTokenTimeoutStageConfig
+} from '@/utils/openaiFirstTokenTimeoutStages'
 interface Props {
   show: boolean
   accountIds: number[]
@@ -2013,6 +1977,7 @@ const allOpenAIAPIKey = computed(() => {
 
 const allOpenAITextAPIKey = computed(() => (
   allOpenAIAPIKey.value &&
+  !targetIncludesShadow.value &&
   !targetSelectedImagePoolModes.value.includes(true)
 ))
 
@@ -2159,7 +2124,6 @@ const openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled = ref(false)
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS = 1000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS = 1
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 3000
-const OPENAI_APIKEY_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS = 100000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS = 3000
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS = 1
 const OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MAX_MS = 30000
@@ -2170,9 +2134,8 @@ const openaiAPIKeyPreambleFlushEnabled = ref(false)
 const openaiAPIKeySSECommentPreflushEnabled = ref(false)
 const openaiAPIKeySafeTokenPlaceholderEnabled = ref(false)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled = ref(false)
-const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled = ref(true)
-const openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS)
+const openaiAPIKeyFirstTokenTimeoutStageConfig = ref(createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig())
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
@@ -2263,24 +2226,11 @@ function normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(value: unknown): 
   )
 }
 
-function normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(value: unknown): number {
-  const ms = Math.trunc(Number(value))
-  if (!Number.isFinite(ms) || ms <= 0) return OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS
-  return Math.min(OPENAI_APIKEY_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS, ms)
-}
-
-function normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(value: unknown): number {
-  const ms = Math.trunc(Number(value))
-  return Number.isSafeInteger(ms) && ms > 0
-    ? ms
-    : OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
-}
-
 function resetOpenAIFirstTokenTimeoutPlaceholderMs(kind: 'oauth' | 'apikey') {
   if (kind === 'oauth') {
     openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS
   } else {
-    openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS
+    openaiAPIKeyFirstTokenTimeoutStageConfig.value = createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
   }
 }
 
@@ -2291,8 +2241,6 @@ function resetOpenAIFirstTokenTimeoutPlaceholderGuard(kind: 'oauth' | 'apikey') 
       OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
   } else {
     openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value = true
-    openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs.value =
-      OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS
   }
 }
 
@@ -2603,18 +2551,23 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.openai_apikey_first_token_timeout_placeholder_enabled =
       openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value
     if (openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value) {
-      extra.openai_apikey_first_token_timeout_placeholder_ms =
-        normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value)
+      const stages = openaiAPIKeyFirstTokenTimeoutStageConfig.value.stages.map((stage, index) => ({
+        ...stage,
+        stage: index + 1
+      }))
+      const firstStage = stages[0]
+      extra.openai_apikey_first_token_timeout_placeholder_ms = firstStage.placeholder_ms
       extra.openai_apikey_first_token_timeout_placeholder_guard_enabled =
         openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value
       if (openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value) {
-        extra.openai_apikey_first_token_timeout_placeholder_guard_max_ms =
-          normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs.value)
+        extra.openai_apikey_first_token_timeout_placeholder_guard_max_ms = firstStage.guard_max_ms
+        extra.openai_apikey_first_token_timeout_placeholder_stages = stages
       } else {
         const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
         updates.extra_remove_keys = [
           ...removeKeys,
-          'openai_apikey_first_token_timeout_placeholder_guard_max_ms'
+          'openai_apikey_first_token_timeout_placeholder_guard_max_ms',
+          'openai_apikey_first_token_timeout_placeholder_stages'
         ]
       }
     } else {
@@ -2623,7 +2576,8 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
         ...removeKeys,
         'openai_apikey_first_token_timeout_placeholder_ms',
         'openai_apikey_first_token_timeout_placeholder_guard_enabled',
-        'openai_apikey_first_token_timeout_placeholder_guard_max_ms'
+        'openai_apikey_first_token_timeout_placeholder_guard_max_ms',
+        'openai_apikey_first_token_timeout_placeholder_stages'
       ]
     }
   }
@@ -2827,14 +2781,12 @@ const handleSubmit = async () => {
     openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value &&
     openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value
   ) {
-    const placeholderMS = normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(
-      openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value
+    const stageError = validateOpenAIApiKeyFirstTokenTimeoutStageConfig(
+      openaiAPIKeyFirstTokenTimeoutStageConfig.value,
+      (key, params) => t(key, params ?? {})
     )
-    const guardMaxMS = normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(
-      openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs.value
-    )
-    if (guardMaxMS < placeholderMS) {
-      appStore.showError(t('admin.accounts.openai.firstTokenTimeoutStages.guardBelowPlaceholder'))
+    if (stageError) {
+      appStore.showError(stageError)
       return
     }
   }

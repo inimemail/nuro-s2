@@ -1119,6 +1119,7 @@ struct ChatStreamSummary {
 struct ChatStreamObservation {
     starts_client_output: bool,
     starts_real_output: bool,
+    starts_downstream_ttft: bool,
     saw_response_created: bool,
     response_created_boundary_offset: Option<usize>,
 }
@@ -1127,6 +1128,7 @@ impl ChatStreamObservation {
     fn merge(&mut self, other: ChatStreamObservation) {
         self.starts_client_output |= other.starts_client_output;
         self.starts_real_output |= other.starts_real_output;
+        self.starts_downstream_ttft |= other.starts_downstream_ttft;
         self.saw_response_created |= other.saw_response_created;
         if self.response_created_boundary_offset.is_none() {
             self.response_created_boundary_offset = other.response_created_boundary_offset;
@@ -4563,8 +4565,10 @@ async fn relay_upstream_direct(
     } else {
         None
     };
-    let first_token_timeout_placeholder =
-        normalize_first_token_timeout_placeholder_ms(plan.first_token_timeout_placeholder_ms);
+    let first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+        plan.first_token_timeout_placeholder_ms,
+        plan.account_type.as_deref(),
+    );
     let edge_protection_enabled = plan.edge_protection_enabled;
     let edge_connect_timeout = edge_protection_enabled
         .then(|| plan.edge_connect_timeout_ms.filter(|value| *value > 0))
@@ -5465,6 +5469,7 @@ async fn relay_upstream_direct(
         let mut first_flush_ms: Option<i64> = None;
         let mut first_token_ms: Option<i64> = None;
         let mut real_first_token_ms: Option<i64> = None;
+        let mut downstream_ttft_observed = false;
         let mut safe_token_placeholder_sent = false;
         let mut first_token_timeout_placeholder_sent = false;
         let mut bootstrap_comment_sent = false;
@@ -5534,7 +5539,7 @@ async fn relay_upstream_direct(
                     _ = wait_optional_sleep(&mut bootstrap_timer), if !bootstrap_comment_sent => {
                         RelaySelectEvent::BootstrapComment
                     }
-                    _ = wait_optional_sleep(&mut first_token_timeout_timer), if !first_token_timeout_placeholder_sent && first_token_ms.is_none() => {
+                    _ = wait_optional_sleep(&mut first_token_timeout_timer), if !first_token_timeout_placeholder_sent && !downstream_ttft_observed => {
                         RelaySelectEvent::FirstTokenTimeoutPlaceholder
                     }
                     next = async {
@@ -5644,9 +5649,12 @@ async fn relay_upstream_direct(
                     if real_first_token_ms.is_none() && observation.starts_real_output {
                         real_first_token_ms = Some(started_at.elapsed().as_millis() as i64);
                     }
+                    if observation.starts_downstream_ttft {
+                        downstream_ttft_observed = true;
+                        first_token_timeout_timer = None;
+                    }
                     if first_token_ms.is_none() && observation.starts_client_output {
                         first_token_ms = Some(started_at.elapsed().as_millis() as i64);
-                        first_token_timeout_timer = None;
                     }
                     if summary.failed {
                         success = false;
@@ -6233,9 +6241,19 @@ fn low_latency_policy(mode: Option<&str>) -> LowLatencyPolicy {
     }
 }
 
-fn normalize_first_token_timeout_placeholder_ms(ms: Option<u64>) -> Option<Duration> {
+fn normalize_first_token_timeout_placeholder_ms(
+    ms: Option<u64>,
+    account_type: Option<&str>,
+) -> Option<Duration> {
+    let max = if account_type.is_some_and(|value| {
+        value.eq_ignore_ascii_case("apikey") || value.eq_ignore_ascii_case("api_key")
+    }) {
+        100_000
+    } else {
+        3_000
+    };
     match ms {
-        Some(value @ 1..=3000) => Some(Duration::from_millis(value)),
+        Some(value) if (1..=max).contains(&value) => Some(Duration::from_millis(value)),
         _ => None,
     }
 }
@@ -7210,8 +7228,46 @@ fn json_starts_real_output(value: &Value) -> bool {
             .and_then(Value::as_str)
             .map(|item_type| item_type == "function_call" || item_type == "custom_tool_call")
             .unwrap_or(false),
-        _ => false,
+        _ => json_chat_starts_real_output(value),
     }
+}
+
+fn json_chat_starts_real_output(value: &Value) -> bool {
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                let Some(delta) = choice.get("delta").and_then(Value::as_object) else {
+                    return false;
+                };
+                ["content", "reasoning_content", "reasoning"]
+                    .iter()
+                    .any(|field| {
+                        delta
+                            .get(*field)
+                            .and_then(Value::as_str)
+                            .is_some_and(|text| !text.trim().is_empty())
+                    })
+                    || delta
+                        .get("tool_calls")
+                        .and_then(Value::as_array)
+                        .is_some_and(|calls| !calls.is_empty())
+                    || delta.get("function_call").is_some_and(Value::is_object)
+            })
+        })
+}
+
+fn json_starts_downstream_ttft(value: &Value, response_dialect: Option<&str>) -> bool {
+    if response_dialect == Some("chat_completions") {
+        return json_chat_starts_real_output(value);
+    }
+    let event_type = json_event_type(value).unwrap_or_default();
+    event_type.ends_with(".delta")
+        && value
+            .get("delta")
+            .and_then(Value::as_str)
+            .is_some_and(|delta| !delta.is_empty())
 }
 
 async fn call_retry(state: &AppState, req: RetryRequest) -> anyhow::Result<RetryDecision> {
@@ -8032,6 +8088,7 @@ impl ChatStreamSummary {
                 return ChatStreamObservation {
                     starts_client_output: false,
                     starts_real_output: false,
+                    starts_downstream_ttft: false,
                     saw_response_created: true,
                     response_created_boundary_offset: None,
                 };
@@ -8062,6 +8119,10 @@ impl ChatStreamSummary {
         let observation = ChatStreamObservation {
             starts_client_output: json_starts_client_output(&value),
             starts_real_output: json_starts_real_output(&value),
+            starts_downstream_ttft: json_starts_downstream_ttft(
+                &value,
+                self.response_dialect.as_deref(),
+            ),
             saw_response_created: false,
             response_created_boundary_offset: None,
         };
@@ -9314,27 +9375,42 @@ mod tests {
     #[test]
     fn first_token_timeout_placeholder_ms_accepts_safe_range() {
         assert_eq!(
-            normalize_first_token_timeout_placeholder_ms(Some(1)),
+            normalize_first_token_timeout_placeholder_ms(Some(1), Some("oauth")),
             Some(Duration::from_millis(1))
         );
         assert_eq!(
-            normalize_first_token_timeout_placeholder_ms(Some(100)),
+            normalize_first_token_timeout_placeholder_ms(Some(100), Some("oauth")),
             Some(Duration::from_millis(100))
         );
         assert_eq!(
-            normalize_first_token_timeout_placeholder_ms(Some(200)),
+            normalize_first_token_timeout_placeholder_ms(Some(200), Some("oauth")),
             Some(Duration::from_millis(200))
         );
         assert_eq!(
-            normalize_first_token_timeout_placeholder_ms(Some(3000)),
+            normalize_first_token_timeout_placeholder_ms(Some(3000), Some("oauth")),
             Some(Duration::from_millis(3000))
         );
-        assert_eq!(normalize_first_token_timeout_placeholder_ms(Some(0)), None);
         assert_eq!(
-            normalize_first_token_timeout_placeholder_ms(Some(3001)),
+            normalize_first_token_timeout_placeholder_ms(Some(0), Some("oauth")),
             None
         );
-        assert_eq!(normalize_first_token_timeout_placeholder_ms(None), None);
+        assert_eq!(
+            normalize_first_token_timeout_placeholder_ms(Some(3001), Some("oauth")),
+            None
+        );
+        assert_eq!(
+            normalize_first_token_timeout_placeholder_ms(None, Some("oauth")),
+            None
+        );
+
+        assert_eq!(
+            normalize_first_token_timeout_placeholder_ms(Some(100_000), Some("api_key")),
+            Some(Duration::from_millis(100_000))
+        );
+        assert_eq!(
+            normalize_first_token_timeout_placeholder_ms(Some(100_001), Some("api_key")),
+            None
+        );
     }
 
     #[test]
@@ -10349,6 +10425,34 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             "type": "response.transport_progress.delta",
             "delta": "in_progress"
         })));
+    }
+
+    #[test]
+    fn downstream_ttft_detection_matches_responses_and_chat_contracts() {
+        assert!(!json_starts_downstream_ttft(
+            &serde_json::json!({"type": "response.output_item.added"}),
+            Some("responses")
+        ));
+        assert!(!json_starts_downstream_ttft(
+            &serde_json::json!({"type": "response.output_text.delta", "delta": ""}),
+            Some("responses")
+        ));
+        assert!(json_starts_downstream_ttft(
+            &serde_json::json!({"type": "response.transport_progress.delta", "delta": "in_progress"}),
+            Some("responses")
+        ));
+        assert!(!json_starts_downstream_ttft(
+            &serde_json::json!({"choices": [{"delta": {"content": ""}}]}),
+            Some("chat_completions")
+        ));
+        assert!(json_starts_downstream_ttft(
+            &serde_json::json!({"choices": [{"delta": {"content": "hello"}}]}),
+            Some("chat_completions")
+        ));
+        assert!(json_starts_downstream_ttft(
+            &serde_json::json!({"choices": [{"delta": {"tool_calls": [{"index": 0}]}}]}),
+            Some("chat_completions")
+        ));
     }
 
     #[test]

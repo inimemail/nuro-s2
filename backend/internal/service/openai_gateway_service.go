@@ -5920,6 +5920,26 @@ func openAIStreamDataStartsRealOutput(data, eventType string) bool {
 	}
 }
 
+// openAIStreamDataStartsDownstreamTTFT matches the compatible downstream
+// Responses timing contract. Structural lifecycle events are client-visible,
+// but they do not stop the timeout placeholder because the downstream panel
+// cannot count them as a first token.
+func openAIStreamDataStartsDownstreamTTFT(data string) bool {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" || trimmed == "[DONE]" {
+		return false
+	}
+	if !gjson.Valid(trimmed) {
+		return false
+	}
+	eventType := gjson.Get(trimmed, "type")
+	if eventType.Type != gjson.String || !strings.HasSuffix(eventType.String(), ".delta") {
+		return false
+	}
+	delta := gjson.Get(trimmed, "delta")
+	return delta.Exists() && delta.Type == gjson.String && delta.String() != ""
+}
+
 func openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType string, flushPreamble bool) bool {
 	if openAIStreamDataStartsClientOutput(data, eventType) {
 		return true
@@ -6504,6 +6524,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	usage := &OpenAIUsage{}
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
+	downstreamTTFTObserved := false
 	responseID := ""
 	clientDisconnected := false
 	terminalEventType := ""
@@ -6570,7 +6591,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
 	}
 	writeFirstTokenTimeoutPlaceholder := func() bool {
-		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || firstTokenMs != nil || !pendingLinesAtEventBoundary() {
+		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || downstreamTTFTObserved || !pendingLinesAtEventBoundary() {
 			return false
 		}
 		if len(pendingLines) > 0 && !writePendingLines() {
@@ -6592,7 +6613,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			return
 		}
 		firstTokenTimeoutPlaceholderPending = false
-		if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && firstTokenMs == nil && !firstTokenTimeoutPlaceholderSent {
+		if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && !downstreamTTFTObserved && !firstTokenTimeoutPlaceholderSent {
 			firstTokenTimeoutPlaceholderPending = true
 		}
 	}
@@ -6723,10 +6744,17 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			searchCounter += countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen)
 			safeTokenPlaceholderPending = safeTokenPlaceholderPending || eventType == "response.created"
 			lineStartsRealOutput := openAIStreamDataStartsRealOutput(trimmedData, eventType)
+			lineStartsDownstreamTTFT := false
+			if firstTokenTimeoutPlaceholder > 0 && !firstTokenTimeoutPlaceholderSent && !downstreamTTFTObserved {
+				lineStartsDownstreamTTFT = openAIStreamDataStartsDownstreamTTFT(trimmedData)
+			}
 			lineStartsFirstToken := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
 			lineStartsClientOutput = lineStartsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(trimmedData, eventType, flushPreamble)
 			if lineStartsRealOutput && trimmedData != "[DONE]" {
 				recordFirstTokenTimeoutGuardSample()
+			}
+			if lineStartsDownstreamTTFT {
+				downstreamTTFTObserved = true
 			}
 			if lineStartsFirstToken && trimmedData != "[DONE]" {
 				if firstTokenMs == nil {
@@ -6852,7 +6880,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			case <-firstTokenTimeoutCh:
 				firstTokenTimeoutCh = nil
-				if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && firstTokenMs == nil && !firstTokenTimeoutPlaceholderSent {
+				if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && !downstreamTTFTObserved && !firstTokenTimeoutPlaceholderSent {
 					firstTokenTimeoutPlaceholderPending = true
 				}
 			}
@@ -7974,6 +8002,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
+	downstreamTTFTObserved := false
 	responseID := ""
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -8080,7 +8109,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		lastDownstreamWriteAt = time.Now()
 	}
 	writeFirstTokenTimeoutPlaceholder := func() bool {
-		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || firstTokenMs != nil || streamFailoverErr != nil || !atSSEEventBoundary {
+		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || downstreamTTFTObserved || streamFailoverErr != nil || !atSSEEventBoundary {
 			return false
 		}
 		if _, err := bufferedWriter.WriteString(openAIResponsesSafeTokenPlaceholderFrame(responseID)); err != nil {
@@ -8102,7 +8131,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			return
 		}
 		firstTokenTimeoutPlaceholderPending = false
-		if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && firstTokenMs == nil && !firstTokenTimeoutPlaceholderSent && streamFailoverErr == nil {
+		if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && !downstreamTTFTObserved && !firstTokenTimeoutPlaceholderSent && streamFailoverErr == nil {
 			firstTokenTimeoutPlaceholderPending = true
 		}
 	}
@@ -8345,6 +8374,10 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			}
 			startsFirstToken := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
 			startsRealOutput := openAIStreamDataStartsRealOutput(data, eventType)
+			startsDownstreamTTFT := false
+			if firstTokenTimeoutPlaceholder > 0 && !firstTokenTimeoutPlaceholderSent && !downstreamTTFTObserved {
+				startsDownstreamTTFT = openAIStreamDataStartsDownstreamTTFT(data)
+			}
 			startsClientOutput := startsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType, flushPreamble)
 
 			// 写入客户端（客户端断开后继续 drain 上游）
@@ -8374,6 +8407,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			// Record first token time
 			if startsRealOutput {
 				recordFirstTokenTimeoutGuardSample()
+			}
+			if startsDownstreamTTFT {
+				downstreamTTFTObserved = true
 			}
 			if startsFirstToken {
 				if firstTokenMs == nil {
@@ -8527,7 +8563,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 		case <-firstTokenTimeoutCh:
 			firstTokenTimeoutCh = nil
-			if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && firstTokenMs == nil && !firstTokenTimeoutPlaceholderSent && streamFailoverErr == nil {
+			if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && !downstreamTTFTObserved && !firstTokenTimeoutPlaceholderSent && streamFailoverErr == nil {
 				firstTokenTimeoutPlaceholderPending = true
 			}
 

@@ -434,6 +434,72 @@ func TestForwardAsChatCompletions_FirstTokenTimeoutPlaceholderDoesNotSetFirstTok
 	require.Contains(t, responseBody, `"content":""`)
 }
 
+func TestForwardAsChatCompletions_StructuralRoleChunkDoesNotCancelTimeoutPlaceholder(t *testing.T) {
+	setGinTestMode()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	createdBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_chat_structural","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		"",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","status":"in_progress","content":[]}}`,
+		"",
+	}, "\n") + "\n"
+	realOutputBody := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"msg_1","delta":"ok"}`,
+		"",
+		`data: {"type":"response.output_text.done","output_index":0,"content_index":0,"item_id":"msg_1","text":"ok"}`,
+		"",
+		`data: {"type":"response.content_part.done","output_index":0,"content_index":0,"item_id":"msg_1","part":{"type":"output_text","text":"ok"}}`,
+		"",
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_chat_structural","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{
+			{data: createdBody},
+			{delay: 60 * time.Millisecond, data: realOutputBody},
+		}},
+	}}
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://api.openai.com/v1"},
+		Extra: map[string]any{
+			openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:           20,
+			openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
+		},
+	}
+
+	result, err := (&OpenAIGatewayService{
+		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+	}).handleChatStreamingResponse(
+		context.Background(), upstream.resp, c, account,
+		"gpt-5.4", "gpt-5.4", "gpt-5.4", time.Now(), len(body),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.FirstTokenMs, "the protected local first-token metric must retain its role-chunk behavior")
+	responseBody := rec.Body.String()
+	require.Contains(t, responseBody, `"role":"assistant"`)
+	require.Contains(t, responseBody, `"content":"ok"`)
+	// One empty content chunk is the timeout compatibility frame; the terminal
+	// stop chunk emitted by the Chat adapter is intentionally empty as well.
+	require.Equal(t, 2, strings.Count(responseBody, `"content":""`))
+	require.Less(t, strings.Index(responseBody, `"role":"assistant"`), strings.Index(responseBody, `"content":""`))
+	require.Less(t, strings.Index(responseBody, `"content":""`), strings.Index(responseBody, `"content":"ok"`))
+}
+
 func TestForwardAsChatCompletions_SafeTokenPlaceholderDisabledDoesNotWriteEmptyContent(t *testing.T) {
 	setGinTestMode()
 

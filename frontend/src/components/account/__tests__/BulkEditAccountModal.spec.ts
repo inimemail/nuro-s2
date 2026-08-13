@@ -178,7 +178,18 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.find('#bulk-edit-openai-ws-mode-enabled').exists()).toBe(false)
   })
 
-  it('OpenAI API Key 批量编辑保留高补帧阈值和无上限保护时间', async () => {
+  it('OpenAI shadow 账号不显示仅适用于独立文本账号的首 Token 配置', () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['apikey'],
+      selectedImagePoolModes: [false],
+      selectedShadowModes: [true]
+    })
+
+    expect(wrapper.find('#bulk-edit-openai-apikey-first-token-timeout-placeholder-enabled').exists()).toBe(false)
+  })
+
+  it('OpenAI API Key 批量编辑提交完整阶段配置并同步首阶段兼容字段', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
       selectedTypes: ['apikey']
@@ -186,17 +197,25 @@ describe('BulkEditAccountModal', () => {
 
     await wrapper.get('#bulk-edit-openai-apikey-first-token-timeout-placeholder-enabled').setValue(true)
     await wrapper.get('#bulk-edit-openai-apikey-first-token-timeout-placeholder-toggle').trigger('click')
-    await wrapper.get('[data-testid="bulk-edit-openai-apikey-first-token-timeout-placeholder-ms"]').setValue(100000)
-    await wrapper.get('[data-testid="bulk-edit-openai-apikey-first-token-timeout-placeholder-guard-max-ms"]').setValue(900000)
+    await wrapper.get('[data-testid="stage-1-placeholder"]').setValue(1000)
+    await wrapper.get('[data-testid="stage-1-guard"]').setValue(6000)
+    await wrapper.get('[data-testid="stage-2-placeholder"]').setValue(4000)
+    await wrapper.get('[data-testid="stage-2-guard"]').setValue(12000)
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       extra: {
         openai_apikey_first_token_timeout_placeholder_enabled: true,
-        openai_apikey_first_token_timeout_placeholder_ms: 100000,
+        openai_apikey_first_token_timeout_placeholder_ms: 1000,
         openai_apikey_first_token_timeout_placeholder_guard_enabled: true,
-        openai_apikey_first_token_timeout_placeholder_guard_max_ms: 900000
+        openai_apikey_first_token_timeout_placeholder_guard_max_ms: 6000,
+        openai_apikey_first_token_timeout_placeholder_stages: [
+          { stage: 1, placeholder_ms: 1000, guard_max_ms: 6000 },
+          { stage: 2, placeholder_ms: 4000, guard_max_ms: 12000 },
+          { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 },
+          { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 }
+        ]
       }
     })
   })
@@ -209,8 +228,8 @@ describe('BulkEditAccountModal', () => {
 
     await wrapper.get('#bulk-edit-openai-apikey-first-token-timeout-placeholder-enabled').setValue(true)
     await wrapper.get('#bulk-edit-openai-apikey-first-token-timeout-placeholder-toggle').trigger('click')
-    await wrapper.get('[data-testid="bulk-edit-openai-apikey-first-token-timeout-placeholder-ms"]').setValue(50000)
-    await wrapper.get('[data-testid="bulk-edit-openai-apikey-first-token-timeout-placeholder-guard-max-ms"]').setValue(3000)
+    await wrapper.get('[data-testid="stage-1-placeholder"]').setValue(5000)
+    await wrapper.get('[data-testid="stage-1-guard"]').setValue(3000)
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()
 

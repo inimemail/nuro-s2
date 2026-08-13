@@ -735,6 +735,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	var usage OpenAIUsage
 	var firstTokenMs *int
+	downstreamTTFTObserved := false
 	clientDisconnected := false
 	clientOutputStarted := requestFirstTokenPlaceholder.Sent
 	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
@@ -827,7 +828,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		return true
 	}
 	writeFirstTokenTimeoutChatPlaceholder := func() bool {
-		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || firstTokenMs != nil {
+		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || downstreamTTFTObserved {
 			return false
 		}
 		empty := ""
@@ -1030,6 +1031,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					break
 				}
 				if chunksStartRealOutput {
+					downstreamTTFTObserved = true
 					recordFirstTokenTimeoutGuardSample()
 				}
 				markFirstToken()
