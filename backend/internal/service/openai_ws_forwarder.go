@@ -2211,6 +2211,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
+	var firstTokenTimeoutGuardSampleMS *int
+	downstreamTTFTObserved := false
+	safeTokenPlaceholder := reqStream && s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
+	firstTokenTimeoutPlaceholder := s.openAIStreamFirstTokenTimeoutPlaceholder(account, originalModel)
+	if !reqStream {
+		firstTokenTimeoutPlaceholder = 0
+	}
+	firstTokenTimeoutPlaceholderSent := false
 	responseID := ""
 	var finalResponse []byte
 	wroteDownstream := false
@@ -2305,9 +2313,28 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			)
 		}
 	}
+	emitFirstTokenPlaceholder := func(reason string) {
+		if !reqStream || clientDisconnected || firstTokenTimeoutPlaceholderSent || downstreamTTFTObserved {
+			return
+		}
+		flushBufferedStreamEvents(reason)
+		emitStreamMessage(openAIResponsesSafeTokenPlaceholderPayload(responseID), true)
+		if !clientDisconnected {
+			firstTokenTimeoutPlaceholderSent = true
+		}
+	}
 
 	readTimeout := s.openAIWSReadTimeout()
 	var pendingJSONDocuments [][]byte
+	firstTokenTimeoutTimer, firstTokenTimeoutCh := openAIStreamFirstTokenTimeoutTimer(startTime, firstTokenTimeoutPlaceholder)
+	if firstTokenTimeoutTimer != nil {
+		defer firstTokenTimeoutTimer.Stop()
+	}
+	type openAIWSReadResult struct {
+		message []byte
+		err     error
+	}
+	var readResultCh <-chan openAIWSReadResult
 
 	for {
 		var message []byte
@@ -2316,7 +2343,23 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			message = pendingJSONDocuments[0]
 			pendingJSONDocuments = pendingJSONDocuments[1:]
 		} else {
-			message, readErr = lease.ReadMessageWithContextTimeout(ctx, readTimeout)
+			if readResultCh == nil {
+				resultCh := make(chan openAIWSReadResult, 1)
+				readResultCh = resultCh
+				go func() {
+					message, err := lease.ReadMessageWithContextTimeout(ctx, readTimeout)
+					resultCh <- openAIWSReadResult{message: message, err: err}
+				}()
+			}
+			select {
+			case result := <-readResultCh:
+				readResultCh = nil
+				message, readErr = result.message, result.err
+			case <-firstTokenTimeoutCh:
+				firstTokenTimeoutCh = nil
+				emitFirstTokenPlaceholder("timeout_placeholder")
+				continue
+			}
 			if readErr == nil {
 				if documents, repaired := splitOpenAIConcatenatedJSONDocuments(message); repaired {
 					logOpenAIWSModeInfo(
@@ -2393,6 +2436,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if firstTokenMs == nil && isTokenEvent {
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
+		}
+		if !downstreamTTFTObserved && openAIStreamDataStartsDownstreamTTFT(string(message)) {
+			downstreamTTFTObserved = true
+			firstTokenTimeoutCh = nil
+		}
+		if firstTokenTimeoutGuardSampleMS == nil && openAIStreamDataStartsRealOutput(string(message), eventType) {
+			ms := int(time.Since(startTime).Milliseconds())
+			firstTokenTimeoutGuardSampleMS = &ms
 		}
 		if debugEnabled && shouldLogOpenAIWSEvent(eventCount, eventType) {
 			logOpenAIWSModeDebug(
@@ -2509,6 +2560,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 		clientMessage := sanitizeOpenAIWSErrorEventForClient(message, eventType, wroteDownstream)
 		if reqStream {
+			if safeTokenPlaceholder && !firstTokenTimeoutPlaceholderSent && eventType == "response.created" {
+				buffered := make([]byte, len(clientMessage))
+				copy(buffered, clientMessage)
+				bufferedStreamEvents = append(bufferedStreamEvents, buffered)
+				bufferedEventCount++
+				emitFirstTokenPlaceholder("safe_placeholder")
+				firstTokenTimeoutCh = nil
+				continue
+			}
 			// 在首个 token 前先缓冲事件（如 response.created），
 			// 以便上游早期断连时仍可安全回退到 HTTP，不给下游发送半截流。
 			shouldBuffer := firstTokenMs == nil && !isTokenEvent && !isTerminalEvent
@@ -2594,6 +2654,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		ttl := s.openAIWSResponseStickyTTL()
 		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
 		stateStore.BindResponseConn(responseID, lease.ConnID(), ttl)
+	}
+	if !clientDisconnected && isOpenAIWSSuccessTerminalEvent(lastEventType) && firstTokenTimeoutGuardSampleMS != nil {
+		s.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, originalModel, *firstTokenTimeoutGuardSampleMS)
 	}
 	if stateStore != nil && storeDisabled && sessionHash != "" {
 		stateStore.BindSessionConn(groupID, sessionHash, lease.ConnID(), s.openAIWSSessionStickyTTL())

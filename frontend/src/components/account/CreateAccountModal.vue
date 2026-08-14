@@ -3502,6 +3502,7 @@
             </div>
             <button
               type="button"
+              data-testid="oauth-first-token-timeout-placeholder-toggle"
               @click="toggleOpenAIFirstTokenTimeoutPlaceholder('oauth')"
               :class="openAIFirstTokenTimeoutSwitchClass(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled)"
             >
@@ -3512,28 +3513,6 @@
                 ]"
               />
             </button>
-          </div>
-          <div v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled" class="mt-3 max-w-xs">
-            <label class="input-label">{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderMs') }}</label>
-            <div class="relative">
-              <input
-                v-model.number="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs"
-                type="number"
-                inputmode="numeric"
-                step="1"
-                :min="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MIN_MS"
-                :max="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_MAX_MS"
-                class="input pr-12 font-mono"
-                @blur="
-                  openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs =
-                    normalizeOpenAIFirstTokenTimeoutPlaceholderMs(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs)
-                "
-              />
-              <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-gray-400">
-                ms
-              </span>
-            </div>
-            <p class="input-hint">{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderMsHint') }}</p>
           </div>
           <div
             v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled"
@@ -3569,30 +3548,6 @@
                   ]"
                 />
               </button>
-            </div>
-            <div v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabled" class="mt-3 max-w-xs">
-              <label class="input-label">{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderGuardMaxMs') }}</label>
-              <div class="relative">
-                <input
-                  v-model.number="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMs"
-                  type="number"
-                  inputmode="numeric"
-                  step="1"
-                  :min="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MIN_MS"
-                  :max="OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_MAX_MS"
-                  class="input pr-12 font-mono"
-                  @blur="
-                    openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMs =
-                      normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(
-                        openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMs
-                      )
-                  "
-                />
-                <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-gray-400">
-                  ms
-                </span>
-              </div>
-              <p class="input-hint">{{ t('admin.accounts.openai.firstTokenTimeoutPlaceholderGuardMaxMsHint') }}</p>
             </div>
           </div>
         </div>
@@ -5173,6 +5128,7 @@ function toggleOpenAIFirstTokenTimeoutPlaceholder(kind: 'oauth' | 'apikey') {
       !openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value
     resetOpenAIFirstTokenTimeoutPlaceholderMs('oauth')
     resetOpenAIFirstTokenTimeoutPlaceholderGuard('oauth')
+    openaiOAuthFirstTokenTimeoutStageConfig.value = createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
   } else {
     openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value =
       !openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value
@@ -6093,6 +6049,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
 
   const extra: Record<string, unknown> = { ...(base || {}) }
   if (isOpenAIOAuthCreate.value) {
+    const firstTokenStage = openaiOAuthFirstTokenTimeoutStageConfig.value.stages[0]
     extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
     extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
     if (openaiOAuthChatGPTPreambleFlushEnabled.value) {
@@ -6113,13 +6070,13 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     if (openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value) {
       extra.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled = true
       extra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms =
-        normalizeOpenAIFirstTokenTimeoutPlaceholderMs(openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value)
+        normalizeOpenAIFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
       extra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled =
         openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabled.value
       if (openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabled.value) {
         extra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms =
           normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(
-            openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMs.value
+            firstTokenStage.guard_max_ms
           )
         extra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages = openaiOAuthFirstTokenTimeoutStageConfig.value.stages.map((stage, index) => ({ ...stage, stage: index + 1 }))
       } else {

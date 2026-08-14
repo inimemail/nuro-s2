@@ -6056,13 +6056,17 @@ func openAIStreamFirstTokenTimeoutTimer(startTime time.Time, timeout time.Durati
 }
 
 func openAIResponsesSafeTokenPlaceholderFrame(responseID string) string {
+	return "data: " + string(openAIResponsesSafeTokenPlaceholderPayload(responseID)) + "\n\n"
+}
+
+func openAIResponsesSafeTokenPlaceholderPayload(responseID string) []byte {
 	responseID = strings.TrimSpace(responseID)
 	if responseID == "" {
 		responseID = "resp_placeholder"
 	}
-	return `data: {"type":"response.transport_progress.delta","delta":"in_progress","response_id":` +
+	return []byte(`{"type":"response.transport_progress.delta","delta":"in_progress","response_id":` +
 		strconv.Quote(responseID) +
-		`}` + "\n\n"
+		`}`)
 }
 
 type openAIRequestFirstTokenPlaceholderDialect string
@@ -6109,11 +6113,10 @@ func (s *OpenAIGatewayService) doOpenAIUpstreamWithFirstTokenTimeoutPlaceholder(
 		resultCh <- openAIUpstreamRequestResult{resp: resp, err: err, elapsed: time.Since(upstreamStart)}
 	}()
 
-	timer := time.NewTimer(timeout)
+	timer, timerCh := openAIStreamFirstTokenTimeoutTimer(startTime, timeout)
 	defer timer.Stop()
 
 	state := openAIRequestFirstTokenPlaceholderState{}
-	timerCh := timer.C
 	for {
 		select {
 		case result := <-resultCh:

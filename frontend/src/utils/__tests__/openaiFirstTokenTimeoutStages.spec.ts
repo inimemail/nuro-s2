@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   readOpenAIApiKeyFirstTokenTimeoutStageConfig,
+  readOpenAIOAuthFirstTokenTimeoutStageConfig,
   validateOpenAIApiKeyFirstTokenTimeoutStageConfig
 } from '../openaiFirstTokenTimeoutStages'
 
@@ -87,5 +88,42 @@ describe('readOpenAIApiKeyFirstTokenTimeoutStageConfig', () => {
     }, (key) => key)
 
     expect(error).toContain('stagePlaceholderInvalid')
+  })
+})
+
+describe('readOpenAIOAuthFirstTokenTimeoutStageConfig', () => {
+  it('repairs the previous UI shape that mirrored the final guard into stage one', () => {
+    const config = readOpenAIOAuthFirstTokenTimeoutStageConfig({
+      openai_oauth_chatgpt_first_token_timeout_placeholder_ms: 800,
+      openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms: 30000,
+      openai_oauth_chatgpt_first_token_timeout_placeholder_stages: [
+        { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
+        { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
+        { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 },
+        { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 }
+      ]
+    })
+
+    expect(config).toEqual({
+      stages: [
+        { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
+        { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
+        { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 },
+        { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 }
+      ]
+    })
+  })
+
+  it('keeps a valid legacy stage-one override authoritative', () => {
+    const config = readOpenAIOAuthFirstTokenTimeoutStageConfig({
+      openai_oauth_chatgpt_first_token_timeout_placeholder_ms: 900,
+      openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms: 6000,
+      openai_oauth_chatgpt_first_token_timeout_placeholder_stages: [
+        { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
+        { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 }
+      ]
+    })
+
+    expect(config.stages[0]).toEqual({ stage: 1, placeholder_ms: 900, guard_max_ms: 6000 })
   })
 })

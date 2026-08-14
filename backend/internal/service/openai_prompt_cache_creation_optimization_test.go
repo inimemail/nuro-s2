@@ -778,12 +778,18 @@ func TestOpenAIPromptCacheCreationOptimization_SuppressModeStaysOnEdgeRS(t *test
 	svc.cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModeCtxPool
 	account.Concurrency = 1
 	account.Extra = map[string]any{
-		"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough,
+		"openai_oauth_responses_websockets_v2_mode":                        OpenAIWSIngressModePassthrough,
+		openAIOAuthChatGPTSafeTokenPlaceholderExtraKey:                     true,
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:           137,
+		openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
 	}
 	wsBody := []byte(`{"type":"response.create","model":"gpt-5.6-sol","input":[{"role":"developer","content":"` + stable + `"},{"role":"user","content":"hello"}]}`)
 	wsPlan, err := svc.BuildResponsesWSEdgePlan(context.Background(), nil, account, wsBody, "oauth-token")
 	require.NoError(t, err)
 	require.Equal(t, OpenAIEdgeTransportWSV2, wsPlan.Plan.Transport)
+	require.True(t, wsPlan.Plan.SafeTokenPlaceholder)
+	require.Equal(t, 137, wsPlan.Plan.FirstTokenTimeoutPlaceholderMS)
 	require.Equal(t, OpenAIPromptCacheCreationOptimizationModeSuppress, wsPlan.Plan.PromptCacheCreationOptimizationMode)
 	require.True(t, wsPlan.Plan.PromptCacheCreationOptimizationApplied)
 	require.Equal(t, "gpt-5.6-sol", wsPlan.Plan.PromptCacheCreationOptimizationModel)

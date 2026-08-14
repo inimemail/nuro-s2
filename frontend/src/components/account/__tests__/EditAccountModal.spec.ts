@@ -333,6 +333,34 @@ function mountModal(account = buildAccount(), groups: any[] = [], simpleMode = t
 }
 
 describe('EditAccountModal', () => {
+  it('submits OAuth timeout stages with stage-one compatibility scalars', async () => {
+    const account = buildOpenAIOAuthAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="oauth-first-token-timeout-placeholder-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="stage-1-placeholder"]').setValue(1200)
+    await wrapper.get('[data-testid="stage-1-guard"]').setValue(6000)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({
+      openai_oauth_chatgpt_first_token_timeout_placeholder_enabled: true,
+      openai_oauth_chatgpt_first_token_timeout_placeholder_ms: 1200,
+      openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled: true,
+      openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms: 6000,
+      openai_oauth_chatgpt_first_token_timeout_placeholder_stages: [
+        { stage: 1, placeholder_ms: 1200, guard_max_ms: 6000 },
+        { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
+        { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 },
+        { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 }
+      ]
+    })
+  })
+
   it('resets saved API key timeout placeholder stages after disabling and enabling again', async () => {
     const account = buildAccount()
     account.extra = {

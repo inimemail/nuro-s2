@@ -582,6 +582,85 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthStoreFalseByDefault(t *testing.T
 	require.Equal(t, isolateOpenAISessionID(0, "conv-oauth-1"), captureDialer.lastHeaders.Get("conversation_id"))
 }
 
+func TestOpenAIGatewayService_Forward_WSv2_FirstTokenPlaceholdersReachHTTPDownstream(t *testing.T) {
+	setGinTestMode()
+
+	tests := []struct {
+		name        string
+		safe        bool
+		timeoutMS   int
+		secondDelay time.Duration
+	}{
+		{name: "safe placeholder after response.created", safe: true, timeoutMS: 200},
+		{name: "timeout placeholder while waiting for real delta", timeoutMS: 20, secondDelay: 60 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+
+			cfg := &config.Config{}
+			cfg.Security.URLAllowlist.Enabled = false
+			cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+			cfg.Gateway.OpenAIWS.Enabled = true
+			cfg.Gateway.OpenAIWS.OAuthEnabled = true
+			cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+			cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+			cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+			cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+			cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 5
+
+			captureConn := &openAIWSCaptureConn{
+				readDelays: []time.Duration{0, tt.secondDelay, 0},
+				events: [][]byte{
+					[]byte(`{"type":"response.created","response":{"id":"resp_ws_placeholder","model":"gpt-5.4"}}`),
+					[]byte(`{"type":"response.output_text.delta","response_id":"resp_ws_placeholder","delta":"ok"}`),
+					[]byte(`{"type":"response.completed","response":{"id":"resp_ws_placeholder","model":"gpt-5.4","usage":{"input_tokens":2,"output_tokens":1}}}`),
+				},
+			}
+			pool := newOpenAIWSConnPool(cfg)
+			pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: captureConn})
+			svc := &OpenAIGatewayService{
+				cfg:              cfg,
+				httpUpstream:     &httpUpstreamRecorder{},
+				cache:            &stubGatewayCache{},
+				openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+				toolCorrector:    NewCodexToolCorrector(),
+				openaiWSPool:     pool,
+			}
+			account := &Account{
+				ID:          291,
+				Name:        "openai-oauth-placeholder",
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Credentials: map[string]any{"access_token": "oauth-token"},
+				Extra: map[string]any{
+					"responses_websockets_v2_enabled":                                  true,
+					openAIOAuthChatGPTSafeTokenPlaceholderExtraKey:                     tt.safe,
+					openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+					openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:           tt.timeoutMS,
+					openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
+				},
+			}
+
+			result, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.4","stream":true,"input":"hello"}`))
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, result.FirstTokenMs, "the local metric must still use the upstream token event")
+			body := rec.Body.String()
+			placeholder := `"type":"response.transport_progress.delta","delta":"in_progress"`
+			require.Equal(t, 1, strings.Count(body, placeholder))
+			require.Less(t, strings.Index(body, `"type":"response.created"`), strings.Index(body, placeholder))
+			require.Less(t, strings.Index(body, placeholder), strings.Index(body, `"type":"response.output_text.delta"`))
+		})
+	}
+}
+
 func TestOpenAIGatewayService_Forward_WSv2_OAuthOriginatorCompatibility(t *testing.T) {
 	setGinTestMode()
 

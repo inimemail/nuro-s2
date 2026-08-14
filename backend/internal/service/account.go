@@ -300,11 +300,44 @@ func NormalizeOpenAIOAuthFirstTokenTimeoutPlaceholderStages(extra map[string]any
 	if raw, ok := converted[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey]; ok {
 		converted[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey] = raw
 	}
+	// A previous OAuth UI mirrored the final stage guard into the legacy
+	// stage-one scalar. Recover that exact invalid shape so already-saved
+	// accounts regain their staged policy without weakening scalar authority
+	// for valid rolling-deployment payloads.
+	if items, ok := openAIFirstTokenTimeoutPlaceholderStageItems(
+		converted[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey],
+	); ok && len(items) > 1 {
+		firstGuard, firstOK := strictInt(items[0]["guard_max_ms"])
+		lastGuard, lastOK := strictInt(items[len(items)-1]["guard_max_ms"])
+		scalarGuard, scalarOK := strictInt(converted[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey])
+		if firstOK && lastOK && scalarOK && firstGuard != lastGuard && scalarGuard == lastGuard {
+			converted[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey] = firstGuard
+		}
+	}
 	stages, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(converted)
 	if err != nil {
 		return nil, err
 	}
 	return stages, nil
+}
+
+func openAIFirstTokenTimeoutPlaceholderStageItems(raw any) ([]map[string]any, bool) {
+	switch items := raw.(type) {
+	case []map[string]any:
+		return items, true
+	case []any:
+		converted := make([]map[string]any, len(items))
+		for i, item := range items {
+			stage, ok := item.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			converted[i] = stage
+		}
+		return converted, true
+	default:
+		return nil, false
+	}
 }
 
 func strictInt(value any) (int, bool) {

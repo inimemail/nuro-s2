@@ -220,6 +220,35 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
+  it('OpenAI OAuth 批量编辑提交完整阶段配置并同步首阶段兼容字段', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['oauth']
+    })
+
+    await wrapper.get('#bulk-edit-openai-oauth-first-token-timeout-placeholder-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-openai-oauth-first-token-timeout-placeholder-toggle').trigger('click')
+    await wrapper.get('[data-testid="stage-1-placeholder"]').setValue(1200)
+    await wrapper.get('[data-testid="stage-1-guard"]').setValue(6000)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: {
+        openai_oauth_chatgpt_first_token_timeout_placeholder_enabled: true,
+        openai_oauth_chatgpt_first_token_timeout_placeholder_ms: 1200,
+        openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled: true,
+        openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms: 6000,
+        openai_oauth_chatgpt_first_token_timeout_placeholder_stages: [
+          { stage: 1, placeholder_ms: 1200, guard_max_ms: 6000 },
+          { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
+          { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 },
+          { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 }
+        ]
+      }
+    })
+  })
+
   it('OpenAI API Key 批量编辑拒绝保护时间低于补帧阈值', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],

@@ -2802,6 +2802,25 @@ async fn relay_ws_session(
         .clone()
         .or_else(|| prompt_cache_creation_optimization_model.clone());
     let mut failure_state = OpenAIWSFailureState::default();
+    let mut safe_token_placeholder = plan.safe_token_placeholder;
+    let mut first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+        plan.first_token_timeout_placeholder_ms,
+        plan.account_type.as_deref(),
+    );
+    let mut turn_started_at = started_at;
+    let mut downstream_ttft_observed = false;
+    let mut first_token_timeout_placeholder_sent = false;
+    let mut current_turn_real_first_token_ms: Option<i64> = None;
+    let mut latest_real_first_token_ms: Option<i64> = None;
+    let mut first_token_timeout_timer = ws_response_active
+        .then_some(first_token_timeout_placeholder)
+        .flatten()
+        .map(|timeout| {
+            Box::pin(tokio::time::sleep(delay_until_elapsed(
+                turn_started_at,
+                timeout,
+            )))
+        });
     let mut ws_body_idle_timeout = plan
         .edge_protection_enabled
         .then(|| plan.edge_body_idle_timeout_ms.filter(|value| *value > 0))
@@ -2856,7 +2875,14 @@ async fn relay_ws_session(
                         );
                         let starts_response = tungstenite_message_is_response_create(&upstream_msg);
                         if starts_response {
+                            turn_started_at = Instant::now();
+                            downstream_ttft_observed = false;
+                            first_token_timeout_placeholder_sent = false;
                             let turn_success = summary.completed_successfully(Some("responses"));
+                            if turn_success && current_turn_real_first_token_ms.is_some() {
+                                latest_real_first_token_ms = current_turn_real_first_token_ms;
+                            }
+                            current_turn_real_first_token_ms = None;
                             if !turn_success {
                                 had_prior_unsuccessful_turn = true;
                                 if prior_failure_terminal_event_type.is_none() {
@@ -2890,6 +2916,8 @@ async fn relay_ws_session(
                         }
                         if starts_response {
                             ws_response_active = true;
+                            first_token_timeout_timer = first_token_timeout_placeholder
+                                .map(|timeout| Box::pin(tokio::time::sleep(timeout)));
                             ws_body_idle_timer = ws_body_idle_timeout
                                 .map(|timeout| Box::pin(tokio::time::sleep(timeout)));
                         }
@@ -2910,6 +2938,20 @@ async fn relay_ws_session(
             next = upstream_read.next() => {
                 match next {
                     Some(Ok(msg)) => {
+                        let upstream_json = tungstenite_message_json(&msg);
+                        let starts_downstream_ttft = upstream_json
+                            .as_ref()
+                            .is_some_and(|value| json_starts_downstream_ttft(value, Some("responses")));
+                        let response_created = upstream_json
+                            .as_ref()
+                            .and_then(json_event_type)
+                            .is_some_and(|event_type| event_type == "response.created");
+                        if current_turn_real_first_token_ms.is_none()
+                            && upstream_json.as_ref().is_some_and(json_starts_real_output)
+                        {
+                            current_turn_real_first_token_ms =
+                                Some(turn_started_at.elapsed().as_millis() as i64);
+                        }
                         if ws_response_active {
                             ws_body_idle_timer = ws_body_idle_timeout
                                 .map(|timeout| Box::pin(tokio::time::sleep(timeout)));
@@ -2985,6 +3027,14 @@ async fn relay_ws_session(
                                                                 .or_else(|| prompt_cache_creation_optimization_model.clone());
                                                             failure_state = OpenAIWSFailureState::default();
                                                             plan = next_plan;
+                                                            safe_token_placeholder = plan.safe_token_placeholder;
+                                                            first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+                                                                plan.first_token_timeout_placeholder_ms,
+                                                                plan.account_type.as_deref(),
+                                                            );
+                                                            first_token_timeout_timer = first_token_timeout_placeholder.map(|timeout| {
+                                                                Box::pin(tokio::time::sleep(delay_until_elapsed(turn_started_at, timeout)))
+                                                            });
                                                             ws_body_idle_timeout = plan
                                                                 .edge_protection_enabled
                                                                 .then(|| plan.edge_body_idle_timeout_ms.filter(|value| *value > 0))
@@ -3007,6 +3057,10 @@ async fn relay_ws_session(
                             cache_creation_policy_applied_for_turn,
                         );
                         summary.observe_ws_message(&msg);
+                        if starts_downstream_ttft {
+                            downstream_ttft_observed = true;
+                            first_token_timeout_timer = None;
+                        }
                         if message_failed && !summary.failed {
                             summary.failed = true;
                             summary.failed_terminal_event_type = Some("error".to_string());
@@ -3018,6 +3072,7 @@ async fn relay_ws_session(
                         }
                         if summary.terminal_event_type(Some("responses")).is_some() {
                             ws_response_active = false;
+                            first_token_timeout_timer = None;
                             ws_body_idle_timer = None;
                         }
                         let downstream_cache_usage_mode_for_turn = if downstream_cache_usage_model
@@ -3051,6 +3106,24 @@ async fn relay_ws_session(
                         if is_client_payload {
                             wrote_client_response_for_turn = true;
                         }
+                        if safe_token_placeholder
+                            && response_created
+                            && !first_token_timeout_placeholder_sent
+                            && !downstream_ttft_observed
+                        {
+                            let placeholder = AxumWsMessage::Text(
+                                openai_responses_safe_token_placeholder_json(summary.response_id.as_deref()),
+                            );
+                            if let Err(err) = client_socket.send(placeholder).await {
+                                success = false;
+                                client_disconnected = true;
+                                error_message = Some(err.to_string());
+                                break;
+                            }
+                            wrote_client_response_for_turn = true;
+                            first_token_timeout_placeholder_sent = true;
+                            first_token_timeout_timer = None;
+                        }
                     }
                     Some(Err(err)) => {
                         success = false;
@@ -3060,6 +3133,20 @@ async fn relay_ws_session(
                     }
                     None => break,
                 }
+            }
+            _ = wait_optional_sleep(&mut first_token_timeout_timer), if ws_response_active && !first_token_timeout_placeholder_sent && !downstream_ttft_observed => {
+                let placeholder = AxumWsMessage::Text(
+                    openai_responses_safe_token_placeholder_json(summary.response_id.as_deref()),
+                );
+                if let Err(err) = client_socket.send(placeholder).await {
+                    success = false;
+                    client_disconnected = true;
+                    error_message = Some(err.to_string());
+                    break;
+                }
+                wrote_client_response_for_turn = true;
+                first_token_timeout_placeholder_sent = true;
+                first_token_timeout_timer = None;
             }
             _ = wait_optional_sleep(&mut ws_body_idle_timer) => {
                 success = false;
@@ -3071,6 +3158,11 @@ async fn relay_ws_session(
     }
 
     prior_turns_successful &= summary.completed_successfully(Some("responses"));
+    if summary.completed_successfully(Some("responses"))
+        && current_turn_real_first_token_ms.is_some()
+    {
+        latest_real_first_token_ms = current_turn_real_first_token_ms;
+    }
     session_failure_state.merge(&failure_state);
     aggregate_usage.add_assign(&summary.usage);
     summary.usage = aggregate_usage;
@@ -3116,7 +3208,7 @@ async fn relay_ws_session(
             upstream_header_ms: None,
             upstream_first_byte_ms: None,
             first_token_ms: None,
-            real_first_token_ms: None,
+            real_first_token_ms: latest_real_first_token_ms,
             guard_sample_at_unix_ns: None,
             first_client_flush_ms: None,
             edge_prepare_ms: None,
@@ -4781,10 +4873,10 @@ async fn relay_upstream_direct(
                 }
                 Err(err) => return Err(err),
             },
-            // Match the Go request-header race and the pre-lane Edge path:
-            // this account setting starts when the upstream request is sent,
-            // so local admission or relay queue time cannot consume it.
-            _ = tokio::time::sleep(timeout) => {
+            // The configured threshold is downstream-facing, so preparation,
+            // admission and upstream connection time all consume the same
+            // request budget instead of being added before the placeholder.
+            _ = tokio::time::sleep(delay_until_elapsed(started_at, timeout)) => {
                 let response_header_guard = header_guard.take();
                 let stream_guard = complete_state.metrics.begin_stream();
                 // Construct this before building the body stream. Axum may
@@ -6279,6 +6371,13 @@ fn json_event_type(value: &Value) -> Option<&str> {
 }
 
 fn openai_responses_safe_token_placeholder_frame(response_id: Option<&str>) -> String {
+    format!(
+        "data: {}\n\n",
+        openai_responses_safe_token_placeholder_json(response_id)
+    )
+}
+
+fn openai_responses_safe_token_placeholder_json(response_id: Option<&str>) -> String {
     let response_id = response_id
         .map(str::trim)
         .filter(|v| !v.is_empty())
@@ -6286,7 +6385,7 @@ fn openai_responses_safe_token_placeholder_frame(response_id: Option<&str>) -> S
     let response_id_json =
         serde_json::to_string(response_id).unwrap_or_else(|_| "\"resp_placeholder\"".to_string());
     format!(
-        "data: {{\"type\":\"response.transport_progress.delta\",\"delta\":\"in_progress\",\"response_id\":{}}}\n\n",
+        "{{\"type\":\"response.transport_progress.delta\",\"delta\":\"in_progress\",\"response_id\":{}}}",
         response_id_json
     )
 }
@@ -9372,6 +9471,23 @@ mod tests {
         assert!(frame.contains("\"response_id\":\"resp_123\""));
         assert!(!frame.contains("output_text"));
         assert!(!frame.contains("item_id"));
+    }
+
+    #[test]
+    fn safe_token_placeholder_json_is_valid_for_native_websocket_clients() {
+        let payload = openai_responses_safe_token_placeholder_json(Some("resp_ws_123"));
+        assert!(!payload.starts_with("data: "));
+        let value: Value = serde_json::from_str(&payload).expect("valid websocket JSON");
+        assert_eq!(
+            json_event_type(&value),
+            Some("response.transport_progress.delta")
+        );
+        assert!(json_starts_downstream_ttft(&value, Some("responses")));
+        assert!(!json_starts_real_output(&value));
+        assert_eq!(
+            value.get("response_id").and_then(Value::as_str),
+            Some("resp_ws_123")
+        );
     }
 
     #[test]

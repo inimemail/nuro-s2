@@ -88,11 +88,28 @@ export function createDefaultOpenAIOAuthFirstTokenTimeoutStageConfig(): OpenAIOA
 export function readOpenAIOAuthFirstTokenTimeoutStageConfig(
   extra: Record<string, unknown> | undefined
 ): OpenAIOAuthFirstTokenTimeoutStageConfig {
+  const rawStages = extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_stages
+  let legacyGuard = extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms
+  if (Array.isArray(rawStages) && rawStages.length > 1) {
+    const first = rawStages[0] && typeof rawStages[0] === 'object'
+      ? rawStages[0] as Record<string, unknown>
+      : undefined
+    const lastValue = rawStages[rawStages.length - 1]
+    const last = lastValue && typeof lastValue === 'object'
+      ? lastValue as Record<string, unknown>
+      : undefined
+    const firstGuard = integer(first?.guard_max_ms)
+    const lastGuard = integer(last?.guard_max_ms)
+    const scalarGuard = integer(legacyGuard)
+    if (firstGuard !== null && lastGuard !== null && firstGuard !== lastGuard && scalarGuard === lastGuard) {
+      legacyGuard = firstGuard
+    }
+  }
   const mapped = extra && {
     ...extra,
     openai_apikey_first_token_timeout_placeholder_ms: extra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms,
-    openai_apikey_first_token_timeout_placeholder_guard_max_ms: extra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms,
-    openai_apikey_first_token_timeout_placeholder_stages: extra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages
+    openai_apikey_first_token_timeout_placeholder_guard_max_ms: legacyGuard,
+    openai_apikey_first_token_timeout_placeholder_stages: rawStages
   }
   const config = readOpenAIApiKeyFirstTokenTimeoutStageConfig(mapped)
   return config

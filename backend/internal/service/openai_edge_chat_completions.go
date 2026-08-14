@@ -919,11 +919,19 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 	serviceTier := extractOpenAIServiceTierFromBody(firstMessage)
 	return &OpenAIEdgePreparedChatCompletions{
 		Plan: OpenAIEdgePlan{
-			Action:                                 OpenAIEdgeActionRelay,
-			AccountID:                              account.ID,
-			AccountType:                            account.Type,
-			Transport:                              OpenAIEdgeTransportWSV2,
-			ResponseDialect:                        OpenAIEdgeDialectResponses,
+			Action:          OpenAIEdgeActionRelay,
+			AccountID:       account.ID,
+			AccountType:     account.Type,
+			Transport:       OpenAIEdgeTransportWSV2,
+			ResponseDialect: OpenAIEdgeDialectResponses,
+			SafeTokenPlaceholder: s.openAIStreamSafeTokenPlaceholderEnabled(
+				account,
+				model,
+			),
+			FirstTokenTimeoutPlaceholderMS: s.openAIStreamFirstTokenTimeoutPlaceholderMs(
+				account,
+				model,
+			),
 			UpstreamURL:                            wsURL,
 			Headers:                                headerMap,
 			Body:                                   json.RawMessage(firstMessage),

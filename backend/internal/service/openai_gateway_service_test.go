@@ -1974,6 +1974,41 @@ func TestOpenAIRequestFirstTokenTimeoutPlaceholderWritesBeforeUpstreamResponse(t
 	require.True(t, IsResponseCommitted(c))
 }
 
+func TestOpenAIRequestFirstTokenTimeoutPlaceholderUsesEndToEndRequestBudget(t *testing.T) {
+	setGinTestMode()
+	svc := &OpenAIGatewayService{}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:           100,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
+		},
+	}
+
+	resp, state, _, err := svc.doOpenAIUpstreamWithFirstTokenTimeoutPlaceholder(
+		c,
+		account,
+		"gpt-5.4",
+		time.Now().Add(-200*time.Millisecond),
+		openAIRequestFirstTokenPlaceholderDialectResponses,
+		func() (*http.Response, error) {
+			time.Sleep(40 * time.Millisecond)
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, state.Sent)
+	require.Contains(t, rec.Body.String(), `"type":"response.transport_progress.delta"`)
+}
+
 func TestOpenAIStreamFirstTokenTimeoutPlaceholderDisabledForImagePoolAccount(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{

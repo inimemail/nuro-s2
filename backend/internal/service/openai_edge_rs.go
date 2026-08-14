@@ -53,12 +53,13 @@ type OpenAIEdgePlan struct {
 	LowLatencyMode  string            `json:"low_latency_mode,omitempty"`
 	Lane            string            `json:"lane,omitempty"`
 	// SafeTokenPlaceholder lets edge-rs mirror the Go Responses SSE behavior:
-	// after response.created, inject an empty output_text.delta so compatible
-	// downstream panels can record an early first token without visible text.
+	// after response.created, inject a non-content transport_progress.delta so
+	// compatible downstream panels can record an early first token without
+	// changing answer text, reasoning, tool state, or usage.
 	SafeTokenPlaceholder bool `json:"safe_token_placeholder,omitempty"`
-	// FirstTokenTimeoutPlaceholderMS injects an empty placeholder after the
-	// configured timeout when upstream has not produced a real first token.
-	// It must not be reported as first_token_ms.
+	// FirstTokenTimeoutPlaceholderMS injects the same non-content progress event
+	// after the configured timeout when downstream has not observed a countable
+	// delta. It must not be reported as first_token_ms or real_first_token_ms.
 	FirstTokenTimeoutPlaceholderMS int `json:"first_token_timeout_placeholder_ms,omitempty"`
 	// RaceResponseHeaderTimeoutMS bounds only the response-header wait while the
 	// request-level Edge race budget is active, including switched accounts. A
