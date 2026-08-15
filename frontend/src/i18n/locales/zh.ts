@@ -3872,8 +3872,7 @@ export default {
         firstTokenTimeoutPlaceholderGuardDesc: '真实首 Token 超过上限后自动暂停补帧，恢复变快后再开启。',
         firstTokenTimeoutPlaceholderGuardMaxMs: '保护上限',
         firstTokenTimeoutPlaceholderGuardMaxMsHint: '1-30000 ms，默认 3000 ms。',
-        firstTokenTimeoutUseGatewayDefault: '跟随网关默认阶段',
-        firstTokenTimeoutUseGatewayDefaultDesc: '保持开启即可使用网关管理中的默认策略；关闭后才保存该账号自己的阶段。',
+        firstTokenTimeoutResetToGateway: '重置为全局阶段',
         firstTokenTimeoutStages: {
           title: '阶段性补帧策略',
           description: '根据最近一次真实首 Token 自动匹配阶段；超过最后一个保护上限时暂停补帧，延迟恢复后自动回到较低阶段。补帧阈值范围 1-100000 ms，保护上限不设最大值，最多 10 个阶段。',

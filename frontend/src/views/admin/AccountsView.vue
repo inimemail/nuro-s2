@@ -448,8 +448,8 @@
       </template>
       <template #pagination><Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" /></template>
     </TablePageLayout>
-    <CreateAccountModal v-if="showCreate" :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
-    <EditAccountModal v-if="showEdit" :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
+    <CreateAccountModal v-if="showCreate" :show="showCreate" :proxies="proxies" :groups="groups" :gateway-api-key-first-token-timeout-stages="gatewayAPIKeyFirstTokenTimeoutStages" :gateway-o-auth-first-token-timeout-stages="gatewayOAuthFirstTokenTimeoutStages" @close="showCreate = false" @created="reload" />
+    <EditAccountModal v-if="showEdit" :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" :gateway-api-key-first-token-timeout-stages="gatewayAPIKeyFirstTokenTimeoutStages" :gateway-o-auth-first-token-timeout-stages="gatewayOAuthFirstTokenTimeoutStages" @close="showEdit = false" @updated="handleAccountUpdated" />
     <ReAuthAccountModal v-if="showReAuth" :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
     <AccountTestModal v-if="showTest" :show="showTest" :account="testingAcc" @close="closeTestModal" @account-updated="handleAccountUpdated" />
     <AccountStatsModal v-if="showStats" :show="showStats" :account="statsAcc" @close="closeStatsModal" />
@@ -467,6 +467,8 @@
       :target="bulkEditTarget ?? undefined"
       :proxies="proxies"
       :groups="groups"
+      :gateway-api-key-first-token-timeout-stages="gatewayAPIKeyFirstTokenTimeoutStages"
+      :gateway-o-auth-first-token-timeout-stages="gatewayOAuthFirstTokenTimeoutStages"
       @close="showBulkEdit = false"
       @updated="handleBulkUpdated"
     />
@@ -492,6 +494,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
+import type { OpenAIFirstTokenTimeoutPlaceholderStage } from '@/api/admin/settings'
 import { useTableLoader } from '@/composables/useTableLoader'
 import { useSwipeSelect, type SwipeSelectVirtualContext } from '@/composables/useSwipeSelect'
 import { useTableSelection } from '@/composables/useTableSelection'
@@ -773,6 +776,9 @@ const poolSoftCooldownMaxSeconds = reactive({
   anthropic: 30
 })
 
+const gatewayAPIKeyFirstTokenTimeoutStages = ref<OpenAIFirstTokenTimeoutPlaceholderStage[]>([])
+const gatewayOAuthFirstTokenTimeoutStages = ref<OpenAIFirstTokenTimeoutPlaceholderStage[]>([])
+
 type PoolSoftCooldownDisplayState = {
   rawUntil: string
   firstSeenMs: number
@@ -793,6 +799,12 @@ const loadPoolSoftCooldownSettings = async () => {
     poolSoftCooldownMaxSeconds.openai = clampPoolSoftCooldownMaxSeconds(settings.openai_pool_soft_cooldown_max_seconds)
     poolSoftCooldownMaxSeconds.openaiImage = clampPoolSoftCooldownMaxSeconds(settings.openai_image_pool_soft_cooldown_max_seconds)
     poolSoftCooldownMaxSeconds.anthropic = clampPoolSoftCooldownMaxSeconds(settings.anthropic_pool_soft_cooldown_max_seconds)
+    gatewayAPIKeyFirstTokenTimeoutStages.value = Array.isArray(settings.gateway_openai_apikey_first_token_timeout_placeholder_stages)
+      ? settings.gateway_openai_apikey_first_token_timeout_placeholder_stages.map(stage => ({ ...stage }))
+      : []
+    gatewayOAuthFirstTokenTimeoutStages.value = Array.isArray(settings.gateway_openai_oauth_first_token_timeout_placeholder_stages)
+      ? settings.gateway_openai_oauth_first_token_timeout_placeholder_stages.map(stage => ({ ...stage }))
+      : []
     normalizeSoftCooldownDisplayRows(accounts.value)
   } catch (error) {
     console.error('Failed to load pool soft cooldown settings:', error)

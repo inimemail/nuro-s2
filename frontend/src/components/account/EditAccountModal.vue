@@ -2488,10 +2488,12 @@
               </button>
             </div>
           </div>
-          <label v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled" class="mt-3 flex items-start gap-3 rounded-lg border border-primary-100 bg-primary-50/60 p-3 text-sm dark:border-primary-900/50 dark:bg-primary-950/20">
-            <input v-model="openaiOAuthFirstTokenTimeoutUseGatewayDefault" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-            <span><span class="font-medium text-gray-800 dark:text-gray-100">{{ t('admin.accounts.openai.firstTokenTimeoutUseGatewayDefault') }}</span><span class="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.openai.firstTokenTimeoutUseGatewayDefaultDesc') }}</span></span>
-          </label>
+          <div v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled" class="mt-3 flex justify-end">
+            <button type="button" class="btn btn-secondary inline-flex items-center gap-1.5 text-xs" @click="resetOpenAIFirstTokenTimeoutStages('oauth')">
+              <Icon name="refresh" size="xs" />
+              {{ t('admin.accounts.openai.firstTokenTimeoutResetToGateway') }}
+            </button>
+          </div>
           <OpenAIApiKeyFirstTokenTimeoutStages
             v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled"
             v-model="openaiOAuthFirstTokenTimeoutStageConfig"
@@ -2636,10 +2638,12 @@
               </button>
             </div>
           </div>
-        <label v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled" class="mt-3 flex items-start gap-3 rounded-lg border border-primary-100 bg-primary-50/60 p-3 text-sm dark:border-primary-900/50 dark:bg-primary-950/20">
-          <input v-model="openaiAPIKeyFirstTokenTimeoutUseGatewayDefault" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
-          <span><span class="font-medium text-gray-800 dark:text-gray-100">{{ t('admin.accounts.openai.firstTokenTimeoutUseGatewayDefault') }}</span><span class="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.openai.firstTokenTimeoutUseGatewayDefaultDesc') }}</span></span>
-        </label>
+        <div v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled" class="mt-3 flex justify-end">
+          <button type="button" class="btn btn-secondary inline-flex items-center gap-1.5 text-xs" @click="resetOpenAIFirstTokenTimeoutStages('apikey')">
+            <Icon name="refresh" size="xs" />
+            {{ t('admin.accounts.openai.firstTokenTimeoutResetToGateway') }}
+          </button>
+        </div>
         <OpenAIApiKeyFirstTokenTimeoutStages
           v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled"
           v-model="openaiAPIKeyFirstTokenTimeoutStageConfig"
@@ -3664,6 +3668,7 @@ import {
 import { formatDateTime, formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import {
   type OpenAIApiKeyFirstTokenTimeoutStageConfig,
+  type OpenAIApiKeyFirstTokenTimeoutStage,
   createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig,
   readOpenAIApiKeyFirstTokenTimeoutStageConfig,
   readOpenAIOAuthFirstTokenTimeoutStageConfig,
@@ -3694,6 +3699,8 @@ interface Props {
   account: Account | null
   proxies: Proxy[]
   groups: AdminGroup[]
+  gatewayApiKeyFirstTokenTimeoutStages?: OpenAIApiKeyFirstTokenTimeoutStage[]
+  gatewayOAuthFirstTokenTimeoutStages?: OpenAIApiKeyFirstTokenTimeoutStage[]
 }
 
 const props = defineProps<Props>()
@@ -3703,6 +3710,13 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+const cloneFirstTokenStages = (stages?: OpenAIApiKeyFirstTokenTimeoutStage[]): OpenAIApiKeyFirstTokenTimeoutStageConfig => ({
+  stages: (stages?.length ? stages : createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig().stages)
+    .map((stage, index) => ({ ...stage, stage: index + 1 }))
+})
+const gatewayAPIKeyFirstTokenTimeoutStages = computed(() => cloneFirstTokenStages(props.gatewayApiKeyFirstTokenTimeoutStages))
+const gatewayOAuthFirstTokenTimeoutStages = computed(() => cloneFirstTokenStages(props.gatewayOAuthFirstTokenTimeoutStages))
 const appStore = useAppStore()
 const authStore = useAuthStore()
 
@@ -4167,19 +4181,17 @@ const openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled = ref(false)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_DEFAULT_MS)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled = ref(true)
 const openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs = ref(OPENAI_FIRST_TOKEN_TIMEOUT_PLACEHOLDER_GUARD_DEFAULT_MAX_MS)
-const openaiAPIKeyFirstTokenTimeoutStageConfig = ref<OpenAIApiKeyFirstTokenTimeoutStageConfig>(
-  createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
-)
-const openaiOAuthFirstTokenTimeoutStageConfig = ref<OpenAIApiKeyFirstTokenTimeoutStageConfig>(
-  createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
-)
-const openaiAPIKeyFirstTokenTimeoutUseGatewayDefault = ref(true)
-const openaiOAuthFirstTokenTimeoutUseGatewayDefault = ref(true)
+const openaiAPIKeyFirstTokenTimeoutStageConfig = ref<OpenAIApiKeyFirstTokenTimeoutStageConfig>(gatewayAPIKeyFirstTokenTimeoutStages.value)
+const openaiOAuthFirstTokenTimeoutStageConfig = ref<OpenAIApiKeyFirstTokenTimeoutStageConfig>(gatewayOAuthFirstTokenTimeoutStages.value)
 function resetOpenAIAPIKeyFirstTokenTimeoutStages() {
-  openaiAPIKeyFirstTokenTimeoutStageConfig.value = createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
+  openaiAPIKeyFirstTokenTimeoutStageConfig.value = gatewayAPIKeyFirstTokenTimeoutStages.value
 }
 function resetOpenAIOAuthFirstTokenTimeoutStages() {
-  openaiOAuthFirstTokenTimeoutStageConfig.value = createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
+  openaiOAuthFirstTokenTimeoutStageConfig.value = gatewayOAuthFirstTokenTimeoutStages.value
+}
+function resetOpenAIFirstTokenTimeoutStages(kind: 'oauth' | 'apikey') {
+  if (kind === 'oauth') resetOpenAIOAuthFirstTokenTimeoutStages()
+  else resetOpenAIAPIKeyFirstTokenTimeoutStages()
 }
 watch(openaiOAuthFirstTokenTimeoutStageConfig, (config) => {
   const first = config.stages[0]
@@ -4971,9 +4983,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value = false
   resetOpenAIFirstTokenTimeoutPlaceholderMs('apikey')
   resetOpenAIFirstTokenTimeoutPlaceholderGuard('apikey')
-  openaiAPIKeyFirstTokenTimeoutStageConfig.value = readOpenAIApiKeyFirstTokenTimeoutStageConfig(undefined)
-  openaiAPIKeyFirstTokenTimeoutUseGatewayDefault.value = true
-  openaiOAuthFirstTokenTimeoutUseGatewayDefault.value = true
+  openaiAPIKeyFirstTokenTimeoutStageConfig.value = gatewayAPIKeyFirstTokenTimeoutStages.value
+  openaiOAuthFirstTokenTimeoutStageConfig.value = gatewayOAuthFirstTokenTimeoutStages.value
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   codexImageGenerationBridgeMode.value = 'inherit'
@@ -5000,11 +5011,6 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       openaiAPIKeySafeTokenPlaceholderEnabled.value = extra?.openai_apikey_safe_token_placeholder_enabled === true
       openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value =
         extra?.openai_apikey_first_token_timeout_placeholder_enabled === true
-      openaiAPIKeyFirstTokenTimeoutUseGatewayDefault.value = extra?.openai_apikey_first_token_timeout_placeholder_use_gateway_default === true || (
-        extra?.openai_apikey_first_token_timeout_placeholder_stages === undefined &&
-        extra?.openai_apikey_first_token_timeout_placeholder_ms === undefined &&
-        extra?.openai_apikey_first_token_timeout_placeholder_guard_max_ms === undefined
-      )
       openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(
         extra?.openai_apikey_first_token_timeout_placeholder_ms
       )
@@ -5013,7 +5019,12 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       openaiAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs.value = normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(
         extra?.openai_apikey_first_token_timeout_placeholder_guard_max_ms
       )
-      openaiAPIKeyFirstTokenTimeoutStageConfig.value = readOpenAIApiKeyFirstTokenTimeoutStageConfig(extra)
+      const hasAPIKeyStages = extra?.openai_apikey_first_token_timeout_placeholder_stages !== undefined ||
+        extra?.openai_apikey_first_token_timeout_placeholder_ms !== undefined ||
+        extra?.openai_apikey_first_token_timeout_placeholder_guard_max_ms !== undefined
+      openaiAPIKeyFirstTokenTimeoutStageConfig.value = hasAPIKeyStages
+        ? readOpenAIApiKeyFirstTokenTimeoutStageConfig(extra)
+        : gatewayAPIKeyFirstTokenTimeoutStages.value
       openAIEndpointCapabilities.value = readOpenAIEndpointCapabilities(
         newAccount.credentials as Record<string, unknown> | undefined
       )
@@ -5050,11 +5061,6 @@ const syncFormFromAccount = (newAccount: Account | null) => {
         extra?.openai_oauth_chatgpt_safe_token_placeholder_enabled === true
       openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value =
         extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled === true
-      openaiOAuthFirstTokenTimeoutUseGatewayDefault.value = extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default === true || (
-        extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_stages === undefined &&
-        extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_ms === undefined &&
-        extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms === undefined
-      )
       openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = normalizeOpenAIFirstTokenTimeoutPlaceholderMs(
         extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_ms
       )
@@ -5063,7 +5069,12 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMs.value = normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(
         extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms
       )
-      openaiOAuthFirstTokenTimeoutStageConfig.value = readOpenAIOAuthFirstTokenTimeoutStageConfig(extra)
+      const hasOAuthStages = extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_stages !== undefined ||
+        extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_ms !== undefined ||
+        extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms !== undefined
+      openaiOAuthFirstTokenTimeoutStageConfig.value = hasOAuthStages
+        ? readOpenAIOAuthFirstTokenTimeoutStageConfig(extra)
+        : gatewayOAuthFirstTokenTimeoutStages.value
       codexCLIOnlyEnabled.value = extra?.codex_cli_only === true
       codexCLIOnlyAllowClaudeCodeEnabled.value =
         Array.isArray(extra?.codex_cli_only_allowed_clients) &&
@@ -6537,28 +6548,18 @@ const handleSubmit = async () => {
           newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled = true
           newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled =
             openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabled.value
-          if (openaiOAuthFirstTokenTimeoutUseGatewayDefault.value) {
-            newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default = true
-            delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms
-            delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms
-            delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages
-          } else {
-            delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default
-            newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms =
-              normalizeOpenAIFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
-          }
-          if (!openaiOAuthFirstTokenTimeoutUseGatewayDefault.value && openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabled.value) {
+          newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms =
+            normalizeOpenAIFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
+          newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages = openaiOAuthFirstTokenTimeoutStageConfig.value.stages.map(
+            (stage, index) => ({ ...stage, stage: index + 1 })
+          )
+          if (openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabled.value) {
             newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms =
               normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(
                 firstTokenStage.guard_max_ms
               )
-            newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages = openaiOAuthFirstTokenTimeoutStageConfig.value.stages.map(
-              (stage, index) => ({ ...stage, stage: index + 1 })
-            )
           } else {
             delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms
-            delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages
-            delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default
           }
         } else {
           delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled
@@ -6581,9 +6582,7 @@ const handleSubmit = async () => {
         const firstTokenStage = openaiAPIKeyFirstTokenTimeoutStageConfig.value.stages[0]
         if (
           !imagePoolModeEnabled.value &&
-          openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value &&
-          openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value &&
-          !openaiAPIKeyFirstTokenTimeoutUseGatewayDefault.value
+          openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value
         ) {
           newExtra.openai_apikey_first_token_timeout_placeholder_stages = openaiAPIKeyFirstTokenTimeoutStageConfig.value.stages.map(
             (stage, index) => ({ ...stage, stage: index + 1 })
@@ -6612,22 +6611,16 @@ const handleSubmit = async () => {
           newExtra.openai_apikey_first_token_timeout_placeholder_enabled = true
           newExtra.openai_apikey_first_token_timeout_placeholder_guard_enabled =
             openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value
-          if (openaiAPIKeyFirstTokenTimeoutUseGatewayDefault.value) {
-            newExtra.openai_apikey_first_token_timeout_placeholder_use_gateway_default = true
-            delete newExtra.openai_apikey_first_token_timeout_placeholder_ms
-            delete newExtra.openai_apikey_first_token_timeout_placeholder_guard_max_ms
-            delete newExtra.openai_apikey_first_token_timeout_placeholder_stages
-          } else {
-            delete newExtra.openai_apikey_first_token_timeout_placeholder_use_gateway_default
-            newExtra.openai_apikey_first_token_timeout_placeholder_ms =
-              normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
-          }
-          if (!openaiAPIKeyFirstTokenTimeoutUseGatewayDefault.value && openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value) {
+          newExtra.openai_apikey_first_token_timeout_placeholder_ms =
+            normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
+          newExtra.openai_apikey_first_token_timeout_placeholder_stages = openaiAPIKeyFirstTokenTimeoutStageConfig.value.stages.map(
+            (stage, index) => ({ ...stage, stage: index + 1 })
+          )
+          if (openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value) {
             newExtra.openai_apikey_first_token_timeout_placeholder_guard_max_ms =
               normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(firstTokenStage.guard_max_ms)
           } else {
             delete newExtra.openai_apikey_first_token_timeout_placeholder_guard_max_ms
-            delete newExtra.openai_apikey_first_token_timeout_placeholder_use_gateway_default
           }
         } else {
           delete newExtra.openai_apikey_first_token_timeout_placeholder_enabled

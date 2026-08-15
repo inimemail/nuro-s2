@@ -3726,8 +3726,7 @@ export default {
           'Auto-pauses placeholders when real first token exceeds the limit, then resumes after recovery.',
         firstTokenTimeoutPlaceholderGuardMaxMs: 'Guard limit',
         firstTokenTimeoutPlaceholderGuardMaxMsHint: '1-30000 ms, default 3000 ms.',
-        firstTokenTimeoutUseGatewayDefault: 'Follow gateway default stages',
-        firstTokenTimeoutUseGatewayDefaultDesc: 'Leave enabled to use the gateway template. Turn it off to save stages only for this account.',
+        firstTokenTimeoutResetToGateway: 'Reset to gateway stages',
         firstTokenTimeoutStages: {
           title: 'Staged placeholder policy',
           description: 'Automatically selects a stage from the latest real first-token latency. Placeholder injection pauses above the final guard and resumes at a lower stage after recovery. Placeholder range: 1-100000 ms; guard limits have no configured maximum. Up to 10 stages.',

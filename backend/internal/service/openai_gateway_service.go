@@ -6024,17 +6024,13 @@ func (s *OpenAIGatewayService) openAIFirstTokenTimeoutPlaceholderStages(account 
 		return nil
 	}
 	if oauth {
-		if account.HasOpenAIOAuthFirstTokenTimeoutPlaceholderOverride() {
-			return account.GetOpenAIOAuthFirstTokenTimeoutPlaceholderStages()
+		if stages := account.GetOpenAIOAuthFirstTokenTimeoutPlaceholderStages(); len(stages) > 0 {
+			return stages
 		}
-	} else if account.HasOpenAIAPIKeyFirstTokenTimeoutPlaceholderOverride() {
-		return account.GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages()
-	}
-	if s != nil && s.settingService != nil {
-		return s.settingService.GetGatewayOpenAIFirstTokenTimeoutPlaceholderStages(context.Background(), oauth)
-	}
-	if oauth {
-		return defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages()
+	} else {
+		if stages := account.GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(); len(stages) > 0 {
+			return stages
+		}
 	}
 	return defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages()
 }
@@ -6051,13 +6047,8 @@ func (s *OpenAIGatewayService) recordOpenAIFirstTokenTimeoutPlaceholderGuardSamp
 		recordedAt = recordedAtUnixNS[0]
 	}
 	guardMaxMS := account.getOpenAIFirstTokenTimeoutPlaceholderGuardRecordingMaxMs()
-	if !account.HasOpenAIAPIKeyFirstTokenTimeoutPlaceholderOverride() && account.IsOpenAIApiKey() && s.settingService != nil {
-		stages := s.openAIFirstTokenTimeoutPlaceholderStages(account, false)
-		if len(stages) > 0 {
-			guardMaxMS = stages[len(stages)-1].GuardMaxMS
-		}
-	} else if !account.HasOpenAIOAuthFirstTokenTimeoutPlaceholderOverride() && account.IsOpenAIOAuth() && s.settingService != nil {
-		stages := s.openAIFirstTokenTimeoutPlaceholderStages(account, true)
+	if account.IsOpenAIApiKey() || account.IsOpenAIOAuth() {
+		stages := s.openAIFirstTokenTimeoutPlaceholderStages(account, account.IsOpenAIOAuth())
 		if len(stages) > 0 {
 			guardMaxMS = stages[len(stages)-1].GuardMaxMS
 		}

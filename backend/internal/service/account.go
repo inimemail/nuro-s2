@@ -3060,9 +3060,9 @@ func (a *Account) GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages() []OpenAIFi
 }
 
 // HasOpenAIAPIKeyFirstTokenTimeoutPlaceholderOverride reports whether the
-// account has an explicit policy. A true use-gateway-default marker is used by
-// the account UI for newly created/freshly reset accounts and takes precedence
-// over any transient editor values.
+// account has an explicitly persisted policy. The legacy gateway-default marker
+// is retained here for compatibility with migration and diagnostics; the hot
+// path no longer uses this helper to choose the live policy.
 func (a *Account) HasOpenAIAPIKeyFirstTokenTimeoutPlaceholderOverride() bool {
 	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
 		return false
@@ -3079,6 +3079,13 @@ func (a *Account) HasOpenAIAPIKeyFirstTokenTimeoutPlaceholderOverride() bool {
 func (a *Account) GetOpenAIOAuthFirstTokenTimeoutPlaceholderStages() []OpenAIFirstTokenTimeoutPlaceholderStage {
 	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
 		return nil
+	}
+	if _, hasStages := a.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey]; !hasStages {
+		_, hasPlaceholder := a.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey]
+		_, hasGuard := a.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey]
+		if !hasPlaceholder && !hasGuard {
+			return defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages()
+		}
 	}
 	stages, err := NormalizeOpenAIOAuthFirstTokenTimeoutPlaceholderStages(a.Extra)
 	if err == nil && len(stages) > 0 {

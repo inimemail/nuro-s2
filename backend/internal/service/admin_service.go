@@ -3394,6 +3394,11 @@ func normalizeOpenAIAPIKeyFirstTokenTimeoutStagesExtra(platform, accountType str
 		return nil, nil
 	}
 	normalized := maps.Clone(extra)
+	// The gateway-default marker belonged to the previous UI model. Account
+	// policies are now always materialized, so discard stale markers whenever
+	// an account Extra payload is normalized.
+	delete(normalized, openAIAPIKeyFirstTokenTimeoutPlaceholderUseGatewayDefaultExtraKey)
+	delete(normalized, openAIOAuthFirstTokenTimeoutPlaceholderUseGatewayDefaultExtraKey)
 	_, stageKeyPresent := normalized[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]
 	if platform == PlatformOpenAI && accountType == AccountTypeOAuth {
 		delete(normalized, openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey)
