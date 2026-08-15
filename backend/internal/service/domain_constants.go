@@ -505,6 +505,11 @@ const (
 	SettingKeyGatewayEdgeBodyIdleTimeoutMS         = "gateway_edge_body_idle_timeout_ms"
 	SettingKeyGatewayEdgeResponseHeaderMaxAttempts = "gateway_edge_response_header_max_attempts"
 	SettingKeyGatewayEdgeResponseHeaderFailover    = "gateway_edge_response_header_failover"
+	// OpenAI first-token timeout placeholder defaults. These are templates for
+	// accounts without an explicit account-level policy; account switches and
+	// saved per-account stages remain authoritative.
+	SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages = "gateway_openai_apikey_first_token_timeout_placeholder_stages"
+	SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages  = "gateway_openai_oauth_first_token_timeout_placeholder_stages"
 	// SettingKeyGatewayRetryAfterSeconds is kept for reading settings saved by
 	// older versions; new writes and API payloads use milliseconds.
 	SettingKeyGatewayRetryAfterSeconds = "gateway_retry_after_seconds"

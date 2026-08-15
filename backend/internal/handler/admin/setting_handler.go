@@ -311,6 +311,8 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		GatewayEdgeBodyIdleTimeoutMS:                    settings.GatewayEdgeBodyIdleTimeoutMS,
 		GatewayEdgeResponseHeaderMaxAttempts:            settings.GatewayEdgeResponseHeaderMaxAttempts,
 		GatewayEdgeResponseHeaderFailover:               settings.GatewayEdgeResponseHeaderFailover,
+		GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: settings.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages,
+		GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  settings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: settings.OpenAIPoolDownstreamModelLimitProtectionEnabled,
 		OpenAIPoolRecoveryProbeEnabled:                  settings.OpenAIPoolRecoveryProbeEnabled,
 		OpenAIPoolRecoveryProbeModel:                    settings.OpenAIPoolRecoveryProbeModel,
@@ -691,6 +693,8 @@ type UpdateSettingsRequest struct {
 	GatewayEdgeBodyIdleTimeoutMS                    int     `json:"gateway_edge_body_idle_timeout_ms"`
 	GatewayEdgeResponseHeaderMaxAttempts            int     `json:"gateway_edge_response_header_max_attempts"`
 	GatewayEdgeResponseHeaderFailover               *bool   `json:"gateway_edge_response_header_failover"`
+	GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_apikey_first_token_timeout_placeholder_stages"`
+	GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages  []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_oauth_first_token_timeout_placeholder_stages"`
 	OpenAIPoolDownstreamModelLimitProtectionEnabled *bool   `json:"openai_pool_downstream_model_limit_protection_enabled"`
 	OpenAIPoolRecoveryProbeEnabled                  *bool   `json:"openai_pool_recovery_probe_enabled"`
 	OpenAIPoolRecoveryProbeModel                    *string `json:"openai_pool_recovery_probe_model"`
@@ -877,6 +881,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+	if req.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages == nil {
+		req.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages = previousSettings.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages
+	}
+	if req.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages == nil {
+		req.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages = previousSettings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages
 	}
 	if req.PasskeyEnabled != nil && *req.PasskeyEnabled {
 		configured, _, _ := h.settingService.PasskeyConfiguration()
@@ -1963,6 +1973,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GatewayEdgeBodyIdleTimeoutMS:              req.GatewayEdgeBodyIdleTimeoutMS,
 		GatewayEdgeResponseHeaderMaxAttempts:      req.GatewayEdgeResponseHeaderMaxAttempts,
 		GatewayEdgeResponseHeaderFailover:         edgeResponseHeaderFailover,
+		GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: req.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages,
+		GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  req.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: func() bool {
 			if req.OpenAIPoolDownstreamModelLimitProtectionEnabled != nil {
 				return *req.OpenAIPoolDownstreamModelLimitProtectionEnabled
@@ -2637,6 +2649,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GatewayEdgeBodyIdleTimeoutMS:                    updatedSettings.GatewayEdgeBodyIdleTimeoutMS,
 		GatewayEdgeResponseHeaderMaxAttempts:            updatedSettings.GatewayEdgeResponseHeaderMaxAttempts,
 		GatewayEdgeResponseHeaderFailover:               updatedSettings.GatewayEdgeResponseHeaderFailover,
+		GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: updatedSettings.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages,
+		GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  updatedSettings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: updatedSettings.OpenAIPoolDownstreamModelLimitProtectionEnabled,
 		OpenAIPoolRecoveryProbeEnabled:                  updatedSettings.OpenAIPoolRecoveryProbeEnabled,
 		OpenAIPoolRecoveryProbeModel:                    updatedSettings.OpenAIPoolRecoveryProbeModel,

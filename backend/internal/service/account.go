@@ -161,6 +161,8 @@ const openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey = "openai_apikey_first_
 const openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey = "openai_apikey_first_token_timeout_placeholder_guard_enabled"
 const openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey = "openai_apikey_first_token_timeout_placeholder_guard_max_ms"
 const openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey = "openai_apikey_first_token_timeout_placeholder_stages"
+const openAIOAuthFirstTokenTimeoutPlaceholderUseGatewayDefaultExtraKey = "openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default"
+const openAIAPIKeyFirstTokenTimeoutPlaceholderUseGatewayDefaultExtraKey = "openai_apikey_first_token_timeout_placeholder_use_gateway_default"
 
 const openAIFirstTokenTimeoutPlaceholderDefaultMs = 1000
 const openAIFirstTokenTimeoutPlaceholderMinMs = 1
@@ -192,6 +194,28 @@ func defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages() []OpenAIFirstTokenT
 		{Stage: 3, PlaceholderMS: 5000, GuardMaxMS: 15000},
 		{Stage: 4, PlaceholderMS: 10000, GuardMaxMS: 30000},
 	}
+}
+
+// NormalizeOpenAIFirstTokenTimeoutPlaceholderStageSlice validates a complete
+// stage template outside an Account.Extra payload (for example, the global
+// gateway default). It returns a canonical copy so callers cannot mutate the
+// stored policy through a shared slice.
+func NormalizeOpenAIFirstTokenTimeoutPlaceholderStageSlice(stages []OpenAIFirstTokenTimeoutPlaceholderStage) ([]OpenAIFirstTokenTimeoutPlaceholderStage, error) {
+	items := make([]any, len(stages))
+	for i, stage := range stages {
+		items[i] = map[string]any{
+			"stage":          stage.Stage,
+			"placeholder_ms": stage.PlaceholderMS,
+			"guard_max_ms":   stage.GuardMaxMS,
+		}
+	}
+	canonical, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStages(map[string]any{
+		openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: items,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append([]OpenAIFirstTokenTimeoutPlaceholderStage(nil), canonical...), nil
 }
 
 // NormalizeOpenAIFirstTokenTimeoutPlaceholderStages validates and canonicalizes a
@@ -3035,6 +3059,23 @@ func (a *Account) GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages() []OpenAIFi
 	}}
 }
 
+// HasOpenAIAPIKeyFirstTokenTimeoutPlaceholderOverride reports whether the
+// account has an explicit policy. A true use-gateway-default marker is used by
+// the account UI for newly created/freshly reset accounts and takes precedence
+// over any transient editor values.
+func (a *Account) HasOpenAIAPIKeyFirstTokenTimeoutPlaceholderOverride() bool {
+	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
+		return false
+	}
+	if value, ok := a.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderUseGatewayDefaultExtraKey].(bool); ok && value {
+		return false
+	}
+	_, hasStages := a.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey]
+	_, hasPlaceholder := a.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey]
+	_, hasGuard := a.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey]
+	return hasStages || hasPlaceholder || hasGuard
+}
+
 func (a *Account) GetOpenAIOAuthFirstTokenTimeoutPlaceholderStages() []OpenAIFirstTokenTimeoutPlaceholderStage {
 	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
 		return nil
@@ -3048,6 +3089,19 @@ func (a *Account) GetOpenAIOAuthFirstTokenTimeoutPlaceholderStages() []OpenAIFir
 		PlaceholderMS: a.GetOpenAIFirstTokenTimeoutPlaceholderMs(),
 		GuardMaxMS:    a.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(),
 	}}
+}
+
+func (a *Account) HasOpenAIOAuthFirstTokenTimeoutPlaceholderOverride() bool {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+		return false
+	}
+	if value, ok := a.Extra[openAIOAuthFirstTokenTimeoutPlaceholderUseGatewayDefaultExtraKey].(bool); ok && value {
+		return false
+	}
+	_, hasStages := a.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey]
+	_, hasPlaceholder := a.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey]
+	_, hasGuard := a.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey]
+	return hasStages || hasPlaceholder || hasGuard
 }
 
 func (a *Account) getOpenAIFirstTokenTimeoutPlaceholderGuardRecordingMaxMs() int {

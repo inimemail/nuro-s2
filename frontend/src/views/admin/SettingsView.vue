@@ -4105,6 +4105,24 @@
             </div>
           </div>
 
+          <!-- OpenAI First-token Timeout Placeholder Defaults -->
+          <div class="space-y-4">
+            <div class="px-1">
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.gatewayFirstTokenDefaults.title') }}</h2>
+              <p class="mt-1 max-w-3xl text-sm text-gray-600 dark:text-gray-400">{{ t('admin.settings.gatewayFirstTokenDefaults.description') }}</p>
+            </div>
+            <div class="grid gap-4 xl:grid-cols-2">
+              <OpenAIFirstTokenDefaultsEditor
+                v-model="form.gateway_openai_apikey_first_token_timeout_placeholder_stages"
+                :title="t('admin.settings.gatewayFirstTokenDefaults.apiKey')"
+              />
+              <OpenAIFirstTokenDefaultsEditor
+                v-model="form.gateway_openai_oauth_first_token_timeout_placeholder_stages"
+                :title="t('admin.settings.gatewayFirstTokenDefaults.oauth')"
+              />
+            </div>
+          </div>
+
           <!-- Gateway Concurrency Profile -->
           <div class="card overflow-hidden">
             <div class="border-b border-gray-100 bg-gradient-to-r from-sky-50 via-white to-emerald-50 px-6 py-5 dark:border-dark-700 dark:from-sky-950/30 dark:via-dark-800 dark:to-emerald-950/20">
@@ -8002,6 +8020,7 @@ import GroupOptionItem from "@/components/common/GroupOptionItem.vue";
 import Toggle from "@/components/common/Toggle.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
+import OpenAIFirstTokenDefaultsEditor from "@/components/admin/OpenAIFirstTokenDefaultsEditor.vue";
 import OpenAIFastPolicyUserSelector from "@/views/admin/settings/OpenAIFastPolicyUserSelector.vue";
 import PanelRateLimitSettingsCard from "@/views/admin/settings/PanelRateLimitSettingsCard.vue";
 import {
@@ -8777,6 +8796,18 @@ const form = reactive<SettingsForm>({
   gateway_edge_body_idle_timeout_ms: 180000,
   gateway_edge_response_header_max_attempts: 3,
   gateway_edge_response_header_failover: true,
+  gateway_openai_apikey_first_token_timeout_placeholder_stages: [
+    { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
+    { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
+    { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 },
+    { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 },
+  ],
+  gateway_openai_oauth_first_token_timeout_placeholder_stages: [
+    { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
+    { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
+    { stage: 3, placeholder_ms: 5000, guard_max_ms: 15000 },
+    { stage: 4, placeholder_ms: 10000, guard_max_ms: 30000 },
+  ],
   openai_pool_downstream_model_limit_protection_enabled: true,
   openai_pool_recovery_probe_enabled: true,
   openai_pool_recovery_probe_model: "gpt-5.5",
@@ -8925,6 +8956,26 @@ function validateGatewayConcurrencySettings(): boolean {
     return false;
   }
   return true;
+}
+
+function validateGatewayFirstTokenStages(stages: Array<{ placeholder_ms: number; guard_max_ms: number }>): boolean {
+  if (stages.length < 1 || stages.length > 10) {
+    appStore.showError(localText('首 Token 默认阶段必须为 1-10 个。', 'First-token defaults must contain 1-10 stages.'))
+    return false
+  }
+  for (let index = 0; index < stages.length; index += 1) {
+    const stage = stages[index]
+    if (!Number.isSafeInteger(stage.placeholder_ms) || stage.placeholder_ms < 1 || stage.placeholder_ms > 100000 || !Number.isSafeInteger(stage.guard_max_ms) || stage.guard_max_ms < stage.placeholder_ms) {
+      appStore.showError(localText(`首 Token 默认第 ${index + 1} 阶段数值无效。`, `Invalid first-token default values in stage ${index + 1}.`))
+      return false
+    }
+    const previous = stages[index - 1]
+    if (previous && (stage.placeholder_ms <= previous.placeholder_ms || stage.guard_max_ms <= previous.guard_max_ms)) {
+      appStore.showError(localText(`首 Token 默认第 ${index + 1} 阶段必须大于上一阶段。`, `First-token default stage ${index + 1} must be greater than the previous stage.`))
+      return false
+    }
+  }
+  return true
 }
 
 const authSourceDefaults = reactive<AuthSourceDefaultsState>(
@@ -9912,6 +9963,8 @@ async function saveSettings() {
   saving.value = true;
   try {
     if (!validateGatewayConcurrencySettings()) return;
+    if (!validateGatewayFirstTokenStages(form.gateway_openai_apikey_first_token_timeout_placeholder_stages)) return;
+    if (!validateGatewayFirstTokenStages(form.gateway_openai_oauth_first_token_timeout_placeholder_stages)) return;
     const normalizedTableDefaultPageSize = Math.floor(
       Number(form.table_default_page_size),
     );
@@ -10226,6 +10279,16 @@ async function saveSettings() {
       gateway_edge_body_idle_timeout_ms: Math.floor(Number(form.gateway_edge_body_idle_timeout_ms)),
       gateway_edge_response_header_max_attempts: Math.floor(Number(form.gateway_edge_response_header_max_attempts)),
       gateway_edge_response_header_failover: form.gateway_edge_response_header_failover,
+      gateway_openai_apikey_first_token_timeout_placeholder_stages: form.gateway_openai_apikey_first_token_timeout_placeholder_stages.map((stage, index) => ({
+        stage: index + 1,
+        placeholder_ms: Math.floor(Number(stage.placeholder_ms)),
+        guard_max_ms: Math.floor(Number(stage.guard_max_ms)),
+      })),
+      gateway_openai_oauth_first_token_timeout_placeholder_stages: form.gateway_openai_oauth_first_token_timeout_placeholder_stages.map((stage, index) => ({
+        stage: index + 1,
+        placeholder_ms: Math.floor(Number(stage.placeholder_ms)),
+        guard_max_ms: Math.floor(Number(stage.guard_max_ms)),
+      })),
       openai_pool_downstream_model_limit_protection_enabled:
         form.openai_pool_downstream_model_limit_protection_enabled,
       openai_pool_recovery_probe_enabled:

@@ -3872,6 +3872,8 @@ export default {
         firstTokenTimeoutPlaceholderGuardDesc: '真实首 Token 超过上限后自动暂停补帧，恢复变快后再开启。',
         firstTokenTimeoutPlaceholderGuardMaxMs: '保护上限',
         firstTokenTimeoutPlaceholderGuardMaxMsHint: '1-30000 ms，默认 3000 ms。',
+        firstTokenTimeoutUseGatewayDefault: '跟随网关默认阶段',
+        firstTokenTimeoutUseGatewayDefaultDesc: '保持开启即可使用网关管理中的默认策略；关闭后才保存该账号自己的阶段。',
         firstTokenTimeoutStages: {
           title: '阶段性补帧策略',
           description: '根据最近一次真实首 Token 自动匹配阶段；超过最后一个保护上限时暂停补帧，延迟恢复后自动回到较低阶段。补帧阈值范围 1-100000 ms，保护上限不设最大值，最多 10 个阶段。',
@@ -6565,6 +6567,21 @@ export default {
         globalWorkersRange: 'Edge 全局并发必须在 1-999999999 之间。',
         extraRange: '用户额外等待数必须在 0-50 之间。',
         retryRange: 'Retry-After 必须在 1-60000ms 之间。'
+      },
+      gatewayFirstTokenDefaults: {
+        title: '首 Token 超时补帧默认策略',
+        description: '这里只设置跟随网关默认的账号。账号已有自定义阶段不会被覆盖，账号开关仍然决定是否启用补帧。',
+        apiKey: 'APIKey 账号',
+        oauth: 'OAuth / ChatGPT 账号',
+        placeholder: '补帧间隔',
+        guard: '真实首 Token 保护上限',
+        restore: '恢复内置默认',
+        add: '添加阶段',
+        remove: '删除阶段',
+        footer: '{count}/10 个阶段；阶段数值需从前到后递增。',
+        invalidPlaceholder: '补帧间隔必须是 1-100000ms 的整数。',
+        invalidGuard: '保护上限必须大于等于补帧间隔。',
+        invalidOrder: '阶段数值必须大于上一阶段。'
       },
       gatewayOpenAIHeaderTimeout: {
         title: 'OpenAI 上游响应头保护',

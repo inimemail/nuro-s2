@@ -2474,6 +2474,11 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled =
       openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value
     if (openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value) {
+      const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
+      updates.extra_remove_keys = [
+        ...removeKeys,
+        'openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default'
+      ]
       extra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms =
         normalizeOpenAIFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
       extra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled =
@@ -2503,7 +2508,8 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
         'openai_oauth_chatgpt_first_token_timeout_placeholder_ms',
         'openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled',
         'openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms',
-        'openai_oauth_chatgpt_first_token_timeout_placeholder_stages'
+        'openai_oauth_chatgpt_first_token_timeout_placeholder_stages',
+        'openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default'
       ]
     }
   }
@@ -2528,6 +2534,11 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.openai_apikey_first_token_timeout_placeholder_enabled =
       openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value
     if (openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value) {
+      const removeKeys = (updates.extra_remove_keys as string[] | undefined) ?? []
+      updates.extra_remove_keys = [
+        ...removeKeys,
+        'openai_apikey_first_token_timeout_placeholder_use_gateway_default'
+      ]
       const stages = openaiAPIKeyFirstTokenTimeoutStageConfig.value.stages.map((stage, index) => ({
         ...stage,
         stage: index + 1
@@ -2544,7 +2555,8 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
         updates.extra_remove_keys = [
           ...removeKeys,
           'openai_apikey_first_token_timeout_placeholder_guard_max_ms',
-          'openai_apikey_first_token_timeout_placeholder_stages'
+          'openai_apikey_first_token_timeout_placeholder_stages',
+          'openai_apikey_first_token_timeout_placeholder_use_gateway_default'
         ]
       }
     } else {
@@ -2554,7 +2566,8 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
         'openai_apikey_first_token_timeout_placeholder_ms',
         'openai_apikey_first_token_timeout_placeholder_guard_enabled',
         'openai_apikey_first_token_timeout_placeholder_guard_max_ms',
-        'openai_apikey_first_token_timeout_placeholder_stages'
+        'openai_apikey_first_token_timeout_placeholder_stages',
+        'openai_apikey_first_token_timeout_placeholder_use_gateway_default'
       ]
     }
   }

@@ -129,6 +129,8 @@ type cachedGatewayForwardingSettings struct {
 	openAIPoolRecoveryProbe                  bool
 	openAIImagePoolRecoveryProbe             bool
 	anthropicPoolRecoveryProbe               bool
+	openAIAPIKeyFirstTokenStages             []OpenAIFirstTokenTimeoutPlaceholderStage
+	openAIOAuthFirstTokenStages              []OpenAIFirstTokenTimeoutPlaceholderStage
 	expiresAt                                int64 // unix nano
 }
 
@@ -2259,6 +2261,28 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	if settings.GatewayRetryAfterMS < 1 || settings.GatewayRetryAfterMS > 60000 {
 		return nil, infraerrors.BadRequest("GATEWAY_RETRY_AFTER_INVALID", "gateway Retry-After must be between 1ms and 60000ms")
 	}
+	if len(settings.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages) == 0 {
+		settings.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages = defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages()
+	}
+	if len(settings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages) == 0 {
+		settings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages = defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages()
+	}
+	apiKeyStages, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStageSlice(settings.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages)
+	if err != nil {
+		return nil, infraerrors.BadRequest("GATEWAY_OPENAI_FIRST_TOKEN_STAGES_INVALID", err.Error())
+	}
+	oauthStages, err := NormalizeOpenAIFirstTokenTimeoutPlaceholderStageSlice(settings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages)
+	if err != nil {
+		return nil, infraerrors.BadRequest("GATEWAY_OPENAI_FIRST_TOKEN_STAGES_INVALID", err.Error())
+	}
+	apiKeyStagesJSON, err := json.Marshal(apiKeyStages)
+	if err != nil {
+		return nil, fmt.Errorf("marshal gateway API key first-token stages: %w", err)
+	}
+	oauthStagesJSON, err := json.Marshal(oauthStages)
+	if err != nil {
+		return nil, fmt.Errorf("marshal gateway OAuth first-token stages: %w", err)
+	}
 	updates[SettingKeyGatewayUserSlotWaitTimeoutMS] = strconv.Itoa(settings.GatewayUserSlotWaitTimeoutMS)
 	updates[SettingKeyGatewayAccountSlotWaitTimeoutMS] = strconv.Itoa(settings.GatewayAccountSlotWaitTimeoutMS)
 	updates[SettingKeyGatewayEdgeQueueWaitBudgetMS] = strconv.Itoa(settings.GatewayEdgeQueueWaitBudgetMS)
@@ -2274,6 +2298,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyGatewayEdgeBodyIdleTimeoutMS] = strconv.Itoa(settings.GatewayEdgeBodyIdleTimeoutMS)
 	updates[SettingKeyGatewayEdgeResponseHeaderMaxAttempts] = strconv.Itoa(settings.GatewayEdgeResponseHeaderMaxAttempts)
 	updates[SettingKeyGatewayEdgeResponseHeaderFailover] = strconv.FormatBool(settings.GatewayEdgeResponseHeaderFailover)
+	updates[SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages] = string(apiKeyStagesJSON)
+	updates[SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages] = string(oauthStagesJSON)
 	updates[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled] = strconv.FormatBool(settings.OpenAIPoolDownstreamModelLimitProtectionEnabled)
 	updates[SettingKeyOpenAIPoolRecoveryProbeEnabled] = strconv.FormatBool(settings.OpenAIPoolRecoveryProbeEnabled)
 	updates[SettingKeyOpenAIPoolRecoveryProbeModel] = strings.TrimSpace(settings.OpenAIPoolRecoveryProbeModel)
@@ -2455,6 +2481,8 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		openAIPoolRecoveryProbe:                  settings.OpenAIPoolRecoveryProbeEnabled,
 		openAIImagePoolRecoveryProbe:             settings.OpenAIImagePoolRecoveryProbeEnabled,
 		anthropicPoolRecoveryProbe:               settings.AnthropicPoolRecoveryProbeEnabled,
+		openAIAPIKeyFirstTokenStages:             append([]OpenAIFirstTokenTimeoutPlaceholderStage(nil), settings.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages...),
+		openAIOAuthFirstTokenStages:              append([]OpenAIFirstTokenTimeoutPlaceholderStage(nil), settings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages...),
 		expiresAt:                                time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 	})
 	s.antigravityUAVersionSF.Forget("antigravity_user_agent_version")
@@ -2693,6 +2721,7 @@ type gatewayForwardingSettingsResult struct {
 	openAIPoolDownstreamModelLimitProtection               bool
 	openAIPoolRecoveryProbe, openAIImagePoolRecoveryProbe  bool
 	anthropicPoolRecoveryProbe                             bool
+	openAIAPIKeyFirstTokenStages, openAIOAuthFirstTokenStages []OpenAIFirstTokenTimeoutPlaceholderStage
 }
 
 func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context) gatewayForwardingSettingsResult {
@@ -2712,6 +2741,8 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 				openAIPoolRecoveryProbe:                  cached.openAIPoolRecoveryProbe,
 				openAIImagePoolRecoveryProbe:             cached.openAIImagePoolRecoveryProbe,
 				anthropicPoolRecoveryProbe:               cached.anthropicPoolRecoveryProbe,
+				openAIAPIKeyFirstTokenStages:             append([]OpenAIFirstTokenTimeoutPlaceholderStage(nil), cached.openAIAPIKeyFirstTokenStages...),
+				openAIOAuthFirstTokenStages:              append([]OpenAIFirstTokenTimeoutPlaceholderStage(nil), cached.openAIOAuthFirstTokenStages...),
 			}
 		}
 	}
@@ -2732,6 +2763,8 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 					openAIPoolRecoveryProbe:                  cached.openAIPoolRecoveryProbe,
 					openAIImagePoolRecoveryProbe:             cached.openAIImagePoolRecoveryProbe,
 					anthropicPoolRecoveryProbe:               cached.anthropicPoolRecoveryProbe,
+					openAIAPIKeyFirstTokenStages:             append([]OpenAIFirstTokenTimeoutPlaceholderStage(nil), cached.openAIAPIKeyFirstTokenStages...),
+					openAIOAuthFirstTokenStages:              append([]OpenAIFirstTokenTimeoutPlaceholderStage(nil), cached.openAIOAuthFirstTokenStages...),
 				}, nil
 			}
 		}
@@ -2751,6 +2784,8 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			SettingKeyOpenAIPoolRecoveryProbeEnabled,
 			SettingKeyOpenAIImagePoolRecoveryProbeEnabled,
 			SettingKeyAnthropicPoolRecoveryProbeEnabled,
+			SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages,
+			SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages,
 		})
 		if err != nil {
 			slog.Warn("failed to get gateway forwarding settings", "error", err)
@@ -2804,6 +2839,8 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if v, ok := values[SettingKeyAnthropicPoolRecoveryProbeEnabled]; ok && v != "" {
 			anthropicPoolRecoveryProbe = v == "true"
 		}
+		apiKeyFirstTokenStages := parseGatewayFirstTokenTimeoutPlaceholderStages(values[SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages])
+		oauthFirstTokenStages := parseGatewayFirstTokenTimeoutPlaceholderStages(values[SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages])
 		gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
 			fingerprintUnification:                   fp,
 			metadataPassthrough:                      mp,
@@ -2818,6 +2855,8 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			openAIPoolRecoveryProbe:                  openAIPoolRecoveryProbe,
 			openAIImagePoolRecoveryProbe:             openAIImagePoolRecoveryProbe,
 			anthropicPoolRecoveryProbe:               anthropicPoolRecoveryProbe,
+			openAIAPIKeyFirstTokenStages:             apiKeyFirstTokenStages,
+			openAIOAuthFirstTokenStages:              oauthFirstTokenStages,
 			expiresAt:                                time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 		})
 		return gatewayForwardingSettingsResult{
@@ -2834,6 +2873,8 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			openAIPoolRecoveryProbe:                  openAIPoolRecoveryProbe,
 			openAIImagePoolRecoveryProbe:             openAIImagePoolRecoveryProbe,
 			anthropicPoolRecoveryProbe:               anthropicPoolRecoveryProbe,
+			openAIAPIKeyFirstTokenStages:             apiKeyFirstTokenStages,
+			openAIOAuthFirstTokenStages:              oauthFirstTokenStages,
 		}, nil
 	})
 	if r, ok := val.(gatewayForwardingSettingsResult); ok {
@@ -2848,6 +2889,21 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 func (s *SettingService) GetGatewayForwardingSettings(ctx context.Context) (fingerprintUnification, metadataPassthrough, cchSigning bool) {
 	result := s.getGatewayForwardingSettingsCached(ctx)
 	return result.fp, result.mp, result.cch
+}
+
+// GetGatewayOpenAIFirstTokenTimeoutPlaceholderStages returns a defensive copy
+// of the global default template. It shares the existing gateway settings
+// cache, so the OpenAI stream hot path does not query the database per request.
+func (s *SettingService) GetGatewayOpenAIFirstTokenTimeoutPlaceholderStages(ctx context.Context, oauth bool) []OpenAIFirstTokenTimeoutPlaceholderStage {
+	result := s.getGatewayForwardingSettingsCached(ctx)
+	stages := result.openAIAPIKeyFirstTokenStages
+	if oauth {
+		stages = result.openAIOAuthFirstTokenStages
+	}
+	if len(stages) == 0 {
+		stages = defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages()
+	}
+	return append([]OpenAIFirstTokenTimeoutPlaceholderStage(nil), stages...)
 }
 
 // IsAnthropicCacheTTL1hInjectionEnabled 检查是否对 Anthropic OAuth/SetupToken 请求体注入 1h cache_control ttl。
@@ -3362,6 +3418,10 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defaultFirstTokenStagesJSON, err := json.Marshal(defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages())
+	if err != nil {
+		return fmt.Errorf("marshal default OpenAI first-token stages: %w", err)
+	}
 
 	// 初始化默认设置
 	defaults := map[string]string{
@@ -3539,6 +3599,8 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyGatewayEdgeBodyIdleTimeoutMS:                    "180000",
 		SettingKeyGatewayEdgeResponseHeaderMaxAttempts:            "3",
 		SettingKeyGatewayEdgeResponseHeaderFailover:               "true",
+		SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: string(defaultFirstTokenStagesJSON),
+		SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  string(defaultFirstTokenStagesJSON),
 		SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled: "true",
 		SettingKeyOpenAIPoolRecoveryProbeEnabled:                  "true",
 		SettingKeyOpenAIPoolRecoveryProbeModel:                    openai.DefaultTestModel,
@@ -4119,6 +4181,12 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.GatewayEdgeBodyIdleTimeoutMS = parsePositiveIntSetting(settings[SettingKeyGatewayEdgeBodyIdleTimeoutMS], 180000)
 	result.GatewayEdgeResponseHeaderMaxAttempts = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayEdgeResponseHeaderMaxAttempts], 3), 1, 100)
 	result.GatewayEdgeResponseHeaderFailover = !isFalseSettingValue(settings[SettingKeyGatewayEdgeResponseHeaderFailover])
+	result.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages = parseGatewayFirstTokenTimeoutPlaceholderStages(
+		settings[SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages],
+	)
+	result.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages = parseGatewayFirstTokenTimeoutPlaceholderStages(
+		settings[SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages],
+	)
 	result.OpenAIPoolDownstreamModelLimitProtectionEnabled = true
 	if v, ok := settings[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled]; ok && v != "" {
 		result.OpenAIPoolDownstreamModelLimitProtectionEnabled = v == "true"
@@ -4253,6 +4321,16 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 
 	return result
+}
+
+func parseGatewayFirstTokenTimeoutPlaceholderStages(raw string) []OpenAIFirstTokenTimeoutPlaceholderStage {
+	var stages []OpenAIFirstTokenTimeoutPlaceholderStage
+	if err := json.Unmarshal([]byte(raw), &stages); err == nil {
+		if normalized, normalizeErr := NormalizeOpenAIFirstTokenTimeoutPlaceholderStageSlice(stages); normalizeErr == nil {
+			return normalized
+		}
+	}
+	return append([]OpenAIFirstTokenTimeoutPlaceholderStage(nil), defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages()...)
 }
 
 func clampAffiliateRebateRate(value float64) float64 {

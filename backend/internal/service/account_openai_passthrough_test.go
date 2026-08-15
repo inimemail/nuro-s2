@@ -405,6 +405,11 @@ func TestAccount_OpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(t *testing.T) {
 		}}
 		require.Equal(t, defaultOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages(), account.GetOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages())
 		require.Equal(t, 30000, account.GetOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs())
+		require.False(t, account.HasOpenAIAPIKeyFirstTokenTimeoutPlaceholderOverride())
+		account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey] = 900
+		require.True(t, account.HasOpenAIAPIKeyFirstTokenTimeoutPlaceholderOverride())
+		account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderUseGatewayDefaultExtraKey] = true
+		require.False(t, account.HasOpenAIAPIKeyFirstTokenTimeoutPlaceholderOverride())
 	})
 
 	t.Run("safe placeholder stays independent from disabled timeout placeholder", func(t *testing.T) {

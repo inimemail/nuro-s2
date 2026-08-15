@@ -3726,6 +3726,8 @@ export default {
           'Auto-pauses placeholders when real first token exceeds the limit, then resumes after recovery.',
         firstTokenTimeoutPlaceholderGuardMaxMs: 'Guard limit',
         firstTokenTimeoutPlaceholderGuardMaxMsHint: '1-30000 ms, default 3000 ms.',
+        firstTokenTimeoutUseGatewayDefault: 'Follow gateway default stages',
+        firstTokenTimeoutUseGatewayDefaultDesc: 'Leave enabled to use the gateway template. Turn it off to save stages only for this account.',
         firstTokenTimeoutStages: {
           title: 'Staged placeholder policy',
           description: 'Automatically selects a stage from the latest real first-token latency. Placeholder injection pauses above the final guard and resumes at a lower stage after recovery. Placeholder range: 1-100000 ms; guard limits have no configured maximum. Up to 10 stages.',
@@ -6424,6 +6426,21 @@ export default {
         globalWorkersRange: 'Edge global concurrency must be between 1 and 999999999.',
         extraRange: 'Extra user wait slots must be between 0 and 50.',
         retryRange: 'Retry-After must be between 1 and 60000ms.'
+      },
+      gatewayFirstTokenDefaults: {
+        title: 'First-token timeout placeholder defaults',
+        description: 'These templates are used only by accounts that follow gateway defaults. Account-level custom stages remain unchanged, and account switches still decide whether placeholders are enabled.',
+        apiKey: 'API Key accounts',
+        oauth: 'OAuth / ChatGPT accounts',
+        placeholder: 'Placeholder interval',
+        guard: 'Real first-token guard',
+        restore: 'Restore built-in defaults',
+        add: 'Add stage',
+        remove: 'Remove stage',
+        footer: '{count}/10 stages; values must increase from left to right.',
+        invalidPlaceholder: 'Placeholder must be an integer from 1 to 100000ms.',
+        invalidGuard: 'Guard must be at least the placeholder interval.',
+        invalidOrder: 'Values must be greater than the previous stage.'
       },
       gatewayOpenAIHeaderTimeout: {
         title: 'OpenAI Upstream Header Protection',

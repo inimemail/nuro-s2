@@ -2488,6 +2488,10 @@
               </button>
             </div>
           </div>
+          <label v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled" class="mt-3 flex items-start gap-3 rounded-lg border border-primary-100 bg-primary-50/60 p-3 text-sm dark:border-primary-900/50 dark:bg-primary-950/20">
+            <input v-model="openaiOAuthFirstTokenTimeoutUseGatewayDefault" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+            <span><span class="font-medium text-gray-800 dark:text-gray-100">{{ t('admin.accounts.openai.firstTokenTimeoutUseGatewayDefault') }}</span><span class="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.openai.firstTokenTimeoutUseGatewayDefaultDesc') }}</span></span>
+          </label>
           <OpenAIApiKeyFirstTokenTimeoutStages
             v-if="openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled"
             v-model="openaiOAuthFirstTokenTimeoutStageConfig"
@@ -2632,10 +2636,14 @@
               </button>
             </div>
           </div>
-          <OpenAIApiKeyFirstTokenTimeoutStages
-            v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled"
-            v-model="openaiAPIKeyFirstTokenTimeoutStageConfig"
-            :guard-enabled="openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled"
+        <label v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled" class="mt-3 flex items-start gap-3 rounded-lg border border-primary-100 bg-primary-50/60 p-3 text-sm dark:border-primary-900/50 dark:bg-primary-950/20">
+          <input v-model="openaiAPIKeyFirstTokenTimeoutUseGatewayDefault" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+          <span><span class="font-medium text-gray-800 dark:text-gray-100">{{ t('admin.accounts.openai.firstTokenTimeoutUseGatewayDefault') }}</span><span class="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.openai.firstTokenTimeoutUseGatewayDefaultDesc') }}</span></span>
+        </label>
+        <OpenAIApiKeyFirstTokenTimeoutStages
+          v-if="openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled"
+          v-model="openaiAPIKeyFirstTokenTimeoutStageConfig"
+          :guard-enabled="openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled"
           />
         </div>
       </div>
@@ -4165,6 +4173,8 @@ const openaiAPIKeyFirstTokenTimeoutStageConfig = ref<OpenAIApiKeyFirstTokenTimeo
 const openaiOAuthFirstTokenTimeoutStageConfig = ref<OpenAIApiKeyFirstTokenTimeoutStageConfig>(
   createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
 )
+const openaiAPIKeyFirstTokenTimeoutUseGatewayDefault = ref(true)
+const openaiOAuthFirstTokenTimeoutUseGatewayDefault = ref(true)
 function resetOpenAIAPIKeyFirstTokenTimeoutStages() {
   openaiAPIKeyFirstTokenTimeoutStageConfig.value = createDefaultOpenAIApiKeyFirstTokenTimeoutStageConfig()
 }
@@ -4962,6 +4972,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   resetOpenAIFirstTokenTimeoutPlaceholderMs('apikey')
   resetOpenAIFirstTokenTimeoutPlaceholderGuard('apikey')
   openaiAPIKeyFirstTokenTimeoutStageConfig.value = readOpenAIApiKeyFirstTokenTimeoutStageConfig(undefined)
+  openaiAPIKeyFirstTokenTimeoutUseGatewayDefault.value = true
+  openaiOAuthFirstTokenTimeoutUseGatewayDefault.value = true
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAllowClaudeCodeEnabled.value = false
   codexImageGenerationBridgeMode.value = 'inherit'
@@ -4988,6 +5000,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       openaiAPIKeySafeTokenPlaceholderEnabled.value = extra?.openai_apikey_safe_token_placeholder_enabled === true
       openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value =
         extra?.openai_apikey_first_token_timeout_placeholder_enabled === true
+      openaiAPIKeyFirstTokenTimeoutUseGatewayDefault.value = extra?.openai_apikey_first_token_timeout_placeholder_use_gateway_default === true || (
+        extra?.openai_apikey_first_token_timeout_placeholder_stages === undefined &&
+        extra?.openai_apikey_first_token_timeout_placeholder_ms === undefined &&
+        extra?.openai_apikey_first_token_timeout_placeholder_guard_max_ms === undefined
+      )
       openaiAPIKeyFirstTokenTimeoutPlaceholderMs.value = normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(
         extra?.openai_apikey_first_token_timeout_placeholder_ms
       )
@@ -5033,6 +5050,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
         extra?.openai_oauth_chatgpt_safe_token_placeholder_enabled === true
       openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value =
         extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled === true
+      openaiOAuthFirstTokenTimeoutUseGatewayDefault.value = extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default === true || (
+        extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_stages === undefined &&
+        extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_ms === undefined &&
+        extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms === undefined
+      )
       openaiOAuthChatGPTFirstTokenTimeoutPlaceholderMs.value = normalizeOpenAIFirstTokenTimeoutPlaceholderMs(
         extra?.openai_oauth_chatgpt_first_token_timeout_placeholder_ms
       )
@@ -6513,11 +6535,19 @@ const handleSubmit = async () => {
         }
         if (openaiOAuthChatGPTFirstTokenTimeoutPlaceholderEnabled.value) {
           newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled = true
-          newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms =
-            normalizeOpenAIFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
           newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled =
             openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabled.value
-          if (openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabled.value) {
+          if (openaiOAuthFirstTokenTimeoutUseGatewayDefault.value) {
+            newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default = true
+            delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms
+            delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms
+            delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages
+          } else {
+            delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default
+            newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_ms =
+              normalizeOpenAIFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
+          }
+          if (!openaiOAuthFirstTokenTimeoutUseGatewayDefault.value && openaiOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabled.value) {
             newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms =
               normalizeOpenAIFirstTokenTimeoutPlaceholderGuardMaxMs(
                 firstTokenStage.guard_max_ms
@@ -6528,6 +6558,7 @@ const handleSubmit = async () => {
           } else {
             delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms
             delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages
+            delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default
           }
         } else {
           delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_enabled
@@ -6535,6 +6566,7 @@ const handleSubmit = async () => {
           delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled
           delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms
           delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages
+          delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default
         }
         delete newExtra.openai_apikey_preamble_flush_enabled
         delete newExtra.openai_apikey_sse_comment_preflush_enabled
@@ -6544,12 +6576,14 @@ const handleSubmit = async () => {
         delete newExtra.openai_apikey_first_token_timeout_placeholder_guard_enabled
         delete newExtra.openai_apikey_first_token_timeout_placeholder_guard_max_ms
         delete newExtra.openai_apikey_first_token_timeout_placeholder_stages
+        delete newExtra.openai_apikey_first_token_timeout_placeholder_use_gateway_default
       } else if (props.account.type === 'apikey') {
         const firstTokenStage = openaiAPIKeyFirstTokenTimeoutStageConfig.value.stages[0]
         if (
           !imagePoolModeEnabled.value &&
           openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value &&
-          openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value
+          openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value &&
+          !openaiAPIKeyFirstTokenTimeoutUseGatewayDefault.value
         ) {
           newExtra.openai_apikey_first_token_timeout_placeholder_stages = openaiAPIKeyFirstTokenTimeoutStageConfig.value.stages.map(
             (stage, index) => ({ ...stage, stage: index + 1 })
@@ -6576,21 +6610,31 @@ const handleSubmit = async () => {
         }
         if (!imagePoolModeEnabled.value && openaiAPIKeyFirstTokenTimeoutPlaceholderEnabled.value) {
           newExtra.openai_apikey_first_token_timeout_placeholder_enabled = true
-          newExtra.openai_apikey_first_token_timeout_placeholder_ms =
-            normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
           newExtra.openai_apikey_first_token_timeout_placeholder_guard_enabled =
             openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value
-          if (openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value) {
+          if (openaiAPIKeyFirstTokenTimeoutUseGatewayDefault.value) {
+            newExtra.openai_apikey_first_token_timeout_placeholder_use_gateway_default = true
+            delete newExtra.openai_apikey_first_token_timeout_placeholder_ms
+            delete newExtra.openai_apikey_first_token_timeout_placeholder_guard_max_ms
+            delete newExtra.openai_apikey_first_token_timeout_placeholder_stages
+          } else {
+            delete newExtra.openai_apikey_first_token_timeout_placeholder_use_gateway_default
+            newExtra.openai_apikey_first_token_timeout_placeholder_ms =
+              normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderMs(firstTokenStage.placeholder_ms)
+          }
+          if (!openaiAPIKeyFirstTokenTimeoutUseGatewayDefault.value && openaiAPIKeyFirstTokenTimeoutPlaceholderGuardEnabled.value) {
             newExtra.openai_apikey_first_token_timeout_placeholder_guard_max_ms =
               normalizeOpenAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMs(firstTokenStage.guard_max_ms)
           } else {
             delete newExtra.openai_apikey_first_token_timeout_placeholder_guard_max_ms
+            delete newExtra.openai_apikey_first_token_timeout_placeholder_use_gateway_default
           }
         } else {
           delete newExtra.openai_apikey_first_token_timeout_placeholder_enabled
           delete newExtra.openai_apikey_first_token_timeout_placeholder_ms
           delete newExtra.openai_apikey_first_token_timeout_placeholder_guard_enabled
           delete newExtra.openai_apikey_first_token_timeout_placeholder_guard_max_ms
+          delete newExtra.openai_apikey_first_token_timeout_placeholder_use_gateway_default
         }
         delete newExtra.openai_oauth_chatgpt_preamble_flush_enabled
         delete newExtra.openai_oauth_chatgpt_sse_comment_preflush_enabled
@@ -6600,6 +6644,7 @@ const handleSubmit = async () => {
         delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled
         delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms
         delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_stages
+        delete newExtra.openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default
       }
       delete newExtra.responses_websockets_v2_enabled
       delete newExtra.openai_ws_enabled
