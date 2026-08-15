@@ -13,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -391,6 +392,11 @@ func TestForwardAsChatCompletions_FirstTokenTimeoutPlaceholderDoesNotSetFirstTok
 	c, _ := gin.CreateTestContext(rec)
 	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request = c.Request.WithContext(context.WithValue(
+		c.Request.Context(),
+		ctxkey.RequestStartTime,
+		time.Now().Add(-10*time.Second),
+	))
 	c.Request.Header.Set("Content-Type", "application/json")
 
 	upstreamBody := strings.Join([]string{
@@ -403,7 +409,7 @@ func TestForwardAsChatCompletions_FirstTokenTimeoutPlaceholderDoesNotSetFirstTok
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_timeout_placeholder"}},
 		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{{
-			delay: 250 * time.Millisecond,
+			delay: 100 * time.Millisecond,
 			data:  upstreamBody,
 		}}},
 	}}
@@ -421,7 +427,7 @@ func TestForwardAsChatCompletions_FirstTokenTimeoutPlaceholderDoesNotSetFirstTok
 		},
 		Extra: map[string]any{
 			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
-			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      200,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      3000,
 		},
 	}
 

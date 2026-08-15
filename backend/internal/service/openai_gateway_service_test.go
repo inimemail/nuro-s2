@@ -16,6 +16,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/cespare/xxhash/v2"
@@ -1980,13 +1981,18 @@ func TestOpenAIRequestFirstTokenTimeoutPlaceholderUsesEndToEndRequestBudget(t *t
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	c.Request = c.Request.WithContext(context.WithValue(
+		c.Request.Context(),
+		ctxkey.RequestStartTime,
+		time.Now().Add(-10*time.Second),
+	))
 	account := &Account{
 		ID:       1,
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,
 		Extra: map[string]any{
 			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
-			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:           100,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:           3000,
 			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
 		},
 	}
@@ -1995,10 +2001,9 @@ func TestOpenAIRequestFirstTokenTimeoutPlaceholderUsesEndToEndRequestBudget(t *t
 		c,
 		account,
 		"gpt-5.4",
-		time.Now().Add(-200*time.Millisecond),
+		time.Now(),
 		openAIRequestFirstTokenPlaceholderDialectResponses,
 		func() (*http.Response, error) {
-			time.Sleep(40 * time.Millisecond)
 			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 		},
 	)
@@ -2007,6 +2012,115 @@ func TestOpenAIRequestFirstTokenTimeoutPlaceholderUsesEndToEndRequestBudget(t *t
 	require.NotNil(t, resp)
 	require.True(t, state.Sent)
 	require.Contains(t, rec.Body.String(), `"type":"response.transport_progress.delta"`)
+}
+
+func TestOpenAIHTTPFirstTokenPlaceholderBudgetStartValidation(t *testing.T) {
+	setGinTestMode()
+	fallback := time.Now()
+	require.Equal(t, fallback, openAIHTTPFirstTokenPlaceholderBudgetStart(nil, fallback))
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	require.Equal(t, fallback, openAIHTTPFirstTokenPlaceholderBudgetStart(c, fallback))
+
+	ingressStart := fallback.Add(-time.Second)
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.RequestStartTime, ingressStart))
+	require.Equal(t, ingressStart, openAIHTTPFirstTokenPlaceholderBudgetStart(c, fallback))
+	timer, timerCh, expired := openAIHTTPFirstTokenPlaceholderTimer(c, fallback, 500*time.Millisecond)
+	require.Nil(t, timer)
+	require.Nil(t, timerCh)
+	require.True(t, expired)
+
+	futureStart := fallback.Add(time.Second)
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.RequestStartTime, futureStart))
+	require.Equal(t, fallback, openAIHTTPFirstTokenPlaceholderBudgetStart(c, fallback))
+	timer, timerCh, expired = openAIHTTPFirstTokenPlaceholderTimer(c, fallback, time.Hour)
+	require.NotNil(t, timer)
+	require.NotNil(t, timerCh)
+	require.False(t, expired)
+	require.True(t, timer.Stop())
+
+	timer, timerCh, expired = openAIHTTPFirstTokenPlaceholderTimer(c, fallback, 0)
+	require.Nil(t, timer)
+	require.Nil(t, timerCh)
+	require.False(t, expired)
+}
+
+func TestOpenAIHTTPPlaceholderIngressBudgetDoesNotChangeServiceTTFT(t *testing.T) {
+	setGinTestMode()
+	streamBody := strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_ingress_budget","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	for _, tt := range []struct {
+		name    string
+		forward func(*OpenAIGatewayService, *gin.Context, *http.Response, *Account, time.Time) (*int, error)
+	}{
+		{
+			name: "converted responses relay",
+			forward: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account, started time.Time) (*int, error) {
+				result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, started, "gpt-5.4", "gpt-5.4")
+				if result == nil {
+					return nil, err
+				}
+				return result.firstTokenMs, err
+			},
+		},
+		{
+			name: "passthrough responses relay",
+			forward: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account, started time.Time) (*int, error) {
+				result, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, started, "gpt-5.4", "gpt-5.4")
+				if result == nil {
+					return nil, err
+				}
+				return result.firstTokenMs, err
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			c.Request = c.Request.WithContext(context.WithValue(
+				c.Request.Context(),
+				ctxkey.RequestStartTime,
+				time.Now().Add(-10*time.Second),
+			))
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{{
+					delay: 40 * time.Millisecond,
+					data:  streamBody,
+				}}},
+			}
+			account := &Account{
+				ID:       1,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeAPIKey,
+				Extra: map[string]any{
+					openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
+					openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:           5000,
+					openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
+				},
+			}
+
+			serviceStart := time.Now()
+			firstTokenMS, err := tt.forward(&OpenAIGatewayService{}, c, resp, account, serviceStart)
+			serviceElapsedMS := int(time.Since(serviceStart).Milliseconds())
+			require.NoError(t, err)
+			require.NotNil(t, firstTokenMS)
+			require.GreaterOrEqual(t, *firstTokenMS, 20, "the placeholder must not become the local real TTFT")
+			require.LessOrEqual(t, *firstTokenMS, serviceElapsedMS, "local TTFT must remain relative to the service start")
+			require.Contains(t, rec.Body.String(), `"type":"response.transport_progress.delta"`)
+			require.Contains(t, rec.Body.String(), `"type":"response.output_text.delta"`)
+		})
+	}
 }
 
 func TestOpenAIStreamFirstTokenTimeoutPlaceholderDisabledForImagePoolAccount(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -274,6 +275,11 @@ func TestForwardAsRawChatCompletions_UsesLaterTimeoutStage(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request = c.Request.WithContext(context.WithValue(
+		c.Request.Context(),
+		ctxkey.RequestStartTime,
+		time.Now().Add(-10*time.Second),
+	))
 
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
@@ -297,13 +303,13 @@ func TestForwardAsRawChatCompletions_UsesLaterTimeoutStage(t *testing.T) {
 		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey:   50,
 		openAIAPIKeyFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
 			map[string]any{"stage": 1, "placeholder_ms": 20, "guard_max_ms": 50},
-			map[string]any{"stage": 2, "placeholder_ms": 40, "guard_max_ms": 100},
-			map[string]any{"stage": 3, "placeholder_ms": 60, "guard_max_ms": 200},
+			map[string]any{"stage": 2, "placeholder_ms": 3000, "guard_max_ms": 3000},
+			map[string]any{"stage": 3, "placeholder_ms": 4000, "guard_max_ms": 5000},
 		},
 	}
 	// A prior real sample above stage 1's protection limit must select stage 2.
 	svc.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, "gpt-5.4", 80)
-	require.Equal(t, 40, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
+	require.Equal(t, 3000, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
 
 	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
 	require.NoError(t, err)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -85,6 +86,29 @@ func TestRequestLogger_GenerateAndPropagateRequestID(t *testing.T) {
 	}
 	if w.Header().Get(requestIDHeader) == "" {
 		t.Fatalf("X-Request-ID should be set")
+	}
+}
+
+func TestRequestLogger_RecordsRequestStartTime(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(RequestLogger())
+	before := time.Now()
+	r.GET("/t", func(c *gin.Context) {
+		startedAt, ok := c.Request.Context().Value(ctxkey.RequestStartTime).(time.Time)
+		if !ok || startedAt.IsZero() {
+			t.Fatal("request start time missing in context")
+		}
+		if startedAt.Before(before) || startedAt.After(time.Now()) {
+			t.Fatalf("request start time outside request lifetime: %v", startedAt)
+		}
+		c.Status(http.StatusOK)
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/t", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
 	}
 }
 

@@ -505,9 +505,12 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 		scanEvents <- rawChatScanEvent{err: scanner.Err(), done: true}
 	}()
-	firstTokenTimeoutTimer, firstTokenTimeoutCh := openAIStreamFirstTokenTimeoutTimer(startTime, firstTokenTimeoutPlaceholder)
+	firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(c, startTime, firstTokenTimeoutPlaceholder)
 	if firstTokenTimeoutTimer != nil {
 		defer firstTokenTimeoutTimer.Stop()
+	}
+	if firstTokenTimeoutBudgetExpired {
+		writeFirstTokenTimeoutPlaceholder()
 	}
 	var scanErr error
 	for {

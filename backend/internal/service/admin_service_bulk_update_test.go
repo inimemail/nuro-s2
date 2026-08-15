@@ -139,7 +139,6 @@ func TestAdminServiceCreateAccount_FirstTokenTimeoutRejectsUnsupportedTargets(t 
 		name  string
 		input *CreateAccountInput
 	}{
-		{name: "OAuth", input: &CreateAccountInput{Platform: PlatformOpenAI, Type: AccountTypeOAuth}},
 		{name: "other platform", input: &CreateAccountInput{Platform: PlatformAnthropic, Type: AccountTypeAPIKey}},
 		{name: "image pool", input: &CreateAccountInput{
 			Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
@@ -153,6 +152,7 @@ func TestAdminServiceCreateAccount_FirstTokenTimeoutRejectsUnsupportedTargets(t 
 					map[string]any{"stage": 1, "placeholder_ms": 800, "guard_max_ms": 5000},
 				},
 			}
+			tt.input.SkipDefaultGroupBind = true
 			repo := &accountRepoStubForBulkUpdate{}
 			svc := &adminServiceImpl{accountRepo: repo}
 			created, err := svc.CreateAccount(context.Background(), tt.input)
@@ -161,6 +161,27 @@ func TestAdminServiceCreateAccount_FirstTokenTimeoutRejectsUnsupportedTargets(t 
 			require.Nil(t, repo.createdAccount)
 		})
 	}
+}
+
+func TestAdminServiceCreateAccount_FirstTokenTimeoutAcceptsIndependentOAuth(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{}
+	svc := &adminServiceImpl{accountRepo: repo}
+	created, err := svc.CreateAccount(context.Background(), &CreateAccountInput{
+		Name:     "openai-oauth",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey: []any{
+				map[string]any{"stage": 1, "placeholder_ms": 800, "guard_max_ms": 5000},
+			},
+		},
+		SkipDefaultGroupBind: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.Len(t, created.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderStagesExtraKey], 1)
+	require.Equal(t, 800, created.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey])
+	require.Equal(t, 5000, created.Extra[openAIOAuthChatGPTFirstTokenTimeoutPlaceholderGuardMaxMsExtraKey])
 }
 
 func TestAdminServiceCreateAccount_FirstTokenTimeoutAcceptsIndependentAPIKey(t *testing.T) {
@@ -189,7 +210,6 @@ func TestAdminServiceUpdateAccount_FirstTokenTimeoutRejectsUnsupportedTarget(t *
 		name    string
 		account *Account
 	}{
-		{name: "OAuth", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth}},
 		{name: "other platform", account: &Account{ID: 7, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}},
 		{name: "image pool", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true, "image_pool_mode": true}}},
 		{name: "credential shadow", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, ParentAccountID: &parentID}},
@@ -231,7 +251,6 @@ func TestAdminServiceUpdateAccountExtra_FirstTokenTimeoutRejectsUnsupportedTarge
 		name    string
 		account *Account
 	}{
-		{name: "OAuth", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth}},
 		{name: "other platform", account: &Account{ID: 7, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}},
 		{name: "image pool", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true, "image_pool_mode": true}}},
 		{name: "credential shadow", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, ParentAccountID: &parentID}},

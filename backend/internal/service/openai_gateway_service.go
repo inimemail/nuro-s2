@@ -6055,6 +6055,29 @@ func openAIStreamFirstTokenTimeoutTimer(startTime time.Time, timeout time.Durati
 	return timer, timer.C
 }
 
+func openAIHTTPFirstTokenPlaceholderBudgetStart(c *gin.Context, fallback time.Time) time.Time {
+	if c == nil || c.Request == nil {
+		return fallback
+	}
+	startedAt, ok := c.Request.Context().Value(ctxkey.RequestStartTime).(time.Time)
+	if !ok || startedAt.IsZero() || startedAt.After(fallback) {
+		return fallback
+	}
+	return startedAt
+}
+
+func openAIHTTPFirstTokenPlaceholderTimer(c *gin.Context, fallback time.Time, timeout time.Duration) (*time.Timer, <-chan time.Time, bool) {
+	if timeout <= 0 {
+		return nil, nil, false
+	}
+	remaining := timeout - time.Since(openAIHTTPFirstTokenPlaceholderBudgetStart(c, fallback))
+	if remaining <= 0 {
+		return nil, nil, true
+	}
+	timer := time.NewTimer(remaining)
+	return timer, timer.C, false
+}
+
 func openAIResponsesSafeTokenPlaceholderFrame(responseID string) string {
 	return "data: " + string(openAIResponsesSafeTokenPlaceholderPayload(responseID)) + "\n\n"
 }
@@ -6113,10 +6136,14 @@ func (s *OpenAIGatewayService) doOpenAIUpstreamWithFirstTokenTimeoutPlaceholder(
 		resultCh <- openAIUpstreamRequestResult{resp: resp, err: err, elapsed: time.Since(upstreamStart)}
 	}()
 
-	timer, timerCh := openAIStreamFirstTokenTimeoutTimer(startTime, timeout)
-	defer timer.Stop()
-
 	state := openAIRequestFirstTokenPlaceholderState{}
+	timer, timerCh, budgetExpired := openAIHTTPFirstTokenPlaceholderTimer(c, startTime, timeout)
+	if timer != nil {
+		defer timer.Stop()
+	}
+	if budgetExpired {
+		state = writeOpenAIRequestFirstTokenTimeoutPlaceholder(c, startTime, requestedModel, dialect)
+	}
 	for {
 		select {
 		case result := <-resultCh:
@@ -6857,9 +6884,14 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			defer bootstrapTimer.Stop()
 			bootstrapCh = bootstrapTimer.C
 		}
-		firstTokenTimeoutTimer, firstTokenTimeoutCh := openAIStreamFirstTokenTimeoutTimer(startTime, firstTokenTimeoutPlaceholder)
+		firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(c, startTime, firstTokenTimeoutPlaceholder)
 		if firstTokenTimeoutTimer != nil {
 			defer firstTokenTimeoutTimer.Stop()
+		}
+		if firstTokenTimeoutBudgetExpired {
+			if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && !downstreamTTFTObserved && !firstTokenTimeoutPlaceholderSent {
+				firstTokenTimeoutPlaceholderPending = true
+			}
 		}
 		for {
 			select {
@@ -8495,9 +8527,14 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		bootstrapCh = bootstrapTimer.C
 		defer bootstrapTimer.Stop()
 	}
-	firstTokenTimeoutTimer, firstTokenTimeoutCh := openAIStreamFirstTokenTimeoutTimer(startTime, firstTokenTimeoutPlaceholder)
+	firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(c, startTime, firstTokenTimeoutPlaceholder)
 	if firstTokenTimeoutTimer != nil {
 		defer firstTokenTimeoutTimer.Stop()
+	}
+	if firstTokenTimeoutBudgetExpired {
+		if !writeFirstTokenTimeoutPlaceholder() && !clientDisconnected && !downstreamTTFTObserved && !firstTokenTimeoutPlaceholderSent && streamFailoverErr == nil {
+			firstTokenTimeoutPlaceholderPending = true
+		}
 	}
 	writeBootstrapComment := func() {
 		if clientDisconnected || openAIStreamClientOutputStarted(c, clientOutputStarted) || streamFailoverErr != nil || !atSSEEventBoundary {

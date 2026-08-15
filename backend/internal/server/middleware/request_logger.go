@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -19,6 +20,7 @@ func RequestLogger() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		requestStartTime := time.Now()
 
 		requestID, validRequestID := normalizeCorrelationID(c.GetHeader(requestIDHeader))
 		if !validRequestID {
@@ -26,7 +28,8 @@ func RequestLogger() gin.HandlerFunc {
 		}
 		c.Header(requestIDHeader, requestID)
 
-		ctx := context.WithValue(c.Request.Context(), ctxkey.RequestID, requestID)
+		ctx := context.WithValue(c.Request.Context(), ctxkey.RequestStartTime, requestStartTime)
+		ctx = context.WithValue(ctx, ctxkey.RequestID, requestID)
 		clientRequestID, _ := ctx.Value(ctxkey.ClientRequestID).(string)
 		clientRequestID, _ = normalizeCorrelationID(clientRequestID)
 

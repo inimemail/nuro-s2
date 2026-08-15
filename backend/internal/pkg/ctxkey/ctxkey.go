@@ -11,6 +11,10 @@ const (
 	// RequestID 为服务端生成/透传的请求 ID。
 	RequestID Key = "ctx_request_id"
 
+	// RequestStartTime records when an HTTP request entered the middleware chain.
+	// It is used for end-to-end downstream latency budgets, not usage TTFT metrics.
+	RequestStartTime Key = "ctx_request_start_time"
+
 	// ClientRequestID 客户端请求的唯一标识，用于追踪请求全生命周期（用于 Ops 监控与排障）。
 	ClientRequestID Key = "ctx_client_request_id"
 
