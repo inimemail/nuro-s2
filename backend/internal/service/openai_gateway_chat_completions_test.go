@@ -379,9 +379,9 @@ func TestForwardAsChatCompletions_SafeTokenPlaceholderWritesRoleAndEmptyContent(
 	require.Contains(t, responseBody, `"role":"assistant"`)
 	require.Contains(t, responseBody, `"content":""`)
 	require.Contains(t, responseBody, `"content":"ok"`)
-	// One empty delta is the safe placeholder and one is the terminal stop
-	// chunk; enabling the timeout placeholder must not add a third.
-	require.Equal(t, 2, strings.Count(responseBody, `"content":""`))
+	// Safe placeholder, timeout placeholder, and terminal stop chunk are
+	// independent empty deltas and none contributes visible content.
+	require.Equal(t, 3, strings.Count(responseBody, `"content":""`))
 	require.Less(t, strings.Index(responseBody, `"content":""`), strings.Index(responseBody, `"content":"ok"`))
 }
 

@@ -1819,7 +1819,7 @@ func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesTransportProgressAfterCre
 	require.Contains(t, body, `"type":"response.created"`)
 	require.Contains(t, body, `"type":"response.transport_progress.delta","delta":"in_progress"`)
 	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
-	require.Equal(t, 1, strings.Count(body, `"type":"response.transport_progress.delta","delta":"in_progress"`))
+	require.Equal(t, 2, strings.Count(body, `"type":"response.transport_progress.delta","delta":"in_progress"`))
 	require.Less(t,
 		strings.Index(body, `"type":"response.created"`),
 		strings.Index(body, `"type":"response.transport_progress.delta","delta":"in_progress"`),
@@ -1828,6 +1828,91 @@ func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesTransportProgressAfterCre
 		strings.Index(body, `"type":"response.transport_progress.delta","delta":"in_progress"`),
 		strings.Index(body, `"type":"response.output_text.delta","delta":"ok"`),
 	)
+}
+
+func TestOpenAIStreamingTimeoutPlaceholderSuppressesLaterSafeDuplicate(t *testing.T) {
+	setGinTestMode()
+	streamBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_timeout_first"}}`,
+		"",
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_timeout_first","usage":{"input_tokens":1,"output_tokens":1}}}`,
+		"",
+	}, "\n") + "\n"
+
+	for _, tt := range []struct {
+		name    string
+		forward func(*OpenAIGatewayService, *gin.Context, *http.Response, *Account, time.Time) error
+	}{
+		{
+			name: "converted",
+			forward: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account, started time.Time) error {
+				_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, started, "gpt-5.4", "gpt-5.4")
+				return err
+			},
+		},
+		{
+			name: "passthrough",
+			forward: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account, started time.Time) error {
+				_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, started, "gpt-5.4", "gpt-5.4")
+				return err
+			},
+		},
+	} {
+		for _, accountCase := range []struct {
+			name        string
+			accountType string
+			extra       map[string]any
+		}{
+			{
+				name:        "oauth",
+				accountType: AccountTypeOAuth,
+				extra: map[string]any{
+					openAIOAuthChatGPTSafeTokenPlaceholderExtraKey:                true,
+					openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+					openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      20,
+				},
+			},
+			{
+				name:        "api_key",
+				accountType: AccountTypeAPIKey,
+				extra: map[string]any{
+					openAIAPIKeySafeTokenPlaceholderExtraKey:                true,
+					openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
+					openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:      20,
+				},
+			},
+		} {
+			t.Run(tt.name+"/"+accountCase.name, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+				resp := &http.Response{
+					StatusCode: http.StatusOK,
+					Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{{
+						delay: 60 * time.Millisecond,
+						data:  streamBody,
+					}}},
+					Header: http.Header{"X-Request-Id": []string{"rid-timeout-before-created"}},
+				}
+				account := &Account{
+					ID:       1,
+					Platform: PlatformOpenAI,
+					Type:     accountCase.accountType,
+					Extra:    accountCase.extra,
+				}
+
+				require.NoError(t, tt.forward(&OpenAIGatewayService{}, c, resp, account, time.Now()))
+				body := rec.Body.String()
+				require.Equal(t, 1, strings.Count(body, `"type":"response.transport_progress.delta","delta":"in_progress"`))
+				require.Less(t,
+					strings.Index(body, `"type":"response.transport_progress.delta"`),
+					strings.Index(body, `"type":"response.created"`),
+				)
+			})
+		}
+	}
 }
 
 func TestOpenAIStreamingSafeTokenPlaceholderDisabledDoesNotInjectCompatibilityDelta(t *testing.T) {
@@ -2260,6 +2345,7 @@ func TestOpenAIResponsesRealDeltaCancelsTimeoutPlaceholder(t *testing.T) {
 		}, "\n"))),
 	}
 	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
+		openAIAPIKeySafeTokenPlaceholderExtraKey:                     true,
 		openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey:      true,
 		openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey:           200,
 		openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey: false,
@@ -2268,7 +2354,7 @@ func TestOpenAIResponsesRealDeltaCancelsTimeoutPlaceholder(t *testing.T) {
 	result, err := (&OpenAIGatewayService{}).handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.4", "gpt-5.4")
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.NotContains(t, rec.Body.String(), `"type":"response.transport_progress.delta"`)
+	require.Equal(t, 1, strings.Count(rec.Body.String(), `"type":"response.transport_progress.delta","delta":"in_progress"`))
 }
 
 func TestOpenAIResponsesSafeTokenPlaceholderTriggersDownstreamTTFTWithoutContentPollution(t *testing.T) {
@@ -2908,7 +2994,7 @@ func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesTransportProgr
 	require.Contains(t, body, `"type":"response.created"`)
 	require.Contains(t, body, `"type":"response.transport_progress.delta","delta":"in_progress"`)
 	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
-	require.Equal(t, 1, strings.Count(body, `"type":"response.transport_progress.delta","delta":"in_progress"`))
+	require.Equal(t, 2, strings.Count(body, `"type":"response.transport_progress.delta","delta":"in_progress"`))
 	require.Less(t,
 		strings.Index(body, `"type":"response.created"`),
 		strings.Index(body, `"type":"response.transport_progress.delta","delta":"in_progress"`),

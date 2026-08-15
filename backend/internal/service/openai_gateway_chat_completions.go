@@ -821,8 +821,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			clientDisconnected = true
 			return true
 		}
+		// Safe and timeout placeholders are independent controls. A safe chunk
+		// must not consume the configured timeout placeholder.
 		safeTokenPlaceholderSent = true
-		firstTokenTimeoutPlaceholderSent = true
 		clientOutputStarted = true
 		c.Writer.Flush()
 		return true
@@ -871,6 +872,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		}
 		firstTokenTimeoutPlaceholderSent = true
 		firstTokenTimeoutPlaceholderID = state.ID
+		// The timeout chunk already fulfills the compatibility placeholder role.
 		safeTokenPlaceholderSent = true
 		clientOutputStarted = true
 		c.Writer.Flush()

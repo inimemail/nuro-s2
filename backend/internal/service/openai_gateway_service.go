@@ -6619,8 +6619,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			clientDisconnected = true
 			return
 		}
+		// Safe and timeout placeholders are independent controls. A safe frame
+		// must not consume the configured timeout placeholder.
 		safeTokenPlaceholderSent = true
-		firstTokenTimeoutPlaceholderSent = true
 		clientOutputStarted = true
 		flusher.Flush()
 		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
@@ -6637,6 +6638,8 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			return true
 		}
 		firstTokenTimeoutPlaceholderSent = true
+		// A timeout frame already fulfills the compatibility placeholder role,
+		// so suppress a redundant safe frame if response.created arrives later.
 		safeTokenPlaceholderSent = true
 		clientOutputStarted = true
 		flusher.Flush()
@@ -8143,8 +8146,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			clientDisconnected = true
 			return
 		}
+		// Safe and timeout placeholders are independent controls. A safe frame
+		// must not consume the configured timeout placeholder.
 		safeTokenPlaceholderSent = true
-		firstTokenTimeoutPlaceholderSent = true
 		clientOutputStarted = true
 		lastDownstreamWriteAt = time.Now()
 	}
@@ -8161,6 +8165,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			return true
 		}
 		firstTokenTimeoutPlaceholderSent = true
+		// A timeout frame already fulfills the compatibility placeholder role,
+		// so suppress a redundant safe frame if response.created arrives later.
 		safeTokenPlaceholderSent = true
 		clientOutputStarted = true
 		lastDownstreamWriteAt = time.Now()
