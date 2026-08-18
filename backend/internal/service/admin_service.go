@@ -252,6 +252,7 @@ type CreateGroupInput struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch              bool
 	AllowLive                          bool
+	EdgeProtectionEnabled              *bool
 	DefaultMappedModel                 string
 	RequireOAuthOnly                   bool
 	RequirePrivacySet                  bool
@@ -319,6 +320,7 @@ type UpdateGroupInput struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch              *bool
 	AllowLive                          *bool
+	EdgeProtectionEnabled              **bool
 	DefaultMappedModel                 *string
 	RequireOAuthOnly                   *bool
 	RequirePrivacySet                  *bool
@@ -2278,6 +2280,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		SupportedModelScopes:               input.SupportedModelScopes,
 		AllowMessagesDispatch:              input.AllowMessagesDispatch,
 		AllowLive:                          input.AllowLive,
+		EdgeProtectionEnabled:              input.EdgeProtectionEnabled,
 		RequireOAuthOnly:                   input.RequireOAuthOnly,
 		RequirePrivacySet:                  input.RequirePrivacySet,
 		DefaultMappedModel:                 input.DefaultMappedModel,
@@ -2291,6 +2294,9 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	sanitizeGroupMessagesDispatchFields(group)
 	if group.Platform != PlatformOpenAI {
 		group.AllowLive = false
+		group.EdgeProtectionEnabled = nil
+	} else if group.EdgeProtectionEnabled != nil && *group.EdgeProtectionEnabled {
+		group.EdgeProtectionEnabled = nil
 	}
 	if err := s.groupRepo.Create(ctx, group); err != nil {
 		return nil, err
@@ -2676,6 +2682,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.AllowLive != nil {
 		group.AllowLive = *input.AllowLive
 	}
+	if input.EdgeProtectionEnabled != nil {
+		group.EdgeProtectionEnabled = *input.EdgeProtectionEnabled
+	}
 	if input.RequireOAuthOnly != nil {
 		group.RequireOAuthOnly = *input.RequireOAuthOnly
 	}
@@ -2714,6 +2723,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	sanitizeGroupMessagesDispatchFields(group)
 	if group.Platform != PlatformOpenAI {
 		group.AllowLive = false
+		group.EdgeProtectionEnabled = nil
+	} else if group.EdgeProtectionEnabled != nil && *group.EdgeProtectionEnabled {
+		group.EdgeProtectionEnabled = nil
 	}
 
 	if err := s.groupRepo.Update(ctx, group); err != nil {

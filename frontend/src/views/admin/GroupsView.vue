@@ -1630,6 +1630,16 @@
           </div>
         </div>
 
+        <div v-if="createForm.platform === 'openai'" class="rounded-lg border border-gray-200 bg-gray-50/80 p-4 dark:border-dark-600 dark:bg-dark-800/60">
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t("admin.groups.edgeProtection.title") }}</h4>
+              <p class="mt-1 text-xs leading-5 text-gray-600 dark:text-gray-400">{{ t("admin.groups.edgeProtection.hint") }}</p>
+            </div>
+            <Select v-model="createForm.edge_protection_enabled" :options="edgeProtectionOptions" class="w-full sm:w-52" data-test="create-edge-protection-mode" />
+          </div>
+        </div>
+
         <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
         <div
           v-if="
@@ -3219,6 +3229,16 @@
           </div>
         </div>
 
+        <div v-if="editForm.platform === 'openai'" class="rounded-lg border border-gray-200 bg-gray-50/80 p-4 dark:border-dark-600 dark:bg-dark-800/60">
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t("admin.groups.edgeProtection.title") }}</h4>
+              <p class="mt-1 text-xs leading-5 text-gray-600 dark:text-gray-400">{{ t("admin.groups.edgeProtection.hint") }}</p>
+            </div>
+            <Select v-model="editForm.edge_protection_enabled" :options="edgeProtectionOptions" class="w-full sm:w-52" data-test="edit-edge-protection-mode" />
+          </div>
+        </div>
+
         <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
         <div
           v-if="
@@ -4003,6 +4023,11 @@ const subscriptionTypeOptions = computed(() => [
   { value: "subscription", label: t("admin.groups.subscription.subscription") },
 ]);
 
+const edgeProtectionOptions = computed(() => [
+  { value: null, label: t("admin.groups.edgeProtection.inherit") },
+  { value: false, label: t("admin.groups.edgeProtection.disabled") },
+]);
+
 // 降级分组选项（创建时）- 仅包含 anthropic 平台且未启用 claude_code_only 的分组
 const fallbackGroupOptions = computed(() => {
   const options: { value: number | null; label: string }[] = [
@@ -4224,6 +4249,7 @@ const createForm = reactive({
   // Messages dispatch is available to OpenAI-compatible platforms.
   allow_messages_dispatch: false,
   allow_live: false,
+  edge_protection_enabled: null as boolean | null,
   opus_mapped_model: createMessagesDispatchDefaults.opus_mapped_model,
   sonnet_mapped_model: createMessagesDispatchDefaults.sonnet_mapped_model,
   haiku_mapped_model: createMessagesDispatchDefaults.haiku_mapped_model,
@@ -4580,6 +4606,7 @@ const editForm = reactive({
   // Messages dispatch is available to OpenAI-compatible platforms.
   allow_messages_dispatch: false,
   allow_live: false,
+  edge_protection_enabled: null as boolean | null,
   default_mapped_model: '',
   opus_mapped_model: editMessagesDispatchDefaults.opus_mapped_model,
   sonnet_mapped_model: editMessagesDispatchDefaults.sonnet_mapped_model,
@@ -5028,6 +5055,7 @@ const closeCreateModal = () => {
   createForm.fallback_group_id_on_invalid_request = null;
   resetMessagesDispatchFormState(createForm);
   createForm.allow_live = false;
+  createForm.edge_protection_enabled = null;
   createForm.require_oauth_only = false;
   createForm.require_privacy_set = false;
   createForm.strict_model_priority_on_model_mismatch = false;
@@ -5248,6 +5276,7 @@ const handleEdit = async (group: AdminGroup) => {
     group.allow_messages_dispatch ||
     messagesDispatchFormState.allow_messages_dispatch;
   editForm.allow_live = group.allow_live ?? false;
+  editForm.edge_protection_enabled = group.edge_protection_enabled ?? null;
   editForm.opus_mapped_model = messagesDispatchFormState.opus_mapped_model;
   editForm.sonnet_mapped_model = messagesDispatchFormState.sonnet_mapped_model;
   editForm.haiku_mapped_model = messagesDispatchFormState.haiku_mapped_model;

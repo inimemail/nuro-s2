@@ -62,6 +62,8 @@ const (
 	FieldAllowBatchImageGeneration = "allow_batch_image_generation"
 	// FieldAllowLive holds the string denoting the allow_live field in the database.
 	FieldAllowLive = "allow_live"
+	// FieldEdgeProtectionEnabled holds the string denoting the edge_protection_enabled field in the database.
+	FieldEdgeProtectionEnabled = "edge_protection_enabled"
 	// FieldImageRateIndependent holds the string denoting the image_rate_independent field in the database.
 	FieldImageRateIndependent = "image_rate_independent"
 	// FieldImageRateMultiplier holds the string denoting the image_rate_multiplier field in the database.
@@ -236,6 +238,7 @@ var Columns = []string{
 	FieldAllowImageGeneration,
 	FieldAllowBatchImageGeneration,
 	FieldAllowLive,
+	FieldEdgeProtectionEnabled,
 	FieldImageRateIndependent,
 	FieldImageRateMultiplier,
 	FieldImagePrice1k,
@@ -528,6 +531,11 @@ func ByAllowBatchImageGeneration(opts ...sql.OrderTermOption) OrderOption {
 // ByAllowLive orders the results by the allow_live field.
 func ByAllowLive(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldAllowLive, opts...).ToFunc()
+}
+
+// ByEdgeProtectionEnabled orders the results by the edge_protection_enabled field.
+func ByEdgeProtectionEnabled(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldEdgeProtectionEnabled, opts...).ToFunc()
 }
 
 // ByImageRateIndependent orders the results by the image_rate_independent field.

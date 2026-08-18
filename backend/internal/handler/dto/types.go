@@ -158,6 +158,8 @@ type Group struct {
 type AdminGroup struct {
 	Group
 	UpstreamBillingGuardMaxMultiplier *float64 `json:"upstream_billing_guard_max_multiplier"`
+	// nil inherits the global Edge protection switch; false disables it for this group.
+	EdgeProtectionEnabled *bool `json:"edge_protection_enabled,omitempty"`
 
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64 `json:"model_routing"`

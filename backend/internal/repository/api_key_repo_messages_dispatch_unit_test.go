@@ -83,6 +83,7 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 		SetVideoPrice1080p(videoPrice1080P).
 		SetWebSearchPricePerCall(webSearchPrice).
 		SetAllowMessagesDispatch(true).
+		SetEdgeProtectionEnabled(false).
 		SetRequireOauthOnly(true).
 		SetRequirePrivacySet(true).
 		SetDefaultMappedModel("gpt-5.4").
@@ -125,6 +126,8 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 	require.Equal(t, 0.8, got.Group.VideoRateMultiplier)
 	require.Equal(t, videoPrice1080P, *got.Group.VideoPrice1080P)
 	require.Equal(t, webSearchPrice, *got.Group.WebSearchPricePerCall)
+	require.NotNil(t, got.Group.EdgeProtectionEnabled)
+	require.False(t, *got.Group.EdgeProtectionEnabled)
 	require.True(t, got.Group.RequireOAuthOnly)
 	require.True(t, got.Group.RequirePrivacySet)
 }

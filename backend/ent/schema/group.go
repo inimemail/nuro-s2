@@ -111,6 +111,10 @@ func (Group) Fields() []ent.Field {
 		field.Bool("allow_live").
 			Default(false).
 			Comment("是否允许该分组使用 OpenAI Live；默认关闭"),
+		field.Bool("edge_protection_enabled").
+			Optional().
+			Nillable().
+			Comment("Edge 上游保护分组覆盖；NULL 继承全局，false 表示该分组关闭"),
 		field.Bool("image_rate_independent").
 			Default(false).
 			Comment("图片生成是否使用独立倍率；false 表示共享分组有效倍率"),

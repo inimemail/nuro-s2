@@ -244,6 +244,80 @@ func TestAdminServiceUpdateGroupSetsAndClearsUpstreamGuardLimit(t *testing.T) {
 	require.Nil(t, updated.UpstreamBillingGuardMaxMultiplier)
 }
 
+func TestAdminServiceUpdateGroupPreservesAndClearsEdgeProtection(t *testing.T) {
+	existing := false
+	group := &Group{
+		ID:                    8,
+		Name:                  "openai-edge",
+		Platform:              PlatformOpenAI,
+		RateMultiplier:        1,
+		Status:                StatusActive,
+		SubscriptionType:      SubscriptionTypeStandard,
+		EdgeProtectionEnabled: &existing,
+	}
+	repo := &groupRepoStubForAdmin{getByID: group}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	updated, err := svc.UpdateGroup(context.Background(), group.ID, &UpdateGroupInput{})
+	require.NoError(t, err)
+	require.NotNil(t, updated.EdgeProtectionEnabled)
+	require.False(t, *updated.EdgeProtectionEnabled)
+
+	var inherit *bool
+	updated, err = svc.UpdateGroup(context.Background(), group.ID, &UpdateGroupInput{
+		EdgeProtectionEnabled: &inherit,
+	})
+	require.NoError(t, err)
+	require.Nil(t, updated.EdgeProtectionEnabled)
+}
+
+func TestAdminServiceClearsEdgeProtectionForNonOpenAIGroup(t *testing.T) {
+	disabled := false
+	createRepo := &groupRepoStubForAdmin{}
+	createService := &adminServiceImpl{groupRepo: createRepo}
+
+	created, err := createService.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                  "anthropic-edge-hidden",
+		Platform:              PlatformAnthropic,
+		RateMultiplier:        1,
+		EdgeProtectionEnabled: &disabled,
+	})
+	require.NoError(t, err)
+	require.Nil(t, created.EdgeProtectionEnabled)
+
+	enabled := true
+	openAIRepo := &groupRepoStubForAdmin{}
+	openAIService := &adminServiceImpl{groupRepo: openAIRepo}
+	openAIGroup, err := openAIService.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                  "openai-edge-inherit",
+		Platform:              PlatformOpenAI,
+		RateMultiplier:        1,
+		AllowLive:             true,
+		EdgeProtectionEnabled: &enabled,
+	})
+	require.NoError(t, err)
+	require.True(t, openAIGroup.AllowLive)
+	require.Nil(t, openAIGroup.EdgeProtectionEnabled)
+
+	existing := &Group{
+		ID:                    9,
+		Name:                  "openai-to-anthropic",
+		Platform:              PlatformOpenAI,
+		RateMultiplier:        1,
+		Status:                StatusActive,
+		SubscriptionType:      SubscriptionTypeStandard,
+		EdgeProtectionEnabled: &disabled,
+	}
+	updateRepo := &groupRepoStubForAdmin{getByID: existing}
+	updateService := &adminServiceImpl{groupRepo: updateRepo}
+
+	updated, err := updateService.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+		Platform: PlatformAnthropic,
+	})
+	require.NoError(t, err)
+	require.Nil(t, updated.EdgeProtectionEnabled)
+}
+
 // TestAdminService_CreateGroup_WithImagePricing 测试创建分组时 ImagePrice 字段正确传递
 func TestAdminService_CreateGroup_WithImagePricing(t *testing.T) {
 	repo := &groupRepoStubForAdmin{}

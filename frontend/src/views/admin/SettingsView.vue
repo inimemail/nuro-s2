@@ -4302,38 +4302,48 @@
                   <Icon name="refresh" size="sm" />
                 </button>
               </div>
-              <div class="mt-5 flex flex-wrap items-center gap-3">
-                <span class="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold" :class="form.gateway_edge_protection_enabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300' : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300'">
-                  <span class="h-2 w-2 rounded-full" :class="form.gateway_edge_protection_enabled ? 'bg-emerald-500' : 'bg-gray-400'" />
-                  {{ form.gateway_edge_protection_enabled ? t("admin.settings.gatewayEdgeProtection.enabled") : t("admin.settings.gatewayEdgeProtection.disabled") }}
-                </span>
-                <span class="text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.restartHint") }}</span>
+              <div class="mt-5 flex w-full items-center justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 dark:border-dark-600 dark:bg-dark-800/70">
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-sm font-semibold text-gray-800 dark:text-gray-100">{{ t("admin.settings.gatewayEdgeProtection.toggleLabel") }}</span>
+                    <span class="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold" :class="form.gateway_edge_protection_enabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300' : 'border-gray-200 bg-white text-gray-600 dark:border-dark-500 dark:bg-dark-700 dark:text-gray-300'">
+                      <span class="h-2 w-2 rounded-full" :class="form.gateway_edge_protection_enabled ? 'bg-emerald-500' : 'bg-gray-400'" />
+                      {{ form.gateway_edge_protection_enabled ? t("admin.settings.gatewayEdgeProtection.enabled") : t("admin.settings.gatewayEdgeProtection.disabled") }}
+                    </span>
+                  </div>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.toggleHint") }}</p>
+                </div>
+                <Toggle
+                  v-model="form.gateway_edge_protection_enabled"
+                  :aria-label="t('admin.settings.gatewayEdgeProtection.toggleLabel')"
+                  data-test="gateway-edge-protection-toggle"
+                />
               </div>
             </div>
             <div class="grid gap-5 p-6 sm:grid-cols-2 lg:grid-cols-3">
               <div>
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayEdgeProtection.connectTimeout") }}</label>
-                <input v-model.number="form.gateway_edge_connect_timeout_ms" type="number" min="1" step="1" class="input w-full" />
+                <input v-model.number="form.gateway_edge_connect_timeout_ms" type="number" min="1" step="1" class="input w-full" :disabled="!form.gateway_edge_protection_enabled" />
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.connectTimeoutHint") }}</p>
               </div>
               <div>
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayEdgeProtection.headerTimeout") }}</label>
-                <input v-model.number="form.gateway_edge_response_header_timeout_ms" type="number" min="1" step="1" class="input w-full" />
+                <input v-model.number="form.gateway_edge_response_header_timeout_ms" type="number" min="1" step="1" class="input w-full" :disabled="!form.gateway_edge_protection_enabled" />
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.headerTimeoutHint") }}</p>
               </div>
               <div>
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayEdgeProtection.headerBudget") }}</label>
-                <input v-model.number="form.gateway_edge_response_header_budget_ms" type="number" min="1" step="1" class="input w-full" />
+                <input v-model.number="form.gateway_edge_response_header_budget_ms" type="number" min="1" step="1" class="input w-full" :disabled="!form.gateway_edge_protection_enabled" />
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.headerBudgetHint") }}</p>
               </div>
               <div>
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayEdgeProtection.bodyIdleTimeout") }}</label>
-                <input v-model.number="form.gateway_edge_body_idle_timeout_ms" type="number" min="1" step="1" class="input w-full" />
+                <input v-model.number="form.gateway_edge_body_idle_timeout_ms" type="number" min="1" step="1" class="input w-full" :disabled="!form.gateway_edge_protection_enabled" />
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.bodyIdleTimeoutHint") }}</p>
               </div>
               <div>
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayEdgeProtection.maxAttempts") }}</label>
-                <input v-model.number="form.gateway_edge_response_header_max_attempts" type="number" min="1" max="100" step="1" class="input w-full" />
+                <input v-model.number="form.gateway_edge_response_header_max_attempts" type="number" min="1" max="100" step="1" class="input w-full" :disabled="!form.gateway_edge_protection_enabled" />
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.maxAttemptsHint") }}</p>
               </div>
               <div class="flex items-end">
@@ -4342,7 +4352,7 @@
                     <div class="text-sm font-medium text-gray-700 dark:text-gray-200">{{ t("admin.settings.gatewayEdgeProtection.failover") }}</div>
                     <div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.failoverHint") }}</div>
                   </div>
-                  <Toggle v-model="form.gateway_edge_response_header_failover" />
+                  <Toggle v-model="form.gateway_edge_response_header_failover" :disabled="!form.gateway_edge_protection_enabled" />
                 </div>
               </div>
               <div class="flex items-end sm:col-span-2 lg:col-span-3">

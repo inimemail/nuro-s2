@@ -74,6 +74,8 @@ type OpenAIEdgePlan struct {
 	EdgeBodyIdleTimeoutMS         int  `json:"edge_body_idle_timeout_ms,omitempty"`
 	EdgeResponseHeaderMaxAttempts int  `json:"edge_response_header_max_attempts,omitempty"`
 	EdgeResponseHeaderFailover    bool `json:"edge_response_header_failover"`
+	// Go-only group override; the final EdgeProtectionEnabled value is sent on wire.
+	EdgeProtectionGroupEnabled *bool `json:"-"`
 	// SSECommentPreflush mirrors the account-level APIKey/OAuth setting that
 	// sends an SSE comment before upstream data so the downstream can commit the
 	// response body earlier. It is deliberately optional for old edge binaries.

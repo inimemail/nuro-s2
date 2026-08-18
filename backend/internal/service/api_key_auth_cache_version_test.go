@@ -2,8 +2,52 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
+
+func TestAPIKeyService_AcceptsV20AuthSnapshotWithoutEdgeProtectionOverride(t *testing.T) {
+	const legacy = `{
+		"snapshot": {
+			"version": 20,
+			"api_key_id": 1,
+			"user_id": 2,
+			"group_id": 9,
+			"status": "active",
+			"user": {
+				"id": 2,
+				"status": "active",
+				"role": "user",
+				"balance": 10,
+				"concurrency": 3
+			},
+			"group": {
+				"id": 9,
+				"name": "openai",
+				"platform": "openai",
+				"status": "active",
+				"subscription_type": "standard",
+				"rate_multiplier": 1
+			}
+		}
+	}`
+
+	var entry APIKeyAuthCacheEntry
+	if err := json.Unmarshal([]byte(legacy), &entry); err != nil {
+		t.Fatalf("unmarshal v20 auth snapshot: %v", err)
+	}
+
+	apiKey, ok, err := (&APIKeyService{}).applyAuthCacheEntry(context.Background(), "k-v20", &entry)
+	if err != nil {
+		t.Fatalf("apply v20 auth snapshot: %v", err)
+	}
+	if !ok || apiKey == nil || apiKey.Group == nil {
+		t.Fatalf("expected v20 auth snapshot to remain usable, got ok=%v apiKey=%#v", ok, apiKey)
+	}
+	if apiKey.Group.EdgeProtectionEnabled != nil {
+		t.Fatalf("missing v20 override must inherit the global Edge protection setting")
+	}
+}
 
 func TestAPIKeyService_RejectsV10AuthSnapshotWithoutModelsListConfig(t *testing.T) {
 	groupID := int64(9)

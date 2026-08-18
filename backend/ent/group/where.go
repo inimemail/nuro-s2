@@ -170,6 +170,11 @@ func AllowLive(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldAllowLive, v))
 }
 
+// EdgeProtectionEnabled applies equality check predicate on the "edge_protection_enabled" field. It's identical to EdgeProtectionEnabledEQ.
+func EdgeProtectionEnabled(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldEdgeProtectionEnabled, v))
+}
+
 // ImageRateIndependent applies equality check predicate on the "image_rate_independent" field. It's identical to ImageRateIndependentEQ.
 func ImageRateIndependent(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldImageRateIndependent, v))
@@ -1363,6 +1368,26 @@ func AllowLiveEQ(v bool) predicate.Group {
 // AllowLiveNEQ applies the NEQ predicate on the "allow_live" field.
 func AllowLiveNEQ(v bool) predicate.Group {
 	return predicate.Group(sql.FieldNEQ(FieldAllowLive, v))
+}
+
+// EdgeProtectionEnabledEQ applies the EQ predicate on the "edge_protection_enabled" field.
+func EdgeProtectionEnabledEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldEdgeProtectionEnabled, v))
+}
+
+// EdgeProtectionEnabledNEQ applies the NEQ predicate on the "edge_protection_enabled" field.
+func EdgeProtectionEnabledNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldEdgeProtectionEnabled, v))
+}
+
+// EdgeProtectionEnabledIsNil applies the IsNil predicate on the "edge_protection_enabled" field.
+func EdgeProtectionEnabledIsNil() predicate.Group {
+	return predicate.Group(sql.FieldIsNull(FieldEdgeProtectionEnabled))
+}
+
+// EdgeProtectionEnabledNotNil applies the NotNil predicate on the "edge_protection_enabled" field.
+func EdgeProtectionEnabledNotNil() predicate.Group {
+	return predicate.Group(sql.FieldNotNull(FieldEdgeProtectionEnabled))
 }
 
 // ImageRateIndependentEQ applies the EQ predicate on the "image_rate_independent" field.

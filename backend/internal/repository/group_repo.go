@@ -102,6 +102,7 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetMcpXMLInject(groupIn.MCPXMLInject).
 		SetAllowMessagesDispatch(groupIn.AllowMessagesDispatch).
 		SetAllowLive(groupIn.AllowLive).
+		SetNillableEdgeProtectionEnabled(groupIn.EdgeProtectionEnabled).
 		SetRequireOauthOnly(groupIn.RequireOAuthOnly).
 		SetRequirePrivacySet(groupIn.RequirePrivacySet).
 		SetDefaultMappedModel(groupIn.DefaultMappedModel).
@@ -359,6 +360,11 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		builder = builder.SetUpstreamBillingGuardMaxMultiplier(*groupIn.UpstreamBillingGuardMaxMultiplier)
 	} else {
 		builder = builder.ClearUpstreamBillingGuardMaxMultiplier()
+	}
+	if groupIn.EdgeProtectionEnabled != nil {
+		builder = builder.SetEdgeProtectionEnabled(*groupIn.EdgeProtectionEnabled)
+	} else {
+		builder = builder.ClearEdgeProtectionEnabled()
 	}
 
 	// 处理 FallbackGroupID：nil 时清除，否则设置

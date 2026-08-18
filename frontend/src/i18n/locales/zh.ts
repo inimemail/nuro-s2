@@ -2258,6 +2258,12 @@ export default {
     groups: {
       title: '分组管理',
       description: '管理 API 密钥分组和费率配置',
+      edgeProtection: {
+        title: 'Edge 上游保护',
+        hint: '仅影响使用此 OpenAI 分组的 Edge 请求。默认继承网关全局开关；关闭后跳过 Edge 建连、响应头和 body 空闲保护。',
+        inherit: '继承全局设置',
+        disabled: '本分组关闭'
+      },
       searchGroups: '搜索分组...',
       createGroup: '创建分组',
       editGroup: '编辑分组',
@@ -6598,6 +6604,8 @@ export default {
         title: 'Edge 上游保护',
         description: '为 Edge 直连上游提供建连、响应头和流式 body 空闲保护；只影响当前请求，不会全局降权账号。',
         reset: '恢复推荐默认',
+        toggleLabel: '保护总开关',
+        toggleHint: '关闭后不启用 Edge 建连、响应头和 body 空闲保护；首 Token 补帧与 Edge 转发保持不变。',
         enabled: '保护已开启',
         disabled: '保护已关闭',
         restartHint: '保存后新请求立即下发到 Edge；正在运行的请求保持原配置。',

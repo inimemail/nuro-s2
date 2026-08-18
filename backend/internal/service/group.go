@@ -88,8 +88,10 @@ type Group struct {
 	SortOrder int
 
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
-	AllowMessagesDispatch       bool
-	AllowLive                   bool
+	AllowMessagesDispatch bool
+	AllowLive             bool
+	// nil inherits the global Edge protection switch; false disables it for this group.
+	EdgeProtectionEnabled       *bool
 	RequireOAuthOnly            bool // 仅允许非 apikey 类型账号关联（OpenAI/Antigravity/Anthropic/Gemini）
 	RequirePrivacySet           bool // 调度时仅允许 privacy 已成功设置的账号（OpenAI/Antigravity/Anthropic/Gemini）
 	DefaultMappedModel          string

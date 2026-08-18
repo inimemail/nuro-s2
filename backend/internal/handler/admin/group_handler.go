@@ -95,6 +95,34 @@ type optionalLimitField struct {
 	value *float64
 }
 
+type optionalBoolField struct {
+	set   bool
+	value *bool
+}
+
+func (f *optionalBoolField) UnmarshalJSON(data []byte) error {
+	f.set = true
+	trimmed := bytes.TrimSpace(data)
+	if bytes.Equal(trimmed, []byte("null")) {
+		f.value = nil
+		return nil
+	}
+	var value bool
+	if err := json.Unmarshal(trimmed, &value); err != nil {
+		return fmt.Errorf("invalid boolean value: %s", string(trimmed))
+	}
+	f.value = &value
+	return nil
+}
+
+func (f optionalBoolField) ToNullableServiceInput() **bool {
+	if !f.set {
+		return nil
+	}
+	value := f.value
+	return &value
+}
+
 func (f *optionalLimitField) UnmarshalJSON(data []byte) error {
 	f.set = true
 
@@ -211,6 +239,7 @@ type CreateGroupRequest struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch              bool                                      `json:"allow_messages_dispatch"`
 	AllowLive                          bool                                      `json:"allow_live"`
+	EdgeProtectionEnabled              *bool                                     `json:"edge_protection_enabled"`
 	RequireOAuthOnly                   bool                                      `json:"require_oauth_only"`
 	RequirePrivacySet                  bool                                      `json:"require_privacy_set"`
 	DefaultMappedModel                 string                                    `json:"default_mapped_model"`
@@ -277,6 +306,7 @@ type UpdateGroupRequest struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch              *bool                                      `json:"allow_messages_dispatch"`
 	AllowLive                          *bool                                      `json:"allow_live"`
+	EdgeProtectionEnabled              optionalBoolField                          `json:"edge_protection_enabled"`
 	RequireOAuthOnly                   *bool                                      `json:"require_oauth_only"`
 	RequirePrivacySet                  *bool                                      `json:"require_privacy_set"`
 	DefaultMappedModel                 *string                                    `json:"default_mapped_model"`
@@ -447,6 +477,7 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		SupportedModelScopes:               req.SupportedModelScopes,
 		AllowMessagesDispatch:              req.AllowMessagesDispatch,
 		AllowLive:                          req.AllowLive,
+		EdgeProtectionEnabled:              req.EdgeProtectionEnabled,
 		RequireOAuthOnly:                   req.RequireOAuthOnly,
 		RequirePrivacySet:                  req.RequirePrivacySet,
 		DefaultMappedModel:                 req.DefaultMappedModel,
@@ -528,6 +559,7 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		SupportedModelScopes:               req.SupportedModelScopes,
 		AllowMessagesDispatch:              req.AllowMessagesDispatch,
 		AllowLive:                          req.AllowLive,
+		EdgeProtectionEnabled:              req.EdgeProtectionEnabled.ToNullableServiceInput(),
 		RequireOAuthOnly:                   req.RequireOAuthOnly,
 		RequirePrivacySet:                  req.RequirePrivacySet,
 		DefaultMappedModel:                 req.DefaultMappedModel,

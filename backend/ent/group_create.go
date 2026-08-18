@@ -344,6 +344,20 @@ func (_c *GroupCreate) SetNillableAllowLive(v *bool) *GroupCreate {
 	return _c
 }
 
+// SetEdgeProtectionEnabled sets the "edge_protection_enabled" field.
+func (_c *GroupCreate) SetEdgeProtectionEnabled(v bool) *GroupCreate {
+	_c.mutation.SetEdgeProtectionEnabled(v)
+	return _c
+}
+
+// SetNillableEdgeProtectionEnabled sets the "edge_protection_enabled" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableEdgeProtectionEnabled(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetEdgeProtectionEnabled(*v)
+	}
+	return _c
+}
+
 // SetImageRateIndependent sets the "image_rate_independent" field.
 func (_c *GroupCreate) SetImageRateIndependent(v bool) *GroupCreate {
 	_c.mutation.SetImageRateIndependent(v)
@@ -1420,6 +1434,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 		_spec.SetField(group.FieldAllowLive, field.TypeBool, value)
 		_node.AllowLive = value
 	}
+	if value, ok := _c.mutation.EdgeProtectionEnabled(); ok {
+		_spec.SetField(group.FieldEdgeProtectionEnabled, field.TypeBool, value)
+		_node.EdgeProtectionEnabled = &value
+	}
 	if value, ok := _c.mutation.ImageRateIndependent(); ok {
 		_spec.SetField(group.FieldImageRateIndependent, field.TypeBool, value)
 		_node.ImageRateIndependent = value
@@ -2055,6 +2073,24 @@ func (u *GroupUpsert) SetAllowLive(v bool) *GroupUpsert {
 // UpdateAllowLive sets the "allow_live" field to the value that was provided on create.
 func (u *GroupUpsert) UpdateAllowLive() *GroupUpsert {
 	u.SetExcluded(group.FieldAllowLive)
+	return u
+}
+
+// SetEdgeProtectionEnabled sets the "edge_protection_enabled" field.
+func (u *GroupUpsert) SetEdgeProtectionEnabled(v bool) *GroupUpsert {
+	u.Set(group.FieldEdgeProtectionEnabled, v)
+	return u
+}
+
+// UpdateEdgeProtectionEnabled sets the "edge_protection_enabled" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateEdgeProtectionEnabled() *GroupUpsert {
+	u.SetExcluded(group.FieldEdgeProtectionEnabled)
+	return u
+}
+
+// ClearEdgeProtectionEnabled clears the value of the "edge_protection_enabled" field.
+func (u *GroupUpsert) ClearEdgeProtectionEnabled() *GroupUpsert {
+	u.SetNull(group.FieldEdgeProtectionEnabled)
 	return u
 }
 
@@ -3154,6 +3190,27 @@ func (u *GroupUpsertOne) SetAllowLive(v bool) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdateAllowLive() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateAllowLive()
+	})
+}
+
+// SetEdgeProtectionEnabled sets the "edge_protection_enabled" field.
+func (u *GroupUpsertOne) SetEdgeProtectionEnabled(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetEdgeProtectionEnabled(v)
+	})
+}
+
+// UpdateEdgeProtectionEnabled sets the "edge_protection_enabled" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateEdgeProtectionEnabled() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateEdgeProtectionEnabled()
+	})
+}
+
+// ClearEdgeProtectionEnabled clears the value of the "edge_protection_enabled" field.
+func (u *GroupUpsertOne) ClearEdgeProtectionEnabled() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearEdgeProtectionEnabled()
 	})
 }
 
@@ -4530,6 +4587,27 @@ func (u *GroupUpsertBulk) SetAllowLive(v bool) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdateAllowLive() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateAllowLive()
+	})
+}
+
+// SetEdgeProtectionEnabled sets the "edge_protection_enabled" field.
+func (u *GroupUpsertBulk) SetEdgeProtectionEnabled(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetEdgeProtectionEnabled(v)
+	})
+}
+
+// UpdateEdgeProtectionEnabled sets the "edge_protection_enabled" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateEdgeProtectionEnabled() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateEdgeProtectionEnabled()
+	})
+}
+
+// ClearEdgeProtectionEnabled clears the value of the "edge_protection_enabled" field.
+func (u *GroupUpsertBulk) ClearEdgeProtectionEnabled() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearEdgeProtectionEnabled()
 	})
 }
 

@@ -826,6 +826,21 @@ func TestOpenAIEdgeRetryExplicitRejectedResponsesFieldsStayOnSameLease(t *testin
 	}
 }
 
+func TestApplyOpenAIEdgeProtectionHonorsGroupDisableOverride(t *testing.T) {
+	disabled := false
+	plan := service.OpenAIEdgePlan{EdgeProtectionGroupEnabled: &disabled}
+	h := &OpenAIGatewayHandler{cfg: &config.Config{}}
+
+	h.applyOpenAIEdgeProtection(&plan)
+
+	if plan.EdgeProtectionEnabled {
+		t.Fatal("group override must disable Edge upstream protection")
+	}
+	if plan.EdgeConnectTimeoutMS != 5000 || plan.EdgeResponseHeaderTimeoutMS != 15000 {
+		t.Fatalf("group override must preserve the configured profile values: %+v", plan)
+	}
+}
+
 func TestOpenAIEdgeRetryRejectedFieldsSurviveCachePolicyFallback(t *testing.T) {
 	cfg := &config.Config{}
 	gatewaySvc := service.NewOpenAIGatewayService(

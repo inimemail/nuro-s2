@@ -2206,6 +2206,12 @@ export default {
     groups: {
       title: 'Group Management',
       description: 'Manage API key groups and rate multipliers',
+      edgeProtection: {
+        title: 'Edge upstream protection',
+        hint: 'Applies only to Edge requests using this OpenAI group. New groups inherit the gateway switch; disabling it skips Edge connect, response-header, and body-idle protection.',
+        inherit: 'Inherit global setting',
+        disabled: 'Disable for this group'
+      },
       searchGroups: 'Search groups...',
       createGroup: 'Create Group',
       editGroup: 'Edit Group',
@@ -6457,6 +6463,8 @@ export default {
         title: 'Edge Upstream Protection',
         description: 'Protect direct Edge upstream connections with connect, response-header, and body-idle budgets. It only affects the current request and never globally downgrades an account.',
         reset: 'Restore recommended defaults',
+        toggleLabel: 'Protection master switch',
+        toggleHint: 'When disabled, Edge connect, response-header, and body-idle protection are skipped; first-token placeholders and Edge forwarding remain unchanged.',
         enabled: 'Protection enabled',
         disabled: 'Protection disabled',
         restartHint: 'New requests receive saved values immediately; in-flight requests keep their original profile.',

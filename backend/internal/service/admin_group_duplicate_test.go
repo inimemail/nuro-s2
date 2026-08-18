@@ -65,6 +65,7 @@ func TestDuplicateGroupCopiesForkFieldsAndKeepsSourceIndependent(t *testing.T) {
 	webSearch := 0.03
 	modelInputPrice := 2e-6
 	guardLimit := 1.25
+	edgeProtectionEnabled := false
 	fallback, invalidFallback := int64(8), int64(9)
 	source := &Group{
 		ID: 4, Name: "Primary", Description: "description", Platform: PlatformOpenAI,
@@ -85,7 +86,7 @@ func TestDuplicateGroupCopiesForkFieldsAndKeepsSourceIndependent(t *testing.T) {
 		FallbackGroupID: &fallback, FallbackGroupIDOnInvalidRequest: &invalidFallback,
 		ModelRoutingEnabled: true, ModelRouting: map[string][]int64{"gpt-*": {12, 13}}, MCPXMLInject: true,
 		SupportedModelScopes: []string{"responses", "messages"}, SortOrder: 7,
-		AllowMessagesDispatch: true, RequireOAuthOnly: true, RequirePrivacySet: true,
+		AllowMessagesDispatch: true, EdgeProtectionEnabled: &edgeProtectionEnabled, RequireOAuthOnly: true, RequirePrivacySet: true,
 		DefaultMappedModel: "gpt-5.6", MessagesDispatchModelConfig: OpenAIMessagesDispatchModelConfig{
 			ExactModelMappings: map[string]string{"gpt-5": "gpt-5.6"},
 		},
@@ -107,6 +108,8 @@ func TestDuplicateGroupCopiesForkFieldsAndKeepsSourceIndependent(t *testing.T) {
 	require.Equal(t, source.ImagePrice4K, duplicate.ImagePrice4K)
 	require.Equal(t, source.VideoPrice1080P, duplicate.VideoPrice1080P)
 	require.Equal(t, source.WebSearchPricePerCall, duplicate.WebSearchPricePerCall)
+	require.Equal(t, source.EdgeProtectionEnabled, duplicate.EdgeProtectionEnabled)
+	require.NotSame(t, source.EdgeProtectionEnabled, duplicate.EdgeProtectionEnabled)
 	require.False(t, duplicate.LongContextPricingEnabled)
 	require.Equal(t, source.ModelPricing, duplicate.ModelPricing)
 	require.Equal(t, source.StrictModelPriorityOnModelMismatch, duplicate.StrictModelPriorityOnModelMismatch)

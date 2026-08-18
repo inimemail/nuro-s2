@@ -237,6 +237,7 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 	groupID := int64(9)
 	webSearchPricePerCall := 0.025
 	upstreamGuard := 2.0
+	edgeProtectionEnabled := false
 	apiKey := &APIKey{
 		ID:      1,
 		UserID:  2,
@@ -266,6 +267,7 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 			BatchImageHoldMultiplier:          0.7,
 			WebSearchPricePerCall:             &webSearchPricePerCall,
 			AllowMessagesDispatch:             true,
+			EdgeProtectionEnabled:             &edgeProtectionEnabled,
 			RequireOAuthOnly:                  true,
 			RequirePrivacySet:                 true,
 			DefaultMappedModel:                "gpt-5.4",
@@ -294,6 +296,7 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 	require.Equal(t, apiKey.Group.UpstreamBillingGuardMaxMultiplier, roundTrip.Group.UpstreamBillingGuardMaxMultiplier)
 	require.Equal(t, apiKey.Group.BatchImageDiscountMultiplier, roundTrip.Group.BatchImageDiscountMultiplier)
 	require.Equal(t, apiKey.Group.BatchImageHoldMultiplier, roundTrip.Group.BatchImageHoldMultiplier)
+	require.Equal(t, apiKey.Group.EdgeProtectionEnabled, roundTrip.Group.EdgeProtectionEnabled)
 	require.Equal(t, apiKey.Group.RequireOAuthOnly, roundTrip.Group.RequireOAuthOnly)
 	require.Equal(t, apiKey.Group.RequirePrivacySet, roundTrip.Group.RequirePrivacySet)
 }

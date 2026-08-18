@@ -675,6 +675,35 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(payload.claude_oauth_system_prompt_blocks).toBe("");
   });
 
+  it("saves the Edge protection master switch and disables subordinate controls", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      gateway_edge_protection_enabled: true,
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const masterSwitch = wrapper.get('[data-test="gateway-edge-protection-toggle"]');
+    await masterSwitch.setValue(false);
+
+    const edgeProtectionSection = masterSwitch.element.closest(".card");
+    expect(edgeProtectionSection).not.toBeNull();
+    expect(
+      Array.from(edgeProtectionSection!.querySelectorAll('input[type="number"]')).every(
+        (input) => (input as HTMLInputElement).disabled,
+      ),
+    ).toBe(true);
+
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({
+      gateway_edge_protection_enabled: false,
+    });
+  });
+
   it("renders Claude OAuth system blocks when enabled", async () => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,

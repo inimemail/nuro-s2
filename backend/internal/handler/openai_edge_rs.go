@@ -944,6 +944,9 @@ func (h *OpenAIGatewayHandler) applyOpenAIEdgeProtection(plan *service.OpenAIEdg
 	plan.EdgeBodyIdleTimeoutMS = profile.EdgeBodyIdleTimeoutMS
 	plan.EdgeResponseHeaderMaxAttempts = profile.EdgeResponseHeaderMaxAttempts
 	plan.EdgeResponseHeaderFailover = profile.EdgeResponseHeaderFailover
+	if plan.EdgeProtectionGroupEnabled != nil && !*plan.EdgeProtectionGroupEnabled {
+		plan.EdgeProtectionEnabled = false
+	}
 }
 
 func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req service.OpenAIEdgePrepareRequest, cfg config.GatewayOpenAIEdgeRSConfig) (service.OpenAIEdgePlan, bool) {
@@ -1077,6 +1080,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 	}
 	plan := prepared.Plan
 	if apiKey.Group != nil {
+		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
 		plan.ReasoningEffortMappings = append([]service.ReasoningEffortMapping(nil), apiKey.Group.ReasoningEffortMappings...)
 	}
@@ -1290,6 +1294,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	}
 	plan := prepared.Plan
 	if apiKey.Group != nil {
+		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
 		plan.ReasoningEffortMappings = append([]service.ReasoningEffortMapping(nil), apiKey.Group.ReasoningEffortMappings...)
 	}
@@ -1485,6 +1490,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	}
 	plan := prepared.Plan
 	if apiKey.Group != nil {
+		plan.EdgeProtectionGroupEnabled = apiKey.Group.EdgeProtectionEnabled
 		plan.MaxReasoningEffort = apiKey.Group.MaxReasoningEffort
 		plan.ReasoningEffortMappings = append([]service.ReasoningEffortMapping(nil), apiKey.Group.ReasoningEffortMappings...)
 	}
@@ -2071,6 +2077,7 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 		lease.passthroughSeen = true
 	}
 	plan := prepared.Plan
+	plan.EdgeProtectionGroupEnabled = lease.lastPlan.EdgeProtectionGroupEnabled
 	plan, err = applyOpenAIEdgeRejectedFields(plan, lease.rejectedFields)
 	if err != nil {
 		return service.OpenAIEdgePlan{}, err

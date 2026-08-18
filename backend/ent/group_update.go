@@ -408,6 +408,26 @@ func (_u *GroupUpdate) SetNillableAllowLive(v *bool) *GroupUpdate {
 	return _u
 }
 
+// SetEdgeProtectionEnabled sets the "edge_protection_enabled" field.
+func (_u *GroupUpdate) SetEdgeProtectionEnabled(v bool) *GroupUpdate {
+	_u.mutation.SetEdgeProtectionEnabled(v)
+	return _u
+}
+
+// SetNillableEdgeProtectionEnabled sets the "edge_protection_enabled" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableEdgeProtectionEnabled(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetEdgeProtectionEnabled(*v)
+	}
+	return _u
+}
+
+// ClearEdgeProtectionEnabled clears the value of the "edge_protection_enabled" field.
+func (_u *GroupUpdate) ClearEdgeProtectionEnabled() *GroupUpdate {
+	_u.mutation.ClearEdgeProtectionEnabled()
+	return _u
+}
+
 // SetImageRateIndependent sets the "image_rate_independent" field.
 func (_u *GroupUpdate) SetImageRateIndependent(v bool) *GroupUpdate {
 	_u.mutation.SetImageRateIndependent(v)
@@ -1592,6 +1612,12 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.AllowLive(); ok {
 		_spec.SetField(group.FieldAllowLive, field.TypeBool, value)
 	}
+	if value, ok := _u.mutation.EdgeProtectionEnabled(); ok {
+		_spec.SetField(group.FieldEdgeProtectionEnabled, field.TypeBool, value)
+	}
+	if _u.mutation.EdgeProtectionEnabledCleared() {
+		_spec.ClearField(group.FieldEdgeProtectionEnabled, field.TypeBool)
+	}
 	if value, ok := _u.mutation.ImageRateIndependent(); ok {
 		_spec.SetField(group.FieldImageRateIndependent, field.TypeBool, value)
 	}
@@ -2508,6 +2534,26 @@ func (_u *GroupUpdateOne) SetNillableAllowLive(v *bool) *GroupUpdateOne {
 	if v != nil {
 		_u.SetAllowLive(*v)
 	}
+	return _u
+}
+
+// SetEdgeProtectionEnabled sets the "edge_protection_enabled" field.
+func (_u *GroupUpdateOne) SetEdgeProtectionEnabled(v bool) *GroupUpdateOne {
+	_u.mutation.SetEdgeProtectionEnabled(v)
+	return _u
+}
+
+// SetNillableEdgeProtectionEnabled sets the "edge_protection_enabled" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableEdgeProtectionEnabled(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetEdgeProtectionEnabled(*v)
+	}
+	return _u
+}
+
+// ClearEdgeProtectionEnabled clears the value of the "edge_protection_enabled" field.
+func (_u *GroupUpdateOne) ClearEdgeProtectionEnabled() *GroupUpdateOne {
+	_u.mutation.ClearEdgeProtectionEnabled()
 	return _u
 }
 
@@ -3724,6 +3770,12 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.AllowLive(); ok {
 		_spec.SetField(group.FieldAllowLive, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.EdgeProtectionEnabled(); ok {
+		_spec.SetField(group.FieldEdgeProtectionEnabled, field.TypeBool, value)
+	}
+	if _u.mutation.EdgeProtectionEnabledCleared() {
+		_spec.ClearField(group.FieldEdgeProtectionEnabled, field.TypeBool)
 	}
 	if value, ok := _u.mutation.ImageRateIndependent(); ok {
 		_spec.SetField(group.FieldImageRateIndependent, field.TypeBool, value)

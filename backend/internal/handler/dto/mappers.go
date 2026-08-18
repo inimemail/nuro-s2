@@ -146,6 +146,7 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 	out := &AdminGroup{
 		Group:                             groupFromServiceBase(g),
 		UpstreamBillingGuardMaxMultiplier: g.UpstreamBillingGuardMaxMultiplier,
+		EdgeProtectionEnabled:             g.EdgeProtectionEnabled,
 		ModelRouting:                      g.ModelRouting,
 		ModelRoutingEnabled:               g.ModelRoutingEnabled,
 		MCPXMLInject:                      g.MCPXMLInject,
