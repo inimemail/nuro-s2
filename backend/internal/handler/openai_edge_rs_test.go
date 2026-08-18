@@ -1003,7 +1003,7 @@ func TestApplyOpenAIEdgeRaceResponseHeaderBudgetRefreshesStalePlanTimeout(t *tes
 	}
 }
 
-func TestOpenAIEdgeRaceResponseHeaderTimeoutExhaustsBudgetAndRecordsAccountFailure(t *testing.T) {
+func TestOpenAIEdgeRaceResponseHeaderTimeoutExcludesAccountWithoutSoftCooldown(t *testing.T) {
 	cfg := &config.Config{}
 	gatewaySvc := service.NewOpenAIGatewayService(
 		nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil,
@@ -1063,6 +1063,8 @@ func TestOpenAIEdgeRaceResponseHeaderTimeoutExhaustsBudgetAndRecordsAccountFailu
 	require.Zero(t, lease.sameAccountRetries[account.ID], "a response-header timeout must not start another same-account retry")
 	require.True(t, lease.cachePolicyEnabled)
 	require.True(t, lease.cachePolicyApplied)
+	require.False(t, gatewaySvc.OpenAIPoolSoftCooldownState(account.ID).Cooling,
+		"a response-header timeout before downstream commit must remain request-local")
 }
 
 func TestOpenAIEdgeRetryResponsesWSRebuildRetainsTransportAndRejectedFieldRemoval(t *testing.T) {
@@ -1306,6 +1308,168 @@ func TestOpenAIEdgeCompletionSuccessRejectsCyberAndDisconnect(t *testing.T) {
 	if openAIEdgeCompletionIsSuccessful("/v1/responses", disconnected) {
 		t.Fatal("client-disconnected completion must not be successful")
 	}
+}
+
+func TestOpenAIEdgeResponseHeaderTimeoutCompletionIsRequestLocal(t *testing.T) {
+	tests := []struct {
+		name string
+		req  service.OpenAIEdgeCompleteRequest
+		want bool
+	}{
+		{
+			name: "typed timeout",
+			req: service.OpenAIEdgeCompleteRequest{
+				ErrorType:    openAIEdgeResponseHeaderTimeoutErrorType,
+				ErrorMessage: openAIEdgeResponseHeaderTimeoutMessage,
+			},
+			want: true,
+		},
+		{
+			name: "legacy edge timeout",
+			req: service.OpenAIEdgeCompleteRequest{
+				ErrorType:    "request_error",
+				ErrorMessage: openAIEdgeResponseHeaderTimeoutMessage,
+			},
+			want: true,
+		},
+		{
+			name: "real upstream 502 remains account failure",
+			req: service.OpenAIEdgeCompleteRequest{
+				ErrorType:          "upstream_error",
+				ErrorMessage:       "bad gateway",
+				UpstreamStatusCode: http.StatusBadGateway,
+			},
+			want: false,
+		},
+		{
+			name: "generic request error remains account failure",
+			req: service.OpenAIEdgeCompleteRequest{
+				ErrorType:    "request_error",
+				ErrorMessage: "upstream connection reset",
+			},
+			want: false,
+		},
+		{
+			name: "stale timeout type on success remains success",
+			req: service.OpenAIEdgeCompleteRequest{
+				Success:      true,
+				ErrorType:    openAIEdgeResponseHeaderTimeoutErrorType,
+				ErrorMessage: openAIEdgeResponseHeaderTimeoutMessage,
+			},
+			want: false,
+		},
+		{
+			name: "typed timeout cannot hide real upstream status",
+			req: service.OpenAIEdgeCompleteRequest{
+				ErrorType:          openAIEdgeResponseHeaderTimeoutErrorType,
+				ErrorMessage:       openAIEdgeResponseHeaderTimeoutMessage,
+				UpstreamStatusCode: http.StatusBadGateway,
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, openAIEdgeCompletionIsRequestLocal(tt.req))
+		})
+	}
+
+	timeout := service.OpenAIEdgeCompleteRequest{
+		ErrorType:    openAIEdgeResponseHeaderTimeoutErrorType,
+		ErrorMessage: openAIEdgeResponseHeaderTimeoutMessage,
+		FailureClass: "upstream_error",
+	}
+	require.False(t, openAIEdgeShouldRecordCircuitOutcome(timeout, false, false),
+		"request-local header timeout must not feed the account proxy circuit")
+}
+
+func TestOpenAIEdgeCompleteResponseHeaderTimeoutDoesNotStartPoolSoftCooldown(t *testing.T) {
+	account := &service.Account{
+		ID:       1003,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                          true,
+			"pool_soft_cooldown_enabled":         true,
+			"pool_soft_cooldown_error_threshold": 1,
+		},
+	}
+	gatewayService := &service.OpenAIGatewayService{}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIEdgeRS = config.GatewayOpenAIEdgeRSConfig{
+		InternalAPIEnabled: true,
+		InternalSecret:     "edge-secret",
+	}
+	lease := &openAIEdgeLease{
+		edgeRequestID: "edge-timeout-1",
+		leaseID:       "lease-timeout-1",
+		account:       account,
+		requestModel:  "gpt-5.6",
+	}
+	h := &OpenAIGatewayHandler{
+		cfg:            cfg,
+		gatewayService: gatewayService,
+		openAIEdgeLeases: map[string]*openAIEdgeLease{
+			lease.leaseID: lease,
+		},
+	}
+	payload := `{
+		"edge_request_id":"edge-timeout-1",
+		"lease_id":"lease-timeout-1",
+		"account_id":1003,
+		"success":false,
+		"failure_class":"upstream_error",
+		"error_type":"edge_response_header_timeout",
+		"error_message":"edge upstream response header timeout",
+		"first_client_flush_ms":800
+	}`
+	c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/complete", payload, "edge-secret")
+
+	h.OpenAIEdgeComplete(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.False(t, gatewayService.OpenAIPoolSoftCooldownState(account.ID).Cooling,
+		"a response-header timeout after placeholder flush must remain request-local")
+
+	realFailureAccount := &service.Account{
+		ID:          1004,
+		Platform:    account.Platform,
+		Type:        account.Type,
+		Credentials: account.Credentials,
+	}
+	realFailureService := &service.OpenAIGatewayService{}
+	realFailureLease := &openAIEdgeLease{
+		edgeRequestID: "edge-upstream-502-1",
+		leaseID:       "lease-upstream-502-1",
+		account:       realFailureAccount,
+		requestModel:  "gpt-5.6",
+	}
+	realFailureHandler := &OpenAIGatewayHandler{
+		cfg:            cfg,
+		gatewayService: realFailureService,
+		openAIEdgeLeases: map[string]*openAIEdgeLease{
+			realFailureLease.leaseID: realFailureLease,
+		},
+	}
+	realFailurePayload := `{
+		"edge_request_id":"edge-upstream-502-1",
+		"lease_id":"lease-upstream-502-1",
+		"account_id":1004,
+		"success":false,
+		"failure_class":"upstream_error",
+		"error_type":"upstream_error",
+		"error_message":"bad gateway",
+		"upstream_status_code":502,
+		"first_client_flush_ms":800
+	}`
+	c, w = newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/complete", realFailurePayload, "edge-secret")
+
+	realFailureHandler.OpenAIEdgeComplete(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.True(t, realFailureService.OpenAIPoolSoftCooldownState(realFailureAccount.ID).Cooling,
+		"a real upstream 502 must retain the existing pool soft-cooldown behavior")
 }
 
 func TestOpenAIEdgeCachePolicyCompatibilityFailureIsLeaseScoped(t *testing.T) {

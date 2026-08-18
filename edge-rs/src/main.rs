@@ -912,6 +912,7 @@ fn relay_error_fallback_reason(err: &anyhow::Error) -> &'static str {
 const EDGE_RESPONSE_HEADER_TIMEOUT: &str = "edge upstream response header timeout";
 const EDGE_RESPONSE_HEADER_BUDGET_EXHAUSTED: &str =
     "edge response header total budget exhausted before upstream attempt";
+const EDGE_RESPONSE_HEADER_TIMEOUT_ERROR_TYPE: &str = "edge_response_header_timeout";
 const EDGE_UPSTREAM_CLIENT_SELECTION_TIMEOUT: &str = "edge upstream client selection timeout";
 
 #[derive(Debug)]
@@ -941,8 +942,18 @@ fn settlement_error_is_permanent(error: &anyhow::Error) -> bool {
         })
 }
 
-fn is_edge_race_response_header_budget_exhausted(err: &anyhow::Error) -> bool {
+fn is_edge_response_header_timeout(err: &anyhow::Error) -> bool {
     err.to_string() == EDGE_RESPONSE_HEADER_TIMEOUT
+}
+
+fn edge_upstream_send_error_type(err: &anyhow::Error) -> &'static str {
+    if is_edge_response_header_timeout(err)
+        || err.to_string() == EDGE_RESPONSE_HEADER_BUDGET_EXHAUSTED
+    {
+        EDGE_RESPONSE_HEADER_TIMEOUT_ERROR_TYPE
+    } else {
+        "request_error"
+    }
 }
 
 fn relay_error_is_local_capacity(err: &anyhow::Error) -> bool {
@@ -4827,7 +4838,7 @@ async fn relay_upstream_direct(
                 Err(err)
                     if (plan.edge_response_header_failover
                         || plan.race_response_header_timeout_ms.is_some())
-                        && is_edge_race_response_header_budget_exhausted(&err) =>
+                        && is_edge_response_header_timeout(&err) =>
                 {
                     drop(lease_renewal_guard);
                     return retry_after_race_response_header_budget(
@@ -4950,6 +4961,7 @@ async fn relay_upstream_direct(
                     let (upstream, mut upstream_client_guard) = match upstream_send.await {
                         Ok(upstream) => upstream,
                         Err(err) => {
+                            let error_type = edge_upstream_send_error_type(&err);
                             success = false;
                             error_message = Some(err.to_string());
                             guard.update_stream_snapshot(
@@ -4995,7 +5007,7 @@ async fn relay_upstream_direct(
                                 edge_relay_start_ms,
                                 edge_fallback_reason: edge_fallback_reason.clone(),
                                 edge_retry_count,
-                                error_type: Some("request_error".to_string()),
+                                error_type: Some(error_type.to_string()),
                                 error_message,
                                 upstream_status_code,
                                 terminal_event_type: None,
@@ -5306,7 +5318,7 @@ async fn relay_upstream_direct(
             Err(err)
                 if (plan.edge_response_header_failover
                     || plan.race_response_header_timeout_ms.is_some())
-                    && is_edge_race_response_header_budget_exhausted(&err) =>
+                    && is_edge_response_header_timeout(&err) =>
             {
                 drop(lease_renewal_guard);
                 return retry_after_race_response_header_budget(
@@ -10153,10 +10165,22 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     #[test]
     fn race_response_header_budget_error_has_dedicated_fallback_reason() {
         let error = anyhow::anyhow!(EDGE_RESPONSE_HEADER_TIMEOUT);
-        assert!(is_edge_race_response_header_budget_exhausted(&error));
-        assert!(!is_edge_race_response_header_budget_exhausted(
-            &anyhow::anyhow!(EDGE_RESPONSE_HEADER_BUDGET_EXHAUSTED)
-        ));
+        assert!(is_edge_response_header_timeout(&error));
+        assert!(!is_edge_response_header_timeout(&anyhow::anyhow!(
+            EDGE_RESPONSE_HEADER_BUDGET_EXHAUSTED
+        )));
+        assert_eq!(
+            edge_upstream_send_error_type(&error),
+            EDGE_RESPONSE_HEADER_TIMEOUT_ERROR_TYPE
+        );
+        assert_eq!(
+            edge_upstream_send_error_type(&anyhow::anyhow!(EDGE_RESPONSE_HEADER_BUDGET_EXHAUSTED)),
+            EDGE_RESPONSE_HEADER_TIMEOUT_ERROR_TYPE
+        );
+        assert_eq!(
+            edge_upstream_send_error_type(&anyhow::anyhow!("upstream connection reset")),
+            "request_error"
+        );
         assert_eq!(
             relay_error_fallback_reason(&anyhow::anyhow!(
                 "race response header budget requested Go fallback: upstream_timeout"
@@ -10174,9 +10198,9 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             "edge_upstream_body_idle_timeout"
         );
         assert!(!relay_error_is_local_capacity(&error));
-        assert!(!is_edge_race_response_header_budget_exhausted(
-            &anyhow::anyhow!("edge race response header budget exhausted: wrapped")
-        ));
+        assert!(!is_edge_response_header_timeout(&anyhow::anyhow!(
+            "edge race response header budget exhausted: wrapped"
+        )));
     }
 
     #[test]

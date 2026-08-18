@@ -1735,7 +1735,11 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeRetry(c *gin.Context) {
 	c.JSON(http.StatusOK, decision)
 }
 
-const openAIEdgeRaceResponseHeaderTimeoutErrorType = "edge_race_response_header_timeout"
+const (
+	openAIEdgeRaceResponseHeaderTimeoutErrorType = "edge_race_response_header_timeout"
+	openAIEdgeResponseHeaderTimeoutErrorType     = "edge_response_header_timeout"
+	openAIEdgeResponseHeaderTimeoutMessage       = "edge upstream response header timeout"
+)
 
 func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req service.OpenAIEdgeRetryRequest) service.OpenAIEdgeRetryDecision {
 	fallback := func(reason string) service.OpenAIEdgeRetryDecision {
@@ -2224,7 +2228,8 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 	if h.gatewayService != nil && lease.account != nil {
 		terminalType := strings.ToLower(strings.TrimSpace(req.TerminalEventType))
 		successfulTerminal := openAIEdgeCompletionIsSuccessful(lease.inboundEndpoint, req)
-		neutralOutcome := req.ClientDisconnected || req.CyberBlocked || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || terminalType == "response.incomplete" ||
+		requestLocalOutcome := openAIEdgeCompletionIsRequestLocal(req)
+		neutralOutcome := req.ClientDisconnected || req.CyberBlocked || requestLocalOutcome || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || terminalType == "response.incomplete" ||
 			terminalType == "response.cancelled" || terminalType == "response.canceled"
 		cachePolicyCompatibilityFailure := openAIEdgeCachePolicyCompatibilityFailure(lease, req)
 		// Keep the process-local proxy circuit in sync with the terminal outcome.
@@ -2291,9 +2296,9 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 		case successfulTerminal:
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), true, firstTokenMs)
 		case neutralOutcome || cachePolicyCompatibilityFailure:
-			// Client cancellation and protocol-level incomplete/cancelled terminal
-			// states are billable but are not account-health samples. Optional cache
-			// policy incompatibility after an early client flush is also neutral.
+			// Client cancellation, request-local Edge protection, and protocol-level
+			// incomplete/cancelled terminal states are not account-health samples.
+			// Optional cache policy incompatibility after an early flush is also neutral.
 		default:
 			statusCode := req.UpstreamStatusCode
 			if statusCode < http.StatusBadRequest {
@@ -2359,6 +2364,20 @@ func openAIEdgeCompletionIsSuccessful(inboundEndpoint string, req service.OpenAI
 		openAIEdgeSuccessfulTerminal(inboundEndpoint, req.TerminalEventType)
 }
 
+func openAIEdgeCompletionIsRequestLocal(req service.OpenAIEdgeCompleteRequest) bool {
+	if req.Success || req.UpstreamStatusCode >= http.StatusBadRequest {
+		return false
+	}
+	errorType := strings.ToLower(strings.TrimSpace(req.ErrorType))
+	if errorType == openAIEdgeResponseHeaderTimeoutErrorType {
+		return true
+	}
+	// Keep rolling upgrades safe while older Edge nodes still report the
+	// response-header timeout as a generic request_error.
+	return errorType == "request_error" &&
+		strings.EqualFold(strings.TrimSpace(req.ErrorMessage), openAIEdgeResponseHeaderTimeoutMessage)
+}
+
 func openAIEdgeFailureClassIsLocalOrClient(failureClass string) bool {
 	switch strings.ToLower(strings.TrimSpace(failureClass)) {
 	case "client_cancelled", "local_capacity_rejected", "queue_timeout", "prepare_failed", "complete_failed", "abort_failed":
@@ -2369,7 +2388,7 @@ func openAIEdgeFailureClassIsLocalOrClient(failureClass string) bool {
 }
 
 func openAIEdgeShouldRecordCircuitOutcome(req service.OpenAIEdgeCompleteRequest, successfulTerminal, cachePolicyCompatibilityFailure bool) bool {
-	if req.ClientDisconnected || req.CyberBlocked || cachePolicyCompatibilityFailure || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) {
+	if req.ClientDisconnected || req.CyberBlocked || cachePolicyCompatibilityFailure || openAIEdgeCompletionIsRequestLocal(req) || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) {
 		return false
 	}
 	if successfulTerminal {
