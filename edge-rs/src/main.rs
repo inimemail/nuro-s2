@@ -4829,7 +4829,7 @@ async fn relay_upstream_direct(
     let complete_state = state.clone();
     let sse_comment_preflush = plan.sse_comment_preflush;
     let preamble_flush = plan.preamble_flush;
-    let safe_token_placeholder = plan.safe_token_placeholder;
+    let mut safe_token_placeholder = plan.safe_token_placeholder;
     let downstream_cache_usage_mode = if plan
         .downstream_cache_usage_model
         .as_deref()
@@ -4843,7 +4843,7 @@ async fn relay_upstream_direct(
     } else {
         None
     };
-    let first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+    let mut first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
         plan.first_token_timeout_placeholder_ms,
         plan.account_type.as_deref(),
     );
@@ -5236,12 +5236,13 @@ async fn relay_upstream_direct(
         .and_then(|v| v.to_str().ok())
         .map(ToOwned::to_owned);
     let stream_guard = complete_state.metrics.begin_stream();
-    // Keep the placeholder deadline request-relative. If the upstream header
-    // phase already consumed the configured window, the first body poll emits
-    // the compatibility frame immediately instead of adding another full
-    // timeout after headers arrive.
-    let first_token_timeout_deadline = first_token_timeout_placeholder
-        .map(|timeout| tokio::time::Instant::from_std(started_at) + timeout);
+    // Start the compatibility-frame window after upstream response headers are
+    // available. This keeps the frame close to the Responses preamble so
+    // downstream 176 clients have a response context before recording TTFT.
+    // Header/transport failover remains governed by the existing Edge retry
+    // budget and is intentionally not changed here.
+    let first_token_timeout_deadline =
+        first_token_timeout_placeholder.map(|timeout| tokio::time::Instant::now() + timeout);
     // Construct the guard outside the async stream so a body dropped before its
     // first poll still settles the lease.
     let complete_guard = ClientDisconnectCompleteGuard::new(
@@ -5325,6 +5326,7 @@ async fn relay_upstream_direct(
                 .map(tokio::time::sleep)
                 .map(Box::pin)
         };
+        let mut first_token_timeout_deadline = first_token_timeout_deadline;
         let mut first_token_timeout_timer = first_token_timeout_deadline
             .map(|deadline| Box::pin(tokio::time::sleep_until(deadline)));
 
@@ -5428,6 +5430,11 @@ async fn relay_upstream_direct(
                         current_edge_retry_count = retry.retry_count;
                         current_plan = retry.plan.clone();
                         guard.update_lease_identity(current_plan.lease_id.clone(), current_plan.account_id);
+                        safe_token_placeholder = current_plan.safe_token_placeholder;
+                        first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+                            current_plan.first_token_timeout_placeholder_ms,
+                            current_plan.account_type.as_deref(),
+                        );
                         if let Some((next_upstream, next_guard)) = retry.upstream {
                             upstream_client_guard.release();
                             lease_renewal_guard.take();
@@ -5441,6 +5448,8 @@ async fn relay_upstream_direct(
                             sanitizer = OpenAIStreamSanitizer::new_with_downstream_cache_usage_mode(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref());
                             preamble_gate = SsePreambleGate::new((preamble_flush || safe_token_placeholder || first_token_timeout_placeholder.is_some()) || response_dialect.as_deref() != Some("responses"));
                             bootstrap_timer = None;
+                            first_token_timeout_deadline = first_token_timeout_placeholder
+                                .map(|timeout| tokio::time::Instant::now() + timeout);
                             first_token_timeout_timer = if !first_token_timeout_placeholder_sent && !downstream_ttft_observed {
                                 first_token_timeout_deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline)))
                             } else {
@@ -5498,6 +5507,11 @@ async fn relay_upstream_direct(
                         current_plan.lease_id.clone(),
                         current_plan.account_id,
                     );
+                    safe_token_placeholder = current_plan.safe_token_placeholder;
+                    first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+                        current_plan.first_token_timeout_placeholder_ms,
+                        current_plan.account_type.as_deref(),
+                    );
                     if let Some((next_upstream, next_guard)) = retry.upstream {
                         upstream_client_guard.release();
                         lease_renewal_guard.take();
@@ -5525,6 +5539,8 @@ async fn relay_upstream_direct(
                                 || response_dialect.as_deref() != Some("responses"),
                         );
                         bootstrap_timer = None;
+                        first_token_timeout_deadline = first_token_timeout_placeholder
+                            .map(|timeout| tokio::time::Instant::now() + timeout);
                         first_token_timeout_timer = if !first_token_timeout_placeholder_sent
                             && !downstream_ttft_observed
                         {
@@ -5751,6 +5767,11 @@ async fn relay_upstream_direct(
                         current_edge_retry_count = retry.retry_count;
                         current_plan = retry.plan.clone();
                         guard.update_lease_identity(current_plan.lease_id.clone(), current_plan.account_id);
+                        safe_token_placeholder = current_plan.safe_token_placeholder;
+                        first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+                            current_plan.first_token_timeout_placeholder_ms,
+                            current_plan.account_type.as_deref(),
+                        );
                         if let Some((next_upstream, next_guard)) = retry.upstream {
                             upstream_client_guard.release();
                             lease_renewal_guard.take();
@@ -5764,6 +5785,8 @@ async fn relay_upstream_direct(
                             sanitizer = OpenAIStreamSanitizer::new_with_downstream_cache_usage_mode(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref());
                             preamble_gate = SsePreambleGate::new((preamble_flush || safe_token_placeholder || first_token_timeout_placeholder.is_some()) || response_dialect.as_deref() != Some("responses"));
                             bootstrap_timer = None;
+                            first_token_timeout_deadline = first_token_timeout_placeholder
+                                .map(|timeout| tokio::time::Instant::now() + timeout);
                             first_token_timeout_timer = if !first_token_timeout_placeholder_sent && !downstream_ttft_observed {
                                 first_token_timeout_deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline)))
                             } else {
