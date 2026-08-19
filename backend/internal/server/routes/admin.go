@@ -379,7 +379,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUp m
 		accounts.POST("/:id/models/sync-upstream", h.Admin.Account.SyncUpstreamModels)
 		accounts.POST("/batch", h.Admin.Account.BatchCreate)
 		accounts.GET("/data", gin.HandlerFunc(stepUp), h.Admin.Account.ExportData)
-		accounts.POST("/data", gin.HandlerFunc(stepUp), h.Admin.Account.ImportData)
+		accounts.POST("/data", h.Admin.Account.ImportData)
 		accounts.POST("/batch-update-credentials", gin.HandlerFunc(stepUp), h.Admin.Account.BatchUpdateCredentials)
 		accounts.POST("/batch-refresh-tier", h.Admin.Account.BatchRefreshTier)
 		accounts.POST("/bulk-update", h.Admin.Account.BulkUpdate)
