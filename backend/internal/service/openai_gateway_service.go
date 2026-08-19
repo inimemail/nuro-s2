@@ -5825,14 +5825,15 @@ func openAIStreamDataStartsCoordinatedClientOutput(data, eventType string) bool 
 	if trimmed == "" {
 		return false
 	}
-	switch strings.TrimSpace(eventType) {
-	case "response.created", "response.in_progress", "response.content_part.added":
-		return false
-	case "response.output_item.added":
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "response.output_item.added" {
 		return openAIStreamDataStartsRealOutput(trimmed, eventType)
-	default:
-		return openAIStreamDataStartsClientOutput(trimmed, eventType)
 	}
+	if eventType == "response.transport_progress.delta" || !strings.HasSuffix(eventType, ".delta") {
+		return false
+	}
+	delta := gjson.Get(trimmed, "delta")
+	return delta.Type == gjson.String && strings.TrimSpace(delta.String()) != ""
 }
 
 func isOpenAIUpstreamCapacityShedEvent(payload []byte) bool {

@@ -3141,7 +3141,11 @@ func (h *OpenAIGatewayHandler) ensureForwardErrorResponse(c *gin.Context, stream
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
 		streamStarted = true
 	}
-	if service.IsResponseCommitted(c) {
+	// A local first-token placeholder commits HTTP 200 but still leaves the
+	// request failover-capable. Allow a Responses terminal failure event to
+	// follow that gateway-owned frame instead of returning a bare EOF.
+	placeholderPending := service.OpenAIRequestPlaceholderWritten(c) && !service.OpenAIRequestUpstreamCommitted(c)
+	if service.IsResponseCommitted(c) && !placeholderPending {
 		return false
 	}
 	// 旧实现在 Writer.Written 时直接 return false，导致 ping 已 flush 之后的

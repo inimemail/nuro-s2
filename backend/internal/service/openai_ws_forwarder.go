@@ -2396,11 +2396,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				truncateOpenAIWSLogValue(firstEventType, openAIWSLogValueMaxLen),
 				truncateOpenAIWSLogValue(lastEventType, openAIWSLogValueMaxLen),
 			)
-			if !wroteDownstream {
-				return nil, wrapOpenAIWSFallback(classifyOpenAIWSReadFallbackReason(readErr), readErr)
-			}
 			if clientDisconnected {
 				break
+			}
+			// A gateway placeholder commits HTTP 200 but does not commit
+			// upstream output. Keep this request failover-capable until real
+			// upstream content has been written.
+			if !wroteDownstream || openAIWSPlaceholderCoordinationPending(c) {
+				return nil, wrapOpenAIWSFallback(classifyOpenAIWSReadFallbackReason(readErr), readErr)
 			}
 			setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(readErr.Error()), "")
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
@@ -2429,6 +2432,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 
 		isTokenEvent := isOpenAIWSTokenEvent(eventType)
+		if openAIRequestPlaceholderCoordinationActive(c) {
+			isTokenEvent = isOpenAIWSRealTokenEvent(message, eventType)
+		}
 		if isTokenEvent {
 			tokenEventCount++
 		}
@@ -2549,7 +2555,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			}
 			// error 事件后连接不再可复用，避免回池后污染下一请求。
 			lease.MarkBroken()
-			if !wroteDownstream && canFallback {
+			if (!wroteDownstream || openAIWSPlaceholderCoordinationPending(c)) && canFallback {
 				return nil, wrapOpenAIWSFallback(fallbackReason, errors.New(errMsg))
 			}
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
@@ -3610,6 +3616,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				lease.MarkBroken()
 			}
 			isTokenEvent := isOpenAIWSTokenEvent(eventType)
+			if openAIRequestPlaceholderCoordinationActive(c) {
+				isTokenEvent = isOpenAIWSRealTokenEvent(upstreamMessage, eventType)
+			}
 			if isTokenEvent {
 				tokenEventCount++
 			}
@@ -4634,6 +4643,28 @@ func isOpenAIWSTokenEvent(eventType string) bool {
 	// 不能把它们当作 token event，否则当上游没有可识别的 delta 时，
 	// firstTokenMs 会被填到终止时刻，等于把"总耗时"误报为"首 token 延迟"。
 	return false
+}
+
+// isOpenAIWSRealTokenEvent is the coordination-aware token predicate. The
+// legacy isOpenAIWSTokenEvent predicate remains broader for diagnostics and
+// non-coordinated behavior; this predicate commits an attempt only on
+// non-empty delta content or a real function/custom-tool item.
+func isOpenAIWSRealTokenEvent(message []byte, eventType string) bool {
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" || isOpenAIWSTerminalEvent(eventType) {
+		return false
+	}
+	if eventType == "response.transport_progress.delta" {
+		return false
+	}
+	if eventType == "response.output_item.added" {
+		return openAIStreamDataStartsRealOutput(string(message), eventType)
+	}
+	if !strings.HasSuffix(eventType, ".delta") {
+		return false
+	}
+	delta := gjson.GetBytes(message, "delta")
+	return delta.Type == gjson.String && strings.TrimSpace(delta.String()) != ""
 }
 
 func replaceOpenAIWSMessageModel(message []byte, fromModel, toModel string) []byte {

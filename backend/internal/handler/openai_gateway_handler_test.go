@@ -425,6 +425,21 @@ func TestOpenAIRecoverResponsesPanic_AppendsResponseFailedAfterWritten(t *testin
 	assert.Contains(t, body, "event: response.failed\n")
 }
 
+func TestOpenAIEnsureForwardErrorResponse_AppendsResponseFailedAfterPlaceholder(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	service.StartOpenAIPlaceholderCoordination(c, time.Now())
+	_, err := c.Writer.WriteString("data: {\"type\":\"response.transport_progress.delta\",\"delta\":\"in_progress\"}\n\n")
+	require.NoError(t, err)
+
+	h := &OpenAIGatewayHandler{}
+	require.True(t, h.ensureForwardErrorResponse(c, false))
+	assert.Contains(t, w.Body.String(), "response.transport_progress.delta")
+	assert.Contains(t, w.Body.String(), "event: response.failed\n")
+}
+
 func TestOpenAIMissingResponsesDependencies(t *testing.T) {
 	t.Run("nil_handler", func(t *testing.T) {
 		var h *OpenAIGatewayHandler
