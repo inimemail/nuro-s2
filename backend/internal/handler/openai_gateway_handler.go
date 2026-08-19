@@ -129,6 +129,12 @@ func openAICompatibleRequestPlatform(ctx context.Context, apiKey *service.APIKey
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.Platform == service.PlatformGrok {
 		return service.PlatformGrok
 	}
+	if apiKey != nil && apiKey.Group != nil {
+		switch apiKey.Group.Platform {
+		case service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek:
+			return apiKey.Group.Platform
+		}
+	}
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.Platform == service.PlatformComposite {
 		return service.PlatformComposite
 	}

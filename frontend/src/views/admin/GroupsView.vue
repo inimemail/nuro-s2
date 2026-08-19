@@ -1643,7 +1643,7 @@
         <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
         <div
           v-if="
-            ['openai', 'antigravity', 'anthropic', 'gemini', 'grok'].includes(
+            ['openai', 'antigravity', 'anthropic', 'gemini', 'grok', 'kimi', 'zhipu', 'deepseek'].includes(
               createForm.platform,
             )
           "
@@ -3242,7 +3242,7 @@
         <!-- 账号过滤控制 (OpenAI/Antigravity/Anthropic/Gemini) -->
         <div
           v-if="
-            ['openai', 'antigravity', 'anthropic', 'gemini', 'grok'].includes(
+            ['openai', 'antigravity', 'anthropic', 'gemini', 'grok', 'kimi', 'zhipu', 'deepseek'].includes(
               editForm.platform,
             )
           "
@@ -4000,6 +4000,9 @@ const platformOptions = computed(() => [
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
   { value: "grok", label: "Grok" },
+  { value: "kimi", label: "Kimi" },
+  { value: "zhipu", label: "Zhipu" },
+  { value: "deepseek", label: "DeepSeek" },
   { value: "composite", label: "Composite" },
 ]);
 
@@ -4010,6 +4013,9 @@ const platformFilterOptions = computed(() => [
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
   { value: "grok", label: "Grok" },
+  { value: "kimi", label: "Kimi" },
+  { value: "zhipu", label: "Zhipu" },
+  { value: "deepseek", label: "DeepSeek" },
   { value: "composite", label: "Composite" },
 ]);
 
@@ -5585,7 +5591,7 @@ watch(
     } else {
       createForm.max_reasoning_effort = normalizeReasoningEffortForPlatform(newVal, createForm.max_reasoning_effort);
     }
-    if (!["openai", "antigravity", "anthropic", "gemini", "grok"].includes(newVal)) {
+    if (!["openai", "antigravity", "anthropic", "gemini", "grok", "kimi", "zhipu", "deepseek"].includes(newVal)) {
       createForm.require_oauth_only = false;
       createForm.require_privacy_set = false;
     }
@@ -5617,7 +5623,7 @@ watch(
     } else {
       editForm.max_reasoning_effort = normalizeReasoningEffortForPlatform(newVal, editForm.max_reasoning_effort);
     }
-    if (!["openai", "antigravity", "anthropic", "gemini", "grok"].includes(newVal)) {
+    if (!["openai", "antigravity", "anthropic", "gemini", "grok", "kimi", "zhipu", "deepseek"].includes(newVal)) {
       editForm.require_oauth_only = false;
       editForm.require_privacy_set = false;
     }

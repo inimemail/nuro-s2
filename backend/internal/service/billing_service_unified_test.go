@@ -67,6 +67,10 @@ func TestCalculateCostUnified_PerRequestMode(t *testing.T) {
 			{groupID: 1, model: "claude-sonnet-4"}: {
 				BillingMode:     BillingModePerRequest,
 				PerRequestPrice: testPtrFloat64(0.05),
+				TimePricing: &ChannelTimePricing{
+					Timezone: "UTC",
+					Periods:  []ChannelTimePricingPeriod{{StartTime: "09:00", EndTime: "17:00", Multiplier: 2}},
+				},
 			},
 		},
 		channelByGroupID: map[int64]*Channel{
@@ -90,16 +94,17 @@ func TestCalculateCostUnified_PerRequestMode(t *testing.T) {
 		Tokens:         UsageTokens{InputTokens: 100, OutputTokens: 50},
 		RequestCount:   3,
 		RateMultiplier: 2.0,
+		PricingAt:      time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC),
 		Resolver:       resolver,
 	}
 	cost, err := bs.CalculateCostUnified(input)
 	require.NoError(t, err)
 	require.NotNil(t, cost)
 
-	// 3 requests * $0.05 = $0.15
-	require.InDelta(t, 0.15, cost.TotalCost, 1e-10)
-	// ActualCost = 0.15 * 2.0 = 0.30
-	require.InDelta(t, 0.30, cost.ActualCost, 1e-10)
+	// 3 requests * $0.05 * 2x time multiplier = $0.30
+	require.InDelta(t, 0.30, cost.TotalCost, 1e-10)
+	// ActualCost = 0.30 * 2.0 account multiplier = $0.60
+	require.InDelta(t, 0.60, cost.ActualCost, 1e-10)
 	require.Equal(t, string(BillingModePerRequest), cost.BillingMode)
 }
 

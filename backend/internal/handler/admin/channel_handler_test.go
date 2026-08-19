@@ -346,6 +346,24 @@ func TestPricingRequestToService_WithAllFields(t *testing.T) {
 	require.Equal(t, float64Ptr(0.5), r.PerRequestPrice)
 }
 
+func TestPricingRequestToService_PreservesTimePricing(t *testing.T) {
+	timePricing := &service.ChannelTimePricing{
+		Timezone: "Asia/Shanghai",
+		Periods: []service.ChannelTimePricingPeriod{{
+			StartTime: "09:00", EndTime: "17:00", Multiplier: 1.25,
+		}},
+	}
+	result := pricingRequestToService([]channelModelPricingRequest{{
+		Models:      []string{"m1"},
+		TimePricing: timePricing,
+	}})
+	require.Len(t, result, 1)
+	require.Equal(t, timePricing, result[0].TimePricing)
+
+	response := pricingToResponse(&result[0])
+	require.Equal(t, timePricing, response.TimePricing)
+}
+
 func TestPricingRequestToService_WithIntervals(t *testing.T) {
 	reqs := []channelModelPricingRequest{
 		{

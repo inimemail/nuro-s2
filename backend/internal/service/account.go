@@ -2216,6 +2216,20 @@ func (a *Account) IsOpenAI() bool {
 	return a.Platform == PlatformOpenAI
 }
 
+// IsOpenAICompatible reports platforms that use the OpenAI-compatible HTTP
+// transport while retaining their own scheduling and billing identity.
+func (a *Account) IsOpenAICompatible() bool {
+	if a == nil {
+		return false
+	}
+	switch a.Platform {
+	case PlatformOpenAI, PlatformKimi, PlatformZhipu, PlatformDeepSeek:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *Account) IsOpenAILongContextBillingEnabled() bool {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
 		return false
@@ -2249,16 +2263,25 @@ func (a *Account) IsGrokAPIKey() bool {
 }
 
 func (a *Account) GetOpenAIBaseURL() string {
-	if !a.IsOpenAI() {
+	if !a.IsOpenAICompatible() {
 		return ""
 	}
-	if a.Type == AccountTypeAPIKey {
+	if a.Type == AccountTypeAPIKey || a.Platform == PlatformKimi || a.Platform == PlatformZhipu || a.Platform == PlatformDeepSeek {
 		baseURL := a.GetCredential("base_url")
 		if baseURL != "" {
 			return baseURL
 		}
 	}
-	return "https://api.openai.com"
+	switch a.Platform {
+	case PlatformKimi:
+		return "https://api.moonshot.cn/v1"
+	case PlatformZhipu:
+		return "https://open.bigmodel.cn/api/paas/v4"
+	case PlatformDeepSeek:
+		return "https://api.deepseek.com/v1"
+	default:
+		return "https://api.openai.com"
+	}
 }
 
 func (a *Account) GetOpenAIAccessToken() string {

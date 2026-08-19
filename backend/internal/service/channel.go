@@ -84,19 +84,32 @@ type AccountStatsPricingRule struct {
 type ChannelModelPricing struct {
 	ID               int64
 	ChannelID        int64
-	Platform         string            // 所属平台（anthropic/openai/gemini/...）
-	Models           []string          // 绑定的模型列表
-	BillingMode      BillingMode       // 计费模式
-	InputPrice       *float64          // 每 token 输入价格（USD）— 向后兼容 flat 定价
-	OutputPrice      *float64          // 每 token 输出价格（USD）
-	CacheWritePrice  *float64          // 缓存写入价格
-	CacheReadPrice   *float64          // 缓存读取价格
-	ImageInputPrice  *float64          // 图片输入 token 价格
-	ImageOutputPrice *float64          // 图片输出价格（向后兼容）
-	PerRequestPrice  *float64          // 默认按次计费价格（USD）
-	Intervals        []PricingInterval // 区间定价列表
+	Platform         string              // 所属平台（anthropic/openai/gemini/...）
+	Models           []string            // 绑定的模型列表
+	BillingMode      BillingMode         // 计费模式
+	InputPrice       *float64            // 每 token 输入价格（USD）— 向后兼容 flat 定价
+	OutputPrice      *float64            // 每 token 输出价格（USD）
+	CacheWritePrice  *float64            // 缓存写入价格
+	CacheReadPrice   *float64            // 缓存读取价格
+	ImageInputPrice  *float64            // 图片输入 token 价格
+	ImageOutputPrice *float64            // 图片输出价格（向后兼容）
+	PerRequestPrice  *float64            // 默认按次计费价格（USD）
+	Intervals        []PricingInterval   // 区间定价列表
+	TimePricing      *ChannelTimePricing `json:"time_pricing,omitempty"`
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+}
+
+// ChannelTimePricing defines optional timezone-aware multiplier windows.
+type ChannelTimePricing struct {
+	Timezone string                     `json:"timezone"`
+	Periods  []ChannelTimePricingPeriod `json:"periods"`
+}
+
+type ChannelTimePricingPeriod struct {
+	StartTime  string  `json:"start_time"`
+	EndTime    string  `json:"end_time"`
+	Multiplier float64 `json:"multiplier"`
 }
 
 // PricingInterval 定价区间（token 区间 / 按次分层 / 图片分辨率分层）
@@ -204,6 +217,12 @@ func (p ChannelModelPricing) Clone() ChannelModelPricing {
 			cp.Intervals[i].CacheWritePrice = cloneGroupPointer(p.Intervals[i].CacheWritePrice)
 			cp.Intervals[i].CacheReadPrice = cloneGroupPointer(p.Intervals[i].CacheReadPrice)
 			cp.Intervals[i].PerRequestPrice = cloneGroupPointer(p.Intervals[i].PerRequestPrice)
+		}
+	}
+	if p.TimePricing != nil {
+		cp.TimePricing = &ChannelTimePricing{Timezone: p.TimePricing.Timezone}
+		if p.TimePricing.Periods != nil {
+			cp.TimePricing.Periods = append([]ChannelTimePricingPeriod(nil), p.TimePricing.Periods...)
 		}
 	}
 	return cp

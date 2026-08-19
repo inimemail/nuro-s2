@@ -431,7 +431,7 @@ func (r *groupRepository) reconcileUpstreamBillingGuardAccounts(ctx context.Cont
 				JOIN groups g2 ON g2.id = ag2.group_id AND g2.deleted_at IS NULL
 					WHERE ag2.account_id = a.id
 					  AND g2.platform = a.platform
-					  AND g2.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')
+					  AND g2.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')
 					  AND g2.upstream_billing_guard_max_multiplier IS NOT NULL
 			  )
 			  AND a.deleted_at IS NULL
@@ -902,7 +902,7 @@ func reconcileRemovedGroupBillingGuards(ctx context.Context, exec sqlExecutor, a
 		WHERE a.id = ANY($1)
 			AND a.deleted_at IS NULL
 			AND a.type = 'apikey'
-			AND a.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')
+			AND a.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')
 			AND a.upstream_billing_guard_enabled = TRUE
 			AND NOT EXISTS (
 				SELECT 1
@@ -910,7 +910,7 @@ func reconcileRemovedGroupBillingGuards(ctx context.Context, exec sqlExecutor, a
 				JOIN groups g ON g.id = ag.group_id AND g.deleted_at IS NULL
 				WHERE ag.account_id = a.id
 					AND g.platform = a.platform
-					AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')
+					AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')
 					AND g.upstream_billing_guard_max_multiplier IS NOT NULL
 			)
 		RETURNING a.id
@@ -1070,7 +1070,7 @@ const (
 					AND NOT (
 						a.platform = g.platform
 						AND a.type = 'apikey'
-						AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')
+						AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')
 						AND a.upstream_billing_guard_enabled = TRUE
 						AND g.upstream_billing_guard_max_multiplier IS NOT NULL
 					AND (

@@ -208,6 +208,9 @@ import {
   PROVIDER_ANTHROPIC,
   PROVIDER_GEMINI,
   PROVIDER_GROK,
+  PROVIDER_KIMI,
+  PROVIDER_ZHIPU,
+  PROVIDER_DEEPSEEK,
   API_MODE_CHAT_COMPLETIONS,
   API_MODE_RESPONSES,
   DEFAULT_GROK_ENDPOINT,
@@ -389,6 +392,9 @@ const providerOptions = computed<ProviderOption[]>(() => [
   { value: PROVIDER_OPENAI, label: t('monitorCommon.providers.openai') },
   { value: PROVIDER_GEMINI, label: t('monitorCommon.providers.gemini') },
   { value: PROVIDER_GROK, label: t('monitorCommon.providers.grok') },
+  { value: PROVIDER_KIMI, label: t('monitorCommon.providers.kimi') },
+  { value: PROVIDER_ZHIPU, label: t('monitorCommon.providers.zhipu') },
+  { value: PROVIDER_DEEPSEEK, label: t('monitorCommon.providers.deepseek') },
 ])
 
 function selectProvider(provider: Provider) {

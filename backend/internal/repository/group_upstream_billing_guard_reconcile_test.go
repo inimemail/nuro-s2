@@ -15,7 +15,7 @@ func TestReconcileUpstreamBillingGuardAccountsPreservesOverridesAndRefreshesDisa
 	db, mock := newSQLMock(t)
 	repo := newGroupRepositoryWithSQL(nil, db)
 
-	mock.ExpectQuery(`(?s)WITH affected.*UPDATE accounts.*NOT EXISTS.*g2\.platform = a\.platform.*g2\.platform IN \('openai', 'anthropic', 'gemini', 'grok', 'antigravity'\).*SELECT id FROM disabled`).
+	mock.ExpectQuery(`(?s)WITH affected.*UPDATE accounts.*NOT EXISTS.*g2\.platform = a\.platform.*g2\.platform IN \('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek'\).*SELECT id FROM disabled`).
 		WithArgs(int64(9)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(41).AddRow(42))
 	for _, accountID := range []int64{41, 42} {
@@ -31,7 +31,7 @@ func TestReconcileUpstreamBillingGuardAccountsPreservesOverridesAndRefreshesDisa
 
 func TestReconcileRemovedGroupBillingGuardsUsesRemainingSamePlatformPolicies(t *testing.T) {
 	db, mock := newSQLMock(t)
-	mock.ExpectQuery(`(?s)UPDATE accounts a.*a\.id = ANY\(\$1\).*a\.platform IN \('openai', 'anthropic', 'gemini', 'grok', 'antigravity'\).*g\.platform = a\.platform.*RETURNING a\.id`).
+	mock.ExpectQuery(`(?s)UPDATE accounts a.*a\.id = ANY\(\$1\).*a\.platform IN \('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek'\).*g\.platform = a\.platform.*RETURNING a\.id`).
 		WithArgs(pq.Array([]int64{41, 42})).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(41))
 	mock.ExpectExec(`(?s)INSERT INTO scheduler_outbox`).
@@ -61,6 +61,6 @@ func TestDeleteAccountGroupsByGroupIDDoesNotDisableGuardsDuringBindingReplacemen
 
 func TestGroupAccountAvailableSQLAppliesGuardToEveryProbePlatform(t *testing.T) {
 	require.Contains(t, groupAccountAvailableSQL, "a.platform = g.platform")
-	require.Contains(t, groupAccountAvailableSQL, "g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')")
+	require.Contains(t, groupAccountAvailableSQL, "g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')")
 	require.False(t, strings.Contains(groupAccountAvailableSQL, "a.platform = 'openai'"))
 }

@@ -8512,6 +8512,9 @@ const platformQuotaLabels: Record<PlatformType, string> = {
   gemini: "Gemini",
   antigravity: "Antigravity",
   grok: "Grok",
+  kimi: "Kimi",
+  zhipu: "Zhipu",
+  deepseek: "DeepSeek",
 };
 
 function defaultLoginAgreementDocuments(): LoginAgreementDocument[] {

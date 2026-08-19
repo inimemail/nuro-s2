@@ -27,7 +27,17 @@ const updatePoolMode = (value: string | number | boolean | null) => { emit('upda
 const updateStatus = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, status: value }) }
 const updatePrivacyMode = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, privacy_mode: value }) }
 const updateGroup = (value: string | number | boolean | null) => { emit('update:filters', { ...props.filters, group: value }) }
-const pOpts = computed(() => [{ value: '', label: t('admin.accounts.allPlatforms') }, { value: 'anthropic', label: 'Anthropic' }, { value: 'openai', label: 'OpenAI' }, { value: 'gemini', label: 'Gemini' }, { value: 'antigravity', label: 'Antigravity' }, { value: 'grok', label: 'Grok' }])
+const pOpts = computed(() => [
+  { value: '', label: t('admin.accounts.allPlatforms') },
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'gemini', label: 'Gemini' },
+  { value: 'antigravity', label: 'Antigravity' },
+  { value: 'grok', label: 'Grok' },
+  { value: 'kimi', label: 'Kimi' },
+  { value: 'zhipu', label: 'Zhipu' },
+  { value: 'deepseek', label: 'DeepSeek' }
+])
 const tOpts = computed(() => [{ value: '', label: t('admin.accounts.allTypes') }, { value: 'oauth', label: t('admin.accounts.oauthType') }, { value: 'setup-token', label: t('admin.accounts.setupToken') }, { value: 'apikey', label: t('admin.accounts.apiKey') }, { value: 'bedrock', label: 'AWS Bedrock' }])
 const poolModeOpts = computed(() => [
   { value: '', label: t('admin.accounts.allPoolModes') },

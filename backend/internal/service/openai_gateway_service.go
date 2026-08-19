@@ -3308,6 +3308,19 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 			return "", "", fmt.Errorf("unsupported grok account type: %s", account.Type)
 		}
 	}
+	if account != nil && (account.Platform == PlatformKimi || account.Platform == PlatformZhipu || account.Platform == PlatformDeepSeek) {
+		if account.Type != AccountTypeAPIKey && account.Type != AccountTypeUpstream {
+			return "", "", fmt.Errorf("unsupported %s account type: %s", account.Platform, account.Type)
+		}
+		apiKey := account.GetCredential("api_key")
+		if apiKey == "" {
+			apiKey = account.GetCredential("access_token")
+		}
+		if apiKey == "" {
+			return "", "", errors.New("api_key not found in credentials")
+		}
+		return apiKey, "apikey", nil
+	}
 	switch account.Type {
 	case AccountTypeOAuth:
 		// Agent Identity authenticates each outbound request with a short-lived

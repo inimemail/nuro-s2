@@ -93,6 +93,9 @@ func (s *SubscriptionExpiryService) sendExpiryReminders(ctx context.Context) {
 	if !s.expiryReminderEnabled(ctx) {
 		return
 	}
+	if !s.notificationEmailService.IsConfigured(ctx) {
+		return
+	}
 	for page := 1; ; page++ {
 		subs, pag, err := s.userSubRepo.List(ctx, pagination.PaginationParams{Page: page, PageSize: 200}, nil, nil, SubscriptionStatusActive, "", "expires_at", "asc")
 		if err != nil {

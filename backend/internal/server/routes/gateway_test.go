@@ -60,6 +60,22 @@ func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
 	}
 }
 
+func TestGatewayPlatformRoutingKeepsMessagesScopeNarrow(t *testing.T) {
+	for _, platform := range []string{service.PlatformOpenAI, service.PlatformGrok} {
+		require.True(t, isOpenAIMessagesGatewayPlatform(platform), platform)
+	}
+	for _, platform := range []string{service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek, service.PlatformAnthropic} {
+		require.False(t, isOpenAIMessagesGatewayPlatform(platform), platform)
+	}
+}
+
+func TestGatewayPlatformRoutingSupportsCNChatCompletions(t *testing.T) {
+	for _, platform := range []string{service.PlatformOpenAI, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek} {
+		require.True(t, isOpenAIChatCompletionsGatewayPlatform(platform), platform)
+	}
+	require.False(t, isOpenAIChatCompletionsGatewayPlatform(service.PlatformAnthropic))
+}
+
 func TestGatewayRoutesCodexModelsManifestPathIsRegistered(t *testing.T) {
 	router := newGatewayRoutesTestRouter()
 

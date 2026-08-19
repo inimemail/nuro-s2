@@ -167,6 +167,27 @@ type CostBreakdown struct {
 	LongContextBillingApplied bool
 }
 
+func applyCostBreakdownMultiplier(cost *CostBreakdown, multiplier float64) {
+	if cost == nil || multiplier == 1 {
+		return
+	}
+	cost.InputCost *= multiplier
+	cost.ImageInputCost *= multiplier
+	cost.OutputCost *= multiplier
+	cost.ImageOutputCost *= multiplier
+	cost.CacheCreationCost *= multiplier
+	cost.CacheReadCost *= multiplier
+	cost.TotalCost *= multiplier
+	cost.ActualCost *= multiplier
+}
+
+func resolvedChannelTimeMultiplier(resolved *ResolvedPricing, at time.Time) float64 {
+	if resolved == nil || resolved.Source != PricingSourceChannel || resolved.channelPricing == nil {
+		return 1
+	}
+	return resolved.channelPricing.TimePricing.MultiplierAt(at)
+}
+
 // addUsageSurcharge combines an auxiliary per-request charge with the primary
 // token/media breakdown while preserving the primary billing mode.
 func addUsageSurcharge(base, surcharge *CostBreakdown) *CostBreakdown {
@@ -961,6 +982,7 @@ type CostInput struct {
 	UsageUnits                float64
 	SizeTier                  string
 	RateMultiplier            float64
+	PricingAt                 time.Time
 	ServiceTier               string                // "priority","flex","" 等
 	Resolver                  *ModelPricingResolver // 定价解析器
 	Resolved                  *ResolvedPricing      // 可选：预解析的定价结果（避免重复 Resolve 调用）
@@ -1008,6 +1030,13 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 		breakdown, err = s.calculatePerRequestCost(resolved, input)
 	default: // BillingModeToken
 		breakdown, err = s.calculateTokenCost(resolved, input)
+	}
+	if err == nil && breakdown != nil {
+		pricingAt := input.PricingAt
+		if pricingAt.IsZero() {
+			pricingAt = time.Now()
+		}
+		applyCostBreakdownMultiplier(breakdown, resolvedChannelTimeMultiplier(resolved, pricingAt))
 	}
 	if err == nil && breakdown != nil {
 		breakdown.BillingMode = string(resolved.Mode)

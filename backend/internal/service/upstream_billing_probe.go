@@ -864,7 +864,7 @@ func normalizedUpstreamBillingProbeNextAt(snapshot *UpstreamBillingProbeSnapshot
 // not expose a static API key and must never enter this path.
 func IsUpstreamBillingProbeIdentity(platform, accountType string) bool {
 	switch platform {
-	case PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformGrok, PlatformAntigravity:
+	case PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformGrok, PlatformAntigravity, PlatformKimi, PlatformZhipu, PlatformDeepSeek:
 		return accountType == AccountTypeAPIKey
 	default:
 		return false

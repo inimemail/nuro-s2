@@ -688,7 +688,7 @@ func ensureEnabledBillingGuardHasConfiguredGroup(ctx context.Context, exec sqlEx
 			JOIN groups g ON g.id = ag.group_id AND g.deleted_at IS NULL
 			WHERE ag.account_id = $1
 				AND g.platform = $2
-				AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')
+				AND g.platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')
 				AND g.upstream_billing_guard_max_multiplier IS NOT NULL
 		)
 	`, account.ID, account.Platform)
@@ -2528,7 +2528,7 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	query := "UPDATE accounts SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL"
 	args := []any{string(payload), id}
 	if probeDisableRequested {
-		query += " AND NOT (platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity') AND type = $3 AND upstream_billing_guard_enabled = TRUE)"
+		query += " AND NOT (platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek') AND type = $3 AND upstream_billing_guard_enabled = TRUE)"
 		args = append(args, service.AccountTypeAPIKey)
 	}
 	result, err := client.ExecContext(ctx, query, args...)
@@ -2700,7 +2700,7 @@ func (r *accountRepository) UpdateUpstreamBillingProbeEnabled(ctx context.Contex
 			END,
 			updated_at = NOW()
 		WHERE id = $2
-			AND platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')
+			AND platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')
 			AND type = $3
 			AND ($4 = TRUE OR upstream_billing_guard_enabled = FALSE)
 			AND deleted_at IS NULL
@@ -2743,7 +2743,7 @@ func (r *accountRepository) UpdateUpstreamBillingGuard(ctx context.Context, id i
 			upstream_billing_guard_blocked = FALSE,
 			updated_at = NOW()
 				WHERE id = $2
-					AND platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity')
+					AND platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek')
 					AND type = $3
 					AND ($1 = FALSE OR COALESCE(extra ->> 'upstream_billing_probe_enabled', 'false') = 'true')
 					AND deleted_at IS NULL
@@ -2955,7 +2955,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 	// accounts untouched rather than persisting probe=false. Other accounts in
 	// the same batch may still be updated normally.
 	if probeDisableRequested {
-		query += " AND NOT (platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity') AND type = $" + itoa(idx) + " AND upstream_billing_guard_enabled = TRUE)"
+		query += " AND NOT (platform IN ('openai', 'anthropic', 'gemini', 'grok', 'antigravity', 'kimi', 'zhipu', 'deepseek') AND type = $" + itoa(idx) + " AND upstream_billing_guard_enabled = TRUE)"
 		args = append(args, service.AccountTypeAPIKey)
 	}
 

@@ -57,6 +57,17 @@ type NotificationEmailService struct {
 	emailService *EmailService
 }
 
+// IsConfigured reports whether an SMTP host is available for delivery.
+// Periodic producers use this gate to avoid scanning business records and
+// rendering templates when email delivery is intentionally not configured.
+func (s *NotificationEmailService) IsConfigured(ctx context.Context) bool {
+	if s == nil || s.emailService == nil || s.emailService.settingRepo == nil {
+		return false
+	}
+	_, err := s.emailService.GetSMTPConfig(ctx)
+	return err == nil
+}
+
 type NotificationEmailEventInfo struct {
 	Event        string   `json:"event"`
 	Label        string   `json:"label"`

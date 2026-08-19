@@ -15,6 +15,19 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func isOpenAIMessagesGatewayPlatform(platform string) bool {
+	return platform == service.PlatformOpenAI || platform == service.PlatformGrok
+}
+
+func isOpenAIChatCompletionsGatewayPlatform(platform string) bool {
+	switch platform {
+	case service.PlatformOpenAI, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek:
+		return true
+	default:
+		return false
+	}
+}
+
 // RegisterGatewayRoutes 注册 API 网关路由（Claude/OpenAI/Gemini 兼容）
 func RegisterGatewayRoutes(
 	r *gin.Engine,
@@ -104,12 +117,10 @@ func RegisterGatewayRoutes(
 	}
 
 	isOpenAIResponsesCompatibleGatewayPlatform := func(c *gin.Context) bool {
-		switch getGroupPlatform(c) {
-		case service.PlatformOpenAI, service.PlatformGrok:
-			return true
-		default:
-			return false
-		}
+		return isOpenAIMessagesGatewayPlatform(getGroupPlatform(c))
+	}
+	isOpenAIChatCompletionsGatewayPlatform := func(c *gin.Context) bool {
+		return isOpenAIChatCompletionsGatewayPlatform(getGroupPlatform(c))
 	}
 	isOpenAIGatewayPlatform := func(c *gin.Context) bool {
 		return getGroupPlatform(c) == service.PlatformOpenAI
@@ -277,7 +288,7 @@ func RegisterGatewayRoutes(
 		gateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
 		// OpenAI Chat Completions API: auto-route based on group platform
 		gateway.POST("/chat/completions", func(c *gin.Context) {
-			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
+			if isOpenAIChatCompletionsGatewayPlatform(c) {
 				h.OpenAIGateway.ChatCompletions(c)
 				return
 			}
@@ -409,7 +420,7 @@ func RegisterGatewayRoutes(
 	}
 	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform
 	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), compositeTarget, requireGroupAnthropic, func(c *gin.Context) {
-		if isOpenAIResponsesCompatibleGatewayPlatform(c) {
+		if isOpenAIChatCompletionsGatewayPlatform(c) {
 			h.OpenAIGateway.ChatCompletions(c)
 			return
 		}

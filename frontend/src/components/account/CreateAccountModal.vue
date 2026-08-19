@@ -70,7 +70,7 @@
       <!-- Platform Selection - Segmented Control Style -->
       <div>
         <label class="input-label">{{ t('admin.accounts.platform') }}</label>
-        <div class="mt-2 flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700" data-tour="account-form-platform">
+        <div class="mt-2 grid grid-cols-2 gap-1 rounded-lg bg-gray-100 p-1 sm:grid-cols-3 lg:grid-cols-4 dark:bg-dark-700" data-tour="account-form-platform">
           <button
             type="button"
             @click="form.platform = 'anthropic'"
@@ -159,6 +159,21 @@
           >
             <Icon name="sparkles" size="sm" />
             Grok
+          </button>
+          <button
+            v-for="provider in [{ value: 'kimi', label: 'Kimi' }, { value: 'zhipu', label: 'Zhipu' }, { value: 'deepseek', label: 'DeepSeek' }]"
+            :key="provider.value"
+            type="button"
+            @click="form.platform = provider.value as AccountPlatform"
+            :class="[
+              'flex min-w-0 items-center justify-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-all',
+              form.platform === provider.value
+                ? 'bg-white text-sky-600 shadow-sm dark:bg-dark-600 dark:text-sky-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <Icon name="sparkles" size="sm" />
+            {{ provider.label }}
           </button>
         </div>
       </div>
@@ -292,6 +307,20 @@
           <p>{{ t('admin.accounts.vertexAnthropicHint') }}</p>
         </div>
       </div>
+
+      <!-- Account Type Selection (OpenAI) -->
+        <div v-if="['kimi', 'zhipu', 'deepseek'].includes(form.platform)">
+          <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
+          <div class="mt-2 rounded-lg border-2 border-sky-200 bg-sky-50 p-3 dark:border-sky-800/40 dark:bg-sky-900/20">
+            <div class="flex items-center gap-3">
+              <Icon name="key" size="sm" class="text-sky-600 dark:text-sky-400" />
+              <div>
+                <span class="block text-sm font-medium text-gray-900 dark:text-white">API Key</span>
+                <span class="text-xs text-gray-500 dark:text-gray-400">OpenAI-compatible provider</span>
+              </div>
+            </div>
+          </div>
+        </div>
 
       <!-- Account Type Selection (OpenAI) -->
       <div v-if="form.platform === 'openai'">
@@ -1168,6 +1197,12 @@
                   ? 'https://generativelanguage.googleapis.com'
                   : form.platform === 'grok'
                     ? 'https://api.x.ai/v1'
+                    : form.platform === 'kimi'
+                      ? 'https://api.moonshot.cn/v1'
+                      : form.platform === 'zhipu'
+                        ? 'https://open.bigmodel.cn/api/paas/v4'
+                        : form.platform === 'deepseek'
+                          ? 'https://api.deepseek.com/v1'
                   : 'https://api.anthropic.com'
             "
           />
@@ -1192,6 +1227,12 @@
                   ? 'AIza...'
                   : form.platform === 'grok'
                     ? 'xai-...'
+                    : form.platform === 'kimi'
+                      ? 'sk-...'
+                      : form.platform === 'zhipu'
+                        ? 'id.secret'
+                        : form.platform === 'deepseek'
+                          ? 'sk-...'
                   : 'sk-ant-...'
             "
           />
@@ -5395,6 +5436,12 @@ watch(
           ? 'https://generativelanguage.googleapis.com'
           : newPlatform === 'grok'
             ? 'https://api.x.ai/v1'
+          : newPlatform === 'kimi'
+            ? 'https://api.moonshot.cn/v1'
+          : newPlatform === 'zhipu'
+            ? 'https://open.bigmodel.cn/api/paas/v4'
+          : newPlatform === 'deepseek'
+            ? 'https://api.deepseek.com/v1'
           : 'https://api.anthropic.com'
     // Clear model-related settings
     allowedModels.value = []
@@ -5411,6 +5458,9 @@ watch(
       accountCategory.value = 'oauth-based'
       antigravityAccountType.value = 'oauth'
     } else {
+      if (newPlatform === 'kimi' || newPlatform === 'zhipu' || newPlatform === 'deepseek') {
+        accountCategory.value = 'apikey'
+      }
       allowOverages.value = false
       antigravityWhitelistModels.value = []
       antigravityModelMappings.value = []
@@ -6719,6 +6769,12 @@ const handleSubmit = async () => {
         ? 'https://generativelanguage.googleapis.com'
         : form.platform === 'grok'
           ? 'https://api.x.ai/v1'
+        : form.platform === 'kimi'
+          ? 'https://api.moonshot.cn/v1'
+        : form.platform === 'zhipu'
+          ? 'https://open.bigmodel.cn/api/paas/v4'
+        : form.platform === 'deepseek'
+          ? 'https://api.deepseek.com/v1'
         : 'https://api.anthropic.com'
 
   // Build credentials with optional model mapping

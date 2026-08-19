@@ -1372,6 +1372,10 @@ func customModelsListAllowsModel(availablePatterns []string, model string) bool 
 
 func defaultModelIDsForPlatform(platform string) []string {
 	switch platform {
+	case service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepSeek:
+		// CN OpenAI-compatible providers expose account-specific model catalogs;
+		// do not leak the Anthropic fallback list into their group UI.
+		return []string{}
 	case service.PlatformOpenAI:
 		return openai.DefaultModelIDs()
 	case service.PlatformGemini:

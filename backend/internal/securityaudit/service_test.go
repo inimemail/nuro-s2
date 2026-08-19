@@ -33,6 +33,10 @@ func enabledAuditTestConfig(baseURL string) Config {
 
 func TestDisabledModeCreatesNoCollectorOrQueueWork(t *testing.T) {
 	svc := NewService(nil, nil, nil, auditEncryptor{})
+	cfg := DefaultConfig()
+	if cfg.Mode != ModeOff || cfg.Enabled {
+		t.Fatalf("default audit config must be disabled: mode=%q enabled=%v", cfg.Mode, cfg.Enabled)
+	}
 	if svc.EnabledFast() || svc.NewCollector() != nil {
 		t.Fatal("disabled service must not allocate a request collector")
 	}

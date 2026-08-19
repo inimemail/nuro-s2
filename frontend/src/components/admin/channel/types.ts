@@ -1,4 +1,5 @@
-import type { BillingMode, PricingInterval } from '@/api/admin/channels'
+import type { BillingMode, PricingInterval, ChannelTimePricing } from '@/api/admin/channels'
+export type { ChannelTimePricing }
 
 export interface IntervalFormEntry {
   min_tokens: number
@@ -23,6 +24,7 @@ export interface PricingFormEntry {
   image_output_price: number | string | null
   per_request_price: number | string | null
   intervals: IntervalFormEntry[]
+  time_pricing?: ChannelTimePricing | null
 }
 
 // 价格转换：后端存 per-token，前端显示 per-MTok ($/1M tokens)
@@ -140,6 +142,46 @@ export function validateIntervals(
   // 非 token 模式按 tier_label 匹配，不做 token 区间重叠校验
   if (mode !== 'token') return null
   return checkIntervalOverlap(sorted)
+}
+
+/** Validate optional timezone-aware multiplier windows before submitting a channel. */
+export function validateChannelTimePricing(config: ChannelTimePricing | null | undefined): string | null {
+  if (!config) return null
+  const timezone = String(config.timezone || '').trim()
+  if (!timezone) return '分时倍率必须填写 IANA 时区'
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format()
+  } catch {
+    return `无效的 IANA 时区：${timezone}`
+  }
+  const parsed: Array<{ start: number; end: number }> = []
+  for (let i = 0; i < (config.periods || []).length; i += 1) {
+    const period = config.periods[i]
+    const parse = (value: string, allowMidnightEnd: boolean) => {
+      const match = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(value || '').trim())
+      if (!match) return null
+      const hour = Number(match[1])
+      const minute = Number(match[2])
+      const second = match[3] == null ? 0 : Number(match[3])
+      if (allowMidnightEnd && hour === 0 && minute === 0 && second === 0) return 86400
+      if (hour > 23 || minute > 59 || second > 59) return null
+      return hour * 3600 + minute * 60 + second
+    }
+    const start = parse(period.start_time, false)
+    const end = parse(period.end_time, true)
+    if (start == null || end == null) return `时段 #${i + 1} 必须使用 HH:mm 或 HH:mm:ss 格式`
+    if (start >= end) return `时段 #${i + 1} 的开始时间必须早于结束时间`
+    if (!Number.isFinite(period.multiplier) || period.multiplier < 0.01 ||
+      Math.abs(period.multiplier * 100 - Math.round(period.multiplier * 100)) > 1e-9) {
+      return `时段 #${i + 1} 的倍率必须是至少 0.01 且最多两位小数`
+    }
+    parsed.push({ start, end })
+  }
+  parsed.sort((a, b) => a.start - b.start)
+  for (let i = 1; i < parsed.length; i += 1) {
+    if (parsed[i].start < parsed[i - 1].end) return '分时倍率时段不能重叠'
+  }
+  return null
 }
 
 function validateSingleInterval(iv: IntervalFormEntry, idx: number): string | null {

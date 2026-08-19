@@ -127,6 +127,15 @@ const labelClass = computed(() => {
   if (props.platform === 'grok') {
     return `${base} bg-slate-200/70 text-slate-800 dark:bg-slate-800/50 dark:text-slate-300`
   }
+  if (props.platform === 'kimi') {
+    return `${base} bg-sky-200/60 text-sky-800 dark:bg-sky-800/40 dark:text-sky-300`
+  }
+  if (props.platform === 'zhipu') {
+    return `${base} bg-rose-200/60 text-rose-800 dark:bg-rose-800/40 dark:text-rose-300`
+  }
+  if (props.platform === 'deepseek') {
+    return `${base} bg-teal-200/60 text-teal-800 dark:bg-teal-800/40 dark:text-teal-300`
+  }
   return `${base} bg-violet-200/60 text-violet-800 dark:bg-violet-800/40 dark:text-violet-300`
 })
 
@@ -152,6 +161,21 @@ const badgeClass = computed(() => {
     return isSubscription.value
       ? 'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300'
       : 'bg-gray-50 text-gray-700 dark:bg-gray-900/20 dark:text-gray-300'
+  }
+  if (props.platform === 'kimi') {
+    return isSubscription.value
+      ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'
+      : 'bg-sky-50 text-sky-700 dark:bg-sky-900/20 dark:text-sky-300'
+  }
+  if (props.platform === 'zhipu') {
+    return isSubscription.value
+      ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300'
+      : 'bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-300'
+  }
+  if (props.platform === 'deepseek') {
+    return isSubscription.value
+      ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300'
+      : 'bg-teal-50 text-teal-700 dark:bg-teal-900/20 dark:text-teal-300'
   }
   // Fallback: original colors
   return isSubscription.value

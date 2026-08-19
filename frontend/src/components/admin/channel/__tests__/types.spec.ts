@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { validateIntervals, type IntervalFormEntry } from '../types'
+import { validateChannelTimePricing, validateIntervals, type IntervalFormEntry } from '../types'
 
 function makeInterval(over: Partial<IntervalFormEntry>): IntervalFormEntry {
   return {
@@ -75,5 +75,26 @@ describe('validateIntervals', () => {
       ]
       expect(validateIntervals(intervals, 'image')).toMatch(/必须大于/)
     })
+  })
+})
+
+describe('validateChannelTimePricing', () => {
+  it('accepts a valid timezone and non-overlapping windows', () => {
+    expect(validateChannelTimePricing({
+      timezone: 'Asia/Shanghai',
+      periods: [
+        { start_time: '09:00', end_time: '12:00', multiplier: 1.25 },
+        { start_time: '13:00', end_time: '00:00', multiplier: 1 },
+      ],
+    })).toBeNull()
+  })
+
+  it('rejects invalid timezone, precision, and overlap', () => {
+    expect(validateChannelTimePricing({ timezone: 'Not/AZone', periods: [] })).toMatch(/时区/)
+    expect(validateChannelTimePricing({ timezone: 'UTC', periods: [{ start_time: '09:00', end_time: '10:00', multiplier: 1.001 }] })).toMatch(/两位小数/)
+    expect(validateChannelTimePricing({ timezone: 'UTC', periods: [
+      { start_time: '09:00', end_time: '12:00', multiplier: 1 },
+      { start_time: '11:00', end_time: '13:00', multiplier: 1 },
+    ] })).toMatch(/重叠/)
   })
 })

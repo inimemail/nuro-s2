@@ -136,6 +136,12 @@ func TestSettingService_PromptAuditFeatureUpdatePersistsAndRefreshesRuntimeGate(
 	require.True(t, enabled)
 }
 
+func TestSettingService_PromptAuditDefaultIsOff(t *testing.T) {
+	svc := NewSettingService(&settingAntigravityUARepoStub{values: map[string]string{}}, &config.Config{})
+	settings := svc.parseSettings(map[string]string{})
+	require.False(t, settings.PromptAuditEnabled)
+}
+
 func TestSettingService_UpdateSettings_ModelPlazaDescriptionLimit(t *testing.T) {
 	t.Run("accepts trimmed description at limit", func(t *testing.T) {
 		repo := &settingUpdateRepoStub{}

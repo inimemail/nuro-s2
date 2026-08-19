@@ -613,7 +613,15 @@ func validatePricingEntries(pricing []ChannelModelPricing) error {
 	if err := validatePricingIntervals(pricing); err != nil {
 		return err
 	}
-	return validatePricingBillingMode(pricing)
+	if err := validatePricingBillingMode(pricing); err != nil {
+		return err
+	}
+	for i := range pricing {
+		if err := validateChannelTimePricing(pricing[i].TimePricing); err != nil {
+			return infraerrors.BadRequest("TIME_PRICING_INVALID", fmt.Sprintf("pricing entry #%d: %v", i+1, err))
+		}
+	}
+	return nil
 }
 
 // validatePricingBillingMode 校验计费模式配置：按次/图片模式必须配价格或区间，所有价格字段不能为负，区间至少有一个价格字段。

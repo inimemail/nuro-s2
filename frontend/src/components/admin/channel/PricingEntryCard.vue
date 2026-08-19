@@ -56,6 +56,8 @@
         type="button"
         @click.stop="emit('remove')"
         class="flex-shrink-0 rounded p-1 text-gray-400 hover:text-red-500"
+        :title="t('common.delete')"
+        :aria-label="t('common.delete')"
       >
         <Icon name="trash" size="sm" />
       </button>
@@ -68,8 +70,8 @@
     >
       <div class="collapsible-inner">
         <!-- Header: Models + Billing Mode -->
-        <div class="mt-3 flex items-start gap-2">
-          <div class="flex-1">
+        <div class="mt-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-2">
+          <div class="min-w-0 flex-1">
             <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
               {{ t('admin.channels.form.models', '模型列表') }} <span class="text-red-500">*</span>
             </label>
@@ -81,7 +83,7 @@
               class="mt-1"
             />
           </div>
-          <div class="w-40">
+          <div class="w-full sm:w-40 sm:flex-none">
             <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
               {{ t('admin.channels.form.billingMode', '计费模式') }}
             </label>
@@ -91,6 +93,26 @@
               :options="billingModeOptions"
               class="mt-1"
             />
+          </div>
+        </div>
+
+        <div class="mt-3 rounded-md border border-dashed border-gray-300 p-2 dark:border-dark-600">
+          <div class="mb-2 flex items-center justify-between">
+            <span class="text-xs font-medium text-gray-600 dark:text-gray-300">{{ t('admin.channels.form.timePricing') }}</span>
+            <button type="button" class="text-xs text-primary-600 hover:text-primary-700" @click="toggleTimePricing">
+              {{ entry.time_pricing ? t('admin.channels.form.timePricingDisable') : t('admin.channels.form.timePricingEnable') }}
+            </button>
+          </div>
+          <div v-if="entry.time_pricing" class="space-y-2">
+            <input :value="entry.time_pricing.timezone" class="input text-sm" :placeholder="t('admin.channels.form.timePricingTimezonePlaceholder')" @input="updateTimePricing({ timezone: ($event.target as HTMLInputElement).value })" />
+            <div v-for="(period, index) in entry.time_pricing.periods" :key="index" class="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(6rem,0.8fr)_auto]">
+              <input :value="period.start_time" class="input text-sm" :placeholder="t('admin.channels.form.timePricingStartPlaceholder')" :aria-label="t('admin.channels.form.timePricingStartPlaceholder')" @input="updatePeriod(index, { start_time: ($event.target as HTMLInputElement).value })" />
+              <input :value="period.end_time" class="input text-sm" :placeholder="t('admin.channels.form.timePricingEndPlaceholder')" :aria-label="t('admin.channels.form.timePricingEndPlaceholder')" @input="updatePeriod(index, { end_time: ($event.target as HTMLInputElement).value })" />
+              <input :value="period.multiplier" type="number" min="0.01" step="0.01" class="input text-sm" :placeholder="t('admin.channels.form.timePricingMultiplierPlaceholder')" :aria-label="t('admin.channels.form.timePricingMultiplierPlaceholder')" @input="updatePeriod(index, { multiplier: Number(($event.target as HTMLInputElement).value) })" />
+              <button type="button" class="justify-self-end rounded p-2 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10" :title="t('common.delete')" :aria-label="t('common.delete')" @click="removePeriod(index)"><Icon name="trash" size="sm" /></button>
+            </div>
+            <p v-if="timePricingError" class="text-xs text-red-500" role="alert">{{ timePricingError }}</p>
+            <button type="button" class="text-xs text-primary-600 hover:text-primary-700" @click="addPeriod">+ {{ t('admin.channels.form.timePricingAddPeriod') }}</button>
           </div>
         </div>
 
@@ -243,7 +265,7 @@ import Icon from '@/components/icons/Icon.vue'
 import IntervalRow from './IntervalRow.vue'
 import ModelTagInput from './ModelTagInput.vue'
 import type { PricingFormEntry, IntervalFormEntry } from './types'
-import { perTokenToMTok, getPlatformTagClass } from './types'
+import { perTokenToMTok, getPlatformTagClass, validateChannelTimePricing } from './types'
 import type { BillingMode } from '@/api/admin/channels'
 import channelsAPI from '@/api/admin/channels'
 
@@ -278,8 +300,37 @@ const billingModeLabel = computed(() => {
   return opt ? opt.label : props.entry.billing_mode
 })
 
+const timePricingError = computed(() => validateChannelTimePricing(props.entry.time_pricing))
+
 function emitField(field: keyof PricingFormEntry, value: string) {
   emit('update', { ...props.entry, [field]: value === '' ? null : value })
+}
+
+function toggleTimePricing() {
+  emit('update', { ...props.entry, time_pricing: props.entry.time_pricing ? null : { timezone: 'Asia/Shanghai', periods: [] } })
+}
+
+function updateTimePricing(patch: Partial<NonNullable<PricingFormEntry['time_pricing']>>) {
+  emit('update', { ...props.entry, time_pricing: { ...(props.entry.time_pricing || { timezone: 'Asia/Shanghai', periods: [] }), ...patch } })
+}
+
+function updatePeriod(index: number, patch: Partial<NonNullable<PricingFormEntry['time_pricing']>['periods'][number]>) {
+  const current = props.entry.time_pricing
+  if (!current) return
+  const periods = current.periods.map((period, i) => i === index ? { ...period, ...patch } : period)
+  updateTimePricing({ periods })
+}
+
+function addPeriod() {
+  const current = props.entry.time_pricing
+  if (!current) return
+  updateTimePricing({ periods: [...current.periods, { start_time: '09:00', end_time: '17:00', multiplier: 1 }] })
+}
+
+function removePeriod(index: number) {
+  const current = props.entry.time_pricing
+  if (!current) return
+  updateTimePricing({ periods: current.periods.filter((_, i) => i !== index) })
 }
 
 function addInterval() {

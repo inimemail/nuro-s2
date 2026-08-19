@@ -156,6 +156,18 @@ func TestSubscriptionExpiryService_ExpiryReminderDisabledSkipsSubscriptionScan(t
 	require.Zero(t, repo.listCalls)
 }
 
+func TestSubscriptionExpiryService_NoSMTPConfigurationSkipsSubscriptionScan(t *testing.T) {
+	repo := &subscriptionExpiryRepoStub{}
+	settingRepo := &subscriptionExpirySettingRepoStub{values: map[string]string{}}
+	svc := NewSubscriptionExpiryService(repo, time.Minute)
+	svc.SetSettingRepository(settingRepo)
+	svc.SetNotificationEmailService(NewNotificationEmailService(settingRepo, NewEmailService(settingRepo, nil)))
+
+	svc.sendExpiryReminders(context.Background())
+
+	require.Zero(t, repo.listCalls)
+}
+
 func TestSubscriptionExpiryService_ExpiryReminderSettingReadErrorFailsClosed(t *testing.T) {
 	svc := NewSubscriptionExpiryService(nil, time.Minute)
 	svc.SetSettingRepository(&subscriptionExpirySettingRepoStub{err: errors.New("db down")})

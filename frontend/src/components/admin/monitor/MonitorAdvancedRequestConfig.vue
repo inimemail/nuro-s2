@@ -7,14 +7,14 @@
         <div
           v-for="(row, i) in headerRows"
           :key="i"
-          class="flex items-center gap-2"
+          class="flex flex-col gap-2 sm:flex-row sm:items-center"
         >
           <input
             v-model="row.name"
             type="text"
             spellcheck="false"
             :placeholder="t('admin.channelMonitor.advanced.headerNamePlaceholder')"
-            class="input w-52 flex-none font-mono text-xs"
+            class="input w-full font-mono text-xs sm:w-52 sm:flex-none"
             @blur="commitHeaders"
           />
           <input
@@ -56,7 +56,7 @@
     <!-- Body mode radio -->
     <div>
       <label class="input-label">{{ t('admin.channelMonitor.advanced.bodyMode') }}</label>
-      <div class="grid grid-cols-3 gap-3">
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <button
           v-for="opt in bodyModeOptions"
           :key="opt.value"
@@ -110,8 +110,11 @@ import type { APIMode, BodyOverrideMode, Provider } from '@/api/admin/channelMon
 import {
   API_MODE_RESPONSES,
   DEFAULT_GROK_MODEL,
+  PROVIDER_DEEPSEEK,
   PROVIDER_GROK,
+  PROVIDER_KIMI,
   PROVIDER_OPENAI,
+  PROVIDER_ZHIPU,
 } from '@/constants/channelMonitor'
 
 const props = defineProps<{
@@ -307,7 +310,7 @@ const bodyPlaceholder = computed(() => {
     }
     return '{\n  "model": "gpt-4o-mini",\n  "instructions": "You are a health check endpoint. Reply briefly.",\n  "input": "Reply with exactly: ok",\n  "max_output_tokens": 20,\n  "stream": false\n}'
   }
-  if (props.provider === PROVIDER_OPENAI || props.provider === PROVIDER_GROK) {
+  if ([PROVIDER_OPENAI, PROVIDER_GROK, PROVIDER_KIMI, PROVIDER_ZHIPU, PROVIDER_DEEPSEEK].includes(props.provider as Provider)) {
     if (props.bodyOverrideMode === 'merge') {
       return '{\n  "max_tokens": 20\n}'
     }
