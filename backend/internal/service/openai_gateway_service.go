@@ -6101,8 +6101,10 @@ func (s *OpenAIGatewayService) openAIStreamFirstTokenTimeoutPlaceholderMs(accoun
 	return ms
 }
 
-// OpenAIStreamRequiresGoPlaceholderCoordination keeps Edge from committing a
-// local compatibility frame that it cannot carry across an account switch.
+// OpenAIStreamRequiresGoPlaceholderCoordination reports whether the Go relay
+// needs request-level coordination for a compatibility frame. Rust Edge has
+// its own lease-aware placeholder state and does not use this as an Edge
+// eligibility gate.
 func (s *OpenAIGatewayService) OpenAIStreamRequiresGoPlaceholderCoordination(account *Account, requestedModel string) bool {
 	return s.openAIStreamFirstTokenTimeoutPlaceholderMs(account, requestedModel) > 0 ||
 		s.openAIStreamSafeTokenPlaceholderEnabled(account, requestedModel)

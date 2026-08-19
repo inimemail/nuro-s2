@@ -125,7 +125,7 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 	// Commit the SSE headers immediately. This removes the extra Go-hop header
 	// delay for systemd deployments where public traffic enters on port 8080.
 	c.Writer.Flush()
-	copyOpenAIEdgeResponseBody(c.Writer, resp.Body)
+	copyOpenAIEdgeResponseBody(c.Writer, resp.Body, strings.HasSuffix(strings.TrimSuffix(c.Request.URL.Path, "/"), "/responses"))
 	return true
 }
 
@@ -251,17 +251,52 @@ func copyOpenAIEdgeResponseHeaders(dst, src http.Header) {
 	}
 }
 
-func copyOpenAIEdgeResponseBody(dst gin.ResponseWriter, src io.Reader) {
+func copyOpenAIEdgeResponseBody(dst gin.ResponseWriter, src io.Reader, responsesDialect bool) {
 	buf := make([]byte, 32*1024)
+	const terminalScanTail = 128
+	var tail []byte
+	terminalSeen := false
 	for {
 		n, readErr := src.Read(buf)
 		if n > 0 {
-			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+			chunk := buf[:n]
+			scan := make([]byte, 0, len(tail)+len(chunk))
+			scan = append(scan, tail...)
+			scan = append(scan, chunk...)
+			if bytes.Contains(scan, []byte(`"type":"response.completed"`)) ||
+				bytes.Contains(scan, []byte(`"type":"response.failed"`)) ||
+				bytes.Contains(scan, []byte(`"type":"response.incomplete"`)) ||
+				bytes.Contains(scan, []byte(`"type":"response.cancelled"`)) ||
+				bytes.Contains(scan, []byte(`"type":"response.canceled"`)) ||
+				bytes.Contains(scan, []byte(`"type":"response.done"`)) ||
+				bytes.Contains(scan, []byte("event: response.completed")) ||
+				bytes.Contains(scan, []byte("event: response.failed")) ||
+				bytes.Contains(scan, []byte("event: response.incomplete")) ||
+				bytes.Contains(scan, []byte("event: response.cancelled")) ||
+				bytes.Contains(scan, []byte("event: response.canceled")) ||
+				bytes.Contains(scan, []byte("event: response.done")) ||
+				bytes.Contains(scan, []byte("data: [DONE]")) {
+				terminalSeen = true
+			}
+			if len(scan) > terminalScanTail {
+				tail = append(tail[:0], scan[len(scan)-terminalScanTail:]...)
+			} else {
+				tail = append(tail[:0], scan...)
+			}
+			if _, writeErr := dst.Write(chunk); writeErr != nil {
 				return
 			}
 			dst.Flush()
 		}
 		if readErr != nil {
+			if !terminalSeen {
+				if responsesDialect {
+					_, _ = dst.Write([]byte("data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}}\n\n"))
+				} else {
+					_, _ = dst.Write([]byte("data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}\n\ndata: [DONE]\n\n"))
+				}
+				dst.Flush()
+			}
 			return
 		}
 	}

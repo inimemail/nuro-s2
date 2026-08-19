@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,6 +80,46 @@ func TestCopyOpenAIEdgeResponseHeadersPreservesJSONResponses(t *testing.T) {
 	require.Equal(t, "application/json; charset=utf-8", dst.Get("Content-Type"))
 	require.Equal(t, "private, max-age=0", dst.Get("Cache-Control"))
 	require.Empty(t, dst.Get("X-Accel-Buffering"))
+}
+
+func TestCopyOpenAIEdgeResponseBodySynthesizesTerminalOnUnexpectedEOF(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name      string
+		responses bool
+		want      string
+	}{
+		{name: "responses", responses: true, want: "response.failed"},
+		{name: "chat", responses: false, want: `"error"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			copyOpenAIEdgeResponseBody(c.Writer, io.LimitReader(strings.NewReader(`data: {"type":"response.created"}
+
+`), 1024), tc.responses)
+			body := recorder.Body.String()
+			if tc.responses {
+				require.Contains(t, body, tc.want)
+			} else {
+				require.Contains(t, body, tc.want)
+			}
+			if !tc.responses {
+				require.Contains(t, body, "data: [DONE]")
+			}
+		})
+	}
+}
+
+func TestCopyOpenAIEdgeResponseBodyDoesNotDuplicateTerminal(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	copyOpenAIEdgeResponseBody(c.Writer, strings.NewReader(`data: {"type":"response.completed"}
+
+`), true)
+	body := recorder.Body.String()
+	require.Equal(t, 1, strings.Count(body, "response.completed"))
+	require.NotContains(t, body, "response.failed")
 }
 
 func TestOpenAIEdgeIngressFallbackHeaderSkipsProxy(t *testing.T) {

@@ -1064,9 +1064,6 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 			accountReleaseFunc()
 		}
 	}()
-	if h.gatewayService.OpenAIStreamRequiresGoPlaceholderCoordination(account, reqModel) {
-		return fallback("first_token_placeholder_requires_go")
-	}
 	prepared, err := h.gatewayService.BuildRawChatCompletionsEdgePlan(c.Request.Context(), c, account, forwardBody, "")
 	if err != nil {
 		reqLog.Warn("openai_edge.build_raw_chat_plan_failed", zap.Int64("account_id", account.ID), zap.Error(err))
@@ -1276,9 +1273,6 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 			accountReleaseFunc()
 		}
 	}()
-	if h.gatewayService.OpenAIStreamRequiresGoPlaceholderCoordination(account, reqModel) {
-		return fallback("first_token_placeholder_requires_go")
-	}
 	var prepared *service.OpenAIEdgePreparedChatCompletions
 	if account.Type == service.AccountTypeOAuth {
 		prepared, err = h.gatewayService.BuildChatGPTOAuthResponsesEdgePlan(c.Request.Context(), c, account, forwardBody)
@@ -1772,6 +1766,8 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	status := req.UpstreamStatusCode
 	responseBody := openAIEdgeRetryResponseBody(req)
 	upstreamMsg := strings.TrimSpace(req.ErrorMessage)
+	edgeBodyTransportFailure := status == 0 && (strings.TrimSpace(req.ErrorType) == "edge_upstream_transport_error" ||
+		strings.TrimSpace(req.ErrorType) == "edge_upstream_body_idle_timeout")
 	if req.WroteClientResponse {
 		if lease.cachePolicyApplied &&
 			service.IsOpenAIPromptCacheCreationOptimizationUnsupportedError(status, upstreamMsg, responseBody) &&
@@ -1837,7 +1833,8 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		}
 	}
 	modelRoutingError := h.openAIEdgeShouldProtectModelRoutingError(c, lease.account, status, upstreamMsg, responseBody)
-	transportRetryable := status == 0 && lease.account.IsOpenAIUpstreamConcurrencyRaceEnabled() && lease.account.IsOpenAIUpstreamConcurrencyRaceTransportRetryEnabled()
+	transportRetryable := edgeBodyTransportFailure ||
+		(status == 0 && lease.account.IsOpenAIUpstreamConcurrencyRaceEnabled() && lease.account.IsOpenAIUpstreamConcurrencyRaceTransportRetryEnabled())
 	if !service.OpenAIEdgeHTTPStatusRetryableForAccount(lease.account, status) && !transportRetryable && !modelRoutingError {
 		return fallback("upstream_status_not_retryable")
 	}
@@ -1857,7 +1854,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		ResponseBody:           responseBody,
 		Message:                openAIEdgeSafeErrorMessage(upstreamMsg),
 		RetryableOnSameAccount: !edgeResponseHeaderTimeout && service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, upstreamMsg, responseBody),
-		SkipPoolSoftCooldown:   modelRoutingError || edgeResponseHeaderTimeout,
+		SkipPoolSoftCooldown:   modelRoutingError || edgeResponseHeaderTimeout || edgeBodyTransportFailure,
 	}
 	if failoverErr.RetryableOnSameAccount {
 		// Edge retries are intentionally immediate. The upstream attempt and the
@@ -1886,7 +1883,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		}
 	}
 	routingModel := lease.openAIRoutingModel()
-	if !edgeResponseHeaderTimeout {
+	if !edgeResponseHeaderTimeout && !edgeBodyTransportFailure {
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, routingModel, false, nil)
 		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), lease.apiKey.GroupID, lease.sessionHash, lease.account, failoverErr, routingModel)
 	}
@@ -2023,12 +2020,6 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 	}
 	account := edgeSelection.account
 	accountReleaseFunc := edgeSelection.releaseFunc
-	if h.gatewayService.OpenAIStreamRequiresGoPlaceholderCoordination(account, routingModel) {
-		if accountReleaseFunc != nil {
-			accountReleaseFunc()
-		}
-		return fallback("first_token_placeholder_requires_go")
-	}
 	plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, account, accountReleaseFunc)
 	if err != nil {
 		if accountReleaseFunc != nil {
