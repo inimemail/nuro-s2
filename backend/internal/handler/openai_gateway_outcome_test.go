@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -178,6 +180,18 @@ func TestShouldSettleOpenAIForwardResultAfterError(t *testing.T) {
 	_, err := c.Writer.WriteString(":\n\n")
 	require.NoError(t, err)
 	require.True(t, shouldSettleOpenAIForwardResultAfterError(c, before, &service.OpenAIForwardResult{Stream: true}))
+
+	placeholderRecorder := httptest.NewRecorder()
+	placeholderContext, _ := gin.CreateTestContext(placeholderRecorder)
+	placeholderContext.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	service.StartOpenAIPlaceholderCoordination(placeholderContext, time.Now())
+	_, err = placeholderContext.Writer.WriteString(`data: {"type":"response.transport_progress.delta","delta":"in_progress"}` + "\n\n")
+	require.NoError(t, err)
+	require.False(t, shouldSettleOpenAIForwardResultAfterError(
+		placeholderContext,
+		-1,
+		&service.OpenAIForwardResult{Stream: true, TerminalEventType: "response.failed"},
+	))
 }
 
 func TestShouldReportOpenAIWSProxyFailure(t *testing.T) {

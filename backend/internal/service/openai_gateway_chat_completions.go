@@ -342,7 +342,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		resp, err = doUpstream()
 	}
 	if err != nil {
-		if requestFirstTokenPlaceholder.Sent {
+		if requestFirstTokenPlaceholder.UpstreamCommitted {
 			_ = s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, http.StatusBadGateway, openAITransportFailoverBody, upstreamModel, err.Error())
 			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", "Upstream request failed")
@@ -381,7 +381,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-		if !requestFirstTokenPlaceholder.Sent && !agentIdentityTaskRecoveryWasTried(ctx) && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+		if !requestFirstTokenPlaceholder.UpstreamCommitted && !agentIdentityTaskRecoveryWasTried(ctx) && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
 			expectedTaskID := account.GetCredential("task_id")
 			if recoveryErr := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); recoveryErr != nil {
 				return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
@@ -392,7 +392,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if requestFirstTokenPlaceholder.Sent {
+		if requestFirstTokenPlaceholder.UpstreamCommitted {
 			cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
 				isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
 			if cachePolicyCompatibilityFailure {
@@ -701,32 +701,35 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	if len(requestFirstTokenPlaceholderOpt) > 0 {
 		requestFirstTokenPlaceholder = requestFirstTokenPlaceholderOpt[0]
 	}
+	ensureOpenAIPlaceholderCoordinator(c, startTime)
 
-	headersWritten := requestFirstTokenPlaceholder.Sent
+	headersWritten := requestFirstTokenPlaceholder.Sent || requestFirstTokenPlaceholder.SafeSent
 	writeStreamHeaders := func() {
 		if headersWritten {
 			return
 		}
 		headersWritten = true
-		if s.responseHeaderFilter != nil {
-			responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-		}
-		c.Writer.Header().Set("Content-Type", "text/event-stream")
-		c.Writer.Header().Set("Cache-Control", "no-cache")
-		c.Writer.Header().Set("Connection", "keep-alive")
-		c.Writer.Header().Set("X-Accel-Buffering", "no")
-		c.Writer.WriteHeader(http.StatusOK)
+		withOpenAIPlaceholderWriterLock(c, func(writer gin.ResponseWriter) {
+			if s.responseHeaderFilter != nil {
+				responseheaders.WriteFilteredHeaders(writer.Header(), resp.Header, s.responseHeaderFilter)
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			writer.Header().Set("Cache-Control", "no-cache")
+			writer.Header().Set("Connection", "keep-alive")
+			writer.Header().Set("X-Accel-Buffering", "no")
+			writer.WriteHeader(http.StatusOK)
+		})
 	}
 
 	state := apicompat.NewResponsesEventToChatState()
 	state.Model = originalModel
-	if requestFirstTokenPlaceholder.Sent {
-		if requestFirstTokenPlaceholder.ChatID != "" {
-			state.ID = requestFirstTokenPlaceholder.ChatID
-		}
-		if requestFirstTokenPlaceholder.ChatCreated > 0 {
-			state.Created = requestFirstTokenPlaceholder.ChatCreated
-		}
+	if requestFirstTokenPlaceholder.ChatID != "" {
+		state.ID = requestFirstTokenPlaceholder.ChatID
+	}
+	if requestFirstTokenPlaceholder.ChatCreated > 0 {
+		state.Created = requestFirstTokenPlaceholder.ChatCreated
+	}
+	if requestFirstTokenPlaceholder.Sent || requestFirstTokenPlaceholder.SafeSent {
 		state.SentRole = true
 	}
 	// 网关作为计费链路的一环，不能把下游 usage 输出绑定到客户端是否显式请求。
@@ -737,10 +740,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	var firstTokenMs *int
 	downstreamTTFTObserved := false
 	clientDisconnected := false
-	clientOutputStarted := requestFirstTokenPlaceholder.Sent
+	clientOutputStarted := requestFirstTokenPlaceholder.UpstreamCommitted
 	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
 	firstTokenTimeoutPlaceholder := s.openAIStreamFirstTokenTimeoutPlaceholder(account, originalModel)
-	safeTokenPlaceholderSent := requestFirstTokenPlaceholder.Sent
+	safeTokenPlaceholderSent := requestFirstTokenPlaceholder.Sent || requestFirstTokenPlaceholder.SafeSent
 	firstTokenTimeoutPlaceholderSent := requestFirstTokenPlaceholder.Sent
 	firstTokenTimeoutPlaceholderID := requestFirstTokenPlaceholder.ChatID
 	var firstTokenTimeoutGuardSampleMS *int
@@ -790,92 +793,87 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		if !safeTokenPlaceholder || safeTokenPlaceholderSent || clientDisconnected || clientOutputStarted {
 			return false
 		}
+		_ = createdChunks
+		chatState := apicompat.NewResponsesEventToChatState()
+		chatState.Model = state.Model
+		if coordinator := openAIPlaceholderCoordinatorFromContext(c); coordinator != nil {
+			snapshot := coordinator.snapshot()
+			if snapshot.ChatID != "" {
+				chatState.ID = snapshot.ChatID
+			}
+			if snapshot.ChatCreated > 0 {
+				chatState.Created = snapshot.ChatCreated
+			}
+		}
 		empty := ""
-		contentChunk := apicompat.ChatCompletionsChunk{
-			ID:      state.ID,
+		roleChunk := apicompat.ChatCompletionsChunk{
+			ID:      chatState.ID,
 			Object:  "chat.completion.chunk",
-			Created: state.Created,
-			Model:   state.Model,
+			Created: chatState.Created,
+			Model:   chatState.Model,
+			Choices: []apicompat.ChatChunkChoice{{
+				Index:        0,
+				Delta:        apicompat.ChatDelta{Role: "assistant"},
+				FinishReason: nil,
+			}},
+		}
+		contentChunk := apicompat.ChatCompletionsChunk{
+			ID:      chatState.ID,
+			Object:  "chat.completion.chunk",
+			Created: chatState.Created,
+			Model:   chatState.Model,
 			Choices: []apicompat.ChatChunkChoice{{
 				Index:        0,
 				Delta:        apicompat.ChatDelta{Content: &empty},
 				FinishReason: nil,
 			}},
 		}
+		roleSSE, roleErr := apicompat.ChatChunkToSSE(roleChunk)
 		contentSSE, contentErr := apicompat.ChatChunkToSSE(contentChunk)
-		if contentErr != nil {
+		if roleErr != nil || contentErr != nil {
 			return false
 		}
-		writeStreamHeaders()
-		for _, chunk := range createdChunks {
-			sse, err := apicompat.ChatChunkToSSE(chunk)
-			if err != nil {
-				continue
-			}
-			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
-				clientDisconnected = true
-				return true
-			}
-		}
-		if _, err := fmt.Fprint(c.Writer, contentSSE); err != nil {
+		if written := writeOpenAISafePlaceholder(c, roleSSE+contentSSE, chatState.ID, chatState.Created); openAIGatewayFrameWriteFailed(c, written) {
 			clientDisconnected = true
 			return true
 		}
+		headersWritten = true
+		state.ID = chatState.ID
+		state.Created = chatState.Created
+		state.SentRole = true
+		pendingSSE = pendingSSE[:0]
 		// Safe and timeout placeholders are independent controls. A safe chunk
 		// must not consume the configured timeout placeholder.
 		safeTokenPlaceholderSent = true
-		clientOutputStarted = true
-		c.Writer.Flush()
 		return true
 	}
 	writeFirstTokenTimeoutChatPlaceholder := func() bool {
 		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || downstreamTTFTObserved {
 			return false
 		}
-		empty := ""
-		chunks := make([]apicompat.ChatCompletionsChunk, 0, 2)
-		if !state.SentRole {
-			state.SentRole = true
-			chunks = append(chunks, apicompat.ChatCompletionsChunk{
-				ID:      state.ID,
-				Object:  "chat.completion.chunk",
-				Created: state.Created,
-				Model:   state.Model,
-				Choices: []apicompat.ChatChunkChoice{{
-					Index:        0,
-					Delta:        apicompat.ChatDelta{Role: "assistant"},
-					FinishReason: nil,
-				}},
-			})
+		placeholderState := writeOpenAIRequestFirstTokenTimeoutPlaceholder(
+			c,
+			startTime,
+			state.Model,
+			openAIRequestFirstTokenPlaceholderDialectChatCompletions,
+		)
+		if !placeholderState.Sent && !OpenAIRequestUpstreamCommitted(c) {
+			clientDisconnected = true
+			return true
 		}
-		chunks = append(chunks, apicompat.ChatCompletionsChunk{
-			ID:      state.ID,
-			Object:  "chat.completion.chunk",
-			Created: state.Created,
-			Model:   state.Model,
-			Choices: []apicompat.ChatChunkChoice{{
-				Index:        0,
-				Delta:        apicompat.ChatDelta{Content: &empty},
-				FinishReason: nil,
-			}},
-		})
-		writeStreamHeaders()
-		for _, chunk := range chunks {
-			sse, err := apicompat.ChatChunkToSSE(chunk)
-			if err != nil {
-				continue
-			}
-			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
-				clientDisconnected = true
-				return true
-			}
+		headersWritten = true
+		if placeholderState.ChatID != "" {
+			state.ID = placeholderState.ChatID
 		}
+		if placeholderState.ChatCreated > 0 {
+			state.Created = placeholderState.ChatCreated
+		}
+		state.SentRole = true
+		pendingSSE = pendingSSE[:0]
 		firstTokenTimeoutPlaceholderSent = true
-		firstTokenTimeoutPlaceholderID = state.ID
+		firstTokenTimeoutPlaceholderID = placeholderState.ChatID
 		// The timeout chunk already fulfills the compatibility placeholder role.
 		safeTokenPlaceholderSent = true
-		clientOutputStarted = true
-		c.Writer.Flush()
 		return true
 	}
 
@@ -995,6 +993,13 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 						zap.Error(err),
 						zap.String("request_id", requestID),
 					)
+					continue
+				}
+				// Role and lifecycle chunks belong to the current upstream
+				// attempt. Keep them private until real output commits that
+				// attempt, so a timeout placeholder can still switch accounts.
+				if !clientOutputStarted && !chunksStartRealOutput {
+					pendingSSE = append(pendingSSE, sse)
 					continue
 				}
 				if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
@@ -1232,7 +1237,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	if keepaliveTicker != nil {
 		keepaliveCh = keepaliveTicker.C
 	}
-	placeholderStartTime := time.Now()
+	placeholderStartTime := openAIRequestPlaceholderEffectiveStartTime(c, startTime, firstTokenTimeoutPlaceholder)
 	firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(placeholderStartTime, firstTokenTimeoutPlaceholder)
 	if firstTokenTimeoutTimer != nil {
 		defer firstTokenTimeoutTimer.Stop()

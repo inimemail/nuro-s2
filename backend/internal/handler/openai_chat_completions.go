@@ -128,6 +128,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		h.handleStreamingAwareError(c, status, code, message, streamStarted)
 		return
 	}
+	if reqStream {
+		service.StartOpenAIPlaceholderCoordination(c, time.Now())
+	}
 
 	affinityBody := body
 	affinityModel := reqModel
@@ -274,6 +277,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		reqLog.Debug("openai_chat_completions.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if reqStream {
+			h.gatewayService.ArmOpenAIChatFirstTokenPlaceholder(c, account, reqModel)
+		}
 
 		slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if !slotResult.Acquired {
@@ -342,7 +348,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					if c.Writer.Size() != writerSizeBeforeForward {
+					if !service.OpenAIRequestAllowsFailover(c, writerSizeBeforeForward) {
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
 					}

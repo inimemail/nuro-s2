@@ -265,7 +265,64 @@ func TestForwardAsRawChatCompletions_StagedTimeoutPlaceholderDoesNotChangePanelT
 	responseBody := rec.Body.String()
 	require.Contains(t, responseBody, `"content":""`)
 	require.Contains(t, responseBody, `"content":"ok"`)
+	require.NotContains(t, responseBody, "chatcmpl_stage", "the failed-attempt/raw upstream ID must be rewritten to the request placeholder ID")
 	require.Less(t, strings.Index(responseBody, `"content":""`), strings.Index(responseBody, `"content":"ok"`))
+}
+
+func TestOpenAIRawChatPlaceholderMaintainsOneStreamAcrossAccountFailover(t *testing.T) {
+	setGinTestMode()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	requestBody := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(requestBody))
+	StartOpenAIPlaceholderCoordination(c, time.Now())
+	coordinator := openAIPlaceholderCoordinatorFromContext(c)
+	coordinator.ensureChatIdentity("gpt-5.4")
+	placeholder := writeOpenAIRequestFirstTokenTimeoutPlaceholder(c, time.Now(), "gpt-5.4", openAIRequestFirstTokenPlaceholderDialectChatCompletions)
+	require.True(t, placeholder.Sent)
+
+	failedStream := `data: {"id":"chatcmpl_account_a","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n"
+	successStream := strings.Join([]string{
+		`data: {"id":"chatcmpl_account_b","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl_account_b","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl_account_b","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+	accountA := rawChatCompletionsTestAccount()
+	accountA.ID = 1
+	accountB := rawChatCompletionsTestAccount()
+	accountB.ID = 2
+
+	_, firstErr := svc.streamRawChatCompletions(
+		c.Request.Context(), c,
+		&http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(failedStream)), Header: http.Header{"X-Request-Id": []string{"rid-raw-a"}}},
+		accountA, "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now(), len(requestBody), coordinator.snapshot(),
+	)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, firstErr, &failoverErr)
+	require.True(t, OpenAIRequestAllowsFailover(c, -1))
+
+	result, secondErr := svc.streamRawChatCompletions(
+		c.Request.Context(), c,
+		&http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(successStream)), Header: http.Header{"X-Request-Id": []string{"rid-raw-b"}}},
+		accountB, "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now(), len(requestBody), coordinator.snapshot(),
+	)
+	require.NoError(t, secondErr)
+	require.NotNil(t, result)
+
+	body := recorder.Body.String()
+	require.NotContains(t, body, "chatcmpl_account_a")
+	require.NotContains(t, body, "chatcmpl_account_b")
+	require.Contains(t, body, placeholder.ChatID)
+	require.Contains(t, body, `"content":"ok"`)
+	require.Equal(t, 1, strings.Count(body, "data: [DONE]"))
+	require.True(t, OpenAIRequestUpstreamCommitted(c))
+	require.False(t, OpenAIRequestAllowsFailover(c, -1))
 }
 
 func TestForwardAsRawChatCompletions_UsesLaterTimeoutStage(t *testing.T) {
@@ -316,9 +373,8 @@ func TestForwardAsRawChatCompletions_UsesLaterTimeoutStage(t *testing.T) {
 	require.NotNil(t, result)
 	require.NotNil(t, result.FirstTokenMs)
 	responseBody := rec.Body.String()
-	require.Contains(t, responseBody, `"content":""`)
+	require.NotContains(t, responseBody, `"content":""`, "stage 2 uses a 3000ms deadline, so the 70ms response must not be padded")
 	require.Contains(t, responseBody, `"content":"ok"`)
-	require.Less(t, strings.Index(responseBody, `"content":""`), strings.Index(responseBody, `"content":"ok"`))
 }
 
 func TestForwardAsRawChatCompletions_PausedStageStillReportsRealPanelTTFT(t *testing.T) {

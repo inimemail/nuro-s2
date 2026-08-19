@@ -1064,6 +1064,9 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 			accountReleaseFunc()
 		}
 	}()
+	if h.gatewayService.OpenAIStreamRequiresGoPlaceholderCoordination(account, reqModel) {
+		return fallback("first_token_placeholder_requires_go")
+	}
 	prepared, err := h.gatewayService.BuildRawChatCompletionsEdgePlan(c.Request.Context(), c, account, forwardBody, "")
 	if err != nil {
 		reqLog.Warn("openai_edge.build_raw_chat_plan_failed", zap.Int64("account_id", account.ID), zap.Error(err))
@@ -1273,6 +1276,9 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 			accountReleaseFunc()
 		}
 	}()
+	if h.gatewayService.OpenAIStreamRequiresGoPlaceholderCoordination(account, reqModel) {
+		return fallback("first_token_placeholder_requires_go")
+	}
 	var prepared *service.OpenAIEdgePreparedChatCompletions
 	if account.Type == service.AccountTypeOAuth {
 		prepared, err = h.gatewayService.BuildChatGPTOAuthResponsesEdgePlan(c.Request.Context(), c, account, forwardBody)
@@ -2017,6 +2023,12 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 	}
 	account := edgeSelection.account
 	accountReleaseFunc := edgeSelection.releaseFunc
+	if h.gatewayService.OpenAIStreamRequiresGoPlaceholderCoordination(account, routingModel) {
+		if accountReleaseFunc != nil {
+			accountReleaseFunc()
+		}
+		return fallback("first_token_placeholder_requires_go")
+	}
 	plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, account, accountReleaseFunc)
 	if err != nil {
 		if accountReleaseFunc != nil {

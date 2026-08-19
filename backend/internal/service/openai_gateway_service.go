@@ -776,6 +776,39 @@ func classifyOpenAIWSReconnectReason(err error) (string, bool) {
 	}
 }
 
+func newOpenAIWSPlaceholderFailoverError(err error) *UpstreamFailoverError {
+	statusCode := http.StatusBadGateway
+	message := "Upstream websocket failed after downstream placeholder"
+	if resolvedStatus, _, _, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(err); ok {
+		if resolvedStatus >= http.StatusBadRequest {
+			statusCode = resolvedStatus
+		}
+		if sanitized := sanitizeUpstreamErrorMessageForOps(upstreamMessage); sanitized != "" {
+			message = sanitized
+		}
+	}
+	return &UpstreamFailoverError{
+		StatusCode:             statusCode,
+		ResponseBody:           append([]byte(nil), openAITransportFailoverBody...),
+		Message:                message,
+		RetryableOnSameAccount: false,
+		SkipPoolSoftCooldown:   true,
+		NextAccountAction:      NextAccountRetry,
+	}
+}
+
+func openAIWSPlaceholderCoordinationPending(c *gin.Context) bool {
+	return openAIRequestPlaceholderCoordinationActive(c) && !OpenAIRequestUpstreamCommitted(c)
+}
+
+func openAIWSShouldStopReconnectForPlaceholderCoordination(c *gin.Context, err error) bool {
+	if !openAIWSPlaceholderCoordinationPending(c) {
+		return false
+	}
+	_, retryable := classifyOpenAIWSReconnectReason(err)
+	return retryable
+}
+
 func resolveOpenAIWSFallbackErrorResponse(err error) (statusCode int, errType string, clientMessage string, upstreamMessage string, ok bool) {
 	if err == nil {
 		return 0, "", "", "", false
@@ -4403,6 +4436,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	// 命中 WS 时仅走 WebSocket Mode；不再自动回退 HTTP。
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
+		if reqStream && s.OpenAIStreamRequiresGoPlaceholderCoordination(account, originalModel) {
+			if coordinator := ensureOpenAIPlaceholderCoordinator(c, startTime); coordinator != nil {
+				coordinator.activate()
+			}
+		}
 		wsReqBody := reqBody
 		if len(reqBody) > 0 {
 			wsReqBody = make(map[string]any, len(reqBody))
@@ -4513,10 +4551,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if wsErr == nil {
 				break
 			}
-			if c != nil && c.Writer != nil && c.Writer.Written() {
+			if OpenAIRequestUpstreamCommitted(c) {
 				break
 			}
-
 			reason, retryable := classifyOpenAIWSReconnectReason(wsErr)
 			if reason != "" {
 				wsLastFailureReason = reason
@@ -4532,6 +4569,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if reason == "agent_identity_task_recovered" && !agentIdentityTaskRecoveryWasTried(wsForwardCtx) {
 				wsForwardCtx = markAgentIdentityTaskRecoveryTried(wsForwardCtx)
 				continue
+			}
+			if openAIWSShouldStopReconnectForPlaceholderCoordination(c, wsErr) {
+				logOpenAIWSModeInfo(
+					"reconnect_stop account_id=%d attempt=%d reason=placeholder_coordination",
+					account.ID,
+					attempt,
+				)
+				break
 			}
 			if retryable && attempt < maxAttempts {
 				backoff := s.openAIWSRetryBackoff(attempt)
@@ -4621,6 +4666,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 			return wsResult, nil
 		}
+		if openAIWSShouldStopReconnectForPlaceholderCoordination(c, wsErr) {
+			return nil, newOpenAIWSPlaceholderFailoverError(wsErr)
+		}
 		s.writeOpenAIWSFallbackErrorResponse(c, account, wsErr)
 		return nil, wsErr
 	}
@@ -4668,7 +4716,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, upstreamElapsed.Milliseconds())
 		if err != nil {
-			if requestFirstTokenPlaceholder.Sent {
+			if requestFirstTokenPlaceholder.UpstreamCommitted {
 				_ = s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 				s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, http.StatusBadGateway, openAITransportFailoverBody, upstreamModel, err.Error())
 				writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectResponses, originalModel, "upstream_error", "Upstream request failed")
@@ -4693,7 +4741,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-			if !requestFirstTokenPlaceholder.Sent && !agentIdentityTaskRecoveryTried && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+			if !requestFirstTokenPlaceholder.UpstreamCommitted && !agentIdentityTaskRecoveryTried && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
 				agentIdentityTaskRecoveryTried = true
 				expectedTaskID := account.GetCredential("task_id")
 				if recoveryErr := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); recoveryErr != nil {
@@ -4706,7 +4754,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)
-			if requestFirstTokenPlaceholder.Sent {
+			if requestFirstTokenPlaceholder.UpstreamCommitted {
 				cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
 					isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
 				if cachePolicyCompatibilityFailure {
@@ -5183,7 +5231,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, upstreamElapsed.Milliseconds())
 		if err != nil {
-			if requestFirstTokenPlaceholder.Sent {
+			if requestFirstTokenPlaceholder.UpstreamCommitted {
 				_ = s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
 				s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, http.StatusBadGateway, openAITransportFailoverBody, reqModel, err.Error())
 				writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectResponses, reqModel, "upstream_error", "Upstream request failed")
@@ -5206,7 +5254,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
-			if !requestFirstTokenPlaceholder.Sent && !agentIdentityTaskRecoveryTried && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+			if !requestFirstTokenPlaceholder.UpstreamCommitted && !agentIdentityTaskRecoveryTried && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
 				agentIdentityTaskRecoveryTried = true
 				expectedTaskID := account.GetCredential("task_id")
 				if recoveryErr := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); recoveryErr != nil {
@@ -5219,7 +5267,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 
-			if requestFirstTokenPlaceholder.Sent {
+			if requestFirstTokenPlaceholder.UpstreamCommitted {
 				cachePolicyCompatibilityFailure := cacheCreationOptimization.Applied &&
 					isOpenAIPromptCacheCreationOptimizationUnsupportedError(resp.StatusCode, upstreamMsg, respBody)
 				if cachePolicyCompatibilityFailure {
@@ -5733,6 +5781,9 @@ type openaiNonStreamingResultPassthrough struct {
 }
 
 func openAIStreamClientOutputStarted(c *gin.Context, localStarted bool) bool {
+	if coordinator := openAIPlaceholderCoordinatorFromContext(c); coordinator != nil && coordinator.isActive() {
+		return OpenAIRequestUpstreamCommitted(c)
+	}
 	if localStarted {
 		return true
 	}
@@ -5758,6 +5809,8 @@ func openAIStreamDataStartsClientOutput(data, eventType string) bool {
 		return false
 	}
 	switch strings.TrimSpace(eventType) {
+	case "response.created", "response.in_progress":
+		return false
 	case "response.failed":
 		return false
 	case "error":
@@ -5765,6 +5818,21 @@ func openAIStreamDataStartsClientOutput(data, eventType string) bool {
 		return !openAIStreamFailedEventShouldFailover(payload, extractOpenAISSEErrorMessage(payload))
 	}
 	return !openAIStreamEventIsPreamble(eventType)
+}
+
+func openAIStreamDataStartsCoordinatedClientOutput(data, eventType string) bool {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" {
+		return false
+	}
+	switch strings.TrimSpace(eventType) {
+	case "response.created", "response.in_progress", "response.content_part.added":
+		return false
+	case "response.output_item.added":
+		return openAIStreamDataStartsRealOutput(trimmed, eventType)
+	default:
+		return openAIStreamDataStartsClientOutput(trimmed, eventType)
+	}
 }
 
 func isOpenAIUpstreamCapacityShedEvent(payload []byte) bool {
@@ -6032,6 +6100,13 @@ func (s *OpenAIGatewayService) openAIStreamFirstTokenTimeoutPlaceholderMs(accoun
 	return ms
 }
 
+// OpenAIStreamRequiresGoPlaceholderCoordination keeps Edge from committing a
+// local compatibility frame that it cannot carry across an account switch.
+func (s *OpenAIGatewayService) OpenAIStreamRequiresGoPlaceholderCoordination(account *Account, requestedModel string) bool {
+	return s.openAIStreamFirstTokenTimeoutPlaceholderMs(account, requestedModel) > 0 ||
+		s.openAIStreamSafeTokenPlaceholderEnabled(account, requestedModel)
+}
+
 func (s *OpenAIGatewayService) openAIFirstTokenTimeoutPlaceholderStages(account *Account, oauth bool) []OpenAIFirstTokenTimeoutPlaceholderStage {
 	if account == nil {
 		return nil
@@ -6128,9 +6203,11 @@ const (
 )
 
 type openAIRequestFirstTokenPlaceholderState struct {
-	Sent        bool
-	ChatID      string
-	ChatCreated int64
+	Sent              bool
+	SafeSent          bool
+	UpstreamCommitted bool
+	ChatID            string
+	ChatCreated       int64
 }
 
 func (s *OpenAIGatewayService) doOpenAIUpstreamWithFirstTokenTimeoutPlaceholder(
@@ -6144,11 +6221,25 @@ func (s *OpenAIGatewayService) doOpenAIUpstreamWithFirstTokenTimeoutPlaceholder(
 	if do == nil {
 		return nil, openAIRequestFirstTokenPlaceholderState{}, 0, errors.New("missing upstream request function")
 	}
-	// Do not commit a downstream SSE response while upstream headers are still
-	// pending. That prevents OAuth refresh/prepare latency or a slow upstream
-	// from turning a retryable failure into a committed 200 stream.
+	coordinator := ensureOpenAIPlaceholderCoordinator(c, startTime)
+	timeout := s.openAIStreamFirstTokenTimeoutPlaceholder(account, requestedModel)
+	if coordinator != nil {
+		if dialect == openAIRequestFirstTokenPlaceholderDialectChatCompletions && timeout > 0 {
+			coordinator.ensureChatIdentity(requestedModel)
+		}
+		var done <-chan struct{}
+		if c != nil && c.Request != nil {
+			done = c.Request.Context().Done()
+		}
+		coordinator.arm(done, timeout, func() {
+			writeOpenAIRequestFirstTokenTimeoutPlaceholder(c, coordinator.startedAt, requestedModel, dialect)
+		})
+	}
 	upstreamStart := time.Now()
 	resp, err := do()
+	if coordinator != nil {
+		return resp, coordinator.snapshot(), time.Since(upstreamStart), err
+	}
 	return resp, openAIRequestFirstTokenPlaceholderState{}, time.Since(upstreamStart), err
 }
 
@@ -6161,26 +6252,29 @@ func writeOpenAIRequestFirstTokenTimeoutPlaceholder(
 	if c == nil || c.Writer == nil {
 		return openAIRequestFirstTokenPlaceholderState{}
 	}
-	flusher, ok := c.Writer.(http.Flusher)
+	_, ok := c.Writer.(http.Flusher)
 	if !ok {
 		return openAIRequestFirstTokenPlaceholderState{}
 	}
-	if !c.Writer.Written() {
-		c.Writer.Header().Set("Content-Type", "text/event-stream")
-		c.Writer.Header().Set("Cache-Control", "no-cache")
-		c.Writer.Header().Set("Connection", "keep-alive")
-		c.Writer.Header().Set("X-Accel-Buffering", "no")
-		c.Writer.WriteHeader(http.StatusOK)
-	}
-
-	state := openAIRequestFirstTokenPlaceholderState{Sent: true}
+	state := openAIRequestFirstTokenPlaceholderState{}
+	chatID := ""
+	chatCreated := int64(0)
 	var frame string
 	switch dialect {
 	case openAIRequestFirstTokenPlaceholderDialectChatCompletions:
 		chatState := apicompat.NewResponsesEventToChatState()
 		chatState.Model = model
-		state.ChatID = chatState.ID
-		state.ChatCreated = chatState.Created
+		if coordinator := openAIPlaceholderCoordinatorFromContext(c); coordinator != nil {
+			snapshot := coordinator.snapshot()
+			if snapshot.ChatID != "" {
+				chatState.ID = snapshot.ChatID
+			}
+			if snapshot.ChatCreated > 0 {
+				chatState.Created = snapshot.ChatCreated
+			}
+		}
+		chatID = chatState.ID
+		chatCreated = chatState.Created
 		empty := ""
 		roleChunk := apicompat.ChatCompletionsChunk{
 			ID:      chatState.ID,
@@ -6213,12 +6307,10 @@ func writeOpenAIRequestFirstTokenTimeoutPlaceholder(
 	default:
 		frame = openAIResponsesSafeTokenPlaceholderFrame("")
 	}
-
-	if _, err := fmt.Fprint(c.Writer, frame); err != nil {
+	if !writeOpenAIGatewayPlaceholder(c, frame, chatID, chatCreated) {
 		return openAIRequestFirstTokenPlaceholderState{}
 	}
-	MarkResponseCommitted(c)
-	flusher.Flush()
+	state = openAIPlaceholderCoordinatorFromContext(c).snapshot()
 	SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
 	return state
 }
@@ -6523,13 +6615,13 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	requestFirstTokenPlaceholderSentOpt ...bool,
 ) (*openaiStreamingResultPassthrough, error) {
 	requestFirstTokenPlaceholderSent := len(requestFirstTokenPlaceholderSentOpt) > 0 && requestFirstTokenPlaceholderSentOpt[0]
-	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-
-	// SSE headers
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
+	withOpenAIPlaceholderWriterLock(c, func(writer gin.ResponseWriter) {
+		writeOpenAIPassthroughResponseHeaders(writer.Header(), resp.Header, s.responseHeaderFilter)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.Header().Set("Cache-Control", "no-cache")
+		writer.Header().Set("Connection", "keep-alive")
+		writer.Header().Set("X-Accel-Buffering", "no")
+	})
 
 	w := c.Writer
 	flusher, ok := w.(http.Flusher)
@@ -6564,11 +6656,16 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	sawFailedEvent := false
 	sawCyberPolicyEvent := false
 	failedMessage := ""
-	clientOutputStarted := accountSSECommentPreflushed || requestFirstTokenPlaceholderSent
+	coordinator := ensureOpenAIPlaceholderCoordinator(c, startTime)
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
 	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
 	firstTokenTimeoutPlaceholder := s.openAIStreamFirstTokenTimeoutPlaceholder(account, originalModel)
+	if coordinator != nil && (safeTokenPlaceholder || firstTokenTimeoutPlaceholder > 0) {
+		coordinator.activate()
+	}
+	gatewayOnlyOutput := coordinator != nil && coordinator.isActive()
+	clientOutputStarted := (accountSSECommentPreflushed || requestFirstTokenPlaceholderSent) && !gatewayOnlyOutput
 	safeTokenPlaceholderSent := requestFirstTokenPlaceholderSent
 	safeTokenPlaceholderPending := false
 	firstTokenTimeoutPlaceholderSent := requestFirstTokenPlaceholderSent
@@ -6594,43 +6691,36 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		if clientDisconnected || openAIStreamClientOutputStarted(c, clientOutputStarted) || !pendingLinesAtEventBoundary() {
 			return
 		}
-		if len(pendingLines) > 0 && !writePendingLines() {
-			return
-		}
-		if _, err := fmt.Fprint(w, ":\n\n"); err != nil {
+		if written := writeOpenAIGatewayOnlyFrame(c, ":\n\n"); openAIGatewayFrameWriteFailed(c, written) {
 			clientDisconnected = true
 			return
 		}
-		clientOutputStarted = true
-		flusher.Flush()
+		if !gatewayOnlyOutput {
+			clientOutputStarted = true
+		}
 		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
 	}
 	writeSafeTokenPlaceholder := func() {
 		if !safeTokenPlaceholder || safeTokenPlaceholderSent || clientDisconnected || !pendingLinesAtEventBoundary() {
 			return
 		}
-		if len(pendingLines) > 0 && !writePendingLines() {
-			return
-		}
-		if _, err := fmt.Fprint(w, openAIResponsesSafeTokenPlaceholderFrame(responseID)); err != nil {
+		if written := writeOpenAISafePlaceholder(c, openAIResponsesSafeTokenPlaceholderFrame(""), "", 0); openAIGatewayFrameWriteFailed(c, written) {
 			clientDisconnected = true
 			return
 		}
 		// Safe and timeout placeholders are independent controls. A safe frame
 		// must not consume the configured timeout placeholder.
 		safeTokenPlaceholderSent = true
-		clientOutputStarted = true
-		flusher.Flush()
+		if !gatewayOnlyOutput {
+			clientOutputStarted = true
+		}
 		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
 	}
 	writeFirstTokenTimeoutPlaceholder := func() bool {
 		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || downstreamTTFTObserved || !pendingLinesAtEventBoundary() {
 			return false
 		}
-		if len(pendingLines) > 0 && !writePendingLines() {
-			return true
-		}
-		if _, err := fmt.Fprint(w, openAIResponsesSafeTokenPlaceholderFrame(responseID)); err != nil {
+		if written := writeOpenAIGatewayPlaceholder(c, openAIResponsesSafeTokenPlaceholderFrame(""), "", 0); openAIGatewayFrameWriteFailed(c, written) {
 			clientDisconnected = true
 			return true
 		}
@@ -6638,8 +6728,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		// A timeout frame already fulfills the compatibility placeholder role,
 		// so suppress a redundant safe frame if response.created arrives later.
 		safeTokenPlaceholderSent = true
-		clientOutputStarted = true
-		flusher.Flush()
+		if !gatewayOnlyOutput {
+			clientOutputStarted = true
+		}
 		SetOpsLatencyMsOnce(c, OpsFirstClientFlushMsKey, time.Since(startTime).Milliseconds())
 		return true
 	}
@@ -6785,6 +6876,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			}
 			lineStartsFirstToken := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
 			lineStartsClientOutput = lineStartsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(trimmedData, eventType, flushPreamble)
+			if gatewayOnlyOutput {
+				lineStartsFirstToken = forceFlushFailedEvent || openAIStreamDataStartsCoordinatedClientOutput(trimmedData, eventType)
+				lineStartsClientOutput = lineStartsFirstToken
+			}
 			if lineStartsRealOutput && trimmedData != "[DONE]" {
 				recordFirstTokenTimeoutGuardSample()
 			}
@@ -6884,7 +6979,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			defer bootstrapTimer.Stop()
 			bootstrapCh = bootstrapTimer.C
 		}
-		placeholderStartTime := time.Now()
+		placeholderStartTime := openAIRequestPlaceholderEffectiveStartTime(c, startTime, firstTokenTimeoutPlaceholder)
 		firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(placeholderStartTime, firstTokenTimeoutPlaceholder)
 		if firstTokenTimeoutTimer != nil {
 			defer firstTokenTimeoutTimer.Stop()
@@ -8000,13 +8095,13 @@ type openaiNonStreamingResult struct {
 
 func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, requestFirstTokenPlaceholderSentOpt ...bool) (*openaiStreamingResult, error) {
 	requestFirstTokenPlaceholderSent := len(requestFirstTokenPlaceholderSentOpt) > 0 && requestFirstTokenPlaceholderSentOpt[0]
-	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-
-	// Set SSE response headers
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
+	withOpenAIPlaceholderWriterLock(c, func(writer gin.ResponseWriter) {
+		responseheaders.WriteFilteredHeaders(writer.Header(), resp.Header, s.responseHeaderFilter)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.Header().Set("Cache-Control", "no-cache")
+		writer.Header().Set("Connection", "keep-alive")
+		writer.Header().Set("X-Accel-Buffering", "no")
+	})
 
 	w := c.Writer
 	flusher, ok := w.(http.Flusher)
@@ -8099,11 +8194,16 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	sawCyberPolicyEvent := false
 	failedMessage := ""
 	var upstreamSSEState openAIUpstreamSSEState
-	clientOutputStarted := accountSSECommentPreflushed || requestFirstTokenPlaceholderSent
+	coordinator := ensureOpenAIPlaceholderCoordinator(c, startTime)
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	flushPreamble := s.openAIStreamPreambleFlushEnabled(account, originalModel)
 	safeTokenPlaceholder := s.openAIStreamSafeTokenPlaceholderEnabled(account, originalModel)
 	firstTokenTimeoutPlaceholder := s.openAIStreamFirstTokenTimeoutPlaceholder(account, originalModel)
+	if coordinator != nil && (safeTokenPlaceholder || firstTokenTimeoutPlaceholder > 0) {
+		coordinator.activate()
+	}
+	gatewayOnlyOutput := coordinator != nil && coordinator.isActive()
+	clientOutputStarted := (accountSSECommentPreflushed || requestFirstTokenPlaceholderSent) && !gatewayOnlyOutput
 	safeTokenPlaceholderSent := requestFirstTokenPlaceholderSent
 	safeTokenPlaceholderPending := false
 	firstTokenTimeoutPlaceholderSent := requestFirstTokenPlaceholderSent
@@ -8136,29 +8236,23 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		if !safeTokenPlaceholder || safeTokenPlaceholderSent || clientDisconnected || !atSSEEventBoundary {
 			return
 		}
-		if _, err := bufferedWriter.WriteString(openAIResponsesSafeTokenPlaceholderFrame(responseID)); err != nil {
-			clientDisconnected = true
-			return
-		}
-		if err := flushBuffered(); err != nil {
+		if written := writeOpenAISafePlaceholder(c, openAIResponsesSafeTokenPlaceholderFrame(""), "", 0); openAIGatewayFrameWriteFailed(c, written) {
 			clientDisconnected = true
 			return
 		}
 		// Safe and timeout placeholders are independent controls. A safe frame
 		// must not consume the configured timeout placeholder.
 		safeTokenPlaceholderSent = true
-		clientOutputStarted = true
+		if !gatewayOnlyOutput {
+			clientOutputStarted = true
+		}
 		lastDownstreamWriteAt = time.Now()
 	}
 	writeFirstTokenTimeoutPlaceholder := func() bool {
 		if firstTokenTimeoutPlaceholder <= 0 || firstTokenTimeoutPlaceholderSent || clientDisconnected || downstreamTTFTObserved || streamFailoverErr != nil || !atSSEEventBoundary {
 			return false
 		}
-		if _, err := bufferedWriter.WriteString(openAIResponsesSafeTokenPlaceholderFrame(responseID)); err != nil {
-			clientDisconnected = true
-			return true
-		}
-		if err := flushBuffered(); err != nil {
+		if written := writeOpenAIGatewayPlaceholder(c, openAIResponsesSafeTokenPlaceholderFrame(""), "", 0); openAIGatewayFrameWriteFailed(c, written) {
 			clientDisconnected = true
 			return true
 		}
@@ -8166,7 +8260,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		// A timeout frame already fulfills the compatibility placeholder role,
 		// so suppress a redundant safe frame if response.created arrives later.
 		safeTokenPlaceholderSent = true
-		clientOutputStarted = true
+		if !gatewayOnlyOutput {
+			clientOutputStarted = true
+		}
 		lastDownstreamWriteAt = time.Now()
 		return true
 	}
@@ -8423,6 +8519,10 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				startsDownstreamTTFT = openAIStreamDataStartsDownstreamTTFT(data)
 			}
 			startsClientOutput := startsFirstToken || openAIStreamDataStartsClientOutputWithPreambleFlush(data, eventType, flushPreamble)
+			if gatewayOnlyOutput {
+				startsFirstToken = forceFlushFailedEvent || openAIStreamDataStartsCoordinatedClientOutput(data, eventType)
+				startsClientOutput = startsFirstToken
+			}
 
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected {
@@ -8531,7 +8631,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		bootstrapCh = bootstrapTimer.C
 		defer bootstrapTimer.Stop()
 	}
-	placeholderStartTime := time.Now()
+	placeholderStartTime := openAIRequestPlaceholderEffectiveStartTime(c, startTime, firstTokenTimeoutPlaceholder)
 	firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(placeholderStartTime, firstTokenTimeoutPlaceholder)
 	if firstTokenTimeoutTimer != nil {
 		defer firstTokenTimeoutTimer.Stop()
@@ -8545,17 +8645,14 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		if clientDisconnected || openAIStreamClientOutputStarted(c, clientOutputStarted) || streamFailoverErr != nil || !atSSEEventBoundary {
 			return
 		}
-		if _, err := bufferedWriter.WriteString(":\n\n"); err != nil {
-			clientDisconnected = true
-			logger.LegacyPrintf("service.openai_gateway", "Client disconnected during smart low-latency bootstrap, continuing to drain upstream for billing")
-			return
-		}
-		if err := flushBuffered(); err != nil {
+		if written := writeOpenAIGatewayOnlyFrame(c, ":\n\n"); openAIGatewayFrameWriteFailed(c, written) {
 			clientDisconnected = true
 			logger.LegacyPrintf("service.openai_gateway", "Client disconnected during smart low-latency bootstrap flush, continuing to drain upstream for billing")
 			return
 		}
-		clientOutputStarted = true
+		if !gatewayOnlyOutput {
+			clientOutputStarted = true
+		}
 		lastDownstreamWriteAt = time.Now()
 	}
 	sendEvent := func(ev scanEvent) bool {

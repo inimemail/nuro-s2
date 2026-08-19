@@ -655,8 +655,8 @@ func TestOpenAIGatewayService_Forward_WSv2_FirstTokenPlaceholdersReachHTTPDownst
 			body := rec.Body.String()
 			placeholder := `"type":"response.transport_progress.delta","delta":"in_progress"`
 			require.Equal(t, 1, strings.Count(body, placeholder))
-			require.Less(t, strings.Index(body, `"type":"response.created"`), strings.Index(body, placeholder))
-			require.Less(t, strings.Index(body, placeholder), strings.Index(body, `"type":"response.output_text.delta"`))
+			require.Less(t, strings.Index(body, placeholder), strings.Index(body, `"type":"response.created"`))
+			require.Less(t, strings.Index(body, `"type":"response.created"`), strings.Index(body, `"type":"response.output_text.delta"`))
 		})
 	}
 }

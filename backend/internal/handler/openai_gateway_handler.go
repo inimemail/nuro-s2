@@ -494,6 +494,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.handleStreamingAwareError(c, status, code, message, streamStarted)
 		return
 	}
+	if reqStream {
+		service.StartOpenAIPlaceholderCoordination(c, time.Now())
+	}
 
 	var sessionHash string
 	if healthProbe {
@@ -766,6 +769,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		if reqStream {
+			h.gatewayService.ArmOpenAIResponsesFirstTokenPlaceholder(c, account, reqModel)
+		}
 
 		slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if !slotResult.Acquired {
@@ -849,7 +855,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				if errors.As(err, &failoverErr) {
 					service.ApplyOpenAIHealthProbeRetryPolicy(c, account, failoverErr)
 					service.IsolateOpenAIHealthProbeFailover(c, failoverErr)
-					if service.OpenAICompactKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward {
+					if !service.OpenAIRequestAllowsFailover(c, writerSizeBeforeForward) {
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
 					}
@@ -1089,11 +1095,16 @@ func shouldSettleOpenAIForwardResultAfterError(c *gin.Context, writerSizeBeforeF
 	if result == nil {
 		return false
 	}
-	if result.ClientDisconnect || result.ImageCount > 0 || openAIEdgeUsageIsBillable(result.Usage) ||
-		strings.TrimSpace(result.TerminalEventType) != "" {
+	if result.ClientDisconnect || result.ImageCount > 0 || openAIEdgeUsageIsBillable(result.Usage) {
 		return true
 	}
-	if service.IsResponseCommitted(c) {
+	if service.OpenAIRequestHasPlaceholderCoordinator(c) && service.OpenAIRequestAllowsFailover(c, writerSizeBeforeForward) {
+		return false
+	}
+	if strings.TrimSpace(result.TerminalEventType) != "" {
+		return true
+	}
+	if service.IsResponseCommitted(c) || service.OpenAIRequestUpstreamCommitted(c) {
 		return true
 	}
 	return service.OpenAICompactKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward
@@ -3091,6 +3102,9 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
 		streamStarted = true
 	}
+	if service.OpenAIRequestPlaceholderWritten(c) {
+		streamStarted = true
+	}
 	if streamStarted {
 		service.MarkOpsStreamError(c, status, errType, message)
 		// /v1/responses 的严格 SDK（Codex CLI）要求终止事件必须属于
@@ -3156,7 +3170,10 @@ func openAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForwa
 	if c == nil || c.Writer == nil || err == nil {
 		return false
 	}
-	if service.IsResponseCommitted(c) {
+	if service.OpenAIRequestPlaceholderWritten(c) && !service.OpenAIRequestUpstreamCommitted(c) {
+		return false
+	}
+	if service.IsResponseCommitted(c) || service.OpenAIRequestUpstreamCommitted(c) {
 		return true
 	}
 	if service.OpenAICompactKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward {

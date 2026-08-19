@@ -1821,11 +1821,11 @@ func TestOpenAIStreamingOAuthSafeTokenPlaceholderWritesTransportProgressAfterCre
 	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
 	require.Equal(t, 2, strings.Count(body, `"type":"response.transport_progress.delta","delta":"in_progress"`))
 	require.Less(t,
-		strings.Index(body, `"type":"response.created"`),
 		strings.Index(body, `"type":"response.transport_progress.delta","delta":"in_progress"`),
+		strings.Index(body, `"type":"response.created"`),
 	)
 	require.Less(t,
-		strings.Index(body, `"type":"response.transport_progress.delta","delta":"in_progress"`),
+		strings.Index(body, `"type":"response.created"`),
 		strings.Index(body, `"type":"response.output_text.delta","delta":"ok"`),
 	)
 }
@@ -2016,7 +2016,7 @@ func TestOpenAIStreamingFirstTokenTimeoutPlaceholderDoesNotSetFirstToken(t *test
 	require.Contains(t, rec.Body.String(), `"type":"response.transport_progress.delta","delta":"in_progress"`)
 }
 
-func TestOpenAIRequestFirstTokenTimeoutPlaceholderDoesNotWriteBeforeUpstreamResponse(t *testing.T) {
+func TestOpenAIRequestFirstTokenTimeoutPlaceholderUsesRequestDeadlineBeforeUpstreamResponse(t *testing.T) {
 	setGinTestMode()
 	for _, tt := range []struct {
 		name        string
@@ -2072,9 +2072,12 @@ func TestOpenAIRequestFirstTokenTimeoutPlaceholderDoesNotWriteBeforeUpstreamResp
 
 			require.NoError(t, err)
 			require.NotNil(t, resp)
-			require.False(t, state.Sent)
+			require.True(t, state.Sent)
+			require.False(t, state.UpstreamCommitted)
 			require.GreaterOrEqual(t, elapsed, 100*time.Millisecond)
-			require.Empty(t, rec.Body.String())
+			require.Contains(t, rec.Body.String(), `"type":"response.transport_progress.delta"`)
+			require.True(t, OpenAIRequestPlaceholderWritten(c))
+			require.True(t, OpenAIRequestAllowsFailover(c, -1))
 			require.False(t, IsResponseCommitted(c))
 		})
 	}
@@ -2239,12 +2242,39 @@ func TestOpenAIStreamFirstTokenTimeoutPlaceholderDisabledForImagePoolAccount(t *
 	require.Zero(t, svc.openAIStreamFirstTokenTimeoutPlaceholderMs(account, "gpt-5.4"))
 }
 
+func TestOpenAIStreamRequiresGoPlaceholderCoordination(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{}}
+	require.False(t, svc.OpenAIStreamRequiresGoPlaceholderCoordination(account, "gpt-5.4"))
+
+	account.Extra[openAIAPIKeySafeTokenPlaceholderExtraKey] = true
+	require.True(t, svc.OpenAIStreamRequiresGoPlaceholderCoordination(account, "gpt-5.4"))
+
+	account.Extra[openAIAPIKeySafeTokenPlaceholderExtraKey] = false
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderEnabledExtraKey] = true
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderMsExtraKey] = 800
+	account.Extra[openAIAPIKeyFirstTokenTimeoutPlaceholderGuardEnabledExtraKey] = false
+	require.True(t, svc.OpenAIStreamRequiresGoPlaceholderCoordination(account, "gpt-5.4"))
+
+	require.False(t, svc.OpenAIStreamRequiresGoPlaceholderCoordination(account, "gpt-image-1"))
+}
+
 func TestOpenAIStreamDataStartsRealOutput(t *testing.T) {
 	require.False(t, openAIStreamDataStartsRealOutput(`{"type":"response.completed"}`, "response.completed"))
 	require.False(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_text.delta","delta":""}`, "response.output_text.delta"))
 	require.False(t, openAIStreamDataStartsRealOutput(`{"type":"response.transport_progress.delta","delta":"in_progress"}`, "response.transport_progress.delta"))
 	require.True(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_text.delta","delta":"hello"}`, "response.output_text.delta"))
 	require.True(t, openAIStreamDataStartsRealOutput(`{"type":"response.output_item.added","item":{"type":"function_call"}}`, "response.output_item.added"))
+}
+
+func TestOpenAIStreamStructuralPreambleDoesNotCommitAttempt(t *testing.T) {
+	require.False(t, openAIStreamDataStartsCoordinatedClientOutput(`{"type":"response.created"}`, "response.created"))
+	require.False(t, openAIStreamDataStartsCoordinatedClientOutput(`{"type":"response.in_progress"}`, "response.in_progress"))
+	require.False(t, openAIStreamDataStartsCoordinatedClientOutput(`{"type":"response.output_item.added","item":{"type":"message"}}`, "response.output_item.added"))
+	require.False(t, openAIStreamDataStartsCoordinatedClientOutput(`{"type":"response.content_part.added"}`, "response.content_part.added"))
+	require.True(t, openAIStreamDataStartsCoordinatedClientOutput(`{"type":"response.output_item.added","item":{"type":"function_call"}}`, "response.output_item.added"))
+	require.True(t, openAIStreamDataStartsCoordinatedClientOutput(`{"type":"response.output_text.delta","delta":"ok"}`, "response.output_text.delta"))
+	require.True(t, openAIStreamDataStartsClientOutput(`{"type":"response.output_item.added","item":{"type":"message"}}`, "response.output_item.added"), "ordinary streams retain their legacy commitment semantics")
 }
 
 func TestOpenAIStreamDataStartsDownstreamTTFT(t *testing.T) {
@@ -2306,6 +2336,7 @@ func TestOpenAIResponsesTimeoutPlaceholderSurvivesStructuralEvents(t *testing.T)
 			rec := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(rec)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			StartOpenAIPlaceholderCoordination(c, time.Now())
 			resp := &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -2332,8 +2363,8 @@ func TestOpenAIResponsesTimeoutPlaceholderSurvivesStructuralEvents(t *testing.T)
 			placeholder := `"type":"response.transport_progress.delta","delta":"in_progress"`
 			realDelta := `"type":"response.output_text.delta"`
 			require.Equal(t, 1, strings.Count(body, placeholder))
-			require.Less(t, strings.Index(body, `"type":"response.content_part.added"`), strings.Index(body, placeholder))
-			require.Less(t, strings.Index(body, placeholder), strings.Index(body, realDelta))
+			require.Less(t, strings.Index(body, placeholder), strings.Index(body, `"type":"response.content_part.added"`))
+			require.Less(t, strings.Index(body, `"type":"response.content_part.added"`), strings.Index(body, realDelta))
 		})
 	}
 }
@@ -2734,6 +2765,142 @@ func TestOpenAIStreamingPassthroughResponseFailedBeforeOutputReturnsFailover(t *
 	require.Empty(t, rec.Body.String())
 }
 
+func TestOpenAIPlaceholderKeepsFailedAttemptPreamblePrivate(t *testing.T) {
+	setGinTestMode()
+	streamBody := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_failed_attempt"}}`,
+		"",
+		`data: {"type":"response.output_item.added","item":{"id":"msg_failed_attempt","type":"message"}}`,
+		"",
+		`data: {"type":"response.content_part.added","part":{"type":"output_text","text":""}}`,
+		"",
+		`data: {"type":"response.failed","error":{"message":"upstream processing failed"}}`,
+		"",
+	}, "\n")
+
+	for _, tt := range []struct {
+		name    string
+		forward func(*OpenAIGatewayService, *gin.Context, *http.Response, *Account) error
+	}{
+		{
+			name: "native",
+			forward: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
+				_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.4", "gpt-5.4")
+				return err
+			},
+		},
+		{
+			name: "passthrough",
+			forward: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
+				_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.4", "gpt-5.4")
+				return err
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			StartOpenAIPlaceholderCoordination(c, time.Now())
+			require.True(t, writeOpenAIRequestFirstTokenTimeoutPlaceholder(c, time.Now(), "gpt-5.4", openAIRequestFirstTokenPlaceholderDialectResponses).Sent)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(streamBody)),
+				Header:     http.Header{"X-Request-Id": []string{"rid-failed-attempt"}},
+			}
+			account := &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}
+
+			err := tt.forward(&OpenAIGatewayService{}, c, resp, account)
+
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.NotContains(t, recorder.Body.String(), "resp_failed_attempt")
+			require.NotContains(t, recorder.Body.String(), "msg_failed_attempt")
+			require.Equal(t, 1, strings.Count(recorder.Body.String(), `"type":"response.transport_progress.delta"`))
+			require.True(t, OpenAIRequestAllowsFailover(c, -1))
+		})
+	}
+}
+
+func TestOpenAIPlaceholderMaintainsOneResponsesStreamAcrossAccountFailover(t *testing.T) {
+	setGinTestMode()
+	failedStream := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_account_a"}}`,
+		"",
+		`data: {"type":"response.output_item.added","item":{"id":"msg_account_a","type":"message"}}`,
+		"",
+		`data: {"type":"response.failed","error":{"message":"upstream processing failed"}}`,
+		"",
+	}, "\n")
+	successStream := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_account_b","model":"gpt-5.4"}}`,
+		"",
+		`data: {"type":"response.output_item.added","item":{"id":"msg_account_b","type":"message"}}`,
+		"",
+		`data: {"type":"response.content_part.added","part":{"type":"output_text","text":""}}`,
+		"",
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_account_b","model":"gpt-5.4","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		"",
+	}, "\n")
+
+	for _, tt := range []struct {
+		name    string
+		forward func(*OpenAIGatewayService, *gin.Context, *http.Response, *Account) error
+	}{
+		{
+			name: "native",
+			forward: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
+				_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.4", "gpt-5.4", true)
+				return err
+			},
+		},
+		{
+			name: "passthrough",
+			forward: func(svc *OpenAIGatewayService, c *gin.Context, resp *http.Response, account *Account) error {
+				_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "gpt-5.4", "gpt-5.4", true)
+				return err
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			StartOpenAIPlaceholderCoordination(c, time.Now())
+			require.True(t, writeOpenAIRequestFirstTokenTimeoutPlaceholder(c, time.Now(), "gpt-5.4", openAIRequestFirstTokenPlaceholderDialectResponses).Sent)
+			svc := &OpenAIGatewayService{}
+
+			firstErr := tt.forward(svc, c, &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(failedStream)),
+				Header:     http.Header{"X-Request-Id": []string{"rid-account-a"}},
+			}, &Account{ID: 1, Platform: PlatformOpenAI, Name: "account-a"})
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, firstErr, &failoverErr)
+			require.True(t, OpenAIRequestAllowsFailover(c, -1))
+
+			secondErr := tt.forward(svc, c, &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(successStream)),
+				Header:     http.Header{"X-Request-Id": []string{"rid-account-b"}},
+			}, &Account{ID: 2, Platform: PlatformOpenAI, Name: "account-b"})
+			require.NoError(t, secondErr)
+
+			body := recorder.Body.String()
+			require.Equal(t, 1, strings.Count(body, `"type":"response.transport_progress.delta"`))
+			require.NotContains(t, body, "resp_account_a")
+			require.NotContains(t, body, "msg_account_a")
+			require.Contains(t, body, "resp_account_b")
+			require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
+			require.Contains(t, body, `"type":"response.completed"`)
+			require.True(t, OpenAIRequestUpstreamCommitted(c))
+			require.False(t, OpenAIRequestAllowsFailover(c, -1))
+		})
+	}
+}
+
 func TestOpenAIStreamingPassthroughOAuthPreambleFlushWritesBeforeFailedEvent(t *testing.T) {
 	setGinTestMode()
 	cfg := &config.Config{
@@ -3007,11 +3174,11 @@ func TestOpenAIStreamingPassthroughOAuthSafeTokenPlaceholderWritesTransportProgr
 	require.Contains(t, body, `"type":"response.output_text.delta","delta":"ok"`)
 	require.Equal(t, 2, strings.Count(body, `"type":"response.transport_progress.delta","delta":"in_progress"`))
 	require.Less(t,
-		strings.Index(body, `"type":"response.created"`),
 		strings.Index(body, `"type":"response.transport_progress.delta","delta":"in_progress"`),
+		strings.Index(body, `"type":"response.created"`),
 	)
 	require.Less(t,
-		strings.Index(body, `"type":"response.transport_progress.delta","delta":"in_progress"`),
+		strings.Index(body, `"type":"response.created"`),
 		strings.Index(body, `"type":"response.output_text.delta","delta":"ok"`),
 	)
 }

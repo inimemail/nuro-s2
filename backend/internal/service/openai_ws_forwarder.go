@@ -2239,13 +2239,15 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	var flusher http.Flusher
 	if reqStream {
-		if s.responseHeaderFilter != nil {
-			responseheaders.WriteFilteredHeaders(c.Writer.Header(), http.Header{}, s.responseHeaderFilter)
-		}
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		c.Header("X-Accel-Buffering", "no")
+		withOpenAIPlaceholderWriterLock(c, func(writer gin.ResponseWriter) {
+			if s.responseHeaderFilter != nil {
+				responseheaders.WriteFilteredHeaders(writer.Header(), http.Header{}, s.responseHeaderFilter)
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			writer.Header().Set("Cache-Control", "no-cache")
+			writer.Header().Set("Connection", "keep-alive")
+			writer.Header().Set("X-Accel-Buffering", "no")
+		})
 		f, ok := c.Writer.(http.Flusher)
 		if !ok {
 			lease.MarkBroken()
@@ -2317,10 +2319,11 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if !reqStream || clientDisconnected || firstTokenTimeoutPlaceholderSent || downstreamTTFTObserved {
 			return
 		}
-		flushBufferedStreamEvents(reason)
-		emitStreamMessage(openAIResponsesSafeTokenPlaceholderPayload(responseID), true)
-		if !clientDisconnected {
+		_ = reason
+		if writeOpenAIGatewayPlaceholder(c, openAIResponsesSafeTokenPlaceholderFrame(""), "", 0) {
 			firstTokenTimeoutPlaceholderSent = true
+		} else if !OpenAIRequestUpstreamCommitted(c) {
+			clientDisconnected = true
 		}
 	}
 
@@ -2484,6 +2487,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				payloadAsJSONBytes(payload),
 			)
 			cyberBlocked = decision.Matched
+		}
+		if eventType == "response.failed" && !cyberBlocked && openAIWSShouldFailoverFailedEventForPlaceholderCoordination(c, originalMessage) {
+			lease.MarkBroken()
+			failedMessage := extractOpenAISSEErrorMessage(originalMessage)
+			if failedMessage == "" {
+				failedMessage = "Upstream response failed"
+			}
+			return nil, wrapOpenAIWSFallback("upstream_error_event", errors.New(failedMessage))
 		}
 
 		if eventType == "error" {
@@ -2704,6 +2715,13 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		ClientDisconnect:              clientDisconnected,
 		CyberBlocked:                  cyberBlocked,
 	}, nil
+}
+
+func openAIWSShouldFailoverFailedEventForPlaceholderCoordination(c *gin.Context, payload []byte) bool {
+	if !openAIWSPlaceholderCoordinationPending(c) || len(bytes.TrimSpace(payload)) == 0 {
+		return false
+	}
+	return openAIStreamFailedEventShouldFailover(payload, extractOpenAISSEErrorMessage(payload))
 }
 
 // ProxyResponsesWebSocketFromClient 处理客户端入站 WebSocket（OpenAI Responses WS Mode）并转发到上游。

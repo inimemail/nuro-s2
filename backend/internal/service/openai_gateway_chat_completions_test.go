@@ -502,8 +502,72 @@ func TestForwardAsChatCompletions_StructuralRoleChunkDoesNotCancelTimeoutPlaceho
 	// One empty content chunk is the timeout compatibility frame; the terminal
 	// stop chunk emitted by the Chat adapter is intentionally empty as well.
 	require.Equal(t, 2, strings.Count(responseBody, `"content":""`))
+	require.NotContains(t, responseBody, "resp_chat_structural", "the buffered attempt response ID must not escape through the placeholder")
 	require.Less(t, strings.Index(responseBody, `"role":"assistant"`), strings.Index(responseBody, `"content":""`))
 	require.Less(t, strings.Index(responseBody, `"content":""`), strings.Index(responseBody, `"content":"ok"`))
+}
+
+func TestOpenAIChatPlaceholderMaintainsOneStreamAcrossAccountFailover(t *testing.T) {
+	setGinTestMode()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	requestBody := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(requestBody))
+	StartOpenAIPlaceholderCoordination(c, time.Now())
+	coordinator := openAIPlaceholderCoordinatorFromContext(c)
+	coordinator.ensureChatIdentity("gpt-5.4")
+	placeholder := writeOpenAIRequestFirstTokenTimeoutPlaceholder(c, time.Now(), "gpt-5.4", openAIRequestFirstTokenPlaceholderDialectChatCompletions)
+	require.True(t, placeholder.Sent)
+
+	failedStream := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_chat_account_a","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		"",
+		`data: {"type":"response.output_item.added","item":{"id":"msg_chat_account_a","type":"message","role":"assistant","content":[]}}`,
+		"",
+		`data: {"type":"response.failed","error":{"message":"upstream processing failed"}}`,
+		"",
+	}, "\n")
+	successStream := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_chat_account_b","model":"gpt-5.4","status":"in_progress","output":[]}}`,
+		"",
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_chat_account_b","object":"response","model":"gpt-5.4","status":"completed","output":[{"type":"message","id":"msg_chat_account_b","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	svc := &OpenAIGatewayService{}
+	accountA := &Account{ID: 1, Platform: PlatformOpenAI, Name: "account-a"}
+	accountB := &Account{ID: 2, Platform: PlatformOpenAI, Name: "account-b"}
+
+	_, firstErr := svc.handleChatStreamingResponse(
+		c.Request.Context(),
+		&http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(failedStream)), Header: http.Header{"X-Request-Id": []string{"rid-chat-a"}}},
+		c, accountA, "gpt-5.4", "gpt-5.4", "gpt-5.4", time.Now(), len(requestBody), coordinator.snapshot(),
+	)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, firstErr, &failoverErr)
+	require.True(t, OpenAIRequestAllowsFailover(c, -1))
+
+	result, secondErr := svc.handleChatStreamingResponse(
+		c.Request.Context(),
+		&http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(successStream)), Header: http.Header{"X-Request-Id": []string{"rid-chat-b"}}},
+		c, accountB, "gpt-5.4", "gpt-5.4", "gpt-5.4", time.Now(), len(requestBody), coordinator.snapshot(),
+	)
+	require.NoError(t, secondErr)
+	require.NotNil(t, result)
+
+	body := recorder.Body.String()
+	require.NotContains(t, body, "resp_chat_account_a")
+	require.NotContains(t, body, "msg_chat_account_a")
+	require.NotContains(t, body, "resp_chat_account_b", "the gateway must keep its stable downstream chat ID")
+	require.NotContains(t, body, "msg_chat_account_b")
+	require.Contains(t, body, placeholder.ChatID)
+	require.Contains(t, body, `"content":"ok"`)
+	require.Contains(t, body, "data: [DONE]")
+	require.True(t, OpenAIRequestUpstreamCommitted(c))
+	require.False(t, OpenAIRequestAllowsFailover(c, -1))
 }
 
 func TestForwardAsChatCompletions_SafeTokenPlaceholderDisabledDoesNotWriteEmptyContent(t *testing.T) {

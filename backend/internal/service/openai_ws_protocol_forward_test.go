@@ -947,6 +947,77 @@ func TestOpenAIGatewayService_Forward_WSv2RetryFiveTimesThenFallbackHTTP(t *test
 	require.Equal(t, int32(openAIWSReconnectRetryLimit+1), wsAttempts.Load())
 }
 
+func TestOpenAIGatewayService_Forward_WSv2PlaceholderCoordinationSwitchesAfterFirstDisconnect(t *testing.T) {
+	setGinTestMode()
+
+	var wsAttempts atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wsAttempts.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket failed: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		var req map[string]any
+		if err := conn.ReadJSON(&req); err != nil {
+			t.Errorf("read ws request failed: %v", err)
+			return
+		}
+		closePayload := websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "")
+		_ = conn.WriteControl(websocket.CloseMessage, closePayload, time.Now().Add(time.Second))
+	}))
+	defer wsServer.Close()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", "custom-client/1.0")
+	StartOpenAIPlaceholderCoordination(c, time.Now())
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+		toolCorrector:    NewCodexToolCorrector(),
+	}
+	account := &Account{
+		ID:          891,
+		Name:        "openai-apikey-placeholder",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": wsServer.URL,
+		},
+		Extra: map[string]any{
+			"responses_websockets_v2_enabled":        true,
+			openAIAPIKeySafeTokenPlaceholderExtraKey: true,
+		},
+	}
+
+	body := []byte(`{"model":"gpt-5.3-codex","stream":true,"input":[{"type":"input_text","text":"hello"}]}`)
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, int32(1), wsAttempts.Load(), "placeholder coordination must skip same-account /5 reconnects")
+	require.Empty(t, rec.Body.String(), "a disconnect before the placeholder deadline must preserve the uncommitted HTTP response")
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.True(t, failoverErr.SkipPoolSoftCooldown)
+	require.Equal(t, NextAccountRetry, failoverErr.NextAccountAction)
+}
+
 func TestOpenAIGatewayService_Forward_WSv2PolicyViolationFastFallbackHTTP(t *testing.T) {
 	setGinTestMode()
 

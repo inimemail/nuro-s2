@@ -232,7 +232,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		resp, err = doUpstream()
 	}
 	if err != nil {
-		if requestFirstTokenPlaceholder.Sent {
+		if requestFirstTokenPlaceholder.UpstreamCommitted {
 			_ = s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, http.StatusBadGateway, openAITransportFailoverBody, upstreamModel, err.Error())
 			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", "Upstream request failed")
@@ -271,7 +271,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if requestFirstTokenPlaceholder.Sent {
+		if requestFirstTokenPlaceholder.UpstreamCommitted {
 			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
 			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, upstreamModel, upstreamMsg)
 			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", "Upstream request failed")
@@ -376,23 +376,26 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	requestBodyLen int,
 	requestFirstTokenPlaceholder openAIRequestFirstTokenPlaceholderState,
 ) (*OpenAIForwardResult, error) {
+	ensureOpenAIPlaceholderCoordinator(c, startTime)
 	requestID := resp.Header.Get("x-request-id")
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
 
-	headersWritten := requestFirstTokenPlaceholder.Sent
+	headersWritten := requestFirstTokenPlaceholder.Sent || requestFirstTokenPlaceholder.SafeSent
 	writeStreamHeaders := func() {
 		if headersWritten {
 			return
 		}
 		headersWritten = true
-		if s.responseHeaderFilter != nil {
-			responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-		}
-		c.Writer.Header().Set("Content-Type", "text/event-stream")
-		c.Writer.Header().Set("Cache-Control", "no-cache")
-		c.Writer.Header().Set("Connection", "keep-alive")
-		c.Writer.Header().Set("X-Accel-Buffering", "no")
-		c.Writer.WriteHeader(http.StatusOK)
+		withOpenAIPlaceholderWriterLock(c, func(writer gin.ResponseWriter) {
+			if s.responseHeaderFilter != nil {
+				responseheaders.WriteFilteredHeaders(writer.Header(), resp.Header, s.responseHeaderFilter)
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			writer.Header().Set("Cache-Control", "no-cache")
+			writer.Header().Set("Connection", "keep-alive")
+			writer.Header().Set("X-Accel-Buffering", "no")
+			writer.WriteHeader(http.StatusOK)
+		})
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -410,6 +413,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	firstTokenTimeoutPlaceholder := s.openAIStreamFirstTokenTimeoutPlaceholder(account, originalModel)
 	reportRealFirstToken := account != nil && account.IsOpenAIApiKey() && account.IsOpenAIFirstTokenTimeoutPlaceholderGuardEnabled()
 	firstTokenTimeoutPlaceholderSent := requestFirstTokenPlaceholder.Sent
+	firstTokenTimeoutPlaceholderID := requestFirstTokenPlaceholder.ChatID
 	streamFailed := false
 	sawTerminal := false
 	terminalEventType := ""
@@ -454,12 +458,20 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		)
 		if state.Sent {
 			firstTokenTimeoutPlaceholderSent = true
+			firstTokenTimeoutPlaceholderID = state.ChatID
+			pendingLines = pendingLines[:0]
 			headersWritten = true
 		}
 	}
 
-	writeLine := func(line string) {
+	writeLine := func(line string, commitsAttempt bool) {
 		if clientDisconnected {
+			return
+		}
+		if !clientOutputStarted && !commitsAttempt {
+			if !firstTokenTimeoutPlaceholderSent {
+				pendingLines = append(pendingLines, line)
+			}
 			return
 		}
 		if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
@@ -505,7 +517,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 		scanEvents <- rawChatScanEvent{err: scanner.Err(), done: true}
 	}()
-	placeholderStartTime := time.Now()
+	placeholderStartTime := openAIRequestPlaceholderEffectiveStartTime(c, startTime, firstTokenTimeoutPlaceholder)
 	firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(placeholderStartTime, firstTokenTimeoutPlaceholder)
 	if firstTokenTimeoutTimer != nil {
 		defer firstTokenTimeoutTimer.Stop()
@@ -528,6 +540,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			break
 		}
 		line := event.line
+		lineCommitsAttempt := false
 		var unsafe bool
 		line, unsafe = sanitizeOpenAIRawChatSSELineWithState(line, &upstreamSSEState)
 		if unsafe {
@@ -542,7 +555,15 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			if trimmedPayload == "[DONE]" {
 				sawTerminal = true
 				terminalEventType = "[DONE]"
+				lineCommitsAttempt = true
 			} else {
+				if firstTokenTimeoutPlaceholderID != "" && gjson.Valid(trimmedPayload) {
+					if rewritten, rewriteErr := sjson.Set(trimmedPayload, "id", firstTokenTimeoutPlaceholderID); rewriteErr == nil {
+						trimmedPayload = rewritten
+						payload = rewritten
+						line = "data: " + rewritten
+					}
+				}
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
 				if u := extractCCStreamUsage(payload); u != nil {
 					usage = *u
@@ -551,7 +572,11 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 					elapsed := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &elapsed
 				}
-				if realFirstTokenMs == nil && openAIChatCompletionsChunkStartsRealOutput(trimmedPayload) {
+				startsRealOutput := openAIChatCompletionsChunkStartsRealOutput(trimmedPayload)
+				if startsRealOutput {
+					lineCommitsAttempt = true
+				}
+				if realFirstTokenMs == nil && startsRealOutput {
 					elapsed := int(time.Since(startTime).Milliseconds())
 					realFirstTokenMs = &elapsed
 					firstTokenTimeoutCh = nil
@@ -561,6 +586,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 					if finishReason.Exists() && finishReason.Type != gjson.Null && strings.TrimSpace(finishReason.String()) != "" {
 						sawTerminal = true
 						terminalEventType = "chat.finish_reason"
+						lineCommitsAttempt = true
 						break
 					}
 				}
@@ -572,7 +598,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			}
 		}
 
-		writeLine(line)
+		writeLine(line, lineCommitsAttempt)
 		if line == "" {
 			if !clientDisconnected && clientOutputStarted {
 				c.Writer.Flush()
