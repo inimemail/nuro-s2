@@ -4688,7 +4688,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 
 		// Handle error response
-		if resp.StatusCode >= 400 {
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -5202,7 +5202,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
 		}
 
-		if resp.StatusCode >= 400 {
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -6091,22 +6091,14 @@ func openAIStreamFirstTokenTimeoutTimer(startTime time.Time, timeout time.Durati
 	return timer, timer.C
 }
 
-func openAIHTTPFirstTokenPlaceholderBudgetStart(c *gin.Context, fallback time.Time) time.Time {
-	if c == nil || c.Request == nil {
-		return fallback
-	}
-	startedAt, ok := c.Request.Context().Value(ctxkey.RequestStartTime).(time.Time)
-	if !ok || startedAt.IsZero() || startedAt.After(fallback) {
-		return fallback
-	}
-	return startedAt
-}
-
-func openAIHTTPFirstTokenPlaceholderTimer(c *gin.Context, fallback time.Time, timeout time.Duration) (*time.Timer, <-chan time.Time, bool) {
+func openAIHTTPFirstTokenPlaceholderTimer(start time.Time, timeout time.Duration) (*time.Timer, <-chan time.Time, bool) {
 	if timeout <= 0 {
 		return nil, nil, false
 	}
-	remaining := timeout - time.Since(openAIHTTPFirstTokenPlaceholderBudgetStart(c, fallback))
+	// The caller supplies a timestamp captured after successful upstream
+	// response headers. Request ingress and preparation time are intentionally
+	// excluded so pre-response failures remain retryable.
+	remaining := timeout - time.Since(start)
 	if remaining <= 0 {
 		return nil, nil, true
 	}
@@ -6141,12 +6133,6 @@ type openAIRequestFirstTokenPlaceholderState struct {
 	ChatCreated int64
 }
 
-type openAIUpstreamRequestResult struct {
-	resp    *http.Response
-	err     error
-	elapsed time.Duration
-}
-
 func (s *OpenAIGatewayService) doOpenAIUpstreamWithFirstTokenTimeoutPlaceholder(
 	c *gin.Context,
 	account *Account,
@@ -6158,37 +6144,12 @@ func (s *OpenAIGatewayService) doOpenAIUpstreamWithFirstTokenTimeoutPlaceholder(
 	if do == nil {
 		return nil, openAIRequestFirstTokenPlaceholderState{}, 0, errors.New("missing upstream request function")
 	}
-	timeout := s.openAIStreamFirstTokenTimeoutPlaceholder(account, requestedModel)
-	if timeout <= 0 {
-		upstreamStart := time.Now()
-		resp, err := do()
-		return resp, openAIRequestFirstTokenPlaceholderState{}, time.Since(upstreamStart), err
-	}
-
+	// Do not commit a downstream SSE response while upstream headers are still
+	// pending. That prevents OAuth refresh/prepare latency or a slow upstream
+	// from turning a retryable failure into a committed 200 stream.
 	upstreamStart := time.Now()
-	resultCh := make(chan openAIUpstreamRequestResult, 1)
-	go func() {
-		resp, err := do()
-		resultCh <- openAIUpstreamRequestResult{resp: resp, err: err, elapsed: time.Since(upstreamStart)}
-	}()
-
-	state := openAIRequestFirstTokenPlaceholderState{}
-	timer, timerCh, budgetExpired := openAIHTTPFirstTokenPlaceholderTimer(c, startTime, timeout)
-	if timer != nil {
-		defer timer.Stop()
-	}
-	if budgetExpired {
-		state = writeOpenAIRequestFirstTokenTimeoutPlaceholder(c, startTime, requestedModel, dialect)
-	}
-	for {
-		select {
-		case result := <-resultCh:
-			return result.resp, state, result.elapsed, result.err
-		case <-timerCh:
-			timerCh = nil
-			state = writeOpenAIRequestFirstTokenTimeoutPlaceholder(c, startTime, requestedModel, dialect)
-		}
-	}
+	resp, err := do()
+	return resp, openAIRequestFirstTokenPlaceholderState{}, time.Since(upstreamStart), err
 }
 
 func writeOpenAIRequestFirstTokenTimeoutPlaceholder(
@@ -6923,7 +6884,8 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			defer bootstrapTimer.Stop()
 			bootstrapCh = bootstrapTimer.C
 		}
-		firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(c, startTime, firstTokenTimeoutPlaceholder)
+		placeholderStartTime := time.Now()
+		firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(placeholderStartTime, firstTokenTimeoutPlaceholder)
 		if firstTokenTimeoutTimer != nil {
 			defer firstTokenTimeoutTimer.Stop()
 		}
@@ -8569,7 +8531,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		bootstrapCh = bootstrapTimer.C
 		defer bootstrapTimer.Stop()
 	}
-	firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(c, startTime, firstTokenTimeoutPlaceholder)
+	placeholderStartTime := time.Now()
+	firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(placeholderStartTime, firstTokenTimeoutPlaceholder)
 	if firstTokenTimeoutTimer != nil {
 		defer firstTokenTimeoutTimer.Stop()
 	}

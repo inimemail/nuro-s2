@@ -912,6 +912,7 @@ fn relay_error_fallback_reason(err: &anyhow::Error) -> &'static str {
 const EDGE_RESPONSE_HEADER_TIMEOUT: &str = "edge upstream response header timeout";
 const EDGE_RESPONSE_HEADER_BUDGET_EXHAUSTED: &str =
     "edge response header total budget exhausted before upstream attempt";
+#[cfg(test)]
 const EDGE_RESPONSE_HEADER_TIMEOUT_ERROR_TYPE: &str = "edge_response_header_timeout";
 const EDGE_UPSTREAM_CLIENT_SELECTION_TIMEOUT: &str = "edge upstream client selection timeout";
 
@@ -946,6 +947,7 @@ fn is_edge_response_header_timeout(err: &anyhow::Error) -> bool {
     err.to_string() == EDGE_RESPONSE_HEADER_TIMEOUT
 }
 
+#[cfg(test)]
 fn edge_upstream_send_error_type(err: &anyhow::Error) -> &'static str {
     if is_edge_response_header_timeout(err)
         || err.to_string() == EDGE_RESPONSE_HEADER_BUDGET_EXHAUSTED
@@ -4064,6 +4066,7 @@ fn is_openai_codex_date_suffix(suffix: &str) -> bool {
             .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
+#[cfg(test)]
 fn openai_cache_creation_policy_unsupported(status: StatusCode, error_body: &str) -> bool {
     status.is_client_error() && openai_cache_creation_policy_error_text(error_body)
 }
@@ -4654,7 +4657,6 @@ async fn relay_upstream_direct(
     let sse_comment_preflush = plan.sse_comment_preflush;
     let preamble_flush = plan.preamble_flush;
     let safe_token_placeholder = plan.safe_token_placeholder;
-    let cache_creation_policy_applied = plan.prompt_cache_creation_optimization_applied;
     let downstream_cache_usage_mode = if plan
         .downstream_cache_usage_model
         .as_deref()
@@ -4711,7 +4713,7 @@ async fn relay_upstream_direct(
     let send_retry_count = timing.retry_count;
     let send_headers = plan.headers.clone();
     let header_start = Instant::now();
-    let mut upstream_send = Box::pin(async move {
+    let upstream_send = Box::pin(async move {
         let attempt_started_at = Instant::now();
         let remaining_budget = || {
             edge_response_header_budget_deadline
@@ -4732,9 +4734,9 @@ async fn relay_upstream_direct(
             }
             remaining
         };
-        // Client/lane selection is part of the header and placeholder race.
-        // A resource-bounded proxy-capacity wait therefore cannot move an account's
-        // configured first-token placeholder past its request-relative limit.
+        // Client/lane selection is part of the bounded upstream-header phase.
+        // A resource-bounded proxy-capacity wait must remain retryable before
+        // any downstream response is committed.
         let mut selected = if race_response_header_deadline.is_some()
             || edge_response_header_budget_deadline.is_some()
             || edge_connect_timeout.is_some()
@@ -4829,546 +4831,61 @@ async fn relay_upstream_direct(
             .record_upstream_response(response.status(), version);
         Ok::<_, anyhow::Error>((response, upstream_client_guard))
     });
-    let (upstream, mut upstream_client_guard) = if let Some(timeout) =
-        first_token_timeout_placeholder
-    {
-        tokio::select! {
-            result = &mut upstream_send => match result {
-                Ok(result) => result,
-                Err(err)
-                    if (plan.edge_response_header_failover
-                        || plan.race_response_header_timeout_ms.is_some())
-                        && is_edge_response_header_timeout(&err) =>
-                {
-                    drop(lease_renewal_guard);
-                    return retry_after_race_response_header_budget(
-                        state,
-                        plan,
-                        RelayAttemptContext {
-                            started_at,
-                            timing,
-                            timing_shared,
-                            lease_identity,
-                            response_header_budget_deadline: edge_response_header_budget_deadline,
-                            relay_attempted_marker: None,
-                            abort_done_marker: abort_done_marker.clone(),
-                            header_guard: header_guard.take(),
-                            ingress_permit,
-                        },
-                    )
-                    .await;
-                }
-                Err(err)
-                    if (plan.edge_response_header_failover
-                        || plan.race_response_header_timeout_ms.is_some())
-                        && err.downcast_ref::<reqwest::Error>().is_some() =>
-                {
-                    drop(lease_renewal_guard);
-                    return retry_after_upstream_transport_error(
-                        state,
-                        plan,
-                        err.to_string(),
-                        RelayAttemptContext {
-                            started_at,
-                            timing,
-                            timing_shared,
-                            lease_identity,
-                            response_header_budget_deadline: edge_response_header_budget_deadline,
-                            relay_attempted_marker: None,
-                            abort_done_marker: abort_done_marker.clone(),
-                            header_guard: header_guard.take(),
-                            ingress_permit,
-                        },
-                    )
-                    .await;
-                }
-                Err(err) => return Err(err),
-            },
-            // The configured threshold is downstream-facing, so preparation,
-            // admission and upstream connection time all consume the same
-            // request budget instead of being added before the placeholder.
-            _ = tokio::time::sleep(delay_until_elapsed(started_at, timeout)) => {
-                let response_header_guard = header_guard.take();
-                let stream_guard = complete_state.metrics.begin_stream();
-                // Construct this before building the body stream. Axum may
-                // drop a response body after committing headers but before
-                // polling it; keeping the completion guard outside the
-                // generator ensures that cancellation still settles the
-                // lease instead of waiting for its TTL.
-                let complete_guard = ClientDisconnectCompleteGuard::new(
-                    complete_state.clone(),
+    let (upstream, mut upstream_client_guard) = match upstream_send.await {
+        Ok(result) => result,
+        Err(err)
+            if (plan.edge_response_header_failover
+                || plan.race_response_header_timeout_ms.is_some())
+                && is_edge_response_header_timeout(&err) =>
+        {
+            drop(lease_renewal_guard);
+            return retry_after_race_response_header_budget(
+                state,
+                plan,
+                RelayAttemptContext {
                     started_at,
-                    pending_stream_complete_request(
-                        edge_request_id.clone(),
-                        lease_id.clone(),
-                        account_id,
-                        edge_prepare_ms,
-                        edge_queue_wait_ms,
-                        edge_relay_start_ms,
-                        edge_fallback_reason.clone(),
-                        edge_retry_count,
-                    ),
-                );
-                let early_body_stream = stream! {
-                    let response_header_guard = response_header_guard;
-                    let _stream_guard = stream_guard;
-                    let _lease_renewal_guard = lease_renewal_guard;
-                    let guard = complete_guard;
-                    let mut first_byte_ms: Option<i64> = None;
-                    let first_flush_ms: Option<i64> =
-                        Some(started_at.elapsed().as_millis() as i64);
-                    let mut first_token_ms: Option<i64> = None;
-                    let mut real_first_token_ms: Option<i64> = None;
-                    let mut success = true;
-                    let mut error_message: Option<String> = None;
-                let mut upstream_status_code: Option<u16> = None;
-                let mut upstream_header_ms: Option<i64> = None;
-                let mut summary = ChatStreamSummary::with_pending(
-                    complete_state.pools.take_sse_string(),
-                    response_dialect.as_deref(),
-                );
-                let mut sanitizer = OpenAIStreamSanitizer::new_with_downstream_cache_usage_mode(
-                    response_dialect.as_deref(),
-                    downstream_cache_usage_mode.as_deref(),
-                );
-                // Older Go plans did not carry `preamble_flush`; their Edge
-                // behavior was to forward Responses preamble events
-                // immediately. The plan decoder defaults that field to true,
-                // while an explicit false enables this gate.
-                let mut preamble_gate = SsePreambleGate::new(
-                    preamble_flush || response_dialect.as_deref() != Some("responses"),
-                );
-                    // Commit an account-requested SSE preflush before the
-                    // timeout placeholder. This branch is reached only when
-                    // the configured timeout wins the header race, so the
-                    // comment and placeholder share the same response start.
-                    if sse_comment_preflush {
-                        // A local preflush is already client-visible, so it
-                        // also releases any upstream preamble held by the
-                        // account-level gate.
-                        for output in preamble_gate.force() {
-                            yield Ok::<Bytes, std::io::Error>(output);
-                        }
-                        yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b":\n\n"));
-                    }
-                    let placeholder =
-                        openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &summary);
-                    for output in preamble_gate.force() {
-                        yield Ok::<Bytes, std::io::Error>(output);
-                    }
-                    yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
-
-                    let (upstream, mut upstream_client_guard) = match upstream_send.await {
-                        Ok(upstream) => upstream,
-                        Err(err) => {
-                            let error_type = edge_upstream_send_error_type(&err);
-                            success = false;
-                            error_message = Some(err.to_string());
-                            guard.update_stream_snapshot(
-                                &summary,
-                                success,
-                                error_message.clone(),
-                                upstream_header_ms,
-                                first_byte_ms,
-                                first_token_ms,
-                                real_first_token_ms,
-                                first_flush_ms,
-                                upstream_status_code,
-                                true,
-                            );
-                            let frame = openai_stream_error_frame(
-                                response_dialect.as_deref(),
-                                summary.model.as_deref(),
-                                "Upstream request failed",
-                            );
-                            yield Ok::<Bytes, std::io::Error>(Bytes::from(frame));
-                            complete_state.pools.recycle_sse_string(std::mem::take(&mut summary.pending));
-                            if call_complete(&complete_state, CompleteRequest {
-                                edge_request_id: edge_request_id.clone(),
-                                lease_id: lease_id.clone(),
-                                account_id,
-                                success,
-                                failure_class: Some("upstream_error".to_string()),
-                                client_disconnected: false,
-                                request_id: summary.request_id.clone(),
-                                response_id: summary.response_id.clone(),
-                                model: summary.model.clone(),
-                                upstream_model: summary.upstream_model.clone(),
-                                usage: summary.usage.clone(),
-                                duration_ms: started_at.elapsed().as_millis() as i64,
-                                upstream_header_ms,
-                                upstream_first_byte_ms: first_byte_ms,
-                                first_token_ms,
-                                real_first_token_ms,
-                                guard_sample_at_unix_ns: None,
-                                first_client_flush_ms: first_flush_ms,
-                                edge_prepare_ms,
-                                edge_queue_wait_ms,
-                                edge_relay_start_ms,
-                                edge_fallback_reason: edge_fallback_reason.clone(),
-                                edge_retry_count,
-                                error_type: Some(error_type.to_string()),
-                                error_message,
-                                upstream_status_code,
-                                terminal_event_type: None,
-                                cyber_blocked: false,
-                            }).await.is_ok() {
-                                guard.mark_done();
-                            }
-                            return;
-                        }
-                    };
-
-                    // A timeout placeholder commits downstream headers, but it
-                    // does not mean the upstream header phase has completed.
-                    // Keep the global header slot until the real upstream
-                    // response arrives (or this body is dropped).
-                    drop(response_header_guard);
-
-                    // The response headers end the bounded pre-response phase.
-                    // Until this point the body-owned future retains the ingress
-                    // permit even when a timeout placeholder was already sent.
-                    drop(ingress_permit);
-
-                    upstream_header_ms = Some(header_start.elapsed().as_millis() as i64);
-                    let status = upstream.status();
-                    upstream_status_code = Some(status.as_u16());
-                    let headers = upstream.headers().clone();
-                    summary.request_id = headers
-                        .get("x-request-id")
-                        .and_then(|v| v.to_str().ok())
-                        .map(ToOwned::to_owned);
-                    if status.is_client_error() || status.is_server_error() {
-                        success = false;
-                        let error_body = read_upstream_error_body(
-                            upstream,
-                            edge_body_idle_timeout,
-                        )
-                        .await
-                        .unwrap_or_else(|_| "upstream error body unavailable".to_string());
-                        upstream_client_guard.release();
-                        let cyber_blocked = json_text_is_cyber_policy(&error_body);
-                        let message = "Upstream request failed";
-                        error_message = Some(message.to_string());
-                        let error_type = if cache_creation_policy_applied
-                            && openai_cache_creation_policy_unsupported(status, &error_body)
-                        {
-                            "cache_creation_optimization_unsupported"
-                        } else {
-                            "upstream_error"
-                        };
-                        summary.cyber_blocked = cyber_blocked;
-                        guard.update_stream_snapshot(
-                            &summary,
-                            success,
-                            error_message.clone(),
-                            upstream_header_ms,
-                            first_byte_ms,
-                            first_token_ms,
-                            real_first_token_ms,
-                            first_flush_ms,
-                            upstream_status_code,
-                            true,
-                        );
-                        let frame = openai_stream_error_frame(
-                            response_dialect.as_deref(),
-                            summary.model.as_deref(),
-                            message,
-                        );
-                        yield Ok::<Bytes, std::io::Error>(Bytes::from(frame));
-                        complete_state.pools.recycle_sse_string(std::mem::take(&mut summary.pending));
-                        if call_complete(&complete_state, CompleteRequest {
-                            edge_request_id: edge_request_id.clone(),
-                            lease_id: lease_id.clone(),
-                            account_id,
-                            success,
-                            failure_class: Some("upstream_error".to_string()),
-                            client_disconnected: false,
-                            request_id: summary.request_id.clone(),
-                            response_id: summary.response_id.clone(),
-                            model: summary.model.clone(),
-                            upstream_model: summary.upstream_model.clone(),
-                            usage: summary.usage.clone(),
-                            duration_ms: started_at.elapsed().as_millis() as i64,
-                            upstream_header_ms,
-                            upstream_first_byte_ms: first_byte_ms,
-                            first_token_ms,
-                            real_first_token_ms,
-                            guard_sample_at_unix_ns: None,
-                            first_client_flush_ms: first_flush_ms,
-                            edge_prepare_ms,
-                            edge_queue_wait_ms,
-                            edge_relay_start_ms,
-                            edge_fallback_reason: edge_fallback_reason.clone(),
-                            edge_retry_count,
-                            error_type: Some(error_type.to_string()),
-                            error_message,
-                            upstream_status_code,
-                            terminal_event_type: None,
-                                cyber_blocked,
-                        }).await.is_ok() {
-                            guard.mark_done();
-                        }
-                        return;
-                    }
-
-                upstream_client_guard.mark_stream_open();
-                let mut bytes_stream = upstream.bytes_stream();
-                loop {
-                    let next = if let Some(idle_timeout) = edge_body_idle_timeout {
-                        match tokio::time::timeout(idle_timeout, bytes_stream.next()).await {
-                            Ok(next) => next,
-                            Err(_) => {
-                                success = false;
-                                error_message = Some("upstream body idle timeout".to_string());
-                                guard.update_stream_snapshot(
-                                    &summary,
-                                    success,
-                                    error_message.clone(),
-                                    upstream_header_ms,
-                                    first_byte_ms,
-                                    first_token_ms,
-                                    real_first_token_ms,
-                                    first_flush_ms,
-                                    upstream_status_code,
-                                    true,
-                                );
-                                yield Err(std::io::Error::other("upstream body idle timeout"));
-                                break;
-                            }
-                        }
-                    } else {
-                        bytes_stream.next().await
-                    };
-                    let Some(next) = next else { break };
-                    match next {
-                        Ok(chunk) => {
-                            if first_byte_ms.is_none() {
-                                first_byte_ms = Some(header_start.elapsed().as_millis() as i64);
-                            }
-                            let observation = summary.observe(&chunk);
-                            if real_first_token_ms.is_none() && observation.starts_real_output {
-                                real_first_token_ms = Some(started_at.elapsed().as_millis() as i64);
-                            }
-                            if first_token_ms.is_none() && observation.starts_client_output {
-                                first_token_ms = Some(started_at.elapsed().as_millis() as i64);
-                            }
-                            if summary.failed {
-                                success = false;
-                                error_message = Some("Upstream request failed".to_string());
-                            }
-                            guard.update_stream_snapshot(
-                                &summary,
-                                success,
-                                error_message.clone(),
-                                upstream_header_ms,
-                                first_byte_ms,
-                                first_token_ms,
-                                real_first_token_ms,
-                                first_flush_ms,
-                                upstream_status_code,
-                                summary.failed,
-                            );
-                            let sanitized = sanitizer.push(&chunk);
-                            if sanitizer.overflowed() {
-                                mark_sse_frame_limit_failure(&mut summary);
-                                success = false;
-                                error_message = Some("upstream SSE frame exceeded the Edge limit".to_string());
-                            }
-                            for output in preamble_gate.accept(
-                                sanitized,
-                                observation.starts_client_output,
-                                summary.failed,
-                            ) {
-                                yield Ok::<Bytes, std::io::Error>(output);
-                            }
-                            if sanitizer.overflowed() {
-                                guard.update_stream_snapshot(
-                                    &summary,
-                                    success,
-                                    error_message.clone(),
-                                    upstream_header_ms,
-                                    first_byte_ms,
-                                    first_token_ms,
-                                    real_first_token_ms,
-                                    first_flush_ms,
-                                    upstream_status_code,
-                                    true,
-                                );
-                                break;
-                            }
-                            if summary.completed_successfully(response_dialect.as_deref()) {
-                                break;
-                            }
-                        }
-                            Err(err) => {
-                                if summary.completed_successfully(response_dialect.as_deref()) {
-                                    break;
-                                }
-                                success = false;
-                                error_message = Some(err.to_string());
-                                guard.update_stream_snapshot(
-                                    &summary,
-                                    success,
-                                    error_message.clone(),
-                                    upstream_header_ms,
-                                    first_byte_ms,
-                                    first_token_ms,
-                                    real_first_token_ms,
-                                    first_flush_ms,
-                                    upstream_status_code,
-                                    true,
-                                );
-                                yield Err(std::io::Error::other(err.to_string()));
-                                break;
-                            }
-                        }
-                    }
-
-                drop(bytes_stream);
-                upstream_client_guard.release();
-                let tail = sanitizer.finish();
-                let tail_starts_output = !tail.is_empty();
-                for output in preamble_gate.accept(tail, tail_starts_output, summary.failed) {
-                    yield Ok::<Bytes, std::io::Error>(output);
-                }
-                // A response may legitimately complete without a text delta.
-                // Never discard sanitized created/completed events merely
-                // because account-level preamble flush was disabled.
-                for output in preamble_gate.force() {
-                    yield Ok::<Bytes, std::io::Error>(output);
-                }
-                if summary.failed {
-                    success = false;
-                    error_message = Some("Upstream request failed".to_string());
-                } else if !summary.completed_successfully(response_dialect.as_deref()) {
-                    success = false;
-                    error_message = Some("Upstream stream ended before completion".to_string());
-                }
-                guard.update_stream_snapshot(
-                    &summary,
-                    success,
-                    error_message.clone(),
-                    upstream_header_ms,
-                    first_byte_ms,
-                    first_token_ms,
-                    real_first_token_ms,
-                    first_flush_ms,
-                    upstream_status_code,
-                    summary.failed || summary.terminal_event_type.is_none(),
-                );
-                let terminal_event_type = summary.terminal_event_type(response_dialect.as_deref());
-                let request_id = summary.request_id.clone();
-                    let response_id = summary.response_id.clone();
-                    let model = summary.model.clone();
-                    let upstream_model = summary.upstream_model.clone();
-                    let usage = summary.usage.clone();
-                    let cyber_blocked = summary.cyber_blocked;
-                    complete_state.pools.recycle_sse_string(std::mem::take(&mut summary.pending));
-                    if call_complete(&complete_state, CompleteRequest {
-                        edge_request_id: edge_request_id.clone(),
-                        lease_id: lease_id.clone(),
-                        account_id,
-                        success,
-                        failure_class: classify_stream_failure(success, false, &summary),
-                        client_disconnected: false,
-                        request_id,
-                        response_id,
-                        model,
-                        upstream_model,
-                        usage,
-                        duration_ms: started_at.elapsed().as_millis() as i64,
-                        upstream_header_ms,
-                        upstream_first_byte_ms: first_byte_ms,
-                        first_token_ms,
-                        real_first_token_ms,
-                        guard_sample_at_unix_ns: None,
-                        first_client_flush_ms: first_flush_ms,
-                        edge_prepare_ms,
-                        edge_queue_wait_ms,
-                        edge_relay_start_ms,
-                        edge_fallback_reason: edge_fallback_reason.clone(),
-                        edge_retry_count,
-                        error_type: if success { None } else { Some("stream_error".to_string()) },
-                        error_message,
-                        upstream_status_code,
-                        terminal_event_type,
-                        cyber_blocked,
-                    }).await.is_ok() {
-                        guard.mark_done();
-                    }
-            };
-
-                let mut builder = Response::builder().status(StatusCode::OK);
-                let headers = builder.headers_mut().expect("headers");
-                headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
-                headers.insert(
-                    header::CACHE_CONTROL,
-                    HeaderValue::from_static("no-cache, no-transform"),
-                );
-                headers.insert(HeaderName::from_static("x-accel-buffering"), HeaderValue::from_static("no"));
-                let response = builder.body(Body::from_stream(early_body_stream))?;
-                mark_lease_abort_transferred(abort_done_marker.as_ref());
-                return Ok(response);
-            }
+                    timing,
+                    timing_shared,
+                    lease_identity,
+                    response_header_budget_deadline: edge_response_header_budget_deadline,
+                    relay_attempted_marker: None,
+                    abort_done_marker: abort_done_marker.clone(),
+                    header_guard: header_guard.take(),
+                    ingress_permit,
+                },
+            )
+            .await;
         }
-    } else {
-        match upstream_send.await {
-            Ok(result) => result,
-            Err(err)
-                if (plan.edge_response_header_failover
-                    || plan.race_response_header_timeout_ms.is_some())
-                    && is_edge_response_header_timeout(&err) =>
-            {
-                drop(lease_renewal_guard);
-                return retry_after_race_response_header_budget(
-                    state,
-                    plan,
-                    RelayAttemptContext {
-                        started_at,
-                        timing,
-                        timing_shared,
-                        lease_identity,
-                        response_header_budget_deadline: edge_response_header_budget_deadline,
-                        relay_attempted_marker: None,
-                        abort_done_marker: abort_done_marker.clone(),
-                        header_guard: header_guard.take(),
-                        ingress_permit,
-                    },
-                )
-                .await;
-            }
-            Err(err)
-                if (plan.edge_response_header_failover
-                    || plan.race_response_header_timeout_ms.is_some())
-                    && err.downcast_ref::<reqwest::Error>().is_some() =>
-            {
-                drop(lease_renewal_guard);
-                return retry_after_upstream_transport_error(
-                    state,
-                    plan,
-                    err.to_string(),
-                    RelayAttemptContext {
-                        started_at,
-                        timing,
-                        timing_shared,
-                        lease_identity,
-                        response_header_budget_deadline: edge_response_header_budget_deadline,
-                        relay_attempted_marker: None,
-                        abort_done_marker: abort_done_marker.clone(),
-                        header_guard: header_guard.take(),
-                        ingress_permit,
-                    },
-                )
-                .await;
-            }
-            Err(err) => return Err(err),
+        Err(err)
+            if (plan.edge_response_header_failover
+                || plan.race_response_header_timeout_ms.is_some())
+                && err.downcast_ref::<reqwest::Error>().is_some() =>
+        {
+            drop(lease_renewal_guard);
+            return retry_after_upstream_transport_error(
+                state,
+                plan,
+                err.to_string(),
+                RelayAttemptContext {
+                    started_at,
+                    timing,
+                    timing_shared,
+                    lease_identity,
+                    response_header_budget_deadline: edge_response_header_budget_deadline,
+                    relay_attempted_marker: None,
+                    abort_done_marker: abort_done_marker.clone(),
+                    header_guard: header_guard.take(),
+                    ingress_permit,
+                },
+            )
+            .await;
         }
+        Err(err) => return Err(err),
     };
     let upstream_header_ms = header_start.elapsed().as_millis() as i64;
     let status = upstream.status();
     let headers = upstream.headers().clone();
-    if status.is_client_error() || status.is_server_error() {
+    if !status.is_success() {
         let upstream_request_id = headers
             .get("x-request-id")
             .and_then(|v| v.to_str().ok())
@@ -5547,9 +5064,13 @@ async fn relay_upstream_direct(
         .map(ToOwned::to_owned);
     drop(plan);
     let stream_guard = complete_state.metrics.begin_stream();
-    // See the early-placeholder path above. Constructing the guard outside
-    // the async stream covers a response body that is dropped before its
-    // first poll, when code inside `stream!` would never run.
+    // The placeholder deadline starts only after successful upstream headers.
+    // Request preparation, OAuth refresh, scheduling, and header failover stay
+    // outside the downstream first-token budget.
+    let first_token_timeout_deadline =
+        first_token_timeout_placeholder.map(|timeout| tokio::time::Instant::now() + timeout);
+    // Construct the guard outside the async stream so a body dropped before its
+    // first poll still settles the lease.
     let complete_guard = ClientDisconnectCompleteGuard::new(
         complete_state.clone(),
         started_at,
@@ -5626,9 +5147,8 @@ async fn relay_upstream_direct(
                 .map(tokio::time::sleep)
                 .map(Box::pin)
         };
-        let mut first_token_timeout_timer = first_token_timeout_placeholder
-            .map(|timeout| tokio::time::sleep(delay_until_elapsed(started_at, timeout)))
-            .map(Box::pin);
+        let mut first_token_timeout_timer = first_token_timeout_deadline
+            .map(|deadline| Box::pin(tokio::time::sleep_until(deadline)));
 
         enum RelaySelectEvent {
             BootstrapComment,
@@ -6432,23 +5952,6 @@ fn openai_stream_timeout_placeholder_frame(
         );
     }
     openai_responses_safe_token_placeholder_frame(summary.response_id.as_deref())
-}
-
-fn openai_stream_error_frame(dialect: Option<&str>, model: Option<&str>, message: &str) -> String {
-    let _ = message;
-    let message_json = "\"Upstream request failed\"";
-    if dialect == Some("chat_completions") {
-        return format!(
-            "event: error\ndata: {{\"error\":{{\"type\":\"upstream_error\",\"message\":{}}}}}\n\n",
-            message_json
-        );
-    }
-    let model = model.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("");
-    let model_json = serde_json::to_string(model).unwrap_or_else(|_| "\"\"".to_string());
-    format!(
-        "event: response.failed\ndata: {{\"type\":\"response.failed\",\"response\":{{\"id\":\"resp_placeholder_failed\",\"object\":\"response\",\"model\":{},\"status\":\"failed\",\"output\":[],\"error\":{{\"code\":\"upstream_error\",\"message\":{}}}}}}}\n\n",
-        model_json, message_json
-    )
 }
 
 #[derive(Default)]

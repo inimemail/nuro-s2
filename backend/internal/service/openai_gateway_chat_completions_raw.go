@@ -264,7 +264,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	defer func() { _ = resp.Body.Close() }()
 
 	// 7. Handle error response with failover
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -505,7 +505,8 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 		scanEvents <- rawChatScanEvent{err: scanner.Err(), done: true}
 	}()
-	firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(c, startTime, firstTokenTimeoutPlaceholder)
+	placeholderStartTime := time.Now()
+	firstTokenTimeoutTimer, firstTokenTimeoutCh, firstTokenTimeoutBudgetExpired := openAIHTTPFirstTokenPlaceholderTimer(placeholderStartTime, firstTokenTimeoutPlaceholder)
 	if firstTokenTimeoutTimer != nil {
 		defer firstTokenTimeoutTimer.Stop()
 	}

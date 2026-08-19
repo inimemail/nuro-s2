@@ -409,7 +409,7 @@ func TestForwardAsChatCompletions_FirstTokenTimeoutPlaceholderDoesNotSetFirstTok
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_timeout_placeholder"}},
 		Body: &delayedSSEChunkReadCloser{chunks: []delayedSSEChunk{{
-			delay: 100 * time.Millisecond,
+			delay: 300 * time.Millisecond,
 			data:  upstreamBody,
 		}}},
 	}}
@@ -427,7 +427,7 @@ func TestForwardAsChatCompletions_FirstTokenTimeoutPlaceholderDoesNotSetFirstTok
 		},
 		Extra: map[string]any{
 			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderEnabledExtraKey: true,
-			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      3000,
+			openAIOAuthChatGPTFirstTokenTimeoutPlaceholderMsExtraKey:      200,
 		},
 	}
 
