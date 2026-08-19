@@ -308,19 +308,60 @@
         </div>
       </div>
 
-      <!-- Account Type Selection (OpenAI) -->
-        <div v-if="['kimi', 'zhipu', 'deepseek'].includes(form.platform)">
-          <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
-          <div class="mt-2 rounded-lg border-2 border-sky-200 bg-sky-50 p-3 dark:border-sky-800/40 dark:bg-sky-900/20">
-            <div class="flex items-center gap-3">
-              <Icon name="key" size="sm" class="text-sky-600 dark:text-sky-400" />
-              <div>
-                <span class="block text-sm font-medium text-gray-900 dark:text-white">API Key</span>
-                <span class="text-xs text-gray-500 dark:text-gray-400">OpenAI-compatible provider</span>
-              </div>
+      <!-- Account type and upstream protocol for CN OpenAI-compatible providers -->
+      <div v-if="isCNProvider">
+        <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
+        <div class="mt-2 grid gap-3 sm:grid-cols-2" data-testid="cn-account-type-options">
+          <button
+            type="button"
+            data-testid="cn-billing-payg"
+            :aria-pressed="cnBillingMode === 'payg'"
+            @click="selectCNBillingMode('payg')"
+            :class="cnBillingMode === 'payg' ? cnOptionClass('sky') : cnOptionClass('gray')"
+          >
+            <div :class="cnIconClass(cnBillingMode === 'payg', 'sky')"><Icon name="key" size="sm" /></div>
+            <div class="min-w-0">
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.accounts.cnProviders.payg') }}</span>
+              <span class="mt-0.5 block text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.accounts.cnProviders.paygDesc') }}</span>
             </div>
-          </div>
+          </button>
+          <button
+            v-if="cnBillingPlanSupported"
+            type="button"
+            data-testid="cn-billing-coding-plan"
+            :aria-pressed="cnBillingMode === 'coding_plan'"
+            @click="selectCNBillingMode('coding_plan')"
+            :class="cnBillingMode === 'coding_plan' ? cnOptionClass('violet') : cnOptionClass('gray')"
+          >
+            <div :class="cnIconClass(cnBillingMode === 'coding_plan', 'violet')"><Icon name="sparkles" size="sm" /></div>
+            <div class="min-w-0">
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.accounts.cnProviders.codingPlan') }}</span>
+              <span class="mt-0.5 block text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.accounts.cnProviders.codingPlanDesc') }}</span>
+            </div>
+          </button>
         </div>
+
+        <label class="input-label mt-5">{{ t('admin.accounts.cnProviders.apiProtocol') }}</label>
+        <div class="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-3" data-testid="cn-api-protocol-options">
+          <button
+            v-for="option in cnApiProtocolOptions"
+            :key="option.value"
+            type="button"
+            :data-testid="`cn-protocol-${option.value}`"
+            :aria-pressed="cnApiMode === option.value"
+            @click="cnApiMode = option.value"
+            :class="cnApiMode === option.value ? cnOptionClass(option.value === 'chat_completions' ? 'sky' : option.value === 'responses' ? 'emerald' : 'orange') : cnOptionClass('gray')"
+          >
+            <div :class="cnIconClass(cnApiMode === option.value, option.value === 'chat_completions' ? 'sky' : option.value === 'responses' ? 'emerald' : 'orange')">
+              <Icon :name="option.value === 'anthropic' ? 'sparkles' : 'terminal'" size="sm" />
+            </div>
+            <div class="min-w-0">
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ option.label }}</span>
+              <span class="mt-0.5 block text-xs leading-5 text-gray-500 dark:text-gray-400">{{ option.description }}</span>
+            </div>
+          </button>
+        </div>
+      </div>
 
       <!-- Account Type Selection (OpenAI) -->
       <div v-if="form.platform === 'openai'">
@@ -1212,6 +1253,25 @@
             class="mt-2"
             @select="apiKeyBaseUrl = $event"
           />
+          <div v-if="cnBaseUrlPresets.length" class="mt-3">
+            <p class="mb-2 text-xs font-medium text-gray-600 dark:text-gray-300">{{ t('admin.accounts.cnProviders.presets') }}</p>
+            <div class="grid gap-2 sm:grid-cols-2">
+              <button
+                v-for="preset in cnBaseUrlPresets"
+                :key="preset.url"
+                type="button"
+                :data-testid="`cn-base-url-${preset.key}`"
+                class="rounded-lg border px-3 py-2 text-left transition-colors"
+                :class="apiKeyBaseUrl === preset.url
+                  ? 'border-sky-500 bg-sky-50 text-sky-700 dark:border-sky-400 dark:bg-sky-900/20 dark:text-sky-300'
+                  : 'border-gray-200 text-gray-600 hover:border-sky-300 hover:bg-gray-50 dark:border-dark-600 dark:text-gray-300 dark:hover:border-sky-700 dark:hover:bg-dark-700'"
+                @click="apiKeyBaseUrl = preset.url"
+              >
+                <span class="block text-xs font-medium">{{ preset.label }}</span>
+                <span class="mt-0.5 block truncate text-[11px] opacity-75">{{ preset.url }}</span>
+              </button>
+            </div>
+          </div>
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.apiKeyRequired') }}</label>
@@ -4538,6 +4598,7 @@ const baseUrlHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
   if (form.platform === 'grok') return ''
+  if (isCNProvider.value) return t('admin.accounts.cnProviders.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
 
@@ -4545,6 +4606,7 @@ const apiKeyHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.apiKeyHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.apiKeyHint')
   if (form.platform === 'grok') return ''
+  if (isCNProvider.value) return t('admin.accounts.cnProviders.apiKeyHint')
   return t('admin.accounts.apiKeyHint')
 })
 
@@ -4634,6 +4696,77 @@ const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_acco
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
+type CNBillingMode = 'payg' | 'coding_plan'
+type CNApiMode = 'chat_completions' | 'anthropic' | 'responses'
+const cnBillingMode = ref<CNBillingMode>('payg')
+const cnApiMode = ref<CNApiMode>('chat_completions')
+
+const isCNProvider = computed(() =>
+  form.platform === 'kimi' || form.platform === 'zhipu' || form.platform === 'deepseek'
+)
+const cnBillingPlanSupported = computed(() => form.platform === 'kimi' || form.platform === 'zhipu')
+const cnApiProtocolOptions = computed(() => {
+  const options: Array<{ value: CNApiMode; label: string; description: string }> = [
+    {
+      value: 'chat_completions',
+      label: t('admin.accounts.cnProviders.chatCompletions'),
+      description: t('admin.accounts.cnProviders.chatCompletionsDesc')
+    },
+    {
+      value: 'anthropic',
+      label: t('admin.accounts.cnProviders.anthropic'),
+      description: t('admin.accounts.cnProviders.anthropicDesc')
+    }
+  ]
+  if (form.platform === 'deepseek') {
+    options.push({
+      value: 'responses',
+      label: t('admin.accounts.cnProviders.responses'),
+      description: t('admin.accounts.cnProviders.responsesDesc')
+    })
+  }
+  return options
+})
+const cnBaseUrlPresets = computed(() => {
+  if (form.platform === 'kimi') {
+    return [
+      { key: 'moonshot', label: t('admin.accounts.cnProviders.kimiMoonshot'), url: 'https://api.moonshot.cn/v1' },
+      { key: 'coding', label: t('admin.accounts.cnProviders.kimiCoding'), url: 'https://api.kimi.com/coding/v1' }
+    ]
+  }
+  if (form.platform === 'zhipu') {
+    return [{ key: 'zhipu', label: t('admin.accounts.cnProviders.zhipu'), url: 'https://open.bigmodel.cn/api/paas/v4' }]
+  }
+  if (form.platform === 'deepseek') {
+    return [{ key: 'deepseek', label: t('admin.accounts.cnProviders.deepseek'), url: 'https://api.deepseek.com/v1' }]
+  }
+  return []
+})
+const cnOptionClass = (accent: 'sky' | 'violet' | 'emerald' | 'orange' | 'gray') => {
+  const selected: Record<string, string> = {
+    sky: 'border-sky-500 bg-sky-50 dark:bg-sky-900/20',
+    violet: 'border-violet-500 bg-violet-50 dark:bg-violet-900/20',
+    emerald: 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20',
+    orange: 'border-orange-500 bg-orange-50 dark:bg-orange-900/20',
+    gray: 'border-gray-200 hover:border-sky-300 dark:border-dark-600 dark:hover:border-sky-700'
+  }
+  return `flex min-w-0 items-start gap-3 rounded-lg border-2 p-3 text-left transition-all ${selected[accent]}`
+}
+const cnIconClass = (selected: boolean, accent: 'sky' | 'violet' | 'emerald' | 'orange') => {
+  const colors: Record<string, string> = {
+    sky: 'bg-sky-500', violet: 'bg-violet-500', emerald: 'bg-emerald-500', orange: 'bg-orange-500'
+  }
+  return `flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${selected ? `${colors[accent]} text-white` : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'}`
+}
+const selectCNBillingMode = (mode: CNBillingMode) => {
+  if (form.platform === 'kimi') {
+    const defaultPaygUrl = 'https://api.moonshot.cn/v1'
+    const codingUrl = 'https://api.kimi.com/coding/v1'
+    if (mode === 'coding_plan' && apiKeyBaseUrl.value === defaultPaygUrl) apiKeyBaseUrl.value = codingUrl
+    if (mode === 'payg' && apiKeyBaseUrl.value === codingUrl) apiKeyBaseUrl.value = defaultPaygUrl
+  }
+  cnBillingMode.value = mode
+}
 
 const syncPreviewCredentials = computed(() => {
   const apiKey = apiKeyValue.value.trim()
@@ -5460,11 +5593,16 @@ watch(
     } else {
       if (newPlatform === 'kimi' || newPlatform === 'zhipu' || newPlatform === 'deepseek') {
         accountCategory.value = 'apikey'
+        cnBillingMode.value = 'payg'
+        cnApiMode.value = 'chat_completions'
       }
       allowOverages.value = false
       antigravityWhitelistModels.value = []
       antigravityModelMappings.value = []
       antigravityModelRestrictionMode.value = 'mapping'
+    }
+    if (newPlatform === 'deepseek') {
+      cnBillingMode.value = 'payg'
     }
     if (newPlatform !== 'gemini' && newPlatform !== 'anthropic' && accountCategory.value === 'service_account') {
       accountCategory.value = 'oauth-based'
@@ -6442,6 +6580,18 @@ const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unk
   return Object.keys(extra).length > 0 ? extra : undefined
 }
 
+// CN providers share the API-key account type, while these values describe the
+// upstream plan/protocol selected in the admin UI. Keep them in `extra` so an
+// edit round-trip does not lose the choice; the existing gateway still uses its
+// established Chat Completions dispatch path by default.
+const buildCNProviderExtra = (base?: Record<string, unknown>): Record<string, unknown> | undefined => {
+  if (!isCNProvider.value) return base
+  const extra: Record<string, unknown> = { ...(base || {}) }
+  extra.cn_billing_mode = cnBillingMode.value
+  extra.cn_api_mode = cnApiMode.value
+  return Object.keys(extra).length > 0 ? extra : undefined
+}
+
 // Helper function to create account with mixed channel warning handling
 const doCreateAccount = async (payload: CreateAccountRequest) => {
   const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
@@ -6886,7 +7036,7 @@ const handleSubmit = async () => {
   }
 
   form.credentials = credentials
-  const extra = buildAnthropicExtra(buildOpenAIExtra())
+  const extra = buildCNProviderExtra(buildAnthropicExtra(buildOpenAIExtra()))
 
   await doCreateAccount({
     ...form,
