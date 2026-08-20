@@ -54,6 +54,7 @@ const EDGE_QUEUE_WAIT_MS_HEADER: &str = "x-sub2api-edge-queue-wait-ms";
 const EDGE_RELAY_START_MS_HEADER: &str = "x-sub2api-edge-relay-start-ms";
 const EDGE_RETRY_COUNT_HEADER: &str = "x-sub2api-edge-retry-count";
 const EDGE_CONTINUATION_HEADER: &str = "x-sub2api-edge-continuation";
+const EDGE_DEFER_PAYLOAD_COMMIT_HEADER: &str = "x-sub2api-edge-defer-payload-commit";
 const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 const SSE_STRING_INITIAL_CAPACITY: usize = 8192;
 const SSE_STRING_IDLE_MAX_CAPACITY: usize = 64 * 1024;
@@ -1217,6 +1218,7 @@ struct ClientDisconnectCompleteGuard {
     state: AppState,
     started_at: Instant,
     request: Mutex<CompleteRequest>,
+    lease_identity: Option<SharedLeaseIdentity>,
     definitive_failure: AtomicBool,
     done: AtomicBool,
 }
@@ -1271,9 +1273,21 @@ impl ClientDisconnectCompleteGuard {
             state,
             started_at,
             request: Mutex::new(request),
+            lease_identity: None,
             definitive_failure: AtomicBool::new(false),
             done: AtomicBool::new(false),
         }
+    }
+
+    fn new_with_lease_identity(
+        state: AppState,
+        started_at: Instant,
+        request: CompleteRequest,
+        lease_identity: SharedLeaseIdentity,
+    ) -> Self {
+        let mut guard = Self::new(state, started_at, request);
+        guard.lease_identity = Some(lease_identity);
+        guard
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1425,6 +1439,11 @@ impl Drop for ClientDisconnectCompleteGuard {
         let Ok(mut request) = self.request.lock().map(|request| request.clone()) else {
             return;
         };
+        if let Some(identity) = self.lease_identity.as_ref() {
+            let identity = lease_identity_snapshot(identity);
+            request.lease_id = identity.lease_id;
+            request.account_id = identity.account_id;
+        }
         if self.definitive_failure.load(Ordering::SeqCst) {
             request.success = false;
             request.client_disconnected = false;
@@ -2281,17 +2300,23 @@ async fn handle_openai_edge(
     )
     .await
     {
-        Ok(resp) => {
+        Ok(mut resp) => {
+            let defer_payload_commit = resp
+                .headers_mut()
+                .remove(EDGE_DEFER_PAYLOAD_COMMIT_HEADER)
+                .is_some();
             let identity = lease_identity_snapshot(&relay_identity);
-            if let Some(lease_id) = identity.lease_id {
-                spawn_payload_commit(
-                    state.clone(),
-                    CommitRequest {
-                        edge_request_id: edge_request_id.clone(),
-                        lease_id: Some(lease_id),
-                        account_id: identity.account_id,
-                    },
-                );
+            if !defer_payload_commit {
+                if let Some(lease_id) = identity.lease_id {
+                    spawn_payload_commit(
+                        state.clone(),
+                        CommitRequest {
+                            edge_request_id: edge_request_id.clone(),
+                            lease_id: Some(lease_id),
+                            account_id: identity.account_id,
+                        },
+                    );
+                }
             }
             request_abort_guard.mark_done();
             resp
@@ -4459,7 +4484,7 @@ async fn relay_upstream(
     if allow_initial_queue {
         relay_upstream_direct_with_global_permit(state, plan, request_body, context).await
     } else {
-        relay_upstream_direct(state, plan, request_body, context).await
+        relay_upstream_direct_core(state, plan, request_body, context).await
     }
 }
 
@@ -4600,6 +4625,18 @@ async fn relay_upstream_direct_with_global_permit(
         _worker: state.metrics.begin_relay_work(),
     });
     relay_upstream_direct(state, plan, request_body, context).await
+}
+
+// Retry paths run after the initial relay has already selected its lane. Keep
+// them on the core direct path so the early-placeholder wrapper is entered
+// only once and cannot recursively capture a non-Send relay future.
+async fn relay_upstream_retry_core(
+    state: AppState,
+    mut plan: EdgePlan,
+    context: RelayAttemptContext,
+) -> anyhow::Result<Response> {
+    let request_body = take_request_body_bytes(&mut plan)?;
+    relay_upstream_direct_core(state, plan, request_body, context).await
 }
 
 async fn open_body_retry_upstream(
@@ -4766,6 +4803,159 @@ async fn retry_body_upstream(
 }
 
 async fn relay_upstream_direct(
+    state: AppState,
+    plan: EdgePlan,
+    request_body: Vec<u8>,
+    context: RelayAttemptContext,
+) -> anyhow::Result<Response> {
+    let timeout = normalize_first_token_timeout_placeholder_ms(
+        plan.first_token_timeout_placeholder_ms,
+        plan.account_type.as_deref(),
+    );
+    if timeout.is_none() {
+        return relay_upstream_direct_core(state, plan, request_body, context).await;
+    }
+    let mut inner_plan = plan.clone();
+    inner_plan.first_token_timeout_placeholder_ms = None;
+    let response_dialect = plan.response_dialect.clone();
+    let started_at = context.started_at;
+    let timing = context.timing.clone();
+    let commit_state = state.clone();
+    let commit_lease_identity = context.lease_identity.clone();
+    let abort_marker = context.abort_done_marker.clone();
+    let abort_state = state.clone();
+    let abort_edge_request_id = plan.edge_request_id.clone();
+    let abort_lease_id = plan.lease_id.clone();
+    let abort_account_id = plan.account_id;
+    let outer_complete_guard = ClientDisconnectCompleteGuard::new_with_lease_identity(
+        state.clone(),
+        started_at,
+        pending_stream_complete_request(
+            plan.edge_request_id.clone(),
+            plan.lease_id.clone(),
+            plan.account_id,
+            timing.prepare_ms,
+            timing.queue_wait_ms,
+            timing.relay_start_ms,
+            timing.fallback_reason.clone(),
+            timing.retry_count,
+        ),
+        commit_lease_identity.clone(),
+    );
+    let inner = Box::pin(relay_upstream_direct_core(
+        state,
+        inner_plan,
+        request_body,
+        context,
+    ));
+    let mut builder = Response::builder().status(StatusCode::OK);
+    write_direct_stream_response_headers(
+        builder.headers_mut().expect("headers"),
+        &HeaderMap::new(),
+    );
+    builder.headers_mut().expect("headers").insert(
+        HeaderName::from_static(EDGE_DEFER_PAYLOAD_COMMIT_HEADER),
+        HeaderValue::from_static("1"),
+    );
+    let body = stream! {
+        let outer_complete_guard = outer_complete_guard;
+        let mut inner = inner;
+        let mut placeholder_sent = false;
+        let mut progress_summary = ChatStreamSummary::default();
+        let deadline = tokio::time::Instant::from_std(started_at) + timeout.expect("checked");
+        let mut timer = Box::pin(tokio::time::sleep_until(deadline));
+        let response = tokio::select! {
+            _ = &mut timer => {
+                placeholder_sent = true;
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &ChatStreamSummary::default())));
+                inner.await
+            }
+            result = &mut inner => result,
+        };
+        match response {
+            Ok(response) if response.status().is_success() => {
+                outer_complete_guard.mark_done();
+                let mut data = response.into_body().into_data_stream();
+                let mut payload_committed = false;
+                loop {
+                    let item = if !placeholder_sent {
+                        tokio::select! {
+                            _ = &mut timer => {
+                                placeholder_sent = true;
+                                yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &ChatStreamSummary::default())));
+                                continue;
+                            }
+                            item = data.next() => item,
+                        }
+                    } else {
+                        data.next().await
+                    };
+                    let Some(item) = item else {
+                        break;
+                    };
+                    match item {
+                        Ok(chunk) => {
+                            let observation = progress_summary.observe(&chunk);
+                            if observation.starts_downstream_ttft || observation.starts_real_output
+                            {
+                                placeholder_sent = true;
+                            }
+                            if observation.starts_real_output && !payload_committed {
+                                payload_committed = spawn_payload_commit_for_identity(
+                                    &commit_state,
+                                    &abort_edge_request_id,
+                                    &commit_lease_identity,
+                                );
+                            }
+                            yield Ok::<Bytes, std::io::Error>(chunk)
+                        }
+                        Err(_) => {
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_terminal_failure_frame(response_dialect.as_deref())));
+                            break;
+                        }
+                    }
+                }
+                if !payload_committed {
+                    spawn_payload_commit_for_identity(
+                        &commit_state,
+                        &abort_edge_request_id,
+                        &commit_lease_identity,
+                    );
+                }
+            }
+            Ok(_) => {
+                outer_complete_guard.mark_done();
+                let _ = placeholder_sent;
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_terminal_failure_frame(response_dialect.as_deref())));
+            }
+            Err(error) => {
+                let aborted = call_abort(
+                    &abort_state,
+                    AbortRequest {
+                        edge_request_id: abort_edge_request_id,
+                        lease_id: abort_lease_id,
+                        account_id: abort_account_id,
+                        reason: format!("early_placeholder_relay_failed: {error}"),
+                        failure_class: "abort_failed".to_string(),
+                        client_disconnected: false,
+                        relay_attempted: true,
+                        fallback_to_go: false,
+                    },
+                )
+                .await
+                .is_ok();
+                if aborted {
+                    outer_complete_guard.mark_done();
+                }
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_terminal_failure_frame(response_dialect.as_deref())));
+            }
+        }
+    };
+    mark_lease_abort_transferred(abort_marker.as_ref());
+    Ok(builder.body(Body::from_stream(body))?)
+}
+
+async fn relay_upstream_direct_core(
     state: AppState,
     plan: EdgePlan,
     request_body: Vec<u8>,
@@ -5004,6 +5194,7 @@ async fn relay_upstream_direct(
             .record_upstream_response(response.status(), version);
         Ok::<_, anyhow::Error>((response, upstream_client_guard))
     });
+
     let (upstream, mut upstream_client_guard) = match upstream_send.await {
         Ok(result) => result,
         Err(err)
@@ -5148,7 +5339,7 @@ async fn relay_upstream_direct(
                 let mut next_timing = timing.clone();
                 next_timing.retry_count += 1;
                 drop(lease_renewal_guard);
-                return Box::pin(relay_upstream(
+                return Box::pin(relay_upstream_retry_core(
                     state,
                     next_plan,
                     RelayAttemptContext {
@@ -5162,7 +5353,6 @@ async fn relay_upstream_direct(
                         header_guard,
                         ingress_permit,
                     },
-                    false,
                 ))
                 .await;
             }
@@ -5236,12 +5426,10 @@ async fn relay_upstream_direct(
         .and_then(|v| v.to_str().ok())
         .map(ToOwned::to_owned);
     let stream_guard = complete_state.metrics.begin_stream();
-    // Keep the compatibility-frame deadline request-relative so the configured
-    // stage value represents the downstream target from request start. The
-    // timer is only polled after successful upstream headers, so no frame is
-    // committed before the response can still fail over safely.
-    let first_token_timeout_deadline = first_token_timeout_placeholder
-        .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
+    // Start the compatibility-frame stage after successful upstream headers;
+    // response-header latency is not automatically subtracted from the stage.
+    let first_token_timeout_deadline =
+        first_token_timeout_placeholder.map(openai_first_token_timeout_deadline_after_headers);
     // Construct the guard outside the async stream so a body dropped before its
     // first poll still settles the lease.
     let complete_guard = ClientDisconnectCompleteGuard::new(
@@ -5453,7 +5641,7 @@ async fn relay_upstream_direct(
                             preamble_gate = SsePreambleGate::new(preamble_flush || response_dialect.as_deref() != Some("responses"));
                             bootstrap_timer = None;
                             first_token_timeout_deadline = next_first_token_timeout_placeholder
-                                .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
+                                .map(openai_first_token_timeout_deadline_after_headers);
                             first_token_timeout_timer = if !first_token_timeout_placeholder_sent && !downstream_ttft_observed {
                                 first_token_timeout_deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline)))
                             } else {
@@ -5541,7 +5729,7 @@ async fn relay_upstream_direct(
                         );
                         bootstrap_timer = None;
                         first_token_timeout_deadline = next_first_token_timeout_placeholder
-                            .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
+                            .map(openai_first_token_timeout_deadline_after_headers);
                         first_token_timeout_timer = if !first_token_timeout_placeholder_sent
                             && !downstream_ttft_observed
                         {
@@ -5793,7 +5981,7 @@ async fn relay_upstream_direct(
                             preamble_gate = SsePreambleGate::new(preamble_flush || response_dialect.as_deref() != Some("responses"));
                             bootstrap_timer = None;
                             first_token_timeout_deadline = next_first_token_timeout_placeholder
-                                .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
+                                .map(openai_first_token_timeout_deadline_after_headers);
                             first_token_timeout_timer = if !first_token_timeout_placeholder_sent && !downstream_ttft_observed {
                                 first_token_timeout_deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline)))
                             } else {
@@ -6026,7 +6214,7 @@ async fn retry_after_race_response_header_budget(
             "retry_failure_already_recorded: edge response header total budget exhausted"
         );
     }
-    Box::pin(relay_upstream(
+    Box::pin(relay_upstream_retry_core(
         state,
         next_plan,
         RelayAttemptContext {
@@ -6040,7 +6228,6 @@ async fn retry_after_race_response_header_budget(
             header_guard,
             ingress_permit,
         },
-        false,
     ))
     .await
 }
@@ -6104,7 +6291,7 @@ async fn retry_after_queue_wait_budget(
     if let Some(relay_attempted_marker) = relay_attempted_marker {
         relay_attempted_marker.store(true, Ordering::SeqCst);
     }
-    Box::pin(relay_upstream(
+    Box::pin(relay_upstream_retry_core(
         state,
         next_plan,
         RelayAttemptContext {
@@ -6118,7 +6305,6 @@ async fn retry_after_queue_wait_budget(
             header_guard,
             ingress_permit,
         },
-        false,
     ))
     .await
 }
@@ -6192,7 +6378,7 @@ async fn retry_after_upstream_transport_error(
             "retry_failure_already_recorded: edge response header total budget exhausted"
         );
     }
-    Box::pin(relay_upstream(
+    Box::pin(relay_upstream_retry_core(
         state,
         next_plan,
         RelayAttemptContext {
@@ -6206,7 +6392,6 @@ async fn retry_after_upstream_transport_error(
             header_guard,
             ingress_permit,
         },
-        false,
     ))
     .await
 }
@@ -6249,11 +6434,8 @@ fn normalize_first_token_timeout_placeholder_ms(
     }
 }
 
-fn openai_first_token_timeout_deadline(
-    started_at: std::time::Instant,
-    timeout: Duration,
-) -> tokio::time::Instant {
-    tokio::time::Instant::from_std(started_at) + timeout
+fn openai_first_token_timeout_deadline_after_headers(timeout: Duration) -> tokio::time::Instant {
+    tokio::time::Instant::now() + timeout
 }
 
 fn delay_until_elapsed(started_at: Instant, timeout: Duration) -> Duration {
@@ -7348,6 +7530,26 @@ fn spawn_payload_commit(state: AppState, request: CommitRequest) {
             }
         });
     }
+}
+
+fn spawn_payload_commit_for_identity(
+    state: &AppState,
+    edge_request_id: &str,
+    identity: &SharedLeaseIdentity,
+) -> bool {
+    let identity = lease_identity_snapshot(identity);
+    let Some(lease_id) = identity.lease_id else {
+        return false;
+    };
+    spawn_payload_commit(
+        state.clone(),
+        CommitRequest {
+            edge_request_id: edge_request_id.to_string(),
+            lease_id: Some(lease_id),
+            account_id: identity.account_id,
+        },
+    );
+    true
 }
 
 async fn send_renew_once(state: &AppState, request: &RenewRequest) -> anyhow::Result<()> {
@@ -9455,14 +9657,12 @@ mod tests {
     }
 
     #[test]
-    fn first_token_timeout_deadline_is_request_relative() {
-        let started_at = std::time::Instant::now()
-            .checked_sub(Duration::from_millis(300))
-            .expect("instant subtraction");
-        let deadline = openai_first_token_timeout_deadline(started_at, Duration::from_millis(800));
+    fn first_token_timeout_stage_starts_after_headers() {
+        let timeout = Duration::from_millis(800);
+        let deadline = openai_first_token_timeout_deadline_after_headers(timeout);
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        assert!(remaining <= Duration::from_millis(550));
-        assert!(remaining >= Duration::from_millis(350));
+        assert!(remaining <= timeout);
+        assert!(remaining >= Duration::from_millis(700));
     }
 
     #[test]
