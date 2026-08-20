@@ -306,6 +306,10 @@ func doUpstreamWithResponseHeaderDeadline(client *http.Client, req *http.Request
 	if req == nil {
 		return client.Do(req)
 	}
+	profile := service.HTTPUpstreamProfileFromContext(req.Context())
+	if profile == service.HTTPUpstreamProfileMedia || profile == service.HTTPUpstreamProfileOpenAIMedia {
+		return client.Do(req)
+	}
 	deadline, ok := service.HTTPUpstreamResponseHeaderDeadline(req.Context())
 	if !ok {
 		return client.Do(req)
@@ -488,7 +492,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	if profile != nil {
 		profileKey = profile.CacheKey()
 	}
-	cacheKey := "tls:" + profileKey + ":" + buildCacheKey(isolation, proxyKey, accountID, protocolMode)
+	cacheKey := "tls:" + profileKey + ":" + buildProfileCacheKey(isolation, proxyKey, accountID, protocolMode, upstreamProfile)
 	poolKey := buildPoolKey(settings, protocolMode) + ":tls"
 
 	now := time.Now()
@@ -648,7 +652,7 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 	settings := s.resolvePoolSettings(isolation, accountConcurrency)
 	settings = s.applyProfilePoolSettings(settings, profile)
 	// 构建缓存键（根据隔离策略不同）
-	cacheKey := buildCacheKey(isolation, proxyKey, accountID, protocolMode)
+	cacheKey := buildProfileCacheKey(isolation, proxyKey, accountID, protocolMode, profile)
 	// 构建连接池配置键（用于检测配置变更）
 	poolKey := buildPoolKey(settings, protocolMode)
 
@@ -899,6 +903,10 @@ func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, pr
 		settings.responseHeaderTimeout = upstreamBillingProbeResponseHeaderTimeout
 		return settings
 	}
+	if profile == service.HTTPUpstreamProfileMedia || profile == service.HTTPUpstreamProfileOpenAIMedia {
+		settings.responseHeaderTimeout = 0
+		return settings
+	}
 	if profile != service.HTTPUpstreamProfileOpenAI {
 		return settings
 	}
@@ -956,6 +964,14 @@ func buildCacheKey(isolation, proxyKey string, accountID int64, protocolMode str
 	return base
 }
 
+func buildProfileCacheKey(isolation, proxyKey string, accountID int64, protocolMode string, profile service.HTTPUpstreamProfile) string {
+	base := buildCacheKey(isolation, proxyKey, accountID, protocolMode)
+	if profile == service.HTTPUpstreamProfileDefault {
+		return base
+	}
+	return string(profile) + ":" + base
+}
+
 func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
 	settings := openAIHTTP2Settings{
 		enabled:                   false,
@@ -986,7 +1002,7 @@ func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamPr
 	if profile == service.HTTPUpstreamProfileBillingProbe {
 		return upstreamProtocolModeBillingProbe
 	}
-	if profile != service.HTTPUpstreamProfileOpenAI {
+	if profile != service.HTTPUpstreamProfileOpenAI && profile != service.HTTPUpstreamProfileOpenAIMedia {
 		return upstreamProtocolModeDefault
 	}
 	settings := s.resolveOpenAIHTTP2Settings()
@@ -1091,7 +1107,7 @@ func isUpstreamTimeoutError(err error) bool {
 }
 
 func (s *httpUpstreamService) recordOpenAIHTTP2Failure(profile service.HTTPUpstreamProfile, protocolMode, proxyKey string, err error) {
-	if profile != service.HTTPUpstreamProfileOpenAI || protocolMode != upstreamProtocolModeOpenAIH2 {
+	if (profile != service.HTTPUpstreamProfileOpenAI && profile != service.HTTPUpstreamProfileOpenAIMedia) || protocolMode != upstreamProtocolModeOpenAIH2 {
 		return
 	}
 	settings := s.resolveOpenAIHTTP2Settings()
@@ -1111,7 +1127,7 @@ func (s *httpUpstreamService) recordOpenAIHTTP2Failure(profile service.HTTPUpstr
 }
 
 func (s *httpUpstreamService) recordOpenAIHTTP2Success(profile service.HTTPUpstreamProfile, protocolMode, proxyKey string) {
-	if profile != service.HTTPUpstreamProfileOpenAI || protocolMode != upstreamProtocolModeOpenAIH2 {
+	if (profile != service.HTTPUpstreamProfileOpenAI && profile != service.HTTPUpstreamProfileOpenAIMedia) || protocolMode != upstreamProtocolModeOpenAIH2 {
 		return
 	}
 	if !isHTTPProxyKey(proxyKey) {

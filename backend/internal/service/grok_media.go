@@ -447,6 +447,9 @@ func (s *OpenAIGatewayService) forwardGrokMedia(ctx context.Context, c *gin.Cont
 	if err != nil {
 		return nil, err
 	}
+	if endpoint.IsGenerationRequest() {
+		upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileMedia))
+	}
 	upstreamReq.Header.Set("Authorization", "Bearer "+token)
 	upstreamReq.Header.Set("Accept", "application/json")
 	applyGrokOAuthIdentityHeaders(upstreamReq.Header, targetURL, account.IsGrokOAuth())

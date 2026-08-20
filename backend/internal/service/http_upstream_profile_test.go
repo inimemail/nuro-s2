@@ -19,3 +19,12 @@ func TestWithHTTPUpstreamProfile_OpenAI(t *testing.T) {
 		t.Fatalf("expected profile %q, got %q", HTTPUpstreamProfileOpenAI, profile)
 	}
 }
+
+func TestWithHTTPUpstreamProfile_MediaProfiles(t *testing.T) {
+	for _, profile := range []HTTPUpstreamProfile{HTTPUpstreamProfileMedia, HTTPUpstreamProfileOpenAIMedia} {
+		ctx := WithHTTPUpstreamProfile(context.Background(), profile)
+		if got := HTTPUpstreamProfileFromContext(ctx); got != profile {
+			t.Fatalf("expected profile %q, got %q", profile, got)
+		}
+	}
+}

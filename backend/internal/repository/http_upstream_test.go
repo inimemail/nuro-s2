@@ -95,6 +95,31 @@ func TestDoUpstreamWithResponseHeaderDeadlineDoesNotCancelEstablishedStream(t *t
 	require.Equal(t, "data", string(body))
 }
 
+func TestDoUpstreamWithResponseHeaderDeadlineMediaProfileIgnoresRaceDeadline(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("media")),
+			Request:    req,
+		}, nil
+	})}
+	req, err := http.NewRequest(http.MethodPost, "https://upstream.invalid/v1/images/generations", nil)
+	require.NoError(t, err)
+	req = req.WithContext(service.WithHTTPUpstreamResponseHeaderDeadline(
+		service.WithHTTPUpstreamProfile(req.Context(), service.HTTPUpstreamProfileMedia),
+		time.Now().Add(-time.Second),
+	))
+
+	resp, err := doUpstreamWithResponseHeaderDeadline(client, req)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "media", string(body))
+	require.NoError(t, resp.Body.Close())
+}
+
 func TestGrokAccessDeniedFallbackKeepsOriginalResponseWhenFallbackFails(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		status := http.StatusForbidden
@@ -401,6 +426,71 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileCustomHeaderTimeout() {
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
 	require.Equal(s.T(), 1800*time.Second, transport.ResponseHeaderTimeout)
+}
+
+func (s *HTTPUpstreamSuite) TestMediaProfilesDisableHeaderTimeoutWithoutChangingOpenAITransport() {
+	s.cfg.Gateway = config.GatewayConfig{
+		ResponseHeaderTimeout:       30,
+		OpenAIResponseHeaderTimeout: 30,
+		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{
+			Enabled: true,
+		},
+	}
+	svc := s.newService()
+	entries := make(map[service.HTTPUpstreamProfile]*upstreamClientEntry)
+
+	for _, profile := range []service.HTTPUpstreamProfile{
+		service.HTTPUpstreamProfileMedia,
+		service.HTTPUpstreamProfileOpenAIMedia,
+	} {
+		entry, err := svc.getClientEntry("", 1, 1, profile, false, false)
+		require.NoError(s.T(), err)
+		entries[profile] = entry
+		transport, ok := entry.client.Transport.(*http.Transport)
+		require.True(s.T(), ok, "expected *http.Transport")
+		require.Zero(s.T(), transport.ResponseHeaderTimeout, "media profile must not inherit the global header timeout")
+		if profile == service.HTTPUpstreamProfileOpenAIMedia {
+			require.True(s.T(), transport.ForceAttemptHTTP2, "OpenAI media must retain HTTP/2 transport behavior")
+			require.Equal(s.T(), upstreamProtocolModeOpenAIH2, entry.protocolMode)
+		}
+	}
+
+	entry, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	require.NoError(s.T(), err)
+	transport, ok := entry.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Equal(s.T(), 30*time.Second, transport.ResponseHeaderTimeout, "normal OpenAI requests must retain the configured timeout")
+	require.NotSame(s.T(), entries[service.HTTPUpstreamProfileOpenAIMedia], entry, "media and normal OpenAI requests must not share a timeout-sensitive pool")
+
+	mediaAgain, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAIMedia, false, false)
+	require.NoError(s.T(), err)
+	require.Same(s.T(), entries[service.HTTPUpstreamProfileOpenAIMedia], mediaAgain, "normal OpenAI traffic must not evict the media pool")
+}
+
+func (s *HTTPUpstreamSuite) TestOpenAIMediaTLSFingerprintPoolIsIsolatedFromNormalOpenAI() {
+	s.cfg.Gateway = config.GatewayConfig{
+		OpenAIResponseHeaderTimeout: 30,
+		OpenAIHTTP2:                 config.GatewayOpenAIHTTP2Config{Enabled: true},
+	}
+	svc := s.newService()
+	profile := &tlsfingerprint.Profile{Name: "test"}
+
+	media, err := svc.getClientEntryWithTLS("", 1, 1, profile, service.HTTPUpstreamProfileOpenAIMedia, false, false)
+	require.NoError(s.T(), err)
+	mediaTransport, ok := media.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Zero(s.T(), mediaTransport.ResponseHeaderTimeout)
+
+	normal, err := svc.getClientEntryWithTLS("", 1, 1, profile, service.HTTPUpstreamProfileOpenAI, false, false)
+	require.NoError(s.T(), err)
+	normalTransport, ok := normal.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Equal(s.T(), 30*time.Second, normalTransport.ResponseHeaderTimeout)
+	require.NotSame(s.T(), media, normal)
+
+	mediaAgain, err := svc.getClientEntryWithTLS("", 1, 1, profile, service.HTTPUpstreamProfileOpenAIMedia, false, false)
+	require.NoError(s.T(), err)
+	require.Same(s.T(), media, mediaAgain)
 }
 
 func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintDoesNotInheritGenericHeaderTimeout() {

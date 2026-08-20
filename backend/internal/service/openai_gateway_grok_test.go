@@ -457,6 +457,7 @@ func TestOpenAIGatewayService_ForwardGrokMediaOAuthUsesImagineEndpointAndCLIHead
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "https://api.x.ai/v1/images/generations", upstream.lastReq.URL.String())
+	require.Equal(t, HTTPUpstreamProfileMedia, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
 	require.Equal(t, "Bearer grok-token", upstream.lastReq.Header.Get("Authorization"))
 	require.Equal(t, grokCLIVersion, upstream.lastReq.Header.Get("X-Grok-Client-Version"))
 	require.Equal(t, "custom-grok-media", upstream.lastReq.Header.Get("User-Agent"))
@@ -518,12 +519,36 @@ func TestOpenAIGatewayService_ForwardGrokVideoMutationEndpoints(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			require.Equal(t, "https://api.x.ai"+tt.path, upstream.lastReq.URL.String())
+			require.Equal(t, HTTPUpstreamProfileMedia, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
 			require.JSONEq(t, string(body), string(upstream.lastBody))
 			require.Equal(t, "video-mutation-123", result.ResponseID)
 			require.Equal(t, 1, result.VideoCount)
 			require.Equal(t, 6, result.VideoDurationSeconds)
 		})
 	}
+}
+
+func TestOpenAIGatewayService_ForwardGrokVideoStatusKeepsDefaultUpstreamProfile(t *testing.T) {
+	setGinTestMode()
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"request_id":"video-123","status":"pending"}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID: 71, Platform: PlatformGrok, Type: AccountTypeAPIKey, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "api-key"},
+	}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/video-123", nil)
+
+	result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideoStatus, "video-123", nil, "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, HTTPUpstreamProfileDefault, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
 }
 
 func TestOpenAIGatewayService_GrokVideoBindingFailurePrecedesResponseCommit(t *testing.T) {

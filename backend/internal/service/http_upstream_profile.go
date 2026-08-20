@@ -12,6 +12,14 @@ type HTTPUpstreamProfile string
 const (
 	HTTPUpstreamProfileDefault HTTPUpstreamProfile = ""
 	HTTPUpstreamProfileOpenAI  HTTPUpstreamProfile = "openai"
+	// Media generation may legitimately complete expensive work before returning
+	// response headers. Keep the provider's default transport behavior while
+	// disabling only the response-header deadline.
+	HTTPUpstreamProfileMedia HTTPUpstreamProfile = "media"
+	// OpenAI media generation can legitimately finish the expensive work before
+	// returning response headers. Keep OpenAI transport behavior, but do not
+	// apply the text/Responses response-header deadline.
+	HTTPUpstreamProfileOpenAIMedia HTTPUpstreamProfile = "openai_media"
 	// Billing probes use a separate connection pool so a short probe cadence
 	// cannot consume production first-token connections.
 	HTTPUpstreamProfileBillingProbe HTTPUpstreamProfile = "billing_probe"
@@ -42,7 +50,7 @@ func HTTPUpstreamProfileFromContext(ctx context.Context) HTTPUpstreamProfile {
 		return HTTPUpstreamProfileDefault
 	}
 	switch profile {
-	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileBillingProbe:
+	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileMedia, HTTPUpstreamProfileOpenAIMedia, HTTPUpstreamProfileBillingProbe:
 		return profile
 	default:
 		return HTTPUpstreamProfileDefault
