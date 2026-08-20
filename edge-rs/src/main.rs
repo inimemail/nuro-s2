@@ -5236,13 +5236,12 @@ async fn relay_upstream_direct(
         .and_then(|v| v.to_str().ok())
         .map(ToOwned::to_owned);
     let stream_guard = complete_state.metrics.begin_stream();
-    // Start the compatibility-frame window after upstream response headers are
-    // available. This keeps the frame close to the Responses preamble so
-    // downstream 176 clients have a response context before recording TTFT.
-    // Header/transport failover remains governed by the existing Edge retry
-    // budget and is intentionally not changed here.
-    let first_token_timeout_deadline =
-        first_token_timeout_placeholder.map(|timeout| tokio::time::Instant::now() + timeout);
+    // Keep the compatibility-frame deadline request-relative so the configured
+    // stage value represents the downstream target from request start. The
+    // timer is only polled after successful upstream headers, so no frame is
+    // committed before the response can still fail over safely.
+    let first_token_timeout_deadline = first_token_timeout_placeholder
+        .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
     // Construct the guard outside the async stream so a body dropped before its
     // first poll still settles the lease.
     let complete_guard = ClientDisconnectCompleteGuard::new(
@@ -5454,7 +5453,7 @@ async fn relay_upstream_direct(
                             preamble_gate = SsePreambleGate::new(preamble_flush || response_dialect.as_deref() != Some("responses"));
                             bootstrap_timer = None;
                             first_token_timeout_deadline = next_first_token_timeout_placeholder
-                                .map(|timeout| tokio::time::Instant::now() + timeout);
+                                .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
                             first_token_timeout_timer = if !first_token_timeout_placeholder_sent && !downstream_ttft_observed {
                                 first_token_timeout_deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline)))
                             } else {
@@ -5542,7 +5541,7 @@ async fn relay_upstream_direct(
                         );
                         bootstrap_timer = None;
                         first_token_timeout_deadline = next_first_token_timeout_placeholder
-                            .map(|timeout| tokio::time::Instant::now() + timeout);
+                            .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
                         first_token_timeout_timer = if !first_token_timeout_placeholder_sent
                             && !downstream_ttft_observed
                         {
@@ -5794,7 +5793,7 @@ async fn relay_upstream_direct(
                             preamble_gate = SsePreambleGate::new(preamble_flush || response_dialect.as_deref() != Some("responses"));
                             bootstrap_timer = None;
                             first_token_timeout_deadline = next_first_token_timeout_placeholder
-                                .map(|timeout| tokio::time::Instant::now() + timeout);
+                                .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
                             first_token_timeout_timer = if !first_token_timeout_placeholder_sent && !downstream_ttft_observed {
                                 first_token_timeout_deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline)))
                             } else {
@@ -6248,6 +6247,13 @@ fn normalize_first_token_timeout_placeholder_ms(
         Some(value) if (1..=max).contains(&value) => Some(Duration::from_millis(value)),
         _ => None,
     }
+}
+
+fn openai_first_token_timeout_deadline(
+    started_at: std::time::Instant,
+    timeout: Duration,
+) -> tokio::time::Instant {
+    tokio::time::Instant::from_std(started_at) + timeout
 }
 
 fn delay_until_elapsed(started_at: Instant, timeout: Duration) -> Duration {
@@ -9446,6 +9452,17 @@ mod tests {
             normalize_first_token_timeout_placeholder_ms(Some(100_001), Some("api_key")),
             None
         );
+    }
+
+    #[test]
+    fn first_token_timeout_deadline_is_request_relative() {
+        let started_at = std::time::Instant::now()
+            .checked_sub(Duration::from_millis(300))
+            .expect("instant subtraction");
+        let deadline = openai_first_token_timeout_deadline(started_at, Duration::from_millis(800));
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(remaining <= Duration::from_millis(550));
+        assert!(remaining >= Duration::from_millis(350));
     }
 
     #[test]
