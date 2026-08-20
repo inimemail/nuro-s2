@@ -4843,7 +4843,7 @@ async fn relay_upstream_direct(
     } else {
         None
     };
-    let mut first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+    let first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
         plan.first_token_timeout_placeholder_ms,
         plan.account_type.as_deref(),
     );
@@ -5288,10 +5288,7 @@ async fn relay_upstream_direct(
         // events are held when the account disabled preamble flush; a missing
         // field is decoded as true for compatibility with older Go plans.
         let mut preamble_gate = SsePreambleGate::new(
-            (preamble_flush
-                || safe_token_placeholder
-                || first_token_timeout_placeholder.is_some())
-                || response_dialect.as_deref() != Some("responses"),
+            preamble_flush || response_dialect.as_deref() != Some("responses"),
         );
         summary.request_id = upstream_request_id;
         guard.update_stream_snapshot(
@@ -5413,6 +5410,13 @@ async fn relay_upstream_direct(
                         Some(status.as_u16()),
                         false,
                     );
+                    // Responses 176 clients require the upstream preamble
+                    // (`response.created`) before they accept the synthetic
+                    // transport-progress delta as a TTFT marker. Release
+                    // anything buffered by the preamble gate first.
+                    for output in preamble_gate.force() {
+                        yield Ok::<Bytes, std::io::Error>(output);
+                    }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
                     continue;
                 }
@@ -5430,12 +5434,13 @@ async fn relay_upstream_direct(
                         current_edge_retry_count = retry.retry_count;
                         current_plan = retry.plan.clone();
                         guard.update_lease_identity(current_plan.lease_id.clone(), current_plan.account_id);
-                        safe_token_placeholder = current_plan.safe_token_placeholder;
-                        first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+                        let next_safe_token_placeholder = current_plan.safe_token_placeholder;
+                        let next_first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
                             current_plan.first_token_timeout_placeholder_ms,
                             current_plan.account_type.as_deref(),
                         );
                         if let Some((next_upstream, next_guard)) = retry.upstream {
+                            safe_token_placeholder = next_safe_token_placeholder;
                             upstream_client_guard.release();
                             lease_renewal_guard.take();
                             lease_renewal_guard = LeaseRenewalGuard::start(&complete_state, &current_plan);
@@ -5446,9 +5451,9 @@ async fn relay_upstream_direct(
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
                             sanitizer = OpenAIStreamSanitizer::new_with_downstream_cache_usage_mode(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref());
-                            preamble_gate = SsePreambleGate::new((preamble_flush || safe_token_placeholder || first_token_timeout_placeholder.is_some()) || response_dialect.as_deref() != Some("responses"));
+                            preamble_gate = SsePreambleGate::new(preamble_flush || response_dialect.as_deref() != Some("responses"));
                             bootstrap_timer = None;
-                            first_token_timeout_deadline = first_token_timeout_placeholder
+                            first_token_timeout_deadline = next_first_token_timeout_placeholder
                                 .map(|timeout| tokio::time::Instant::now() + timeout);
                             first_token_timeout_timer = if !first_token_timeout_placeholder_sent && !downstream_ttft_observed {
                                 first_token_timeout_deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline)))
@@ -5508,7 +5513,7 @@ async fn relay_upstream_direct(
                         current_plan.account_id,
                     );
                     safe_token_placeholder = current_plan.safe_token_placeholder;
-                    first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+                    let next_first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
                         current_plan.first_token_timeout_placeholder_ms,
                         current_plan.account_type.as_deref(),
                     );
@@ -5533,13 +5538,10 @@ async fn relay_upstream_direct(
                             downstream_cache_usage_mode.as_deref(),
                         );
                         preamble_gate = SsePreambleGate::new(
-                            (preamble_flush
-                                || safe_token_placeholder
-                                || first_token_timeout_placeholder.is_some())
-                                || response_dialect.as_deref() != Some("responses"),
+                            preamble_flush || response_dialect.as_deref() != Some("responses"),
                         );
                         bootstrap_timer = None;
-                        first_token_timeout_deadline = first_token_timeout_placeholder
+                        first_token_timeout_deadline = next_first_token_timeout_placeholder
                             .map(|timeout| tokio::time::Instant::now() + timeout);
                         first_token_timeout_timer = if !first_token_timeout_placeholder_sent
                             && !downstream_ttft_observed
@@ -5627,6 +5629,12 @@ async fn relay_upstream_direct(
                                 for output in preamble_gate.accept(sanitized, false, false) {
                                     yield Ok::<Bytes, std::io::Error>(output);
                                 }
+                            }
+                            // Keep the Responses event order intact: release
+                            // `response.created` before the synthetic
+                            // transport-progress delta.
+                            for output in preamble_gate.force() {
+                                yield Ok::<Bytes, std::io::Error>(output);
                             }
                             let placeholder = openai_stream_timeout_placeholder_frame(
                                 response_dialect.as_deref(),
@@ -5768,7 +5776,7 @@ async fn relay_upstream_direct(
                         current_plan = retry.plan.clone();
                         guard.update_lease_identity(current_plan.lease_id.clone(), current_plan.account_id);
                         safe_token_placeholder = current_plan.safe_token_placeholder;
-                        first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+                        let next_first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
                             current_plan.first_token_timeout_placeholder_ms,
                             current_plan.account_type.as_deref(),
                         );
@@ -5783,9 +5791,9 @@ async fn relay_upstream_direct(
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
                             sanitizer = OpenAIStreamSanitizer::new_with_downstream_cache_usage_mode(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref());
-                            preamble_gate = SsePreambleGate::new((preamble_flush || safe_token_placeholder || first_token_timeout_placeholder.is_some()) || response_dialect.as_deref() != Some("responses"));
+                            preamble_gate = SsePreambleGate::new(preamble_flush || response_dialect.as_deref() != Some("responses"));
                             bootstrap_timer = None;
-                            first_token_timeout_deadline = first_token_timeout_placeholder
+                            first_token_timeout_deadline = next_first_token_timeout_placeholder
                                 .map(|timeout| tokio::time::Instant::now() + timeout);
                             first_token_timeout_timer = if !first_token_timeout_placeholder_sent && !downstream_ttft_observed {
                                 first_token_timeout_deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline)))
@@ -9303,6 +9311,31 @@ mod tests {
         // local placeholder separately without treating the preamble as a
         // real token event.
         assert!(gate.accept(Bytes::new(), false, false).is_empty());
+    }
+
+    #[test]
+    fn responses_placeholder_follows_buffered_created_preamble() {
+        let mut gate = SsePreambleGate::new(false);
+        let created = Bytes::from_static(
+            b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\"}}\n\n",
+        );
+        assert!(gate.accept(created, false, false).is_empty());
+
+        let mut output = gate
+            .force()
+            .into_iter()
+            .flat_map(|chunk| chunk.to_vec())
+            .collect::<Vec<_>>();
+        output.extend_from_slice(
+            openai_responses_safe_token_placeholder_frame(Some("resp_123")).as_bytes(),
+        );
+        let output = String::from_utf8(output).expect("placeholder stream must be UTF-8");
+
+        let created_offset = output.find("response.created").expect("created preamble");
+        let placeholder_offset = output
+            .find("response.transport_progress.delta")
+            .expect("transport placeholder");
+        assert!(created_offset < placeholder_offset);
     }
 
     #[test]
