@@ -637,6 +637,17 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 	if streamFailed || !sawTerminal {
+		if !clientDisconnected && c.Request.Context().Err() == nil &&
+			(OpenAIRequestUpstreamCommitted(c) || clientOutputStarted) && !OpenAIRequestTerminalWritten(c) {
+			writeOpenAIRequestPlaceholderErrorSSE(
+				c,
+				openAIRequestFirstTokenPlaceholderDialectChatCompletions,
+				originalModel,
+				"upstream_error",
+				"Upstream request failed",
+			)
+			terminalEventType = "error"
+		}
 		return resultWithUsage(), s.newOpenAIStreamFailoverError(c, account, false, requestID, nil, "Upstream request failed")
 	}
 	if realFirstTokenMs != nil {

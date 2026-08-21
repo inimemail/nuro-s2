@@ -3003,7 +3003,13 @@ func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error,
 
 func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
 	if failoverClientGone(c) {
+		if h.gatewayService != nil {
+			h.gatewayService.CompleteOpenAIStreamStallAction(c, true)
+		}
 		return
+	}
+	if h.gatewayService != nil {
+		h.gatewayService.CompleteOpenAIStreamStallAction(c, false)
 	}
 	if failoverErr.IsOpenAIRequestBodyTooLarge() {
 		service.SetOpsUpstreamError(c, http.StatusRequestEntityTooLarge, service.OpenAIRequestBodyTooLargeClientMessage, "")

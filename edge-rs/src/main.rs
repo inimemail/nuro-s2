@@ -727,6 +727,7 @@ struct EdgePlan {
     #[serde(default)]
     safe_token_placeholder: bool,
     first_token_timeout_placeholder_ms: Option<u64>,
+    semantic_progress_timeout_ms: Option<u64>,
     race_response_header_timeout_ms: Option<u64>,
     #[serde(default)]
     edge_protection_enabled: bool,
@@ -927,6 +928,9 @@ fn relay_error_fallback_reason(err: &anyhow::Error) -> &'static str {
     }
     if message.contains("upstream body idle timeout") {
         return "edge_upstream_body_idle_timeout";
+    }
+    if message.contains("semantic progress timeout") {
+        return "edge_semantic_progress_timeout";
     }
     if message.contains("edge relay queue full") {
         return "edge_relay_queue_full";
@@ -1137,6 +1141,7 @@ struct CompleteRequest {
     upstream_first_byte_ms: Option<i64>,
     first_token_ms: Option<i64>,
     real_first_token_ms: Option<i64>,
+    max_semantic_gap_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     guard_sample_at_unix_ns: Option<i64>,
     first_client_flush_ms: Option<i64>,
@@ -1197,6 +1202,8 @@ struct ChatStreamObservation {
     starts_client_output: bool,
     starts_real_output: bool,
     starts_downstream_ttft: bool,
+    starts_semantic_progress: bool,
+    starts_visible_output: bool,
     saw_response_created: bool,
     response_created_boundary_offset: Option<usize>,
 }
@@ -1206,6 +1213,8 @@ impl ChatStreamObservation {
         self.starts_client_output |= other.starts_client_output;
         self.starts_real_output |= other.starts_real_output;
         self.starts_downstream_ttft |= other.starts_downstream_ttft;
+        self.starts_semantic_progress |= other.starts_semantic_progress;
+        self.starts_visible_output |= other.starts_visible_output;
         self.saw_response_created |= other.saw_response_created;
         if self.response_created_boundary_offset.is_none() {
             self.response_created_boundary_offset = other.response_created_boundary_offset;
@@ -1449,6 +1458,7 @@ fn pending_stream_complete_request(
         upstream_first_byte_ms: None,
         first_token_ms: None,
         real_first_token_ms: None,
+        max_semantic_gap_ms: None,
         guard_sample_at_unix_ns: None,
         first_client_flush_ms: None,
         edge_prepare_ms,
@@ -3317,6 +3327,7 @@ async fn relay_ws_session(
             upstream_first_byte_ms: None,
             first_token_ms: None,
             real_first_token_ms: latest_real_first_token_ms,
+            max_semantic_gap_ms: None,
             guard_sample_at_unix_ns: None,
             first_client_flush_ms: None,
             edge_prepare_ms: None,
@@ -5215,6 +5226,10 @@ async fn relay_upstream_direct_core_impl(
         plan.first_token_timeout_placeholder_ms,
         plan.account_type.as_deref(),
     );
+    let semantic_progress_timeout = plan
+        .semantic_progress_timeout_ms
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis);
     let edge_protection_enabled = plan.edge_protection_enabled;
     let edge_connect_timeout = edge_protection_enabled
         .then(|| plan.edge_connect_timeout_ms.filter(|value| *value > 0))
@@ -5482,6 +5497,7 @@ async fn relay_upstream_direct_core_impl(
                     upstream_first_byte_ms: None,
                     first_token_ms: None,
                     real_first_token_ms: None,
+                    max_semantic_gap_ms: None,
                     guard_sample_at_unix_ns: None,
                     first_client_flush_ms: None,
                     edge_prepare_ms: timing.prepare_ms,
@@ -5662,6 +5678,10 @@ async fn relay_upstream_direct_core_impl(
         let mut first_flush_ms: Option<i64> = None;
         let mut first_token_ms: Option<i64> = None;
         let mut real_first_token_ms: Option<i64> = None;
+        let mut completion_error_type: Option<String> = None;
+        let mut last_semantic_progress_at = Instant::now();
+        let mut max_semantic_gap = Duration::ZERO;
+        let mut semantic_sample_complete = false;
         let mut downstream_ttft_observed = false;
         let mut safe_token_placeholder_sent = false;
         let mut first_token_timeout_placeholder_sent = false;
@@ -5718,22 +5738,28 @@ async fn relay_upstream_direct_core_impl(
         let mut first_token_timeout_deadline = first_token_timeout_deadline;
         let mut first_token_timeout_timer = first_token_timeout_deadline
             .map(|deadline| Box::pin(tokio::time::sleep_until(deadline)));
+        let mut semantic_progress_timer = semantic_progress_timeout.map(tokio::time::sleep).map(Box::pin);
+        let mut semantic_stall_failover_used = false;
 
         enum RelaySelectEvent {
             BootstrapComment,
             FirstTokenTimeoutPlaceholder,
             Upstream(Option<Result<Bytes, reqwest::Error>>),
             BodyIdleTimeout,
+            SemanticProgressTimeout,
         }
 
         'relay: loop {
-            let event = if bootstrap_timer.is_some() || first_token_timeout_timer.is_some() {
+            let event = if bootstrap_timer.is_some() || first_token_timeout_timer.is_some() || semantic_progress_timer.is_some() {
                 tokio::select! {
                     _ = wait_optional_sleep(&mut bootstrap_timer), if !bootstrap_comment_sent => {
                         RelaySelectEvent::BootstrapComment
                     }
                     _ = wait_optional_sleep(&mut first_token_timeout_timer), if !first_token_timeout_placeholder_sent && !downstream_ttft_observed => {
                         RelaySelectEvent::FirstTokenTimeoutPlaceholder
+                    }
+                    _ = wait_optional_sleep(&mut semantic_progress_timer) => {
+                        RelaySelectEvent::SemanticProgressTimeout
                     }
                     next = async {
                         if let Some(idle_timeout) = edge_body_idle_timeout {
@@ -5812,15 +5838,21 @@ async fn relay_upstream_direct_core_impl(
                     yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
                     continue;
                 }
-                RelaySelectEvent::BodyIdleTimeout => {
-                    if real_first_token_ms.is_none() {
+                timeout_event @ (RelaySelectEvent::BodyIdleTimeout | RelaySelectEvent::SemanticProgressTimeout) => {
+                    let semantic_timeout = matches!(timeout_event, RelaySelectEvent::SemanticProgressTimeout);
+                    let retry_error_type = if semantic_timeout { "edge_semantic_progress_timeout" } else { "edge_upstream_body_idle_timeout" };
+                    let retry_error_message = if semantic_timeout { "upstream semantic progress timeout" } else { "upstream body idle timeout" };
+                    if real_first_token_ms.is_none() && (!semantic_timeout || !semantic_stall_failover_used) {
+                        if semantic_timeout {
+                            semantic_stall_failover_used = true;
+                        }
                         let retry = retry_body_upstream(
                             &complete_state,
                             current_plan.clone(),
                             &retry_request_body,
                             response_dialect.as_deref(),
-                            "edge_upstream_body_idle_timeout".to_string(),
-                            "upstream body idle timeout".to_string(),
+                            retry_error_type.to_string(),
+                            retry_error_message.to_string(),
                             current_edge_retry_count,
                         ).await;
                         current_edge_retry_count = retry.retry_count;
@@ -5852,11 +5884,20 @@ async fn relay_upstream_direct_core_impl(
                             } else {
                                 None
                             };
+                            semantic_progress_timer = current_plan.semantic_progress_timeout_ms
+                                .filter(|value| *value > 0)
+                                .map(Duration::from_millis)
+                                .map(tokio::time::sleep)
+                                .map(Box::pin);
+                            last_semantic_progress_at = Instant::now();
+                            max_semantic_gap = Duration::ZERO;
+                            semantic_sample_complete = false;
                             continue 'relay;
                         }
                     }
                     success = false;
-                    error_message = Some("upstream body idle timeout".to_string());
+                    error_message = Some(retry_error_message.to_string());
+                    completion_error_type = Some(retry_error_type.to_string());
                     if !summary.failed {
                         summary.failed = true;
                         summary.failed_terminal_event_type = Some("error".to_string());
@@ -5943,6 +5984,14 @@ async fn relay_upstream_direct_core_impl(
                         } else {
                             None
                         };
+                        semantic_progress_timer = current_plan.semantic_progress_timeout_ms
+                            .filter(|value| *value > 0)
+                            .map(Duration::from_millis)
+                            .map(tokio::time::sleep)
+                            .map(Box::pin);
+                        last_semantic_progress_at = Instant::now();
+                        max_semantic_gap = Duration::ZERO;
+                        semantic_sample_complete = false;
                         continue 'relay;
                     }
                 }
@@ -5971,6 +6020,21 @@ async fn relay_upstream_direct_core_impl(
                     bootstrap_comment_sent = true;
                     bootstrap_timer = None;
                     let observation = summary.observe(&chunk);
+                    if observation.starts_semantic_progress && !semantic_sample_complete {
+                        let now = Instant::now();
+                        max_semantic_gap = max_semantic_gap.max(now.duration_since(last_semantic_progress_at));
+                        last_semantic_progress_at = now;
+                    }
+                    if observation.starts_visible_output {
+                        semantic_progress_timer = None;
+                        semantic_sample_complete = true;
+                    } else if observation.starts_semantic_progress {
+                        semantic_progress_timer = current_plan.semantic_progress_timeout_ms
+                            .filter(|value| *value > 0)
+                            .map(Duration::from_millis)
+                            .map(tokio::time::sleep)
+                            .map(Box::pin);
+                    }
                     if real_first_token_ms.is_none() && observation.starts_real_output {
                         real_first_token_ms = Some(started_at.elapsed().as_millis() as i64);
                     }
@@ -6192,6 +6256,14 @@ async fn relay_upstream_direct_core_impl(
                             } else {
                                 None
                             };
+                            semantic_progress_timer = current_plan.semantic_progress_timeout_ms
+                                .filter(|value| *value > 0)
+                                .map(Duration::from_millis)
+                                .map(tokio::time::sleep)
+                                .map(Box::pin);
+                            last_semantic_progress_at = Instant::now();
+                            max_semantic_gap = Duration::ZERO;
+                            semantic_sample_complete = false;
                             continue 'relay;
                         }
                     }
@@ -6307,6 +6379,9 @@ async fn relay_upstream_direct_core_impl(
         let upstream_model = summary.upstream_model.clone();
         let usage = summary.usage.clone();
         let cyber_blocked = summary.cyber_blocked;
+        if success && !semantic_sample_complete {
+            max_semantic_gap = max_semantic_gap.max(Instant::now().duration_since(last_semantic_progress_at));
+        }
         complete_state.pools.recycle_sse_string(std::mem::take(&mut summary.pending));
 
         if call_complete(&complete_state, CompleteRequest {
@@ -6326,6 +6401,7 @@ async fn relay_upstream_direct_core_impl(
             upstream_first_byte_ms: first_byte_ms,
             first_token_ms,
             real_first_token_ms,
+            max_semantic_gap_ms: success.then_some(max_semantic_gap.as_millis() as i64),
             guard_sample_at_unix_ns: None,
             first_client_flush_ms: first_flush_ms,
             edge_prepare_ms,
@@ -6333,7 +6409,11 @@ async fn relay_upstream_direct_core_impl(
             edge_relay_start_ms,
             edge_fallback_reason,
             edge_retry_count: current_edge_retry_count,
-            error_type: if success { None } else { Some("stream_error".to_string()) },
+            error_type: if success {
+                None
+            } else {
+                completion_error_type.or_else(|| Some("stream_error".to_string()))
+            },
             error_message,
             upstream_status_code: Some(status.as_u16()),
             terminal_event_type,
@@ -7717,6 +7797,103 @@ fn json_starts_real_output(value: &Value) -> bool {
     }
 }
 
+fn json_starts_reasoning_output(value: &Value) -> bool {
+    (matches!(
+        json_event_type(value).unwrap_or_default(),
+        "response.reasoning_summary_text.delta" | "response.reasoning_text.delta"
+    ) && value
+        .get("delta")
+        .and_then(Value::as_str)
+        .is_some_and(|delta| !delta.trim().is_empty()))
+        || json_chat_starts_reasoning_output(value)
+}
+
+fn json_starts_visible_output(value: &Value) -> bool {
+    let event_type = json_event_type(value).unwrap_or_default();
+    match event_type {
+        "response.output_text.delta"
+        | "response.function_call_arguments.delta"
+        | "response.custom_tool_call_input.delta" => value
+            .get("delta")
+            .and_then(Value::as_str)
+            .is_some_and(|delta| !delta.trim().is_empty()),
+        "response.output_item.added" => value
+            .pointer("/item/type")
+            .and_then(Value::as_str)
+            .is_some_and(|item_type| matches!(item_type, "function_call" | "custom_tool_call")),
+        _ => json_chat_starts_visible_output(value),
+    }
+}
+
+fn json_chat_starts_reasoning_output(value: &Value) -> bool {
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                choice
+                    .get("delta")
+                    .and_then(Value::as_object)
+                    .is_some_and(|delta| {
+                        ["reasoning_content", "reasoning"].iter().any(|field| {
+                            delta
+                                .get(*field)
+                                .and_then(Value::as_str)
+                                .is_some_and(|text| !text.trim().is_empty())
+                        })
+                    })
+            })
+        })
+}
+
+fn json_chat_starts_visible_output(value: &Value) -> bool {
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                let Some(delta) = choice.get("delta").and_then(Value::as_object) else {
+                    return false;
+                };
+                delta
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.trim().is_empty())
+                    || delta.get("tool_calls").is_some_and(|calls| {
+                        calls.as_array().is_some_and(|calls| !calls.is_empty())
+                    })
+                    || delta
+                        .get("function_call")
+                        .is_some_and(|call| call.as_object().is_some_and(|call| !call.is_empty()))
+            })
+        })
+}
+
+fn json_starts_semantic_progress(value: &Value) -> bool {
+    let event_type = json_event_type(value).unwrap_or_default();
+    if matches!(
+        event_type,
+        "response.completed"
+            | "response.done"
+            | "response.failed"
+            | "response.incomplete"
+            | "response.cancelled"
+            | "response.canceled"
+    ) {
+        return true;
+    }
+    if event_type == "response.transport_progress.delta" {
+        return false;
+    }
+    json_starts_reasoning_output(value)
+        || json_starts_visible_output(value)
+        || (event_type.ends_with(".delta")
+            && value
+                .get("delta")
+                .and_then(Value::as_str)
+                .is_some_and(|delta| !delta.trim().is_empty()))
+}
+
 fn json_chat_starts_real_output(value: &Value) -> bool {
     value
         .get("choices")
@@ -8594,6 +8771,8 @@ impl ChatStreamSummary {
                     starts_client_output: false,
                     starts_real_output: false,
                     starts_downstream_ttft: false,
+                    starts_semantic_progress: false,
+                    starts_visible_output: false,
                     saw_response_created: true,
                     response_created_boundary_offset: None,
                 };
@@ -8628,6 +8807,8 @@ impl ChatStreamSummary {
                 &value,
                 self.response_dialect.as_deref(),
             ),
+            starts_semantic_progress: json_starts_semantic_progress(&value),
+            starts_visible_output: json_starts_visible_output(&value),
             saw_response_created: false,
             response_created_boundary_offset: None,
         };
@@ -10697,6 +10878,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             preamble_flush: false,
             safe_token_placeholder: true,
             first_token_timeout_placeholder_ms: Some(800),
+            semantic_progress_timeout_ms: None,
             race_response_header_timeout_ms: None,
             edge_protection_enabled: true,
             edge_connect_timeout_ms: Some(5_000),
@@ -11074,6 +11256,52 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     }
 
     #[test]
+    fn semantic_progress_ignores_structural_and_transport_placeholder_events() {
+        for value in [
+            serde_json::json!({"type": "response.created"}),
+            serde_json::json!({"type": "response.output_item.added", "item": {"type": "message"}}),
+            serde_json::json!({"type": "response.content_part.added"}),
+            serde_json::json!({"type": "response.transport_progress.delta", "delta": "in_progress"}),
+        ] {
+            assert!(!json_starts_semantic_progress(&value), "{value}");
+            assert!(!json_starts_visible_output(&value), "{value}");
+        }
+    }
+
+    #[test]
+    fn semantic_progress_distinguishes_reasoning_from_visible_output() {
+        let reasoning = serde_json::json!({
+            "type": "response.reasoning_summary_text.delta",
+            "delta": "thinking"
+        });
+        assert!(json_starts_semantic_progress(&reasoning));
+        assert!(json_starts_reasoning_output(&reasoning));
+        assert!(!json_starts_visible_output(&reasoning));
+
+        let visible = serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": "answer"
+        });
+        assert!(json_starts_semantic_progress(&visible));
+        assert!(!json_starts_reasoning_output(&visible));
+        assert!(json_starts_visible_output(&visible));
+
+        let chat_reasoning = serde_json::json!({
+            "choices": [{"delta": {"reasoning_content": "thinking"}}]
+        });
+        assert!(json_starts_semantic_progress(&chat_reasoning));
+        assert!(json_starts_reasoning_output(&chat_reasoning));
+        assert!(!json_starts_visible_output(&chat_reasoning));
+
+        let chat_visible = serde_json::json!({
+            "choices": [{"delta": {"content": "answer"}}]
+        });
+        assert!(json_starts_semantic_progress(&chat_visible));
+        assert!(!json_starts_reasoning_output(&chat_visible));
+        assert!(json_starts_visible_output(&chat_visible));
+    }
+
+    #[test]
     fn real_first_token_detection_requires_real_output() {
         assert!(!json_starts_real_output(&serde_json::json!({
             "type": "response.completed"
@@ -11224,6 +11452,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             preamble_flush: false,
             safe_token_placeholder: false,
             first_token_timeout_placeholder_ms: None,
+            semantic_progress_timeout_ms: None,
             race_response_header_timeout_ms: None,
             edge_protection_enabled: false,
             edge_connect_timeout_ms: None,
@@ -11373,6 +11602,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             preamble_flush: false,
             safe_token_placeholder: false,
             first_token_timeout_placeholder_ms: None,
+            semantic_progress_timeout_ms: None,
             race_response_header_timeout_ms: None,
             edge_protection_enabled: false,
             edge_connect_timeout_ms: None,

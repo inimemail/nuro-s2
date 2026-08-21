@@ -31,12 +31,17 @@ type openAIPlaceholderCoordinator struct {
 	deadline   time.Time
 	armed      bool
 
-	placeholderWritten     bool
-	safePlaceholderWritten bool
-	gatewayWriteObserved   bool
-	upstreamCommitted      bool
-	chatID                 string
-	chatCreated            int64
+	placeholderWritten       bool
+	safePlaceholderWritten   bool
+	gatewayWriteObserved     bool
+	upstreamCommitted        bool
+	terminalWritten          bool
+	responsesTerminalWritten bool
+	stallFailoverClaimed     bool
+	stallActionPending       bool
+	stallProgressKey         openAIStreamProgressKey
+	chatID                   string
+	chatCreated              int64
 }
 
 type openAIPlaceholderWriter struct {
@@ -146,7 +151,41 @@ func (c *openAIPlaceholderCoordinator) markWriteLocked(data []byte) {
 		return
 	}
 	c.upstreamCommitted = true
+	if openAIWriteContainsTerminalFrame(data) {
+		c.terminalWritten = true
+	}
+	if openAIWriteContainsResponsesTerminalFrame(data) {
+		c.responsesTerminalWritten = true
+	}
 	c.stopOnce.Do(func() { close(c.stop) })
+}
+
+func openAIWriteContainsTerminalFrame(data []byte) bool {
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if bytes.Equal(line, []byte("data: [DONE]")) {
+			return true
+		}
+	}
+	return openAIWriteContainsResponsesTerminalFrame(data)
+}
+
+func openAIWriteContainsResponsesTerminalFrame(data []byte) bool {
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if !gjson.ValidBytes(payload) {
+			continue
+		}
+		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+		if openAIResponsesTerminalEventType(eventType) != "" || eventType == "error" || gjson.GetBytes(payload, "error").Exists() {
+			return true
+		}
+	}
+	return false
 }
 
 func openAIWriteContainsOnlyGatewayFrames(data []byte) bool {
@@ -294,6 +333,54 @@ func (c *openAIPlaceholderCoordinator) snapshot() openAIRequestFirstTokenPlaceho
 		ChatID:            c.chatID,
 		ChatCreated:       c.chatCreated,
 	}
+}
+
+func (c *openAIPlaceholderCoordinator) tryClaimStallFailover(key openAIStreamProgressKey) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.upstreamCommitted || c.stallFailoverClaimed {
+		return false
+	}
+	c.stallFailoverClaimed = true
+	c.stallActionPending = true
+	c.stallProgressKey = key
+	return true
+}
+
+func (c *openAIPlaceholderCoordinator) completeStallAction(success bool) (openAIStreamProgressKey, bool) {
+	if c == nil {
+		return openAIStreamProgressKey{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.stallActionPending {
+		return openAIStreamProgressKey{}, false
+	}
+	c.stallActionPending = false
+	return c.stallProgressKey, true
+}
+
+func OpenAIRequestTerminalWritten(c *gin.Context) bool {
+	coordinator := openAIPlaceholderCoordinatorFromContext(c)
+	if coordinator == nil {
+		return false
+	}
+	coordinator.mu.Lock()
+	defer coordinator.mu.Unlock()
+	return coordinator.terminalWritten
+}
+
+func OpenAIRequestResponsesTerminalWritten(c *gin.Context) bool {
+	coordinator := openAIPlaceholderCoordinatorFromContext(c)
+	if coordinator == nil {
+		return false
+	}
+	coordinator.mu.Lock()
+	defer coordinator.mu.Unlock()
+	return coordinator.responsesTerminalWritten
 }
 
 func ensureOpenAIPlaceholderCoordinator(c *gin.Context, startedAt time.Time) *openAIPlaceholderCoordinator {

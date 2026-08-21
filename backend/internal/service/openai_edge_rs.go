@@ -61,6 +61,10 @@ type OpenAIEdgePlan struct {
 	// after the configured timeout when downstream has not observed a countable
 	// delta. It must not be reported as first_token_ms or real_first_token_ms.
 	FirstTokenTimeoutPlaceholderMS int `json:"first_token_timeout_placeholder_ms,omitempty"`
+	// SemanticProgressTimeoutMS is learned from successful, content-free stream
+	// timing samples. It is not an administrator setting and is omitted while
+	// the route is still learning or temporarily suspended.
+	SemanticProgressTimeoutMS int `json:"semantic_progress_timeout_ms,omitempty"`
 	// RaceResponseHeaderTimeoutMS bounds only the response-header wait while the
 	// request-level Edge race budget is active, including switched accounts. A
 	// successful SSE body is never time-limited by it.
@@ -157,6 +161,7 @@ type OpenAIEdgeCompleteRequest struct {
 	UpstreamFirstByteMS *int64      `json:"upstream_first_byte_ms,omitempty"`
 	FirstTokenMS        *int64      `json:"first_token_ms,omitempty"`
 	RealFirstTokenMS    *int64      `json:"real_first_token_ms,omitempty"`
+	MaxSemanticGapMS    *int64      `json:"max_semantic_gap_ms,omitempty"`
 	GuardSampleAtUnixNS *int64      `json:"guard_sample_at_unix_ns,omitempty"`
 	FirstClientFlushMS  *int64      `json:"first_client_flush_ms,omitempty"`
 	EdgePrepareMS       *int64      `json:"edge_prepare_ms,omitempty"`

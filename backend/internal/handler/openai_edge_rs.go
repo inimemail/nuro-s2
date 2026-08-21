@@ -82,6 +82,10 @@ type openAIEdgeLease struct {
 	channelUsageFields service.ChannelUsageFields
 	promptAudit        *securityaudit.Collector
 	payloadReleased    bool
+	stallActionPending bool
+	stallActionAccount *service.Account
+	stallActionModel   string
+	stallActionEffort  string
 	timer              *time.Timer
 	timerGeneration    uint64
 }
@@ -409,6 +413,38 @@ func (l *openAIEdgeLease) releaseAccount() {
 	}
 }
 
+// settleOpenAIEdgeStallAction closes the request-local semantic-stall action
+// exactly once. Complete, abort, and lease recovery can all race to settle a
+// lease, so the pending flag and its original route identity are consumed under
+// the lease lock before recording the result in the in-memory learner.
+func (h *OpenAIGatewayHandler) settleOpenAIEdgeStallAction(lease *openAIEdgeLease, success bool) {
+	if lease == nil {
+		return
+	}
+	lease.mu.Lock()
+	if !lease.stallActionPending {
+		lease.mu.Unlock()
+		return
+	}
+	account := lease.stallActionAccount
+	model := lease.stallActionModel
+	effort := lease.stallActionEffort
+	lease.stallActionPending = false
+	lease.stallActionAccount = nil
+	lease.stallActionModel = ""
+	lease.stallActionEffort = ""
+	lease.mu.Unlock()
+	if h != nil && h.gatewayService != nil && account != nil {
+		h.gatewayService.RecordOpenAIStreamStallActionResult(
+			account,
+			model,
+			service.OpenAIUpstreamTransportHTTPSSE,
+			effort,
+			success,
+		)
+	}
+}
+
 func (l *openAIEdgeLease) openAIRoutingModel() string {
 	if l == nil {
 		return ""
@@ -630,6 +666,7 @@ func (h *OpenAIGatewayHandler) expireOpenAIEdgeLease(lease *openAIEdgeLease, gen
 	}
 	h.openAIEdgeLeaseMu.Unlock()
 	if expired {
+		h.settleOpenAIEdgeStallAction(lease, false)
 		lease.release()
 	}
 }
@@ -867,6 +904,7 @@ func (h *OpenAIGatewayHandler) recoverOpenAIEdgeLeases(edgeNodeID, currentInstan
 	}
 	h.openAIEdgeLeaseMu.Unlock()
 	for _, lease := range stale {
+		h.settleOpenAIEdgeStallAction(lease, false)
 		lease.release()
 	}
 	return len(stale)
@@ -1766,8 +1804,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	status := req.UpstreamStatusCode
 	responseBody := openAIEdgeRetryResponseBody(req)
 	upstreamMsg := strings.TrimSpace(req.ErrorMessage)
+	edgeSemanticProgressTimeout := status == 0 && strings.TrimSpace(req.ErrorType) == "edge_semantic_progress_timeout"
 	edgeBodyTransportFailure := status == 0 && (strings.TrimSpace(req.ErrorType) == "edge_upstream_transport_error" ||
-		strings.TrimSpace(req.ErrorType) == "edge_upstream_body_idle_timeout")
+		strings.TrimSpace(req.ErrorType) == "edge_upstream_body_idle_timeout" || edgeSemanticProgressTimeout)
 	if req.WroteClientResponse {
 		if lease.cachePolicyApplied &&
 			service.IsOpenAIPromptCacheCreationOptimizationUnsupportedError(status, upstreamMsg, responseBody) &&
@@ -1855,6 +1894,29 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		Message:                openAIEdgeSafeErrorMessage(upstreamMsg),
 		RetryableOnSameAccount: !edgeResponseHeaderTimeout && service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, upstreamMsg, responseBody),
 		SkipPoolSoftCooldown:   modelRoutingError || edgeResponseHeaderTimeout || edgeBodyTransportFailure,
+	}
+	if edgeSemanticProgressTimeout {
+		if lease.stallActionPending {
+			return service.OpenAIEdgeRetryDecision{
+				Action:       service.OpenAIEdgeActionRespondError,
+				Reason:       "semantic_progress_failover_already_used",
+				StatusCode:   http.StatusGatewayTimeout,
+				ErrorType:    "upstream_timeout",
+				ErrorMessage: "Upstream request failed",
+			}
+		}
+		lease.stallActionPending = true
+		lease.stallActionAccount = lease.account
+		lease.stallActionModel = lease.openAIRoutingModel()
+		if lease.reasoningEffort != nil {
+			lease.stallActionEffort = *lease.reasoningEffort
+		}
+		failoverErr.RetryableOnSameAccount = false
+		failoverErr.SkipPromptCacheAvoidance = true
+		failoverErr.SkipStickySessionEviction = true
+		failoverErr.SkipSchedulePenalty = true
+		failoverErr.Scope = service.GatewayFailureScopeRequest
+		failoverErr.NextAccountAction = service.NextAccountRetry
 	}
 	if failoverErr.RetryableOnSameAccount {
 		// Edge retries are intentionally immediate. The upstream attempt and the
@@ -2238,6 +2300,8 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 	if h.gatewayService != nil && lease.account != nil {
 		terminalType := strings.ToLower(strings.TrimSpace(req.TerminalEventType))
 		successfulTerminal := openAIEdgeCompletionIsSuccessful(lease.inboundEndpoint, req)
+		stallActionSuccess := successfulTerminal || req.ClientDisconnected || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass)
+		h.settleOpenAIEdgeStallAction(lease, stallActionSuccess)
 		requestLocalOutcome := openAIEdgeCompletionIsRequestLocal(req)
 		neutralOutcome := req.ClientDisconnected || req.CyberBlocked || requestLocalOutcome || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || terminalType == "response.incomplete" ||
 			terminalType == "response.cancelled" || terminalType == "response.canceled"
@@ -2275,6 +2339,9 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 				*realFirstTokenMs,
 				guardSampleAtUnixNS,
 			)
+		}
+		if successfulTerminal && req.MaxSemanticGapMS != nil && *req.MaxSemanticGapMS > 0 {
+			h.gatewayService.RecordOpenAIStreamSemanticGapSample(lease.account, lease.openAIRoutingModel(), lease.reasoningEffort, *req.MaxSemanticGapMS)
 		}
 		edgeFallbackReason := stringPointerFromTrimmed(req.EdgeFallbackReason)
 		result := &service.OpenAIForwardResult{
@@ -2382,6 +2449,9 @@ func openAIEdgeCompletionIsRequestLocal(req service.OpenAIEdgeCompleteRequest) b
 	if errorType == openAIEdgeResponseHeaderTimeoutErrorType {
 		return true
 	}
+	if errorType == "edge_semantic_progress_timeout" {
+		return true
+	}
 	// Keep rolling upgrades safe while older Edge nodes still report the
 	// response-header timeout as a generic request_error.
 	return errorType == "request_error" &&
@@ -2441,6 +2511,8 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeAbort(c *gin.Context) {
 	if lease != nil {
 		lease.release()
 		if h.gatewayService != nil && lease.account != nil {
+			actionSuccess := req.ClientDisconnected || openAIEdgeFailureClassIsLocalOrClient(req.FailureClass) || openAIEdgeAbortReasonIsNeutral(req.Reason)
+			h.settleOpenAIEdgeStallAction(lease, actionSuccess)
 			// Abort is also a settlement boundary for relay failures that never
 			// reached a terminal event. The circuit itself ignores client/local
 			// classes, while retaining upstream_disconnect observations.

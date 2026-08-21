@@ -1,0 +1,34 @@
+Review target: uncommitted OpenAI stream semantic-progress, Edge retry, terminal framing, and placeholder changes.
+Changed branch/field: request-local semantic stall failover, response terminal tracking, and learned semantic gap route state.
+
+Artifacts:
+- MODIFIED_FILE: review-artifacts/MODIFIED_FILE.go
+- DIFF_FILE: review-artifacts/DIFF_FILE
+- VERIFICATION.txt: review-artifacts/VERIFICATION.txt
+- ROLLBACK.sh: review-artifacts/ROLLBACK.sh
+
+BASELINE:
+command: git rev-parse HEAD
+literal output: 35af60518415999932ff7b88e138686f94f01d7a
+exit status: 0
+command: sha256sum /tmp/nuro-s2-baseline.go
+literal output: 1f2bf42239ba36ebff92b332b5a2ea9d588183824430a33c02c458387f9d1c38  /tmp/nuro-s2-baseline.go
+exit status: 0
+
+MODIFIED:
+command: sha256sum review-artifacts/MODIFIED_FILE.go
+literal output: c5b336513aa13fbba2184b0e87de309e3fb78c4353ae5dfd6ad87f7132996710  review-artifacts/MODIFIED_FILE.go
+exit status: 0
+command: env GOCACHE=/tmp/nuro-s2-go-cache go test ./... -run '^$' -count=1
+literal output: success (no test failures; compile-only package check)
+exit status: 0
+command: cargo fmt --check && cargo clippy --locked -- -D warnings && cargo test --locked
+literal output: 139 passed, 0 failed
+exit status: 0
+
+ROLLBACK:
+command: cp review-artifacts/MODIFIED_FILE.go /tmp/nuro-s2-rollback-copy.go; ./review-artifacts/ROLLBACK.sh /tmp/nuro-s2-rollback-copy.go /tmp/nuro-s2-baseline.go; cmp -s /tmp/nuro-s2-rollback-copy.go /tmp/nuro-s2-baseline.go
+literal output: restored behavior/status; cmp matched baseline
+exit status: 0
+
+Target working tree remains modified; no source rollback was applied.

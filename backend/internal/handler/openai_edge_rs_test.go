@@ -1164,6 +1164,29 @@ func TestOpenAIEdgeRetryAmbiguousResponses400DoesNotReplay(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeRetryRejectsSecondSemanticFailover(t *testing.T) {
+	account := &service.Account{ID: 1001, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	h := &OpenAIGatewayHandler{openAIEdgeLeases: map[string]*openAIEdgeLease{
+		"lease-1": {
+			leaseID:            "lease-1",
+			account:            account,
+			stallActionPending: true,
+		},
+	}}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:      "lease-1",
+		AccountID:    account.ID,
+		ErrorType:    "edge_semantic_progress_timeout",
+		ErrorMessage: "upstream semantic progress timeout",
+	})
+
+	require.Equal(t, service.OpenAIEdgeActionRespondError, decision.Action)
+	require.Equal(t, "semantic_progress_failover_already_used", decision.Reason)
+	require.Equal(t, http.StatusGatewayTimeout, decision.StatusCode)
+}
+
 func TestOpenAIEdgeRetryProtectsPoolModelRouting404(t *testing.T) {
 	h := &OpenAIGatewayHandler{
 		openAIEdgeLeases: map[string]*openAIEdgeLease{
@@ -1344,6 +1367,14 @@ func TestOpenAIEdgeResponseHeaderTimeoutCompletionIsRequestLocal(t *testing.T) {
 			req: service.OpenAIEdgeCompleteRequest{
 				ErrorType:    "request_error",
 				ErrorMessage: openAIEdgeResponseHeaderTimeoutMessage,
+			},
+			want: true,
+		},
+		{
+			name: "semantic progress timeout",
+			req: service.OpenAIEdgeCompleteRequest{
+				ErrorType:    "edge_semantic_progress_timeout",
+				ErrorMessage: "upstream semantic progress timeout",
 			},
 			want: true,
 		},

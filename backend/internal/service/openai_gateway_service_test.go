@@ -1428,7 +1428,7 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "stream data interval timeout") {
 		t.Fatalf("expected stream timeout error, got %v", err)
 	}
-	if !strings.Contains(rec.Body.String(), "\"type\":\"error\"") || !strings.Contains(rec.Body.String(), "stream_timeout") {
+	if !strings.Contains(rec.Body.String(), "\"type\":\"response.failed\"") || !strings.Contains(rec.Body.String(), "stream_timeout") {
 		t.Fatalf("expected OpenAI-compatible error SSE event, got %q", rec.Body.String())
 	}
 }
@@ -3330,7 +3330,7 @@ func TestOpenAIStreamingPassthroughDoneMarkerIsNotResponsesSuccess(t *testing.T)
 	result, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "", "")
 	require.EqualError(t, err, "stream usage incomplete: missing terminal event")
 	require.NotNil(t, result)
-	require.Empty(t, result.terminalEventType)
+	require.Equal(t, "response.failed", result.terminalEventType)
 }
 
 func TestOpenAIStreamingTooLong(t *testing.T) {
@@ -3368,7 +3368,7 @@ func TestOpenAIStreamingTooLong(t *testing.T) {
 	if !errors.Is(err, bufio.ErrTooLong) {
 		t.Fatalf("expected ErrTooLong, got %v", err)
 	}
-	if !strings.Contains(rec.Body.String(), "\"type\":\"error\"") || !strings.Contains(rec.Body.String(), "response_too_large") {
+	if !strings.Contains(rec.Body.String(), "\"type\":\"response.failed\"") || !strings.Contains(rec.Body.String(), "response_too_large") {
 		t.Fatalf("expected OpenAI-compatible error SSE event, got %q", rec.Body.String())
 	}
 }

@@ -799,6 +799,7 @@ func TestForwardAsRawChatCompletions_FailedStreamPreservesUsageWithoutSuccessful
 	require.NotContains(t, rec.Body.String(), "private-upstream.example")
 	require.NotContains(t, rec.Body.String(), "Cloudflare")
 	require.Contains(t, rec.Body.String(), safeUpstreamErrorMessage)
+	require.Contains(t, rec.Body.String(), "data: [DONE]")
 }
 
 func TestForwardAsRawChatCompletions_UpstreamRequestIgnoresClientCancel(t *testing.T) {

@@ -252,3 +252,20 @@ func TestOpenAIPlaceholderCoordinatorComposesWithCompactKeepaliveWriter(t *testi
 	}
 	require.Contains(t, recorder.Body.String(), `"type":"response.transport_progress.delta"`)
 }
+
+func TestOpenAIPlaceholderCoordinatorAllowsOnlyOneStallFailoverAndTracksTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	StartOpenAIPlaceholderCoordination(c, time.Now())
+	coordinator := openAIPlaceholderCoordinatorFromContext(c)
+	key := openAIStreamProgressKey{accountID: 1, model: "gpt-5.4"}
+	require.True(t, coordinator.tryClaimStallFailover(key))
+	require.False(t, coordinator.tryClaimStallFailover(key))
+
+	_, err := c.Writer.WriteString("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n")
+	require.NoError(t, err)
+	require.True(t, OpenAIRequestTerminalWritten(c))
+	require.False(t, OpenAIRequestAllowsFailover(c, -1))
+}
