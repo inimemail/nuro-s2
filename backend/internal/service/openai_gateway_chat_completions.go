@@ -649,7 +649,11 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	acc.SupplementResponseOutput(finalResponse)
 	if finalResponse.Usage != nil {
 		usageForDownstream := cloneOpenAIResponsesUsage(finalResponse.Usage)
-		if normalizeOpenAIResponsesUsageForDownstream(usageForDownstream, openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)) {
+		if normalizeOpenAIResponsesUsageForDownstreamWithMarkup(
+			usageForDownstream,
+			openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel),
+			s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel),
+		) {
 			finalResponse.Usage = usageForDownstream
 		}
 	}
@@ -697,6 +701,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	requestFirstTokenPlaceholderOpt ...openAIRequestFirstTokenPlaceholderState,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
+	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
 	requestFirstTokenPlaceholder := openAIRequestFirstTokenPlaceholderState{}
 	if len(requestFirstTokenPlaceholderOpt) > 0 {
 		requestFirstTokenPlaceholder = requestFirstTokenPlaceholderOpt[0]
@@ -917,9 +923,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			if event.Response != nil && event.Response.Usage != nil {
 				usage = copyOpenAIUsageFromResponsesUsage(event.Response.Usage)
 			}
-			if downstreamMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel); downstreamMode != "" {
-				normalizeOpenAIResponsesStreamEventForDownstream(&event, downstreamMode)
-			}
+			normalizeOpenAIResponsesStreamEventForDownstreamWithMarkup(&event, downstreamCacheUsageMode, downstreamCacheMarkup)
 		}
 		if strings.TrimSpace(event.Type) == "response.failed" {
 			payloadBytes := []byte(payload)

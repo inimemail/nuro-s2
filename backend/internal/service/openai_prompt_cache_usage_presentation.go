@@ -5,11 +5,74 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"math/big"
 	"math/bits"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 )
+
+const openAIDownstreamCacheMarkupPriceScale = 1_000_000_000_000_000
+
+// OpenAIDownstreamCacheMarkupPolicy is copied into Edge plans. Prices use
+// fixed-point units so Go and Rust produce the same terminal usage values.
+type OpenAIDownstreamCacheMarkupPolicy struct {
+	ThresholdTokens             int64 `json:"threshold_tokens,omitempty"`
+	PercentBPS                  int64 `json:"percent_bps,omitempty"`
+	InputPriceUnits             int64 `json:"input_price_units,omitempty"`
+	CacheReadPriceUnits         int64 `json:"cache_read_price_units,omitempty"`
+	OutputPriceUnits            int64 `json:"output_price_units,omitempty"`
+	LongContextThreshold        int64 `json:"long_context_threshold,omitempty"`
+	LongContextInclusive        bool  `json:"long_context_inclusive,omitempty"`
+	LongContextInputMultiplier  int64 `json:"long_context_input_multiplier,omitempty"`
+	LongContextOutputMultiplier int64 `json:"long_context_output_multiplier,omitempty"`
+}
+
+func (p OpenAIDownstreamCacheMarkupPolicy) enabled() bool {
+	return p.ThresholdTokens >= 0 && p.PercentBPS > 0 && p.InputPriceUnits > 0 &&
+		p.CacheReadPriceUnits > 0 && p.OutputPriceUnits > 0
+}
+
+func openAIDownstreamCacheMarkupPriceUnits(price float64) int64 {
+	if price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) {
+		return 0
+	}
+	scaled := math.Round(price * openAIDownstreamCacheMarkupPriceScale)
+	if scaled <= 0 || scaled > math.MaxInt64 {
+		return 0
+	}
+	return int64(scaled)
+}
+
+func (s *OpenAIGatewayService) openAIDownstreamCacheMarkupPolicyForContext(
+	ctx context.Context,
+	account *Account,
+	model string,
+) OpenAIDownstreamCacheMarkupPolicy {
+	if OpenAIImageGenerationIntentFromContext(ctx) || account == nil ||
+		!account.IsOpenAIDownstreamCacheMarkupEnabled() || !isOpenAIGPTTextModel(model) || s == nil || s.billingService == nil {
+		return OpenAIDownstreamCacheMarkupPolicy{}
+	}
+	pricing, err := s.billingService.GetModelPricing(model)
+	if err != nil || pricing == nil {
+		return OpenAIDownstreamCacheMarkupPolicy{}
+	}
+	policy := OpenAIDownstreamCacheMarkupPolicy{
+		ThresholdTokens:             account.OpenAIDownstreamCacheMarkupThresholdTokens(),
+		PercentBPS:                  account.OpenAIDownstreamCacheMarkupPercentBPS(),
+		InputPriceUnits:             openAIDownstreamCacheMarkupPriceUnits(pricing.InputPricePerToken),
+		CacheReadPriceUnits:         openAIDownstreamCacheMarkupPriceUnits(pricing.CacheReadPricePerToken),
+		OutputPriceUnits:            openAIDownstreamCacheMarkupPriceUnits(pricing.OutputPricePerToken),
+		LongContextThreshold:        int64(pricing.LongContextInputThreshold),
+		LongContextInclusive:        pricing.LongContextThresholdInclusive,
+		LongContextInputMultiplier:  int64(math.Round(pricing.LongContextInputMultiplier * 1_000_000)),
+		LongContextOutputMultiplier: int64(math.Round(pricing.LongContextOutputMultiplier * 1_000_000)),
+	}
+	if !policy.enabled() {
+		return OpenAIDownstreamCacheMarkupPolicy{}
+	}
+	return policy
+}
 
 // openAIDownstreamCacheUsageMode is intentionally narrower than the request
 // optimization mode. A/B never rewrite downstream usage, and a disabled
@@ -54,12 +117,23 @@ func openAIDownstreamCacheUsageModeForContext(ctx context.Context, account *Acco
 // it so local billing, audit, and cache scheduling continue to use upstream
 // truth.
 func normalizeOpenAIDownstreamUsageJSON(body []byte, mode string) ([]byte, bool) {
-	if mode != OpenAIPromptCacheCreationOptimizationModeFree && mode != OpenAIPromptCacheCreationOptimizationModeInput125 {
+	return normalizeOpenAIDownstreamUsageJSONWithMarkup(body, mode, OpenAIDownstreamCacheMarkupPolicy{})
+}
+
+func normalizeOpenAIDownstreamUsageJSONWithMarkup(
+	body []byte,
+	mode string,
+	markup OpenAIDownstreamCacheMarkupPolicy,
+) ([]byte, bool) {
+	cacheCreationEnabled := mode == OpenAIPromptCacheCreationOptimizationModeFree || mode == OpenAIPromptCacheCreationOptimizationModeInput125
+	markupEnabled := markup.enabled()
+	if !cacheCreationEnabled && !markupEnabled {
 		return body, false
 	}
 	// Streaming callers see many pre-token events. Avoid a JSON decode unless
-	// the frame can actually carry a positive cache-creation bucket.
-	if !openAIUsageBytesContainCacheCreationAlias(body) {
+	// the frame can actually carry a relevant usage bucket.
+	if (!cacheCreationEnabled || !openAIUsageBytesContainCacheCreationAlias(body)) &&
+		(!markupEnabled || !openAIUsageBytesContainCacheReadAlias(body)) {
 		return body, false
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
@@ -74,7 +148,12 @@ func normalizeOpenAIDownstreamUsageJSON(body []byte, mode string) ([]byte, bool)
 	}
 	changed := false
 	for _, usage := range openAIKnownUsageObjects(object) {
-		changed = normalizeOpenAIUsageObjectForDownstream(usage, mode) || changed
+		rawCacheRead := openAIUsageCacheReadTokens(usage)
+		rawInput, _ := firstJSONIntWithKey(usage, "input_tokens", "prompt_tokens")
+		if cacheCreationEnabled {
+			changed = normalizeOpenAIUsageObjectForDownstream(usage, mode) || changed
+		}
+		changed = applyOpenAIDownstreamCacheMarkupObject(usage, rawInput, rawCacheRead, markup) || changed
 	}
 	if !changed {
 		return body, false
@@ -88,6 +167,12 @@ func normalizeOpenAIDownstreamUsageJSON(body []byte, mode string) ([]byte, bool)
 
 func openAIUsageBytesContainCacheCreationAlias(body []byte) bool {
 	return bytes.Contains(body, []byte(`"cache_creation`)) || bytes.Contains(body, []byte(`"cache_write`))
+}
+
+func openAIUsageBytesContainCacheReadAlias(body []byte) bool {
+	return bytes.Contains(body, []byte(`"cached_tokens"`)) ||
+		bytes.Contains(body, []byte(`"cache_read_input_tokens"`)) ||
+		bytes.Contains(body, []byte(`"cache_read_tokens"`))
 }
 
 func shouldNormalizeOpenAIStreamUsageForDownstream(body []byte, eventType string) bool {
@@ -106,6 +191,19 @@ func normalizeOpenAIDownstreamUsageForRequest(body []byte, ctx context.Context, 
 	return normalizeOpenAIDownstreamUsageJSON(body, openAIDownstreamCacheUsageModeForContext(ctx, account, model))
 }
 
+func (s *OpenAIGatewayService) normalizeOpenAIDownstreamUsageForRequest(
+	body []byte,
+	ctx context.Context,
+	account *Account,
+	model string,
+) ([]byte, bool) {
+	return normalizeOpenAIDownstreamUsageJSONWithMarkup(
+		body,
+		openAIDownstreamCacheUsageModeForContext(ctx, account, model),
+		s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, model),
+	)
+}
+
 func normalizeOpenAIWSDownstreamCacheUsage(message []byte, eventType string, mode string) []byte {
 	if mode == "" || !shouldNormalizeOpenAIStreamUsageForDownstream(message, eventType) {
 		return message
@@ -114,6 +212,38 @@ func normalizeOpenAIWSDownstreamCacheUsage(message []byte, eventType string, mod
 		return normalized
 	}
 	return message
+}
+
+func normalizeOpenAIWSDownstreamUsage(
+	message []byte,
+	eventType string,
+	mode string,
+	markup OpenAIDownstreamCacheMarkupPolicy,
+) []byte {
+	if !shouldNormalizeOpenAIStreamUsageForDownstreamWithMarkup(message, eventType, mode, markup) {
+		return message
+	}
+	if normalized, changed := normalizeOpenAIDownstreamUsageJSONWithMarkup(message, mode, markup); changed {
+		return normalized
+	}
+	return message
+}
+
+func shouldNormalizeOpenAIStreamUsageForDownstreamWithMarkup(
+	body []byte,
+	eventType string,
+	mode string,
+	markup OpenAIDownstreamCacheMarkupPolicy,
+) bool {
+	if shouldNormalizeOpenAIStreamUsageForDownstream(body, eventType) {
+		return true
+	}
+	if !markup.enabled() || !openAIUsageBytesContainCacheReadAlias(body) {
+		return false
+	}
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	return openAIResponsesTerminalEventType(eventType) != "" || eventType == "error" ||
+		(eventType == "" && bytes.Contains(body, []byte(`"usage"`)))
 }
 
 func openAIKnownUsageObjects(root map[string]any) []map[string]any {
@@ -192,6 +322,116 @@ func normalizeOpenAIUsageObjectForDownstream(usage map[string]any, mode string) 
 		usage["total_tokens"] = saturatingAddInt64(newInput, output)
 	}
 	return true
+}
+
+func openAIUsageCacheReadTokens(usage map[string]any) int64 {
+	return firstPositiveJSONInt(usage,
+		[]string{"input_tokens_details", "cached_tokens"},
+		[]string{"prompt_tokens_details", "cached_tokens"},
+		[]string{"cache_read_input_tokens"},
+		[]string{"cache_read_tokens"},
+		[]string{"cached_tokens"},
+	)
+}
+
+func applyOpenAIDownstreamCacheMarkupObject(
+	usage map[string]any,
+	rawInput int64,
+	rawCacheRead int64,
+	policy OpenAIDownstreamCacheMarkupPolicy,
+) bool {
+	if !policy.enabled() || rawCacheRead <= 0 || rawCacheRead < policy.ThresholdTokens {
+		return false
+	}
+	input, inputKey := firstJSONIntWithKey(usage, "input_tokens", "prompt_tokens")
+	output, outputKey := firstJSONIntWithKey(usage, "output_tokens", "completion_tokens")
+	if inputKey == "" || outputKey == "" {
+		return false
+	}
+	inputAdd, cacheReadAdd, outputAdd := openAIDownstreamCacheMarkupAdds(rawInput, rawCacheRead, policy)
+	if inputAdd == 0 && cacheReadAdd == 0 && outputAdd == 0 {
+		return false
+	}
+	cacheRead := openAIUsageCacheReadTokens(usage)
+	newInput := saturatingAddInt64(input, saturatingAddInt64(inputAdd, cacheReadAdd))
+	newCacheRead := saturatingAddInt64(cacheRead, cacheReadAdd)
+	newOutput := saturatingAddInt64(output, outputAdd)
+	usage[inputKey] = newInput
+	if alternate := map[string]string{"input_tokens": "prompt_tokens", "prompt_tokens": "input_tokens"}[inputKey]; alternate != "" {
+		if _, exists := usage[alternate]; exists {
+			usage[alternate] = newInput
+		}
+	}
+	usage[outputKey] = newOutput
+	if alternate := map[string]string{"output_tokens": "completion_tokens", "completion_tokens": "output_tokens"}[outputKey]; alternate != "" {
+		if _, exists := usage[alternate]; exists {
+			usage[alternate] = newOutput
+		}
+	}
+	setOpenAICacheReadAliases(usage, newCacheRead, true, inputKey)
+	if _, exists := usage["total_tokens"]; exists {
+		usage["total_tokens"] = saturatingAddInt64(newInput, newOutput)
+	}
+	return true
+}
+
+func openAIDownstreamCacheMarkupAdds(
+	rawInput int64,
+	rawCacheRead int64,
+	policy OpenAIDownstreamCacheMarkupPolicy,
+) (inputAdd, cacheReadAdd, outputAdd int64) {
+	inputPrice := policy.InputPriceUnits
+	cacheReadPrice := policy.CacheReadPriceUnits
+	outputPrice := policy.OutputPriceUnits
+	longContext := policy.LongContextThreshold > 0 &&
+		(rawInput > policy.LongContextThreshold || (policy.LongContextInclusive && rawInput == policy.LongContextThreshold))
+	if longContext {
+		inputPrice = multiplyFixedPrice(inputPrice, policy.LongContextInputMultiplier)
+		cacheReadPrice = multiplyFixedPrice(cacheReadPrice, policy.LongContextInputMultiplier)
+		outputPrice = multiplyFixedPrice(outputPrice, policy.LongContextOutputMultiplier)
+	}
+	return roundedMarkupTokens(rawCacheRead, cacheReadPrice, policy.PercentBPS, inputPrice),
+		roundedMarkupTokens(rawCacheRead, cacheReadPrice, policy.PercentBPS, cacheReadPrice),
+		roundedMarkupTokens(rawCacheRead, cacheReadPrice, policy.PercentBPS, outputPrice)
+}
+
+func multiplyFixedPrice(price, multiplierMillionths int64) int64 {
+	if price <= 0 || multiplierMillionths <= 0 {
+		return price
+	}
+	return roundedBigMulDiv([]int64{price, multiplierMillionths}, 1_000_000)
+}
+
+func roundedMarkupTokens(cacheRead, cacheReadPrice, percentBPS, bucketPrice int64) int64 {
+	if cacheRead <= 0 || cacheReadPrice <= 0 || percentBPS <= 0 || bucketPrice <= 0 {
+		return 0
+	}
+	denominator := saturatingAddInt64(0, bucketPrice)
+	if denominator > math.MaxInt64/30_000 {
+		return 0
+	}
+	denominator *= 30_000 // 10000 basis points and three equal cost shares.
+	return roundedBigMulDiv([]int64{cacheRead, cacheReadPrice, percentBPS}, denominator)
+}
+
+func roundedBigMulDiv(factors []int64, denominator int64) int64 {
+	if denominator <= 0 {
+		return 0
+	}
+	numerator := big.NewInt(1)
+	for _, factor := range factors {
+		if factor <= 0 {
+			return 0
+		}
+		numerator.Mul(numerator, big.NewInt(factor))
+	}
+	denom := big.NewInt(denominator)
+	numerator.Add(numerator, new(big.Int).Rsh(new(big.Int).Set(denom), 1))
+	numerator.Quo(numerator, denom)
+	if !numerator.IsInt64() {
+		return math.MaxInt64
+	}
+	return numerator.Int64()
 }
 
 type openAIDownstreamDisplayUsage struct {
@@ -514,6 +754,46 @@ func normalizeOpenAIResponsesUsageForDownstream(usage *apicompat.ResponsesUsage,
 	return true
 }
 
+func normalizeOpenAIResponsesUsageForDownstreamWithMarkup(
+	usage *apicompat.ResponsesUsage,
+	mode string,
+	markup OpenAIDownstreamCacheMarkupPolicy,
+) bool {
+	if usage == nil {
+		return false
+	}
+	rawInput := int64(usage.InputTokens)
+	rawCacheRead := int64(0)
+	if usage.InputTokensDetails != nil {
+		rawCacheRead = int64(max(usage.InputTokensDetails.CachedTokens, 0))
+	}
+	changed := normalizeOpenAIResponsesUsageForDownstream(usage, mode)
+	if !markup.enabled() || rawCacheRead <= 0 || rawCacheRead < markup.ThresholdTokens {
+		return changed
+	}
+	inputAdd, cacheReadAdd, outputAdd := openAIDownstreamCacheMarkupAdds(rawInput, rawCacheRead, markup)
+	if inputAdd == 0 && cacheReadAdd == 0 && outputAdd == 0 {
+		return changed
+	}
+	if usage.InputTokensDetails == nil {
+		usage.InputTokensDetails = &apicompat.ResponsesInputTokensDetails{}
+	}
+	usage.InputTokens = int(minInt64(
+		saturatingAddInt64(int64(usage.InputTokens), saturatingAddInt64(inputAdd, cacheReadAdd)),
+		math.MaxInt,
+	))
+	usage.InputTokensDetails.CachedTokens = int(minInt64(
+		saturatingAddInt64(int64(usage.InputTokensDetails.CachedTokens), cacheReadAdd),
+		math.MaxInt,
+	))
+	usage.OutputTokens = int(minInt64(saturatingAddInt64(int64(usage.OutputTokens), outputAdd), math.MaxInt))
+	usage.TotalTokens = int(minInt64(
+		saturatingAddInt64(int64(usage.InputTokens), int64(usage.OutputTokens)),
+		math.MaxInt,
+	))
+	return true
+}
+
 func cloneOpenAIResponsesUsage(usage *apicompat.ResponsesUsage) *apicompat.ResponsesUsage {
 	if usage == nil {
 		return nil
@@ -546,6 +826,34 @@ func normalizeOpenAIResponsesStreamEventForDownstream(event *apicompat.Responses
 		response := *event.Response
 		usage := cloneOpenAIResponsesUsage(event.Response.Usage)
 		if normalizeOpenAIResponsesUsageForDownstream(usage, mode) {
+			response.Usage = usage
+			event.Response = &response
+			changed = true
+		}
+	}
+	return changed
+}
+
+func normalizeOpenAIResponsesStreamEventForDownstreamWithMarkup(
+	event *apicompat.ResponsesStreamEvent,
+	mode string,
+	markup OpenAIDownstreamCacheMarkupPolicy,
+) bool {
+	if event == nil {
+		return false
+	}
+	changed := false
+	if event.Usage != nil {
+		usage := cloneOpenAIResponsesUsage(event.Usage)
+		if normalizeOpenAIResponsesUsageForDownstreamWithMarkup(usage, mode, markup) {
+			event.Usage = usage
+			changed = true
+		}
+	}
+	if event.Response != nil && event.Response.Usage != nil {
+		response := *event.Response
+		usage := cloneOpenAIResponsesUsage(event.Response.Usage)
+		if normalizeOpenAIResponsesUsageForDownstreamWithMarkup(usage, mode, markup) {
 			response.Usage = usage
 			event.Response = &response
 			changed = true

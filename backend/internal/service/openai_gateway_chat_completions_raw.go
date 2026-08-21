@@ -379,6 +379,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	ensureOpenAIPlaceholderCoordinator(c, startTime)
 	requestID := resp.Header.Get("x-request-id")
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
 
 	headersWritten := requestFirstTokenPlaceholder.Sent || requestFirstTokenPlaceholder.SafeSent
 	writeStreamHeaders := func() {
@@ -590,8 +591,8 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 						break
 					}
 				}
-				if downstreamCacheUsageMode != "" && shouldNormalizeOpenAIStreamUsageForDownstream([]byte(trimmedPayload), "") {
-					if normalizedPayload, normalized := normalizeOpenAIDownstreamUsageJSON([]byte(trimmedPayload), downstreamCacheUsageMode); normalized {
+				if shouldNormalizeOpenAIStreamUsageForDownstreamWithMarkup([]byte(trimmedPayload), "", downstreamCacheUsageMode, downstreamCacheMarkup) {
+					if normalizedPayload, normalized := normalizeOpenAIDownstreamUsageJSONWithMarkup([]byte(trimmedPayload), downstreamCacheUsageMode, downstreamCacheMarkup); normalized {
 						line = "data: " + string(normalizedPayload)
 					}
 				}
@@ -819,7 +820,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		usage = parsedUsage
 	}
 	downstreamBody := respBody
-	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(respBody, ctx, account, upstreamModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(respBody, ctx, account, upstreamModel); normalized {
 		downstreamBody = normalizedBody
 	}
 

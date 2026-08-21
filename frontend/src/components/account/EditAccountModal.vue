@@ -774,6 +774,13 @@
             v-model:enabled="promptCacheCreationOptimizationEnabled"
             v-model:mode="promptCacheCreationOptimizationMode"
           />
+          <DownstreamCacheMarkupControl
+            v-if="showPromptCacheCreationOptimizationToggle"
+            class="mt-3"
+            v-model:enabled="downstreamCacheMarkupEnabled"
+            v-model:threshold-tokens="downstreamCacheMarkupThresholdTokens"
+            v-model:percent="downstreamCacheMarkupPercent"
+          />
           <div v-if="showUpstreamStrongIsolationToggle" class="mt-3 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
             <div class="flex items-center justify-between gap-4">
               <div>
@@ -1354,6 +1361,12 @@
           v-if="showPromptCacheCreationOptimizationToggle"
           v-model:enabled="promptCacheCreationOptimizationEnabled"
           v-model:mode="promptCacheCreationOptimizationMode"
+        />
+        <DownstreamCacheMarkupControl
+          v-if="showPromptCacheCreationOptimizationToggle"
+          v-model:enabled="downstreamCacheMarkupEnabled"
+          v-model:threshold-tokens="downstreamCacheMarkupThresholdTokens"
+          v-model:percent="downstreamCacheMarkupPercent"
         />
         <div class="rounded-lg bg-amber-50 p-3 dark:bg-amber-900/15">
           <div class="flex items-center justify-between gap-4">
@@ -3722,6 +3735,7 @@ import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import PromptCacheCreationOptimizationControl from '@/components/account/PromptCacheCreationOptimizationControl.vue'
+import DownstreamCacheMarkupControl from '@/components/account/DownstreamCacheMarkupControl.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
@@ -3872,6 +3886,9 @@ const promptCacheBoostEnabled = ref(false)
 type PromptCacheCreationOptimizationMode = 'reduce' | 'suppress' | 'free' | 'input_125'
 const promptCacheCreationOptimizationEnabled = ref(false)
 const promptCacheCreationOptimizationMode = ref<PromptCacheCreationOptimizationMode>('reduce')
+const downstreamCacheMarkupEnabled = ref(false)
+const downstreamCacheMarkupThresholdTokens = ref(100000)
+const downstreamCacheMarkupPercent = ref(0)
 const promptCacheBoostAggressiveEnabled = ref(false)
 const promptCacheBoostUpstreamHitPriorityEnabled = ref(false)
 const promptCacheSmartRoutingEnabled = ref(false)
@@ -4054,6 +4071,22 @@ const loadPromptCacheCreationOptimizationFromCredentials = (
   }
 }
 
+const loadDownstreamCacheMarkupFromCredentials = (
+  credentials: Record<string, unknown>,
+  account: Account
+) => {
+  const applicable =
+    account.parent_account_id == null &&
+    account.platform === 'openai' &&
+    (account.type === 'oauth' || account.type === 'apikey') &&
+    credentials.image_pool_mode !== true
+  const threshold = Number(credentials.openai_downstream_cache_markup_threshold_tokens)
+  const percentBps = Number(credentials.openai_downstream_cache_markup_percent_bps)
+  downstreamCacheMarkupEnabled.value = applicable && credentials.openai_downstream_cache_markup_enabled === true
+  downstreamCacheMarkupThresholdTokens.value = Number.isFinite(threshold) && threshold >= 0 ? Math.trunc(threshold) : 100000
+  downstreamCacheMarkupPercent.value = Number.isFinite(percentBps) && percentBps >= 0 ? Math.round(percentBps) / 100 : 0
+}
+
 const applyPromptCacheCreationOptimizationCredentials = (credentials: Record<string, unknown>) => {
   delete credentials.openai_prompt_cache_creation_optimization_enabled
   delete credentials.openai_prompt_cache_creation_optimization_mode
@@ -4062,6 +4095,18 @@ const applyPromptCacheCreationOptimizationCredentials = (credentials: Record<str
   }
   credentials.openai_prompt_cache_creation_optimization_enabled = true
   credentials.openai_prompt_cache_creation_optimization_mode = promptCacheCreationOptimizationMode.value
+}
+
+const applyDownstreamCacheMarkupCredentials = (credentials: Record<string, unknown>) => {
+  delete credentials.openai_downstream_cache_markup_enabled
+  delete credentials.openai_downstream_cache_markup_threshold_tokens
+  delete credentials.openai_downstream_cache_markup_percent_bps
+  if (!showPromptCacheCreationOptimizationToggle.value) {
+    return
+  }
+  credentials.openai_downstream_cache_markup_enabled = downstreamCacheMarkupEnabled.value
+  credentials.openai_downstream_cache_markup_threshold_tokens = Math.max(0, Math.trunc(downstreamCacheMarkupThresholdTokens.value))
+  credentials.openai_downstream_cache_markup_percent_bps = Math.max(0, Math.round(downstreamCacheMarkupPercent.value * 100))
 }
 
 const applyCacheBoostAndIsolationCredentials = (credentials: Record<string, unknown>) => {
@@ -5040,6 +5085,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     ? accountExtra.cn_api_mode as CNApiMode
     : 'chat_completions'
   loadPromptCacheCreationOptimizationFromCredentials(credentials || {}, newAccount)
+  loadDownstreamCacheMarkupFromCredentials(credentials || {}, newAccount)
   interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
   const canUseHeaderOverride =
     newAccount.parent_account_id == null &&
@@ -5556,6 +5602,9 @@ watch(imagePoolModeEnabled, (enabled) => {
   if (enabled) {
     promptCacheCreationOptimizationEnabled.value = false
     promptCacheCreationOptimizationMode.value = 'reduce'
+    downstreamCacheMarkupEnabled.value = false
+    downstreamCacheMarkupThresholdTokens.value = 100000
+    downstreamCacheMarkupPercent.value = 0
     promptCacheBoostEnabled.value = false
     clearOpenAIPromptCacheAdvancedOptions()
     promptCacheBoostAggressiveEnabled.value = false
@@ -5575,6 +5624,9 @@ watch(showPromptCacheCreationOptimizationToggle, (visible) => {
   if (!visible) {
     promptCacheCreationOptimizationEnabled.value = false
     promptCacheCreationOptimizationMode.value = 'reduce'
+    downstreamCacheMarkupEnabled.value = false
+    downstreamCacheMarkupThresholdTokens.value = 100000
+    downstreamCacheMarkupPercent.value = 0
   }
 })
 
@@ -6292,6 +6344,7 @@ const handleSubmit = async () => {
       }
       applyCacheBoostAndIsolationCredentials(newCredentials)
       applyPromptCacheCreationOptimizationCredentials(newCredentials)
+      applyDownstreamCacheMarkupCredentials(newCredentials)
       // Add custom error codes if enabled
       if (customErrorCodesEnabled.value) {
         newCredentials.custom_error_codes_enabled = true
@@ -6501,6 +6554,7 @@ const handleSubmit = async () => {
       }
       applyCacheBoostAndIsolationCredentials(newCredentials)
       applyPromptCacheCreationOptimizationCredentials(newCredentials)
+      applyDownstreamCacheMarkupCredentials(newCredentials)
 
       updatePayload.credentials = newCredentials
     }

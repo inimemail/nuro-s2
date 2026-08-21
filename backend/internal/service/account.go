@@ -425,6 +425,7 @@ const (
 	OpenAIPromptCacheCreationOptimizationModeInput125   = "input_125"
 	openAIPromptCacheCreationOptimizationLegacyReduce   = "retention_first"
 	openAIPromptCacheCreationOptimizationLegacySuppress = "explicit_suppress"
+	OpenAIDownstreamCacheMarkupDefaultThresholdTokens   = 100000
 )
 
 const (
@@ -1529,6 +1530,42 @@ func (a *Account) OpenAIPromptCacheCreationOptimizationMode() string {
 func (a *Account) IsOpenAIPromptCacheCreationSuppressEnabled() bool {
 	return a.IsOpenAIPromptCacheCreationOptimizationEnabled() &&
 		a.OpenAIPromptCacheCreationOptimizationMode() == OpenAIPromptCacheCreationOptimizationModeSuppress
+}
+
+// IsOpenAIDownstreamCacheMarkupEnabled controls account-scoped downstream
+// usage presentation. It never changes the usage retained for local billing.
+func (a *Account) IsOpenAIDownstreamCacheMarkupEnabled() bool {
+	if a == nil || !a.IsOpenAI() || a.IsShadow() || a.IsImagePoolMode() || a.Credentials == nil {
+		return false
+	}
+	if a.Type != AccountTypeOAuth && a.Type != AccountTypeAPIKey {
+		return false
+	}
+	return credentialBool(a.Credentials, "openai_downstream_cache_markup_enabled")
+}
+
+func (a *Account) OpenAIDownstreamCacheMarkupThresholdTokens() int64 {
+	if a == nil || a.Credentials == nil {
+		return OpenAIDownstreamCacheMarkupDefaultThresholdTokens
+	}
+	value, ok := strictInt(a.Credentials["openai_downstream_cache_markup_threshold_tokens"])
+	if !ok || value < 0 {
+		return OpenAIDownstreamCacheMarkupDefaultThresholdTokens
+	}
+	return int64(value)
+}
+
+// OpenAIDownstreamCacheMarkupPercentBPS returns hundredths of one percent.
+// For example, 1000 basis points means 10.00%.
+func (a *Account) OpenAIDownstreamCacheMarkupPercentBPS() int64 {
+	if a == nil || a.Credentials == nil {
+		return 0
+	}
+	value, ok := strictInt(a.Credentials["openai_downstream_cache_markup_percent_bps"])
+	if !ok || value < 0 {
+		return 0
+	}
+	return int64(value)
 }
 
 func (a *Account) isOpenAIUpstreamStrongIsolationApplicableAccount() bool {

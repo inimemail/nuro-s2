@@ -127,6 +127,39 @@ func isOpenAIGPT56Model(model string) bool {
 	return false
 }
 
+// isOpenAIGPTTextModel identifies GPT-family text usage envelopes. Media and
+// realtime models use different billing units and must not receive text-token
+// presentation adjustments.
+func isOpenAIGPTTextModel(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(lastOpenAIModelSegment(model)))
+	if normalized == "" {
+		return false
+	}
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	normalized = strings.Join(strings.Fields(normalized), "-")
+	for strings.Contains(normalized, "--") {
+		normalized = strings.ReplaceAll(normalized, "--", "-")
+	}
+	textFamily := strings.HasPrefix(normalized, "gpt-") ||
+		strings.HasPrefix(normalized, "o1") ||
+		strings.HasPrefix(normalized, "o3") ||
+		strings.HasPrefix(normalized, "o4") ||
+		strings.HasPrefix(normalized, "codex") ||
+		strings.Contains(normalized, "-codex")
+	if !textFamily {
+		return false
+	}
+	for _, marker := range []string{
+		"image", "video", "embedding", "moderation", "realtime", "audio",
+		"transcribe", "tts", "search",
+	} {
+		if strings.Contains(normalized, marker) {
+			return false
+		}
+	}
+	return true
+}
+
 func appendUsageBillingModelCandidate(candidates []string, seen map[string]struct{}, model string) []string {
 	trimmed := strings.TrimSpace(model)
 	if trimmed == "" {

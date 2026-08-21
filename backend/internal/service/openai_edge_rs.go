@@ -94,13 +94,15 @@ type OpenAIEdgePlan struct {
 	PreambleFlush bool `json:"preamble_flush"`
 	// PromptCacheCreationOptimizationMode carries the account policy for edge-rs
 	// WS turns. Applied reports whether the current outgoing body was rewritten.
-	PromptCacheCreationOptimizationMode    string                   `json:"prompt_cache_creation_optimization_mode,omitempty"`
-	PromptCacheCreationOptimizationModel   string                   `json:"prompt_cache_creation_optimization_model,omitempty"`
-	PromptCacheCreationOptimizationApplied bool                     `json:"prompt_cache_creation_optimization_applied,omitempty"`
-	DownstreamCacheUsageMode               string                   `json:"downstream_cache_usage_mode,omitempty"`
-	DownstreamCacheUsageModel              string                   `json:"downstream_cache_usage_model,omitempty"`
-	MaxReasoningEffort                     string                   `json:"max_reasoning_effort,omitempty"`
-	ReasoningEffortMappings                []ReasoningEffortMapping `json:"reasoning_effort_mappings,omitempty"`
+	PromptCacheCreationOptimizationMode    string                             `json:"prompt_cache_creation_optimization_mode,omitempty"`
+	PromptCacheCreationOptimizationModel   string                             `json:"prompt_cache_creation_optimization_model,omitempty"`
+	PromptCacheCreationOptimizationApplied bool                               `json:"prompt_cache_creation_optimization_applied,omitempty"`
+	DownstreamCacheUsageMode               string                             `json:"downstream_cache_usage_mode,omitempty"`
+	DownstreamCacheUsageModel              string                             `json:"downstream_cache_usage_model,omitempty"`
+	DownstreamCacheMarkup                  *OpenAIDownstreamCacheMarkupPolicy `json:"downstream_cache_markup,omitempty"`
+	DownstreamCacheMarkupModel             string                             `json:"downstream_cache_markup_model,omitempty"`
+	MaxReasoningEffort                     string                             `json:"max_reasoning_effort,omitempty"`
+	ReasoningEffortMappings                []ReasoningEffortMapping           `json:"reasoning_effort_mappings,omitempty"`
 }
 
 type OpenAIEdgeRetryRequest struct {

@@ -19,6 +19,9 @@ func TestFilterSchedulerCredentialsKeepsPromptCacheAdvancedFlags(t *testing.T) {
 		"prompt_cache_long_context_enhancement_enabled":     true,
 		"openai_prompt_cache_creation_optimization_enabled": true,
 		"openai_prompt_cache_creation_optimization_mode":    service.OpenAIPromptCacheCreationOptimizationModeSuppress,
+		"openai_downstream_cache_markup_enabled":            true,
+		"openai_downstream_cache_markup_threshold_tokens":   100000,
+		"openai_downstream_cache_markup_percent_bps":        1000,
 		"unrelated_secret":                                  "drop-me",
 	}
 

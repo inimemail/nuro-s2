@@ -668,9 +668,11 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	acc.SupplementResponseOutput(finalResponse)
 
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
-	if downstreamCacheUsageMode != "" {
-		normalizeOpenAIResponsesUsageForDownstream(finalResponse.Usage, downstreamCacheUsageMode)
-	}
+	normalizeOpenAIResponsesUsageForDownstreamWithMarkup(
+		finalResponse.Usage,
+		downstreamCacheUsageMode,
+		s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel),
+	)
 	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)
 
 	if s.responseHeaderFilter != nil {
@@ -942,6 +944,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	state := apicompat.NewResponsesEventToAnthropicState()
 	state.Model = originalModel
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
 	var usage OpenAIUsage
 	responseID := ""
 	var firstTokenMs *int
@@ -1073,14 +1076,14 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				return true
 			}
 		}
-		if downstreamCacheUsageMode != "" {
+		if downstreamCacheUsageMode != "" || downstreamCacheMarkup.enabled() {
 			// The local usage snapshot above remains the unmodified upstream
 			// value. Only the event copy consumed by the downstream converter is
 			// normalized for the explicitly selected account mode.
 			if event.Response != nil {
-				normalizeOpenAIResponsesUsageForDownstream(event.Response.Usage, downstreamCacheUsageMode)
+				normalizeOpenAIResponsesUsageForDownstreamWithMarkup(event.Response.Usage, downstreamCacheUsageMode, downstreamCacheMarkup)
 			}
-			normalizeOpenAIResponsesUsageForDownstream(event.Usage, downstreamCacheUsageMode)
+			normalizeOpenAIResponsesUsageForDownstreamWithMarkup(event.Usage, downstreamCacheUsageMode, downstreamCacheMarkup)
 		}
 
 		// Convert to Anthropic events

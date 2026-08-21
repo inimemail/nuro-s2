@@ -744,11 +744,45 @@ struct EdgePlan {
     prompt_cache_creation_optimization_applied: bool,
     downstream_cache_usage_mode: Option<String>,
     downstream_cache_usage_model: Option<String>,
+    downstream_cache_markup: Option<DownstreamCacheMarkupPolicy>,
+    downstream_cache_markup_model: Option<String>,
     // Older Go control planes do not include reasoning policy fields.
     #[serde(default)]
     max_reasoning_effort: Option<String>,
     #[serde(default)]
     reasoning_effort_mappings: Vec<ReasoningEffortMapping>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct DownstreamCacheMarkupPolicy {
+    #[serde(default)]
+    threshold_tokens: i64,
+    #[serde(default)]
+    percent_bps: i64,
+    #[serde(default)]
+    input_price_units: i64,
+    #[serde(default)]
+    cache_read_price_units: i64,
+    #[serde(default)]
+    output_price_units: i64,
+    #[serde(default)]
+    long_context_threshold: i64,
+    #[serde(default)]
+    long_context_inclusive: bool,
+    #[serde(default)]
+    long_context_input_multiplier: i64,
+    #[serde(default)]
+    long_context_output_multiplier: i64,
+}
+
+impl DownstreamCacheMarkupPolicy {
+    fn enabled(&self) -> bool {
+        self.threshold_tokens >= 0
+            && self.percent_bps > 0
+            && self.input_price_units > 0
+            && self.cache_read_price_units > 0
+            && self.output_price_units > 0
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2919,6 +2953,12 @@ async fn relay_ws_session(
         .downstream_cache_usage_model
         .clone()
         .or_else(|| prompt_cache_creation_optimization_model.clone());
+    let mut downstream_cache_markup = plan
+        .downstream_cache_markup
+        .clone()
+        .filter(DownstreamCacheMarkupPolicy::enabled);
+    let mut downstream_cache_markup_model = plan.downstream_cache_markup_model.clone();
+    let mut downstream_cache_markup_turn_model = downstream_cache_markup_model.clone();
     let mut failure_state = OpenAIWSFailureState::default();
     let mut safe_token_placeholder = plan.safe_token_placeholder;
     let mut first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
@@ -2975,7 +3015,7 @@ async fn relay_ws_session(
                             &mut prompt_cache_creation_optimization_model,
                             plan.max_reasoning_effort.as_deref(),
                             &plan.reasoning_effort_mappings,
-                            downstream_cache_usage_mode.is_some(),
+                            downstream_cache_usage_mode.is_some() || downstream_cache_markup.is_some(),
                             // Edge WS plans are strict passthrough plans. The
                             // transformed Go paths own the v165 item-ID cleanup;
                             // changing follow-up frames here would violate the
@@ -2985,11 +3025,18 @@ async fn relay_ws_session(
                         if let Some(applied) = turn_policy_applied {
                             cache_creation_policy_applied_for_turn = applied;
                         }
+                        let markup_turn_model = turn_model.clone();
                         update_downstream_cache_usage_model_for_ws_turn(
                             downstream_cache_usage_mode.as_deref(),
                             &mut downstream_cache_usage_model,
                             turn_usage_eligible,
                             turn_model,
+                        );
+                        update_downstream_cache_markup_model_for_ws_turn(
+                            downstream_cache_markup.as_ref(),
+                            &mut downstream_cache_markup_turn_model,
+                            turn_usage_eligible,
+                            markup_turn_model,
                         );
                         let starts_response = tungstenite_message_is_response_create(&upstream_msg);
                         if starts_response {
@@ -3143,6 +3190,12 @@ async fn relay_ws_session(
                                                                 .downstream_cache_usage_model
                                                                 .clone()
                                                                 .or_else(|| prompt_cache_creation_optimization_model.clone());
+                                                            downstream_cache_markup = next_plan
+                                                                .downstream_cache_markup
+                                                                .clone()
+                                                                .filter(DownstreamCacheMarkupPolicy::enabled);
+                                                            downstream_cache_markup_model = next_plan.downstream_cache_markup_model.clone();
+                                                            downstream_cache_markup_turn_model = downstream_cache_markup_model.clone();
                                                             failure_state = OpenAIWSFailureState::default();
                                                             plan = next_plan;
                                                             safe_token_placeholder = plan.safe_token_placeholder;
@@ -3201,10 +3254,19 @@ async fn relay_ws_session(
                         } else {
                             None
                         };
+                        let downstream_cache_markup_for_turn = downstream_cache_markup.as_ref().filter(|_| {
+                            downstream_cache_markup_model.as_deref().is_some_and(|configured| {
+                                downstream_cache_markup_turn_model.as_deref().is_some_and(|current| {
+                                    configured.trim().eq_ignore_ascii_case(current.trim())
+                                        && is_openai_gpt_text_model(current)
+                                })
+                            })
+                        });
                         let client_msg = match tungstenite_to_axum_message(
-                            sanitize_openai_ws_message_with_downstream_cache_usage_mode(
+                            sanitize_openai_ws_message_with_downstream_usage(
                                 msg,
                                 downstream_cache_usage_mode_for_turn,
+                                downstream_cache_markup_for_turn,
                             ),
                         ) {
                             Ok(msg) => msg,
@@ -3687,6 +3749,24 @@ fn update_downstream_cache_usage_model_for_ws_turn(
     }
 }
 
+fn update_downstream_cache_markup_model_for_ws_turn(
+    markup: Option<&DownstreamCacheMarkupPolicy>,
+    turn_model_state: &mut Option<String>,
+    turn_usage_eligible: Option<bool>,
+    turn_model: Option<String>,
+) {
+    if markup.is_none() {
+        return;
+    }
+    if turn_usage_eligible == Some(false) {
+        *turn_model_state = None;
+        return;
+    }
+    if turn_model.is_some() {
+        *turn_model_state = turn_model;
+    }
+}
+
 enum OpenAIWSJSONFrame {
     Text(String),
     Binary(Vec<u8>),
@@ -4159,6 +4239,39 @@ fn is_openai_gpt56_model(model: &str) -> bool {
         suffix,
         "max" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
     ) || is_openai_codex_date_suffix(suffix)
+}
+
+fn is_openai_gpt_text_model(model: &str) -> bool {
+    let normalized = model
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .replace('_', "-")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-")
+        .to_ascii_lowercase();
+    let text_family = normalized.starts_with("gpt-")
+        || normalized.starts_with("o1")
+        || normalized.starts_with("o3")
+        || normalized.starts_with("o4")
+        || normalized.starts_with("codex")
+        || normalized.contains("-codex");
+    text_family
+        && ![
+            "image",
+            "video",
+            "embedding",
+            "moderation",
+            "realtime",
+            "audio",
+            "transcribe",
+            "tts",
+            "search",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
 }
 
 fn is_openai_codex_date_suffix(suffix: &str) -> bool {
@@ -5222,6 +5335,15 @@ async fn relay_upstream_direct_core_impl(
     } else {
         None
     };
+    let downstream_cache_markup = plan
+        .downstream_cache_markup
+        .clone()
+        .filter(DownstreamCacheMarkupPolicy::enabled)
+        .filter(|_| {
+            plan.downstream_cache_markup_model
+                .as_deref()
+                .is_some_and(is_openai_gpt_text_model)
+        });
     let first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
         plan.first_token_timeout_placeholder_ms,
         plan.account_type.as_deref(),
@@ -5692,9 +5814,10 @@ async fn relay_upstream_direct_core_impl(
             complete_state.pools.take_sse_string(),
             response_dialect.as_deref(),
         );
-        let mut sanitizer = OpenAIStreamSanitizer::new_with_downstream_cache_usage_mode(
+        let mut sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(
             response_dialect.as_deref(),
             downstream_cache_usage_mode.as_deref(),
+            downstream_cache_markup.as_ref(),
         );
         // Keep legacy Chat behavior unchanged. Only Responses preamble
         // events are held when the account disabled preamble flush; a missing
@@ -5874,7 +5997,7 @@ async fn relay_upstream_direct_core_impl(
                             upstream_client_guard = next_guard;
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
-                            sanitizer = OpenAIStreamSanitizer::new_with_downstream_cache_usage_mode(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref());
+                            sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref(), downstream_cache_markup.as_ref());
                             preamble_gate = SsePreambleGate::new(preamble_flush || response_dialect.as_deref() != Some("responses"));
                             bootstrap_timer = None;
                             first_token_timeout_deadline = next_first_token_timeout_placeholder
@@ -5966,9 +6089,10 @@ async fn relay_upstream_direct_core_impl(
                             response_dialect.as_deref(),
                         );
                         summary.request_id = next_request_id;
-                        sanitizer = OpenAIStreamSanitizer::new_with_downstream_cache_usage_mode(
+                        sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(
                             response_dialect.as_deref(),
                             downstream_cache_usage_mode.as_deref(),
+                            downstream_cache_markup.as_ref(),
                         );
                         preamble_gate = SsePreambleGate::new(
                             preamble_flush || response_dialect.as_deref() != Some("responses"),
@@ -6246,7 +6370,7 @@ async fn relay_upstream_direct_core_impl(
                             upstream_client_guard = next_guard;
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
-                            sanitizer = OpenAIStreamSanitizer::new_with_downstream_cache_usage_mode(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref());
+                            sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref(), downstream_cache_markup.as_ref());
                             preamble_gate = SsePreambleGate::new(preamble_flush || response_dialect.as_deref() != Some("responses"));
                             bootstrap_timer = None;
                             first_token_timeout_deadline = next_first_token_timeout_placeholder
@@ -6898,6 +7022,7 @@ struct OpenAIStreamSanitizer {
     chat_dialect: bool,
     event_type: Option<String>,
     downstream_cache_usage_mode: Option<String>,
+    downstream_cache_markup: Option<DownstreamCacheMarkupPolicy>,
     overflowed: bool,
 }
 
@@ -6911,11 +7036,20 @@ impl OpenAIStreamSanitizer {
         dialect: Option<&str>,
         downstream_cache_usage_mode: Option<&str>,
     ) -> Self {
+        Self::new_with_downstream_usage(dialect, downstream_cache_usage_mode, None)
+    }
+
+    fn new_with_downstream_usage(
+        dialect: Option<&str>,
+        downstream_cache_usage_mode: Option<&str>,
+        downstream_cache_markup: Option<&DownstreamCacheMarkupPolicy>,
+    ) -> Self {
         Self {
             pending: Vec::with_capacity(1024),
             chat_dialect: dialect == Some("chat_completions"),
             event_type: None,
             downstream_cache_usage_mode: downstream_cache_usage_mode.map(ToOwned::to_owned),
+            downstream_cache_markup: downstream_cache_markup.cloned(),
             overflowed: false,
         }
     }
@@ -6968,6 +7102,7 @@ impl OpenAIStreamSanitizer {
                 self.chat_dialect,
                 &mut self.event_type,
                 self.downstream_cache_usage_mode.as_deref(),
+                self.downstream_cache_markup.as_ref(),
             ));
         }
         Bytes::from(output)
@@ -7048,6 +7183,7 @@ fn sanitize_openai_sse_line(
     chat_dialect: bool,
     current_event_type: &mut Option<String>,
     downstream_cache_usage_mode: Option<&str>,
+    downstream_cache_markup: Option<&DownstreamCacheMarkupPolicy>,
 ) -> Vec<u8> {
     let text = String::from_utf8_lossy(line);
     let without_newline = text.trim_end_matches(['\r', '\n']);
@@ -7078,13 +7214,15 @@ fn sanitize_openai_sse_line(
         if has_error {
             return safe_sse_error_line(chat_dialect);
         }
-        let normalize_usage = downstream_cache_usage_mode.is_some()
+        let normalize_usage = (downstream_cache_usage_mode.is_some()
+            || downstream_cache_markup.is_some_and(DownstreamCacheMarkupPolicy::enabled))
             && openai_downstream_usage_event_candidate(&value, event_type);
         let normalized = normalize_completed_image_generation_status(&mut value)
             | (normalize_usage
-                && normalize_openai_downstream_cache_usage(
+                && normalize_openai_downstream_usage(
                     &mut value,
                     downstream_cache_usage_mode,
+                    downstream_cache_markup,
                 ));
         let normalized_payload = if normalized {
             value.to_string()
@@ -7134,8 +7272,18 @@ fn openai_stream_terminal_failure_frame(dialect: Option<&str>) -> String {
 }
 
 fn normalize_openai_downstream_cache_usage(value: &mut Value, mode: Option<&str>) -> bool {
+    normalize_openai_downstream_usage(value, mode, None)
+}
+
+fn normalize_openai_downstream_usage(
+    value: &mut Value,
+    mode: Option<&str>,
+    markup: Option<&DownstreamCacheMarkupPolicy>,
+) -> bool {
     let mode = mode.unwrap_or_default().trim();
-    if !matches!(mode, "free" | "input_125") {
+    let cache_creation_enabled = matches!(mode, "free" | "input_125");
+    let markup_enabled = markup.is_some_and(DownstreamCacheMarkupPolicy::enabled);
+    if !cache_creation_enabled && !markup_enabled {
         return false;
     }
     let Some(root) = value.as_object_mut() else {
@@ -7144,14 +7292,16 @@ fn normalize_openai_downstream_cache_usage(value: &mut Value, mode: Option<&str>
     let mut changed = root
         .get_mut("usage")
         .and_then(Value::as_object_mut)
-        .is_some_and(|usage| normalize_openai_downstream_usage_object(usage, mode));
+        .is_some_and(|usage| {
+            normalize_openai_downstream_usage_object_with_markup(usage, mode, markup)
+        });
     if let Some(usage) = root
         .get_mut("response")
         .and_then(Value::as_object_mut)
         .and_then(|nested| nested.get_mut("usage"))
         .and_then(Value::as_object_mut)
     {
-        changed |= normalize_openai_downstream_usage_object(usage, mode);
+        changed |= normalize_openai_downstream_usage_object_with_markup(usage, mode, markup);
     }
     changed
 }
@@ -7169,7 +7319,27 @@ fn openai_downstream_usage_event_candidate(value: &Value, event_type: &str) -> b
         && value.get("usage").is_some_and(Value::is_object))
 }
 
-fn normalize_openai_downstream_usage_object(
+fn normalize_openai_downstream_usage_object_with_markup(
+    usage: &mut serde_json::Map<String, Value>,
+    mode: &str,
+    markup: Option<&DownstreamCacheMarkupPolicy>,
+) -> bool {
+    let raw_input = usage
+        .get("input_tokens")
+        .and_then(Value::as_i64)
+        .or_else(|| usage.get("prompt_tokens").and_then(Value::as_i64))
+        .unwrap_or(0)
+        .max(0);
+    let raw_cache_read = openai_usage_cache_read_tokens(usage);
+    let cache_creation_enabled = matches!(mode, "free" | "input_125");
+    let mut changed = false;
+    if cache_creation_enabled {
+        changed = normalize_openai_downstream_cache_creation_usage_object(usage, mode);
+    }
+    changed | apply_openai_downstream_cache_markup(usage, raw_input, raw_cache_read, markup)
+}
+
+fn normalize_openai_downstream_cache_creation_usage_object(
     usage: &mut serde_json::Map<String, Value>,
     mode: &str,
 ) -> bool {
@@ -7287,6 +7457,176 @@ fn normalize_openai_downstream_usage_object(
         );
     }
     true
+}
+
+fn openai_usage_cache_read_tokens(usage: &serde_json::Map<String, Value>) -> i64 {
+    first_positive_usage_i64(
+        usage,
+        &[
+            &["input_tokens_details", "cached_tokens"],
+            &["prompt_tokens_details", "cached_tokens"],
+            &["cache_read_input_tokens"],
+            &["cache_read_tokens"],
+            &["cached_tokens"],
+        ],
+    )
+}
+
+fn apply_openai_downstream_cache_markup(
+    usage: &mut serde_json::Map<String, Value>,
+    raw_input: i64,
+    raw_cache_read: i64,
+    policy: Option<&DownstreamCacheMarkupPolicy>,
+) -> bool {
+    let Some(policy) = policy.filter(|policy| policy.enabled()) else {
+        return false;
+    };
+    if raw_cache_read <= 0 || raw_cache_read < policy.threshold_tokens {
+        return false;
+    }
+    let input_tokens = usage.get("input_tokens").and_then(Value::as_i64);
+    let prompt_tokens = usage.get("prompt_tokens").and_then(Value::as_i64);
+    let input_key = if input_tokens.is_some_and(|value| value > 0) {
+        "input_tokens"
+    } else if prompt_tokens.is_some_and(|value| value > 0) {
+        "prompt_tokens"
+    } else if input_tokens.is_some() {
+        "input_tokens"
+    } else if prompt_tokens.is_some() {
+        "prompt_tokens"
+    } else {
+        return false;
+    };
+    let output_tokens = usage.get("output_tokens").and_then(Value::as_i64);
+    let completion_tokens = usage.get("completion_tokens").and_then(Value::as_i64);
+    let output_key = if output_tokens.is_some_and(|value| value > 0) {
+        "output_tokens"
+    } else if completion_tokens.is_some_and(|value| value > 0) {
+        "completion_tokens"
+    } else if output_tokens.is_some() {
+        "output_tokens"
+    } else if completion_tokens.is_some() {
+        "completion_tokens"
+    } else {
+        return false;
+    };
+    let (input_add, cache_read_add, output_add) =
+        openai_downstream_cache_markup_adds(raw_input, raw_cache_read, policy);
+    if input_add == 0 && cache_read_add == 0 && output_add == 0 {
+        return false;
+    }
+    let input = usage
+        .get(input_key)
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(0);
+    let output = usage
+        .get(output_key)
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(0);
+    let cache_read = openai_usage_cache_read_tokens(usage);
+    let new_input = input
+        .saturating_add(input_add)
+        .saturating_add(cache_read_add);
+    let new_output = output.saturating_add(output_add);
+    let new_cache_read = cache_read.saturating_add(cache_read_add);
+    usage.insert(input_key.to_string(), Value::from(new_input));
+    let alternate_input = if input_key == "input_tokens" {
+        "prompt_tokens"
+    } else {
+        "input_tokens"
+    };
+    if usage.contains_key(alternate_input) {
+        usage.insert(alternate_input.to_string(), Value::from(new_input));
+    }
+    usage.insert(output_key.to_string(), Value::from(new_output));
+    let alternate_output = if output_key == "output_tokens" {
+        "completion_tokens"
+    } else {
+        "output_tokens"
+    };
+    if usage.contains_key(alternate_output) {
+        usage.insert(alternate_output.to_string(), Value::from(new_output));
+    }
+    set_openai_cache_read_aliases(usage, new_cache_read, true, input_key);
+    if usage.contains_key("total_tokens") {
+        usage.insert(
+            "total_tokens".to_string(),
+            Value::from(new_input.saturating_add(new_output)),
+        );
+    }
+    true
+}
+
+fn openai_downstream_cache_markup_adds(
+    raw_input: i64,
+    raw_cache_read: i64,
+    policy: &DownstreamCacheMarkupPolicy,
+) -> (i64, i64, i64) {
+    let mut input_price = policy.input_price_units;
+    let mut cache_read_price = policy.cache_read_price_units;
+    let mut output_price = policy.output_price_units;
+    let long_context = policy.long_context_threshold > 0
+        && (raw_input > policy.long_context_threshold
+            || (policy.long_context_inclusive && raw_input == policy.long_context_threshold));
+    if long_context {
+        input_price = multiply_fixed_price(input_price, policy.long_context_input_multiplier);
+        cache_read_price =
+            multiply_fixed_price(cache_read_price, policy.long_context_input_multiplier);
+        output_price = multiply_fixed_price(output_price, policy.long_context_output_multiplier);
+    }
+    (
+        rounded_markup_tokens(
+            raw_cache_read,
+            cache_read_price,
+            policy.percent_bps,
+            input_price,
+        ),
+        rounded_markup_tokens(
+            raw_cache_read,
+            cache_read_price,
+            policy.percent_bps,
+            cache_read_price,
+        ),
+        rounded_markup_tokens(
+            raw_cache_read,
+            cache_read_price,
+            policy.percent_bps,
+            output_price,
+        ),
+    )
+}
+
+fn multiply_fixed_price(price: i64, multiplier_millionths: i64) -> i64 {
+    if price <= 0 || multiplier_millionths <= 0 {
+        return price;
+    }
+    rounded_u128_mul_div(&[price, multiplier_millionths], 1_000_000)
+}
+
+fn rounded_markup_tokens(
+    cache_read: i64,
+    cache_read_price: i64,
+    percent_bps: i64,
+    bucket_price: i64,
+) -> i64 {
+    if cache_read <= 0 || cache_read_price <= 0 || percent_bps <= 0 || bucket_price <= 0 {
+        return 0;
+    }
+    let denominator = (bucket_price as u128).saturating_mul(30_000);
+    rounded_u128_mul_div(&[cache_read, cache_read_price, percent_bps], denominator)
+}
+
+fn rounded_u128_mul_div(factors: &[i64], denominator: u128) -> i64 {
+    if denominator == 0 || factors.iter().any(|factor| *factor <= 0) {
+        return 0;
+    }
+    let numerator = factors.iter().fold(1_u128, |value, factor| {
+        value.saturating_mul(*factor as u128)
+    });
+    let quotient = numerator.saturating_add(denominator / 2) / denominator;
+    quotient.min(i64::MAX as u128) as i64
 }
 
 #[derive(Clone, Copy)]
@@ -7527,6 +7867,14 @@ fn sanitize_openai_ws_message_with_downstream_cache_usage_mode(
     msg: TungsteniteMessage,
     downstream_cache_usage_mode: Option<&str>,
 ) -> TungsteniteMessage {
+    sanitize_openai_ws_message_with_downstream_usage(msg, downstream_cache_usage_mode, None)
+}
+
+fn sanitize_openai_ws_message_with_downstream_usage(
+    msg: TungsteniteMessage,
+    downstream_cache_usage_mode: Option<&str>,
+    downstream_cache_markup: Option<&DownstreamCacheMarkupPolicy>,
+) -> TungsteniteMessage {
     match msg {
         TungsteniteMessage::Text(text) => {
             let mut value = match serde_json::from_str::<Value>(&text) {
@@ -7538,13 +7886,15 @@ fn sanitize_openai_ws_message_with_downstream_cache_usage_mode(
                 }
             };
             let event_type = json_event_type(&value).unwrap_or_default().to_string();
-            let normalize_usage = downstream_cache_usage_mode.is_some()
+            let normalize_usage = (downstream_cache_usage_mode.is_some()
+                || downstream_cache_markup.is_some_and(DownstreamCacheMarkupPolicy::enabled))
                 && openai_downstream_usage_event_candidate(&value, &event_type);
             let image_status_normalized = normalize_completed_image_generation_status(&mut value);
             let usage_normalized = normalize_usage
-                && normalize_openai_downstream_cache_usage(
+                && normalize_openai_downstream_usage(
                     &mut value,
                     downstream_cache_usage_mode,
+                    downstream_cache_markup,
                 );
             let has_error = event_type == "error"
                 || event_type == "response.failed"
@@ -10892,6 +11242,8 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             prompt_cache_creation_optimization_applied: false,
             downstream_cache_usage_mode: None,
             downstream_cache_usage_model: None,
+            downstream_cache_markup: None,
+            downstream_cache_markup_model: None,
             max_reasoning_effort: None,
             reasoning_effort_mappings: Vec::new(),
         };
@@ -11466,6 +11818,8 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             prompt_cache_creation_optimization_applied: false,
             downstream_cache_usage_mode: None,
             downstream_cache_usage_model: None,
+            downstream_cache_markup: None,
+            downstream_cache_markup_model: None,
             max_reasoning_effort: None,
             reasoning_effort_mappings: Vec::new(),
         };
@@ -11616,6 +11970,8 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             prompt_cache_creation_optimization_applied: false,
             downstream_cache_usage_mode: None,
             downstream_cache_usage_model: None,
+            downstream_cache_markup: None,
+            downstream_cache_markup_model: None,
             max_reasoning_effort: None,
             reasoning_effort_mappings: Vec::new(),
         };
@@ -11874,6 +12230,142 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             value.pointer("/usage/input_tokens_details/cache_creation_tokens"),
             Some(&Value::from(0))
         );
+    }
+
+    #[test]
+    fn downstream_cache_markup_matches_go_fixed_point_allocation() {
+        let policy = DownstreamCacheMarkupPolicy {
+            threshold_tokens: 100_000,
+            percent_bps: 1_000,
+            input_price_units: 100,
+            cache_read_price_units: 10,
+            output_price_units: 600,
+            long_context_threshold: 272_000,
+            ..Default::default()
+        };
+        let mut value = serde_json::json!({
+            "usage": {
+                "input_tokens": 130000,
+                "output_tokens": 1000,
+                "total_tokens": 131000,
+                "input_tokens_details": {"cached_tokens": 120000}
+            }
+        });
+
+        assert!(normalize_openai_downstream_usage(
+            &mut value,
+            None,
+            Some(&policy)
+        ));
+        assert_eq!(
+            value.pointer("/usage/input_tokens"),
+            Some(&Value::from(134400))
+        );
+        assert_eq!(
+            value.pointer("/usage/input_tokens_details/cached_tokens"),
+            Some(&Value::from(124000))
+        );
+        assert_eq!(
+            value.pointer("/usage/output_tokens"),
+            Some(&Value::from(1067))
+        );
+        assert_eq!(
+            value.pointer("/usage/total_tokens"),
+            Some(&Value::from(135467))
+        );
+    }
+
+    #[test]
+    fn downstream_cache_markup_text_model_filter_matches_go_scope() {
+        for model in [
+            "gpt-4.1",
+            "gpt-4-vision-preview",
+            "gpt-5.6-sol",
+            "o3-mini",
+            "o4-mini",
+            "codex-1",
+        ] {
+            assert!(
+                is_openai_gpt_text_model(model),
+                "expected text model: {model}"
+            );
+        }
+        for model in [
+            "gpt-image-2",
+            "codex-image",
+            "gpt-4o-realtime-preview",
+            "gpt-4o-search-preview",
+            "gpt-4o-mini-tts",
+            "gpt-4o-embedding",
+            "deepseek-v4",
+        ] {
+            assert!(
+                !is_openai_gpt_text_model(model),
+                "expected media/non-text model: {model}"
+            );
+        }
+    }
+
+    #[test]
+    fn downstream_cache_markup_below_threshold_is_exact_noop() {
+        let policy = DownstreamCacheMarkupPolicy {
+            threshold_tokens: 100_000,
+            percent_bps: 1_000,
+            input_price_units: 100,
+            cache_read_price_units: 10,
+            output_price_units: 600,
+            ..Default::default()
+        };
+        let mut value = serde_json::json!({
+            "usage": {
+                "input_tokens": 109999,
+                "output_tokens": 10,
+                "total_tokens": 110009,
+                "input_tokens_details": {"cached_tokens": 99999}
+            }
+        });
+        let original = value.clone();
+
+        assert!(!normalize_openai_downstream_usage(
+            &mut value,
+            None,
+            Some(&policy)
+        ));
+        assert_eq!(value, original);
+    }
+
+    #[test]
+    fn downstream_cache_markup_uses_raw_read_before_mode_d() {
+        let policy = DownstreamCacheMarkupPolicy {
+            threshold_tokens: 100_000,
+            percent_bps: 1_000,
+            input_price_units: 100,
+            cache_read_price_units: 10,
+            output_price_units: 600,
+            ..Default::default()
+        };
+        let original = serde_json::json!({
+            "usage": {
+                "input_tokens": 160000,
+                "output_tokens": 1000,
+                "total_tokens": 161000,
+                "cache_creation_input_tokens": 50000,
+                "input_tokens_details": {"cached_tokens": 99000, "cache_write_tokens": 50000}
+            }
+        });
+        let mut mode_d_only = original.clone();
+        let mut with_markup = original;
+
+        assert!(normalize_openai_downstream_cache_usage(
+            &mut mode_d_only,
+            Some("input_125")
+        ));
+        assert!(normalize_openai_downstream_usage(
+            &mut with_markup,
+            Some("input_125"),
+            Some(&policy)
+        ));
+        assert_eq!(with_markup, mode_d_only);
     }
 
     #[test]

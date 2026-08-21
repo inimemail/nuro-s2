@@ -91,6 +91,7 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 	if downstreamCacheUsageMode != "" {
 		downstreamCacheUsageModel = upstreamModel
 	}
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
 
 	apiKey := account.GetOpenAIApiKey()
 	if apiKey == "" {
@@ -162,6 +163,8 @@ func (s *OpenAIGatewayService) BuildRawChatCompletionsEdgePlan(
 			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
 			DownstreamCacheUsageMode:               downstreamCacheUsageMode,
 			DownstreamCacheUsageModel:              downstreamCacheUsageModel,
+			DownstreamCacheMarkup:                  openAIDownstreamCacheMarkupPolicyPointer(downstreamCacheMarkup),
+			DownstreamCacheMarkupModel:             upstreamModel,
 		},
 		Model:           originalModel,
 		BillingModel:    billingModel,
@@ -324,6 +327,7 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	if downstreamCacheUsageMode != "" {
 		downstreamCacheUsageModel = policyModel
 	}
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, policyModel)
 
 	apiKey := account.GetOpenAIApiKey()
 	if apiKey == "" {
@@ -411,6 +415,8 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
 			DownstreamCacheUsageMode:               downstreamCacheUsageMode,
 			DownstreamCacheUsageModel:              downstreamCacheUsageModel,
+			DownstreamCacheMarkup:                  openAIDownstreamCacheMarkupPolicyPointer(downstreamCacheMarkup),
+			DownstreamCacheMarkupModel:             policyModel,
 		},
 		Model:           originalModel,
 		BillingModel:    originalModel,
@@ -603,6 +609,7 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if downstreamCacheUsageMode != "" {
 		downstreamCacheUsageModel = upstreamModel
 	}
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
 
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -652,6 +659,8 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
 			DownstreamCacheUsageMode:               downstreamCacheUsageMode,
 			DownstreamCacheUsageModel:              downstreamCacheUsageModel,
+			DownstreamCacheMarkup:                  openAIDownstreamCacheMarkupPolicyPointer(downstreamCacheMarkup),
+			DownstreamCacheMarkupModel:             upstreamModel,
 		},
 		Model:           originalModel,
 		BillingModel:    billingModel,
@@ -876,6 +885,7 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 	}
 	downstreamCacheUsageMode := ""
 	downstreamCacheUsageModel := ""
+	downstreamCacheMarkup := OpenAIDownstreamCacheMarkupPolicy{}
 	if !OpenAIImageGenerationIntentFromContext(ctx) {
 		// Carry the account-scoped C/D mode across the WS session even when
 		// the first turn is not GPT-5.6. edge-rs still gates every turn by its
@@ -884,6 +894,9 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 	}
 	if downstreamCacheUsageMode != "" && isOpenAIGPT56Model(policyModel) {
 		downstreamCacheUsageModel = policyModel
+	}
+	if !OpenAIImageGenerationIntentFromContext(ctx) {
+		downstreamCacheMarkup = s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, policyModel)
 	}
 
 	promptCacheKey := strings.TrimSpace(gjson.GetBytes(firstMessage, "prompt_cache_key").String())
@@ -945,6 +958,8 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 			PromptCacheCreationOptimizationApplied: cacheCreationOptimization.Applied,
 			DownstreamCacheUsageMode:               downstreamCacheUsageMode,
 			DownstreamCacheUsageModel:              downstreamCacheUsageModel,
+			DownstreamCacheMarkup:                  openAIDownstreamCacheMarkupPolicyPointer(downstreamCacheMarkup),
+			DownstreamCacheMarkupModel:             policyModel,
 		},
 		Model:           model,
 		BillingModel:    model,
@@ -963,6 +978,14 @@ func openAIEdgePromptCacheCreationOptimizationFields(
 		return "", ""
 	}
 	return account.OpenAIPromptCacheCreationOptimizationMode(), model
+}
+
+func openAIDownstreamCacheMarkupPolicyPointer(policy OpenAIDownstreamCacheMarkupPolicy) *OpenAIDownstreamCacheMarkupPolicy {
+	if !policy.enabled() {
+		return nil
+	}
+	copy := policy
+	return &copy
 }
 
 func (s *OpenAIGatewayService) checkOpenAIEdgeLocalAccountPolicy(ctx context.Context, c *gin.Context, account *Account, body []byte) error {

@@ -329,7 +329,11 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	}
 	if responsesResp != nil && responsesResp.Usage != nil {
 		responsesResp.Usage = cloneOpenAIResponsesUsage(responsesResp.Usage)
-		normalizeOpenAIResponsesUsageForDownstream(responsesResp.Usage, openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel))
+		normalizeOpenAIResponsesUsageForDownstreamWithMarkup(
+			responsesResp.Usage,
+			openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel),
+			s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel),
+		)
 	}
 
 	if s.responseHeaderFilter != nil {
@@ -368,6 +372,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, upstreamModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, upstreamModel)
 	headersWritten := false
 	writeStreamHeaders := func() {
 		if headersWritten {
@@ -502,7 +507,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		if isOpenAICompatResponsesTerminalEvent(event.Type) {
 			terminalEventType = event.Type
 		}
-		normalizeOpenAIResponsesStreamEventForDownstream(event, downstreamCacheUsageMode)
+		normalizeOpenAIResponsesStreamEventForDownstreamWithMarkup(event, downstreamCacheUsageMode, downstreamCacheMarkup)
 	}
 	writeEvents(finalEvents)
 	if !clientDisconnected {

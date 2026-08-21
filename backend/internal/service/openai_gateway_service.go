@@ -6810,6 +6810,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel)
 	searchCounter := 0
 	streamSearchSeen := make(map[string]struct{})
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
@@ -6949,8 +6950,8 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			}
 			s.parseSSEUsageBytes(dataBytes, usage)
-			if downstreamCacheUsageMode != "" && shouldNormalizeOpenAIStreamUsageForDownstream(dataBytes, eventType) {
-				if normalizedData, normalized := normalizeOpenAIDownstreamUsageJSON(dataBytes, downstreamCacheUsageMode); normalized {
+			if shouldNormalizeOpenAIStreamUsageForDownstreamWithMarkup(dataBytes, eventType, downstreamCacheUsageMode, downstreamCacheMarkup) {
+				if normalizedData, normalized := normalizeOpenAIDownstreamUsageJSONWithMarkup(dataBytes, downstreamCacheUsageMode, downstreamCacheMarkup); normalized {
 					dataBytes = normalizedData
 					trimmedData = string(normalizedData)
 					line = "data: " + trimmedData
@@ -7264,7 +7265,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		}
 		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
 		body = normalizedBody
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
@@ -7453,7 +7454,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(ctx context.Context, r
 			return nil, failoverErr
 		}
 	}
-	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
 		body = normalizedBody
 	}
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -8210,6 +8211,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 	usage := &OpenAIUsage{}
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel)
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
 	downstreamTTFTObserved := false
@@ -8619,12 +8621,12 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					line = "data: " + data
 				}
 			}
-			if downstreamCacheUsageMode != "" {
+			if downstreamCacheUsageMode != "" || downstreamCacheMarkup.enabled() {
 				// Internal usage observes the upstream frame; only the downstream
 				// copy is normalized for explicitly selected C/D accounts.
 				s.parseSSEUsageBytes(dataBytes, usage)
-				if shouldNormalizeOpenAIStreamUsageForDownstream(dataBytes, eventType) {
-					if normalizedData, normalized := normalizeOpenAIDownstreamUsageJSON(dataBytes, downstreamCacheUsageMode); normalized {
+				if shouldNormalizeOpenAIStreamUsageForDownstreamWithMarkup(dataBytes, eventType, downstreamCacheUsageMode, downstreamCacheMarkup) {
+					if normalizedData, normalized := normalizeOpenAIDownstreamUsageJSONWithMarkup(dataBytes, downstreamCacheUsageMode, downstreamCacheMarkup); normalized {
 						dataBytes = normalizedData
 						data = string(normalizedData)
 						line = "data: " + data
@@ -8680,7 +8682,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					firstTokenMs = &ms
 				}
 			}
-			if downstreamCacheUsageMode == "" {
+			if downstreamCacheUsageMode == "" && !downstreamCacheMarkup.enabled() {
 				s.parseSSEUsageBytes(dataBytes, usage)
 			}
 			return
@@ -9381,7 +9383,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 			return nil, failoverErr
 		}
 	}
-	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
 		body = normalizedBody
 	}
 
@@ -9509,7 +9511,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(ctx context.Context, resp *http.R
 			return nil, failoverErr
 		}
 	}
-	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
 		body = normalizedBody
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
