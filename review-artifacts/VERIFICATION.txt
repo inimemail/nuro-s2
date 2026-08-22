@@ -32,3 +32,28 @@ literal output: restored behavior/status; cmp matched baseline
 exit status: 0
 
 Target working tree remains modified; no source rollback was applied.
+
+CURRENT CHANGE:
+changed branch/field: OpenAI pool response-header timeout failover; immediate first-error soft cooldown and immediate account switch for `http2: timeout awaiting response headers`.
+source files: backend/internal/service/gateway_service.go, backend/internal/service/openai_pool_failover.go, backend/internal/service/openai_account_runtime_block_fastpath.go, backend/internal/service/openai_gateway_service.go, backend/internal/service/openai_pool_failover_test.go, backend/internal/handler/openai_edge_rs.go
+
+BASELINE:
+command: git diff --check
+literal output: no output
+exit status: 0
+
+MODIFIED:
+command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -run 'TestOpenAIPool(MediaResponseHeaderTimeout|ResponseHeaderTimeout|CommittedResponseHeaderTimeout|Upstream502Message|FailoverSwitch|RequestFailoverError)' -count=1
+literal output: ok github.com/Wei-Shaw/sub2api/internal/service
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/... -run '^$'
+literal output: all internal packages compiled successfully
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/handler -run '^TestOpenAIEdgeRetry' -count=1
+literal output: ok github.com/Wei-Shaw/sub2api/internal/handler
+exit status: 0
+
+ROLLBACK:
+command: cp review-artifacts/MODIFIED_FILE.go /tmp/nuro-s2-timeout-rollback.go; ./review-artifacts/ROLLBACK.sh /tmp/nuro-s2-timeout-rollback.go /tmp/nuro-s2-baseline.go; cmp -s /tmp/nuro-s2-timeout-rollback.go /tmp/nuro-s2-baseline.go
+literal output: rollback restored behavior/status; cmp matched baseline
+exit status: 0

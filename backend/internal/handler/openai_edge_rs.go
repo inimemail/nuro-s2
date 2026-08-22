@@ -1815,6 +1815,19 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		}
 		return fallback("client_response_already_written")
 	}
+	// A second semantic-stall failover is request-local and must terminate
+	// deterministically even when the optional control-plane dependencies are
+	// unavailable. Do this before the dependency fallback below so clients do
+	// not receive an ambiguous fallback_go result.
+	if edgeSemanticProgressTimeout && lease.stallActionPending {
+		return service.OpenAIEdgeRetryDecision{
+			Action:       service.OpenAIEdgeActionRespondError,
+			Reason:       "semantic_progress_failover_already_used",
+			StatusCode:   http.StatusGatewayTimeout,
+			ErrorType:    "upstream_timeout",
+			ErrorMessage: "Upstream request failed",
+		}
+	}
 	if strings.TrimSpace(req.ErrorType) == "edge_queue_wait_timeout" {
 		return h.openAIEdgeRetrySwitchAccount(c, lease, req, "queue_wait_timeout")
 	}
@@ -1896,15 +1909,6 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		SkipPoolSoftCooldown:   modelRoutingError || edgeResponseHeaderTimeout || edgeBodyTransportFailure,
 	}
 	if edgeSemanticProgressTimeout {
-		if lease.stallActionPending {
-			return service.OpenAIEdgeRetryDecision{
-				Action:       service.OpenAIEdgeActionRespondError,
-				Reason:       "semantic_progress_failover_already_used",
-				StatusCode:   http.StatusGatewayTimeout,
-				ErrorType:    "upstream_timeout",
-				ErrorMessage: "Upstream request failed",
-			}
-		}
 		lease.stallActionPending = true
 		lease.stallActionAccount = lease.account
 		lease.stallActionModel = lease.openAIRoutingModel()

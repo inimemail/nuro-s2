@@ -687,6 +687,10 @@ type UpstreamFailoverError struct {
 	ProbeKind              string
 	ForceCacheBilling      bool // Antigravity 粘性会话切换时设为 true
 	RetryableOnSameAccount bool // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	// immediatePoolSoftCooldown marks a response-header timeout that should
+	// enter the existing OpenAI pool soft cooldown on its first occurrence.
+	// It is intentionally narrower than generic 5xx failover handling.
+	immediatePoolSoftCooldown bool
 	// RetryRuleKey/RetryRuleLimit are populated for OpenAI race-mode retries.
 	// They keep per-status sub-limits separate from the request-level total.
 	RetryRuleKey              string

@@ -50,6 +50,38 @@ type openAIPoolSoftCooldownContext struct {
 	ClearGeneration int64
 }
 
+// isOpenAIResponseHeaderTimeoutError identifies failures that happen while
+// waiting for the upstream response headers. These errors are produced before
+// a response exists, so matching the transport wording is safe here and does
+// not classify stream body stalls as account failures.
+func isOpenAIResponseHeaderTimeoutError(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "timeout awaiting response headers") ||
+		strings.Contains(lower, "client.timeout exceeded while awaiting headers") ||
+		strings.Contains(lower, "client timeout exceeded while awaiting headers")
+}
+
+func shouldImmediatelyCoolOpenAITextPool(upstreamReq *http.Request, message string) bool {
+	if upstreamReq != nil {
+		profile := HTTPUpstreamProfileFromContext(upstreamReq.Context())
+		if profile == HTTPUpstreamProfileMedia || profile == HTTPUpstreamProfileOpenAIMedia {
+			return false
+		}
+		if upstreamReq.URL != nil {
+			path := strings.ToLower(upstreamReq.URL.Path)
+			if strings.Contains(path, "/images/") ||
+				strings.Contains(path, "/audio/") ||
+				strings.Contains(path, "/video") {
+				return false
+			}
+		}
+	}
+	return isOpenAIResponseHeaderTimeoutError(message)
+}
+
 func (s *OpenAIGatewayService) newOpenAIPoolRequestFailoverError(
 	c *gin.Context,
 	account *Account,
@@ -60,6 +92,7 @@ func (s *OpenAIGatewayService) newOpenAIPoolRequestFailoverError(
 	if account == nil || !account.IsOpenAI() || !account.IsPoolMode() || err == nil {
 		return nil
 	}
+	immediatePoolSoftCooldown := shouldImmediatelyCoolOpenAITextPool(upstreamReq, err.Error())
 	safeErr := sanitizeUpstreamErrorMessage(err.Error())
 	if safeErr == "" {
 		safeErr = "upstream request failed"
@@ -84,14 +117,22 @@ func (s *OpenAIGatewayService) newOpenAIPoolRequestFailoverError(
 	if account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
 		retryable = ruleMatched && ruleLimit > 0
 	}
+	// A response-header timeout means this account did not establish a usable
+	// upstream response. Do not spend pool same-account retry budget on it;
+	// switch immediately and let the existing soft cooldown/recovery probe own
+	// the account's next attempt.
+	if immediatePoolSoftCooldown {
+		retryable = false
+	}
 	return &UpstreamFailoverError{
-		StatusCode:             http.StatusBadGateway,
-		ResponseBody:           body,
-		Message:                safeErr,
-		RetryableOnSameAccount: retryable,
-		RetryRuleKey:           ruleKey,
-		RetryRuleLimit:         ruleLimit,
-		RetryRuleTransport:     ruleMatched && ruleKey == "transport",
+		StatusCode:                http.StatusBadGateway,
+		ResponseBody:              body,
+		Message:                   safeErr,
+		immediatePoolSoftCooldown: immediatePoolSoftCooldown,
+		RetryableOnSameAccount:    retryable,
+		RetryRuleKey:              ruleKey,
+		RetryRuleLimit:            ruleLimit,
+		RetryRuleTransport:        ruleMatched && ruleKey == "transport",
 	}
 }
 

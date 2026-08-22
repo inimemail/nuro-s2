@@ -671,12 +671,21 @@ func (s *OpenAIGatewayService) HandleOpenAIAccountFailoverSwitch(
 	}
 	if failoverErr != nil {
 		decision := s.classifyOpenAIPoolFailover(ctx, account, failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
+		immediatePoolSoftCooldown := failoverErr.immediatePoolSoftCooldown
 		userRequestError := isOpenAIPoolUserRequestedModelError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody) ||
 			isOpenAIPoolExplicitClientRequestError(failoverErr.StatusCode, failoverErr.Message, failoverErr.ResponseBody)
 		if !userRequestError && !failoverErr.SkipPromptCacheAvoidance {
 			s.avoidOpenAIPromptCacheWarmAccount(ctx, groupID, sessionHash, account, failoverErr)
 		}
-		if !userRequestError && !failoverErr.SkipPoolSoftCooldown && !decision.SkipSoftCooldown && s.shouldStartOpenAIPoolSoftCooldown(account) {
+		shouldStartSoftCooldown := false
+		if !userRequestError && !failoverErr.SkipPoolSoftCooldown && !decision.SkipSoftCooldown {
+			if immediatePoolSoftCooldown && account.IsPoolSoftCooldownEnabled() {
+				shouldStartSoftCooldown = true
+			} else {
+				shouldStartSoftCooldown = s.shouldStartOpenAIPoolSoftCooldown(account)
+			}
+		}
+		if shouldStartSoftCooldown {
 			probeModel := strings.TrimSpace(failoverErr.ProbeModel)
 			if probeModel == "" && len(requestedModel) > 0 {
 				probeModel = strings.TrimSpace(requestedModel[0])

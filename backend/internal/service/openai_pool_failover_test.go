@@ -75,6 +75,149 @@ func TestOpenAIPoolRequestFailoverError_BuiltinRetryDisabled(t *testing.T) {
 	require.False(t, failoverErr.RetryableOnSameAccount)
 }
 
+func TestOpenAIPoolResponseHeaderTimeoutTriggersImmediateSoftCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       121,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                          true,
+			"pool_soft_cooldown_error_threshold": 3,
+		},
+	}
+
+	failoverErr := svc.newOpenAIPoolRequestFailoverError(
+		nil,
+		account,
+		nil,
+		errors.New(`Post "https://example.test/v1/responses": http2: timeout awaiting response headers`),
+		false,
+	)
+
+	require.NotNil(t, failoverErr)
+	require.True(t, failoverErr.immediatePoolSoftCooldown)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "gpt-5.4")
+
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.Equal(t, "openai", state.ProbeKind)
+	require.Equal(t, "gpt-5.4", state.ProbeModel)
+}
+
+func TestOpenAIPoolCommittedResponseHeaderTimeoutTriggersImmediateSoftCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       122,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                          true,
+			"pool_soft_cooldown_error_threshold": 3,
+		},
+	}
+
+	svc.RecordOpenAIPoolFailureAfterCommittedResponse(
+		context.Background(),
+		account,
+		http.StatusBadGateway,
+		openAITransportFailoverBody,
+		"gpt-5.4",
+		`Post "https://example.test/v1/responses": http2: timeout awaiting response headers`,
+	)
+
+	require.True(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
+}
+
+func TestOpenAIPoolMediaResponseHeaderTimeoutKeepsExistingCooldownPolicy(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       123,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                          true,
+			"pool_soft_cooldown_error_threshold": 3,
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "https://example.test/v1/images/generations", nil)
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAIMedia))
+
+	failoverErr := svc.newOpenAIPoolRequestFailoverError(
+		nil,
+		account,
+		req,
+		errors.New("http2: timeout awaiting response headers"),
+		false,
+	)
+
+	require.NotNil(t, failoverErr)
+	require.False(t, failoverErr.immediatePoolSoftCooldown)
+
+	mediaAccount := *account
+	mediaAccount.ID = 124
+	svc.RecordOpenAIPoolFailureAfterCommittedResponse(
+		context.Background(),
+		&mediaAccount,
+		http.StatusBadGateway,
+		openAITransportFailoverBody,
+		"gpt-image-2",
+		`Post "https://example.test/v1/responses": http2: timeout awaiting response headers`,
+	)
+	require.False(t, svc.OpenAIPoolSoftCooldownState(mediaAccount.ID).Cooling)
+}
+
+func TestOpenAIPoolResponseHeaderTimeoutRespectsSoftCooldownDisabled(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       125,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                  true,
+			"pool_soft_cooldown_enabled": false,
+		},
+	}
+	failoverErr := svc.newOpenAIPoolRequestFailoverError(
+		nil,
+		account,
+		nil,
+		errors.New("http2: timeout awaiting response headers"),
+		false,
+	)
+
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr, "gpt-5.4")
+
+	require.False(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
+}
+
+func TestOpenAIPoolUpstream502MessageDoesNotTriggerImmediateHeaderCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       126,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                          true,
+			"pool_soft_cooldown_error_threshold": 3,
+		},
+	}
+	responseBody := []byte(`{"error":{"message":"timeout awaiting response headers"}}`)
+
+	svc.RecordOpenAIPoolFailureAfterCommittedResponse(
+		context.Background(),
+		account,
+		http.StatusBadGateway,
+		responseBody,
+		"gpt-5.4",
+		"timeout awaiting response headers",
+	)
+
+	require.False(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
+}
+
 func TestOpenAIPoolRequestFailoverError_Explicit502OverridesBuiltinDisabled(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{

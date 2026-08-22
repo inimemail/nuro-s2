@@ -6384,6 +6384,9 @@ func (s *OpenAIGatewayService) RecordOpenAIPoolFailureAfterCommittedResponse(
 	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
 		return
 	}
+	immediatePoolSoftCooldown := bytes.Equal(responseBody, openAITransportFailoverBody) &&
+		isOpenAIResponseHeaderTimeoutError(message) &&
+		!account.IsImagePoolMode() && !isOpenAIImageGenerationModel(requestedModel)
 	message = sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
 	if message == "" {
 		message = sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(responseBody))
@@ -6395,7 +6398,13 @@ func (s *OpenAIGatewayService) RecordOpenAIPoolFailureAfterCommittedResponse(
 	if !decision.Failover || decision.SkipSoftCooldown {
 		return
 	}
-	if !s.shouldStartOpenAIPoolSoftCooldown(account) {
+	if !account.IsPoolSoftCooldownEnabled() {
+		// Preserve the existing disabled-setting behavior, including any
+		// runtime-block cleanup performed by the shared threshold helper.
+		s.shouldStartOpenAIPoolSoftCooldown(account)
+		return
+	}
+	if !immediatePoolSoftCooldown && !s.shouldStartOpenAIPoolSoftCooldown(account) {
 		return
 	}
 	probeModel := strings.TrimSpace(requestedModel)
