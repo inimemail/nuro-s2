@@ -55,6 +55,37 @@ func TestRedisSchedulerEventBusRuntimeClearGenerationIsMonotonic(t *testing.T) {
 	require.Equal(t, second, loaded)
 }
 
+func TestRedisSchedulerEventBusRuntimeClearGenerationCompareAndAdvance(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	bus := NewRedisSchedulerEventBus(client).(*redisSchedulerEventBus)
+
+	generation, advanced, err := bus.AdvanceAccountRuntimeClearGenerationIfEqual(context.Background(), 10, 0)
+	require.NoError(t, err)
+	require.True(t, advanced)
+	require.Equal(t, int64(1), generation)
+
+	generation, advanced, err = bus.AdvanceAccountRuntimeClearGenerationIfEqual(context.Background(), 10, 0)
+	require.NoError(t, err)
+	require.False(t, advanced)
+	require.Equal(t, int64(1), generation)
+}
+
+func TestRedisSchedulerEventBusRuntimeClearGenerationAdvancesAboveFloor(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	bus := NewRedisSchedulerEventBus(client).(*redisSchedulerEventBus)
+
+	generation, err := bus.AdvanceAccountRuntimeClearGenerationAbove(context.Background(), 12, 7)
+	require.NoError(t, err)
+	require.Equal(t, int64(8), generation)
+	generation, err = bus.AdvanceAccountRuntimeClearGenerationAbove(context.Background(), 12, 3)
+	require.NoError(t, err)
+	require.Equal(t, int64(9), generation)
+}
+
 func TestVersionedAccountCooldownClearPreservesCurrentGeneration(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})

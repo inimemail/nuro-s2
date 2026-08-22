@@ -34,39 +34,45 @@
 
     <div v-if="enabled" class="border-t border-violet-200/80 p-3 dark:border-violet-900/60">
       <div class="grid gap-3 sm:grid-cols-2">
-        <label class="block">
-          <span class="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">
+        <label class="group block min-w-0">
+          <span class="mb-1.5 flex items-center justify-between gap-2 text-xs font-semibold text-gray-700 dark:text-gray-200">
             {{ t('admin.accounts.downstreamCacheMarkupThreshold') }}
+            <span class="text-[10px] font-medium text-gray-400 dark:text-gray-500">Token</span>
           </span>
-          <div class="relative">
+          <div class="flex h-10 overflow-hidden rounded-md border border-gray-300 bg-white shadow-sm transition group-focus-within:border-violet-500 group-focus-within:ring-2 group-focus-within:ring-violet-500/15 dark:border-dark-600 dark:bg-dark-800">
             <input
               data-testid="downstream-cache-markup-threshold"
-              class="form-input w-full pr-16 tabular-nums"
+              class="min-w-0 flex-1 border-0 bg-transparent px-3 text-sm font-semibold tabular-nums text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-0 focus:ring-0 dark:text-gray-100"
               type="number"
               min="0"
               step="1"
+              inputmode="numeric"
+              :aria-label="t('admin.accounts.downstreamCacheMarkupThreshold')"
               :value="thresholdTokens"
               @input="updateThreshold"
             />
-            <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-gray-400">Token</span>
+            <span class="flex w-16 flex-none items-center justify-center border-l border-gray-200 bg-gray-50 text-[11px] font-medium text-gray-500 dark:border-dark-600 dark:bg-dark-700 dark:text-gray-400">Token</span>
           </div>
         </label>
 
-        <label class="block">
-          <span class="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">
+        <label class="group block min-w-0">
+          <span class="mb-1.5 flex items-center justify-between gap-2 text-xs font-semibold text-gray-700 dark:text-gray-200">
             {{ t('admin.accounts.downstreamCacheMarkupPercent') }}
+            <span class="text-[10px] font-medium text-gray-400 dark:text-gray-500">%</span>
           </span>
-          <div class="relative">
+          <div class="flex h-10 overflow-hidden rounded-md border border-gray-300 bg-white shadow-sm transition group-focus-within:border-violet-500 group-focus-within:ring-2 group-focus-within:ring-violet-500/15 dark:border-dark-600 dark:bg-dark-800">
             <input
               data-testid="downstream-cache-markup-percent"
-              class="form-input w-full pr-10 tabular-nums"
+              class="min-w-0 flex-1 border-0 bg-transparent px-3 text-sm font-semibold tabular-nums text-gray-900 outline-none ring-0 placeholder:text-gray-400 focus:border-0 focus:ring-0 dark:text-gray-100"
               type="number"
               min="0"
               step="0.01"
+              inputmode="decimal"
+              :aria-label="t('admin.accounts.downstreamCacheMarkupPercent')"
               :value="percent"
               @input="updatePercent"
             />
-            <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-gray-400">%</span>
+            <span class="flex w-12 flex-none items-center justify-center border-l border-gray-200 bg-gray-50 text-sm font-semibold text-violet-600 dark:border-dark-600 dark:bg-dark-700 dark:text-violet-300">%</span>
           </div>
         </label>
       </div>

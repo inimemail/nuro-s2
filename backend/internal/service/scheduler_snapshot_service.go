@@ -240,6 +240,83 @@ func (s *SchedulerSnapshotService) publishAccountRuntimeClear(ctx context.Contex
 		}
 		generation = reconciledGeneration
 	}
+	return generation, s.publishAccountRuntimeClearGeneration(ctx, accountID, generation)
+}
+
+func (s *SchedulerSnapshotService) publishAccountRuntimeClearIfGeneration(ctx context.Context, accountID, expectedGeneration int64) (int64, bool, error) {
+	if s == nil || accountID <= 0 || expectedGeneration < 0 {
+		return 0, false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	store, ok := s.eventBus.(SchedulerRuntimeClearGenerationCASStore)
+	if !ok {
+		return 0, false, errors.New("scheduler runtime-clear compare-and-advance store unavailable")
+	}
+	generationCtx, generationCancel := context.WithTimeout(ctx, time.Second)
+	generation, advanced, err := store.AdvanceAccountRuntimeClearGenerationIfEqual(generationCtx, accountID, expectedGeneration)
+	generationCancel()
+	if err != nil || !advanced {
+		return generation, false, err
+	}
+	return generation, true, s.publishAccountRuntimeClearGeneration(ctx, accountID, generation)
+}
+
+// advanceAccountRuntimeGeneration invalidates work that started against the
+// current runtime state without broadcasting a clear event. A new cooldown
+// uses the returned generation so an older recovery probe cannot clear it.
+func (s *SchedulerSnapshotService) advanceAccountRuntimeGeneration(ctx context.Context, accountID int64) (int64, error) {
+	if s == nil || accountID <= 0 {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	store, ok := s.eventBus.(SchedulerRuntimeClearGenerationStore)
+	if !ok {
+		// Scheduler event propagation may be disabled (or unavailable in a
+		// single-replica/legacy deployment). Keep a monotonic local fence so a
+		// recovery probe cannot clear a newer cooldown that was created on this
+		// process while no shared store is present.
+		generation := s.localAccountRuntimeClearGeneration(accountID) + 1
+		s.noteAccountRuntimeClearGeneration(accountID, generation)
+		return generation, nil
+	}
+	if floorStore, ok := store.(SchedulerRuntimeClearGenerationFloorStore); ok {
+		floor := s.localAccountRuntimeClearGeneration(accountID)
+		generationCtx, generationCancel := context.WithTimeout(ctx, time.Second)
+		generation, err := floorStore.AdvanceAccountRuntimeClearGenerationAbove(generationCtx, accountID, floor)
+		generationCancel()
+		if err != nil {
+			// The atomic write may have committed before the client observed the
+			// error. Reconcile and accept it only when it crossed the local floor.
+			reconcileCtx, reconcileCancel := context.WithTimeout(ctx, time.Second)
+			reconciled, reconcileErr := store.LoadAccountRuntimeClearGeneration(reconcileCtx, accountID)
+			reconcileCancel()
+			if reconcileErr != nil {
+				return 0, errors.Join(err, fmt.Errorf("reconcile runtime generation: %w", reconcileErr))
+			}
+			if reconciled <= floor {
+				return 0, err
+			}
+			generation = reconciled
+		}
+		s.noteAccountRuntimeClearGeneration(accountID, generation)
+		return generation, nil
+	}
+
+	generationCtx, generationCancel := context.WithTimeout(ctx, time.Second)
+	generation, err := store.AdvanceAccountRuntimeClearGeneration(generationCtx, accountID)
+	generationCancel()
+	if err != nil {
+		return 0, err
+	}
+	s.noteAccountRuntimeClearGeneration(accountID, generation)
+	return generation, nil
+}
+
+func (s *SchedulerSnapshotService) publishAccountRuntimeClearGeneration(ctx context.Context, accountID, generation int64) error {
 	s.noteAccountRuntimeClearGeneration(accountID, generation)
 	event := SchedulerEvent{
 		Type:       SchedulerEventAccountRuntimeCleared,
@@ -255,18 +332,18 @@ func (s *SchedulerSnapshotService) publishAccountRuntimeClear(ctx context.Contex
 		publishErr = s.eventBus.Publish(publishCtx, event)
 		publishCancel()
 		if publishErr == nil {
-			return generation, nil
+			return nil
 		}
 		if attempt < 2 {
 			select {
 			case <-ctx.Done():
-				return generation, ctx.Err()
+				return ctx.Err()
 			case <-time.After(time.Duration(attempt+1) * 50 * time.Millisecond):
 			}
 		}
 	}
 	logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] publish runtime-clear failed: account_id=%d generation=%d err=%v", accountID, generation, publishErr)
-	return generation, fmt.Errorf("publish account runtime-clear event: %w", publishErr)
+	return fmt.Errorf("publish account runtime-clear event: %w", publishErr)
 }
 
 func (s *SchedulerSnapshotService) currentAccountRuntimeClearGeneration(accountID int64) int64 {

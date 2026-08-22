@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -38,6 +39,18 @@ type SchedulerEventBus interface {
 type SchedulerRuntimeClearGenerationStore interface {
 	AdvanceAccountRuntimeClearGeneration(ctx context.Context, accountID int64) (int64, error)
 	LoadAccountRuntimeClearGeneration(ctx context.Context, accountID int64) (int64, error)
+}
+
+// SchedulerRuntimeClearGenerationCASStore fences recovery work that started at
+// an older generation. Only one replica may advance a given generation.
+type SchedulerRuntimeClearGenerationCASStore interface {
+	AdvanceAccountRuntimeClearGenerationIfEqual(ctx context.Context, accountID, expectedGeneration int64) (generation int64, advanced bool, err error)
+}
+
+// SchedulerRuntimeClearGenerationFloorStore atomically advances a generation
+// beyond both the shared value and a caller-observed local floor.
+type SchedulerRuntimeClearGenerationFloorStore interface {
+	AdvanceAccountRuntimeClearGenerationAbove(ctx context.Context, accountID, floorGeneration int64) (int64, error)
 }
 
 type routedSchedulerEventBus struct {
@@ -78,6 +91,22 @@ func (b *routedSchedulerEventBus) LoadAccountRuntimeClearGeneration(ctx context.
 		return 0, nil
 	}
 	return store.LoadAccountRuntimeClearGeneration(ctx, accountID)
+}
+
+func (b *routedSchedulerEventBus) AdvanceAccountRuntimeClearGenerationIfEqual(ctx context.Context, accountID, expectedGeneration int64) (int64, bool, error) {
+	store, ok := b.runtimeBus.(SchedulerRuntimeClearGenerationCASStore)
+	if !ok {
+		return 0, false, errors.New("scheduler runtime-clear compare-and-advance store unavailable")
+	}
+	return store.AdvanceAccountRuntimeClearGenerationIfEqual(ctx, accountID, expectedGeneration)
+}
+
+func (b *routedSchedulerEventBus) AdvanceAccountRuntimeClearGenerationAbove(ctx context.Context, accountID, floorGeneration int64) (int64, error) {
+	store, ok := b.runtimeBus.(SchedulerRuntimeClearGenerationFloorStore)
+	if !ok {
+		return 0, errors.New("scheduler runtime-clear floor-advance store unavailable")
+	}
+	return store.AdvanceAccountRuntimeClearGenerationAbove(ctx, accountID, floorGeneration)
 }
 
 func (b *routedSchedulerEventBus) Subscribe(buffer int) (<-chan SchedulerEvent, func()) {
@@ -169,6 +198,36 @@ func (b *localSchedulerEventBus) LoadAccountRuntimeClearGeneration(_ context.Con
 	generation := b.runtimeClearGenerations[accountID]
 	b.mu.RUnlock()
 	return generation, nil
+}
+
+func (b *localSchedulerEventBus) AdvanceAccountRuntimeClearGenerationIfEqual(_ context.Context, accountID, expectedGeneration int64) (int64, bool, error) {
+	if b == nil || accountID <= 0 || expectedGeneration < 0 {
+		return 0, false, nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	current := b.runtimeClearGenerations[accountID]
+	if current != expectedGeneration {
+		return current, false, nil
+	}
+	current++
+	b.runtimeClearGenerations[accountID] = current
+	return current, true, nil
+}
+
+func (b *localSchedulerEventBus) AdvanceAccountRuntimeClearGenerationAbove(_ context.Context, accountID, floorGeneration int64) (int64, error) {
+	if b == nil || accountID <= 0 || floorGeneration < 0 {
+		return 0, nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	current := b.runtimeClearGenerations[accountID]
+	if current < floorGeneration {
+		current = floorGeneration
+	}
+	current++
+	b.runtimeClearGenerations[accountID] = current
+	return current, nil
 }
 
 func NewSchedulerEventBus(cfg *config.Config) SchedulerEventBus {

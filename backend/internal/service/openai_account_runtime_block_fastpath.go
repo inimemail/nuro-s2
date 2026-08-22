@@ -182,9 +182,7 @@ func (s *OpenAIGatewayService) clearLocalAccountSchedulingBlockBefore(accountID,
 		return
 	}
 	deleteAccountRuntimeDeadlineBefore(&s.openaiAccountRuntimeBlockUntil, accountID, clearGeneration)
-	if !deleteAccountRuntimeDeadlineBefore(&s.openaiPoolSoftCooldownUntil, accountID, clearGeneration) {
-		return
-	}
+	deleteAccountRuntimeDeadlineBefore(&s.openaiPoolSoftCooldownUntil, accountID, clearGeneration)
 	if value, ok := s.openaiPoolSoftCooldownContext.Load(accountID); ok {
 		cooldownContext, valid := value.(openAIPoolSoftCooldownContext)
 		if !valid || clearGeneration <= 0 || cooldownContext.ClearGeneration < clearGeneration {
@@ -202,6 +200,39 @@ func (s *OpenAIGatewayService) currentAccountRuntimeClearGeneration(accountID in
 		return 0
 	}
 	return s.schedulerSnapshot.currentAccountRuntimeClearGeneration(accountID)
+}
+
+func (s *OpenAIGatewayService) AccountRuntimeRecoveryFenceMatches(accountID int64, expectedUntil time.Time, expectedGeneration int64) bool {
+	if s == nil || accountID <= 0 || expectedUntil.IsZero() {
+		return false
+	}
+	value, ok := s.openaiPoolSoftCooldownUntil.Load(accountID)
+	if !ok {
+		return false
+	}
+	until, generation, valid := parseAccountRuntimeDeadline(value)
+	if !valid || !until.Equal(expectedUntil) || generation != expectedGeneration {
+		return false
+	}
+	if s.schedulerSnapshot != nil && s.currentAccountRuntimeClearGeneration(accountID) != expectedGeneration {
+		return false
+	}
+	return true
+}
+
+func (s *OpenAIGatewayService) accountRuntimeClearGenerationMatches(accountID, expectedGeneration int64) bool {
+	if s == nil || accountID <= 0 || expectedGeneration < 0 {
+		return false
+	}
+	value, ok := s.openaiPoolSoftCooldownUntil.Load(accountID)
+	if !ok {
+		// No OpenAI pool deadline is present for this account; another blocker
+		// (or an admin clear) may own the state, so this matcher is not
+		// applicable and must not veto a legacy local clear.
+		return true
+	}
+	_, generation, valid := parseAccountRuntimeDeadline(value)
+	return valid && generation == expectedGeneration
 }
 
 func (s *OpenAIGatewayService) storeOpenAIAccountCooldownInRedis(accountID int64, until time.Time, generations ...int64) {
@@ -347,6 +378,20 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 	cooldownContext.LastProbeReason = truncateString(strings.TrimSpace(cooldownContext.LastProbeReason), 256)
 	cooldown = s.capOpenAIPoolSoftCooldown(ctx, account, cooldown, cooldownContext)
 	clearGeneration := s.currentAccountRuntimeClearGeneration(account.ID)
+	if s.schedulerSnapshot != nil {
+		if nextGeneration, err := s.schedulerSnapshot.advanceAccountRuntimeGeneration(ctx, account.ID); err == nil && nextGeneration > clearGeneration {
+			clearGeneration = nextGeneration
+		} else if err != nil {
+			// Fail closed when the shared generation store is temporarily
+			// unavailable. A recovery CAS from the preceding generation may still
+			// complete, but it must not clear this newly-created cooldown.
+			clearGeneration++
+			// Keep the local fence in sync with the generation carried by the
+			// deadline. Otherwise the next recovery probe would reject its own
+			// state as stale until Redis recovers.
+			s.schedulerSnapshot.noteAccountRuntimeClearGeneration(account.ID, clearGeneration)
+		}
+	}
 	cooldownContext.ClearGeneration = clearGeneration
 	if cooldownContext.ProbeCapability != "" || cooldownContext.ProbeModel != "" || cooldownContext.ProbeKind != "" ||
 		cooldownContext.CooldownSource != "" || cooldownContext.StatusCode > 0 || cooldownContext.Reason != "" ||
@@ -457,7 +502,23 @@ func (s *OpenAIGatewayService) storeOpenAIPoolSoftCooldownUntil(accountID int64,
 			}
 			continue
 		}
-		currentUntil, _, ok := parseAccountRuntimeDeadline(current)
+		currentUntil, currentGeneration, ok := parseAccountRuntimeDeadline(current)
+		if ok && currentUntil.After(now) && currentGeneration < clearGeneration {
+			// Preserve the existing shorter deadline semantics while carrying the
+			// new generation. Otherwise this replica would treat its still-active
+			// cooldown as stale immediately after the shared generation advances.
+			nextUntil := until
+			if currentUntil.Before(nextUntil) {
+				nextUntil = currentUntil
+			}
+			next := accountRuntimeDeadline{Until: nextUntil, ClearGeneration: clearGeneration}
+			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(accountID, current, next) {
+				s.storeOpenAIAccountCooldownInRedis(accountID, nextUntil, clearGeneration)
+				s.publishOpenAISchedulingRuntimeEvent(context.Background(), SchedulerEventAccountUpdated, accountID, "soft_cooldown")
+				return
+			}
+			continue
+		}
 		if !ok || !currentUntil.After(now) {
 			if s.openaiPoolSoftCooldownUntil.CompareAndSwap(accountID, current, deadline) {
 				s.storeOpenAIAccountCooldownInRedis(accountID, until, deadline.ClearGeneration)

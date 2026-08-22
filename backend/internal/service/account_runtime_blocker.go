@@ -99,6 +99,43 @@ type CompositeAccountRuntimeBlocker struct {
 	blockers []AccountRuntimeBlocker
 }
 
+type accountRuntimeGenerationMatcher interface {
+	accountRuntimeClearGenerationMatches(accountID, expectedGeneration int64) bool
+}
+
+func (b *CompositeAccountRuntimeBlocker) localRuntimeGenerationMatches(accountID, expectedGeneration int64) bool {
+	if b == nil {
+		return false
+	}
+	for _, blocker := range b.blockers {
+		matcher, ok := blocker.(accountRuntimeGenerationMatcher)
+		if !ok {
+			continue
+		}
+		if !matcher.accountRuntimeClearGenerationMatches(accountID, expectedGeneration) {
+			return false
+		}
+	}
+	// With no generation-aware blocker, retain legacy local-clear behavior.
+	// When a matcher is present, reaching this point means every matcher
+	// agreed that the expected generation is still current.
+	return true
+}
+
+func (b *CompositeAccountRuntimeBlocker) AccountRuntimeRecoveryFenceMatches(accountID int64, expectedUntil time.Time, expectedGeneration int64) bool {
+	if b == nil || accountID <= 0 || expectedUntil.IsZero() {
+		return false
+	}
+	for _, blocker := range b.blockers {
+		if fencer, ok := blocker.(interface {
+			AccountRuntimeRecoveryFenceMatches(int64, time.Time, int64) bool
+		}); ok {
+			return fencer.AccountRuntimeRecoveryFenceMatches(accountID, expectedUntil, expectedGeneration)
+		}
+	}
+	return true
+}
+
 func NewCompositeAccountRuntimeBlocker(openai *OpenAIGatewayService, anthropic *GatewayService, rateLimitService *RateLimitService, openAITokenProvider *OpenAITokenProvider) *CompositeAccountRuntimeBlocker {
 	blockers := make([]AccountRuntimeBlocker, 0, 2)
 	if openai != nil {
@@ -143,8 +180,21 @@ func (b *CompositeAccountRuntimeBlocker) ClearAccountSchedulingBlock(accountID i
 // before clearing. Admin and successful-probe recovery use this path so every
 // replica drops old state while cooldowns created at the new generation remain.
 func (b *CompositeAccountRuntimeBlocker) ClearAccountSchedulingBlockAcrossReplicas(ctx context.Context, accountID int64) error {
+	_, err := b.clearAccountSchedulingBlockAcrossReplicas(ctx, accountID, nil)
+	return err
+}
+
+// ClearAccountSchedulingBlockAcrossReplicasIfGeneration clears only when the
+// shared runtime-clear generation still matches the probe's starting point.
+// A stale replica therefore cannot clear a newer cooldown.
+func (b *CompositeAccountRuntimeBlocker) ClearAccountSchedulingBlockAcrossReplicasIfGeneration(ctx context.Context, accountID, expectedGeneration int64) (bool, error) {
+	advanced, err := b.clearAccountSchedulingBlockAcrossReplicas(ctx, accountID, &expectedGeneration)
+	return advanced, err
+}
+
+func (b *CompositeAccountRuntimeBlocker) clearAccountSchedulingBlockAcrossReplicas(ctx context.Context, accountID int64, expectedGeneration *int64) (bool, error) {
 	if b == nil || accountID <= 0 {
-		return nil
+		return false, nil
 	}
 	var snapshot *SchedulerSnapshotService
 	for _, blocker := range b.blockers {
@@ -160,16 +210,58 @@ func (b *CompositeAccountRuntimeBlocker) ClearAccountSchedulingBlockAcrossReplic
 		}
 	}
 	if snapshot == nil {
-		b.ClearAccountSchedulingBlock(accountID)
-		return nil
-	}
-	generation, err := snapshot.publishAccountRuntimeClear(ctx, accountID)
-	if generation <= 0 {
-		if err != nil {
-			return err
+		if expectedGeneration != nil {
+			if !b.localRuntimeGenerationMatches(accountID, *expectedGeneration) {
+				return false, nil
+			}
+			// Deployments without a scheduler snapshot cannot provide shared
+			// generation fencing. Preserve the legacy local-clear behavior
+			// instead of leaving a recovered account permanently cooling.
+			b.ClearAccountSchedulingBlock(accountID)
+			return true, nil
 		}
 		b.ClearAccountSchedulingBlock(accountID)
-		return nil
+		return true, nil
+	}
+	// A snapshot can exist while event propagation is disabled (or while a
+	// legacy bus does not expose generation storage). There is no remote state
+	// to fence in that mode, so retain the established local-clear behavior
+	// instead of returning a publish error and leaving the account cooling.
+	if _, hasGenerationStore := snapshot.eventBus.(SchedulerRuntimeClearGenerationStore); !hasGenerationStore {
+		if expectedGeneration != nil && !b.localRuntimeGenerationMatches(accountID, *expectedGeneration) {
+			return false, nil
+		}
+		b.ClearAccountSchedulingBlock(accountID)
+		return true, nil
+	}
+	var generation int64
+	var advanced bool
+	var err error
+	if expectedGeneration != nil {
+		if _, supportsCAS := snapshot.eventBus.(SchedulerRuntimeClearGenerationCASStore); supportsCAS {
+			generation, advanced, err = snapshot.publishAccountRuntimeClearIfGeneration(ctx, accountID, *expectedGeneration)
+		} else {
+			// Preserve compatibility with legacy event buses that predate
+			// generation fencing; repository wiring uses the CAS-capable bus.
+			generation, err = snapshot.publishAccountRuntimeClear(ctx, accountID)
+			advanced = true
+		}
+		if err != nil || !advanced {
+			return advanced, err
+		}
+	} else {
+		generation, err = snapshot.publishAccountRuntimeClear(ctx, accountID)
+		advanced = true
+	}
+	if generation <= 0 {
+		if err != nil {
+			return false, err
+		}
+		if expectedGeneration != nil {
+			return false, nil
+		}
+		b.ClearAccountSchedulingBlock(accountID)
+		return true, nil
 	}
 	for _, blocker := range b.blockers {
 		switch service := blocker.(type) {
@@ -184,7 +276,7 @@ func (b *CompositeAccountRuntimeBlocker) ClearAccountSchedulingBlockAcrossReplic
 			blocker.ClearAccountSchedulingBlock(accountID)
 		}
 	}
-	return err
+	return advanced, err
 }
 
 func (b *CompositeAccountRuntimeBlocker) OpenAIPoolSoftCooldownState(accountID int64) OpenAIPoolSoftCooldownState {

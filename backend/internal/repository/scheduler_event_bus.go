@@ -15,6 +15,28 @@ import (
 const schedulerEventStreamKey = "scheduler:events"
 const schedulerRuntimeClearGenerationKey = "scheduler:runtime_clear_generations"
 
+var advanceRuntimeClearGenerationIfEqualScript = redis.NewScript(`
+	local current = tonumber(redis.call('HGET', KEYS[1], ARGV[1]) or '0')
+	local expected = tonumber(ARGV[2])
+	if current ~= expected then
+		return {current, 0}
+	end
+	local next = current + 1
+	redis.call('HSET', KEYS[1], ARGV[1], next)
+	return {next, 1}
+`)
+
+var advanceRuntimeClearGenerationAboveScript = redis.NewScript(`
+	local current = tonumber(redis.call('HGET', KEYS[1], ARGV[1]) or '0')
+	local floor = tonumber(ARGV[2])
+	if current < floor then
+		current = floor
+	end
+	local next = current + 1
+	redis.call('HSET', KEYS[1], ARGV[1], next)
+	return next
+`)
+
 type redisSchedulerEventBus struct {
 	rdb       *redis.Client
 	streamKey string
@@ -70,6 +92,36 @@ func (b *redisSchedulerEventBus) LoadAccountRuntimeClearGeneration(ctx context.C
 		return 0, nil
 	}
 	return generation, err
+}
+
+func (b *redisSchedulerEventBus) AdvanceAccountRuntimeClearGenerationIfEqual(ctx context.Context, accountID, expectedGeneration int64) (int64, bool, error) {
+	if b == nil || b.rdb == nil || accountID <= 0 || expectedGeneration < 0 {
+		return 0, false, nil
+	}
+	values, err := advanceRuntimeClearGenerationIfEqualScript.Run(
+		ctx,
+		b.rdb,
+		[]string{schedulerRuntimeClearGenerationKey},
+		strconv.FormatInt(accountID, 10),
+		expectedGeneration,
+	).Int64Slice()
+	if err != nil {
+		return 0, false, err
+	}
+	if len(values) != 2 {
+		return 0, false, fmt.Errorf("unexpected runtime-clear generation result length: %d", len(values))
+	}
+	return values[0], values[1] == 1, nil
+}
+
+func (b *redisSchedulerEventBus) AdvanceAccountRuntimeClearGenerationAbove(ctx context.Context, accountID, floorGeneration int64) (int64, error) {
+	if b == nil || b.rdb == nil || accountID <= 0 || floorGeneration < 0 {
+		return 0, nil
+	}
+	return advanceRuntimeClearGenerationAboveScript.Run(
+		ctx, b.rdb, []string{schedulerRuntimeClearGenerationKey},
+		strconv.FormatInt(accountID, 10), floorGeneration,
+	).Int64()
 }
 
 func (b *redisSchedulerEventBus) Subscribe(buffer int) (<-chan service.SchedulerEvent, func()) {

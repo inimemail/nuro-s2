@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 )
+
+var ErrStaleAccountRecovery = errors.New("stale account recovery generation")
 
 // RateLimitService 处理限流和过载状态管理
 type RateLimitService struct {
@@ -48,6 +51,12 @@ type SuccessfulTestRecoveryResult struct {
 // AccountRecoveryOptions 控制账号恢复时的附加行为。
 type AccountRecoveryOptions struct {
 	InvalidateToken bool
+	// DeferSchedulingClear keeps runtime scheduling blocks in place until the
+	// caller has completed any additional recovery fencing.
+	DeferSchedulingClear           bool
+	ExpectedRuntimeUntil           time.Time
+	ExpectedRuntimeClearGeneration int64
+	RequireRuntimeFence            bool
 }
 
 type geminiUsageCacheEntry struct {
@@ -1650,9 +1659,15 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 	if err != nil {
 		return nil, err
 	}
+	if options.RequireRuntimeFence && !s.runtimeRecoveryFenceMatches(accountID, options.ExpectedRuntimeUntil, options.ExpectedRuntimeClearGeneration) {
+		return nil, ErrStaleAccountRecovery
+	}
 
 	result := &SuccessfulTestRecoveryResult{}
 	if account.Status == StatusError {
+		if options.RequireRuntimeFence && !s.runtimeRecoveryFenceMatches(accountID, options.ExpectedRuntimeUntil, options.ExpectedRuntimeClearGeneration) {
+			return nil, ErrStaleAccountRecovery
+		}
 		if err := s.accountRepo.ClearError(ctx, accountID); err != nil {
 			return nil, err
 		}
@@ -1665,6 +1680,9 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 	}
 
 	if hasRecoverableRuntimeState(account) {
+		if options.RequireRuntimeFence && !s.runtimeRecoveryFenceMatches(accountID, options.ExpectedRuntimeUntil, options.ExpectedRuntimeClearGeneration) {
+			return nil, ErrStaleAccountRecovery
+		}
 		// Recovery publishes one fenced runtime clear after all durable state is
 		// updated. Avoid an earlier process-local clear that could race a newer
 		// cooldown on this replica.
@@ -1676,15 +1694,51 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 	if result.ClearedError || result.ClearedRateLimit {
 		s.ResetOpenAI403Counter(ctx, accountID)
 	}
-	if isOpenAICompatibleSchedulingAccount(account) || isAnthropicPoolAccount(account) {
-		if err := s.notifyAccountSchedulingBlockClearedAcrossReplicas(ctx, accountID); err != nil {
-			return result, err
+	if !options.DeferSchedulingClear {
+		if isOpenAICompatibleSchedulingAccount(account) || isAnthropicPoolAccount(account) {
+			if err := s.notifyAccountSchedulingBlockClearedAcrossReplicas(ctx, accountID); err != nil {
+				return result, err
+			}
+		} else {
+			s.notifyAccountSchedulingBlockCleared(accountID)
 		}
-	} else {
-		s.notifyAccountSchedulingBlockCleared(accountID)
 	}
 
 	return result, nil
+}
+
+func (s *RateLimitService) runtimeRecoveryFenceMatches(accountID int64, expectedUntil time.Time, expectedGeneration int64) bool {
+	if s == nil || s.runtimeBlocker == nil {
+		return true
+	}
+	fencer, ok := s.runtimeBlocker.(interface {
+		AccountRuntimeRecoveryFenceMatches(int64, time.Time, int64) bool
+	})
+	if !ok {
+		return true
+	}
+	return fencer.AccountRuntimeRecoveryFenceMatches(accountID, expectedUntil, expectedGeneration)
+}
+
+// FinalizeDeferredAccountRecovery releases a runtime scheduling block only
+// when no other replica has advanced the generation since this recovery began.
+func (s *RateLimitService) FinalizeDeferredAccountRecovery(ctx context.Context, accountID, expectedGeneration int64) (bool, error) {
+	if s == nil || s.runtimeBlocker == nil || accountID <= 0 {
+		return true, nil
+	}
+	clearer, ok := s.runtimeBlocker.(interface {
+		ClearAccountSchedulingBlockAcrossReplicasIfGeneration(context.Context, int64, int64) (bool, error)
+	})
+	if !ok {
+		// Legacy/local blockers may not expose generation fencing. Preserve
+		// their established clear behavior; production multi-replica wiring
+		// uses CompositeAccountRuntimeBlocker with the conditional method.
+		if err := s.notifyAccountSchedulingBlockClearedAcrossReplicas(ctx, accountID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return clearer.ClearAccountSchedulingBlockAcrossReplicasIfGeneration(ctx, accountID, expectedGeneration)
 }
 
 // RecoverAccountAfterSuccessfulTest 将一次成功测试视为正常请求，

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -177,6 +178,135 @@ func TestRuntimeClearGenerationClearsOldStateAndPreservesNewState(t *testing.T) 
 	require.False(t, anthropicOld)
 	require.True(t, openAINew)
 	require.True(t, anthropicNew)
+}
+
+func TestCompositeConditionalRuntimeClearRejectsStaleReplica(t *testing.T) {
+	bus := NewLocalSchedulerEventBus()
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, bus)
+	openAI := &OpenAIGatewayService{schedulerSnapshot: snapshot}
+	blocker := NewCompositeAccountRuntimeBlocker(openAI, nil, nil, nil)
+	accountID := int64(706)
+	openAI.openaiPoolSoftCooldownUntil.Store(accountID, accountRuntimeDeadline{
+		Until: time.Now().Add(time.Minute), ClearGeneration: 0,
+	})
+
+	cleared, err := blocker.ClearAccountSchedulingBlockAcrossReplicasIfGeneration(context.Background(), accountID, 0)
+	require.NoError(t, err)
+	require.True(t, cleared)
+
+	newDeadline := accountRuntimeDeadline{Until: time.Now().Add(time.Minute), ClearGeneration: 1}
+	openAI.openaiPoolSoftCooldownUntil.Store(accountID, newDeadline)
+	cleared, err = blocker.ClearAccountSchedulingBlockAcrossReplicasIfGeneration(context.Background(), accountID, 0)
+	require.NoError(t, err)
+	require.False(t, cleared)
+	require.Equal(t, newDeadline, mustLoadAccountRuntimeDeadline(t, &openAI.openaiPoolSoftCooldownUntil, accountID))
+}
+
+func TestNewPoolCooldownOnAnotherReplicaAdvancesGenerationBeforeStaleProbeClear(t *testing.T) {
+	bus := NewLocalSchedulerEventBus()
+	probeSnapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, bus)
+	failureSnapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, bus)
+	probeReplica := &OpenAIGatewayService{schedulerSnapshot: probeSnapshot}
+	failureReplica := &OpenAIGatewayService{schedulerSnapshot: failureSnapshot, cfg: &config.Config{}}
+	accountID := int64(707)
+	probeReplica.openaiPoolSoftCooldownUntil.Store(accountID, accountRuntimeDeadline{
+		Until: time.Now().Add(-time.Second), ClearGeneration: 0,
+	})
+	account := &Account{
+		ID: accountID, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "api_key": "sk-test"},
+	}
+
+	failureReplica.MarkOpenAIPoolAccountSoftCooldown(context.Background(), account, http.StatusTooManyRequests, nil)
+	deadline := mustLoadAccountRuntimeDeadline(t, &failureReplica.openaiPoolSoftCooldownUntil, accountID)
+	require.Equal(t, int64(1), deadline.ClearGeneration)
+
+	blocker := NewCompositeAccountRuntimeBlocker(probeReplica, nil, nil, nil)
+	cleared, err := blocker.ClearAccountSchedulingBlockAcrossReplicasIfGeneration(context.Background(), accountID, 0)
+	require.NoError(t, err)
+	require.False(t, cleared)
+	require.Equal(t, deadline, mustLoadAccountRuntimeDeadline(t, &failureReplica.openaiPoolSoftCooldownUntil, accountID))
+}
+
+func TestNewPoolCooldownCarriesAdvancedGenerationIntoActiveLocalState(t *testing.T) {
+	bus := NewLocalSchedulerEventBus()
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, bus)
+	openAI := &OpenAIGatewayService{schedulerSnapshot: snapshot, cfg: &config.Config{}}
+	account := &Account{
+		ID: 708, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "api_key": "sk-test"},
+	}
+	oldUntil := time.Now().Add(20 * time.Second)
+	openAI.openaiPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{Until: oldUntil, ClearGeneration: 0})
+
+	openAI.MarkOpenAIPoolAccountSoftCooldown(context.Background(), account, http.StatusTooManyRequests, nil)
+
+	deadline := mustLoadAccountRuntimeDeadline(t, &openAI.openaiPoolSoftCooldownUntil, account.ID)
+	require.Equal(t, int64(1), deadline.ClearGeneration)
+	require.True(t, deadline.Until.Before(oldUntil))
+	require.True(t, deadline.Until.After(time.Now()))
+	require.True(t, openAI.isOpenAIPoolAccountSoftCooling(account))
+}
+
+func TestAdvanceAccountRuntimeGenerationWithoutSharedStoreUsesLocalFence(t *testing.T) {
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, nil, nil)
+
+	generation, err := snapshot.advanceAccountRuntimeGeneration(context.Background(), 709)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), generation)
+	require.Equal(t, int64(1), snapshot.localAccountRuntimeClearGeneration(709))
+
+	generation, err = snapshot.advanceAccountRuntimeGeneration(context.Background(), 709)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), generation)
+}
+
+func TestNewPoolCooldownKeepsLocalFenceWhenSharedAdvanceFails(t *testing.T) {
+	bus := &ambiguousAdvanceRuntimeClearEventBus{}
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, bus)
+	openAI := &OpenAIGatewayService{schedulerSnapshot: snapshot, cfg: &config.Config{}}
+	account := &Account{
+		ID: 710, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "api_key": "sk-test"},
+	}
+
+	openAI.MarkOpenAIPoolAccountSoftCooldown(context.Background(), account, http.StatusTooManyRequests, nil)
+
+	deadline := mustLoadAccountRuntimeDeadline(t, &openAI.openaiPoolSoftCooldownUntil, account.ID)
+	require.Equal(t, int64(1), deadline.ClearGeneration)
+	require.Equal(t, int64(1), snapshot.localAccountRuntimeClearGeneration(account.ID))
+}
+
+func TestConditionalRuntimeClearWithoutEventBusUsesLocalPath(t *testing.T) {
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, nil, nil)
+	openAI := &OpenAIGatewayService{schedulerSnapshot: snapshot}
+	blocker := NewCompositeAccountRuntimeBlocker(openAI, nil, nil, nil)
+	accountID := int64(711)
+	snapshot.noteAccountRuntimeClearGeneration(accountID, 1)
+	openAI.openaiPoolSoftCooldownUntil.Store(accountID, accountRuntimeDeadline{
+		Until: time.Now().Add(time.Minute), ClearGeneration: 1,
+	})
+
+	cleared, err := blocker.ClearAccountSchedulingBlockAcrossReplicasIfGeneration(context.Background(), accountID, 1)
+	require.NoError(t, err)
+	require.True(t, cleared)
+	_, cooling := openAI.openaiPoolSoftCooldownUntil.Load(accountID)
+	require.False(t, cooling)
+}
+
+func TestConditionalRuntimeClearWithoutEventBusRejectsStaleGeneration(t *testing.T) {
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, nil, nil)
+	openAI := &OpenAIGatewayService{schedulerSnapshot: snapshot}
+	blocker := NewCompositeAccountRuntimeBlocker(openAI, nil, nil, nil)
+	accountID := int64(712)
+	snapshot.noteAccountRuntimeClearGeneration(accountID, 1)
+	newDeadline := accountRuntimeDeadline{Until: time.Now().Add(time.Minute), ClearGeneration: 2}
+	openAI.openaiPoolSoftCooldownUntil.Store(accountID, newDeadline)
+
+	cleared, err := blocker.ClearAccountSchedulingBlockAcrossReplicasIfGeneration(context.Background(), accountID, 1)
+	require.NoError(t, err)
+	require.False(t, cleared)
+	require.Equal(t, newDeadline, mustLoadAccountRuntimeDeadline(t, &openAI.openaiPoolSoftCooldownUntil, accountID))
 }
 
 func TestCompositeAccountRuntimeBlocker_PublishFailureRetriesAndStillClearsLocalState(t *testing.T) {

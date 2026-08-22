@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -185,23 +186,59 @@ func (s *OpenAIGatewayService) runOpenAIPoolRecoveryProbe(ctx context.Context, a
 	result := s.probeOpenAIPoolAccountRecovery(ctx, account, requestedModel)
 	if result.success {
 		cooldownContext := s.openAIPoolAccountSoftCooldownContext(account.ID)
-		if !deleteAccountRuntimeDeadlineIfMatches(&s.openaiPoolSoftCooldownUntil, account.ID, cooldownUntil, clearGeneration) {
-			loggerLegacyOpenAIPoolRecovery("probe_result_ignored_stale account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
-			return
-		}
-		s.clearLocalAccountSchedulingBlockBefore(account.ID, clearGeneration+1)
-		_ = s.clearOpenAIAccountCooldownInRedisBefore(account.ID, clearGeneration+1)
-		s.openaiPoolRecoveryProbeFailureCount.Delete(account.ID)
 		if s.rateLimitService != nil {
 			recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), successfulProbeStateRecoveryTimeout)
-			_, err := s.rateLimitService.RecoverAccountAfterSuccessfulTest(recoveryCtx, account.ID)
+			_, err := s.rateLimitService.RecoverAccountState(recoveryCtx, account.ID, AccountRecoveryOptions{
+				DeferSchedulingClear: true, RequireRuntimeFence: true,
+				ExpectedRuntimeUntil: cooldownUntil, ExpectedRuntimeClearGeneration: clearGeneration,
+			})
 			recoveryCancel()
 			if err != nil {
+				if errors.Is(err, ErrStaleAccountRecovery) {
+					loggerLegacyOpenAIPoolRecovery("runtime_recovery_stale account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
+					return
+				}
 				loggerLegacyOpenAIPoolRecovery("recover_state_failed account_id=%d err=%v", account.ID, err)
-				s.restoreOpenAIPoolRecoveryAfterStateClearFailure(account, cooldownContext, result, err)
+				s.restoreOpenAIPoolRecoveryAfterStateClearFailure(account, cooldownContext, result, err, accountRuntimeDeadline{
+					Until: cooldownUntil, ClearGeneration: clearGeneration,
+				})
 				return
 			}
+			finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), successfulProbeStateRecoveryTimeout)
+			cleared, finalizeErr := s.rateLimitService.FinalizeDeferredAccountRecovery(finalizeCtx, account.ID, clearGeneration)
+			finalizeCancel()
+			if finalizeErr != nil {
+				loggerLegacyOpenAIPoolRecovery("runtime_clear_after_recovery_failed account_id=%d err=%v", account.ID, finalizeErr)
+				s.restoreOpenAIPoolRecoveryAfterStateClearFailure(account, cooldownContext, result, finalizeErr)
+				return
+			}
+			if !cleared {
+				loggerLegacyOpenAIPoolRecovery("runtime_clear_stale_probe account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
+				if latestGeneration := s.currentAccountRuntimeClearGeneration(account.ID); latestGeneration > clearGeneration {
+					s.clearLocalAccountSchedulingBlockBefore(account.ID, latestGeneration)
+					_ = s.clearOpenAIAccountCooldownInRedisBefore(account.ID, latestGeneration)
+				}
+				return
+			}
+		} else {
+			if !deleteAccountRuntimeDeadlineIfMatches(&s.openaiPoolSoftCooldownUntil, account.ID, cooldownUntil, clearGeneration) {
+				loggerLegacyOpenAIPoolRecovery("probe_result_ignored_stale account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
+				return
+			}
+			s.clearLocalAccountSchedulingBlockBefore(account.ID, clearGeneration+1)
+			_ = s.clearOpenAIAccountCooldownInRedisBefore(account.ID, clearGeneration+1)
 		}
+		// The composite runtime blocker normally clears this deadline. Keep a
+		// local fallback for tests or deployments without that blocker, while
+		// never deleting a newer cooldown installed concurrently.
+		if current, ok := s.openaiPoolSoftCooldownUntil.Load(account.ID); ok {
+			if until, generation, valid := parseAccountRuntimeDeadline(current); valid && until.Equal(cooldownUntil) && generation == clearGeneration {
+				if deleteAccountRuntimeDeadlineIfMatches(&s.openaiPoolSoftCooldownUntil, account.ID, cooldownUntil, clearGeneration) {
+					s.clearOpenAIAccountCooldownInRedisBefore(account.ID, clearGeneration+1)
+				}
+			}
+		}
+		s.openaiPoolRecoveryProbeFailureCount.Delete(account.ID)
 		loggerLegacyOpenAIPoolRecovery("probe_success account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
 		return
 	}
@@ -221,11 +258,20 @@ func (s *OpenAIGatewayService) runOpenAIPoolRecoveryProbe(ctx context.Context, a
 	}
 }
 
-func (s *OpenAIGatewayService) restoreOpenAIPoolRecoveryAfterStateClearFailure(account *Account, cooldownContext openAIPoolSoftCooldownContext, probeResult openAIPoolRecoveryProbeResult, recoveryErr error) {
+func (s *OpenAIGatewayService) restoreOpenAIPoolRecoveryAfterStateClearFailure(account *Account, cooldownContext openAIPoolSoftCooldownContext, probeResult openAIPoolRecoveryProbeResult, recoveryErr error, expected ...accountRuntimeDeadline) {
 	if s == nil || account == nil || recoveryErr == nil {
 		return
 	}
 	clearGeneration := s.currentAccountRuntimeClearGeneration(account.ID)
+	if len(expected) > 0 {
+		if clearGeneration > expected[0].ClearGeneration {
+			s.clearLocalAccountSchedulingBlockBefore(account.ID, clearGeneration)
+			return
+		}
+		if expected[0].ClearGeneration > clearGeneration {
+			clearGeneration = expected[0].ClearGeneration
+		}
+	}
 	backoffCtx, backoffCancel := context.WithTimeout(context.Background(), time.Second)
 	backoff := s.nextOpenAIPoolRecoveryProbeBackoff(backoffCtx, account, true)
 	backoffCancel()
@@ -237,14 +283,37 @@ func (s *OpenAIGatewayService) restoreOpenAIPoolRecoveryAfterStateClearFailure(a
 	probeResult.retryable = true
 	probeResult.err = fmt.Errorf("runtime recovery failed: %w", recoveryErr)
 	cooldownContext.LastProbeReason = truncateString(sanitizeUpstreamErrorMessage(probeResult.err.Error()), 256)
-	if _, loaded := s.openaiPoolSoftCooldownContext.LoadOrStore(account.ID, cooldownContext); loaded {
-		return
-	}
 	deadline := accountRuntimeDeadline{Until: until, ClearGeneration: clearGeneration}
-	if _, loaded := s.openaiPoolSoftCooldownUntil.LoadOrStore(account.ID, deadline); loaded {
-		s.openaiPoolSoftCooldownContext.CompareAndDelete(account.ID, cooldownContext)
+	for {
+		current, loaded := s.openaiPoolSoftCooldownUntil.Load(account.ID)
+		if !loaded {
+			if len(expected) > 0 {
+				return
+			}
+			if _, stored := s.openaiPoolSoftCooldownUntil.LoadOrStore(account.ID, deadline); stored {
+				continue
+			}
+			break
+		}
+		currentUntil, currentGeneration, valid := parseAccountRuntimeDeadline(current)
+		if len(expected) > 0 && (!valid || !currentUntil.Equal(expected[0].Until) || currentGeneration != expected[0].ClearGeneration) {
+			return
+		}
+		if valid && currentUntil.After(time.Now()) {
+			// A newer request installed its own cooldown while recovery was
+			// finishing; never overwrite that state with the old probe result.
+			return
+		}
+		if s.openaiPoolSoftCooldownUntil.CompareAndSwap(account.ID, current, deadline) {
+			break
+		}
+	}
+	if current, ok := s.openaiPoolSoftCooldownUntil.Load(account.ID); !ok {
+		return
+	} else if currentUntil, currentGeneration, valid := parseAccountRuntimeDeadline(current); !valid || !currentUntil.Equal(until) || currentGeneration != clearGeneration {
 		return
 	}
+	s.openaiPoolSoftCooldownContext.Store(account.ID, cooldownContext)
 	if latestGeneration := s.currentAccountRuntimeClearGeneration(account.ID); latestGeneration > clearGeneration {
 		s.clearLocalAccountSchedulingBlockBefore(account.ID, latestGeneration)
 		return

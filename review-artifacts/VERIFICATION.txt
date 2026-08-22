@@ -57,3 +57,104 @@ ROLLBACK:
 command: cp review-artifacts/MODIFIED_FILE.go /tmp/nuro-s2-timeout-rollback.go; ./review-artifacts/ROLLBACK.sh /tmp/nuro-s2-timeout-rollback.go /tmp/nuro-s2-baseline.go; cmp -s /tmp/nuro-s2-timeout-rollback.go /tmp/nuro-s2-baseline.go
 literal output: rollback restored behavior/status; cmp matched baseline
 exit status: 0
+
+CURRENT CHANGE:
+changed branch/field: deferred OpenAI Pool recovery clearing and downstream cache markup threshold/percent controls.
+source files: backend/internal/service/ratelimit_service.go, backend/internal/service/openai_pool_recovery_probe.go, backend/internal/service/openai_pool_recovery_probe_test.go, frontend/src/components/account/DownstreamCacheMarkupControl.vue
+multi-replica fencing files: backend/internal/service/scheduler_event_bus.go, backend/internal/service/scheduler_snapshot_service.go, backend/internal/service/account_runtime_blocker.go, backend/internal/service/scheduler_event_bus_routing_test.go, backend/internal/service/account_runtime_blocker_test.go, backend/internal/repository/scheduler_event_bus.go, backend/internal/repository/scheduler_event_bus_test.go
+
+BASELINE:
+command: git diff --check
+literal output: no output
+exit status: 0
+
+MODIFIED:
+command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -run 'TestOpenAIPoolRecoveryProbe_(DurableRecoveryFailure|StateClearFailure|SuccessClearsRemoteReplicaCooldown|ResponsesStreamFailedKeepsCooldown)|TestRateLimitService_RecoverAccount' -count=1
+literal output: ok github.com/Wei-Shaw/sub2api/internal/service
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go vet ./internal/service
+literal output: no output
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/... -run '^$'
+literal output: all internal packages compiled successfully
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -run 'Test(LocalSchedulerRuntimeClearGenerationCompareAndAdvance|CompositeConditionalRuntimeClearRejectsStaleReplica|OpenAIPoolRecoveryProbe|CompositeAccountRuntimeBlocker|RuntimeClearGeneration)' -count=1
+literal output: ok github.com/Wei-Shaw/sub2api/internal/service
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go vet ./internal/service ./internal/repository
+literal output: no output
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go test -race ./internal/service -run 'Test(OpenAIPoolRecoveryProbe|CompositeConditionalRuntimeClearRejectsStaleReplica|LocalSchedulerRuntimeClearGenerationCompareAndAdvance)' -count=1
+literal output: ok github.com/Wei-Shaw/sub2api/internal/service
+exit status: 0
+command: npm run test:run -- src/components/account/__tests__/DownstreamCacheMarkupControl.spec.ts src/components/account/__tests__/AccountStatusIndicator.spec.ts
+literal output: 2 test files, 9 tests passed
+exit status: 0
+
+ENVIRONMENT:
+command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/repository -run 'Test(RedisSchedulerEventBusRuntimeClearGenerationCompareAndAdvance|VersionedAccountCooldown)' -count=1
+literal output: miniredis could not start: listen tcp 127.0.0.1:0: bind: operation not permitted
+exit status: 1
+result: repository Redis integration tests were blocked by the sandbox listener restriction; repository packages compiled and go vet passed.
+rerun result: the same Redis tests completed successfully in the listener-enabled execution environment (see FINAL MULTI-REPLICA REVIEW).
+command: npm run typecheck
+literal output: completed with no diagnostics
+exit status: 0
+command: npm run build
+literal output: vite production build completed successfully
+exit status: 0
+
+FINAL MULTI-REPLICA REVIEW:
+changed branch/field: OpenAI Pool recovery generation fencing; new cooldown generation invalidation (including local fallback when the shared store is unavailable); deferred durable recovery/runtime clear ordering; local-only clear compatibility when event propagation is disabled; cache markup input presentation.
+source paths: backend/internal/repository/scheduler_event_bus.go, backend/internal/service/scheduler_event_bus.go, backend/internal/service/scheduler_snapshot_service.go, backend/internal/service/account_runtime_blocker.go, backend/internal/service/openai_account_runtime_block_fastpath.go, backend/internal/service/openai_pool_recovery_probe.go, backend/internal/service/ratelimit_service.go, frontend/src/components/account/DownstreamCacheMarkupControl.vue
+
+BASELINE:
+command: git diff --check
+input: current uncommitted working tree
+literal output: no output
+exit status: 0
+
+MODIFIED:
+command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -run 'Test(NewPoolCooldown|AdvanceAccountRuntimeGeneration|OpenAIPoolRecoveryProbe|CompositeConditionalRuntimeClearRejectsStaleReplica|LocalSchedulerRuntimeClearGeneration)' -count=1
+input: expanded recovery/fencing regression subset
+literal output: ok github.com/Wei-Shaw/sub2api/internal/service 1.196s
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -count=1
+input: complete backend internal/service test suite (rerun with local listeners allowed)
+literal output: ok github.com/Wei-Shaw/sub2api/internal/service 49.087s
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -count=1
+input: complete backend internal/service test suite after event-bus compatibility fix
+literal output: ok github.com/Wei-Shaw/sub2api/internal/service 48.885s
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/repository -run 'Test(RedisSchedulerEventBusRuntimeClearGenerationCompareAndAdvance|RedisSchedulerEventBusRuntimeClearGenerationIsMonotonic|VersionedAccountCooldown)' -count=1
+input: Redis generation CAS and versioned cooldown regression tests (rerun with local listeners allowed)
+literal output: ok github.com/Wei-Shaw/sub2api/internal/repository 0.906s
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go test -race ./internal/service -run 'Test(OpenAIPoolRecoveryProbe|NewPoolCooldown|CompositeConditionalRuntimeClearRejectsStaleReplica|LocalSchedulerRuntimeClearGenerationCompareAndAdvance)' -count=1
+input: recovery ordering, local-only clear compatibility, and multi-replica generation race regressions
+literal output: ok github.com/Wei-Shaw/sub2api/internal/service 2.683s
+exit status: 0
+command: env GOCACHE=/tmp/nuro-go-cache go vet ./internal/service ./internal/repository
+input: changed backend packages
+literal output: no output
+exit status: 0
+command: npm run test:run -- src/components/account/__tests__/DownstreamCacheMarkupControl.spec.ts src/components/account/__tests__/AccountStatusIndicator.spec.ts
+input: cache markup control and recovery status UI tests
+literal output: 2 test files passed; 9 tests passed
+exit status: 0
+command: npm run typecheck
+input: frontend TypeScript/Vue source
+literal output: completed with no diagnostics
+exit status: 0
+command: npm run build
+input: frontend production build
+literal output: 917 modules transformed; built in 11.16s
+exit status: 0
+
+ROLLBACK:
+command: cp review-artifacts/MODIFIED_FILE.go /tmp/nuro-s2-final-rollback.go; ./review-artifacts/ROLLBACK.sh /tmp/nuro-s2-final-rollback.go /tmp/nuro-s2-baseline.go; cmp -s /tmp/nuro-s2-final-rollback.go /tmp/nuro-s2-baseline.go
+input: rollback verification copy only; source working tree remains modified
+literal output: restored behavior/status; cmp matched baseline
+exit status: 0
+restored behavior/status: rollback copy exactly matched the preserved baseline; MODIFIED_FILE remained changed.
