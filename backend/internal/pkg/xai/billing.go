@@ -15,9 +15,9 @@ const (
 	CLITokenAuthHeader     = "x-xai-token-auth"
 	CLITokenAuthValue      = "xai-grok-cli"
 	CLIClientVersionHeader = "x-grok-client-version"
-	// Keep in sync with https://x.ai/cli/stable. This is the single source for
-	// gateway traffic, OAuth proxy traffic, and background billing probes.
-	CLIClientVersion = "0.2.114"
+	// Keep in sync with https://x.ai/cli/stable. This is the single version
+	// source for gateway traffic, OAuth proxy traffic, and billing probes.
+	CLIClientVersion = "0.2.120"
 	CLIUserAgent     = "grok-pager/" + CLIClientVersion + " grok-shell/" + CLIClientVersion + " (macos; aarch64)"
 
 	BillingWeeklyPath  = "/billing?format=credits"
@@ -26,6 +26,16 @@ const (
 	SuperGrokLimitCents      = 15_000  // $150.00
 	SuperGrokHeavyLimitCents = 150_000 // $1,500.00
 )
+
+// CLIWorkspaceUserAgent is the official workspace identity used by Grok OAuth
+// API requests. Billing probes intentionally keep the legacy pager UA above.
+func CLIWorkspaceUserAgent(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		version = CLIClientVersion
+	}
+	return "xai-grok-workspace/" + version
+}
 
 // BillingPeriod describes the current weekly/monthly window.
 type BillingPeriod struct {

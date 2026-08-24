@@ -52,6 +52,31 @@ func TestBuildOpenAIChatCompletionsURL(t *testing.T) {
 	}
 }
 
+func TestForwardAsRawChatCompletionsGrokOAuthOfficialAPIUsesCLIIdentity(t *testing.T) {
+	setGinTestMode()
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := &Account{
+		ID: 103, Platform: PlatformGrok, Type: AccountTypeOAuth,
+		Credentials: map[string]any{"access_token": "grok-token", "base_url": "https://api.x.ai/v1"},
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "xai-grok-cli", upstream.lastReq.Header.Get("X-XAI-Token-Auth"))
+	require.Equal(t, grokCLIVersion, upstream.lastReq.Header.Get("X-Grok-Client-Version"))
+	require.Equal(t, "xai-grok-workspace/"+grokCLIVersion, upstream.lastReq.Header.Get("User-Agent"))
+}
+
 func TestSanitizeOpenAIRawChatSSELine(t *testing.T) {
 	normal := `data: {"id":"chatcmpl_1","choices":[{"delta":{"content":"ok"}}],"error":null}`
 	require.Equal(t, normal, sanitizeOpenAIRawChatSSELine(normal))

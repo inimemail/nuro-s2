@@ -25,6 +25,44 @@ type geminiCompatHTTPUpstreamStub struct {
 	lastReq  *http.Request
 }
 
+func TestCleanToolSchemaNormalizesGeminiEnumsAndDropsDeprecated(t *testing.T) {
+	schema := map[string]any{
+		"type":       "object",
+		"deprecated": true,
+		"properties": map[string]any{
+			"mode": map[string]any{"type": "string", "enum": []any{"auto", 1, true, nil}},
+			"bad":  map[string]any{"type": "string", "enum": []any{map[string]any{"nested": true}}},
+		},
+	}
+	cleaned, ok := cleanToolSchema(schema).(map[string]any)
+	require.True(t, ok)
+	require.NotContains(t, cleaned, "deprecated")
+	properties := cleaned["properties"].(map[string]any)
+	mode := properties["mode"].(map[string]any)
+	require.Equal(t, []any{"auto", "1", "true", "null"}, mode["enum"])
+	bad := properties["bad"].(map[string]any)
+	require.NotContains(t, bad, "enum")
+}
+
+func TestCleanToolSchemaConvertsIntegerExclusiveMinimum(t *testing.T) {
+	cleaned, ok := cleanToolSchema(map[string]any{
+		"type":             "integer",
+		"exclusiveMinimum": float64(3),
+		"minimum":          float64(1),
+	}).(map[string]any)
+	require.True(t, ok)
+	require.NotContains(t, cleaned, "exclusiveMinimum")
+	require.Equal(t, float64(4), cleaned["minimum"])
+
+	cleaned, ok = cleanToolSchema(map[string]any{
+		"type":             "integer",
+		"exclusiveMinimum": float64(3),
+		"minimum":          float64(8),
+	}).(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, float64(8), cleaned["minimum"])
+}
+
 func (s *geminiCompatHTTPUpstreamStub) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
 	s.calls++
 	s.lastReq = req

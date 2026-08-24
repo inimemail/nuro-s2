@@ -31,6 +31,11 @@ func TestBuildBillingSummaryWeekly(t *testing.T) {
 	require.Equal(t, "grok", summary.ProductUsage[0].Product)
 }
 
+func TestCLIWorkspaceUserAgent(t *testing.T) {
+	require.Equal(t, "xai-grok-workspace/0.2.120", CLIWorkspaceUserAgent("0.2.120"))
+	require.Equal(t, "xai-grok-workspace/"+CLIClientVersion, CLIWorkspaceUserAgent(""))
+}
+
 func TestBuildBillingSummaryMonthlyParsesCentsAndPlan(t *testing.T) {
 	summary := BuildBillingSummary(&BillingConfig{
 		MonthlyLimit:       json.RawMessage(`{"val":"15000"}`),

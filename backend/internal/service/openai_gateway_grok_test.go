@@ -96,6 +96,15 @@ func TestBuildGrokResponsesRequestCustomOAuthEndpointOmitsCLIIdentity(t *testing
 	require.Empty(t, req.Header.Get("X-Grok-Client-Version"))
 }
 
+func TestApplyGrokCLIHeadersUsesOfficialWorkspaceIdentity(t *testing.T) {
+	headers := make(http.Header)
+	applyGrokCLIHeaders(headers)
+	require.Equal(t, "xai-grok-cli", headers.Get("X-XAI-Token-Auth"))
+	require.Equal(t, grokCLIVersion, headers.Get("X-Grok-Client-Version"))
+	require.Equal(t, "grok-shell", headers.Get("X-Grok-Client-Identifier"))
+	require.Equal(t, "xai-grok-workspace/"+grokCLIVersion, headers.Get("User-Agent"))
+}
+
 func TestGrokBillingProbeCustomOAuthEndpointUsesAccountHeadersWithoutCLIIdentity(t *testing.T) {
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,

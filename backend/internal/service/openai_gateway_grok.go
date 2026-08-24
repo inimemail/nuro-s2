@@ -658,8 +658,10 @@ func applyGrokCLIHeaders(headers http.Header) {
 	if headers == nil {
 		return
 	}
-	headers.Set("User-Agent", grokUpstreamUserAgent)
+	headers.Set("X-XAI-Token-Auth", xai.CLITokenAuthValue)
 	headers.Set("X-Grok-Client-Version", grokCLIVersion)
+	headers.Set("X-Grok-Client-Identifier", "grok-shell")
+	headers.Set("User-Agent", xai.CLIWorkspaceUserAgent(grokCLIVersion))
 }
 
 // applyGrokOAuthIdentityHeaders adds the protocol identity required by the

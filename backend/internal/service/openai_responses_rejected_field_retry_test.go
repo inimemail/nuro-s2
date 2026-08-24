@@ -103,6 +103,32 @@ func TestNormalizeOpenAIResponsesRejectedFieldRetryBodyIsExact(t *testing.T) {
 		require.Equal(t, "input[0].namespace", field)
 		require.False(t, gjson.GetBytes(retryBody, "input.0.namespace").Exists())
 	})
+
+	t.Run("status clears every item of the rejected type only", func(t *testing.T) {
+		body := []byte(`{"input":[{"type":"message","status":"keep-other"},{"type":"function_call","status":"remove-1"},{"type":"function_call","status":"remove-2"},{"type":"message","status":"keep-other-2"}]}`)
+		retryBody, field, changed, err := normalizeOpenAIResponsesRejectedFieldRetryBody(
+			http.StatusBadRequest,
+			body,
+			[]byte(`{"error":{"code":"unsupported_parameter","param":"input[1].status","message":"Unsupported parameter: input[1].status"}}`),
+		)
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.Equal(t, "input[1].status", field)
+		require.False(t, gjson.GetBytes(retryBody, "input.1.status").Exists())
+		require.False(t, gjson.GetBytes(retryBody, "input.2.status").Exists())
+		require.Equal(t, "keep-other", gjson.GetBytes(retryBody, "input.0.status").String())
+		require.Equal(t, "keep-other-2", gjson.GetBytes(retryBody, "input.3.status").String())
+	})
+
+	t.Run("status cleanup can be replayed for a failover account", func(t *testing.T) {
+		body := []byte(`{"input":[{"type":"message","status":"keep"},{"type":"function_call","status":"remove-1"},{"type":"function_call","status":"remove-2"}]}`)
+		retryBody, changed, err := RemoveOpenAIResponsesRejectedField(body, "input[1].status")
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.False(t, gjson.GetBytes(retryBody, "input.1.status").Exists())
+		require.False(t, gjson.GetBytes(retryBody, "input.2.status").Exists())
+		require.Equal(t, "keep", gjson.GetBytes(retryBody, "input.0.status").String())
+	})
 }
 
 func TestOpenAIGatewayServiceComposesNamespaceStripWithRejectedFieldRetry(t *testing.T) {
