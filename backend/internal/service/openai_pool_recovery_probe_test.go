@@ -1164,6 +1164,46 @@ func TestOpenAIPoolSoftCooldownStateForAccount_ClampsExistingRegularPoolCooldown
 	require.Equal(t, first.Until, second.Until)
 }
 
+type sharedOpenAIPoolCooldownCache struct {
+	schedulerTestConcurrencyCache
+	until      time.Time
+	generation int64
+	active     bool
+}
+
+func (c *sharedOpenAIPoolCooldownCache) GetAccountCooldown(context.Context, int64) (time.Time, int64, bool, error) {
+	return c.until, c.generation, c.active, nil
+}
+
+func TestOpenAIPoolSoftCooldownStateForAccount_HydratesSharedCooldown(t *testing.T) {
+	until := time.Now().Add(20 * time.Second)
+	cache := &sharedOpenAIPoolCooldownCache{
+		until:      until,
+		generation: 7,
+		active:     true,
+	}
+	svc := &OpenAIGatewayService{
+		concurrencyService: NewConcurrencyService(cache),
+		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{
+			SettingKeyOpenAIPoolSoftCooldownMaxSeconds: "30",
+		}),
+	}
+	account := &Account{
+		ID:       221,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+
+	state := svc.OpenAIPoolSoftCooldownStateForAccount(context.Background(), account)
+
+	require.True(t, state.Cooling)
+	require.WithinDuration(t, until, state.Until, time.Second)
+	require.False(t, state.ProbeInFlight)
+}
+
 func TestOpenAIPoolSoftCooldownStateForAccount_ClampsExistingImagePoolCooldown(t *testing.T) {
 	svc := &OpenAIGatewayService{
 		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{

@@ -943,6 +943,31 @@ func (c *concurrencyCache) ClearAccountCooldownBeforeGeneration(ctx context.Cont
 	return clearAccountCooldownBeforeGenerationScript.Run(ctx, c.rdb, []string{accountCooldownKey(accountID)}, generation).Err()
 }
 
+func (c *concurrencyCache) GetAccountCooldown(ctx context.Context, accountID int64) (time.Time, int64, bool, error) {
+	if c == nil || c.rdb == nil || accountID <= 0 {
+		return time.Time{}, 0, false, nil
+	}
+	value, err := c.rdb.Get(ctx, accountCooldownKey(accountID)).Result()
+	if errors.Is(err, redis.Nil) {
+		return time.Time{}, 0, false, nil
+	}
+	if err != nil {
+		return time.Time{}, 0, false, err
+	}
+	ttl, err := c.rdb.PTTL(ctx, accountCooldownKey(accountID)).Result()
+	if err != nil {
+		return time.Time{}, 0, false, err
+	}
+	if ttl <= 0 {
+		return time.Time{}, 0, false, nil
+	}
+	generation := int64(0)
+	if len(value) > 2 && value[:2] == "g:" {
+		generation, _ = strconv.ParseInt(value[2:], 10, 64)
+	}
+	return time.Now().Add(ttl), generation, true, nil
+}
+
 func (c *concurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts []service.AccountWithConcurrency) (map[int64]*service.AccountLoadInfo, error) {
 	if len(accounts) == 0 {
 		return map[int64]*service.AccountLoadInfo{}, nil

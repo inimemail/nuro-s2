@@ -133,6 +133,14 @@ type VersionedAccountCooldownCache interface {
 	ClearAccountCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error
 }
 
+// AccountCooldownReader exposes the shared cooldown marker for observability
+// and cross-replica state hydration. It is intentionally separate from the
+// hot-path cache contract so lightweight test and non-Redis caches remain
+// compatible.
+type AccountCooldownReader interface {
+	GetAccountCooldown(ctx context.Context, accountID int64) (until time.Time, generation int64, active bool, err error)
+}
+
 var (
 	requestIDPrefix  = initRequestIDPrefix()
 	requestIDCounter atomic.Uint64
@@ -789,6 +797,20 @@ func (s *ConcurrencyService) ClearAccountCooldownBeforeGeneration(ctx context.Co
 		return s.ClearAccountCooldown(ctx, accountID)
 	}
 	return cache.ClearAccountCooldownBeforeGeneration(ctx, accountID, generation)
+}
+
+// GetAccountCooldown reads the distributed cooldown marker when the backing
+// cache supports it. Missing reader support is treated as an empty snapshot
+// for compatibility with local-only caches.
+func (s *ConcurrencyService) GetAccountCooldown(ctx context.Context, accountID int64) (time.Time, int64, bool, error) {
+	if s == nil || s.cache == nil || accountID <= 0 {
+		return time.Time{}, 0, false, nil
+	}
+	reader, ok := s.cache.(AccountCooldownReader)
+	if !ok {
+		return time.Time{}, 0, false, nil
+	}
+	return reader.GetAccountCooldown(ctx, accountID)
 }
 
 // AcquireUserSlot attempts to acquire a concurrency slot for a user.
