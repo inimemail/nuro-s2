@@ -579,6 +579,24 @@ func TestOpenAIEdgeRetryFallbackBoundaries(t *testing.T) {
 			want: "client_response_already_written",
 		},
 		{
+			name: "gateway only placeholder remains retryable",
+			req: service.OpenAIEdgeRetryRequest{
+				LeaseID:            "lease-1",
+				UpstreamStatusCode: http.StatusTooManyRequests,
+				CommitState:        service.OpenAIEdgeCommitStateGatewayOnly,
+			},
+			want: "edge_dependencies_missing",
+		},
+		{
+			name: "explicit terminal response cannot retry",
+			req: service.OpenAIEdgeRetryRequest{
+				LeaseID:            "lease-1",
+				UpstreamStatusCode: http.StatusTooManyRequests,
+				CommitState:        service.OpenAIEdgeCommitStateTerminal,
+			},
+			want: "client_response_already_written",
+		},
+		{
 			name: "missing lease falls back",
 			req: service.OpenAIEdgeRetryRequest{
 				LeaseID:            "missing",
@@ -1185,6 +1203,160 @@ func TestOpenAIEdgeRetryRejectsSecondSemanticFailover(t *testing.T) {
 	require.Equal(t, service.OpenAIEdgeActionRespondError, decision.Action)
 	require.Equal(t, "semantic_progress_failover_already_used", decision.Reason)
 	require.Equal(t, http.StatusGatewayTimeout, decision.StatusCode)
+}
+
+func TestOpenAIEdgeRetrySecondSemanticFailoverKeepsCurrentForStagedEdge(t *testing.T) {
+	account := &service.Account{ID: 1001, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	h := &OpenAIGatewayHandler{openAIEdgeLeases: map[string]*openAIEdgeLease{
+		"lease-1": {
+			leaseID:            "lease-1",
+			account:            account,
+			stallActionPending: true,
+		},
+	}}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:             "lease-1",
+		AccountID:           account.ID,
+		ErrorType:           "edge_semantic_progress_timeout",
+		ErrorMessage:        "upstream semantic progress timeout",
+		SupportsStagedRetry: true,
+	})
+
+	require.Equal(t, service.OpenAIEdgeActionKeepCurrent, decision.Action)
+	require.Equal(t, "semantic_keep_current", decision.Reason)
+}
+
+func TestOpenAIEdgeRetryStageActivateAndCancelOwnAccountSlots(t *testing.T) {
+	newHandler := func(lease *openAIEdgeLease) *OpenAIGatewayHandler {
+		h := &OpenAIGatewayHandler{
+			cfg:              &config.Config{},
+			openAIEdgeLeases: map[string]*openAIEdgeLease{"lease-1": lease},
+		}
+		h.cfg.Gateway.OpenAIEdgeRS = config.GatewayOpenAIEdgeRSConfig{
+			InternalAPIEnabled: true,
+			InternalSecret:     "edge-secret",
+		}
+		return h
+	}
+
+	t.Run("reject empty stage id", func(t *testing.T) {
+		lease := &openAIEdgeLease{
+			edgeRequestID: "edge-1",
+			leaseID:       "lease-1",
+			account:       &service.Account{ID: 1001},
+		}
+		h := newHandler(lease)
+		c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry-stage", `{"edge_request_id":"edge-1","lease_id":"lease-1","action":"activate"}`, "edge-secret")
+		h.OpenAIEdgeRetryStage(c)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		require.Contains(t, w.Body.String(), "invalid_stage_action")
+		require.Empty(t, lease.activatedRetryID)
+	})
+
+	t.Run("activate", func(t *testing.T) {
+		oldReleaseCalls := 0
+		candidateReleaseCalls := 0
+		candidate := &service.Account{ID: 2002}
+		lease := &openAIEdgeLease{
+			edgeRequestID:      "edge-1",
+			leaseID:            "lease-1",
+			account:            &service.Account{ID: 1001},
+			accountReleaseFunc: func() { oldReleaseCalls++ },
+			stagedRetry: &openAIEdgeStagedRetry{
+				id: "stage-1",
+				prepared: &openAIEdgePreparedRetryPlan{
+					plan:    service.OpenAIEdgePlan{EdgeRequestID: "edge-1", LeaseID: "lease-1", AccountID: candidate.ID},
+					account: candidate,
+					release: func() { candidateReleaseCalls++ },
+				},
+			},
+		}
+		h := newHandler(lease)
+		c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry-stage", `{"edge_request_id":"edge-1","lease_id":"lease-1","account_id":2002,"staged_retry_id":"stage-1","action":"activate"}`, "edge-secret")
+		h.OpenAIEdgeRetryStage(c)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		require.Equal(t, 1, oldReleaseCalls)
+		require.Zero(t, candidateReleaseCalls)
+		require.Equal(t, candidate, lease.account)
+		require.Nil(t, lease.stagedRetry)
+
+		c, w = newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry-stage", `{"edge_request_id":"edge-1","lease_id":"lease-1","account_id":2002,"staged_retry_id":"stage-1","action":"activate"}`, "edge-secret")
+		h.OpenAIEdgeRetryStage(c)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		require.Contains(t, w.Body.String(), "staged_retry_already_activated")
+		require.Equal(t, 1, oldReleaseCalls)
+		require.Zero(t, candidateReleaseCalls)
+		require.Equal(t, candidate, lease.account)
+
+		// A delayed/lost activate response may be followed by cancel cleanup.
+		// Once the candidate is active, cancel must be an idempotent no-op.
+		c, w = newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry-stage", `{"edge_request_id":"edge-1","lease_id":"lease-1","account_id":2002,"staged_retry_id":"stage-1","action":"cancel"}`, "edge-secret")
+		h.OpenAIEdgeRetryStage(c)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		require.Contains(t, w.Body.String(), "staged_retry_already_activated")
+		require.Equal(t, 1, oldReleaseCalls)
+		require.Zero(t, candidateReleaseCalls)
+		require.Equal(t, candidate, lease.account)
+	})
+
+	t.Run("cancel", func(t *testing.T) {
+		oldReleased := false
+		candidateReleased := false
+		lease := &openAIEdgeLease{
+			edgeRequestID:      "edge-1",
+			leaseID:            "lease-1",
+			account:            &service.Account{ID: 1001},
+			accountReleaseFunc: func() { oldReleased = true },
+			stagedRetry: &openAIEdgeStagedRetry{
+				id: "stage-1",
+				prepared: &openAIEdgePreparedRetryPlan{
+					account: &service.Account{ID: 2002},
+					release: func() { candidateReleased = true },
+				},
+			},
+		}
+		h := newHandler(lease)
+		c, w := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry-stage", `{"edge_request_id":"edge-1","lease_id":"lease-1","account_id":2002,"staged_retry_id":"stage-1","action":"cancel"}`, "edge-secret")
+		h.OpenAIEdgeRetryStage(c)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		require.False(t, oldReleased)
+		require.True(t, candidateReleased)
+		require.Equal(t, int64(1001), lease.account.ID)
+		require.Nil(t, lease.stagedRetry)
+
+		// Repeating cancel after the first acknowledgement must remain harmless.
+		c, w = newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry-stage", `{"edge_request_id":"edge-1","lease_id":"lease-1","account_id":2002,"staged_retry_id":"stage-1","action":"cancel"}`, "edge-secret")
+		h.OpenAIEdgeRetryStage(c)
+		require.Equal(t, http.StatusOK, w.Code)
+		require.Contains(t, w.Body.String(), "staged_retry_already_cancelled")
+		require.True(t, candidateReleased)
+		require.False(t, oldReleased)
+	})
+}
+
+func TestOpenAIEdgeLeaseReleaseOwnsActiveAndStagedSlots(t *testing.T) {
+	activeReleaseCalls := 0
+	stagedReleaseCalls := 0
+	lease := &openAIEdgeLease{
+		accountReleaseFunc: func() { activeReleaseCalls++ },
+		stagedRetry: &openAIEdgeStagedRetry{prepared: &openAIEdgePreparedRetryPlan{
+			release: func() { stagedReleaseCalls++ },
+		}},
+	}
+
+	lease.release()
+	lease.release()
+
+	require.Equal(t, 1, activeReleaseCalls)
+	require.Equal(t, 1, stagedReleaseCalls)
+	require.Nil(t, lease.stagedRetry)
 }
 
 func TestOpenAIEdgeRetryProtectsPoolModelRouting404(t *testing.T) {

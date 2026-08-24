@@ -34,6 +34,10 @@ const (
 )
 
 type openAIEdgeLease struct {
+	// retryMu serializes retry/staged-retry decisions for one lease. It is
+	// deliberately separate from mu so account selection and release callbacks
+	// never hold the lifecycle lock across external service calls.
+	retryMu            sync.Mutex
 	mu                 sync.Mutex
 	settled            bool
 	edgeRequestID      string
@@ -86,8 +90,14 @@ type openAIEdgeLease struct {
 	stallActionAccount *service.Account
 	stallActionModel   string
 	stallActionEffort  string
-	timer              *time.Timer
-	timerGeneration    uint64
+	stagedRetry        *openAIEdgeStagedRetry
+	activatedRetryID   string
+	// retryReleaseQueue contains slot-release callbacks that must run after the
+	// retry operation drops its locks. Account selection and scheduler callbacks
+	// are external code and must never execute while a lease mutex is held.
+	retryReleaseQueue []func()
+	timer             *time.Timer
+	timerGeneration   uint64
 }
 
 func (h *OpenAIGatewayHandler) newOpenAIEdgePromptAuditCollector(
@@ -123,6 +133,29 @@ type openAIEdgeAccountSelection struct {
 	account         *service.Account
 	releaseFunc     func()
 	userReleaseFunc func()
+}
+
+type openAIEdgePreparedRetryPlan struct {
+	plan               service.OpenAIEdgePlan
+	account            *service.Account
+	release            func()
+	passthroughSeen    bool
+	requestModel       string
+	billingModel       string
+	upstreamModel      string
+	reasoningEffort    *string
+	serviceTier        *string
+	upstreamEndpoint   string
+	cachePolicyEnabled bool
+	cachePolicyApplied bool
+}
+
+type openAIEdgeStagedRetry struct {
+	id                 string
+	prepared           *openAIEdgePreparedRetryPlan
+	stallActionAccount *service.Account
+	stallActionModel   string
+	stallActionEffort  string
 }
 
 const (
@@ -380,19 +413,36 @@ func (l *openAIEdgeLease) release() {
 		return
 	}
 	l.releaseOnce.Do(func() {
+		l.retryMu.Lock()
 		l.mu.Lock()
 		timer := l.timer
 		accountReleaseFunc := l.accountReleaseFunc
+		var stagedReleaseFunc func()
+		if l.stagedRetry != nil && l.stagedRetry.prepared != nil {
+			stagedReleaseFunc = l.stagedRetry.prepared.release
+		}
 		userReleaseFunc := l.userReleaseFunc
+		queuedReleaseFuncs := append([]func(){}, l.retryReleaseQueue...)
 		l.timer = nil
 		l.accountReleaseFunc = nil
+		l.stagedRetry = nil
+		l.retryReleaseQueue = nil
 		l.userReleaseFunc = nil
 		l.mu.Unlock()
+		l.retryMu.Unlock()
 		if timer != nil {
 			timer.Stop()
 		}
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
+		}
+		if stagedReleaseFunc != nil {
+			stagedReleaseFunc()
+		}
+		for _, releaseFunc := range queuedReleaseFuncs {
+			if releaseFunc != nil {
+				releaseFunc()
+			}
 		}
 		if userReleaseFunc != nil {
 			userReleaseFunc()
@@ -404,12 +454,53 @@ func (l *openAIEdgeLease) releaseAccount() {
 	if l == nil {
 		return
 	}
+	l.retryMu.Lock()
 	l.mu.Lock()
 	accountReleaseFunc := l.accountReleaseFunc
+	var stagedReleaseFunc func()
+	if l.stagedRetry != nil && l.stagedRetry.prepared != nil {
+		stagedReleaseFunc = l.stagedRetry.prepared.release
+	}
+	queuedReleaseFuncs := append([]func(){}, l.retryReleaseQueue...)
 	l.accountReleaseFunc = nil
+	l.stagedRetry = nil
+	l.retryReleaseQueue = nil
 	l.mu.Unlock()
+	l.retryMu.Unlock()
 	if accountReleaseFunc != nil {
 		accountReleaseFunc()
+	}
+	if stagedReleaseFunc != nil {
+		stagedReleaseFunc()
+	}
+	for _, releaseFunc := range queuedReleaseFuncs {
+		if releaseFunc != nil {
+			releaseFunc()
+		}
+	}
+}
+
+func (l *openAIEdgeLease) queueRetryRelease(releaseFunc func()) {
+	if l == nil || releaseFunc == nil {
+		return
+	}
+	l.mu.Lock()
+	l.retryReleaseQueue = append(l.retryReleaseQueue, releaseFunc)
+	l.mu.Unlock()
+}
+
+func (l *openAIEdgeLease) drainRetryReleases() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	releases := append([]func(){}, l.retryReleaseQueue...)
+	l.retryReleaseQueue = nil
+	l.mu.Unlock()
+	for _, releaseFunc := range releases {
+		if releaseFunc != nil {
+			releaseFunc()
+		}
 	}
 }
 
@@ -421,9 +512,11 @@ func (h *OpenAIGatewayHandler) settleOpenAIEdgeStallAction(lease *openAIEdgeLeas
 	if lease == nil {
 		return
 	}
+	lease.retryMu.Lock()
 	lease.mu.Lock()
 	if !lease.stallActionPending {
 		lease.mu.Unlock()
+		lease.retryMu.Unlock()
 		return
 	}
 	account := lease.stallActionAccount
@@ -434,6 +527,7 @@ func (h *OpenAIGatewayHandler) settleOpenAIEdgeStallAction(lease *openAIEdgeLeas
 	lease.stallActionModel = ""
 	lease.stallActionEffort = ""
 	lease.mu.Unlock()
+	lease.retryMu.Unlock()
 	if h != nil && h.gatewayService != nil && account != nil {
 		h.gatewayService.RecordOpenAIStreamStallActionResult(
 			account,
@@ -603,13 +697,16 @@ func (h *OpenAIGatewayHandler) storeOpenAIEdgeLease(lease *openAIEdgeLease, ttl 
 		h.openAIEdgeLeaseByRequest[edgeRequestID] = lease.leaseID
 	}
 	h.openAIEdgeLeaseMu.Unlock()
+	lease.retryMu.Lock()
 	lease.mu.Lock()
 	if lease.settled {
 		lease.mu.Unlock()
+		lease.retryMu.Unlock()
 		return true
 	}
 	h.scheduleOpenAIEdgeLeaseExpiryLocked(lease, ttl)
 	lease.mu.Unlock()
+	lease.retryMu.Unlock()
 	return true
 }
 
@@ -648,6 +745,7 @@ func (h *OpenAIGatewayHandler) expireOpenAIEdgeLease(lease *openAIEdgeLease, gen
 	expired := false
 	h.openAIEdgeLeaseMu.Lock()
 	if h.openAIEdgeLeases[lease.leaseID] == lease {
+		lease.retryMu.Lock()
 		lease.mu.Lock()
 		if !lease.settled && lease.timerGeneration == generation {
 			if remaining := time.Until(lease.expiresAt); remaining > 0 {
@@ -663,6 +761,7 @@ func (h *OpenAIGatewayHandler) expireOpenAIEdgeLease(lease *openAIEdgeLease, gen
 			}
 		}
 		lease.mu.Unlock()
+		lease.retryMu.Unlock()
 	}
 	h.openAIEdgeLeaseMu.Unlock()
 	if expired {
@@ -692,6 +791,8 @@ func (h *OpenAIGatewayHandler) renewOpenAIEdgeLeaseForRequest(leaseID, edgeReque
 	if lease == nil {
 		return "lease_not_found"
 	}
+	lease.retryMu.Lock()
+	defer lease.retryMu.Unlock()
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
 	if lease.settled {
@@ -731,6 +832,8 @@ func (h *OpenAIGatewayHandler) takeOpenAIEdgeLeaseForRequest(leaseID, edgeReques
 	if lease == nil {
 		return nil, ""
 	}
+	lease.retryMu.Lock()
+	defer lease.retryMu.Unlock()
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
 	if edgeRequestID != "" && edgeRequestID != lease.edgeRequestID {
@@ -766,6 +869,8 @@ func (h *OpenAIGatewayHandler) cancelOpenAIEdgeLeaseForRequest(leaseID, edgeRequ
 	}
 	lease := h.openAIEdgeLeases[leaseID]
 	if lease != nil {
+		lease.retryMu.Lock()
+		defer lease.retryMu.Unlock()
 		lease.mu.Lock()
 		defer lease.mu.Unlock()
 		if edgeRequestID != "" && edgeRequestID != lease.edgeRequestID {
@@ -812,6 +917,8 @@ func (h *OpenAIGatewayHandler) releaseOpenAIEdgeRetryPayload(leaseID, edgeReques
 	if lease == nil {
 		return nil, "lease_not_found"
 	}
+	lease.retryMu.Lock()
+	defer lease.retryMu.Unlock()
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
 	if edgeRequestID != "" && edgeRequestID != lease.edgeRequestID {
@@ -889,6 +996,7 @@ func (h *OpenAIGatewayHandler) recoverOpenAIEdgeLeases(edgeNodeID, currentInstan
 			strings.TrimSpace(lease.edgeInstanceID) == "" || lease.edgeInstanceID == currentInstanceID {
 			continue
 		}
+		lease.retryMu.Lock()
 		lease.mu.Lock()
 		if !lease.settled {
 			lease.settled = true
@@ -901,6 +1009,7 @@ func (h *OpenAIGatewayHandler) recoverOpenAIEdgeLeases(edgeNodeID, currentInstan
 			stale = append(stale, lease)
 		}
 		lease.mu.Unlock()
+		lease.retryMu.Unlock()
 	}
 	h.openAIEdgeLeaseMu.Unlock()
 	for _, lease := range stale {
@@ -1793,21 +1902,37 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	if lease == nil {
 		return fallback("lease_not_found")
 	}
-	lease.mu.Lock()
-	defer lease.mu.Unlock()
+	// Serialize the complete retry decision, including account selection and
+	// plan construction, without holding the field mutex across external
+	// scheduler/sticky/slot callbacks. All other lease lifecycle operations take
+	// retryMu before mu, so the lease cannot be settled or staged concurrently.
+	lease.retryMu.Lock()
+	defer func() {
+		lease.retryMu.Unlock()
+		lease.drainRetryReleases()
+	}()
 	if lease.settled || lease.account == nil {
 		return fallback("lease_already_settled")
 	}
 	if req.AccountID != 0 && req.AccountID != lease.account.ID {
 		return fallback("account_mismatch")
 	}
+	if lease.failedAccountIDs == nil {
+		lease.failedAccountIDs = make(map[int64]struct{})
+	}
+	if lease.sameAccountStarted == nil {
+		lease.sameAccountStarted = make(map[int64]time.Time)
+	}
 	status := req.UpstreamStatusCode
 	responseBody := openAIEdgeRetryResponseBody(req)
 	upstreamMsg := strings.TrimSpace(req.ErrorMessage)
-	edgeSemanticProgressTimeout := status == 0 && strings.TrimSpace(req.ErrorType) == "edge_semantic_progress_timeout"
-	edgeBodyTransportFailure := status == 0 && (strings.TrimSpace(req.ErrorType) == "edge_upstream_transport_error" ||
+	errorType := strings.TrimSpace(req.ErrorType)
+	edgeSemanticProgressTimeout := status == 0 && errorType == "edge_semantic_progress_timeout"
+	edgeStreamFailure := status == 0 && errorType == "edge_upstream_stream_failed"
+	edgeBodyTransportFailure := status == 0 && (errorType == "edge_upstream_transport_error" ||
 		strings.TrimSpace(req.ErrorType) == "edge_upstream_body_idle_timeout" || edgeSemanticProgressTimeout)
-	if req.WroteClientResponse {
+	commitState := req.EffectiveCommitState()
+	if commitState == service.OpenAIEdgeCommitStateRealOutput || commitState == service.OpenAIEdgeCommitStateTerminal {
 		if lease.cachePolicyApplied &&
 			service.IsOpenAIPromptCacheCreationOptimizationUnsupportedError(status, upstreamMsg, responseBody) &&
 			h != nil && h.gatewayService != nil {
@@ -1820,6 +1945,12 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 	// unavailable. Do this before the dependency fallback below so clients do
 	// not receive an ambiguous fallback_go result.
 	if edgeSemanticProgressTimeout && lease.stallActionPending {
+		if req.SupportsStagedRetry {
+			return service.OpenAIEdgeRetryDecision{
+				Action: service.OpenAIEdgeActionKeepCurrent,
+				Reason: "semantic_keep_current",
+			}
+		}
 		return service.OpenAIEdgeRetryDecision{
 			Action:       service.OpenAIEdgeActionRespondError,
 			Reason:       "semantic_progress_failover_already_used",
@@ -1884,8 +2015,23 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 			Plan:   &plan,
 		}
 	}
+	var streamFailoverErr *service.UpstreamFailoverError
+	if edgeStreamFailure {
+		if h == nil || h.gatewayService == nil {
+			return fallback("edge_dependencies_missing")
+		}
+		var shouldFailover bool
+		streamFailoverErr, shouldFailover = h.gatewayService.ClassifyOpenAIEdgeStreamFailure(
+			c.Request.Context(), lease.account, responseBody, upstreamMsg,
+		)
+		if !shouldFailover || streamFailoverErr == nil {
+			return fallback("stream_failed_terminal")
+		}
+		status = streamFailoverErr.StatusCode
+		upstreamMsg = streamFailoverErr.Message
+	}
 	modelRoutingError := h.openAIEdgeShouldProtectModelRoutingError(c, lease.account, status, upstreamMsg, responseBody)
-	transportRetryable := edgeBodyTransportFailure ||
+	transportRetryable := edgeBodyTransportFailure || edgeStreamFailure ||
 		(status == 0 && lease.account.IsOpenAIUpstreamConcurrencyRaceEnabled() && lease.account.IsOpenAIUpstreamConcurrencyRaceTransportRetryEnabled())
 	if !service.OpenAIEdgeHTTPStatusRetryableForAccount(lease.account, status) && !transportRetryable && !modelRoutingError {
 		return fallback("upstream_status_not_retryable")
@@ -1901,20 +2047,17 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		zap.Int64("account_id", lease.account.ID),
 		zap.Int("upstream_status", status),
 	)
-	failoverErr := &service.UpstreamFailoverError{
-		StatusCode:             status,
-		ResponseBody:           responseBody,
-		Message:                openAIEdgeSafeErrorMessage(upstreamMsg),
-		RetryableOnSameAccount: !edgeResponseHeaderTimeout && service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, upstreamMsg, responseBody),
-		SkipPoolSoftCooldown:   modelRoutingError || edgeResponseHeaderTimeout || edgeBodyTransportFailure,
+	failoverErr := streamFailoverErr
+	if failoverErr == nil {
+		failoverErr = &service.UpstreamFailoverError{
+			StatusCode:             status,
+			ResponseBody:           responseBody,
+			Message:                openAIEdgeSafeErrorMessage(upstreamMsg),
+			RetryableOnSameAccount: !edgeResponseHeaderTimeout && service.OpenAIPoolFailoverRetryableOnSameAccount(lease.account, status, upstreamMsg, responseBody),
+			SkipPoolSoftCooldown:   modelRoutingError || edgeResponseHeaderTimeout || edgeBodyTransportFailure,
+		}
 	}
 	if edgeSemanticProgressTimeout {
-		lease.stallActionPending = true
-		lease.stallActionAccount = lease.account
-		lease.stallActionModel = lease.openAIRoutingModel()
-		if lease.reasoningEffort != nil {
-			lease.stallActionEffort = *lease.reasoningEffort
-		}
 		failoverErr.RetryableOnSameAccount = false
 		failoverErr.SkipPromptCacheAvoidance = true
 		failoverErr.SkipStickySessionEviction = true
@@ -1949,11 +2092,18 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		}
 	}
 	routingModel := lease.openAIRoutingModel()
+	stagedSemanticSwitch := edgeSemanticProgressTimeout && req.SupportsStagedRetry
 	if !edgeResponseHeaderTimeout && !edgeBodyTransportFailure {
+		var groupID *int64
+		if lease.apiKey != nil {
+			groupID = lease.apiKey.GroupID
+		}
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, routingModel, false, nil)
-		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), lease.apiKey.GroupID, lease.sessionHash, lease.account, failoverErr, routingModel)
+		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), groupID, lease.sessionHash, lease.account, failoverErr, routingModel)
 	}
-	h.gatewayService.RecordOpenAIAccountSwitch()
+	if !stagedSemanticSwitch {
+		h.gatewayService.RecordOpenAIAccountSwitch()
+	}
 	lease.failedAccountIDs[lease.account.ID] = struct{}{}
 	if lease.switchCount >= lease.maxAccountSwitches {
 		if modelRoutingError {
@@ -1971,7 +2121,29 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		decision.FailureRecorded = true
 		return decision
 	}
-	decision := h.openAIEdgeRetrySwitchAccount(c, lease, req, "account_switch")
+	switchReason := "account_switch"
+	if stagedSemanticSwitch {
+		switchReason = "semantic_progress_switch"
+	}
+	stallActionAccount := lease.account
+	stallActionModel := lease.openAIRoutingModel()
+	stallActionEffort := ""
+	if lease.reasoningEffort != nil {
+		stallActionEffort = *lease.reasoningEffort
+	}
+	decision := h.openAIEdgeRetrySwitchAccount(c, lease, req, switchReason)
+	if edgeSemanticProgressTimeout && decision.Action == service.OpenAIEdgeActionRelay {
+		if decision.StagedRetryID != "" && lease.stagedRetry != nil {
+			lease.stagedRetry.stallActionAccount = stallActionAccount
+			lease.stagedRetry.stallActionModel = stallActionModel
+			lease.stagedRetry.stallActionEffort = stallActionEffort
+		} else {
+			lease.stallActionPending = true
+			lease.stallActionAccount = stallActionAccount
+			lease.stallActionModel = stallActionModel
+			lease.stallActionEffort = stallActionEffort
+		}
+	}
 	decision.FailureRecorded = true
 	return decision
 }
@@ -2022,6 +2194,9 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 	if h == nil || h.gatewayService == nil {
 		return fallback("edge_dependencies_missing")
 	}
+	if lease.failedAccountIDs == nil {
+		lease.failedAccountIDs = make(map[int64]struct{})
+	}
 	reqLog := requestLogger(c, "handler.openai_edge.retry_switch",
 		zap.String("lease_id", lease.leaseID),
 		zap.String("reason", successReason),
@@ -2031,8 +2206,10 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 	responseBody := openAIEdgeRetryResponseBody(req)
 	modelRoutingError := h.openAIEdgeShouldProtectModelRoutingError(c, lease.account, req.UpstreamStatusCode, strings.TrimSpace(req.ErrorMessage), responseBody)
 	var group *service.Group
+	var groupID *int64
 	if lease.apiKey != nil {
 		group = lease.apiKey.Group
+		groupID = lease.apiKey.GroupID
 	}
 	if modelRoutingError && lease.lockedPriority < 0 && !openAIGroupAllowsModelMismatchPriorityFallback(group) {
 		lease.lockedPriority = lease.account.Priority
@@ -2047,15 +2224,21 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 		}
 		lease.switchCount++
 	}
-	accountReleaseFuncToCall := lease.accountReleaseFunc
-	lease.accountReleaseFunc = nil
-	if accountReleaseFuncToCall != nil {
-		accountReleaseFuncToCall()
+	stageRetry := successReason == "semantic_progress_switch" && req.SupportsStagedRetry
+	if !stageRetry {
+		accountReleaseFuncToCall := lease.accountReleaseFunc
+		lease.accountReleaseFunc = nil
+		lease.queueRetryRelease(accountReleaseFuncToCall)
+	} else if lease.stagedRetry != nil && lease.stagedRetry.prepared != nil {
+		return service.OpenAIEdgeRetryDecision{
+			Action: service.OpenAIEdgeActionKeepCurrent,
+			Reason: "semantic_retry_in_progress",
+		}
 	}
 	requiredTransport := openAIEdgeRetryRequiredTransport(lease.inboundEndpoint)
 	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
-		lease.apiKey.GroupID,
+		groupID,
 		0,
 		0,
 		0,
@@ -2069,7 +2252,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 			return openAIEdgeRetryAccountEligible(account, lease.inboundEndpoint) &&
 				(lease.lockedPriority < 0 || account.Priority == lease.lockedPriority)
 		},
-		true,
+		!stageRetry,
 		reqLog,
 	)
 	if err != nil || edgeSelection == nil || edgeSelection.account == nil {
@@ -2082,24 +2265,146 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 		if modelRoutingError {
 			return openAIEdgeModelRoutingErrorDecision("model_routing_error_no_retry_account")
 		}
+		if stageRetry {
+			return service.OpenAIEdgeRetryDecision{Action: service.OpenAIEdgeActionKeepCurrent, Reason: "retry_no_candidate"}
+		}
 		return fallback("retry_" + reason)
 	}
 	account := edgeSelection.account
 	accountReleaseFunc := edgeSelection.releaseFunc
+	if stageRetry {
+		prepared, prepareErr := h.prepareOpenAIEdgeRetryPlan(c, lease, account, accountReleaseFunc)
+		if prepareErr != nil {
+			lease.queueRetryRelease(accountReleaseFunc)
+			reqLog.Warn("openai_edge.staged_retry_plan_failed", zap.Int64("account_id", account.ID), zap.Error(prepareErr))
+			return service.OpenAIEdgeRetryDecision{Action: service.OpenAIEdgeActionKeepCurrent, Reason: "semantic_keep_current"}
+		}
+		stagedRetryID := uuid.NewString()
+		lease.stagedRetry = &openAIEdgeStagedRetry{id: stagedRetryID, prepared: prepared}
+		return service.OpenAIEdgeRetryDecision{
+			Action:        service.OpenAIEdgeActionRelay,
+			Reason:        successReason,
+			StagedRetryID: stagedRetryID,
+			Plan:          &prepared.plan,
+		}
+	}
 	plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, account, accountReleaseFunc)
 	if err != nil {
-		if accountReleaseFunc != nil {
-			accountReleaseFunc()
-		}
+		lease.queueRetryRelease(accountReleaseFunc)
 		reqLog.Warn("openai_edge.retry_plan_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		return fallback("retry_plan_failed")
 	}
-	lease.account = account
-	lease.accountReleaseFunc = accountReleaseFunc
 	return service.OpenAIEdgeRetryDecision{Action: service.OpenAIEdgeActionRelay, Reason: successReason, Plan: &plan}
 }
 
-func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *openAIEdgeLease, account *service.Account, release func()) (service.OpenAIEdgePlan, error) {
+func (h *OpenAIGatewayHandler) OpenAIEdgeRetryStage(c *gin.Context) {
+	if !h.requireOpenAIEdgeSecret(c) {
+		return
+	}
+	var req service.OpenAIEdgeRetryStageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid retry stage request"})
+		return
+	}
+	stageID := strings.TrimSpace(req.StagedRetryID)
+	action := strings.TrimSpace(req.Action)
+	if stageID == "" || (action != service.OpenAIEdgeRetryStageActivate && action != service.OpenAIEdgeRetryStageCancel) {
+		c.JSON(http.StatusBadRequest, service.OpenAIEdgeAck{OK: false, Reason: "invalid_stage_action"})
+		return
+	}
+	lease := h.getOpenAIEdgeLease(req.LeaseID)
+	if lease == nil {
+		c.JSON(http.StatusConflict, service.OpenAIEdgeAck{OK: false, Reason: "lease_not_found"})
+		return
+	}
+	lease.retryMu.Lock()
+	lease.mu.Lock()
+	if lease.settled || lease.account == nil {
+		lease.mu.Unlock()
+		lease.retryMu.Unlock()
+		c.JSON(http.StatusConflict, service.OpenAIEdgeAck{OK: false, Reason: "lease_already_settled"})
+		return
+	}
+	if req.EdgeRequestID != "" && req.EdgeRequestID != lease.edgeRequestID {
+		lease.mu.Unlock()
+		lease.retryMu.Unlock()
+		c.JSON(http.StatusConflict, service.OpenAIEdgeAck{OK: false, Reason: "request_mismatch"})
+		return
+	}
+	staged := lease.stagedRetry
+	if staged == nil || staged.prepared == nil || staged.id != stageID {
+		if lease.activatedRetryID == stageID &&
+			(req.AccountID == 0 || lease.account.ID == req.AccountID) {
+			lease.mu.Unlock()
+			lease.retryMu.Unlock()
+			reason := "staged_retry_already_activated"
+			if action == service.OpenAIEdgeRetryStageCancel {
+				// An activate response may have been lost. Cancellation is a
+				// no-op after activation so Rust can safely retry settlement
+				// without reverting the active account.
+				reason = "staged_retry_already_activated"
+			}
+			c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: reason})
+			return
+		}
+		if action == service.OpenAIEdgeRetryStageCancel {
+			// Cancel is idempotent. A lost 200 response must not turn a
+			// harmless duplicate cleanup into a stream failure.
+			lease.mu.Unlock()
+			lease.retryMu.Unlock()
+			c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: "staged_retry_already_cancelled"})
+			return
+		}
+		lease.mu.Unlock()
+		lease.retryMu.Unlock()
+		c.JSON(http.StatusConflict, service.OpenAIEdgeAck{OK: false, Reason: "staged_retry_not_found"})
+		return
+	}
+	if req.AccountID != 0 && (staged.prepared.account == nil || staged.prepared.account.ID != req.AccountID) {
+		lease.mu.Unlock()
+		lease.retryMu.Unlock()
+		c.JSON(http.StatusConflict, service.OpenAIEdgeAck{OK: false, Reason: "staged_account_mismatch"})
+		return
+	}
+	switch action {
+	case service.OpenAIEdgeRetryStageCancel:
+		stagedRelease := staged.prepared.release
+		lease.stagedRetry = nil
+		lease.mu.Unlock()
+		lease.retryMu.Unlock()
+		if stagedRelease != nil {
+			stagedRelease()
+		}
+		c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: "staged_retry_cancelled"})
+	case service.OpenAIEdgeRetryStageActivate:
+		oldRelease := lease.accountReleaseFunc
+		applyOpenAIEdgePreparedRetryPlan(lease, staged.prepared)
+		lease.stagedRetry = nil
+		lease.activatedRetryID = staged.id
+		lease.stallActionPending = true
+		lease.stallActionAccount = staged.stallActionAccount
+		lease.stallActionModel = staged.stallActionModel
+		lease.stallActionEffort = staged.stallActionEffort
+		var groupID *int64
+		if lease.apiKey != nil {
+			groupID = lease.apiKey.GroupID
+		}
+		sessionHash := lease.sessionHash
+		accountID := lease.account.ID
+		lease.mu.Unlock()
+		lease.retryMu.Unlock()
+		if oldRelease != nil {
+			oldRelease()
+		}
+		if h.gatewayService != nil {
+			h.gatewayService.RecordOpenAIAccountSwitch()
+			_ = h.gatewayService.ClaimStickySession(c.Request.Context(), groupID, sessionHash, accountID)
+		}
+		c.JSON(http.StatusOK, service.OpenAIEdgeAck{OK: true, Reason: "staged_retry_activated"})
+	}
+}
+
+func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRetryPlan(c *gin.Context, lease *openAIEdgeLease, account *service.Account, release func()) (*openAIEdgePreparedRetryPlan, error) {
 	var (
 		prepared *service.OpenAIEdgePreparedChatCompletions
 		err      error
@@ -2125,7 +2430,7 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 	if lease.inboundEndpoint == "/v1/responses:ws" {
 		token, _, tokenErr := h.gatewayService.GetAccessToken(c.Request.Context(), account)
 		if tokenErr != nil {
-			return service.OpenAIEdgePlan{}, tokenErr
+			return nil, tokenErr
 		}
 		prepared, err = h.gatewayService.BuildResponsesWSEdgePlan(c.Request.Context(), c, account, attemptBody, token)
 	} else if lease.inboundEndpoint == "/v1/responses" {
@@ -2138,18 +2443,13 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 		prepared, err = h.gatewayService.BuildRawChatCompletionsEdgePlan(c.Request.Context(), c, account, attemptBody, "")
 	}
 	if err != nil {
-		return service.OpenAIEdgePlan{}, err
-	}
-	// Only remember a passthrough transition after a usable relay plan exists.
-	// A local prepare failure must not alter the body of a later account attempt.
-	if currentPassthrough {
-		lease.passthroughSeen = true
+		return nil, err
 	}
 	plan := prepared.Plan
 	plan.EdgeProtectionGroupEnabled = lease.lastPlan.EdgeProtectionGroupEnabled
 	plan, err = applyOpenAIEdgeRejectedFields(plan, lease.rejectedFields)
 	if err != nil {
-		return service.OpenAIEdgePlan{}, err
+		return nil, err
 	}
 	plan.EdgeRequestID = lease.edgeRequestID
 	plan.LeaseID = lease.leaseID
@@ -2161,19 +2461,48 @@ func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *o
 	plan.Lane = openAIEdgeLaneFromServiceTier(prepared.ServiceTier)
 	h.applyOpenAIEdgeProtection(&plan)
 	applyOpenAIEdgeRaceResponseHeaderBudget(lease, &plan)
-	lease.account = account
-	lease.accountReleaseFunc = release
-	markSameAccountAttemptStart(lease.sameAccountStarted, account, time.Now())
-	lease.requestModel = prepared.Model
-	lease.billingModel = prepared.BillingModel
-	lease.upstreamModel = prepared.UpstreamModel
-	lease.reasoningEffort = prepared.ReasoningEffort
-	lease.serviceTier = prepared.ServiceTier
-	lease.upstreamEndpoint = service.OpenAIEdgeRawUpstreamEndpointForInbound(account, lease.inboundEndpoint)
-	lease.cachePolicyEnabled = plan.PromptCacheCreationOptimizationMode != ""
-	lease.cachePolicyApplied = plan.PromptCacheCreationOptimizationApplied
-	lease.lastPlan = plan
-	return plan, nil
+	return &openAIEdgePreparedRetryPlan{
+		plan:               plan,
+		account:            account,
+		release:            release,
+		passthroughSeen:    lease.passthroughSeen || currentPassthrough,
+		requestModel:       prepared.Model,
+		billingModel:       prepared.BillingModel,
+		upstreamModel:      prepared.UpstreamModel,
+		reasoningEffort:    prepared.ReasoningEffort,
+		serviceTier:        prepared.ServiceTier,
+		upstreamEndpoint:   service.OpenAIEdgeRawUpstreamEndpointForInbound(account, lease.inboundEndpoint),
+		cachePolicyEnabled: plan.PromptCacheCreationOptimizationMode != "",
+		cachePolicyApplied: plan.PromptCacheCreationOptimizationApplied,
+	}, nil
+}
+
+func applyOpenAIEdgePreparedRetryPlan(lease *openAIEdgeLease, prepared *openAIEdgePreparedRetryPlan) {
+	if lease == nil || prepared == nil {
+		return
+	}
+	lease.account = prepared.account
+	lease.accountReleaseFunc = prepared.release
+	lease.passthroughSeen = prepared.passthroughSeen
+	markSameAccountAttemptStart(lease.sameAccountStarted, prepared.account, time.Now())
+	lease.requestModel = prepared.requestModel
+	lease.billingModel = prepared.billingModel
+	lease.upstreamModel = prepared.upstreamModel
+	lease.reasoningEffort = prepared.reasoningEffort
+	lease.serviceTier = prepared.serviceTier
+	lease.upstreamEndpoint = prepared.upstreamEndpoint
+	lease.cachePolicyEnabled = prepared.cachePolicyEnabled
+	lease.cachePolicyApplied = prepared.cachePolicyApplied
+	lease.lastPlan = prepared.plan
+}
+
+func (h *OpenAIGatewayHandler) buildOpenAIEdgeRetryPlan(c *gin.Context, lease *openAIEdgeLease, account *service.Account, release func()) (service.OpenAIEdgePlan, error) {
+	prepared, err := h.prepareOpenAIEdgeRetryPlan(c, lease, account, release)
+	if err != nil {
+		return service.OpenAIEdgePlan{}, err
+	}
+	applyOpenAIEdgePreparedRetryPlan(lease, prepared)
+	return prepared.plan, nil
 }
 
 func applyOpenAIEdgeRaceResponseHeaderBudget(lease *openAIEdgeLease, plan *service.OpenAIEdgePlan) {

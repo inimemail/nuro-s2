@@ -101,6 +101,11 @@ func (h *OpenAIGatewayHandler) snapshotOpenAIEdgeContinuation(lease *openAIEdgeL
 	if lease == nil {
 		return state
 	}
+	// Retry decisions and lease lifecycle transitions use the lock order
+	// retryMu -> mu. Take both locks here so continuation snapshots cannot
+	// race with an in-flight retry decision updating the same fields.
+	lease.retryMu.Lock()
+	defer lease.retryMu.Unlock()
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
 	return h.snapshotOpenAIEdgeContinuationLocked(lease)

@@ -6384,6 +6384,9 @@ func (s *OpenAIGatewayService) RecordOpenAIPoolFailureAfterCommittedResponse(
 	if s == nil || account == nil || !account.IsOpenAI() || !account.IsPoolMode() {
 		return
 	}
+	immediatePoolSoftCooldown := bytes.Equal(responseBody, openAITransportFailoverBody) &&
+		isOpenAIResponseHeaderTimeoutError(message) &&
+		!account.IsImagePoolMode() && !isOpenAIImageGenerationModel(requestedModel)
 	message = sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
 	if message == "" {
 		message = sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(responseBody))
@@ -6395,7 +6398,13 @@ func (s *OpenAIGatewayService) RecordOpenAIPoolFailureAfterCommittedResponse(
 	if !decision.Failover || decision.SkipSoftCooldown {
 		return
 	}
-	if !s.shouldStartOpenAIPoolSoftCooldown(account) {
+	if !account.IsPoolSoftCooldownEnabled() {
+		// Preserve the existing disabled-setting behavior, including any
+		// runtime-block cleanup performed by the shared threshold helper.
+		s.shouldStartOpenAIPoolSoftCooldown(account)
+		return
+	}
+	if !immediatePoolSoftCooldown && !s.shouldStartOpenAIPoolSoftCooldown(account) {
 		return
 	}
 	probeModel := strings.TrimSpace(requestedModel)
@@ -6467,6 +6476,84 @@ func openAIStreamFailedEventRetryableOnSameAccount(account *Account, payload []b
 		return false
 	}
 	return isOpenAITransientProcessingError(http.StatusBadRequest, message, payload)
+}
+
+// ClassifyOpenAIEdgeStreamFailure applies the same response.failed/error
+// policy used by the Go streaming paths without logging or exposing the raw
+// upstream payload. Edge uses the returned failover error only before real
+// model output has reached the downstream connection.
+func (s *OpenAIGatewayService) ClassifyOpenAIEdgeStreamFailure(
+	ctx context.Context,
+	account *Account,
+	payload []byte,
+	message string,
+) (*UpstreamFailoverError, bool) {
+	message = sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
+	if message == "" {
+		message = sanitizeUpstreamErrorMessage(extractOpenAISSEErrorMessage(payload))
+	}
+	if message == "" {
+		message = "OpenAI stream disconnected before completion"
+	}
+	if !openAIStreamFailedEventShouldFailover(payload, message) {
+		return nil, false
+	}
+	return s.classifyOpenAIStreamFailover(ctx, account, payload, message), true
+}
+
+func (s *OpenAIGatewayService) classifyOpenAIStreamFailover(
+	ctx context.Context,
+	account *Account,
+	payload []byte,
+	message string,
+) *UpstreamFailoverError {
+	statusCode := openAIStreamFailureStatus(payload, message)
+	body, _ := json.Marshal(gin.H{
+		"error": gin.H{
+			"type":    map[bool]string{true: "rate_limit_error", false: "upstream_error"}[statusCode == http.StatusTooManyRequests],
+			"message": message,
+		},
+	})
+	decision := s.classifyOpenAIPoolFailover(ctx, account, statusCode, message, body)
+	retryableOnSameAccount := decision.RetryableOnSameAccount
+	if openAIStreamFailedEventRetryableOnSameAccount(account, payload, message) {
+		retryableOnSameAccount = true
+	}
+	ruleKey, ruleLimit := decision.RetryRuleKey, decision.RetryRuleLimit
+	if account != nil && account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		// A response.failed payload carries a semantic status and therefore uses
+		// the HTTP-rule budget. Bare disconnects use the transport rule instead.
+		ruleStatus := 0
+		if len(bytes.TrimSpace(payload)) > 0 && gjson.ValidBytes(payload) {
+			ruleStatus = statusCode
+		}
+		if openAIPoolSameAccountRetryBlockedByRequestContent(http.StatusBadGateway, message, body) {
+			retryableOnSameAccount = false
+			ruleKey, ruleLimit = "", 0
+		} else {
+			ruleKey, ruleLimit, _ = account.OpenAIUpstreamConcurrencyRaceRetryRule(ruleStatus)
+			retryableOnSameAccount = ruleKey != "" && ruleLimit > 0
+		}
+		return &UpstreamFailoverError{
+			StatusCode:             statusCode,
+			ResponseBody:           body,
+			Message:                message,
+			RetryableOnSameAccount: retryableOnSameAccount,
+			RetryRuleKey:           ruleKey,
+			RetryRuleLimit:         ruleLimit,
+			RetryRuleTransport:     ruleStatus == 0 && ruleKey == "transport",
+			SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
+		}
+	}
+	return &UpstreamFailoverError{
+		StatusCode:             statusCode,
+		ResponseBody:           body,
+		Message:                message,
+		RetryableOnSameAccount: retryableOnSameAccount,
+		RetryRuleKey:           ruleKey,
+		RetryRuleLimit:         ruleLimit,
+		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
+	}
 }
 
 func (s *OpenAIGatewayService) recordOpenAIStreamUpstreamError(
@@ -6552,55 +6639,9 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 		}
 		appendOpsUpstreamError(c, event)
 	}
-	body, _ := json.Marshal(gin.H{
-		"error": gin.H{
-			"type":    map[bool]string{true: "rate_limit_error", false: "upstream_error"}[statusCode == http.StatusTooManyRequests],
-			"message": message,
-		},
-	})
-	decision := s.classifyOpenAIPoolFailover(c.Request.Context(), account, statusCode, message, body)
-	retryableOnSameAccount := decision.RetryableOnSameAccount
-	if openAIStreamFailedEventRetryableOnSameAccount(account, payload, message) {
-		retryableOnSameAccount = true
-	}
-	ruleKey, ruleLimit := decision.RetryRuleKey, decision.RetryRuleLimit
-	if account != nil && account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
-		// A response.failed payload carries a usable semantic status and belongs
-		// to the race HTTP-rule budget. Only a bare disconnect/scan failure has no
-		// status and may consume the independent transport budget.
-		ruleStatus := 0
-		if len(bytes.TrimSpace(payload)) > 0 && gjson.ValidBytes(payload) {
-			ruleStatus = statusCode
-		}
-		if openAIPoolSameAccountRetryBlockedByRequestContent(http.StatusBadGateway, message, body) {
-			retryableOnSameAccount = false
-			ruleKey, ruleLimit = "", 0
-		} else {
-			ruleKey, ruleLimit, _ = account.OpenAIUpstreamConcurrencyRaceRetryRule(ruleStatus)
-			retryableOnSameAccount = ruleKey != "" && ruleLimit > 0
-		}
-		return &UpstreamFailoverError{
-			StatusCode:             statusCode,
-			ResponseBody:           body,
-			ResponseHeaders:        firstClonedHeader(responseHeaders),
-			Message:                message,
-			RetryableOnSameAccount: retryableOnSameAccount,
-			RetryRuleKey:           ruleKey,
-			RetryRuleLimit:         ruleLimit,
-			RetryRuleTransport:     ruleStatus == 0 && ruleKey == "transport",
-			SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-		}
-	}
-	return &UpstreamFailoverError{
-		StatusCode:             statusCode,
-		ResponseBody:           body,
-		ResponseHeaders:        firstClonedHeader(responseHeaders),
-		Message:                message,
-		RetryableOnSameAccount: retryableOnSameAccount,
-		RetryRuleKey:           ruleKey,
-		RetryRuleLimit:         ruleLimit,
-		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-	}
+	failoverErr := s.classifyOpenAIStreamFailover(c.Request.Context(), account, payload, message)
+	failoverErr.ResponseHeaders = firstClonedHeader(responseHeaders)
+	return failoverErr
 }
 
 func firstClonedHeader(headers []http.Header) http.Header {
@@ -6810,6 +6851,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel)
 	searchCounter := 0
 	streamSearchSeen := make(map[string]struct{})
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
@@ -6949,8 +6991,8 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			}
 			s.parseSSEUsageBytes(dataBytes, usage)
-			if downstreamCacheUsageMode != "" && shouldNormalizeOpenAIStreamUsageForDownstream(dataBytes, eventType) {
-				if normalizedData, normalized := normalizeOpenAIDownstreamUsageJSON(dataBytes, downstreamCacheUsageMode); normalized {
+			if shouldNormalizeOpenAIStreamUsageForDownstreamWithMarkup(dataBytes, eventType, downstreamCacheUsageMode, downstreamCacheMarkup) {
+				if normalizedData, normalized := normalizeOpenAIDownstreamUsageJSONWithMarkup(dataBytes, downstreamCacheUsageMode, downstreamCacheMarkup); normalized {
 					dataBytes = normalizedData
 					trimmedData = string(normalizedData)
 					line = "data: " + trimmedData
@@ -7264,7 +7306,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		}
 		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
 		body = normalizedBody
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
@@ -7453,7 +7495,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(ctx context.Context, r
 			return nil, failoverErr
 		}
 	}
-	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
 		body = normalizedBody
 	}
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -8210,6 +8252,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 	usage := &OpenAIUsage{}
 	downstreamCacheUsageMode := openAIDownstreamCacheUsageModeForContext(ctx, account, mappedModel)
+	downstreamCacheMarkup := s.openAIDownstreamCacheMarkupPolicyForContext(ctx, account, mappedModel)
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
 	downstreamTTFTObserved := false
@@ -8619,12 +8662,12 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					line = "data: " + data
 				}
 			}
-			if downstreamCacheUsageMode != "" {
+			if downstreamCacheUsageMode != "" || downstreamCacheMarkup.enabled() {
 				// Internal usage observes the upstream frame; only the downstream
 				// copy is normalized for explicitly selected C/D accounts.
 				s.parseSSEUsageBytes(dataBytes, usage)
-				if shouldNormalizeOpenAIStreamUsageForDownstream(dataBytes, eventType) {
-					if normalizedData, normalized := normalizeOpenAIDownstreamUsageJSON(dataBytes, downstreamCacheUsageMode); normalized {
+				if shouldNormalizeOpenAIStreamUsageForDownstreamWithMarkup(dataBytes, eventType, downstreamCacheUsageMode, downstreamCacheMarkup) {
+					if normalizedData, normalized := normalizeOpenAIDownstreamUsageJSONWithMarkup(dataBytes, downstreamCacheUsageMode, downstreamCacheMarkup); normalized {
 						dataBytes = normalizedData
 						data = string(normalizedData)
 						line = "data: " + data
@@ -8680,7 +8723,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 					firstTokenMs = &ms
 				}
 			}
-			if downstreamCacheUsageMode == "" {
+			if downstreamCacheUsageMode == "" && !downstreamCacheMarkup.enabled() {
 				s.parseSSEUsageBytes(dataBytes, usage)
 			}
 			return
@@ -9381,7 +9424,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 			return nil, failoverErr
 		}
 	}
-	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
 		body = normalizedBody
 	}
 
@@ -9509,7 +9552,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(ctx context.Context, resp *http.R
 			return nil, failoverErr
 		}
 	}
-	if normalizedBody, normalized := normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
+	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
 		body = normalizedBody
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)

@@ -8,7 +8,16 @@ import (
 const (
 	OpenAIEdgeActionFallbackGo   = "fallback_go"
 	OpenAIEdgeActionRelay        = "relay"
+	OpenAIEdgeActionKeepCurrent  = "keep_current"
 	OpenAIEdgeActionRespondError = "respond_error"
+
+	OpenAIEdgeCommitStateNone        = "none"
+	OpenAIEdgeCommitStateGatewayOnly = "gateway_only"
+	OpenAIEdgeCommitStateRealOutput  = "real_output"
+	OpenAIEdgeCommitStateTerminal    = "terminal"
+
+	OpenAIEdgeRetryStageActivate = "activate"
+	OpenAIEdgeRetryStageCancel   = "cancel"
 
 	OpenAIEdgeTransportHTTP2SSE = "http2_sse"
 	OpenAIEdgeTransportWSV2     = "ws_v2"
@@ -106,16 +115,39 @@ type OpenAIEdgePlan struct {
 }
 
 type OpenAIEdgeRetryRequest struct {
-	EdgeRequestID       string          `json:"edge_request_id"`
-	LeaseID             string          `json:"lease_id,omitempty"`
-	AccountID           int64           `json:"account_id,omitempty"`
-	UpstreamStatusCode  int             `json:"upstream_status_code,omitempty"`
-	UpstreamRequestID   string          `json:"upstream_request_id,omitempty"`
-	ErrorType           string          `json:"error_type,omitempty"`
-	ErrorMessage        string          `json:"error_message,omitempty"`
-	RequestBody         json.RawMessage `json:"request_body,omitempty"`
-	ResponseBody        json.RawMessage `json:"response_body,omitempty"`
-	WroteClientResponse bool            `json:"wrote_client_response"`
+	EdgeRequestID      string          `json:"edge_request_id"`
+	LeaseID            string          `json:"lease_id,omitempty"`
+	AccountID          int64           `json:"account_id,omitempty"`
+	UpstreamStatusCode int             `json:"upstream_status_code,omitempty"`
+	UpstreamRequestID  string          `json:"upstream_request_id,omitempty"`
+	ErrorType          string          `json:"error_type,omitempty"`
+	ErrorMessage       string          `json:"error_message,omitempty"`
+	RequestBody        json.RawMessage `json:"request_body,omitempty"`
+	ResponseBody       json.RawMessage `json:"response_body,omitempty"`
+	// CommitState separates gateway-owned compatibility frames from model
+	// output. WroteClientResponse remains on the wire for rolling upgrades.
+	CommitState         string `json:"commit_state,omitempty"`
+	WroteClientResponse bool   `json:"wrote_client_response"`
+	SupportsStagedRetry bool   `json:"supports_staged_retry,omitempty"`
+}
+
+func (r OpenAIEdgeRetryRequest) EffectiveCommitState() string {
+	switch r.CommitState {
+	case OpenAIEdgeCommitStateNone:
+		if r.WroteClientResponse {
+			return OpenAIEdgeCommitStateRealOutput
+		}
+		return OpenAIEdgeCommitStateNone
+	case OpenAIEdgeCommitStateGatewayOnly,
+		OpenAIEdgeCommitStateRealOutput,
+		OpenAIEdgeCommitStateTerminal:
+		return r.CommitState
+	default:
+		if r.WroteClientResponse {
+			return OpenAIEdgeCommitStateRealOutput
+		}
+		return OpenAIEdgeCommitStateNone
+	}
 }
 
 // OpenAIEdgeCommitRequest releases retry-only payload copies after the edge
@@ -139,11 +171,20 @@ type OpenAIEdgeRetryDecision struct {
 	Action            string          `json:"action"`
 	Reason            string          `json:"reason,omitempty"`
 	ContinuationToken string          `json:"continuation_token,omitempty"`
+	StagedRetryID     string          `json:"staged_retry_id,omitempty"`
 	Plan              *OpenAIEdgePlan `json:"plan,omitempty"`
 	FailureRecorded   bool            `json:"failure_recorded,omitempty"`
 	StatusCode        int             `json:"status_code,omitempty"`
 	ErrorType         string          `json:"error_type,omitempty"`
 	ErrorMessage      string          `json:"error_message,omitempty"`
+}
+
+type OpenAIEdgeRetryStageRequest struct {
+	EdgeRequestID string `json:"edge_request_id"`
+	LeaseID       string `json:"lease_id"`
+	AccountID     int64  `json:"account_id,omitempty"`
+	StagedRetryID string `json:"staged_retry_id"`
+	Action        string `json:"action"`
 }
 
 type OpenAIEdgeCompleteRequest struct {

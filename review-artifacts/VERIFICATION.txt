@@ -1,160 +1,88 @@
-Review target: uncommitted OpenAI stream semantic-progress, Edge retry, terminal framing, and placeholder changes.
-Changed branch/field: request-local semantic stall failover, response terminal tracking, and learned semantic gap route state.
+Review target: OpenAI Edge same-SSE failover, gateway-only first-token placeholder, stream failure classification, staged retry activation, WS commit state, and winning-account downstream usage policy.
+Changed branch/field: Edge retry commit_state (none/gateway_only/real_output/terminal), staged retry activation/cancel, SSE response.failed handling, request-relative first-token placeholder deadline, bounded response-header attempts, lease release/identity compatibility, continuation snapshot locking, and plan-scoped downstream cache usage markup.
 
 Artifacts:
-- MODIFIED_FILE: review-artifacts/MODIFIED_FILE.go
-- DIFF_FILE: review-artifacts/DIFF_FILE
-- VERIFICATION.txt: review-artifacts/VERIFICATION.txt
-- ROLLBACK.sh: review-artifacts/ROLLBACK.sh
+- MODIFIED_FILE: /Users/inim/nuro-s2/review-artifacts/MODIFIED_FILE.go
+- DIFF_FILE: /Users/inim/nuro-s2/review-artifacts/DIFF_FILE
+- VERIFICATION.txt: /Users/inim/nuro-s2/review-artifacts/VERIFICATION.txt
+- ROLLBACK.sh: /Users/inim/nuro-s2/review-artifacts/ROLLBACK.sh
 
 BASELINE:
 command: git rev-parse HEAD
-literal output: 35af60518415999932ff7b88e138686f94f01d7a
+input: repository HEAD before this worktree change
+literal output: 0ad80a74e21089cbb9a5d1c324dd300d3f73043c
 exit status: 0
-command: sha256sum /tmp/nuro-s2-baseline.go
-literal output: 1f2bf42239ba36ebff92b332b5a2ea9d588183824430a33c02c458387f9d1c38  /tmp/nuro-s2-baseline.go
+command: sha256sum /tmp/nuro-s2-baseline-openai_gateway_service.go
+input: HEAD copy of backend/internal/service/openai_gateway_service.go
+literal output: eace698cdeba13ad03a503d1559c8cd89b97d4d995a2c63469df6851a8549929  /tmp/nuro-s2-baseline-openai_gateway_service.go
+exit status: 0
+command: (cd /tmp/nuro-s2-baseline-copy/edge-rs && cargo test --bin sub2api-edge-rs)
+input: detached archive of HEAD 0ad80a74e21089cbb9a5d1c324dd300d3f73043c
+literal output: test result: ok. 143 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+exit status: 0
+command: (cd /tmp/nuro-s2-baseline-copy/backend && env GOCACHE=/tmp/nuro-s2-baseline-go-cache go test ./internal/handler ./internal/service -run 'TestOpenAIEdge' -count=1)
+input: HEAD Go handler/service packages and existing OpenAI Edge tests
+literal output: ok github.com/Wei-Shaw/sub2api/internal/handler 1.302s; ok github.com/Wei-Shaw/sub2api/internal/service 0.960s
 exit status: 0
 
 MODIFIED:
-command: sha256sum review-artifacts/MODIFIED_FILE.go
-literal output: c5b336513aa13fbba2184b0e87de309e3fb78c4353ae5dfd6ad87f7132996710  review-artifacts/MODIFIED_FILE.go
+command: sha256sum /Users/inim/nuro-s2/review-artifacts/MODIFIED_FILE.go
+input: current worktree copy of backend/internal/service/openai_gateway_service.go
+literal output: 2b7891f749236fce508280f042f8632ca8d94f8d4db9e1418aceb0db91279f7f  /Users/inim/nuro-s2/review-artifacts/MODIFIED_FILE.go
 exit status: 0
-command: env GOCACHE=/tmp/nuro-s2-go-cache go test ./... -run '^$' -count=1
-literal output: success (no test failures; compile-only package check)
+command: (cd /Users/inim/nuro-s2/edge-rs && cargo test --bin sub2api-edge-rs)
+input: current Edge source, including commit-state, staged-retry, lease, stream-failure, and usage-policy tests
+literal output: test result: ok. 155 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 exit status: 0
-command: cargo fmt --check && cargo clippy --locked -- -D warnings && cargo test --locked
-literal output: 139 passed, 0 failed
+command: (cd /Users/inim/nuro-s2/edge-rs && cargo clippy --all-targets -- -D warnings)
+input: current Edge source
+literal output: Finished `dev` profile; no warnings emitted
+exit status: 0
+compatibility guard: plans that omit edge_response_header_max_attempts use a bounded 64-attempt legacy ceiling; configured plans keep the configured limit.
+command: (cd /Users/inim/nuro-s2/backend && env GOCACHE=/tmp/nuro-s2-go-cache go test ./internal/handler ./internal/service -run 'Test(OpenAIEdge|ClassifyOpenAIEdge)' -count=1)
+input: current Go Edge retry-stage, commit-state, stream-failure classifier, and lease compatibility tests
+literal output: ok github.com/Wei-Shaw/sub2api/internal/handler 1.348s; ok github.com/Wei-Shaw/sub2api/internal/service 0.956s
+exit status: 0
+command: (cd /Users/inim/nuro-s2/backend && env GOCACHE=/tmp/nuro-s2-go-race-cache go test -race ./internal/handler ./internal/service -run 'Test(OpenAIEdge|ClassifyOpenAIEdge)' -count=1)
+input: the same focused Edge tests under the Go race detector
+literal output: ok github.com/Wei-Shaw/sub2api/internal/handler 2.517s; ok github.com/Wei-Shaw/sub2api/internal/service 2.268s
+exit status: 0
+command: (cd /Users/inim/nuro-s2/backend && env GOCACHE=/tmp/nuro-s2-go-full-cache go test ./... -count=1)
+input: current backend tree, with local httptest/miniredis listeners permitted
+literal output: all backend packages passed; final packages github.com/Wei-Shaw/sub2api/internal/service and github.com/Wei-Shaw/sub2api/migrations ok
+exit status: 0
+command: (cd /Users/inim/nuro-s2/backend && env GOCACHE=/tmp/nuro-s2-go-cache go vet ./internal/handler ./internal/service)
+input: current changed Go packages
+literal output: no output
+exit status: 0
+command: (cd /Users/inim/nuro-s2/backend && env GOCACHE=/tmp/nuro-s2-go-cache CGO_ENABLED=0 go build -trimpath -o /tmp/nuro-s2-server ./cmd/server)
+input: current backend production build
+literal output: no output; /tmp/nuro-s2-server created
+exit status: 0
+command: (cd /Users/inim/nuro-s2/edge-rs && cargo build --release --bin sub2api-edge-rs)
+input: current Edge production build
+literal output: Finished `release` profile [optimized] target(s)
+exit status: 0
+command: git diff --check
+input: current uncommitted worktree
+literal output: no output
 exit status: 0
 
 ROLLBACK:
-command: cp review-artifacts/MODIFIED_FILE.go /tmp/nuro-s2-rollback-copy.go; ./review-artifacts/ROLLBACK.sh /tmp/nuro-s2-rollback-copy.go /tmp/nuro-s2-baseline.go; cmp -s /tmp/nuro-s2-rollback-copy.go /tmp/nuro-s2-baseline.go
-literal output: restored behavior/status; cmp matched baseline
+command: cp review-artifacts/MODIFIED_FILE.go /tmp/nuro-s2-rollback-copy.go && review-artifacts/ROLLBACK.sh /tmp/nuro-s2-rollback-copy.go /tmp/nuro-s2-baseline-openai_gateway_service.go && cmp -s /tmp/nuro-s2-rollback-copy.go /tmp/nuro-s2-baseline-openai_gateway_service.go
+input: rollback verification copy only; source worktree remains modified
+literal output: cmp matched baseline
 exit status: 0
+restored behavior/status: rollback copy hash eace698cdeba13ad03a503d1559c8cd89b97d4d995a2c63469df6851a8549929; MODIFIED_FILE remains changed with hash 2b7891f749236fce508280f042f8632ca8d94f8d4db9e1418aceb0db91279f7f.
 
-Target working tree remains modified; no source rollback was applied.
+Scope checks:
+- The placeholder remains a single request-scoped response.transport_progress.delta or empty Chat chunk and is excluded from real TTFT, usage, billing, health, scheduler, and semantic-progress learning.
+- Forwarded upstream structural events commit real_output; only gateway-owned frames remain retryable.
+- Timeout placeholders use the original request-relative deadline, so slow response headers do not delay the downstream panel marker.
+- Candidate accounts are prepared without releasing the current lease, activated only after a successful compatible response header, and cancelled/released on failure.
+- Header retry attempts and total budget are shared across account switches; exhaustion stops before preparing another candidate.
+- Rust synchronizes real upstream output to the legacy wrote_client_response field for rolling compatibility.
+- Image, video, audio, search, and non-text usage markup remain filtered by the existing model predicates.
+- No account stages or frontend settings were changed.
 
-CURRENT CHANGE:
-changed branch/field: OpenAI pool response-header timeout failover; immediate first-error soft cooldown and immediate account switch for `http2: timeout awaiting response headers`.
-source files: backend/internal/service/gateway_service.go, backend/internal/service/openai_pool_failover.go, backend/internal/service/openai_account_runtime_block_fastpath.go, backend/internal/service/openai_gateway_service.go, backend/internal/service/openai_pool_failover_test.go, backend/internal/handler/openai_edge_rs.go
-
-BASELINE:
-command: git diff --check
-literal output: no output
-exit status: 0
-
-MODIFIED:
-command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -run 'TestOpenAIPool(MediaResponseHeaderTimeout|ResponseHeaderTimeout|CommittedResponseHeaderTimeout|Upstream502Message|FailoverSwitch|RequestFailoverError)' -count=1
-literal output: ok github.com/Wei-Shaw/sub2api/internal/service
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/... -run '^$'
-literal output: all internal packages compiled successfully
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/handler -run '^TestOpenAIEdgeRetry' -count=1
-literal output: ok github.com/Wei-Shaw/sub2api/internal/handler
-exit status: 0
-
-ROLLBACK:
-command: cp review-artifacts/MODIFIED_FILE.go /tmp/nuro-s2-timeout-rollback.go; ./review-artifacts/ROLLBACK.sh /tmp/nuro-s2-timeout-rollback.go /tmp/nuro-s2-baseline.go; cmp -s /tmp/nuro-s2-timeout-rollback.go /tmp/nuro-s2-baseline.go
-literal output: rollback restored behavior/status; cmp matched baseline
-exit status: 0
-
-CURRENT CHANGE:
-changed branch/field: deferred OpenAI Pool recovery clearing and downstream cache markup threshold/percent controls.
-source files: backend/internal/service/ratelimit_service.go, backend/internal/service/openai_pool_recovery_probe.go, backend/internal/service/openai_pool_recovery_probe_test.go, frontend/src/components/account/DownstreamCacheMarkupControl.vue
-multi-replica fencing files: backend/internal/service/scheduler_event_bus.go, backend/internal/service/scheduler_snapshot_service.go, backend/internal/service/account_runtime_blocker.go, backend/internal/service/scheduler_event_bus_routing_test.go, backend/internal/service/account_runtime_blocker_test.go, backend/internal/repository/scheduler_event_bus.go, backend/internal/repository/scheduler_event_bus_test.go
-
-BASELINE:
-command: git diff --check
-literal output: no output
-exit status: 0
-
-MODIFIED:
-command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -run 'TestOpenAIPoolRecoveryProbe_(DurableRecoveryFailure|StateClearFailure|SuccessClearsRemoteReplicaCooldown|ResponsesStreamFailedKeepsCooldown)|TestRateLimitService_RecoverAccount' -count=1
-literal output: ok github.com/Wei-Shaw/sub2api/internal/service
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go vet ./internal/service
-literal output: no output
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/... -run '^$'
-literal output: all internal packages compiled successfully
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -run 'Test(LocalSchedulerRuntimeClearGenerationCompareAndAdvance|CompositeConditionalRuntimeClearRejectsStaleReplica|OpenAIPoolRecoveryProbe|CompositeAccountRuntimeBlocker|RuntimeClearGeneration)' -count=1
-literal output: ok github.com/Wei-Shaw/sub2api/internal/service
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go vet ./internal/service ./internal/repository
-literal output: no output
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go test -race ./internal/service -run 'Test(OpenAIPoolRecoveryProbe|CompositeConditionalRuntimeClearRejectsStaleReplica|LocalSchedulerRuntimeClearGenerationCompareAndAdvance)' -count=1
-literal output: ok github.com/Wei-Shaw/sub2api/internal/service
-exit status: 0
-command: npm run test:run -- src/components/account/__tests__/DownstreamCacheMarkupControl.spec.ts src/components/account/__tests__/AccountStatusIndicator.spec.ts
-literal output: 2 test files, 9 tests passed
-exit status: 0
-
-ENVIRONMENT:
-command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/repository -run 'Test(RedisSchedulerEventBusRuntimeClearGenerationCompareAndAdvance|VersionedAccountCooldown)' -count=1
-literal output: miniredis could not start: listen tcp 127.0.0.1:0: bind: operation not permitted
-exit status: 1
-result: repository Redis integration tests were blocked by the sandbox listener restriction; repository packages compiled and go vet passed.
-rerun result: the same Redis tests completed successfully in the listener-enabled execution environment (see FINAL MULTI-REPLICA REVIEW).
-command: npm run typecheck
-literal output: completed with no diagnostics
-exit status: 0
-command: npm run build
-literal output: vite production build completed successfully
-exit status: 0
-
-FINAL MULTI-REPLICA REVIEW:
-changed branch/field: OpenAI Pool recovery generation fencing; new cooldown generation invalidation (including local fallback when the shared store is unavailable); deferred durable recovery/runtime clear ordering; local-only clear compatibility when event propagation is disabled; cache markup input presentation.
-source paths: backend/internal/repository/scheduler_event_bus.go, backend/internal/service/scheduler_event_bus.go, backend/internal/service/scheduler_snapshot_service.go, backend/internal/service/account_runtime_blocker.go, backend/internal/service/openai_account_runtime_block_fastpath.go, backend/internal/service/openai_pool_recovery_probe.go, backend/internal/service/ratelimit_service.go, frontend/src/components/account/DownstreamCacheMarkupControl.vue
-
-BASELINE:
-command: git diff --check
-input: current uncommitted working tree
-literal output: no output
-exit status: 0
-
-MODIFIED:
-command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -run 'Test(NewPoolCooldown|AdvanceAccountRuntimeGeneration|OpenAIPoolRecoveryProbe|CompositeConditionalRuntimeClearRejectsStaleReplica|LocalSchedulerRuntimeClearGeneration)' -count=1
-input: expanded recovery/fencing regression subset
-literal output: ok github.com/Wei-Shaw/sub2api/internal/service 1.196s
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -count=1
-input: complete backend internal/service test suite (rerun with local listeners allowed)
-literal output: ok github.com/Wei-Shaw/sub2api/internal/service 49.087s
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/service -count=1
-input: complete backend internal/service test suite after event-bus compatibility fix
-literal output: ok github.com/Wei-Shaw/sub2api/internal/service 48.885s
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go test ./internal/repository -run 'Test(RedisSchedulerEventBusRuntimeClearGenerationCompareAndAdvance|RedisSchedulerEventBusRuntimeClearGenerationIsMonotonic|VersionedAccountCooldown)' -count=1
-input: Redis generation CAS and versioned cooldown regression tests (rerun with local listeners allowed)
-literal output: ok github.com/Wei-Shaw/sub2api/internal/repository 0.906s
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go test -race ./internal/service -run 'Test(OpenAIPoolRecoveryProbe|NewPoolCooldown|CompositeConditionalRuntimeClearRejectsStaleReplica|LocalSchedulerRuntimeClearGenerationCompareAndAdvance)' -count=1
-input: recovery ordering, local-only clear compatibility, and multi-replica generation race regressions
-literal output: ok github.com/Wei-Shaw/sub2api/internal/service 2.683s
-exit status: 0
-command: env GOCACHE=/tmp/nuro-go-cache go vet ./internal/service ./internal/repository
-input: changed backend packages
-literal output: no output
-exit status: 0
-command: npm run test:run -- src/components/account/__tests__/DownstreamCacheMarkupControl.spec.ts src/components/account/__tests__/AccountStatusIndicator.spec.ts
-input: cache markup control and recovery status UI tests
-literal output: 2 test files passed; 9 tests passed
-exit status: 0
-command: npm run typecheck
-input: frontend TypeScript/Vue source
-literal output: completed with no diagnostics
-exit status: 0
-command: npm run build
-input: frontend production build
-literal output: 917 modules transformed; built in 11.16s
-exit status: 0
-
-ROLLBACK:
-command: cp review-artifacts/MODIFIED_FILE.go /tmp/nuro-s2-final-rollback.go; ./review-artifacts/ROLLBACK.sh /tmp/nuro-s2-final-rollback.go /tmp/nuro-s2-baseline.go; cmp -s /tmp/nuro-s2-final-rollback.go /tmp/nuro-s2-baseline.go
-input: rollback verification copy only; source working tree remains modified
-literal output: restored behavior/status; cmp matched baseline
-exit status: 0
-restored behavior/status: rollback copy exactly matched the preserved baseline; MODIFIED_FILE remained changed.
+The actual source worktree is intentionally left modified; rollback was tested only on the separate copy above.

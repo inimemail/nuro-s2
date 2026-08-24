@@ -60,6 +60,30 @@ const SSE_STRING_INITIAL_CAPACITY: usize = 8192;
 const SSE_STRING_IDLE_MAX_CAPACITY: usize = 64 * 1024;
 const MAX_UPSTREAM_ERROR_BODY_BYTES: usize = 1024 * 1024;
 const MAX_SSE_LINE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_EDGE_STREAM_FAILURE_PAYLOAD_BYTES: usize = 64 * 1024;
+const RETRY_COMMIT_NONE: &str = "none";
+const RETRY_COMMIT_GATEWAY_ONLY: &str = "gateway_only";
+const RETRY_COMMIT_REAL_OUTPUT: &str = "real_output";
+const RETRY_COMMIT_TERMINAL: &str = "terminal";
+// Plans from an older control plane may omit the response-header attempt
+// limit. Preserve the former bounded retry behavior for those plans instead
+// of allowing a mixed-version request to retry forever.
+const LEGACY_EDGE_RETRY_MAX_ATTEMPTS: u32 = 64;
+
+fn ws_upstream_payload_commit_state(terminal: bool) -> &'static str {
+    if terminal {
+        RETRY_COMMIT_TERMINAL
+    } else {
+        RETRY_COMMIT_REAL_OUTPUT
+    }
+}
+
+fn retry_commit_state_wrote_client_response(commit_state: &str) -> bool {
+    matches!(
+        commit_state,
+        RETRY_COMMIT_REAL_OUTPUT | RETRY_COMMIT_TERMINAL
+    )
+}
 const DEFAULT_UPSTREAM_ERROR_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const FALLBACK_GO_RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const FALLBACK_GO_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -133,6 +157,12 @@ struct EdgeMetrics {
     upstream_http1_responses: AtomicU64,
     upstream_http2_responses: AtomicU64,
     retry_attempts: AtomicU64,
+    stream_failed_retries: AtomicU64,
+    stream_failed_terminals: AtomicU64,
+    semantic_keep_current: AtomicU64,
+    retry_no_candidate: AtomicU64,
+    header_attempts_exhausted: AtomicU64,
+    header_budget_exhausted: AtomicU64,
     transient_proxy_active: AtomicU64,
     transient_proxy_waiters: AtomicU64,
     transient_proxy_total: AtomicU64,
@@ -433,6 +463,19 @@ impl EdgeMetrics {
         }
     }
 
+    fn record_retry_reason(&self, reason: &str) {
+        let counter = match reason {
+            "stream_failed_retry" => &self.stream_failed_retries,
+            "stream_failed_terminal" => &self.stream_failed_terminals,
+            "semantic_keep_current" => &self.semantic_keep_current,
+            "retry_no_candidate" => &self.retry_no_candidate,
+            "header_attempts_exhausted" => &self.header_attempts_exhausted,
+            "header_budget_exhausted" => &self.header_budget_exhausted,
+            _ => return,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn render(&self, state: &AppState) -> String {
         let active = self.active_requests.load(Ordering::Relaxed);
         let active_streams = self.active_streams.load(Ordering::Relaxed);
@@ -543,6 +586,12 @@ impl EdgeMetrics {
              # TYPE sub2api_edge_upstream_5xx_total counter\nsub2api_edge_upstream_5xx_total {}\n\
              # TYPE sub2api_edge_upstream_429_total counter\nsub2api_edge_upstream_429_total {}\n\
              # TYPE sub2api_edge_retry_attempts_total counter\nsub2api_edge_retry_attempts_total {}\n\
+             # TYPE sub2api_edge_retry_outcomes_total counter\nsub2api_edge_retry_outcomes_total{{reason=\"stream_failed_retry\"}} {}\n\
+             sub2api_edge_retry_outcomes_total{{reason=\"stream_failed_terminal\"}} {}\n\
+             sub2api_edge_retry_outcomes_total{{reason=\"semantic_keep_current\"}} {}\n\
+             sub2api_edge_retry_outcomes_total{{reason=\"retry_no_candidate\"}} {}\n\
+             sub2api_edge_retry_outcomes_total{{reason=\"header_attempts_exhausted\"}} {}\n\
+             sub2api_edge_retry_outcomes_total{{reason=\"header_budget_exhausted\"}} {}\n\
              # TYPE sub2api_edge_upstream_responses_by_http_version_total counter\nsub2api_edge_upstream_responses_by_http_version_total{{version=\"h1\"}} {}\n\
              sub2api_edge_upstream_responses_by_http_version_total{{version=\"h2\"}} {}\n\
              # TYPE sub2api_edge_upstream_lane_pool_enabled gauge\nsub2api_edge_upstream_lane_pool_enabled {}\n\
@@ -582,6 +631,12 @@ impl EdgeMetrics {
             self.upstream_5xx.load(Ordering::Relaxed),
             self.upstream_429.load(Ordering::Relaxed),
             self.retry_attempts.load(Ordering::Relaxed),
+            self.stream_failed_retries.load(Ordering::Relaxed),
+            self.stream_failed_terminals.load(Ordering::Relaxed),
+            self.semantic_keep_current.load(Ordering::Relaxed),
+            self.retry_no_candidate.load(Ordering::Relaxed),
+            self.header_attempts_exhausted.load(Ordering::Relaxed),
+            self.header_budget_exhausted.load(Ordering::Relaxed),
             self.upstream_http1_responses.load(Ordering::Relaxed),
             self.upstream_http2_responses.load(Ordering::Relaxed),
             u64::from(lane.enabled),
@@ -785,6 +840,34 @@ impl DownstreamCacheMarkupPolicy {
     }
 }
 
+fn downstream_usage_policy_for_plan(
+    plan: &EdgePlan,
+) -> (Option<String>, Option<DownstreamCacheMarkupPolicy>) {
+    let cache_usage_mode = if plan
+        .downstream_cache_usage_model
+        .as_deref()
+        .is_some_and(is_openai_gpt56_model)
+    {
+        plan.downstream_cache_usage_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|mode| matches!(*mode, "free" | "input_125"))
+            .map(ToOwned::to_owned)
+    } else {
+        None
+    };
+    let cache_markup = plan
+        .downstream_cache_markup
+        .clone()
+        .filter(DownstreamCacheMarkupPolicy::enabled)
+        .filter(|_| {
+            plan.downstream_cache_markup_model
+                .as_deref()
+                .is_some_and(is_openai_gpt_text_model)
+        });
+    (cache_usage_mode, cache_markup)
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct ReasoningEffortMapping {
     from: String,
@@ -877,6 +960,7 @@ struct EarlyPlaceholderRelayError {
     message: String,
     plan: EdgePlan,
     context: RelayAttemptContext,
+    placeholder_sent: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for EarlyPlaceholderRelayError {
@@ -913,8 +997,15 @@ type SharedLeaseIdentity = Arc<Mutex<LeaseIdentity>>;
 
 fn update_lease_identity(identity: &SharedLeaseIdentity, plan: &EdgePlan) {
     if let Ok(mut current) = identity.lock() {
-        current.lease_id = plan.lease_id.clone();
-        current.account_id = plan.account_id;
+        // A rolling-upgrade control plane may omit the newer identity fields.
+        // Preserve the last known lease/account instead of losing settlement
+        // routing after a failed retry attempt.
+        if plan.lease_id.is_some() {
+            current.lease_id = plan.lease_id.clone();
+        }
+        if plan.account_id.is_some() {
+            current.account_id = plan.account_id;
+        }
     }
 }
 
@@ -1120,6 +1211,7 @@ struct RetryDecision {
     action: String,
     reason: Option<String>,
     continuation_token: Option<String>,
+    staged_retry_id: Option<String>,
     plan: Option<EdgePlan>,
     #[serde(default)]
     failure_recorded: bool,
@@ -1139,7 +1231,27 @@ struct RetryRequest {
     error_message: Option<String>,
     request_body: Option<Value>,
     response_body: Option<Value>,
+    commit_state: String,
     wrote_client_response: bool,
+    supports_staged_retry: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct RetryStageRequest {
+    edge_request_id: String,
+    lease_id: Option<String>,
+    account_id: Option<i64>,
+    staged_retry_id: String,
+    action: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RetryStageAck {
+    // Older Go control planes returned an empty success object. Treat an
+    // omitted `ok` field as acknowledged while still honoring an explicit
+    // false response from the current endpoint.
+    ok: Option<bool>,
+    reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1240,6 +1352,139 @@ struct ChatStreamObservation {
     starts_visible_output: bool,
     saw_response_created: bool,
     response_created_boundary_offset: Option<usize>,
+}
+
+#[derive(Debug)]
+struct SseEventParser {
+    pending: Vec<u8>,
+    line_start: usize,
+    overflowed: bool,
+}
+
+impl Default for SseEventParser {
+    fn default() -> Self {
+        Self {
+            pending: Vec::with_capacity(4096),
+            line_start: 0,
+            overflowed: false,
+        }
+    }
+}
+
+impl SseEventParser {
+    fn push(&mut self, chunk: &[u8]) -> Vec<Bytes> {
+        if self.overflowed {
+            return Vec::new();
+        }
+        let mut frames = Vec::new();
+        for byte in chunk.iter().copied() {
+            self.pending.push(byte);
+            if self.pending.len() > MAX_SSE_LINE_BYTES {
+                self.pending.clear();
+                self.overflowed = true;
+                break;
+            }
+            if byte != b'\n' {
+                continue;
+            }
+            let mut line_end = self.pending.len() - 1;
+            if line_end > self.line_start && self.pending[line_end - 1] == b'\r' {
+                line_end -= 1;
+            }
+            if line_end != self.line_start {
+                self.line_start = self.pending.len();
+                continue;
+            }
+            let frame = std::mem::take(&mut self.pending);
+            if !frame.is_empty() {
+                frames.push(Bytes::from(frame));
+            }
+            self.line_start = 0;
+        }
+        frames
+    }
+
+    fn finish_frame(&mut self) -> Option<Bytes> {
+        if self.overflowed || self.pending.is_empty() {
+            self.pending.clear();
+            return None;
+        }
+        self.pending.extend_from_slice(b"\n\n");
+        self.line_start = 0;
+        Some(Bytes::from(std::mem::take(&mut self.pending)))
+    }
+
+    fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+}
+
+#[derive(Debug)]
+struct SseFailureEvent {
+    payload: Value,
+    message: String,
+}
+
+fn parse_sse_failure_event(frame: &[u8]) -> Option<SseFailureEvent> {
+    let text = std::str::from_utf8(frame).ok()?;
+    let mut control_event_type = "";
+    let mut data = String::new();
+    for line in text.lines() {
+        let line = line.trim_end_matches('\r').trim_start();
+        if let Some(event_type) = line.strip_prefix("event:") {
+            control_event_type = event_type.trim();
+            continue;
+        }
+        let Some(part) = line.strip_prefix("data:") else {
+            continue;
+        };
+        if !data.is_empty() {
+            data.push('\n');
+        }
+        data.push_str(part.trim());
+        if data.len() > MAX_EDGE_STREAM_FAILURE_PAYLOAD_BYTES {
+            break;
+        }
+    }
+    let parsed = (data.len() <= MAX_EDGE_STREAM_FAILURE_PAYLOAD_BYTES)
+        .then(|| serde_json::from_str::<Value>(&data).ok())
+        .flatten();
+    let event_type = parsed
+        .as_ref()
+        .and_then(json_event_type)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(control_event_type)
+        .to_string();
+    let failed = matches!(event_type.as_str(), "response.failed" | "error")
+        || parsed.as_ref().is_some_and(json_has_non_null_error);
+    if !failed {
+        return None;
+    }
+    let message = parsed
+        .as_ref()
+        .and_then(extract_edge_stream_failure_message)
+        .unwrap_or_else(|| "Upstream request failed".to_string());
+    let payload = parsed.unwrap_or_else(|| {
+        serde_json::json!({
+            "type": if event_type.is_empty() { "error" } else { event_type.as_str() },
+            "error": { "message": message },
+        })
+    });
+    Some(SseFailureEvent { payload, message })
+}
+
+fn extract_edge_stream_failure_message(value: &Value) -> Option<String> {
+    [
+        "/response/error/message",
+        "/error/message",
+        "/message",
+        "/detail",
+    ]
+    .iter()
+    .find_map(|path| value.pointer(path).and_then(Value::as_str))
+    .map(str::trim)
+    .filter(|message| !message.is_empty())
+    .map(|message| message.chars().take(512).collect())
 }
 
 impl ChatStreamObservation {
@@ -2906,7 +3151,7 @@ async fn relay_ws_session(
     let first_upstream_msg = edge_plan_ws_first_message(&plan, first_msg)?;
     let mut ws_response_active = tungstenite_message_is_response_create(&first_upstream_msg);
     let mut last_request_body = tungstenite_message_json(&first_upstream_msg);
-    let mut wrote_client_response_for_turn = false;
+    let mut commit_state_for_turn = RETRY_COMMIT_NONE;
     if let Err(first_error) = upstream_write.send(first_upstream_msg.clone()).await {
         if !reused_idle {
             return Err(first_error.into());
@@ -3071,7 +3316,7 @@ async fn relay_ws_session(
                                 error_message = None;
                             }
                             last_request_body = tungstenite_message_json(&upstream_msg);
-                            wrote_client_response_for_turn = false;
+                            commit_state_for_turn = RETRY_COMMIT_NONE;
                         }
                         if let Err(err) = upstream_write.send(upstream_msg).await {
                             success = false;
@@ -3125,7 +3370,10 @@ async fn relay_ws_session(
                             let _ = client_socket.send(AxumWsMessage::Close(None)).await;
                             break;
                         }
-                        if !wrote_client_response_for_turn {
+                        if !matches!(
+                            commit_state_for_turn,
+                            RETRY_COMMIT_REAL_OUTPUT | RETRY_COMMIT_TERMINAL
+                        ) {
                             if let (Some(rejected_body), Some(request_body)) = (
                                 openai_ws_explicit_rejected_field_error(&msg),
                                 last_request_body.clone(),
@@ -3142,7 +3390,12 @@ async fn relay_ws_session(
                                         error_message: Some("Upstream rejected a supported request field".to_string()),
                                         request_body: Some(request_body.clone()),
                                         response_body: Some(rejected_body),
-                                        wrote_client_response: false,
+                                        commit_state: commit_state_for_turn.to_string(),
+                                        wrote_client_response:
+                                            retry_commit_state_wrote_client_response(
+                                                commit_state_for_turn,
+                                            ),
+                                        supports_staged_retry: false,
                                     },
                                 )
                                 .await;
@@ -3284,7 +3537,13 @@ async fn relay_ws_session(
                             break;
                         }
                         if is_client_payload {
-                            wrote_client_response_for_turn = true;
+                            // This payload came from the upstream, even when it
+                            // is only response.created or another structural
+                            // event. Once forwarded, switching accounts could
+                            // mix response identities.
+                            commit_state_for_turn = ws_upstream_payload_commit_state(
+                                summary.terminal_event_type(Some("responses")).is_some(),
+                            );
                         }
                         if safe_token_placeholder
                             && response_created
@@ -3300,7 +3559,9 @@ async fn relay_ws_session(
                                 error_message = Some(err.to_string());
                                 break;
                             }
-                            wrote_client_response_for_turn = true;
+                            if commit_state_for_turn == RETRY_COMMIT_NONE {
+                                commit_state_for_turn = RETRY_COMMIT_GATEWAY_ONLY;
+                            }
                             first_token_timeout_placeholder_sent = true;
                             first_token_timeout_timer = None;
                         }
@@ -3324,7 +3585,9 @@ async fn relay_ws_session(
                     error_message = Some(err.to_string());
                     break;
                 }
-                wrote_client_response_for_turn = true;
+                if commit_state_for_turn == RETRY_COMMIT_NONE {
+                    commit_state_for_turn = RETRY_COMMIT_GATEWAY_ONLY;
+                }
                 first_token_timeout_placeholder_sent = true;
                 first_token_timeout_timer = None;
             }
@@ -4822,7 +5085,7 @@ async fn relay_upstream_retry_core(
     plan: EdgePlan,
     context: RelayAttemptContext,
 ) -> anyhow::Result<Response> {
-    relay_upstream_retry_core_mode(state, plan, context, false).await
+    relay_upstream_retry_core_mode(state, plan, context, false, None).await
 }
 
 async fn relay_upstream_retry_core_mode(
@@ -4830,10 +5093,18 @@ async fn relay_upstream_retry_core_mode(
     mut plan: EdgePlan,
     context: RelayAttemptContext,
     early_placeholder_mode: bool,
+    placeholder_sent: Option<Arc<AtomicBool>>,
 ) -> anyhow::Result<Response> {
     let request_body = take_request_body_bytes(&mut plan)?;
-    relay_upstream_direct_core_impl(state, plan, request_body, context, early_placeholder_mode)
-        .await
+    relay_upstream_direct_core_impl(
+        state,
+        plan,
+        request_body,
+        context,
+        early_placeholder_mode,
+        placeholder_sent,
+    )
+    .await
 }
 
 async fn open_body_retry_upstream(
@@ -4841,6 +5112,7 @@ async fn open_body_retry_upstream(
     plan: &EdgePlan,
     request_body: &Bytes,
     retry_count: i64,
+    response_header_budget_deadline: Option<Instant>,
 ) -> anyhow::Result<(reqwest::Response, UpstreamClientGuard)> {
     let upstream_url = plan
         .upstream_url
@@ -4859,16 +5131,35 @@ async fn open_body_retry_upstream(
         })
         .flatten()
         .map(Duration::from_millis);
-    let selected = state
-        .upstream_client_for_plan(
-            plan.account_id,
-            plan.account_type.as_deref(),
-            plan.proxy_url.as_deref(),
-            upstream_url,
-            plan.lane.as_deref(),
-            connect_timeout,
-        )
-        .await?;
+    let remaining_budget = || {
+        response_header_budget_deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    };
+    let selection_timeout = match (connect_timeout, remaining_budget()) {
+        (Some(connect), Some(budget)) => Some(connect.min(budget)),
+        (Some(connect), None) => Some(connect),
+        (None, Some(budget)) => Some(budget),
+        (None, None) => None,
+    };
+    let selection = state.upstream_client_for_plan(
+        plan.account_id,
+        plan.account_type.as_deref(),
+        plan.proxy_url.as_deref(),
+        upstream_url,
+        plan.lane.as_deref(),
+        connect_timeout,
+    );
+    let mut selected = if let Some(timeout) = selection_timeout {
+        if timeout.is_zero() {
+            anyhow::bail!(EDGE_RESPONSE_HEADER_BUDGET_EXHAUSTED);
+        }
+        match tokio::time::timeout(timeout, selection).await {
+            Ok(result) => result?,
+            Err(_) => anyhow::bail!(EDGE_UPSTREAM_CLIENT_SELECTION_TIMEOUT),
+        }
+    } else {
+        selection.await?
+    };
     let mut request = selected.client.post(upstream_url);
     if let Some(headers) = &plan.headers {
         for (name, value) in headers {
@@ -4880,20 +5171,35 @@ async fn open_body_retry_upstream(
         HeaderValue::from_static("identity"),
     );
     state.metrics.record_upstream_attempt(retry_count);
-    let response = if let Some(timeout) = response_header_timeout {
+    let response_timeout = match (response_header_timeout, remaining_budget()) {
+        (Some(header), Some(budget)) => Some(header.min(budget)),
+        (Some(header), None) => Some(header),
+        (None, Some(budget)) => Some(budget),
+        (None, None) => None,
+    };
+    let response = if let Some(timeout) = response_timeout {
+        if timeout.is_zero() {
+            selected.guard.release();
+            anyhow::bail!(EDGE_RESPONSE_HEADER_BUDGET_EXHAUSTED);
+        }
         match tokio::time::timeout(timeout, request.body(request_body.clone()).send()).await {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
                 state.metrics.record_upstream_send_error(&error);
+                selected.guard.release();
                 return Err(error.into());
             }
-            Err(_) => anyhow::bail!(EDGE_RESPONSE_HEADER_TIMEOUT),
+            Err(_) => {
+                selected.guard.release();
+                anyhow::bail!(EDGE_RESPONSE_HEADER_TIMEOUT)
+            }
         }
     } else {
         match request.body(request_body.clone()).send().await {
             Ok(response) => response,
             Err(error) => {
                 state.metrics.record_upstream_send_error(&error);
+                selected.guard.release();
                 return Err(error.into());
             }
         }
@@ -4906,25 +5212,163 @@ async fn open_body_retry_upstream(
     Ok((response, guard))
 }
 
+#[derive(Debug)]
+struct RequestRetryBudget {
+    response_header_deadline: Option<Instant>,
+    max_attempts: Option<u32>,
+    attempts: u32,
+}
+
+// Header attempts include the first upstream attempt. Reject an exhausted
+// retry before asking Go to prepare another account.
+fn edge_header_attempt_limit(configured: Option<u32>) -> u32 {
+    configured
+        .filter(|value| *value > 0)
+        .unwrap_or(LEGACY_EDGE_RETRY_MAX_ATTEMPTS)
+}
+
+fn edge_header_retry_exhaustion(
+    configured_max_attempts: Option<u32>,
+    completed_attempts: u32,
+    response_header_budget_deadline: Option<Instant>,
+) -> Option<&'static str> {
+    if response_header_budget_deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+        return Some("header_budget_exhausted");
+    }
+    if completed_attempts >= edge_header_attempt_limit(configured_max_attempts) {
+        return Some("header_attempts_exhausted");
+    }
+    None
+}
+
+fn edge_header_retry_exhaustion_error(reason: &str) -> anyhow::Error {
+    let detail = match reason {
+        "header_budget_exhausted" => "edge response header total budget exhausted",
+        _ => "edge response header attempts exhausted",
+    };
+    anyhow::anyhow!("retry_failure_already_recorded: {detail}")
+}
+
+impl RequestRetryBudget {
+    fn new(
+        max_attempts: Option<u32>,
+        response_header_deadline: Option<Instant>,
+        prior_retries: u32,
+    ) -> Self {
+        Self {
+            response_header_deadline,
+            max_attempts: Some(edge_header_attempt_limit(max_attempts)),
+            attempts: prior_retries.saturating_add(1),
+        }
+    }
+
+    fn availability(&self) -> Result<(), &'static str> {
+        if self
+            .response_header_deadline
+            .is_some_and(|deadline| deadline <= Instant::now())
+        {
+            return Err("header_budget_exhausted");
+        }
+        if self
+            .max_attempts
+            .is_some_and(|max_attempts| self.attempts >= max_attempts)
+        {
+            return Err("header_attempts_exhausted");
+        }
+        Ok(())
+    }
+
+    fn begin_attempt(&mut self) -> Result<(), &'static str> {
+        self.availability()?;
+        self.attempts = self.attempts.saturating_add(1);
+        Ok(())
+    }
+}
+
+fn http_retry_commit_state(
+    real_output_observed: bool,
+    upstream_terminal_output_committed: bool,
+    gateway_only_output_committed: bool,
+) -> &'static str {
+    if upstream_terminal_output_committed {
+        RETRY_COMMIT_TERMINAL
+    } else if real_output_observed {
+        RETRY_COMMIT_REAL_OUTPUT
+    } else if gateway_only_output_committed {
+        RETRY_COMMIT_GATEWAY_ONLY
+    } else {
+        RETRY_COMMIT_NONE
+    }
+}
+
+fn retry_reason_is_no_candidate(reason: &str) -> bool {
+    matches!(
+        reason,
+        "retry_no_candidate"
+            | "retry_edge_no_eligible_account"
+            | "retry_edge_account_capacity_exhausted"
+            | "retry_account_select_failed"
+            | "retry_retry_account_select_failed"
+            | "retry_account_slot_acquire_failed"
+            | "retry_user_slot_acquire_failed"
+            | "retry_user_slot_busy"
+    )
+}
+
 struct BodyRetryOutcome {
     plan: EdgePlan,
     upstream: Option<(reqwest::Response, UpstreamClientGuard)>,
     retry_count: i64,
+    keep_current: bool,
+    reason: String,
+}
+
+struct BodyRetryRequest<'a> {
+    plan: EdgePlan,
+    request_body: &'a Bytes,
+    response_dialect: Option<&'a str>,
+    error_type: String,
+    error_message: String,
+    response_body: Option<Value>,
+    retry_count: i64,
+    commit_state: &'a str,
 }
 
 async fn retry_body_upstream(
     state: &AppState,
-    mut plan: EdgePlan,
-    request_body: &Bytes,
-    response_dialect: Option<&str>,
-    mut error_type: String,
-    mut error_message: String,
-    mut retry_count: i64,
+    request: BodyRetryRequest<'_>,
+    retry_budget: &mut RequestRetryBudget,
 ) -> BodyRetryOutcome {
+    let BodyRetryRequest {
+        mut plan,
+        request_body,
+        response_dialect,
+        mut error_type,
+        mut error_message,
+        response_body: initial_response_body,
+        mut retry_count,
+        commit_state,
+    } = request;
     let mut upstream_status_code = None;
     let mut upstream_request_id = None;
-    let mut response_body = None;
-    for _ in 0..64 {
+    let mut response_body = initial_response_body;
+    loop {
+        if let Err(reason) = retry_budget.availability() {
+            state.metrics.record_retry_reason(reason);
+            let keep_current = error_type == "edge_semantic_progress_timeout";
+            if keep_current {
+                state.metrics.record_retry_reason("semantic_keep_current");
+            } else if error_type == "edge_upstream_stream_failed" {
+                state.metrics.record_retry_reason("stream_failed_terminal");
+            }
+            return BodyRetryOutcome {
+                plan,
+                upstream: None,
+                retry_count,
+                keep_current,
+                reason: reason.to_string(),
+            };
+        }
         let decision = call_retry(
             state,
             RetryRequest {
@@ -4937,35 +5381,179 @@ async fn retry_body_upstream(
                 error_message: Some(error_message.clone()),
                 request_body: None,
                 response_body: response_body.take(),
-                wrote_client_response: false,
+                commit_state: commit_state.to_string(),
+                wrote_client_response: retry_commit_state_wrote_client_response(commit_state),
+                supports_staged_retry: true,
             },
         )
         .await;
         let Ok(decision) = decision else {
-            break;
+            let keep_current = error_type == "edge_semantic_progress_timeout";
+            if keep_current {
+                state.metrics.record_retry_reason("semantic_keep_current");
+            } else if error_type == "edge_upstream_stream_failed" {
+                state.metrics.record_retry_reason("stream_failed_terminal");
+            }
+            return BodyRetryOutcome {
+                plan,
+                upstream: None,
+                retry_count,
+                keep_current,
+                reason: "retry_control_failed".to_string(),
+            };
         };
-        if decision.action != "relay" {
-            break;
+        if decision.action == "keep_current" {
+            let reason = decision
+                .reason
+                .unwrap_or_else(|| "semantic_keep_current".to_string());
+            state.metrics.record_retry_reason("semantic_keep_current");
+            if reason != "semantic_keep_current" {
+                state.metrics.record_retry_reason(&reason);
+            }
+            if retry_reason_is_no_candidate(&reason) && reason != "retry_no_candidate" {
+                state.metrics.record_retry_reason("retry_no_candidate");
+            }
+            return BodyRetryOutcome {
+                plan,
+                upstream: None,
+                retry_count,
+                keep_current: true,
+                reason,
+            };
         }
+        if decision.action != "relay" {
+            let reason = decision
+                .reason
+                .unwrap_or_else(|| "stream_failed_terminal".to_string());
+            state.metrics.record_retry_reason(&reason);
+            if retry_reason_is_no_candidate(&reason) && reason != "retry_no_candidate" {
+                state.metrics.record_retry_reason("retry_no_candidate");
+            }
+            if error_type == "edge_upstream_stream_failed" && reason != "stream_failed_terminal" {
+                state.metrics.record_retry_reason("stream_failed_terminal");
+            }
+            return BodyRetryOutcome {
+                plan,
+                upstream: None,
+                retry_count,
+                keep_current: false,
+                reason,
+            };
+        }
+        let staged_retry_id = decision.staged_retry_id.clone();
         let Some(next_plan) = decision.plan else {
-            break;
+            if error_type == "edge_upstream_stream_failed" {
+                state.metrics.record_retry_reason("stream_failed_terminal");
+            }
+            return BodyRetryOutcome {
+                plan,
+                upstream: None,
+                retry_count,
+                keep_current: false,
+                reason: "retry_plan_missing".to_string(),
+            };
         };
+        let previous_plan = plan.clone();
+        if let Err(reason) = retry_budget.begin_attempt() {
+            state.metrics.record_retry_reason(reason);
+            if let Some(staged_retry_id) = staged_retry_id.as_deref() {
+                let _ = call_retry_stage(state, &next_plan, staged_retry_id, "cancel").await;
+                state.metrics.record_retry_reason("semantic_keep_current");
+                return BodyRetryOutcome {
+                    plan,
+                    upstream: None,
+                    retry_count,
+                    keep_current: true,
+                    reason: reason.to_string(),
+                };
+            }
+            if error_type == "edge_upstream_stream_failed" {
+                state.metrics.record_retry_reason("stream_failed_terminal");
+            }
+            return BodyRetryOutcome {
+                plan: next_plan,
+                upstream: None,
+                retry_count,
+                keep_current: false,
+                reason: reason.to_string(),
+            };
+        }
+        if error_type == "edge_upstream_stream_failed" {
+            state.metrics.record_retry_reason("stream_failed_retry");
+        }
         plan = next_plan;
         retry_count += 1;
-        match open_body_retry_upstream(state, &plan, request_body, retry_count).await {
+        match open_body_retry_upstream(
+            state,
+            &plan,
+            request_body,
+            retry_count,
+            retry_budget.response_header_deadline,
+        )
+        .await
+        {
             Ok((upstream, mut guard))
                 if upstream.status().is_success()
                     && plan.response_dialect.as_deref() == response_dialect =>
             {
+                if let Some(staged_retry_id) = staged_retry_id.as_deref() {
+                    let activate_result =
+                        call_retry_stage(state, &plan, staged_retry_id, "activate").await;
+                    if activate_result.is_err() {
+                        // The activate response can be lost after Go has
+                        // switched the lease. A follow-up cancel is therefore
+                        // also an activation probe: Go returns
+                        // `staged_retry_already_activated` without reverting
+                        // the active account, and the candidate stream can be
+                        // retained safely.
+                        let cancel_result =
+                            call_retry_stage(state, &plan, staged_retry_id, "cancel").await;
+                        let activated_after_lost_response = cancel_result
+                            .as_ref()
+                            .ok()
+                            .and_then(|ack| ack.reason.as_deref())
+                            == Some("staged_retry_already_activated");
+                        if !activated_after_lost_response {
+                            guard.release();
+                            state.metrics.record_retry_reason("semantic_keep_current");
+                            return BodyRetryOutcome {
+                                plan: previous_plan,
+                                upstream: None,
+                                retry_count,
+                                keep_current: true,
+                                reason: "semantic_keep_current".to_string(),
+                            };
+                        }
+                    }
+                }
                 guard.mark_stream_open();
                 return BodyRetryOutcome {
                     plan,
                     upstream: Some((upstream, guard)),
                     retry_count,
+                    keep_current: false,
+                    reason: if staged_retry_id.is_some() {
+                        "semantic_switch_activated".to_string()
+                    } else {
+                        "retry_relay".to_string()
+                    },
                 };
             }
             Ok((upstream, mut guard)) => {
                 let status = upstream.status();
+                if let Some(staged_retry_id) = staged_retry_id.as_deref() {
+                    drop(upstream);
+                    guard.release();
+                    let _ = call_retry_stage(state, &plan, staged_retry_id, "cancel").await;
+                    state.metrics.record_retry_reason("semantic_keep_current");
+                    return BodyRetryOutcome {
+                        plan: previous_plan,
+                        upstream: None,
+                        retry_count,
+                        keep_current: true,
+                        reason: "semantic_keep_current".to_string(),
+                    };
+                }
                 upstream_request_id = upstream
                     .headers()
                     .get("x-request-id")
@@ -4985,17 +5573,23 @@ async fn retry_body_upstream(
                 response_body = (!body.is_empty()).then_some(Value::String(body));
             }
             Err(error) => {
+                if let Some(staged_retry_id) = staged_retry_id.as_deref() {
+                    let _ = call_retry_stage(state, &plan, staged_retry_id, "cancel").await;
+                    state.metrics.record_retry_reason("semantic_keep_current");
+                    return BodyRetryOutcome {
+                        plan: previous_plan,
+                        upstream: None,
+                        retry_count,
+                        keep_current: true,
+                        reason: "semantic_keep_current".to_string(),
+                    };
+                }
                 upstream_status_code = None;
                 error_type = "edge_upstream_transport_error".to_string();
                 error_message = error.to_string();
                 response_body = None;
             }
         }
-    }
-    BodyRetryOutcome {
-        plan,
-        upstream: None,
-        retry_count,
     }
 }
 
@@ -5023,6 +5617,7 @@ async fn relay_upstream_direct(
     let abort_marker = context.abort_done_marker.clone();
     let abort_state = state.clone();
     let abort_edge_request_id = plan.edge_request_id.clone();
+    let placeholder_sent_marker = Arc::new(AtomicBool::new(false));
     let outer_complete_guard = ClientDisconnectCompleteGuard::new_with_lease_identity(
         state.clone(),
         started_at,
@@ -5043,6 +5638,7 @@ async fn relay_upstream_direct(
         inner_plan,
         request_body,
         context,
+        placeholder_sent_marker.clone(),
     ));
     let mut builder = Response::builder().status(StatusCode::OK);
     write_direct_stream_response_headers(
@@ -5056,14 +5652,16 @@ async fn relay_upstream_direct(
     let body = stream! {
         let outer_complete_guard = outer_complete_guard;
         let mut inner = inner;
-        let mut placeholder_sent = false;
+        let mut placeholder_sent = placeholder_sent_marker.load(Ordering::Acquire);
         let mut progress_summary = ChatStreamSummary::default();
         let deadline = tokio::time::Instant::from_std(started_at) + timeout.expect("checked");
         let mut timer = Box::pin(tokio::time::sleep_until(deadline));
         let response = tokio::select! {
             _ = &mut timer => {
                 placeholder_sent = true;
-                yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &ChatStreamSummary::default())));
+                if !placeholder_sent_marker.swap(true, Ordering::AcqRel) {
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &ChatStreamSummary::default())));
+                }
                 inner.await
             }
             result = &mut inner => result,
@@ -5078,7 +5676,9 @@ async fn relay_upstream_direct(
                         tokio::select! {
                             _ = &mut timer => {
                                 placeholder_sent = true;
-                                yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &ChatStreamSummary::default())));
+                                if !placeholder_sent_marker.swap(true, Ordering::AcqRel) {
+                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &ChatStreamSummary::default())));
+                                }
                                 continue;
                             }
                             item = data.next() => item,
@@ -5095,6 +5695,7 @@ async fn relay_upstream_direct(
                             if observation.starts_downstream_ttft || observation.starts_real_output
                             {
                                 placeholder_sent = true;
+                                placeholder_sent_marker.store(true, Ordering::Release);
                             }
                             if observation.starts_real_output && !payload_committed {
                                 payload_committed = spawn_payload_commit_for_identity(
@@ -5134,7 +5735,9 @@ async fn relay_upstream_direct(
                             tokio::select! {
                                 _ = &mut timer => {
                                     placeholder_sent = true;
-                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &ChatStreamSummary::default())));
+                                    if !placeholder_sent_marker.swap(true, Ordering::AcqRel) {
+                                        yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &ChatStreamSummary::default())));
+                                    }
                                     retry.await
                                 }
                                 result = &mut retry => result,
@@ -5152,7 +5755,9 @@ async fn relay_upstream_direct(
                                         tokio::select! {
                                             _ = &mut timer => {
                                                 placeholder_sent = true;
-                                                yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &ChatStreamSummary::default())));
+                                                if !placeholder_sent_marker.swap(true, Ordering::AcqRel) {
+                                                    yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &ChatStreamSummary::default())));
+                                                }
                                                 continue;
                                             }
                                             item = data.next() => item,
@@ -5168,6 +5773,7 @@ async fn relay_upstream_direct(
                                             let observation = progress_summary.observe(&chunk);
                                             if observation.starts_downstream_ttft || observation.starts_real_output {
                                                 placeholder_sent = true;
+                                                placeholder_sent_marker.store(true, Ordering::Release);
                                             }
                                             if observation.starts_real_output && !payload_committed {
                                                 payload_committed = spawn_payload_commit_for_identity(
@@ -5208,25 +5814,24 @@ async fn relay_upstream_direct(
                     Err(error) => error,
                 };
                 let abort_identity = lease_identity_snapshot(&commit_lease_identity);
-                let failure_already_recorded = error
-                    .to_string()
-                    .contains("retry_failure_already_recorded");
-                let aborted = failure_already_recorded
-                    || call_abort(
-                        &abort_state,
-                        AbortRequest {
-                            edge_request_id: abort_edge_request_id,
-                            lease_id: abort_identity.lease_id,
-                            account_id: abort_identity.account_id,
-                            reason: format!("early_placeholder_relay_failed: {error}"),
-                            failure_class: "abort_failed".to_string(),
-                            client_disconnected: false,
-                            relay_attempted: true,
-                            fallback_to_go: false,
-                        },
-                    )
-                    .await
-                    .is_ok();
+                // Even when Go has already recorded the failure, abort still
+                // owns lease/slot release. Its neutral reason prevents a
+                // duplicate health sample.
+                let aborted = call_abort(
+                    &abort_state,
+                    AbortRequest {
+                        edge_request_id: abort_edge_request_id,
+                        lease_id: abort_identity.lease_id,
+                        account_id: abort_identity.account_id,
+                        reason: format!("early_placeholder_relay_failed: {error}"),
+                        failure_class: "abort_failed".to_string(),
+                        client_disconnected: false,
+                        relay_attempted: true,
+                        fallback_to_go: false,
+                    },
+                )
+                .await
+                .is_ok();
                 if aborted {
                     outer_complete_guard.mark_done();
                 }
@@ -5244,7 +5849,7 @@ async fn relay_upstream_direct_core(
     request_body: Vec<u8>,
     context: RelayAttemptContext,
 ) -> anyhow::Result<Response> {
-    relay_upstream_direct_core_impl(state, plan, request_body, context, false).await
+    relay_upstream_direct_core_impl(state, plan, request_body, context, false, None).await
 }
 
 async fn relay_upstream_direct_core_with_early_placeholder(
@@ -5252,8 +5857,17 @@ async fn relay_upstream_direct_core_with_early_placeholder(
     plan: EdgePlan,
     request_body: Vec<u8>,
     context: RelayAttemptContext,
+    placeholder_sent: Arc<AtomicBool>,
 ) -> anyhow::Result<Response> {
-    relay_upstream_direct_core_impl(state, plan, request_body, context, true).await
+    relay_upstream_direct_core_impl(
+        state,
+        plan,
+        request_body,
+        context,
+        true,
+        Some(placeholder_sent),
+    )
+    .await
 }
 
 async fn relay_upstream_direct_core_impl(
@@ -5262,6 +5876,7 @@ async fn relay_upstream_direct_core_impl(
     request_body: Vec<u8>,
     context: RelayAttemptContext,
     early_placeholder_mode: bool,
+    placeholder_sent_marker: Option<Arc<AtomicBool>>,
 ) -> anyhow::Result<Response> {
     let request_body = Bytes::from(request_body);
     let RelayAttemptContext {
@@ -5322,28 +5937,8 @@ async fn relay_upstream_direct_core_impl(
     let sse_comment_preflush = plan.sse_comment_preflush;
     let preamble_flush = plan.preamble_flush;
     let mut safe_token_placeholder = plan.safe_token_placeholder;
-    let downstream_cache_usage_mode = if plan
-        .downstream_cache_usage_model
-        .as_deref()
-        .is_some_and(is_openai_gpt56_model)
-    {
-        plan.downstream_cache_usage_mode
-            .as_deref()
-            .map(str::trim)
-            .filter(|mode| matches!(*mode, "free" | "input_125"))
-            .map(ToOwned::to_owned)
-    } else {
-        None
-    };
-    let downstream_cache_markup = plan
-        .downstream_cache_markup
-        .clone()
-        .filter(DownstreamCacheMarkupPolicy::enabled)
-        .filter(|_| {
-            plan.downstream_cache_markup_model
-                .as_deref()
-                .is_some_and(is_openai_gpt_text_model)
-        });
+    let (mut downstream_cache_usage_mode, mut downstream_cache_markup) =
+        downstream_usage_policy_for_plan(&plan);
     let first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
         plan.first_token_timeout_placeholder_ms,
         plan.account_type.as_deref(),
@@ -5519,6 +6114,9 @@ async fn relay_upstream_direct_core_impl(
                 && early_placeholder_failure_kind(&err).is_some() =>
         {
             drop(lease_renewal_guard);
+            let placeholder_sent = placeholder_sent_marker
+                .clone()
+                .expect("early placeholder relay has a shared marker");
             return Err(EarlyPlaceholderRelayError {
                 kind: early_placeholder_failure_kind(&err)
                     .expect("early placeholder error kind checked"),
@@ -5535,6 +6133,7 @@ async fn relay_upstream_direct_core_impl(
                     header_guard: header_guard.take(),
                     ingress_permit,
                 },
+                placeholder_sent,
             }
             .into());
         }
@@ -5665,7 +6264,9 @@ async fn relay_upstream_direct_core_impl(
                 } else {
                     Some(Value::String(error_body))
                 },
+                commit_state: RETRY_COMMIT_NONE.to_string(),
                 wrote_client_response: false,
+                supports_staged_retry: true,
             },
         )
         .await?;
@@ -5696,6 +6297,7 @@ async fn relay_upstream_direct_core_impl(
                         ingress_permit,
                     },
                     early_placeholder_mode,
+                    placeholder_sent_marker.clone(),
                 ))
                 .await;
             }
@@ -5769,10 +6371,15 @@ async fn relay_upstream_direct_core_impl(
         .and_then(|v| v.to_str().ok())
         .map(ToOwned::to_owned);
     let stream_guard = complete_state.metrics.begin_stream();
-    // Start the compatibility-frame stage after successful upstream headers;
-    // response-header latency is not automatically subtracted from the stage.
-    let first_token_timeout_deadline =
-        first_token_timeout_placeholder.map(openai_first_token_timeout_deadline_after_headers);
+    // Keep the compatibility-frame deadline request-relative. If response
+    // headers consume the configured window, the first body poll emits the
+    // frame immediately, preserving the legacy downstream TTFT behavior.
+    let first_token_timeout_deadline = first_token_timeout_placeholder
+        .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
+    let buffer_attempt_preamble = early_placeholder_mode
+        || safe_token_placeholder
+        || sse_comment_preflush
+        || low_latency_policy.enabled;
     // Construct the guard outside the async stream so a body dropped before its
     // first poll still settles the lease.
     let complete_guard = ClientDisconnectCompleteGuard::new(
@@ -5792,6 +6399,14 @@ async fn relay_upstream_direct_core_impl(
     let body_stream = stream! {
         let mut current_plan = initial_plan;
         let mut current_edge_retry_count = edge_retry_count;
+        let mut retry_budget = RequestRetryBudget::new(
+            current_plan
+                .edge_protection_enabled
+                .then_some(current_plan.edge_response_header_max_attempts)
+                .flatten(),
+            edge_response_header_budget_deadline,
+            timing.header_attempts,
+        );
         let mut upstream_client_guard = upstream_client_guard;
         let _stream_guard = stream_guard;
         let mut lease_renewal_guard = lease_renewal_guard;
@@ -5804,9 +6419,17 @@ async fn relay_upstream_direct_core_impl(
         let mut last_semantic_progress_at = Instant::now();
         let mut max_semantic_gap = Duration::ZERO;
         let mut semantic_sample_complete = false;
-        let mut downstream_ttft_observed = false;
-        let mut safe_token_placeholder_sent = false;
-        let mut first_token_timeout_placeholder_sent = false;
+        let placeholder_already_sent = placeholder_sent_marker
+            .as_ref()
+            .is_some_and(|marker| marker.load(Ordering::Acquire));
+        let mut downstream_ttft_observed = placeholder_already_sent;
+        let mut safe_token_placeholder_sent = placeholder_already_sent;
+        let mut first_token_timeout_placeholder_sent = placeholder_already_sent;
+        let mut gateway_only_output_committed = placeholder_already_sent;
+        // Structural Responses events may be forwarded for compatibility, but
+        // they are still retryable until real model output or a terminal event
+        // has been committed to the downstream connection.
+        let mut upstream_terminal_output_committed = false;
         let mut bootstrap_comment_sent = false;
         let mut success = true;
         let mut error_message: Option<String> = None;
@@ -5819,11 +6442,13 @@ async fn relay_upstream_direct_core_impl(
             downstream_cache_usage_mode.as_deref(),
             downstream_cache_markup.as_ref(),
         );
+        let mut event_parser = SseEventParser::default();
         // Keep legacy Chat behavior unchanged. Only Responses preamble
         // events are held when the account disabled preamble flush; a missing
         // field is decoded as true for compatibility with older Go plans.
         let mut preamble_gate = SsePreambleGate::new(
-            preamble_flush || response_dialect.as_deref() != Some("responses"),
+            !buffer_attempt_preamble
+                && (preamble_flush || response_dialect.as_deref() != Some("responses")),
         );
         summary.request_id = upstream_request_id;
         guard.update_stream_snapshot(
@@ -5843,10 +6468,8 @@ async fn relay_upstream_direct_core_impl(
             || (low_latency_policy.enabled && low_latency_policy.barrier.is_none())
         {
             first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
+            gateway_only_output_committed = true;
             bootstrap_comment_sent = true;
-            for output in preamble_gate.force() {
-                yield Ok::<Bytes, std::io::Error>(output);
-            }
             yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b":\n\n"));
         }
 
@@ -5910,6 +6533,7 @@ async fn relay_upstream_direct_core_impl(
                     if first_flush_ms.is_none() {
                         first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
                     }
+                    gateway_only_output_committed = true;
                     bootstrap_comment_sent = true;
                     bootstrap_timer = None;
                     guard.update_stream_snapshot(
@@ -5924,9 +6548,6 @@ async fn relay_upstream_direct_core_impl(
                         Some(status.as_u16()),
                         false,
                     );
-                    for output in preamble_gate.force() {
-                        yield Ok::<Bytes, std::io::Error>(output);
-                    }
                     yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b":\n\n"));
                     continue;
                 }
@@ -5937,6 +6558,9 @@ async fn relay_upstream_direct_core_impl(
                     first_token_timeout_placeholder_sent = true;
                     safe_token_placeholder_sent = true;
                     first_token_timeout_timer = None;
+                    let emit_placeholder = placeholder_sent_marker
+                        .as_ref()
+                        .is_none_or(|marker| !marker.swap(true, Ordering::AcqRel));
                     let placeholder =
                         openai_stream_timeout_placeholder_frame(response_dialect.as_deref(), &summary);
                     guard.update_stream_snapshot(
@@ -5951,42 +6575,66 @@ async fn relay_upstream_direct_core_impl(
                         Some(status.as_u16()),
                         false,
                     );
-                    // Responses 176 clients require the upstream preamble
-                    // (`response.created`) before they accept the synthetic
-                    // transport-progress delta as a TTFT marker. Release
-                    // anything buffered by the preamble gate first.
-                    for output in preamble_gate.force() {
-                        yield Ok::<Bytes, std::io::Error>(output);
+                    // Keep attempt-specific preamble buffered. The synthetic
+                    // .delta itself is the downstream TTFT marker and remains
+                    // gateway-only, so a later account switch cannot leak the
+                    // losing response ID into the same downstream connection.
+                    if emit_placeholder {
+                        gateway_only_output_committed = true;
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
                     }
-                    yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
                     continue;
                 }
                 timeout_event @ (RelaySelectEvent::BodyIdleTimeout | RelaySelectEvent::SemanticProgressTimeout) => {
                     let semantic_timeout = matches!(timeout_event, RelaySelectEvent::SemanticProgressTimeout);
                     let retry_error_type = if semantic_timeout { "edge_semantic_progress_timeout" } else { "edge_upstream_body_idle_timeout" };
                     let retry_error_message = if semantic_timeout { "upstream semantic progress timeout" } else { "upstream body idle timeout" };
+                    if semantic_timeout && semantic_stall_failover_used {
+                        semantic_progress_timer = None;
+                        semantic_sample_complete = true;
+                        continue 'relay;
+                    }
                     if real_first_token_ms.is_none() && (!semantic_timeout || !semantic_stall_failover_used) {
                         if semantic_timeout {
                             semantic_stall_failover_used = true;
                         }
                         let retry = retry_body_upstream(
                             &complete_state,
-                            current_plan.clone(),
-                            &retry_request_body,
-                            response_dialect.as_deref(),
-                            retry_error_type.to_string(),
-                            retry_error_message.to_string(),
-                            current_edge_retry_count,
+                            BodyRetryRequest {
+                                plan: current_plan.clone(),
+                                request_body: &retry_request_body,
+                                response_dialect: response_dialect.as_deref(),
+                                error_type: retry_error_type.to_string(),
+                                error_message: retry_error_message.to_string(),
+                                response_body: None,
+                                retry_count: current_edge_retry_count,
+                                commit_state: http_retry_commit_state(
+                                    real_first_token_ms.is_some(),
+                                    upstream_terminal_output_committed,
+                                    gateway_only_output_committed,
+                                ),
+                            },
+                            &mut retry_budget,
                         ).await;
                         current_edge_retry_count = retry.retry_count;
+                        if semantic_timeout && retry.keep_current {
+                            semantic_progress_timer = None;
+                            semantic_sample_complete = true;
+                            continue 'relay;
+                        }
                         current_plan = retry.plan.clone();
-                        guard.update_lease_identity(current_plan.lease_id.clone(), current_plan.account_id);
+                        guard.update_lease_identity(
+                            current_plan.lease_id.clone(),
+                            current_plan.account_id,
+                        );
                         let next_safe_token_placeholder = current_plan.safe_token_placeholder;
                         let next_first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
                             current_plan.first_token_timeout_placeholder_ms,
                             current_plan.account_type.as_deref(),
                         );
                         if let Some((next_upstream, next_guard)) = retry.upstream {
+                            (downstream_cache_usage_mode, downstream_cache_markup) =
+                                downstream_usage_policy_for_plan(&current_plan);
                             safe_token_placeholder = next_safe_token_placeholder;
                             upstream_client_guard.release();
                             lease_renewal_guard.take();
@@ -5997,11 +6645,15 @@ async fn relay_upstream_direct_core_impl(
                             upstream_client_guard = next_guard;
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
+                            event_parser = SseEventParser::default();
                             sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref(), downstream_cache_markup.as_ref());
-                            preamble_gate = SsePreambleGate::new(preamble_flush || response_dialect.as_deref() != Some("responses"));
+                            preamble_gate = SsePreambleGate::new(
+                                !buffer_attempt_preamble
+                                    && (preamble_flush || response_dialect.as_deref() != Some("responses")),
+                            );
                             bootstrap_timer = None;
                             first_token_timeout_deadline = next_first_token_timeout_placeholder
-                                .map(openai_first_token_timeout_deadline_after_headers);
+                                .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
                             first_token_timeout_timer = if !first_token_timeout_placeholder_sent && !downstream_ttft_observed {
                                 first_token_timeout_deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline)))
                             } else {
@@ -6017,14 +6669,18 @@ async fn relay_upstream_direct_core_impl(
                             semantic_sample_complete = false;
                             continue 'relay;
                         }
+                        completion_error_type = Some(retry.reason);
                     }
                     success = false;
                     error_message = Some(retry_error_message.to_string());
-                    completion_error_type = Some(retry_error_type.to_string());
+                    if completion_error_type.is_none() {
+                        completion_error_type = Some(retry_error_type.to_string());
+                    }
                     if !summary.failed {
                         summary.failed = true;
                         summary.failed_terminal_event_type = Some("error".to_string());
                         summary.terminal_event_type = Some("error".to_string());
+                        preamble_gate.discard_pending();
                         for output in preamble_gate.force() {
                             yield Ok::<Bytes, std::io::Error>(output);
                         }
@@ -6048,18 +6704,28 @@ async fn relay_upstream_direct_core_impl(
                 }
                 RelaySelectEvent::Upstream(next) => next,
             };
+            let next = next.or_else(|| event_parser.finish_frame().map(Ok));
             let Some(next) = next else {
                 if !summary.completed_successfully(response_dialect.as_deref())
                     && real_first_token_ms.is_none()
                 {
                     let retry = retry_body_upstream(
                         &complete_state,
-                        current_plan.clone(),
-                        &retry_request_body,
-                        response_dialect.as_deref(),
-                        "edge_upstream_transport_error".to_string(),
-                        "upstream stream ended before completion".to_string(),
-                        current_edge_retry_count,
+                        BodyRetryRequest {
+                            plan: current_plan.clone(),
+                            request_body: &retry_request_body,
+                            response_dialect: response_dialect.as_deref(),
+                            error_type: "edge_upstream_transport_error".to_string(),
+                            error_message: "upstream stream ended before completion".to_string(),
+                            response_body: None,
+                            retry_count: current_edge_retry_count,
+                            commit_state: http_retry_commit_state(
+                                real_first_token_ms.is_some(),
+                                upstream_terminal_output_committed,
+                                gateway_only_output_committed,
+                            ),
+                        },
+                        &mut retry_budget,
                     )
                     .await;
                     current_edge_retry_count = retry.retry_count;
@@ -6068,12 +6734,14 @@ async fn relay_upstream_direct_core_impl(
                         current_plan.lease_id.clone(),
                         current_plan.account_id,
                     );
-                    safe_token_placeholder = current_plan.safe_token_placeholder;
                     let next_first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
                         current_plan.first_token_timeout_placeholder_ms,
                         current_plan.account_type.as_deref(),
                     );
                     if let Some((next_upstream, next_guard)) = retry.upstream {
+                        (downstream_cache_usage_mode, downstream_cache_markup) =
+                            downstream_usage_policy_for_plan(&current_plan);
+                        safe_token_placeholder = current_plan.safe_token_placeholder;
                         upstream_client_guard.release();
                         lease_renewal_guard.take();
                         lease_renewal_guard = LeaseRenewalGuard::start(&complete_state, &current_plan);
@@ -6089,17 +6757,19 @@ async fn relay_upstream_direct_core_impl(
                             response_dialect.as_deref(),
                         );
                         summary.request_id = next_request_id;
+                        event_parser = SseEventParser::default();
                         sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(
                             response_dialect.as_deref(),
                             downstream_cache_usage_mode.as_deref(),
                             downstream_cache_markup.as_ref(),
                         );
                         preamble_gate = SsePreambleGate::new(
-                            preamble_flush || response_dialect.as_deref() != Some("responses"),
+                            !buffer_attempt_preamble
+                                && (preamble_flush || response_dialect.as_deref() != Some("responses")),
                         );
                         bootstrap_timer = None;
                         first_token_timeout_deadline = next_first_token_timeout_placeholder
-                            .map(openai_first_token_timeout_deadline_after_headers);
+                            .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
                         first_token_timeout_timer = if !first_token_timeout_placeholder_sent
                             && !downstream_ttft_observed
                         {
@@ -6118,6 +6788,7 @@ async fn relay_upstream_direct_core_impl(
                         semantic_sample_complete = false;
                         continue 'relay;
                     }
+                    completion_error_type = Some(retry.reason);
                 }
                 if !summary.completed_successfully(response_dialect.as_deref()) {
                     success = false;
@@ -6126,6 +6797,7 @@ async fn relay_upstream_direct_core_impl(
                         summary.failed = true;
                         summary.failed_terminal_event_type = Some("error".to_string());
                         summary.terminal_event_type = Some("error".to_string());
+                        preamble_gate.discard_pending();
                         for output in preamble_gate.force() {
                             yield Ok::<Bytes, std::io::Error>(output);
                         }
@@ -6143,6 +6815,104 @@ async fn relay_upstream_direct_core_impl(
                     }
                     bootstrap_comment_sent = true;
                     bootstrap_timer = None;
+                    let frames = event_parser.push(&chunk);
+                    if event_parser.overflowed() {
+                        mark_sse_frame_limit_failure(&mut summary);
+                        success = false;
+                        error_message = Some("upstream SSE event exceeded the Edge limit".to_string());
+                        completion_error_type = Some("sse_event_limit_exceeded".to_string());
+                        preamble_gate.discard_pending();
+                        yield Ok::<Bytes, std::io::Error>(Bytes::from(
+                            openai_stream_terminal_failure_frame(response_dialect.as_deref()),
+                        ));
+                        break 'relay;
+                    }
+                    for chunk in frames {
+                    if real_first_token_ms.is_none() {
+                        if let Some(failure) = parse_sse_failure_event(&chunk) {
+                            let retry = retry_body_upstream(
+                                &complete_state,
+                                BodyRetryRequest {
+                                    plan: current_plan.clone(),
+                                    request_body: &retry_request_body,
+                                    response_dialect: response_dialect.as_deref(),
+                                    error_type: "edge_upstream_stream_failed".to_string(),
+                                    error_message: failure.message,
+                                    response_body: Some(failure.payload),
+                                    retry_count: current_edge_retry_count,
+                                    commit_state: http_retry_commit_state(
+                                        real_first_token_ms.is_some(),
+                                        upstream_terminal_output_committed,
+                                        gateway_only_output_committed,
+                                    ),
+                                },
+                                &mut retry_budget,
+                            )
+                            .await;
+                            current_edge_retry_count = retry.retry_count;
+                            current_plan = retry.plan.clone();
+                            guard.update_lease_identity(
+                                current_plan.lease_id.clone(),
+                                current_plan.account_id,
+                            );
+                            let next_first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
+                                current_plan.first_token_timeout_placeholder_ms,
+                                current_plan.account_type.as_deref(),
+                            );
+                            if let Some((next_upstream, next_guard)) = retry.upstream {
+                                (downstream_cache_usage_mode, downstream_cache_markup) =
+                                    downstream_usage_policy_for_plan(&current_plan);
+                                safe_token_placeholder = current_plan.safe_token_placeholder;
+                                upstream_client_guard.release();
+                                lease_renewal_guard.take();
+                                lease_renewal_guard = LeaseRenewalGuard::start(&complete_state, &current_plan);
+                                let next_request_id = next_upstream
+                                    .headers()
+                                    .get("x-request-id")
+                                    .and_then(|value| value.to_str().ok())
+                                    .map(ToOwned::to_owned);
+                                bytes_stream = next_upstream.bytes_stream();
+                                upstream_client_guard = next_guard;
+                                summary = ChatStreamSummary::with_pending(
+                                    complete_state.pools.take_sse_string(),
+                                    response_dialect.as_deref(),
+                                );
+                                summary.request_id = next_request_id;
+                                event_parser = SseEventParser::default();
+                                sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(
+                                    response_dialect.as_deref(),
+                                    downstream_cache_usage_mode.as_deref(),
+                                    downstream_cache_markup.as_ref(),
+                                );
+                                preamble_gate = SsePreambleGate::new(
+                                    !buffer_attempt_preamble
+                                        && (preamble_flush || response_dialect.as_deref() != Some("responses")),
+                                );
+                                bootstrap_timer = None;
+                                first_token_timeout_deadline = next_first_token_timeout_placeholder
+                                    .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
+                                first_token_timeout_timer = if !first_token_timeout_placeholder_sent
+                                    && !downstream_ttft_observed
+                                {
+                                    first_token_timeout_deadline
+                                        .map(|deadline| Box::pin(tokio::time::sleep_until(deadline)))
+                                } else {
+                                    None
+                                };
+                                semantic_progress_timer = current_plan
+                                    .semantic_progress_timeout_ms
+                                    .filter(|value| *value > 0)
+                                    .map(Duration::from_millis)
+                                    .map(tokio::time::sleep)
+                                    .map(Box::pin);
+                                last_semantic_progress_at = Instant::now();
+                                max_semantic_gap = Duration::ZERO;
+                                semantic_sample_complete = false;
+                                continue 'relay;
+                            }
+                            completion_error_type = Some(retry.reason);
+                        }
+                    }
                     let observation = summary.observe(&chunk);
                     if observation.starts_semantic_progress && !semantic_sample_complete {
                         let now = Instant::now();
@@ -6162,9 +6932,15 @@ async fn relay_upstream_direct_core_impl(
                     if real_first_token_ms.is_none() && observation.starts_real_output {
                         real_first_token_ms = Some(started_at.elapsed().as_millis() as i64);
                     }
+                    if summary.terminal_event_type.is_some() {
+                        upstream_terminal_output_committed = true;
+                    }
                     if observation.starts_downstream_ttft {
                         downstream_ttft_observed = true;
                         first_token_timeout_timer = None;
+                        if let Some(marker) = placeholder_sent_marker.as_ref() {
+                            marker.store(true, Ordering::Release);
+                        }
                     }
                     if first_token_ms.is_none() && observation.starts_client_output {
                         first_token_ms = Some(started_at.elapsed().as_millis() as i64);
@@ -6188,6 +6964,9 @@ async fn relay_upstream_direct_core_impl(
                     if safe_token_placeholder && !safe_token_placeholder_sent {
                         if let Some(offset) = observation.response_created_boundary_offset {
                             safe_token_placeholder_sent = true;
+                            let emit_placeholder = placeholder_sent_marker
+                                .as_ref()
+                                .is_none_or(|marker| !marker.swap(true, Ordering::AcqRel));
                             if first_flush_ms.is_none() {
                                 first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
                                 guard.update_stream_snapshot(
@@ -6210,22 +6989,24 @@ async fn relay_upstream_direct_core_impl(
                                     yield Ok::<Bytes, std::io::Error>(output);
                                 }
                             }
-                            // Keep the Responses event order intact: release
-                            // `response.created` before the synthetic
-                            // transport-progress delta.
-                            for output in preamble_gate.force() {
-                                yield Ok::<Bytes, std::io::Error>(output);
-                            }
+                            // The placeholder is request-scoped and may outlive
+                            // this upstream attempt. Keep the attempt-specific
+                            // response.created buffered until real output wins.
                             let placeholder = openai_stream_timeout_placeholder_frame(
                                 response_dialect.as_deref(),
                                 &summary,
                             );
-                            yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
+                            if emit_placeholder {
+                                gateway_only_output_committed = true;
+                                yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
+                            }
                             if offset < chunk.len() {
                                 let sanitized = sanitizer.push(&chunk.slice(offset..));
                                 for output in preamble_gate.accept(
                                     sanitized,
-                                    observation.starts_client_output,
+                                    observation.starts_real_output
+                                        || (!buffer_attempt_preamble
+                                            && observation.starts_client_output),
                                     summary.failed,
                                 ) {
                                     yield Ok::<Bytes, std::io::Error>(output);
@@ -6247,10 +7028,10 @@ async fn relay_upstream_direct_core_impl(
                                     Some(status.as_u16()),
                                     true,
                                 );
-                                break;
+                                break 'relay;
                             }
                             if summary.completed_successfully(response_dialect.as_deref()) {
-                                break;
+                                break 'relay;
                             }
                             continue;
                         }
@@ -6267,6 +7048,9 @@ async fn relay_upstream_direct_core_impl(
                         && observation.starts_client_output
                     {
                         safe_token_placeholder_sent = true;
+                        let emit_placeholder = placeholder_sent_marker
+                            .as_ref()
+                            .is_none_or(|marker| !marker.swap(true, Ordering::AcqRel));
                         if first_flush_ms.is_none() {
                             first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
                             guard.update_stream_snapshot(
@@ -6286,10 +7070,10 @@ async fn relay_upstream_direct_core_impl(
                             summary.response_id.as_deref(),
                             summary.model.as_deref(),
                         );
-                        for output in preamble_gate.force() {
-                            yield Ok::<Bytes, std::io::Error>(output);
+                        if emit_placeholder {
+                            gateway_only_output_committed = true;
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
                         }
-                        yield Ok::<Bytes, std::io::Error>(Bytes::from(placeholder));
                     }
                     let sanitized = sanitizer.push(&chunk);
                     if sanitizer.overflowed() {
@@ -6297,9 +7081,13 @@ async fn relay_upstream_direct_core_impl(
                         success = false;
                         error_message = Some("upstream SSE frame exceeded the Edge limit".to_string());
                     }
+                    if summary.failed {
+                        preamble_gate.discard_pending();
+                    }
                     for output in preamble_gate.accept(
                         sanitized,
-                        observation.starts_client_output,
+                        observation.starts_real_output
+                            || (!buffer_attempt_preamble && observation.starts_client_output),
                         summary.failed,
                     ) {
                         if first_flush_ms.is_none() {
@@ -6319,6 +7107,9 @@ async fn relay_upstream_direct_core_impl(
                         }
                         yield Ok::<Bytes, std::io::Error>(output);
                     }
+                    if summary.failed {
+                        break 'relay;
+                    }
                     if sanitizer.overflowed() {
                         guard.update_stream_snapshot(
                             &summary,
@@ -6332,10 +7123,11 @@ async fn relay_upstream_direct_core_impl(
                             Some(status.as_u16()),
                             true,
                         );
-                        break;
+                        break 'relay;
                     }
                     if summary.completed_successfully(response_dialect.as_deref()) {
-                        break;
+                        break 'relay;
+                    }
                     }
                 }
                 Err(err) => {
@@ -6345,22 +7137,36 @@ async fn relay_upstream_direct_core_impl(
                     if real_first_token_ms.is_none() {
                         let retry = retry_body_upstream(
                             &complete_state,
-                            current_plan.clone(),
-                            &retry_request_body,
-                            response_dialect.as_deref(),
-                            "edge_upstream_transport_error".to_string(),
-                            err.to_string(),
-                            current_edge_retry_count,
+                            BodyRetryRequest {
+                                plan: current_plan.clone(),
+                                request_body: &retry_request_body,
+                                response_dialect: response_dialect.as_deref(),
+                                error_type: "edge_upstream_transport_error".to_string(),
+                                error_message: err.to_string(),
+                                response_body: None,
+                                retry_count: current_edge_retry_count,
+                                    commit_state: http_retry_commit_state(
+                                        real_first_token_ms.is_some(),
+                                        upstream_terminal_output_committed,
+                                        gateway_only_output_committed,
+                                    ),
+                            },
+                            &mut retry_budget,
                         ).await;
                         current_edge_retry_count = retry.retry_count;
                         current_plan = retry.plan.clone();
-                        guard.update_lease_identity(current_plan.lease_id.clone(), current_plan.account_id);
-                        safe_token_placeholder = current_plan.safe_token_placeholder;
+                        guard.update_lease_identity(
+                            current_plan.lease_id.clone(),
+                            current_plan.account_id,
+                        );
                         let next_first_token_timeout_placeholder = normalize_first_token_timeout_placeholder_ms(
                             current_plan.first_token_timeout_placeholder_ms,
                             current_plan.account_type.as_deref(),
                         );
                         if let Some((next_upstream, next_guard)) = retry.upstream {
+                            (downstream_cache_usage_mode, downstream_cache_markup) =
+                                downstream_usage_policy_for_plan(&current_plan);
+                            safe_token_placeholder = current_plan.safe_token_placeholder;
                             upstream_client_guard.release();
                             lease_renewal_guard.take();
                             lease_renewal_guard = LeaseRenewalGuard::start(&complete_state, &current_plan);
@@ -6370,11 +7176,15 @@ async fn relay_upstream_direct_core_impl(
                             upstream_client_guard = next_guard;
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
+                            event_parser = SseEventParser::default();
                             sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(response_dialect.as_deref(), downstream_cache_usage_mode.as_deref(), downstream_cache_markup.as_ref());
-                            preamble_gate = SsePreambleGate::new(preamble_flush || response_dialect.as_deref() != Some("responses"));
+                            preamble_gate = SsePreambleGate::new(
+                                !buffer_attempt_preamble
+                                    && (preamble_flush || response_dialect.as_deref() != Some("responses")),
+                            );
                             bootstrap_timer = None;
-                            first_token_timeout_deadline = next_first_token_timeout_placeholder
-                                .map(openai_first_token_timeout_deadline_after_headers);
+                        first_token_timeout_deadline = next_first_token_timeout_placeholder
+                            .map(|timeout| openai_first_token_timeout_deadline(started_at, timeout));
                             first_token_timeout_timer = if !first_token_timeout_placeholder_sent && !downstream_ttft_observed {
                                 first_token_timeout_deadline.map(|deadline| Box::pin(tokio::time::sleep_until(deadline)))
                             } else {
@@ -6390,6 +7200,7 @@ async fn relay_upstream_direct_core_impl(
                             semantic_sample_complete = false;
                             continue 'relay;
                         }
+                        completion_error_type = Some(retry.reason);
                     }
                     success = false;
                     error_message = Some(err.to_string());
@@ -6397,6 +7208,7 @@ async fn relay_upstream_direct_core_impl(
                         summary.failed = true;
                         summary.failed_terminal_event_type = Some("error".to_string());
                         summary.terminal_event_type = Some("error".to_string());
+                        preamble_gate.discard_pending();
                         for output in preamble_gate.force() {
                             yield Ok::<Bytes, std::io::Error>(output);
                         }
@@ -6426,8 +7238,11 @@ async fn relay_upstream_direct_core_impl(
 
         drop(bytes_stream);
         upstream_client_guard.release();
+        if summary.failed {
+            preamble_gate.discard_pending();
+        }
         let tail = sanitizer.finish();
-        let tail_starts_output = !tail.is_empty();
+        let tail_starts_output = !buffer_attempt_preamble && !tail.is_empty();
         for output in preamble_gate.accept(tail, tail_starts_output, summary.failed) {
             if first_flush_ms.is_none() {
                 first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
@@ -6570,6 +7385,14 @@ async fn retry_after_race_response_header_budget(
         header_guard,
         ingress_permit,
     } = context;
+    if let Some(reason) = edge_header_retry_exhaustion(
+        plan.edge_response_header_max_attempts,
+        timing.header_attempts.saturating_add(1),
+        response_header_budget_deadline,
+    ) {
+        state.metrics.record_retry_reason(reason);
+        return Err(edge_header_retry_exhaustion_error(reason));
+    }
     let decision = call_retry(
         &state,
         RetryRequest {
@@ -6582,7 +7405,9 @@ async fn retry_after_race_response_header_budget(
             error_message: Some("upstream response headers exceeded race budget".to_string()),
             request_body: None,
             response_body: None,
+            commit_state: RETRY_COMMIT_NONE.to_string(),
             wrote_client_response: false,
+            supports_staged_retry: true,
         },
     )
     .await?;
@@ -6616,9 +7441,13 @@ async fn retry_after_race_response_header_budget(
         .filter(|value| *value > 0)
         .is_some_and(|max_attempts| next_timing.header_attempts >= max_attempts)
     {
+        state
+            .metrics
+            .record_retry_reason("header_attempts_exhausted");
         anyhow::bail!("retry_failure_already_recorded: edge response header attempts exhausted");
     }
     if response_header_budget_deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+        state.metrics.record_retry_reason("header_budget_exhausted");
         anyhow::bail!(
             "retry_failure_already_recorded: edge response header total budget exhausted"
         );
@@ -6672,7 +7501,9 @@ async fn retry_after_queue_wait_budget(
             )),
             request_body: None,
             response_body: None,
+            commit_state: RETRY_COMMIT_NONE.to_string(),
             wrote_client_response: false,
+            supports_staged_retry: true,
         },
     )
     .await?;
@@ -6735,6 +7566,14 @@ async fn retry_after_upstream_transport_error(
         header_guard,
         ingress_permit,
     } = context;
+    if let Some(reason) = edge_header_retry_exhaustion(
+        plan.edge_response_header_max_attempts,
+        timing.header_attempts.saturating_add(1),
+        response_header_budget_deadline,
+    ) {
+        state.metrics.record_retry_reason(reason);
+        return Err(edge_header_retry_exhaustion_error(reason));
+    }
     let decision = call_retry(
         &state,
         RetryRequest {
@@ -6747,7 +7586,9 @@ async fn retry_after_upstream_transport_error(
             error_message: Some(error_message),
             request_body: None,
             response_body: None,
+            commit_state: RETRY_COMMIT_NONE.to_string(),
             wrote_client_response: false,
+            supports_staged_retry: true,
         },
     )
     .await?;
@@ -6780,9 +7621,13 @@ async fn retry_after_upstream_transport_error(
         .filter(|value| *value > 0)
         .is_some_and(|max_attempts| next_timing.header_attempts >= max_attempts)
     {
+        state
+            .metrics
+            .record_retry_reason("header_attempts_exhausted");
         anyhow::bail!("retry_failure_already_recorded: edge response header attempts exhausted");
     }
     if response_header_budget_deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+        state.metrics.record_retry_reason("header_budget_exhausted");
         anyhow::bail!(
             "retry_failure_already_recorded: edge response header total budget exhausted"
         );
@@ -6813,7 +7658,20 @@ async fn retry_early_placeholder_relay(
     state: AppState,
     mut failure: EarlyPlaceholderRelayError,
 ) -> anyhow::Result<Response> {
-    for _ in 0..64 {
+    let max_attempts = failure
+        .plan
+        .edge_response_header_max_attempts
+        .filter(|value| *value > 0)
+        .unwrap_or(LEGACY_EDGE_RETRY_MAX_ATTEMPTS);
+    for _ in 0..max_attempts {
+        if let Some(reason) = edge_header_retry_exhaustion(
+            failure.plan.edge_response_header_max_attempts,
+            failure.context.timing.header_attempts.saturating_add(1),
+            failure.context.response_header_budget_deadline,
+        ) {
+            state.metrics.record_retry_reason(reason);
+            return Err(edge_header_retry_exhaustion_error(reason));
+        }
         let error_type = early_placeholder_retry_error_type(failure.kind);
         let decision = call_retry(
             &state,
@@ -6829,7 +7687,9 @@ async fn retry_early_placeholder_relay(
                 response_body: None,
                 // The compatibility frame is intentionally not treated as a
                 // committed model response by the Go retry gate.
+                commit_state: RETRY_COMMIT_GATEWAY_ONLY.to_string(),
                 wrote_client_response: false,
+                supports_staged_retry: true,
             },
         )
         .await?;
@@ -6864,6 +7724,9 @@ async fn retry_early_placeholder_relay(
             .filter(|value| *value > 0)
             .is_some_and(|max_attempts| next_timing.header_attempts >= max_attempts)
         {
+            state
+                .metrics
+                .record_retry_reason("header_attempts_exhausted");
             anyhow::bail!("edge response header attempts exhausted");
         }
         if failure
@@ -6871,6 +7734,7 @@ async fn retry_early_placeholder_relay(
             .response_header_budget_deadline
             .is_some_and(|deadline| deadline <= Instant::now())
         {
+            state.metrics.record_retry_reason("header_budget_exhausted");
             anyhow::bail!("edge response header total budget exhausted");
         }
         let (next_plan, next_request_body) = prepare_early_placeholder_retry_plan(next_plan)?;
@@ -6889,6 +7753,7 @@ async fn retry_early_placeholder_relay(
                 header_guard: failure.context.header_guard.take(),
                 ingress_permit: failure.context.ingress_permit.take(),
             },
+            failure.placeholder_sent.clone(),
         )
         .await
         {
@@ -6901,6 +7766,9 @@ async fn retry_early_placeholder_relay(
             },
         }
     }
+    state
+        .metrics
+        .record_retry_reason("header_attempts_exhausted");
     anyhow::bail!("early placeholder retry attempts exhausted")
 }
 
@@ -6942,8 +7810,11 @@ fn normalize_first_token_timeout_placeholder_ms(
     }
 }
 
-fn openai_first_token_timeout_deadline_after_headers(timeout: Duration) -> tokio::time::Instant {
-    tokio::time::Instant::now() + timeout
+fn openai_first_token_timeout_deadline(
+    started_at: Instant,
+    timeout: Duration,
+) -> tokio::time::Instant {
+    tokio::time::Instant::from_std(started_at) + timeout
 }
 
 fn delay_until_elapsed(started_at: Instant, timeout: Duration) -> Duration {
@@ -7032,6 +7903,7 @@ impl OpenAIStreamSanitizer {
         Self::new_with_downstream_cache_usage_mode(dialect, None)
     }
 
+    #[cfg(test)]
     fn new_with_downstream_cache_usage_mode(
         dialect: Option<&str>,
         downstream_cache_usage_mode: Option<&str>,
@@ -7142,11 +8014,16 @@ impl SsePreambleGate {
                     .checked_add(bytes.len())
                     .is_none_or(|size| size > SSE_PREAMBLE_BUFFER_MAX_BYTES);
                 if exceeds_limit {
-                    // Do not let an unbounded sequence of preamble events pin
-                    // memory. Releasing the buffered bytes preserves the
-                    // stream rather than dropping upstream output.
-                    self.released = true;
-                    return self.release_with(bytes);
+                    // Retain a bounded suffix without committing this attempt.
+                    // A later retry may still discard it, while real output can
+                    // release the surviving preamble in order.
+                    self.pending.clear();
+                    self.pending_bytes = 0;
+                    if bytes.len() <= SSE_PREAMBLE_BUFFER_MAX_BYTES {
+                        self.pending_bytes = bytes.len();
+                        self.pending.push(bytes);
+                    }
+                    return Vec::new();
                 }
                 self.pending_bytes += bytes.len();
                 self.pending.push(bytes);
@@ -7159,6 +8036,11 @@ impl SsePreambleGate {
 
     fn force(&mut self) -> Vec<Bytes> {
         self.accept(Bytes::new(), false, true)
+    }
+
+    fn discard_pending(&mut self) {
+        self.pending.clear();
+        self.pending_bytes = 0;
     }
 
     fn release_with(&mut self, bytes: Bytes) -> Vec<Bytes> {
@@ -7271,6 +8153,7 @@ fn openai_stream_terminal_failure_frame(dialect: Option<&str>) -> String {
     "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}}\n\n".to_string()
 }
 
+#[cfg(test)]
 fn normalize_openai_downstream_cache_usage(value: &mut Value, mode: Option<&str>) -> bool {
     normalize_openai_downstream_usage(value, mode, None)
 }
@@ -7863,6 +8746,7 @@ fn sanitize_openai_ws_message(msg: TungsteniteMessage) -> TungsteniteMessage {
     sanitize_openai_ws_message_with_downstream_cache_usage_mode(msg, None)
 }
 
+#[cfg(test)]
 fn sanitize_openai_ws_message_with_downstream_cache_usage_mode(
     msg: TungsteniteMessage,
     downstream_cache_usage_mode: Option<&str>,
@@ -8298,6 +9182,74 @@ async fn call_retry(state: &AppState, req: RetryRequest) -> anyhow::Result<Retry
         anyhow::bail!("retry status {}", resp.status());
     }
     Ok(resp.json::<RetryDecision>().await?)
+}
+
+async fn call_retry_stage(
+    state: &AppState,
+    plan: &EdgePlan,
+    staged_retry_id: &str,
+    action: &str,
+) -> anyhow::Result<RetryStageAck> {
+    let request = RetryStageRequest {
+        edge_request_id: plan.edge_request_id.clone(),
+        lease_id: plan.lease_id.clone(),
+        account_id: plan.account_id,
+        staged_retry_id: staged_retry_id.to_string(),
+        action: action.to_string(),
+    };
+    let max_attempts = PAYLOAD_COMMIT_MAX_ATTEMPTS.max(1);
+    let mut delay = Duration::from_millis(10);
+    let mut last_error = None;
+    for attempt in 1..=max_attempts {
+        match send_retry_stage_once(state, &request).await {
+            Ok(ack) if ack.ok.unwrap_or(true) => return Ok(ack),
+            Ok(ack) => {
+                return Err(anyhow::anyhow!(
+                    "retry stage was not acknowledged: {}",
+                    ack.reason.unwrap_or_else(|| "unknown_reason".to_string())
+                ));
+            }
+            Err(err) if settlement_error_is_permanent(&err) => return Err(err),
+            Err(err) => last_error = Some(err),
+        }
+        if attempt < max_attempts {
+            tokio::time::sleep(delay).await;
+            delay = delay.saturating_mul(2).min(Duration::from_millis(250));
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("retry stage settlement failed")))
+}
+
+async fn send_retry_stage_once(
+    state: &AppState,
+    request: &RetryStageRequest,
+) -> anyhow::Result<RetryStageAck> {
+    let url = format!(
+        "{}/internal/edge/openai/retry-stage",
+        state.cfg.control_base_url
+    );
+    let resp = state
+        .client
+        .post(url)
+        .header(EDGE_SECRET_HEADER, &state.cfg.internal_secret)
+        .timeout(std::time::Duration::from_millis(
+            state.cfg.complete_timeout_ms,
+        ))
+        .json(request)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(SettlementHttpError {
+            status: resp.status(),
+        }
+        .into());
+    }
+    let body = resp.bytes().await?;
+    if body.is_empty() {
+        return Ok(RetryStageAck::default());
+    }
+    serde_json::from_slice::<RetryStageAck>(&body)
+        .map_err(|error| anyhow::anyhow!("invalid retry stage acknowledgement: {error}"))
 }
 
 async fn send_settlement_once<T: Serialize + ?Sized>(
@@ -10400,15 +11352,219 @@ mod tests {
     }
 
     #[test]
-    fn sse_preamble_gate_fails_open_at_bounded_buffer_size() {
+    fn sse_preamble_gate_remains_uncommitted_at_bounded_buffer_size() {
         let mut gate = SsePreambleGate::new(false);
         let oversized = Bytes::from(vec![b'x'; SSE_PREAMBLE_BUFFER_MAX_BYTES + 1]);
         let output = gate.accept(oversized.clone(), false, false);
-        assert_eq!(output, vec![oversized]);
-        assert_eq!(
-            gate.accept(Bytes::from_static(b"next"), false, false),
-            vec![Bytes::from_static(b"next")]
+        assert!(output.is_empty());
+        assert!(gate
+            .accept(Bytes::from_static(b"next"), false, false)
+            .is_empty());
+        assert_eq!(gate.force(), vec![Bytes::from_static(b"next")]);
+    }
+
+    #[test]
+    fn sse_event_parser_reassembles_split_failed_event() {
+        let mut parser = SseEventParser::default();
+        assert!(parser
+            .push(b"event: response.failed\ndata: {\"type\":\"response.fail")
+            .is_empty());
+        let frames = parser.push(
+            b"ed\",\"response\":{\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"busy\"}}}\n\n",
         );
+        assert_eq!(frames.len(), 1);
+        let failure = parse_sse_failure_event(&frames[0]).expect("failed SSE event");
+        assert_eq!(failure.message, "busy");
+        assert_eq!(
+            failure
+                .payload
+                .pointer("/response/error/code")
+                .and_then(Value::as_str),
+            Some("server_is_overloaded")
+        );
+    }
+
+    #[test]
+    fn sse_event_parser_preserves_combined_event_order() {
+        let mut parser = SseEventParser::default();
+        let frames = parser.push(
+            b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"loser\"}}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"retry\"}}}\n\n",
+        );
+        assert_eq!(frames.len(), 2);
+        assert!(parse_sse_failure_event(&frames[0]).is_none());
+        assert!(parse_sse_failure_event(&frames[1]).is_some());
+    }
+
+    #[test]
+    fn sse_event_parser_dispatches_unterminated_event_at_eof() {
+        let mut parser = SseEventParser::default();
+        assert!(parser
+            .push(b"data: {\"type\":\"response.failed\",\"error\":{\"message\":\"eof\"}}")
+            .is_empty());
+        let tail = parser.finish_frame().expect("EOF event");
+        let frames = parser.push(&tail);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            parse_sse_failure_event(&frames[0])
+                .expect("failed EOF event")
+                .message,
+            "eof"
+        );
+    }
+
+    #[test]
+    fn request_retry_budget_shares_attempts_and_deadline() {
+        let mut budget =
+            RequestRetryBudget::new(Some(3), Some(Instant::now() + Duration::from_secs(1)), 0);
+        assert_eq!(budget.availability(), Ok(()));
+        assert_eq!(budget.availability(), Ok(()));
+        assert_eq!(budget.begin_attempt(), Ok(()));
+        assert_eq!(budget.begin_attempt(), Ok(()));
+        assert_eq!(budget.begin_attempt(), Err("header_attempts_exhausted"));
+
+        let mut expired = RequestRetryBudget::new(Some(3), Some(Instant::now()), 0);
+        assert_eq!(expired.begin_attempt(), Err("header_budget_exhausted"));
+
+        let legacy = RequestRetryBudget::new(None, None, 0);
+        assert_eq!(legacy.max_attempts, Some(LEGACY_EDGE_RETRY_MAX_ATTEMPTS));
+    }
+
+    #[test]
+    fn response_header_retry_stops_before_preparing_an_extra_attempt() {
+        let future = Some(Instant::now() + Duration::from_secs(1));
+        assert_eq!(
+            edge_header_attempt_limit(None),
+            LEGACY_EDGE_RETRY_MAX_ATTEMPTS
+        );
+        assert_eq!(
+            edge_header_attempt_limit(Some(0)),
+            LEGACY_EDGE_RETRY_MAX_ATTEMPTS
+        );
+        assert_eq!(edge_header_attempt_limit(Some(1)), 1);
+        assert_eq!(edge_header_retry_exhaustion(Some(1), 0, future), None);
+        assert_eq!(
+            edge_header_retry_exhaustion(Some(1), 1, future),
+            Some("header_attempts_exhausted")
+        );
+        assert_eq!(edge_header_retry_exhaustion(Some(3), 2, future), None);
+        assert_eq!(
+            edge_header_retry_exhaustion(Some(3), 3, future),
+            Some("header_attempts_exhausted")
+        );
+        assert_eq!(
+            edge_header_retry_exhaustion(Some(3), 0, Some(Instant::now())),
+            Some("header_budget_exhausted")
+        );
+        assert_eq!(
+            relay_error_fallback_reason(&edge_header_retry_exhaustion_error(
+                "header_attempts_exhausted"
+            )),
+            "retry_failure_already_recorded"
+        );
+    }
+
+    #[test]
+    fn http_retry_commit_state_only_keeps_gateway_owned_output_retryable() {
+        assert_eq!(
+            http_retry_commit_state(false, false, false),
+            RETRY_COMMIT_NONE
+        );
+        assert_eq!(
+            http_retry_commit_state(false, false, true),
+            RETRY_COMMIT_GATEWAY_ONLY
+        );
+        assert_eq!(
+            http_retry_commit_state(false, true, true),
+            RETRY_COMMIT_TERMINAL
+        );
+        assert_eq!(
+            http_retry_commit_state(true, false, true),
+            RETRY_COMMIT_REAL_OUTPUT
+        );
+        assert!(!retry_commit_state_wrote_client_response(RETRY_COMMIT_NONE));
+        assert!(!retry_commit_state_wrote_client_response(
+            RETRY_COMMIT_GATEWAY_ONLY
+        ));
+        assert!(retry_commit_state_wrote_client_response(
+            RETRY_COMMIT_REAL_OUTPUT
+        ));
+        assert!(retry_commit_state_wrote_client_response(
+            RETRY_COMMIT_TERMINAL
+        ));
+    }
+
+    #[test]
+    fn structural_responses_events_do_not_commit_retry_state() {
+        let mut summary = ChatStreamSummary::with_pending(String::new(), Some("responses"));
+        let observation = summary
+            .observe(b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n");
+        assert!(!observation.starts_real_output);
+        assert!(!observation.starts_downstream_ttft);
+        assert!(summary.terminal_event_type.is_none());
+        assert_eq!(
+            http_retry_commit_state(false, false, false),
+            RETRY_COMMIT_NONE
+        );
+
+        let observation = summary.observe(
+            b"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\"}}\n\n",
+        );
+        assert!(!observation.starts_real_output);
+        assert_eq!(
+            http_retry_commit_state(false, false, false),
+            RETRY_COMMIT_NONE
+        );
+    }
+
+    #[test]
+    fn ws_forwarded_upstream_payload_is_never_gateway_only() {
+        assert_eq!(
+            ws_upstream_payload_commit_state(false),
+            RETRY_COMMIT_REAL_OUTPUT
+        );
+        assert_eq!(
+            ws_upstream_payload_commit_state(true),
+            RETRY_COMMIT_TERMINAL
+        );
+    }
+
+    #[test]
+    fn retry_no_candidate_metric_classification_is_fixed_and_narrow() {
+        for reason in [
+            "retry_no_candidate",
+            "retry_edge_no_eligible_account",
+            "retry_edge_account_capacity_exhausted",
+            "retry_account_select_failed",
+            "retry_account_slot_acquire_failed",
+            "retry_user_slot_busy",
+        ] {
+            assert!(retry_reason_is_no_candidate(reason), "reason={reason}");
+        }
+        assert!(!retry_reason_is_no_candidate("retry_plan_failed"));
+        assert!(!retry_reason_is_no_candidate("upstream payload"));
+    }
+
+    #[test]
+    fn retry_reason_metrics_use_fixed_non_payload_labels() {
+        let metrics = EdgeMetrics::default();
+        for reason in [
+            "stream_failed_retry",
+            "stream_failed_terminal",
+            "semantic_keep_current",
+            "retry_no_candidate",
+            "header_attempts_exhausted",
+            "header_budget_exhausted",
+        ] {
+            metrics.record_retry_reason(reason);
+        }
+        metrics.record_retry_reason("upstream payload must not become a label");
+
+        assert_eq!(metrics.stream_failed_retries.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.stream_failed_terminals.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.semantic_keep_current.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.retry_no_candidate.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.header_attempts_exhausted.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.header_budget_exhausted.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -10492,12 +11648,13 @@ mod tests {
     }
 
     #[test]
-    fn first_token_timeout_stage_starts_after_headers() {
+    fn first_token_timeout_stage_is_request_relative() {
         let timeout = Duration::from_millis(800);
-        let deadline = openai_first_token_timeout_deadline_after_headers(timeout);
+        let started_at = Instant::now() - Duration::from_millis(500);
+        let deadline = openai_first_token_timeout_deadline(started_at, timeout);
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        assert!(remaining <= timeout);
-        assert!(remaining >= Duration::from_millis(700));
+        assert!(remaining <= Duration::from_millis(350));
+        assert!(remaining >= Duration::from_millis(200));
     }
 
     #[test]
@@ -11278,6 +12435,23 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         let current = lease_identity_snapshot(&identity);
         assert_eq!(current.lease_id.as_deref(), Some("lease-1"));
         assert_eq!(current.account_id, Some(202));
+    }
+
+    #[test]
+    fn lease_identity_snapshot_survives_legacy_retry_plan_without_identity() {
+        let identity = Arc::new(Mutex::new(LeaseIdentity {
+            lease_id: Some("lease-1".to_string()),
+            account_id: Some(101),
+        }));
+        let legacy_plan: EdgePlan = serde_json::from_value(serde_json::json!({
+            "action": "relay",
+            "edge_request_id": "edge-legacy"
+        }))
+        .expect("legacy plan");
+        update_lease_identity(&identity, &legacy_plan);
+        let current = lease_identity_snapshot(&identity);
+        assert_eq!(current.lease_id.as_deref(), Some("lease-1"));
+        assert_eq!(current.account_id, Some(101));
     }
 
     #[test]
@@ -12304,6 +13478,57 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 "expected media/non-text model: {model}"
             );
         }
+    }
+
+    #[test]
+    fn downstream_usage_policy_is_scoped_to_the_winning_plan() {
+        let configured: EdgePlan = serde_json::from_value(serde_json::json!({
+            "action": "relay",
+            "edge_request_id": "configured",
+            "downstream_cache_usage_mode": "input_125",
+            "downstream_cache_usage_model": "gpt-5.6-sol",
+            "downstream_cache_markup_model": "gpt-5.6-sol",
+            "downstream_cache_markup": {
+                "threshold_tokens": 100000,
+                "percent_bps": 1000,
+                "input_price_units": 100,
+                "cache_read_price_units": 10,
+                "output_price_units": 600
+            }
+        }))
+        .expect("configured plan");
+        let unconfigured: EdgePlan = serde_json::from_value(serde_json::json!({
+            "action": "relay",
+            "edge_request_id": "unconfigured"
+        }))
+        .expect("unconfigured plan");
+        let image: EdgePlan = serde_json::from_value(serde_json::json!({
+            "action": "relay",
+            "edge_request_id": "image",
+            "downstream_cache_usage_mode": "input_125",
+            "downstream_cache_usage_model": "gpt-image-2",
+            "downstream_cache_markup_model": "gpt-image-2",
+            "downstream_cache_markup": {
+                "threshold_tokens": 100000,
+                "percent_bps": 1000,
+                "input_price_units": 100,
+                "cache_read_price_units": 10,
+                "output_price_units": 600
+            }
+        }))
+        .expect("image plan");
+
+        let (mode, markup) = downstream_usage_policy_for_plan(&configured);
+        assert_eq!(mode.as_deref(), Some("input_125"));
+        assert!(markup.is_some());
+
+        let (mode, markup) = downstream_usage_policy_for_plan(&unconfigured);
+        assert!(mode.is_none());
+        assert!(markup.is_none());
+
+        let (mode, markup) = downstream_usage_policy_for_plan(&image);
+        assert!(mode.is_none());
+        assert!(markup.is_none());
     }
 
     #[test]

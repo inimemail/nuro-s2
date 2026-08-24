@@ -6478,6 +6478,84 @@ func openAIStreamFailedEventRetryableOnSameAccount(account *Account, payload []b
 	return isOpenAITransientProcessingError(http.StatusBadRequest, message, payload)
 }
 
+// ClassifyOpenAIEdgeStreamFailure applies the same response.failed/error
+// policy used by the Go streaming paths without logging or exposing the raw
+// upstream payload. Edge uses the returned failover error only before real
+// model output has reached the downstream connection.
+func (s *OpenAIGatewayService) ClassifyOpenAIEdgeStreamFailure(
+	ctx context.Context,
+	account *Account,
+	payload []byte,
+	message string,
+) (*UpstreamFailoverError, bool) {
+	message = sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
+	if message == "" {
+		message = sanitizeUpstreamErrorMessage(extractOpenAISSEErrorMessage(payload))
+	}
+	if message == "" {
+		message = "OpenAI stream disconnected before completion"
+	}
+	if !openAIStreamFailedEventShouldFailover(payload, message) {
+		return nil, false
+	}
+	return s.classifyOpenAIStreamFailover(ctx, account, payload, message), true
+}
+
+func (s *OpenAIGatewayService) classifyOpenAIStreamFailover(
+	ctx context.Context,
+	account *Account,
+	payload []byte,
+	message string,
+) *UpstreamFailoverError {
+	statusCode := openAIStreamFailureStatus(payload, message)
+	body, _ := json.Marshal(gin.H{
+		"error": gin.H{
+			"type":    map[bool]string{true: "rate_limit_error", false: "upstream_error"}[statusCode == http.StatusTooManyRequests],
+			"message": message,
+		},
+	})
+	decision := s.classifyOpenAIPoolFailover(ctx, account, statusCode, message, body)
+	retryableOnSameAccount := decision.RetryableOnSameAccount
+	if openAIStreamFailedEventRetryableOnSameAccount(account, payload, message) {
+		retryableOnSameAccount = true
+	}
+	ruleKey, ruleLimit := decision.RetryRuleKey, decision.RetryRuleLimit
+	if account != nil && account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
+		// A response.failed payload carries a semantic status and therefore uses
+		// the HTTP-rule budget. Bare disconnects use the transport rule instead.
+		ruleStatus := 0
+		if len(bytes.TrimSpace(payload)) > 0 && gjson.ValidBytes(payload) {
+			ruleStatus = statusCode
+		}
+		if openAIPoolSameAccountRetryBlockedByRequestContent(http.StatusBadGateway, message, body) {
+			retryableOnSameAccount = false
+			ruleKey, ruleLimit = "", 0
+		} else {
+			ruleKey, ruleLimit, _ = account.OpenAIUpstreamConcurrencyRaceRetryRule(ruleStatus)
+			retryableOnSameAccount = ruleKey != "" && ruleLimit > 0
+		}
+		return &UpstreamFailoverError{
+			StatusCode:             statusCode,
+			ResponseBody:           body,
+			Message:                message,
+			RetryableOnSameAccount: retryableOnSameAccount,
+			RetryRuleKey:           ruleKey,
+			RetryRuleLimit:         ruleLimit,
+			RetryRuleTransport:     ruleStatus == 0 && ruleKey == "transport",
+			SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
+		}
+	}
+	return &UpstreamFailoverError{
+		StatusCode:             statusCode,
+		ResponseBody:           body,
+		Message:                message,
+		RetryableOnSameAccount: retryableOnSameAccount,
+		RetryRuleKey:           ruleKey,
+		RetryRuleLimit:         ruleLimit,
+		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
+	}
+}
+
 func (s *OpenAIGatewayService) recordOpenAIStreamUpstreamError(
 	c *gin.Context,
 	account *Account,
@@ -6561,55 +6639,9 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverError(
 		}
 		appendOpsUpstreamError(c, event)
 	}
-	body, _ := json.Marshal(gin.H{
-		"error": gin.H{
-			"type":    map[bool]string{true: "rate_limit_error", false: "upstream_error"}[statusCode == http.StatusTooManyRequests],
-			"message": message,
-		},
-	})
-	decision := s.classifyOpenAIPoolFailover(c.Request.Context(), account, statusCode, message, body)
-	retryableOnSameAccount := decision.RetryableOnSameAccount
-	if openAIStreamFailedEventRetryableOnSameAccount(account, payload, message) {
-		retryableOnSameAccount = true
-	}
-	ruleKey, ruleLimit := decision.RetryRuleKey, decision.RetryRuleLimit
-	if account != nil && account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
-		// A response.failed payload carries a usable semantic status and belongs
-		// to the race HTTP-rule budget. Only a bare disconnect/scan failure has no
-		// status and may consume the independent transport budget.
-		ruleStatus := 0
-		if len(bytes.TrimSpace(payload)) > 0 && gjson.ValidBytes(payload) {
-			ruleStatus = statusCode
-		}
-		if openAIPoolSameAccountRetryBlockedByRequestContent(http.StatusBadGateway, message, body) {
-			retryableOnSameAccount = false
-			ruleKey, ruleLimit = "", 0
-		} else {
-			ruleKey, ruleLimit, _ = account.OpenAIUpstreamConcurrencyRaceRetryRule(ruleStatus)
-			retryableOnSameAccount = ruleKey != "" && ruleLimit > 0
-		}
-		return &UpstreamFailoverError{
-			StatusCode:             statusCode,
-			ResponseBody:           body,
-			ResponseHeaders:        firstClonedHeader(responseHeaders),
-			Message:                message,
-			RetryableOnSameAccount: retryableOnSameAccount,
-			RetryRuleKey:           ruleKey,
-			RetryRuleLimit:         ruleLimit,
-			RetryRuleTransport:     ruleStatus == 0 && ruleKey == "transport",
-			SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-		}
-	}
-	return &UpstreamFailoverError{
-		StatusCode:             statusCode,
-		ResponseBody:           body,
-		ResponseHeaders:        firstClonedHeader(responseHeaders),
-		Message:                message,
-		RetryableOnSameAccount: retryableOnSameAccount,
-		RetryRuleKey:           ruleKey,
-		RetryRuleLimit:         ruleLimit,
-		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-	}
+	failoverErr := s.classifyOpenAIStreamFailover(c.Request.Context(), account, payload, message)
+	failoverErr.ResponseHeaders = firstClonedHeader(responseHeaders)
+	return failoverErr
 }
 
 func firstClonedHeader(headers []http.Header) http.Header {
