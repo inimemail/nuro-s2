@@ -105,14 +105,35 @@
           </div>
           <div v-if="entry.time_pricing" class="space-y-2">
             <input :value="entry.time_pricing.timezone" class="input text-sm" :placeholder="t('admin.channels.form.timePricingTimezonePlaceholder')" @input="updateTimePricing({ timezone: ($event.target as HTMLInputElement).value })" />
-            <div v-for="(period, index) in entry.time_pricing.periods" :key="index" class="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(6rem,0.8fr)_auto]">
+            <div v-for="(period, index) in entry.time_pricing.periods" :key="index" class="grid grid-cols-2 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(6rem,0.8fr)_auto_auto]">
               <input :value="period.start_time" class="input text-sm" :placeholder="t('admin.channels.form.timePricingStartPlaceholder')" :aria-label="t('admin.channels.form.timePricingStartPlaceholder')" @input="updatePeriod(index, { start_time: ($event.target as HTMLInputElement).value })" />
               <input :value="period.end_time" class="input text-sm" :placeholder="t('admin.channels.form.timePricingEndPlaceholder')" :aria-label="t('admin.channels.form.timePricingEndPlaceholder')" @input="updatePeriod(index, { end_time: ($event.target as HTMLInputElement).value })" />
               <input :value="period.multiplier" type="number" min="0.01" step="0.01" class="input text-sm" :placeholder="t('admin.channels.form.timePricingMultiplierPlaceholder')" :aria-label="t('admin.channels.form.timePricingMultiplierPlaceholder')" @input="updatePeriod(index, { multiplier: Number(($event.target as HTMLInputElement).value) })" />
+              <label class="col-span-2 inline-flex min-h-9 cursor-pointer items-center gap-2 whitespace-nowrap text-xs text-gray-500 dark:text-gray-400 sm:col-span-1">
+                <input :checked="period.weekdays_only === true" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500" @change="updatePeriod(index, { weekdays_only: ($event.target as HTMLInputElement).checked })" />
+                {{ t('admin.channels.form.weekdaysOnly', '仅工作日') }}
+              </label>
               <button type="button" class="justify-self-end rounded p-2 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10" :title="t('common.delete')" :aria-label="t('common.delete')" @click="removePeriod(index)"><Icon name="trash" size="sm" /></button>
             </div>
             <p v-if="timePricingError" class="text-xs text-red-500" role="alert">{{ timePricingError }}</p>
             <button type="button" class="text-xs text-primary-600 hover:text-primary-700" @click="addPeriod">+ {{ t('admin.channels.form.timePricingAddPeriod') }}</button>
+          </div>
+
+          <div class="mt-3 grid grid-cols-1 gap-2 sm:max-w-lg sm:grid-cols-2">
+            <label class="rounded border border-gray-200 bg-white p-2 dark:border-dark-600 dark:bg-dark-700">
+              <span class="flex items-center justify-between gap-2 text-xs font-medium text-gray-600 dark:text-gray-300">
+                {{ t('admin.channels.form.fastMultiplier', 'Fast 倍率') }}
+                <span class="text-gray-400">×</span>
+              </span>
+              <input :value="entry.fast_multiplier" @input="emitField('fast_multiplier', ($event.target as HTMLInputElement).value)" type="number" step="any" min="0.000001" class="input mt-1 text-sm" :placeholder="t('admin.channels.form.multiplierPlaceholder', '未设置')" />
+            </label>
+            <label class="rounded border border-gray-200 bg-white p-2 dark:border-dark-600 dark:bg-dark-700">
+              <span class="flex items-center justify-between gap-2 text-xs font-medium text-gray-600 dark:text-gray-300">
+                {{ t('admin.channels.form.flexMultiplier', 'Flex 倍率') }}
+                <span class="text-gray-400">×</span>
+              </span>
+              <input :value="entry.flex_multiplier" @input="emitField('flex_multiplier', ($event.target as HTMLInputElement).value)" type="number" step="any" min="0.000001" class="input mt-1 text-sm" :placeholder="t('admin.channels.form.multiplierPlaceholder', '未设置')" />
+            </label>
           </div>
         </div>
 
@@ -173,6 +194,7 @@
                 :key="idx"
                 :interval="iv"
                 :mode="entry.billing_mode"
+                :enable-multipliers="true"
                 @update="updateInterval(idx, $event)"
                 @remove="removeInterval(idx)"
               />
@@ -207,6 +229,7 @@
               :key="idx"
               :interval="iv"
               :mode="entry.billing_mode"
+              :enable-multipliers="true"
               @update="updateInterval(idx, $event)"
               @remove="removeInterval(idx)"
             />
@@ -247,6 +270,7 @@
               :key="idx"
               :interval="iv"
               :mode="entry.billing_mode"
+              :enable-multipliers="true"
               @update="updateInterval(idx, $event)"
               @remove="removeInterval(idx)"
             />
@@ -324,7 +348,7 @@ function updatePeriod(index: number, patch: Partial<NonNullable<PricingFormEntry
 function addPeriod() {
   const current = props.entry.time_pricing
   if (!current) return
-  updateTimePricing({ periods: [...current.periods, { start_time: '09:00', end_time: '17:00', multiplier: 1 }] })
+  updateTimePricing({ periods: [...current.periods, { start_time: '09:00', end_time: '17:00', multiplier: 1, weekdays_only: false }] })
 }
 
 function removePeriod(index: number) {
@@ -338,7 +362,8 @@ function addInterval() {
   intervals.push({
     min_tokens: 0, max_tokens: null, tier_label: '',
     input_price: null, output_price: null, cache_write_price: null,
-    cache_read_price: null, per_request_price: null,
+    cache_read_price: null, input_multiplier: null, output_multiplier: null,
+    cache_write_multiplier: null, cache_read_multiplier: null, per_request_price: null,
     sort_order: intervals.length
   })
   emit('update', { ...props.entry, intervals })
@@ -352,7 +377,8 @@ function addImageTier() {
   intervals.push({
     min_tokens: 0, max_tokens: null, tier_label: labels[intervals.length] || '',
     input_price: null, output_price: null, cache_write_price: null,
-    cache_read_price: null, per_request_price: null,
+    cache_read_price: null, input_multiplier: null, output_multiplier: null,
+    cache_write_multiplier: null, cache_read_multiplier: null, per_request_price: null,
     sort_order: intervals.length
   })
   emit('update', { ...props.entry, intervals })

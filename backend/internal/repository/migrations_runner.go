@@ -58,6 +58,9 @@ const latestAPIKeyIPIndexMigration = "178_add_usage_logs_api_key_latest_ip_index
 const latestAPIKeyIPIndex = "idx_usage_logs_api_key_latest_ip"
 const usersEmailDotStrippedIndexMigration = "201_add_users_email_alias_dedup_index_notx.sql"
 const usersEmailDotStrippedIndex = "idx_users_email_dot_stripped"
+const usageLogsEffectiveModelIndexesMigration = "214_usage_log_effective_model_indexes_notx.sql"
+const usageLogsEffectiveRequestedModelIndex = "idx_usage_logs_effective_requested_model_created"
+const usageLogsEffectiveUpstreamModelIndex = "idx_usage_logs_effective_upstream_model_created"
 
 type migrationChecksumCompatibilityRule struct {
 	fileChecksum       string
@@ -286,6 +289,13 @@ func prepareNonTransactionalMigration(ctx context.Context, db migrationExecutor,
 		return dropInvalidIndexIfPresent(ctx, db, latestAPIKeyIPIndex)
 	case usersEmailDotStrippedIndexMigration:
 		return dropInvalidIndexIfPresent(ctx, db, usersEmailDotStrippedIndex)
+	case usageLogsEffectiveModelIndexesMigration:
+		for _, indexName := range []string{usageLogsEffectiveRequestedModelIndex, usageLogsEffectiveUpstreamModelIndex} {
+			if err := dropInvalidIndexIfPresent(ctx, db, indexName); err != nil {
+				return err
+			}
+		}
+		return nil
 	default:
 		return nil
 	}

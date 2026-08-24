@@ -681,6 +681,42 @@ func TestBuildOpenAIWSReplayInputSequence(t *testing.T) {
 		require.Equal(t, "world", gjson.GetBytes(items[1], "text").String())
 	})
 
+	t.Run("previous_response_id_filters_orphan_historical_tool_call", func(t *testing.T) {
+		previousFull := []json.RawMessage{
+			json.RawMessage(`{"type":"input_text","text":"hello"}`),
+			json.RawMessage(`{"type":"custom_tool_call","call_id":"call_orphan","name":"exec"}`),
+		}
+		items, exists, err := buildOpenAIWSReplayInputSequence(
+			previousFull,
+			true,
+			[]byte(`{"previous_response_id":"resp_1","input":[{"role":"user","content":"continue"}]}`),
+			true,
+		)
+		require.NoError(t, err)
+		require.True(t, exists)
+		require.Len(t, items, 2)
+		require.Equal(t, "hello", gjson.GetBytes(items[0], "text").String())
+		require.Equal(t, "user", gjson.GetBytes(items[1], "role").String())
+	})
+
+	t.Run("previous_response_id_preserves_paired_historical_tool_call", func(t *testing.T) {
+		previousFull := []json.RawMessage{
+			json.RawMessage(`{"type":"custom_tool_call","call_id":"call_1","name":"exec"}`),
+			json.RawMessage(`{"type":"custom_tool_call_output","call_id":"call_1","output":"ok"}`),
+		}
+		items, exists, err := buildOpenAIWSReplayInputSequence(
+			previousFull,
+			true,
+			[]byte(`{"previous_response_id":"resp_1","input":[{"role":"user","content":"continue"}]}`),
+			true,
+		)
+		require.NoError(t, err)
+		require.True(t, exists)
+		require.Len(t, items, 3)
+		require.Equal(t, "custom_tool_call", gjson.GetBytes(items[0], "type").String())
+		require.Equal(t, "custom_tool_call_output", gjson.GetBytes(items[1], "type").String())
+	})
+
 	t.Run("previous_response_id_full_input_replace", func(t *testing.T) {
 		items, exists, err := buildOpenAIWSReplayInputSequence(
 			lastFull,

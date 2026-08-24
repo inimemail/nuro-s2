@@ -11,12 +11,16 @@
  */
 
 import { useI18n } from 'vue-i18n'
-import type { MonitorStatus, Provider } from '@/api/admin/channelMonitor'
+import type { CheckMode, MonitorStatus, Provider } from '@/api/admin/channelMonitor'
 import {
   PROVIDER_OPENAI,
   PROVIDER_ANTHROPIC,
   PROVIDER_GEMINI,
   PROVIDER_GROK,
+  PROVIDER_ANTIGRAVITY,
+  PROVIDER_KIMI,
+  PROVIDER_ZHIPU,
+  PROVIDER_DEEPSEEK,
   STATUS_OPERATIONAL,
   STATUS_DEGRADED,
   STATUS_FAILED,
@@ -58,10 +62,25 @@ export function useChannelMonitorFormat() {
   }
 
   function providerLabel(p: Provider | string): string {
-    if (p === PROVIDER_OPENAI || p === PROVIDER_ANTHROPIC || p === PROVIDER_GEMINI || p === PROVIDER_GROK) {
+    if ([PROVIDER_OPENAI, PROVIDER_ANTHROPIC, PROVIDER_GEMINI, PROVIDER_GROK, PROVIDER_ANTIGRAVITY, PROVIDER_KIMI, PROVIDER_ZHIPU, PROVIDER_DEEPSEEK].includes(p as Provider)) {
       return t(`monitorCommon.providers.${p}`)
     }
     return p || '-'
+  }
+
+  function checkModeLabel(mode: CheckMode | string): string {
+    if (mode === 'probe' || mode === 'quota' || mode === 'quota_probe') return t(`monitorCommon.checkMode.${mode}`)
+    return mode || '-'
+  }
+
+  function formatMonitorModel(model: string): string {
+    return model === 'quota' ? t('monitorCommon.checkMode.quota') : model
+  }
+
+  function checkModeBadgeClass(mode: CheckMode | string): string {
+    return mode === 'quota' || mode === 'quota_probe'
+      ? 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'
+      : NEUTRAL_BADGE
   }
 
   function providerBadgeClass(p: Provider | string): string {
@@ -74,6 +93,14 @@ export function useChannelMonitorFormat() {
         return 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300'
       case PROVIDER_GROK:
         return 'bg-zinc-100 text-zinc-700 dark:bg-zinc-500/15 dark:text-zinc-300'
+      case PROVIDER_ANTIGRAVITY:
+        return 'bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300'
+      case PROVIDER_KIMI:
+        return 'bg-pink-100 text-pink-700 dark:bg-pink-500/15 dark:text-pink-300'
+      case PROVIDER_ZHIPU:
+        return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300'
+      case PROVIDER_DEEPSEEK:
+        return 'bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300'
       default:
         return NEUTRAL_BADGE
     }
@@ -102,6 +129,13 @@ export function useChannelMonitorFormat() {
         return active
           ? 'border-zinc-500 bg-zinc-50 text-zinc-800 dark:bg-zinc-500/15 dark:text-zinc-200 dark:border-zinc-400'
           : 'border-gray-200 bg-white text-gray-600 hover:border-zinc-400 hover:text-zinc-800 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400 dark:hover:border-zinc-500/50'
+      case PROVIDER_ANTIGRAVITY:
+      case PROVIDER_KIMI:
+      case PROVIDER_ZHIPU:
+      case PROVIDER_DEEPSEEK:
+        return active
+          ? 'border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-400 dark:bg-blue-500/15 dark:text-blue-300'
+          : 'border-gray-200 bg-white text-gray-600 hover:border-blue-300 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400'
       default:
         return active
           ? 'border-gray-400 bg-gray-50 text-gray-700 dark:border-dark-500 dark:bg-dark-700 dark:text-gray-200'
@@ -142,7 +176,10 @@ export function useChannelMonitorFormat() {
     statusLabel,
     statusBadgeClass,
     providerLabel,
+    checkModeLabel,
+    formatMonitorModel,
     providerBadgeClass,
+    checkModeBadgeClass,
     providerPickerClass,
     formatLatency,
     formatPercent,

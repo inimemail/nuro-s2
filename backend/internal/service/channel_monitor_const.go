@@ -59,13 +59,24 @@ const (
 	providerGeminiPathTemplate = "/v1beta/models/%s:generateContent"
 
 	// MonitorProvider* provider 字符串常量（也是 ent enum 的实际值）。
-	MonitorProviderOpenAI    = "openai"
-	MonitorProviderAnthropic = "anthropic"
-	MonitorProviderGemini    = "gemini"
-	MonitorProviderGrok      = "grok"
-	MonitorProviderKimi      = "kimi"
-	MonitorProviderZhipu     = "zhipu"
-	MonitorProviderDeepSeek  = "deepseek"
+	MonitorProviderOpenAI      = "openai"
+	MonitorProviderAnthropic   = "anthropic"
+	MonitorProviderGemini      = "gemini"
+	MonitorProviderGrok        = "grok"
+	MonitorProviderAntigravity = "antigravity"
+	MonitorProviderKimi        = "kimi"
+	MonitorProviderZhipu       = "zhipu"
+	MonitorProviderDeepSeek    = "deepseek"
+
+	MonitorCheckModeProbe      = "probe"
+	MonitorCheckModeQuota      = "quota"
+	MonitorCheckModeQuotaProbe = "quota_probe"
+	MonitorDefaultQuotaModel   = "quota"
+
+	monitorQuotaFetchCacheTTL       = 5 * time.Minute
+	monitorQuotaErrorCacheTTL       = time.Minute
+	monitorQuotaFetchTimeout        = 45 * time.Second
+	monitorQuotaDegradedUsedPercent = 90.0
 
 	MonitorDefaultGrokModel = "grok-4.5"
 
@@ -122,7 +133,19 @@ var (
 		"CHANNEL_MONITOR_NOT_FOUND", "channel monitor not found",
 	)
 	ErrChannelMonitorInvalidProvider = infraerrors.BadRequest(
-		"CHANNEL_MONITOR_INVALID_PROVIDER", "provider must be one of openai/anthropic/gemini/grok/kimi/zhipu/deepseek",
+		"CHANNEL_MONITOR_INVALID_PROVIDER", "provider must be one of openai/anthropic/gemini/grok/antigravity/kimi/zhipu/deepseek",
+	)
+	ErrChannelMonitorInvalidCheckMode = infraerrors.BadRequest(
+		"CHANNEL_MONITOR_INVALID_CHECK_MODE", "check_mode must be one of probe/quota/quota_probe; antigravity only supports quota",
+	)
+	ErrChannelMonitorAccountRequired = infraerrors.BadRequest(
+		"CHANNEL_MONITOR_ACCOUNT_REQUIRED", "account_id is required for quota-based check_mode",
+	)
+	ErrChannelMonitorProviderIncompatible = infraerrors.BadRequest(
+		"CHANNEL_MONITOR_PROVIDER_INCOMPATIBLE", "monitor provider must match the linked account platform",
+	)
+	ErrChannelMonitorAccountNotSupportable = infraerrors.BadRequest(
+		"CHANNEL_MONITOR_ACCOUNT_NOT_SUPPORTABLE", "linked account cannot serve as a quota data source",
 	)
 	ErrChannelMonitorInvalidAPIMode = infraerrors.BadRequest(
 		"CHANNEL_MONITOR_INVALID_API_MODE", "api_mode must be chat_completions or responses; responses is only supported for openai",

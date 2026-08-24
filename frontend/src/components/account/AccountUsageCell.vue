@@ -1,6 +1,7 @@
 <template>
   <div ref="rootRef" v-if="showUsageWindows">
     <OllamaCloudUsageCell :account="account" />
+    <CNProviderUsageCell :account="account" />
     <!-- Anthropic OAuth and Setup Token accounts: fetch real usage data -->
     <template
       v-if="
@@ -781,6 +782,7 @@ import { formatCompactNumber } from '@/utils/format'
 import UsageProgressBar from './UsageProgressBar.vue'
 import AccountQuotaInfo from './AccountQuotaInfo.vue'
 import OllamaCloudUsageCell from './OllamaCloudUsageCell.vue'
+import CNProviderUsageCell from './CNProviderUsageCell.vue'
 
 // Module-level cache shared across all AccountUsageCell instances
 const _usageCache = new Map<number, { data: AccountUsageInfo; ts: number }>()
@@ -835,6 +837,10 @@ let visibilityObserver: IntersectionObserver | null = null
 
 // Show usage windows for OAuth and Setup Token accounts
 const showUsageWindows = computed(() => {
+  // Domestic API-key accounts expose their provider balance/quota in the
+  // dedicated CNProviderUsageCell below. Keep that cell inside the same
+  // viewport-gated wrapper used by the other usage panels.
+  if (props.account.type === 'apikey' && ['kimi', 'zhipu', 'deepseek'].includes(props.account.platform)) return true
   if (props.account.type === 'apikey' && (props.account.platform === 'openai' || props.account.platform === 'anthropic')) {
     const baseURL = String((props.account.credentials as Record<string, unknown> | undefined)?.base_url || '').replace(/\/$/, '')
     if (baseURL === 'https://ollama.com' || baseURL === 'https://ollama.com/v1') return true

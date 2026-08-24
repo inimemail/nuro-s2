@@ -29,6 +29,25 @@ const (
 	PlatformComposite   = "composite"
 )
 
+// Domestic provider account modes are stored independently from the wire
+// protocol. The local UI uses "coding_plan"; "coding" remains a read-only
+// compatibility value for accounts imported from upstream sub2api.
+const (
+	CNBillingModePayG       = "payg"
+	CNBillingModeCodingPlan = "coding_plan"
+	AccountModePayG         = "payg"
+	AccountModeCoding       = "coding"
+)
+
+// Domestic provider upstream protocols. Missing or invalid values always
+// fall back to Chat Completions to preserve legacy account behavior.
+const (
+	APIProtocolChatCompletions = "chat_completions"
+	APIProtocolAnthropic       = "anthropic"
+	APIProtocolResponses       = "responses"
+	APIProtocolAdaptive        = "adaptive"
+)
+
 // Account type constants
 const (
 	AccountTypeOAuth          = "oauth"           // OAuth类型账号（full scope: profile + inference）

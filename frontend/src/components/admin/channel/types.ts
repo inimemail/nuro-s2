@@ -9,6 +9,10 @@ export interface IntervalFormEntry {
   output_price: number | string | null
   cache_write_price: number | string | null
   cache_read_price: number | string | null
+  input_multiplier: number | string | null
+  output_multiplier: number | string | null
+  cache_write_multiplier: number | string | null
+  cache_read_multiplier: number | string | null
   per_request_price: number | string | null
   sort_order: number
 }
@@ -20,6 +24,8 @@ export interface PricingFormEntry {
   output_price: number | string | null
   cache_write_price: number | string | null
   cache_read_price: number | string | null
+  fast_multiplier?: number | string | null
+  flex_multiplier?: number | string | null
   image_input_price: number | string | null
   image_output_price: number | string | null
   per_request_price: number | string | null
@@ -58,6 +64,10 @@ export function apiIntervalsToForm(intervals: PricingInterval[]): IntervalFormEn
     output_price: perTokenToMTok(iv.output_price),
     cache_write_price: perTokenToMTok(iv.cache_write_price),
     cache_read_price: perTokenToMTok(iv.cache_read_price),
+    input_multiplier: iv.input_multiplier,
+    output_multiplier: iv.output_multiplier,
+    cache_write_multiplier: iv.cache_write_multiplier,
+    cache_read_multiplier: iv.cache_read_multiplier,
     per_request_price: iv.per_request_price,
     sort_order: iv.sort_order
   }))
@@ -72,6 +82,10 @@ export function formIntervalsToAPI(intervals: IntervalFormEntry[]): PricingInter
     output_price: mTokToPerToken(iv.output_price),
     cache_write_price: mTokToPerToken(iv.cache_write_price),
     cache_read_price: mTokToPerToken(iv.cache_read_price),
+    input_multiplier: toNullableNumber(iv.input_multiplier),
+    output_multiplier: toNullableNumber(iv.output_multiplier),
+    cache_write_multiplier: toNullableNumber(iv.cache_write_multiplier),
+    cache_read_multiplier: toNullableNumber(iv.cache_read_multiplier),
     per_request_price: toNullableNumber(iv.per_request_price),
     sort_order: iv.sort_order
   }))
@@ -205,9 +219,16 @@ function validateIntervalPrices(iv: IntervalFormEntry, idx: number): string | nu
     ['输出价格', iv.output_price],
     ['缓存写入价格', iv.cache_write_price],
     ['缓存读取价格', iv.cache_read_price],
+    ['输入倍率', iv.input_multiplier],
+    ['输出倍率', iv.output_multiplier],
+    ['缓存写入倍率', iv.cache_write_multiplier],
+    ['缓存读取倍率', iv.cache_read_multiplier],
     ['单次价格', iv.per_request_price],
   ]
   for (const [name, val] of prices) {
+    if (val != null && val !== '' && Number(val) <= 0 && name.includes('倍率')) {
+      return `区间 #${idx + 1}: ${name}必须大于 0`
+    }
     if (val != null && val !== '' && Number(val) < 0) {
       return `区间 #${idx + 1}: ${name}不能为负数`
     }

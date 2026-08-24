@@ -1,6 +1,9 @@
 package service
 
-import "time"
+import (
+	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"time"
+)
 
 // MonitorBodyOverrideMode 自定义请求体处理模式。
 //
@@ -43,6 +46,8 @@ type ChannelMonitor struct {
 	CreatedBy       int64
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	CheckMode       string
+	AccountID       *int64
 
 	// 请求自定义快照（来自模板拷贝 or 用户手填，运行时直接读取）
 	TemplateID       *int64            // 仅用于 UI 分组 + 一键应用，运行时不用
@@ -57,6 +62,8 @@ type ChannelMonitor struct {
 	// DuplicateOperationID is internal persistence metadata used only for
 	// idempotent recovery after an ambiguous duplicate request.
 	DuplicateOperationID string
+	// ClearAccount is an internal update marker consumed by the repository.
+	ClearAccount bool
 }
 
 // ChannelMonitorListParams 列表查询过滤参数。
@@ -85,6 +92,8 @@ type ChannelMonitorCreateParams struct {
 	ExtraHeaders     map[string]string
 	BodyOverrideMode string
 	BodyOverride     map[string]any
+	CheckMode        string
+	AccountID        *int64
 }
 
 // ChannelMonitorUpdateParams 更新参数（指针字段表示"未提供则不更新"）。
@@ -107,6 +116,12 @@ type ChannelMonitorUpdateParams struct {
 	ExtraHeaders     *map[string]string
 	BodyOverrideMode *string
 	BodyOverride     *map[string]any
+	CheckMode        *string
+	AccountID        *int64
+	// ClearAccount explicitly removes the linked quota account. A nil AccountID
+	// means "leave unchanged" during updates; callers that need to clear it
+	// should set this flag (the admin API also treats account_id <= 0 as clear).
+	ClearAccount bool
 }
 
 // CheckResult 单个模型一次检测的结果。
@@ -117,6 +132,7 @@ type CheckResult struct {
 	PingLatencyMs *int
 	Message       string
 	CheckedAt     time.Time
+	Quota         *domain.MonitorQuotaSnapshot
 }
 
 // UserMonitorView 用户只读视图：监控概览（含主模型最近状态 + 7d 可用率 + 附加模型最近状态）。
@@ -178,6 +194,7 @@ type ChannelMonitorHistoryRow struct {
 	PingLatencyMs *int
 	Message       string
 	CheckedAt     time.Time
+	Quota         *domain.MonitorQuotaSnapshot
 }
 
 // ChannelMonitorHistoryEntry 历史记录查询返回行（含 ent 主键 ID）。
@@ -189,6 +206,7 @@ type ChannelMonitorHistoryEntry struct {
 	PingLatencyMs *int
 	Message       string
 	CheckedAt     time.Time
+	Quota         *domain.MonitorQuotaSnapshot
 }
 
 // ChannelMonitorLatest 最近一次检测的简明信息（用于 UserMonitorView 聚合）。
@@ -198,6 +216,7 @@ type ChannelMonitorLatest struct {
 	LatencyMs     *int
 	PingLatencyMs *int
 	CheckedAt     time.Time
+	Quota         *domain.MonitorQuotaSnapshot
 }
 
 // ChannelMonitorAvailability 单个模型在某窗口内的可用率与平均延迟（用于 UserMonitorDetail 聚合）。
@@ -216,6 +235,7 @@ type ChannelMonitorAvailability struct {
 type MonitorStatusSummary struct {
 	PrimaryStatus    string // 空字符串表示无历史
 	PrimaryLatencyMs *int
+	LatestQuota      *domain.MonitorQuotaSnapshot
 	Availability7d   float64 // 0-100，无历史时为 0
 	ExtraModels      []ExtraModelStatus
 }

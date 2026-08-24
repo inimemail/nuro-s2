@@ -47,6 +47,20 @@ describe('refreshAuthTokens', () => {
     await expect(second).resolves.toMatchObject({ refresh_token: 'new-refresh' })
   })
 
+  it('reuses a healthy token during proactive refresh window', async () => {
+    localStorage.setItem('auth_token', 'current-access')
+    localStorage.setItem('refresh_token', 'current-refresh')
+    localStorage.setItem('token_expires_at', String(Date.now() + 10 * 60_000))
+    localStorage.setItem('auth_user', JSON.stringify({ id: 7, email: 'admin@example.com' }))
+    const { refreshAuthTokens } = await import('@/api/tokenRefresh')
+
+    await expect(refreshAuthTokens()).resolves.toMatchObject({
+      access_token: 'current-access',
+      refresh_token: 'current-refresh'
+    })
+    expect(mockedPost).not.toHaveBeenCalled()
+  })
+
   it('adopts a token rotated by another tab after acquiring the Web Lock', async () => {
     seedSession()
     const request = vi.fn(async (_name: string, callback: () => Promise<unknown>) => {

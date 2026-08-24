@@ -56,8 +56,8 @@ func TestExtractUpstreamModelIDs(t *testing.T) {
 	}{
 		{
 			name: "openai and anthropic data array",
-			body: `{"data":[{"id":"claude-sonnet-4-5"},{"id":"gpt-5"},{"id":"gpt-5"},{"id":""}]}`,
-			want: []string{"claude-sonnet-4-5", "gpt-5"},
+			body: `{"data":[{"id":"claude-sonnet-4-5"},{"id":"gpt-5"},{"id":"gpt-5"},{"id":""},{"slug":"o3-mini"}]}`,
+			want: []string{"claude-sonnet-4-5", "gpt-5", "o3-mini"},
 		},
 		{
 			name: "gemini models array strips prefix",
@@ -68,6 +68,11 @@ func TestExtractUpstreamModelIDs(t *testing.T) {
 			name: "top level array",
 			body: `[{"id":"z-model"},{"name":"models/a-model"}]`,
 			want: []string{"a-model", "z-model"},
+		},
+		{
+			name: "codex manifest uses slug",
+			body: `{"models":[{"slug":"gpt-5-codex"},{"slug":"gpt-5-codex"}]}`,
+			want: []string{"gpt-5-codex"},
 		},
 	}
 
@@ -216,6 +221,63 @@ func TestFetchUpstreamSupportedModelsParsesOpenAIResponse(t *testing.T) {
 	require.Equal(t, []string{"gpt-5", "o3"}, models)
 	require.Equal(t, "https://openai.example.com/v1/models", upstream.lastReq.URL.String())
 	require.Equal(t, "Bearer openai-key", upstream.lastReq.Header.Get("Authorization"))
+}
+
+func TestFetchUpstreamSupportedModelsParsesOpenAIOAuthManifest(t *testing.T) {
+	t.Parallel()
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"models":[{"slug":"gpt-5-codex"}]}`)),
+	}}
+	svc := &AccountTestService{
+		httpUpstream: upstream,
+		cfg:          upstreamModelSyncTestConfig(),
+	}
+
+	models, err := svc.FetchUpstreamSupportedModels(context.Background(), &Account{
+		ID:       9,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":       "oauth-access-token",
+			"chatgpt_account_id": "acct_test",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-5-codex"}, models)
+	require.Equal(t, "https://chatgpt.com/backend-api/codex/models", upstream.lastReq.URL.Scheme+"://"+upstream.lastReq.URL.Host+upstream.lastReq.URL.Path)
+	require.Equal(t, "oauth-access-token", strings.TrimPrefix(upstream.lastReq.Header.Get("Authorization"), "Bearer "))
+	require.Equal(t, "acct_test", upstream.lastReq.Header.Get("chatgpt-account-id"))
+	require.NotEmpty(t, upstream.lastReq.URL.Query().Get("client_version"))
+}
+
+func TestFetchUpstreamSupportedModelsUsesConfiguredBodyLimit(t *testing.T) {
+	t.Parallel()
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"model"}]}`)),
+	}}
+	cfg := upstreamModelSyncTestConfig()
+	cfg.Gateway.ModelsListReadMaxBytes = 8
+	svc := &AccountTestService{httpUpstream: upstream, cfg: cfg}
+
+	_, err := svc.FetchUpstreamSupportedModels(context.Background(), &Account{
+		ID:       10,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "openai-key",
+		},
+	})
+	require.Error(t, err)
+	var syncErr *UpstreamModelSyncError
+	require.ErrorAs(t, err, &syncErr)
+	require.Equal(t, UpstreamModelSyncErrorUpstream, syncErr.Kind)
+	require.Contains(t, syncErr.SafeMessage(), "too large")
 }
 
 func TestFetchUpstreamSupportedModelsDoesNotExposeUpstreamBody(t *testing.T) {

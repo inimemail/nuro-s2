@@ -44,6 +44,7 @@ func resolveAccountStatsCostWithPolicy(
 	requestCount int,
 	totalCost float64,
 	applyModelFileLongContext bool,
+	serviceTier ...string,
 ) *float64 {
 	if channelService == nil || upstreamModel == "" {
 		return nil
@@ -56,7 +57,7 @@ func resolveAccountStatsCostWithPolicy(
 	platform := channelService.GetGroupPlatform(ctx, groupID)
 
 	// 优先级 1：自定义规则（始终尝试）
-	if cost := tryCustomRules(channel, accountID, groupID, platform, upstreamModel, tokens, requestCount); cost != nil {
+	if cost := tryCustomRules(channel, accountID, groupID, platform, upstreamModel, tokens, requestCount, serviceTier...); cost != nil {
 		return cost
 	}
 
@@ -113,7 +114,7 @@ func tryModelFilePricingWithPolicy(
 // tryCustomRules 遍历自定义规则，按数组顺序先命中为准。
 func tryCustomRules(
 	channel *Channel, accountID, groupID int64,
-	platform, model string, tokens UsageTokens, requestCount int,
+	platform, model string, tokens UsageTokens, requestCount int, serviceTier ...string,
 ) *float64 {
 	modelLower := strings.ToLower(model)
 	for _, rule := range channel.AccountStatsPricingRules {
@@ -124,7 +125,7 @@ func tryCustomRules(
 		if pricing == nil {
 			continue // 规则匹配但模型不在规则定价中，继续下一条
 		}
-		return calculateStatsCost(pricing, tokens, requestCount)
+		return calculateStatsCost(pricing, tokens, requestCount, serviceTier...)
 	}
 	return nil
 }
@@ -193,15 +194,15 @@ func isPlatformMatch(queryPlatform, pricingPlatform string) bool {
 }
 
 // calculateStatsCost 使用给定的定价计算费用（不含任何倍率，原始费用）。
-func calculateStatsCost(pricing *ChannelModelPricing, tokens UsageTokens, requestCount int) *float64 {
+func calculateStatsCost(pricing *ChannelModelPricing, tokens UsageTokens, requestCount int, serviceTier ...string) *float64 {
 	if pricing == nil {
 		return nil
 	}
 	switch pricing.BillingMode {
 	case BillingModePerRequest, BillingModeImage:
-		return calculatePerRequestStatsCost(pricing, requestCount)
+		return applyStatsServiceTierMultiplier(calculatePerRequestStatsCost(pricing, requestCount), pricing, serviceTier...)
 	default:
-		return calculateTokenStatsCost(pricing, tokens)
+		return applyStatsServiceTierMultiplier(calculateTokenStatsCost(pricing, tokens), pricing, serviceTier...)
 	}
 }
 
@@ -219,6 +220,7 @@ func calculatePerRequestStatsCost(pricing *ChannelModelPricing, requestCount int
 // and use its prices instead of the flat pricing fields.
 func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *float64 {
 	p := pricing
+	var inputMultiplier, outputMultiplier, cacheWriteMultiplier, cacheReadMultiplier *float64
 	if len(pricing.Intervals) > 0 {
 		totalTokens := tokens.InputTokens + tokens.OutputTokens + tokens.CacheCreationTokens + tokens.CacheReadTokens
 		if iv := FindMatchingInterval(pricing.Intervals, totalTokens); iv != nil {
@@ -229,6 +231,10 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 				CacheReadPrice:  iv.CacheReadPrice,
 				PerRequestPrice: iv.PerRequestPrice,
 			}
+			inputMultiplier = iv.InputMultiplier
+			outputMultiplier = iv.OutputMultiplier
+			cacheWriteMultiplier = iv.CacheWriteMultiplier
+			cacheReadMultiplier = iv.CacheReadMultiplier
 		}
 	}
 	deref := func(ptr *float64) float64 {
@@ -237,15 +243,49 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 		}
 		return *ptr
 	}
-	cost := float64(tokens.InputTokens)*deref(p.InputPrice) +
-		float64(tokens.OutputTokens)*deref(p.OutputPrice) +
-		float64(tokens.CacheCreationTokens)*deref(p.CacheWritePrice) +
-		float64(tokens.CacheReadTokens)*deref(p.CacheReadPrice) +
+	inputPrice := deref(p.InputPrice)
+	if p.InputPrice == nil && inputMultiplier != nil {
+		inputPrice = deref(pricing.InputPrice) * *inputMultiplier
+	}
+	outputPrice := deref(p.OutputPrice)
+	if p.OutputPrice == nil && outputMultiplier != nil {
+		outputPrice = deref(pricing.OutputPrice) * *outputMultiplier
+	}
+	cacheWritePrice := deref(p.CacheWritePrice)
+	if p.CacheWritePrice == nil && cacheWriteMultiplier != nil {
+		cacheWritePrice = deref(pricing.CacheWritePrice) * *cacheWriteMultiplier
+	}
+	cacheReadPrice := deref(p.CacheReadPrice)
+	if p.CacheReadPrice == nil && cacheReadMultiplier != nil {
+		cacheReadPrice = deref(pricing.CacheReadPrice) * *cacheReadMultiplier
+	}
+	cost := float64(tokens.InputTokens)*inputPrice +
+		float64(tokens.OutputTokens)*outputPrice +
+		float64(tokens.CacheCreationTokens)*cacheWritePrice +
+		float64(tokens.CacheReadTokens)*cacheReadPrice +
 		float64(tokens.ImageOutputTokens)*deref(p.ImageOutputPrice)
 	if cost <= 0 {
 		return nil
 	}
 	return &cost
+}
+
+func applyStatsServiceTierMultiplier(cost *float64, pricing *ChannelModelPricing, serviceTier ...string) *float64 {
+	if cost == nil || pricing == nil || len(serviceTier) == 0 {
+		return cost
+	}
+	var multiplier *float64
+	switch normalizeBillingServiceTier(serviceTier[0]) {
+	case "priority", "fast":
+		multiplier = pricing.FastMultiplier
+	case "flex":
+		multiplier = pricing.FlexMultiplier
+	}
+	if multiplier == nil || *multiplier <= 0 || *multiplier == 1 {
+		return cost
+	}
+	value := *cost * *multiplier
+	return &value
 }
 
 // applyAccountStatsCost resolves the account stats cost for a usage log entry.
@@ -286,6 +326,11 @@ func applyAccountStatsCostWithPolicy(
 	}
 	usageLog.AccountStatsCost = resolveAccountStatsCostWithPolicy(
 		ctx, cs, bs, accountID, groupID, model, tokens, requestCount, totalCost,
-		applyModelFileLongContext,
+		applyModelFileLongContext, func() string {
+			if usageLog != nil && usageLog.ServiceTier != nil {
+				return *usageLog.ServiceTier
+			}
+			return ""
+		}(),
 	)
 }

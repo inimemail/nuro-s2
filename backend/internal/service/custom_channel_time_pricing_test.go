@@ -17,6 +17,23 @@ func TestChannelTimePricingMultiplierAt(t *testing.T) {
 	}
 }
 
+func TestChannelTimePricingWeekdaysOnly(t *testing.T) {
+	config := &ChannelTimePricing{
+		Timezone: "Asia/Shanghai",
+		Periods: []ChannelTimePricingPeriod{{
+			StartTime: "09:00", EndTime: "17:00", Multiplier: 1.8, WeekdaysOnly: true,
+		}},
+	}
+	weekday := time.Date(2026, 8, 24, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	weekend := time.Date(2026, 8, 23, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	if got := config.MultiplierAt(weekday); got != 1.8 {
+		t.Fatalf("weekday multiplier = %v", got)
+	}
+	if got := config.MultiplierAt(weekend); got != 1 {
+		t.Fatalf("weekend multiplier = %v", got)
+	}
+}
+
 func TestChannelTimePricingRejectsOverlapAndInvalidTimezone(t *testing.T) {
 	if err := validateChannelTimePricing(&ChannelTimePricing{Timezone: "UTC", Periods: []ChannelTimePricingPeriod{{StartTime: "09:00", EndTime: "12:00", Multiplier: 1}, {StartTime: "11:00", EndTime: "13:00", Multiplier: 1}}}); err == nil {
 		t.Fatal("expected overlap error")

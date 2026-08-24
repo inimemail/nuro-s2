@@ -1,10 +1,13 @@
 <template>
-  <div class="flex items-center gap-2">
-    <span class="text-sm text-gray-900 dark:text-gray-100">{{ row.primary_model }}</span>
+  <div class="flex min-w-[240px] items-start justify-between gap-3">
+    <div class="min-w-0 flex-1">
+      <span class="text-sm text-gray-900 dark:text-gray-100">{{ formatMonitorModel(row.primary_model) }}</span>
+      <MonitorQuotaView v-if="row.latest_quota" :snapshot="row.latest_quota" class="mt-1" />
+    </div>
     <HelpTooltip>
       <template #trigger>
         <span
-          class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+          class="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
           :class="statusBadgeClass(row.primary_status)"
         >
           {{ statusLabel(row.primary_status) }}
@@ -12,7 +15,7 @@
       </template>
       <div class="space-y-2">
         <div class="text-xs font-semibold text-gray-100">
-          {{ row.primary_model }}
+          {{ formatMonitorModel(row.primary_model) }}
           <span
             class="ml-1 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium"
             :class="statusBadgeClass(row.primary_status)"
@@ -60,6 +63,7 @@
 import { useI18n } from 'vue-i18n'
 import type { ChannelMonitor } from '@/api/admin/channelMonitor'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
+import MonitorQuotaView from '@/components/common/MonitorQuotaView.vue'
 import { useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 
 defineProps<{
@@ -67,5 +71,5 @@ defineProps<{
 }>()
 
 const { t } = useI18n()
-const { statusLabel, statusBadgeClass, formatLatency } = useChannelMonitorFormat()
+const { statusLabel, statusBadgeClass, formatLatency, formatMonitorModel } = useChannelMonitorFormat()
 </script>

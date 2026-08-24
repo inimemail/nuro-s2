@@ -9,11 +9,39 @@ import (
 // 渠道监控参数校验与归一化辅助函数。
 // 校验失败一律返回 channel_monitor_const.go 中预定义的 Err* 错误，错误信息不含具体 IP/hostname，避免泄露内网拓扑。
 
-// validateProvider 校验 provider 字符串。
-// 唯一来源于 providerAdapters：新增 provider 只需要在 channel_monitor_checker.go 注册 adapter。
+var monitorProviders = map[string]struct{}{
+	MonitorProviderOpenAI: {}, MonitorProviderAnthropic: {}, MonitorProviderGemini: {},
+	MonitorProviderGrok: {}, MonitorProviderAntigravity: {}, MonitorProviderKimi: {},
+	MonitorProviderZhipu: {}, MonitorProviderDeepSeek: {},
+}
+
+// validateProvider 校验 provider 字符串。Antigravity 仅支持配额，因此不在探活 adapter 表中。
 func validateProvider(p string) error {
-	if !isSupportedProvider(p) {
+	if _, ok := monitorProviders[p]; !ok {
 		return ErrChannelMonitorInvalidProvider
+	}
+	return nil
+}
+
+func defaultCheckMode(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return MonitorCheckModeProbe
+	}
+	return strings.TrimSpace(mode)
+}
+
+func monitorCheckModeUsesQuota(mode string) bool {
+	mode = defaultCheckMode(mode)
+	return mode == MonitorCheckModeQuota || mode == MonitorCheckModeQuotaProbe
+}
+
+func validateCheckMode(provider, mode string) error {
+	mode = defaultCheckMode(mode)
+	if mode != MonitorCheckModeProbe && mode != MonitorCheckModeQuota && mode != MonitorCheckModeQuotaProbe {
+		return ErrChannelMonitorInvalidCheckMode
+	}
+	if provider == MonitorProviderAntigravity && mode != MonitorCheckModeQuota {
+		return ErrChannelMonitorInvalidCheckMode
 	}
 	return nil
 }
@@ -115,12 +143,46 @@ func normalizeModels(in []string) []string {
 	return out
 }
 
-func normalizeMonitorPrimaryModel(provider, model string) string {
+func normalizeMonitorPrimaryModel(provider, checkMode, model string) string {
 	model = strings.TrimSpace(model)
+	if model == "" && defaultCheckMode(checkMode) == MonitorCheckModeQuota {
+		return MonitorDefaultQuotaModel
+	}
 	if model == "" && provider == MonitorProviderGrok {
 		return MonitorDefaultGrokModel
 	}
 	return model
+}
+
+func monitorAccountQuotaCapability(account *Account) error {
+	if account == nil {
+		return ErrChannelMonitorAccountRequired
+	}
+	switch account.Platform {
+	case PlatformKimi, PlatformZhipu, PlatformDeepSeek:
+		if account.IsCodingPlan() {
+			if account.GetCodingPlanProvider() == "" {
+				return ErrChannelMonitorAccountNotSupportable
+			}
+			return nil
+		}
+		if account.Platform == PlatformZhipu {
+			return ErrChannelMonitorAccountNotSupportable
+		}
+	case PlatformAnthropic:
+		if account.Type != AccountTypeOAuth && account.Type != AccountTypeSetupToken {
+			return ErrChannelMonitorAccountNotSupportable
+		}
+	case PlatformOpenAI:
+		if account.Type != AccountTypeOAuth {
+			return ErrChannelMonitorAccountNotSupportable
+		}
+	case PlatformAntigravity:
+		if strings.TrimSpace(account.GetCredential("access_token")) == "" {
+			return ErrChannelMonitorAccountNotSupportable
+		}
+	}
+	return nil
 }
 
 // defaultAPIMode 空串归一为 chat_completions，保证历史数据与旧客户端兼容。

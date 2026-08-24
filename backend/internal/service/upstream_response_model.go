@@ -17,10 +17,11 @@ const (
 // upstreamResponseModelObserver is request-local diagnostic state. It never
 // changes routing, billing, cache behavior, or the downstream response.
 type upstreamResponseModelObserver struct {
-	mu       sync.RWMutex
-	first    string
-	terminal string
-	conflict bool
+	mu          sync.RWMutex
+	first       string
+	terminal    string
+	serviceTier string
+	conflict    bool
 }
 
 func (o *upstreamResponseModelObserver) Observe(model string, terminal bool) {
@@ -77,6 +78,7 @@ func (o *upstreamResponseModelObserver) beginTurn() {
 	o.mu.Lock()
 	o.first = ""
 	o.terminal = ""
+	o.serviceTier = ""
 	o.conflict = false
 	o.mu.Unlock()
 }
@@ -116,6 +118,66 @@ func (o *upstreamResponseModelObserver) ObserveOpenAI(payload []byte, eventType 
 	}
 	model := firstTrimmedGJSONModel(gjson.GetBytes(payload, "response.model"), gjson.GetBytes(payload, "model"))
 	o.Observe(model, isUpstreamResponseModelTerminalEvent(eventType))
+	if model != "" && strings.TrimSpace(eventType) != "response.created" && (strings.TrimSpace(eventType) == "" || isUpstreamResponseModelTerminalEvent(eventType)) {
+		tier := firstTrimmedGJSONModel(gjson.GetBytes(payload, "response.service_tier"), gjson.GetBytes(payload, "service_tier"))
+		if tier != "" {
+			o.mu.Lock()
+			o.serviceTier = strings.ToLower(tier)
+			o.mu.Unlock()
+		}
+	}
+}
+
+func observedUpstreamResponseServiceTier(c *gin.Context) string {
+	if o := upstreamResponseModelObserverFromContext(c); o != nil {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		return o.serviceTier
+	}
+	return ""
+}
+
+func ResolveBillingServiceTier(requested, observed string) string {
+	normalize := func(value string) string {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "fast" {
+			return "priority"
+		}
+		return value
+	}
+	requested, observed = normalize(requested), normalize(observed)
+	rank := func(value string) (int, bool) {
+		switch value {
+		case "flex":
+			return 0, true
+		case "", "default", "standard", "auto", "scale":
+			return 1, true
+		case "priority":
+			return 2, true
+		default:
+			return 1, false
+		}
+	}
+	observedRank, known := rank(observed)
+	requestedRank, _ := rank(requested)
+	if known && observed != "" && observedRank < requestedRank {
+		return observed
+	}
+	return requested
+}
+
+func ApplyObservedOpenAIServiceTier(c *gin.Context, result *OpenAIForwardResult) {
+	if result == nil {
+		return
+	}
+	requested := ""
+	if result.ServiceTier != nil {
+		requested = *result.ServiceTier
+	}
+	billing := ResolveBillingServiceTier(requested, observedUpstreamResponseServiceTier(c))
+	if billing != strings.TrimSpace(requested) {
+		result.ServiceTier = &billing
+	}
 }
 
 func (o *upstreamResponseModelObserver) ObserveAnthropic(payload []byte) {

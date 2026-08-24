@@ -118,3 +118,26 @@ func TestHasItemReferenceForCallIDs(t *testing.T) {
 	require.True(t, HasItemReferenceForCallIDs(req, []string{"call_1", "call_2"}))
 	require.False(t, HasItemReferenceForCallIDs(req, []string{"call_1", "call_3"}))
 }
+
+func TestAnalyzeToolCallOutputContextCoverageBytes(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		hasOutput bool
+		coversAll bool
+	}{
+		{name: "no output", body: `{"input":"hello"}`},
+		{name: "object output needs replay", body: `{"input":{"type":"custom_tool_call_output","call_id":"call_a"}}`, hasOutput: true},
+		{name: "paired context", body: `{"input":[{"type":"custom_tool_call","call_id":"call_a"},{"type":"custom_tool_call_output","call_id":"call_a"}]}`, hasOutput: true, coversAll: true},
+		{name: "item reference", body: `{"input":[{"type":"item_reference","id":"call_a"},{"type":"function_call_output","call_id":"call_a"}]}`, hasOutput: true, coversAll: true},
+		{name: "partial coverage", body: `{"input":[{"type":"function_call","call_id":"call_a"},{"type":"function_call_output","call_id":"call_a"},{"type":"function_call_output","call_id":"call_b"}]}`, hasOutput: true},
+		{name: "missing call id", body: `{"input":[{"type":"function_call_output"}]}`, hasOutput: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AnalyzeToolCallOutputContextCoverageBytes([]byte(tt.body))
+			require.Equal(t, tt.hasOutput, got.HasFunctionCallOutput)
+			require.Equal(t, tt.coversAll, got.ContextCoversAllCallIDs)
+		})
+	}
+}

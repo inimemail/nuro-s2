@@ -12,8 +12,9 @@ import (
 var channelTimePricingLocations sync.Map
 
 type parsedChannelTimePeriod struct {
-	start, end int
-	multiplier float64
+	start, end   int
+	multiplier   float64
+	weekdaysOnly bool
 }
 
 func validateChannelTimePricing(config *ChannelTimePricing) error {
@@ -42,6 +43,9 @@ func (config *ChannelTimePricing) MultiplierAt(at time.Time) float64 {
 	local := at.In(location)
 	second := local.Hour()*3600 + local.Minute()*60 + local.Second()
 	for _, period := range periods {
+		if period.weekdaysOnly && (local.Weekday() == time.Saturday || local.Weekday() == time.Sunday) {
+			continue
+		}
 		if second >= period.start && second < period.end {
 			return period.multiplier
 		}
@@ -107,7 +111,7 @@ func parseChannelTimePeriods(periods []ChannelTimePricingPeriod) ([]parsedChanne
 		if start >= end {
 			return nil, fmt.Errorf("start time must be before end time")
 		}
-		parsed = append(parsed, parsedChannelTimePeriod{start: start, end: end, multiplier: period.Multiplier})
+		parsed = append(parsed, parsedChannelTimePeriod{start: start, end: end, multiplier: period.Multiplier, weekdaysOnly: period.WeekdaysOnly})
 	}
 	sort.Slice(parsed, func(i, j int) bool { return parsed[i].start < parsed[j].start })
 	for i := 1; i < len(parsed); i++ {

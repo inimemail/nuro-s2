@@ -28,7 +28,7 @@
 
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
-        <div>
+        <div v-if="!isCNProvider || cnApiMode !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
             v-model="editBaseUrl"
@@ -75,6 +75,16 @@
                 <span class="mt-0.5 block truncate text-[11px] opacity-75">{{ preset.url }}</span>
               </button>
             </div>
+          </div>
+        </div>
+        <div v-if="isCNProvider && cnApiMode === 'adaptive'" class="rounded-lg border border-sky-200 bg-sky-50/70 p-3 dark:border-sky-800/50 dark:bg-sky-900/10">
+          <div class="mb-2 flex items-center gap-2 text-xs font-semibold text-sky-800 dark:text-sky-200"><Icon name="swap" size="sm" />{{ t('admin.accounts.cnProviders.adaptiveEndpoints', '自适应协议端点') }}</div>
+          <p class="mb-3 text-xs leading-5 text-sky-700/80 dark:text-sky-300/80">{{ t('admin.accounts.cnProviders.adaptiveEndpointsDesc', '根据下游请求协议选择对应端点，未填写时使用供应商默认地址。') }}</p>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label v-for="option in cnAdaptiveProtocolOptions" :key="option.value" class="min-w-0">
+              <span class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300">{{ option.label }}</span>
+              <input v-model="adaptiveBaseUrls[option.value]" type="url" class="input text-sm" :placeholder="option.url" :data-testid="`cn-adaptive-base-url-${option.value}`" />
+            </label>
           </div>
         </div>
         <div v-if="isCNProvider" class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -4710,19 +4720,32 @@ const defaultBaseUrl = computed(() => {
 })
 
 type CNBillingMode = 'payg' | 'coding_plan'
-type CNApiMode = 'chat_completions' | 'anthropic' | 'responses'
+type CNApiMode = 'adaptive' | 'chat_completions' | 'anthropic' | 'responses'
 const cnBillingMode = ref<CNBillingMode>('payg')
-const cnApiMode = ref<CNApiMode>('chat_completions')
+const cnApiMode = ref<CNApiMode>('adaptive')
+const adaptiveBaseUrls = ref<Record<string, string>>({})
 const isCNProvider = computed(() => ['kimi', 'zhipu', 'deepseek'].includes(props.account?.platform || ''))
 const cnBillingPlanSupported = computed(() => props.account?.platform === 'kimi' || props.account?.platform === 'zhipu')
 const cnApiProtocolOptions = computed(() => {
   const options: Array<{ value: CNApiMode; label: string; description: string }> = [
+    { value: 'adaptive', label: t('admin.accounts.cnProviders.adaptive', '自适应'), description: t('admin.accounts.cnProviders.adaptiveDesc', '按请求协议自动选择端点') },
     { value: 'chat_completions', label: t('admin.accounts.cnProviders.chatCompletions'), description: t('admin.accounts.cnProviders.chatCompletionsDesc') },
     { value: 'anthropic', label: t('admin.accounts.cnProviders.anthropic'), description: t('admin.accounts.cnProviders.anthropicDesc') }
   ]
   if (props.account?.platform === 'deepseek') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), description: t('admin.accounts.cnProviders.responsesDesc') })
   return options
 })
+const cnAdaptiveProtocolOptions = computed(() => {
+  const options = [
+    { value: 'chat_completions', label: t('admin.accounts.cnProviders.chatCompletions'), url: props.account?.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding/v1' : 'https://api.moonshot.cn/v1') : props.account?.platform === 'zhipu' ? 'https://open.bigmodel.cn/api/paas/v4' : 'https://api.deepseek.com/v1' },
+    { value: 'anthropic', label: t('admin.accounts.cnProviders.anthropic'), url: props.account?.platform === 'kimi' ? (cnBillingMode.value === 'coding_plan' ? 'https://api.kimi.com/coding' : 'https://api.moonshot.cn/anthropic') : props.account?.platform === 'zhipu' ? 'https://open.bigmodel.cn/api/anthropic' : 'https://api.deepseek.com/anthropic' }
+  ]
+  if (props.account?.platform === 'deepseek') options.push({ value: 'responses', label: t('admin.accounts.cnProviders.responses'), url: 'https://api.deepseek.com' })
+  return options
+})
+function resetAdaptiveBaseUrls() {
+  adaptiveBaseUrls.value = Object.fromEntries(cnAdaptiveProtocolOptions.value.map(option => [option.value, option.url]))
+}
 const cnBaseUrlPresets = computed(() => {
   if (props.account?.platform === 'kimi') return [
     { label: t('admin.accounts.cnProviders.kimiMoonshot'), url: 'https://api.moonshot.cn/v1' },
@@ -5081,9 +5104,17 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   cnBillingMode.value = accountExtra.cn_billing_mode === 'coding_plan' && (newAccount.platform === 'kimi' || newAccount.platform === 'zhipu')
     ? 'coding_plan'
     : 'payg'
-  cnApiMode.value = accountExtra.cn_api_mode === 'anthropic' || accountExtra.cn_api_mode === 'responses'
+  cnApiMode.value = accountExtra.cn_api_mode === 'adaptive' || accountExtra.cn_api_mode === 'anthropic' || accountExtra.cn_api_mode === 'responses'
     ? accountExtra.cn_api_mode as CNApiMode
     : 'chat_completions'
+  const configuredAdaptiveUrls = accountExtra.cn_api_base_urls as Record<string, unknown> | undefined
+  resetAdaptiveBaseUrls()
+  if (configuredAdaptiveUrls && typeof configuredAdaptiveUrls === 'object') {
+    for (const option of cnAdaptiveProtocolOptions.value) {
+      const configured = configuredAdaptiveUrls[option.value]
+      if (typeof configured === 'string' && configured.trim()) adaptiveBaseUrls.value[option.value] = configured.trim()
+    }
+  }
   loadPromptCacheCreationOptimizationFromCredentials(credentials || {}, newAccount)
   loadDownstreamCacheMarkupFromCredentials(credentials || {}, newAccount)
   interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
@@ -6199,6 +6230,12 @@ const handleSubmit = async () => {
         ...currentCredentials,
         base_url: newBaseUrl
       }
+      if (isCNProvider.value && cnApiMode.value === 'adaptive') {
+        newCredentials.base_url = (adaptiveBaseUrls.value.chat_completions || cnAdaptiveProtocolOptions.value[0]?.url || newBaseUrl).trim()
+        newCredentials.api_base_urls = Object.fromEntries(cnAdaptiveProtocolOptions.value.map(option => [option.value, (adaptiveBaseUrls.value[option.value] || option.url).trim()]))
+      } else if (isCNProvider.value) {
+        delete newCredentials.api_base_urls
+      }
 
       // Handle API key
       // 后端响应已脱敏：currentCredentials 不会再包含 api_key 原文。
@@ -6726,6 +6763,11 @@ const handleSubmit = async () => {
       newExtra.cn_api_mode = cnApiProtocolOptions.value.some(option => option.value === cnApiMode.value)
         ? cnApiMode.value
         : 'chat_completions'
+      if (cnApiMode.value === 'adaptive') {
+        newExtra.cn_api_base_urls = Object.fromEntries(cnAdaptiveProtocolOptions.value.map(option => [option.value, (adaptiveBaseUrls.value[option.value] || option.url).trim()]))
+      } else {
+        delete newExtra.cn_api_base_urls
+      }
       updatePayload.extra = newExtra
     }
 

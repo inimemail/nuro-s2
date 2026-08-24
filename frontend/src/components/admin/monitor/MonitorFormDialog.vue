@@ -12,6 +12,25 @@
       </div>
 
       <div>
+        <label class="input-label">{{ t('admin.channelMonitor.form.checkMode') }}</label>
+        <div class="grid gap-2 sm:grid-cols-3">
+          <button
+            v-for="opt in checkModeOptions"
+            :key="opt.value"
+            type="button"
+            :aria-pressed="form.check_mode === opt.value"
+            :disabled="opt.disabled"
+            class="min-h-[68px] rounded-lg border-2 px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45"
+            :class="checkModeButtonClass(opt.value)"
+            @click="selectCheckMode(opt.value)"
+          >
+            <span class="block text-sm font-semibold">{{ opt.label }}</span>
+            <span class="mt-1 block text-xs leading-4 opacity-75">{{ opt.hint }}</span>
+          </button>
+        </div>
+      </div>
+
+      <div>
         <label class="input-label">{{ t('admin.channelMonitor.form.provider') }} <span class="text-red-500">*</span></label>
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <button
@@ -29,7 +48,24 @@
         </div>
       </div>
 
-      <div v-if="form.provider === PROVIDER_OPENAI" class="rounded-lg border border-blue-100 bg-blue-50/50 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
+      <div v-if="usesQuotaMode" class="rounded-lg border border-blue-100 bg-blue-50/50 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
+        <label class="input-label">
+          {{ t('admin.channelMonitor.form.linkedAccount') }} <span class="text-red-500">*</span>
+        </label>
+        <Select
+          v-model="accountSelectValue"
+          :options="accountOptions"
+          :placeholder="t('admin.channelMonitor.form.linkedAccountPlaceholder')"
+          remote
+          :loading="accountsLoading"
+          @search="onAccountSearch"
+        />
+        <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.channelMonitor.form.linkedAccountHint') }}</p>
+        <p v-if="accountHydrationFailed" class="mt-1 text-xs text-amber-600 dark:text-amber-400">{{ t('admin.channelMonitor.form.linkedAccountMissing') }}</p>
+        <p v-else-if="accountOptions.length === 0 && !accountsLoading" class="mt-1 text-xs text-amber-600 dark:text-amber-400">{{ t('admin.channelMonitor.form.linkedAccountEmpty') }}</p>
+      </div>
+
+      <div v-if="form.provider === PROVIDER_OPENAI && usesProbePart" class="rounded-lg border border-blue-100 bg-blue-50/50 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
         <label class="input-label">{{ t('admin.channelMonitor.form.apiMode') }}</label>
         <div class="grid gap-3 sm:grid-cols-2">
           <button
@@ -47,21 +83,21 @@
         </div>
       </div>
 
-      <div>
+      <div v-if="usesProbePart">
         <label class="input-label">{{ t('admin.channelMonitor.form.endpoint') }} <span class="text-red-500">*</span></label>
-        <div class="flex gap-2">
+        <div class="flex flex-col gap-2 sm:flex-row">
           <input v-model="form.endpoint" type="text" required class="input flex-1" :placeholder="t('admin.channelMonitor.form.endpointPlaceholder')" />
-          <button type="button" @click="useCurrentDomain" class="btn btn-secondary whitespace-nowrap">
+          <button type="button" @click="useCurrentDomain" class="btn btn-secondary w-full whitespace-nowrap sm:w-auto">
             {{ t('admin.channelMonitor.form.useCurrentDomain') }}
           </button>
         </div>
       </div>
 
-      <div>
+      <div v-if="usesProbePart">
         <label class="input-label">
           {{ t('admin.channelMonitor.form.apiKey') }}<span v-if="!editing" class="text-red-500"> *</span>
         </label>
-        <div class="flex gap-2">
+        <div class="flex flex-col gap-2 sm:flex-row">
           <input
             v-model="form.api_key"
             type="password"
@@ -69,14 +105,14 @@
             class="input flex-1"
             :placeholder="editing ? t('admin.channelMonitor.form.apiKeyEditPlaceholder') : t('admin.channelMonitor.form.apiKeyPlaceholder')"
           />
-          <button type="button" @click="openMyKeyPicker" class="btn btn-secondary whitespace-nowrap">
+          <button type="button" @click="openMyKeyPicker" class="btn btn-secondary w-full whitespace-nowrap sm:w-auto">
             {{ t('admin.channelMonitor.form.useMyKey') }}
           </button>
         </div>
         <p v-if="editing && editing.api_key_masked" class="mt-1 text-xs text-gray-400">{{ editing.api_key_masked }}</p>
       </div>
 
-      <div>
+      <div v-if="usesProbePart">
         <label class="input-label">{{ t('admin.channelMonitor.form.primaryModel') }} <span class="text-red-500">*</span></label>
         <input
           v-model="form.primary_model"
@@ -88,7 +124,7 @@
         />
       </div>
 
-      <div>
+      <div v-if="usesProbePart">
         <label class="input-label">{{ t('admin.channelMonitor.form.extraModels') }}</label>
         <ModelTagInput
           :models="form.extra_models"
@@ -115,7 +151,7 @@
       </div>
 
       <!-- 高级设置区：请求模板 + 自定义 headers/body -->
-      <details class="rounded-lg border border-gray-200 bg-gray-50/50 p-3 dark:border-dark-700 dark:bg-dark-900/30">
+      <details v-if="usesProbePart" class="rounded-lg border border-gray-200 bg-gray-50/50 p-3 dark:border-dark-700 dark:bg-dark-900/30">
         <summary class="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-300">
           {{ t('admin.channelMonitor.advanced.section') }}
         </summary>
@@ -189,6 +225,7 @@ import type {
   ChannelMonitor,
   CreateParams,
   APIMode,
+  CheckMode,
   Provider,
   UpdateParams,
 } from '@/api/admin/channelMonitor'
@@ -208,13 +245,20 @@ import {
   PROVIDER_ANTHROPIC,
   PROVIDER_GEMINI,
   PROVIDER_GROK,
+  PROVIDER_ANTIGRAVITY,
   PROVIDER_KIMI,
   PROVIDER_ZHIPU,
   PROVIDER_DEEPSEEK,
+  CHECK_MODE_PROBE,
+  CHECK_MODE_QUOTA,
+  CHECK_MODE_QUOTA_PROBE,
   API_MODE_CHAT_COMPLETIONS,
   API_MODE_RESPONSES,
   DEFAULT_GROK_ENDPOINT,
   DEFAULT_GROK_MODEL,
+  DEFAULT_KIMI_ENDPOINT,
+  DEFAULT_ZHIPU_ENDPOINT,
+  DEFAULT_DEEPSEEK_ENDPOINT,
   DEFAULT_INTERVAL_SECONDS,
 } from '@/constants/channelMonitor'
 
@@ -254,6 +298,8 @@ interface MonitorForm {
   name: string
   provider: Provider
   api_mode: APIMode
+  check_mode: CheckMode
+  account_id: number | null
   endpoint: string
   api_key: string
   primary_model: string
@@ -272,6 +318,8 @@ const form = reactive<MonitorForm>({
   name: '',
   provider: PROVIDER_ANTHROPIC,
   api_mode: API_MODE_CHAT_COMPLETIONS,
+  check_mode: CHECK_MODE_PROBE,
+  account_id: null,
   endpoint: '',
   api_key: '',
   primary_model: '',
@@ -284,6 +332,9 @@ const form = reactive<MonitorForm>({
   body_override_mode: 'off',
   body_override: null,
 })
+
+const usesQuotaMode = computed(() => form.check_mode !== CHECK_MODE_PROBE)
+const usesProbePart = computed(() => form.check_mode !== CHECK_MODE_QUOTA)
 
 let suppressFormWatchers = false
 
@@ -392,17 +443,101 @@ const providerOptions = computed<ProviderOption[]>(() => [
   { value: PROVIDER_OPENAI, label: t('monitorCommon.providers.openai') },
   { value: PROVIDER_GEMINI, label: t('monitorCommon.providers.gemini') },
   { value: PROVIDER_GROK, label: t('monitorCommon.providers.grok') },
+  { value: PROVIDER_ANTIGRAVITY, label: t('monitorCommon.providers.antigravity') },
   { value: PROVIDER_KIMI, label: t('monitorCommon.providers.kimi') },
   { value: PROVIDER_ZHIPU, label: t('monitorCommon.providers.zhipu') },
   { value: PROVIDER_DEEPSEEK, label: t('monitorCommon.providers.deepseek') },
 ])
+
+const checkModeOptions = computed(() => [
+  { value: CHECK_MODE_PROBE, label: t('admin.channelMonitor.form.checkModeProbe'), hint: t('admin.channelMonitor.form.checkModeProbeHint'), disabled: form.provider === PROVIDER_ANTIGRAVITY },
+  { value: CHECK_MODE_QUOTA, label: t('admin.channelMonitor.form.checkModeQuota'), hint: t('admin.channelMonitor.form.checkModeQuotaHint'), disabled: false },
+  { value: CHECK_MODE_QUOTA_PROBE, label: t('admin.channelMonitor.form.checkModeQuotaProbe'), hint: t('admin.channelMonitor.form.checkModeQuotaProbeHint'), disabled: form.provider === PROVIDER_ANTIGRAVITY },
+])
+
+function checkModeButtonClass(mode: CheckMode): string {
+  return form.check_mode === mode
+    ? 'border-blue-500 bg-blue-50 text-blue-800 shadow-sm dark:border-blue-400 dark:bg-blue-500/15 dark:text-blue-200'
+    : 'border-gray-200 bg-white text-gray-600 hover:border-blue-300 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400'
+}
+
+function selectCheckMode(mode: CheckMode) {
+  if (checkModeOptions.value.find((option) => option.value === mode)?.disabled) return
+  form.check_mode = mode
+  if (!usesQuotaMode.value) form.account_id = null
+}
+
+interface LinkedAccount { id: number; name: string; type: string }
+const linkedAccounts = ref<LinkedAccount[]>([])
+const accountsLoading = ref(false)
+const accountHydrationFailed = ref(false)
+const pinnedAccount = ref<LinkedAccount | null>(null)
+let accountRequest = 0
+
+const accountOptions = computed(() => {
+  const accounts = [...linkedAccounts.value]
+  if (pinnedAccount.value && !accounts.some((account) => account.id === pinnedAccount.value?.id)) accounts.unshift(pinnedAccount.value)
+  return accounts.map((account) => ({ value: String(account.id), label: `${account.name} · ${account.type} · #${account.id}` }))
+})
+
+const accountSelectValue = computed<string>({
+  get: () => form.account_id == null ? '' : String(form.account_id),
+  set: (raw) => {
+    const id = Number(raw)
+    form.account_id = Number.isSafeInteger(id) && id > 0 ? id : null
+  },
+})
+
+async function loadLinkedAccounts(search = '') {
+  if (!props.show || !usesQuotaMode.value) return
+  const request = ++accountRequest
+  accountsLoading.value = true
+  try {
+    const response = await adminAPI.accounts.list(1, 50, { platform: form.provider, ...(search ? { search } : {}) })
+    if (request !== accountRequest) return
+    linkedAccounts.value = (response.items || []).map((account) => ({ id: account.id, name: account.name, type: account.type }))
+  } catch (error) {
+    if (request === accountRequest) linkedAccounts.value = []
+    console.warn('load linked monitor accounts failed', error)
+  } finally {
+    if (request === accountRequest) accountsLoading.value = false
+  }
+}
+
+async function hydrateSelectedAccount() {
+  if (!form.account_id || !usesQuotaMode.value) return
+  try {
+    const account = await adminAPI.accounts.getById(form.account_id)
+    if (String(account.platform) !== form.provider) throw new Error('platform mismatch')
+    pinnedAccount.value = { id: account.id, name: account.name, type: account.type }
+    accountHydrationFailed.value = false
+  } catch {
+    accountHydrationFailed.value = true
+  }
+}
+
+function onAccountSearch(query: string) { void loadLinkedAccounts(query) }
+
+watch(() => [props.show, form.provider, form.check_mode] as const, ([show]) => {
+  if (show && usesQuotaMode.value) void loadLinkedAccounts()
+}, { immediate: true })
 
 function selectProvider(provider: Provider) {
   if (form.provider === provider) return
   const previousProvider = form.provider
   const clearGrokEndpoint = previousProvider === PROVIDER_GROK && form.endpoint === DEFAULT_GROK_ENDPOINT
   const clearGrokModel = previousProvider === PROVIDER_GROK && form.primary_model === DEFAULT_GROK_MODEL
+	const defaults: Partial<Record<Provider, string>> = {
+		[PROVIDER_KIMI]: DEFAULT_KIMI_ENDPOINT,
+		[PROVIDER_ZHIPU]: DEFAULT_ZHIPU_ENDPOINT,
+		[PROVIDER_DEEPSEEK]: DEFAULT_DEEPSEEK_ENDPOINT,
+	}
   form.provider = provider
+  form.account_id = null
+  pinnedAccount.value = null
+  accountHydrationFailed.value = false
+  if (provider === PROVIDER_ANTIGRAVITY) form.check_mode = CHECK_MODE_QUOTA
+  if (previousProvider === PROVIDER_ANTIGRAVITY && provider !== PROVIDER_ANTIGRAVITY) form.check_mode = CHECK_MODE_PROBE
   if (provider === PROVIDER_GROK) {
     if (!form.endpoint.trim()) form.endpoint = DEFAULT_GROK_ENDPOINT
     if (!form.primary_model.trim()) form.primary_model = DEFAULT_GROK_MODEL
@@ -410,6 +545,7 @@ function selectProvider(provider: Provider) {
   }
   if (clearGrokEndpoint) form.endpoint = ''
   if (clearGrokModel) form.primary_model = ''
+	if (defaults[provider] && !form.endpoint.trim()) form.endpoint = defaults[provider] || ''
 }
 
 // Clear api_key whenever provider changes to avoid cross-provider key mismatch.
@@ -438,6 +574,8 @@ function resetForm() {
   form.name = ''
   form.provider = PROVIDER_ANTHROPIC
   form.api_mode = API_MODE_CHAT_COMPLETIONS
+  form.check_mode = CHECK_MODE_PROBE
+  form.account_id = null
   form.endpoint = ''
   form.api_key = ''
   form.primary_model = ''
@@ -457,6 +595,8 @@ function loadFromMonitor(m: ChannelMonitor) {
   form.name = m.name
   form.provider = m.provider
   form.api_mode = normalizeAPIMode(m.api_mode)
+  form.check_mode = m.check_mode || CHECK_MODE_PROBE
+  form.account_id = m.account_id ?? null
   form.endpoint = m.endpoint
   form.api_key = ''
   form.primary_model = m.primary_model
@@ -469,6 +609,7 @@ function loadFromMonitor(m: ChannelMonitor) {
   form.body_override_mode = m.body_override_mode || 'off'
   form.body_override = m.body_override ? { ...m.body_override } : null
   suppressFormWatchers = false
+	void hydrateSelectedAccount()
 }
 
 // Re-sync form whenever the dialog is opened or the target monitor changes.
@@ -522,10 +663,12 @@ function buildPayload(): CreateParams {
     name: form.name.trim(),
     provider: form.provider,
     api_mode: form.provider === PROVIDER_OPENAI ? form.api_mode : API_MODE_CHAT_COMPLETIONS,
-    endpoint: form.endpoint.trim(),
-    api_key: form.api_key.trim(),
-    primary_model: form.primary_model.trim(),
-    extra_models: form.extra_models,
+    check_mode: form.check_mode,
+    account_id: usesQuotaMode.value ? form.account_id : null,
+    endpoint: usesProbePart.value ? form.endpoint.trim() : '',
+    api_key: usesProbePart.value ? form.api_key.trim() : '',
+    primary_model: usesProbePart.value ? form.primary_model.trim() : 'quota',
+    extra_models: usesProbePart.value ? form.extra_models : [],
     group_name: form.group_name.trim(),
     enabled: form.enabled,
     interval_seconds: form.interval_seconds,
@@ -542,7 +685,11 @@ async function handleSubmit() {
     appStore.showError(t('admin.channelMonitor.nameRequired'))
     return
   }
-  if (!form.primary_model.trim()) {
+  if (usesQuotaMode.value && !form.account_id) {
+	appStore.showError(t('admin.channelMonitor.linkedAccountRequired'))
+	return
+	}
+  if (usesProbePart.value && !form.primary_model.trim()) {
     appStore.showError(t('admin.channelMonitor.primaryModelRequired'))
     return
   }
@@ -556,7 +703,8 @@ async function handleSubmit() {
       // Only send api_key if user typed a new value
       if (api_key) req.api_key = api_key
       // template_id=null 用 clear_template=true 明确告诉后端清空（pointer 语义）
-      if (form.template_id == null) {
+	  if (!usesQuotaMode.value) req.account_id = 0
+      if (usesProbePart.value && form.template_id == null) {
         req.clear_template = true
         delete req.template_id
       }

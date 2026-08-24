@@ -499,6 +499,9 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			Stream: true, Duration: time.Since(startTime), FirstTokenMs: firstTokenMs,
 		}, errors.New("upstream chat stream ended before a terminal event")
 	}
+	if err := state.ValidateToolCallArguments(); err != nil {
+		return &OpenAIForwardResult{RequestID: requestID, Usage: usage, Model: originalModel, BillingModel: billingModel, UpstreamModel: upstreamModel, Stream: true, Duration: time.Since(startTime), FirstTokenMs: firstTokenMs}, fmt.Errorf("invalid tool call arguments from upstream: %w", err)
+	}
 
 	finalEvents := apicompat.FinalizeChatCompletionsResponsesStream(state)
 	terminalEventType := ""

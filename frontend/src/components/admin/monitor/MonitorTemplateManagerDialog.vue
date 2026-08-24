@@ -291,6 +291,7 @@ const countByProvider = computed<Record<Provider, number>>(() => {
     openai: 0,
     gemini: 0,
     grok: 0,
+    antigravity: 0,
     kimi: 0,
     zhipu: 0,
     deepseek: 0,

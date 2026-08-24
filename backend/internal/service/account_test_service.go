@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -69,6 +70,7 @@ type AccountTestService struct {
 	geminiTokenProvider       *GeminiTokenProvider
 	claudeTokenProvider       *ClaudeTokenProvider
 	grokTokenProvider         *GrokTokenProvider
+	openAITokenProvider       *OpenAITokenProvider
 	antigravityGatewayService *AntigravityGatewayService
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
@@ -89,12 +91,14 @@ func NewAccountTestService(
 	cfg *config.Config,
 	settingService *SettingService,
 	tlsFPProfileService *TLSFingerprintProfileService,
+	openAITokenProvider *OpenAITokenProvider,
 ) *AccountTestService {
 	return &AccountTestService{
 		accountRepo:               accountRepo,
 		geminiTokenProvider:       geminiTokenProvider,
 		claudeTokenProvider:       claudeTokenProvider,
 		grokTokenProvider:         grokTokenProvider,
+		openAITokenProvider:       openAITokenProvider,
 		antigravityGatewayService: antigravityGatewayService,
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
@@ -190,6 +194,19 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	// Route to platform-specific test method
+	if account.IsCNProvider() {
+		switch account.GetAPIProtocol() {
+		case APIProtocolAnthropic, APIProtocolAdaptive:
+			clone := *account
+			clone.Credentials = cloneAccountCredentials(account.Credentials)
+			clone.Credentials["base_url"] = account.GetAnthropicProtocolBaseURL()
+			return s.testClaudeAccountConnection(c, &clone, modelID)
+		case APIProtocolResponses:
+			return s.testCNProviderResponsesConnection(c, account, modelID, prompt)
+		default:
+			return s.testCNProviderChatCompletionsConnection(c, account, modelID, prompt)
+		}
+	}
 	if account.IsOpenAI() {
 		return s.testOpenAIAccountConnection(c, account, modelID, prompt, normalizeAccountTestMode(mode))
 	}
@@ -207,6 +224,53 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	}
 
 	return s.testClaudeAccountConnection(c, account, modelID)
+}
+
+func (s *AccountTestService) testCNProviderChatCompletionsConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
+	testModelID := strings.TrimSpace(modelID)
+	if testModelID == "" {
+		testModelID = openai.DefaultTestModel
+	}
+	testModelID = account.GetMappedModel(testModelID)
+	apiKey := strings.TrimSpace(account.GetCNAPIKey())
+	if apiKey == "" {
+		return s.sendErrorAndEnd(c, "No API key available")
+	}
+	baseURL, err := s.validateUpstreamBaseURL(account.GetCNProtocolBaseURL(APIProtocolChatCompletions))
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+	}
+	return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, baseURL, apiKey)
+}
+
+func (s *AccountTestService) testCNProviderResponsesConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
+	clone := *account
+	clone.Platform = PlatformOpenAI
+	clone.Credentials = cloneAccountCredentials(account.Credentials)
+	clone.Extra = cloneAccountExtra(account.Extra)
+	if clone.Extra == nil {
+		clone.Extra = make(map[string]any)
+	}
+	// testOpenAIAccountConnection selects the Responses transport from the
+	// OpenAI capability marker. CN accounts use their own protocol marker, so
+	// preserve the actual endpoint while explicitly selecting the same path.
+	clone.Extra[openai_compat.ExtraKeyResponsesSupported] = true
+	clone.Credentials["base_url"] = buildOpenAIResponsesURLForPlatform(account.Platform, account.GetCNProtocolBaseURL(APIProtocolResponses))
+	return s.testOpenAIAccountConnection(c, &clone, modelID, prompt, AccountTestModeDefault)
+}
+
+func cloneAccountCredentials(credentials map[string]any) map[string]any {
+	if credentials == nil {
+		return make(map[string]any)
+	}
+	return maps.Clone(credentials)
+}
+
+func cloneAccountExtra(extra map[string]any) map[string]any {
+	if extra == nil {
+		return nil
+	}
+	return maps.Clone(extra)
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection

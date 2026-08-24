@@ -35,13 +35,14 @@ func (ChannelMonitor) Fields() []ent.Field {
 			NotEmpty().
 			MaxLen(100),
 		field.Enum("provider").
-			Values("openai", "anthropic", "gemini", "grok", "kimi", "zhipu", "deepseek"),
+			Values("openai", "anthropic", "gemini", "grok", "antigravity", "kimi", "zhipu", "deepseek"),
+		field.String("check_mode").Default("probe").MaxLen(32),
+		field.Int64("account_id").Optional().Nillable(),
 		field.String("api_mode").
 			Default("chat_completions").
 			MaxLen(32).
 			Comment("OpenAI request protocol: chat_completions or responses; non-OpenAI uses chat_completions"),
 		field.String("endpoint").
-			NotEmpty().
 			MaxLen(500).
 			Comment("Provider base origin, e.g. https://api.openai.com"),
 		field.String("api_key_encrypted").
@@ -111,5 +112,6 @@ func (ChannelMonitor) Indexes() []ent.Index {
 		index.Fields("provider", "api_mode"),
 		index.Fields("group_name"),
 		index.Fields("template_id"),
+		index.Fields("account_id"),
 	}
 }

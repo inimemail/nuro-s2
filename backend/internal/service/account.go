@@ -2303,6 +2303,12 @@ func (a *Account) GetOpenAIBaseURL() string {
 	if !a.IsOpenAICompatible() {
 		return ""
 	}
+	if a.IsCNProvider() {
+		if a.GetAPIProtocol() == APIProtocolResponses {
+			return a.GetCNProtocolBaseURL(APIProtocolResponses)
+		}
+		return a.GetCNProtocolBaseURL(APIProtocolChatCompletions)
+	}
 	if a.Type == AccountTypeAPIKey || a.Platform == PlatformKimi || a.Platform == PlatformZhipu || a.Platform == PlatformDeepSeek {
 		baseURL := a.GetCredential("base_url")
 		if baseURL != "" {
@@ -2310,12 +2316,6 @@ func (a *Account) GetOpenAIBaseURL() string {
 		}
 	}
 	switch a.Platform {
-	case PlatformKimi:
-		return "https://api.moonshot.cn/v1"
-	case PlatformZhipu:
-		return "https://open.bigmodel.cn/api/paas/v4"
-	case PlatformDeepSeek:
-		return "https://api.deepseek.com/v1"
 	default:
 		return "https://api.openai.com"
 	}

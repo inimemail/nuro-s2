@@ -1064,7 +1064,20 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 		applyLongCtx = applyLongCtx && *input.LongContextBillingEnabled
 	}
 
-	return s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongCtx), nil
+	breakdown := s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongCtx)
+	if resolved.channelPricing != nil {
+		switch normalizeBillingServiceTier(input.ServiceTier) {
+		case "priority", "fast":
+			if resolved.channelPricing.FastMultiplier != nil {
+				applyCostBreakdownMultiplier(breakdown, *resolved.channelPricing.FastMultiplier)
+			}
+		case "flex":
+			if resolved.channelPricing.FlexMultiplier != nil {
+				applyCostBreakdownMultiplier(breakdown, *resolved.channelPricing.FlexMultiplier/0.5)
+			}
+		}
+	}
+	return breakdown, nil
 }
 
 // computeTokenBreakdown 是 token 计费的核心逻辑，由 calculateTokenCost 和 calculateCostInternal 共用。

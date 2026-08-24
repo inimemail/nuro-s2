@@ -141,6 +141,26 @@ func openAICompatibleRequestPlatform(ctx context.Context, apiKey *service.APIKey
 	return service.PlatformOpenAI
 }
 
+func allowOpenAICompatibleMessagesDispatch(c *gin.Context, apiKey *service.APIKey) bool {
+	if apiKey == nil || apiKey.Group == nil {
+		return true
+	}
+	platform := apiKey.Group.Platform
+	// Provider-native Messages routes are enabled by the platform contract;
+	// unlike OpenAI/Grok's configurable dispatch, CN groups do not expose this
+	// mapping switch in the admin UI and are sanitized to false on persistence.
+	if platform == service.PlatformGrok || service.IsCNProvider(platform) {
+		return true
+	}
+	if platform == service.PlatformComposite && c != nil && c.Request != nil {
+		if resolved, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok &&
+			(resolved == service.PlatformGrok || service.IsCNProvider(resolved)) {
+			return true
+		}
+	}
+	return apiKey.Group.AllowMessagesDispatch
+}
+
 type openAIModelBodyReplaceFunc func([]byte, string) []byte
 
 type openAIAccountSlotAcquireResult struct {
@@ -987,6 +1007,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}
 			return
 		}
+		service.ApplyObservedOpenAIServiceTier(c, result)
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 		userAgent := c.GetHeader("User-Agent")
@@ -1266,7 +1287,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	)
 
 	// 检查分组是否允许 /v1/messages 调度
-	if apiKey.Group != nil && !apiKey.Group.AllowMessagesDispatch {
+	if !allowOpenAICompatibleMessagesDispatch(c, apiKey) {
 		h.anthropicErrorResponse(c, http.StatusForbidden, "permission_error",
 			"This group does not allow /v1/messages dispatch")
 		return

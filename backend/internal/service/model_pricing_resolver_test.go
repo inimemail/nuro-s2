@@ -97,6 +97,37 @@ func TestGetIntervalPricing_MatchesInterval(t *testing.T) {
 	require.InDelta(t, 3e-6, result2.InputPricePerToken, 1e-12)
 }
 
+func TestGetIntervalPricing_AppliesMultipliersToInheritedPrices(t *testing.T) {
+	base := &ModelPricing{
+		InputPricePerToken:                 2e-6,
+		InputPricePerTokenPriority:         4e-6,
+		OutputPricePerToken:                6e-6,
+		OutputPricePerTokenPriority:        12e-6,
+		CacheCreationPricePerToken:         2.5e-6,
+		CacheCreationPricePerTokenPriority: 5e-6,
+		CacheReadPricePerToken:             0.2e-6,
+		CacheReadPricePerTokenPriority:     0.4e-6,
+	}
+	resolved := &ResolvedPricing{
+		BasePricing: base,
+		Intervals: []PricingInterval{{
+			MinTokens:       0,
+			InputMultiplier: testPtrFloat64(1.5), OutputMultiplier: testPtrFloat64(2),
+			CacheWriteMultiplier: testPtrFloat64(1.25), CacheReadMultiplier: testPtrFloat64(0.5),
+		}},
+	}
+
+	got := (&ModelPricingResolver{}).GetIntervalPricing(resolved, 100)
+	require.InDelta(t, 3e-6, got.InputPricePerToken, 1e-12)
+	require.InDelta(t, 6e-6, got.InputPricePerTokenPriority, 1e-12)
+	require.InDelta(t, 12e-6, got.OutputPricePerToken, 1e-12)
+	require.InDelta(t, 24e-6, got.OutputPricePerTokenPriority, 1e-12)
+	require.InDelta(t, 3.125e-6, got.CacheCreationPricePerToken, 1e-12)
+	require.InDelta(t, 0.1e-6, got.CacheReadPricePerToken, 1e-12)
+	require.InDelta(t, 0.2e-6, got.CacheReadPricePerTokenPriority, 1e-12)
+	require.InDelta(t, 2e-6, base.InputPricePerToken, 1e-12, "base pricing must remain immutable")
+}
+
 func TestGetIntervalPricing_NoMatch_FallsBackToBase(t *testing.T) {
 	bs := newTestBillingServiceForResolver()
 	r := NewModelPricingResolver(&ChannelService{}, bs)

@@ -1,6 +1,10 @@
 package service
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/tidwall/gjson"
+)
 
 // ToolContinuationSignals 聚合工具续链相关信号，避免重复遍历 input。
 type ToolContinuationSignals struct {
@@ -18,6 +22,13 @@ type FunctionCallOutputValidation struct {
 	HasToolCallContext                 bool
 	HasFunctionCallOutputMissingCallID bool
 	HasItemReferenceForAllCallIDs      bool
+}
+
+// ToolCallOutputContextCoverage describes whether tool outputs can be resolved
+// entirely from the input carried by the current request.
+type ToolCallOutputContextCoverage struct {
+	HasFunctionCallOutput   bool
+	ContextCoversAllCallIDs bool
 }
 
 func isCodexToolCallContextItemType(typ string) bool {
@@ -44,6 +55,67 @@ func isCodexToolCallOutputItemType(typ string) bool {
 	default:
 		return false
 	}
+}
+
+// AnalyzeToolCallOutputContextCoverageBytes scans both array and single-object
+// input forms. A result is covered only when every output call_id has matching
+// call context or an item_reference in the same request.
+func AnalyzeToolCallOutputContextCoverageBytes(body []byte) ToolCallOutputContextCoverage {
+	coverage := ToolCallOutputContextCoverage{}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return coverage
+	}
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() && !input.IsObject() {
+		return coverage
+	}
+
+	missingCallID := false
+	outputCallIDs := make(map[string]struct{})
+	contextIDs := make(map[string]struct{})
+	analyzeItem := func(item gjson.Result) {
+		if !item.IsObject() {
+			return
+		}
+		itemType := item.Get("type").String()
+		switch {
+		case isCodexToolCallOutputItemType(itemType):
+			coverage.HasFunctionCallOutput = true
+			callID := strings.TrimSpace(item.Get("call_id").String())
+			if callID == "" {
+				missingCallID = true
+				return
+			}
+			outputCallIDs[callID] = struct{}{}
+		case isCodexToolCallContextItemType(itemType):
+			if callID := strings.TrimSpace(item.Get("call_id").String()); callID != "" {
+				contextIDs[callID] = struct{}{}
+			}
+		case itemType == "item_reference":
+			if id := strings.TrimSpace(item.Get("id").String()); id != "" {
+				contextIDs[id] = struct{}{}
+			}
+		}
+	}
+	if input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			analyzeItem(item)
+			return true
+		})
+	} else {
+		analyzeItem(input)
+	}
+
+	if !coverage.HasFunctionCallOutput || missingCallID {
+		return coverage
+	}
+	for callID := range outputCallIDs {
+		if _, ok := contextIDs[callID]; !ok {
+			return coverage
+		}
+	}
+	coverage.ContextCoversAllCallIDs = true
+	return coverage
 }
 
 // NeedsToolContinuation 判定请求是否需要工具调用续链处理。

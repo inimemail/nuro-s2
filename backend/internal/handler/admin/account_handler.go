@@ -63,11 +63,54 @@ type AccountHandler struct {
 	tokenCacheInvalidator   service.TokenCacheInvalidator
 	upstreamBillingProbe    *service.UpstreamBillingProbeService
 	ollamaCloudUsage        *service.OllamaCloudUsageService
+	cnProviderQuota         *service.CNProviderQuotaService
+	cnProviderBalance       *service.CNProviderBalanceService
 }
 
 // SetOllamaCloudUsageService attaches the opt-in background usage service.
 func (h *AccountHandler) SetOllamaCloudUsageService(s *service.OllamaCloudUsageService) {
 	h.ollamaCloudUsage = s
+}
+
+func (h *AccountHandler) SetCNProviderServices(quota *service.CNProviderQuotaService, balance *service.CNProviderBalanceService) {
+	h.cnProviderQuota = quota
+	h.cnProviderBalance = balance
+}
+
+func (h *AccountHandler) QueryCNProviderQuota(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account")
+		return
+	}
+	if h.cnProviderQuota == nil {
+		response.InternalError(c, "Quota service unavailable")
+		return
+	}
+	result, err := h.cnProviderQuota.QueryUsage(c.Request.Context(), id)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *AccountHandler) QueryCNProviderBalance(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account")
+		return
+	}
+	if h.cnProviderBalance == nil {
+		response.InternalError(c, "Balance service unavailable")
+		return
+	}
+	result, err := h.cnProviderBalance.QueryBalance(c.Request.Context(), id)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -170,20 +213,20 @@ type BulkUpdateAccountsRequest struct {
 }
 
 var allowedBulkExtraRemoveKeys = map[string]struct{}{
-	"codex_image_generation_bridge":                                      {},
-	"codex_image_generation_bridge_enabled":                              {},
-	"codex_image_generation_explicit_tool_policy":                        {},
-	"openai_responses_passthrough_compat":                                {},
-	"openai_responses_arguments_object_compat":                           {},
-	"openai_apikey_first_token_timeout_placeholder_ms":                   {},
-	"openai_apikey_first_token_timeout_placeholder_guard_enabled":        {},
-	"openai_apikey_first_token_timeout_placeholder_guard_max_ms":         {},
-	"openai_apikey_first_token_timeout_placeholder_stages":               {},
-	"openai_apikey_first_token_timeout_placeholder_use_gateway_default":  {},
-	"openai_oauth_chatgpt_first_token_timeout_placeholder_ms":            {},
-	"openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled": {},
-	"openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms":  {},
-	"openai_oauth_chatgpt_first_token_timeout_placeholder_stages":        {},
+	"codex_image_generation_bridge":                                            {},
+	"codex_image_generation_bridge_enabled":                                    {},
+	"codex_image_generation_explicit_tool_policy":                              {},
+	"openai_responses_passthrough_compat":                                      {},
+	"openai_responses_arguments_object_compat":                                 {},
+	"openai_apikey_first_token_timeout_placeholder_ms":                         {},
+	"openai_apikey_first_token_timeout_placeholder_guard_enabled":              {},
+	"openai_apikey_first_token_timeout_placeholder_guard_max_ms":               {},
+	"openai_apikey_first_token_timeout_placeholder_stages":                     {},
+	"openai_apikey_first_token_timeout_placeholder_use_gateway_default":        {},
+	"openai_oauth_chatgpt_first_token_timeout_placeholder_ms":                  {},
+	"openai_oauth_chatgpt_first_token_timeout_placeholder_guard_enabled":       {},
+	"openai_oauth_chatgpt_first_token_timeout_placeholder_guard_max_ms":        {},
+	"openai_oauth_chatgpt_first_token_timeout_placeholder_stages":              {},
 	"openai_oauth_chatgpt_first_token_timeout_placeholder_use_gateway_default": {},
 }
 

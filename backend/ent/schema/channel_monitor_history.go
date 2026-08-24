@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"time"
 
 	"entgo.io/ent"
@@ -43,6 +44,7 @@ func (ChannelMonitorHistory) Fields() []ent.Field {
 			Optional().
 			Default("").
 			MaxLen(500),
+		field.JSON("quota", &domain.MonitorQuotaSnapshot{}).Optional(),
 		field.Time("checked_at").
 			Default(time.Now),
 	}

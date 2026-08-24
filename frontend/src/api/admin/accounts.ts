@@ -27,6 +27,21 @@ import type {
   OllamaCloudUsageSettings
 } from '@/types'
 
+export interface CNProviderQuotaTier { window: '5h' | 'weekly'; used_percent: number; reset_at?: string }
+export interface CNProviderQuotaResult { provider: string; success: boolean; tiers?: CNProviderQuotaTier[]; error?: string; fetched_at?: number }
+export interface CNProviderBalanceEntry { currency: string; balance: number }
+export interface CNProviderBalanceResult { provider: string; success: boolean; balance: number; currency?: string; balances?: CNProviderBalanceEntry[]; available?: boolean; error?: string; fetched_at?: number }
+
+export async function getCNProviderQuota(id: number): Promise<CNProviderQuotaResult> {
+  const { data } = await apiClient.get<CNProviderQuotaResult>(`/admin/accounts/${id}/cn-provider-quota`)
+  return data
+}
+
+export async function getCNProviderBalance(id: number): Promise<CNProviderBalanceResult> {
+  const { data } = await apiClient.get<CNProviderBalanceResult>(`/admin/accounts/${id}/cn-provider-balance`)
+  return data
+}
+
 export async function getOllamaCloudUsage(id: number): Promise<OllamaCloudUsageState> {
   const { data } = await apiClient.get<OllamaCloudUsageState>(`/admin/accounts/${id}/ollama-cloud-usage`)
   return data
@@ -992,6 +1007,8 @@ export const accountsAPI = {
   ,refreshOllamaCloudUsage
   ,getOllamaCloudUsageSettings
   ,updateOllamaCloudUsageSettings
+  ,getCNProviderQuota
+  ,getCNProviderBalance
 }
 
 export default accountsAPI

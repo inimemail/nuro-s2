@@ -91,6 +91,8 @@ type ChannelModelPricing struct {
 	OutputPrice      *float64            // 每 token 输出价格（USD）
 	CacheWritePrice  *float64            // 缓存写入价格
 	CacheReadPrice   *float64            // 缓存读取价格
+	FastMultiplier   *float64            // Fast/priority 服务层级倍率
+	FlexMultiplier   *float64            // Flex 服务层级倍率
 	ImageInputPrice  *float64            // 图片输入 token 价格
 	ImageOutputPrice *float64            // 图片输出价格（向后兼容）
 	PerRequestPrice  *float64            // 默认按次计费价格（USD）
@@ -107,26 +109,31 @@ type ChannelTimePricing struct {
 }
 
 type ChannelTimePricingPeriod struct {
-	StartTime  string  `json:"start_time"`
-	EndTime    string  `json:"end_time"`
-	Multiplier float64 `json:"multiplier"`
+	StartTime    string  `json:"start_time"`
+	EndTime      string  `json:"end_time"`
+	Multiplier   float64 `json:"multiplier"`
+	WeekdaysOnly bool    `json:"weekdays_only,omitempty"`
 }
 
 // PricingInterval 定价区间（token 区间 / 按次分层 / 图片分辨率分层）
 type PricingInterval struct {
-	ID              int64
-	PricingID       int64
-	MinTokens       int      // 区间下界（含）
-	MaxTokens       *int     // 区间上界（不含），nil = 无上限
-	TierLabel       string   // 层级标签（按次/图片模式：1K, 2K, 4K, HD 等）
-	InputPrice      *float64 // token 模式：每 token 输入价
-	OutputPrice     *float64 // token 模式：每 token 输出价
-	CacheWritePrice *float64 // token 模式：缓存写入价
-	CacheReadPrice  *float64 // token 模式：缓存读取价
-	PerRequestPrice *float64 // 按次/图片模式：每次请求价格
-	SortOrder       int
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                   int64
+	PricingID            int64
+	MinTokens            int      // 区间下界（含）
+	MaxTokens            *int     // 区间上界（不含），nil = 无上限
+	TierLabel            string   // 层级标签（按次/图片模式：1K, 2K, 4K, HD 等）
+	InputPrice           *float64 // token 模式：每 token 输入价
+	OutputPrice          *float64 // token 模式：每 token 输出价
+	CacheWritePrice      *float64 // token 模式：缓存写入价
+	CacheReadPrice       *float64 // token 模式：缓存读取价
+	InputMultiplier      *float64 // 未设区间价时乘渠道基础输入价
+	OutputMultiplier     *float64
+	CacheWriteMultiplier *float64
+	CacheReadMultiplier  *float64
+	PerRequestPrice      *float64 // 按次/图片模式：每次请求价格
+	SortOrder            int
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 // IsActive 判断渠道是否启用
@@ -200,6 +207,8 @@ func (p ChannelModelPricing) Clone() ChannelModelPricing {
 	cp.OutputPrice = cloneGroupPointer(p.OutputPrice)
 	cp.CacheWritePrice = cloneGroupPointer(p.CacheWritePrice)
 	cp.CacheReadPrice = cloneGroupPointer(p.CacheReadPrice)
+	cp.FastMultiplier = cloneGroupPointer(p.FastMultiplier)
+	cp.FlexMultiplier = cloneGroupPointer(p.FlexMultiplier)
 	cp.ImageInputPrice = cloneGroupPointer(p.ImageInputPrice)
 	cp.ImageOutputPrice = cloneGroupPointer(p.ImageOutputPrice)
 	cp.PerRequestPrice = cloneGroupPointer(p.PerRequestPrice)
@@ -216,6 +225,10 @@ func (p ChannelModelPricing) Clone() ChannelModelPricing {
 			cp.Intervals[i].OutputPrice = cloneGroupPointer(p.Intervals[i].OutputPrice)
 			cp.Intervals[i].CacheWritePrice = cloneGroupPointer(p.Intervals[i].CacheWritePrice)
 			cp.Intervals[i].CacheReadPrice = cloneGroupPointer(p.Intervals[i].CacheReadPrice)
+			cp.Intervals[i].InputMultiplier = cloneGroupPointer(p.Intervals[i].InputMultiplier)
+			cp.Intervals[i].OutputMultiplier = cloneGroupPointer(p.Intervals[i].OutputMultiplier)
+			cp.Intervals[i].CacheWriteMultiplier = cloneGroupPointer(p.Intervals[i].CacheWriteMultiplier)
+			cp.Intervals[i].CacheReadMultiplier = cloneGroupPointer(p.Intervals[i].CacheReadMultiplier)
 			cp.Intervals[i].PerRequestPrice = cloneGroupPointer(p.Intervals[i].PerRequestPrice)
 		}
 	}
