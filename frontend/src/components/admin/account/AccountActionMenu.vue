@@ -89,24 +89,24 @@ const isRateLimited = computed(() => {
 const isOverloaded = computed(() => props.account?.overload_until && new Date(props.account.overload_until) > new Date())
 const isTempUnschedulable = computed(() => props.account?.temp_unschedulable_until && new Date(props.account.temp_unschedulable_until) > new Date())
 const isOpenAIPoolSoftCooling = computed(() => {
+  if (props.account?.openai_pool_recovery_probe_in_flight) return true
   if (!props.account?.openai_pool_soft_cooldown_until) return false
   const untilMs = new Date(props.account.openai_pool_soft_cooldown_until).getTime()
   if (!Number.isFinite(untilMs)) return false
   return (
     new Date(props.account.openai_pool_soft_cooldown_until) > new Date() ||
     props.account.openai_pool_soft_cooldown_due ||
-    props.account.openai_pool_recovery_probe_in_flight ||
     untilMs <= Date.now()
   )
 })
 const isAnthropicPoolSoftCooling = computed(() => {
+  if (props.account?.anthropic_pool_recovery_probe_in_flight) return true
   if (!props.account?.anthropic_pool_soft_cooldown_until) return false
   const untilMs = new Date(props.account.anthropic_pool_soft_cooldown_until).getTime()
   if (!Number.isFinite(untilMs)) return false
   return (
     new Date(props.account.anthropic_pool_soft_cooldown_until) > new Date() ||
     props.account.anthropic_pool_soft_cooldown_due ||
-    props.account.anthropic_pool_recovery_probe_in_flight ||
     untilMs <= Date.now()
   )
 })

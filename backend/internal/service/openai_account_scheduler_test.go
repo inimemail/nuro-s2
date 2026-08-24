@@ -4266,7 +4266,7 @@ func TestBuildOpenAISelectionOrder_AllCoolingPoolAccountsExcludedUntilProbeSucce
 	require.Empty(t, order)
 }
 
-func TestReportOpenAIAccountScheduleResult_SuccessClearsPoolSoftCooldown(t *testing.T) {
+func TestReportOpenAIAccountScheduleResult_SuccessClearsExpiredPoolSoftCooldown(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{
 		ID:          5401,
@@ -4275,11 +4275,72 @@ func TestReportOpenAIAccountScheduleResult_SuccessClearsPoolSoftCooldown(t *test
 		Credentials: map[string]any{"pool_mode": true},
 	}
 
-	svc.openaiPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(time.Minute))
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, time.Now().Add(-time.Second))
 	require.True(t, svc.isOpenAIPoolAccountSoftCooling(account))
 
 	svc.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 	require.False(t, svc.isOpenAIPoolAccountSoftCooling(account))
+}
+
+func TestReportOpenAIAccountScheduleResult_SuccessPreservesActivePoolSoftCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          5402,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{
+		Until:           time.Now().Add(time.Minute),
+		ClearGeneration: 3,
+	})
+	svc.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+
+	require.True(t, svc.isOpenAIPoolAccountSoftCooling(account))
+}
+
+func TestReportOpenAIAccountScheduleResult_SuccessPreservesRecoveryProbe(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          5403,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{
+		Until:           time.Now().Add(-time.Second),
+		ClearGeneration: 3,
+	})
+	svc.openaiPoolRecoveryProbeInFlight.Store(account.ID, struct{}{})
+	svc.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+
+	require.True(t, svc.isOpenAIPoolAccountSoftCooling(account))
+	_, probing := svc.openaiPoolRecoveryProbeInFlight.Load(account.ID)
+	require.True(t, probing)
+}
+
+func TestReportOpenAIAccountScheduleResult_SuccessPreservesExpiredCooldownWithContext(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          5404,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{
+		Until:           time.Now().Add(-time.Second),
+		ClearGeneration: 3,
+	})
+	svc.openaiPoolSoftCooldownContext.Store(account.ID, openAIPoolSoftCooldownContext{
+		ClearGeneration: 3,
+		CooldownSource:  "probe_backoff",
+	})
+	svc.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+
+	require.True(t, svc.isOpenAIPoolAccountSoftCooling(account))
 }
 
 func TestDeriveOpenAISelectionSeed_NoAffinityAddsEntropy(t *testing.T) {

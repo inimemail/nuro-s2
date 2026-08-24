@@ -2678,13 +2678,59 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64
 	s.reportOpenAIAccountScheduleResultForCapability(accountID, success, firstTokenMs, "")
 }
 
+// clearOpenAIPoolCooldownAfterSuccessfulRequest only clears an expired local
+// cooldown. A request may have started before a newer pool cooldown was
+// installed and finish successfully afterwards; that result must not erase
+// the newer backoff or its recovery probe state.
+func (s *OpenAIGatewayService) clearOpenAIPoolCooldownAfterSuccessfulRequest(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	if _, probing := s.openaiPoolRecoveryProbeInFlight.Load(accountID); probing {
+		return
+	}
+	value, loaded := s.openaiPoolSoftCooldownUntil.Load(accountID)
+	if !loaded {
+		s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
+		return
+	}
+	until, generation, valid := parseAccountRuntimeDeadline(value)
+	if !valid {
+		if s.openaiPoolSoftCooldownUntil.CompareAndDelete(accountID, value) {
+			s.openaiPoolSoftCooldownContext.Delete(accountID)
+			s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
+			s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
+		}
+		return
+	}
+	if until.After(time.Now()) {
+		return
+	}
+	// A real pool cooldown carries context describing the upstream failure or
+	// probe backoff. Even after its display deadline expires, let the recovery
+	// probe own the transition to healthy; an old long-running request must not
+	// clear this state merely because it eventually completed successfully.
+	if _, hasContext := s.openaiPoolSoftCooldownContext.Load(accountID); hasContext {
+		return
+	}
+	if !s.openaiPoolSoftCooldownUntil.CompareAndDelete(accountID, value) {
+		return
+	}
+	s.openaiPoolSoftCooldownContext.Delete(accountID)
+	s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
+	s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
+	// Only clear a Redis value older than the state we just removed. An
+	// unconditional DEL could erase a newer cooldown created on another
+	// replica.
+	_ = s.clearOpenAIAccountCooldownInRedisBefore(accountID, generation+1)
+}
+
 func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResultForRequest(account *Account, requestedModel string, success bool, firstTokenMs *int) {
 	if s == nil || account == nil {
 		return
 	}
 	if success {
-		s.openaiPoolSoftCooldownUntil.Delete(account.ID)
-		s.openaiPoolSoftCooldownFailureCount.Delete(account.ID)
+		s.clearOpenAIPoolCooldownAfterSuccessfulRequest(account.ID)
 	}
 	stats := s.getOpenAIAccountRuntimeStats()
 	if stats == nil {
@@ -2707,8 +2753,7 @@ func (s *OpenAIGatewayService) reportOpenAIAccountScheduleResultForCapability(ac
 		return
 	}
 	if success {
-		s.openaiPoolSoftCooldownUntil.Delete(accountID)
-		s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
+		s.clearOpenAIPoolCooldownAfterSuccessfulRequest(accountID)
 	}
 	stats := s.getOpenAIAccountRuntimeStats()
 	if stats == nil {

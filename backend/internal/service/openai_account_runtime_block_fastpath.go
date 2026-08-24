@@ -182,17 +182,29 @@ func (s *OpenAIGatewayService) clearLocalAccountSchedulingBlockBefore(accountID,
 		return
 	}
 	deleteAccountRuntimeDeadlineBefore(&s.openaiAccountRuntimeBlockUntil, accountID, clearGeneration)
+	preservePoolState := false
+	if value, ok := s.openaiPoolSoftCooldownUntil.Load(accountID); ok {
+		_, generation, valid := parseAccountRuntimeDeadline(value)
+		preservePoolState = valid && clearGeneration > 0 && generation >= clearGeneration
+	}
 	deleteAccountRuntimeDeadlineBefore(&s.openaiPoolSoftCooldownUntil, accountID, clearGeneration)
-	if value, ok := s.openaiPoolSoftCooldownContext.Load(accountID); ok {
-		cooldownContext, valid := value.(openAIPoolSoftCooldownContext)
-		if !valid || clearGeneration <= 0 || cooldownContext.ClearGeneration < clearGeneration {
-			s.openaiPoolSoftCooldownContext.CompareAndDelete(accountID, value)
+	if !preservePoolState {
+		// A newer cooldown may have been installed between the first read and
+		// the conditional delete. Re-read before clearing its probe metadata.
+		if value, ok := s.openaiPoolSoftCooldownUntil.Load(accountID); ok {
+			_, generation, valid := parseAccountRuntimeDeadline(value)
+			preservePoolState = valid && clearGeneration > 0 && generation >= clearGeneration
 		}
 	}
-	s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
-	s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
-	s.openaiPoolRecoveryProbeFailureCount.Delete(accountID)
-	s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
+	if !preservePoolState {
+		if value, ok := s.openaiPoolSoftCooldownContext.Load(accountID); ok {
+			s.openaiPoolSoftCooldownContext.CompareAndDelete(accountID, value)
+		}
+		s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
+		s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
+		s.openaiPoolRecoveryProbeFailureCount.Delete(accountID)
+		s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
+	}
 }
 
 func (s *OpenAIGatewayService) currentAccountRuntimeClearGeneration(accountID int64) int64 {

@@ -1867,6 +1867,8 @@ const updateSchedulableInList = (accountIds: number[], schedulable: boolean) => 
     if (!idSet.has(account.id)) return account
     const updated = { ...account, schedulable }
     if (!schedulable) {
+      poolSoftCooldownDisplayState.delete(`openai:${account.id}`)
+      poolSoftCooldownDisplayState.delete(`anthropic:${account.id}`)
       updated.openai_pool_soft_cooldown_until = null
       updated.openai_pool_soft_cooldown_due = false
       updated.openai_pool_soft_cooldown_status_code = undefined

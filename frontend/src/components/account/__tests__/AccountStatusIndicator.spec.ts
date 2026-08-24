@@ -264,4 +264,26 @@ describe('AccountStatusIndicator', () => {
     expect(wrapper.text()).toContain('admin.accounts.status.poolRecoveryPendingShort')
     expect(wrapper.text()).not.toContain('admin.accounts.status.active')
   })
+
+  it('只有探测标记时也显示探测中，不回退到正常', () => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({
+          id: 6,
+          name: 'openai-probing',
+          platform: 'openai',
+          type: 'apikey',
+          openai_pool_recovery_probe_in_flight: true,
+        })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('admin.accounts.status.poolRecoveryProbing')
+    expect(wrapper.text()).not.toContain('admin.accounts.status.active')
+  })
 })

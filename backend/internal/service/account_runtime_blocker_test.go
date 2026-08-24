@@ -360,6 +360,33 @@ func TestCompositeAccountRuntimeBlocker_PreservesSourceStateCreatedAfterGenerati
 	require.Equal(t, int64(1), generation)
 }
 
+func TestClearLocalRuntimeState_PreservesProbeForNewerCooldownGeneration(t *testing.T) {
+	openAI := &OpenAIGatewayService{}
+	accountID := int64(7051)
+	openAI.openaiPoolSoftCooldownUntil.Store(accountID, accountRuntimeDeadline{
+		Until:           time.Now().Add(time.Minute),
+		ClearGeneration: 2,
+	})
+	openAI.openaiPoolSoftCooldownContext.Store(accountID, openAIPoolSoftCooldownContext{
+		ClearGeneration: 2,
+		CooldownSource:  "probe_backoff",
+	})
+	openAI.openaiPoolRecoveryProbeInFlight.Store(accountID, struct{}{})
+
+	openAI.clearLocalAccountSchedulingBlockBefore(accountID, 1)
+
+	deadline, ok := openAI.openaiPoolSoftCooldownUntil.Load(accountID)
+	require.True(t, ok)
+	_, generation, valid := parseAccountRuntimeDeadline(deadline)
+	require.True(t, valid)
+	require.Equal(t, int64(2), generation)
+	_, probing := openAI.openaiPoolRecoveryProbeInFlight.Load(accountID)
+	require.True(t, probing)
+	contextValue, contextLoaded := openAI.openaiPoolSoftCooldownContext.Load(accountID)
+	require.True(t, contextLoaded)
+	require.Equal(t, int64(2), contextValue.(openAIPoolSoftCooldownContext).ClearGeneration)
+}
+
 func TestCooldownStoreDoesNotResurrectStateAfterConcurrentGenerationAdvance(t *testing.T) {
 	for _, testCase := range []struct {
 		name  string
