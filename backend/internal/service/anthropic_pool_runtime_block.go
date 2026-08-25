@@ -73,6 +73,9 @@ func (s *GatewayService) MarkAnthropicPoolAccountSoftCooldown(ctx context.Contex
 
 func (s *GatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	s.clearAnthropicPoolSoftCooldown(accountID)
+	if s.nonOpenAIPoolRuntime != nil {
+		s.nonOpenAIPoolRuntime.clearAccountID(accountID)
+	}
 }
 
 func (s *GatewayService) BlockAccountScheduling(account *Account, until time.Time, reason string) {

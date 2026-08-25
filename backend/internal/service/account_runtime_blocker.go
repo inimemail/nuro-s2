@@ -356,3 +356,19 @@ func (b *CompositeAccountRuntimeBlocker) MaybeKickAnthropicPoolRecoveryProbeFrom
 		}
 	}
 }
+
+func (b *CompositeAccountRuntimeBlocker) NonOpenAIPoolRuntimeStateForAccount(account *Account) NonOpenAIPoolRuntimeState {
+	if b == nil || account == nil {
+		return NonOpenAIPoolRuntimeState{}
+	}
+	for _, blocker := range b.blockers {
+		if reader, ok := blocker.(interface {
+			NonOpenAIPoolRuntimeStateForAccount(*Account) NonOpenAIPoolRuntimeState
+		}); ok {
+			if state := reader.NonOpenAIPoolRuntimeStateForAccount(account); state.Cooling {
+				return state
+			}
+		}
+	}
+	return NonOpenAIPoolRuntimeState{}
+}

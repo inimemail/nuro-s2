@@ -231,7 +231,9 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 			p.prefix, resp.StatusCode, modelName, p.account.ID, rateLimitDuration, truncateForLog(respBody, 200))
 
 		resetAt := time.Now().Add(rateLimitDuration)
-		if !setModelRateLimitByModelName(p.ctx, p.accountRepo, p.account.ID, modelName, p.prefix, resp.StatusCode, resetAt, false) {
+		if p.account.IsPoolMode() {
+			p.handleError(p.ctx, p.prefix, p.account, resp.StatusCode, resp.Header, respBody, p.requestedModel, p.groupID, p.sessionHash, p.isStickySession)
+		} else if !setModelRateLimitByModelName(p.ctx, p.accountRepo, p.account.ID, modelName, p.prefix, resp.StatusCode, resetAt, false) {
 			p.handleError(p.ctx, p.prefix, p.account, resp.StatusCode, resp.Header, respBody, p.requestedModel, p.groupID, p.sessionHash, p.isStickySession)
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d rate_limited account=%d (no model mapping)", p.prefix, resp.StatusCode, p.account.ID)
 		} else {
@@ -395,7 +397,9 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 			p.prefix, resp.StatusCode, maxAttempts, modelName, p.account.ID, rateLimitDuration, truncateForLog(retryBody, 200))
 
 		resetAt := time.Now().Add(rateLimitDuration)
-		if p.accountRepo != nil && modelName != "" {
+		if p.account.IsPoolMode() {
+			p.handleError(p.ctx, p.prefix, p.account, resp.StatusCode, resp.Header, retryBody, p.requestedModel, p.groupID, p.sessionHash, p.isStickySession)
+		} else if p.accountRepo != nil && modelName != "" {
 			if err := p.accountRepo.SetModelRateLimit(p.ctx, p.account.ID, modelName, resetAt); err != nil {
 				logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d model_rate_limit_failed model=%s error=%v", p.prefix, resp.StatusCode, modelName, err)
 			} else {
@@ -660,6 +664,9 @@ urlFallbackLoop:
 				}
 				logger.LegacyPrintf("service.antigravity_gateway", "%s status=request_failed retries_exhausted error=%v", p.prefix, err)
 				setOpsUpstreamError(p.c, 0, safeErr, "")
+				if p.account.IsPoolMode() && s.nonOpenAIPoolRuntime != nil {
+					s.nonOpenAIPoolRuntime.markFailure(p.ctx, nonOpenAIPoolSettings(p.ctx, s.settingService), p.account, 0, safeErr, "transport_error")
+				}
 				return nil, fmt.Errorf("upstream request failed after retries: %w", err)
 			}
 
@@ -868,15 +875,16 @@ func logPrefix(sessionID, accountName string) string {
 
 // AntigravityGatewayService 处理 Antigravity 平台的 API 转发
 type AntigravityGatewayService struct {
-	accountRepo         AccountRepository
-	tokenProvider       *AntigravityTokenProvider
-	rateLimitService    *RateLimitService
-	httpUpstream        HTTPUpstream
-	tlsFPProfileService *TLSFingerprintProfileService
-	settingService      *SettingService
-	cache               GatewayCache // 用于模型级限流时清除粘性会话绑定
-	schedulerSnapshot   *SchedulerSnapshotService
-	internal500Cache    Internal500CounterCache // INTERNAL 500 渐进惩罚计数器
+	accountRepo          AccountRepository
+	tokenProvider        *AntigravityTokenProvider
+	rateLimitService     *RateLimitService
+	httpUpstream         HTTPUpstream
+	tlsFPProfileService  *TLSFingerprintProfileService
+	settingService       *SettingService
+	cache                GatewayCache // 用于模型级限流时清除粘性会话绑定
+	schedulerSnapshot    *SchedulerSnapshotService
+	internal500Cache     Internal500CounterCache // INTERNAL 500 渐进惩罚计数器
+	nonOpenAIPoolRuntime *NonOpenAIPoolRuntime
 }
 
 func NewAntigravityGatewayService(
@@ -891,15 +899,16 @@ func NewAntigravityGatewayService(
 	internal500Cache Internal500CounterCache,
 ) *AntigravityGatewayService {
 	return &AntigravityGatewayService{
-		accountRepo:         accountRepo,
-		tokenProvider:       tokenProvider,
-		rateLimitService:    rateLimitService,
-		httpUpstream:        httpUpstream,
-		tlsFPProfileService: tlsFPProfileService,
-		settingService:      settingService,
-		cache:               cache,
-		schedulerSnapshot:   schedulerSnapshot,
-		internal500Cache:    internal500Cache,
+		accountRepo:          accountRepo,
+		tokenProvider:        tokenProvider,
+		rateLimitService:     rateLimitService,
+		httpUpstream:         httpUpstream,
+		tlsFPProfileService:  tlsFPProfileService,
+		settingService:       settingService,
+		cache:                cache,
+		schedulerSnapshot:    schedulerSnapshot,
+		internal500Cache:     internal500Cache,
+		nonOpenAIPoolRuntime: settingService.sharedNonOpenAIPoolRuntime(),
 	}
 }
 
@@ -2871,6 +2880,14 @@ func (s *AntigravityGatewayService) handleUpstreamError(
 	requestedModel string,
 	groupID int64, sessionHash string, isStickySession bool,
 ) *handleModelRateLimitResult {
+	if account != nil && account.IsPoolMode() {
+		if s.nonOpenAIPoolRuntime != nil && shouldNonOpenAIPoolFailoverStatus(statusCode) {
+			s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, statusCode, extractUpstreamErrorMessage(body), "upstream_failure")
+		}
+		// Pool mode keeps the existing retry decision, but uses the shared soft
+		// cooldown instead of a longer-lived hard model/account limit.
+		return nil
+	}
 	// 遵守自定义错误码策略：未命中则跳过所有限流处理
 	if !account.ShouldHandleErrorCode(statusCode) {
 		return nil
@@ -4539,6 +4556,9 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
 	if err != nil {
 		logger.LegacyPrintf("service.antigravity_gateway", "%s upstream request failed: %v", prefix, err)
+		if account.IsPoolMode() && s.nonOpenAIPoolRuntime != nil {
+			s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, 0, sanitizeUpstreamErrorMessage(err.Error()), "transport_error")
+		}
 		return nil, fmt.Errorf("upstream request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -4546,9 +4566,12 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	// 处理错误响应
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		if account.IsPoolMode() && s.nonOpenAIPoolRuntime != nil && shouldNonOpenAIPoolFailoverStatus(resp.StatusCode) {
+			s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, resp.StatusCode, extractUpstreamErrorMessage(respBody), "upstream_failure")
+		}
 
 		// 429 错误时标记账号限流
-		if resp.StatusCode == http.StatusTooManyRequests {
+		if resp.StatusCode == http.StatusTooManyRequests && !account.IsPoolMode() {
 			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", false)
 		}
 

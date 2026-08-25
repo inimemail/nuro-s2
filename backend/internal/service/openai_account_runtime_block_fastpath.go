@@ -48,6 +48,12 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	stateCtx, cancel := openAIAccountStateContext(ctx)
 	defer cancel()
 
+	if s != nil && account != nil && account.IsPoolMode() && nonOpenAIPoolPlatform(account.Platform) {
+		if s.nonOpenAIPoolRuntime != nil && (statusCode == 0 || shouldNonOpenAIPoolFailoverStatus(statusCode)) {
+			s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, statusCode, extractUpstreamErrorMessage(responseBody), "upstream_failure")
+		}
+		return false
+	}
 	if account != nil && account.IsPoolMode() {
 		return false
 	}
@@ -324,6 +330,20 @@ func (s *OpenAIGatewayService) isOpenAIAccountRuntimeBlocked(account *Account) b
 	}
 	s.openaiAccountRuntimeBlockUntil.Delete(account.ID)
 	return false
+}
+
+func (s *OpenAIGatewayService) isNonOpenAIPoolCandidateBlocked(ctx context.Context, account *Account) bool {
+	if s == nil || account == nil || s.nonOpenAIPoolRuntime == nil || !nonOpenAIPoolPlatform(account.Platform) {
+		return false
+	}
+	return s.nonOpenAIPoolRuntime.candidateBlocked(nonOpenAIPoolSettings(ctx, s.settingService), account)
+}
+
+func (s *OpenAIGatewayService) shouldSkipNonOpenAIPoolAccount(ctx context.Context, account *Account) bool {
+	if s == nil || account == nil || s.nonOpenAIPoolRuntime == nil || !nonOpenAIPoolPlatform(account.Platform) {
+		return false
+	}
+	return s.nonOpenAIPoolRuntime.shouldSkip(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account)
 }
 
 func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldown(ctx context.Context, account *Account, statusCode int, responseBody []byte) {
@@ -886,6 +906,7 @@ func (s *OpenAIGatewayService) hasHigherPriorityOpenAIAccountAvailable(
 		if strictPriorityLayer {
 			if !account.IsSchedulable() ||
 				s.isOpenAIAccountRuntimeBlocked(account) ||
+				s.isNonOpenAIPoolCandidateBlocked(ctx, account) ||
 				s.isOpenAIProxyStreamQuarantined(account) ||
 				s.isOpenAIPoolAccountSoftCooling(account) ||
 				(requirePrivacySet && !account.IsPrivacySet()) ||
@@ -911,7 +932,7 @@ func (s *OpenAIGatewayService) hasHigherPriorityOpenAIAccountAvailable(
 		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, platform) {
 			continue
 		}
-		if s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIProxyStreamQuarantined(account) || s.isOpenAIPoolAccountSoftCooling(account) {
+		if s.isOpenAIAccountRuntimeBlocked(account) || s.isNonOpenAIPoolCandidateBlocked(ctx, account) || s.isOpenAIProxyStreamQuarantined(account) || s.isOpenAIPoolAccountSoftCooling(account) {
 			continue
 		}
 		if requiredTransport != OpenAIUpstreamTransportAny &&
@@ -978,7 +999,7 @@ func (s *OpenAIGatewayService) hasSamePriorityNonPoolOpenAIAccountAvailable(
 		if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, platform) {
 			continue
 		}
-		if s.isOpenAIAccountRuntimeBlocked(account) || s.isOpenAIProxyStreamQuarantined(account) || s.isOpenAIPoolAccountSoftCooling(account) {
+		if s.isOpenAIAccountRuntimeBlocked(account) || s.isNonOpenAIPoolCandidateBlocked(ctx, account) || s.isOpenAIProxyStreamQuarantined(account) || s.isOpenAIPoolAccountSoftCooling(account) {
 			continue
 		}
 		if requiredTransport != OpenAIUpstreamTransportAny &&

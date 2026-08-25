@@ -1081,6 +1081,12 @@ export interface Account {
   anthropic_pool_last_probe_status_code?: number
   anthropic_pool_last_probe_reason?: string
   anthropic_pool_recovery_probe_in_flight: boolean
+  non_openai_pool_soft_cooldown_until?: string | null
+  non_openai_pool_soft_cooldown_due?: boolean
+  non_openai_pool_soft_cooldown_status_code?: number
+  non_openai_pool_soft_cooldown_reason?: string
+  non_openai_pool_soft_cooldown_source?: string
+  non_openai_pool_recovery_probe_in_flight?: boolean
 
   // Session window fields (5-hour window)
   session_window_start: string | null

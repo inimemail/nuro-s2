@@ -286,4 +286,45 @@ describe('AccountStatusIndicator', () => {
     expect(wrapper.text()).toContain('admin.accounts.status.poolRecoveryProbing')
     expect(wrapper.text()).not.toContain('admin.accounts.status.active')
   })
+
+  it('非 OpenAI 池冷却到期后保持待探测状态，不闪回正常', async () => {
+    const nowMs = Date.parse('2026-06-07T00:00:00Z')
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        nowMs,
+        account: makeAccount({
+          id: 7,
+          name: 'deepseek-pool',
+          platform: 'deepseek',
+          type: 'apikey',
+          non_openai_pool_soft_cooldown_until: new Date(nowMs + 2000).toISOString(),
+          non_openai_pool_soft_cooldown_status_code: 503,
+        })
+      },
+      global: { stubs: { Icon: true } }
+    })
+
+    expect(wrapper.text()).toContain('admin.accounts.status.poolSoftCooldown')
+    await wrapper.setProps({ nowMs: nowMs + 2000 })
+    expect(wrapper.text()).toContain('admin.accounts.status.poolRecoveryPending')
+    expect(wrapper.text()).not.toContain('admin.accounts.status.active')
+  })
+
+  it('非 OpenAI 池探测标记会显示探测中', () => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({
+          id: 8,
+          name: 'kimi-probing',
+          platform: 'kimi',
+          type: 'apikey',
+          non_openai_pool_recovery_probe_in_flight: true,
+        })
+      },
+      global: { stubs: { Icon: true } }
+    })
+
+    expect(wrapper.text()).toContain('admin.accounts.status.poolRecoveryProbing')
+    expect(wrapper.text()).not.toContain('admin.accounts.status.active')
+  })
 })

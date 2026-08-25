@@ -6485,7 +6485,22 @@ export default {
         anthropicPoolRecoveryProbeHint: 'When enabled, Anthropic pool accounts recover only after a successful probe when soft cooldown expires. When disabled, they recover directly.',
         anthropicPoolProbeModel: 'Anthropic Probe Model',
         anthropicPoolSoftCooldownMax: 'Anthropic Max Soft Cooldown Seconds',
-        anthropicPoolProbeTimeout: 'Anthropic Probe Timeout Seconds'
+        anthropicPoolProbeTimeout: 'Anthropic Probe Timeout Seconds',
+        nonOpenAIPoolTitle: 'Non-OpenAI Platform Pool Scheduling',
+        nonOpenAIPoolEnabled: 'Enable non-OpenAI platform pool scheduling',
+        nonOpenAIPoolDescription: 'Gemini, Antigravity, Grok, Kimi, Zhipu, and DeepSeek use independent pool soft cooldown and recovery probing. Existing OpenAI and Anthropic strategies are unchanged.',
+        nonOpenAIPoolDefaultCooldown: 'General error cooldown',
+        nonOpenAIPoolAuthCooldown: 'Auth/rate-limit cooldown',
+        nonOpenAIPoolServerCooldown: 'Server error cooldown',
+        nonOpenAIPoolTransportCooldown: 'Transport error cooldown',
+        nonOpenAIPoolMaxCooldown: 'Maximum cooldown',
+        nonOpenAIPoolProbeTimeout: 'Probe timeout',
+        nonOpenAIPoolProbeBackoff: 'Maximum probe backoff',
+        nonOpenAIPoolPlatforms: 'Platform settings',
+        nonOpenAIPoolRecoveryProbe: 'recovery probe',
+        nonOpenAIPoolRequestProbeHint: 'Recovery uses a normal downstream request. It adds no extra request, reconnect, or first-token delay.',
+        nonOpenAIPoolPlatformMaxCooldown: 'Platform maximum cooldown',
+        nonOpenAIPoolPlatformProbeTimeout: 'Probe timeout'
       },
       gatewayConcurrency: {
         title: 'Concurrency Wait Policy',

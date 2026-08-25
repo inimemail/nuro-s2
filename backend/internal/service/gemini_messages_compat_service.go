@@ -58,6 +58,8 @@ type GeminiMessagesCompatService struct {
 	cfg                       *config.Config
 	responseHeaderFilter      *responseheaders.CompiledHeaderFilter
 	accountHealthStats        atomic.Pointer[accountRuntimeHealthStats]
+	nonOpenAIPoolRuntime      *NonOpenAIPoolRuntime
+	settingService            *SettingService
 }
 
 func NewGeminiMessagesCompatService(
@@ -70,6 +72,7 @@ func NewGeminiMessagesCompatService(
 	httpUpstream HTTPUpstream,
 	tlsFPProfileService *TLSFingerprintProfileService,
 	antigravityGatewayService *AntigravityGatewayService,
+	settingService *SettingService,
 	cfg *config.Config,
 ) *GeminiMessagesCompatService {
 	svc := &GeminiMessagesCompatService{
@@ -84,6 +87,8 @@ func NewGeminiMessagesCompatService(
 		antigravityGatewayService: antigravityGatewayService,
 		cfg:                       cfg,
 		responseHeaderFilter:      compileResponseHeaderFilter(cfg),
+		nonOpenAIPoolRuntime:      settingService.sharedNonOpenAIPoolRuntime(),
+		settingService:            settingService,
 	}
 	svc.accountHealthStats.Store(newAccountRuntimeHealthStats())
 	return svc
@@ -100,6 +105,9 @@ func (s *GeminiMessagesCompatService) ReportAccountScheduleResult(account *Accou
 	}
 	if account.Platform != PlatformGemini && account.Platform != PlatformAntigravity {
 		return
+	}
+	if success && s.nonOpenAIPoolRuntime != nil {
+		s.nonOpenAIPoolRuntime.markSuccess(account)
 	}
 	stats := s.getAccountHealthStats()
 	if stats == nil {
@@ -299,6 +307,9 @@ func (s *GeminiMessagesCompatService) isAccountUsableForRequestWithPrecheck(
 	// 检查平台匹配
 	// Check platform matching
 	if !s.isAccountValidForPlatform(account, platform, useMixedScheduling) {
+		return false
+	}
+	if s.nonOpenAIPoolRuntime != nil && s.nonOpenAIPoolRuntime.shouldSkip(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account) {
 		return false
 	}
 
@@ -509,6 +520,7 @@ func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context
 	if hydrated == nil {
 		return nil, fmt.Errorf("selected gemini account %d not found during hydration", account.ID)
 	}
+	copyNonOpenAIPoolProbeToken(account, hydrated)
 	return hydrated, nil
 }
 
@@ -864,6 +876,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				sleepGeminiBackoff(attempt)
 				continue
 			}
+			if s.nonOpenAIPoolRuntime != nil {
+				s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, 0, safeErr, "transport_error")
+			}
 			setOpsUpstreamError(c, 0, safeErr, "")
 			return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", safeUpstreamErrorMessage)
 		}
@@ -953,7 +968,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				}
 				break
 			}
-			if resp.StatusCode == 429 {
+			if resp.StatusCode == 429 && !account.IsPoolMode() {
 				// Mark as rate-limited early so concurrent requests avoid this account.
 				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			}
@@ -1404,6 +1419,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				sleepGeminiBackoff(attempt)
 				continue
 			}
+			if s.nonOpenAIPoolRuntime != nil {
+				s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, 0, safeErr, "transport_error")
+			}
 			if action == "countTokens" {
 				estimated := estimateGeminiCountTokens(body)
 				c.JSON(http.StatusOK, map[string]any{"totalTokens": estimated})
@@ -1441,7 +1459,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				}
 				break
 			}
-			if resp.StatusCode == 429 {
+			if resp.StatusCode == 429 && !account.IsPoolMode() {
 				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			}
 			if attempt < geminiMaxRetries {
@@ -1780,6 +1798,9 @@ func (s *GeminiMessagesCompatService) shouldFailoverGeminiUpstreamError(statusCo
 func (s *GeminiMessagesCompatService) poolModeSkippedFailoverError(c *gin.Context, account *Account, statusCode int, respBody []byte, upstreamRequestID string) *UpstreamFailoverError {
 	if account == nil || !account.IsPoolMode() || !s.shouldFailoverGeminiUpstreamError(statusCode) {
 		return nil
+	}
+	if s.nonOpenAIPoolRuntime != nil {
+		s.nonOpenAIPoolRuntime.markFailure(context.Background(), nonOpenAIPoolSettings(context.Background(), s.settingService), account, statusCode, extractUpstreamErrorMessage(respBody), "failover")
 	}
 	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -3256,6 +3277,16 @@ func asInt(v any) (int, bool) {
 }
 
 func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, body []byte) {
+	if account != nil && account.IsPoolMode() && nonOpenAIPoolPlatform(account.Platform) {
+		if s.nonOpenAIPoolRuntime != nil && shouldNonOpenAIPoolFailoverStatus(statusCode) {
+			// Gemini/Antigravity failures are isolated from the existing daily quota state.
+			s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, statusCode, extractUpstreamErrorMessage(body), "upstream_failure")
+		}
+		// Match the established OpenAI pool-mode contract: keep the current
+		// request's retry/failover budget, but do not persist the provider's
+		// ordinary hard rate-limit or error state for this pool account.
+		return
+	}
 	// 遵守自定义错误码策略：未命中则跳过所有限流处理
 	if !account.ShouldHandleErrorCode(statusCode) {
 		return

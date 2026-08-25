@@ -89,7 +89,28 @@ func (s *OpenAIGatewayService) newOpenAIPoolRequestFailoverError(
 	err error,
 	passthrough bool,
 ) *UpstreamFailoverError {
-	if account == nil || !account.IsOpenAI() || !account.IsPoolMode() || err == nil {
+	if account == nil || !account.IsPoolMode() || err == nil {
+		return nil
+	}
+	if nonOpenAIPoolPlatform(account.Platform) {
+		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		if safeErr == "" {
+			safeErr = "upstream request failed"
+		}
+		if s != nil && s.nonOpenAIPoolRuntime != nil {
+			s.nonOpenAIPoolRuntime.markFailure(context.Background(), nonOpenAIPoolSettings(context.Background(), s.settingService), account, 0, safeErr, "transport_error")
+		}
+		return &UpstreamFailoverError{
+			StatusCode:   http.StatusBadGateway,
+			ResponseBody: openAIUpstreamFailoverErrorBody("Upstream request failed"),
+			Message:      safeErr,
+			// The existing domestic-compatible path did not add same-account
+			// transport retries. Keep that retry budget unchanged; cooldown only
+			// removes this account from subsequent pool selection.
+			RetryableOnSameAccount: false,
+		}
+	}
+	if !account.IsOpenAI() {
 		return nil
 	}
 	immediatePoolSoftCooldown := shouldImmediatelyCoolOpenAITextPool(upstreamReq, err.Error())

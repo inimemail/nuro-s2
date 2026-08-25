@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -116,6 +117,7 @@ const backendModeDBTimeout = 5 * time.Second
 
 // cachedGatewayForwardingSettings 缓存网关转发行为设置（进程内缓存，60s TTL）
 type cachedGatewayForwardingSettings struct {
+	nonOpenAIPool                            NonOpenAIPoolSettings
 	fingerprintUnification                   bool
 	metadataPassthrough                      bool
 	cchSigning                               bool
@@ -212,6 +214,8 @@ type SettingService struct {
 	panelRateLimitCache         atomic.Value // *cachedPanelRateLimitSettings
 	panelRateLimitSF            singleflight.Group
 	openAICodexRoutingHint      atomic.Bool
+	nonOpenAIPoolRuntimeOnce    sync.Once
+	nonOpenAIPoolRuntime        *NonOpenAIPoolRuntime
 
 	// openAIQuotaAutoPauseSettingsCache holds the most recently observed quota auto-pause
 	// settings. GetOpenAIQuotaAutoPauseSettings reads this atomic.Value on the request hot
@@ -221,6 +225,16 @@ type SettingService struct {
 	// instance owns its own cache, no shared package-level state.
 	openAIQuotaAutoPauseSettingsCache atomic.Value // *cachedOpenAIQuotaAutoPauseSettings
 	openAIQuotaAutoPauseSettingsSF    singleflight.Group
+}
+
+func (s *SettingService) sharedNonOpenAIPoolRuntime() *NonOpenAIPoolRuntime {
+	if s == nil {
+		return NewNonOpenAIPoolRuntime()
+	}
+	s.nonOpenAIPoolRuntimeOnce.Do(func() {
+		s.nonOpenAIPoolRuntime = NewNonOpenAIPoolRuntime()
+	})
+	return s.nonOpenAIPoolRuntime
 }
 
 // DefaultPlatformQuotaSetting 单 platform 三档限额（nil = 沿用上层；0 = 显式禁用；>0 = 上限）
@@ -2313,6 +2327,11 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyAnthropicPoolRecoveryProbeModel] = strings.TrimSpace(settings.AnthropicPoolRecoveryProbeModel)
 	updates[SettingKeyAnthropicPoolSoftCooldownMaxSeconds] = strconv.Itoa(clampInt(settings.AnthropicPoolSoftCooldownMaxSeconds, 1, 30))
 	updates[SettingKeyAnthropicPoolProbeTimeoutSeconds] = strconv.Itoa(clampInt(settings.AnthropicPoolProbeTimeoutSeconds, 1, 30))
+	nonOpenAIPoolJSON, err := json.Marshal(normalizeNonOpenAIPoolSettings(settings.NonOpenAIPool))
+	if err != nil {
+		return nil, fmt.Errorf("marshal non-OpenAI pool settings: %w", err)
+	}
+	updates[SettingKeyNonOpenAIPoolSettings] = string(nonOpenAIPoolJSON)
 
 	// Backend Mode
 	updates[SettingKeyBackendModeEnabled] = strconv.FormatBool(settings.BackendModeEnabled)
@@ -2468,6 +2487,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	})
 	gatewayForwardingSF.Forget("gateway_forwarding")
 	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
+		nonOpenAIPool:                            cloneNonOpenAIPoolSettings(normalizeNonOpenAIPoolSettings(settings.NonOpenAIPool)),
 		fingerprintUnification:                   settings.EnableFingerprintUnification,
 		metadataPassthrough:                      settings.EnableMetadataPassthrough,
 		cchSigning:                               settings.EnableCCHSigning,
@@ -2485,6 +2505,9 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		openAIOAuthFirstTokenStages:              append([]OpenAIFirstTokenTimeoutPlaceholderStage(nil), settings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages...),
 		expiresAt:                                time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 	})
+	if !settings.NonOpenAIPool.Enabled && s.nonOpenAIPoolRuntime != nil {
+		s.nonOpenAIPoolRuntime.clearAll()
+	}
 	s.antigravityUAVersionSF.Forget("antigravity_user_agent_version")
 	antigravityUserAgentVersion := antigravity.NormalizeUserAgentVersion(settings.AntigravityUserAgentVersion)
 	if antigravityUserAgentVersion == "" {
@@ -2714,13 +2737,14 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
 }
 
 type gatewayForwardingSettingsResult struct {
-	fp, mp, cch, cacheTTL1h, rewriteMessageCacheControl    bool
-	clientDatelineNormalization                            bool
-	claudeOAuthSystemPromptInjection                       bool
-	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks string
-	openAIPoolDownstreamModelLimitProtection               bool
-	openAIPoolRecoveryProbe, openAIImagePoolRecoveryProbe  bool
-	anthropicPoolRecoveryProbe                             bool
+	nonOpenAIPool                                             NonOpenAIPoolSettings
+	fp, mp, cch, cacheTTL1h, rewriteMessageCacheControl       bool
+	clientDatelineNormalization                               bool
+	claudeOAuthSystemPromptInjection                          bool
+	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks    string
+	openAIPoolDownstreamModelLimitProtection                  bool
+	openAIPoolRecoveryProbe, openAIImagePoolRecoveryProbe     bool
+	anthropicPoolRecoveryProbe                                bool
 	openAIAPIKeyFirstTokenStages, openAIOAuthFirstTokenStages []OpenAIFirstTokenTimeoutPlaceholderStage
 }
 
@@ -2728,6 +2752,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 	if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
 			return gatewayForwardingSettingsResult{
+				nonOpenAIPool:                            cached.nonOpenAIPool,
 				fp:                                       cached.fingerprintUnification,
 				mp:                                       cached.metadataPassthrough,
 				cch:                                      cached.cchSigning,
@@ -2750,6 +2775,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
 				return gatewayForwardingSettingsResult{
+					nonOpenAIPool:                            cached.nonOpenAIPool,
 					fp:                                       cached.fingerprintUnification,
 					mp:                                       cached.metadataPassthrough,
 					cch:                                      cached.cchSigning,
@@ -2786,10 +2812,12 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			SettingKeyAnthropicPoolRecoveryProbeEnabled,
 			SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages,
 			SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages,
+			SettingKeyNonOpenAIPoolSettings,
 		})
 		if err != nil {
 			slog.Warn("failed to get gateway forwarding settings", "error", err)
 			gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
+				nonOpenAIPool:                            DefaultNonOpenAIPoolSettings(),
 				fingerprintUnification:                   true,
 				metadataPassthrough:                      false,
 				cchSigning:                               false,
@@ -2803,7 +2831,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 				anthropicPoolRecoveryProbe:               true,
 				expiresAt:                                time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
 			})
-			return gatewayForwardingSettingsResult{fp: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true, openAIPoolDownstreamModelLimitProtection: true, openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true, anthropicPoolRecoveryProbe: true}, nil
+			return gatewayForwardingSettingsResult{nonOpenAIPool: DefaultNonOpenAIPoolSettings(), fp: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true, openAIPoolDownstreamModelLimitProtection: true, openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true, anthropicPoolRecoveryProbe: true}, nil
 		}
 		fp := true
 		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
@@ -2839,9 +2867,17 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if v, ok := values[SettingKeyAnthropicPoolRecoveryProbeEnabled]; ok && v != "" {
 			anthropicPoolRecoveryProbe = v == "true"
 		}
+		nonOpenAIPool := DefaultNonOpenAIPoolSettings()
+		if raw := strings.TrimSpace(values[SettingKeyNonOpenAIPoolSettings]); raw != "" {
+			var parsed NonOpenAIPoolSettings
+			if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+				nonOpenAIPool = normalizeNonOpenAIPoolSettings(parsed)
+			}
+		}
 		apiKeyFirstTokenStages := parseGatewayFirstTokenTimeoutPlaceholderStages(values[SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages])
 		oauthFirstTokenStages := parseGatewayFirstTokenTimeoutPlaceholderStages(values[SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages])
 		gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
+			nonOpenAIPool:                            nonOpenAIPool,
 			fingerprintUnification:                   fp,
 			metadataPassthrough:                      mp,
 			cchSigning:                               cch,
@@ -2860,6 +2896,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			expiresAt:                                time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 		})
 		return gatewayForwardingSettingsResult{
+			nonOpenAIPool:                            nonOpenAIPool,
 			fp:                                       fp,
 			mp:                                       mp,
 			cch:                                      cch,
@@ -2880,7 +2917,14 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 	if r, ok := val.(gatewayForwardingSettingsResult); ok {
 		return r
 	}
-	return gatewayForwardingSettingsResult{fp: true, clientDatelineNormalization: true, openAIPoolDownstreamModelLimitProtection: true, openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true, anthropicPoolRecoveryProbe: true}
+	return gatewayForwardingSettingsResult{nonOpenAIPool: DefaultNonOpenAIPoolSettings(), fp: true, clientDatelineNormalization: true, openAIPoolDownstreamModelLimitProtection: true, openAIPoolRecoveryProbe: true, openAIImagePoolRecoveryProbe: true, anthropicPoolRecoveryProbe: true}
+}
+
+func (s *SettingService) GetNonOpenAIPoolSettings(ctx context.Context) NonOpenAIPoolSettings {
+	if s == nil {
+		return DefaultNonOpenAIPoolSettings()
+	}
+	return cloneNonOpenAIPoolSettings(s.getGatewayForwardingSettingsCached(ctx).nonOpenAIPool)
 }
 
 // GetGatewayForwardingSettings returns cached gateway forwarding settings.
@@ -3583,61 +3627,62 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyMaxClaudeCodeVersion: "",
 
 		// 分组隔离（默认不允许未分组 Key 调度）
-		SettingKeyAllowUngroupedKeyScheduling:                     "false",
-		SettingKeyGatewayUserSlotWaitTimeoutMS:                    "100",
-		SettingKeyGatewayAccountSlotWaitTimeoutMS:                 "50",
-		SettingKeyGatewayEdgeQueueWaitBudgetMS:                    "50",
-		SettingKeyGatewayEdgeGlobalWorkers:                        "9999",
-		SettingKeyGatewayUserWaitingExtra:                         "5",
-		SettingKeyGatewayRetryAfterMS:                             "1000",
-		SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled:       "true",
-		SettingKeyGatewayOpenAIResponseHeaderTimeoutMS:            "30000",
-		SettingKeyGatewayProtectionEnabled:                        "true",
-		SettingKeyGatewayEdgeConnectTimeoutMS:                     "5000",
-		SettingKeyGatewayEdgeResponseHeaderTimeoutMS:              "15000",
-		SettingKeyGatewayEdgeResponseHeaderBudgetMS:               "15000",
-		SettingKeyGatewayEdgeBodyIdleTimeoutMS:                    "180000",
-		SettingKeyGatewayEdgeResponseHeaderMaxAttempts:            "3",
-		SettingKeyGatewayEdgeResponseHeaderFailover:               "true",
+		SettingKeyAllowUngroupedKeyScheduling:                           "false",
+		SettingKeyGatewayUserSlotWaitTimeoutMS:                          "100",
+		SettingKeyGatewayAccountSlotWaitTimeoutMS:                       "50",
+		SettingKeyGatewayEdgeQueueWaitBudgetMS:                          "50",
+		SettingKeyGatewayEdgeGlobalWorkers:                              "9999",
+		SettingKeyGatewayUserWaitingExtra:                               "5",
+		SettingKeyGatewayRetryAfterMS:                                   "1000",
+		SettingKeyGatewayOpenAIResponseHeaderTimeoutEnabled:             "true",
+		SettingKeyGatewayOpenAIResponseHeaderTimeoutMS:                  "30000",
+		SettingKeyGatewayProtectionEnabled:                              "true",
+		SettingKeyGatewayEdgeConnectTimeoutMS:                           "5000",
+		SettingKeyGatewayEdgeResponseHeaderTimeoutMS:                    "15000",
+		SettingKeyGatewayEdgeResponseHeaderBudgetMS:                     "15000",
+		SettingKeyGatewayEdgeBodyIdleTimeoutMS:                          "180000",
+		SettingKeyGatewayEdgeResponseHeaderMaxAttempts:                  "3",
+		SettingKeyGatewayEdgeResponseHeaderFailover:                     "true",
 		SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: string(defaultFirstTokenStagesJSON),
 		SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  string(defaultFirstTokenStagesJSON),
-		SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled: "true",
-		SettingKeyOpenAIPoolRecoveryProbeEnabled:                  "true",
-		SettingKeyOpenAIPoolRecoveryProbeModel:                    openai.DefaultTestModel,
-		SettingKeyOpenAIPoolSoftCooldownMaxSeconds:                "30",
-		SettingKeyOpenAIPoolProbeTimeoutSeconds:                   "5",
-		SettingKeyOpenAIImagePoolRecoveryProbeEnabled:             "true",
-		SettingKeyOpenAIImagePoolRecoveryProbeModel:               openAIPoolRecoveryProbeDefaultImageModel,
-		SettingKeyOpenAIImagePoolSoftCooldownMaxSeconds:           "30",
-		SettingKeyOpenAIImagePoolProbeTimeoutSeconds:              "360",
-		SettingKeyAnthropicPoolRecoveryProbeEnabled:               "true",
-		SettingKeyAnthropicPoolRecoveryProbeModel:                 anthropicPoolProbeDefaultModel,
-		SettingKeyAnthropicPoolSoftCooldownMaxSeconds:             "30",
-		SettingKeyAnthropicPoolProbeTimeoutSeconds:                "5",
-		SettingKeyEnableAnthropicCacheTTL1hInjection:              "false",
-		SettingKeyRewriteMessageCacheControl:                      strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
-		SettingKeyEnableClientDatelineNormalization:               "true",
-		SettingKeyStreamLowLatencyMode:                            s.defaultStreamLowLatencyMode(),
-		SettingKeyLowLatencyStreamHeaders:                         strconv.FormatBool(s.defaultLowLatencyStreamHeaders()),
-		SettingKeyAntigravityUserAgentVersion:                     "",
-		SettingKeyOpenAICodexUserAgent:                            "",
-		SettingKeyOpenAICodexClientVersion:                        "",
-		SettingKeyOpenAICodexClientVersionSynced:                  "",
-		SettingKeyOpenAICodexVersionAutoSyncEnabled:               "false",
-		SettingKeyOpenAICodexRoutingHintEnabled:                   "false",
-		SettingKeyMinCodexVersion:                                 "",
-		SettingKeyMaxCodexVersion:                                 "",
-		SettingKeyCodexCLIOnlyBlacklist:                           "",
-		SettingKeyCodexCLIOnlyWhitelist:                           "",
-		SettingKeyCodexCLIOnlyAllowAppServerClients:               "false",
-		SettingKeyCodexCLIOnlyEngineFingerprintSignals:            "",
-		SettingPaymentVisibleMethodAlipaySource:                   "",
-		SettingPaymentVisibleMethodWxpaySource:                    "",
-		SettingPaymentVisibleMethodAlipayEnabled:                  "false",
-		SettingPaymentVisibleMethodWxpayEnabled:                   "false",
-		openAIAdvancedSchedulerSettingKey:                         "false",
-		SettingKeyAllowUserViewErrorRequests:                      "false",
+		SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled:       "true",
+		SettingKeyOpenAIPoolRecoveryProbeEnabled:                        "true",
+		SettingKeyOpenAIPoolRecoveryProbeModel:                          openai.DefaultTestModel,
+		SettingKeyOpenAIPoolSoftCooldownMaxSeconds:                      "30",
+		SettingKeyOpenAIPoolProbeTimeoutSeconds:                         "5",
+		SettingKeyOpenAIImagePoolRecoveryProbeEnabled:                   "true",
+		SettingKeyOpenAIImagePoolRecoveryProbeModel:                     openAIPoolRecoveryProbeDefaultImageModel,
+		SettingKeyOpenAIImagePoolSoftCooldownMaxSeconds:                 "30",
+		SettingKeyOpenAIImagePoolProbeTimeoutSeconds:                    "360",
+		SettingKeyAnthropicPoolRecoveryProbeEnabled:                     "true",
+		SettingKeyAnthropicPoolRecoveryProbeModel:                       anthropicPoolProbeDefaultModel,
+		SettingKeyAnthropicPoolSoftCooldownMaxSeconds:                   "30",
+		SettingKeyAnthropicPoolProbeTimeoutSeconds:                      "5",
+		SettingKeyEnableAnthropicCacheTTL1hInjection:                    "false",
+		SettingKeyRewriteMessageCacheControl:                            strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
+		SettingKeyEnableClientDatelineNormalization:                     "true",
+		SettingKeyStreamLowLatencyMode:                                  s.defaultStreamLowLatencyMode(),
+		SettingKeyLowLatencyStreamHeaders:                               strconv.FormatBool(s.defaultLowLatencyStreamHeaders()),
+		SettingKeyAntigravityUserAgentVersion:                           "",
+		SettingKeyOpenAICodexUserAgent:                                  "",
+		SettingKeyOpenAICodexClientVersion:                              "",
+		SettingKeyOpenAICodexClientVersionSynced:                        "",
+		SettingKeyOpenAICodexVersionAutoSyncEnabled:                     "false",
+		SettingKeyOpenAICodexRoutingHintEnabled:                         "false",
+		SettingKeyMinCodexVersion:                                       "",
+		SettingKeyMaxCodexVersion:                                       "",
+		SettingKeyCodexCLIOnlyBlacklist:                                 "",
+		SettingKeyCodexCLIOnlyWhitelist:                                 "",
+		SettingKeyCodexCLIOnlyAllowAppServerClients:                     "false",
+		SettingKeyCodexCLIOnlyEngineFingerprintSignals:                  "",
+		SettingPaymentVisibleMethodAlipaySource:                         "",
+		SettingPaymentVisibleMethodWxpaySource:                          "",
+		SettingPaymentVisibleMethodAlipayEnabled:                        "false",
+		SettingPaymentVisibleMethodWxpayEnabled:                         "false",
+		openAIAdvancedSchedulerSettingKey:                               "false",
+		SettingKeyAllowUserViewErrorRequests:                            "false",
 	}
+	defaults[SettingKeyNonOpenAIPoolSettings] = mustMarshalDefaultNonOpenAIPoolSettings()
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
 }
@@ -4221,6 +4266,13 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 	result.AnthropicPoolSoftCooldownMaxSeconds = clampInt(parsePositiveIntSetting(settings[SettingKeyAnthropicPoolSoftCooldownMaxSeconds], 30), 1, 30)
 	result.AnthropicPoolProbeTimeoutSeconds = clampInt(parsePositiveIntSetting(settings[SettingKeyAnthropicPoolProbeTimeoutSeconds], 5), 1, 30)
+	result.NonOpenAIPool = DefaultNonOpenAIPoolSettings()
+	if raw := strings.TrimSpace(settings[SettingKeyNonOpenAIPoolSettings]); raw != "" {
+		var parsed NonOpenAIPoolSettings
+		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+			result.NonOpenAIPool = normalizeNonOpenAIPoolSettings(parsed)
+		}
+	}
 
 	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false, cch_signing=false)
 	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {

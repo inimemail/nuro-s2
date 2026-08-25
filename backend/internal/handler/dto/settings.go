@@ -27,26 +27,27 @@ type CustomEndpoint struct {
 
 // SystemSettings represents the admin settings API response payload.
 type SystemSettings struct {
-	RegistrationEnabled                 bool                     `json:"registration_enabled"`
-	EmailVerifyEnabled                  bool                     `json:"email_verify_enabled"`
-	RegistrationEmailSuffixWhitelist    []string                 `json:"registration_email_suffix_whitelist"`
-	RegistrationEmailDomainQuotaEnabled bool                     `json:"registration_email_domain_quota_enabled"`
-	PromoCodeEnabled                    bool                     `json:"promo_code_enabled"`
-	PasswordResetEnabled                bool                     `json:"password_reset_enabled"`
-	FrontendURL                         string                   `json:"frontend_url"`
-	InvitationCodeEnabled               bool                     `json:"invitation_code_enabled"`
-	TotpEnabled                         bool                     `json:"totp_enabled"`                   // TOTP 双因素认证
-	TotpEncryptionKeyConfigured         bool                     `json:"totp_encryption_key_configured"` // TOTP 加密密钥是否已配置
-	PasskeyEnabled                      bool                     `json:"passkey_enabled"`
-	PasskeyConfigured                   bool                     `json:"passkey_configured"`
-	PasskeyRPID                         string                   `json:"passkey_rp_id"`
-	PasskeyRPOrigins                    []string                 `json:"passkey_rp_origins"`
-	AuditLogRetentionDays               int                      `json:"audit_log_retention_days"`
-	SessionBindingEnabled               bool                     `json:"session_binding_enabled"`
-	LoginAgreementEnabled               bool                     `json:"login_agreement_enabled"`
-	LoginAgreementMode                  string                   `json:"login_agreement_mode"`
-	LoginAgreementUpdatedAt             string                   `json:"login_agreement_updated_at"`
-	LoginAgreementDocuments             []LoginAgreementDocument `json:"login_agreement_documents"`
+	NonOpenAIPool                       service.NonOpenAIPoolSettings `json:"non_openai_pool"`
+	RegistrationEnabled                 bool                          `json:"registration_enabled"`
+	EmailVerifyEnabled                  bool                          `json:"email_verify_enabled"`
+	RegistrationEmailSuffixWhitelist    []string                      `json:"registration_email_suffix_whitelist"`
+	RegistrationEmailDomainQuotaEnabled bool                          `json:"registration_email_domain_quota_enabled"`
+	PromoCodeEnabled                    bool                          `json:"promo_code_enabled"`
+	PasswordResetEnabled                bool                          `json:"password_reset_enabled"`
+	FrontendURL                         string                        `json:"frontend_url"`
+	InvitationCodeEnabled               bool                          `json:"invitation_code_enabled"`
+	TotpEnabled                         bool                          `json:"totp_enabled"`                   // TOTP 双因素认证
+	TotpEncryptionKeyConfigured         bool                          `json:"totp_encryption_key_configured"` // TOTP 加密密钥是否已配置
+	PasskeyEnabled                      bool                          `json:"passkey_enabled"`
+	PasskeyConfigured                   bool                          `json:"passkey_configured"`
+	PasskeyRPID                         string                        `json:"passkey_rp_id"`
+	PasskeyRPOrigins                    []string                      `json:"passkey_rp_origins"`
+	AuditLogRetentionDays               int                           `json:"audit_log_retention_days"`
+	SessionBindingEnabled               bool                          `json:"session_binding_enabled"`
+	LoginAgreementEnabled               bool                          `json:"login_agreement_enabled"`
+	LoginAgreementMode                  string                        `json:"login_agreement_mode"`
+	LoginAgreementUpdatedAt             string                        `json:"login_agreement_updated_at"`
+	LoginAgreementDocuments             []LoginAgreementDocument      `json:"login_agreement_documents"`
 
 	SMTPHost               string `json:"smtp_host"`
 	SMTPPort               int    `json:"smtp_port"`
@@ -182,37 +183,37 @@ type SystemSettings struct {
 	MaxClaudeCodeVersion string `json:"max_claude_code_version"`
 
 	// 分组隔离
-	AllowUngroupedKeyScheduling                     bool   `json:"allow_ungrouped_key_scheduling"`
-	GatewayUserSlotWaitTimeoutMS                    int    `json:"gateway_user_slot_wait_timeout_ms"`
-	GatewayAccountSlotWaitTimeoutMS                 int    `json:"gateway_account_slot_wait_timeout_ms"`
-	GatewayEdgeQueueWaitBudgetMS                    int    `json:"gateway_edge_queue_wait_budget_ms"`
-	GatewayEdgeGlobalWorkers                        int    `json:"gateway_edge_global_workers"`
-	GatewayUserWaitingExtra                         int    `json:"gateway_user_waiting_extra"`
-	GatewayRetryAfterMS                             int    `json:"gateway_retry_after_ms"`
-	GatewayOpenAIResponseHeaderTimeoutEnabled       bool   `json:"gateway_openai_response_header_timeout_enabled"`
-	GatewayOpenAIResponseHeaderTimeoutMS            int64  `json:"gateway_openai_response_header_timeout_ms"`
-	GatewayProtectionEnabled                        bool   `json:"gateway_edge_protection_enabled"`
-	GatewayEdgeConnectTimeoutMS                     int    `json:"gateway_edge_connect_timeout_ms"`
-	GatewayEdgeResponseHeaderTimeoutMS              int    `json:"gateway_edge_response_header_timeout_ms"`
-	GatewayEdgeResponseHeaderBudgetMS               int    `json:"gateway_edge_response_header_budget_ms"`
-	GatewayEdgeBodyIdleTimeoutMS                    int    `json:"gateway_edge_body_idle_timeout_ms"`
-	GatewayEdgeResponseHeaderMaxAttempts            int    `json:"gateway_edge_response_header_max_attempts"`
-	GatewayEdgeResponseHeaderFailover               bool   `json:"gateway_edge_response_header_failover"`
+	AllowUngroupedKeyScheduling                           bool                                              `json:"allow_ungrouped_key_scheduling"`
+	GatewayUserSlotWaitTimeoutMS                          int                                               `json:"gateway_user_slot_wait_timeout_ms"`
+	GatewayAccountSlotWaitTimeoutMS                       int                                               `json:"gateway_account_slot_wait_timeout_ms"`
+	GatewayEdgeQueueWaitBudgetMS                          int                                               `json:"gateway_edge_queue_wait_budget_ms"`
+	GatewayEdgeGlobalWorkers                              int                                               `json:"gateway_edge_global_workers"`
+	GatewayUserWaitingExtra                               int                                               `json:"gateway_user_waiting_extra"`
+	GatewayRetryAfterMS                                   int                                               `json:"gateway_retry_after_ms"`
+	GatewayOpenAIResponseHeaderTimeoutEnabled             bool                                              `json:"gateway_openai_response_header_timeout_enabled"`
+	GatewayOpenAIResponseHeaderTimeoutMS                  int64                                             `json:"gateway_openai_response_header_timeout_ms"`
+	GatewayProtectionEnabled                              bool                                              `json:"gateway_edge_protection_enabled"`
+	GatewayEdgeConnectTimeoutMS                           int                                               `json:"gateway_edge_connect_timeout_ms"`
+	GatewayEdgeResponseHeaderTimeoutMS                    int                                               `json:"gateway_edge_response_header_timeout_ms"`
+	GatewayEdgeResponseHeaderBudgetMS                     int                                               `json:"gateway_edge_response_header_budget_ms"`
+	GatewayEdgeBodyIdleTimeoutMS                          int                                               `json:"gateway_edge_body_idle_timeout_ms"`
+	GatewayEdgeResponseHeaderMaxAttempts                  int                                               `json:"gateway_edge_response_header_max_attempts"`
+	GatewayEdgeResponseHeaderFailover                     bool                                              `json:"gateway_edge_response_header_failover"`
 	GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_apikey_first_token_timeout_placeholder_stages"`
 	GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages  []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_oauth_first_token_timeout_placeholder_stages"`
-	OpenAIPoolDownstreamModelLimitProtectionEnabled bool   `json:"openai_pool_downstream_model_limit_protection_enabled"`
-	OpenAIPoolRecoveryProbeEnabled                  bool   `json:"openai_pool_recovery_probe_enabled"`
-	OpenAIPoolRecoveryProbeModel                    string `json:"openai_pool_recovery_probe_model"`
-	OpenAIPoolSoftCooldownMaxSeconds                int    `json:"openai_pool_soft_cooldown_max_seconds"`
-	OpenAIPoolProbeTimeoutSeconds                   int    `json:"openai_pool_probe_timeout_seconds"`
-	OpenAIImagePoolRecoveryProbeEnabled             bool   `json:"openai_image_pool_recovery_probe_enabled"`
-	OpenAIImagePoolRecoveryProbeModel               string `json:"openai_image_pool_recovery_probe_model"`
-	OpenAIImagePoolSoftCooldownMaxSeconds           int    `json:"openai_image_pool_soft_cooldown_max_seconds"`
-	OpenAIImagePoolProbeTimeoutSeconds              int    `json:"openai_image_pool_probe_timeout_seconds"`
-	AnthropicPoolRecoveryProbeEnabled               bool   `json:"anthropic_pool_recovery_probe_enabled"`
-	AnthropicPoolRecoveryProbeModel                 string `json:"anthropic_pool_recovery_probe_model"`
-	AnthropicPoolSoftCooldownMaxSeconds             int    `json:"anthropic_pool_soft_cooldown_max_seconds"`
-	AnthropicPoolProbeTimeoutSeconds                int    `json:"anthropic_pool_probe_timeout_seconds"`
+	OpenAIPoolDownstreamModelLimitProtectionEnabled       bool                                              `json:"openai_pool_downstream_model_limit_protection_enabled"`
+	OpenAIPoolRecoveryProbeEnabled                        bool                                              `json:"openai_pool_recovery_probe_enabled"`
+	OpenAIPoolRecoveryProbeModel                          string                                            `json:"openai_pool_recovery_probe_model"`
+	OpenAIPoolSoftCooldownMaxSeconds                      int                                               `json:"openai_pool_soft_cooldown_max_seconds"`
+	OpenAIPoolProbeTimeoutSeconds                         int                                               `json:"openai_pool_probe_timeout_seconds"`
+	OpenAIImagePoolRecoveryProbeEnabled                   bool                                              `json:"openai_image_pool_recovery_probe_enabled"`
+	OpenAIImagePoolRecoveryProbeModel                     string                                            `json:"openai_image_pool_recovery_probe_model"`
+	OpenAIImagePoolSoftCooldownMaxSeconds                 int                                               `json:"openai_image_pool_soft_cooldown_max_seconds"`
+	OpenAIImagePoolProbeTimeoutSeconds                    int                                               `json:"openai_image_pool_probe_timeout_seconds"`
+	AnthropicPoolRecoveryProbeEnabled                     bool                                              `json:"anthropic_pool_recovery_probe_enabled"`
+	AnthropicPoolRecoveryProbeModel                       string                                            `json:"anthropic_pool_recovery_probe_model"`
+	AnthropicPoolSoftCooldownMaxSeconds                   int                                               `json:"anthropic_pool_soft_cooldown_max_seconds"`
+	AnthropicPoolProbeTimeoutSeconds                      int                                               `json:"anthropic_pool_probe_timeout_seconds"`
 
 	// Backend Mode
 	BackendModeEnabled bool `json:"backend_mode_enabled"`

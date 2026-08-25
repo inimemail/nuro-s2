@@ -504,6 +504,7 @@ const (
 	SettingKeyAnthropicPoolSoftCooldownMaxSeconds = "anthropic_pool_soft_cooldown_max_seconds"
 	// SettingKeyAnthropicPoolProbeTimeoutSeconds Anthropic 池恢复探测超时秒数（默认 5）
 	SettingKeyAnthropicPoolProbeTimeoutSeconds = "anthropic_pool_probe_timeout_seconds"
+	SettingKeyNonOpenAIPoolSettings            = "non_openai_pool_settings"
 
 	// SettingKeyBackendModeEnabled Backend 模式：禁用用户注册和自助服务，仅管理员可登录
 	SettingKeyBackendModeEnabled = "backend_mode_enabled"

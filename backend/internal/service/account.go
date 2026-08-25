@@ -87,6 +87,14 @@ type Account struct {
 	AnthropicPoolLastProbeStatusCode    int
 	AnthropicPoolLastProbeReason        string
 	AnthropicPoolRecoveryProbeInFlight  bool
+	nonOpenAIPoolProbeToken             uint64
+
+	NonOpenAIPoolSoftCooldownUntil      *time.Time
+	NonOpenAIPoolSoftCooldownDue        bool
+	NonOpenAIPoolSoftCooldownStatusCode int
+	NonOpenAIPoolSoftCooldownReason     string
+	NonOpenAIPoolSoftCooldownSource     string
+	NonOpenAIPoolRecoveryProbeInFlight  bool
 
 	SessionWindowStart  *time.Time
 	SessionWindowEnd    *time.Time

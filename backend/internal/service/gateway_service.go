@@ -742,11 +742,21 @@ func (s *GatewayService) ReportAccountScheduleResult(account *Account, success b
 		s.clearAnthropicPoolSoftCooldown(account.ID)
 		s.anthropicPoolSoftCooldownFailureCnt.Delete(account.ID)
 	}
+	if success && nonOpenAIPoolPlatform(account.Platform) && s.nonOpenAIPoolRuntime != nil {
+		s.nonOpenAIPoolRuntime.markSuccess(account)
+	}
 	stats := s.getAccountHealthStats()
 	if stats == nil {
 		return
 	}
 	stats.report(account.ID, success, firstTokenMs)
+}
+
+func (s *GatewayService) NonOpenAIPoolRuntimeStateForAccount(account *Account) NonOpenAIPoolRuntimeState {
+	if s == nil || s.nonOpenAIPoolRuntime == nil {
+		return NonOpenAIPoolRuntimeState{}
+	}
+	return s.nonOpenAIPoolRuntime.stateForAccount(account)
 }
 
 func (s *GatewayService) getAccountHealthStats() *accountRuntimeHealthStats {
@@ -810,6 +820,7 @@ type GatewayService struct {
 	anthropicPoolRecoveryProbeAdminKick  sync.Map // key: int64(accountID), value: time.Time
 	anthropicCacheBoostGroupAvailability sync.Map // key: string(group:model), value: anthropicCacheBoostGroupAvailability
 	accountHealthStats                   atomic.Pointer[accountRuntimeHealthStats]
+	nonOpenAIPoolRuntime                 *NonOpenAIPoolRuntime
 }
 
 // NewGatewayService creates a new GatewayService
@@ -877,6 +888,7 @@ func NewGatewayService(
 		resolver:              resolver,
 		balanceNotifyService:  balanceNotifyService,
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
+		nonOpenAIPoolRuntime:  settingService.sharedNonOpenAIPoolRuntime(),
 	}
 	svc.accountHealthStats.Store(newAccountRuntimeHealthStats())
 	svc.userGroupRateResolver = newUserGroupRateResolver(
@@ -2919,6 +2931,9 @@ func (s *GatewayService) isAccountSchedulableForModelSelection(ctx context.Conte
 	if s.shouldSkipAnthropicPoolCoolingAccount(ctx, account, requestedModel) {
 		return false
 	}
+	if nonOpenAIPoolPlatform(account.Platform) && s.nonOpenAIPoolRuntime != nil && s.nonOpenAIPoolRuntime.shouldSkip(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account) {
+		return false
+	}
 	return account.IsSchedulableForModelWithContext(ctx, requestedModel)
 }
 
@@ -3314,6 +3329,7 @@ func (s *GatewayService) hydrateSelectedAccount(ctx context.Context, account *Ac
 	if hydrated == nil {
 		return nil, fmt.Errorf("selected gateway account %d not found during hydration", account.ID)
 	}
+	copyNonOpenAIPoolProbeToken(account, hydrated)
 	return hydrated, nil
 }
 

@@ -249,6 +249,13 @@ type Account struct {
 	AnthropicPoolLastProbeReason        string     `json:"anthropic_pool_last_probe_reason,omitempty"`
 	AnthropicPoolRecoveryProbeInFlight  bool       `json:"anthropic_pool_recovery_probe_in_flight"`
 
+	NonOpenAIPoolSoftCooldownUntil      *time.Time `json:"non_openai_pool_soft_cooldown_until"`
+	NonOpenAIPoolSoftCooldownDue        bool       `json:"non_openai_pool_soft_cooldown_due"`
+	NonOpenAIPoolSoftCooldownStatusCode int        `json:"non_openai_pool_soft_cooldown_status_code,omitempty"`
+	NonOpenAIPoolSoftCooldownReason     string     `json:"non_openai_pool_soft_cooldown_reason,omitempty"`
+	NonOpenAIPoolSoftCooldownSource     string     `json:"non_openai_pool_soft_cooldown_source,omitempty"`
+	NonOpenAIPoolRecoveryProbeInFlight  bool       `json:"non_openai_pool_recovery_probe_in_flight"`
+
 	SessionWindowStart  *time.Time `json:"session_window_start"`
 	SessionWindowEnd    *time.Time `json:"session_window_end"`
 	SessionWindowStatus string     `json:"session_window_status"`

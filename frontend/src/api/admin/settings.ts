@@ -22,6 +22,24 @@ export interface OpenAIFirstTokenTimeoutPlaceholderStage {
   guard_max_ms: number;
 }
 
+export interface NonOpenAIPoolPlatformSettings {
+  recovery_probe_enabled: boolean;
+  soft_cooldown_max_seconds: number;
+  probe_timeout_seconds: number;
+}
+
+export interface NonOpenAIPoolSettings {
+  enabled: boolean;
+  default_cooldown_seconds: number;
+  auth_cooldown_seconds: number;
+  server_error_cooldown_seconds: number;
+  transport_cooldown_seconds: number;
+  max_cooldown_seconds: number;
+  probe_timeout_seconds: number;
+  probe_max_backoff_seconds: number;
+  platforms: Record<string, NonOpenAIPoolPlatformSettings>;
+}
+
 // ── 平台限额类型 ──────────────────────────────────────────────────
 export type PlatformType = "anthropic" | "openai" | "gemini" | "antigravity" | "grok" | "kimi" | "zhipu" | "deepseek"
 export type QuotaWindowType = "daily" | "weekly" | "monthly"
@@ -362,6 +380,7 @@ export function deriveWeChatConnectStoredMode(
  * System settings interface
  */
 export interface SystemSettings {
+  non_openai_pool: NonOpenAIPoolSettings;
   // Registration settings
   registration_enabled: boolean;
   email_verify_enabled: boolean;
@@ -686,6 +705,7 @@ export interface SystemSettings {
 }
 
 export interface UpdateSettingsRequest {
+  non_openai_pool?: NonOpenAIPoolSettings;
   registration_enabled?: boolean;
   email_verify_enabled?: boolean;
   registration_email_suffix_whitelist?: string[];

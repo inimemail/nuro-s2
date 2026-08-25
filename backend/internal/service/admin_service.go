@@ -3182,6 +3182,10 @@ type anthropicPoolRecoveryProbeAdminKicker interface {
 	MaybeKickAnthropicPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account)
 }
 
+type nonOpenAIPoolRuntimeStateReader interface {
+	NonOpenAIPoolRuntimeStateForAccount(account *Account) NonOpenAIPoolRuntimeState
+}
+
 func (s *adminServiceImpl) attachAccountRuntimeState(ctx context.Context, account *Account) {
 	if s == nil || account == nil || s.runtimeBlocker == nil {
 		return
@@ -3240,6 +3244,18 @@ func (s *adminServiceImpl) attachAccountRuntimeState(ctx context.Context, accoun
 			account.AnthropicPoolLastProbeStatusCode = state.LastProbeStatus
 			account.AnthropicPoolLastProbeReason = state.LastProbeReason
 			account.AnthropicPoolRecoveryProbeInFlight = state.ProbeInFlight
+		}
+	}
+	if reader, ok := s.runtimeBlocker.(nonOpenAIPoolRuntimeStateReader); ok {
+		state := reader.NonOpenAIPoolRuntimeStateForAccount(account)
+		if state.Cooling {
+			until := state.Until
+			account.NonOpenAIPoolSoftCooldownUntil = &until
+			account.NonOpenAIPoolSoftCooldownDue = state.Due
+			account.NonOpenAIPoolSoftCooldownStatusCode = state.StatusCode
+			account.NonOpenAIPoolSoftCooldownReason = state.Reason
+			account.NonOpenAIPoolSoftCooldownSource = state.CooldownSource
+			account.NonOpenAIPoolRecoveryProbeInFlight = state.ProbeInFlight
 		}
 	}
 }

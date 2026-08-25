@@ -4035,6 +4035,135 @@
                 </div>
               </div>
 
+              <section
+                data-test="non-openai-pool-settings"
+                class="overflow-hidden rounded-lg border border-emerald-200 bg-emerald-50/40 dark:border-emerald-900/60 dark:bg-emerald-950/15"
+              >
+                <div class="flex items-start justify-between gap-4 border-b border-emerald-100 px-4 py-4 dark:border-emerald-900/40 sm:px-5">
+                  <div class="min-w-0">
+                    <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
+                      {{ t("admin.settings.scheduling.nonOpenAIPoolTitle") }}
+                    </h3>
+                    <p class="mt-1 max-w-3xl text-xs leading-5 text-gray-600 dark:text-gray-400">
+                      {{ t("admin.settings.scheduling.nonOpenAIPoolDescription") }}
+                    </p>
+                  </div>
+                  <Toggle
+                    v-model="form.non_openai_pool.enabled"
+                    class="shrink-0"
+                    :aria-label="t('admin.settings.scheduling.nonOpenAIPoolEnabled')"
+                  />
+                </div>
+
+                <fieldset
+                  :disabled="!form.non_openai_pool.enabled"
+                  :class="[
+                    'space-y-5 p-4 transition-opacity sm:p-5',
+                    !form.non_openai_pool.enabled && 'opacity-50'
+                  ]"
+                >
+                  <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <label v-for="field in nonOpenAIPoolCooldownFields" :key="field.key" class="block min-w-0">
+                      <span class="mb-1.5 block text-xs font-medium leading-4 text-gray-700 dark:text-gray-300">
+                        {{ t(field.label) }}
+                      </span>
+                      <div class="relative">
+                        <input
+                          v-model.number="form.non_openai_pool[field.key]"
+                          type="number"
+                          min="1"
+                          :max="field.max"
+                          class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-10 text-sm text-gray-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-600 dark:bg-dark-800 dark:text-white"
+                        />
+                        <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-gray-400">s</span>
+                      </div>
+                    </label>
+                  </div>
+
+                  <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    <label v-for="field in nonOpenAIPoolGlobalFields" :key="field.key" class="block min-w-0">
+                      <span class="mb-1.5 block text-xs font-medium leading-4 text-gray-700 dark:text-gray-300">
+                        {{ t(field.label) }}
+                      </span>
+                      <div class="relative">
+                        <input
+                          v-model.number="form.non_openai_pool[field.key]"
+                          type="number"
+                          min="1"
+                          :max="field.max"
+                          class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-10 text-sm text-gray-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-600 dark:bg-dark-800 dark:text-white"
+                        />
+                        <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-gray-400">s</span>
+                      </div>
+                    </label>
+                  </div>
+
+                  <div>
+                    <div class="mb-3">
+                      <h4 class="text-xs font-semibold text-gray-800 dark:text-gray-200">
+                        {{ t("admin.settings.scheduling.nonOpenAIPoolPlatforms") }}
+                      </h4>
+                      <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                        {{ t("admin.settings.scheduling.nonOpenAIPoolRequestProbeHint") }}
+                      </p>
+                    </div>
+                    <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      <div
+                        v-for="platform in nonOpenAIPoolPlatforms"
+                        :key="platform.key"
+                        class="rounded-md border border-gray-200 bg-white p-4 dark:border-dark-600 dark:bg-dark-800/80"
+                      >
+                        <div class="flex items-center justify-between gap-3">
+                          <span class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ platform.label }}</span>
+                          <div class="flex shrink-0 items-center gap-2">
+                            <span class="text-[11px] text-gray-500 dark:text-gray-400">
+                              {{ t("admin.settings.scheduling.nonOpenAIPoolRecoveryProbe") }}
+                            </span>
+                            <Toggle
+                              v-model="form.non_openai_pool.platforms[platform.key].recovery_probe_enabled"
+                              :aria-label="`${platform.label} ${t('admin.settings.scheduling.nonOpenAIPoolRecoveryProbe')}`"
+                            />
+                          </div>
+                        </div>
+                        <div class="mt-4 grid grid-cols-2 gap-3">
+                          <label class="block min-w-0">
+                            <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">
+                              {{ t("admin.settings.scheduling.nonOpenAIPoolPlatformMaxCooldown") }}
+                            </span>
+                            <div class="relative">
+                              <input
+                                v-model.number="form.non_openai_pool.platforms[platform.key].soft_cooldown_max_seconds"
+                                type="number"
+                                min="1"
+                                max="3600"
+                                class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-8 text-sm dark:border-gray-600 dark:bg-dark-700 dark:text-white"
+                              />
+                              <span class="pointer-events-none absolute inset-y-0 right-2 flex items-center text-[11px] text-gray-400">s</span>
+                            </div>
+                          </label>
+                          <label class="block min-w-0">
+                            <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">
+                              {{ t("admin.settings.scheduling.nonOpenAIPoolPlatformProbeTimeout") }}
+                            </span>
+                            <div class="relative">
+                              <input
+                                v-model.number="form.non_openai_pool.platforms[platform.key].probe_timeout_seconds"
+                                type="number"
+                                min="1"
+                                max="60"
+                                :disabled="!form.non_openai_pool.platforms[platform.key].recovery_probe_enabled"
+                                class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-8 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-600 dark:bg-dark-700 dark:text-white dark:disabled:bg-dark-900 dark:disabled:text-gray-500"
+                              />
+                              <span class="pointer-events-none absolute inset-y-0 right-2 flex items-center text-[11px] text-gray-400">s</span>
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </fieldset>
+              </section>
+
               <div class="flex items-center justify-between">
                 <div>
                   <label
@@ -8012,6 +8141,8 @@ import type {
   WebSearchEmulationConfig,
   WebSearchProviderConfig,
   WebSearchTestResult,
+  NonOpenAIPoolSettings,
+  NonOpenAIPoolPlatformSettings,
 } from "@/api/admin/settings";
 import type {
   AdminGroup,
@@ -8594,9 +8725,94 @@ type SettingsForm = Omit<
   openai_advanced_scheduler_enabled: boolean;
   // 系统全局平台限额 map；form 内始终归一化为全平台对象（模板非空绑定依赖此不变量）
   default_platform_quotas: DefaultPlatformQuotasMap;
+  non_openai_pool: NonOpenAIPoolSettings;
 };
 
+const nonOpenAIPoolPlatforms = [
+  { key: "gemini", label: "Gemini" },
+  { key: "antigravity", label: "Antigravity" },
+  { key: "grok", label: "Grok" },
+  { key: "kimi", label: "Kimi" },
+  { key: "zhipu", label: "Zhipu" },
+  { key: "deepseek", label: "DeepSeek" },
+] as const;
+
+const nonOpenAIPoolCooldownFields = [
+  { key: "default_cooldown_seconds", label: "admin.settings.scheduling.nonOpenAIPoolDefaultCooldown", max: 600 },
+  { key: "auth_cooldown_seconds", label: "admin.settings.scheduling.nonOpenAIPoolAuthCooldown", max: 3600 },
+  { key: "server_error_cooldown_seconds", label: "admin.settings.scheduling.nonOpenAIPoolServerCooldown", max: 600 },
+  { key: "transport_cooldown_seconds", label: "admin.settings.scheduling.nonOpenAIPoolTransportCooldown", max: 600 },
+] as const;
+
+const nonOpenAIPoolGlobalFields = [
+  { key: "max_cooldown_seconds", label: "admin.settings.scheduling.nonOpenAIPoolMaxCooldown", max: 3600 },
+  { key: "probe_timeout_seconds", label: "admin.settings.scheduling.nonOpenAIPoolProbeTimeout", max: 60 },
+  { key: "probe_max_backoff_seconds", label: "admin.settings.scheduling.nonOpenAIPoolProbeBackoff", max: 3600 },
+] as const;
+
+function defaultNonOpenAIPoolSettings(): NonOpenAIPoolSettings {
+  const platforms: Record<string, NonOpenAIPoolPlatformSettings> = {};
+  for (const platform of nonOpenAIPoolPlatforms) {
+    platforms[platform.key] = {
+      recovery_probe_enabled: true,
+      soft_cooldown_max_seconds: 30,
+      probe_timeout_seconds: 5,
+    };
+  }
+  return {
+    enabled: true,
+    default_cooldown_seconds: 5,
+    auth_cooldown_seconds: 30,
+    server_error_cooldown_seconds: 5,
+    transport_cooldown_seconds: 5,
+    max_cooldown_seconds: 30,
+    probe_timeout_seconds: 5,
+    probe_max_backoff_seconds: 60,
+    platforms,
+  };
+}
+
+function normalizeNonOpenAIPoolForm(raw?: Partial<NonOpenAIPoolSettings> | null): NonOpenAIPoolSettings {
+  const defaults = defaultNonOpenAIPoolSettings();
+  const source = raw || {};
+  const platforms = { ...defaults.platforms, ...(source.platforms || {}) };
+  for (const platform of nonOpenAIPoolPlatforms) {
+    const item = {
+      ...defaults.platforms[platform.key],
+      ...(platforms[platform.key] || {}),
+    };
+    platforms[platform.key] = {
+      recovery_probe_enabled:
+        typeof item.recovery_probe_enabled === "boolean"
+          ? item.recovery_probe_enabled
+          : defaults.platforms[platform.key].recovery_probe_enabled,
+      soft_cooldown_max_seconds: clampNumber(
+        Number(item.soft_cooldown_max_seconds) || defaults.platforms[platform.key].soft_cooldown_max_seconds,
+        1,
+        3600,
+      ),
+      probe_timeout_seconds: clampNumber(
+        Number(item.probe_timeout_seconds) || defaults.platforms[platform.key].probe_timeout_seconds,
+        1,
+        60,
+      ),
+    };
+  }
+  return {
+    enabled: typeof source.enabled === "boolean" ? source.enabled : defaults.enabled,
+    default_cooldown_seconds: clampNumber(Number(source.default_cooldown_seconds) || defaults.default_cooldown_seconds, 1, 600),
+    auth_cooldown_seconds: clampNumber(Number(source.auth_cooldown_seconds) || defaults.auth_cooldown_seconds, 1, 3600),
+    server_error_cooldown_seconds: clampNumber(Number(source.server_error_cooldown_seconds) || defaults.server_error_cooldown_seconds, 1, 600),
+    transport_cooldown_seconds: clampNumber(Number(source.transport_cooldown_seconds) || defaults.transport_cooldown_seconds, 1, 600),
+    max_cooldown_seconds: clampNumber(Number(source.max_cooldown_seconds) || defaults.max_cooldown_seconds, 1, 3600),
+    probe_timeout_seconds: clampNumber(Number(source.probe_timeout_seconds) || defaults.probe_timeout_seconds, 1, 60),
+    probe_max_backoff_seconds: clampNumber(Number(source.probe_max_backoff_seconds) || defaults.probe_max_backoff_seconds, 1, 3600),
+    platforms,
+  };
+}
+
 const form = reactive<SettingsForm>({
+  non_openai_pool: defaultNonOpenAIPoolSettings(),
   registration_enabled: true,
   email_verify_enabled: false,
   registration_email_suffix_whitelist: [],
@@ -9767,6 +9983,7 @@ async function loadSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    form.non_openai_pool = normalizeNonOpenAIPoolForm(settings.non_openai_pool);
     loadClaudeOAuthSystemPromptBlocks(
       String(settings.claude_oauth_system_prompt_blocks || ""),
     );
@@ -10328,6 +10545,7 @@ async function saveSettings() {
         clampNumber(Number(form.anthropic_pool_soft_cooldown_max_seconds) || 30, 1, 30),
       anthropic_pool_probe_timeout_seconds:
         clampNumber(Number(form.anthropic_pool_probe_timeout_seconds) || 5, 1, 30),
+      non_openai_pool: normalizeNonOpenAIPoolForm(form.non_openai_pool),
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
       enable_cch_signing: form.enable_cch_signing,
@@ -10465,6 +10683,7 @@ async function saveSettings() {
     }
     Object.assign(authSourceDefaults, buildAuthSourceDefaultsState(updated));
     form.default_platform_quotas = normalizePlatformQuotasMap(updated.default_platform_quotas);
+    form.non_openai_pool = normalizeNonOpenAIPoolForm(updated.non_openai_pool);
     registrationEmailSuffixWhitelistTags.value =
       normalizeRegistrationEmailSuffixDomains(
         updated.registration_email_suffix_whitelist,

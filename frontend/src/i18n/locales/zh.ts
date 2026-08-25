@@ -6626,7 +6626,22 @@ export default {
         anthropicPoolRecoveryProbeHint: '开启后，Anthropic 池账号软冷却到期需探测成功才恢复；关闭后到期直接恢复调度。',
         anthropicPoolProbeModel: 'Anthropic 探测模型',
         anthropicPoolSoftCooldownMax: 'Anthropic 最大软冷却秒数',
-        anthropicPoolProbeTimeout: 'Anthropic 探测超时秒数'
+        anthropicPoolProbeTimeout: 'Anthropic 探测超时秒数',
+        nonOpenAIPoolTitle: '非 OpenAI 平台池调度',
+        nonOpenAIPoolEnabled: '启用非 OpenAI 平台池调度',
+        nonOpenAIPoolDescription: 'Gemini、Antigravity、Grok、Kimi、智谱、DeepSeek 使用独立的池软冷却和恢复探测，不改动 OpenAI 与 Anthropic 的现有策略。',
+        nonOpenAIPoolDefaultCooldown: '普通错误冷却',
+        nonOpenAIPoolAuthCooldown: '认证/限流冷却',
+        nonOpenAIPoolServerCooldown: '服务端错误冷却',
+        nonOpenAIPoolTransportCooldown: '传输错误冷却',
+        nonOpenAIPoolMaxCooldown: '最大冷却',
+        nonOpenAIPoolProbeTimeout: '探测超时',
+        nonOpenAIPoolProbeBackoff: '探测最大退避',
+        nonOpenAIPoolPlatforms: '平台级设置',
+        nonOpenAIPoolRecoveryProbe: '恢复探测',
+        nonOpenAIPoolRequestProbeHint: '恢复探测使用正常下游请求，不额外增加请求、重连或首 Token 延迟。',
+        nonOpenAIPoolPlatformMaxCooldown: '平台最大冷却',
+        nonOpenAIPoolPlatformProbeTimeout: '探测超时'
       },
       gatewayConcurrency: {
         title: '并发等待策略',

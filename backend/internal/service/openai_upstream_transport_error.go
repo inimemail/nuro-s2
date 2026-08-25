@@ -75,6 +75,9 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
+	if account.IsPoolMode() && nonOpenAIPoolPlatform(account.Platform) && s != nil && s.nonOpenAIPoolRuntime != nil {
+		s.nonOpenAIPoolRuntime.markFailure(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account, 0, safeErr, "transport_error")
+	}
 	// Pool accounts use their assignment/lease retry path. A transient or
 	// transport failure must not write account-level temporary unschedulable
 	// state that removes the whole pool from scheduling.

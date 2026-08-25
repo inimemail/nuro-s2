@@ -340,7 +340,28 @@ const isAnthropicPoolSoftCooling = computed(() => {
   )
 })
 
+const isNonOpenAIPoolSoftCooling = computed(() => {
+  if (props.account.non_openai_pool_recovery_probe_in_flight) return true
+  if (!props.account.non_openai_pool_soft_cooldown_until) return false
+  const untilMs = new Date(props.account.non_openai_pool_soft_cooldown_until).getTime()
+  if (!Number.isFinite(untilMs)) return false
+  return (
+    isAfterNow(props.account.non_openai_pool_soft_cooldown_until) ||
+    props.account.non_openai_pool_soft_cooldown_due ||
+    untilMs <= nowMs.value
+  )
+})
+
 const activePoolCooldown = computed(() => {
+  if (isNonOpenAIPoolSoftCooling.value) {
+    return {
+      until: props.account.non_openai_pool_soft_cooldown_until,
+      due: props.account.non_openai_pool_soft_cooldown_due,
+      probing: props.account.non_openai_pool_recovery_probe_in_flight,
+      statusCode: props.account.non_openai_pool_soft_cooldown_status_code,
+      reason: props.account.non_openai_pool_soft_cooldown_reason,
+    }
+  }
   if (isAnthropicPoolSoftCooling.value) {
     return {
       until: props.account.anthropic_pool_soft_cooldown_until,
@@ -362,7 +383,9 @@ const activePoolCooldown = computed(() => {
   return null
 })
 
-const isPoolSoftCooling = computed(() => isOpenAIPoolSoftCooling.value || isAnthropicPoolSoftCooling.value)
+const isPoolSoftCooling = computed(
+  () => isOpenAIPoolSoftCooling.value || isAnthropicPoolSoftCooling.value || isNonOpenAIPoolSoftCooling.value
+)
 
 // Computed: has error status
 const hasError = computed(() => {

@@ -446,6 +446,7 @@ type OpenAIGatewayService struct {
 	openaiPoolRecoveryProbeInFlight              sync.Map // key: int64(accountID), value: struct{}
 	openaiPoolRecoveryProbeFailureCount          sync.Map // key: int64(accountID), value: int
 	openaiPoolRecoveryProbeAdminKickAt           sync.Map // key: int64(accountID), value: time.Time
+	nonOpenAIPoolRuntime                         *NonOpenAIPoolRuntime
 	openaiCodexAutoResetInFlight                 sync.Map // key: int64(accountID), value: struct{}
 	openaiCodexAutoResetCooldownUntil            sync.Map // key: int64(accountID), value: time.Time
 	openaiOAuth429WindowStartUnixNano            atomic.Int64
@@ -534,6 +535,7 @@ func NewOpenAIGatewayService(
 		liveAttestation:       liveattestation.NewProvider(),
 		liveAttestationCipher: newLiveAttestationCipher(cfg),
 		responseHeaderFilter:  compileResponseHeaderFilter(cfg),
+		nonOpenAIPoolRuntime:  settingService.sharedNonOpenAIPoolRuntime(),
 		codexSnapshotThrottle: newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
 	}
 	if rateLimitService != nil {
@@ -1780,8 +1782,8 @@ func openAICompactSupportTier(account *Account) int {
 // compact-support checks used during account selection.
 func normalizeOpenAICompatibleRequestPlatform(platform string) string {
 	switch strings.TrimSpace(platform) {
-	case PlatformGrok:
-		return PlatformGrok
+	case PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek:
+		return strings.TrimSpace(platform)
 	default:
 		return PlatformOpenAI
 	}
@@ -2257,6 +2259,9 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 	if selected == nil {
 		return nil, noAvailableOpenAISelectionError(requestedModel, compactBlocked)
 	}
+	if s.shouldSkipNonOpenAIPoolAccount(ctx, selected) {
+		return nil, noAvailableOpenAISelectionError(requestedModel, compactBlocked)
+	}
 
 	hydrated, err := s.hydrateSelectedAccount(ctx, selected)
 	if err != nil {
@@ -2298,6 +2303,9 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 
 	account, err := s.getSchedulableAccount(ctx, accountID)
 	if err != nil {
+		return nil
+	}
+	if s.isNonOpenAIPoolCandidateBlocked(ctx, account) {
 		return nil
 	}
 	if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
@@ -2362,6 +2370,9 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
+	if s.shouldSkipNonOpenAIPoolAccount(ctx, account) {
+		return nil
+	}
 
 	// 刷新会话 TTL 并返回账号
 	// Refresh session TTL and return account
@@ -2396,6 +2407,9 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform...)
 		if fresh == nil {
+			continue
+		}
+		if s.isNonOpenAIPoolCandidateBlocked(ctx, fresh) {
 			continue
 		}
 		fresh = s.recheckSelectedOpenAIAccountForGroup(ctx, fresh, groupID, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform...)
@@ -2698,6 +2712,9 @@ openAIGroupGuardFallback:
 		if !isOpenAIAccountEligibleForRequest(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability, requestPlatform) {
 			continue
 		}
+		if s.isNonOpenAIPoolCandidateBlocked(ctx, acc) {
+			continue
+		}
 		if !openAIAccountMatchesLockedPriority(acc, lockedPriority) {
 			continue
 		}
@@ -2829,6 +2846,12 @@ openAIGroupGuardFallback:
 			}
 			result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency, fresh.Platform)
 			if err == nil && result != nil && result.Acquired {
+				if s.shouldSkipNonOpenAIPoolAccount(ctx, fresh) {
+					if result.ReleaseFunc != nil {
+						result.ReleaseFunc()
+					}
+					continue
+				}
 				selection, selectErr := s.newAcquiredSelectionResult(ctx, fresh, result.ReleaseFunc)
 				if selectErr != nil {
 					return nil, true, selectErr
@@ -2868,6 +2891,12 @@ openAIGroupGuardFallback:
 			}
 			result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency, fresh.Platform)
 			if err == nil && result != nil && result.Acquired {
+				if s.shouldSkipNonOpenAIPoolAccount(ctx, fresh) {
+					if result.ReleaseFunc != nil {
+						result.ReleaseFunc()
+					}
+					continue
+				}
 				selection, selectErr := s.newAcquiredSelectionResult(ctx, fresh, result.ReleaseFunc)
 				if selectErr != nil {
 					return nil, selectErr
@@ -2909,6 +2938,9 @@ openAIGroupGuardFallback:
 			continue
 		}
 		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel, requireCompact) {
+			continue
+		}
+		if s.shouldSkipNonOpenAIPoolAccount(ctx, fresh) {
 			continue
 		}
 		return s.newSelectionResult(ctx, fresh, false, nil, &AccountWaitPlan{
@@ -3105,6 +3137,7 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 		if err != nil || current == nil {
 			return nil
 		}
+		copyNonOpenAIPoolProbeToken(account, current)
 		fresh = current
 	}
 
@@ -3181,6 +3214,7 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	if !isOpenAIAccountEligibleForRequest(ctx, latest, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform...) {
 		return nil
 	}
+	copyNonOpenAIPoolProbeToken(account, latest)
 	if !parentHealthyForShadow(latest, s.parentAccountLookup(ctx)) {
 		return nil
 	}
@@ -3240,6 +3274,7 @@ func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, accou
 	if hydrated == nil {
 		return nil, fmt.Errorf("selected openai account %d not found during hydration", account.ID)
 	}
+	copyNonOpenAIPoolProbeToken(account, hydrated)
 	return hydrated, nil
 }
 

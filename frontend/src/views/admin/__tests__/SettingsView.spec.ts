@@ -675,6 +675,47 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(payload.claude_oauth_system_prompt_blocks).toBe("");
   });
 
+  it("renders and saves the non-OpenAI pool settings for all supported platforms", async () => {
+    const nonOpenAIPool = {
+      enabled: true,
+      default_cooldown_seconds: 7,
+      auth_cooldown_seconds: 31,
+      server_error_cooldown_seconds: 8,
+      transport_cooldown_seconds: 9,
+      max_cooldown_seconds: 40,
+      probe_timeout_seconds: 6,
+      probe_max_backoff_seconds: 90,
+      platforms: Object.fromEntries(
+        ["gemini", "antigravity", "grok", "kimi", "zhipu", "deepseek"].map((platform) => [
+          platform,
+          {
+            recovery_probe_enabled: true,
+            soft_cooldown_max_seconds: 40,
+            probe_timeout_seconds: 6,
+          },
+        ]),
+      ),
+    };
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      non_openai_pool: nonOpenAIPool,
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const panel = wrapper.get('[data-test="non-openai-pool-settings"]');
+    for (const platform of ["Gemini", "Antigravity", "Grok", "Kimi", "Zhipu", "DeepSeek"]) {
+      expect(panel.text()).toContain(platform);
+    }
+
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({
+      non_openai_pool: nonOpenAIPool,
+    });
+  });
+
   it("saves the Edge protection master switch and disables subordinate controls", async () => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,

@@ -1276,6 +1276,12 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.anthropic_pool_last_probe_status_code !== next.anthropic_pool_last_probe_status_code ||
     current.anthropic_pool_last_probe_reason !== next.anthropic_pool_last_probe_reason ||
     current.anthropic_pool_recovery_probe_in_flight !== next.anthropic_pool_recovery_probe_in_flight ||
+    current.non_openai_pool_soft_cooldown_until !== next.non_openai_pool_soft_cooldown_until ||
+    current.non_openai_pool_soft_cooldown_due !== next.non_openai_pool_soft_cooldown_due ||
+    current.non_openai_pool_soft_cooldown_status_code !== next.non_openai_pool_soft_cooldown_status_code ||
+    current.non_openai_pool_soft_cooldown_reason !== next.non_openai_pool_soft_cooldown_reason ||
+    current.non_openai_pool_soft_cooldown_source !== next.non_openai_pool_soft_cooldown_source ||
+    current.non_openai_pool_recovery_probe_in_flight !== next.non_openai_pool_recovery_probe_in_flight ||
     buildOpenAIUsageRefreshKey(current) !== buildOpenAIUsageRefreshKey(next) ||
     buildUpstreamBillingGuardRefreshKey(current) !== buildUpstreamBillingGuardRefreshKey(next)
   )
@@ -1421,6 +1427,9 @@ const hasOpenAIPoolRecoveryWatchRows = computed(() => {
     const anthropicPoolUntilMs = account.anthropic_pool_soft_cooldown_until
       ? new Date(account.anthropic_pool_soft_cooldown_until).getTime()
       : NaN
+    const nonOpenAIPoolUntilMs = account.non_openai_pool_soft_cooldown_until
+      ? new Date(account.non_openai_pool_soft_cooldown_until).getTime()
+      : NaN
     const openAIPoolWatching =
       account.openai_pool_recovery_probe_in_flight ||
       account.openai_pool_soft_cooldown_due ||
@@ -1429,7 +1438,11 @@ const hasOpenAIPoolRecoveryWatchRows = computed(() => {
       account.anthropic_pool_recovery_probe_in_flight ||
       account.anthropic_pool_soft_cooldown_due ||
       Number.isFinite(anthropicPoolUntilMs)
-    return openAIPoolWatching || anthropicPoolWatching
+    const nonOpenAIPoolWatching =
+      account.non_openai_pool_recovery_probe_in_flight ||
+      account.non_openai_pool_soft_cooldown_due ||
+      Number.isFinite(nonOpenAIPoolUntilMs)
+    return openAIPoolWatching || anthropicPoolWatching || nonOpenAIPoolWatching
   })
 })
 
@@ -1889,6 +1902,12 @@ const updateSchedulableInList = (accountIds: number[], schedulable: boolean) => 
       updated.anthropic_pool_last_probe_status_code = undefined
       updated.anthropic_pool_last_probe_reason = undefined
       updated.anthropic_pool_recovery_probe_in_flight = false
+      updated.non_openai_pool_soft_cooldown_until = null
+      updated.non_openai_pool_soft_cooldown_due = false
+      updated.non_openai_pool_soft_cooldown_status_code = undefined
+      updated.non_openai_pool_soft_cooldown_reason = undefined
+      updated.non_openai_pool_soft_cooldown_source = undefined
+      updated.non_openai_pool_recovery_probe_in_flight = false
     }
     syncAccountRefs(updated)
     return updated
