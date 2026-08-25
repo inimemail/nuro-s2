@@ -91,6 +91,30 @@ func TestNonOpenAIPoolRuntimeConcurrentProbeLease(t *testing.T) {
 	}
 }
 
+func TestNonOpenAIPoolRuntimeReleaseProbeRollsBackAdmissionFailure(t *testing.T) {
+	runtime := NewNonOpenAIPoolRuntime()
+	settings := DefaultNonOpenAIPoolSettings()
+	account := nonOpenAIPoolTestAccount(101, PlatformKimi)
+	runtime.deadlines.Store(nonOpenAIPoolKey(account), time.Now().Add(-time.Second))
+	if runtime.shouldSkip(context.Background(), settings, account) {
+		t.Fatal("expired account should claim the recovery probe")
+	}
+	if account.nonOpenAIPoolProbeToken == 0 {
+		t.Fatal("expected probe token")
+	}
+	runtime.releaseProbe(account)
+	if account.nonOpenAIPoolProbeToken != 0 {
+		t.Fatal("probe token was not released")
+	}
+	if _, loaded := runtime.probes.Load(nonOpenAIPoolKey(account)); loaded {
+		t.Fatal("probe lease was not released")
+	}
+	copy := nonOpenAIPoolTestAccount(account.ID, account.Platform)
+	if runtime.shouldSkip(context.Background(), settings, copy) {
+		t.Fatal("released probe should be claimable again")
+	}
+}
+
 func TestNonOpenAIPoolSchedulerPrecheckDoesNotClaimProbe(t *testing.T) {
 	runtime := NewNonOpenAIPoolRuntime()
 	settings := DefaultNonOpenAIPoolSettings()
@@ -174,6 +198,32 @@ func TestNonOpenAIPoolRuntimeProbeFailureReentersCooldown(t *testing.T) {
 	runtime.markFailure(context.Background(), settings, account, 503, "unavailable", "probe")
 	if !runtime.shouldSkip(context.Background(), settings, nonOpenAIPoolTestAccount(account.ID, account.Platform)) {
 		t.Fatal("failed probe should re-enter cooldown")
+	}
+}
+
+func TestNonOpenAIPoolRuntimeProbeFailureWithZeroBackoffReleasesLease(t *testing.T) {
+	runtime := NewNonOpenAIPoolRuntime()
+	settings := DefaultNonOpenAIPoolSettings()
+	settings.ServerErrorCooldownSeconds = 0
+	settings.MaxCooldownSeconds = 0
+	account := nonOpenAIPoolTestAccount(112, PlatformKimi)
+	key := nonOpenAIPoolKey(account)
+	runtime.deadlines.Store(key, time.Now().Add(-time.Second))
+	if runtime.shouldSkip(context.Background(), settings, account) {
+		t.Fatal("expired account should be allowed as recovery probe")
+	}
+	if account.nonOpenAIPoolProbeToken == 0 {
+		t.Fatal("expected probe token")
+	}
+	runtime.markFailure(context.Background(), settings, account, http.StatusServiceUnavailable, "unavailable", "probe")
+	if account.nonOpenAIPoolProbeToken != 0 {
+		t.Fatal("probe token should be released when no backoff is configured")
+	}
+	if _, loaded := runtime.probes.Load(key); loaded {
+		t.Fatal("probe lease should be removed when no backoff is configured")
+	}
+	if _, loaded := runtime.deadlines.Load(key); loaded {
+		t.Fatal("expired deadline should be removed when no backoff is configured")
 	}
 }
 

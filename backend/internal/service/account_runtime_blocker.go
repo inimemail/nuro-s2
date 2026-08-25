@@ -270,6 +270,9 @@ func (b *CompositeAccountRuntimeBlocker) clearAccountSchedulingBlockAcrossReplic
 			if clearErr := service.clearOpenAIAccountCooldownInRedisBefore(accountID, generation); clearErr != nil {
 				err = errors.Join(err, clearErr)
 			}
+			if clearErr := service.clearOpenAIPoolCooldownInRedisBefore(accountID, generation); clearErr != nil {
+				err = errors.Join(err, clearErr)
+			}
 		case *GatewayService:
 			service.clearAnthropicPoolSoftCooldownBefore(accountID, generation)
 		default:

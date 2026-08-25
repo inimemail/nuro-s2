@@ -4266,7 +4266,7 @@ func TestBuildOpenAISelectionOrder_AllCoolingPoolAccountsExcludedUntilProbeSucce
 	require.Empty(t, order)
 }
 
-func TestReportOpenAIAccountScheduleResult_SuccessClearsExpiredPoolSoftCooldown(t *testing.T) {
+func TestReportOpenAIAccountScheduleResult_SuccessPreservesExpiredPoolSoftCooldown(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{
 		ID:          5401,
@@ -4279,7 +4279,7 @@ func TestReportOpenAIAccountScheduleResult_SuccessClearsExpiredPoolSoftCooldown(
 	require.True(t, svc.isOpenAIPoolAccountSoftCooling(account))
 
 	svc.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
-	require.False(t, svc.isOpenAIPoolAccountSoftCooling(account))
+	require.True(t, svc.isOpenAIPoolAccountSoftCooling(account))
 }
 
 func TestReportOpenAIAccountScheduleResult_SuccessPreservesActivePoolSoftCooldown(t *testing.T) {

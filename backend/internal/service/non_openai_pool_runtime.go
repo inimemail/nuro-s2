@@ -276,6 +276,12 @@ func (r *NonOpenAIPoolRuntime) markFailure(ctx context.Context, settings NonOpen
 		seconds = settings.MaxCooldownSeconds
 	}
 	if seconds <= 0 {
+		// A failed recovery probe with no effective backoff must not leave its
+		// lease (and the expired deadline) installed. Otherwise every subsequent
+		// candidate can be reported as ProbeInFlight until the lease timeout.
+		if probeFailure {
+			r.clear(account)
+		}
 		return
 	}
 	account.nonOpenAIPoolProbeToken = 0
@@ -303,6 +309,27 @@ func (r *NonOpenAIPoolRuntime) markSuccess(account *Account) {
 	r.deadlines.Delete(key)
 	r.probeFailures.Delete(key)
 	r.states.Delete(key)
+}
+
+// releaseProbe rolls back a probe lease when scheduler admission fails after
+// the candidate was selected. Without this rollback a failed Redis slot claim
+// could leave the account marked as probing until the lease timeout.
+func (r *NonOpenAIPoolRuntime) releaseProbe(account *Account) {
+	if r == nil || account == nil || account.nonOpenAIPoolProbeToken == 0 {
+		return
+	}
+	key := nonOpenAIPoolKey(account)
+	value, ok := r.probes.Load(key)
+	lease, valid := value.(nonOpenAIPoolProbeLease)
+	if !ok || !valid || lease.Token != account.nonOpenAIPoolProbeToken || !r.probes.CompareAndDelete(key, value) {
+		return
+	}
+	account.nonOpenAIPoolProbeToken = 0
+	state := r.state(account.ID, account.Platform)
+	if state.ProbeInFlight {
+		state.ProbeInFlight = false
+		r.states.Store(key, state)
+	}
 }
 
 func incrementNonOpenAIPoolCounter(counter *sync.Map, key string) int {

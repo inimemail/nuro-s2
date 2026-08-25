@@ -864,11 +864,13 @@ func TestOpenAIPoolFailoverSwitch_SuccessResetsSoftCooldownFailureThreshold(t *t
 	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
 	require.False(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
 
+	// A normal request success must not reset the pool failure generation;
+	// recovery probe is the sole pool cooldown exit.
 	svc.ReportOpenAIAccountScheduleResultForRequest(account, "gpt-test", true, nil)
 
 	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
 	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
-	require.False(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
+	require.True(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
 	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
 	require.True(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
 }

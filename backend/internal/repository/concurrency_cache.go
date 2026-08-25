@@ -41,6 +41,9 @@ const (
 	accountWaitKeyPrefix = "wait:account:"
 	// OpenAI 账号软冷却/运行时阻断键格式: cooldown:account:{accountID}
 	accountCooldownKeyPrefix = "cooldown:account:"
+	// OpenAI 池软冷却专用键。与通用运行时阻断隔离，避免后台展示或
+	// 429 阻断状态被误解释为池恢复状态。
+	openAIPoolCooldownKeyPrefix = "cooldown:openai_pool:"
 
 	// 默认槽位过期时间（分钟），可通过配置覆盖
 	defaultSlotTTLMinutes = 2
@@ -50,12 +53,20 @@ var (
 	setAccountCooldownGenerationScript = redis.NewScript(`
 		local current = redis.call('GET', KEYS[1])
 		local generation = tonumber(ARGV[1])
+		local ttl = tonumber(ARGV[2])
 		local currentGeneration = 0
 		if current ~= false and string.sub(current, 1, 2) == 'g:' then
 			currentGeneration = tonumber(string.sub(current, 3)) or 0
 		end
+		-- A pool marker and a regular runtime block may share the legacy
+		-- admission key during migration. Never let a shorter marker replace a
+		-- longer block from the same generation.
+		if current ~= false and currentGeneration == generation then
+			local currentTTL = redis.call('PTTL', KEYS[1])
+			if currentTTL == -1 or currentTTL >= ttl then return 0 end
+		end
 		if current == false or currentGeneration <= generation then
-			redis.call('SET', KEYS[1], 'g:' .. generation, 'PX', ARGV[2])
+			redis.call('SET', KEYS[1], 'g:' .. generation, 'PX', ttl)
 			return 1
 		end
 		return 0
@@ -527,6 +538,10 @@ func accountCooldownKey(accountID int64) string {
 	return fmt.Sprintf("%s%d", accountCooldownKeyPrefix, accountID)
 }
 
+func openAIPoolCooldownKey(accountID int64) string {
+	return fmt.Sprintf("%s%d", openAIPoolCooldownKeyPrefix, accountID)
+}
+
 // Account slot operations
 
 func (c *concurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -960,6 +975,54 @@ func (c *concurrencyCache) GetAccountCooldown(ctx context.Context, accountID int
 	}
 	if ttl <= 0 {
 		return time.Time{}, 0, false, nil
+	}
+	generation := int64(0)
+	if len(value) > 2 && value[:2] == "g:" {
+		generation, _ = strconv.ParseInt(value[2:], 10, 64)
+	}
+	return time.Now().Add(ttl), generation, true, nil
+}
+
+func (c *concurrencyCache) SetOpenAIPoolCooldownGeneration(ctx context.Context, accountID int64, ttl time.Duration, generation int64) error {
+	if accountID <= 0 || ttl <= 0 || generation < 0 {
+		return nil
+	}
+	ttlMillis := ttl.Milliseconds()
+	if ttlMillis <= 0 {
+		ttlMillis = 1
+	}
+	return setAccountCooldownGenerationScript.Run(ctx, c.rdb, []string{openAIPoolCooldownKey(accountID)}, generation, ttlMillis).Err()
+}
+
+func (c *concurrencyCache) ClearOpenAIPoolCooldown(ctx context.Context, accountID int64) error {
+	if accountID <= 0 {
+		return nil
+	}
+	return c.rdb.Del(ctx, openAIPoolCooldownKey(accountID)).Err()
+}
+
+func (c *concurrencyCache) ClearOpenAIPoolCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error {
+	if accountID <= 0 || generation <= 0 {
+		return nil
+	}
+	return clearAccountCooldownBeforeGenerationScript.Run(ctx, c.rdb, []string{openAIPoolCooldownKey(accountID)}, generation).Err()
+}
+
+func (c *concurrencyCache) GetOpenAIPoolCooldown(ctx context.Context, accountID int64) (time.Time, int64, bool, error) {
+	if c == nil || c.rdb == nil || accountID <= 0 {
+		return time.Time{}, 0, false, nil
+	}
+	key := openAIPoolCooldownKey(accountID)
+	value, err := c.rdb.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return time.Time{}, 0, false, nil
+	}
+	if err != nil {
+		return time.Time{}, 0, false, err
+	}
+	ttl, err := c.rdb.PTTL(ctx, key).Result()
+	if err != nil || ttl <= 0 {
+		return time.Time{}, 0, false, err
 	}
 	generation := int64(0)
 	if len(value) > 2 && value[:2] == "g:" {

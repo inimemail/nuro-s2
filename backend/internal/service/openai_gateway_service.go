@@ -2259,7 +2259,7 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 	if selected == nil {
 		return nil, noAvailableOpenAISelectionError(requestedModel, compactBlocked)
 	}
-	if s.shouldSkipNonOpenAIPoolAccount(ctx, selected) {
+	if s.isNonOpenAIPoolCandidateBlocked(ctx, selected) {
 		return nil, noAvailableOpenAISelectionError(requestedModel, compactBlocked)
 	}
 
@@ -2370,7 +2370,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
-	if s.shouldSkipNonOpenAIPoolAccount(ctx, account) {
+	if s.isNonOpenAIPoolCandidateBlocked(ctx, account) {
 		return nil
 	}
 
@@ -2567,7 +2567,23 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			}
 			result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency, account.Platform)
 			if err == nil && result != nil && result.Acquired {
+				if s.shouldSkipNonOpenAIPoolAccount(ctx, account) {
+					if s.nonOpenAIPoolRuntime != nil {
+						s.nonOpenAIPoolRuntime.releaseProbe(account)
+					}
+					if result.ReleaseFunc != nil {
+						result.ReleaseFunc()
+					}
+					if effectiveExcludedIDs == nil {
+						effectiveExcludedIDs = make(map[int64]struct{})
+					}
+					effectiveExcludedIDs[account.ID] = struct{}{}
+					continue
+				}
 				return s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
+			}
+			if s.nonOpenAIPoolRuntime != nil {
+				s.nonOpenAIPoolRuntime.releaseProbe(account)
 			}
 			if stickyAccountID > 0 && stickyAccountID == account.ID && s.concurrencyService != nil {
 				stickyBusyPreserve = true
@@ -2665,17 +2681,29 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						if sessionHash != "" {
 							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						}
+					} else if s.isNonOpenAIPoolCandidateBlocked(ctx, account) {
+						stickyBusyPreserve = true
 					} else {
 						result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency, account.Platform)
 						if err == nil && result != nil && result.Acquired {
-							selection, selectErr := s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
-							if selectErr != nil {
-								return nil, selectErr
+							if s.shouldSkipNonOpenAIPoolAccount(ctx, account) {
+								if s.nonOpenAIPoolRuntime != nil {
+									s.nonOpenAIPoolRuntime.releaseProbe(account)
+								}
+								if result.ReleaseFunc != nil {
+									result.ReleaseFunc()
+								}
+								stickyBusyPreserve = true
+							} else {
+								selection, selectErr := s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
+								if selectErr != nil {
+									return nil, selectErr
+								}
+								if sessionHash != "" {
+									_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
+								}
+								return selection, nil
 							}
-							if sessionHash != "" {
-								_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, s.openAIStickySessionTTLForHash(sessionHash, openaiStickySessionTTL))
-							}
-							return selection, nil
 						}
 						stickyBusyPreserve = true
 					}
@@ -2847,6 +2875,9 @@ openAIGroupGuardFallback:
 			result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency, fresh.Platform)
 			if err == nil && result != nil && result.Acquired {
 				if s.shouldSkipNonOpenAIPoolAccount(ctx, fresh) {
+					if s.nonOpenAIPoolRuntime != nil {
+						s.nonOpenAIPoolRuntime.releaseProbe(fresh)
+					}
 					if result.ReleaseFunc != nil {
 						result.ReleaseFunc()
 					}
@@ -2892,6 +2923,9 @@ openAIGroupGuardFallback:
 			result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency, fresh.Platform)
 			if err == nil && result != nil && result.Acquired {
 				if s.shouldSkipNonOpenAIPoolAccount(ctx, fresh) {
+					if s.nonOpenAIPoolRuntime != nil {
+						s.nonOpenAIPoolRuntime.releaseProbe(fresh)
+					}
 					if result.ReleaseFunc != nil {
 						result.ReleaseFunc()
 					}
@@ -2940,7 +2974,7 @@ openAIGroupGuardFallback:
 		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel, requireCompact) {
 			continue
 		}
-		if s.shouldSkipNonOpenAIPoolAccount(ctx, fresh) {
+		if s.isNonOpenAIPoolCandidateBlocked(ctx, fresh) {
 			continue
 		}
 		return s.newSelectionResult(ctx, fresh, false, nil, &AccountWaitPlan{

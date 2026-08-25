@@ -133,12 +133,24 @@ type VersionedAccountCooldownCache interface {
 	ClearAccountCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error
 }
 
-// AccountCooldownReader exposes the shared cooldown marker for observability
-// and cross-replica state hydration. It is intentionally separate from the
-// hot-path cache contract so lightweight test and non-Redis caches remain
-// compatible.
+// AccountCooldownReader exposes the shared generic runtime-block marker for
+// observability. It is intentionally separate from the hot-path cache contract
+// so lightweight test and non-Redis caches remain compatible.
 type AccountCooldownReader interface {
 	GetAccountCooldown(ctx context.Context, accountID int64) (until time.Time, generation int64, active bool, err error)
+}
+
+// OpenAIPoolCooldownCache isolates the pool recovery marker from the generic
+// account runtime-block marker. Implementations are optional so local/test
+// caches keep their existing behaviour.
+type OpenAIPoolCooldownCache interface {
+	SetOpenAIPoolCooldownGeneration(ctx context.Context, accountID int64, ttl time.Duration, generation int64) error
+	ClearOpenAIPoolCooldown(ctx context.Context, accountID int64) error
+	ClearOpenAIPoolCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error
+}
+
+type OpenAIPoolCooldownReader interface {
+	GetOpenAIPoolCooldown(ctx context.Context, accountID int64) (until time.Time, generation int64, active bool, err error)
 }
 
 var (
@@ -811,6 +823,54 @@ func (s *ConcurrencyService) GetAccountCooldown(ctx context.Context, accountID i
 		return time.Time{}, 0, false, nil
 	}
 	return reader.GetAccountCooldown(ctx, accountID)
+}
+
+func (s *ConcurrencyService) SetOpenAIPoolCooldownGeneration(ctx context.Context, accountID int64, until time.Time, generation int64) error {
+	if s == nil || s.cache == nil || accountID <= 0 || generation < 0 {
+		return nil
+	}
+	ttl := time.Until(until)
+	if ttl <= 0 {
+		return s.ClearOpenAIPoolCooldownBeforeGeneration(ctx, accountID, generation+1)
+	}
+	cache, ok := s.cache.(OpenAIPoolCooldownCache)
+	if !ok {
+		return nil
+	}
+	return cache.SetOpenAIPoolCooldownGeneration(ctx, accountID, ttl, generation)
+}
+
+func (s *ConcurrencyService) ClearOpenAIPoolCooldown(ctx context.Context, accountID int64) error {
+	if s == nil || s.cache == nil || accountID <= 0 {
+		return nil
+	}
+	cache, ok := s.cache.(OpenAIPoolCooldownCache)
+	if !ok {
+		return nil
+	}
+	return cache.ClearOpenAIPoolCooldown(ctx, accountID)
+}
+
+func (s *ConcurrencyService) ClearOpenAIPoolCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error {
+	if s == nil || s.cache == nil || accountID <= 0 || generation <= 0 {
+		return nil
+	}
+	cache, ok := s.cache.(OpenAIPoolCooldownCache)
+	if !ok {
+		return nil
+	}
+	return cache.ClearOpenAIPoolCooldownBeforeGeneration(ctx, accountID, generation)
+}
+
+func (s *ConcurrencyService) GetOpenAIPoolCooldown(ctx context.Context, accountID int64) (time.Time, int64, bool, error) {
+	if s == nil || s.cache == nil || accountID <= 0 {
+		return time.Time{}, 0, false, nil
+	}
+	cache, ok := s.cache.(OpenAIPoolCooldownReader)
+	if !ok {
+		return time.Time{}, 0, false, nil
+	}
+	return cache.GetOpenAIPoolCooldown(ctx, accountID)
 }
 
 // AcquireUserSlot attempts to acquire a concurrency slot for a user.

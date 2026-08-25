@@ -120,3 +120,21 @@ func TestVersionedAccountCooldownClearRemovesLegacyValue(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, exists)
 }
+
+func TestVersionedAccountCooldownGenerationDoesNotShortenSameGeneration(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	cache := &concurrencyCache{rdb: client}
+	ctx := context.Background()
+	accountID := int64(12)
+
+	require.NoError(t, cache.SetAccountCooldownGeneration(ctx, accountID, 10*time.Minute, 4))
+	firstTTL, err := client.PTTL(ctx, accountCooldownKey(accountID)).Result()
+	require.NoError(t, err)
+	require.NoError(t, cache.SetAccountCooldownGeneration(ctx, accountID, time.Minute, 4))
+	secondTTL, err := client.PTTL(ctx, accountCooldownKey(accountID)).Result()
+	require.NoError(t, err)
+	require.Greater(t, secondTTL, 8*time.Minute)
+	require.LessOrEqual(t, secondTTL, firstTTL)
+}

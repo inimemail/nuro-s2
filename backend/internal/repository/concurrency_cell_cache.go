@@ -257,6 +257,15 @@ func (c *cellAwareConcurrencyCache) routeForPlatform(ctx context.Context, platfo
 	if ttl, ttlErr := c.legacy.rdb.PTTL(ctx, accountCooldownKey(accountID)).Result(); ttlErr == nil && ttl > 0 {
 		_ = route.cache.SetAccountCooldown(ctx, accountID, ttl)
 	}
+	if until, generation, active, readErr := c.legacy.GetOpenAIPoolCooldown(ctx, accountID); readErr == nil && active {
+		ttl := time.Until(until)
+		// Preserve the dedicated pool marker when an account is first routed to
+		// a Cell; otherwise the Cell-local admission path could miss an active
+		// recovery cooldown created before assignment.
+		if ttl > 0 {
+			_ = route.cache.SetOpenAIPoolCooldownGeneration(ctx, accountID, ttl, generation)
+		}
+	}
 	return route, nil
 }
 
@@ -685,6 +694,38 @@ func (c *cellAwareConcurrencyCache) GetAccountCooldown(ctx context.Context, acco
 		return time.Time{}, 0, false, err
 	}
 	return cache.GetAccountCooldown(ctx, accountID)
+}
+
+func (c *cellAwareConcurrencyCache) SetOpenAIPoolCooldownGeneration(ctx context.Context, accountID int64, ttl time.Duration, generation int64) error {
+	cache, err := c.accountCache(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return cache.SetOpenAIPoolCooldownGeneration(ctx, accountID, ttl, generation)
+}
+
+func (c *cellAwareConcurrencyCache) ClearOpenAIPoolCooldown(ctx context.Context, accountID int64) error {
+	cache, err := c.accountCache(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return cache.ClearOpenAIPoolCooldown(ctx, accountID)
+}
+
+func (c *cellAwareConcurrencyCache) ClearOpenAIPoolCooldownBeforeGeneration(ctx context.Context, accountID, generation int64) error {
+	cache, err := c.accountCache(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return cache.ClearOpenAIPoolCooldownBeforeGeneration(ctx, accountID, generation)
+}
+
+func (c *cellAwareConcurrencyCache) GetOpenAIPoolCooldown(ctx context.Context, accountID int64) (time.Time, int64, bool, error) {
+	cache, err := c.accountCache(ctx, accountID)
+	if err != nil {
+		return time.Time{}, 0, false, err
+	}
+	return cache.GetOpenAIPoolCooldown(ctx, accountID)
 }
 
 func (c *cellAwareConcurrencyCache) CleanupExpiredAccountSlots(ctx context.Context, accountID int64) error {

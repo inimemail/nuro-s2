@@ -665,6 +665,9 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			}
 		}
 		if selection != nil && selection.Account != nil && s.service.shouldSkipNonOpenAIPoolAccount(ctx, selection.Account) {
+			if s.service.nonOpenAIPoolRuntime != nil {
+				s.service.nonOpenAIPoolRuntime.releaseProbe(selection.Account)
+			}
 			if selection.ReleaseFunc != nil {
 				selection.ReleaseFunc()
 			}
@@ -831,11 +834,25 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}
 		return nil, false, nil
 	}
-	if s.service.shouldSkipNonOpenAIPoolAccount(ctx, account) {
+	if s.service.isNonOpenAIPoolCandidateBlocked(ctx, account) {
 		return nil, true, nil
 	}
 	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency, account.Platform)
+	if acquireErr != nil || result == nil || !result.Acquired {
+		if s.service.nonOpenAIPoolRuntime != nil {
+			s.service.nonOpenAIPoolRuntime.releaseProbe(account)
+		}
+	}
 	if acquireErr == nil && result != nil && result.Acquired {
+		if s.service.shouldSkipNonOpenAIPoolAccount(ctx, account) {
+			if s.service.nonOpenAIPoolRuntime != nil {
+				s.service.nonOpenAIPoolRuntime.releaseProbe(account)
+			}
+			if result.ReleaseFunc != nil {
+				result.ReleaseFunc()
+			}
+			return nil, true, nil
+		}
 		if sessionHash != "" {
 			_ = s.service.refreshStickySessionTTL(ctx, req.GroupID, sessionHash, s.service.openAIStickySessionTTLForHash(sessionHash, s.service.openAIWSSessionStickyTTL()))
 		}
@@ -1679,7 +1696,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		if s.service.shouldSkipNonOpenAIPoolAccount(ctx, fresh) {
+		if s.service.isNonOpenAIPoolCandidateBlocked(ctx, fresh) {
 			continue
 		}
 		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
@@ -1688,9 +1705,21 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 		}
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency, fresh.Platform)
 		if acquireErr != nil {
+			if s.service.nonOpenAIPoolRuntime != nil {
+				s.service.nonOpenAIPoolRuntime.releaseProbe(fresh)
+			}
 			return nil, compactBlocked, acquireErr
 		}
 		if result != nil && result.Acquired {
+			if s.service.shouldSkipNonOpenAIPoolAccount(ctx, fresh) {
+				if s.service.nonOpenAIPoolRuntime != nil {
+					s.service.nonOpenAIPoolRuntime.releaseProbe(fresh)
+				}
+				if result.ReleaseFunc != nil {
+					result.ReleaseFunc()
+				}
+				continue
+			}
 			if req.SessionHash != "" && !req.PreserveStickyBinding {
 				_ = s.service.claimStickySessionAccountID(ctx, req.GroupID, req.SessionHash, fresh.ID, s.service.openAIStickySessionTTLForHash(req.SessionHash, s.service.openAIWSSessionStickyTTL()))
 			}
@@ -1801,6 +1830,9 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithArbite
 			continue
 		}
 		if s.service.shouldSkipNonOpenAIPoolAccount(ctx, fresh) {
+			if s.service.nonOpenAIPoolRuntime != nil {
+				s.service.nonOpenAIPoolRuntime.releaseProbe(fresh)
+			}
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()
 			}
@@ -1983,7 +2015,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		if s.service.shouldSkipNonOpenAIPoolAccount(ctx, fresh) {
+		if s.service.isNonOpenAIPoolCandidateBlocked(ctx, fresh) {
 			continue
 		}
 		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
@@ -2706,53 +2738,6 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64
 	s.reportOpenAIAccountScheduleResultForCapability(accountID, success, firstTokenMs, "")
 }
 
-// clearOpenAIPoolCooldownAfterSuccessfulRequest only clears an expired local
-// cooldown. A request may have started before a newer pool cooldown was
-// installed and finish successfully afterwards; that result must not erase
-// the newer backoff or its recovery probe state.
-func (s *OpenAIGatewayService) clearOpenAIPoolCooldownAfterSuccessfulRequest(accountID int64) {
-	if s == nil || accountID <= 0 {
-		return
-	}
-	if _, probing := s.openaiPoolRecoveryProbeInFlight.Load(accountID); probing {
-		return
-	}
-	value, loaded := s.openaiPoolSoftCooldownUntil.Load(accountID)
-	if !loaded {
-		s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
-		return
-	}
-	until, generation, valid := parseAccountRuntimeDeadline(value)
-	if !valid {
-		if s.openaiPoolSoftCooldownUntil.CompareAndDelete(accountID, value) {
-			s.openaiPoolSoftCooldownContext.Delete(accountID)
-			s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
-			s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
-		}
-		return
-	}
-	if until.After(time.Now()) {
-		return
-	}
-	// A real pool cooldown carries context describing the upstream failure or
-	// probe backoff. Even after its display deadline expires, let the recovery
-	// probe own the transition to healthy; an old long-running request must not
-	// clear this state merely because it eventually completed successfully.
-	if _, hasContext := s.openaiPoolSoftCooldownContext.Load(accountID); hasContext {
-		return
-	}
-	if !s.openaiPoolSoftCooldownUntil.CompareAndDelete(accountID, value) {
-		return
-	}
-	s.openaiPoolSoftCooldownContext.Delete(accountID)
-	s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
-	s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
-	// Only clear a Redis value older than the state we just removed. An
-	// unconditional DEL could erase a newer cooldown created on another
-	// replica.
-	_ = s.clearOpenAIAccountCooldownInRedisBefore(accountID, generation+1)
-}
-
 func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResultForRequest(account *Account, requestedModel string, success bool, firstTokenMs *int) {
 	if s == nil || account == nil {
 		return
@@ -2762,8 +2747,6 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResultForRequest(accou
 			if s.nonOpenAIPoolRuntime != nil {
 				s.nonOpenAIPoolRuntime.markSuccess(account)
 			}
-		} else {
-			s.clearOpenAIPoolCooldownAfterSuccessfulRequest(account.ID)
 		}
 	}
 	stats := s.getOpenAIAccountRuntimeStats()
@@ -2785,9 +2768,6 @@ func (s *OpenAIGatewayService) ReportOpenAIImageAccountScheduleResult(accountID 
 func (s *OpenAIGatewayService) reportOpenAIAccountScheduleResultForCapability(accountID int64, success bool, firstTokenMs *int, requiredImageCapability OpenAIImagesCapability) {
 	if s == nil {
 		return
-	}
-	if success {
-		s.clearOpenAIPoolCooldownAfterSuccessfulRequest(accountID)
 	}
 	stats := s.getOpenAIAccountRuntimeStats()
 	if stats == nil {
