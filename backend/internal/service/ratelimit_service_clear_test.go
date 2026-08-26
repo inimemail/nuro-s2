@@ -78,6 +78,15 @@ type crossReplicaRuntimeBlockRecorder struct {
 	clearAcrossErr   error
 }
 
+type runtimeOnlyBlockRecorder struct {
+	runtimeBlockRecorder
+	runtimeOnlyIDs []int64
+}
+
+func (r *runtimeOnlyBlockRecorder) ClearAccountRuntimeBlockOnly(accountID int64) {
+	r.runtimeOnlyIDs = append(r.runtimeOnlyIDs, accountID)
+}
+
 func (r *crossReplicaRuntimeBlockRecorder) ClearAccountSchedulingBlockAcrossReplicas(_ context.Context, accountID int64) error {
 	r.clearedAcrossIDs = append(r.clearedAcrossIDs, accountID)
 	return r.clearAcrossErr
@@ -276,6 +285,17 @@ func TestRateLimitService_RecoverAccountState_ClearsRuntimeAcrossReplicasWithout
 	require.False(t, result.ClearedRateLimit)
 	require.Empty(t, blocker.clearedIDs)
 	require.Equal(t, []int64{8}, blocker.clearedAcrossIDs)
+}
+
+func TestRateLimitService_ClearRateLimitUsesRuntimeOnlyClear(t *testing.T) {
+	repo := &rateLimitClearRepoStub{}
+	blocker := &runtimeOnlyBlockRecorder{}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc.SetAccountRuntimeBlocker(blocker)
+
+	require.NoError(t, svc.ClearRateLimit(context.Background(), 81))
+	require.Equal(t, []int64{81}, blocker.runtimeOnlyIDs)
+	require.Empty(t, blocker.clearedIDs)
 }
 
 func TestRateLimitService_RecoverAccountState_ReportsCrossReplicaClearFailure(t *testing.T) {

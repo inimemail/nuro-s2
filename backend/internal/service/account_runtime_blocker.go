@@ -176,6 +176,23 @@ func (b *CompositeAccountRuntimeBlocker) ClearAccountSchedulingBlock(accountID i
 	}
 }
 
+// ClearAccountRuntimeBlockOnly clears generic runtime admission state without
+// touching a platform pool's independent soft-cooldown/recovery state.
+func (b *CompositeAccountRuntimeBlocker) ClearAccountRuntimeBlockOnly(accountID int64) {
+	if b == nil {
+		return
+	}
+	for _, blocker := range b.blockers {
+		if service, ok := blocker.(interface{ ClearAccountRuntimeBlockOnly(int64) }); ok {
+			service.ClearAccountRuntimeBlockOnly(accountID)
+			continue
+		}
+		if blocker != nil {
+			blocker.ClearAccountSchedulingBlock(accountID)
+		}
+	}
+}
+
 // ClearAccountSchedulingBlockAcrossReplicas advances the shared generation
 // before clearing. Admin and successful-probe recovery use this path so every
 // replica drops old state while cooldowns created at the new generation remain.

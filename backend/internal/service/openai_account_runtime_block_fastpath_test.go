@@ -106,6 +106,20 @@ func TestOpenAIRuntimeBlock_ClearAccountSchedulingBlock(t *testing.T) {
 	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
 
+func TestOpenAIRuntimeBlock_ClearAccountRuntimeBlockOnlyPreservesPoolCooldown(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 471, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true}}
+
+	svc.storeOpenAIPoolSoftCooldownUntil(account.ID, time.Now().Add(time.Minute))
+	svc.BlockAccountScheduling(account, time.Now().Add(time.Minute), "runtime")
+	svc.ClearAccountRuntimeBlockOnly(account.ID)
+
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	require.True(t, svc.isOpenAIPoolAccountSoftCooling(account))
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+}
+
 func TestOpenAIPoolSoftCooldown_529UsesOverloadCooldownSettings(t *testing.T) {
 	settingRepo := newMockSettingRepo()
 	data, _ := json.Marshal(OverloadCooldownSettings{Enabled: true, CooldownSeconds: 2})

@@ -78,6 +78,14 @@ func (s *GatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	}
 }
 
+func (s *GatewayService) ClearAccountRuntimeBlockOnly(accountID int64) {
+	if s != nil && s.nonOpenAIPoolRuntime != nil {
+		// Domestic-platform runtime cooldowns share this gateway service, but
+		// Anthropic pool cooldown state must remain owned by explicit recovery.
+		s.nonOpenAIPoolRuntime.clearAccountID(accountID)
+	}
+}
+
 func (s *GatewayService) BlockAccountScheduling(account *Account, until time.Time, reason string) {
 }
 

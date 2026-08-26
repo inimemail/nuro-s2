@@ -241,6 +241,19 @@ func TestNonOpenAIPoolRuntimeDisabledClearsState(t *testing.T) {
 	}
 }
 
+func TestGatewayRuntimeOnlyClearRemovesDomesticPoolState(t *testing.T) {
+	runtime := NewNonOpenAIPoolRuntime()
+	settings := DefaultNonOpenAIPoolSettings()
+	account := nonOpenAIPoolTestAccount(131, PlatformKimi)
+	runtime.markFailure(context.Background(), settings, account, http.StatusServiceUnavailable, "unavailable", "test")
+	service := &GatewayService{nonOpenAIPoolRuntime: runtime}
+
+	service.ClearAccountRuntimeBlockOnly(account.ID)
+	if state := runtime.stateForAccount(account); state.Cooling {
+		t.Fatal("runtime-only clear should remove domestic pool cooldown")
+	}
+}
+
 func TestNonOpenAIPoolRuntimeNeverTouchesOpenAI(t *testing.T) {
 	runtime := NewNonOpenAIPoolRuntime()
 	settings := DefaultNonOpenAIPoolSettings()

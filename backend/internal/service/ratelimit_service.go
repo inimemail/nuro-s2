@@ -136,6 +136,10 @@ func (s *RateLimitService) notifyAccountSchedulingBlockCleared(accountID int64) 
 	if s == nil || s.runtimeBlocker == nil || accountID <= 0 {
 		return
 	}
+	if clearer, ok := s.runtimeBlocker.(interface{ ClearAccountRuntimeBlockOnly(int64) }); ok {
+		clearer.ClearAccountRuntimeBlockOnly(accountID)
+		return
+	}
 	s.runtimeBlocker.ClearAccountSchedulingBlock(accountID)
 }
 
@@ -147,6 +151,10 @@ func (s *RateLimitService) notifyAccountSchedulingBlockClearedAcrossReplicas(ctx
 		ClearAccountSchedulingBlockAcrossReplicas(context.Context, int64) error
 	}); ok {
 		return clearer.ClearAccountSchedulingBlockAcrossReplicas(ctx, accountID)
+	}
+	if clearer, ok := s.runtimeBlocker.(interface{ ClearAccountRuntimeBlockOnly(int64) }); ok {
+		clearer.ClearAccountRuntimeBlockOnly(accountID)
+		return nil
 	}
 	s.runtimeBlocker.ClearAccountSchedulingBlock(accountID)
 	return nil

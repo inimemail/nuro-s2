@@ -44,7 +44,7 @@ func (s *OpenAIGatewayService) maybeStartOpenAIPoolRecoveryProbe(ctx context.Con
 		return
 	}
 	if !account.IsPoolSoftCooldownEnabled() {
-		s.ClearAccountSchedulingBlock(account.ID)
+		s.clearOpenAIPoolAccountSchedulingBlock(account.ID)
 		return
 	}
 	cooldownUntil, ok := s.openAIPoolAccountSoftCooldownUntil(account)
@@ -116,7 +116,7 @@ func (s *OpenAIGatewayService) clearOpenAIPoolSoftCooldownIfRecoveryProbeDisable
 		return false
 	}
 	usesImagePool := s.openAIPoolRecoveryProbeUsesImagePool(account, requestedModel)
-	s.ClearAccountSchedulingBlock(account.ID)
+	s.clearOpenAIPoolAccountSchedulingBlock(account.ID)
 	loggerLegacyOpenAIPoolRecovery("probe_disabled_recover account_id=%d image_pool=%t", account.ID, usesImagePool)
 	return true
 }

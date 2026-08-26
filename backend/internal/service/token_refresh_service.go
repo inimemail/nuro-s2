@@ -121,6 +121,10 @@ func (s *TokenRefreshService) notifyAccountSchedulingBlockCleared(accountID int6
 	if s == nil || s.runtimeBlocker == nil || accountID <= 0 {
 		return
 	}
+	if clearer, ok := s.runtimeBlocker.(interface{ ClearAccountRuntimeBlockOnly(int64) }); ok {
+		clearer.ClearAccountRuntimeBlockOnly(accountID)
+		return
+	}
 	s.runtimeBlocker.ClearAccountSchedulingBlock(accountID)
 }
 

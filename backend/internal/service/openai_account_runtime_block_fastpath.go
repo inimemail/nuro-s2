@@ -166,7 +166,77 @@ func (s *OpenAIGatewayService) ClearAccountSchedulingBlock(accountID int64) {
 	if s == nil || accountID <= 0 {
 		return
 	}
+	// This is the explicit full-clear API used by admin and successful recovery.
+	// Automatic runtime cleanup uses ClearAccountRuntimeBlockOnly below.
 	s.clearLocalAccountSchedulingBlock(accountID)
+	s.clearOpenAIAccountCooldownInRedis(accountID)
+	s.clearOpenAIPoolCooldownInRedis(accountID)
+}
+
+// ClearAccountRuntimeBlockOnly is used by automatic rate-limit/token-refresh
+// cleanup. It deliberately leaves OpenAI pool soft-cooldown state untouched;
+// only an explicit pool recovery/disable path may clear that state.
+func (s *OpenAIGatewayService) ClearAccountRuntimeBlockOnly(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	s.clearLocalAccountRuntimeBlock(accountID)
+	if s.openAIPoolCooldownStillActive(accountID) {
+		return
+	}
+	s.clearOpenAIAccountCooldownInRedis(accountID)
+}
+
+func (s *OpenAIGatewayService) openAIPoolCooldownStillActive(accountID int64) bool {
+	if s == nil || accountID <= 0 {
+		return false
+	}
+	if _, probing := s.openaiPoolRecoveryProbeInFlight.Load(accountID); probing {
+		return true
+	}
+	if _, _, active := s.openAIPoolAccountSoftCooldownReadOnly(accountID); active {
+		return true
+	}
+	if s.concurrencyService == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, _, active, err := s.concurrencyService.GetOpenAIPoolCooldown(ctx, accountID)
+	// If the shared read fails, preserve the compatibility admission marker;
+	// fail-closed is safer than allowing another replica to bypass a pool
+	// cooldown while this instance is recovering its state.
+	return err != nil || active
+}
+
+func (s *OpenAIGatewayService) clearLocalAccountRuntimeBlock(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	s.openaiAccountRuntimeBlockUntil.Delete(accountID)
+}
+
+func (s *OpenAIGatewayService) clearLocalOpenAIPoolState(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	s.openaiPoolSoftCooldownUntil.Delete(accountID)
+	s.openaiPoolSoftCooldownContext.Delete(accountID)
+	s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
+	s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
+	s.openaiPoolRecoveryProbeFailureCount.Delete(accountID)
+	s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
+}
+
+// clearOpenAIPoolAccountSchedulingBlock is reserved for explicit pool-state
+// disable/recovery paths. Automatic runtime cleanup uses
+// ClearAccountRuntimeBlockOnly, which preserves probe backoff state.
+func (s *OpenAIGatewayService) clearOpenAIPoolAccountSchedulingBlock(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	s.clearLocalAccountRuntimeBlock(accountID)
+	s.clearLocalOpenAIPoolState(accountID)
 	s.clearOpenAIAccountCooldownInRedis(accountID)
 	s.clearOpenAIPoolCooldownInRedis(accountID)
 }
@@ -175,13 +245,8 @@ func (s *OpenAIGatewayService) clearLocalAccountSchedulingBlock(accountID int64)
 	if s == nil || accountID <= 0 {
 		return
 	}
-	s.openaiAccountRuntimeBlockUntil.Delete(accountID)
-	s.openaiPoolSoftCooldownUntil.Delete(accountID)
-	s.openaiPoolSoftCooldownContext.Delete(accountID)
-	s.openaiPoolSoftCooldownFailureCount.Delete(accountID)
-	s.openaiPoolRecoveryProbeInFlight.Delete(accountID)
-	s.openaiPoolRecoveryProbeFailureCount.Delete(accountID)
-	s.openaiPoolRecoveryProbeAdminKickAt.Delete(accountID)
+	s.clearLocalAccountRuntimeBlock(accountID)
+	s.clearLocalOpenAIPoolState(accountID)
 }
 
 func (s *OpenAIGatewayService) clearLocalAccountSchedulingBlockBefore(accountID, clearGeneration int64) {
@@ -409,7 +474,7 @@ func (s *OpenAIGatewayService) MarkOpenAIPoolAccountSoftCooldownWithContext(ctx 
 		return
 	}
 	if !account.IsPoolSoftCooldownEnabled() {
-		s.ClearAccountSchedulingBlock(account.ID)
+		s.clearOpenAIPoolAccountSchedulingBlock(account.ID)
 		return
 	}
 	cooldown := openAIPoolSoftCooldownDefault
@@ -493,7 +558,7 @@ func (s *OpenAIGatewayService) shouldStartOpenAIPoolSoftCooldown(account *Accoun
 		return false
 	}
 	if !account.IsPoolSoftCooldownEnabled() {
-		s.ClearAccountSchedulingBlock(account.ID)
+		s.clearOpenAIPoolAccountSchedulingBlock(account.ID)
 		return false
 	}
 	threshold := account.GetPoolSoftCooldownErrorThreshold()
