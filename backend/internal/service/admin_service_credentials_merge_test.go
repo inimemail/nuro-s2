@@ -91,6 +91,40 @@ func TestUpdateAccount_ExplicitNewTokenOverwrites(t *testing.T) {
 	require.Equal(t, "sk-old", repo.account.Credentials["api_key"])
 }
 
+func TestUpdateAccount_CNCredentialOnlyEditCanonicalizesLegacyProtocol(t *testing.T) {
+	accountID := int64(205)
+	repo := &updateAccountCredsRepoStub{
+		account: &Account{
+			ID:       accountID,
+			Platform: PlatformDeepSeek,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				cnAPIProtocolExtraKey: APIProtocolChatCompletions,
+			},
+			Credentials: map[string]any{
+				"api_key":       "sk-old",
+				"api_protocol":  APIProtocolChatCompletions,
+				"api_base_urls": map[string]any{"responses": "https://legacy.example"},
+			},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	updated, err := svc.UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+		Credentials: map[string]any{
+			"api_key":       "sk-new",
+			"api_protocol":  APIProtocolResponses,
+			"api_base_urls": map[string]any{"responses": "https://new.example"},
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, updated)
+	require.Equal(t, APIProtocolResponses, repo.account.Extra[cnAPIProtocolExtraKey])
+	require.NotContains(t, repo.account.Credentials, "api_protocol")
+	require.NotContains(t, repo.account.Credentials, "api_base_urls")
+}
+
 func TestUpdateAccount_EmptyCredentialsSkipsUpdate(t *testing.T) {
 	accountID := int64(204)
 	repo := &updateAccountCredsRepoStub{

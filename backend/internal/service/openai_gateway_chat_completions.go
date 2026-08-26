@@ -694,6 +694,12 @@ func shouldForwardAPIKeyChatViaResponses(account *Account) bool {
 	if account == nil || account.Type != AccountTypeAPIKey {
 		return true
 	}
+	// DeepSeek's explicit domestic Responses mode is a protocol selection, not
+	// merely a capability probe result. Keep /v1/chat/completions clients on
+	// the existing CC->Responses bridge for that account mode.
+	if account.IsDeepSeek() && account.GetAPIProtocol() == APIProtocolResponses {
+		return true
+	}
 	return openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportYes
 }
 

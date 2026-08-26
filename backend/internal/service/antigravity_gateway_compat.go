@@ -27,6 +27,7 @@ const (
 	AntigravityCredentialRejectedClientMessage = "Upstream authentication failed; reauthorize the account and verify its project configuration"
 	// AntigravityCredentialRejectedReason 标识上游拒绝已刷新 OAuth 凭据。
 	AntigravityCredentialRejectedReason GatewayFailureReason = "antigravity_oauth_credential_rejected"
+	antigravityCompatMaxTokens                               = 64000
 )
 
 type antigravityCompatRequest struct {
@@ -158,7 +159,7 @@ func preserveChatCompletionTokenLimit(request *apicompat.ChatCompletionsRequest,
 		limit = request.MaxCompletionTokens
 	}
 	if limit != nil && *limit > 0 {
-		claudeRequest.MaxTokens = *limit
+		claudeRequest.MaxTokens = min(*limit, antigravityCompatMaxTokens)
 	}
 }
 
@@ -263,6 +264,10 @@ func (s *AntigravityGatewayService) buildAntigravityCompatGeminiBody(
 		if err != nil {
 			return nil, err
 		}
+		body, err = enableMixedGeminiToolInvocations(body)
+		if err != nil {
+			return nil, err
+		}
 		body = ensureGeminiFunctionCallThoughtSignatures(body)
 		body, err = injectIdentityPatchToGeminiRequest(body)
 		if err != nil {
@@ -277,6 +282,38 @@ func (s *AntigravityGatewayService) buildAntigravityCompatGeminiBody(
 	options := s.getClaudeTransformOptions(ctx)
 	options.EnableIdentityPatch = true
 	return antigravity.TransformClaudeToGeminiWithOptions(claudeRequest, projectID, mappedModel, options)
+}
+
+func enableMixedGeminiToolInvocations(body []byte) ([]byte, error) {
+	var request map[string]any
+	if err := json.Unmarshal(body, &request); err != nil {
+		return nil, err
+	}
+
+	var hasGoogleSearch, hasFunctionDeclarations bool
+	if tools, ok := request["tools"].([]any); ok {
+		for _, rawTool := range tools {
+			tool, ok := rawTool.(map[string]any)
+			if !ok {
+				continue
+			}
+			_, hasSearch := tool["googleSearch"]
+			declarations, hasFunctions := tool["functionDeclarations"].([]any)
+			hasGoogleSearch = hasGoogleSearch || hasSearch
+			hasFunctionDeclarations = hasFunctionDeclarations || hasFunctions && len(declarations) > 0
+		}
+	}
+	if !hasGoogleSearch || !hasFunctionDeclarations {
+		return body, nil
+	}
+
+	toolConfig, _ := request["toolConfig"].(map[string]any)
+	if toolConfig == nil {
+		toolConfig = make(map[string]any)
+		request["toolConfig"] = toolConfig
+	}
+	toolConfig["includeServerSideToolInvocations"] = true
+	return json.Marshal(request)
 }
 
 func antigravityCompatProxyURL(account *Account) string {

@@ -3559,6 +3559,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err != nil {
 		return nil, err
 	}
+	accountExtra, input.Credentials = normalizeCNProviderStoredConfig(input.Platform, accountExtra, input.Credentials)
 	// Quota and billing observations are runtime-owned. Never accept a
 	// client-provided snapshot on create; only the tri-state override is
 	// administrator input.
@@ -3864,6 +3865,20 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 		ComputeQuotaResetAt(account.Extra)
 	}
+	// Canonicalize domestic protocol fields after both credential and Extra
+	// merges. This also covers credential-only edits, which otherwise could
+	// leave legacy api_protocol/api_base_urls fields behind indefinitely.
+	if account.IsCNProvider() && (input.Extra != nil || len(input.Credentials) > 0) {
+		if _, extraProtocolSubmitted := input.Extra[cnAPIProtocolExtraKey]; !extraProtocolSubmitted {
+			if requestedProtocol, submitted := input.Credentials["api_protocol"]; submitted {
+				if account.Extra == nil {
+					account.Extra = make(map[string]any)
+				}
+				account.Extra[cnAPIProtocolExtraKey] = requestedProtocol
+			}
+		}
+		account.Extra, account.Credentials = normalizeCNProviderStoredConfig(account.Platform, account.Extra, account.Credentials)
+	}
 	if requestedRateSyncEnabledUpdate != nil && *requestedRateSyncEnabledUpdate {
 		if requestedProbeEnabledUpdate != nil && !*requestedProbeEnabledUpdate {
 			return nil, infraerrors.BadRequest(
@@ -4158,6 +4173,21 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
 	delete(updates, UpstreamBillingRateSyncEnabledExtraKey)
 	delete(updates, UpstreamBillingProbeExtraKey)
+	if hasCNProviderStoredConfigUpdate(updates, nil, nil) {
+		account, err := s.accountRepo.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if account.IsCNProvider() {
+			_, hadLegacyBaseURLs := updates[cnAPIBaseURLsExtraKey]
+			updates, _ = normalizeCNProviderStoredConfigForAccount(account, updates, nil)
+			if hadLegacyBaseURLs {
+				// UpdateExtra is a JSONB merge, so null removes the legacy value
+				// from protocol selection without replacing unrelated Extra keys.
+				updates[cnAPIBaseURLsExtraKey] = nil
+			}
+		}
+	}
 	if _, exists := updates[openAILongContextBillingEnabledKey]; exists {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
@@ -4365,11 +4395,12 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	needMixedChannelCheck := input.GroupIDs != nil && !input.SkipMixedChannelCheck
 	_, hasLongContextBillingUpdate := input.Extra[openAILongContextBillingEnabledKey]
 	probeDisableRequested := input.ProbeEnabled != nil && !*input.ProbeEnabled
+	hasCNConfigUpdate := hasCNProviderStoredConfigUpdate(input.Extra, input.Credentials, input.ExtraRemoveKeys)
 
 	// 预加载账号平台信息（混合渠道检查需要）。
 	platformByID := map[int64]string{}
 	var cachedTargets []*Account
-	if needMixedChannelCheck || hasLongContextBillingUpdate || hasAPIKeyFirstTokenTimeoutValueUpdate || hasOAuthFirstTokenTimeoutUpdate || input.ProbeEnabled != nil || input.RateMultiplier != nil {
+	if needMixedChannelCheck || hasLongContextBillingUpdate || hasAPIKeyFirstTokenTimeoutValueUpdate || hasOAuthFirstTokenTimeoutUpdate || input.ProbeEnabled != nil || input.RateMultiplier != nil || hasCNConfigUpdate {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
@@ -4508,8 +4539,50 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		}
 	}
 
-	// Run bulk update for column/jsonb fields first.
-	if len(normalIDs) > 0 {
+	// Run bulk update for column/jsonb fields first. Domestic protocol fields
+	// are normalized per platform so mixed selections cannot persist CN-only
+	// settings on OpenAI or Anthropic accounts.
+	if len(normalIDs) > 0 && hasCNConfigUpdate {
+		accountByID := make(map[int64]*Account, len(cachedTargets))
+		for _, account := range cachedTargets {
+			if account != nil {
+				accountByID[account.ID] = account
+			}
+		}
+		type normalizedBulkUpdateGroup struct {
+			ids     []int64
+			updates AccountBulkUpdate
+		}
+		groups := make(map[string]*normalizedBulkUpdateGroup)
+		groupOrder := make([]string, 0, 4)
+		for _, accountID := range normalIDs {
+			account := accountByID[accountID]
+			updates := normalizeBulkUpdateForAccount(account, repoUpdates)
+			groupKey := "non-cn"
+			if account != nil && account.IsCNProvider() {
+				_, hasLegacyProtocol := updates.Credentials["api_protocol"]
+				_, hasLegacyBaseURLs := updates.Credentials["api_base_urls"]
+				groupKey = account.Platform + "\x00" + valueAsString(updates.Extra[cnAPIProtocolExtraKey]) +
+					"\x00" + strconv.FormatBool(hasLegacyProtocol) + "\x00" + strconv.FormatBool(hasLegacyBaseURLs)
+			}
+			group := groups[groupKey]
+			if group == nil {
+				group = &normalizedBulkUpdateGroup{updates: updates}
+				groups[groupKey] = group
+				groupOrder = append(groupOrder, groupKey)
+			}
+			group.ids = append(group.ids, accountID)
+		}
+		for _, groupKey := range groupOrder {
+			group := groups[groupKey]
+			if group.updates.IsZero() {
+				continue
+			}
+			if _, err := s.accountRepo.BulkUpdate(ctx, group.ids, group.updates); err != nil {
+				return nil, err
+			}
+		}
+	} else if len(normalIDs) > 0 {
 		if _, err := s.accountRepo.BulkUpdate(ctx, normalIDs, repoUpdates); err != nil {
 			return nil, err
 		}

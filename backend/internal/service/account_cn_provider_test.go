@@ -22,8 +22,8 @@ func TestCNProviderLocalExtraTakesPrecedence(t *testing.T) {
 	}
 	require.Equal(t, CNBillingModeCodingPlan, account.GetCNBillingMode())
 	require.Equal(t, AccountModeCoding, account.GetAccountMode())
-	require.Equal(t, APIProtocolAnthropic, account.GetAPIProtocol())
-	require.Equal(t, DefaultKimiCodingAnthropicBaseURL, account.GetAnthropicProtocolBaseURL())
+	require.Equal(t, APIProtocolChatCompletions, account.GetAPIProtocol())
+	require.Empty(t, account.GetAnthropicProtocolBaseURL())
 }
 
 func TestCNProviderLegacyAccountIsExactChatDefault(t *testing.T) {
@@ -42,7 +42,7 @@ func TestCNProviderLegacyAccountIsExactChatDefault(t *testing.T) {
 	}
 }
 
-func TestCNProviderAdaptiveUsesLocalProtocolURLs(t *testing.T) {
+func TestCNProviderLegacyAdaptiveUsesChatURLOnly(t *testing.T) {
 	account := &Account{
 		Platform:    PlatformDeepSeek,
 		Type:        AccountTypeAPIKey,
@@ -57,8 +57,8 @@ func TestCNProviderAdaptiveUsesLocalProtocolURLs(t *testing.T) {
 		},
 	}
 	require.Equal(t, "https://chat.example/v1", account.GetOpenAIBaseURL())
-	require.Equal(t, "https://messages.example", account.GetAnthropicProtocolBaseURL())
-	require.Equal(t, "https://responses.example", account.GetCNProtocolBaseURL(APIProtocolResponses))
+	require.Empty(t, account.GetAnthropicProtocolBaseURL())
+	require.Equal(t, DefaultDeepSeekResponsesBaseURL, account.GetCNProtocolBaseURL(APIProtocolResponses))
 }
 
 func TestCNProviderResponsesRestrictedToDeepSeek(t *testing.T) {
@@ -71,14 +71,58 @@ func TestCNProviderResponsesRestrictedToDeepSeek(t *testing.T) {
 	require.Equal(t, DefaultDeepSeekResponsesBaseURL, account.GetCNProtocolBaseURL(APIProtocolResponses))
 }
 
-func TestAdaptiveCNProviderResponsesUseNativeAnthropicExceptDeepSeek(t *testing.T) {
+func TestDeepSeekResponsesUsesConfiguredResponsesBaseURL(t *testing.T) {
+	account := &Account{
+		Platform: PlatformDeepSeek,
+		Extra: map[string]any{
+			cnAPIProtocolExtraKey: APIProtocolResponses,
+			cnAPIBaseURLsExtraKey: map[string]any{APIProtocolResponses: "https://responses.proxy/v1"},
+		},
+	}
+	require.Equal(t, "https://responses.proxy/v1", account.GetCNProtocolBaseURL(APIProtocolResponses))
+	require.Empty(t, account.GetCNProtocolBaseURL(APIProtocolAnthropic))
+}
+
+func TestCNProtocolControlsChatCompletionsResponsesBridge(t *testing.T) {
+	deepseek := &Account{Platform: PlatformDeepSeek, Type: AccountTypeAPIKey, Extra: map[string]any{cnAPIProtocolExtraKey: APIProtocolResponses}}
+	require.True(t, shouldForwardAPIKeyChatViaResponses(deepseek))
+
+	kimi := &Account{Platform: PlatformKimi, Type: AccountTypeAPIKey, Extra: map[string]any{cnAPIProtocolExtraKey: APIProtocolChatCompletions}}
+	require.False(t, shouldForwardAPIKeyChatViaResponses(kimi))
+}
+
+func TestNormalizeCNProviderStoredConfigPreservesOnlyExplicitDeepSeekResponses(t *testing.T) {
+	for _, platform := range []string{PlatformKimi, PlatformZhipu} {
+		extra, credentials := normalizeCNProviderStoredConfig(platform,
+			map[string]any{cnAPIProtocolExtraKey: APIProtocolResponses, cnAPIBaseURLsExtraKey: map[string]any{"responses": "https://old.example"}},
+			map[string]any{"api_key": "secret", "api_protocol": APIProtocolAnthropic, "api_base_urls": map[string]any{"anthropic": "https://old.example"}},
+		)
+		require.Equal(t, APIProtocolChatCompletions, extra[cnAPIProtocolExtraKey])
+		require.NotContains(t, extra, cnAPIBaseURLsExtraKey)
+		require.Equal(t, "secret", credentials["api_key"])
+		require.NotContains(t, credentials, "api_protocol")
+		require.NotContains(t, credentials, "api_base_urls")
+	}
+
+	extra, credentials := normalizeCNProviderStoredConfig(PlatformDeepSeek, nil, map[string]any{
+		"api_key":      "secret",
+		"api_protocol": APIProtocolResponses,
+	})
+	require.Equal(t, APIProtocolResponses, extra[cnAPIProtocolExtraKey])
+	require.Equal(t, "secret", credentials["api_key"])
+	require.NotContains(t, credentials, "api_protocol")
+}
+
+func TestLegacyAdaptiveCNProviderValuesNormalizeToChat(t *testing.T) {
 	for _, platform := range []string{PlatformKimi, PlatformZhipu} {
 		account := &Account{Platform: platform, Type: AccountTypeAPIKey, Extra: map[string]any{"cn_api_mode": APIProtocolAdaptive}}
-		require.True(t, account.IsAdaptiveAPIProtocol())
+		require.False(t, account.IsAdaptiveAPIProtocol())
+		require.Equal(t, APIProtocolChatCompletions, account.GetAPIProtocol())
 		require.NotEqual(t, APIProtocolResponses, account.GetAPIProtocol())
 	}
 	deepseek := &Account{Platform: PlatformDeepSeek, Type: AccountTypeAPIKey, Extra: map[string]any{"cn_api_mode": APIProtocolAdaptive}}
-	require.True(t, deepseek.IsAdaptiveAPIProtocol())
+	require.False(t, deepseek.IsAdaptiveAPIProtocol())
+	require.Equal(t, APIProtocolChatCompletions, deepseek.GetAPIProtocol())
 }
 
 func TestCNProviderAnthropicSSEUsageAliases(t *testing.T) {

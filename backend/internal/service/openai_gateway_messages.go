@@ -36,7 +36,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
-	if account.IsAnthropicProtocol() || account.IsAdaptiveAPIProtocol() {
+	if account.IsAnthropicProtocol() {
 		return s.forwardAnthropicViaNativeAnthropicEndpoint(ctx, c, account, body, defaultMappedModel)
 	}
 	if account.IsCNProvider() && account.GetAPIProtocol() == APIProtocolChatCompletions {

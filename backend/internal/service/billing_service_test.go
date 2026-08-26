@@ -738,6 +738,57 @@ func TestCalculateCost_SupportsCacheBreakdown(t *testing.T) {
 	require.InDelta(t, expected5m+expected1h, cost.CacheCreationCost, 1e-10)
 }
 
+func TestNormalizeCacheCreationBreakdownClampsContradictoryUsage(t *testing.T) {
+	tests := []struct {
+		name   string
+		tokens UsageTokens
+		want5m int
+		want1h int
+	}{
+		{
+			name:   "details larger than aggregate are scaled proportionally",
+			tokens: UsageTokens{CacheCreationTokens: 100, CacheCreation5mTokens: 80, CacheCreation1hTokens: 40},
+			want5m: 67,
+			want1h: 33,
+		},
+		{
+			name:   "negative details are ignored",
+			tokens: UsageTokens{CacheCreationTokens: 100, CacheCreation5mTokens: -5, CacheCreation1hTokens: 20},
+			want5m: 0,
+			want1h: 20,
+		},
+		{
+			name:   "valid details are preserved",
+			tokens: UsageTokens{CacheCreationTokens: 100, CacheCreation5mTokens: 60, CacheCreation1hTokens: 40},
+			want5m: 60,
+			want1h: 40,
+		},
+		{
+			name:   "missing aggregate preserves valid details",
+			tokens: UsageTokens{CacheCreationTokens: 0, CacheCreation5mTokens: 30, CacheCreation1hTokens: 10},
+			want5m: 30,
+			want1h: 10,
+		},
+		{
+			name: "extreme details do not overflow proportional scaling",
+			tokens: UsageTokens{
+				CacheCreationTokens:   100,
+				CacheCreation5mTokens: int(^uint(0) >> 1),
+				CacheCreation1hTokens: int(^uint(0) >> 1),
+			},
+			want5m: 50,
+			want1h: 50,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got5m, got1h := normalizeCacheCreationBreakdown(tt.tokens)
+			require.Equal(t, tt.want5m, got5m)
+			require.Equal(t, tt.want1h, got1h)
+		})
+	}
+}
+
 func TestCalculateCost_LargeTokenCount(t *testing.T) {
 	svc := newTestBillingService()
 

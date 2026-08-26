@@ -340,12 +340,11 @@ describe('CreateAccountModal', () => {
 
     expect(wrapper.get('[data-testid="cn-billing-coding-plan"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="cn-protocol-chat_completions"]').exists()).toBe(true)
-    expect(wrapper.get('[data-testid="cn-protocol-anthropic"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="cn-protocol-anthropic"]').exists()).toBe(false)
     const baseUrl = wrapper.get('input[placeholder="https://api.moonshot.cn/v1"]')
     await baseUrl.setValue('https://gateway.example.test/kimi')
     await wrapper.get('[data-testid="cn-billing-coding-plan"]').trigger('click')
     expect((baseUrl.element as HTMLInputElement).value).toBe('https://gateway.example.test/kimi')
-    await wrapper.get('[data-testid="cn-protocol-anthropic"]').trigger('click')
     await wrapper.get('[data-testid="cn-base-url-coding"]').trigger('click')
     await wrapper.get('input[data-tour="account-form-name"]').setValue('Kimi Coding')
     await wrapper.get('input[placeholder="sk-..."]').setValue('sk-kimi-test')
@@ -356,7 +355,7 @@ describe('CreateAccountModal', () => {
       platform: 'kimi',
       type: 'apikey',
       credentials: { base_url: 'https://api.kimi.com/coding/v1', api_key: 'sk-kimi-test' },
-      extra: { cn_billing_mode: 'coding_plan', cn_api_mode: 'anthropic' }
+      extra: { cn_billing_mode: 'coding_plan', cn_api_mode: 'chat_completions' }
     })
   })
 
@@ -368,14 +367,15 @@ describe('CreateAccountModal', () => {
     expect(wrapper.find('[data-testid="cn-billing-coding-plan"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="cn-protocol-responses"]').exists()).toBe(true)
     await wrapper.get('[data-testid="cn-protocol-responses"]').trigger('click')
-    await wrapper.get('[data-testid="cn-base-url-deepseek"]').trigger('click')
+    expect(wrapper.find('[data-testid="cn-base-url-deepseek"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="cn-base-url-deepseekResponses"]').exists()).toBe(true)
     await wrapper.get('input[data-tour="account-form-name"]').setValue('DeepSeek Responses')
     await wrapper.get('input[placeholder="sk-..."]').setValue('sk-deepseek-test')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
 
     expect(createAccountMock.mock.calls[0]?.[0]).toMatchObject({
-      credentials: { base_url: 'https://api.deepseek.com/v1', api_key: 'sk-deepseek-test' },
+      credentials: { base_url: 'https://api.deepseek.com', api_key: 'sk-deepseek-test' },
       extra: {
         cn_billing_mode: 'payg',
         cn_api_mode: 'responses'

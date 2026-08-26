@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -1195,14 +1196,47 @@ func (s *BillingService) computeTokenBreakdown(
 // multiplier 用于长上下文等场景下的整体价格缩放（普通调用传 1.0 即可）。
 func (s *BillingService) computeCacheCreationCost(pricing *ModelPricing, tokens UsageTokens, price, multiplier float64) float64 {
 	if pricing.SupportsCacheBreakdown && (pricing.CacheCreation5mPrice > 0 || pricing.CacheCreation1hPrice > 0) {
-		if tokens.CacheCreation5mTokens == 0 && tokens.CacheCreation1hTokens == 0 && tokens.CacheCreationTokens > 0 {
+		cache5m, cache1h := normalizeCacheCreationBreakdown(tokens)
+		if cache5m == 0 && cache1h == 0 && tokens.CacheCreationTokens > 0 {
 			// API 未返回 ephemeral 明细，回退到全部按 5m 单价计费
 			return float64(tokens.CacheCreationTokens) * pricing.CacheCreation5mPrice * multiplier
 		}
-		return float64(tokens.CacheCreation5mTokens)*pricing.CacheCreation5mPrice*multiplier +
-			float64(tokens.CacheCreation1hTokens)*pricing.CacheCreation1hPrice*multiplier
+		return float64(cache5m)*pricing.CacheCreation5mPrice*multiplier + float64(cache1h)*pricing.CacheCreation1hPrice*multiplier
 	}
 	return float64(tokens.CacheCreationTokens) * price * multiplier
+}
+
+func normalizeCacheCreationBreakdown(tokens UsageTokens) (int, int) {
+	a, b, total := tokens.CacheCreation5mTokens, tokens.CacheCreation1hTokens, tokens.CacheCreationTokens
+	if a < 0 {
+		a = 0
+	}
+	if b < 0 {
+		b = 0
+	}
+	if total <= 0 {
+		// Some existing usage adapters expose the 5m/1h breakdown without
+		// populating the aggregate. Preserve those billable details; a positive
+		// aggregate is required before contradiction scaling is meaningful.
+		return a, b
+	}
+	if a <= total && b <= total-a {
+		return a, b
+	}
+	// Convert before summing so contradictory near-MaxInt details cannot wrap
+	// the integer denominator and distort the proportional allocation.
+	weightTotal := float64(a) + float64(b)
+	if weightTotal <= 0 {
+		return 0, 0
+	}
+	a = int(math.Round(float64(total) * float64(a) / weightTotal))
+	if a < 0 {
+		a = 0
+	}
+	if a > total {
+		a = total
+	}
+	return a, total - a
 }
 
 // calculatePerRequestCost 按次/图片计费

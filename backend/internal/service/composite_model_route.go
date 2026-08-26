@@ -280,7 +280,7 @@ func DetectCompositeModelPlatform(model string) (string, bool) {
 	if strings.HasPrefix(m, "grok-") || m == "grok" || strings.HasPrefix(m, "xai/") {
 		return PlatformGrok, true
 	}
-	if strings.HasPrefix(m, "kimi-") || strings.HasPrefix(m, "moonshot/") {
+	if m == "k3" || m == "k3-256k" || strings.HasPrefix(m, "kimi-") || strings.HasPrefix(m, "kimi-code/") || strings.HasPrefix(m, "moonshot-") || strings.HasPrefix(m, "moonshot/") {
 		return PlatformKimi, true
 	}
 	if strings.HasPrefix(m, "glm-") || strings.HasPrefix(m, "zhipu/") {

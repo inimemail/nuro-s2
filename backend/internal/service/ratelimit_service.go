@@ -80,12 +80,21 @@ const (
 	maxRateLimit429CooldownSeconds     = 7200
 )
 
+const kimiConcurrentRequestLimitMessage = "You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again."
+
+func isKimiConcurrentRequestLimit403(account *Account, upstreamMsg string) bool {
+	return account != nil && account.Platform == PlatformKimi &&
+		strings.EqualFold(strings.TrimSpace(upstreamMsg), kimiConcurrentRequestLimitMessage)
+}
+
 const (
 	openAIImageRateLimitDefaultCooldown = time.Minute
 	openAIImageRateLimitReason          = "openai_image_rate_limited"
 )
 
 var openAIImageTryAgainPattern = regexp.MustCompile(`(?i)try again in\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes)`)
+var openCodeGoUsageLimitResetPattern = regexp.MustCompile(`(?i)\bresets\s+in\s+`)
+var openCodeGoUsageLimitDurationPattern = regexp.MustCompile(`(?i)^([0-9]+(?:\.[0-9]+)?)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)\b`)
 
 const (
 	openAI403CooldownMinutesDefault = 10
@@ -816,6 +825,15 @@ func (s *RateLimitService) handle403(ctx context.Context, account *Account, upst
 	if account.Platform == PlatformOpenAI {
 		return s.handleOpenAI403(ctx, account, upstreamMsg, responseBody)
 	}
+	if isKimiConcurrentRequestLimit403(account, upstreamMsg) {
+		until := time.Now().Add(time.Duration(openAI403CooldownMinutesDefault) * time.Minute)
+		reason := "cn_concurrency_limit: " + kimiConcurrentRequestLimitMessage
+		s.notifyAccountSchedulingBlocked(account, until, "cn_concurrency_limit")
+		if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); err != nil {
+			slog.Warn("kimi_concurrency_limit_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+		}
+		return true
+	}
 	// 非 Antigravity 平台：保持原有行为
 	msg := buildForbiddenErrorMessage(
 		"Access forbidden (403):",
@@ -1429,7 +1447,7 @@ func parseOpenAIRateLimitResetTime(body []byte) *int64 {
 
 	// 检查是否为 usage_limit_reached 或 rate_limit_exceeded 类型
 	errType, _ := errObj["type"].(string)
-	if errType != "usage_limit_reached" && errType != "rate_limit_exceeded" {
+	if errType != "usage_limit_reached" && errType != "rate_limit_exceeded" && errType != "GoUsageLimitError" {
 		return nil
 	}
 
@@ -1455,8 +1473,66 @@ func parseOpenAIRateLimitResetTime(body []byte) *int64 {
 			return &ts
 		}
 	}
+	if errType == "GoUsageLimitError" {
+		if message, _ := errObj["message"].(string); message != "" {
+			if d := parseOpenCodeGoUsageLimitResetDuration(message); d > 0 {
+				ts := time.Now().Add(d).Unix()
+				return &ts
+			}
+		}
+	}
 
 	return nil
+}
+
+func parseOpenCodeGoUsageLimitResetDuration(message string) time.Duration {
+	loc := openCodeGoUsageLimitResetPattern.FindStringIndex(message)
+	if loc == nil {
+		return 0
+	}
+	rest := strings.TrimSpace(message[loc[1]:])
+	var total time.Duration
+	for {
+		// Providers may join compound durations with a natural-language "and"
+		// (for example, "1 hour and 30 minutes"). Treat it like punctuation.
+		rest = strings.TrimSpace(rest)
+		if len(rest) >= 4 && strings.EqualFold(rest[:4], "and ") {
+			rest = strings.TrimSpace(rest[4:])
+		}
+		m := openCodeGoUsageLimitDurationPattern.FindStringSubmatch(rest)
+		if len(m) == 0 {
+			break
+		}
+		v, err := strconv.ParseFloat(m[1], 64)
+		if err != nil || v <= 0 {
+			return 0
+		}
+		unit := time.Second
+		switch strings.ToLower(m[2]) {
+		case "m", "min", "mins", "minute", "minutes":
+			unit = time.Minute
+		case "h", "hr", "hrs", "hour", "hours":
+			unit = time.Hour
+		case "d", "day", "days":
+			unit = 24 * time.Hour
+		case "w", "week", "weeks":
+			unit = 7 * 24 * time.Hour
+		}
+		const maxDuration = time.Duration(1<<63 - 1)
+		if v >= float64(maxDuration)/float64(unit) {
+			return 0
+		}
+		part := time.Duration(v * float64(unit))
+		if part <= 0 || total > maxDuration-part {
+			return 0
+		}
+		total += part
+		rest = strings.TrimSpace(rest[len(m[0]):])
+		if len(rest) > 0 && rest[0] == ',' {
+			rest = rest[1:]
+		}
+	}
+	return total
 }
 
 func parseOpenAIRateLimitPlanType(body []byte) string {

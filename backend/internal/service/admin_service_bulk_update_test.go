@@ -46,6 +46,8 @@ type accountRepoStubForBulkUpdate struct {
 	shadowsByParent map[int64][]*Account
 	updateCalls     []*Account
 	createdAccount  *Account
+	updateExtraIDs  []int64
+	updateExtra     map[string]any
 }
 
 type bulkUpdateCall struct {
@@ -86,6 +88,12 @@ func (s *accountRepoStubForBulkUpdate) ListShadowsByParent(_ context.Context, pa
 func (s *accountRepoStubForBulkUpdate) Update(_ context.Context, account *Account) error {
 	copied := *account
 	s.updateCalls = append(s.updateCalls, &copied)
+	return nil
+}
+
+func (s *accountRepoStubForBulkUpdate) UpdateExtra(_ context.Context, id int64, updates map[string]any) error {
+	s.updateExtraIDs = append(s.updateExtraIDs, id)
+	s.updateExtra = maps.Clone(updates)
 	return nil
 }
 
@@ -267,6 +275,34 @@ func TestAdminServiceUpdateAccountExtra_FirstTokenTimeoutRejectsUnsupportedTarge
 	}
 }
 
+func TestAdminServiceUpdateAccountExtra_PreservesDeepSeekResponsesWhenRemovingLegacyURLs(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{getByIDAccounts: map[int64]*Account{
+		7: {
+			ID:       7,
+			Platform: PlatformDeepSeek,
+			Type:     AccountTypeAPIKey,
+			Credentials: map[string]any{
+				"api_protocol":  APIProtocolResponses,
+				"api_base_urls": map[string]any{"responses": "https://legacy.example"},
+			},
+			Extra: map[string]any{
+				cnAPIProtocolExtraKey: APIProtocolResponses,
+				cnAPIBaseURLsExtraKey: map[string]any{"responses": "https://legacy.example"},
+			},
+		},
+	}}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	err := svc.UpdateAccountExtra(context.Background(), 7, map[string]any{
+		cnAPIBaseURLsExtraKey: map[string]any{},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, []int64{7}, repo.updateExtraIDs)
+	require.Equal(t, APIProtocolResponses, repo.updateExtra[cnAPIProtocolExtraKey])
+	require.Nil(t, repo.updateExtra[cnAPIBaseURLsExtraKey])
+}
+
 func TestAdminServiceBulkUpdateAccounts_AcceptsLegacyProbeFlagInExtra(t *testing.T) {
 	repo := &accountRepoStubForBulkUpdate{
 		getByIDsAccounts: []*Account{{ID: 7, Platform: PlatformGemini, Type: AccountTypeAPIKey}},
@@ -325,6 +361,100 @@ func TestAdminServiceBulkUpdateAccounts_ForwardsExtraRemoveKeys(t *testing.T) {
 		"codex_image_generation_bridge_enabled",
 		"codex_image_generation_explicit_tool_policy",
 	}, repo.bulkUpdatePayload.ExtraRemoveKeys)
+}
+
+func TestAdminServiceBulkUpdateAccounts_NormalizesCNProtocolPerPlatform(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{
+		{ID: 1, Platform: PlatformKimi, Type: AccountTypeAPIKey},
+		{ID: 2, Platform: PlatformDeepSeek, Type: AccountTypeAPIKey},
+		{ID: 3, Platform: PlatformAnthropic, Type: AccountTypeAPIKey},
+	}}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1, 2, 3},
+		Extra: map[string]any{
+			cnAPIProtocolExtraKey: APIProtocolResponses,
+			cnAPIBaseURLsExtraKey: map[string]any{"responses": "https://legacy.example"},
+			"feature":             true,
+		},
+		Credentials: map[string]any{
+			"api_protocol":  APIProtocolAnthropic,
+			"api_base_urls": map[string]any{"anthropic": "https://legacy.example"},
+			"api_key":       "updated-key",
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 3, result.Success)
+	require.Len(t, repo.bulkUpdateCalls, 3)
+
+	kimi := repo.bulkUpdateCalls[0]
+	require.Equal(t, []int64{1}, kimi.IDs)
+	require.Equal(t, APIProtocolChatCompletions, kimi.Updates.Extra[cnAPIProtocolExtraKey])
+	require.NotContains(t, kimi.Updates.Extra, cnAPIBaseURLsExtraKey)
+	require.NotContains(t, kimi.Updates.Credentials, "api_protocol")
+	require.NotContains(t, kimi.Updates.Credentials, "api_base_urls")
+
+	deepSeek := repo.bulkUpdateCalls[1]
+	require.Equal(t, []int64{2}, deepSeek.IDs)
+	require.Equal(t, APIProtocolResponses, deepSeek.Updates.Extra[cnAPIProtocolExtraKey])
+
+	anthropic := repo.bulkUpdateCalls[2]
+	require.Equal(t, []int64{3}, anthropic.IDs)
+	require.NotContains(t, anthropic.Updates.Extra, cnAPIProtocolExtraKey)
+	require.NotContains(t, anthropic.Updates.Extra, cnAPIBaseURLsExtraKey)
+	require.NotContains(t, anthropic.Updates.Credentials, "api_protocol")
+	require.NotContains(t, anthropic.Updates.Credentials, "api_base_urls")
+	require.Equal(t, true, anthropic.Updates.Extra["feature"])
+	require.Equal(t, "updated-key", anthropic.Updates.Credentials["api_key"])
+}
+
+func TestAdminServiceBulkUpdateAccounts_CleansLegacyCredentialsPerAccount(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{
+		{ID: 1, Platform: PlatformKimi, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_protocol": APIProtocolAnthropic}},
+		{ID: 2, Platform: PlatformKimi, Type: AccountTypeAPIKey},
+	}}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1, 2},
+		Extra:      map[string]any{cnAPIProtocolExtraKey: APIProtocolChatCompletions},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 2, result.Success)
+	require.Len(t, repo.bulkUpdateCalls, 2)
+	for _, call := range repo.bulkUpdateCalls {
+		switch call.IDs[0] {
+		case 1:
+			require.Contains(t, call.Updates.Credentials, "api_protocol")
+			require.Nil(t, call.Updates.Credentials["api_protocol"])
+		case 2:
+			require.NotContains(t, call.Updates.Credentials, "api_protocol")
+		}
+	}
+}
+
+func TestAdminServiceBulkUpdateAccounts_LegacyCredentialProtocolOverridesStoredCNExtra(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{{
+		ID:       1,
+		Platform: PlatformDeepSeek,
+		Type:     AccountTypeAPIKey,
+		Extra:    map[string]any{cnAPIProtocolExtraKey: APIProtocolChatCompletions},
+	}}}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs:  []int64{1},
+		Credentials: map[string]any{"api_protocol": APIProtocolResponses},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.Len(t, repo.bulkUpdateCalls, 1)
+	require.Equal(t, APIProtocolResponses, repo.bulkUpdateCalls[0].Updates.Extra[cnAPIProtocolExtraKey])
+	require.NotContains(t, repo.bulkUpdateCalls[0].Updates.Credentials, "api_protocol")
 }
 
 func TestAdminServiceBulkUpdateAccounts_FirstTokenTimeoutStagesAreValidatedAndPreserved(t *testing.T) {

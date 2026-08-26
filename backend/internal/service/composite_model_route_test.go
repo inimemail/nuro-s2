@@ -29,6 +29,18 @@ func TestCompositeRouteResolverExplicitRoutePrecedesDetector(t *testing.T) {
 	}
 }
 
+func TestDetectCompositeModelPlatformKimiCodeAliases(t *testing.T) {
+	for _, model := range []string{"k3", "k3-256k", "kimi-k3", "kimi-code/k3", "moonshot-v1-128k"} {
+		platform, ok := DetectCompositeModelPlatform(model)
+		if !ok || platform != PlatformKimi {
+			t.Fatalf("model %q resolved to %q, ok=%v; want kimi", model, platform, ok)
+		}
+	}
+	if _, ok := DetectCompositeModelPlatform("k3-preview"); ok {
+		t.Fatal("unknown k3 alias must fail closed")
+	}
+}
+
 func TestCompositeRouteResolverFailsClosedForUnknownModel(t *testing.T) {
 	r := NewCompositeRouteResolver(&compositeRouteRepoStub{})
 	d, err := r.Resolve(context.Background(), 1, "vendor-private-model", CompositeRouteEndpointResponses)

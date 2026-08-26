@@ -69,6 +69,7 @@ describe('useModelWhitelist', () => {
 
   it('Kimi 使用 Moonshot 模型列表且不显示其他平台映射预设', () => {
     expect(getModelsByPlatform('kimi')).toContain('moonshot-v1-128k')
+    expect(getModelsByPlatform('kimi')).toContain('k3-256k')
     expect(getModelsByPlatform('kimi')).not.toContain('claude-opus-4-6')
     expect(getPresetMappingsByPlatform('kimi')).toEqual([])
   })

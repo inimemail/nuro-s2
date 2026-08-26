@@ -90,7 +90,7 @@ const antigravityModels = [
 const zhipuModels = [
   'glm-4', 'glm-4v', 'glm-4-plus', 'glm-4-0520',
   'glm-4-air', 'glm-4-airx', 'glm-4-long', 'glm-4-flash',
-  'glm-4v-plus', 'glm-4.5', 'glm-4.6',
+  'glm-4v-plus', 'glm-4.5', 'glm-4.6', 'glm-4.7', 'glm-4.7-flash', 'glm-4.7-flashx',
   'glm-3-turbo', 'glm-4-alltools',
   'chatglm_turbo', 'chatglm_pro', 'chatglm_std', 'chatglm_lite',
   'cogview-3', 'cogvideo'
@@ -113,7 +113,8 @@ const deepseekModels = [
   'deepseek-v3', 'deepseek-v3-0324',
   'deepseek-r1', 'deepseek-r1-0528',
   'deepseek-r1-distill-qwen-32b', 'deepseek-r1-distill-qwen-14b', 'deepseek-r1-distill-qwen-7b',
-  'deepseek-r1-distill-llama-70b', 'deepseek-r1-distill-llama-8b'
+  'deepseek-r1-distill-llama-70b', 'deepseek-r1-distill-llama-8b',
+  'deepseek-v4-flash', 'deepseek-v4-pro'
 ]
 
 // Mistral
@@ -182,7 +183,7 @@ const yiModels = [
 // Moonshot/Kimi
 const moonshotModels = [
   'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k',
-  'kimi-latest'
+  'kimi-latest', 'kimi-k3', 'k3', 'k3-256k'
 ]
 
 // 字节跳动 豆包

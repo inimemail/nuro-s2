@@ -3857,8 +3857,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		body = sanitizedBody
 	}
 	clearOpenAIResponsesNamespaceNames(c)
-	if account != nil && (account.IsAnthropicProtocol() ||
-		(account.IsCNProvider() && account.IsAdaptiveAPIProtocol() && !account.IsDeepSeek())) {
+	if account != nil && account.IsAnthropicProtocol() {
 		reqModel, _, _ := extractOpenAIRequestMetaFromBody(body)
 		return s.forwardResponsesViaNativeAnthropic(ctx, c, account, body, reqModel)
 	}

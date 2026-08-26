@@ -107,6 +107,7 @@ import {
   readPaymentRecoverySnapshot,
 } from '@/components/payment/paymentFlow'
 import { usePaymentStore } from '@/stores/payment'
+import { useAuthStore } from '@/stores/auth'
 import { paymentAPI } from '@/api/payment'
 import type { PaymentOrder } from '@/types/payment'
 import { formatPaymentAmount, normalizePaymentCurrency } from '@/components/payment/currency'
@@ -117,6 +118,7 @@ const { t } = i18n
 const route = useRoute()
 const router = useRouter()
 const paymentStore = usePaymentStore()
+const authStore = useAuthStore()
 
 const order = ref<PaymentOrder | null>(null)
 const loading = ref(true)
@@ -136,6 +138,7 @@ const STATUS_REFRESH_INTERVAL_MS = 2000
 const STATUS_REFRESH_MAX_ATTEMPTS = 15
 
 let statusRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let userBalanceRefreshStarted = false
 const refreshAttempts = ref(0)
 
 /** 充值金额 = pay_amount / (1 + fee_rate/100)，fee_rate=0 时等于 pay_amount */
@@ -194,6 +197,20 @@ function setResolvedOrder(nextOrder: PaymentOrder | null): void {
   if (nextOrder?.currency) {
     currency.value = normalizePaymentCurrency(nextOrder.currency)
   }
+  refreshUserBalanceForSuccessfulOrder(nextOrder)
+}
+
+function refreshUserBalanceForSuccessfulOrder(nextOrder: PaymentOrder | null): void {
+  if (!nextOrder || userBalanceRefreshStarted || normalizeOrderStatus(nextOrder.status) !== 'COMPLETED') {
+    return
+  }
+  if (nextOrder.order_type !== 'balance') {
+    return
+  }
+  userBalanceRefreshStarted = true
+  void authStore.refreshUser().catch(() => {
+    // The order result remains authoritative when profile refresh is unavailable.
+  })
 }
 
 function normalizeOrderStatus(status: string | null | undefined): string {

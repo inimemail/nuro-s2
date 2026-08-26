@@ -1,6 +1,9 @@
 package service
 
-import "strings"
+import (
+	"maps"
+	"strings"
+)
 
 const (
 	cnBillingModeExtraKey = "cn_billing_mode"
@@ -22,6 +25,206 @@ func (a *Account) IsDeepSeek() bool {
 
 func (a *Account) IsCNProvider() bool {
 	return a != nil && IsCNProvider(a.Platform)
+}
+
+func normalizeCNProviderStoredConfig(platform string, extra, credentials map[string]any) (map[string]any, map[string]any) {
+	if !IsCNProvider(platform) {
+		return extra, credentials
+	}
+	normalizedExtra := maps.Clone(extra)
+	if normalizedExtra == nil {
+		normalizedExtra = make(map[string]any)
+	}
+	protocol := APIProtocolChatCompletions
+	requestedProtocol := strings.TrimSpace(valueAsString(normalizedExtra[cnAPIProtocolExtraKey]))
+	if requestedProtocol == "" {
+		requestedProtocol = strings.TrimSpace(valueAsString(credentials["api_protocol"]))
+	}
+	if platform == PlatformDeepSeek && requestedProtocol == APIProtocolResponses {
+		protocol = APIProtocolResponses
+	}
+	normalizedExtra[cnAPIProtocolExtraKey] = protocol
+	delete(normalizedExtra, cnAPIBaseURLsExtraKey)
+
+	normalizedCredentials := maps.Clone(credentials)
+	if normalizedCredentials != nil {
+		delete(normalizedCredentials, "api_protocol")
+		delete(normalizedCredentials, "api_base_urls")
+	}
+	return normalizedExtra, normalizedCredentials
+}
+
+// normalizeCNProviderStoredConfigForAccount applies an incremental Extra edit
+// without treating an omitted protocol as a request to downgrade an existing
+// DeepSeek Responses account. This is important for UpdateAccountExtra, where
+// callers commonly edit an unrelated key or only remove legacy base URLs.
+func normalizeCNProviderStoredConfigForAccount(account *Account, extra, credentials map[string]any) (map[string]any, map[string]any) {
+	if account == nil || !account.IsCNProvider() {
+		return extra, credentials
+	}
+	mergedExtra := maps.Clone(account.Extra)
+	if mergedExtra == nil {
+		mergedExtra = make(map[string]any)
+	}
+	for key, value := range extra {
+		mergedExtra[key] = value
+	}
+	mergedCredentials := maps.Clone(account.Credentials)
+	if mergedCredentials == nil {
+		mergedCredentials = make(map[string]any)
+	}
+	for key, value := range credentials {
+		mergedCredentials[key] = value
+	}
+	// An explicitly submitted legacy credential protocol is still an update
+	// request. Let it override the stored Extra value when this incremental edit
+	// did not also submit the canonical Extra field.
+	if _, extraProtocolSubmitted := extra[cnAPIProtocolExtraKey]; !extraProtocolSubmitted {
+		if requestedProtocol, credentialProtocolSubmitted := credentials["api_protocol"]; credentialProtocolSubmitted {
+			mergedExtra[cnAPIProtocolExtraKey] = requestedProtocol
+		}
+	}
+	normalizedExtra, _ := normalizeCNProviderStoredConfig(account.Platform, mergedExtra, mergedCredentials)
+
+	// Keep this function incremental: return only the caller's keys, plus the
+	// canonical protocol when a domestic protocol edit was requested.
+	resultExtra := maps.Clone(extra)
+	if resultExtra == nil {
+		resultExtra = make(map[string]any)
+	}
+	_, requestedProtocol := extra[cnAPIProtocolExtraKey]
+	_, requestedCredentialProtocol := credentials["api_protocol"]
+	_, requestedCredentialBaseURLs := credentials["api_base_urls"]
+	_, requestedBaseURLs := extra[cnAPIBaseURLsExtraKey]
+	if requestedProtocol || requestedCredentialProtocol || requestedCredentialBaseURLs || requestedBaseURLs {
+		resultExtra[cnAPIProtocolExtraKey] = normalizedExtra[cnAPIProtocolExtraKey]
+	}
+	delete(resultExtra, cnAPIBaseURLsExtraKey)
+	resultCredentials := maps.Clone(credentials)
+	if resultCredentials != nil {
+		delete(resultCredentials, "api_protocol")
+		delete(resultCredentials, "api_base_urls")
+	}
+	return resultExtra, resultCredentials
+}
+
+func hasCNProviderStoredConfigUpdate(extra, credentials map[string]any, extraRemoveKeys []string) bool {
+	if _, ok := extra[cnAPIProtocolExtraKey]; ok {
+		return true
+	}
+	if _, ok := extra[cnAPIBaseURLsExtraKey]; ok {
+		return true
+	}
+	if _, ok := credentials["api_protocol"]; ok {
+		return true
+	}
+	if _, ok := credentials["api_base_urls"]; ok {
+		return true
+	}
+	for _, key := range extraRemoveKeys {
+		key = strings.TrimSpace(key)
+		if key == cnAPIProtocolExtraKey || key == cnAPIBaseURLsExtraKey {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeBulkUpdateForAccount(account *Account, updates AccountBulkUpdate) AccountBulkUpdate {
+	updates.Extra = maps.Clone(updates.Extra)
+	updates.Credentials = maps.Clone(updates.Credentials)
+	updates.ExtraRemoveKeys = append([]string(nil), updates.ExtraRemoveKeys...)
+
+	if account != nil && account.IsCNProvider() {
+		mergedExtra := maps.Clone(account.Extra)
+		if mergedExtra == nil {
+			mergedExtra = make(map[string]any)
+		}
+		for _, key := range updates.ExtraRemoveKeys {
+			delete(mergedExtra, strings.TrimSpace(key))
+		}
+		for key, value := range updates.Extra {
+			mergedExtra[key] = value
+		}
+		mergedCredentials := maps.Clone(account.Credentials)
+		if mergedCredentials == nil {
+			mergedCredentials = make(map[string]any)
+		}
+		for key, value := range updates.Credentials {
+			mergedCredentials[key] = value
+		}
+		if _, extraProtocolSubmitted := updates.Extra[cnAPIProtocolExtraKey]; !extraProtocolSubmitted {
+			if requestedProtocol, credentialProtocolSubmitted := updates.Credentials["api_protocol"]; credentialProtocolSubmitted {
+				mergedExtra[cnAPIProtocolExtraKey] = requestedProtocol
+			}
+		}
+		normalizedExtra, _ := normalizeCNProviderStoredConfig(account.Platform, mergedExtra, mergedCredentials)
+		if updates.Extra == nil {
+			updates.Extra = make(map[string]any)
+		}
+		updates.Extra[cnAPIProtocolExtraKey] = normalizedExtra[cnAPIProtocolExtraKey]
+		delete(updates.Extra, cnAPIBaseURLsExtraKey)
+		updates.ExtraRemoveKeys = ensureBulkUpdateKey(
+			removeBulkUpdateKeys(updates.ExtraRemoveKeys, cnAPIProtocolExtraKey, cnAPIBaseURLsExtraKey),
+			cnAPIBaseURLsExtraKey,
+		)
+		// Never persist legacy protocol fields supplied by a client. BulkUpdate
+		// merges JSONB credentials and has no credential removal list, so only
+		// neutralize fields that already exist on the account.
+		delete(updates.Credentials, "api_protocol")
+		delete(updates.Credentials, "api_base_urls")
+		// BulkUpdate merges JSONB credentials and has no credential removal list.
+		// Only neutralize fields that already exist on the account; incoming
+		// legacy fields on a clean account are simply ignored.
+		if _, exists := account.Credentials["api_protocol"]; exists {
+			if updates.Credentials == nil {
+				updates.Credentials = make(map[string]any)
+			}
+			updates.Credentials["api_protocol"] = nil
+		}
+		if _, exists := account.Credentials["api_base_urls"]; exists {
+			if updates.Credentials == nil {
+				updates.Credentials = make(map[string]any)
+			}
+			updates.Credentials["api_base_urls"] = nil
+		}
+		return updates
+	}
+
+	delete(updates.Extra, cnAPIProtocolExtraKey)
+	delete(updates.Extra, cnAPIBaseURLsExtraKey)
+	delete(updates.Credentials, "api_protocol")
+	delete(updates.Credentials, "api_base_urls")
+	updates.ExtraRemoveKeys = removeBulkUpdateKeys(updates.ExtraRemoveKeys, cnAPIProtocolExtraKey, cnAPIBaseURLsExtraKey)
+	return updates
+}
+
+func ensureBulkUpdateKey(values []string, key string) []string {
+	for _, value := range values {
+		if strings.TrimSpace(value) == key {
+			return values
+		}
+	}
+	return append(values, key)
+}
+
+func removeBulkUpdateKeys(values []string, targets ...string) []string {
+	targetSet := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		targetSet[target] = struct{}{}
+	}
+	filtered := values[:0]
+	for _, value := range values {
+		if _, drop := targetSet[strings.TrimSpace(value)]; !drop {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func valueAsString(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 // GetCNBillingMode reads the local Extra representation first. Credentials
@@ -72,8 +275,10 @@ func (a *Account) GetCodingPlanProvider() string {
 	}
 }
 
-// GetAPIProtocol defaults to the exact legacy Chat Completions path. Native
-// Responses is deliberately restricted to DeepSeek.
+// GetAPIProtocol returns the domestic provider wire protocol. Domestic
+// providers use OpenAI-compatible Chat Completions; only DeepSeek's explicit
+// Responses mode remains supported for compatibility. Legacy adaptive and
+// anthropic values are normalized to Chat Completions.
 func (a *Account) GetAPIProtocol() string {
 	if a == nil || !a.IsCNProvider() {
 		return APIProtocolChatCompletions
@@ -83,8 +288,8 @@ func (a *Account) GetAPIProtocol() string {
 		protocol = strings.TrimSpace(a.GetCredential("api_protocol"))
 	}
 	switch protocol {
-	case APIProtocolAdaptive, APIProtocolAnthropic, APIProtocolChatCompletions:
-		return protocol
+	case APIProtocolChatCompletions:
+		return APIProtocolChatCompletions
 	case APIProtocolResponses:
 		if a.IsDeepSeek() {
 			return protocol
@@ -180,12 +385,14 @@ func (a *Account) GetCNProtocolBaseURL(protocol string) string {
 	if a == nil || !a.IsCNProvider() {
 		return ""
 	}
-	if a.IsAdaptiveAPIProtocol() {
-		if configured := a.getCNConfiguredProtocolBaseURL(protocol); configured != "" {
-			return configured
-		}
+	if protocol == APIProtocolAnthropic && !a.IsAnthropicProtocol() {
+		return ""
 	}
-	if protocol == a.GetAPIProtocol() || (!a.IsAdaptiveAPIProtocol() && protocol == APIProtocolChatCompletions) {
+	if configured := a.getCNConfiguredProtocolBaseURL(protocol); configured != "" &&
+		(protocol == APIProtocolChatCompletions || protocol == a.GetAPIProtocol()) {
+		return configured
+	}
+	if protocol == a.GetAPIProtocol() {
 		if configured := strings.TrimSpace(a.GetCredential("base_url")); configured != "" {
 			return configured
 		}
@@ -194,7 +401,7 @@ func (a *Account) GetCNProtocolBaseURL(protocol string) string {
 }
 
 func (a *Account) GetAnthropicProtocolBaseURL() string {
-	if a == nil || (!a.IsAnthropicProtocol() && !a.IsAdaptiveAPIProtocol()) {
+	if a == nil || !a.IsAnthropicProtocol() {
 		return ""
 	}
 	return a.GetCNProtocolBaseURL(APIProtocolAnthropic)

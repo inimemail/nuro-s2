@@ -55,6 +55,27 @@ func TestOpenAIBodyHasThinkingEnabledIgnoresJSONFormatting(t *testing.T) {
 	require.False(t, OpenAIBodyHasThinkingEnabled([]byte(`{"thinking":"enabled"}`)))
 }
 
+func TestPreserveChatCompletionTokenLimitClampsAntigravityMaximum(t *testing.T) {
+	tooLarge := 100000
+	request := &apicompat.ChatCompletionsRequest{MaxCompletionTokens: &tooLarge}
+	claudeRequest := &apicompat.AnthropicRequest{}
+
+	preserveChatCompletionTokenLimit(request, claudeRequest)
+	require.Equal(t, antigravityCompatMaxTokens, claudeRequest.MaxTokens)
+}
+
+func TestEnableMixedGeminiToolInvocations(t *testing.T) {
+	body := []byte(`{"tools":[{"googleSearch":{}},{"functionDeclarations":[{"name":"lookup"}]}],"toolConfig":{"functionCallingConfig":{"mode":"AUTO"}}}`)
+	updated, err := enableMixedGeminiToolInvocations(body)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"tools":[{"googleSearch":{}},{"functionDeclarations":[{"name":"lookup"}]}],"toolConfig":{"functionCallingConfig":{"mode":"AUTO"},"includeServerSideToolInvocations":true}}`, string(updated))
+
+	searchOnly := []byte(`{"tools":[{"googleSearch":{}}]}`)
+	unchanged, err := enableMixedGeminiToolInvocations(searchOnly)
+	require.NoError(t, err)
+	require.Equal(t, searchOnly, unchanged)
+}
+
 func TestAntigravityCompatReadErrorTreatsCanceledRequestAsNeutral(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, cancel := context.WithCancel(context.Background())
