@@ -2422,7 +2422,6 @@ export default {
         ttsPerMillionChars: 'TTS ($/1M chars)',
         sttPerHour: 'STT ($/hour)',
         videoModelPrices: 'Video model prices (JSON)',
-        videoModelPricesPlaceholder: '{"grok-imagine-video-1.5-preview":{"480p":0.14,"720p":0.24}}',
         invalidVideoModelPrices: 'Invalid video model prices JSON.'
       },
       modelsList: {

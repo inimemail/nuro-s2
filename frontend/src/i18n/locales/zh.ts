@@ -2504,7 +2504,6 @@ export default {
         ttsPerMillionChars: 'TTS（$/100 万字符）',
         sttPerHour: 'STT（$/小时）',
         videoModelPrices: '视频模型价格（JSON）',
-        videoModelPricesPlaceholder: '{"grok-imagine-video-1.5-preview":{"480p":0.14,"720p":0.24}}',
         invalidVideoModelPrices: '视频模型价格 JSON 格式不正确。'
       },
       modelsList: {

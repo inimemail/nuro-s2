@@ -1046,7 +1046,7 @@
             <div><label class="input-label">{{ t("admin.groups.grokPricing.realtimePerMinute") }}</label><input v-model.number="createForm.audio_realtime_price_per_min" type="number" step="0.01" min="0" placeholder="0.05" class="input" /></div>
             <div><label class="input-label">{{ t("admin.groups.grokPricing.ttsPerMillionChars") }}</label><input v-model.number="createForm.audio_tts_price_per_million_chars" type="number" step="0.01" min="0" placeholder="15" class="input" /></div>
             <div><label class="input-label">{{ t("admin.groups.grokPricing.sttPerHour") }}</label><input v-model.number="createForm.audio_stt_price_per_hour" type="number" step="0.01" min="0" placeholder="0.10" class="input" /></div>
-            <div class="md:col-span-2"><label class="input-label">{{ t("admin.groups.grokPricing.videoModelPrices") }}</label><textarea v-model="createForm.video_model_prices_json" rows="3" class="input font-mono text-xs" :placeholder="t('admin.groups.grokPricing.videoModelPricesPlaceholder')"></textarea></div>
+            <div class="md:col-span-2"><label class="input-label">{{ t("admin.groups.grokPricing.videoModelPrices") }}</label><textarea v-model="createForm.video_model_prices_json" rows="3" class="input font-mono text-xs" :placeholder="grokVideoModelPricesPlaceholder"></textarea></div>
           </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
             {{ t("admin.groups.imagePricing.modeHint") }}
@@ -2650,7 +2650,7 @@
             <div><label class="input-label">{{ t("admin.groups.grokPricing.realtimePerMinute") }}</label><input v-model.number="editForm.audio_realtime_price_per_min" type="number" step="0.01" min="0" placeholder="0.05" class="input" /></div>
             <div><label class="input-label">{{ t("admin.groups.grokPricing.ttsPerMillionChars") }}</label><input v-model.number="editForm.audio_tts_price_per_million_chars" type="number" step="0.01" min="0" placeholder="15" class="input" /></div>
             <div><label class="input-label">{{ t("admin.groups.grokPricing.sttPerHour") }}</label><input v-model.number="editForm.audio_stt_price_per_hour" type="number" step="0.01" min="0" placeholder="0.10" class="input" /></div>
-            <div class="md:col-span-2"><label class="input-label">{{ t("admin.groups.grokPricing.videoModelPrices") }}</label><textarea v-model="editForm.video_model_prices_json" rows="3" class="input font-mono text-xs" :placeholder="t('admin.groups.grokPricing.videoModelPricesPlaceholder')"></textarea></div>
+            <div class="md:col-span-2"><label class="input-label">{{ t("admin.groups.grokPricing.videoModelPrices") }}</label><textarea v-model="editForm.video_model_prices_json" rows="3" class="input font-mono text-xs" :placeholder="grokVideoModelPricesPlaceholder"></textarea></div>
           </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
             {{ t("admin.groups.imagePricing.modeHint") }}
@@ -3811,6 +3811,7 @@ import type { PricingFormEntry } from "@/components/admin/channel/types";
 import { apiIntervalsToForm, findModelConflict, formIntervalsToAPI, mTokToPerToken, perTokenToMTok, toNullableNumber, validateIntervals } from "@/components/admin/channel/types";
 
 const { t } = useI18n();
+const grokVideoModelPricesPlaceholder = '{"grok-imagine-video-1.5-preview":{"480p":0.14,"720p":0.24}}';
 const appStore = useAppStore();
 const onboardingStore = useOnboardingStore();
 const reasoningEffortValues = OPENAI_REASONING_EFFORT_VALUES;
