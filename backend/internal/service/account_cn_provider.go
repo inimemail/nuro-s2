@@ -27,6 +27,10 @@ func (a *Account) IsCNProvider() bool {
 	return a != nil && IsCNProvider(a.Platform)
 }
 
+// normalizeCNProviderStoredConfig canonicalizes both the current Extra
+// representation and the legacy credential representation. Domestic protocol
+// selection is deliberately lossless so adaptive routing and its per-protocol
+// endpoints survive unrelated account edits.
 func normalizeCNProviderStoredConfig(platform string, extra, credentials map[string]any) (map[string]any, map[string]any) {
 	if !IsCNProvider(platform) {
 		return extra, credentials
@@ -40,11 +44,20 @@ func normalizeCNProviderStoredConfig(platform string, extra, credentials map[str
 	if requestedProtocol == "" {
 		requestedProtocol = strings.TrimSpace(valueAsString(credentials["api_protocol"]))
 	}
-	if platform == PlatformDeepSeek && requestedProtocol == APIProtocolResponses {
-		protocol = APIProtocolResponses
+	switch requestedProtocol {
+	case APIProtocolAdaptive, APIProtocolAnthropic, APIProtocolChatCompletions:
+		protocol = requestedProtocol
+	case APIProtocolResponses:
+		if platform == PlatformDeepSeek {
+			protocol = requestedProtocol
+		}
 	}
 	normalizedExtra[cnAPIProtocolExtraKey] = protocol
-	delete(normalizedExtra, cnAPIBaseURLsExtraKey)
+	if _, ok := normalizedExtra[cnAPIBaseURLsExtraKey]; !ok {
+		if legacy, ok := credentials["api_base_urls"]; ok {
+			normalizedExtra[cnAPIBaseURLsExtraKey] = legacy
+		}
+	}
 
 	normalizedCredentials := maps.Clone(credentials)
 	if normalizedCredentials != nil {
@@ -84,6 +97,11 @@ func normalizeCNProviderStoredConfigForAccount(account *Account, extra, credenti
 			mergedExtra[cnAPIProtocolExtraKey] = requestedProtocol
 		}
 	}
+	if _, extraBaseURLsSubmitted := extra[cnAPIBaseURLsExtraKey]; !extraBaseURLsSubmitted {
+		if requestedBaseURLs, credentialBaseURLsSubmitted := credentials["api_base_urls"]; credentialBaseURLsSubmitted {
+			mergedExtra[cnAPIBaseURLsExtraKey] = requestedBaseURLs
+		}
+	}
 	normalizedExtra, _ := normalizeCNProviderStoredConfig(account.Platform, mergedExtra, mergedCredentials)
 
 	// Keep this function incremental: return only the caller's keys, plus the
@@ -99,7 +117,9 @@ func normalizeCNProviderStoredConfigForAccount(account *Account, extra, credenti
 	if requestedProtocol || requestedCredentialProtocol || requestedCredentialBaseURLs || requestedBaseURLs {
 		resultExtra[cnAPIProtocolExtraKey] = normalizedExtra[cnAPIProtocolExtraKey]
 	}
-	delete(resultExtra, cnAPIBaseURLsExtraKey)
+	if requestedBaseURLs || requestedCredentialBaseURLs {
+		resultExtra[cnAPIBaseURLsExtraKey] = normalizedExtra[cnAPIBaseURLsExtraKey]
+	}
 	resultCredentials := maps.Clone(credentials)
 	if resultCredentials != nil {
 		delete(resultCredentials, "api_protocol")
@@ -134,6 +154,11 @@ func normalizeBulkUpdateForAccount(account *Account, updates AccountBulkUpdate) 
 	updates.Extra = maps.Clone(updates.Extra)
 	updates.Credentials = maps.Clone(updates.Credentials)
 	updates.ExtraRemoveKeys = append([]string(nil), updates.ExtraRemoveKeys...)
+	_, submittedBaseURLs := updates.Extra[cnAPIBaseURLsExtraKey]
+	_, submittedLegacyBaseURLs := updates.Credentials["api_base_urls"]
+	removeBaseURLs := bulkUpdateContainsKey(updates.ExtraRemoveKeys, cnAPIBaseURLsExtraKey)
+	clearBaseURLs := (submittedBaseURLs && isEmptyCNBaseURLs(updates.Extra[cnAPIBaseURLsExtraKey])) ||
+		(submittedLegacyBaseURLs && isEmptyCNBaseURLs(updates.Credentials["api_base_urls"]))
 
 	if account != nil && account.IsCNProvider() {
 		mergedExtra := maps.Clone(account.Extra)
@@ -158,16 +183,27 @@ func normalizeBulkUpdateForAccount(account *Account, updates AccountBulkUpdate) 
 				mergedExtra[cnAPIProtocolExtraKey] = requestedProtocol
 			}
 		}
+		if _, extraBaseURLsSubmitted := updates.Extra[cnAPIBaseURLsExtraKey]; !extraBaseURLsSubmitted {
+			if requestedBaseURLs, credentialBaseURLsSubmitted := updates.Credentials["api_base_urls"]; credentialBaseURLsSubmitted {
+				mergedExtra[cnAPIBaseURLsExtraKey] = requestedBaseURLs
+			}
+		}
 		normalizedExtra, _ := normalizeCNProviderStoredConfig(account.Platform, mergedExtra, mergedCredentials)
 		if updates.Extra == nil {
 			updates.Extra = make(map[string]any)
 		}
 		updates.Extra[cnAPIProtocolExtraKey] = normalizedExtra[cnAPIProtocolExtraKey]
-		delete(updates.Extra, cnAPIBaseURLsExtraKey)
-		updates.ExtraRemoveKeys = ensureBulkUpdateKey(
-			removeBulkUpdateKeys(updates.ExtraRemoveKeys, cnAPIProtocolExtraKey, cnAPIBaseURLsExtraKey),
-			cnAPIBaseURLsExtraKey,
-		)
+		if clearBaseURLs {
+			updates.Extra[cnAPIBaseURLsExtraKey] = nil
+		} else if submittedBaseURLs || submittedLegacyBaseURLs {
+			updates.Extra[cnAPIBaseURLsExtraKey] = normalizedExtra[cnAPIBaseURLsExtraKey]
+		} else {
+			delete(updates.Extra, cnAPIBaseURLsExtraKey)
+		}
+		updates.ExtraRemoveKeys = removeBulkUpdateKeys(updates.ExtraRemoveKeys, cnAPIProtocolExtraKey)
+		if submittedBaseURLs || submittedLegacyBaseURLs || !removeBaseURLs {
+			updates.ExtraRemoveKeys = removeBulkUpdateKeys(updates.ExtraRemoveKeys, cnAPIBaseURLsExtraKey)
+		}
 		// Never persist legacy protocol fields supplied by a client. BulkUpdate
 		// merges JSONB credentials and has no credential removal list, so only
 		// neutralize fields that already exist on the account.
@@ -199,13 +235,24 @@ func normalizeBulkUpdateForAccount(account *Account, updates AccountBulkUpdate) 
 	return updates
 }
 
-func ensureBulkUpdateKey(values []string, key string) []string {
+func bulkUpdateContainsKey(values []string, key string) bool {
 	for _, value := range values {
 		if strings.TrimSpace(value) == key {
-			return values
+			return true
 		}
 	}
-	return append(values, key)
+	return false
+}
+
+func isEmptyCNBaseURLs(value any) bool {
+	switch values := value.(type) {
+	case map[string]any:
+		return len(values) == 0
+	case map[string]string:
+		return len(values) == 0
+	default:
+		return false
+	}
 }
 
 func removeBulkUpdateKeys(values []string, targets ...string) []string {
@@ -275,10 +322,9 @@ func (a *Account) GetCodingPlanProvider() string {
 	}
 }
 
-// GetAPIProtocol returns the domestic provider wire protocol. Domestic
-// providers use OpenAI-compatible Chat Completions; only DeepSeek's explicit
-// Responses mode remains supported for compatibility. Legacy adaptive and
-// anthropic values are normalized to Chat Completions.
+// GetAPIProtocol returns the selected domestic provider wire protocol.
+// Responses is restricted to DeepSeek; all domestic providers support
+// adaptive, Chat Completions, and native Anthropic routing.
 func (a *Account) GetAPIProtocol() string {
 	if a == nil || !a.IsCNProvider() {
 		return APIProtocolChatCompletions
@@ -288,8 +334,8 @@ func (a *Account) GetAPIProtocol() string {
 		protocol = strings.TrimSpace(a.GetCredential("api_protocol"))
 	}
 	switch protocol {
-	case APIProtocolChatCompletions:
-		return APIProtocolChatCompletions
+	case APIProtocolAdaptive, APIProtocolAnthropic, APIProtocolChatCompletions:
+		return protocol
 	case APIProtocolResponses:
 		if a.IsDeepSeek() {
 			return protocol
@@ -385,14 +431,22 @@ func (a *Account) GetCNProtocolBaseURL(protocol string) string {
 	if a == nil || !a.IsCNProvider() {
 		return ""
 	}
-	if protocol == APIProtocolAnthropic && !a.IsAnthropicProtocol() {
+	if protocol == APIProtocolAnthropic && !a.IsAnthropicProtocol() && !a.IsAdaptiveAPIProtocol() {
 		return ""
 	}
-	if configured := a.getCNConfiguredProtocolBaseURL(protocol); configured != "" &&
-		(protocol == APIProtocolChatCompletions || protocol == a.GetAPIProtocol()) {
-		return configured
+	if a.IsAdaptiveAPIProtocol() {
+		if configured := a.getCNConfiguredProtocolBaseURL(protocol); configured != "" {
+			return configured
+		}
 	}
 	if protocol == a.GetAPIProtocol() {
+		if configured := a.getCNConfiguredProtocolBaseURL(protocol); configured != "" {
+			return configured
+		}
+	}
+	// Chat Completions remains the legacy base_url fallback for every domestic
+	// mode, including adaptive accounts created before the endpoint map existed.
+	if protocol == a.GetAPIProtocol() || (a.IsAdaptiveAPIProtocol() && protocol == APIProtocolChatCompletions) {
 		if configured := strings.TrimSpace(a.GetCredential("base_url")); configured != "" {
 			return configured
 		}
@@ -401,7 +455,7 @@ func (a *Account) GetCNProtocolBaseURL(protocol string) string {
 }
 
 func (a *Account) GetAnthropicProtocolBaseURL() string {
-	if a == nil || !a.IsAnthropicProtocol() {
+	if a == nil || (!a.IsAnthropicProtocol() && !a.IsAdaptiveAPIProtocol()) {
 		return ""
 	}
 	return a.GetCNProtocolBaseURL(APIProtocolAnthropic)

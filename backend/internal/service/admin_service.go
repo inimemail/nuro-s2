@@ -3877,6 +3877,14 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 				account.Extra[cnAPIProtocolExtraKey] = requestedProtocol
 			}
 		}
+		if _, extraBaseURLsSubmitted := input.Extra[cnAPIBaseURLsExtraKey]; !extraBaseURLsSubmitted {
+			if requestedBaseURLs, submitted := input.Credentials["api_base_urls"]; submitted {
+				if account.Extra == nil {
+					account.Extra = make(map[string]any)
+				}
+				account.Extra[cnAPIBaseURLsExtraKey] = requestedBaseURLs
+			}
+		}
 		account.Extra, account.Credentials = normalizeCNProviderStoredConfig(account.Platform, account.Extra, account.Credentials)
 	}
 	if requestedRateSyncEnabledUpdate != nil && *requestedRateSyncEnabledUpdate {
@@ -4179,11 +4187,9 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 			return err
 		}
 		if account.IsCNProvider() {
-			_, hadLegacyBaseURLs := updates[cnAPIBaseURLsExtraKey]
+			clearBaseURLs := isEmptyCNBaseURLs(updates[cnAPIBaseURLsExtraKey])
 			updates, _ = normalizeCNProviderStoredConfigForAccount(account, updates, nil)
-			if hadLegacyBaseURLs {
-				// UpdateExtra is a JSONB merge, so null removes the legacy value
-				// from protocol selection without replacing unrelated Extra keys.
+			if clearBaseURLs {
 				updates[cnAPIBaseURLsExtraKey] = nil
 			}
 		}

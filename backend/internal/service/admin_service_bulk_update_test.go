@@ -392,13 +392,14 @@ func TestAdminServiceBulkUpdateAccounts_NormalizesCNProtocolPerPlatform(t *testi
 	kimi := repo.bulkUpdateCalls[0]
 	require.Equal(t, []int64{1}, kimi.IDs)
 	require.Equal(t, APIProtocolChatCompletions, kimi.Updates.Extra[cnAPIProtocolExtraKey])
-	require.NotContains(t, kimi.Updates.Extra, cnAPIBaseURLsExtraKey)
+	require.Equal(t, map[string]any{"responses": "https://legacy.example"}, kimi.Updates.Extra[cnAPIBaseURLsExtraKey])
 	require.NotContains(t, kimi.Updates.Credentials, "api_protocol")
 	require.NotContains(t, kimi.Updates.Credentials, "api_base_urls")
 
 	deepSeek := repo.bulkUpdateCalls[1]
 	require.Equal(t, []int64{2}, deepSeek.IDs)
 	require.Equal(t, APIProtocolResponses, deepSeek.Updates.Extra[cnAPIProtocolExtraKey])
+	require.Equal(t, map[string]any{"responses": "https://legacy.example"}, deepSeek.Updates.Extra[cnAPIBaseURLsExtraKey])
 
 	anthropic := repo.bulkUpdateCalls[2]
 	require.Equal(t, []int64{3}, anthropic.IDs)
@@ -434,6 +435,30 @@ func TestAdminServiceBulkUpdateAccounts_CleansLegacyCredentialsPerAccount(t *tes
 			require.NotContains(t, call.Updates.Credentials, "api_protocol")
 		}
 	}
+}
+
+func TestAdminServiceBulkUpdateAccounts_ClearsEmptyCNBaseURLs(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{getByIDsAccounts: []*Account{{
+		ID:       1,
+		Platform: PlatformKimi,
+		Type:     AccountTypeAPIKey,
+		Extra: map[string]any{
+			cnAPIProtocolExtraKey: APIProtocolAdaptive,
+			cnAPIBaseURLsExtraKey: map[string]any{"chat_completions": "https://old.example"},
+		},
+	}}}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1},
+		Extra: map[string]any{
+			cnAPIBaseURLsExtraKey: map[string]any{},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Success)
+	require.Nil(t, repo.bulkUpdateCalls[0].Updates.Extra[cnAPIBaseURLsExtraKey])
 }
 
 func TestAdminServiceBulkUpdateAccounts_LegacyCredentialProtocolOverridesStoredCNExtra(t *testing.T) {

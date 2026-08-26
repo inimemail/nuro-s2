@@ -340,7 +340,7 @@ describe('CreateAccountModal', () => {
 
     expect(wrapper.get('[data-testid="cn-billing-coding-plan"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="cn-protocol-chat_completions"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="cn-protocol-anthropic"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="cn-protocol-anthropic"]').exists()).toBe(true)
     const baseUrl = wrapper.get('input[placeholder="https://api.moonshot.cn/v1"]')
     await baseUrl.setValue('https://gateway.example.test/kimi')
     await wrapper.get('[data-testid="cn-billing-coding-plan"]').trigger('click')
@@ -354,8 +354,15 @@ describe('CreateAccountModal', () => {
     expect(createAccountMock.mock.calls[0]?.[0]).toMatchObject({
       platform: 'kimi',
       type: 'apikey',
-      credentials: { base_url: 'https://api.kimi.com/coding/v1', api_key: 'sk-kimi-test' },
-      extra: { cn_billing_mode: 'coding_plan', cn_api_mode: 'chat_completions' }
+      credentials: {
+        base_url: 'https://api.kimi.com/coding/v1',
+        api_key: 'sk-kimi-test',
+        api_base_urls: {
+          chat_completions: 'https://api.kimi.com/coding/v1',
+          anthropic: 'https://api.kimi.com/coding'
+        }
+      },
+      extra: { cn_billing_mode: 'coding_plan', cn_api_mode: 'adaptive' }
     })
   })
 

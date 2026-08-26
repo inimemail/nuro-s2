@@ -121,6 +121,7 @@ func TestUpdateAccount_CNCredentialOnlyEditCanonicalizesLegacyProtocol(t *testin
 	require.NoError(t, err)
 	require.NotNil(t, updated)
 	require.Equal(t, APIProtocolResponses, repo.account.Extra[cnAPIProtocolExtraKey])
+	require.Equal(t, map[string]any{"responses": "https://new.example"}, repo.account.Extra[cnAPIBaseURLsExtraKey])
 	require.NotContains(t, repo.account.Credentials, "api_protocol")
 	require.NotContains(t, repo.account.Credentials, "api_base_urls")
 }
