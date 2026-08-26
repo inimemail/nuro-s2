@@ -53,7 +53,11 @@ type AccountRecoveryOptions struct {
 	InvalidateToken bool
 	// DeferSchedulingClear keeps runtime scheduling blocks in place until the
 	// caller has completed any additional recovery fencing.
-	DeferSchedulingClear           bool
+	DeferSchedulingClear bool
+	// FullSchedulingClear marks an explicit successful pool recovery. Unlike a
+	// normal runtime-state cleanup, it is allowed to clear platform pool state
+	// on every replica.
+	FullSchedulingClear            bool
 	ExpectedRuntimeUntil           time.Time
 	ExpectedRuntimeClearGeneration int64
 	RequireRuntimeFence            bool
@@ -150,6 +154,30 @@ func (s *RateLimitService) notifyAccountSchedulingBlockClearedAcrossReplicas(ctx
 	if clearer, ok := s.runtimeBlocker.(interface {
 		ClearAccountSchedulingBlockAcrossReplicas(context.Context, int64) error
 	}); ok {
+		return clearer.ClearAccountSchedulingBlockAcrossReplicas(ctx, accountID)
+	}
+	if clearer, ok := s.runtimeBlocker.(interface{ ClearAccountRuntimeBlockOnly(int64) }); ok {
+		clearer.ClearAccountRuntimeBlockOnly(accountID)
+		return nil
+	}
+	s.runtimeBlocker.ClearAccountSchedulingBlock(accountID)
+	return nil
+}
+
+func (s *RateLimitService) notifyAccountRuntimeBlockClearedAcrossReplicas(ctx context.Context, accountID int64) error {
+	if s == nil || s.runtimeBlocker == nil || accountID <= 0 {
+		return nil
+	}
+	if clearer, ok := s.runtimeBlocker.(interface {
+		ClearAccountRuntimeBlockAcrossReplicas(context.Context, int64) error
+	}); ok {
+		return clearer.ClearAccountRuntimeBlockAcrossReplicas(ctx, accountID)
+	}
+	if clearer, ok := s.runtimeBlocker.(interface {
+		ClearAccountSchedulingBlockAcrossReplicas(context.Context, int64) error
+	}); ok {
+		// Preserve compatibility with legacy blockers. Production wiring uses
+		// CompositeAccountRuntimeBlocker and takes the runtime-only path above.
 		return clearer.ClearAccountSchedulingBlockAcrossReplicas(ctx, accountID)
 	}
 	if clearer, ok := s.runtimeBlocker.(interface{ ClearAccountRuntimeBlockOnly(int64) }); ok {
@@ -1704,7 +1732,11 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 	}
 	if !options.DeferSchedulingClear {
 		if isOpenAICompatibleSchedulingAccount(account) || isAnthropicPoolAccount(account) {
-			if err := s.notifyAccountSchedulingBlockClearedAcrossReplicas(ctx, accountID); err != nil {
+			clear := s.notifyAccountRuntimeBlockClearedAcrossReplicas
+			if options.FullSchedulingClear {
+				clear = s.notifyAccountSchedulingBlockClearedAcrossReplicas
+			}
+			if err := clear(ctx, accountID); err != nil {
 				return result, err
 			}
 		} else {

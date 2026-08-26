@@ -216,6 +216,16 @@ func (s *OpenAIGatewayService) clearLocalAccountRuntimeBlock(accountID int64) {
 	s.openaiAccountRuntimeBlockUntil.Delete(accountID)
 }
 
+// clearLocalAccountRuntimeBlockBefore handles the shared generic runtime
+// clear event. It deliberately leaves OpenAI pool soft-cooldown state intact;
+// ordinary account recovery does not prove that the pool has recovered.
+func (s *OpenAIGatewayService) clearLocalAccountRuntimeBlockBefore(accountID, clearGeneration int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	deleteAccountRuntimeDeadlineBefore(&s.openaiAccountRuntimeBlockUntil, accountID, clearGeneration)
+}
+
 func (s *OpenAIGatewayService) clearLocalOpenAIPoolState(accountID int64) {
 	if s == nil || accountID <= 0 {
 		return
@@ -298,9 +308,10 @@ func (s *OpenAIGatewayService) AccountRuntimeRecoveryFenceMatches(accountID int6
 	if !valid || !until.Equal(expectedUntil) || generation != expectedGeneration {
 		return false
 	}
-	if s.schedulerSnapshot != nil && s.currentAccountRuntimeClearGeneration(accountID) != expectedGeneration {
-		return false
-	}
+	// Pool recovery is fenced by the pool deadline itself. The scheduler
+	// runtime-clear generation is shared with ordinary account runtime state;
+	// comparing it here would make an unrelated runtime clear invalidate a
+	// still-failing pool probe and make the admin state briefly look healthy.
 	return true
 }
 
@@ -339,7 +350,7 @@ func (s *OpenAIGatewayService) storeOpenAIAccountCooldownInRedis(accountID int64
 	if len(generations) > 0 && s.schedulerSnapshot != nil {
 		latestGeneration := s.schedulerSnapshot.currentAccountRuntimeClearGeneration(accountID)
 		if latestGeneration > generations[0] {
-			s.clearLocalAccountSchedulingBlockBefore(accountID, latestGeneration)
+			s.clearLocalAccountRuntimeBlockBefore(accountID, latestGeneration)
 			_ = s.clearOpenAIAccountCooldownInRedisBefore(accountID, latestGeneration)
 		}
 	}
@@ -366,13 +377,9 @@ func (s *OpenAIGatewayService) storeOpenAIPoolCooldownInRedis(accountID int64, u
 		}
 		cancel()
 	}
-	if len(generations) > 0 && s.schedulerSnapshot != nil {
-		latest := s.schedulerSnapshot.currentAccountRuntimeClearGeneration(accountID)
-		if latest > generation {
-			s.clearLocalAccountSchedulingBlockBefore(accountID, latest)
-			_ = s.clearOpenAIPoolCooldownInRedisBefore(accountID, latest)
-		}
-	}
+	// Do not compare this pool generation with the generic runtime-clear
+	// generation. A regular account recovery may advance the latter while the
+	// pool is still failing and must remain visible/blocked.
 }
 
 func (s *OpenAIGatewayService) clearOpenAIAccountCooldownInRedis(accountID int64) {
@@ -643,6 +650,13 @@ func (s *OpenAIGatewayService) storeOpenAIPoolSoftCooldownUntil(accountID int64,
 		Until:           until,
 		ClearGeneration: clearGeneration,
 	}
+	// Do not resurrect a pool cooldown after a replicated runtime-clear event
+	// that completed while this failure was being recorded. The dedicated pool
+	// state remains independent once it has been committed; this guard only
+	// protects the initial stale write race.
+	if latest := s.currentAccountRuntimeClearGeneration(accountID); latest > clearGeneration {
+		return
+	}
 	for {
 		current, loaded := s.openaiPoolSoftCooldownUntil.Load(accountID)
 		if !loaded {
@@ -698,14 +712,18 @@ func (s *OpenAIGatewayService) isOpenAIPoolAccountSoftCooling(account *Account) 
 	if !ok {
 		return false
 	}
-	if s.schedulerSnapshot != nil {
+	// Migrate the pre-generation in-memory representation lazily. New pool
+	// deadlines are accountRuntimeDeadline values and are never cleared by a
+	// generic runtime generation; only the legacy bare time.Time value may be
+	// safely retired after a replicated clear event.
+	if _, legacy := value.(time.Time); legacy && s.schedulerSnapshot != nil {
 		if generation := s.schedulerSnapshot.observedAccountRuntimeClearGeneration(account.ID); generation > 0 {
 			s.clearLocalAccountSchedulingBlockBefore(account.ID, generation)
+			value, ok = s.openaiPoolSoftCooldownUntil.Load(account.ID)
+			if !ok {
+				return false
+			}
 		}
-	}
-	value, ok = s.openaiPoolSoftCooldownUntil.Load(account.ID)
-	if !ok {
-		return false
 	}
 	_, _, ok = parseAccountRuntimeDeadline(value)
 	if !ok {
@@ -743,14 +761,14 @@ func (s *OpenAIGatewayService) openAIPoolAccountSoftCooldownUntilByID(accountID 
 	if !ok {
 		return time.Time{}, false
 	}
-	if s.schedulerSnapshot != nil {
+	if _, legacy := value.(time.Time); legacy && s.schedulerSnapshot != nil {
 		if generation := s.schedulerSnapshot.observedAccountRuntimeClearGeneration(accountID); generation > 0 {
 			s.clearLocalAccountSchedulingBlockBefore(accountID, generation)
+			value, ok = s.openaiPoolSoftCooldownUntil.Load(accountID)
+			if !ok {
+				return time.Time{}, false
+			}
 		}
-	}
-	value, ok = s.openaiPoolSoftCooldownUntil.Load(accountID)
-	if !ok {
-		return time.Time{}, false
 	}
 	until, _, ok := parseAccountRuntimeDeadline(value)
 	if !ok {
@@ -849,15 +867,10 @@ func (s *OpenAIGatewayService) OpenAIPoolSoftCooldownStateForAccount(ctx context
 	if s == nil || account == nil {
 		return OpenAIPoolSoftCooldownState{}
 	}
-	until, generation, cooling := s.openAIPoolAccountSoftCooldownReadOnly(account.ID)
-	if cooling {
-		if latest := s.currentAccountRuntimeClearGeneration(account.ID); latest > 0 && generation < latest {
-			until, cooling = time.Time{}, false
-		}
-	}
+	until, _, cooling := s.openAIPoolAccountSoftCooldownReadOnly(account.ID)
 	if !cooling && account.IsOpenAI() && account.IsPoolMode() {
 		if s.concurrencyService != nil {
-			until, generation, cooling, _ = s.getUsableSharedOpenAIPoolCooldown(ctx, account.ID)
+			until, _, cooling, _ = s.getUsableSharedOpenAIPoolCooldown(ctx, account.ID)
 		}
 	}
 	if !cooling {

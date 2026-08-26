@@ -93,9 +93,10 @@ func (s *OpenAIGatewayService) getUsableSharedOpenAIPoolCooldown(ctx context.Con
 	if err != nil || !active || until.IsZero() {
 		return until, generation, active, err
 	}
-	if latest := s.currentAccountRuntimeClearGeneration(accountID); latest > 0 && generation < latest {
-		return time.Time{}, generation, false, nil
-	}
+	// The dedicated pool key is authoritative for pool recovery. Its
+	// generation must not be compared with the shared generic runtime-clear
+	// generation, because ordinary account recovery advances that generation
+	// without recovering the pool itself.
 	return until, generation, true, nil
 }
 
@@ -245,8 +246,10 @@ func (s *OpenAIGatewayService) runOpenAIPoolRecoveryProbe(ctx context.Context, a
 			if !cleared {
 				loggerLegacyOpenAIPoolRecovery("runtime_clear_stale_probe account_id=%d endpoint=%s status=%d", account.ID, result.endpoint, result.statusCode)
 				if latestGeneration := s.currentAccountRuntimeClearGeneration(account.ID); latestGeneration > clearGeneration {
-					s.clearLocalAccountSchedulingBlockBefore(account.ID, latestGeneration)
-					_ = s.clearOpenAIPoolCooldownInRedisBefore(account.ID, latestGeneration)
+					// A stale probe may only release the generic runtime block. The
+					// dedicated pool cooldown belongs to the newer recovery state and
+					// must remain visible/blocked until its own probe succeeds.
+					s.clearLocalAccountRuntimeBlockBefore(account.ID, latestGeneration)
 				}
 				return
 			}
@@ -256,7 +259,7 @@ func (s *OpenAIGatewayService) runOpenAIPoolRecoveryProbe(ctx context.Context, a
 				return
 			}
 			s.clearLocalAccountSchedulingBlockBefore(account.ID, clearGeneration+1)
-			_ = s.clearOpenAIPoolCooldownInRedisBefore(account.ID, clearGeneration+1)
+			_ = s.clearOpenAIAccountCooldownInRedisBefore(account.ID, clearGeneration+1)
 		}
 		// The composite runtime blocker normally clears this deadline. Keep a
 		// local fallback for tests or deployments without that blocker, while
@@ -295,7 +298,7 @@ func (s *OpenAIGatewayService) restoreOpenAIPoolRecoveryAfterStateClearFailure(a
 	clearGeneration := s.currentAccountRuntimeClearGeneration(account.ID)
 	if len(expected) > 0 {
 		if clearGeneration > expected[0].ClearGeneration {
-			s.clearLocalAccountSchedulingBlockBefore(account.ID, clearGeneration)
+			s.clearLocalAccountRuntimeBlockBefore(account.ID, clearGeneration)
 			return
 		}
 		if expected[0].ClearGeneration > clearGeneration {
@@ -345,7 +348,7 @@ func (s *OpenAIGatewayService) restoreOpenAIPoolRecoveryAfterStateClearFailure(a
 	}
 	s.openaiPoolSoftCooldownContext.Store(account.ID, cooldownContext)
 	if latestGeneration := s.currentAccountRuntimeClearGeneration(account.ID); latestGeneration > clearGeneration {
-		s.clearLocalAccountSchedulingBlockBefore(account.ID, latestGeneration)
+		s.clearLocalAccountRuntimeBlockBefore(account.ID, latestGeneration)
 		return
 	}
 	s.storeOpenAIPoolCooldownInRedis(account.ID, until, clearGeneration)

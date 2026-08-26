@@ -55,6 +55,7 @@ type SchedulerSnapshotService struct {
 	unsubscribe                     func()
 	runtimeClearMu                  sync.RWMutex
 	runtimeClearHandlers            []func(int64, int64)
+	runtimeOnlyClearHandlers        []func(int64, int64)
 	runtimeClearGenerations         sync.Map // key: int64(accountID), value: int64
 	runtimeClearGenerationCheckedAt sync.Map // key: int64(accountID), value: time.Time
 	runtimeClearGenerationSF        singleflight.Group
@@ -187,7 +188,11 @@ func (s *SchedulerSnapshotService) handleSchedulerEvent(ctx context.Context, eve
 		}
 		s.noteAccountRuntimeClearGeneration(event.AccountID, event.Generation)
 		s.runtimeClearMu.RLock()
-		handlers := append([]func(int64, int64){}, s.runtimeClearHandlers...)
+		handlers := s.runtimeClearHandlers
+		if event.Type == SchedulerEventAccountRuntimeOnlyCleared {
+			handlers = s.runtimeOnlyClearHandlers
+		}
+		handlers = append([]func(int64, int64){}, handlers...)
 		s.runtimeClearMu.RUnlock()
 		for _, handler := range handlers {
 			handler(event.AccountID, event.Generation)
@@ -207,7 +212,24 @@ func (s *SchedulerSnapshotService) RegisterAccountRuntimeClearHandler(handler fu
 	s.runtimeClearMu.Unlock()
 }
 
+func (s *SchedulerSnapshotService) RegisterAccountRuntimeOnlyClearHandler(handler func(int64, int64)) {
+	if s == nil || handler == nil {
+		return
+	}
+	s.runtimeClearMu.Lock()
+	s.runtimeOnlyClearHandlers = append(s.runtimeOnlyClearHandlers, handler)
+	s.runtimeClearMu.Unlock()
+}
+
 func (s *SchedulerSnapshotService) publishAccountRuntimeClear(ctx context.Context, accountID int64) (int64, error) {
+	return s.publishAccountRuntimeClearEvent(ctx, accountID, SchedulerEventAccountRuntimeCleared, "runtime_clear")
+}
+
+func (s *SchedulerSnapshotService) publishAccountRuntimeOnlyClear(ctx context.Context, accountID int64) (int64, error) {
+	return s.publishAccountRuntimeClearEvent(ctx, accountID, SchedulerEventAccountRuntimeOnlyCleared, "runtime_only_clear")
+}
+
+func (s *SchedulerSnapshotService) publishAccountRuntimeClearEvent(ctx context.Context, accountID int64, eventType SchedulerEventType, reason string) (int64, error) {
 	if s == nil || accountID <= 0 {
 		return 0, nil
 	}
@@ -240,7 +262,7 @@ func (s *SchedulerSnapshotService) publishAccountRuntimeClear(ctx context.Contex
 		}
 		generation = reconciledGeneration
 	}
-	return generation, s.publishAccountRuntimeClearGeneration(ctx, accountID, generation)
+	return generation, s.publishAccountRuntimeClearGeneration(ctx, accountID, generation, eventType, reason)
 }
 
 func (s *SchedulerSnapshotService) publishAccountRuntimeClearIfGeneration(ctx context.Context, accountID, expectedGeneration int64) (int64, bool, error) {
@@ -260,7 +282,7 @@ func (s *SchedulerSnapshotService) publishAccountRuntimeClearIfGeneration(ctx co
 	if err != nil || !advanced {
 		return generation, false, err
 	}
-	return generation, true, s.publishAccountRuntimeClearGeneration(ctx, accountID, generation)
+	return generation, true, s.publishAccountRuntimeClearGeneration(ctx, accountID, generation, SchedulerEventAccountRuntimeCleared, "runtime_clear")
 }
 
 // advanceAccountRuntimeGeneration invalidates work that started against the
@@ -316,13 +338,13 @@ func (s *SchedulerSnapshotService) advanceAccountRuntimeGeneration(ctx context.C
 	return generation, nil
 }
 
-func (s *SchedulerSnapshotService) publishAccountRuntimeClearGeneration(ctx context.Context, accountID, generation int64) error {
+func (s *SchedulerSnapshotService) publishAccountRuntimeClearGeneration(ctx context.Context, accountID, generation int64, eventType SchedulerEventType, reason string) error {
 	s.noteAccountRuntimeClearGeneration(accountID, generation)
 	event := SchedulerEvent{
-		Type:       SchedulerEventAccountRuntimeCleared,
+		Type:       eventType,
 		AccountID:  accountID,
 		Generation: generation,
-		Reason:     "runtime_clear",
+		Reason:     reason,
 		At:         time.Now(),
 		Source:     s.eventSource,
 	}
@@ -457,7 +479,7 @@ func (s *SchedulerSnapshotService) publishEvent(ctx context.Context, event Sched
 	}
 	// Runtime clears are a correctness event and stay enabled independently of
 	// the optional local-snapshot invalidation bus.
-	if event.Type != SchedulerEventAccountRuntimeCleared &&
+	if !isSchedulerRuntimeClearEvent(event) &&
 		s.cfg != nil && !s.cfg.Gateway.Scheduling.EventBusEnabled {
 		return
 	}

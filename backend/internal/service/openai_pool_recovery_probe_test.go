@@ -1221,6 +1221,66 @@ func TestOpenAIPoolSoftCooldownStateForAccount_HydratesSharedCooldown(t *testing
 	require.False(t, state.ProbeInFlight)
 }
 
+func TestOpenAIPoolSoftCooldownStateForAccount_DoesNotHidePoolStateAfterRuntimeClearGenerationAdvance(t *testing.T) {
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, nil)
+	account := &Account{
+		ID: 223, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	snapshot.noteAccountRuntimeClearGeneration(account.ID, 9)
+	svc := &OpenAIGatewayService{schedulerSnapshot: snapshot}
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, accountRuntimeDeadline{
+		Until:           time.Now().Add(time.Minute),
+		ClearGeneration: 3,
+	})
+
+	state := svc.OpenAIPoolSoftCooldownStateForAccount(context.Background(), account)
+
+	require.True(t, state.Cooling)
+	require.False(t, state.Due)
+}
+
+func TestOpenAIPoolSoftCooldownRead_DoesNotClearGenerationZeroPoolState(t *testing.T) {
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, nil)
+	account := &Account{
+		ID: 225, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	snapshot.noteAccountRuntimeClearGeneration(account.ID, 7)
+	svc := &OpenAIGatewayService{schedulerSnapshot: snapshot}
+	deadline := accountRuntimeDeadline{Until: time.Now().Add(time.Minute), ClearGeneration: 0}
+	svc.openaiPoolSoftCooldownUntil.Store(account.ID, deadline)
+
+	until, cooling := svc.openAIPoolAccountSoftCooldownUntilByID(account.ID)
+
+	require.True(t, cooling)
+	require.WithinDuration(t, deadline.Until, until, time.Second)
+	_, stillPresent := svc.openaiPoolSoftCooldownUntil.Load(account.ID)
+	require.True(t, stillPresent)
+}
+
+func TestOpenAIPoolSoftCooldownStateForAccount_DoesNotRejectSharedPoolStateWithOlderRuntimeGeneration(t *testing.T) {
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, nil)
+	account := &Account{
+		ID: 224, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	snapshot.noteAccountRuntimeClearGeneration(account.ID, 9)
+	cache := &sharedOpenAIPoolCooldownCache{
+		until:      time.Now().Add(time.Minute),
+		generation: 3,
+		active:     true,
+	}
+	svc := &OpenAIGatewayService{
+		schedulerSnapshot:  snapshot,
+		concurrencyService: NewConcurrencyService(cache),
+	}
+
+	state := svc.OpenAIPoolSoftCooldownStateForAccount(context.Background(), account)
+
+	require.True(t, state.Cooling)
+}
+
 func TestOpenAIPoolSoftCooldownStateForAccount_ReadsExistingImagePoolCooldown(t *testing.T) {
 	svc := &OpenAIGatewayService{
 		settingService: openAIPoolRecoveryProbeTestSettingServiceWithValues(t, true, true, map[string]string{

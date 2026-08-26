@@ -19,6 +19,10 @@ const (
 	// SchedulerEventAccountRuntimeCleared clears process-local cooldown and
 	// recovery-probe state on every application replica.
 	SchedulerEventAccountRuntimeCleared SchedulerEventType = "account_runtime_cleared"
+	// SchedulerEventAccountRuntimeOnlyCleared clears only generic runtime
+	// admission state. Platform pool recovery state remains independently
+	// fenced until a successful probe or explicit admin recovery.
+	SchedulerEventAccountRuntimeOnlyCleared SchedulerEventType = "account_runtime_only_cleared"
 )
 
 type SchedulerEvent struct {
@@ -68,7 +72,7 @@ func NewRuntimeRoutedSchedulerEventBus(snapshotBus, runtimeBus SchedulerEventBus
 }
 
 func (b *routedSchedulerEventBus) Publish(ctx context.Context, event SchedulerEvent) error {
-	if event.Type == SchedulerEventAccountRuntimeCleared {
+	if isSchedulerRuntimeClearEvent(event) {
 		return b.runtimeBus.Publish(ctx, event)
 	}
 	if b.snapshotBus == nil {
@@ -169,7 +173,7 @@ type localSchedulerEventBus struct {
 }
 
 func isSchedulerRuntimeClearEvent(event SchedulerEvent) bool {
-	return event.Type == SchedulerEventAccountRuntimeCleared
+	return event.Type == SchedulerEventAccountRuntimeCleared || event.Type == SchedulerEventAccountRuntimeOnlyCleared
 }
 
 func NewLocalSchedulerEventBus() SchedulerEventBus {

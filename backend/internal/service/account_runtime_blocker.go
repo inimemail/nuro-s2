@@ -193,6 +193,61 @@ func (b *CompositeAccountRuntimeBlocker) ClearAccountRuntimeBlockOnly(accountID 
 	}
 }
 
+// ClearAccountRuntimeBlockAcrossReplicas advances the shared fence and clears
+// generic runtime admission state everywhere without treating that event as a
+// successful platform-pool recovery.
+func (b *CompositeAccountRuntimeBlocker) ClearAccountRuntimeBlockAcrossReplicas(ctx context.Context, accountID int64) error {
+	if b == nil || accountID <= 0 {
+		return nil
+	}
+	var snapshot *SchedulerSnapshotService
+	for _, blocker := range b.blockers {
+		switch service := blocker.(type) {
+		case *OpenAIGatewayService:
+			if service != nil && service.schedulerSnapshot != nil {
+				snapshot = service.schedulerSnapshot
+			}
+		case *GatewayService:
+			if snapshot == nil && service != nil && service.schedulerSnapshot != nil {
+				snapshot = service.schedulerSnapshot
+			}
+		}
+	}
+	if snapshot == nil {
+		b.ClearAccountRuntimeBlockOnly(accountID)
+		return nil
+	}
+	if _, hasGenerationStore := snapshot.eventBus.(SchedulerRuntimeClearGenerationStore); !hasGenerationStore {
+		b.ClearAccountRuntimeBlockOnly(accountID)
+		return nil
+	}
+	generation, err := snapshot.publishAccountRuntimeOnlyClear(ctx, accountID)
+	if generation <= 0 {
+		if err == nil {
+			b.ClearAccountRuntimeBlockOnly(accountID)
+		}
+		return err
+	}
+	for _, blocker := range b.blockers {
+		switch service := blocker.(type) {
+		case *OpenAIGatewayService:
+			service.clearLocalAccountRuntimeBlockBefore(accountID, generation)
+			if clearErr := service.clearOpenAIAccountCooldownInRedisBefore(accountID, generation); clearErr != nil {
+				err = errors.Join(err, clearErr)
+			}
+		case *GatewayService:
+			service.ClearAccountRuntimeBlockOnly(accountID)
+		default:
+			if service, ok := blocker.(interface{ ClearAccountRuntimeBlockOnly(int64) }); ok {
+				service.ClearAccountRuntimeBlockOnly(accountID)
+			} else {
+				blocker.ClearAccountSchedulingBlock(accountID)
+			}
+		}
+	}
+	return err
+}
+
 // ClearAccountSchedulingBlockAcrossReplicas advances the shared generation
 // before clearing. Admin and successful-probe recovery use this path so every
 // replica drops old state while cooldowns created at the new generation remain.
@@ -283,6 +338,9 @@ func (b *CompositeAccountRuntimeBlocker) clearAccountSchedulingBlockAcrossReplic
 	for _, blocker := range b.blockers {
 		switch service := blocker.(type) {
 		case *OpenAIGatewayService:
+			// This is an explicit/admin or successful-probe full clear. Keep the
+			// generation fence, but clear the pool state that was deliberately
+			// recovered as well as the generic runtime block.
 			service.clearLocalAccountSchedulingBlockBefore(accountID, generation)
 			if clearErr := service.clearOpenAIAccountCooldownInRedisBefore(accountID, generation); clearErr != nil {
 				err = errors.Join(err, clearErr)

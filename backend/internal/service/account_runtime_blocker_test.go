@@ -387,6 +387,32 @@ func TestClearLocalRuntimeState_PreservesProbeForNewerCooldownGeneration(t *test
 	require.Equal(t, int64(2), contextValue.(openAIPoolSoftCooldownContext).ClearGeneration)
 }
 
+func TestGenericRuntimeClearEventDoesNotRemoveOpenAIPoolCooldown(t *testing.T) {
+	snapshot := NewSchedulerSnapshotService(nil, nil, nil, nil, &config.Config{}, NewLocalSchedulerEventBus())
+	openAI := &OpenAIGatewayService{schedulerSnapshot: snapshot}
+	snapshot.RegisterAccountRuntimeClearHandler(openAI.clearLocalAccountRuntimeBlockBefore)
+	accountID := int64(7052)
+	openAI.openaiAccountRuntimeBlockUntil.Store(accountID, accountRuntimeDeadline{
+		Until:           time.Now().Add(time.Minute),
+		ClearGeneration: 0,
+	})
+	openAI.openaiPoolSoftCooldownUntil.Store(accountID, accountRuntimeDeadline{
+		Until:           time.Now().Add(time.Minute),
+		ClearGeneration: 0,
+	})
+
+	_, err := snapshot.publishAccountRuntimeClear(context.Background(), accountID)
+	require.NoError(t, err)
+	snapshot.handleSchedulerEvent(context.Background(), SchedulerEvent{
+		Type: SchedulerEventAccountRuntimeCleared, AccountID: accountID, Generation: 1,
+	})
+
+	_, runtimeBlocked := openAI.openaiAccountRuntimeBlockUntil.Load(accountID)
+	_, poolCooling := openAI.openaiPoolSoftCooldownUntil.Load(accountID)
+	require.False(t, runtimeBlocked)
+	require.True(t, poolCooling)
+}
+
 func TestCooldownStoreDoesNotResurrectStateAfterConcurrentGenerationAdvance(t *testing.T) {
 	for _, testCase := range []struct {
 		name  string

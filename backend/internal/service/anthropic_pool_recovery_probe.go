@@ -167,7 +167,7 @@ func (s *GatewayService) runAnthropicPoolRecoveryProbe(ctx context.Context, acco
 		s.anthropicPoolRecoveryProbeFailureCnt.Delete(account.ID)
 		if s.rateLimitService != nil {
 			recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), successfulProbeStateRecoveryTimeout)
-			_, err := s.rateLimitService.RecoverAccountAfterSuccessfulTest(recoveryCtx, account.ID)
+			_, err := s.rateLimitService.RecoverAccountState(recoveryCtx, account.ID, AccountRecoveryOptions{FullSchedulingClear: true})
 			recoveryCancel()
 			if err != nil {
 				loggerLegacyAnthropicPoolRecovery("recover_state_failed account_id=%d err=%v", account.ID, err)

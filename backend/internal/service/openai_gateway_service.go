@@ -546,6 +546,7 @@ func NewOpenAIGatewayService(
 	}
 	if schedulerSnapshot != nil {
 		schedulerSnapshot.RegisterAccountRuntimeClearHandler(svc.clearLocalAccountSchedulingBlockBefore)
+		schedulerSnapshot.RegisterAccountRuntimeOnlyClearHandler(svc.clearLocalAccountRuntimeBlockBefore)
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
