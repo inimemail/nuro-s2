@@ -6641,6 +6641,7 @@ export default {
         nonOpenAIPoolRequestProbeHint: '恢复探测使用正常下游请求，不额外增加请求、重连或首 Token 延迟。',
         nonOpenAIPoolTextPool: '普通模型池恢复探测',
         nonOpenAIPoolImagePool: '图片/媒体池恢复探测',
+        nonOpenAIPoolProbeModel: '探测模型',
         nonOpenAIPoolPlatformMaxCooldown: '平台最大冷却',
         nonOpenAIPoolPlatformProbeTimeout: '探测超时'
       },

@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 // NonOpenAIPoolPlatformSettings controls the pool runtime for one non-OpenAI
@@ -9,6 +10,7 @@ import (
 // runtime implementation.
 type NonOpenAIPoolPlatformSettings struct {
 	RecoveryProbeEnabled   bool                        `json:"recovery_probe_enabled"`
+	RecoveryProbeModel     string                      `json:"recovery_probe_model"`
 	SoftCooldownMaxSeconds int                         `json:"soft_cooldown_max_seconds"`
 	ProbeTimeoutSeconds    int                         `json:"probe_timeout_seconds"`
 	Image                  NonOpenAIPoolBucketSettings `json:"image"`
@@ -18,6 +20,7 @@ type NonOpenAIPoolPlatformSettings struct {
 func (s *NonOpenAIPoolPlatformSettings) UnmarshalJSON(data []byte) error {
 	type platformSettingsJSON struct {
 		RecoveryProbeEnabled   bool                         `json:"recovery_probe_enabled"`
+		RecoveryProbeModel     string                       `json:"recovery_probe_model"`
 		SoftCooldownMaxSeconds int                          `json:"soft_cooldown_max_seconds"`
 		ProbeTimeoutSeconds    int                          `json:"probe_timeout_seconds"`
 		Image                  *NonOpenAIPoolBucketSettings `json:"image"`
@@ -27,6 +30,7 @@ func (s *NonOpenAIPoolPlatformSettings) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	s.RecoveryProbeEnabled = decoded.RecoveryProbeEnabled
+	s.RecoveryProbeModel = decoded.RecoveryProbeModel
 	s.SoftCooldownMaxSeconds = decoded.SoftCooldownMaxSeconds
 	s.ProbeTimeoutSeconds = decoded.ProbeTimeoutSeconds
 	s.Image = NonOpenAIPoolBucketSettings{}
@@ -40,9 +44,10 @@ func (s *NonOpenAIPoolPlatformSettings) UnmarshalJSON(data []byte) error {
 // NonOpenAIPoolBucketSettings contains the settings that differ between a
 // platform's normal model traffic and its image/media traffic.
 type NonOpenAIPoolBucketSettings struct {
-	RecoveryProbeEnabled   bool `json:"recovery_probe_enabled"`
-	SoftCooldownMaxSeconds int  `json:"soft_cooldown_max_seconds"`
-	ProbeTimeoutSeconds    int  `json:"probe_timeout_seconds"`
+	RecoveryProbeEnabled   bool   `json:"recovery_probe_enabled"`
+	RecoveryProbeModel     string `json:"recovery_probe_model"`
+	SoftCooldownMaxSeconds int    `json:"soft_cooldown_max_seconds"`
+	ProbeTimeoutSeconds    int    `json:"probe_timeout_seconds"`
 }
 
 // NonOpenAIPoolSettings is persisted as one JSON setting so adding a platform
@@ -70,10 +75,19 @@ func DefaultNonOpenAIPoolSettings() NonOpenAIPoolSettings {
 
 func defaultNonOpenAIPoolPlatforms() map[string]NonOpenAIPoolPlatformSettings {
 	platforms := make(map[string]NonOpenAIPoolPlatformSettings, 6)
+	probeModels := map[string]string{
+		PlatformGemini: "gemini-2.0-flash", PlatformAntigravity: "claude-sonnet-4-5",
+		PlatformGrok: "grok-4.5", PlatformKimi: "kimi-k2",
+		PlatformZhipu: "glm-4.7", PlatformDeepSeek: "deepseek-chat",
+	}
+	imageProbeModels := map[string]string{
+		PlatformGemini: "gemini-2.5-flash-image", PlatformAntigravity: "gemini-2.5-flash-image",
+		PlatformGrok: "grok-imagine-image",
+	}
 	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek} {
 		platforms[platform] = NonOpenAIPoolPlatformSettings{
-			RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5,
-			Image: NonOpenAIPoolBucketSettings{RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5},
+			RecoveryProbeEnabled: true, RecoveryProbeModel: probeModels[platform], SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5,
+			Image: NonOpenAIPoolBucketSettings{RecoveryProbeEnabled: true, RecoveryProbeModel: imageProbeModels[platform], SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 360},
 		}
 	}
 	return platforms
@@ -114,6 +128,10 @@ func normalizeNonOpenAIPoolSettings(value NonOpenAIPoolSettings) NonOpenAIPoolSe
 			item = fallback
 		}
 		item.SoftCooldownMaxSeconds = clamp(item.SoftCooldownMaxSeconds, fallback.SoftCooldownMaxSeconds, 3600)
+		item.RecoveryProbeModel = strings.TrimSpace(item.RecoveryProbeModel)
+		if item.RecoveryProbeModel == "" {
+			item.RecoveryProbeModel = fallback.RecoveryProbeModel
+		}
 		item.ProbeTimeoutSeconds = clamp(item.ProbeTimeoutSeconds, value.ProbeTimeoutSeconds, 60)
 		// Older settings had only one platform bucket. Seed the new image bucket
 		// from the legacy values so an upgrade does not disable image recovery.
@@ -122,10 +140,14 @@ func normalizeNonOpenAIPoolSettings(value NonOpenAIPoolSettings) NonOpenAIPoolSe
 			item.Image = fallback.Image
 		}
 		item.Image.SoftCooldownMaxSeconds = clamp(item.Image.SoftCooldownMaxSeconds, fallback.Image.SoftCooldownMaxSeconds, 3600)
+		item.Image.RecoveryProbeModel = strings.TrimSpace(item.Image.RecoveryProbeModel)
+		if item.Image.RecoveryProbeModel == "" {
+			item.Image.RecoveryProbeModel = fallback.Image.RecoveryProbeModel
+		}
 		if item.Image.ProbeTimeoutSeconds <= 0 {
 			item.Image.ProbeTimeoutSeconds = fallback.Image.ProbeTimeoutSeconds
 		}
-		item.Image.ProbeTimeoutSeconds = clamp(item.Image.ProbeTimeoutSeconds, value.ProbeTimeoutSeconds, 60)
+		item.Image.ProbeTimeoutSeconds = clamp(item.Image.ProbeTimeoutSeconds, fallback.Image.ProbeTimeoutSeconds, 600)
 		value.Platforms[platform] = item
 	}
 	return value

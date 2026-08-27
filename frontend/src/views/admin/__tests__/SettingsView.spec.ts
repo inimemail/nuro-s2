@@ -690,10 +690,12 @@ describe("admin SettingsView payment visible method controls", () => {
           platform,
           {
             recovery_probe_enabled: true,
+            recovery_probe_model: `${platform}-probe`,
             soft_cooldown_max_seconds: 40,
             probe_timeout_seconds: 6,
             image: {
               recovery_probe_enabled: true,
+              recovery_probe_model: `${platform}-image-probe`,
               soft_cooldown_max_seconds: 30,
               probe_timeout_seconds: 5,
             },
@@ -727,8 +729,10 @@ describe("admin SettingsView payment visible method controls", () => {
       platforms: {
         grok: {
           recovery_probe_enabled: true,
+          recovery_probe_model: "grok-probe",
           image: {
             recovery_probe_enabled: true,
+            recovery_probe_model: "grok-image-probe",
             soft_cooldown_max_seconds: 30,
             probe_timeout_seconds: 5,
           },

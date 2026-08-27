@@ -1085,7 +1085,11 @@ export interface Account {
   non_openai_pool_soft_cooldown_due?: boolean
   non_openai_pool_soft_cooldown_status_code?: number
   non_openai_pool_soft_cooldown_reason?: string
+  non_openai_pool_soft_cooldown_probe_model?: string
+  non_openai_pool_soft_cooldown_probe_kind?: string
   non_openai_pool_soft_cooldown_source?: string
+  non_openai_pool_last_probe_status_code?: number
+  non_openai_pool_last_probe_reason?: string
   non_openai_pool_recovery_probe_in_flight?: boolean
 
   // Session window fields (5-hour window)

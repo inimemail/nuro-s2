@@ -24,6 +24,7 @@ export interface OpenAIFirstTokenTimeoutPlaceholderStage {
 
 export interface NonOpenAIPoolPlatformSettings {
   recovery_probe_enabled: boolean;
+  recovery_probe_model: string;
   soft_cooldown_max_seconds: number;
   probe_timeout_seconds: number;
   image: NonOpenAIPoolBucketSettings;
@@ -31,6 +32,7 @@ export interface NonOpenAIPoolPlatformSettings {
 
 export interface NonOpenAIPoolBucketSettings {
   recovery_probe_enabled: boolean;
+  recovery_probe_model: string;
   soft_cooldown_max_seconds: number;
   probe_timeout_seconds: number;
 }

@@ -110,8 +110,19 @@ const isAnthropicPoolSoftCooling = computed(() => {
     untilMs <= Date.now()
   )
 })
+const isNonOpenAIPoolSoftCooling = computed(() => {
+  if (props.account?.non_openai_pool_recovery_probe_in_flight) return true
+  if (!props.account?.non_openai_pool_soft_cooldown_until) return false
+  const untilMs = new Date(props.account.non_openai_pool_soft_cooldown_until).getTime()
+  if (!Number.isFinite(untilMs)) return false
+  return (
+    new Date(props.account.non_openai_pool_soft_cooldown_until) > new Date() ||
+    Boolean(props.account.non_openai_pool_soft_cooldown_due) ||
+    untilMs <= Date.now()
+  )
+})
 const hasRecoverableState = computed(() => {
-  return props.account?.status === 'error' || Boolean(isRateLimited.value) || Boolean(isOverloaded.value) || Boolean(isTempUnschedulable.value) || isOpenAIPoolSoftCooling.value || isAnthropicPoolSoftCooling.value
+  return props.account?.status === 'error' || Boolean(isRateLimited.value) || Boolean(isOverloaded.value) || Boolean(isTempUnschedulable.value) || isOpenAIPoolSoftCooling.value || isAnthropicPoolSoftCooling.value || isNonOpenAIPoolSoftCooling.value
 })
 const hasProxyFallback = computed(() => Boolean(props.account?.proxy_fallback_origin_id))
 const isAntigravityOAuth = computed(() => props.account?.platform === 'antigravity' && props.account?.type === 'oauth')

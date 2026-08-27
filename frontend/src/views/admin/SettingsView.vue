@@ -4091,6 +4091,18 @@
                               :aria-label="`${platform.label} ${t('admin.settings.scheduling.nonOpenAIPoolTextPool')}`"
                             />
                           </div>
+                          <label class="block min-w-0">
+                            <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">
+                              {{ t("admin.settings.scheduling.nonOpenAIPoolProbeModel") }}
+                            </span>
+                            <input
+                              v-model.trim="form.non_openai_pool.platforms[platform.key].recovery_probe_model"
+                              type="text"
+                              :disabled="!form.non_openai_pool.platforms[platform.key].recovery_probe_enabled"
+                              class="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-600 dark:bg-dark-700 dark:text-white dark:disabled:bg-dark-900 dark:disabled:text-gray-500"
+                              :placeholder="nonOpenAIPoolProbeModelDefaults[platform.key]"
+                            />
+                          </label>
                           <div class="grid gap-3 sm:grid-cols-2">
                             <label class="block min-w-0">
                               <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">
@@ -4129,6 +4141,10 @@
                               <span class="text-xs font-semibold text-gray-700 dark:text-gray-300">{{ t("admin.settings.scheduling.nonOpenAIPoolImagePool") }}</span>
                               <Toggle v-model="form.non_openai_pool.platforms[platform.key].image.recovery_probe_enabled" :aria-label="`${platform.label} ${t('admin.settings.scheduling.nonOpenAIPoolImagePool')}`" />
                             </div>
+                            <label class="mt-3 block min-w-0">
+                              <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.scheduling.nonOpenAIPoolProbeModel") }}</span>
+                              <input v-model.trim="form.non_openai_pool.platforms[platform.key].image.recovery_probe_model" type="text" :disabled="!form.non_openai_pool.platforms[platform.key].image.recovery_probe_enabled" class="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-600 dark:bg-dark-700 dark:text-white dark:disabled:bg-dark-900 dark:disabled:text-gray-500" :placeholder="nonOpenAIPoolImageProbeModelDefaults[platform.key]" />
+                            </label>
                             <div class="mt-3 grid gap-3 sm:grid-cols-2">
                               <label class="block min-w-0">
                                 <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.scheduling.nonOpenAIPoolPlatformMaxCooldown") }}</span>
@@ -4140,7 +4156,7 @@
                               <label class="block min-w-0">
                                 <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.scheduling.nonOpenAIPoolPlatformProbeTimeout") }}</span>
                                 <div class="relative">
-                                  <input v-model.number="form.non_openai_pool.platforms[platform.key].image.probe_timeout_seconds" type="number" min="1" max="60" :disabled="!form.non_openai_pool.platforms[platform.key].image.recovery_probe_enabled" class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-8 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-600 dark:bg-dark-700 dark:text-white dark:disabled:bg-dark-900 dark:disabled:text-gray-500" />
+                                  <input v-model.number="form.non_openai_pool.platforms[platform.key].image.probe_timeout_seconds" type="number" min="1" max="600" :disabled="!form.non_openai_pool.platforms[platform.key].image.recovery_probe_enabled" class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-8 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-600 dark:bg-dark-700 dark:text-white dark:disabled:bg-dark-900 dark:disabled:text-gray-500" />
                                   <span class="pointer-events-none absolute inset-y-0 right-2 flex items-center text-[11px] text-gray-400">s</span>
                                 </div>
                               </label>
@@ -8727,16 +8743,33 @@ const nonOpenAIPoolPlatforms = [
   { key: "deepseek", label: "DeepSeek", image: false },
 ] as const;
 
+const nonOpenAIPoolProbeModelDefaults: Record<string, string> = {
+  gemini: "gemini-2.0-flash",
+  antigravity: "claude-sonnet-4-5",
+  grok: "grok-4.5",
+  kimi: "kimi-k2",
+  zhipu: "glm-4.7",
+  deepseek: "deepseek-chat",
+};
+
+const nonOpenAIPoolImageProbeModelDefaults: Record<string, string> = {
+  gemini: "gemini-2.5-flash-image",
+  antigravity: "gemini-2.5-flash-image",
+  grok: "grok-imagine-image",
+};
+
 function defaultNonOpenAIPoolSettings(): NonOpenAIPoolSettings {
   const platforms: Record<string, NonOpenAIPoolPlatformSettings> = {};
   for (const platform of nonOpenAIPoolPlatforms) {
     const bucket: NonOpenAIPoolBucketSettings = {
       recovery_probe_enabled: true,
+      recovery_probe_model: nonOpenAIPoolImageProbeModelDefaults[platform.key] || "",
       soft_cooldown_max_seconds: 30,
-      probe_timeout_seconds: 5,
+      probe_timeout_seconds: 360,
     };
     platforms[platform.key] = {
       recovery_probe_enabled: true,
+      recovery_probe_model: nonOpenAIPoolProbeModelDefaults[platform.key],
       soft_cooldown_max_seconds: 30,
       probe_timeout_seconds: 5,
       image: bucket,
@@ -8773,6 +8806,8 @@ function normalizeNonOpenAIPoolForm(raw?: Partial<NonOpenAIPoolSettings> | null)
         typeof item.recovery_probe_enabled === "boolean"
           ? item.recovery_probe_enabled
           : defaults.platforms[platform.key].recovery_probe_enabled,
+      recovery_probe_model:
+        String(item.recovery_probe_model || "").trim() || defaults.platforms[platform.key].recovery_probe_model,
       soft_cooldown_max_seconds: clampNumber(
         Number(item.soft_cooldown_max_seconds) || defaults.platforms[platform.key].soft_cooldown_max_seconds,
         1,
@@ -8788,8 +8823,10 @@ function normalizeNonOpenAIPoolForm(raw?: Partial<NonOpenAIPoolSettings> | null)
           typeof image.recovery_probe_enabled === "boolean"
             ? image.recovery_probe_enabled
             : defaults.platforms[platform.key].image.recovery_probe_enabled,
+        recovery_probe_model:
+          String(image.recovery_probe_model || "").trim() || defaults.platforms[platform.key].image.recovery_probe_model,
         soft_cooldown_max_seconds: clampNumber(Number(image.soft_cooldown_max_seconds) || 30, 1, 3600),
-        probe_timeout_seconds: clampNumber(Number(image.probe_timeout_seconds) || 5, 1, 60),
+        probe_timeout_seconds: clampNumber(Number(image.probe_timeout_seconds) || 360, 1, 600),
       },
     };
   }

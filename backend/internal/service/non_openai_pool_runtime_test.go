@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,18 @@ func nonOpenAIPoolTestAccount(id int64, platform string) *Account {
 		"pool_mode":                          true,
 		"pool_soft_cooldown_error_threshold": 1,
 	}}
+}
+
+func waitForNonOpenAIPool(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition was not met before timeout")
 }
 
 type nonOpenAIPoolAccountRepoStub struct {
@@ -71,15 +84,29 @@ func TestNonOpenAIPoolImageProbeSuccessDoesNotClearTextBucket(t *testing.T) {
 	settings := DefaultNonOpenAIPoolSettings()
 	account := nonOpenAIPoolTestAccount(72, PlatformGemini)
 	imageCtx := WithNonOpenAIPoolRequestKind(context.Background(), NonOpenAIPoolRequestKindImage)
+	completed := make(chan struct{}, 1)
+	runtime.registerProbeRunner(PlatformGemini, func(context.Context, int64, string, string, string) NonOpenAIPoolProbeResult {
+		completed <- struct{}{}
+		return NonOpenAIPoolProbeResult{Success: true, StatusCode: http.StatusOK}
+	})
 
 	runtime.markFailure(context.Background(), settings, account, http.StatusServiceUnavailable, "text unavailable", "test")
 	runtime.markFailure(imageCtx, settings, account, http.StatusServiceUnavailable, "image unavailable", "test")
 	imageKey := nonOpenAIPoolKey(account, NonOpenAIPoolRequestKindImage)
-	runtime.deadlines.Store(imageKey, time.Now().Add(-time.Second))
-	if runtime.shouldSkip(imageCtx, settings, account) {
-		t.Fatal("expired image bucket should claim a recovery probe")
+	deadline := time.Now().Add(-time.Second)
+	runtime.deadlines.Store(imageKey, deadline)
+	if !runtime.shouldSkip(imageCtx, settings, account) {
+		t.Fatal("expired image bucket must remain excluded during background recovery")
 	}
-	runtime.markSuccess(account)
+	select {
+	case <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("image recovery probe did not run")
+	}
+	waitForNonOpenAIPool(t, time.Second, func() bool {
+		_, cooling := runtime.deadlines.Load(imageKey)
+		return !cooling
+	})
 	if runtime.shouldSkip(imageCtx, settings, nonOpenAIPoolTestAccount(account.ID, account.Platform)) {
 		t.Fatal("successful image probe should clear the image bucket")
 	}
@@ -112,13 +139,14 @@ func TestNonOpenAIPoolStaleProbeSuccessDoesNotResetCurrentGeneration(t *testing.
 	runtime := NewNonOpenAIPoolRuntime()
 	account := nonOpenAIPoolTestAccount(74, PlatformGrok)
 	key := nonOpenAIPoolKey(account, NonOpenAIPoolRequestKindImage)
-	account.nonOpenAIPoolProbeToken = 41
-	account.nonOpenAIPoolProbeKind = NonOpenAIPoolRequestKindImage
-	account.nonOpenAIPoolRequestKind = NonOpenAIPoolRequestKindImage
-	runtime.probes.Store(key, nonOpenAIPoolProbeLease{StartedAt: time.Now(), Token: 42})
+	oldDeadline := time.Now().Add(-2 * time.Second)
+	currentDeadline := time.Now().Add(time.Second)
+	oldLease := nonOpenAIPoolProbeLease{StartedAt: time.Now(), Token: 41, Deadline: oldDeadline}
+	runtime.deadlines.Store(key, currentDeadline)
+	runtime.probes.Store(key, nonOpenAIPoolProbeLease{StartedAt: time.Now(), Token: 42, Deadline: currentDeadline})
 	runtime.consecutiveFailures.Store(key, 1)
 
-	runtime.markSuccess(account)
+	runtime.finishRecoveryProbe(DefaultNonOpenAIPoolSettings(), account, NonOpenAIPoolRequestKindImage, oldLease, NonOpenAIPoolProbeResult{Success: true})
 
 	if value, ok := runtime.consecutiveFailures.Load(key); !ok || value != 1 {
 		t.Fatalf("stale probe success changed current failure count: value=%v present=%v", value, ok)
@@ -242,185 +270,125 @@ func TestNonOpenAIPoolPlatformMaxIsNotCappedByLegacyGlobalMax(t *testing.T) {
 	}
 }
 
-func TestNonOpenAIPoolRuntimeAllowsSingleRecoveryProbe(t *testing.T) {
-	runtime := &NonOpenAIPoolRuntime{}
+func TestNonOpenAIPoolRuntimeStartsProbeWithoutDownstreamTraffic(t *testing.T) {
+	runtime := NewNonOpenAIPoolRuntime()
 	settings := DefaultNonOpenAIPoolSettings()
 	account := nonOpenAIPoolTestAccount(9, PlatformDeepSeek)
-	runtime.deadlines.Store(nonOpenAIPoolKey(account), time.Now().Add(-time.Second))
-	if runtime.shouldSkip(context.Background(), settings, account) {
-		t.Fatal("first request after deadline should be the probe")
-	}
-	if account.nonOpenAIPoolProbeToken == 0 {
-		t.Fatal("probe request should carry a lease token")
-	}
-	if runtime.shouldSkip(context.Background(), settings, account) {
-		t.Fatal("the same probe request must remain eligible on repeated checks")
-	}
-	concurrentCopy := nonOpenAIPoolTestAccount(account.ID, account.Platform)
-	if !runtime.shouldSkip(context.Background(), settings, concurrentCopy) {
-		t.Fatal("a concurrent request must be skipped while the probe is in flight")
+	called := make(chan struct{}, 1)
+	runtime.registerProbeRunner(PlatformDeepSeek, func(context.Context, int64, string, string, string) NonOpenAIPoolProbeResult {
+		called <- struct{}{}
+		return NonOpenAIPoolProbeResult{Success: true, StatusCode: http.StatusOK}
+	})
+	deadline := time.Now().Add(20 * time.Millisecond)
+	runtime.deadlines.Store(nonOpenAIPoolKey(account), deadline)
+	runtime.scheduleRecoveryProbe(settings, account, NonOpenAIPoolRequestKindText, deadline)
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("background recovery probe was not started")
 	}
 }
 
-func TestNonOpenAIPoolRuntimeConcurrentProbeLease(t *testing.T) {
+func TestNonOpenAIPoolRuntimeTimerUsesLatestProbeSettings(t *testing.T) {
+	runtime := NewNonOpenAIPoolRuntime()
+	initial := DefaultNonOpenAIPoolSettings()
+	latest := DefaultNonOpenAIPoolSettings()
+	platform := latest.Platforms[PlatformDeepSeek]
+	platform.RecoveryProbeModel = "deepseek-latest-probe"
+	latest.Platforms[PlatformDeepSeek] = platform
+	runtime.settingsProvider = func() NonOpenAIPoolSettings { return latest }
+	account := nonOpenAIPoolTestAccount(91, PlatformDeepSeek)
+	models := make(chan string, 1)
+	runtime.registerProbeRunner(PlatformDeepSeek, func(_ context.Context, _ int64, _, _, model string) NonOpenAIPoolProbeResult {
+		models <- model
+		return NonOpenAIPoolProbeResult{Success: true, StatusCode: http.StatusOK}
+	})
+	deadline := time.Now().Add(20 * time.Millisecond)
+	runtime.deadlines.Store(nonOpenAIPoolKey(account), deadline)
+	runtime.scheduleRecoveryProbe(initial, account, NonOpenAIPoolRequestKindText, deadline)
+	select {
+	case model := <-models:
+		if model != "deepseek-latest-probe" {
+			t.Fatalf("probe model = %q, want latest setting", model)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("background recovery probe was not started")
+	}
+}
+
+func TestNonOpenAIPoolRuntimeProbeTimeoutIsAutomaticallyTakenOver(t *testing.T) {
 	runtime := NewNonOpenAIPoolRuntime()
 	settings := DefaultNonOpenAIPoolSettings()
-	base := nonOpenAIPoolTestAccount(10, PlatformKimi)
-	runtime.deadlines.Store(nonOpenAIPoolKey(base), time.Now().Add(-time.Second))
-
-	const requestCount = 32
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	allowed := make(chan *Account, requestCount)
-	for i := 0; i < requestCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			account := nonOpenAIPoolTestAccount(base.ID, base.Platform)
-			<-start
-			if !runtime.shouldSkip(context.Background(), settings, account) {
-				allowed <- account
-			}
-		}()
-	}
-	close(start)
-	wg.Wait()
-	close(allowed)
-	if got := len(allowed); got != 1 {
-		t.Fatalf("allowed probe requests = %d, want 1", got)
-	}
-}
-
-func TestNonOpenAIPoolRuntimeReleaseProbeRollsBackAdmissionFailure(t *testing.T) {
-	runtime := NewNonOpenAIPoolRuntime()
-	settings := DefaultNonOpenAIPoolSettings()
-	account := nonOpenAIPoolTestAccount(101, PlatformKimi)
-	runtime.deadlines.Store(nonOpenAIPoolKey(account), time.Now().Add(-time.Second))
-	if runtime.shouldSkip(context.Background(), settings, account) {
-		t.Fatal("expired account should claim the recovery probe")
-	}
-	if account.nonOpenAIPoolProbeToken == 0 {
-		t.Fatal("expected probe token")
-	}
-	runtime.releaseProbe(account)
-	if account.nonOpenAIPoolProbeToken != 0 {
-		t.Fatal("probe token was not released")
-	}
-	if _, loaded := runtime.probes.Load(nonOpenAIPoolKey(account)); loaded {
-		t.Fatal("probe lease was not released")
-	}
-	copy := nonOpenAIPoolTestAccount(account.ID, account.Platform)
-	if runtime.shouldSkip(context.Background(), settings, copy) {
-		t.Fatal("released probe should be claimable again")
-	}
-}
-
-func TestNonOpenAIPoolHydrationFailureReleasesProbe(t *testing.T) {
-	tests := []struct {
-		name    string
-		hydrate func(*NonOpenAIPoolRuntime, *SchedulerSnapshotService, *Account) error
-	}{
-		{
-			name: "gateway",
-			hydrate: func(runtime *NonOpenAIPoolRuntime, snapshot *SchedulerSnapshotService, account *Account) error {
-				_, err := (&GatewayService{nonOpenAIPoolRuntime: runtime, schedulerSnapshot: snapshot}).hydrateSelectedAccount(context.Background(), account)
-				return err
-			},
-		},
-		{
-			name: "gemini",
-			hydrate: func(runtime *NonOpenAIPoolRuntime, snapshot *SchedulerSnapshotService, account *Account) error {
-				_, err := (&GeminiMessagesCompatService{nonOpenAIPoolRuntime: runtime, schedulerSnapshot: snapshot}).hydrateSelectedAccount(context.Background(), account)
-				return err
-			},
-		},
-		{
-			name: "openai compatible",
-			hydrate: func(runtime *NonOpenAIPoolRuntime, snapshot *SchedulerSnapshotService, account *Account) error {
-				_, err := (&OpenAIGatewayService{nonOpenAIPoolRuntime: runtime, schedulerSnapshot: snapshot}).hydrateSelectedAccount(context.Background(), account)
-				return err
-			},
-		},
-	}
-
-	for index, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			runtime := NewNonOpenAIPoolRuntime()
-			settings := DefaultNonOpenAIPoolSettings()
-			account := nonOpenAIPoolTestAccount(1100+int64(index), PlatformGemini)
-			key := nonOpenAIPoolKey(account)
-			runtime.deadlines.Store(key, time.Now().Add(-time.Second))
-			if runtime.shouldSkip(context.Background(), settings, account) {
-				t.Fatal("expired cooldown should claim a recovery probe")
-			}
-			if err := test.hydrate(runtime, &SchedulerSnapshotService{}, account); err == nil {
-				t.Fatal("empty scheduler snapshot should fail hydration")
-			}
-			if account.nonOpenAIPoolProbeToken != 0 {
-				t.Fatal("hydration failure did not clear the request probe token")
-			}
-			if _, ok := runtime.probes.Load(key); ok {
-				t.Fatal("hydration failure left the recovery probe lease installed")
-			}
-		})
-	}
-}
-
-func TestNonOpenAIPoolSchedulerPrecheckDoesNotClaimProbe(t *testing.T) {
-	runtime := NewNonOpenAIPoolRuntime()
-	settings := DefaultNonOpenAIPoolSettings()
-	account := nonOpenAIPoolTestAccount(21, PlatformKimi)
-	runtime.markFailure(context.Background(), settings, account, http.StatusServiceUnavailable, "unavailable", "test")
-
-	if !runtime.candidateBlocked(settings, account) {
-		t.Fatal("active cooldown must be excluded by the scheduler precheck")
-	}
+	platform := settings.Platforms[PlatformKimi]
+	platform.ProbeTimeoutSeconds = 1
+	settings.Platforms[PlatformKimi] = platform
+	runtime.settingsProvider = func() NonOpenAIPoolSettings { return settings }
+	account := nonOpenAIPoolTestAccount(92, PlatformKimi)
 	key := nonOpenAIPoolKey(account)
 	deadline := time.Now().Add(-time.Second)
 	runtime.deadlines.Store(key, deadline)
-	state := runtime.stateForAccount(account)
-	state.Until = deadline
-	state.Due = true
-	runtime.states.Store(key, state)
-
-	if runtime.candidateBlocked(settings, account) {
-		t.Fatal("expired cooldown must remain eligible for the selected request to probe")
-	}
-	if _, claimed := runtime.probes.Load(key); claimed {
-		t.Fatal("scheduler precheck must not claim a recovery probe")
-	}
-	if runtime.shouldSkip(context.Background(), settings, account) {
-		t.Fatal("the selected request should claim and execute the recovery probe")
-	}
-	if account.nonOpenAIPoolProbeToken == 0 {
-		t.Fatal("selected recovery probe must carry its request token")
-	}
+	var calls atomic.Int32
+	releaseStaleProbe := make(chan struct{})
+	runtime.registerProbeRunner(PlatformKimi, func(_ context.Context, _ int64, _, _, _ string) NonOpenAIPoolProbeResult {
+		if calls.Add(1) == 1 {
+			// Simulate a transport that ignores context cancellation. The lease
+			// timer must still let a new generation take over.
+			<-releaseStaleProbe
+			return NonOpenAIPoolProbeResult{Success: true, StatusCode: http.StatusOK}
+		}
+		return NonOpenAIPoolProbeResult{Success: true, StatusCode: http.StatusOK}
+	})
+	runtime.maybeStartRecoveryProbe(settings, account, NonOpenAIPoolRequestKindText, deadline)
+	waitForNonOpenAIPool(t, 3*time.Second, func() bool {
+		_, cooling := runtime.deadlines.Load(key)
+		return calls.Load() >= 2 && !cooling
+	})
+	close(releaseStaleProbe)
 }
 
-func TestNonOpenAIPoolSchedulerPrecheckAllowsExpiredProbeTakeover(t *testing.T) {
+func TestNonOpenAIPoolRuntimeConcurrentKickRunsSingleProbeAndBlocksRequests(t *testing.T) {
 	runtime := NewNonOpenAIPoolRuntime()
 	settings := DefaultNonOpenAIPoolSettings()
-	settings.Platforms[PlatformGrok] = NonOpenAIPoolPlatformSettings{
-		RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 1,
-		Image: NonOpenAIPoolBucketSettings{RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 1},
-	}
-	account := nonOpenAIPoolTestAccount(211, PlatformGrok)
-	imageCtx := WithNonOpenAIPoolRequestKind(context.Background(), NonOpenAIPoolRequestKindImage)
-	key := nonOpenAIPoolKey(account, NonOpenAIPoolRequestKindImage)
+	account := nonOpenAIPoolTestAccount(10, PlatformKimi)
+	key := nonOpenAIPoolKey(account)
 	deadline := time.Now().Add(-time.Second)
 	runtime.deadlines.Store(key, deadline)
-	runtime.states.Store(key, NonOpenAIPoolRuntimeState{Until: deadline, Cooling: true, Due: true, ProbeInFlight: true})
-	runtime.probes.Store(key, nonOpenAIPoolProbeLease{StartedAt: time.Now().Add(-2 * time.Second), Token: 41})
-
-	if runtime.candidateBlockedForKind(settings, account, NonOpenAIPoolRequestKindImage) {
-		t.Fatal("expired probe lease must be eligible for takeover")
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	var mu sync.Mutex
+	calls := 0
+	runtime.registerProbeRunner(PlatformKimi, func(context.Context, int64, string, string, string) NonOpenAIPoolProbeResult {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		started <- struct{}{}
+		<-release
+		return NonOpenAIPoolProbeResult{Success: true, StatusCode: http.StatusOK}
+	})
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runtime.maybeStartRecoveryProbe(settings, account, NonOpenAIPoolRequestKindText, deadline)
+		}()
 	}
-	if runtime.shouldSkip(imageCtx, settings, account) {
-		t.Fatal("selected request should replace the expired probe lease")
+	wg.Wait()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("probe did not start")
 	}
-	if account.nonOpenAIPoolProbeToken == 0 || account.nonOpenAIPoolProbeToken == 41 {
-		t.Fatalf("replacement probe token = %d, want a new token", account.nonOpenAIPoolProbeToken)
+	if !runtime.candidateBlocked(settings, account) || !runtime.shouldSkip(context.Background(), settings, account) {
+		t.Fatal("real downstream requests must remain excluded during recovery")
 	}
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 1 {
+		t.Fatalf("probe calls = %d, want 1", gotCalls)
+	}
+	close(release)
 }
 
 func TestOpenAIStickyTemporaryUnavailableUsesNonOpenAIRequestKind(t *testing.T) {
@@ -466,12 +434,13 @@ func TestNonOpenAIPoolRuntimeProbeSuccessClearsState(t *testing.T) {
 	runtime := NewNonOpenAIPoolRuntime()
 	settings := DefaultNonOpenAIPoolSettings()
 	account := nonOpenAIPoolTestAccount(11, PlatformZhipu)
-	runtime.markFailure(context.Background(), settings, account, 500, "server", "test")
-	runtime.deadlines.Store(nonOpenAIPoolKey(account), time.Now().Add(-time.Second))
-	if runtime.shouldSkip(context.Background(), settings, account) {
-		t.Fatal("expired account should be allowed as recovery probe")
-	}
-	runtime.markSuccess(account)
+	key := nonOpenAIPoolKey(account)
+	deadline := time.Now().Add(-time.Second)
+	lease := nonOpenAIPoolProbeLease{StartedAt: time.Now(), Token: 1, Deadline: deadline}
+	runtime.deadlines.Store(key, deadline)
+	runtime.probes.Store(key, lease)
+	runtime.states.Store(key, NonOpenAIPoolRuntimeState{Until: deadline, Cooling: true, Due: true, ProbeInFlight: true})
+	runtime.finishRecoveryProbe(settings, account, NonOpenAIPoolRequestKindText, lease, NonOpenAIPoolProbeResult{Success: true, StatusCode: http.StatusOK})
 	if runtime.shouldSkip(context.Background(), settings, nonOpenAIPoolTestAccount(account.ID, account.Platform)) {
 		t.Fatal("successful probe should clear cooldown")
 	}
@@ -484,13 +453,85 @@ func TestNonOpenAIPoolRuntimeProbeFailureReentersCooldown(t *testing.T) {
 	runtime := NewNonOpenAIPoolRuntime()
 	settings := DefaultNonOpenAIPoolSettings()
 	account := nonOpenAIPoolTestAccount(12, PlatformGemini)
-	runtime.deadlines.Store(nonOpenAIPoolKey(account), time.Now().Add(-time.Second))
-	if runtime.shouldSkip(context.Background(), settings, account) {
-		t.Fatal("expired account should be allowed as recovery probe")
-	}
-	runtime.markFailure(context.Background(), settings, account, 503, "unavailable", "probe")
+	key := nonOpenAIPoolKey(account)
+	deadline := time.Now().Add(-time.Second)
+	lease := nonOpenAIPoolProbeLease{StartedAt: time.Now(), Token: 1, Deadline: deadline}
+	runtime.deadlines.Store(key, deadline)
+	runtime.probes.Store(key, lease)
+	runtime.finishRecoveryProbe(settings, account, NonOpenAIPoolRequestKindText, lease, NonOpenAIPoolProbeResult{StatusCode: 503, Reason: "unavailable"})
 	if !runtime.shouldSkip(context.Background(), settings, nonOpenAIPoolTestAccount(account.ID, account.Platform)) {
 		t.Fatal("failed probe should re-enter cooldown")
+	}
+}
+
+func TestNonOpenAIPoolRuntimeDisablingProbeDuringFlightDoesNotExtendCooldown(t *testing.T) {
+	runtime := NewNonOpenAIPoolRuntime()
+	settings := DefaultNonOpenAIPoolSettings()
+	account := nonOpenAIPoolTestAccount(120, PlatformGemini)
+	key := nonOpenAIPoolKey(account)
+	deadline := time.Now().Add(-time.Second)
+	lease := nonOpenAIPoolProbeLease{StartedAt: time.Now(), Token: 1, Deadline: deadline}
+	runtime.deadlines.Store(key, deadline)
+	runtime.probes.Store(key, lease)
+
+	platform := settings.Platforms[PlatformGemini]
+	platform.RecoveryProbeEnabled = false
+	settings.Platforms[PlatformGemini] = platform
+	runtime.finishRecoveryProbe(settings, account, NonOpenAIPoolRequestKindText, lease, NonOpenAIPoolProbeResult{StatusCode: http.StatusServiceUnavailable, Reason: "unavailable"})
+	if runtime.candidateBlocked(settings, account) {
+		t.Fatal("disabling recovery probes must not extend an expired cooldown")
+	}
+	if state := runtime.stateForAccountWithSettings(account, settings); state.Cooling {
+		t.Fatalf("disabled recovery probe retained display state: %+v", state)
+	}
+}
+
+func TestNonOpenAIPoolRuntimeDisablingFeatureDuringFlightDoesNotRestoreCooldown(t *testing.T) {
+	runtime := NewNonOpenAIPoolRuntime()
+	settings := DefaultNonOpenAIPoolSettings()
+	account := nonOpenAIPoolTestAccount(119, PlatformGemini)
+	key := nonOpenAIPoolKey(account)
+	deadline := time.Now().Add(-time.Second)
+	lease := nonOpenAIPoolProbeLease{StartedAt: time.Now(), Token: 1, Deadline: deadline}
+	runtime.deadlines.Store(key, deadline)
+	runtime.probes.Store(key, lease)
+
+	settings.Enabled = false
+	runtime.finishRecoveryProbe(settings, account, NonOpenAIPoolRequestKindText, lease, NonOpenAIPoolProbeResult{StatusCode: http.StatusServiceUnavailable, Reason: "unavailable"})
+	if runtime.candidateBlocked(settings, account) {
+		t.Fatal("disabling non-OpenAI pool recovery must not restore cooldown after an in-flight failure")
+	}
+	if state := runtime.stateForAccountWithSettings(account, settings); state.Cooling {
+		t.Fatalf("disabled feature retained display state: %+v", state)
+	}
+}
+
+func TestNonOpenAIPoolProbeFailurePreservesOriginalCooldownReason(t *testing.T) {
+	runtime := NewNonOpenAIPoolRuntime()
+	settings := DefaultNonOpenAIPoolSettings()
+	account := nonOpenAIPoolTestAccount(118, PlatformDeepSeek)
+	key := nonOpenAIPoolKey(account)
+	deadline := time.Now().Add(-time.Second)
+	lease := nonOpenAIPoolProbeLease{StartedAt: time.Now(), Token: 1, Deadline: deadline}
+	runtime.deadlines.Store(key, deadline)
+	runtime.probes.Store(key, lease)
+	runtime.states.Store(key, NonOpenAIPoolRuntimeState{
+		Until: deadline, Cooling: true, Due: true, ProbeInFlight: true,
+		StatusCode: http.StatusTooManyRequests, Reason: "original rate limit",
+	})
+
+	runtime.finishRecoveryProbe(settings, account, NonOpenAIPoolRequestKindText, lease, NonOpenAIPoolProbeResult{
+		StatusCode: http.StatusServiceUnavailable, Reason: "probe unavailable",
+	})
+	state := runtime.stateForAccount(account)
+	if state.StatusCode != http.StatusTooManyRequests || state.Reason != "original rate limit" {
+		t.Fatalf("original cooldown cause was overwritten: %+v", state)
+	}
+	if state.LastProbeStatus != http.StatusServiceUnavailable || state.LastProbeReason != "probe unavailable" {
+		t.Fatalf("last probe failure was not retained separately: %+v", state)
+	}
+	if state.CooldownSource != "probe_backoff" || state.ProbeModel == "" || state.ProbeKind != NonOpenAIPoolRequestKindText {
+		t.Fatalf("probe backoff metadata is incomplete: %+v", state)
 	}
 }
 
@@ -512,29 +553,23 @@ func TestNonOpenAIPoolOldFailureDuringActiveCooldownResetsDueDisplay(t *testing.
 	}
 }
 
-func TestNonOpenAIPoolRuntimeProbeFailureWithZeroBackoffReleasesLease(t *testing.T) {
+func TestNonOpenAIPoolRuntimeProbeFailureUsesMinimumBackoff(t *testing.T) {
 	runtime := NewNonOpenAIPoolRuntime()
 	settings := DefaultNonOpenAIPoolSettings()
 	settings.ServerErrorCooldownSeconds = 0
 	settings.MaxCooldownSeconds = 0
 	account := nonOpenAIPoolTestAccount(112, PlatformKimi)
 	key := nonOpenAIPoolKey(account)
-	runtime.deadlines.Store(key, time.Now().Add(-time.Second))
-	if runtime.shouldSkip(context.Background(), settings, account) {
-		t.Fatal("expired account should be allowed as recovery probe")
-	}
-	if account.nonOpenAIPoolProbeToken == 0 {
-		t.Fatal("expected probe token")
-	}
-	runtime.markFailure(context.Background(), settings, account, http.StatusServiceUnavailable, "unavailable", "probe")
-	if account.nonOpenAIPoolProbeToken != 0 {
-		t.Fatal("probe token should be released when no backoff is configured")
-	}
+	deadline := time.Now().Add(-time.Second)
+	lease := nonOpenAIPoolProbeLease{StartedAt: time.Now(), Token: 1, Deadline: deadline}
+	runtime.deadlines.Store(key, deadline)
+	runtime.probes.Store(key, lease)
+	runtime.finishRecoveryProbe(settings, account, NonOpenAIPoolRequestKindText, lease, NonOpenAIPoolProbeResult{StatusCode: http.StatusServiceUnavailable, Reason: "unavailable"})
 	if _, loaded := runtime.probes.Load(key); loaded {
-		t.Fatal("probe lease should be removed when no backoff is configured")
+		t.Fatal("completed probe lease should be removed")
 	}
-	if _, loaded := runtime.deadlines.Load(key); loaded {
-		t.Fatal("expired deadline should be removed when no backoff is configured")
+	if value, loaded := runtime.deadlines.Load(key); !loaded || !value.(time.Time).After(time.Now()) {
+		t.Fatal("failed probe should retain a future retry deadline")
 	}
 }
 

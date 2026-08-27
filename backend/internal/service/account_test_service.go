@@ -93,7 +93,7 @@ func NewAccountTestService(
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAITokenProvider *OpenAITokenProvider,
 ) *AccountTestService {
-	return &AccountTestService{
+	svc := &AccountTestService{
 		accountRepo:               accountRepo,
 		geminiTokenProvider:       geminiTokenProvider,
 		claudeTokenProvider:       claudeTokenProvider,
@@ -105,6 +105,13 @@ func NewAccountTestService(
 		settingService:            settingService,
 		tlsFPProfileService:       tlsFPProfileService,
 	}
+	if settingService != nil {
+		runtime := settingService.sharedNonOpenAIPoolRuntime()
+		for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek} {
+			runtime.registerProbeRunner(platform, svc.runNonOpenAIPoolProbe)
+		}
+	}
+	return svc
 }
 
 func (s *AccountTestService) validateUpstreamBaseURL(raw string) (string, error) {

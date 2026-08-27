@@ -3186,6 +3186,10 @@ type nonOpenAIPoolRuntimeStateReader interface {
 	NonOpenAIPoolRuntimeStateForAccount(account *Account) NonOpenAIPoolRuntimeState
 }
 
+type nonOpenAIPoolRecoveryProbeAdminKicker interface {
+	MaybeKickNonOpenAIPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account)
+}
+
 func (s *adminServiceImpl) attachAccountRuntimeState(ctx context.Context, account *Account) {
 	if s == nil || account == nil || s.runtimeBlocker == nil {
 		return
@@ -3249,12 +3253,22 @@ func (s *adminServiceImpl) attachAccountRuntimeState(ctx context.Context, accoun
 	if reader, ok := s.runtimeBlocker.(nonOpenAIPoolRuntimeStateReader); ok {
 		state := reader.NonOpenAIPoolRuntimeStateForAccount(account)
 		if state.Cooling {
+			if state.Due && !state.ProbeInFlight {
+				if kicker, ok := s.runtimeBlocker.(nonOpenAIPoolRecoveryProbeAdminKicker); ok {
+					kicker.MaybeKickNonOpenAIPoolRecoveryProbeFromAdminList(ctx, account)
+					state = reader.NonOpenAIPoolRuntimeStateForAccount(account)
+				}
+			}
 			until := state.Until
 			account.NonOpenAIPoolSoftCooldownUntil = &until
 			account.NonOpenAIPoolSoftCooldownDue = state.Due
 			account.NonOpenAIPoolSoftCooldownStatusCode = state.StatusCode
 			account.NonOpenAIPoolSoftCooldownReason = state.Reason
+			account.NonOpenAIPoolSoftCooldownProbeModel = state.ProbeModel
+			account.NonOpenAIPoolSoftCooldownProbeKind = state.ProbeKind
 			account.NonOpenAIPoolSoftCooldownSource = state.CooldownSource
+			account.NonOpenAIPoolLastProbeStatusCode = state.LastProbeStatus
+			account.NonOpenAIPoolLastProbeReason = state.LastProbeReason
 			account.NonOpenAIPoolRecoveryProbeInFlight = state.ProbeInFlight
 		}
 	}

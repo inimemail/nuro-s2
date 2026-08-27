@@ -1280,7 +1280,11 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.non_openai_pool_soft_cooldown_due !== next.non_openai_pool_soft_cooldown_due ||
     current.non_openai_pool_soft_cooldown_status_code !== next.non_openai_pool_soft_cooldown_status_code ||
     current.non_openai_pool_soft_cooldown_reason !== next.non_openai_pool_soft_cooldown_reason ||
+    current.non_openai_pool_soft_cooldown_probe_model !== next.non_openai_pool_soft_cooldown_probe_model ||
+    current.non_openai_pool_soft_cooldown_probe_kind !== next.non_openai_pool_soft_cooldown_probe_kind ||
     current.non_openai_pool_soft_cooldown_source !== next.non_openai_pool_soft_cooldown_source ||
+    current.non_openai_pool_last_probe_status_code !== next.non_openai_pool_last_probe_status_code ||
+    current.non_openai_pool_last_probe_reason !== next.non_openai_pool_last_probe_reason ||
     current.non_openai_pool_recovery_probe_in_flight !== next.non_openai_pool_recovery_probe_in_flight ||
     buildOpenAIUsageRefreshKey(current) !== buildOpenAIUsageRefreshKey(next) ||
     buildUpstreamBillingGuardRefreshKey(current) !== buildUpstreamBillingGuardRefreshKey(next)
@@ -1906,7 +1910,11 @@ const updateSchedulableInList = (accountIds: number[], schedulable: boolean) => 
       updated.non_openai_pool_soft_cooldown_due = false
       updated.non_openai_pool_soft_cooldown_status_code = undefined
       updated.non_openai_pool_soft_cooldown_reason = undefined
+      updated.non_openai_pool_soft_cooldown_probe_model = undefined
+      updated.non_openai_pool_soft_cooldown_probe_kind = undefined
       updated.non_openai_pool_soft_cooldown_source = undefined
+      updated.non_openai_pool_last_probe_status_code = undefined
+      updated.non_openai_pool_last_probe_reason = undefined
       updated.non_openai_pool_recovery_probe_in_flight = false
     }
     syncAccountRefs(updated)

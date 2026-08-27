@@ -450,3 +450,16 @@ func (b *CompositeAccountRuntimeBlocker) NonOpenAIPoolRuntimeStateForAccount(acc
 	}
 	return NonOpenAIPoolRuntimeState{}
 }
+
+func (b *CompositeAccountRuntimeBlocker) MaybeKickNonOpenAIPoolRecoveryProbeFromAdminList(ctx context.Context, account *Account) {
+	if b == nil {
+		return
+	}
+	for _, blocker := range b.blockers {
+		if kicker, ok := blocker.(interface {
+			MaybeKickNonOpenAIPoolRecoveryProbeFromAdminList(context.Context, *Account)
+		}); ok {
+			kicker.MaybeKickNonOpenAIPoolRecoveryProbeFromAdminList(ctx, account)
+		}
+	}
+}

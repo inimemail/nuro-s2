@@ -17,8 +17,8 @@ func TestNormalizeNonOpenAIPoolSettingsMigratesLegacyPlatformToImageBucket(t *te
 	if !grok.Image.RecoveryProbeEnabled {
 		t.Fatal("legacy settings should keep image/media recovery enabled")
 	}
-	if grok.Image.SoftCooldownMaxSeconds != 30 || grok.Image.ProbeTimeoutSeconds != 5 {
-		t.Fatalf("image defaults = %+v, want max=30 timeout=5", grok.Image)
+	if grok.Image.SoftCooldownMaxSeconds != 30 || grok.Image.ProbeTimeoutSeconds != 360 {
+		t.Fatalf("image defaults = %+v, want max=30 timeout=360", grok.Image)
 	}
 }
 
@@ -58,7 +58,7 @@ func TestNormalizeNonOpenAIPoolSettingsPreservesExplicitDisabledZeroImageJSON(t 
 	if image.RecoveryProbeEnabled {
 		t.Fatal("explicit disabled image recovery was mistaken for a legacy missing image object")
 	}
-	if image.SoftCooldownMaxSeconds != 30 || image.ProbeTimeoutSeconds != 5 {
+	if image.SoftCooldownMaxSeconds != 30 || image.ProbeTimeoutSeconds != 360 {
 		t.Fatalf("explicit partial image settings should receive numeric defaults: %+v", image)
 	}
 }
@@ -82,5 +82,24 @@ func TestNormalizeNonOpenAIPoolSettingsMigratesMissingImageJSON(t *testing.T) {
 	image := normalizeNonOpenAIPoolSettings(settings).Platforms[PlatformGrok].Image
 	if !image.RecoveryProbeEnabled {
 		t.Fatal("legacy JSON without image settings should enable image recovery by default")
+	}
+}
+
+func TestNormalizeNonOpenAIPoolSettingsSeedsAndPreservesProbeModels(t *testing.T) {
+	settings := DefaultNonOpenAIPoolSettings()
+	grok := settings.Platforms[PlatformGrok]
+	grok.RecoveryProbeModel = "custom-grok-text"
+	grok.Image.RecoveryProbeModel = "custom-grok-image"
+	settings.Platforms[PlatformGrok] = grok
+
+	normalized := normalizeNonOpenAIPoolSettings(settings)
+	if got := normalized.Platforms[PlatformGrok].RecoveryProbeModel; got != "custom-grok-text" {
+		t.Fatalf("text probe model = %q", got)
+	}
+	if got := normalized.Platforms[PlatformGrok].Image.RecoveryProbeModel; got != "custom-grok-image" {
+		t.Fatalf("image probe model = %q", got)
+	}
+	if got := normalized.Platforms[PlatformDeepSeek].RecoveryProbeModel; got != "deepseek-chat" {
+		t.Fatalf("default DeepSeek probe model = %q", got)
 	}
 }

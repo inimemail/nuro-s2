@@ -759,6 +759,13 @@ func (s *GatewayService) NonOpenAIPoolRuntimeStateForAccount(account *Account) N
 	return s.nonOpenAIPoolRuntime.stateForAccountWithSettings(account, nonOpenAIPoolSettings(context.Background(), s.settingService))
 }
 
+func (s *GatewayService) MaybeKickNonOpenAIPoolRecoveryProbeFromAdminList(_ context.Context, account *Account) {
+	if s == nil || s.nonOpenAIPoolRuntime == nil {
+		return
+	}
+	s.nonOpenAIPoolRuntime.maybeKickFromAdmin(nonOpenAIPoolSettings(context.Background(), s.settingService), account)
+}
+
 func (s *GatewayService) getAccountHealthStats() *accountRuntimeHealthStats {
 	if s == nil {
 		return nil

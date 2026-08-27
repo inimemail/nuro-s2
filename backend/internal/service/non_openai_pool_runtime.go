@@ -19,21 +19,38 @@ type NonOpenAIPoolRuntime struct {
 	consecutiveFailures sync.Map // key: platform:kind:accountID, value: int
 	probeFailures       sync.Map // key: platform:kind:accountID, value: int
 	nextProbe           atomic.Uint64
+	probeRunnersMu      sync.RWMutex
+	probeRunners        map[string]NonOpenAIPoolProbeFunc
+	settingsProvider    func() NonOpenAIPoolSettings
 }
 
 type nonOpenAIPoolProbeLease struct {
 	StartedAt time.Time
 	Token     uint64
+	Deadline  time.Time
 }
 
+type NonOpenAIPoolProbeResult struct {
+	Success    bool
+	StatusCode int
+	Reason     string
+	Source     string
+}
+
+type NonOpenAIPoolProbeFunc func(ctx context.Context, accountID int64, platform, kind, model string) NonOpenAIPoolProbeResult
+
 type NonOpenAIPoolRuntimeState struct {
-	Until          time.Time
-	Cooling        bool
-	Due            bool
-	ProbeInFlight  bool
-	StatusCode     int
-	Reason         string
-	CooldownSource string
+	Until           time.Time
+	Cooling         bool
+	Due             bool
+	ProbeInFlight   bool
+	StatusCode      int
+	Reason          string
+	CooldownSource  string
+	ProbeModel      string
+	ProbeKind       string
+	LastProbeStatus int
+	LastProbeReason string
 }
 
 const (
@@ -102,7 +119,14 @@ func withNonOpenAIPoolModelKind(ctx context.Context, account *Account, requested
 }
 
 func NewNonOpenAIPoolRuntime() *NonOpenAIPoolRuntime {
-	return &NonOpenAIPoolRuntime{}
+	return &NonOpenAIPoolRuntime{probeRunners: make(map[string]NonOpenAIPoolProbeFunc)}
+}
+
+func (r *NonOpenAIPoolRuntime) currentSettings(fallback NonOpenAIPoolSettings) NonOpenAIPoolSettings {
+	if r != nil && r.settingsProvider != nil {
+		return r.settingsProvider()
+	}
+	return fallback
 }
 
 func nonOpenAIPoolPlatform(platform string) bool {
@@ -149,7 +173,29 @@ func nonOpenAIPoolBucketSettings(settings NonOpenAIPoolSettings, account *Accoun
 	if kind == NonOpenAIPoolRequestKindImage && nonOpenAIPoolPlatformSupportsImageBucket(account.Platform) {
 		return platformSettings.Image, true
 	}
-	return NonOpenAIPoolBucketSettings{RecoveryProbeEnabled: platformSettings.RecoveryProbeEnabled, SoftCooldownMaxSeconds: platformSettings.SoftCooldownMaxSeconds, ProbeTimeoutSeconds: platformSettings.ProbeTimeoutSeconds}, true
+	return NonOpenAIPoolBucketSettings{RecoveryProbeEnabled: platformSettings.RecoveryProbeEnabled, RecoveryProbeModel: platformSettings.RecoveryProbeModel, SoftCooldownMaxSeconds: platformSettings.SoftCooldownMaxSeconds, ProbeTimeoutSeconds: platformSettings.ProbeTimeoutSeconds}, true
+}
+
+func (r *NonOpenAIPoolRuntime) registerProbeRunner(platform string, runner NonOpenAIPoolProbeFunc) {
+	if r == nil || runner == nil {
+		return
+	}
+	r.probeRunnersMu.Lock()
+	if r.probeRunners == nil {
+		r.probeRunners = make(map[string]NonOpenAIPoolProbeFunc)
+	}
+	r.probeRunners[strings.ToLower(strings.TrimSpace(platform))] = runner
+	r.probeRunnersMu.Unlock()
+}
+
+func (r *NonOpenAIPoolRuntime) probeRunner(platform string) NonOpenAIPoolProbeFunc {
+	if r == nil {
+		return nil
+	}
+	r.probeRunnersMu.RLock()
+	runner := r.probeRunners[strings.ToLower(strings.TrimSpace(platform))]
+	r.probeRunnersMu.RUnlock()
+	return runner
 }
 
 func formatInt64(value int64) string {
@@ -191,29 +237,6 @@ func (r *NonOpenAIPoolRuntime) shouldSkip(ctx context.Context, settings NonOpenA
 	account.nonOpenAIPoolRequestKind = kind
 	key := nonOpenAIPoolKey(account, kind)
 	bucket, hasPlatformSettings := nonOpenAIPoolBucketSettings(settings, account, kind)
-	probeTimeout := settings.ProbeTimeoutSeconds
-	if hasPlatformSettings && bucket.ProbeTimeoutSeconds > 0 {
-		probeTimeout = bucket.ProbeTimeoutSeconds
-	}
-	if existing, loaded := r.probes.Load(key); loaded {
-		lease, valid := existing.(nonOpenAIPoolProbeLease)
-		if valid && (probeTimeout <= 0 || time.Since(lease.StartedAt) < time.Duration(probeTimeout)*time.Second) {
-			// The selected request may pass through more than one eligibility check.
-			// Keep its lease idempotent while excluding all other request copies.
-			if account.nonOpenAIPoolProbeToken == lease.Token {
-				return false
-			}
-			state := r.state(account.ID, account.Platform, kind)
-			state.Cooling = true
-			state.Due = true
-			state.ProbeInFlight = true
-			r.states.Store(key, state)
-			return true
-		}
-		if !r.probes.CompareAndDelete(key, existing) {
-			return true
-		}
-	}
 	value, ok := r.deadlines.Load(key)
 	if !ok {
 		return false
@@ -236,26 +259,15 @@ func (r *NonOpenAIPoolRuntime) shouldSkip(ctx context.Context, settings NonOpenA
 		r.clearKind(account, kind)
 		return false
 	}
-	// Exactly one request is allowed to act as the recovery probe. The probe
-	// itself is the normal downstream request, so no extra retry/reconnect is added.
-	lease := nonOpenAIPoolProbeLease{StartedAt: time.Now(), Token: r.nextProbe.Add(1)}
-	if _, loaded := r.probes.LoadOrStore(key, lease); loaded {
-		return true
-	}
-	account.nonOpenAIPoolProbeToken = lease.Token
-	account.nonOpenAIPoolProbeKind = kind
 	state := r.state(account.ID, account.Platform, kind)
 	state.Until = until
 	state.Cooling = true
 	state.Due = true
-	state.ProbeInFlight = true
 	r.states.Store(key, state)
-	return false
+	r.maybeStartRecoveryProbe(settings, account, kind, until)
+	return true
 }
 
-// candidateBlocked is the side-effect-free scheduler precheck. An expired
-// cooldown without a probe lease remains eligible so the request that is
-// actually selected can claim the recovery probe in shouldSkip.
 func (r *NonOpenAIPoolRuntime) candidateBlocked(settings NonOpenAIPoolSettings, account *Account) bool {
 	return r.candidateBlockedForKind(settings, account, NonOpenAIPoolRequestKindText)
 }
@@ -271,29 +283,230 @@ func (r *NonOpenAIPoolRuntime) candidateBlockedForKind(settings NonOpenAIPoolSet
 	if kind == NonOpenAIPoolRequestKindImage && !nonOpenAIPoolPlatformSupportsImageBucket(account.Platform) {
 		kind = NonOpenAIPoolRequestKindText
 	}
-	state := r.state(account.ID, account.Platform, kind)
-	if !state.Cooling {
+	key := nonOpenAIPoolKey(account, kind)
+	value, ok := r.deadlines.Load(key)
+	until, valid := value.(time.Time)
+	if !ok || !valid || until.IsZero() {
 		return false
 	}
+	bucket, hasPlatformSettings := nonOpenAIPoolBucketSettings(settings, account, kind)
+	if !time.Now().Before(until) && hasPlatformSettings && !bucket.RecoveryProbeEnabled {
+		r.clearKind(account, kind)
+		return false
+	}
+	if !time.Now().Before(until) {
+		r.maybeStartRecoveryProbe(settings, account, kind, until)
+	}
+	return true
+}
+
+func (r *NonOpenAIPoolRuntime) scheduleRecoveryProbe(settings NonOpenAIPoolSettings, account *Account, kind string, deadline time.Time) {
+	if r == nil || account == nil || deadline.IsZero() {
+		return
+	}
+	accountID, platform := account.ID, account.Platform
+	delay := time.Until(deadline)
+	if delay < 0 {
+		delay = 0
+	}
+	time.AfterFunc(delay, func() {
+		probeAccount := &Account{ID: accountID, Platform: platform, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true}}
+		r.maybeStartRecoveryProbe(r.currentSettings(settings), probeAccount, kind, deadline)
+	})
+}
+
+func (r *NonOpenAIPoolRuntime) maybeStartRecoveryProbe(settings NonOpenAIPoolSettings, account *Account, kind string, expectedDeadline time.Time) {
+	if r == nil || account == nil || expectedDeadline.IsZero() || time.Now().Before(expectedDeadline) {
+		return
+	}
+	if !settings.Enabled {
+		r.clearKind(account, kind)
+		return
+	}
 	key := nonOpenAIPoolKey(account, kind)
-	if value, ok := r.probes.Load(key); ok {
-		if lease, valid := value.(nonOpenAIPoolProbeLease); valid {
-			if account.nonOpenAIPoolProbeToken != 0 && lease.Token == account.nonOpenAIPoolProbeToken {
-				return false
-			}
-			bucket, hasPlatformSettings := nonOpenAIPoolBucketSettings(settings, account, kind)
-			probeTimeout := settings.ProbeTimeoutSeconds
-			if hasPlatformSettings && bucket.ProbeTimeoutSeconds > 0 {
-				probeTimeout = bucket.ProbeTimeoutSeconds
-			}
-			if probeTimeout <= 0 || time.Since(lease.StartedAt) < time.Duration(probeTimeout)*time.Second {
-				return true
-			}
+	current, ok := r.deadlines.Load(key)
+	deadline, valid := current.(time.Time)
+	if !ok || !valid || !deadline.Equal(expectedDeadline) {
+		return
+	}
+	bucket, hasPlatformSettings := nonOpenAIPoolBucketSettings(settings, account, kind)
+	if hasPlatformSettings && !bucket.RecoveryProbeEnabled {
+		if r.deadlines.CompareAndDelete(key, current) {
+			r.states.Delete(key)
+			r.probeFailures.Delete(key)
+		}
+		return
+	}
+	runner := r.probeRunner(account.Platform)
+	if runner == nil {
+		return
+	}
+	if existing, loaded := r.probes.Load(key); loaded {
+		lease, valid := existing.(nonOpenAIPoolProbeLease)
+		timeoutSeconds := bucket.ProbeTimeoutSeconds
+		if timeoutSeconds <= 0 {
+			timeoutSeconds = settings.ProbeTimeoutSeconds
+		}
+		if valid && (timeoutSeconds <= 0 || time.Since(lease.StartedAt) < time.Duration(timeoutSeconds)*time.Second) {
+			return
+		}
+		if !r.probes.CompareAndDelete(key, existing) {
+			return
 		}
 	}
-	// Missing, invalid, or expired leases are eligible here. shouldSkip owns the
-	// CAS cleanup and lets exactly one selected request take over the probe.
-	return !state.Due
+	lease := nonOpenAIPoolProbeLease{StartedAt: time.Now(), Token: r.nextProbe.Add(1), Deadline: expectedDeadline}
+	if _, loaded := r.probes.LoadOrStore(key, lease); loaded {
+		return
+	}
+	state := r.state(account.ID, account.Platform, kind)
+	state.Until = expectedDeadline
+	state.Cooling = true
+	state.Due = true
+	state.ProbeInFlight = true
+	state.ProbeModel = bucket.RecoveryProbeModel
+	state.ProbeKind = kind
+	r.states.Store(key, state)
+
+	timeoutSeconds := bucket.ProbeTimeoutSeconds
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = settings.ProbeTimeoutSeconds
+	}
+	if timeoutSeconds > 0 {
+		time.AfterFunc(time.Duration(timeoutSeconds)*time.Second, func() {
+			r.maybeStartRecoveryProbe(r.currentSettings(settings), account, kind, expectedDeadline)
+		})
+	}
+	go func() {
+		ctx := context.Background()
+		cancel := func() {}
+		if timeoutSeconds > 0 {
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+		}
+		defer cancel()
+		result := runner(ctx, account.ID, account.Platform, kind, bucket.RecoveryProbeModel)
+		if ctx.Err() != nil && result.Success {
+			result = NonOpenAIPoolProbeResult{StatusCode: 0, Reason: ctx.Err().Error(), Source: "probe_timeout"}
+		}
+		r.finishRecoveryProbe(r.currentSettings(settings), account, kind, lease, result)
+	}()
+}
+
+func (r *NonOpenAIPoolRuntime) maybeKickFromAdmin(settings NonOpenAIPoolSettings, account *Account) {
+	if r == nil || account == nil {
+		return
+	}
+	for _, kind := range []string{NonOpenAIPoolRequestKindText, NonOpenAIPoolRequestKindImage} {
+		if kind == NonOpenAIPoolRequestKindImage && !nonOpenAIPoolPlatformSupportsImageBucket(account.Platform) {
+			continue
+		}
+		value, ok := r.deadlines.Load(nonOpenAIPoolKey(account, kind))
+		deadline, valid := value.(time.Time)
+		if ok && valid && !time.Now().Before(deadline) {
+			r.maybeStartRecoveryProbe(settings, account, kind, deadline)
+		}
+	}
+}
+
+func (r *NonOpenAIPoolRuntime) finishRecoveryProbe(settings NonOpenAIPoolSettings, account *Account, kind string, lease nonOpenAIPoolProbeLease, result NonOpenAIPoolProbeResult) {
+	key := nonOpenAIPoolKey(account, kind)
+	loaded, ok := r.probes.Load(key)
+	currentLease, valid := loaded.(nonOpenAIPoolProbeLease)
+	if !ok || !valid || currentLease.Token != lease.Token {
+		return
+	}
+	defer r.probes.CompareAndDelete(key, loaded)
+	deadlineValue, ok := r.deadlines.Load(key)
+	deadline, valid := deadlineValue.(time.Time)
+	if !ok || !valid || !deadline.Equal(lease.Deadline) {
+		return
+	}
+	if !settings.Enabled {
+		if r.deadlines.CompareAndDelete(key, deadlineValue) {
+			r.consecutiveFailures.Delete(key)
+			r.probeFailures.Delete(key)
+			r.states.Delete(key)
+		}
+		return
+	}
+	bucket, hasPlatformSettings := nonOpenAIPoolBucketSettings(settings, account, kind)
+	if hasPlatformSettings && !bucket.RecoveryProbeEnabled {
+		if r.deadlines.CompareAndDelete(key, deadlineValue) {
+			r.consecutiveFailures.Delete(key)
+			r.probeFailures.Delete(key)
+			r.states.Delete(key)
+		}
+		return
+	}
+	if result.Success {
+		if r.deadlines.CompareAndDelete(key, deadlineValue) {
+			r.consecutiveFailures.Delete(key)
+			r.probeFailures.Delete(key)
+			r.states.Delete(key)
+		}
+		return
+	}
+
+	failures := incrementNonOpenAIPoolCounter(&r.probeFailures, key)
+	seconds := nonOpenAIPoolCooldownSeconds(settings, result.StatusCode)
+	for i := 1; i < failures && seconds < settings.ProbeMaxBackoffSeconds; i++ {
+		seconds *= 2
+	}
+	maxSeconds := settings.MaxCooldownSeconds
+	if hasPlatformSettings && bucket.SoftCooldownMaxSeconds > 0 {
+		maxSeconds = bucket.SoftCooldownMaxSeconds
+	}
+	if settings.ProbeMaxBackoffSeconds > 0 && (maxSeconds <= 0 || settings.ProbeMaxBackoffSeconds < maxSeconds) {
+		maxSeconds = settings.ProbeMaxBackoffSeconds
+	}
+	if maxSeconds > 0 && seconds > maxSeconds {
+		seconds = maxSeconds
+	}
+	if seconds <= 0 {
+		seconds = 1
+	}
+	newDeadline := time.Now().Add(time.Duration(seconds) * time.Second)
+	if !r.deadlines.CompareAndSwap(key, deadlineValue, newDeadline) {
+		return
+	}
+	reason := truncateString(sanitizeUpstreamErrorMessage(strings.TrimSpace(result.Reason)), 256)
+	source := truncateString(strings.TrimSpace(result.Source), 64)
+	if source == "" {
+		source = "recovery_probe"
+	}
+	state := r.state(account.ID, account.Platform, kind)
+	state.Until = newDeadline
+	state.Cooling = true
+	state.Due = false
+	state.ProbeInFlight = false
+	state.CooldownSource = "probe_backoff"
+	state.ProbeModel = bucket.RecoveryProbeModel
+	state.ProbeKind = kind
+	state.LastProbeStatus = result.StatusCode
+	state.LastProbeReason = reason
+	// Preserve the error that originally placed the account in cooldown. Probe
+	// errors are tracked separately, matching the OpenAI/Anthropic state model.
+	if state.Reason == "" {
+		state.StatusCode = result.StatusCode
+		state.Reason = reason
+	}
+	if source != "" && state.LastProbeReason == "" {
+		state.LastProbeReason = source
+	}
+	r.states.Store(key, state)
+	r.scheduleRecoveryProbe(settings, account, kind, newDeadline)
+}
+
+func nonOpenAIPoolCooldownSeconds(settings NonOpenAIPoolSettings, statusCode int) int {
+	seconds := settings.DefaultCooldownSeconds
+	switch {
+	case statusCode == http.StatusUnauthorized || statusCode == http.StatusPaymentRequired || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests:
+		seconds = settings.AuthCooldownSeconds
+	case statusCode == 0:
+		seconds = settings.TransportCooldownSeconds
+	case statusCode == http.StatusBadGateway || statusCode == 529 || statusCode >= 500:
+		seconds = settings.ServerErrorCooldownSeconds
+	}
+	return seconds
 }
 
 func (r *NonOpenAIPoolRuntime) stateForAccount(account *Account) NonOpenAIPoolRuntimeState {
@@ -379,53 +592,34 @@ func (r *NonOpenAIPoolRuntime) markFailure(ctx context.Context, settings NonOpen
 	}
 	reason = sanitizeUpstreamErrorMessage(strings.TrimSpace(reason))
 	key := nonOpenAIPoolKey(account, kind)
-	probeFailure := false
-	if currentProbe, ok := r.probes.Load(key); ok {
-		lease, valid := currentProbe.(nonOpenAIPoolProbeLease)
-		if valid && account.nonOpenAIPoolProbeToken != 0 && lease.Token == account.nonOpenAIPoolProbeToken {
-			probeFailure = true
-		} else {
-			// A normal request that started before cooldown, or an expired probe,
-			// must not replace a newer in-flight recovery probe.
-			return
-		}
+	if _, probing := r.probes.Load(key); probing {
+		// Requests that started before the cooldown cannot overwrite the active
+		// background probe generation.
+		return
 	}
-	if !probeFailure {
-		if value, ok := r.deadlines.Load(key); ok {
-			if activeUntil, valid := value.(time.Time); valid && time.Now().Before(activeUntil) {
-				state := r.state(account.ID, account.Platform, kind)
-				state.Until = activeUntil
-				state.Cooling = true
-				state.Due = false
-				state.ProbeInFlight = false
-				state.StatusCode = statusCode
-				state.Reason = truncateString(strings.TrimSpace(reason), 256)
-				state.CooldownSource = truncateString(strings.TrimSpace(source), 64)
-				r.states.Store(key, state)
-				return
+	if value, ok := r.deadlines.Load(key); ok {
+		if activeUntil, valid := value.(time.Time); valid {
+			state := r.state(account.ID, account.Platform, kind)
+			state.Until = activeUntil
+			state.Cooling = true
+			state.Due = !time.Now().Before(activeUntil)
+			state.ProbeInFlight = false
+			state.StatusCode = statusCode
+			state.Reason = truncateString(strings.TrimSpace(reason), 256)
+			state.CooldownSource = truncateString(strings.TrimSpace(source), 64)
+			r.states.Store(key, state)
+			if state.Due {
+				r.maybeStartRecoveryProbe(settings, account, kind, activeUntil)
 			}
-		}
-	}
-	if !probeFailure {
-		threshold := account.GetPoolSoftCooldownErrorThreshold()
-		failureCount := incrementNonOpenAIPoolCounter(&r.consecutiveFailures, key)
-		if threshold > 1 && failureCount < threshold {
 			return
 		}
-		r.consecutiveFailures.Delete(key)
 	}
-	probeFailureCount := 0
-	if probeFailure {
-		probeFailureCount = incrementNonOpenAIPoolCounter(&r.probeFailures, key)
+	threshold := account.GetPoolSoftCooldownErrorThreshold()
+	failureCount := incrementNonOpenAIPoolCounter(&r.consecutiveFailures, key)
+	if threshold > 1 && failureCount < threshold {
+		return
 	}
-	if probeFailureCount > 1 {
-		for i := 1; i < probeFailureCount && seconds < settings.ProbeMaxBackoffSeconds; i++ {
-			seconds *= 2
-		}
-		if settings.ProbeMaxBackoffSeconds > 0 && seconds > settings.ProbeMaxBackoffSeconds {
-			seconds = settings.ProbeMaxBackoffSeconds
-		}
-	}
+	r.consecutiveFailures.Delete(key)
 	if hasPlatformSettings && bucket.SoftCooldownMaxSeconds > 0 && seconds > bucket.SoftCooldownMaxSeconds {
 		seconds = bucket.SoftCooldownMaxSeconds
 	}
@@ -433,12 +627,6 @@ func (r *NonOpenAIPoolRuntime) markFailure(ctx context.Context, settings NonOpen
 		seconds = settings.MaxCooldownSeconds
 	}
 	if seconds <= 0 {
-		// A failed recovery probe with no effective backoff must not leave its
-		// lease (and the expired deadline) installed. Otherwise every subsequent
-		// candidate can be reported as ProbeInFlight until the lease timeout.
-		if probeFailure {
-			r.clear(account)
-		}
 		return
 	}
 	account.nonOpenAIPoolProbeToken = 0
@@ -446,7 +634,12 @@ func (r *NonOpenAIPoolRuntime) markFailure(ctx context.Context, settings NonOpen
 	r.probes.Delete(key)
 	until := time.Now().Add(time.Duration(seconds) * time.Second)
 	r.deadlines.Store(key, until)
-	r.states.Store(key, NonOpenAIPoolRuntimeState{Until: until, Cooling: true, StatusCode: statusCode, Reason: truncateString(strings.TrimSpace(reason), 256), CooldownSource: truncateString(strings.TrimSpace(source), 64)})
+	r.states.Store(key, NonOpenAIPoolRuntimeState{
+		Until: until, Cooling: true, StatusCode: statusCode,
+		Reason: truncateString(strings.TrimSpace(reason), 256), CooldownSource: truncateString(strings.TrimSpace(source), 64),
+		ProbeModel: bucket.RecoveryProbeModel, ProbeKind: kind,
+	})
+	r.scheduleRecoveryProbe(settings, account, kind, until)
 }
 
 func (r *NonOpenAIPoolRuntime) markSuccess(account *Account) {
@@ -457,34 +650,16 @@ func (r *NonOpenAIPoolRuntime) markSuccess(account *Account) {
 	// service. Only the first report owns the request-scoped bucket marker; a
 	// duplicate report must not fall back to the text bucket and clear its
 	// failure counter after an image/media success.
-	if account.nonOpenAIPoolProbeToken == 0 && account.nonOpenAIPoolRequestKind == "" {
+	if account.nonOpenAIPoolRequestKind == "" {
 		return
 	}
 	kind := nonOpenAIPoolRequestKindForAccount(nil, account)
 	if account.nonOpenAIPoolRequestKind == NonOpenAIPoolRequestKindImage {
 		kind = NonOpenAIPoolRequestKindImage
 	}
-	if account.nonOpenAIPoolProbeKind == NonOpenAIPoolRequestKindImage {
-		kind = NonOpenAIPoolRequestKindImage
-	}
 	key := nonOpenAIPoolKey(account, kind)
-	if account.nonOpenAIPoolProbeToken == 0 {
-		r.consecutiveFailures.Delete(key)
-		account.nonOpenAIPoolRequestKind = ""
-		return
-	}
-	value, ok := r.probes.Load(key)
-	lease, valid := value.(nonOpenAIPoolProbeLease)
-	if !ok || !valid || lease.Token != account.nonOpenAIPoolProbeToken || !r.probes.CompareAndDelete(key, value) {
-		return
-	}
 	r.consecutiveFailures.Delete(key)
-	account.nonOpenAIPoolProbeToken = 0
-	account.nonOpenAIPoolProbeKind = ""
 	account.nonOpenAIPoolRequestKind = ""
-	r.deadlines.Delete(key)
-	r.probeFailures.Delete(key)
-	r.states.Delete(key)
 }
 
 // releaseProbe rolls back a probe lease when scheduler admission fails after

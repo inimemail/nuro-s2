@@ -233,6 +233,9 @@ func (s *SettingService) sharedNonOpenAIPoolRuntime() *NonOpenAIPoolRuntime {
 	}
 	s.nonOpenAIPoolRuntimeOnce.Do(func() {
 		s.nonOpenAIPoolRuntime = NewNonOpenAIPoolRuntime()
+		s.nonOpenAIPoolRuntime.settingsProvider = func() NonOpenAIPoolSettings {
+			return nonOpenAIPoolSettings(context.Background(), s)
+		}
 	})
 	return s.nonOpenAIPoolRuntime
 }

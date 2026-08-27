@@ -6500,6 +6500,7 @@ export default {
         nonOpenAIPoolRequestProbeHint: 'Recovery uses a normal downstream request. It adds no extra request, reconnect, or first-token delay.',
         nonOpenAIPoolTextPool: 'Normal-model recovery probe',
         nonOpenAIPoolImagePool: 'Image/media recovery probe',
+        nonOpenAIPoolProbeModel: 'Probe model',
         nonOpenAIPoolPlatformMaxCooldown: 'Platform maximum cooldown',
         nonOpenAIPoolPlatformProbeTimeout: 'Probe timeout'
       },

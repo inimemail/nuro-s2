@@ -96,7 +96,11 @@ type Account struct {
 	NonOpenAIPoolSoftCooldownDue        bool
 	NonOpenAIPoolSoftCooldownStatusCode int
 	NonOpenAIPoolSoftCooldownReason     string
+	NonOpenAIPoolSoftCooldownProbeModel string
+	NonOpenAIPoolSoftCooldownProbeKind  string
 	NonOpenAIPoolSoftCooldownSource     string
+	NonOpenAIPoolLastProbeStatusCode    int
+	NonOpenAIPoolLastProbeReason        string
 	NonOpenAIPoolRecoveryProbeInFlight  bool
 
 	SessionWindowStart  *time.Time
