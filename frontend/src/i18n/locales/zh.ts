@@ -6628,7 +6628,7 @@ export default {
         anthropicPoolProbeTimeout: 'Anthropic 探测超时秒数',
         nonOpenAIPoolTitle: '非 OpenAI 平台池调度',
         nonOpenAIPoolEnabled: '启用非 OpenAI 平台池调度',
-        nonOpenAIPoolDescription: 'Gemini、Antigravity、Grok、Kimi、智谱、DeepSeek 使用独立的池软冷却和恢复探测，不改动 OpenAI 与 Anthropic 的现有策略。',
+        nonOpenAIPoolDescription: '各平台普通模型池独立调度；Gemini、Antigravity、Grok 的图片/媒体池单独冷却和恢复，不改动 OpenAI 与 Anthropic。',
         nonOpenAIPoolDefaultCooldown: '普通错误冷却',
         nonOpenAIPoolAuthCooldown: '认证/限流冷却',
         nonOpenAIPoolServerCooldown: '服务端错误冷却',
@@ -6639,6 +6639,8 @@ export default {
         nonOpenAIPoolPlatforms: '平台级设置',
         nonOpenAIPoolRecoveryProbe: '恢复探测',
         nonOpenAIPoolRequestProbeHint: '恢复探测使用正常下游请求，不额外增加请求、重连或首 Token 延迟。',
+        nonOpenAIPoolTextPool: '普通模型池恢复探测',
+        nonOpenAIPoolImagePool: '图片/媒体池恢复探测',
         nonOpenAIPoolPlatformMaxCooldown: '平台最大冷却',
         nonOpenAIPoolPlatformProbeTimeout: '探测超时'
       },

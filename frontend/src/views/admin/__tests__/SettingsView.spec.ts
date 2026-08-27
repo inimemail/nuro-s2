@@ -692,6 +692,11 @@ describe("admin SettingsView payment visible method controls", () => {
             recovery_probe_enabled: true,
             soft_cooldown_max_seconds: 40,
             probe_timeout_seconds: 6,
+            image: {
+              recovery_probe_enabled: true,
+              soft_cooldown_max_seconds: 30,
+              probe_timeout_seconds: 5,
+            },
           },
         ]),
       ),
@@ -708,11 +713,27 @@ describe("admin SettingsView payment visible method controls", () => {
     for (const platform of ["Gemini", "Antigravity", "Grok", "Kimi", "Zhipu", "DeepSeek"]) {
       expect(panel.text()).toContain(platform);
     }
+    for (const platform of ["gemini", "antigravity", "grok"]) {
+      expect(panel.find(`[data-test="non-openai-image-pool-${platform}"]`).exists()).toBe(true);
+    }
+    for (const platform of ["kimi", "zhipu", "deepseek"]) {
+      expect(panel.find(`[data-test="non-openai-image-pool-${platform}"]`).exists()).toBe(false);
+    }
 
     await wrapper.find("form").trigger("submit.prevent");
     await flushPromises();
-    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({
-      non_openai_pool: nonOpenAIPool,
+    expect(updateSettings.mock.calls[0]?.[0]?.non_openai_pool).toMatchObject({
+      enabled: true,
+      platforms: {
+        grok: {
+          recovery_probe_enabled: true,
+          image: {
+            recovery_probe_enabled: true,
+            soft_cooldown_max_seconds: 30,
+            probe_timeout_seconds: 5,
+          },
+        },
+      },
     });
   });
 

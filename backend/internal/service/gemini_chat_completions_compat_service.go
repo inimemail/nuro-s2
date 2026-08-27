@@ -39,6 +39,9 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 	}
 
 	originalModel := ccReq.Model
+	if isImageGenerationModel(originalModel) || (account != nil && isImageGenerationModel(account.GetMappedModel(originalModel))) {
+		ctx = WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
+	}
 	clientStream := ccReq.Stream
 	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
 
@@ -86,6 +89,9 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	mappedModel := req.Model
 	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
 		mappedModel = account.GetMappedModel(req.Model)
+	}
+	if isImageGenerationModel(mappedModel) {
+		ctx = WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
 	}
 
 	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody)

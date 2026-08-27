@@ -1367,6 +1367,9 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	// 应用 thinking 模式自动后缀：如果 thinking 开启且目标是 claude-sonnet-4-5，自动改为 thinking 版本
 	thinkingEnabled := claudeReq.Thinking != nil && (claudeReq.Thinking.Type == "enabled" || claudeReq.Thinking.Type == "adaptive")
 	mappedModel = applyThinkingModelSuffix(mappedModel, thinkingEnabled)
+	if isImageGenerationModel(mappedModel) {
+		ctx = WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
+	}
 	billingModel := mappedModel
 
 	// 获取 access_token
@@ -2087,6 +2090,9 @@ func stripSignatureSensitiveBlocksFromClaudeRequest(req *antigravity.ClaudeReque
 //	          └─ 失败 → 设置模型限流 + 清除粘性绑定 → 切换账号
 func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Context, account *Account, originalModel string, action string, stream bool, body []byte, isStickySession bool) (*ForwardResult, error) {
 	startTime := time.Now()
+	if isImageGenerationModel(originalModel) {
+		ctx = WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
+	}
 
 	sessionID := getSessionID(c)
 	prefix := logPrefix(sessionID, account.Name)
@@ -2127,6 +2133,9 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	if mappedModel == "" {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		return nil, s.writeGoogleError(c, http.StatusForbidden, fmt.Sprintf("model %s not in whitelist", originalModel))
+	}
+	if isImageGenerationModel(mappedModel) {
+		ctx = WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
 	}
 	billingModel := mappedModel
 
@@ -4515,6 +4524,9 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		return nil, fmt.Errorf("missing model")
 	}
 	originalModel := claudeReq.Model
+	if isImageGenerationModel(originalModel) {
+		ctx = WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
+	}
 
 	// 构建上游请求 URL
 	upstreamURL := baseURL + "/v1/messages"

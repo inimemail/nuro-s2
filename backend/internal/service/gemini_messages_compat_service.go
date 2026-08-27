@@ -136,6 +136,9 @@ func (s *GeminiMessagesCompatService) SelectAccountForModel(ctx context.Context,
 }
 
 func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
+	if isImageGenerationModel(requestedModel) {
+		ctx = WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
+	}
 	// 1. 确定目标平台和调度模式
 	// Determine target platform and scheduling mode
 	platform, useMixedScheduling, hasForcePlatform, err := s.resolvePlatformAndSchedulingMode(ctx, groupID)
@@ -292,6 +295,7 @@ func (s *GeminiMessagesCompatService) isAccountUsableForRequestWithPrecheck(
 	useMixedScheduling bool,
 	precheckResult map[int64]bool,
 ) bool {
+	ctx = withNonOpenAIPoolModelKind(ctx, account, requestedModel)
 	// 检查模型调度能力
 	// Check model scheduling capability
 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
@@ -515,9 +519,15 @@ func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context
 	}
 	hydrated, err := getSchedulerAccountForRequest(ctx, s.schedulerSnapshot, account.ID)
 	if err != nil {
+		if s.nonOpenAIPoolRuntime != nil {
+			s.nonOpenAIPoolRuntime.releaseProbe(account)
+		}
 		return nil, err
 	}
 	if hydrated == nil {
+		if s.nonOpenAIPoolRuntime != nil {
+			s.nonOpenAIPoolRuntime.releaseProbe(account)
+		}
 		return nil, fmt.Errorf("selected gemini account %d not found during hydration", account.ID)
 	}
 	copyNonOpenAIPoolProbeToken(account, hydrated)
@@ -674,11 +684,17 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	if strings.TrimSpace(req.Model) == "" {
 		return nil, fmt.Errorf("missing model")
 	}
+	if isImageGenerationModel(req.Model) {
+		ctx = WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
+	}
 
 	originalModel := req.Model
 	mappedModel := req.Model
 	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
 		mappedModel = account.GetMappedModel(req.Model)
+	}
+	if isImageGenerationModel(mappedModel) {
+		ctx = WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
 	}
 
 	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(body)
@@ -1209,6 +1225,9 @@ func isGeminiSignatureRelatedError(respBody []byte) bool {
 
 func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.Context, account *Account, originalModel string, action string, stream bool, body []byte) (*ForwardResult, error) {
 	startTime := time.Now()
+	if isImageGenerationModel(originalModel) {
+		ctx = WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
+	}
 
 	if strings.TrimSpace(originalModel) == "" {
 		return nil, s.writeGoogleError(c, http.StatusBadRequest, "Missing model in URL")
@@ -1242,6 +1261,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	mappedModel := originalModel
 	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
 		mappedModel = account.GetMappedModel(originalModel)
+	}
+	if isImageGenerationModel(mappedModel) {
+		ctx = WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
 	}
 
 	proxyURL := ""
@@ -1800,7 +1822,11 @@ func (s *GeminiMessagesCompatService) poolModeSkippedFailoverError(c *gin.Contex
 		return nil
 	}
 	if s.nonOpenAIPoolRuntime != nil {
-		s.nonOpenAIPoolRuntime.markFailure(context.Background(), nonOpenAIPoolSettings(context.Background(), s.settingService), account, statusCode, extractUpstreamErrorMessage(respBody), "failover")
+		failureCtx := context.Background()
+		if c != nil && c.Request != nil {
+			failureCtx = c.Request.Context()
+		}
+		s.nonOpenAIPoolRuntime.markFailure(failureCtx, nonOpenAIPoolSettings(failureCtx, s.settingService), account, statusCode, extractUpstreamErrorMessage(respBody), "failover")
 	}
 	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{

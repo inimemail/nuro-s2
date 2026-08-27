@@ -13,11 +13,11 @@ import (
 // runtimes. It is used by OpenAI-compatible domestic providers and by the
 // Gemini compatibility path, without changing either existing implementation.
 type NonOpenAIPoolRuntime struct {
-	deadlines           sync.Map // key: platform:accountID, value: time.Time
-	states              sync.Map // key: platform:accountID, value: NonOpenAIPoolRuntimeState
-	probes              sync.Map // key: platform:accountID, value: nonOpenAIPoolProbeLease
-	consecutiveFailures sync.Map // key: platform:accountID, value: int
-	probeFailures       sync.Map // key: platform:accountID, value: int
+	deadlines           sync.Map // key: platform:kind:accountID, value: time.Time
+	states              sync.Map // key: platform:kind:accountID, value: NonOpenAIPoolRuntimeState
+	probes              sync.Map // key: platform:kind:accountID, value: nonOpenAIPoolProbeLease
+	consecutiveFailures sync.Map // key: platform:kind:accountID, value: int
+	probeFailures       sync.Map // key: platform:kind:accountID, value: int
 	nextProbe           atomic.Uint64
 }
 
@@ -36,6 +36,71 @@ type NonOpenAIPoolRuntimeState struct {
 	CooldownSource string
 }
 
+const (
+	NonOpenAIPoolRequestKindText  = "text"
+	NonOpenAIPoolRequestKindImage = "image"
+)
+
+type nonOpenAIPoolRequestKindContextKey struct{}
+
+// WithNonOpenAIPoolRequestKind marks normal text or image/media traffic.
+func WithNonOpenAIPoolRequestKind(ctx context.Context, kind string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if kind != NonOpenAIPoolRequestKindImage {
+		kind = NonOpenAIPoolRequestKindText
+	}
+	return context.WithValue(ctx, nonOpenAIPoolRequestKindContextKey{}, kind)
+}
+
+func nonOpenAIPoolRequestKindFromContext(ctx context.Context) string {
+	kind, _ := nonOpenAIPoolRequestKindFromContextExplicit(ctx)
+	return kind
+}
+
+func nonOpenAIPoolRequestKindFromContextExplicit(ctx context.Context) (string, bool) {
+	if ctx != nil {
+		if kind, ok := ctx.Value(nonOpenAIPoolRequestKindContextKey{}).(string); ok {
+			if kind == NonOpenAIPoolRequestKindImage {
+				return kind, true
+			}
+			return NonOpenAIPoolRequestKindText, true
+		}
+		if OpenAIImageGenerationIntentFromContext(ctx) || OpenAIImagesEndpointFromContext(ctx) {
+			return NonOpenAIPoolRequestKindImage, true
+		}
+	}
+	return NonOpenAIPoolRequestKindText, false
+}
+
+func nonOpenAIPoolRequestKindForAccount(ctx context.Context, account *Account) string {
+	if account != nil && nonOpenAIPoolPlatformSupportsImageBucket(account.Platform) &&
+		nonOpenAIPoolRequestKindFromContext(ctx) == NonOpenAIPoolRequestKindImage {
+		return NonOpenAIPoolRequestKindImage
+	}
+	return NonOpenAIPoolRequestKindText
+}
+
+func withNonOpenAIPoolModelKind(ctx context.Context, account *Account, requestedModel string) context.Context {
+	if account == nil || !nonOpenAIPoolPlatformSupportsImageBucket(account.Platform) {
+		return ctx
+	}
+	if nonOpenAIPoolRequestKindFromContext(ctx) == NonOpenAIPoolRequestKindImage {
+		return ctx
+	}
+	model := strings.TrimSpace(requestedModel)
+	if account != nil {
+		if mapped := strings.TrimSpace(account.GetMappedModel(model)); mapped != "" {
+			model = mapped
+		}
+	}
+	if isImageGenerationModel(model) {
+		return WithNonOpenAIPoolRequestKind(ctx, NonOpenAIPoolRequestKindImage)
+	}
+	return ctx
+}
+
 func NewNonOpenAIPoolRuntime() *NonOpenAIPoolRuntime {
 	return &NonOpenAIPoolRuntime{}
 }
@@ -49,15 +114,42 @@ func nonOpenAIPoolPlatform(platform string) bool {
 	}
 }
 
+func nonOpenAIPoolPlatformSupportsImageBucket(platform string) bool {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case PlatformGemini, PlatformAntigravity, PlatformGrok:
+		return true
+	default:
+		return false
+	}
+}
+
 func shouldNonOpenAIPoolFailoverStatus(statusCode int) bool {
 	return statusCode == 0 || statusCode == http.StatusRequestTimeout || statusCode == http.StatusUnauthorized || statusCode == http.StatusPaymentRequired || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests || statusCode == 529 || statusCode >= 500
 }
 
-func nonOpenAIPoolKey(account *Account) string {
+func nonOpenAIPoolKey(account *Account, kinds ...string) string {
 	if account == nil {
 		return ""
 	}
-	return strings.ToLower(strings.TrimSpace(account.Platform)) + ":" + formatInt64(account.ID)
+	kind := NonOpenAIPoolRequestKindText
+	if len(kinds) > 0 && kinds[0] == NonOpenAIPoolRequestKindImage {
+		kind = NonOpenAIPoolRequestKindImage
+	}
+	return strings.ToLower(strings.TrimSpace(account.Platform)) + ":" + kind + ":" + formatInt64(account.ID)
+}
+
+func nonOpenAIPoolBucketSettings(settings NonOpenAIPoolSettings, account *Account, kind string) (NonOpenAIPoolBucketSettings, bool) {
+	if account == nil {
+		return NonOpenAIPoolBucketSettings{}, false
+	}
+	platformSettings, ok := settings.Platforms[strings.ToLower(strings.TrimSpace(account.Platform))]
+	if !ok {
+		return NonOpenAIPoolBucketSettings{RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: settings.MaxCooldownSeconds, ProbeTimeoutSeconds: settings.ProbeTimeoutSeconds}, false
+	}
+	if kind == NonOpenAIPoolRequestKindImage && nonOpenAIPoolPlatformSupportsImageBucket(account.Platform) {
+		return platformSettings.Image, true
+	}
+	return NonOpenAIPoolBucketSettings{RecoveryProbeEnabled: platformSettings.RecoveryProbeEnabled, SoftCooldownMaxSeconds: platformSettings.SoftCooldownMaxSeconds, ProbeTimeoutSeconds: platformSettings.ProbeTimeoutSeconds}, true
 }
 
 func formatInt64(value int64) string {
@@ -84,7 +176,6 @@ func formatInt64(value int64) string {
 }
 
 func (r *NonOpenAIPoolRuntime) shouldSkip(ctx context.Context, settings NonOpenAIPoolSettings, account *Account) bool {
-	_ = ctx
 	if r == nil || account == nil || !account.IsPoolMode() || !nonOpenAIPoolPlatform(account.Platform) {
 		return false
 	}
@@ -96,11 +187,13 @@ func (r *NonOpenAIPoolRuntime) shouldSkip(ctx context.Context, settings NonOpenA
 		r.clear(account)
 		return false
 	}
-	key := nonOpenAIPoolKey(account)
-	platformSettings, hasPlatformSettings := settings.Platforms[strings.ToLower(strings.TrimSpace(account.Platform))]
+	kind := nonOpenAIPoolRequestKindForAccount(ctx, account)
+	account.nonOpenAIPoolRequestKind = kind
+	key := nonOpenAIPoolKey(account, kind)
+	bucket, hasPlatformSettings := nonOpenAIPoolBucketSettings(settings, account, kind)
 	probeTimeout := settings.ProbeTimeoutSeconds
-	if hasPlatformSettings && platformSettings.ProbeTimeoutSeconds > 0 {
-		probeTimeout = platformSettings.ProbeTimeoutSeconds
+	if hasPlatformSettings && bucket.ProbeTimeoutSeconds > 0 {
+		probeTimeout = bucket.ProbeTimeoutSeconds
 	}
 	if existing, loaded := r.probes.Load(key); loaded {
 		lease, valid := existing.(nonOpenAIPoolProbeLease)
@@ -110,7 +203,7 @@ func (r *NonOpenAIPoolRuntime) shouldSkip(ctx context.Context, settings NonOpenA
 			if account.nonOpenAIPoolProbeToken == lease.Token {
 				return false
 			}
-			state := r.state(account.ID, account.Platform)
+			state := r.state(account.ID, account.Platform, kind)
 			state.Cooling = true
 			state.Due = true
 			state.ProbeInFlight = true
@@ -131,7 +224,7 @@ func (r *NonOpenAIPoolRuntime) shouldSkip(ctx context.Context, settings NonOpenA
 		return false
 	}
 	if time.Now().Before(until) {
-		state := r.state(account.ID, account.Platform)
+		state := r.state(account.ID, account.Platform, kind)
 		state.Until = until
 		state.Cooling = true
 		state.Due = false
@@ -139,8 +232,8 @@ func (r *NonOpenAIPoolRuntime) shouldSkip(ctx context.Context, settings NonOpenA
 		r.states.Store(key, state)
 		return true
 	}
-	if hasPlatformSettings && !platformSettings.RecoveryProbeEnabled {
-		r.clear(account)
+	if hasPlatformSettings && !bucket.RecoveryProbeEnabled {
+		r.clearKind(account, kind)
 		return false
 	}
 	// Exactly one request is allowed to act as the recovery probe. The probe
@@ -150,7 +243,8 @@ func (r *NonOpenAIPoolRuntime) shouldSkip(ctx context.Context, settings NonOpenA
 		return true
 	}
 	account.nonOpenAIPoolProbeToken = lease.Token
-	state := r.state(account.ID, account.Platform)
+	account.nonOpenAIPoolProbeKind = kind
+	state := r.state(account.ID, account.Platform, kind)
 	state.Until = until
 	state.Cooling = true
 	state.Due = true
@@ -163,6 +257,10 @@ func (r *NonOpenAIPoolRuntime) shouldSkip(ctx context.Context, settings NonOpenA
 // cooldown without a probe lease remains eligible so the request that is
 // actually selected can claim the recovery probe in shouldSkip.
 func (r *NonOpenAIPoolRuntime) candidateBlocked(settings NonOpenAIPoolSettings, account *Account) bool {
+	return r.candidateBlockedForKind(settings, account, NonOpenAIPoolRequestKindText)
+}
+
+func (r *NonOpenAIPoolRuntime) candidateBlockedForKind(settings NonOpenAIPoolSettings, account *Account, kind string) bool {
 	if r == nil || account == nil || !account.IsPoolMode() || !nonOpenAIPoolPlatform(account.Platform) {
 		return false
 	}
@@ -170,29 +268,80 @@ func (r *NonOpenAIPoolRuntime) candidateBlocked(settings NonOpenAIPoolSettings, 
 		r.clear(account)
 		return false
 	}
-	state := r.stateForAccount(account)
+	if kind == NonOpenAIPoolRequestKindImage && !nonOpenAIPoolPlatformSupportsImageBucket(account.Platform) {
+		kind = NonOpenAIPoolRequestKindText
+	}
+	state := r.state(account.ID, account.Platform, kind)
 	if !state.Cooling {
 		return false
 	}
-	if account.nonOpenAIPoolProbeToken != 0 {
-		if value, ok := r.probes.Load(nonOpenAIPoolKey(account)); ok {
-			if lease, valid := value.(nonOpenAIPoolProbeLease); valid && lease.Token == account.nonOpenAIPoolProbeToken {
+	key := nonOpenAIPoolKey(account, kind)
+	if value, ok := r.probes.Load(key); ok {
+		if lease, valid := value.(nonOpenAIPoolProbeLease); valid {
+			if account.nonOpenAIPoolProbeToken != 0 && lease.Token == account.nonOpenAIPoolProbeToken {
 				return false
+			}
+			bucket, hasPlatformSettings := nonOpenAIPoolBucketSettings(settings, account, kind)
+			probeTimeout := settings.ProbeTimeoutSeconds
+			if hasPlatformSettings && bucket.ProbeTimeoutSeconds > 0 {
+				probeTimeout = bucket.ProbeTimeoutSeconds
+			}
+			if probeTimeout <= 0 || time.Since(lease.StartedAt) < time.Duration(probeTimeout)*time.Second {
+				return true
 			}
 		}
 	}
-	return !state.Due || state.ProbeInFlight
+	// Missing, invalid, or expired leases are eligible here. shouldSkip owns the
+	// CAS cleanup and lets exactly one selected request take over the probe.
+	return !state.Due
 }
 
 func (r *NonOpenAIPoolRuntime) stateForAccount(account *Account) NonOpenAIPoolRuntimeState {
+	return r.stateForAccountWithSettings(account, DefaultNonOpenAIPoolSettings())
+}
+
+func (r *NonOpenAIPoolRuntime) stateForAccountWithSettings(account *Account, settings NonOpenAIPoolSettings) NonOpenAIPoolRuntimeState {
 	if account == nil || !nonOpenAIPoolPlatform(account.Platform) {
 		return NonOpenAIPoolRuntimeState{}
 	}
-	return r.state(account.ID, account.Platform)
+	textState := r.displayStateForKind(account, settings, NonOpenAIPoolRequestKindText)
+	imageState := r.displayStateForKind(account, settings, NonOpenAIPoolRequestKindImage)
+	if imageState.ProbeInFlight && !textState.ProbeInFlight {
+		return imageState
+	}
+	if textState.ProbeInFlight {
+		return textState
+	}
+	if !textState.Cooling {
+		return imageState
+	}
+	if imageState.Cooling && imageState.Until.After(textState.Until) {
+		return imageState
+	}
+	return textState
+}
+
+func (r *NonOpenAIPoolRuntime) displayStateForKind(account *Account, settings NonOpenAIPoolSettings, kind string) NonOpenAIPoolRuntimeState {
+	state := r.state(account.ID, account.Platform, kind)
+	if !state.ProbeInFlight {
+		return state
+	}
+	leaseValue, ok := r.probes.Load(nonOpenAIPoolKey(account, kind))
+	lease, valid := leaseValue.(nonOpenAIPoolProbeLease)
+	bucket, hasPlatformSettings := nonOpenAIPoolBucketSettings(settings, account, kind)
+	probeTimeout := settings.ProbeTimeoutSeconds
+	if hasPlatformSettings && bucket.ProbeTimeoutSeconds > 0 {
+		probeTimeout = bucket.ProbeTimeoutSeconds
+	}
+	if !ok || !valid || (probeTimeout > 0 && time.Since(lease.StartedAt) >= time.Duration(probeTimeout)*time.Second) {
+		state.Cooling = true
+		state.Due = true
+		state.ProbeInFlight = false
+	}
+	return state
 }
 
 func (r *NonOpenAIPoolRuntime) markFailure(ctx context.Context, settings NonOpenAIPoolSettings, account *Account, statusCode int, reason, source string) {
-	_ = ctx
 	if r == nil || account == nil || !account.IsPoolMode() || !nonOpenAIPoolPlatform(account.Platform) {
 		return
 	}
@@ -213,17 +362,23 @@ func (r *NonOpenAIPoolRuntime) markFailure(ctx context.Context, settings NonOpen
 	case statusCode == http.StatusBadGateway || statusCode == 529 || statusCode >= 500:
 		seconds = settings.ServerErrorCooldownSeconds
 	}
-	platformSettings, hasPlatformSettings := settings.Platforms[strings.ToLower(strings.TrimSpace(account.Platform))]
-	if hasPlatformSettings {
-		if platformSettings.SoftCooldownMaxSeconds > 0 && seconds > platformSettings.SoftCooldownMaxSeconds {
-			seconds = platformSettings.SoftCooldownMaxSeconds
+	kind := nonOpenAIPoolRequestKindForAccount(ctx, account)
+	if _, explicit := nonOpenAIPoolRequestKindFromContextExplicit(ctx); !explicit {
+		if account.nonOpenAIPoolRequestKind == NonOpenAIPoolRequestKindImage {
+			kind = NonOpenAIPoolRequestKindImage
 		}
 	}
-	if settings.MaxCooldownSeconds > 0 && seconds > settings.MaxCooldownSeconds {
+	bucket, hasPlatformSettings := nonOpenAIPoolBucketSettings(settings, account, kind)
+	if hasPlatformSettings {
+		if bucket.SoftCooldownMaxSeconds > 0 && seconds > bucket.SoftCooldownMaxSeconds {
+			seconds = bucket.SoftCooldownMaxSeconds
+		}
+	}
+	if !hasPlatformSettings && settings.MaxCooldownSeconds > 0 && seconds > settings.MaxCooldownSeconds {
 		seconds = settings.MaxCooldownSeconds
 	}
 	reason = sanitizeUpstreamErrorMessage(strings.TrimSpace(reason))
-	key := nonOpenAIPoolKey(account)
+	key := nonOpenAIPoolKey(account, kind)
 	probeFailure := false
 	if currentProbe, ok := r.probes.Load(key); ok {
 		lease, valid := currentProbe.(nonOpenAIPoolProbeLease)
@@ -238,9 +393,11 @@ func (r *NonOpenAIPoolRuntime) markFailure(ctx context.Context, settings NonOpen
 	if !probeFailure {
 		if value, ok := r.deadlines.Load(key); ok {
 			if activeUntil, valid := value.(time.Time); valid && time.Now().Before(activeUntil) {
-				state := r.state(account.ID, account.Platform)
+				state := r.state(account.ID, account.Platform, kind)
 				state.Until = activeUntil
 				state.Cooling = true
+				state.Due = false
+				state.ProbeInFlight = false
 				state.StatusCode = statusCode
 				state.Reason = truncateString(strings.TrimSpace(reason), 256)
 				state.CooldownSource = truncateString(strings.TrimSpace(source), 64)
@@ -269,10 +426,10 @@ func (r *NonOpenAIPoolRuntime) markFailure(ctx context.Context, settings NonOpen
 			seconds = settings.ProbeMaxBackoffSeconds
 		}
 	}
-	if hasPlatformSettings && platformSettings.SoftCooldownMaxSeconds > 0 && seconds > platformSettings.SoftCooldownMaxSeconds {
-		seconds = platformSettings.SoftCooldownMaxSeconds
+	if hasPlatformSettings && bucket.SoftCooldownMaxSeconds > 0 && seconds > bucket.SoftCooldownMaxSeconds {
+		seconds = bucket.SoftCooldownMaxSeconds
 	}
-	if settings.MaxCooldownSeconds > 0 && seconds > settings.MaxCooldownSeconds {
+	if !hasPlatformSettings && settings.MaxCooldownSeconds > 0 && seconds > settings.MaxCooldownSeconds {
 		seconds = settings.MaxCooldownSeconds
 	}
 	if seconds <= 0 {
@@ -285,6 +442,7 @@ func (r *NonOpenAIPoolRuntime) markFailure(ctx context.Context, settings NonOpen
 		return
 	}
 	account.nonOpenAIPoolProbeToken = 0
+	account.nonOpenAIPoolProbeKind = ""
 	r.probes.Delete(key)
 	until := time.Now().Add(time.Duration(seconds) * time.Second)
 	r.deadlines.Store(key, until)
@@ -295,9 +453,24 @@ func (r *NonOpenAIPoolRuntime) markSuccess(account *Account) {
 	if r == nil || account == nil || !account.IsPoolMode() || !nonOpenAIPoolPlatform(account.Platform) {
 		return
 	}
-	key := nonOpenAIPoolKey(account)
-	r.consecutiveFailures.Delete(key)
+	// A successful request can be reported by more than one compatibility
+	// service. Only the first report owns the request-scoped bucket marker; a
+	// duplicate report must not fall back to the text bucket and clear its
+	// failure counter after an image/media success.
+	if account.nonOpenAIPoolProbeToken == 0 && account.nonOpenAIPoolRequestKind == "" {
+		return
+	}
+	kind := nonOpenAIPoolRequestKindForAccount(nil, account)
+	if account.nonOpenAIPoolRequestKind == NonOpenAIPoolRequestKindImage {
+		kind = NonOpenAIPoolRequestKindImage
+	}
+	if account.nonOpenAIPoolProbeKind == NonOpenAIPoolRequestKindImage {
+		kind = NonOpenAIPoolRequestKindImage
+	}
+	key := nonOpenAIPoolKey(account, kind)
 	if account.nonOpenAIPoolProbeToken == 0 {
+		r.consecutiveFailures.Delete(key)
+		account.nonOpenAIPoolRequestKind = ""
 		return
 	}
 	value, ok := r.probes.Load(key)
@@ -305,7 +478,10 @@ func (r *NonOpenAIPoolRuntime) markSuccess(account *Account) {
 	if !ok || !valid || lease.Token != account.nonOpenAIPoolProbeToken || !r.probes.CompareAndDelete(key, value) {
 		return
 	}
+	r.consecutiveFailures.Delete(key)
 	account.nonOpenAIPoolProbeToken = 0
+	account.nonOpenAIPoolProbeKind = ""
+	account.nonOpenAIPoolRequestKind = ""
 	r.deadlines.Delete(key)
 	r.probeFailures.Delete(key)
 	r.states.Delete(key)
@@ -318,14 +494,20 @@ func (r *NonOpenAIPoolRuntime) releaseProbe(account *Account) {
 	if r == nil || account == nil || account.nonOpenAIPoolProbeToken == 0 {
 		return
 	}
-	key := nonOpenAIPoolKey(account)
+	kind := account.nonOpenAIPoolProbeKind
+	if kind != NonOpenAIPoolRequestKindImage {
+		kind = NonOpenAIPoolRequestKindText
+	}
+	key := nonOpenAIPoolKey(account, kind)
 	value, ok := r.probes.Load(key)
 	lease, valid := value.(nonOpenAIPoolProbeLease)
 	if !ok || !valid || lease.Token != account.nonOpenAIPoolProbeToken || !r.probes.CompareAndDelete(key, value) {
 		return
 	}
 	account.nonOpenAIPoolProbeToken = 0
-	state := r.state(account.ID, account.Platform)
+	account.nonOpenAIPoolProbeKind = ""
+	account.nonOpenAIPoolRequestKind = ""
+	state := r.state(account.ID, account.Platform, kind)
 	if state.ProbeInFlight {
 		state.ProbeInFlight = false
 		r.states.Store(key, state)
@@ -362,6 +544,8 @@ func copyNonOpenAIPoolProbeToken(source, target *Account) {
 		return
 	}
 	target.nonOpenAIPoolProbeToken = source.nonOpenAIPoolProbeToken
+	target.nonOpenAIPoolProbeKind = source.nonOpenAIPoolProbeKind
+	target.nonOpenAIPoolRequestKind = source.nonOpenAIPoolRequestKind
 }
 
 func (r *NonOpenAIPoolRuntime) clear(account *Account) {
@@ -369,7 +553,18 @@ func (r *NonOpenAIPoolRuntime) clear(account *Account) {
 		return
 	}
 	account.nonOpenAIPoolProbeToken = 0
-	key := nonOpenAIPoolKey(account)
+	account.nonOpenAIPoolProbeKind = ""
+	account.nonOpenAIPoolRequestKind = ""
+	for _, kind := range []string{NonOpenAIPoolRequestKindText, NonOpenAIPoolRequestKindImage} {
+		r.clearKind(account, kind)
+	}
+}
+
+func (r *NonOpenAIPoolRuntime) clearKind(account *Account, kind string) {
+	if r == nil || account == nil {
+		return
+	}
+	key := nonOpenAIPoolKey(account, kind)
 	r.deadlines.Delete(key)
 	r.probes.Delete(key)
 	r.consecutiveFailures.Delete(key)
@@ -383,12 +578,14 @@ func (r *NonOpenAIPoolRuntime) clearAccountID(accountID int64) {
 	}
 	suffix := ":" + formatInt64(accountID)
 	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek} {
-		key := strings.ToLower(platform) + suffix
-		r.deadlines.Delete(key)
-		r.probes.Delete(key)
-		r.consecutiveFailures.Delete(key)
-		r.probeFailures.Delete(key)
-		r.states.Delete(key)
+		for _, kind := range []string{NonOpenAIPoolRequestKindText, NonOpenAIPoolRequestKindImage} {
+			key := strings.ToLower(platform) + ":" + kind + suffix
+			r.deadlines.Delete(key)
+			r.probes.Delete(key)
+			r.consecutiveFailures.Delete(key)
+			r.probeFailures.Delete(key)
+			r.states.Delete(key)
+		}
 	}
 }
 
@@ -404,11 +601,15 @@ func (r *NonOpenAIPoolRuntime) clearAll() {
 	}
 }
 
-func (r *NonOpenAIPoolRuntime) state(accountID int64, platform string) NonOpenAIPoolRuntimeState {
+func (r *NonOpenAIPoolRuntime) state(accountID int64, platform string, kinds ...string) NonOpenAIPoolRuntimeState {
 	if r == nil {
 		return NonOpenAIPoolRuntimeState{}
 	}
-	key := strings.ToLower(strings.TrimSpace(platform)) + ":" + formatInt64(accountID)
+	kind := NonOpenAIPoolRequestKindText
+	if len(kinds) > 0 && kinds[0] == NonOpenAIPoolRequestKindImage {
+		kind = NonOpenAIPoolRequestKindImage
+	}
+	key := strings.ToLower(strings.TrimSpace(platform)) + ":" + kind + ":" + formatInt64(accountID)
 	if value, ok := r.states.Load(key); ok {
 		if state, ok := value.(NonOpenAIPoolRuntimeState); ok {
 			if !state.Until.IsZero() && time.Now().After(state.Until) {

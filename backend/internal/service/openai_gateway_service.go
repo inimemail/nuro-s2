@@ -2315,7 +2315,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	// Pool soft-cooldown, runtime block and the process-local proxy circuit are
 	// reversible. Keep the sticky binding so cache affinity can recover after
 	// the temporary condition clears; this request falls through normally.
-	if openAIStickyAccountTemporarilyUnavailable(s, account, groupID) {
+	if openAIStickyAccountTemporarilyUnavailable(ctx, s, account, groupID) {
 		return nil
 	}
 
@@ -2339,12 +2339,12 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	stickyAccount := account
 	account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
 	if account == nil {
-		if !openAIStickyAccountTemporarilyUnavailable(s, stickyAccount, groupID) {
+		if !openAIStickyAccountTemporarilyUnavailable(ctx, s, stickyAccount, groupID) {
 			_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		}
 		return nil
 	}
-	if openAIStickyAccountTemporarilyUnavailable(s, account, groupID) {
+	if openAIStickyAccountTemporarilyUnavailable(ctx, s, account, groupID) {
 		return nil
 	}
 	if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
@@ -2630,7 +2630,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					stickyBusyPreserve = true
 					goto openAIGroupGuardFallback
 				}
-				if openAIStickyAccountTemporarilyUnavailable(s, account, groupID) {
+				if openAIStickyAccountTemporarilyUnavailable(ctx, s, account, groupID) {
 					stickyBusyPreserve = true
 					goto openAIGroupGuardFallback
 				}
@@ -2651,12 +2651,12 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					stickyAccount := account
 					account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, requestPlatform)
 					if account == nil {
-						if sessionHash != "" && !openAIStickyAccountTemporarilyUnavailable(s, stickyAccount, groupID) {
+						if sessionHash != "" && !openAIStickyAccountTemporarilyUnavailable(ctx, s, stickyAccount, groupID) {
 							_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						}
 					} else if account.IsUpstreamBillingGuardBlockedForGroup(groupID) {
 						stickyBusyPreserve = true
-					} else if openAIStickyAccountTemporarilyUnavailable(s, account, groupID) {
+					} else if openAIStickyAccountTemporarilyUnavailable(ctx, s, account, groupID) {
 						stickyBusyPreserve = true
 					} else if !s.latestOpenAIAccountMatchesGroup(ctx, account, groupID) {
 						if sessionHash != "" {
@@ -3304,9 +3304,15 @@ func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, accou
 	}
 	hydrated, err := getSchedulerAccountForRequest(ctx, s.schedulerSnapshot, account.ID)
 	if err != nil {
+		if s.nonOpenAIPoolRuntime != nil {
+			s.nonOpenAIPoolRuntime.releaseProbe(account)
+		}
 		return nil, err
 	}
 	if hydrated == nil {
+		if s.nonOpenAIPoolRuntime != nil {
+			s.nonOpenAIPoolRuntime.releaseProbe(account)
+		}
 		return nil, fmt.Errorf("selected openai account %d not found during hydration", account.ID)
 	}
 	copyNonOpenAIPoolProbeToken(account, hydrated)

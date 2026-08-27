@@ -8,6 +8,38 @@ import (
 // platform. OpenAI deliberately keeps its existing independent settings and
 // runtime implementation.
 type NonOpenAIPoolPlatformSettings struct {
+	RecoveryProbeEnabled   bool                        `json:"recovery_probe_enabled"`
+	SoftCooldownMaxSeconds int                         `json:"soft_cooldown_max_seconds"`
+	ProbeTimeoutSeconds    int                         `json:"probe_timeout_seconds"`
+	Image                  NonOpenAIPoolBucketSettings `json:"image"`
+	imagePresent           bool
+}
+
+func (s *NonOpenAIPoolPlatformSettings) UnmarshalJSON(data []byte) error {
+	type platformSettingsJSON struct {
+		RecoveryProbeEnabled   bool                         `json:"recovery_probe_enabled"`
+		SoftCooldownMaxSeconds int                          `json:"soft_cooldown_max_seconds"`
+		ProbeTimeoutSeconds    int                          `json:"probe_timeout_seconds"`
+		Image                  *NonOpenAIPoolBucketSettings `json:"image"`
+	}
+	var decoded platformSettingsJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	s.RecoveryProbeEnabled = decoded.RecoveryProbeEnabled
+	s.SoftCooldownMaxSeconds = decoded.SoftCooldownMaxSeconds
+	s.ProbeTimeoutSeconds = decoded.ProbeTimeoutSeconds
+	s.Image = NonOpenAIPoolBucketSettings{}
+	s.imagePresent = decoded.Image != nil
+	if decoded.Image != nil {
+		s.Image = *decoded.Image
+	}
+	return nil
+}
+
+// NonOpenAIPoolBucketSettings contains the settings that differ between a
+// platform's normal model traffic and its image/media traffic.
+type NonOpenAIPoolBucketSettings struct {
 	RecoveryProbeEnabled   bool `json:"recovery_probe_enabled"`
 	SoftCooldownMaxSeconds int  `json:"soft_cooldown_max_seconds"`
 	ProbeTimeoutSeconds    int  `json:"probe_timeout_seconds"`
@@ -32,15 +64,19 @@ func DefaultNonOpenAIPoolSettings() NonOpenAIPoolSettings {
 		Enabled: true, DefaultCooldownSeconds: 5, AuthCooldownSeconds: 30,
 		ServerErrorCooldownSeconds: 5, TransportCooldownSeconds: 5,
 		MaxCooldownSeconds: 30, ProbeTimeoutSeconds: 5, ProbeMaxBackoffSeconds: 60,
-		Platforms: map[string]NonOpenAIPoolPlatformSettings{
-			PlatformGemini:      {RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5},
-			PlatformAntigravity: {RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5},
-			PlatformGrok:        {RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5},
-			PlatformKimi:        {RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5},
-			PlatformZhipu:       {RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5},
-			PlatformDeepSeek:    {RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5},
-		},
+		Platforms: defaultNonOpenAIPoolPlatforms(),
 	}
+}
+
+func defaultNonOpenAIPoolPlatforms() map[string]NonOpenAIPoolPlatformSettings {
+	platforms := make(map[string]NonOpenAIPoolPlatformSettings, 6)
+	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepSeek} {
+		platforms[platform] = NonOpenAIPoolPlatformSettings{
+			RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5,
+			Image: NonOpenAIPoolBucketSettings{RecoveryProbeEnabled: true, SoftCooldownMaxSeconds: 30, ProbeTimeoutSeconds: 5},
+		}
+	}
+	return platforms
 }
 
 func mustMarshalDefaultNonOpenAIPoolSettings() string {
@@ -79,6 +115,17 @@ func normalizeNonOpenAIPoolSettings(value NonOpenAIPoolSettings) NonOpenAIPoolSe
 		}
 		item.SoftCooldownMaxSeconds = clamp(item.SoftCooldownMaxSeconds, fallback.SoftCooldownMaxSeconds, 3600)
 		item.ProbeTimeoutSeconds = clamp(item.ProbeTimeoutSeconds, value.ProbeTimeoutSeconds, 60)
+		// Older settings had only one platform bucket. Seed the new image bucket
+		// from the legacy values so an upgrade does not disable image recovery.
+		if !item.imagePresent && item.Image.SoftCooldownMaxSeconds <= 0 && item.Image.ProbeTimeoutSeconds <= 0 &&
+			!item.Image.RecoveryProbeEnabled {
+			item.Image = fallback.Image
+		}
+		item.Image.SoftCooldownMaxSeconds = clamp(item.Image.SoftCooldownMaxSeconds, fallback.Image.SoftCooldownMaxSeconds, 3600)
+		if item.Image.ProbeTimeoutSeconds <= 0 {
+			item.Image.ProbeTimeoutSeconds = fallback.Image.ProbeTimeoutSeconds
+		}
+		item.Image.ProbeTimeoutSeconds = clamp(item.Image.ProbeTimeoutSeconds, value.ProbeTimeoutSeconds, 60)
 		value.Platforms[platform] = item
 	}
 	return value

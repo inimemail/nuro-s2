@@ -462,7 +462,7 @@ func (s *OpenAIGatewayService) isNonOpenAIPoolCandidateBlocked(ctx context.Conte
 	if s == nil || account == nil || s.nonOpenAIPoolRuntime == nil || !nonOpenAIPoolPlatform(account.Platform) {
 		return false
 	}
-	return s.nonOpenAIPoolRuntime.candidateBlocked(nonOpenAIPoolSettings(ctx, s.settingService), account)
+	return s.nonOpenAIPoolRuntime.candidateBlockedForKind(nonOpenAIPoolSettings(ctx, s.settingService), account, nonOpenAIPoolRequestKindFromContext(ctx))
 }
 
 func (s *OpenAIGatewayService) shouldSkipNonOpenAIPoolAccount(ctx context.Context, account *Account) bool {

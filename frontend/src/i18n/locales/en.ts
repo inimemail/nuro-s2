@@ -6487,7 +6487,7 @@ export default {
         anthropicPoolProbeTimeout: 'Anthropic Probe Timeout Seconds',
         nonOpenAIPoolTitle: 'Non-OpenAI Platform Pool Scheduling',
         nonOpenAIPoolEnabled: 'Enable non-OpenAI platform pool scheduling',
-        nonOpenAIPoolDescription: 'Gemini, Antigravity, Grok, Kimi, Zhipu, and DeepSeek use independent pool soft cooldown and recovery probing. Existing OpenAI and Anthropic strategies are unchanged.',
+        nonOpenAIPoolDescription: 'Each platform has an independent normal-model pool. Gemini, Antigravity, and Grok image/media traffic uses a separate cooldown and recovery pool. OpenAI and Anthropic are unchanged.',
         nonOpenAIPoolDefaultCooldown: 'General error cooldown',
         nonOpenAIPoolAuthCooldown: 'Auth/rate-limit cooldown',
         nonOpenAIPoolServerCooldown: 'Server error cooldown',
@@ -6498,6 +6498,8 @@ export default {
         nonOpenAIPoolPlatforms: 'Platform settings',
         nonOpenAIPoolRecoveryProbe: 'recovery probe',
         nonOpenAIPoolRequestProbeHint: 'Recovery uses a normal downstream request. It adds no extra request, reconnect, or first-token delay.',
+        nonOpenAIPoolTextPool: 'Normal-model recovery probe',
+        nonOpenAIPoolImagePool: 'Image/media recovery probe',
         nonOpenAIPoolPlatformMaxCooldown: 'Platform maximum cooldown',
         nonOpenAIPoolPlatformProbeTimeout: 'Probe timeout'
       },

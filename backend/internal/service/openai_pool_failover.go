@@ -98,7 +98,13 @@ func (s *OpenAIGatewayService) newOpenAIPoolRequestFailoverError(
 			safeErr = "upstream request failed"
 		}
 		if s != nil && s.nonOpenAIPoolRuntime != nil {
-			s.nonOpenAIPoolRuntime.markFailure(context.Background(), nonOpenAIPoolSettings(context.Background(), s.settingService), account, 0, safeErr, "transport_error")
+			failureCtx := context.Background()
+			if upstreamReq != nil {
+				failureCtx = upstreamReq.Context()
+			} else if c != nil && c.Request != nil {
+				failureCtx = c.Request.Context()
+			}
+			s.nonOpenAIPoolRuntime.markFailure(failureCtx, nonOpenAIPoolSettings(failureCtx, s.settingService), account, 0, safeErr, "transport_error")
 		}
 		return &UpstreamFailoverError{
 			StatusCode:   http.StatusBadGateway,

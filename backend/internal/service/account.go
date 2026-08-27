@@ -88,6 +88,9 @@ type Account struct {
 	AnthropicPoolLastProbeReason        string
 	AnthropicPoolRecoveryProbeInFlight  bool
 	nonOpenAIPoolProbeToken             uint64
+	nonOpenAIPoolProbeKind              string
+	// Request-local; scheduler hydration copies it with the probe token.
+	nonOpenAIPoolRequestKind string
 
 	NonOpenAIPoolSoftCooldownUntil      *time.Time
 	NonOpenAIPoolSoftCooldownDue        bool

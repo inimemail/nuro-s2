@@ -26,6 +26,13 @@ export interface NonOpenAIPoolPlatformSettings {
   recovery_probe_enabled: boolean;
   soft_cooldown_max_seconds: number;
   probe_timeout_seconds: number;
+  image: NonOpenAIPoolBucketSettings;
+}
+
+export interface NonOpenAIPoolBucketSettings {
+  recovery_probe_enabled: boolean;
+  soft_cooldown_max_seconds: number;
+  probe_timeout_seconds: number;
 }
 
 export interface NonOpenAIPoolSettings {

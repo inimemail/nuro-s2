@@ -4062,42 +4062,6 @@
                     !form.non_openai_pool.enabled && 'opacity-50'
                   ]"
                 >
-                  <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    <label v-for="field in nonOpenAIPoolCooldownFields" :key="field.key" class="block min-w-0">
-                      <span class="mb-1.5 block text-xs font-medium leading-4 text-gray-700 dark:text-gray-300">
-                        {{ t(field.label) }}
-                      </span>
-                      <div class="relative">
-                        <input
-                          v-model.number="form.non_openai_pool[field.key]"
-                          type="number"
-                          min="1"
-                          :max="field.max"
-                          class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-10 text-sm text-gray-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-600 dark:bg-dark-800 dark:text-white"
-                        />
-                        <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-gray-400">s</span>
-                      </div>
-                    </label>
-                  </div>
-
-                  <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                    <label v-for="field in nonOpenAIPoolGlobalFields" :key="field.key" class="block min-w-0">
-                      <span class="mb-1.5 block text-xs font-medium leading-4 text-gray-700 dark:text-gray-300">
-                        {{ t(field.label) }}
-                      </span>
-                      <div class="relative">
-                        <input
-                          v-model.number="form.non_openai_pool[field.key]"
-                          type="number"
-                          min="1"
-                          :max="field.max"
-                          class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-10 text-sm text-gray-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-gray-600 dark:bg-dark-800 dark:text-white"
-                        />
-                        <span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-gray-400">s</span>
-                      </div>
-                    </label>
-                  </div>
-
                   <div>
                     <div class="mb-3">
                       <h4 class="text-xs font-semibold text-gray-800 dark:text-gray-200">
@@ -4107,56 +4071,81 @@
                         {{ t("admin.settings.scheduling.nonOpenAIPoolRequestProbeHint") }}
                       </p>
                     </div>
-                    <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    <div class="grid gap-4 xl:grid-cols-2">
                       <div
                         v-for="platform in nonOpenAIPoolPlatforms"
                         :key="platform.key"
-                        class="rounded-md border border-gray-200 bg-white p-4 dark:border-dark-600 dark:bg-dark-800/80"
+                        :data-test="`non-openai-pool-${platform.key}`"
+                        class="overflow-hidden rounded-md border border-gray-200 bg-white dark:border-dark-600 dark:bg-dark-800/80"
                       >
-                        <div class="flex items-center justify-between gap-3">
-                          <span class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ platform.label }}</span>
-                          <div class="flex shrink-0 items-center gap-2">
-                            <span class="text-[11px] text-gray-500 dark:text-gray-400">
-                              {{ t("admin.settings.scheduling.nonOpenAIPoolRecoveryProbe") }}
+                        <div class="border-b border-gray-100 px-4 py-3 dark:border-dark-600">
+                          <span class="text-sm font-semibold text-gray-900 dark:text-white">{{ platform.label }}</span>
+                        </div>
+                        <div class="space-y-4 p-4">
+                          <div class="flex items-center justify-between gap-3">
+                            <span class="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                              {{ t("admin.settings.scheduling.nonOpenAIPoolTextPool") }}
                             </span>
                             <Toggle
                               v-model="form.non_openai_pool.platforms[platform.key].recovery_probe_enabled"
-                              :aria-label="`${platform.label} ${t('admin.settings.scheduling.nonOpenAIPoolRecoveryProbe')}`"
+                              :aria-label="`${platform.label} ${t('admin.settings.scheduling.nonOpenAIPoolTextPool')}`"
                             />
                           </div>
-                        </div>
-                        <div class="mt-4 grid grid-cols-2 gap-3">
-                          <label class="block min-w-0">
-                            <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">
-                              {{ t("admin.settings.scheduling.nonOpenAIPoolPlatformMaxCooldown") }}
-                            </span>
-                            <div class="relative">
-                              <input
-                                v-model.number="form.non_openai_pool.platforms[platform.key].soft_cooldown_max_seconds"
-                                type="number"
-                                min="1"
-                                max="3600"
-                                class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-8 text-sm dark:border-gray-600 dark:bg-dark-700 dark:text-white"
-                              />
-                              <span class="pointer-events-none absolute inset-y-0 right-2 flex items-center text-[11px] text-gray-400">s</span>
+                          <div class="grid gap-3 sm:grid-cols-2">
+                            <label class="block min-w-0">
+                              <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">
+                                {{ t("admin.settings.scheduling.nonOpenAIPoolPlatformMaxCooldown") }}
+                              </span>
+                              <div class="relative">
+                                <input
+                                  v-model.number="form.non_openai_pool.platforms[platform.key].soft_cooldown_max_seconds"
+                                  type="number"
+                                  min="1"
+                                  max="3600"
+                                  class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-8 text-sm dark:border-gray-600 dark:bg-dark-700 dark:text-white"
+                                />
+                                <span class="pointer-events-none absolute inset-y-0 right-2 flex items-center text-[11px] text-gray-400">s</span>
+                              </div>
+                            </label>
+                            <label class="block min-w-0">
+                              <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">
+                                {{ t("admin.settings.scheduling.nonOpenAIPoolPlatformProbeTimeout") }}
+                              </span>
+                              <div class="relative">
+                                <input
+                                  v-model.number="form.non_openai_pool.platforms[platform.key].probe_timeout_seconds"
+                                  type="number"
+                                  min="1"
+                                  max="60"
+                                  :disabled="!form.non_openai_pool.platforms[platform.key].recovery_probe_enabled"
+                                  class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-8 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-600 dark:bg-dark-700 dark:text-white dark:disabled:bg-dark-900 dark:disabled:text-gray-500"
+                                />
+                                <span class="pointer-events-none absolute inset-y-0 right-2 flex items-center text-[11px] text-gray-400">s</span>
+                              </div>
+                            </label>
+                          </div>
+                          <div v-if="platform.image" :data-test="`non-openai-image-pool-${platform.key}`" class="border-t border-gray-100 pt-4 dark:border-dark-600">
+                            <div class="flex items-center justify-between gap-3">
+                              <span class="text-xs font-semibold text-gray-700 dark:text-gray-300">{{ t("admin.settings.scheduling.nonOpenAIPoolImagePool") }}</span>
+                              <Toggle v-model="form.non_openai_pool.platforms[platform.key].image.recovery_probe_enabled" :aria-label="`${platform.label} ${t('admin.settings.scheduling.nonOpenAIPoolImagePool')}`" />
                             </div>
-                          </label>
-                          <label class="block min-w-0">
-                            <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">
-                              {{ t("admin.settings.scheduling.nonOpenAIPoolPlatformProbeTimeout") }}
-                            </span>
-                            <div class="relative">
-                              <input
-                                v-model.number="form.non_openai_pool.platforms[platform.key].probe_timeout_seconds"
-                                type="number"
-                                min="1"
-                                max="60"
-                                :disabled="!form.non_openai_pool.platforms[platform.key].recovery_probe_enabled"
-                                class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-8 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-600 dark:bg-dark-700 dark:text-white dark:disabled:bg-dark-900 dark:disabled:text-gray-500"
-                              />
-                              <span class="pointer-events-none absolute inset-y-0 right-2 flex items-center text-[11px] text-gray-400">s</span>
+                            <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                              <label class="block min-w-0">
+                                <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.scheduling.nonOpenAIPoolPlatformMaxCooldown") }}</span>
+                                <div class="relative">
+                                  <input v-model.number="form.non_openai_pool.platforms[platform.key].image.soft_cooldown_max_seconds" type="number" min="1" max="3600" class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-8 text-sm dark:border-gray-600 dark:bg-dark-700 dark:text-white" />
+                                  <span class="pointer-events-none absolute inset-y-0 right-2 flex items-center text-[11px] text-gray-400">s</span>
+                                </div>
+                              </label>
+                              <label class="block min-w-0">
+                                <span class="mb-1.5 block text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.scheduling.nonOpenAIPoolPlatformProbeTimeout") }}</span>
+                                <div class="relative">
+                                  <input v-model.number="form.non_openai_pool.platforms[platform.key].image.probe_timeout_seconds" type="number" min="1" max="60" :disabled="!form.non_openai_pool.platforms[platform.key].image.recovery_probe_enabled" class="w-full rounded-md border border-gray-300 bg-white py-2 pl-3 pr-8 text-sm disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 dark:border-gray-600 dark:bg-dark-700 dark:text-white dark:disabled:bg-dark-900 dark:disabled:text-gray-500" />
+                                  <span class="pointer-events-none absolute inset-y-0 right-2 flex items-center text-[11px] text-gray-400">s</span>
+                                </div>
+                              </label>
                             </div>
-                          </label>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -8142,6 +8131,7 @@ import type {
   WebSearchProviderConfig,
   WebSearchTestResult,
   NonOpenAIPoolSettings,
+  NonOpenAIPoolBucketSettings,
   NonOpenAIPoolPlatformSettings,
 } from "@/api/admin/settings";
 import type {
@@ -8729,34 +8719,27 @@ type SettingsForm = Omit<
 };
 
 const nonOpenAIPoolPlatforms = [
-  { key: "gemini", label: "Gemini" },
-  { key: "antigravity", label: "Antigravity" },
-  { key: "grok", label: "Grok" },
-  { key: "kimi", label: "Kimi" },
-  { key: "zhipu", label: "Zhipu" },
-  { key: "deepseek", label: "DeepSeek" },
-] as const;
-
-const nonOpenAIPoolCooldownFields = [
-  { key: "default_cooldown_seconds", label: "admin.settings.scheduling.nonOpenAIPoolDefaultCooldown", max: 600 },
-  { key: "auth_cooldown_seconds", label: "admin.settings.scheduling.nonOpenAIPoolAuthCooldown", max: 3600 },
-  { key: "server_error_cooldown_seconds", label: "admin.settings.scheduling.nonOpenAIPoolServerCooldown", max: 600 },
-  { key: "transport_cooldown_seconds", label: "admin.settings.scheduling.nonOpenAIPoolTransportCooldown", max: 600 },
-] as const;
-
-const nonOpenAIPoolGlobalFields = [
-  { key: "max_cooldown_seconds", label: "admin.settings.scheduling.nonOpenAIPoolMaxCooldown", max: 3600 },
-  { key: "probe_timeout_seconds", label: "admin.settings.scheduling.nonOpenAIPoolProbeTimeout", max: 60 },
-  { key: "probe_max_backoff_seconds", label: "admin.settings.scheduling.nonOpenAIPoolProbeBackoff", max: 3600 },
+  { key: "gemini", label: "Gemini", image: true },
+  { key: "antigravity", label: "Antigravity", image: true },
+  { key: "grok", label: "Grok", image: true },
+  { key: "kimi", label: "Kimi", image: false },
+  { key: "zhipu", label: "Zhipu", image: false },
+  { key: "deepseek", label: "DeepSeek", image: false },
 ] as const;
 
 function defaultNonOpenAIPoolSettings(): NonOpenAIPoolSettings {
   const platforms: Record<string, NonOpenAIPoolPlatformSettings> = {};
   for (const platform of nonOpenAIPoolPlatforms) {
+    const bucket: NonOpenAIPoolBucketSettings = {
+      recovery_probe_enabled: true,
+      soft_cooldown_max_seconds: 30,
+      probe_timeout_seconds: 5,
+    };
     platforms[platform.key] = {
       recovery_probe_enabled: true,
       soft_cooldown_max_seconds: 30,
       probe_timeout_seconds: 5,
+      image: bucket,
     };
   }
   return {
@@ -8781,6 +8764,10 @@ function normalizeNonOpenAIPoolForm(raw?: Partial<NonOpenAIPoolSettings> | null)
       ...defaults.platforms[platform.key],
       ...(platforms[platform.key] || {}),
     };
+    const image = {
+      ...defaults.platforms[platform.key].image,
+      ...((platforms[platform.key] as Partial<NonOpenAIPoolPlatformSettings> | undefined)?.image || {}),
+    };
     platforms[platform.key] = {
       recovery_probe_enabled:
         typeof item.recovery_probe_enabled === "boolean"
@@ -8796,6 +8783,14 @@ function normalizeNonOpenAIPoolForm(raw?: Partial<NonOpenAIPoolSettings> | null)
         1,
         60,
       ),
+      image: {
+        recovery_probe_enabled:
+          typeof image.recovery_probe_enabled === "boolean"
+            ? image.recovery_probe_enabled
+            : defaults.platforms[platform.key].image.recovery_probe_enabled,
+        soft_cooldown_max_seconds: clampNumber(Number(image.soft_cooldown_max_seconds) || 30, 1, 3600),
+        probe_timeout_seconds: clampNumber(Number(image.probe_timeout_seconds) || 5, 1, 60),
+      },
     };
   }
   return {

@@ -777,7 +777,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		}
 		return nil, false, nil
 	}
-	if openAIStickyAccountTemporarilyUnavailable(s.service, account, req.GroupID) {
+	if openAIStickyAccountTemporarilyUnavailable(ctx, s.service, account, req.GroupID) {
 		return nil, true, nil
 	}
 	if shouldClearStickySession(account, req.RequestedModel) || !account.IsSchedulable() {
@@ -807,7 +807,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, true, nil
 	}
 	if account == nil || !s.service.latestOpenAIAccountMatchesGroup(ctx, account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
-		if account == nil && openAIStickyAccountTemporarilyUnavailable(s.service, stickyAccount, req.GroupID) {
+		if account == nil && openAIStickyAccountTemporarilyUnavailable(ctx, s.service, stickyAccount, req.GroupID) {
 			return nil, true, nil
 		}
 		if sessionHash != "" {
@@ -874,7 +874,7 @@ func openAIStickyCompatibilityFailureIsTemporary(reason string) bool {
 	}
 }
 
-func openAIStickyAccountTemporarilyUnavailable(s *OpenAIGatewayService, account *Account, groupID *int64) bool {
+func openAIStickyAccountTemporarilyUnavailable(ctx context.Context, s *OpenAIGatewayService, account *Account, groupID *int64) bool {
 	if account == nil {
 		return false
 	}
@@ -887,7 +887,7 @@ func openAIStickyAccountTemporarilyUnavailable(s *OpenAIGatewayService, account 
 		// sticky lookup bypass that probe; the normal candidate path owns the
 		// clear/allow decision.
 		s.isOpenAIPoolAccountSoftCooling(account) ||
-		s.isNonOpenAIPoolCandidateBlocked(context.Background(), account)) {
+		s.isNonOpenAIPoolCandidateBlocked(ctx, account)) {
 		return true
 	}
 	now := time.Now()

@@ -151,6 +151,8 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	}
 
 	requestCtx := c.Request.Context()
+	// Grok image/video traffic uses its own non-OpenAI media pool bucket.
+	requestCtx = service.WithNonOpenAIPoolRequestKind(requestCtx, service.NonOpenAIPoolRequestKindImage)
 	if err := h.billingCacheService.CheckBillingEligibility(requestCtx, apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(requestCtx, apiKey)); err != nil {
 		reqLog.Info("grok_media.billing_eligibility_check_failed", zap.Error(err))
 		status, code, message, retryAfter := billingErrorDetails(err)

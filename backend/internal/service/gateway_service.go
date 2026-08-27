@@ -756,7 +756,7 @@ func (s *GatewayService) NonOpenAIPoolRuntimeStateForAccount(account *Account) N
 	if s == nil || s.nonOpenAIPoolRuntime == nil {
 		return NonOpenAIPoolRuntimeState{}
 	}
-	return s.nonOpenAIPoolRuntime.stateForAccount(account)
+	return s.nonOpenAIPoolRuntime.stateForAccountWithSettings(account, nonOpenAIPoolSettings(context.Background(), s.settingService))
 }
 
 func (s *GatewayService) getAccountHealthStats() *accountRuntimeHealthStats {
@@ -2934,7 +2934,8 @@ func (s *GatewayService) isAccountSchedulableForModelSelection(ctx context.Conte
 	if s.shouldSkipAnthropicPoolCoolingAccount(ctx, account, requestedModel) {
 		return false
 	}
-	if nonOpenAIPoolPlatform(account.Platform) && s.nonOpenAIPoolRuntime != nil && s.nonOpenAIPoolRuntime.shouldSkip(ctx, nonOpenAIPoolSettings(ctx, s.settingService), account) {
+	poolCtx := withNonOpenAIPoolModelKind(ctx, account, requestedModel)
+	if nonOpenAIPoolPlatform(account.Platform) && s.nonOpenAIPoolRuntime != nil && s.nonOpenAIPoolRuntime.shouldSkip(poolCtx, nonOpenAIPoolSettings(poolCtx, s.settingService), account) {
 		return false
 	}
 	return account.IsSchedulableForModelWithContext(ctx, requestedModel)
@@ -3327,9 +3328,15 @@ func (s *GatewayService) hydrateSelectedAccount(ctx context.Context, account *Ac
 	}
 	hydrated, err := getSchedulerAccountForRequest(ctx, s.schedulerSnapshot, account.ID)
 	if err != nil {
+		if s.nonOpenAIPoolRuntime != nil {
+			s.nonOpenAIPoolRuntime.releaseProbe(account)
+		}
 		return nil, err
 	}
 	if hydrated == nil {
+		if s.nonOpenAIPoolRuntime != nil {
+			s.nonOpenAIPoolRuntime.releaseProbe(account)
+		}
 		return nil, fmt.Errorf("selected gateway account %d not found during hydration", account.ID)
 	}
 	copyNonOpenAIPoolProbeToken(account, hydrated)
