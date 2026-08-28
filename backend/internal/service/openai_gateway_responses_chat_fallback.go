@@ -214,7 +214,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 				"message": "Upstream request failed",
 			},
 		})
-		return openAIUnsettledAttemptResult(attemptCtx, account, originalModel, billingModel, upstreamModel, clientStream, time.Since(startTime)), fmt.Errorf("upstream request failed: %s", safeErr)
+		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
 	if trackAttempt {
 		attempt.markResponse(resp.StatusCode, strings.TrimSpace(resp.Header.Get("x-request-id")))

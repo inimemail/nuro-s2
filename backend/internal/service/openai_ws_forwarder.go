@@ -120,14 +120,6 @@ func openAIWSFallbackAttemptID(err error) string {
 	return ""
 }
 
-// OpenAIWSFallbackAttempt exposes only the accounting metadata for a WS
-// fallback. The concrete error type remains private; handlers use this to
-// settle a written-but-unconfirmed attempt without changing the historical
-// nil-result/error return contract of Forward.
-func OpenAIWSFallbackAttempt(err error) (attemptID string, requestWritten bool) {
-	return openAIWSFallbackAttemptID(err), openAIWSFallbackRequestWritten(err)
-}
-
 // OpenAIWSClientCloseError 表示应以指定 WebSocket close code 主动关闭客户端连接的错误。
 type OpenAIWSClientCloseError struct {
 	statusCode coderws.StatusCode

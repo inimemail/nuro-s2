@@ -161,7 +161,9 @@ func (e *OpenAIImagesUpstreamError) ToFailoverErrorWithModelLimitProtection(acco
 	body := e.failoverBody()
 	decision := classifyOpenAIPoolFailoverWithModelLimitProtection(account, statusCode, msg, body, downstreamModelLimitProtectionEnabled)
 	retryableOnSameAccount := decision.RetryableOnSameAccount
-	if e.UpstreamRequestBodyStarted {
+	executionUnknown := account != nil && account.Platform == PlatformOpenAI && e.UpstreamRequestBodyStarted &&
+		(statusCode == 0 || statusCode >= http.StatusInternalServerError)
+	if executionUnknown {
 		// The Responses application error is still tied to a POST whose body was
 		// sent. Do not replay it on the same account even when the status would
 		// otherwise qualify for the pool's compatibility retry rule.
@@ -177,7 +179,7 @@ func (e *OpenAIImagesUpstreamError) ToFailoverErrorWithModelLimitProtection(acco
 		SkipPoolSoftCooldown:       decision.SkipSoftCooldown,
 		AttemptID:                  strings.TrimSpace(e.AttemptID),
 		UpstreamRequestBodyStarted: e.UpstreamRequestBodyStarted,
-		ExecutionUnknown:           e.UpstreamRequestBodyStarted && (statusCode == 0 || statusCode >= http.StatusInternalServerError),
+		ExecutionUnknown:           executionUnknown,
 	}
 }
 
@@ -1512,7 +1514,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		upstreamCtx = context.Background()
 	}
 	attempt := newOpenAIUpstreamAttempt()
-	upstreamCtx = withOpenAIUpstreamAttempt(upstreamCtx, attempt)
+	if account != nil && account.Platform == PlatformOpenAI {
+		upstreamCtx = withOpenAIUpstreamAttempt(upstreamCtx, attempt)
+	}
 	upstreamCtx, releaseUpstreamCtx := context.WithCancel(upstreamCtx)
 	defer releaseUpstreamCtx()
 
@@ -1555,16 +1559,6 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 			Kind:               "request_error",
 			Message:            safeErr,
 		})
-		if OpenAIUpstreamAttemptBodyStarted(upstreamCtx) {
-			return &OpenAIForwardResult{
-				AttemptID:                  attempt.ID,
-				UpstreamRequestBodyStarted: true,
-				Model:                      requestModel,
-				UpstreamModel:              requestModel,
-				Stream:                     parsed.Stream,
-				Duration:                   time.Since(startTime),
-			}, fmt.Errorf("upstream request failed: %s", safeErr)
-		}
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
 	attempt.markResponse(resp.StatusCode, strings.TrimSpace(firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id"))))

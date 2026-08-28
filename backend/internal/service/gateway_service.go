@@ -10146,16 +10146,19 @@ func resolveUsageBillingRequestID(ctx context.Context, upstreamRequestID string)
 	return "generated:" + generateRequestID()
 }
 
+// resolveOpenAIUsageBillingRequestID keeps one logical HTTP request idempotent
+// while allowing multiple turns on a single OpenAI WebSocket connection to be
+// billed independently. Each WS turn has its own response/request id; retries
+// of that turn reuse the same id and therefore remain deduplicated.
 func resolveOpenAIUsageBillingRequestID(ctx context.Context, result *OpenAIForwardResult) string {
-	if result != nil {
-		if attemptID := strings.TrimSpace(result.AttemptID); attemptID != "" {
-			// A concrete attempt wins over the logical/client ID. This prevents the
-			// repository idempotency key from collapsing multiple real upstream POSTs.
-			return "attempt:" + attemptID
+	if result != nil && result.OpenAIWSMode {
+		turnID := strings.TrimSpace(result.ResponseID)
+		if turnID == "" {
+			turnID = strings.TrimSpace(result.RequestID)
 		}
-	}
-	if attempt := OpenAIUpstreamAttemptFromContext(ctx); attempt != nil && strings.TrimSpace(attempt.ID) != "" {
-		return "attempt:" + strings.TrimSpace(attempt.ID)
+		if turnID != "" {
+			return "ws-turn:" + turnID
+		}
 	}
 	if result == nil {
 		return resolveUsageBillingRequestID(ctx, "")

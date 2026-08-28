@@ -129,12 +129,29 @@ func TestOpenAIWSFallbackRequestWrittenTracksExecutionBoundary(t *testing.T) {
 	reason, retryable := classifyOpenAIWSReconnectReason(afterWrite)
 	require.Equal(t, "read_event", reason)
 	require.True(t, retryable)
+	// Generic reconnect classification may remain retryable for pre-send
+	// failures; the caller separately blocks it at the request-write boundary.
 
 	compatibility := wrapOpenAIWSWrittenFallback("invalid_encrypted_content", errors.New("invalid encrypted content"))
 	require.True(t, openAIWSFallbackRequestWritten(compatibility))
 	reason, retryable = classifyOpenAIWSReconnectReason(compatibility)
 	require.Equal(t, "invalid_encrypted_content", reason)
 	require.False(t, retryable)
+}
+
+func TestShouldStopOpenAIWSReconnectAfterWrite(t *testing.T) {
+	require.False(t, shouldStopOpenAIWSReconnectAfterWrite(wrapOpenAIWSFallback("read_event", errors.New("read")), "read_event"))
+	require.True(t, shouldStopOpenAIWSReconnectAfterWrite(wrapOpenAIWSWrittenFallback("read_event", errors.New("read")), "read_event"))
+	require.False(t, shouldStopOpenAIWSReconnectAfterWrite(
+		wrapOpenAIWSWrittenFallback("ws_connection_limit_reached", errors.New("limit")),
+		"ws_connection_limit_reached",
+	))
+}
+
+func TestOpenAIWSPlaceholderExecutionBoundaryIsPlatformScoped(t *testing.T) {
+	err := wrapOpenAIWSWrittenFallback("read_event", errors.New("read"))
+	require.True(t, newOpenAIWSPlaceholderFailoverError(&Account{Platform: PlatformOpenAI}, err).ExecutionUnknown)
+	require.False(t, newOpenAIWSPlaceholderFailoverError(&Account{Platform: PlatformGrok}, err).ExecutionUnknown)
 }
 
 func TestOpenAIWSErrorHTTPStatus(t *testing.T) {

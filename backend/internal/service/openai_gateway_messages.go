@@ -397,7 +397,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		if trackAttempt {
 			transportErr = annotateOpenAIUpstreamError(upstreamReq, transportErr)
 		}
-		return openAIUnsettledAttemptResult(attemptCtx, account, originalModel, billingModel, upstreamModel, clientStream, time.Since(startTime)), transportErr
+		return nil, transportErr
 	}
 	// An OAuth account switch can leave Anthropic thinking signatures from the
 	// previous account in the converted Responses input. Retry once on the same

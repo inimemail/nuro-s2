@@ -1004,6 +1004,26 @@ func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
 	})
 }
 
+func TestFailoverStateExecutionUnknownIsOpenAIOnly(t *testing.T) {
+	failoverErr := &service.UpstreamFailoverError{RetryableOnSameAccount: true, ExecutionUnknown: true}
+
+	openAIState := NewFailoverState(3, false)
+	action := openAIState.handleFailoverErrorWithRetryPlan(
+		context.Background(), &mockTempUnscheduler{}, 100, service.PlatformOpenAI, 3, 0, 0, false, failoverErr,
+	)
+	require.Equal(t, FailoverContinue, action)
+	require.Zero(t, openAIState.SameAccountRetryCount[100])
+	require.Equal(t, 1, openAIState.SwitchCount)
+
+	geminiState := NewFailoverState(3, false)
+	action = geminiState.handleFailoverErrorWithRetryPlan(
+		context.Background(), &mockTempUnscheduler{}, 200, service.PlatformGemini, 3, 0, 0, false, failoverErr,
+	)
+	require.Equal(t, FailoverContinue, action)
+	require.Equal(t, 1, geminiState.SameAccountRetryCount[200])
+	require.Zero(t, geminiState.SwitchCount)
+}
+
 // ---------------------------------------------------------------------------
 // HandleFailoverError — TempUnschedule 调用验证
 // ---------------------------------------------------------------------------

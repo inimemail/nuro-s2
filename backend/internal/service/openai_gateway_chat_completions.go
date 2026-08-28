@@ -316,7 +316,10 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	// 6. Build upstream request
-	attemptCtx := withOpenAIUpstreamAttempt(ctx, attempt)
+	attemptCtx := ctx
+	if account != nil && account.Platform == PlatformOpenAI {
+		attemptCtx = withOpenAIUpstreamAttempt(ctx, attempt)
+	}
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(attemptCtx)
 	upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, true, promptCacheKey, false)
 	releaseUpstreamCtx()
@@ -388,17 +391,6 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			Message:            safeErr,
 		})
 		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
-		if OpenAIUpstreamAttemptBodyStarted(attemptCtx) {
-			return &OpenAIForwardResult{
-				AttemptID:                  attempt.ID,
-				UpstreamRequestBodyStarted: true,
-				Model:                      originalModel,
-				BillingModel:               billingModel,
-				UpstreamModel:              upstreamModel,
-				Stream:                     clientStream,
-				Duration:                   time.Since(startTime),
-			}, fmt.Errorf("upstream request failed: %s", safeErr)
-		}
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
 	attempt.markResponse(resp.StatusCode, strings.TrimSpace(resp.Header.Get("x-request-id")))

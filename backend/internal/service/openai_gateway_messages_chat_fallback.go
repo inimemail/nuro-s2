@@ -169,7 +169,7 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
 	if err != nil {
 		transportErr := annotateOpenAIUpstreamError(upstreamReq, s.handleOpenAIUpstreamTransportError(attemptCtx, c, account, err, false))
-		return openAIUnsettledAttemptResult(attemptCtx, account, originalModel, billingModel, upstreamModel, clientStream, time.Since(startTime)), transportErr
+		return nil, transportErr
 	}
 	if trackAttempt {
 		attempt.markResponse(resp.StatusCode, strings.TrimSpace(firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id"))))

@@ -27,9 +27,8 @@ func annotateOpenAIUpstreamError(req *http.Request, err error) error {
 	return err
 }
 
-// OpenAIUpstreamAttempt tracks one real outbound OpenAI request.  It is kept
-// deliberately small and independent from the response/placeholder state so
-// accounting can distinguish retries without changing response semantics.
+// OpenAIUpstreamAttempt tracks whether one real outbound OpenAI request may
+// already have executed, so retry policy can avoid replaying it.
 type OpenAIUpstreamAttempt struct {
 	ID        string
 	StartedAt time.Time
@@ -168,31 +167,4 @@ func applyOpenAIStableClientRequestID(req *http.Request, ctx context.Context) {
 	// Keep an explicit client value stable across all local retries while
 	// avoiding forwarding arbitrary user-supplied header values.
 	req.Header.Set("X-Client-Request-ID", "gateway-"+clientRequestID)
-}
-
-func openAIUnsettledAttemptResult(
-	ctx context.Context,
-	account *Account,
-	model string,
-	billingModel string,
-	upstreamModel string,
-	stream bool,
-	duration time.Duration,
-) *OpenAIForwardResult {
-	if account == nil || account.Platform != PlatformOpenAI || !OpenAIUpstreamAttemptBodyStarted(ctx) {
-		return nil
-	}
-	attempt := OpenAIUpstreamAttemptFromContext(ctx)
-	if attempt == nil || strings.TrimSpace(attempt.ID) == "" {
-		return nil
-	}
-	return &OpenAIForwardResult{
-		AttemptID:                  strings.TrimSpace(attempt.ID),
-		UpstreamRequestBodyStarted: true,
-		Model:                      model,
-		BillingModel:               billingModel,
-		UpstreamModel:              upstreamModel,
-		Stream:                     stream,
-		Duration:                   duration,
-	}
 }

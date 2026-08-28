@@ -161,10 +161,6 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		if failoverClientGone(c) {
 			return false
 		}
-		if !guardOpenAIExecutionUnknownSwitch(c, requestCtx, account, failoverErr) {
-			h.handleFailoverExhausted(c, failoverErr, streamStarted)
-			return false
-		}
 		h.gatewayService.ReportOpenAIImageAccountScheduleResult(account.ID, false, nil, parsed.RequiredCapability)
 		if strings.TrimSpace(failoverErr.ProbeModel) == "" {
 			failoverErr.ProbeModel = strings.TrimSpace(parsed.Model)
@@ -175,6 +171,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			failoverErr.SkipPoolSoftCooldown = true
 		}
 		h.gatewayService.HandleOpenAIAccountFailoverSwitch(requestCtx, apiKey.GroupID, sessionHash, account, failoverErr, parsed.Model)
+		if !openAIExecutionAllowsAccountSwitch(account, failoverErr) {
+			h.handleFailoverExhausted(c, failoverErr, streamStarted)
+			return false
+		}
 		h.gatewayService.RecordOpenAIAccountSwitch()
 		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
 			modelRoutingLockedPriority,
@@ -323,11 +323,6 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		}
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 		if err != nil {
-			if result != nil && result.AttemptID != "" && result.UpstreamRequestBodyStarted && result.ImageCount == 0 && !openAIEdgeUsageIsBillable(result.Usage) {
-				h.recordOpenAIUnsettledAttempt(requestCtx, c, apiKey, subscription, account, parsed.Model, body, &service.UpstreamFailoverError{
-					StatusCode: result.UpstreamStatusCode, AttemptID: result.AttemptID, UpstreamRequestBodyStarted: true,
-				}, GetInboundEndpoint(c), "", service.ChannelUsageFields{})
-			}
 			if result != nil && (result.ImageCount > 0 || openAIEdgeUsageIsBillable(result.Usage)) {
 				reqLog.Warn("openai.images.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),
@@ -341,7 +336,6 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					if imageUpstreamErr.ShouldFailoverWithModelLimitProtection(account, protectionEnabled) {
 						if c.Writer.Size() != writerSizeBeforeForward {
 							failoverErr := imageUpstreamErr.ToFailoverErrorWithModelLimitProtection(account, protectionEnabled)
-							h.recordOpenAIUnsettledAttempt(requestCtx, c, apiKey, subscription, account, parsed.Model, body, failoverErr, GetInboundEndpoint(c), "", service.ChannelUsageFields{})
 							h.handleFailoverExhausted(c, failoverErr, true)
 							return
 						}
@@ -359,8 +353,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					h.recordOpenAIUnsettledAttempt(requestCtx, c, apiKey, subscription, account, parsed.Model, body, failoverErr, GetInboundEndpoint(c), "", service.ChannelUsageFields{})
-					if failoverErr.RetryableOnSameAccount && !failoverErr.ExecutionUnknown {
+					if failoverErr.RetryableOnSameAccount && openAIExecutionAllowsAccountSwitch(account, failoverErr) {
 						retryDelay := sameAccountRetryDelayForAccount(account)
 						if retryPlan, ok := planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, 0, failoverErr); ok {
 							sameAccountRetryAccountID = account.ID
@@ -423,7 +416,6 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		}
 		switch {
 		case successfulOutcome:
-			applyConservativeOpenAIMissingUsage(result, account, body, GetInboundEndpoint(c))
 			if result.FirstTokenMs != nil {
 				service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 			}

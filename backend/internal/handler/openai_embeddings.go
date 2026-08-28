@@ -121,12 +121,12 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		if failoverClientGone(c) {
 			return false
 		}
-		if !guardOpenAIExecutionUnknownSwitch(c, c.Request.Context(), account, failoverErr) {
+		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
+		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, "", account, failoverErr)
+		if !openAIExecutionAllowsAccountSwitch(account, failoverErr) {
 			h.handleFailoverExhausted(c, failoverErr, false)
 			return false
 		}
-		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
-		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, "", account, failoverErr)
 		h.gatewayService.RecordOpenAIAccountSwitch()
 		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
 			modelRoutingLockedPriority,
@@ -267,19 +267,13 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 
 		if err != nil {
-			if result != nil && result.AttemptID != "" && result.UpstreamRequestBodyStarted && !openAIEdgeUsageIsBillable(result.Usage) {
-				h.recordOpenAIUnsettledAttempt(c.Request.Context(), c, apiKey, subscription, account, reqModel, body, &service.UpstreamFailoverError{
-					StatusCode: result.UpstreamStatusCode, AttemptID: result.AttemptID, UpstreamRequestBodyStarted: true,
-				}, GetInboundEndpoint(c), "", service.ChannelUsageFields{})
-			}
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
-				h.recordOpenAIUnsettledAttempt(c.Request.Context(), c, apiKey, subscription, account, reqModel, body, failoverErr, GetInboundEndpoint(c), "", service.ChannelUsageFields{})
 				if c.Writer.Size() != writerSizeBeforeForward {
 					h.handleFailoverExhausted(c, failoverErr, true)
 					return
 				}
-				if failoverErr.RetryableOnSameAccount && !failoverErr.ExecutionUnknown {
+				if failoverErr.RetryableOnSameAccount && openAIExecutionAllowsAccountSwitch(account, failoverErr) {
 					retryDelay := sameAccountRetryDelayForAccount(account)
 					if retryPlan, ok := planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, 0, failoverErr); ok {
 						retryAccountID = account.ID
@@ -321,7 +315,6 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			return
 		}
 
-		applyConservativeOpenAIMissingUsage(result, account, body, GetInboundEndpoint(c))
 		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, nil)
 		userAgent := c.GetHeader("User-Agent")
 		sessionID := service.ExtractClientSessionID(c)

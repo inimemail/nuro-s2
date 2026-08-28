@@ -565,9 +565,10 @@ func TestOpenAIEdgeRetryFallbackBoundaries(t *testing.T) {
 	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
 
 	for _, tc := range []struct {
-		name string
-		req  service.OpenAIEdgeRetryRequest
-		want string
+		name       string
+		req        service.OpenAIEdgeRetryRequest
+		want       string
+		wantAction string
 	}{
 		{
 			name: "written client response cannot retry",
@@ -630,12 +631,13 @@ func TestOpenAIEdgeRetryFallbackBoundaries(t *testing.T) {
 			want: "edge_dependencies_missing",
 		},
 		{
-			name: "server error passes gate then fails on deps",
+			name: "server error stops without replay",
 			req: service.OpenAIEdgeRetryRequest{
 				LeaseID:            "lease-1",
 				UpstreamStatusCode: http.StatusInternalServerError,
 			},
-			want: "edge_dependencies_missing",
+			want:       "execution_unknown_replay_blocked",
+			wantAction: service.OpenAIEdgeActionRespondError,
 		},
 		{
 			name: "missing dependencies falls back after retryable status",
@@ -648,8 +650,12 @@ func TestOpenAIEdgeRetryFallbackBoundaries(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decision := h.openAIEdgeRetryDecision(c, tc.req)
-			if decision.Action != service.OpenAIEdgeActionFallbackGo {
-				t.Fatalf("expected fallback action, got %q", decision.Action)
+			wantAction := tc.wantAction
+			if wantAction == "" {
+				wantAction = service.OpenAIEdgeActionFallbackGo
+			}
+			if decision.Action != wantAction {
+				t.Fatalf("expected action %q, got %q", wantAction, decision.Action)
 			}
 			if decision.Reason != tc.want {
 				t.Fatalf("expected reason %q, got %q", tc.want, decision.Reason)
@@ -670,17 +676,58 @@ func TestOpenAIEdgeRetryBoundsExecutionUnknownReplacement(t *testing.T) {
 		UpstreamStatusCode: http.StatusBadGateway,
 	}
 
-	first := h.openAIEdgeRetryDecision(c, req)
-	if first.Reason != "edge_dependencies_missing" {
-		t.Fatalf("first execution-unknown retry should pass the replay guard, got %q", first.Reason)
+	decision := h.openAIEdgeRetryDecision(c, req)
+	if decision.Reason != "execution_unknown_replay_blocked" {
+		t.Fatalf("execution-unknown retry reason = %q", decision.Reason)
 	}
-	if lease.executionUnknownRetries != 1 {
-		t.Fatalf("first execution-unknown retry count = %d, want 1", lease.executionUnknownRetries)
+	if decision.Action != service.OpenAIEdgeActionRespondError {
+		t.Fatalf("execution-unknown action = %q, want respond_error", decision.Action)
 	}
-	second := h.openAIEdgeRetryDecision(c, req)
-	if second.Reason != "execution_unknown_replay_blocked" {
-		t.Fatalf("second execution-unknown retry reason = %q", second.Reason)
+}
+
+func TestOpenAIEdgeExecutionUnknownRecordsFailureWithoutAccountSwitch(t *testing.T) {
+	gatewaySvc := service.NewOpenAIGatewayService(
+		nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	account := &service.Account{
+		ID:       1001,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
 	}
+	lease := &openAIEdgeLease{
+		leaseID:            "lease-execution-unknown-health",
+		expiresAt:          time.Now().Add(time.Minute),
+		account:            account,
+		apiKey:             &service.APIKey{},
+		failedAccountIDs:   make(map[int64]struct{}),
+		sameAccountRetries: make(map[int64]int),
+		sameAccountStarted: make(map[int64]time.Time),
+		maxAccountSwitches: 3,
+	}
+	h := &OpenAIGatewayHandler{
+		gatewayService: gatewaySvc,
+		openAIEdgeLeases: map[string]*openAIEdgeLease{
+			lease.leaseID: lease,
+		},
+	}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:            lease.leaseID,
+		AccountID:          account.ID,
+		UpstreamStatusCode: http.StatusBadGateway,
+		ErrorMessage:       "upstream failed after accepting the request",
+	})
+
+	require.Equal(t, service.OpenAIEdgeActionRespondError, decision.Action)
+	require.Equal(t, "execution_unknown_replay_blocked", decision.Reason)
+	require.True(t, decision.FailureRecorded)
+	require.Contains(t, lease.failedAccountIDs, account.ID)
+	require.Zero(t, gatewaySvc.SnapshotOpenAIAccountSchedulerMetrics().AccountSwitchTotal)
 }
 
 func TestOpenAIEdgeRetryLocalFailureDoesNotConsumeExecutionUnknownBudget(t *testing.T) {
@@ -690,12 +737,12 @@ func TestOpenAIEdgeRetryLocalFailureDoesNotConsumeExecutionUnknownBudget(t *test
 	}
 	h := &OpenAIGatewayHandler{openAIEdgeLeases: map[string]*openAIEdgeLease{"lease-local": lease}}
 	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
-	_ = h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
 		LeaseID: "lease-local", AccountID: 1001,
 		ErrorType: "edge_queue_wait_timeout",
 	})
-	if lease.executionUnknownRetries != 0 {
-		t.Fatalf("local queue failure consumed execution-unknown budget: %d", lease.executionUnknownRetries)
+	if decision.Reason == "execution_unknown_replay_blocked" {
+		t.Fatal("local queue failure must not be classified as an executed upstream request")
 	}
 }
 
@@ -1077,7 +1124,7 @@ func TestApplyOpenAIEdgeRaceResponseHeaderBudgetRefreshesStalePlanTimeout(t *tes
 	}
 }
 
-func TestOpenAIEdgeRaceResponseHeaderTimeoutExcludesAccountWithoutSoftCooldown(t *testing.T) {
+func TestOpenAIEdgeRaceResponseHeaderTimeoutStopsReplayWithoutSoftCooldown(t *testing.T) {
 	cfg := &config.Config{}
 	gatewaySvc := service.NewOpenAIGatewayService(
 		nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil,
@@ -1129,12 +1176,13 @@ func TestOpenAIEdgeRaceResponseHeaderTimeoutExcludesAccountWithoutSoftCooldown(t
 		ErrorMessage:       "upstream response headers exceeded race budget",
 	})
 
-	require.Equal(t, service.OpenAIEdgeActionFallbackGo, decision.Action)
-	require.Equal(t, "max_account_switches_exhausted", decision.Reason)
-	require.True(t, decision.FailureRecorded)
-	require.Contains(t, lease.failedAccountIDs, account.ID, "the timed-out account must be excluded from normal failover")
+	require.Equal(t, service.OpenAIEdgeActionRespondError, decision.Action)
+	require.Equal(t, "execution_unknown_replay_blocked", decision.Reason)
+	require.False(t, decision.FailureRecorded)
+	require.NotContains(t, lease.failedAccountIDs, account.ID, "request-local race timeout must not alter shared account health")
 	require.False(t, lease.sameAccountStarted[sharedRaceRetryExhaustedKey].IsZero(), "the request race budget must remain exhausted")
 	require.Zero(t, lease.sameAccountRetries[account.ID], "a response-header timeout must not start another same-account retry")
+	require.Zero(t, gatewaySvc.SnapshotOpenAIAccountSchedulerMetrics().AccountSwitchTotal)
 	require.True(t, lease.cachePolicyEnabled)
 	require.True(t, lease.cachePolicyApplied)
 	require.False(t, gatewaySvc.OpenAIPoolSoftCooldownState(account.ID).Cooling,
@@ -1784,47 +1832,6 @@ func TestOpenAIEdgeAbortCircuitClassificationIsStrict(t *testing.T) {
 			t.Fatalf("neutral abort incorrectly reached proxy circuit: %+v", req)
 		}
 	}
-}
-
-func TestOpenAIEdgeAbortUsageClassification(t *testing.T) {
-	if !openAIEdgeAbortShouldRecordUsage(service.OpenAIEdgeAbortRequest{
-		RelayAttempted: true, FailureClass: "abort_failed", Reason: "upstream_disconnect",
-	}) {
-		t.Fatal("a real relay abort must be conservatively billable")
-	}
-	for _, req := range []service.OpenAIEdgeAbortRequest{
-		{RelayAttempted: true, FailureClass: "client_cancelled", Reason: "client_disconnect", ClientDisconnected: true},
-		{RelayAttempted: true, FailureClass: "local_capacity_rejected", Reason: "edge_relay_queue_full"},
-		{RelayAttempted: true, FailureClass: "prepare_failed", Reason: "prepare_failed"},
-		{RelayAttempted: true, FailureClass: "upstream_disconnect", Reason: "fallback", FallbackToGo: true},
-	} {
-		if openAIEdgeAbortShouldRecordUsage(req) {
-			t.Fatalf("neutral abort must not be billed: %+v", req)
-		}
-	}
-}
-
-func TestOpenAIEdgeUnsettledUsageEstimatesSurvivePayloadRelease(t *testing.T) {
-	body := []byte(`{"model":"gpt-5.6","input":"` + strings.Repeat("x", 800) + `","max_output_tokens":321}`)
-	inputTokens, outputTokens := conservativeOpenAIUsageEstimates(body, "/v1/responses")
-	lease := &openAIEdgeLease{
-		inboundEndpoint:     "/v1/responses",
-		inputTokenEstimate:  inputTokens,
-		outputTokenEstimate: outputTokens,
-	}
-
-	gotInput, gotOutput := openAIEdgeUnsettledUsageEstimates(lease, http.StatusBadGateway)
-	require.Equal(t, inputTokens, gotInput)
-	require.Equal(t, 321, gotOutput)
-
-	gotInput, gotOutput = openAIEdgeUnsettledUsageEstimates(lease, http.StatusTooManyRequests)
-	require.Equal(t, inputTokens, gotInput)
-	require.Zero(t, gotOutput, "known rejection must not fabricate completion usage")
-
-	result := &service.OpenAIForwardResult{AttemptID: "edge-attempt", UpstreamRequestBodyStarted: true}
-	require.True(t, applyConservativeOpenAIUsageEstimates(result, &service.Account{Platform: service.PlatformOpenAI}, lease.inputTokenEstimate, lease.outputTokenEstimate))
-	require.Equal(t, inputTokens, result.Usage.InputTokens)
-	require.Equal(t, 321, result.Usage.OutputTokens)
 }
 
 func TestOpenAIEdgeRealFirstTokenMSPrefersRealSample(t *testing.T) {

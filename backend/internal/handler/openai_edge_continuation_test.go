@@ -2,15 +2,12 @@ package handler
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/alicebob/miniredis/v2"
-	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
@@ -144,18 +141,6 @@ func TestSeedRetryStateFromEdgeContinuationRestoresAllFailoverState(t *testing.T
 	require.Contains(t, failed, int64(22))
 	require.Equal(t, time.UnixMilli(state.DeadlineUnixMS), starts[sharedRaceRetryDeadlineKey])
 	require.Equal(t, time.UnixMilli(state.StartedAtUnixMS), starts[sharedRaceRetryStartedKey])
-}
-
-func TestRestoreOpenAIExecutionUnknownSwitchFromEdge(t *testing.T) {
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	state := &edgeRetryContinuation{Version: 1, ExecutionUnknownRetries: 1}
-	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.EdgeRetryContinuation, state))
-
-	restoreOpenAIExecutionUnknownSwitchFromEdge(c)
-
-	require.Equal(t, 1, c.GetInt(openAIExecutionUnknownSwitchKey))
-	require.False(t, allowOpenAIExecutionUnknownSwitch(c))
 }
 
 func TestEdgeContinuationPreservesExplicitRaceBudgetExhaustion(t *testing.T) {

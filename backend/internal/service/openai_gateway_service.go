@@ -71,8 +71,8 @@ const (
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
 	// Missing pricing must not silently turn a real OpenAI attempt into free
-	// usage. These deliberately conservative USD-per-million fallbacks apply
-	// only when every configured/model pricing candidate is unavailable.
+	// usage. These conservative fallbacks apply only when every configured/model
+	// pricing candidate is unavailable.
 	openAIUnknownPricingInputPerMillion  = 20.0
 	openAIUnknownPricingOutputPerMillion = 200.0
 	openAIOAuth401RefreshRetryKey        = "openai_oauth_401_refresh_retry"
@@ -236,17 +236,16 @@ type OpenAIUsage struct {
 // OpenAIForwardResult represents the result of forwarding
 type OpenAIForwardResult struct {
 	RequestID string
-	// UpstreamStatusCode is populated for terminal HTTP failures so accounting
-	// can distinguish an ambiguous transport/server failure from a deliberate
-	// client or rate-limit rejection.
+	// UpstreamStatusCode is populated for terminal HTTP failures so transport
+	// policy can distinguish ambiguous server failures from explicit rejections.
 	UpstreamStatusCode int
 	// AttemptID identifies the concrete upstream request that produced this
-	// result. It is separate from the logical/client request ID so retries can
-	// be audited and billed independently.
+	// result. It is transport metadata only; billing remains keyed to the
+	// logical/client request ID.
 	AttemptID string
 	// UpstreamRequestBodyStarted is true only after the transport read at least
-	// one request-body byte. It prevents an error returned while building the
-	// request from being mistaken for a billable upstream execution.
+	// one request-body byte. It separates safe pre-send retries from attempts
+	// whose execution outcome may be unknown.
 	UpstreamRequestBodyStarted bool
 	ResponseID                 string
 	Usage                      OpenAIUsage
@@ -802,7 +801,14 @@ func classifyOpenAIWSReconnectReason(err error) (string, bool) {
 	}
 }
 
-func newOpenAIWSPlaceholderFailoverError(err error) *UpstreamFailoverError {
+func shouldStopOpenAIWSReconnectAfterWrite(err error, reason string) bool {
+	// A concrete connection-limit rejection proves the model request did not
+	// execute, so the existing bounded reconnect remains safe. Other post-write
+	// failures are ambiguous and must not replay the turn.
+	return openAIWSFallbackRequestWritten(err) && reason != "ws_connection_limit_reached"
+}
+
+func newOpenAIWSPlaceholderFailoverError(account *Account, err error) *UpstreamFailoverError {
 	statusCode := http.StatusBadGateway
 	message := "Upstream websocket failed after downstream placeholder"
 	if resolvedStatus, _, _, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(err); ok {
@@ -813,13 +819,14 @@ func newOpenAIWSPlaceholderFailoverError(err error) *UpstreamFailoverError {
 			message = sanitized
 		}
 	}
+	executionUnknown := account != nil && account.Platform == PlatformOpenAI && openAIWSFallbackRequestWritten(err)
 	return &UpstreamFailoverError{
 		StatusCode:                 statusCode,
 		ResponseBody:               append([]byte(nil), openAITransportFailoverBody...),
 		Message:                    message,
 		RetryableOnSameAccount:     false,
-		ExecutionUnknown:           openAIWSFallbackRequestWritten(err),
-		UpstreamRequestBodyStarted: openAIWSFallbackRequestWritten(err),
+		ExecutionUnknown:           executionUnknown,
+		UpstreamRequestBodyStarted: executionUnknown,
 		AttemptID:                  openAIWSFallbackAttemptID(err),
 		SkipPoolSoftCooldown:       true,
 		NextAccountAction:          NextAccountRetry,
@@ -4721,6 +4728,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				wsForwardCtx = markAgentIdentityTaskRecoveryTried(wsForwardCtx)
 				continue
 			}
+			if account != nil && account.Platform == PlatformOpenAI && shouldStopOpenAIWSReconnectAfterWrite(wsErr, reason) {
+				logOpenAIWSModeInfo(
+					"reconnect_stop account_id=%d attempt=%d reason=request_already_written failure_reason=%s",
+					account.ID,
+					attempt,
+					normalizeOpenAIWSLogValue(reason),
+				)
+				break
+			}
 			if openAIWSShouldStopReconnectForPlaceholderCoordination(c, wsErr) {
 				logOpenAIWSModeInfo(
 					"reconnect_stop account_id=%d attempt=%d reason=placeholder_coordination",
@@ -4818,7 +4834,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return wsResult, nil
 		}
 		if openAIWSShouldStopReconnectForPlaceholderCoordination(c, wsErr) {
-			return nil, newOpenAIWSPlaceholderFailoverError(wsErr)
+			return nil, newOpenAIWSPlaceholderFailoverError(account, wsErr)
 		}
 		s.writeOpenAIWSFallbackErrorResponse(c, account, wsErr)
 		return nil, wsErr
@@ -4905,7 +4921,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				return nil, failoverErr
 			}
 			transportErr := annotateOpenAIUpstreamError(upstreamReq, s.handleOpenAIUpstreamTransportError(attemptCtx, c, account, err, false))
-			return openAIUnsettledAttemptResult(attemptCtx, account, originalModel, "", upstreamModel, reqStream, time.Since(startTime)), transportErr
+			return nil, transportErr
 		}
 		if attempt != nil {
 			attempt.markResponse(resp.StatusCode, strings.TrimSpace(resp.Header.Get("x-request-id")))
@@ -5445,7 +5461,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				return nil, failoverErr
 			}
 			transportErr := annotateOpenAIUpstreamError(upstreamReq, s.handleOpenAIUpstreamTransportError(attemptCtx, c, account, err, true))
-			return openAIUnsettledAttemptResult(attemptCtx, account, reqModel, "", upstreamPassthroughModel, reqStream, time.Since(startTime)), transportErr
+			return nil, transportErr
 		}
 		attempt.markResponse(resp.StatusCode, strings.TrimSpace(resp.Header.Get("x-request-id")))
 
@@ -5702,8 +5718,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if err != nil {
 		return nil, err
 	}
-	trackOpenAIRequestBody(req, ctx)
-	applyOpenAIStableClientRequestID(req, ctx)
+	if account != nil && account.Platform == PlatformOpenAI {
+		trackOpenAIRequestBody(req, ctx)
+		applyOpenAIStableClientRequestID(req, ctx)
+	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 
 	// 透传客户端请求头（安全白名单）。
@@ -6867,11 +6885,21 @@ func (s *OpenAIGatewayService) newOpenAIStreamFailoverErrorWithContext(
 	}
 	failoverErr := s.classifyOpenAIStreamFailover(ctx, account, payload, message)
 	failoverErr.ResponseHeaders = firstClonedHeader(responseHeaders)
-	if attempt := OpenAIUpstreamAttemptFromContext(ctx); attempt != nil {
+	if account != nil && account.Platform == PlatformOpenAI {
+		attempt := OpenAIUpstreamAttemptFromContext(ctx)
+		if attempt == nil {
+			return failoverErr
+		}
 		failoverErr.AttemptID = strings.TrimSpace(attempt.ID)
 		failoverErr.UpstreamRequestBodyStarted = OpenAIUpstreamAttemptBodyStarted(ctx)
-		if failoverErr.UpstreamRequestBodyStarted {
+		// A semantic 4xx/429 failed event is an explicit rejection; the
+		// established account failover path remains safe. Only a transport,
+		// malformed, or 5xx-style outcome has an unknown execution result after
+		// the request body was written.
+		semanticStatus := openAIStreamFailedEventSemanticStatus(payload, message)
+		if failoverErr.UpstreamRequestBodyStarted && (semanticStatus == 0 || semanticStatus >= http.StatusInternalServerError) {
 			failoverErr.RetryableOnSameAccount = false
+			failoverErr.ExecutionUnknown = true
 		}
 	}
 	return failoverErr
@@ -7832,8 +7860,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if err != nil {
 		return nil, err
 	}
-	trackOpenAIRequestBody(req, ctx)
-	applyOpenAIStableClientRequestID(req, ctx)
+	if account != nil && account.Platform == PlatformOpenAI {
+		trackOpenAIRequestBody(req, ctx)
+		applyOpenAIStableClientRequestID(req, ctx)
+	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 
 	// Set authentication header. This is a pure Bearer replacement for normal
@@ -9642,8 +9672,8 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 			return nil, annotateOpenAIAttemptFailover(resp.Request, failoverErr)
 		}
 		// A structurally valid successful response may omit usage on compatible
-		// upstreams. Preserve the response; the handler will conservatively fill
-		// usage for the concrete OpenAI AttemptID before local billing.
+		// upstreams. Preserve the response and record zero usage; never invent
+		// token counts for a response whose provider did not report them.
 		usageValue = OpenAIUsage{}
 	}
 	if openAIPassthroughResponseIsUnsafe(body) {
@@ -10896,8 +10926,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 			).Warn("openai_usage.pricing_missing_conservative_fallback", zap.Error(err))
 			cost = conservativeOpenAIUnknownPricingCost(tokens, multiplier)
 		} else {
-			// Keep non-OpenAI providers on their existing behavior. Their pricing
-			// modes and usage units are not interchangeable with OpenAI tokens.
+			// Other providers use provider-specific usage units and retain their
+			// established zero-cost behavior when no price is configured.
 			cost = &CostBreakdown{BillingMode: string(BillingModeToken)}
 		}
 	}
@@ -10912,10 +10942,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// Create usage log
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
-	requestID := resolveUsageBillingRequestID(ctx, result.RequestID)
-	if account.Platform == PlatformOpenAI {
-		requestID = resolveOpenAIUsageBillingRequestID(ctx, result)
-	}
+	requestID := resolveOpenAIUsageBillingRequestID(ctx, result)
 
 	// 确定 RequestedModel（渠道映射前的原始模型）
 	requestedModel := result.Model
@@ -11088,18 +11115,20 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 	var billingErr error
 	if account.Platform == PlatformOpenAI {
+		// OpenAI request retries and Edge/WS completion callbacks can race a
+		// transient billing failure. The repository key is idempotent, so retrying
+		// here improves local completeness without changing the final deduction.
 		billingErr = applyOpenAIUsageBillingWithRetry(ctx, requestID, usageLog, billingParams, s.billingDeps(), s.usageBillingRepo)
 	} else {
-		// Preserve the established single-attempt billing semantics for domestic,
-		// Grok, Anthropic, and other providers. The retry is an OpenAI-specific
-		// safeguard for the new per-attempt accounting path.
+		// Keep domestic, Grok, Anthropic, and other providers on their established
+		// single-attempt billing semantics.
 		_, billingErr = applyUsageBilling(ctx, requestID, usageLog, billingParams, s.billingDeps(), s.usageBillingRepo)
 	}
 
 	if billingErr != nil {
-		// Keep the calculated cost in the usage log after a transient billing
-		// failure. The retry/outbox layer can reconcile it later; never rewrite
-		// an already observed upstream cost to zero.
+		// Keep the request trace and calculated upstream cost after a failed
+		// billing transaction. The repository transaction is idempotent, so a
+		// later reconciliation can safely apply the same logical request.
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
 		return billingErr
 	}
@@ -11108,6 +11137,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	return nil
 }
 
+// applyOpenAIUsageBillingWithRetry retries transient repository failures. The
+// repository claims (request_id, api_key_id) in the same transaction as all
+// deductions, so a retry after an uncertain commit is idempotent and cannot
+// double-charge the request.
 func applyOpenAIUsageBillingWithRetry(
 	ctx context.Context,
 	requestID string,

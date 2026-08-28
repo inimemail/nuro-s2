@@ -61,15 +61,20 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	targetURL := buildOpenAIEmbeddingsURL(validatedURL)
 
 	attempt := newOpenAIUpstreamAttempt()
-	attemptCtx := withOpenAIUpstreamAttempt(ctx, attempt)
+	attemptCtx := ctx
+	if account != nil && account.Platform == PlatformOpenAI {
+		attemptCtx = withOpenAIUpstreamAttempt(ctx, attempt)
+	}
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(attemptCtx)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
-	trackOpenAIRequestBody(upstreamReq, upstreamCtx)
-	applyOpenAIStableClientRequestID(upstreamReq, upstreamCtx)
+	if account != nil && account.Platform == PlatformOpenAI {
+		trackOpenAIRequestBody(upstreamReq, upstreamCtx)
+		applyOpenAIStableClientRequestID(upstreamReq, upstreamCtx)
+	}
 	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileOpenAI))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Authorization", "Bearer "+apiKey)
@@ -108,16 +113,6 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 			Message:            safeErr,
 		})
 		writeOpenAIEmbeddingsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
-		if OpenAIUpstreamAttemptBodyStarted(attemptCtx) {
-			return &OpenAIForwardResult{
-				AttemptID:                  attempt.ID,
-				UpstreamRequestBodyStarted: true,
-				Model:                      originalModel,
-				BillingModel:               billingModel,
-				UpstreamModel:              upstreamModel,
-				Duration:                   time.Since(startTime),
-			}, fmt.Errorf("upstream request failed: %s", safeErr)
-		}
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
 	attempt.markResponse(resp.StatusCode, strings.TrimSpace(firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id"))))

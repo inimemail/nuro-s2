@@ -865,7 +865,7 @@ func TestOpenAIGatewayService_Forward_WSv2StreamEarlyCloseFallbackHTTP(t *testin
 	require.Empty(t, rec.Body.String(), "未产出 token 前上游断连时不应写入下游半截流")
 }
 
-func TestOpenAIGatewayService_Forward_WSv2RetryFiveTimesThenFallbackHTTP(t *testing.T) {
+func TestOpenAIGatewayService_Forward_WSv2PostWriteDisconnectDoesNotReplay(t *testing.T) {
 	setGinTestMode()
 
 	var wsAttempts atomic.Int32
@@ -944,7 +944,7 @@ func TestOpenAIGatewayService_Forward_WSv2RetryFiveTimesThenFallbackHTTP(t *test
 	require.Error(t, err)
 	require.Nil(t, result)
 	require.Nil(t, upstream.lastReq, "WS 重连耗尽后不应再回退 HTTP")
-	require.Equal(t, int32(openAIWSReconnectRetryLimit+1), wsAttempts.Load())
+	require.Equal(t, int32(1), wsAttempts.Load())
 }
 
 func TestOpenAIGatewayService_Forward_WSv2PlaceholderCoordinationSwitchesAfterFirstDisconnect(t *testing.T) {

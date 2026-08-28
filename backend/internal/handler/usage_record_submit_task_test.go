@@ -244,3 +244,35 @@ func TestOpenAIGatewayHandlerSubmitOpenAIUsageRecordTask_ImageResultUsesMandator
 
 	require.True(t, called.Load(), "image usage task must be mandatory when async submit is dropped")
 }
+
+func TestOpenAIGatewayHandlerSubmitOpenAIUsageRecordTask_AttemptAndWebSocketUseMandatoryFallback(t *testing.T) {
+	for name, result := range map[string]*service.OpenAIForwardResult{
+		"attempt":   {AttemptID: "attempt-1"},
+		"websocket": {OpenAIWSMode: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pool := service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{
+				WorkerCount: 1, QueueSize: 1, TaskTimeout: time.Second,
+				OverflowPolicy: "drop", OverflowSamplePercent: 0, AutoScaleEnabled: false,
+			})
+			t.Cleanup(pool.Stop)
+			h := &OpenAIGatewayHandler{usageRecordWorkerPool: pool}
+
+			block := make(chan struct{})
+			release := make(chan struct{})
+			pool.Submit(func(context.Context) {
+				close(block)
+				<-release
+			})
+			<-block
+			pool.Submit(func(context.Context) {})
+
+			var called atomic.Bool
+			h.submitOpenAIUsageRecordTask(context.Background(), result, func(context.Context) {
+				called.Store(true)
+			})
+			close(release)
+			require.Eventually(t, called.Load, time.Second, time.Millisecond, "billable OpenAI result must not be dropped")
+		})
+	}
+}

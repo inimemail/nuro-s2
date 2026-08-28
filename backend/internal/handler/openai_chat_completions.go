@@ -157,7 +157,6 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	if restoredSwitchCount, _ := seedRetryStateFromEdgeContinuation(c.Request.Context(), sameAccountRetryCount, sameAccountRetryStartedAt, failedAccountIDs, sameAccountRetryRuleCount); restoredSwitchCount > 0 {
 		switchCount = restoredSwitchCount
 	}
-	restoreOpenAIExecutionUnknownSwitchFromEdge(c)
 	sameAccountRetryAccountID := int64(0)
 	var sameAccountRetryAccount *service.Account
 	var sameAccountRetryErr *service.UpstreamFailoverError
@@ -170,12 +169,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		if failoverClientGone(c) {
 			return false
 		}
-		if !guardOpenAIExecutionUnknownSwitch(c, c.Request.Context(), account, failoverErr) {
+		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
+		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, sessionHash, account, failoverErr)
+		if !openAIExecutionAllowsAccountSwitch(account, failoverErr) {
 			h.handleFailoverExhausted(c, failoverErr, streamStarted)
 			return false
 		}
-		h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, false, nil)
-		h.gatewayService.HandleOpenAIAccountFailoverSwitch(c.Request.Context(), apiKey.GroupID, sessionHash, account, failoverErr)
 		h.gatewayService.RecordOpenAIAccountSwitch()
 		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
 			modelRoutingLockedPriority,
@@ -339,11 +338,6 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 		recordSuccessfulOpenAIOpsTTFT(c, result, err)
 		if err != nil {
-			if result != nil && result.AttemptID != "" && result.UpstreamRequestBodyStarted && !openAIEdgeUsageIsBillable(result.Usage) {
-				h.recordOpenAIUnsettledAttempt(c.Request.Context(), c, apiKey, subscription, account, reqModel, body, &service.UpstreamFailoverError{
-					StatusCode: result.UpstreamStatusCode, AttemptID: result.AttemptID, UpstreamRequestBodyStarted: result.UpstreamRequestBodyStarted,
-				}, GetInboundEndpoint(c), "", service.ChannelUsageFields{})
-			}
 			if shouldSettleOpenAIForwardResultAfterError(c, writerSizeBeforeForward, result) {
 				reqLog.Warn("openai_chat_completions.forward_partial_result",
 					zap.Int64("account_id", account.ID),
@@ -358,13 +352,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					h.recordOpenAIUnsettledAttempt(c.Request.Context(), c, apiKey, subscription, account, reqModel, body, failoverErr, GetInboundEndpoint(c), "", service.ChannelUsageFields{})
 					if !service.OpenAIRequestAllowsFailover(c, writerSizeBeforeForward) {
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
 					}
 					// Pool mode: retry on the same account
-					if failoverErr.RetryableOnSameAccount && !failoverErr.ExecutionUnknown {
+					if failoverErr.RetryableOnSameAccount && openAIExecutionAllowsAccountSwitch(account, failoverErr) {
 						retryDelay := sameAccountRetryDelayForAccount(account)
 						if retryPlan, ok := planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, 0, failoverErr); ok {
 							sameAccountRetryAccountID = account.ID
@@ -437,7 +430,6 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			}
 			switch {
 			case successfulOutcome:
-				applyConservativeOpenAIMissingUsage(result, account, body, GetInboundEndpoint(c))
 				h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(account, reqModel, true, result.FirstTokenMs)
 			case neutralOutcome:
 			default:

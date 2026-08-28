@@ -154,7 +154,10 @@ func TestOpenAIWSPlaceholderStopsSameAccountReconnectAndSwitchesAccount(t *testi
 	require.True(t, OpenAIRequestTokenPlaceholderWritten(c))
 	require.True(t, openAIWSShouldStopReconnectForPlaceholderCoordination(c, wrapOpenAIWSFallback("read_event", errors.New("connection closed"))))
 
-	failoverErr := newOpenAIWSPlaceholderFailoverError(wrapOpenAIWSFallback("read_event", errors.New("connection closed")))
+	failoverErr := newOpenAIWSPlaceholderFailoverError(
+		&Account{Platform: PlatformOpenAI},
+		wrapOpenAIWSFallback("read_event", errors.New("connection closed")),
+	)
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 	require.False(t, failoverErr.RetryableOnSameAccount)
 	require.True(t, failoverErr.SkipPoolSoftCooldown)

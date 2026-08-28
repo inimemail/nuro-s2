@@ -606,7 +606,10 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		return nil, err
 	}
 	attempt := newOpenAIUpstreamAttempt()
-	attemptCtx := withOpenAIUpstreamAttempt(ctx, attempt)
+	attemptCtx := ctx
+	if account != nil && account.Platform == PlatformOpenAI {
+		attemptCtx = withOpenAIUpstreamAttempt(ctx, attempt)
+	}
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(attemptCtx, parsed.Stream)
 	defer releaseUpstreamCtx()
 
@@ -641,16 +644,6 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			Kind:               "request_error",
 			Message:            safeErr,
 		})
-		if OpenAIUpstreamAttemptBodyStarted(attemptCtx) {
-			return &OpenAIForwardResult{
-				AttemptID:                  attempt.ID,
-				UpstreamRequestBodyStarted: true,
-				Model:                      requestModel,
-				UpstreamModel:              upstreamModel,
-				Stream:                     parsed.Stream,
-				Duration:                   time.Since(startTime),
-			}, fmt.Errorf("upstream request failed: %s", safeErr)
-		}
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
 	attempt.markResponse(resp.StatusCode, strings.TrimSpace(firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id"))))
@@ -787,8 +780,10 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 	if err != nil {
 		return nil, err
 	}
-	trackOpenAIRequestBody(req, ctx)
-	applyOpenAIStableClientRequestID(req, ctx)
+	if account != nil && account.Platform == PlatformOpenAI {
+		trackOpenAIRequestBody(req, ctx)
+		applyOpenAIStableClientRequestID(req, ctx)
+	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAIMedia))
 	authHeaders, err := s.buildOpenAIAuthenticationHeaders(ctx, account, token)
 	if err != nil {

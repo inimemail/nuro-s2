@@ -19,8 +19,7 @@ const (
 	ClientRequestID Key = "ctx_client_request_id"
 
 	// OpenAIAttemptID identifies one real OpenAI upstream request attempt.
-	// It is intentionally distinct from ClientRequestID: retries of one
-	// downstream request must not collapse into one billing record.
+	// It is transport metadata only and must not be used as a billing key.
 	OpenAIAttemptID Key = "ctx_openai_attempt_id"
 
 	// Model 请求模型标识（用于统一请求链路日志字段）。

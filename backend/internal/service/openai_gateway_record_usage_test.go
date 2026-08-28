@@ -948,6 +948,9 @@ func TestOpenAIGatewayServiceRecordUsage_BillingErrorWritesUnsettledUsageLog(t *
 	require.Greater(t, usageRepo.lastLog.InputCost, 0.0)
 	require.Greater(t, usageRepo.lastLog.OutputCost, 0.0)
 	require.Greater(t, usageRepo.lastLog.TotalCost, 0.0)
+	// The billing transaction failed, but the calculated cost must remain in
+	// the usage log so reconciliation can distinguish an unsettled charge from
+	// a genuinely zero-cost request.
 	require.Greater(t, usageRepo.lastLog.ActualCost, 0.0)
 }
 

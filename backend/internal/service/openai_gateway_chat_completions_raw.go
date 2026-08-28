@@ -280,17 +280,6 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			Message:            safeErr,
 		})
 		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
-		if trackAttempt && OpenAIUpstreamAttemptBodyStarted(attemptCtx) {
-			return &OpenAIForwardResult{
-				AttemptID:                  attemptID,
-				UpstreamRequestBodyStarted: true,
-				Model:                      originalModel,
-				BillingModel:               billingModel,
-				UpstreamModel:              upstreamModel,
-				Stream:                     clientStream,
-				Duration:                   time.Since(startTime),
-			}, fmt.Errorf("upstream request failed: %s", safeErr)
-		}
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
 	if trackAttempt {

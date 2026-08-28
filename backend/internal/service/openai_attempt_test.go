@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
@@ -28,14 +27,6 @@ func TestOpenAITrackedBodyMarksOnlyWhenBytesAreRead(t *testing.T) {
 	require.ErrorIs(t, err, io.EOF)
 }
 
-func TestRecordUsageRequestIDUsesConcreteAttempt(t *testing.T) {
-	attempt := newOpenAIUpstreamAttempt()
-	ctx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "logical-request")
-	result := &OpenAIForwardResult{RequestID: "upstream-request", AttemptID: attempt.ID}
-	got := resolveOpenAIUsageBillingRequestID(ctx, result)
-	require.Equal(t, "attempt:"+attempt.ID, got)
-}
-
 func TestApplyOpenAIStableClientRequestID(t *testing.T) {
 	ctx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "logical-request")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.test", nil)
@@ -44,12 +35,24 @@ func TestApplyOpenAIStableClientRequestID(t *testing.T) {
 	require.Equal(t, "gateway-logical-request", req.Header.Get("X-Client-Request-ID"))
 }
 
-func TestConservativeOpenAIUnknownPricingCostIsNonZero(t *testing.T) {
-	cost := conservativeOpenAIUnknownPricingCost(UsageTokens{InputTokens: 1_000, OutputTokens: 500}, 2)
-	require.InDelta(t, 0.02, cost.InputCost, 1e-12)
-	require.InDelta(t, 0.10, cost.OutputCost, 1e-12)
-	require.InDelta(t, 0.12, cost.TotalCost, 1e-12)
-	require.InDelta(t, 0.24, cost.ActualCost, 1e-12)
+func TestOpenAIAttemptIDDoesNotChangeLogicalBillingRequestID(t *testing.T) {
+	ctx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "logical-request")
+	result := &OpenAIForwardResult{RequestID: "upstream-request", AttemptID: "attempt-123"}
+	require.Equal(t, "client:logical-request", resolveUsageBillingRequestID(ctx, result.RequestID))
+}
+
+func TestOpenAIWebSocketTurnsUseIndependentBillingRequestIDs(t *testing.T) {
+	ctx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "logical-request")
+	first := &OpenAIForwardResult{OpenAIWSMode: true, RequestID: "req-1", ResponseID: "resp-1"}
+	second := &OpenAIForwardResult{OpenAIWSMode: true, RequestID: "req-2", ResponseID: "resp-2"}
+	require.Equal(t, "ws-turn:resp-1", resolveOpenAIUsageBillingRequestID(ctx, first))
+	require.Equal(t, "ws-turn:resp-2", resolveOpenAIUsageBillingRequestID(ctx, second))
+	require.Equal(t, "ws-turn:resp-1", resolveOpenAIUsageBillingRequestID(ctx, first))
+}
+
+func TestOpenAIWebSocketBillingRequestIDFallsBackToRequestID(t *testing.T) {
+	result := &OpenAIForwardResult{OpenAIWSMode: true, RequestID: "req-1"}
+	require.Equal(t, "ws-turn:req-1", resolveOpenAIUsageBillingRequestID(context.Background(), result))
 }
 
 func TestAnnotateOpenAIAttemptFailoverStopsSameAccountReplay(t *testing.T) {
@@ -81,6 +84,66 @@ func TestAnnotateOpenAIAttemptFailoverExplicitClientErrorIsKnown(t *testing.T) {
 	require.True(t, failoverErr.RetryableOnSameAccount)
 }
 
+func TestOpenAIStreamFailureAfterRequestWriteStopsReplay(t *testing.T) {
+	attempt := newOpenAIUpstreamAttempt()
+	attempt.markBodyWriteStarted()
+	ctx := withOpenAIUpstreamAttempt(context.Background(), attempt)
+
+	failoverErr := (&OpenAIGatewayService{}).newOpenAIStreamFailoverErrorWithContext(
+		ctx,
+		nil,
+		&Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		false,
+		"request-stream",
+		nil,
+		"stream ended before a terminal event",
+	)
+
+	require.Equal(t, attempt.ID, failoverErr.AttemptID)
+	require.True(t, failoverErr.UpstreamRequestBodyStarted)
+	require.True(t, failoverErr.ExecutionUnknown)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+}
+
+func TestOpenAIStreamExplicitRateLimitAfterRequestWriteRemainsKnown(t *testing.T) {
+	attempt := newOpenAIUpstreamAttempt()
+	attempt.markBodyWriteStarted()
+	ctx := withOpenAIUpstreamAttempt(context.Background(), attempt)
+
+	failoverErr := (&OpenAIGatewayService{}).newOpenAIStreamFailoverErrorWithContext(
+		ctx,
+		nil,
+		&Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		false,
+		"request-stream",
+		[]byte(`{"response":{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"slow down"}}}`),
+		"rate limited",
+	)
+
+	require.True(t, failoverErr.UpstreamRequestBodyStarted)
+	require.False(t, failoverErr.ExecutionUnknown)
+}
+
+func TestOpenAIStreamFailureTrackingDoesNotAffectOtherPlatforms(t *testing.T) {
+	attempt := newOpenAIUpstreamAttempt()
+	attempt.markBodyWriteStarted()
+	ctx := withOpenAIUpstreamAttempt(context.Background(), attempt)
+
+	failoverErr := (&OpenAIGatewayService{}).newOpenAIStreamFailoverErrorWithContext(
+		ctx,
+		nil,
+		&Account{Platform: PlatformGrok, Type: AccountTypeAPIKey},
+		false,
+		"request-grok-stream",
+		nil,
+		"stream ended before a terminal event",
+	)
+
+	require.Empty(t, failoverErr.AttemptID)
+	require.False(t, failoverErr.UpstreamRequestBodyStarted)
+	require.False(t, failoverErr.ExecutionUnknown)
+}
+
 func TestOpenAITrackedBodyPreservesRequestContentLength(t *testing.T) {
 	attempt := newOpenAIUpstreamAttempt()
 	ctx := withOpenAIUpstreamAttempt(context.Background(), attempt)
@@ -98,32 +161,6 @@ func TestOpenAIWSAttemptIDIsScopedToOpenAIPlatform(t *testing.T) {
 	require.Empty(t, newOpenAIUpstreamAttemptIDForAccount(&Account{Platform: PlatformDeepSeek}))
 }
 
-func TestOpenAIUnsettledAttemptResultRequiresOpenAIBodyWrite(t *testing.T) {
-	attempt := newOpenAIUpstreamAttempt()
-	ctx := withOpenAIUpstreamAttempt(context.Background(), attempt)
-	account := &Account{Platform: PlatformOpenAI}
-	require.Nil(t, openAIUnsettledAttemptResult(ctx, account, "gpt", "billing", "upstream", true, time.Second))
-
-	attempt.markBodyWriteStarted()
-	result := openAIUnsettledAttemptResult(ctx, account, "gpt", "billing", "upstream", true, time.Second)
-	require.NotNil(t, result)
-	require.Equal(t, attempt.ID, result.AttemptID)
-	require.True(t, result.UpstreamRequestBodyStarted)
-	require.Equal(t, "billing", result.BillingModel)
-
-	require.Nil(t, openAIUnsettledAttemptResult(ctx, &Account{Platform: PlatformDeepSeek}, "deepseek", "", "", true, time.Second))
-	require.Nil(t, openAIUnsettledAttemptResult(ctx, &Account{Platform: PlatformGrok}, "grok", "", "", true, time.Second))
-}
-
-func TestResolveOpenAIUsageBillingRequestIDPrefersAttemptID(t *testing.T) {
-	ctx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "client-request")
-	result := &OpenAIForwardResult{RequestID: "upstream-request", AttemptID: "attempt-123"}
-	require.Equal(t, "attempt:attempt-123", resolveOpenAIUsageBillingRequestID(ctx, result))
-
-	result.AttemptID = ""
-	require.Equal(t, "client:client-request", resolveOpenAIUsageBillingRequestID(ctx, result))
-}
-
 func TestOpenAIImagesApplicationErrorPreservesAttemptAndDisablesReplay(t *testing.T) {
 	err := &OpenAIImagesUpstreamError{
 		StatusCode:                 http.StatusBadGateway,
@@ -136,4 +173,15 @@ func TestOpenAIImagesApplicationErrorPreservesAttemptAndDisablesReplay(t *testin
 	require.True(t, failover.UpstreamRequestBodyStarted)
 	require.True(t, failover.ExecutionUnknown)
 	require.False(t, failover.RetryableOnSameAccount)
+}
+
+func TestOpenAIImagesApplicationErrorDoesNotBlockOtherPlatformReplay(t *testing.T) {
+	err := &OpenAIImagesUpstreamError{
+		StatusCode:                 http.StatusBadGateway,
+		Message:                    "incomplete",
+		AttemptID:                  "attempt-grok-image",
+		UpstreamRequestBodyStarted: true,
+	}
+	failover := err.ToFailoverErrorWithModelLimitProtection(&Account{Platform: PlatformGrok, Type: AccountTypeAPIKey}, true)
+	require.False(t, failover.ExecutionUnknown)
 }
