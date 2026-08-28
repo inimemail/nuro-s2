@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -71,6 +72,28 @@ func TestDoUpstreamWithResponseHeaderDeadlineStopsBeforeHeaders(t *testing.T) {
 	_, err = doUpstreamWithResponseHeaderDeadline(client, req)
 	require.Error(t, err)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestDoUpstreamWithResponseHeaderDeadlineAllowsWrittenRequestGrace(t *testing.T) {
+	attempt := &service.OpenAIUpstreamAttempt{ID: "deadline-grace"}
+	attemptCtx := context.WithValue(context.Background(), ctxkey.OpenAIAttemptID, attempt)
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, readErr := io.ReadAll(req.Body)
+		if readErr != nil || string(body) != "payload" {
+			return nil, errors.New("request body was not readable")
+		}
+		// Return after the race deadline but inside the execution-unknown grace.
+		time.Sleep(20 * time.Millisecond)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody, Request: req}, nil
+	})}
+	req, err := http.NewRequest(http.MethodPost, "https://upstream.invalid", strings.NewReader("payload"))
+	require.NoError(t, err)
+	req = req.WithContext(service.WithHTTPUpstreamResponseHeaderDeadline(attemptCtx, time.Now().Add(5*time.Millisecond)))
+	service.TrackOpenAIRequestBody(req, attemptCtx)
+
+	resp, err := doUpstreamWithResponseHeaderDeadline(client, req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestDoUpstreamWithResponseHeaderDeadlineDoesNotCancelEstablishedStream(t *testing.T) {

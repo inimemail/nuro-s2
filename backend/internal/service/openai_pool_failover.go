@@ -144,6 +144,19 @@ func (s *OpenAIGatewayService) newOpenAIPoolRequestFailoverError(
 	if account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
 		retryable = ruleMatched && ruleLimit > 0
 	}
+	bodyStarted := upstreamReq != nil && OpenAIUpstreamAttemptBodyStarted(upstreamReq.Context())
+	attemptID := ""
+	if upstreamReq != nil {
+		if attempt := OpenAIUpstreamAttemptFromContext(upstreamReq.Context()); attempt != nil {
+			attemptID = strings.TrimSpace(attempt.ID)
+		}
+	}
+	if bodyStarted && (upstreamReq == nil || upstreamReq.Response == nil) {
+		// A transport failure after bytes have left the gateway is unknown and is
+		// not safe to replay on the same account. Explicit HTTP responses are
+		// classified by their status and retain their established retry rules.
+		retryable = false
+	}
 	// A response-header timeout means this account did not establish a usable
 	// upstream response. Do not spend pool same-account retry budget on it;
 	// switch immediately and let the existing soft cooldown/recovery probe own
@@ -151,16 +164,18 @@ func (s *OpenAIGatewayService) newOpenAIPoolRequestFailoverError(
 	if immediatePoolSoftCooldown {
 		retryable = false
 	}
-	return &UpstreamFailoverError{
-		StatusCode:                http.StatusBadGateway,
-		ResponseBody:              body,
-		Message:                   safeErr,
-		immediatePoolSoftCooldown: immediatePoolSoftCooldown,
-		RetryableOnSameAccount:    retryable,
-		RetryRuleKey:              ruleKey,
-		RetryRuleLimit:            ruleLimit,
-		RetryRuleTransport:        ruleMatched && ruleKey == "transport",
-	}
+	return annotateOpenAIAttemptFailover(upstreamReq, &UpstreamFailoverError{
+		StatusCode:                 http.StatusBadGateway,
+		ResponseBody:               body,
+		Message:                    safeErr,
+		immediatePoolSoftCooldown:  immediatePoolSoftCooldown,
+		RetryableOnSameAccount:     retryable,
+		RetryRuleKey:               ruleKey,
+		RetryRuleLimit:             ruleLimit,
+		RetryRuleTransport:         ruleMatched && ruleKey == "transport",
+		UpstreamRequestBodyStarted: bodyStarted,
+		AttemptID:                  attemptID,
+	})
 }
 
 func (s *OpenAIGatewayService) newOpenAIPoolEmbeddedFailoverError(
@@ -222,7 +237,11 @@ func (s *OpenAIGatewayService) newOpenAIPoolEmbeddedFailoverError(
 	} else {
 		s.handleOpenAIAccountUpstreamError(ctx, account, statusCode, header, responseBody)
 	}
-	return &UpstreamFailoverError{
+	var upstreamReq *http.Request
+	if resp != nil {
+		upstreamReq = resp.Request
+	}
+	return annotateOpenAIAttemptFailover(upstreamReq, &UpstreamFailoverError{
 		StatusCode:             statusCode,
 		ResponseBody:           responseBody,
 		ResponseHeaders:        cloneHTTPHeader(header),
@@ -233,7 +252,7 @@ func (s *OpenAIGatewayService) newOpenAIPoolEmbeddedFailoverError(
 		RetryRuleKey:           decision.RetryRuleKey,
 		RetryRuleLimit:         decision.RetryRuleLimit,
 		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-	}
+	})
 }
 
 func openAIPoolProbeKindForModel(model string) string {

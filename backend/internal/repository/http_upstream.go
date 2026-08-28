@@ -33,6 +33,12 @@ import (
 	"golang.org/x/mod/semver"
 )
 
+// unknownExecutionGrace gives an already-sent request a bounded chance to
+// finish after the response-header race window. Cancelling it immediately can
+// cause the handler to submit the same logical request through another
+// account while the upstream is still processing the first POST.
+const unknownExecutionGrace = 3 * time.Second
+
 // 默认配置常量
 // 这些值在配置文件未指定时作为回退默认值使用
 const (
@@ -324,6 +330,20 @@ func doUpstreamWithResponseHeaderDeadline(client *http.Client, req *http.Request
 	var timedOut atomic.Bool
 	waiting.Store(true)
 	timer := time.AfterFunc(remaining, func() {
+		if !waiting.Load() {
+			return
+		}
+		if service.OpenAIUpstreamAttemptBodyStarted(req.Context()) {
+			// The request may already have been accepted by the provider. Keep
+			// RoundTrip alive briefly so the caller does not immediately replay it.
+			time.AfterFunc(unknownExecutionGrace, func() {
+				if waiting.CompareAndSwap(true, false) {
+					timedOut.Store(true)
+					cancel()
+				}
+			})
+			return
+		}
 		if waiting.CompareAndSwap(true, false) {
 			timedOut.Store(true)
 			cancel()
@@ -336,6 +356,8 @@ func doUpstreamWithResponseHeaderDeadline(client *http.Client, req *http.Request
 			cancel()
 		}
 	}
+	// A response that arrives during the grace window is still a valid
+	// successful attempt. Only the follow-up hard timeout is terminal.
 	if timedOut.Load() {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()

@@ -34,11 +34,13 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 	if upstreamModel != "" && upstreamModel != requestedModel {
 		body = ReplaceModelInBody(body, upstreamModel)
 	}
-	token, _, err := s.GetAccessToken(ctx, account)
+	attempt := newOpenAIUpstreamAttempt()
+	attemptCtx := withOpenAIUpstreamAttempt(ctx, attempt)
+	token, _, err := s.GetAccessToken(attemptCtx, account)
 	if err != nil {
 		return nil, err
 	}
-	req, err := s.buildOpenAIAlphaSearchRequest(ctx, c, account, body, token)
+	req, err := s.buildOpenAIAlphaSearchRequest(attemptCtx, c, account, body, token)
 	if err != nil {
 		// A custom account can be syntactically schedulable while the runtime URL
 		// trust policy rejects its host. Treat that as request-local ineligibility
@@ -58,12 +60,15 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 	if err != nil {
 		// The request reached the transport layer and failed before an HTTP
 		// response was available, so this is eligible for the race transport rule.
-		return nil, newOpenAIAlphaSearchFailoverErrorForAccount(account, http.StatusBadGateway, nil, safeUpstreamErrorMessage, false, true)
+		failoverErr := annotateOpenAIAttemptFailover(req, newOpenAIAlphaSearchFailoverErrorForAccount(account, http.StatusBadGateway, nil, safeUpstreamErrorMessage, false, true))
+		failoverErr.RetryableOnSameAccount = false
+		return nil, failoverErr
 	}
+	attempt.markResponse(resp.StatusCode, strings.TrimSpace(firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id"))))
 	defer func() { _ = resp.Body.Close() }()
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
-		return nil, fmt.Errorf("read alpha search response: %w", err)
+		return nil, annotateOpenAIAttemptFailover(req, newOpenAIAlphaSearchFailoverErrorForAccount(account, http.StatusBadGateway, nil, safeUpstreamErrorMessage, false, true))
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		upstreamMessage := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
@@ -71,17 +76,21 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 			upstreamMessage = safeUpstreamErrorMessage
 		}
 		retrySameAccount := openAIPoolFailoverRetryableOnSameAccount(account, resp.StatusCode, upstreamMessage, respBody)
-		return nil, newOpenAIAlphaSearchFailoverErrorForAccount(account, resp.StatusCode, respBody, upstreamMessage, retrySameAccount, false)
+		failoverErr := annotateOpenAIAttemptFailover(req, newOpenAIAlphaSearchFailoverErrorForAccount(account, resp.StatusCode, respBody, upstreamMessage, retrySameAccount, false))
+		// Alpha Search deliberately bypasses same-account retries; preserve its
+		// endpoint-specific failover contract while retaining Attempt metadata.
+		failoverErr.RetryableOnSameAccount = false
+		return nil, failoverErr
 	}
 	if !openAIAlphaSearchSuccessResponseIsValid(respBody) {
-		return nil, newOpenAIAlphaSearchFailoverErrorForAccount(
+		return nil, annotateOpenAIAttemptFailover(req, newOpenAIAlphaSearchFailoverErrorForAccount(
 			account,
 			http.StatusBadGateway,
 			openAIUpstreamFailoverErrorBody(safeUpstreamErrorMessage),
 			safeUpstreamErrorMessage,
 			false,
 			true,
-		)
+		))
 	}
 	if !account.IsShadow() {
 		s.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, resp.Header)
@@ -90,11 +99,13 @@ func (s *OpenAIGatewayService) ForwardAlphaSearch(ctx context.Context, c *gin.Co
 	contentType := responseheaders.SafeContentType(resp.Header.Get("Content-Type"), "application/json")
 	c.Data(resp.StatusCode, contentType, respBody)
 	return &OpenAIForwardResult{
-		RequestID:      strings.TrimSpace(resp.Header.Get("x-request-id")),
-		Model:          requestedModel,
-		UpstreamModel:  upstreamModel,
-		Duration:       time.Since(upstreamStart),
-		WebSearchCalls: 1,
+		RequestID:                  strings.TrimSpace(resp.Header.Get("x-request-id")),
+		AttemptID:                  attempt.ID,
+		UpstreamRequestBodyStarted: OpenAIUpstreamAttemptBodyStarted(attemptCtx),
+		Model:                      requestedModel,
+		UpstreamModel:              upstreamModel,
+		Duration:                   time.Since(upstreamStart),
+		WebSearchCalls:             1,
 	}, nil
 }
 

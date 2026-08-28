@@ -119,11 +119,22 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	}
 	targetURL := buildOpenAIChatCompletionsURL(validatedURL)
 
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	trackAttempt := account != nil && account.Platform == PlatformOpenAI
+	var attempt *OpenAIUpstreamAttempt
+	attemptCtx := ctx
+	if trackAttempt {
+		attempt = newOpenAIUpstreamAttempt()
+		attemptCtx = withOpenAIUpstreamAttempt(ctx, attempt)
+	}
+	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(attemptCtx)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(chatBody))
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
+	}
+	if trackAttempt {
+		trackOpenAIRequestBody(upstreamReq, upstreamCtx)
+		applyOpenAIStableClientRequestID(upstreamReq, upstreamCtx)
 	}
 	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileOpenAI))
 	upstreamReq.Header.Set("Content-Type", "application/json")
@@ -157,7 +168,11 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	}
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
 	if err != nil {
-		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+		transportErr := annotateOpenAIUpstreamError(upstreamReq, s.handleOpenAIUpstreamTransportError(attemptCtx, c, account, err, false))
+		return openAIUnsettledAttemptResult(attemptCtx, account, originalModel, billingModel, upstreamModel, clientStream, time.Since(startTime)), transportErr
+	}
+	if trackAttempt {
+		attempt.markResponse(resp.StatusCode, strings.TrimSpace(firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id"))))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -197,22 +212,32 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 			})
 			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
 			decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)
-			return nil, &UpstreamFailoverError{
+			return nil, annotateOpenAIAttemptFailover(upstreamReq, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
 				RetryRuleKey:           decision.RetryRuleKey,
 				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-			}
+			})
 		}
 		return s.handleAnthropicErrorResponse(resp, c, account, billingModel)
 	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsAnthropic(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+		result, forwardErr := s.streamChatCompletionsAsAnthropic(attemptCtx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+		if result != nil && trackAttempt {
+			result.AttemptID = attempt.ID
+			result.UpstreamRequestBodyStarted = OpenAIUpstreamAttemptBodyStarted(attemptCtx)
+		}
+		return result, forwardErr
 	}
-	return s.bufferChatCompletionsAsAnthropic(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+	result, forwardErr := s.bufferChatCompletionsAsAnthropic(attemptCtx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+	if result != nil && trackAttempt {
+		result.AttemptID = attempt.ID
+		result.UpstreamRequestBodyStarted = OpenAIUpstreamAttemptBodyStarted(attemptCtx)
+	}
+	return result, forwardErr
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(

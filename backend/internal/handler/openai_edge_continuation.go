@@ -11,6 +11,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/runtimeops"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -31,16 +32,17 @@ type openAIEdgeContinuationMemory struct {
 // keys and cache policy fields remain owned by the existing Edge lease/handler
 // pipeline and are never serialized here.
 type edgeRetryContinuation struct {
-	Version                int                      `json:"version"`
-	EdgeRequestID          string                   `json:"edge_request_id"`
-	StartedAtUnixMS        int64                    `json:"started_at_unix_ms,omitempty"`
-	DeadlineUnixMS         int64                    `json:"deadline_unix_ms,omitempty"`
-	SameAccountRetries     map[int64]int            `json:"same_account_retries,omitempty"`
-	SameAccountRuleRetries map[int64]map[string]int `json:"same_account_rule_retries,omitempty"`
-	FailedAccountIDs       []int64                  `json:"failed_account_ids,omitempty"`
-	SwitchCount            int                      `json:"switch_count,omitempty"`
-	LastAccountID          int64                    `json:"last_account_id,omitempty"`
-	BudgetExhausted        bool                     `json:"budget_exhausted,omitempty"`
+	Version                 int                      `json:"version"`
+	EdgeRequestID           string                   `json:"edge_request_id"`
+	StartedAtUnixMS         int64                    `json:"started_at_unix_ms,omitempty"`
+	DeadlineUnixMS          int64                    `json:"deadline_unix_ms,omitempty"`
+	SameAccountRetries      map[int64]int            `json:"same_account_retries,omitempty"`
+	SameAccountRuleRetries  map[int64]map[string]int `json:"same_account_rule_retries,omitempty"`
+	FailedAccountIDs        []int64                  `json:"failed_account_ids,omitempty"`
+	SwitchCount             int                      `json:"switch_count,omitempty"`
+	ExecutionUnknownRetries int                      `json:"execution_unknown_retries,omitempty"`
+	LastAccountID           int64                    `json:"last_account_id,omitempty"`
+	BudgetExhausted         bool                     `json:"budget_exhausted,omitempty"`
 }
 
 func (h *OpenAIGatewayHandler) attachOpenAIEdgeContinuation(ctx context.Context, leaseID string, decision *service.OpenAIEdgeRetryDecision) {
@@ -52,7 +54,7 @@ func (h *OpenAIGatewayHandler) attachOpenAIEdgeContinuation(ctx context.Context,
 		return
 	}
 	state := h.snapshotOpenAIEdgeContinuation(lease)
-	if state.SwitchCount <= 0 && len(state.SameAccountRetries) == 0 {
+	if state.SwitchCount <= 0 && len(state.SameAccountRetries) == 0 && state.ExecutionUnknownRetries <= 0 {
 		return
 	}
 	token := uuid.NewString()
@@ -120,6 +122,7 @@ func (h *OpenAIGatewayHandler) snapshotOpenAIEdgeContinuationLocked(lease *openA
 	state.SameAccountRetries = cloneRetryCounts(lease.sameAccountRetries)
 	state.SameAccountRuleRetries = cloneRetryRuleCounts(lease.sameRuleRetries)
 	state.SwitchCount = lease.switchCount
+	state.ExecutionUnknownRetries = lease.executionUnknownRetries
 	state.LastAccountID = 0
 	if lease.account != nil {
 		state.LastAccountID = lease.account.ID
@@ -243,6 +246,21 @@ func edgeRetryContinuationFromContext(ctx context.Context) *edgeRetryContinuatio
 	}
 	state, _ := ctx.Value(ctxkey.EdgeRetryContinuation).(*edgeRetryContinuation)
 	return state
+}
+
+func restoreOpenAIExecutionUnknownSwitchFromEdge(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	state := edgeRetryContinuationFromContext(c.Request.Context())
+	if state == nil || state.ExecutionUnknownRetries <= 0 {
+		return
+	}
+	count := state.ExecutionUnknownRetries
+	if count > openAIExecutionUnknownSwitchLimit {
+		count = openAIExecutionUnknownSwitchLimit
+	}
+	c.Set(openAIExecutionUnknownSwitchKey, count)
 }
 
 func seedRetryStateFromEdgeContinuation(ctx context.Context, counts map[int64]int, starts map[int64]time.Time, failed map[int64]struct{}, ruleCounts ...sameAccountRetryRuleCounts) (switchCount int, restored bool) {

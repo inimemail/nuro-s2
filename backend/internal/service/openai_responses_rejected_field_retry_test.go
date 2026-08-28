@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
@@ -156,6 +159,121 @@ func TestOpenAIGatewayServiceComposesNamespaceStripWithRejectedFieldRetry(t *tes
 	}
 	require.True(t, gjson.GetBytes(upstream.bodies[0], "max_output_tokens").Exists())
 	require.False(t, gjson.GetBytes(upstream.bodies[1], "max_output_tokens").Exists())
+}
+
+func TestOpenAIResponsesRejectedFieldCacheIsScopedAndExpires(t *testing.T) {
+	account := &Account{
+		ID: 1001, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://upstream.example/v1"},
+	}
+	svc := &OpenAIGatewayService{}
+	body := []byte(`{"model":"gpt-5.6","max_output_tokens":2048,"input":[{"type":"custom_tool_call","namespace":"tools","status":"completed"}]}`)
+
+	svc.RecordOpenAIResponsesRejectedField(account, "gpt-5.6", string(OpenAIUpstreamTransportHTTPSSE), "max_output_tokens")
+	updated, changed, err := svc.ApplyOpenAIResponsesRejectedFieldCache(account, "gpt-5.6", string(OpenAIUpstreamTransportHTTPSSE), body)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(updated, "max_output_tokens").Exists())
+	require.True(t, gjson.GetBytes(updated, "input.0.namespace").Exists())
+
+	// A different model and transport must not inherit the remembered capability.
+	untouched, changed, err := svc.ApplyOpenAIResponsesRejectedFieldCache(account, "gpt-5.5", string(OpenAIUpstreamTransportResponsesWebsocketV2), body)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, string(body), string(untouched))
+}
+
+func TestOpenAIResponsesRejectedFieldCacheRemovesCategoryAcrossInputItems(t *testing.T) {
+	account := &Account{ID: 1002, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	svc := &OpenAIGatewayService{}
+	svc.RecordOpenAIResponsesRejectedField(account, "gpt-5.6", string(OpenAIUpstreamTransportHTTPSSE), "input[1].status")
+	body := []byte(`{"model":"gpt-5.6","input":[{"type":"message","status":"completed"},{"type":"message","status":"in_progress"},{"type":"custom_tool_call","status":"completed"}]}`)
+	updated, changed, err := svc.ApplyOpenAIResponsesRejectedFieldCache(account, "gpt-5.6", string(OpenAIUpstreamTransportHTTPSSE), body)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(updated, "input.0.status").Exists())
+	require.False(t, gjson.GetBytes(updated, "input.1.status").Exists())
+	require.False(t, gjson.GetBytes(updated, "input.2.status").Exists())
+}
+
+func TestOpenAIResponsesRejectedFieldCacheSeparatesCompactAndPlatforms(t *testing.T) {
+	account := &Account{ID: 1003, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	body := []byte(`{"model":"gpt-5.6","max_output_tokens":2048}`)
+	responsesScope := OpenAIResponsesRejectedFieldTransportScope(string(OpenAIUpstreamTransportHTTPSSE), false)
+	compactScope := OpenAIResponsesRejectedFieldTransportScope(string(OpenAIUpstreamTransportHTTPSSE), true)
+	require.NotEqual(t, responsesScope, compactScope)
+
+	svc := &OpenAIGatewayService{}
+	svc.RecordOpenAIResponsesRejectedField(account, "gpt-5.6", responsesScope, "max_output_tokens")
+	updated, changed, err := svc.ApplyOpenAIResponsesRejectedFieldCache(account, "gpt-5.6", responsesScope, body)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(updated, "max_output_tokens").Exists())
+
+	untouched, changed, err := svc.ApplyOpenAIResponsesRejectedFieldCache(account, "gpt-5.6", compactScope, body)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, string(body), string(untouched))
+
+	grok := &Account{ID: account.ID, Platform: PlatformGrok, Type: AccountTypeAPIKey}
+	svc.RecordOpenAIResponsesRejectedField(grok, "grok-4", responsesScope, "max_output_tokens")
+	untouched, changed, err = svc.ApplyOpenAIResponsesRejectedFieldCache(grok, "grok-4", responsesScope, body)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, string(body), string(untouched))
+}
+
+func TestOpenAIResponsesRejectedFieldRemotePollIsSingleFlightPerScope(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	now := time.Now()
+	var claimed atomic.Int64
+	var wg sync.WaitGroup
+	for range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if svc.shouldPollOpenAIResponsesRejectedFields("scope", now) {
+				claimed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, int64(1), claimed.Load())
+	require.False(t, svc.shouldPollOpenAIResponsesRejectedFields("scope", now.Add(openAIResponsesRejectedFieldRemotePollInterval-time.Millisecond)))
+	require.True(t, svc.shouldPollOpenAIResponsesRejectedFields("scope", now.Add(openAIResponsesRejectedFieldRemotePollInterval)))
+}
+
+func TestOpenAIResponsesRejectedFieldCleanupRemovesExpiredLowTrafficEntry(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	const memoryKey = "scope:max_output_tokens"
+	svc.storeOpenAIResponsesRejectedFieldUntil(memoryKey, time.Now().Add(20*time.Millisecond))
+
+	require.Eventually(t, func() bool {
+		_, valueExists := svc.openaiResponsesRejectedFieldUntil.Load(memoryKey)
+		_, workerExists := svc.openaiResponsesRejectedFieldCleanupScheduled.Load(memoryKey)
+		return !valueExists && !workerExists
+	}, time.Second, 5*time.Millisecond)
+}
+
+func TestOpenAIResponsesRejectedFieldCleanupFollowsExtendedDeadline(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	const memoryKey = "scope:input.status"
+	firstUntil := time.Now().Add(30 * time.Millisecond)
+	extendedUntil := firstUntil.Add(100 * time.Millisecond)
+	svc.storeOpenAIResponsesRejectedFieldUntil(memoryKey, firstUntil)
+	time.Sleep(10 * time.Millisecond)
+	svc.storeOpenAIResponsesRejectedFieldUntil(memoryKey, extendedUntil)
+
+	time.Sleep(time.Until(firstUntil) + 20*time.Millisecond)
+	rawUntil, exists := svc.openaiResponsesRejectedFieldUntil.Load(memoryKey)
+	require.True(t, exists)
+	require.Equal(t, extendedUntil, rawUntil)
+
+	require.Eventually(t, func() bool {
+		_, valueExists := svc.openaiResponsesRejectedFieldUntil.Load(memoryKey)
+		_, workerExists := svc.openaiResponsesRejectedFieldCleanupScheduled.Load(memoryKey)
+		return !valueExists && !workerExists
+	}, time.Second, 5*time.Millisecond)
 }
 
 func newRejectedFieldTestResponse(status int, body string) *http.Response {

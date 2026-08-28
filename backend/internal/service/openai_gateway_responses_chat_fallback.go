@@ -147,11 +147,22 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 	targetURL := buildOpenAIChatCompletionsURL(validatedURL)
 
-	upstreamCtx, releaseUpstreamCtx := openAIUpstreamRequestContext(ctx, c)
+	trackAttempt := account != nil && account.Platform == PlatformOpenAI
+	var attempt *OpenAIUpstreamAttempt
+	attemptCtx := ctx
+	if trackAttempt {
+		attempt = newOpenAIUpstreamAttempt()
+		attemptCtx = withOpenAIUpstreamAttempt(ctx, attempt)
+	}
+	upstreamCtx, releaseUpstreamCtx := openAIUpstreamRequestContext(attemptCtx, c)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(chatBody))
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
+	}
+	if trackAttempt {
+		trackOpenAIRequestBody(upstreamReq, upstreamCtx)
+		applyOpenAIStableClientRequestID(upstreamReq, upstreamCtx)
 	}
 	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileOpenAI))
 	upstreamReq.Header.Set("Content-Type", "application/json")
@@ -203,7 +214,10 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 				"message": "Upstream request failed",
 			},
 		})
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		return openAIUnsettledAttemptResult(attemptCtx, account, originalModel, billingModel, upstreamModel, clientStream, time.Since(startTime)), fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	if trackAttempt {
+		attempt.markResponse(resp.StatusCode, strings.TrimSpace(resp.Header.Get("x-request-id")))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -243,22 +257,30 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 			})
 			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
 			decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)
-			return nil, &UpstreamFailoverError{
+			return nil, annotateOpenAIAttemptFailover(upstreamReq, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
 				RetryRuleKey:           decision.RetryRuleKey,
 				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-			}
+			})
 		}
 		return s.handleErrorResponse(ctx, resp, c, account, chatBody, billingModel)
 	}
 
+	var result *OpenAIForwardResult
+	var forwardErr error
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+		result, forwardErr = s.streamChatCompletionsAsResponses(attemptCtx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+	} else {
+		result, forwardErr = s.bufferChatCompletionsAsResponses(attemptCtx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
 	}
-	return s.bufferChatCompletionsAsResponses(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, customTools, toolSearchDeclared, namespaceTools, startTime)
+	if result != nil && trackAttempt {
+		result.AttemptID = attempt.ID
+		result.UpstreamRequestBodyStarted = OpenAIUpstreamAttemptBodyStarted(attemptCtx)
+	}
+	return result, forwardErr
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(

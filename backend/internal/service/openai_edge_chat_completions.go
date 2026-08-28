@@ -312,6 +312,10 @@ func (s *OpenAIGatewayService) BuildRawResponsesEdgePlan(
 	if err != nil {
 		return nil, err
 	}
+	upstreamBody, _, err = s.ApplyOpenAIResponsesRejectedFieldCache(account, policyModel, openAIResponsesRejectedFieldTransportScope(string(OpenAIUpstreamTransportHTTPSSE), false), upstreamBody)
+	if err != nil {
+		return nil, fmt.Errorf("apply cached edge Responses field compatibility: %w", err)
+	}
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		isolatedBody, isolated, isolationErr := applyOpenAIUpstreamStrongIsolationBody(upstreamBody, true)
 		if isolationErr != nil {
@@ -594,6 +598,10 @@ func (s *OpenAIGatewayService) BuildChatGPTOAuthResponsesEdgePlan(
 	if err != nil {
 		return nil, err
 	}
+	upstreamBody, _, err = s.ApplyOpenAIResponsesRejectedFieldCache(account, upstreamModel, openAIResponsesRejectedFieldTransportScope(string(OpenAIUpstreamTransportHTTPSSE), false), upstreamBody)
+	if err != nil {
+		return nil, fmt.Errorf("apply cached OAuth edge Responses field compatibility: %w", err)
+	}
 	if account.IsOpenAIUpstreamStrongIsolationEnabled() {
 		isolatedBody, isolated, isolationErr := applyOpenAIUpstreamStrongIsolationBody(upstreamBody, true)
 		if isolationErr != nil {
@@ -875,6 +883,10 @@ func (s *OpenAIGatewayService) BuildResponsesWSEdgePlan(
 		return nil, err
 	}
 	firstMessage = optimizedFirst
+	firstMessage, _, err = s.ApplyOpenAIResponsesRejectedFieldCache(account, policyModel, openAIResponsesRejectedFieldTransportScope(string(OpenAIUpstreamTransportResponsesWebsocketV2), false), firstMessage)
+	if err != nil {
+		return nil, fmt.Errorf("apply cached edge WS Responses field compatibility: %w", err)
+	}
 	cacheCreationMode, cacheCreationModel := openAIEdgePromptCacheCreationOptimizationFields(account, policyModel, cacheCreationOptimization)
 	// An edge WS session may change models after the first response.create via
 	// session.update. Keep the account policy available to edge-rs even when the

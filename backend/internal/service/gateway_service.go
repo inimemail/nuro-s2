@@ -687,6 +687,17 @@ type UpstreamFailoverError struct {
 	ProbeKind              string
 	ForceCacheBilling      bool // Antigravity 粘性会话切换时设为 true
 	RetryableOnSameAccount bool // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	// UpstreamRequestBodyStarted indicates that the gateway had begun sending
+	// the request body. Retrying an unknown transport failure after this point
+	// may duplicate a billable model execution.
+	UpstreamRequestBodyStarted bool
+	// AttemptID identifies the concrete OpenAI attempt that failed, when the
+	// error originated in an OpenAI outbound request.
+	AttemptID string
+	// ExecutionUnknown means the request body was sent but the gateway cannot
+	// prove whether the provider accepted or executed it. A caller must not
+	// fan this logical request out through multiple replacement accounts.
+	ExecutionUnknown bool
 	// immediatePoolSoftCooldown marks a response-header timeout that should
 	// enter the existing OpenAI pool soft cooldown on its first occurrence.
 	// It is intentionally narrower than generic 5xx failover handling.
@@ -10133,6 +10144,23 @@ func resolveUsageBillingRequestID(ctx context.Context, upstreamRequestID string)
 		return requestID
 	}
 	return "generated:" + generateRequestID()
+}
+
+func resolveOpenAIUsageBillingRequestID(ctx context.Context, result *OpenAIForwardResult) string {
+	if result != nil {
+		if attemptID := strings.TrimSpace(result.AttemptID); attemptID != "" {
+			// A concrete attempt wins over the logical/client ID. This prevents the
+			// repository idempotency key from collapsing multiple real upstream POSTs.
+			return "attempt:" + attemptID
+		}
+	}
+	if attempt := OpenAIUpstreamAttemptFromContext(ctx); attempt != nil && strings.TrimSpace(attempt.ID) != "" {
+		return "attempt:" + strings.TrimSpace(attempt.ID)
+	}
+	if result == nil {
+		return resolveUsageBillingRequestID(ctx, "")
+	}
+	return resolveUsageBillingRequestID(ctx, result.RequestID)
 }
 
 func resolveUsageBillingPayloadFingerprint(ctx context.Context, requestPayloadHash string) string {

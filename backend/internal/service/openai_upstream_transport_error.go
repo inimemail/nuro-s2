@@ -73,6 +73,9 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 	})
 
 	if errors.Is(err, context.Canceled) {
+		// Context cancellation includes downstream disconnects and the shared
+		// response-header race losing branch. Preserve the historical behavior:
+		// cancellation must not trigger another account switch or replay the POST.
 		return err
 	}
 	if account.IsPoolMode() && nonOpenAIPoolPlatform(account.Platform) && s != nil && s.nonOpenAIPoolRuntime != nil {

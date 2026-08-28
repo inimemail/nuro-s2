@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +37,25 @@ type OpenAIImagesUpstreamError struct {
 	Message           string
 	Param             string
 	UpstreamRequestID string
+	// Attempt metadata is retained when a 2xx Responses stream carries an
+	// application-level error (for example response.incomplete). Those errors
+	// bypass the HTTP failover classifier but may still represent a billable
+	// execution.
+	AttemptID                  string
+	UpstreamRequestBodyStarted bool
+}
+
+func annotateOpenAIImagesAttemptError(err error, attempt *OpenAIUpstreamAttempt, ctx context.Context) error {
+	if err == nil || attempt == nil {
+		return err
+	}
+	var upstreamErr *OpenAIImagesUpstreamError
+	if !errors.As(err, &upstreamErr) || upstreamErr == nil {
+		return err
+	}
+	upstreamErr.AttemptID = strings.TrimSpace(attempt.ID)
+	upstreamErr.UpstreamRequestBodyStarted = OpenAIUpstreamAttemptBodyStarted(ctx)
+	return err
 }
 
 func (e *OpenAIImagesUpstreamError) Error() string {
@@ -140,14 +160,24 @@ func (e *OpenAIImagesUpstreamError) ToFailoverErrorWithModelLimitProtection(acco
 	msg := e.clientMessage()
 	body := e.failoverBody()
 	decision := classifyOpenAIPoolFailoverWithModelLimitProtection(account, statusCode, msg, body, downstreamModelLimitProtectionEnabled)
+	retryableOnSameAccount := decision.RetryableOnSameAccount
+	if e.UpstreamRequestBodyStarted {
+		// The Responses application error is still tied to a POST whose body was
+		// sent. Do not replay it on the same account even when the status would
+		// otherwise qualify for the pool's compatibility retry rule.
+		retryableOnSameAccount = false
+	}
 	return &UpstreamFailoverError{
-		StatusCode:             statusCode,
-		ResponseBody:           body,
-		Message:                msg,
-		RetryableOnSameAccount: decision.RetryableOnSameAccount,
-		RetryRuleKey:           decision.RetryRuleKey,
-		RetryRuleLimit:         decision.RetryRuleLimit,
-		SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
+		StatusCode:                 statusCode,
+		ResponseBody:               body,
+		Message:                    msg,
+		RetryableOnSameAccount:     retryableOnSameAccount,
+		RetryRuleKey:               decision.RetryRuleKey,
+		RetryRuleLimit:             decision.RetryRuleLimit,
+		SkipPoolSoftCooldown:       decision.SkipSoftCooldown,
+		AttemptID:                  strings.TrimSpace(e.AttemptID),
+		UpstreamRequestBodyStarted: e.UpstreamRequestBodyStarted,
+		ExecutionUnknown:           e.UpstreamRequestBodyStarted && (statusCode == 0 || statusCode >= http.StatusInternalServerError),
 	}
 }
 
@@ -1481,6 +1511,8 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if upstreamCtx == nil {
 		upstreamCtx = context.Background()
 	}
+	attempt := newOpenAIUpstreamAttempt()
+	upstreamCtx = withOpenAIUpstreamAttempt(upstreamCtx, attempt)
 	upstreamCtx, releaseUpstreamCtx := context.WithCancel(upstreamCtx)
 	defer releaseUpstreamCtx()
 
@@ -1523,8 +1555,19 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 			Kind:               "request_error",
 			Message:            safeErr,
 		})
+		if OpenAIUpstreamAttemptBodyStarted(upstreamCtx) {
+			return &OpenAIForwardResult{
+				AttemptID:                  attempt.ID,
+				UpstreamRequestBodyStarted: true,
+				Model:                      requestModel,
+				UpstreamModel:              requestModel,
+				Stream:                     parsed.Stream,
+				Duration:                   time.Since(startTime),
+			}, fmt.Errorf("upstream request failed: %s", safeErr)
+		}
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
+	attempt.markResponse(resp.StatusCode, strings.TrimSpace(firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id"))))
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
@@ -1556,16 +1599,17 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 			})
 			s.handleFailoverSideEffects(upstreamCtx, resp, account, requestModel)
 			decision := s.classifyOpenAIPoolFailover(upstreamCtx, account, resp.StatusCode, upstreamMsg, respBody)
-			return nil, &UpstreamFailoverError{
+			return nil, annotateOpenAIAttemptFailover(upstreamReq, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
 				RetryRuleKey:           decision.RetryRuleKey,
 				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-			}
+			})
 		}
-		return s.handleErrorResponse(upstreamCtx, resp, c, account, responsesBody)
+		result, forwardErr := s.handleErrorResponse(upstreamCtx, resp, c, account, responsesBody)
+		return result, annotateOpenAIImagesAttemptError(forwardErr, attempt, upstreamCtx)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1580,43 +1624,47 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		if err != nil {
 			if imageCount > 0 {
 				return &OpenAIForwardResult{
-					RequestID:        resp.Header.Get("x-request-id"),
-					Usage:            usage,
-					Model:            requestModel,
-					UpstreamModel:    requestModel,
-					Stream:           parsed.Stream,
-					ResponseHeaders:  resp.Header.Clone(),
-					Duration:         time.Since(startTime),
-					FirstTokenMs:     firstTokenMs,
-					ImageCount:       imageCount,
-					ImageSize:        parsed.SizeTier,
-					ImageInputSize:   parsed.Size,
-					ImageOutputSizes: imageOutputSizes,
+					RequestID:                  resp.Header.Get("x-request-id"),
+					AttemptID:                  attempt.ID,
+					UpstreamRequestBodyStarted: OpenAIUpstreamAttemptBodyStarted(upstreamCtx),
+					Usage:                      usage,
+					Model:                      requestModel,
+					UpstreamModel:              requestModel,
+					Stream:                     parsed.Stream,
+					ResponseHeaders:            resp.Header.Clone(),
+					Duration:                   time.Since(startTime),
+					FirstTokenMs:               firstTokenMs,
+					ImageCount:                 imageCount,
+					ImageSize:                  parsed.SizeTier,
+					ImageInputSize:             parsed.Size,
+					ImageOutputSizes:           imageOutputSizes,
 				}, err
 			}
-			return nil, err
+			return nil, annotateOpenAIImagesAttemptError(err, attempt, upstreamCtx)
 		}
 	} else {
 		usage, imageCount, imageOutputSizes, err = s.handleOpenAIImagesOAuthNonStreamingResponse(ctx, resp, c, account, parsed.ResponseFormat, requestModel)
 		if err != nil {
-			return nil, err
+			return nil, annotateOpenAIImagesAttemptError(err, attempt, upstreamCtx)
 		}
 	}
 	if imageCount <= 0 {
 		imageCount = parsed.N
 	}
 	return &OpenAIForwardResult{
-		RequestID:        resp.Header.Get("x-request-id"),
-		Usage:            usage,
-		Model:            requestModel,
-		UpstreamModel:    requestModel,
-		Stream:           parsed.Stream,
-		ResponseHeaders:  resp.Header.Clone(),
-		Duration:         time.Since(startTime),
-		FirstTokenMs:     firstTokenMs,
-		ImageCount:       imageCount,
-		ImageSize:        parsed.SizeTier,
-		ImageInputSize:   parsed.Size,
-		ImageOutputSizes: imageOutputSizes,
+		RequestID:                  resp.Header.Get("x-request-id"),
+		AttemptID:                  attempt.ID,
+		UpstreamRequestBodyStarted: OpenAIUpstreamAttemptBodyStarted(upstreamCtx),
+		Usage:                      usage,
+		Model:                      requestModel,
+		UpstreamModel:              requestModel,
+		Stream:                     parsed.Stream,
+		ResponseHeaders:            resp.Header.Clone(),
+		Duration:                   time.Since(startTime),
+		FirstTokenMs:               firstTokenMs,
+		ImageCount:                 imageCount,
+		ImageSize:                  parsed.SizeTier,
+		ImageInputSize:             parsed.Size,
+		ImageOutputSizes:           imageOutputSizes,
 	}, nil
 }

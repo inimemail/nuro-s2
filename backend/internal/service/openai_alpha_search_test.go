@@ -223,7 +223,10 @@ func TestForwardAlphaSearchReturnsFailoverBeforeWriting(t *testing.T) {
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
-	require.True(t, failoverErr.RetryableOnSameAccount)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+	require.NotEmpty(t, failoverErr.AttemptID)
+	require.True(t, failoverErr.UpstreamRequestBodyStarted)
+	require.False(t, failoverErr.ExecutionUnknown, "an explicit 429 response is a known rejection")
 	require.True(t, failoverErr.SkipPoolSoftCooldown)
 	require.True(t, failoverErr.SkipPromptCacheAvoidance)
 	require.True(t, failoverErr.SkipStickySessionEviction)

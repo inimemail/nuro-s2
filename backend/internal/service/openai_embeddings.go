@@ -60,12 +60,16 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	}
 	targetURL := buildOpenAIEmbeddingsURL(validatedURL)
 
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	attempt := newOpenAIUpstreamAttempt()
+	attemptCtx := withOpenAIUpstreamAttempt(ctx, attempt)
+	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(attemptCtx)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
+	trackOpenAIRequestBody(upstreamReq, upstreamCtx)
+	applyOpenAIStableClientRequestID(upstreamReq, upstreamCtx)
 	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileOpenAI))
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Authorization", "Bearer "+apiKey)
@@ -104,8 +108,19 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 			Message:            safeErr,
 		})
 		writeOpenAIEmbeddingsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+		if OpenAIUpstreamAttemptBodyStarted(attemptCtx) {
+			return &OpenAIForwardResult{
+				AttemptID:                  attempt.ID,
+				UpstreamRequestBodyStarted: true,
+				Model:                      originalModel,
+				BillingModel:               billingModel,
+				UpstreamModel:              upstreamModel,
+				Duration:                   time.Since(startTime),
+			}, fmt.Errorf("upstream request failed: %s", safeErr)
+		}
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
+	attempt.markResponse(resp.StatusCode, strings.TrimSpace(firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id"))))
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
@@ -136,14 +151,14 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 			})
 			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
 			decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)
-			return nil, &UpstreamFailoverError{
+			return nil, annotateOpenAIAttemptFailover(upstreamReq, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
 				RetryRuleKey:           decision.RetryRuleKey,
 				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-			}
+			})
 		}
 		writeOpenAIEmbeddingsError(c, resp.StatusCode, "upstream_error", safeUpstreamErrorMessage)
 		return nil, fmt.Errorf("upstream returned status %d", resp.StatusCode)
@@ -157,7 +172,7 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
 	if failoverErr := s.newOpenAIPoolEmbeddedFailoverError(ctx, c, account, resp, respBody, upstreamModel, false); failoverErr != nil {
-		return nil, failoverErr
+		return nil, annotateOpenAIAttemptFailover(upstreamReq, failoverErr)
 	}
 	if openAIPassthroughResponseIsUnsafe(respBody) || !gjson.GetBytes(respBody, "data").IsArray() {
 		failoverErr := &UpstreamFailoverError{
@@ -172,13 +187,15 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter)
 
 	return &OpenAIForwardResult{
-		RequestID:     firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id")),
-		Usage:         extractOpenAIEmbeddingsUsage(respBody),
-		Model:         originalModel,
-		BillingModel:  billingModel,
-		UpstreamModel: upstreamModel,
-		Stream:        false,
-		Duration:      time.Since(startTime),
+		RequestID:                  firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id")),
+		AttemptID:                  attempt.ID,
+		UpstreamRequestBodyStarted: OpenAIUpstreamAttemptBodyStarted(attemptCtx),
+		Usage:                      extractOpenAIEmbeddingsUsage(respBody),
+		Model:                      originalModel,
+		BillingModel:               billingModel,
+		UpstreamModel:              upstreamModel,
+		Stream:                     false,
+		Duration:                   time.Since(startTime),
 	}, nil
 }
 

@@ -110,6 +110,10 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		if failoverClientGone(c) {
 			return false
 		}
+		if !guardOpenAIExecutionUnknownSwitch(c, c.Request.Context(), account, failoverErr) {
+			h.handleFailoverExhausted(c, failoverErr, false)
+			return false
+		}
 		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
 			modelRoutingLockedPriority,
 			account,
@@ -251,7 +255,11 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			h.handleFailoverExhausted(c, failoverErr, true)
 			return
 		}
-		if failoverErr.RetryableOnSameAccount {
+		h.recordOpenAIUnsettledAttempt(
+			c.Request.Context(), c, apiKey, subscription, account, requestedModel, body, failoverErr,
+			GetInboundEndpoint(c), GetUpstreamEndpoint(c, account.Platform), channelMapping.ToUsageFields(requestedModel, channelMapping.MappedModel),
+		)
+		if failoverErr.RetryableOnSameAccount && !failoverErr.ExecutionUnknown {
 			retryDelay := sameAccountRetryDelayForAccount(account)
 			if retryPlan, retry := planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, 0, failoverErr); retry {
 				sameAccountRetryAccountID = account.ID

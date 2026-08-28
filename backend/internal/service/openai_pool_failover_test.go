@@ -56,6 +56,26 @@ func TestOpenAIPoolRequestFailoverError_ConnectionError(t *testing.T) {
 	require.True(t, failoverErr.RetryableOnSameAccount)
 }
 
+func TestOpenAIPoolRequestFailoverError_BodyStartedStopsSameAccountReplay(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:          102,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	attempt := newOpenAIUpstreamAttempt()
+	attempt.markBodyWriteStarted()
+	req, err := http.NewRequestWithContext(withOpenAIUpstreamAttempt(context.Background(), attempt), http.MethodPost, "https://example.test/v1/responses", nil)
+	require.NoError(t, err)
+
+	failoverErr := svc.newOpenAIPoolRequestFailoverError(nil, account, req, errors.New("connection reset by peer"), false)
+
+	require.NotNil(t, failoverErr)
+	require.True(t, failoverErr.UpstreamRequestBodyStarted)
+	require.False(t, failoverErr.RetryableOnSameAccount)
+}
+
 func TestOpenAIPoolRequestFailoverError_BuiltinRetryDisabled(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{

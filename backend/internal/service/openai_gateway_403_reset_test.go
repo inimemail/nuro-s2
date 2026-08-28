@@ -49,7 +49,7 @@ func TestOpenAIGatewayServiceRecordUsage_ResetsOpenAI403CounterForZeroUsage(t *t
 	require.True(t, lastUsedScheduled)
 }
 
-func TestOpenAIGatewayServiceRecordUsage_HealthProbeKeepsBillingButSkipsAccountState(t *testing.T) {
+func TestOpenAIGatewayServiceRecordUsage_HealthProbeSkipsBillingAndAccountState(t *testing.T) {
 	counter := &openAI403CounterResetStub{}
 	rateLimitSvc := NewRateLimitService(nil, nil, nil, nil, nil)
 	rateLimitSvc.SetOpenAI403CounterCache(counter)
@@ -78,8 +78,8 @@ func TestOpenAIGatewayServiceRecordUsage_HealthProbeKeepsBillingButSkipsAccountS
 
 	require.NoError(t, err)
 	require.Empty(t, counter.resetCalls)
-	require.Equal(t, 1, billingRepo.calls)
-	require.Equal(t, 1, usageRepo.calls)
+	require.Equal(t, 0, billingRepo.calls)
+	require.Equal(t, 0, usageRepo.calls)
 	_, lastUsedScheduled := svc.deferredService.lastUsedUpdates.Load(int64(778))
 	require.False(t, lastUsedScheduled)
 }

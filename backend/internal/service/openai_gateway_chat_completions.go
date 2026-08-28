@@ -106,6 +106,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if account.Type == AccountTypeAPIKey && !shouldForwardAPIKeyChatViaResponses(account) {
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
+	attempt := newOpenAIUpstreamAttempt()
 
 	startTime := time.Now()
 
@@ -315,13 +316,13 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	// 6. Build upstream request
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	attemptCtx := withOpenAIUpstreamAttempt(ctx, attempt)
+	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(attemptCtx)
 	upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, true, promptCacheKey, false)
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
-
 	if promptCacheKey != "" && !strongIsolationEnabled && (explicitPromptCacheKey || !promptCacheBoostGeneratedKey) {
 		sessionSeed := promptCacheKey
 		if account.Type == AccountTypeAPIKey {
@@ -354,10 +355,12 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 	if err != nil {
 		if requestFirstTokenPlaceholder.UpstreamCommitted {
-			_ = s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+			_ = s.handleOpenAIUpstreamTransportError(attemptCtx, c, account, err, false)
 			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, http.StatusBadGateway, openAITransportFailoverBody, upstreamModel, err.Error())
 			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", "Upstream request failed")
 			return &OpenAIForwardResult{
+				AttemptID:                     attempt.ID,
+				UpstreamRequestBodyStarted:    OpenAIUpstreamAttemptBodyStarted(attemptCtx),
 				Usage:                         OpenAIUsage{},
 				Model:                         originalModel,
 				BillingModel:                  billingModel,
@@ -369,6 +372,9 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			}, fmt.Errorf("chat_completions upstream request failed after first token placeholder: %w", err)
 		}
 		if failoverErr := s.newOpenAIPoolRequestFailoverError(c, account, upstreamReq, err, false); failoverErr != nil {
+			if attempt := OpenAIUpstreamAttemptFromContext(upstreamReq.Context()); attempt != nil {
+				failoverErr.UpstreamRequestBodyStarted = OpenAIUpstreamAttemptBodyStarted(upstreamReq.Context())
+			}
 			return nil, failoverErr
 		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
@@ -382,8 +388,20 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			Message:            safeErr,
 		})
 		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+		if OpenAIUpstreamAttemptBodyStarted(attemptCtx) {
+			return &OpenAIForwardResult{
+				AttemptID:                  attempt.ID,
+				UpstreamRequestBodyStarted: true,
+				Model:                      originalModel,
+				BillingModel:               billingModel,
+				UpstreamModel:              upstreamModel,
+				Stream:                     clientStream,
+				Duration:                   time.Since(startTime),
+			}, fmt.Errorf("upstream request failed: %s", safeErr)
+		}
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
+	attempt.markResponse(resp.StatusCode, strings.TrimSpace(resp.Header.Get("x-request-id")))
 	defer func() { _ = resp.Body.Close() }()
 
 	// 8. Handle error response with failover
@@ -430,6 +448,8 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", safeUpstreamErrorMessage)
 			return &OpenAIForwardResult{
 				RequestID:            resp.Header.Get("x-request-id"),
+				AttemptID:            attempt.ID,
+				UpstreamStatusCode:   resp.StatusCode,
 				Usage:                OpenAIUsage{},
 				Model:                originalModel,
 				BillingModel:         billingModel,
@@ -516,12 +536,16 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleChatStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, startTime, len(body), requestFirstTokenPlaceholder)
+		result, handleErr = s.handleChatStreamingResponse(attemptCtx, resp, c, account, originalModel, billingModel, upstreamModel, startTime, len(body), requestFirstTokenPlaceholder)
 	} else {
-		result, handleErr = s.handleChatBufferedStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, startTime)
+		result, handleErr = s.handleChatBufferedStreamingResponse(attemptCtx, resp, c, account, originalModel, billingModel, upstreamModel, startTime)
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing
+	if result != nil {
+		result.AttemptID = attempt.ID
+		result.UpstreamRequestBodyStarted = OpenAIUpstreamAttemptBodyStarted(attemptCtx)
+	}
 	if handleErr == nil && result != nil {
 		if responsesReq.ServiceTier != "" {
 			st := responsesReq.ServiceTier

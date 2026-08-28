@@ -161,11 +161,30 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		SetActualOpenAIUpstreamEndpoint(c, grokChatRawEndpoint)
 	}
 
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	// This raw path is shared by OpenAI-compatible domestic providers and Grok.
+	// Attempt-level billing/replay protection is intentionally limited to the
+	// actual OpenAI platform; other providers must retain their existing usage
+	// queue and request-id semantics.
+	trackAttempt := account != nil && account.Platform == PlatformOpenAI
+	var attempt *OpenAIUpstreamAttempt
+	attemptCtx := ctx
+	if trackAttempt {
+		attempt = newOpenAIUpstreamAttempt()
+		attemptCtx = withOpenAIUpstreamAttempt(ctx, attempt)
+	}
+	attemptID := ""
+	if attempt != nil {
+		attemptID = attempt.ID
+	}
+	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(attemptCtx)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
+	}
+	if trackAttempt {
+		trackOpenAIRequestBody(upstreamReq, upstreamCtx)
+		applyOpenAIStableClientRequestID(upstreamReq, upstreamCtx)
 	}
 	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileOpenAI))
 	upstreamReq.Header.Set("Content-Type", "application/json")
@@ -233,16 +252,18 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 	if err != nil {
 		if requestFirstTokenPlaceholder.UpstreamCommitted {
-			_ = s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+			_ = s.handleOpenAIUpstreamTransportError(attemptCtx, c, account, err, false)
 			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, http.StatusBadGateway, openAITransportFailoverBody, upstreamModel, err.Error())
 			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", "Upstream request failed")
 			return &OpenAIForwardResult{
-				Usage:         OpenAIUsage{},
-				Model:         originalModel,
-				BillingModel:  billingModel,
-				UpstreamModel: upstreamModel,
-				Stream:        true,
-				Duration:      time.Since(startTime),
+				AttemptID:                  attemptID,
+				UpstreamRequestBodyStarted: OpenAIUpstreamAttemptBodyStarted(attemptCtx),
+				Usage:                      OpenAIUsage{},
+				Model:                      originalModel,
+				BillingModel:               billingModel,
+				UpstreamModel:              upstreamModel,
+				Stream:                     true,
+				Duration:                   time.Since(startTime),
 			}, fmt.Errorf("raw chat_completions upstream request failed after first token placeholder: %w", err)
 		}
 		if failoverErr := s.newOpenAIPoolRequestFailoverError(c, account, upstreamReq, err, false); failoverErr != nil {
@@ -259,7 +280,21 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			Message:            safeErr,
 		})
 		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+		if trackAttempt && OpenAIUpstreamAttemptBodyStarted(attemptCtx) {
+			return &OpenAIForwardResult{
+				AttemptID:                  attemptID,
+				UpstreamRequestBodyStarted: true,
+				Model:                      originalModel,
+				BillingModel:               billingModel,
+				UpstreamModel:              upstreamModel,
+				Stream:                     clientStream,
+				Duration:                   time.Since(startTime),
+			}, fmt.Errorf("upstream request failed: %s", safeErr)
+		}
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	if trackAttempt {
+		attempt.markResponse(resp.StatusCode, strings.TrimSpace(resp.Header.Get("x-request-id")))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -276,13 +311,16 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			s.RecordOpenAIPoolFailureAfterCommittedResponse(ctx, account, resp.StatusCode, respBody, upstreamModel, upstreamMsg)
 			writeOpenAIRequestPlaceholderErrorSSE(c, openAIRequestFirstTokenPlaceholderDialectChatCompletions, originalModel, "upstream_error", "Upstream request failed")
 			return &OpenAIForwardResult{
-				RequestID:     resp.Header.Get("x-request-id"),
-				Usage:         OpenAIUsage{},
-				Model:         originalModel,
-				BillingModel:  billingModel,
-				UpstreamModel: upstreamModel,
-				Stream:        true,
-				Duration:      time.Since(startTime),
+				RequestID:                  resp.Header.Get("x-request-id"),
+				AttemptID:                  attemptID,
+				UpstreamRequestBodyStarted: OpenAIUpstreamAttemptBodyStarted(attemptCtx),
+				UpstreamStatusCode:         resp.StatusCode,
+				Usage:                      OpenAIUsage{},
+				Model:                      originalModel,
+				BillingModel:               billingModel,
+				UpstreamModel:              upstreamModel,
+				Stream:                     true,
+				Duration:                   time.Since(startTime),
 			}, fmt.Errorf("raw chat_completions upstream error after first token placeholder: %d message=%s", resp.StatusCode, upstreamMsg)
 		}
 		if account.Platform == PlatformGrok {
@@ -298,7 +336,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 					RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
 				}
 				annotateOpenAIRaceRetryRule(account, failoverErr, resp.StatusCode)
-				return nil, failoverErr
+				return nil, annotateOpenAIAttemptFailover(upstreamReq, failoverErr)
 			}
 			return s.handleChatCompletionsErrorResponseWithoutAccountState(resp, c, account, billingModel)
 		}
@@ -331,7 +369,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 				Detail:             upstreamDetail,
 			})
 			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
-			return nil, &UpstreamFailoverError{
+			return nil, annotateOpenAIAttemptFailover(upstreamReq, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				Message:                upstreamMsg,
@@ -341,7 +379,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 				RetryRuleKey:           decision.RetryRuleKey,
 				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-			}
+			})
 		}
 		return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
 	}
@@ -350,10 +388,18 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 
 	// 8. Forward response
+	var result *OpenAIForwardResult
+	var forwardErr error
 	if clientStream {
-		return s.streamRawChatCompletions(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body), requestFirstTokenPlaceholder)
+		result, forwardErr = s.streamRawChatCompletions(attemptCtx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body), requestFirstTokenPlaceholder)
+	} else {
+		result, forwardErr = s.bufferRawChatCompletions(attemptCtx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
-	return s.bufferRawChatCompletions(ctx, c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	if result != nil && trackAttempt {
+		result.AttemptID = attempt.ID
+		result.UpstreamRequestBodyStarted = OpenAIUpstreamAttemptBodyStarted(attemptCtx)
+	}
+	return result, forwardErr
 }
 
 // streamRawChatCompletions 透传上游 CC SSE 流到客户端，并提取 usage（包括
@@ -649,7 +695,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			)
 			terminalEventType = "error"
 		}
-		return resultWithUsage(), s.newOpenAIStreamFailoverError(c, account, false, requestID, nil, "Upstream request failed")
+		return resultWithUsage(), s.newOpenAIStreamFailoverErrorWithContext(ctx, c, account, false, requestID, nil, "Upstream request failed")
 	}
 	if realFirstTokenMs != nil {
 		s.recordOpenAIFirstTokenTimeoutPlaceholderGuardSample(account, originalModel, *realFirstTokenMs)

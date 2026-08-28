@@ -335,10 +335,17 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 6. Build upstream request
+	trackAttempt := account != nil && account.Platform == PlatformOpenAI
+	var attempt *OpenAIUpstreamAttempt
+	attemptCtx := ctx
+	if trackAttempt {
+		attempt = newOpenAIUpstreamAttempt()
+		attemptCtx = withOpenAIUpstreamAttempt(ctx, attempt)
+	}
 	if account.Type == AccountTypeOAuth && account.Platform != PlatformGrok {
 		setOpenAICompatMessagesBridgeContext(c, true)
 	}
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(attemptCtx)
 	var upstreamReq *http.Request
 	if account.Platform == PlatformGrok {
 		upstreamReq, err = buildGrokResponsesRequest(upstreamCtx, c, account, responsesBody, token, grokCacheIdentity, s.cfg)
@@ -349,6 +356,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
+	// Grok uses its own request/accounting semantics. Keep attempt tracking
+	// limited to actual OpenAI upstream requests so Grok usage queues and
+	// request-id deduplication remain unchanged.
 
 	// Override session_id with a deterministic UUID derived from the isolated
 	// session key, ensuring different API keys produce different upstream sessions.
@@ -383,7 +393,11 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
 	if err != nil {
-		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+		transportErr := s.handleOpenAIUpstreamTransportError(attemptCtx, c, account, err, false)
+		if trackAttempt {
+			transportErr = annotateOpenAIUpstreamError(upstreamReq, transportErr)
+		}
+		return openAIUnsettledAttemptResult(attemptCtx, account, originalModel, billingModel, upstreamModel, clientStream, time.Since(startTime)), transportErr
 	}
 	// An OAuth account switch can leave Anthropic thinking signatures from the
 	// previous account in the converted Responses input. Retry once on the same
@@ -403,7 +417,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			if changed {
 				grokEncryptedContentDirectRetryTried = true
 				responsesBody = retryBody
-				retryCtx, releaseRetry := detachUpstreamContext(ctx)
+				// This retry is Grok-specific and intentionally keeps the original
+				// provider context; OpenAI attempt accounting does not apply here.
+				attemptCtx = ctx
+				retryCtx, releaseRetry := detachUpstreamContext(attemptCtx)
 				upstreamReq, err = buildGrokResponsesRequest(retryCtx, c, account, responsesBody, token, grokCacheIdentity, s.cfg)
 				releaseRetry()
 				if err != nil {
@@ -411,7 +428,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				}
 				resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.resolveTLSProfile(account))
 				if err != nil {
-					return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
+					return nil, s.handleOpenAIUpstreamTransportError(attemptCtx, c, account, err, false)
 				}
 			} else {
 				resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -419,6 +436,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		} else {
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		}
+	}
+	if trackAttempt {
+		attempt.markResponse(resp.StatusCode, strings.TrimSpace(firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id"))))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -518,14 +538,14 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
 			}
 			decision := s.classifyOpenAIPoolFailover(ctx, account, resp.StatusCode, upstreamMsg, respBody)
-			return nil, &UpstreamFailoverError{
+			return nil, annotateOpenAIAttemptFailover(upstreamReq, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: decision.RetryableOnSameAccount,
 				RetryRuleKey:           decision.RetryRuleKey,
 				RetryRuleLimit:         decision.RetryRuleLimit,
 				SkipPoolSoftCooldown:   decision.SkipSoftCooldown,
-			}
+			})
 		}
 		// Non-failover error: return Anthropic-formatted error to client
 		if account.Platform == PlatformGrok {
@@ -548,10 +568,14 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleAnthropicStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, startTime)
+		result, handleErr = s.handleAnthropicStreamingResponse(attemptCtx, resp, c, account, originalModel, billingModel, upstreamModel, startTime)
 	} else {
 		// Client wants JSON: buffer the streaming response and assemble a JSON reply.
-		result, handleErr = s.handleAnthropicBufferedStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, startTime)
+		result, handleErr = s.handleAnthropicBufferedStreamingResponse(attemptCtx, resp, c, account, originalModel, billingModel, upstreamModel, startTime)
+	}
+	if result != nil && trackAttempt {
+		result.AttemptID = attempt.ID
+		result.UpstreamRequestBodyStarted = OpenAIUpstreamAttemptBodyStarted(attemptCtx)
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing

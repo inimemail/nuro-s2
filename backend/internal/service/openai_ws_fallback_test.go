@@ -120,6 +120,23 @@ func TestClassifyOpenAIWSReconnectReason(t *testing.T) {
 	require.True(t, retryable)
 }
 
+func TestOpenAIWSFallbackRequestWrittenTracksExecutionBoundary(t *testing.T) {
+	beforeWrite := wrapOpenAIWSFallback("dial_failed", errors.New("dial"))
+	require.False(t, openAIWSFallbackRequestWritten(beforeWrite))
+
+	afterWrite := wrapOpenAIWSWrittenFallback("read_event", errors.New("read"))
+	require.True(t, openAIWSFallbackRequestWritten(afterWrite))
+	reason, retryable := classifyOpenAIWSReconnectReason(afterWrite)
+	require.Equal(t, "read_event", reason)
+	require.True(t, retryable)
+
+	compatibility := wrapOpenAIWSWrittenFallback("invalid_encrypted_content", errors.New("invalid encrypted content"))
+	require.True(t, openAIWSFallbackRequestWritten(compatibility))
+	reason, retryable = classifyOpenAIWSReconnectReason(compatibility)
+	require.Equal(t, "invalid_encrypted_content", reason)
+	require.False(t, retryable)
+}
+
 func TestOpenAIWSErrorHTTPStatus(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"invalid_request_error","code":"invalid_request","message":"invalid input"}}`)))
 	require.Equal(t, http.StatusUnauthorized, openAIWSErrorHTTPStatus([]byte(`{"type":"error","error":{"type":"authentication_error","code":"invalid_api_key","message":"auth failed"}}`)))
@@ -264,4 +281,15 @@ func TestShouldLogOpenAIWSPayloadSchema(t *testing.T) {
 
 	svc.cfg.Gateway.OpenAIWS.PayloadLogSampleRate = 1
 	require.True(t, svc.shouldLogOpenAIWSPayloadSchema(2))
+}
+
+func TestOpenAIWSIngressWrittenTurnIsNotGenericallyReplayed(t *testing.T) {
+	err := wrapOpenAIWSIngressWrittenTurnError("read_upstream", errors.New("connection reset"), false, "attempt-ws")
+	require.False(t, isOpenAIWSIngressTurnRetryable(err))
+	attemptID, written := openAIWSIngressAttempt(err)
+	require.True(t, written)
+	require.Equal(t, "attempt-ws", attemptID)
+
+	preSendErr := wrapOpenAIWSIngressTurnError("write_upstream", errors.New("dial failed"), false)
+	require.True(t, isOpenAIWSIngressTurnRetryable(preSendErr))
 }

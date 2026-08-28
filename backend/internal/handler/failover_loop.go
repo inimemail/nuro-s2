@@ -422,7 +422,7 @@ func (s *FailoverState) handleFailoverErrorWithRetryPlanAndBudget(
 	s.LastFailoverErr = failoverErr
 
 	// 同账号重试不算切换账号，粘性会话只在实际切号时强制缓存计费。
-	sameAccountRetry := failoverErr.RetryableOnSameAccount &&
+	sameAccountRetry := failoverErr.RetryableOnSameAccount && !failoverErr.ExecutionUnknown &&
 		s.sameAccountRetryAllowedWithBudget(accountID, retryLimit, retryDelay, retryMaxElapsed, sharedRaceBudget, failoverErr)
 	if needForceCacheBilling(s.hasBoundSession, failoverErr, sameAccountRetry) {
 		s.ForceCacheBilling = true

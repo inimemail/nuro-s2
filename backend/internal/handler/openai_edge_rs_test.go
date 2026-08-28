@@ -658,6 +658,47 @@ func TestOpenAIEdgeRetryFallbackBoundaries(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeRetryBoundsExecutionUnknownReplacement(t *testing.T) {
+	lease := &openAIEdgeLease{
+		edgeRequestID: "edge-unknown", leaseID: "lease-unknown",
+		account: &service.Account{ID: 1001},
+	}
+	h := &OpenAIGatewayHandler{openAIEdgeLeases: map[string]*openAIEdgeLease{"lease-unknown": lease}}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+	req := service.OpenAIEdgeRetryRequest{
+		LeaseID: "lease-unknown", AccountID: 1001,
+		UpstreamStatusCode: http.StatusBadGateway,
+	}
+
+	first := h.openAIEdgeRetryDecision(c, req)
+	if first.Reason != "edge_dependencies_missing" {
+		t.Fatalf("first execution-unknown retry should pass the replay guard, got %q", first.Reason)
+	}
+	if lease.executionUnknownRetries != 1 {
+		t.Fatalf("first execution-unknown retry count = %d, want 1", lease.executionUnknownRetries)
+	}
+	second := h.openAIEdgeRetryDecision(c, req)
+	if second.Reason != "execution_unknown_replay_blocked" {
+		t.Fatalf("second execution-unknown retry reason = %q", second.Reason)
+	}
+}
+
+func TestOpenAIEdgeRetryLocalFailureDoesNotConsumeExecutionUnknownBudget(t *testing.T) {
+	lease := &openAIEdgeLease{
+		edgeRequestID: "edge-local", leaseID: "lease-local",
+		account: &service.Account{ID: 1001},
+	}
+	h := &OpenAIGatewayHandler{openAIEdgeLeases: map[string]*openAIEdgeLease{"lease-local": lease}}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+	_ = h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID: "lease-local", AccountID: 1001,
+		ErrorType: "edge_queue_wait_timeout",
+	})
+	if lease.executionUnknownRetries != 0 {
+		t.Fatalf("local queue failure consumed execution-unknown budget: %d", lease.executionUnknownRetries)
+	}
+}
+
 func TestOpenAIEdgeRetryCacheCreationCompatibilityStaysOnEdgeRS(t *testing.T) {
 	cfg := &config.Config{}
 	gatewaySvc := service.NewOpenAIGatewayService(
@@ -1743,6 +1784,47 @@ func TestOpenAIEdgeAbortCircuitClassificationIsStrict(t *testing.T) {
 			t.Fatalf("neutral abort incorrectly reached proxy circuit: %+v", req)
 		}
 	}
+}
+
+func TestOpenAIEdgeAbortUsageClassification(t *testing.T) {
+	if !openAIEdgeAbortShouldRecordUsage(service.OpenAIEdgeAbortRequest{
+		RelayAttempted: true, FailureClass: "abort_failed", Reason: "upstream_disconnect",
+	}) {
+		t.Fatal("a real relay abort must be conservatively billable")
+	}
+	for _, req := range []service.OpenAIEdgeAbortRequest{
+		{RelayAttempted: true, FailureClass: "client_cancelled", Reason: "client_disconnect", ClientDisconnected: true},
+		{RelayAttempted: true, FailureClass: "local_capacity_rejected", Reason: "edge_relay_queue_full"},
+		{RelayAttempted: true, FailureClass: "prepare_failed", Reason: "prepare_failed"},
+		{RelayAttempted: true, FailureClass: "upstream_disconnect", Reason: "fallback", FallbackToGo: true},
+	} {
+		if openAIEdgeAbortShouldRecordUsage(req) {
+			t.Fatalf("neutral abort must not be billed: %+v", req)
+		}
+	}
+}
+
+func TestOpenAIEdgeUnsettledUsageEstimatesSurvivePayloadRelease(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6","input":"` + strings.Repeat("x", 800) + `","max_output_tokens":321}`)
+	inputTokens, outputTokens := conservativeOpenAIUsageEstimates(body, "/v1/responses")
+	lease := &openAIEdgeLease{
+		inboundEndpoint:     "/v1/responses",
+		inputTokenEstimate:  inputTokens,
+		outputTokenEstimate: outputTokens,
+	}
+
+	gotInput, gotOutput := openAIEdgeUnsettledUsageEstimates(lease, http.StatusBadGateway)
+	require.Equal(t, inputTokens, gotInput)
+	require.Equal(t, 321, gotOutput)
+
+	gotInput, gotOutput = openAIEdgeUnsettledUsageEstimates(lease, http.StatusTooManyRequests)
+	require.Equal(t, inputTokens, gotInput)
+	require.Zero(t, gotOutput, "known rejection must not fabricate completion usage")
+
+	result := &service.OpenAIForwardResult{AttemptID: "edge-attempt", UpstreamRequestBodyStarted: true}
+	require.True(t, applyConservativeOpenAIUsageEstimates(result, &service.Account{Platform: service.PlatformOpenAI}, lease.inputTokenEstimate, lease.outputTokenEstimate))
+	require.Equal(t, inputTokens, result.Usage.InputTokens)
+	require.Equal(t, 321, result.Usage.OutputTokens)
 }
 
 func TestOpenAIEdgeRealFirstTokenMSPrefersRealSample(t *testing.T) {

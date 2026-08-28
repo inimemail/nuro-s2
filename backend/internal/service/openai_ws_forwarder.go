@@ -72,6 +72,10 @@ var openAIWSIngressPreflightPingIdle = 20 * time.Second
 type openAIWSFallbackError struct {
 	Reason string
 	Err    error
+	// RequestWritten indicates that the current WS turn was successfully
+	// written to the provider before the fallback error occurred.
+	RequestWritten bool
+	AttemptID      string
 }
 
 func (e *openAIWSFallbackError) Error() string {
@@ -95,6 +99,35 @@ func wrapOpenAIWSFallback(reason string, err error) error {
 	return &openAIWSFallbackError{Reason: strings.TrimSpace(reason), Err: err}
 }
 
+func wrapOpenAIWSWrittenFallback(reason string, err error, attemptID ...string) error {
+	id := ""
+	if len(attemptID) > 0 {
+		id = strings.TrimSpace(attemptID[0])
+	}
+	return &openAIWSFallbackError{Reason: strings.TrimSpace(reason), Err: err, RequestWritten: true, AttemptID: id}
+}
+
+func openAIWSFallbackRequestWritten(err error) bool {
+	var fallbackErr *openAIWSFallbackError
+	return errors.As(err, &fallbackErr) && fallbackErr != nil && fallbackErr.RequestWritten
+}
+
+func openAIWSFallbackAttemptID(err error) string {
+	var fallbackErr *openAIWSFallbackError
+	if errors.As(err, &fallbackErr) && fallbackErr != nil {
+		return strings.TrimSpace(fallbackErr.AttemptID)
+	}
+	return ""
+}
+
+// OpenAIWSFallbackAttempt exposes only the accounting metadata for a WS
+// fallback. The concrete error type remains private; handlers use this to
+// settle a written-but-unconfirmed attempt without changing the historical
+// nil-result/error return contract of Forward.
+func OpenAIWSFallbackAttempt(err error) (attemptID string, requestWritten bool) {
+	return openAIWSFallbackAttemptID(err), openAIWSFallbackRequestWritten(err)
+}
+
 // OpenAIWSClientCloseError 表示应以指定 WebSocket close code 主动关闭客户端连接的错误。
 type OpenAIWSClientCloseError struct {
 	statusCode coderws.StatusCode
@@ -106,6 +139,8 @@ type openAIWSIngressTurnError struct {
 	stage           string
 	cause           error
 	wroteDownstream bool
+	requestWritten  bool
+	attemptID       string
 }
 
 type openAIWSRejectedFieldError struct {
@@ -186,6 +221,31 @@ func wrapOpenAIWSIngressTurnError(stage string, cause error, wroteDownstream boo
 	}
 }
 
+func wrapOpenAIWSIngressWrittenTurnError(stage string, cause error, wroteDownstream bool, attemptID string) error {
+	if cause == nil {
+		return nil
+	}
+	return &openAIWSIngressTurnError{
+		stage:           strings.TrimSpace(stage),
+		cause:           cause,
+		wroteDownstream: wroteDownstream,
+		requestWritten:  true,
+		attemptID:       strings.TrimSpace(attemptID),
+	}
+}
+
+func openAIWSIngressAttempt(err error) (string, bool) {
+	var turnErr *openAIWSIngressTurnError
+	if errors.As(err, &turnErr) && turnErr != nil {
+		return strings.TrimSpace(turnErr.attemptID), turnErr.requestWritten
+	}
+	var failoverErr *UpstreamFailoverError
+	if errors.As(err, &failoverErr) && failoverErr != nil {
+		return strings.TrimSpace(failoverErr.AttemptID), failoverErr.UpstreamRequestBodyStarted
+	}
+	return "", false
+}
+
 func isOpenAIWSIngressTurnRetryable(err error) bool {
 	var turnErr *openAIWSIngressTurnError
 	if !errors.As(err, &turnErr) || turnErr == nil {
@@ -195,6 +255,13 @@ func isOpenAIWSIngressTurnRetryable(err error) bool {
 		return false
 	}
 	if turnErr.wroteDownstream {
+		return false
+	}
+	// A completed WS write can already have started model execution. Generic
+	// read/transport recovery must not replay the entire turn. Explicit
+	// previous_response_not_found and rejected-field compatibility recovery are
+	// handled before this generic retry gate by their dedicated branches.
+	if turnErr.requestWritten {
 		return false
 	}
 	switch turnErr.stage {
@@ -1927,6 +1994,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
 	}
 	strongIsolationEnabled := account.IsOpenAIUpstreamStrongIsolationEnabled()
+	upstreamAttemptID := newOpenAIUpstreamAttemptIDForAccount(account)
 
 	wsURL, err := s.buildOpenAIResponsesWSURL(account)
 	if err != nil {
@@ -2439,7 +2507,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			// upstream output. Keep this request failover-capable until real
 			// upstream content has been written.
 			if !wroteDownstream || openAIWSPlaceholderCoordinationPending(c) {
-				return nil, wrapOpenAIWSFallback(classifyOpenAIWSReadFallbackReason(readErr), readErr)
+				return nil, wrapOpenAIWSWrittenFallback(classifyOpenAIWSReadFallbackReason(readErr), readErr, upstreamAttemptID)
 			}
 			setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(readErr.Error()), "")
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
@@ -2536,7 +2604,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			if failedMessage == "" {
 				failedMessage = "Upstream response failed"
 			}
-			return nil, wrapOpenAIWSFallback("upstream_error_event", errors.New(failedMessage))
+			return nil, wrapOpenAIWSWrittenFallback("upstream_error_event", errors.New(failedMessage), upstreamAttemptID)
 		}
 
 		if eventType == "error" {
@@ -2592,7 +2660,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			// error 事件后连接不再可复用，避免回池后污染下一请求。
 			lease.MarkBroken()
 			if (!wroteDownstream || openAIWSPlaceholderCoordinationPending(c)) && canFallback {
-				return nil, wrapOpenAIWSFallback(fallbackReason, errors.New(errMsg))
+				return nil, wrapOpenAIWSWrittenFallback(fallbackReason, errors.New(errMsg), upstreamAttemptID)
 			}
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
 			setOpsUpstreamError(c, statusCode, clientErrMsg, "")
@@ -2681,7 +2749,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				wroteDownstream,
 			)
 			if !wroteDownstream {
-				return nil, wrapOpenAIWSFallback("missing_final_response", errors.New("no terminal response payload"))
+				return nil, wrapOpenAIWSWrittenFallback("missing_final_response", errors.New("no terminal response payload"), upstreamAttemptID)
 			}
 			return nil, errors.New("ws finished without final response")
 		}
@@ -2739,6 +2807,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	return &OpenAIForwardResult{
 		RequestID:                     responseID,
+		AttemptID:                     upstreamAttemptID,
+		UpstreamRequestBodyStarted:    true,
 		Usage:                         *usage,
 		Model:                         originalModel,
 		UpstreamModel:                 mappedModel,
@@ -3500,6 +3570,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return nil, errors.New("upstream websocket lease is nil")
 		}
 		turnStart := time.Now()
+		upstreamAttemptID := newOpenAIUpstreamAttemptIDForAccount(account)
 		wroteDownstream := false
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(payload), s.openAIWSWriteTimeout()); err != nil {
 			return nil, wrapOpenAIWSIngressTurnError(
@@ -3551,10 +3622,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			upstreamMessage, readErr := lease.ReadMessageWithContextTimeout(ctx, s.openAIWSReadTimeout())
 			if readErr != nil {
 				lease.MarkBroken()
-				return nil, wrapOpenAIWSIngressTurnError(
+				return nil, wrapOpenAIWSIngressWrittenTurnError(
 					"read_upstream",
 					fmt.Errorf("read upstream websocket event: %w", readErr),
 					wroteDownstream,
+					upstreamAttemptID,
 				)
 			}
 
@@ -3639,18 +3711,21 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					if errMsg == "" {
 						errMsg = "previous response not found"
 					}
-					return nil, wrapOpenAIWSIngressTurnError(
+					return nil, wrapOpenAIWSIngressWrittenTurnError(
 						openAIWSIngressStagePreviousResponseNotFound,
 						errors.New(errMsg),
 						false,
+						upstreamAttemptID,
 					)
 				}
 				if !wroteDownstream && isOpenAIWSRateLimitError(errCodeRaw, errTypeRaw, errMsgRaw) {
 					lease.MarkBroken()
 					return nil, &UpstreamFailoverError{
-						StatusCode:      http.StatusTooManyRequests,
-						ResponseBody:    append([]byte(nil), upstreamMessage...),
-						ResponseHeaders: cloneHeader(lease.HandshakeHeaders()),
+						StatusCode:                 http.StatusTooManyRequests,
+						ResponseBody:               append([]byte(nil), upstreamMessage...),
+						ResponseHeaders:            cloneHeader(lease.HandshakeHeaders()),
+						AttemptID:                  upstreamAttemptID,
+						UpstreamRequestBodyStarted: true,
 					}
 				}
 				// A protocol-level error ends the current turn. Do not wait for a
@@ -3714,10 +3789,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 							truncateOpenAIWSLogValue(closeReason, openAIWSHeaderValueMaxLen),
 						)
 					} else {
-						return nil, wrapOpenAIWSIngressTurnError(
+						return nil, wrapOpenAIWSIngressWrittenTurnError(
 							"write_client",
 							fmt.Errorf("write client websocket event: %w", err),
 							wroteDownstream,
+							upstreamAttemptID,
 						)
 					}
 				} else {
@@ -3753,6 +3829,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				imageCount := imageCounter.Count()
 				result := &OpenAIForwardResult{
 					RequestID:                     responseID,
+					AttemptID:                     upstreamAttemptID,
+					UpstreamRequestBodyStarted:    true,
 					Usage:                         usage,
 					Model:                         originalModel,
 					UpstreamModel:                 mappedModel,
@@ -3786,12 +3864,20 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 	}
 
-	currentPayload := firstPayload.payloadRaw
+	applyRejectedFieldCache := func(payload []byte) ([]byte, error) {
+		model := openAIWSPassthroughPolicyModelForFrame(account, payload)
+		updated, _, err := s.ApplyOpenAIResponsesRejectedFieldCache(account, model, openAIResponsesRejectedFieldTransportScope(string(OpenAIUpstreamTransportResponsesWebsocketV2), false), payload)
+		return updated, err
+	}
+	currentPayload, err := applyRejectedFieldCache(firstPayload.payloadRaw)
+	if err != nil {
+		return fmt.Errorf("apply cached ingress WS Responses field compatibility: %w", err)
+	}
 	currentOriginalModel := firstPayload.originalModel
 	currentImageBillingModel := firstPayload.imageBillingModel
 	currentImageSizeTier := firstPayload.imageSizeTier
 	currentImageInputSize := firstPayload.imageInputSize
-	currentPayloadBytes := firstPayload.payloadBytes
+	currentPayloadBytes := len(currentPayload)
 	currentCacheCreationOptimizationApplied := firstPayload.cacheCreationOptimizationApplied
 	currentDownstreamCacheUsageMode := firstPayload.downstreamCacheUsageMode
 	currentDownstreamCacheMarkup := firstPayload.downstreamCacheMarkup
@@ -3962,6 +4048,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if rewriteErr != nil || !changed {
 			return false
 		}
+		s.RecordOpenAIResponsesRejectedField(
+			account,
+			openAIWSPassthroughPolicyModelForFrame(account, currentPayload),
+			openAIResponsesRejectedFieldTransportScope(string(OpenAIUpstreamTransportResponsesWebsocketV2), false),
+			field,
+		)
 		logOpenAIWSModeInfo(
 			"ingress_ws_rejected_field_retry account_id=%d turn=%d conn_id=%s field=%s",
 			account.ID,
@@ -4326,7 +4418,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				finalErr = unwrapped
 			}
 			if hooks != nil && hooks.AfterTurn != nil {
-				hooks.AfterTurn(turn, nil, finalErr)
+				var failedResult *OpenAIForwardResult
+				if attemptID, requestWritten := openAIWSIngressAttempt(relayErr); requestWritten && attemptID != "" {
+					failedResult = &OpenAIForwardResult{
+						AttemptID:                  attemptID,
+						UpstreamRequestBodyStarted: true,
+						OpenAIWSMode:               true,
+					}
+				}
+				hooks.AfterTurn(turn, failedResult, finalErr)
 			}
 			sessionLease.MarkBroken()
 			return finalErr
@@ -4444,12 +4544,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 			}
 		}
-		currentPayload = nextPayload.payloadRaw
+		currentPayload, err = applyRejectedFieldCache(nextPayload.payloadRaw)
+		if err != nil {
+			return fmt.Errorf("apply cached next-turn WS Responses field compatibility: %w", err)
+		}
 		currentOriginalModel = nextPayload.originalModel
 		currentImageBillingModel = nextPayload.imageBillingModel
 		currentImageSizeTier = nextPayload.imageSizeTier
 		currentImageInputSize = nextPayload.imageInputSize
-		currentPayloadBytes = nextPayload.payloadBytes
+		currentPayloadBytes = len(currentPayload)
 		currentCacheCreationOptimizationApplied = nextPayload.cacheCreationOptimizationApplied
 		currentDownstreamCacheUsageMode = nextPayload.downstreamCacheUsageMode
 		currentDownstreamCacheMarkup = nextPayload.downstreamCacheMarkup
