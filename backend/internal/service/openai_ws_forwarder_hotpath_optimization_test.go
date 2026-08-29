@@ -85,7 +85,7 @@ func TestSanitizeOpenAIWSErrorEventForClient(t *testing.T) {
 	t.Run("error event removes endpoint and unknown diagnostics", func(t *testing.T) {
 		payload := []byte(`{"type":"error","error":{"type":"server_error","message":"<!DOCTYPE html><title>xiaobaishu.org | 502</title>","upstream_host":"xiaobaishu.org"},"debug_url":"https://www.cloudflare.com/5xx"}`)
 		sanitized := sanitizeOpenAIWSErrorEventForClient(payload, "error", false)
-		require.JSONEq(t, `{"type":"error","error":{"type":"server_error","message":"Upstream request failed"}}`, string(sanitized))
+		require.JSONEq(t, `{"type":"response.failed","response":{"status":"failed","output":[],"error":{"type":"server_error","message":"Upstream request failed"}}}`, string(sanitized))
 		require.NotContains(t, string(sanitized), "xiaobaishu.org")
 		require.NotContains(t, string(sanitized), "cloudflare.com")
 		require.NotContains(t, string(sanitized), "DOCTYPE")
@@ -108,6 +108,11 @@ func TestSanitizeOpenAIWSErrorEventForClient(t *testing.T) {
 		payload := []byte(`{"type":"response.completed","response":{"id":"resp_ok","output":[{"type":"message","content":[]}]}}`)
 		require.Equal(t, payload, sanitizeOpenAIWSErrorEventForClient(payload, "response.completed", true))
 	})
+}
+
+func TestBuildOpenAIWSHTTPBridgeErrorEventUsesResponsesTerminalShape(t *testing.T) {
+	payload := buildOpenAIWSHTTPBridgeErrorEvent(http.StatusBadGateway, "private upstream detail")
+	require.JSONEq(t, `{"type":"response.failed","status":502,"response":{"status":"failed","output":[],"error":{"type":"upstream_error","message":"Upstream request failed"}}}`, string(payload))
 }
 
 func TestNormalizeOpenAIWSUpstreamEventForSafety(t *testing.T) {

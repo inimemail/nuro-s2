@@ -124,18 +124,21 @@ func (c *openAIWSToolCallReplayCollector) addItem(item gjson.Result) {
 
 func buildOpenAIWSHTTPBridgeErrorEvent(statusCode int, message string) []byte {
 	_ = message
-	message = safeUpstreamErrorMessage
 	event := map[string]any{
-		"type":   "error",
+		"type":   "response.failed",
 		"status": statusCode,
-		"error": map[string]any{
-			"type":    "upstream_error",
-			"message": message,
+		"response": map[string]any{
+			"status": "failed",
+			"output": []any{},
+			"error": map[string]any{
+				"type":    "upstream_error",
+				"message": safeUpstreamErrorMessage,
+			},
 		},
 	}
 	body, err := json.Marshal(event)
 	if err != nil {
-		return []byte(`{"type":"error","error":{"type":"upstream_error","message":"upstream request failed"}}`)
+		return []byte(`{"type":"response.failed","response":{"status":"failed","output":[],"error":{"type":"upstream_error","message":"Upstream request failed"}}}`)
 	}
 	return body
 }
@@ -366,6 +369,19 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	scanBuf := getSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
 	defer putSSEScannerBuf64K(scanBuf)
+	emitFailedTerminal := func() {
+		if !wroteDownstream || clientDisconnected {
+			return
+		}
+		if err := writeClientMessage(safeOpenAIResponsesFailedPayload(nil, false)); err != nil {
+			if isOpenAIWSClientDisconnectError(err) {
+				clientDisconnected = true
+				return
+			}
+			return
+		}
+		wroteDownstream = true
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -521,6 +537,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if turn == 1 && !wroteDownstream {
 			return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, streamErr, true)
 		}
+		emitFailedTerminal()
 		return resultWithUsage(), streamErr
 	}
 	terminalErr := errors.New("upstream http bridge stream ended before terminal event")
@@ -530,6 +547,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	if turn == 1 && !wroteDownstream {
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, terminalErr, true)
 	}
+	emitFailedTerminal()
 	return resultWithUsage(), terminalErr
 }
 

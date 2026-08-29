@@ -3367,6 +3367,19 @@ async fn relay_ws_session(
                                 .map(|timeout| Box::pin(tokio::time::sleep(timeout)));
                         }
                         if matches!(msg, TungsteniteMessage::Close(_)) {
+                            if ws_response_active && !client_disconnected {
+                                let failed = AxumWsMessage::Text(safe_ws_response_failed_event(
+                                    summary.response_id.as_deref(),
+                                ));
+                                if client_socket.send(failed).await.is_ok() {
+                                    summary.failed = true;
+                                    summary.failed_terminal_event_type =
+                                        Some("response.failed".to_string());
+                                    summary.terminal_event_type =
+                                        Some("response.failed".to_string());
+                                    success = false;
+                                }
+                            }
                             let _ = client_socket.send(AxumWsMessage::Close(None)).await;
                             break;
                         }
@@ -3570,9 +3583,34 @@ async fn relay_ws_session(
                         success = false;
                         failure_state.mark_other_failure();
                         error_message = Some(err.to_string());
+                        if ws_response_active && !client_disconnected {
+                            let failed = AxumWsMessage::Text(safe_ws_response_failed_event(
+                                summary.response_id.as_deref(),
+                            ));
+                            if client_socket.send(failed).await.is_ok() {
+                                summary.failed = true;
+                                summary.failed_terminal_event_type =
+                                    Some("response.failed".to_string());
+                                summary.terminal_event_type = Some("response.failed".to_string());
+                            }
+                        }
                         break;
                     }
-                    None => break,
+                    None => {
+                        success = false;
+                        if ws_response_active && !client_disconnected {
+                            let failed = AxumWsMessage::Text(safe_ws_response_failed_event(
+                                summary.response_id.as_deref(),
+                            ));
+                            if client_socket.send(failed).await.is_ok() {
+                                summary.failed = true;
+                                summary.failed_terminal_event_type =
+                                    Some("response.failed".to_string());
+                                summary.terminal_event_type = Some("response.failed".to_string());
+                            }
+                        }
+                        break;
+                    }
                 }
             }
             _ = wait_optional_sleep(&mut first_token_timeout_timer), if ws_response_active && !first_token_timeout_placeholder_sent && !downstream_ttft_observed => {
@@ -7855,6 +7893,26 @@ fn openai_responses_safe_token_placeholder_json(response_id: Option<&str>) -> St
     )
 }
 
+fn safe_ws_response_failed_event(response_id: Option<&str>) -> String {
+    let response_id = response_id.map(str::trim).filter(|value| !value.is_empty());
+    let mut response = serde_json::json!({
+        "status": "failed",
+        "output": [],
+        "error": {
+            "type": "upstream_error",
+            "message": "Upstream request failed"
+        }
+    });
+    if let Some(response_id) = response_id {
+        response["id"] = Value::String(response_id.to_string());
+    }
+    serde_json::json!({
+        "type": "response.failed",
+        "response": response,
+    })
+    .to_string()
+}
+
 fn openai_chat_safe_token_placeholder_frame(id: Option<&str>, model: Option<&str>) -> String {
     let id = id
         .map(str::trim)
@@ -8763,11 +8821,7 @@ fn sanitize_openai_ws_message_with_downstream_usage(
         TungsteniteMessage::Text(text) => {
             let mut value = match serde_json::from_str::<Value>(&text) {
                 Ok(value) => value,
-                Err(_) => {
-                    return TungsteniteMessage::Text(
-                        r#"{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}"#.to_string(),
-                    )
-                }
+                Err(_) => return TungsteniteMessage::Text(safe_ws_response_failed_event(None)),
             };
             let event_type = json_event_type(&value).unwrap_or_default().to_string();
             let normalize_usage = (downstream_cache_usage_mode.is_some()
@@ -8784,18 +8838,20 @@ fn sanitize_openai_ws_message_with_downstream_usage(
                 || event_type == "response.failed"
                 || json_is_unsafe_upstream_diagnostic(&value);
             if has_error {
-                TungsteniteMessage::Text(
-                    r#"{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}"#.to_string(),
-                )
+                let response_id = value
+                    .pointer("/response/id")
+                    .and_then(Value::as_str)
+                    .or_else(|| value.get("response_id").and_then(Value::as_str));
+                TungsteniteMessage::Text(safe_ws_response_failed_event(response_id))
             } else if image_status_normalized || usage_normalized {
                 TungsteniteMessage::Text(value.to_string())
             } else {
                 TungsteniteMessage::Text(text)
             }
         }
-        TungsteniteMessage::Binary(_) => TungsteniteMessage::Text(
-            r#"{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}"#.to_string(),
-        ),
+        TungsteniteMessage::Binary(_) => {
+            TungsteniteMessage::Text(safe_ws_response_failed_event(None))
+        }
         other => other,
     }
 }
@@ -11805,11 +11861,17 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             r#"{"type":"error","error":{"message":"private.example"}}"#.to_string(),
         ));
         assert!(
-            matches!(error, TungsteniteMessage::Text(text) if !text.contains("private.example") && text.contains("Upstream request failed"))
+            matches!(error, TungsteniteMessage::Text(text) if !text.contains("private.example") && text.contains("response.failed") && text.contains("\"status\":\"failed\""))
+        );
+        let failed = sanitize_openai_ws_message(TungsteniteMessage::Text(
+            r#"{"type":"response.failed","response":{"id":"resp_failed_1","status":"failed","error":{"message":"private.example"}}}"#.to_string(),
+        ));
+        assert!(
+            matches!(failed, TungsteniteMessage::Text(text) if text.contains("response.failed") && text.contains("resp_failed_1") && !text.contains("private.example"))
         );
         let binary = sanitize_openai_ws_message(TungsteniteMessage::Binary(vec![0xff]));
         assert!(
-            matches!(binary, TungsteniteMessage::Text(text) if text.contains("Upstream request failed"))
+            matches!(binary, TungsteniteMessage::Text(text) if text.contains("response.failed") && text.contains("Upstream request failed"))
         );
 
         let diagnostic = sanitize_openai_ws_message(TungsteniteMessage::Text(
@@ -11824,11 +11886,23 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
                 .to_string(),
         ));
         assert!(
-            matches!(nested, TungsteniteMessage::Text(text) if !text.contains("private-provider.example") && text.contains("Upstream request failed"))
+            matches!(nested, TungsteniteMessage::Text(text) if !text.contains("private-provider.example") && text.contains("response.failed") && text.contains("Upstream request failed"))
         );
         assert!(!json_is_unsafe_upstream_diagnostic(&serde_json::json!({
             "data": [{"embedding": [0.1, 0.2], "index": 0}]
         })));
+    }
+
+    #[test]
+    fn safe_ws_response_failed_event_preserves_safe_response_id() {
+        let event: Value =
+            serde_json::from_str(&safe_ws_response_failed_event(Some("resp_tool_1")))
+                .expect("response.failed event must be valid JSON");
+        assert_eq!(event["type"], "response.failed");
+        assert_eq!(event["response"]["id"], "resp_tool_1");
+        assert_eq!(event["response"]["status"], "failed");
+        assert!(event["response"]["output"].is_array());
+        assert_eq!(event["response"]["error"]["type"], "upstream_error");
     }
 
     #[test]

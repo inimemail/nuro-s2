@@ -2502,6 +2502,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				return nil, wrapOpenAIWSWrittenFallback(classifyOpenAIWSReadFallbackReason(readErr), readErr, upstreamAttemptID)
 			}
 			setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(readErr.Error()), "")
+			if reqStream && !clientDisconnected {
+				flushBufferedStreamEvents("read_error")
+				emitStreamMessage(safeOpenAIResponsesFailedPayload(nil, false), true)
+			}
 			return nil, fmt.Errorf("openai ws read event: %w", readErr)
 		}
 
@@ -2658,7 +2662,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			setOpsUpstreamError(c, statusCode, clientErrMsg, "")
 			if reqStream && !clientDisconnected {
 				flushBufferedStreamEvents("error_event")
-				emitStreamMessage([]byte(`{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`), true)
+				emitStreamMessage(safeOpenAIResponsesFailedPayload(message, wroteDownstream), true)
 			}
 			if !reqStream {
 				c.JSON(statusCode, gin.H{

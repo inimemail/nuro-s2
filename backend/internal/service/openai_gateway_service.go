@@ -9946,9 +9946,32 @@ func isSafeOpenAIClientErrorType(value string) bool {
 
 func safeOpenAIStreamErrorPayload(eventType string) []byte {
 	if strings.TrimSpace(eventType) == "response.failed" {
-		return []byte(`{"type":"response.failed","response":{"status":"failed","error":{"type":"upstream_error","message":"Upstream request failed"}}}`)
+		return safeOpenAIResponsesFailedPayload(nil, false)
 	}
 	return []byte(`{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`)
+}
+
+func safeOpenAIResponsesFailedPayload(payload []byte, clientOutputStarted bool) []byte {
+	response := map[string]any{
+		"status": "failed",
+		"output": []any{},
+		"error":  buildSafeOpenAIErrorObject(payload, clientOutputStarted),
+	}
+	responseID := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String())
+	if responseID == "" {
+		responseID = strings.TrimSpace(gjson.GetBytes(payload, "response_id").String())
+	}
+	if openAIErrorIDIsSafe(responseID) {
+		response["id"] = responseID
+	}
+	event, err := json.Marshal(map[string]any{
+		"type":     "response.failed",
+		"response": response,
+	})
+	if err != nil {
+		return []byte(`{"type":"response.failed","response":{"status":"failed","output":[],"error":{"type":"upstream_error","message":"Upstream request failed"}}}`)
+	}
+	return event
 }
 
 func sanitizeOpenAIStreamEventDataForClient(payload []byte, eventType string, clientOutputStarted bool) ([]byte, bool) {
@@ -9979,26 +10002,19 @@ func sanitizeOpenAIStreamEventDataForClient(payload []byte, eventType string, cl
 
 func sanitizeOpenAIWSErrorEventForClient(payload []byte, eventType string, clientOutputStarted bool) []byte {
 	if len(payload) == 0 || !gjson.ValidBytes(payload) {
-		return safeOpenAIStreamErrorPayload("error")
+		return safeOpenAIStreamErrorPayload("response.failed")
 	}
 	switch strings.TrimSpace(eventType) {
 	case "error":
-		updated, err := json.Marshal(map[string]any{
-			"type":  "error",
-			"error": buildSafeOpenAIErrorObject(payload, clientOutputStarted),
-		})
-		if err == nil {
-			return updated
-		}
-		return []byte(`{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`)
+		return safeOpenAIResponsesFailedPayload(payload, clientOutputStarted)
 	case "response.failed":
 		if updated, sanitized := sanitizeOpenAIResponseFailedEventForClient(payload, eventType, clientOutputStarted); sanitized {
 			return updated
 		}
-		return []byte(`{"type":"response.failed","response":{"status":"failed","error":{"type":"upstream_error","message":"Upstream request failed"}}}`)
+		return safeOpenAIResponsesFailedPayload(payload, clientOutputStarted)
 	default:
 		if openAIPassthroughResponseIsUnsafe(payload) {
-			return safeOpenAIStreamErrorPayload("error")
+			return safeOpenAIStreamErrorPayload("response.failed")
 		}
 		return payload
 	}

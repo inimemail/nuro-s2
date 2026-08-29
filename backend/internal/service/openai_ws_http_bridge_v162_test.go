@@ -101,7 +101,8 @@ func TestProxyOpenAIWSHTTPBridgeTurnTransportErrorFailoverSafety(t *testing.T) {
 			}
 			require.Len(t, writes, tt.wantWrites)
 			if tt.wantWrites > 0 {
-				require.Equal(t, "error", gjson.GetBytes(writes[0], "type").String())
+				require.Equal(t, "response.failed", gjson.GetBytes(writes[0], "type").String())
+				require.Equal(t, "failed", gjson.GetBytes(writes[0], "response.status").String())
 				require.Equal(t, int64(http.StatusBadGateway), gjson.GetBytes(writes[0], "status").Int())
 			}
 		})
@@ -220,7 +221,7 @@ func TestProxyOpenAIWSHTTPBridgeTurnRequiresTerminalEvent(t *testing.T) {
 			name: "created_then_done_is_truncated_not_success",
 			body: "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_truncated\"}}\n\n" +
 				"data: [DONE]\n\n",
-			wantWrites: 1,
+			wantWrites: 2,
 		},
 	}
 	for _, tt := range tests {
