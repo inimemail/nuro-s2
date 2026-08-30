@@ -200,6 +200,7 @@ type SystemSettings struct {
 	GatewayEdgeResponseHeaderMaxAttempts                  int                                               `json:"gateway_edge_response_header_max_attempts"`
 	GatewayEdgeResponseHeaderFailover                     bool                                              `json:"gateway_edge_response_header_failover"`
 	GatewayEdgeExposeRetriedUsage                         bool                                              `json:"gateway_edge_expose_retried_usage"`
+	GatewayEdgeLocalDataPlaneEnabled                      bool                                              `json:"gateway_edge_local_data_plane_enabled"`
 	GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_apikey_first_token_timeout_placeholder_stages"`
 	GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages  []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_oauth_first_token_timeout_placeholder_stages"`
 	OpenAIPoolDownstreamModelLimitProtectionEnabled       bool                                              `json:"openai_pool_downstream_model_limit_protection_enabled"`

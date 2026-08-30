@@ -818,6 +818,7 @@ func (s *SettingService) applyGatewayRuntimeSettings(settings *SystemSettings) {
 		EdgeResponseHeaderMaxAttempts: settings.GatewayEdgeResponseHeaderMaxAttempts,
 		EdgeResponseHeaderFailover:    settings.GatewayEdgeResponseHeaderFailover,
 		EdgeExposeRetriedUsage:        settings.GatewayEdgeExposeRetriedUsage,
+		EdgeLocalDataPlaneEnabled:     settings.GatewayEdgeLocalDataPlaneEnabled,
 		EdgeProtectionConfigured:      true,
 	})
 }
@@ -2317,6 +2318,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyGatewayEdgeResponseHeaderMaxAttempts] = strconv.Itoa(settings.GatewayEdgeResponseHeaderMaxAttempts)
 	updates[SettingKeyGatewayEdgeResponseHeaderFailover] = strconv.FormatBool(settings.GatewayEdgeResponseHeaderFailover)
 	updates[SettingKeyGatewayEdgeExposeRetriedUsage] = strconv.FormatBool(settings.GatewayEdgeExposeRetriedUsage)
+	updates[SettingKeyGatewayEdgeLocalDataPlaneEnabled] = strconv.FormatBool(settings.GatewayEdgeLocalDataPlaneEnabled)
 	updates[SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages] = string(apiKeyStagesJSON)
 	updates[SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages] = string(oauthStagesJSON)
 	updates[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled] = strconv.FormatBool(settings.OpenAIPoolDownstreamModelLimitProtectionEnabled)
@@ -3649,6 +3651,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyGatewayEdgeResponseHeaderMaxAttempts:                  "3",
 		SettingKeyGatewayEdgeResponseHeaderFailover:                     "true",
 		SettingKeyGatewayEdgeExposeRetriedUsage:                         "false",
+		SettingKeyGatewayEdgeLocalDataPlaneEnabled:                      "true",
 		SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: string(defaultFirstTokenStagesJSON),
 		SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  string(defaultFirstTokenStagesJSON),
 		SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled:       "true",
@@ -4233,6 +4236,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.GatewayEdgeResponseHeaderMaxAttempts = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayEdgeResponseHeaderMaxAttempts], 3), 1, 100)
 	result.GatewayEdgeResponseHeaderFailover = !isFalseSettingValue(settings[SettingKeyGatewayEdgeResponseHeaderFailover])
 	result.GatewayEdgeExposeRetriedUsage = settings[SettingKeyGatewayEdgeExposeRetriedUsage] == "true"
+	result.GatewayEdgeLocalDataPlaneEnabled = !isFalseSettingValue(settings[SettingKeyGatewayEdgeLocalDataPlaneEnabled])
 	result.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages = parseGatewayFirstTokenTimeoutPlaceholderStages(
 		settings[SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages],
 	)

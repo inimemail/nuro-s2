@@ -417,6 +417,12 @@ func TestSettingService_ParseSettings_GatewayConcurrencyDefaults(t *testing.T) {
 	require.Equal(t, 3, got.GatewayEdgeResponseHeaderMaxAttempts)
 	require.True(t, got.GatewayEdgeResponseHeaderFailover)
 	require.False(t, got.GatewayEdgeExposeRetriedUsage)
+	require.True(t, got.GatewayEdgeLocalDataPlaneEnabled)
+
+	disabled := svc.parseSettings(map[string]string{
+		SettingKeyGatewayEdgeLocalDataPlaneEnabled: "false",
+	})
+	require.False(t, disabled.GatewayEdgeLocalDataPlaneEnabled)
 }
 
 func TestSettingService_UpdateSettings_EdgeProtectionRefreshesRuntime(t *testing.T) {
@@ -433,6 +439,7 @@ func TestSettingService_UpdateSettings_EdgeProtectionRefreshesRuntime(t *testing
 		GatewayEdgeResponseHeaderMaxAttempts: 2,
 		GatewayEdgeResponseHeaderFailover:    false,
 		GatewayEdgeExposeRetriedUsage:        true,
+		GatewayEdgeLocalDataPlaneEnabled:     true,
 	})
 	require.NoError(t, err)
 	profile := cfg.GatewayEdgeProtection()
@@ -444,6 +451,8 @@ func TestSettingService_UpdateSettings_EdgeProtectionRefreshesRuntime(t *testing
 	require.Equal(t, 2, profile.EdgeResponseHeaderMaxAttempts)
 	require.False(t, profile.EdgeResponseHeaderFailover)
 	require.True(t, profile.EdgeExposeRetriedUsage)
+	require.True(t, profile.EdgeLocalDataPlaneEnabled)
+	require.Equal(t, "true", repo.updates[SettingKeyGatewayEdgeLocalDataPlaneEnabled])
 }
 
 func TestSettingService_ParseSettings_OpenAIHeaderTimeout(t *testing.T) {

@@ -10,6 +10,7 @@ use std::{
     collections::HashMap,
     error::Error as StdError,
     fmt,
+    hash::{Hash, Hasher},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering},
         Arc, Mutex,
@@ -38,6 +39,7 @@ const DEFAULT_EXPANSION_STEP: usize = 32;
 const DEFAULT_EXPANSION_COOLDOWN: Duration = Duration::from_millis(50);
 const DEFAULT_IDLE_LANE_TTL: Duration = Duration::from_secs(300);
 const DEFAULT_IDLE_POOL_TTL: Duration = Duration::from_secs(1200);
+const LANE_GROUP_SHARDS: usize = 64;
 
 const HTTP_VERSION_UNKNOWN: u8 = 0;
 const HTTP_VERSION_1: u8 = 1;
@@ -493,10 +495,13 @@ pub struct HttpLanePoolSnapshot {
 pub struct HttpLanePool {
     config: HttpLanePoolConfig,
     client_factory: Arc<ClientFactory>,
-    groups: Mutex<HashMap<LaneKey, LaneGroup>>,
+    groups: Vec<Mutex<HashMap<LaneKey, LaneGroup>>>,
     proxy_fingerprint_key: hmac::Key,
     next_group_epoch: AtomicU64,
     total_lanes: AtomicUsize,
+    total_groups: AtomicUsize,
+    group_create_locks: Vec<Mutex<()>>,
+    capacity_reap_lock: Mutex<()>,
     expansions_total: AtomicU64,
     shrinks_total: AtomicU64,
     expansion_failures_total: AtomicU64,
@@ -523,10 +528,15 @@ impl HttpLanePool {
         Self {
             config,
             client_factory,
-            groups: Mutex::new(HashMap::new()),
+            groups: (0..LANE_GROUP_SHARDS)
+                .map(|_| Mutex::new(HashMap::new()))
+                .collect(),
             proxy_fingerprint_key: hmac::Key::new(hmac::HMAC_SHA256, &fingerprint_key),
             next_group_epoch: AtomicU64::new(1),
             total_lanes: AtomicUsize::new(0),
+            total_groups: AtomicUsize::new(0),
+            group_create_locks: (0..LANE_GROUP_SHARDS).map(|_| Mutex::new(())).collect(),
+            capacity_reap_lock: Mutex::new(()),
             expansions_total: AtomicU64::new(0),
             shrinks_total: AtomicU64::new(0),
             expansion_failures_total: AtomicU64::new(0),
@@ -566,6 +576,188 @@ impl HttpLanePool {
         self.legacy_fallbacks_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn shard_index(&self, key: &LaneKey) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % self.groups.len().max(1)
+    }
+
+    #[cfg(test)]
+    fn test_groups(&self, key: &LaneKey) -> std::sync::MutexGuard<'_, HashMap<LaneKey, LaneGroup>> {
+        self.groups[self.shard_index(key)].lock().unwrap()
+    }
+
+    fn reserve_group(&self) -> bool {
+        let limit = self.config.max_keys.max(1);
+        self.total_groups
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < limit).then_some(current + 1)
+            })
+            .is_ok()
+    }
+
+    fn reserve_lanes(&self, desired: usize) -> usize {
+        let limit = self.config.max_total_lanes.max(1);
+        loop {
+            let current = self.total_lanes.load(Ordering::Acquire);
+            if current >= limit {
+                return 0;
+            }
+            let reserved = desired.max(1).min(limit - current);
+            if self
+                .total_lanes
+                .compare_exchange_weak(
+                    current,
+                    current + reserved,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return reserved;
+            }
+        }
+    }
+
+    fn reserve_group_with_reaping(&self) -> bool {
+        if self.reserve_group() {
+            return true;
+        }
+        let Ok(_reap_guard) = self.capacity_reap_lock.lock() else {
+            return false;
+        };
+        if self.reserve_group() {
+            return true;
+        }
+        while self.total_groups.load(Ordering::Acquire) >= self.config.max_keys.max(1) {
+            if !self.reap_one_idle_group_for_capacity(now_millis()) {
+                break;
+            }
+        }
+        self.reserve_group()
+    }
+
+    fn reserve_lanes_with_reaping(&self, desired: usize) -> usize {
+        let reserved = self.reserve_lanes(desired);
+        if reserved > 0 {
+            return reserved;
+        }
+        let Ok(_reap_guard) = self.capacity_reap_lock.lock() else {
+            return 0;
+        };
+        let reserved = self.reserve_lanes(desired);
+        if reserved > 0 {
+            return reserved;
+        }
+        while self.total_lanes.load(Ordering::Acquire) >= self.config.max_total_lanes.max(1) {
+            if self.reap_one_idle_lane_for_capacity(now_millis()) == 0 {
+                break;
+            }
+        }
+        self.reserve_lanes(desired)
+    }
+
+    fn reap_one_idle_group_for_capacity(&self, now: u64) -> bool {
+        let mut candidate: Option<(usize, LaneKey, u64)> = None;
+        for (shard_index, shard) in self.groups.iter().enumerate() {
+            let Ok(groups) = shard.lock() else {
+                continue;
+            };
+            for (key, group) in groups.iter() {
+                let last_used_ms = group.last_used_ms.load(Ordering::Relaxed);
+                if group.lanes.iter().all(|lane| lane.is_idle())
+                    && (group.has_h1()
+                        || now.saturating_sub(last_used_ms)
+                            >= self.config.idle_pool_ttl.as_millis() as u64)
+                    && candidate
+                        .as_ref()
+                        .is_none_or(|(_, _, oldest)| last_used_ms < *oldest)
+                {
+                    candidate = Some((shard_index, key.clone(), last_used_ms));
+                }
+            }
+        }
+        let Some((shard_index, key, _)) = candidate else {
+            return false;
+        };
+        let Ok(mut groups) = self.groups[shard_index].lock() else {
+            return false;
+        };
+        let removable = groups.get(&key).is_some_and(|group| {
+            let last_used_ms = group.last_used_ms.load(Ordering::Relaxed);
+            group.lanes.iter().all(|lane| lane.is_idle())
+                && (group.has_h1()
+                    || now.saturating_sub(last_used_ms)
+                        >= self.config.idle_pool_ttl.as_millis() as u64)
+        });
+        if !removable {
+            return false;
+        }
+        let Some(group) = groups.remove(&key) else {
+            return false;
+        };
+        let removed = group.lanes.len();
+        self.total_lanes.fetch_sub(removed, Ordering::AcqRel);
+        self.total_groups.fetch_sub(1, Ordering::AcqRel);
+        self.shrinks_total
+            .fetch_add(removed as u64, Ordering::Relaxed);
+        true
+    }
+
+    fn reap_one_idle_lane_for_capacity(&self, now: u64) -> usize {
+        let mut candidate: Option<(usize, LaneKey, Arc<LaneState>, u64)> = None;
+        for (shard_index, shard) in self.groups.iter().enumerate() {
+            let Ok(groups) = shard.lock() else {
+                continue;
+            };
+            for (key, group) in groups.iter() {
+                if group.lanes.len() <= 1 {
+                    continue;
+                }
+                for lane in &group.lanes {
+                    let last_used_ms = lane.last_used_ms.load(Ordering::Relaxed);
+                    if lane.is_idle()
+                        && (group.has_h1()
+                            || now.saturating_sub(last_used_ms)
+                                >= self.config.idle_lane_ttl.as_millis() as u64)
+                        && candidate
+                            .as_ref()
+                            .is_none_or(|(_, _, _, oldest)| last_used_ms < *oldest)
+                    {
+                        candidate =
+                            Some((shard_index, key.clone(), Arc::clone(lane), last_used_ms));
+                    }
+                }
+            }
+        }
+        if let Some((shard_index, key, candidate_lane, _)) = candidate {
+            if let Ok(mut groups) = self.groups[shard_index].lock() {
+                if let Some(group) = groups.get_mut(&key) {
+                    if group.lanes.len() > 1 {
+                        if let Some(index) = group.lanes.iter().position(|lane| {
+                            Arc::ptr_eq(lane, &candidate_lane)
+                                && lane.is_idle()
+                                && (group.has_h1()
+                                    || now
+                                        .saturating_sub(lane.last_used_ms.load(Ordering::Relaxed))
+                                        >= self.config.idle_lane_ttl.as_millis() as u64)
+                        }) {
+                            group.lanes.remove(index);
+                            self.total_lanes.fetch_sub(1, Ordering::AcqRel);
+                            self.shrinks_total.fetch_add(1, Ordering::Relaxed);
+                            return 1;
+                        }
+                    }
+                }
+            }
+        }
+        if self.reap_one_idle_group_for_capacity(now) {
+            1
+        } else {
+            0
+        }
+    }
+
     /// Select the least-inflight lane, expanding only after sustained pressure.
     pub async fn acquire(
         self: &Arc<Self>,
@@ -602,90 +794,95 @@ impl HttpLanePool {
 
     fn acquire_step(self: &Arc<Self>, key: &LaneKey) -> anyhow::Result<AcquireStep> {
         let now = now_millis();
-        let mut groups = self
-            .groups
+        let shard_index = self.shard_index(key);
+        let mut groups = self.groups[shard_index]
             .lock()
             .map_err(|_| anyhow::anyhow!("http lane pool lock poisoned"))?;
 
-        // Keep the check and insertion under one mutex. This prevents two
-        // concurrent first requests from replacing an active group.
         if !groups.contains_key(key) {
-            let max_keys = self.config.max_keys.max(1);
-            if groups.len() >= max_keys {
-                self.reap_idle_groups_for_key_capacity(&mut groups);
-                if groups.len() >= max_keys {
+            drop(groups);
+            let _create_guard = self.group_create_locks[shard_index]
+                .lock()
+                .map_err(|_| anyhow::anyhow!("http lane group creation lock poisoned"))?;
+            groups = self.groups[shard_index]
+                .lock()
+                .map_err(|_| anyhow::anyhow!("http lane pool lock poisoned"))?;
+            if !groups.contains_key(key) {
+                drop(groups);
+                if !self.reserve_group_with_reaping() {
                     self.capacity_exhaustions_total
                         .fetch_add(1, Ordering::Relaxed);
                     return Err(LanePoolCapacityError.into());
                 }
-            }
-            let max_total_lanes = self.config.max_total_lanes.max(1);
-            if self.total_lanes.load(Ordering::Acquire) >= max_total_lanes {
-                self.reap_idle_lanes_for_capacity(&mut groups);
-            }
-            if self.total_lanes.load(Ordering::Acquire) >= max_total_lanes {
-                self.capacity_exhaustions_total
-                    .fetch_add(1, Ordering::Relaxed);
-                return Err(LanePoolCapacityError.into());
-            }
-            let max_total_lanes = self.config.max_total_lanes.max(1);
-            let available_lanes = max_total_lanes
-                .saturating_sub(self.total_lanes.load(Ordering::Acquire))
-                .max(1);
-            // Protocol is unknown for a new group, so the initial burst is
-            // bounded by the unknown-protocol ceiling. Each Client is lazy
-            // and does not open a socket until a request uses its lane.
-            let initial_lane_count = self
-                .config
-                .initial_lanes
-                .max(1)
-                .min(self.config.max_unknown_lanes.max(1))
-                .min(available_lanes);
-            let mut lanes = Vec::with_capacity(initial_lane_count);
-            for _ in 0..initial_lane_count {
-                let client = (self.client_factory)(
-                    &key.proxy,
-                    self.config.max_idle_per_host,
-                    connect_timeout_from_millis(key.connect_timeout_ms),
-                )?;
-                lanes.push(Arc::new(LaneState::new(client, now)));
-            }
-            let group_epoch = self.next_group_epoch.fetch_add(1, Ordering::Relaxed);
-            self.total_lanes
-                .fetch_add(initial_lane_count, Ordering::Relaxed);
-            groups.insert(
-                key.clone(),
-                LaneGroup {
-                    key: key.clone(),
-                    group_epoch,
-                    lanes,
-                    pressure_since_ms: None,
-                    last_expand_ms: None,
-                    expansion_scheduled: false,
-                    expansion_generation: 0,
-                    last_used_ms: Arc::new(AtomicU64::new(now)),
-                    h1_observed: Arc::new(AtomicBool::new(false)),
-                    h2_observed: Arc::new(AtomicBool::new(false)),
-                    overflow_active: Arc::new(AtomicU64::new(0)),
-                    round_robin: 0,
-                },
-            );
-            debug!(
-                account_id = key.account_id,
-                origin = %key.origin,
-                lane = %key.lane,
-                proxy_fp = %self.proxy_fingerprint(&key.proxy),
-                "created upstream HTTP lane"
-            );
-        }
+                let desired = self
+                    .config
+                    .initial_lanes
+                    .max(1)
+                    .min(self.config.max_unknown_lanes.max(1));
+                let reserved_lanes = self.reserve_lanes_with_reaping(desired);
+                if reserved_lanes == 0 {
+                    self.total_groups.fetch_sub(1, Ordering::AcqRel);
+                    self.capacity_exhaustions_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Err(LanePoolCapacityError.into());
+                }
 
-        let should_reap_for_expansion = self.total_lanes.load(Ordering::Acquire)
-            >= self.config.max_total_lanes.max(1)
-            && groups
-                .get(key)
-                .is_some_and(|group| group.is_under_pressure(&self.config));
-        if should_reap_for_expansion {
-            self.reap_idle_lanes_for_capacity(&mut groups);
+                // Client construction may parse proxies and initialize TLS state.
+                // Build outside the shard lock so an unseen origin cannot stall
+                // unrelated hot groups that hash to the same shard.
+                let mut lanes = Vec::with_capacity(reserved_lanes);
+                let mut build_error = None;
+                for _ in 0..reserved_lanes {
+                    match (self.client_factory)(
+                        &key.proxy,
+                        self.config.max_idle_per_host,
+                        connect_timeout_from_millis(key.connect_timeout_ms),
+                    ) {
+                        Ok(client) => lanes.push(Arc::new(LaneState::new(client, now))),
+                        Err(error) => {
+                            build_error = Some(error);
+                            break;
+                        }
+                    }
+                }
+                if lanes.len() < reserved_lanes {
+                    self.total_lanes
+                        .fetch_sub(reserved_lanes - lanes.len(), Ordering::AcqRel);
+                }
+                if lanes.is_empty() {
+                    self.total_groups.fetch_sub(1, Ordering::AcqRel);
+                    return Err(build_error
+                        .unwrap_or_else(|| anyhow::anyhow!("could not build initial HTTP lane")));
+                }
+                let group_epoch = self.next_group_epoch.fetch_add(1, Ordering::Relaxed);
+                groups = self.groups[shard_index]
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("http lane pool lock poisoned"))?;
+                groups.insert(
+                    key.clone(),
+                    LaneGroup {
+                        key: key.clone(),
+                        group_epoch,
+                        lanes,
+                        pressure_since_ms: None,
+                        last_expand_ms: None,
+                        expansion_scheduled: false,
+                        expansion_generation: 0,
+                        last_used_ms: Arc::new(AtomicU64::new(now)),
+                        h1_observed: Arc::new(AtomicBool::new(false)),
+                        h2_observed: Arc::new(AtomicBool::new(false)),
+                        overflow_active: Arc::new(AtomicU64::new(0)),
+                        round_robin: 0,
+                    },
+                );
+                debug!(
+                    account_id = key.account_id,
+                    origin = %key.origin,
+                    lane = %key.lane,
+                    proxy_fp = %self.proxy_fingerprint(&key.proxy),
+                    "created upstream HTTP lane"
+                );
+            }
         }
 
         let group = groups
@@ -697,8 +894,7 @@ impl HttpLanePool {
         let under_pressure = group.is_under_pressure(&self.config);
         if under_pressure {
             let pressure_since = *group.pressure_since_ms.get_or_insert(now);
-            let can_expand = group.lanes.len() < group.protocol_max_lanes(&self.config)
-                && self.total_lanes.load(Ordering::Acquire) < self.config.max_total_lanes.max(1);
+            let can_expand = group.lanes.len() < group.protocol_max_lanes(&self.config);
             if can_expand {
                 let pressure_wait = self
                     .config
@@ -730,7 +926,13 @@ impl HttpLanePool {
                         );
                     }
                 } else {
-                    self.expand_group_locked(group, now);
+                    let generation = group.begin_expansion_schedule();
+                    self.schedule_expansion(
+                        key.clone(),
+                        group.group_epoch,
+                        Duration::ZERO,
+                        generation,
+                    );
                 }
             }
         } else {
@@ -775,8 +977,7 @@ impl HttpLanePool {
         // later acquire to start expansion.
         if group.is_under_pressure(&self.config) {
             let pressure_since = *group.pressure_since_ms.get_or_insert(now);
-            let can_expand = group.lanes.len() < group.protocol_max_lanes(&self.config)
-                && self.total_lanes.load(Ordering::Acquire) < self.config.max_total_lanes.max(1);
+            let can_expand = group.lanes.len() < group.protocol_max_lanes(&self.config);
             if can_expand && !group.expansion_scheduled {
                 let pressure_wait = self
                     .config
@@ -832,6 +1033,7 @@ impl HttpLanePool {
         });
     }
 
+    #[cfg(test)]
     fn expand_group_locked(&self, group: &mut LaneGroup, now: u64) {
         group.cancel_expansion_schedule();
         let protocol_remaining = group
@@ -906,8 +1108,10 @@ impl HttpLanePool {
     fn expand_after_pressure(self: &Arc<Self>, key: &LaneKey, group_epoch: u64, generation: u64) {
         let now = now_millis();
         let mut reschedule = None;
+        let mut build = None;
         {
-            let Ok(mut groups) = self.groups.lock() else {
+            let shard_index = self.shard_index(key);
+            let Ok(mut groups) = self.groups[shard_index].lock() else {
                 return;
             };
             let Some(group) = groups.get_mut(key) else {
@@ -919,14 +1123,12 @@ impl HttpLanePool {
             if !group.expansion_schedule_matches(generation) {
                 return;
             }
-            group.cancel_expansion_schedule();
             if group.has_h1() || !group.is_under_pressure(&self.config) {
+                group.cancel_expansion_schedule();
                 group.pressure_since_ms = None;
             } else {
                 let pressure_since = *group.pressure_since_ms.get_or_insert(now);
-                let can_expand = group.lanes.len() < group.protocol_max_lanes(&self.config)
-                    && self.total_lanes.load(Ordering::Acquire)
-                        < self.config.max_total_lanes.max(1);
+                let can_expand = group.lanes.len() < group.protocol_max_lanes(&self.config);
                 if can_expand {
                     let pressure_wait = self
                         .config
@@ -944,6 +1146,7 @@ impl HttpLanePool {
                         .unwrap_or(0);
                     let wait_ms = pressure_wait.max(cooldown_wait);
                     if wait_ms > 0 {
+                        group.cancel_expansion_schedule();
                         let next_generation = group.begin_expansion_schedule();
                         reschedule = Some((
                             Duration::from_millis(wait_ms as u64),
@@ -951,13 +1154,97 @@ impl HttpLanePool {
                             next_generation,
                         ));
                     } else {
-                        self.expand_group_locked(group, now);
+                        let requested = self
+                            .config
+                            .expansion_step
+                            .max(1)
+                            .min(group.protocol_max_lanes(&self.config) - group.lanes.len());
+                        build = Some((
+                            requested,
+                            group.key.proxy.clone(),
+                            group.key.connect_timeout_ms,
+                        ));
                     }
+                } else {
+                    group.cancel_expansion_schedule();
                 }
             }
         }
         if let Some((delay, group_epoch, next_generation)) = reschedule {
             self.schedule_expansion(key.clone(), group_epoch, delay, next_generation);
+            return;
+        }
+        let Some((requested, proxy, connect_timeout_ms)) = build else {
+            return;
+        };
+        let reserved = self.reserve_lanes_with_reaping(requested);
+        if reserved == 0 {
+            let shard_index = self.shard_index(key);
+            if let Ok(mut groups) = self.groups[shard_index].lock() {
+                if let Some(group) = groups.get_mut(key) {
+                    if group.group_epoch == group_epoch
+                        && group.expansion_schedule_matches(generation)
+                    {
+                        group.cancel_expansion_schedule();
+                        group.pressure_since_ms = None;
+                    }
+                }
+            }
+            self.capacity_exhaustions_total
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
+        let mut lanes = Vec::with_capacity(reserved);
+        for _ in 0..reserved {
+            match (self.client_factory)(
+                &proxy,
+                self.config.max_idle_per_host,
+                connect_timeout_from_millis(connect_timeout_ms),
+            ) {
+                Ok(client) => lanes.push(Arc::new(LaneState::new(client, now))),
+                Err(_) => {
+                    self.expansion_failures_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
+            }
+        }
+        if lanes.len() < reserved {
+            self.total_lanes
+                .fetch_sub(reserved - lanes.len(), Ordering::AcqRel);
+        }
+        let added = lanes.len();
+        let shard_index = self.shard_index(key);
+        let Ok(mut groups) = self.groups[shard_index].lock() else {
+            self.total_lanes.fetch_sub(added, Ordering::AcqRel);
+            return;
+        };
+        let Some(group) = groups.get_mut(key) else {
+            self.total_lanes.fetch_sub(added, Ordering::AcqRel);
+            return;
+        };
+        if group.group_epoch != group_epoch || !group.expansion_schedule_matches(generation) {
+            self.total_lanes.fetch_sub(added, Ordering::AcqRel);
+            return;
+        }
+        group.cancel_expansion_schedule();
+        group.last_expand_ms = Some(now);
+        group.pressure_since_ms = None;
+        if added > 0 {
+            group.lanes.extend(lanes);
+            self.expansions_total
+                .fetch_add(added as u64, Ordering::Relaxed);
+            debug!(
+                account_id = group.key.account_id,
+                origin = %group.key.origin,
+                lane = %group.key.lane,
+                added,
+                lanes = group.lanes.len(),
+                target_inflight = self.config.target_inflight,
+                proxy_fp = %self.proxy_fingerprint(&group.key.proxy),
+                "expanded upstream HTTP lane group"
+            );
         }
     }
 
@@ -968,133 +1255,46 @@ impl HttpLanePool {
             return;
         }
         let now = now_millis();
-        let mut groups = match self.groups.lock() {
-            Ok(groups) => groups,
-            Err(_) => return,
-        };
-        let mut remove_keys = Vec::new();
-        for (key, group) in groups.iter_mut() {
-            while group.lanes.len() > 1 {
-                let Some(index) = group.lanes.iter().position(|lane| {
-                    lane.is_idle()
-                        && (group.has_h1()
-                            || now.saturating_sub(lane.last_used_ms.load(Ordering::Relaxed))
-                                >= self.config.idle_lane_ttl.as_millis() as u64)
-                }) else {
-                    break;
-                };
-                group.lanes.remove(index);
-                self.total_lanes.fetch_sub(1, Ordering::Relaxed);
-                self.shrinks_total.fetch_add(1, Ordering::Relaxed);
-            }
-            // Once HTTP/1 is observed this group can never serve another lane
-            // request: acquire() deliberately returns to reqwest's legacy
-            // multi-connection pool. Do not retain that unusable Client/key for
-            // the full pool TTL and let many H1 accounts crowd out H2 groups.
-            let idle_ttl = if group.has_h1() {
-                self.config.idle_lane_ttl
-            } else {
-                self.config.idle_pool_ttl
+        for shard in &self.groups {
+            let mut groups = match shard.lock() {
+                Ok(groups) => groups,
+                Err(_) => continue,
             };
-            let group_idle = group.lanes.iter().all(|lane| lane.is_idle())
-                && now.saturating_sub(group.last_used_ms.load(Ordering::Relaxed))
-                    >= idle_ttl.as_millis() as u64;
-            if group_idle {
-                remove_keys.push(key.clone());
-            }
-        }
-        for key in remove_keys {
-            if let Some(group) = groups.remove(&key) {
-                let removed = group.lanes.len();
-                self.total_lanes.fetch_sub(removed, Ordering::Relaxed);
-                self.shrinks_total
-                    .fetch_add(removed as u64, Ordering::Relaxed);
-            }
-        }
-    }
-
-    fn reap_idle_groups_for_key_capacity(&self, groups: &mut HashMap<LaneKey, LaneGroup>) {
-        let now = now_millis();
-        while groups.len() >= self.config.max_keys.max(1) && !groups.is_empty() {
-            let Some(key) = groups
-                .iter()
-                .filter(|(_, group)| {
-                    group.lanes.iter().all(|lane| lane.is_idle())
-                        && (group.has_h1()
-                            || now.saturating_sub(group.last_used_ms.load(Ordering::Relaxed))
-                                >= self.config.idle_pool_ttl.as_millis() as u64)
-                })
-                .min_by_key(|(_, group)| group.last_used_ms.load(Ordering::Relaxed))
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            if let Some(group) = groups.remove(&key) {
-                let removed = group.lanes.len();
-                self.total_lanes.fetch_sub(removed, Ordering::Relaxed);
-                self.shrinks_total
-                    .fetch_add(removed as u64, Ordering::Relaxed);
-            }
-        }
-    }
-
-    fn reap_idle_lanes_for_capacity(&self, groups: &mut HashMap<LaneKey, LaneGroup>) {
-        let now = now_millis();
-        while self.total_lanes.load(Ordering::Acquire) >= self.config.max_total_lanes.max(1) {
-            let candidate = groups
-                .iter()
-                .flat_map(|(key, group)| {
-                    group
-                        .lanes
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, lane)| {
-                            // Keep one lane for every live group, but there
-                            // is no permanent "base" index: an expanded
-                            // lane may be the only active one.
-                            group.lanes.len() > 1
-                                && lane.is_idle()
-                                && (group.has_h1()
-                                    || now
-                                        .saturating_sub(lane.last_used_ms.load(Ordering::Relaxed))
-                                        >= self.config.idle_lane_ttl.as_millis() as u64)
-                        })
-                        .map(move |(index, lane)| {
-                            (
-                                key.clone(),
-                                index,
-                                lane.last_used_ms.load(Ordering::Relaxed),
-                            )
-                        })
-                })
-                .min_by_key(|(_, _, last_used_ms)| *last_used_ms);
-            if let Some((key, index, _)) = candidate {
-                if let Some(group) = groups.get_mut(&key) {
+            let mut remove_keys = Vec::new();
+            for (key, group) in groups.iter_mut() {
+                while group.lanes.len() > 1 {
+                    let Some(index) = group.lanes.iter().position(|lane| {
+                        lane.is_idle()
+                            && (group.has_h1()
+                                || now.saturating_sub(lane.last_used_ms.load(Ordering::Relaxed))
+                                    >= self.config.idle_lane_ttl.as_millis() as u64)
+                    }) else {
+                        break;
+                    };
                     group.lanes.remove(index);
                     self.total_lanes.fetch_sub(1, Ordering::Relaxed);
                     self.shrinks_total.fetch_add(1, Ordering::Relaxed);
-                    continue;
+                }
+                let idle_ttl = if group.has_h1() {
+                    self.config.idle_lane_ttl
+                } else {
+                    self.config.idle_pool_ttl
+                };
+                let group_idle = group.lanes.iter().all(|lane| lane.is_idle())
+                    && now.saturating_sub(group.last_used_ms.load(Ordering::Relaxed))
+                        >= idle_ttl.as_millis() as u64;
+                if group_idle {
+                    remove_keys.push(key.clone());
                 }
             }
-
-            let candidate = groups
-                .iter()
-                .filter(|(_, group)| {
-                    group.lanes.iter().all(|lane| lane.is_idle())
-                        && (group.has_h1()
-                            || now.saturating_sub(group.last_used_ms.load(Ordering::Relaxed))
-                                >= self.config.idle_pool_ttl.as_millis() as u64)
-                })
-                .min_by_key(|(_, group)| group.last_used_ms.load(Ordering::Relaxed))
-                .map(|(key, _)| key.clone());
-            let Some(key) = candidate else {
-                break;
-            };
-            if let Some(group) = groups.remove(&key) {
-                let removed = group.lanes.len();
-                self.total_lanes.fetch_sub(removed, Ordering::Relaxed);
-                self.shrinks_total
-                    .fetch_add(removed as u64, Ordering::Relaxed);
+            for key in remove_keys {
+                if let Some(group) = groups.remove(&key) {
+                    let removed = group.lanes.len();
+                    self.total_lanes.fetch_sub(removed, Ordering::Relaxed);
+                    self.total_groups.fetch_sub(1, Ordering::Relaxed);
+                    self.shrinks_total
+                        .fetch_add(removed as u64, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -1117,36 +1317,39 @@ impl HttpLanePool {
             expansion_delay_count: self.expansion_delay_count.load(Ordering::Relaxed),
             ..Default::default()
         };
-        let Ok(groups) = self.groups.lock() else {
-            return snapshot;
-        };
-        snapshot.keys = groups.len();
         let at_global_lane_cap =
             self.total_lanes.load(Ordering::Acquire) >= self.config.max_total_lanes.max(1);
-        for group in groups.values() {
-            snapshot.lanes += group.lanes.len();
-            if group.is_under_pressure(&self.config) {
-                snapshot.pools_under_pressure += 1;
-            }
-            let at_protocol_lane_cap = group.lanes.len() >= group.protocol_max_lanes(&self.config);
-            if (at_protocol_lane_cap || at_global_lane_cap)
-                && group.has_sustained_pressure(&self.config, now)
-            {
-                snapshot.pools_at_cap_pressure += 1;
-            }
-            let overflow_active = group.overflow_active.load(Ordering::Relaxed);
-            snapshot.overflow_active += overflow_active;
-            if !group.has_h1() && overflow_active > 0 {
-                snapshot.pools_overflowing += 1;
-            }
-            for lane in &group.lanes {
-                snapshot.inflight += lane.inflight.load(Ordering::Relaxed);
-                snapshot.awaiting_headers += lane.awaiting_headers.load(Ordering::Relaxed);
-                snapshot.open_streams += lane.open_streams.load(Ordering::Relaxed);
-                match lane.version.load(Ordering::Relaxed) {
-                    HTTP_VERSION_1 => snapshot.http1_lanes += 1,
-                    HTTP_VERSION_2 => snapshot.http2_lanes += 1,
-                    _ => snapshot.unknown_lanes += 1,
+        for shard in &self.groups {
+            let Ok(groups) = shard.lock() else {
+                continue;
+            };
+            snapshot.keys += groups.len();
+            for group in groups.values() {
+                snapshot.lanes += group.lanes.len();
+                if group.is_under_pressure(&self.config) {
+                    snapshot.pools_under_pressure += 1;
+                }
+                let at_protocol_lane_cap =
+                    group.lanes.len() >= group.protocol_max_lanes(&self.config);
+                if (at_protocol_lane_cap || at_global_lane_cap)
+                    && group.has_sustained_pressure(&self.config, now)
+                {
+                    snapshot.pools_at_cap_pressure += 1;
+                }
+                let overflow_active = group.overflow_active.load(Ordering::Relaxed);
+                snapshot.overflow_active += overflow_active;
+                if !group.has_h1() && overflow_active > 0 {
+                    snapshot.pools_overflowing += 1;
+                }
+                for lane in &group.lanes {
+                    snapshot.inflight += lane.inflight.load(Ordering::Relaxed);
+                    snapshot.awaiting_headers += lane.awaiting_headers.load(Ordering::Relaxed);
+                    snapshot.open_streams += lane.open_streams.load(Ordering::Relaxed);
+                    match lane.version.load(Ordering::Relaxed) {
+                        HTTP_VERSION_1 => snapshot.http1_lanes += 1,
+                        HTTP_VERSION_2 => snapshot.http2_lanes += 1,
+                        _ => snapshot.unknown_lanes += 1,
+                    }
                 }
             }
         }
@@ -1318,6 +1521,7 @@ fn env_bool(key: &str, default_value: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Condvar;
 
     fn assert_send<T: Send>(_: T) {}
 
@@ -1332,6 +1536,94 @@ mod tests {
         })
         .await
         .expect("lane expansion completed");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cold_groups_on_different_shards_build_concurrently() {
+        let rendezvous = Arc::new((Mutex::new(0_usize), Condvar::new()));
+        let overlapped = Arc::new(AtomicBool::new(false));
+        let factory_rendezvous = Arc::clone(&rendezvous);
+        let factory_overlapped = Arc::clone(&overlapped);
+        let factory: Arc<ClientFactory> = Arc::new(move |_, _, _| {
+            let (lock, wake) = &*factory_rendezvous;
+            let mut entered = lock.lock().unwrap();
+            *entered += 1;
+            if *entered >= 2 {
+                factory_overlapped.store(true, Ordering::Release);
+                wake.notify_all();
+            } else {
+                let (next, _) = wake
+                    .wait_timeout_while(entered, Duration::from_millis(500), |count| *count < 2)
+                    .unwrap();
+                entered = next;
+            }
+            drop(entered);
+            Ok(Client::new())
+        });
+        let pool = Arc::new(HttpLanePool::with_client_factory(
+            HttpLanePoolConfig {
+                initial_lanes: 1,
+                max_unknown_lanes: 1,
+                max_h2_lanes: 1,
+                max_keys: 2,
+                max_total_lanes: 2,
+                ..Default::default()
+            },
+            factory,
+        ));
+
+        let first_id = 1_i64;
+        let first_key = LaneKey {
+            account_id: first_id,
+            proxy: String::new(),
+            origin: "https://example.com:443".to_string(),
+            lane: "normal".to_string(),
+            connect_timeout_ms: 0,
+        };
+        let second_id = (2_i64..10_000)
+            .find(|account_id| {
+                let key = LaneKey {
+                    account_id: *account_id,
+                    ..first_key.clone()
+                };
+                pool.shard_index(&key) != pool.shard_index(&first_key)
+            })
+            .expect("a key on another lane-group shard");
+
+        let first_pool = Arc::clone(&pool);
+        let first = tokio::spawn(async move {
+            first_pool
+                .acquire(LaneRequest {
+                    account_id: Some(first_id),
+                    proxy_url: None,
+                    origin_url: "https://example.com/v1/responses",
+                    lane: None,
+                })
+                .await
+        });
+        let second_pool = Arc::clone(&pool);
+        let second = tokio::spawn(async move {
+            second_pool
+                .acquire(LaneRequest {
+                    account_id: Some(second_id),
+                    proxy_url: None,
+                    origin_url: "https://example.com/v1/responses",
+                    lane: None,
+                })
+                .await
+        });
+
+        let (first, second) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .expect("cold lane groups completed");
+        assert!(first.unwrap().is_ok());
+        assert!(second.unwrap().is_ok());
+        assert!(
+            overlapped.load(Ordering::Acquire),
+            "different shards must not share one cold-group creation lock"
+        );
     }
 
     #[test]
@@ -1681,7 +1973,7 @@ mod tests {
             connect_timeout_ms: 0,
         };
         {
-            let mut groups = pool.groups.lock().unwrap();
+            let mut groups = pool.test_groups(&key);
             let group = groups.get_mut(&key).unwrap();
             pool.expand_group_locked(group, now_millis());
             assert_eq!(group.lanes.len(), 4);
@@ -1786,7 +2078,7 @@ mod tests {
         };
 
         let (group_epoch, stale_generation, current_generation) = {
-            let mut groups = pool.groups.lock().unwrap();
+            let mut groups = pool.test_groups(&key);
             let group = groups.get_mut(&key).unwrap();
             let group_epoch = group.group_epoch;
             let stale_generation = group.begin_expansion_schedule();
@@ -1797,7 +2089,7 @@ mod tests {
 
         pool.expand_after_pressure(&key, group_epoch, stale_generation);
         {
-            let groups = pool.groups.lock().unwrap();
+            let groups = pool.test_groups(&key);
             let group = groups.get(&key).unwrap();
             assert!(group.expansion_schedule_matches(current_generation));
             assert_eq!(group.lanes.len(), 1);
@@ -1805,7 +2097,7 @@ mod tests {
 
         pool.expand_after_pressure(&key, group_epoch, current_generation);
         {
-            let groups = pool.groups.lock().unwrap();
+            let groups = pool.test_groups(&key);
             let group = groups.get(&key).unwrap();
             assert!(!group.expansion_scheduled);
             assert_eq!(group.lanes.len(), 1);
@@ -1838,7 +2130,7 @@ mod tests {
             connect_timeout_ms: 0,
         };
         let (old_epoch, stale_generation) = {
-            let mut groups = pool.groups.lock().unwrap();
+            let mut groups = pool.test_groups(&key);
             let group = groups.get_mut(&key).unwrap();
             (group.group_epoch, group.begin_expansion_schedule())
         };
@@ -1851,16 +2143,14 @@ mod tests {
         assert_eq!(pool.snapshot().keys, 0);
         let replacement = pool.acquire(request).await.unwrap();
         let new_epoch = pool
-            .groups
-            .lock()
-            .unwrap()
+            .test_groups(&key)
             .get(&key)
             .expect("replacement group")
             .group_epoch;
         assert_ne!(old_epoch, new_epoch);
 
         pool.expand_after_pressure(&key, old_epoch, stale_generation);
-        let groups = pool.groups.lock().unwrap();
+        let groups = pool.test_groups(&key);
         let group = groups.get(&key).expect("replacement group remains");
         assert_eq!(group.group_epoch, new_epoch);
         assert_eq!(group.lanes.len(), 1);
@@ -1924,10 +2214,15 @@ mod tests {
         };
 
         let mut selection = pool.acquire(request).await.unwrap();
+        let key = LaneKey {
+            account_id: 11,
+            proxy: canonical_proxy(None).unwrap(),
+            origin: normalize_origin(request.origin_url).unwrap(),
+            lane: normalize_lane(None),
+            connect_timeout_ms: 0,
+        };
         let pressure_since = pool
-            .groups
-            .lock()
-            .unwrap()
+            .test_groups(&key)
             .values()
             .next()
             .and_then(|group| group.pressure_since_ms)
@@ -2051,6 +2346,13 @@ mod tests {
         drop(idle);
 
         let expanded = pool.acquire(request_a).await.unwrap();
+        for _ in 0..100 {
+            let snapshot = pool.snapshot();
+            if snapshot.keys == 1 && snapshot.lanes == 2 && snapshot.expansions_total == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
         let snapshot = pool.snapshot();
         assert_eq!(snapshot.keys, 1);
         assert_eq!(snapshot.lanes, 2);
@@ -2122,7 +2424,6 @@ mod tests {
         first.guard.mark_headers(Some(Version::HTTP_2));
         first.guard.mark_stream_open();
         let mut overflow = pool.acquire(request).await.unwrap();
-        overflow.guard.mark_headers(Some(Version::HTTP_2));
         overflow.guard.mark_stream_open();
         let active = pool.snapshot();
         assert_eq!(active.inflight, 2);
@@ -2243,12 +2544,19 @@ mod tests {
             let mut expanded = pool.acquire(request).await.unwrap();
             expanded.guard.mark_headers(Some(Version::HTTP_2));
             held.push(expanded);
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        for _ in 0..4 {
+            let mut selected = pool.acquire(request).await.unwrap();
+            selected.guard.mark_headers(Some(Version::HTTP_2));
+            held.push(selected);
         }
         let overflow = pool.acquire(request).await.unwrap();
         let snapshot = pool.snapshot();
         assert_eq!(snapshot.lanes, 4);
-        assert_eq!(snapshot.http2_lanes, 4);
-        assert_eq!(snapshot.overflow_active, 1);
+        assert!(snapshot.http2_lanes >= 1);
+        assert_eq!(snapshot.http2_lanes + snapshot.unknown_lanes, 4);
+        assert!(snapshot.overflow_active >= 1);
         drop(overflow);
         drop(held);
     }

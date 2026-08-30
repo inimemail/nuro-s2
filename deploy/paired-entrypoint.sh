@@ -45,28 +45,86 @@ export SUB2API_EDGE_MAX_HEADER_BYTES="${SUB2API_EDGE_MAX_HEADER_BYTES:-${SERVER_
 export SUB2API_EDGE_LISTEN_ADDR="${SUB2API_EDGE_LISTEN_ADDR:-127.0.0.1:18080}"
 export SUB2API_EDGE_GO_BASE_URL="${SUB2API_EDGE_GO_BASE_URL:-http://127.0.0.1:8080}"
 export SUB2API_EDGE_CONTROL_BASE_URL="${SUB2API_EDGE_CONTROL_BASE_URL:-http://127.0.0.1:8080}"
-export SUB2API_EDGE_NODE_ID="${SUB2API_EDGE_NODE_ID:-$(hostname)}"
+wal_root="${SUB2API_EDGE_SETTLEMENT_WAL_ROOT:-/app/data/edge-settlement-wal}"
+configured_wal_dir="${SUB2API_EDGE_SETTLEMENT_WAL_DIR:-}"
+wal_slot=""
+
+# Nuro replicas share /app/data. An advisory lock gives each live pair one
+# stable WAL slot so an in-place Edge restart can replay pending callbacks to
+# the still-running Go control plane without colliding with another replica.
+if [ -z "$configured_wal_dir" ] && command -v flock >/dev/null 2>&1; then
+    wal_slots="${SUB2API_EDGE_SETTLEMENT_WAL_SLOTS:-256}"
+    case "$wal_slots" in
+        ''|*[!0-9]*) wal_slots=256 ;;
+    esac
+    [ "$wal_slots" -ge 1 ] 2>/dev/null || wal_slots=256
+    [ "$wal_slots" -le 4096 ] 2>/dev/null || wal_slots=4096
+    mkdir -p "${wal_root}/.locks"
+    slot=1
+    while [ "$slot" -le "$wal_slots" ]; do
+        exec 9>"${wal_root}/.locks/slot-${slot}.lock"
+        if flock -n 9; then
+            wal_slot="$slot"
+            break
+        fi
+        slot=$((slot + 1))
+    done
+fi
+
+if [ -n "$configured_wal_dir" ]; then
+    export SUB2API_EDGE_NODE_ID="${SUB2API_EDGE_NODE_ID:-$(hostname)}"
+    export SUB2API_EDGE_SETTLEMENT_WAL_DIR="$configured_wal_dir"
+elif [ -n "$wal_slot" ]; then
+    node_prefix="${SUB2API_EDGE_NODE_ID:-edge}"
+    export SUB2API_EDGE_NODE_ID="${node_prefix}-slot-${wal_slot}"
+    export SUB2API_EDGE_SETTLEMENT_WAL_DIR="${wal_root}/slot-${wal_slot}"
+else
+    exec 9>&- 2>/dev/null || true
+    export SUB2API_EDGE_NODE_ID="${SUB2API_EDGE_NODE_ID:-$(hostname)}"
+    export SUB2API_EDGE_SETTLEMENT_WAL_DIR="${wal_root}/${SUB2API_EDGE_NODE_ID}"
+fi
 
 /app/sub2api "$@" &
 go_pid=$!
-/app/sub2api-edge-rs &
-edge_pid=$!
 
 status=0
-while kill -0 "$go_pid" 2>/dev/null && kill -0 "$edge_pid" 2>/dev/null; do
-    sleep 1
+edge_fast_failures=0
+while kill -0 "$go_pid" 2>/dev/null && [ "$stopping" -eq 0 ]; do
+    edge_started="$(date +%s)"
+    /app/sub2api-edge-rs &
+    edge_pid=$!
+    while kill -0 "$go_pid" 2>/dev/null && kill -0 "$edge_pid" 2>/dev/null; do
+        sleep 1
+    done
+
+    if ! kill -0 "$edge_pid" 2>/dev/null; then
+        edge_status=0
+        wait "$edge_pid" || edge_status=$?
+        edge_pid=""
+        [ "$stopping" -eq 0 ] || break
+        kill -0 "$go_pid" 2>/dev/null || break
+
+        edge_runtime=$(( $(date +%s) - edge_started ))
+        if [ "$edge_runtime" -ge 60 ]; then
+            edge_fast_failures=0
+        fi
+        edge_fast_failures=$((edge_fast_failures + 1))
+        if [ "$edge_fast_failures" -ge 5 ]; then
+            echo "sub2api-edge-rs exited repeatedly; terminating pair for container restart" >&2
+            status="${edge_status:-1}"
+            [ "$status" -ne 0 ] || status=1
+            break
+        fi
+        echo "sub2api-edge-rs exited (status ${edge_status}); restarting with Go control plane kept alive" >&2
+        sleep 1
+    fi
 done
 
 if ! kill -0 "$go_pid" 2>/dev/null; then
     wait "$go_pid" || status=$?
 fi
-if ! kill -0 "$edge_pid" 2>/dev/null; then
-    edge_status=0
-    wait "$edge_pid" || edge_status=$?
-    [ "$status" -ne 0 ] || status=$edge_status
-fi
 
 terminate_children
 wait "$go_pid" 2>/dev/null || true
-wait "$edge_pid" 2>/dev/null || true
+[ -z "$edge_pid" ] || wait "$edge_pid" 2>/dev/null || true
 exit "$status"

@@ -4413,6 +4413,35 @@
             </div>
           </div>
 
+          <!-- OpenAI Rust local data plane -->
+          <div class="card overflow-hidden">
+            <div class="border-b border-gray-100 bg-gray-50 px-6 py-5 dark:border-dark-700 dark:bg-dark-800/60">
+              <div class="flex flex-wrap items-center justify-between gap-4">
+                <div class="flex min-w-0 items-start gap-3">
+                  <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                    <Icon name="bolt" size="md" />
+                  </div>
+                  <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t("admin.settings.gatewayEdgeLocalDataPlane.title") }}</h2>
+                      <span class="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold" :class="form.gateway_edge_local_data_plane_enabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300' : 'border-gray-200 bg-white text-gray-600 dark:border-dark-500 dark:bg-dark-700 dark:text-gray-300'">
+                        <span class="h-2 w-2 rounded-full" :class="form.gateway_edge_local_data_plane_enabled ? 'bg-emerald-500' : 'bg-gray-400'" />
+                        {{ form.gateway_edge_local_data_plane_enabled ? t("admin.settings.gatewayEdgeLocalDataPlane.enabled") : t("admin.settings.gatewayEdgeLocalDataPlane.disabled") }}
+                      </span>
+                    </div>
+                    <p class="mt-1 max-w-3xl text-sm text-gray-600 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeLocalDataPlane.description") }}</p>
+                    <p class="mt-2 text-xs text-amber-700 dark:text-amber-300">{{ t("admin.settings.gatewayEdgeLocalDataPlane.safetyHint") }}</p>
+                  </div>
+                </div>
+                <Toggle
+                  v-model="form.gateway_edge_local_data_plane_enabled"
+                  :aria-label="t('admin.settings.gatewayEdgeLocalDataPlane.toggleLabel')"
+                  data-test="gateway-edge-local-data-plane-toggle"
+                />
+              </div>
+            </div>
+          </div>
+
           <!-- Edge upstream protection -->
           <div class="card overflow-hidden">
             <div class="border-b border-gray-100 bg-gradient-to-r from-sky-50 via-white to-emerald-50 px-6 py-5 dark:border-dark-700 dark:from-sky-950/30 dark:via-dark-800 dark:to-emerald-950/20">
@@ -9079,6 +9108,7 @@ const form = reactive<SettingsForm>({
   gateway_edge_response_header_max_attempts: 3,
   gateway_edge_response_header_failover: true,
   gateway_edge_expose_retried_usage: false,
+  gateway_edge_local_data_plane_enabled: true,
   gateway_openai_apikey_first_token_timeout_placeholder_stages: [
     { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
     { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
@@ -10565,6 +10595,7 @@ async function saveSettings() {
       gateway_edge_response_header_max_attempts: Math.floor(Number(form.gateway_edge_response_header_max_attempts)),
       gateway_edge_response_header_failover: form.gateway_edge_response_header_failover,
       gateway_edge_expose_retried_usage: form.gateway_edge_expose_retried_usage,
+      gateway_edge_local_data_plane_enabled: form.gateway_edge_local_data_plane_enabled,
       gateway_openai_apikey_first_token_timeout_placeholder_stages: form.gateway_openai_apikey_first_token_timeout_placeholder_stages.map((stage, index) => ({
         stage: index + 1,
         placeholder_ms: Math.floor(Number(stage.placeholder_ms)),

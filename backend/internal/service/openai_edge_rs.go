@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/base64"
 	"encoding/json"
+	"time"
 )
 
 const (
@@ -42,6 +43,22 @@ type OpenAIEdgePrepareRequest struct {
 	BodyRawBase64  string            `json:"body_raw_base64,omitempty"`
 	ClientIP       string            `json:"client_ip,omitempty"`
 	Stream         *bool             `json:"stream,omitempty"`
+	// PreferredAccountID is an untrusted Rust route-cache hint. Go must fully
+	// revalidate it and may ignore it before issuing any lease.
+	PreferredAccountID int64 `json:"preferred_account_id,omitempty"`
+}
+
+const OpenAIEdgeControlProtocolVersion = 2
+
+type OpenAIEdgeControlSnapshot struct {
+	ProtocolVersion int       `json:"protocol_version"`
+	Generation      int64     `json:"generation"`
+	GeneratedAt     time.Time `json:"generated_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	ExpiresAtUnixMS int64     `json:"expires_at_unix_ms"`
+	Enabled         bool      `json:"enabled"`
+	Ready           bool      `json:"ready"`
+	Reason          string    `json:"reason,omitempty"`
 }
 
 type OpenAIEdgePlan struct {

@@ -118,6 +118,7 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     su-exec \
+    util-linux \
     libpq \
     zstd-libs \
     lz4-libs \

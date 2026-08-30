@@ -242,6 +242,7 @@ func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 	userID int64,
 	userConcurrency int,
 	apiKeyID int64,
+	preferredAccountID int64,
 	previousResponseID string,
 	sessionHash string,
 	requestedModel string,
@@ -252,6 +253,38 @@ func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 	bindSticky bool,
 	reqLog *zap.Logger,
 ) (*openAIEdgeAccountSelection, string, error) {
+	var preferredSelection *service.AccountSelectionResult
+	if preferredAccountID > 0 {
+		var resolveErr error
+		preferredSelection, _, resolveErr = h.gatewayService.SelectAccountWithSchedulerForCapabilityAndUserSlotAndStickyAccount(
+			ctx,
+			groupID,
+			userID,
+			userConcurrency,
+			previousResponseID,
+			sessionHash,
+			preferredAccountID,
+			requestedModel,
+			baseExcluded,
+			requiredTransport,
+			requiredCapability,
+			false,
+		)
+		if resolveErr != nil && reqLog != nil {
+			reqLog.Debug("openai_edge.local_candidate_recheck_failed", zap.Int64("account_id", preferredAccountID), zap.Error(resolveErr))
+		}
+		if resolveErr != nil {
+			if preferredSelection != nil {
+				if preferredSelection.ReleaseFunc != nil {
+					preferredSelection.ReleaseFunc()
+				}
+				if preferredSelection.UserReleaseFunc != nil {
+					preferredSelection.UserReleaseFunc()
+				}
+			}
+			preferredSelection = nil
+		}
+	}
 	capacitySkippedIDs := make(map[int64]struct{})
 	localSkippedIDs := make(map[int64]struct{})
 	var userReleaseFunc func()
@@ -263,11 +296,10 @@ func (h *OpenAIGatewayHandler) selectOpenAIEdgeAccountWithSlot(
 	}()
 	for {
 		excludedIDs := mergeOpenAIAccountExclusions(baseExcluded, capacitySkippedIDs, localSkippedIDs)
-		var (
-			selection *service.AccountSelectionResult
-			err       error
-		)
-		if !userSlotHeld && userID > 0 && userConcurrency > 0 {
+		selection := preferredSelection
+		preferredSelection = nil
+		var err error
+		if selection == nil && !userSlotHeld && userID > 0 && userConcurrency > 0 {
 			selection, _, err = h.gatewayService.SelectAccountWithSchedulerForCapabilityAndUserSlot(
 				ctx,
 				groupID,
@@ -1036,6 +1068,48 @@ func (h *OpenAIGatewayHandler) requireOpenAIEdgeSecret(c *gin.Context) bool {
 }
 
 func (h *OpenAIGatewayHandler) OpenAIEdgePrepare(c *gin.Context) {
+	h.openAIEdgePrepare(c, false)
+}
+
+// OpenAIEdgeClaim is the v2 claim/compile boundary. Rust may provide an
+// account hint, but all authorization, billing, policy and concurrency checks
+// remain authoritative in Go.
+func (h *OpenAIGatewayHandler) OpenAIEdgeClaim(c *gin.Context) {
+	h.openAIEdgePrepare(c, true)
+}
+
+func (h *OpenAIGatewayHandler) OpenAIEdgeControlSnapshot(c *gin.Context) {
+	if !h.requireOpenAIEdgeSecret(c) {
+		return
+	}
+	now := time.Now().UTC()
+	profile := config.GatewaySchedulingRuntime{}
+	if h != nil && h.cfg != nil {
+		profile = h.cfg.GatewayEdgeProtection()
+	}
+	cfg := h.openAIEdgeConfig()
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	enabled := profile.EdgeLocalDataPlaneEnabled
+	ready := enabled && cfg.Enabled && mode != "" && mode != "off" && mode != "shadow"
+	reason := ""
+	if !enabled {
+		reason = "disabled_by_admin"
+	} else if !ready {
+		reason = "edge_relay_not_ready"
+	}
+	c.JSON(http.StatusOK, service.OpenAIEdgeControlSnapshot{
+		ProtocolVersion: service.OpenAIEdgeControlProtocolVersion,
+		Generation:      now.Unix() / 5,
+		GeneratedAt:     now,
+		ExpiresAt:       now.Add(15 * time.Second),
+		ExpiresAtUnixMS: now.Add(15 * time.Second).UnixMilli(),
+		Enabled:         enabled,
+		Ready:           ready,
+		Reason:          reason,
+	})
+}
+
+func (h *OpenAIGatewayHandler) openAIEdgePrepare(c *gin.Context, localClaim bool) {
 	if !h.requireOpenAIEdgeSecret(c) {
 		return
 	}
@@ -1046,6 +1120,13 @@ func (h *OpenAIGatewayHandler) OpenAIEdgePrepare(c *gin.Context) {
 	}
 	if err := normalizeOpenAIEdgePrepareBody(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid prepare raw body"})
+		return
+	}
+	if !localClaim {
+		req.PreferredAccountID = 0
+	} else if h.cfg == nil || !h.cfg.GatewayEdgeProtection().EdgeLocalDataPlaneEnabled {
+		cfg := h.openAIEdgeConfig()
+		c.JSON(http.StatusOK, openAIEdgeFallbackPlan(req, "edge_local_data_plane_disabled", cfg, h.openAIEdgeLowLatencyMode()))
 		return
 	}
 
@@ -1178,6 +1259,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawChatRelay(c *gin.Context, req
 		subject.UserID,
 		subject.Concurrency,
 		apiKey.ID,
+		req.PreferredAccountID,
 		"",
 		sessionHash,
 		reqModel,
@@ -1386,6 +1468,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		subject.UserID,
 		subject.Concurrency,
 		apiKey.ID,
+		req.PreferredAccountID,
 		"",
 		sessionHash,
 		reqModel,
@@ -1581,6 +1664,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		subject.UserID,
 		subject.Concurrency,
 		apiKey.ID,
+		0,
 		"",
 		sessionHash,
 		reqModel,
@@ -2322,6 +2406,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 	edgeSelection, reason, err := h.selectOpenAIEdgeAccountWithSlot(
 		c.Request.Context(),
 		groupID,
+		0,
 		0,
 		0,
 		0,

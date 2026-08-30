@@ -2416,6 +2416,57 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionSticky(t *testin
 	}
 }
 
+func TestOpenAIGatewayService_EdgeHintCannotOverrideNewerGoStickyBinding(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10)
+	hinted := Account{
+		ID: 2101, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		GroupIDs: []int64{groupID},
+	}
+	current := Account{
+		ID: 2102, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		GroupIDs: []int64{groupID},
+	}
+	cacheKey := "openai:edge-hint-session"
+	cache := &schedulerTestGatewayCache{
+		sessionBindings: map[string]int64{cacheKey: current.ID},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{hinted, current}},
+		cache:              cache,
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapabilityAndUserSlotAndStickyAccount(
+		ctx,
+		&groupID,
+		0,
+		0,
+		"",
+		"edge-hint-session",
+		hinted.ID,
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIEndpointCapabilityResponses,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, current.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerSessionSticky, decision.Layer)
+	require.Equal(t, current.ID, cache.sessionBindings[cacheKey])
+	require.Zero(t, cache.deletedSessions[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyGroupMismatchFallsBack(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(10)

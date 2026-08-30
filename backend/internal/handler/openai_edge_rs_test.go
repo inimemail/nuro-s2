@@ -82,6 +82,91 @@ func TestOpenAIEdgePrepareRequiresEnabledInternalAPIAndSecret(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeControlSnapshotFollowsRuntimeSwitch(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIEdgeRS = config.GatewayOpenAIEdgeRSConfig{
+		Enabled:            true,
+		InternalAPIEnabled: true,
+		InternalSecret:     "edge-secret",
+		Mode:               "relay",
+	}
+	h := &OpenAIGatewayHandler{cfg: cfg}
+
+	call := func() service.OpenAIEdgeControlSnapshot {
+		c, w := newOpenAIEdgeTestContext(http.MethodGet, "/internal/edge/openai/v2/control", "", "edge-secret")
+		h.OpenAIEdgeControlSnapshot(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("control snapshot status=%d body=%s", w.Code, w.Body.String())
+		}
+		var snapshot service.OpenAIEdgeControlSnapshot
+		if err := json.Unmarshal(w.Body.Bytes(), &snapshot); err != nil {
+			t.Fatalf("unmarshal control snapshot: %v", err)
+		}
+		return snapshot
+	}
+
+	enabled := call()
+	if !enabled.Enabled || !enabled.Ready || enabled.ProtocolVersion != service.OpenAIEdgeControlProtocolVersion {
+		t.Fatalf("unexpected default-enabled snapshot: %+v", enabled)
+	}
+	if !enabled.ExpiresAt.After(enabled.GeneratedAt) || enabled.ExpiresAtUnixMS <= time.Now().UnixMilli() {
+		t.Fatalf("control snapshot has invalid validity window: %+v", enabled)
+	}
+
+	cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
+		EdgeProtectionConfigured:  true,
+		EdgeLocalDataPlaneEnabled: false,
+	})
+	disabled := call()
+	if disabled.Enabled || disabled.Ready || disabled.Reason != "disabled_by_admin" {
+		t.Fatalf("unexpected disabled snapshot: %+v", disabled)
+	}
+
+	cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
+		EdgeProtectionConfigured:  true,
+		EdgeLocalDataPlaneEnabled: true,
+	})
+	enabled = call()
+	if !enabled.Enabled || !enabled.Ready || enabled.ProtocolVersion != service.OpenAIEdgeControlProtocolVersion {
+		t.Fatalf("unexpected enabled snapshot: %+v", enabled)
+	}
+	if !enabled.ExpiresAt.After(enabled.GeneratedAt) || enabled.ExpiresAtUnixMS <= time.Now().UnixMilli() {
+		t.Fatalf("control snapshot has invalid validity window: %+v", enabled)
+	}
+}
+
+func TestOpenAIEdgeClaimFallsBackWhenLocalDataPlaneIsDisabled(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIEdgeRS = config.GatewayOpenAIEdgeRSConfig{
+		Enabled:            true,
+		InternalAPIEnabled: true,
+		InternalSecret:     "edge-secret",
+		Mode:               "relay",
+	}
+	cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
+		EdgeProtectionConfigured:  true,
+		EdgeLocalDataPlaneEnabled: false,
+	})
+	h := &OpenAIGatewayHandler{cfg: cfg}
+	c, w := newOpenAIEdgeTestContext(
+		http.MethodPost,
+		"/internal/edge/openai/v2/claim",
+		`{"edge_request_id":"edge-claim-1","method":"POST","path":"/v1/responses","preferred_account_id":7,"body":{"model":"gpt-5","stream":true},"stream":true}`,
+		"edge-secret",
+	)
+	h.OpenAIEdgeClaim(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("claim status=%d body=%s", w.Code, w.Body.String())
+	}
+	var plan service.OpenAIEdgePlan
+	if err := json.Unmarshal(w.Body.Bytes(), &plan); err != nil {
+		t.Fatalf("unmarshal claim fallback: %v", err)
+	}
+	if plan.Action != service.OpenAIEdgeActionFallbackGo || plan.Reason != "edge_local_data_plane_disabled" {
+		t.Fatalf("unexpected disabled claim plan: %+v", plan)
+	}
+}
+
 func TestTakeOpenAIEdgeLeaseRejectsStaleCompletionWithoutRemovingCurrentLease(t *testing.T) {
 	h := &OpenAIGatewayHandler{openAIEdgeLeases: make(map[string]*openAIEdgeLease)}
 	lease := &openAIEdgeLease{

@@ -1114,6 +1114,9 @@ type GatewaySchedulingRuntime struct {
 	// EdgeExposeRetriedUsage controls whether edge-rs exposes usage accumulated
 	// across internal upstream retries in the single downstream usage frame.
 	EdgeExposeRetriedUsage bool
+	// EdgeLocalDataPlaneEnabled gates the versioned Rust-local OpenAI HTTP/SSE
+	// path independently from the upstream timeout protection profile.
+	EdgeLocalDataPlaneEnabled bool
 	// EdgeProtectionConfigured distinguishes an explicitly published Edge
 	// profile from legacy runtime updates that predate these fields.
 	EdgeProtectionConfigured bool
@@ -1132,6 +1135,7 @@ func (c *Config) GatewayEdgeProtection() GatewaySchedulingRuntime {
 		EdgeResponseHeaderMaxAttempts: 3,
 		EdgeResponseHeaderFailover:    true,
 		EdgeExposeRetriedUsage:        false,
+		EdgeLocalDataPlaneEnabled:     true,
 	}
 	if c == nil {
 		return result
@@ -1159,6 +1163,7 @@ func (c *Config) GatewayEdgeProtection() GatewaySchedulingRuntime {
 			result.EdgeProtectionEnabled = live.EdgeProtectionEnabled
 			result.EdgeResponseHeaderFailover = live.EdgeResponseHeaderFailover
 			result.EdgeExposeRetriedUsage = live.EdgeExposeRetriedUsage
+			result.EdgeLocalDataPlaneEnabled = live.EdgeLocalDataPlaneEnabled
 		}
 	}
 	return result

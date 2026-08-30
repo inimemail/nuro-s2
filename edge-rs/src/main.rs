@@ -5,7 +5,9 @@ use std::{
     env,
     fmt::Display,
     future::{pending, Future},
+    hash::{Hash, Hasher},
     net::SocketAddr,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -99,6 +101,8 @@ const PAYLOAD_COMMIT_MAX_ATTEMPTS: usize = 5;
 // delayed usage/account-health callbacks still have a chance to recover.
 const SETTLEMENT_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(50);
 const SETTLEMENT_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+const SETTLEMENT_WAL_COMPACT_RECORDS: u64 = 100_000;
+const SETTLEMENT_WAL_COMPACT_BYTES: u64 = 64 * 1024 * 1024;
 const EDGE_RECOVERY_MAX_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
@@ -126,12 +130,192 @@ struct AppState {
     ingress_body_bytes: Arc<Semaphore>,
     metrics: Arc<EdgeMetrics>,
     draining: Arc<AtomicBool>,
+    local_data_plane: Arc<LocalDataPlaneState>,
+    settlement_wal: Arc<SettlementWal>,
 }
 
 impl AppState {
     fn metrics_is_draining(&self) -> bool {
         self.draining.load(Ordering::Acquire)
     }
+}
+
+impl LocalDataPlaneState {
+    fn new(cfg: &EdgeConfig) -> Self {
+        Self {
+            ready: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
+            expires_at_unix_ms: AtomicU64::new(0),
+            force_off: cfg.local_data_plane_force_off,
+            durable_settlement_ready: AtomicBool::new(cfg.settlement_wal_enabled),
+            hint_ttl: Duration::from_secs(cfg.local_route_hint_ttl_secs.max(1)),
+            max_hints: cfg.local_route_hint_max_entries.max(1),
+            hints: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        !self.force_off
+            && self.durable_settlement_ready.load(Ordering::Acquire)
+            && self.ready.load(Ordering::Acquire)
+            && unix_time_millis() < self.expires_at_unix_ms.load(Ordering::Acquire)
+    }
+
+    fn route_hint(&self, request: &PrepareRequest) -> Option<i64> {
+        if !self.is_ready() || !local_route_hint_eligible(request) {
+            return None;
+        }
+        let key = local_route_hint_key(request)?;
+        let now = Instant::now();
+        let mut hints = self.hints.lock().ok()?;
+        let hint = hints.get(&key).copied();
+        if hint.is_some_and(|item| item.expires_at <= now) {
+            hints.remove(&key);
+            return None;
+        }
+        hint.map(|item| item.account_id)
+    }
+
+    fn remember(&self, request: &PrepareRequest, plan: &EdgePlan) {
+        if !self.is_ready()
+            || !local_route_hint_eligible(request)
+            || plan.action != "relay"
+            || !plan.account_type.as_deref().is_some_and(|account_type| {
+                account_type.eq_ignore_ascii_case("apikey")
+                    || account_type.eq_ignore_ascii_case("api_key")
+            })
+        {
+            return;
+        }
+        let (Some(key), Some(account_id)) = (local_route_hint_key(request), plan.account_id) else {
+            return;
+        };
+        let Ok(mut hints) = self.hints.lock() else {
+            return;
+        };
+        if hints.len() >= self.max_hints && !hints.contains_key(&key) {
+            let now = Instant::now();
+            hints.retain(|_, item| item.expires_at > now);
+            if hints.len() >= self.max_hints {
+                if let Some(evict) = hints.keys().next().copied() {
+                    hints.remove(&evict);
+                }
+            }
+        }
+        hints.insert(
+            key,
+            LocalRouteHint {
+                account_id,
+                expires_at: Instant::now() + self.hint_ttl,
+            },
+        );
+    }
+
+    fn apply_snapshot(&self, snapshot: &ControlSnapshot) {
+        let ready = !self.force_off
+            && self.durable_settlement_ready.load(Ordering::Acquire)
+            && snapshot.protocol_version == 2
+            && snapshot.enabled
+            && snapshot.ready
+            && snapshot.expires_at_unix_ms > unix_time_millis().min(i64::MAX as u64) as i64;
+        self.generation
+            .store(snapshot.generation.max(0) as u64, Ordering::Release);
+        self.expires_at_unix_ms
+            .store(snapshot.expires_at_unix_ms.max(0) as u64, Ordering::Release);
+        self.ready.store(ready, Ordering::Release);
+        if !ready {
+            if let Ok(mut hints) = self.hints.lock() {
+                hints.clear();
+            }
+        }
+    }
+
+    fn disable_durable_settlement(&self) -> bool {
+        let was_ready = self.durable_settlement_ready.swap(false, Ordering::AcqRel);
+        self.ready.store(false, Ordering::Release);
+        if let Ok(mut hints) = self.hints.lock() {
+            hints.clear();
+        }
+        was_ready
+    }
+}
+
+fn unix_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn local_route_hint_eligible(request: &PrepareRequest) -> bool {
+    request.method.eq_ignore_ascii_case("POST")
+        && request.stream == Some(true)
+        && matches!(
+            request.path.as_str(),
+            "/v1/responses" | "/v1/chat/completions"
+        )
+        && !request
+            .headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("upgrade"))
+}
+
+fn local_route_hint_key(request: &PrepareRequest) -> Option<u64> {
+    let credential = ["authorization", "x-api-key", "x-goog-api-key"]
+        .into_iter()
+        .find_map(|wanted| {
+            request
+                .headers
+                .iter()
+                .find(|(name, value)| name.eq_ignore_ascii_case(wanted) && !value.trim().is_empty())
+                .map(|(_, value)| (wanted, value.trim()))
+        })?;
+    // A downstream API key can carry many unrelated conversations. Reusing an
+    // account hint without an explicit session discriminator would bypass Go's
+    // sticky/load-aware scheduler across those conversations. Content-derived
+    // session hashes deliberately stay in Go; requests without an explicit
+    // session signal use the established full scheduler path.
+    let session = request
+        .headers
+        .iter()
+        .find(|(name, value)| {
+            (name.eq_ignore_ascii_case("session_id")
+                || name.eq_ignore_ascii_case("conversation_id"))
+                && !value.trim().is_empty()
+        })
+        .map(|(_, value)| value.trim())
+        .or_else(|| {
+            ["session_id", "conversation_id", "prompt_cache_key"]
+                .into_iter()
+                .find_map(|name| {
+                    request
+                        .body
+                        .get(name)
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                })
+        })
+        .or_else(|| {
+            request
+                .body
+                .pointer("/metadata/session_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })?;
+    let model = request
+        .body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    credential.hash(&mut hasher);
+    request.path.hash(&mut hasher);
+    model.hash(&mut hasher);
+    session.hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 #[derive(Default)]
@@ -169,6 +353,46 @@ struct EdgeMetrics {
     transient_proxy_total: AtomicU64,
     transient_proxy_wait_micros: AtomicU64,
     transient_proxy_wait_count: AtomicU64,
+    local_claims: AtomicU64,
+    local_claim_fallbacks: AtomicU64,
+    control_snapshot_failures: AtomicU64,
+}
+
+struct LocalDataPlaneState {
+    ready: AtomicBool,
+    generation: AtomicU64,
+    expires_at_unix_ms: AtomicU64,
+    force_off: bool,
+    durable_settlement_ready: AtomicBool,
+    hint_ttl: Duration,
+    max_hints: usize,
+    hints: Mutex<HashMap<u64, LocalRouteHint>>,
+}
+
+#[derive(Clone, Copy)]
+struct LocalRouteHint {
+    account_id: i64,
+    expires_at: Instant,
+}
+
+struct SettlementWal {
+    dir: PathBuf,
+    log_path: PathBuf,
+    enabled: bool,
+    healthy: AtomicBool,
+    pending: AtomicU64,
+    state: Mutex<SettlementWalState>,
+    written_sequence: AtomicU64,
+    flushed_sequence: AtomicU64,
+    flush_notify: tokio::sync::Notify,
+    compact_records: u64,
+    compact_bytes: u64,
+}
+
+struct SettlementWalState {
+    file: Option<std::fs::File>,
+    pending: HashMap<String, SettlementRetryJob>,
+    records_since_compaction: u64,
 }
 
 struct ActiveRequestGuard {
@@ -581,6 +805,22 @@ impl EdgeMetrics {
             state.cfg.global_workers,
         );
         output.push_str(&format!(
+            "# TYPE sub2api_edge_local_data_plane_ready gauge\nsub2api_edge_local_data_plane_ready {}\n\
+             # TYPE sub2api_edge_local_claims_total counter\nsub2api_edge_local_claims_total {}\n\
+             # TYPE sub2api_edge_local_claim_fallbacks_total counter\nsub2api_edge_local_claim_fallbacks_total {}\n\
+             # TYPE sub2api_edge_control_snapshot_failures_total counter\nsub2api_edge_control_snapshot_failures_total {}\n",
+            u64::from(state.local_data_plane.is_ready()),
+            self.local_claims.load(Ordering::Relaxed),
+            self.local_claim_fallbacks.load(Ordering::Relaxed),
+            self.control_snapshot_failures.load(Ordering::Relaxed),
+        ));
+        output.push_str(&format!(
+            "# TYPE sub2api_edge_settlement_wal_pending gauge\nsub2api_edge_settlement_wal_pending {}\n\
+             # TYPE sub2api_edge_settlement_wal_healthy gauge\nsub2api_edge_settlement_wal_healthy {}\n",
+            state.settlement_wal.pending.load(Ordering::Relaxed),
+            u64::from(state.settlement_wal.is_healthy()),
+        ));
+        output.push_str(&format!(
             "# TYPE sub2api_edge_upstream_attempts_total counter\nsub2api_edge_upstream_attempts_total {}\n\
              # TYPE sub2api_edge_upstream_connect_errors_total counter\nsub2api_edge_upstream_connect_errors_total {}\n\
              # TYPE sub2api_edge_upstream_responses_total counter\nsub2api_edge_upstream_responses_total {}\n\
@@ -731,6 +971,14 @@ struct EdgeConfig {
     upstream_warm_interval_secs: u64,
     upstream_dynamic_warm_active_secs: u64,
     max_dynamic_warm_keys: usize,
+    local_data_plane_force_off: bool,
+    local_control_poll_ms: u64,
+    local_route_hint_ttl_secs: u64,
+    local_route_hint_max_entries: usize,
+    settlement_wal_enabled: bool,
+    settlement_wal_dir: PathBuf,
+    settlement_wal_compact_records: u64,
+    settlement_wal_compact_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -747,6 +995,15 @@ struct PrepareRequest {
     body_raw_base64: Option<String>,
     client_ip: Option<String>,
     stream: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ControlSnapshot {
+    protocol_version: u32,
+    generation: i64,
+    enabled: bool,
+    ready: bool,
+    expires_at_unix_ms: i64,
 }
 
 #[derive(Deserialize)]
@@ -1278,7 +1535,7 @@ struct RenewRequest {
     account_id: Option<i64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct CompleteRequest {
     edge_request_id: String,
     lease_id: Option<String>,
@@ -1313,7 +1570,7 @@ struct CompleteRequest {
     cyber_blocked: bool,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct Usage {
     input_tokens: i64,
     output_tokens: i64,
@@ -1517,7 +1774,7 @@ struct LowLatencyPolicy {
     barrier: Option<Duration>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct AbortRequest {
     edge_request_id: String,
     lease_id: Option<String>,
@@ -1529,7 +1786,8 @@ struct AbortRequest {
     fallback_to_go: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", content = "request", rename_all = "snake_case")]
 enum SettlementRetryJob {
     Complete(Box<CompleteRequest>),
     Abort(AbortRequest),
@@ -1561,6 +1819,376 @@ impl SettlementRetryJob {
             Self::Complete(request) => &request.edge_request_id,
             Self::Abort(request) => &request.edge_request_id,
         }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum SettlementWalRecord {
+    Put {
+        key: String,
+        job: SettlementRetryJob,
+    },
+    Ack {
+        key: String,
+    },
+}
+
+impl SettlementWal {
+    async fn new(cfg: &EdgeConfig) -> anyhow::Result<Self> {
+        let dir = cfg.settlement_wal_dir.clone();
+        let log_path = dir.join("settlements.log");
+        let file = if cfg.settlement_wal_enabled {
+            std::fs::create_dir_all(&dir)?;
+            Some(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)?,
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            dir,
+            log_path,
+            enabled: cfg.settlement_wal_enabled,
+            healthy: AtomicBool::new(true),
+            pending: AtomicU64::new(0),
+            state: Mutex::new(SettlementWalState {
+                file,
+                pending: HashMap::new(),
+                records_since_compaction: 0,
+            }),
+            written_sequence: AtomicU64::new(0),
+            flushed_sequence: AtomicU64::new(0),
+            flush_notify: tokio::sync::Notify::new(),
+            compact_records: cfg.settlement_wal_compact_records.max(1),
+            compact_bytes: cfg.settlement_wal_compact_bytes.max(1),
+        })
+    }
+
+    fn unavailable(cfg: &EdgeConfig) -> Self {
+        Self {
+            dir: cfg.settlement_wal_dir.clone(),
+            log_path: cfg.settlement_wal_dir.join("settlements.log"),
+            enabled: cfg.settlement_wal_enabled,
+            healthy: AtomicBool::new(false),
+            pending: AtomicU64::new(0),
+            state: Mutex::new(SettlementWalState {
+                file: None,
+                pending: HashMap::new(),
+                records_since_compaction: 0,
+            }),
+            written_sequence: AtomicU64::new(0),
+            flushed_sequence: AtomicU64::new(0),
+            flush_notify: tokio::sync::Notify::new(),
+            compact_records: cfg.settlement_wal_compact_records.max(1),
+            compact_bytes: cfg.settlement_wal_compact_bytes.max(1),
+        }
+    }
+
+    fn is_healthy(&self) -> bool {
+        !self.enabled || self.healthy.load(Ordering::Acquire)
+    }
+
+    fn mark_unhealthy(&self) {
+        self.healthy.store(false, Ordering::Release);
+        self.flush_notify.notify_waiters();
+    }
+
+    fn key(job: &SettlementRetryJob) -> String {
+        format!("{}:{}", job.kind(), job.edge_request_id())
+    }
+
+    fn append_record(&self, record: SettlementWalRecord) -> anyhow::Result<u64> {
+        if !self.enabled {
+            return Ok(0);
+        }
+        if !self.is_healthy() {
+            anyhow::bail!("settlement WAL is unhealthy");
+        }
+        let result = self.append_record_inner(record);
+        if result.is_err() {
+            self.mark_unhealthy();
+        }
+        result
+    }
+
+    fn append_record_inner(&self, record: SettlementWalRecord) -> anyhow::Result<u64> {
+        let mut bytes = serde_json::to_vec(&record)?;
+        bytes.push(b'\n');
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("settlement WAL lock poisoned"))?;
+        let file = state
+            .file
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("settlement WAL file is unavailable"))?;
+        std::io::Write::write_all(file, &bytes)?;
+        match record {
+            SettlementWalRecord::Put { key, job } => {
+                state.pending.insert(key, job);
+            }
+            SettlementWalRecord::Ack { key } => {
+                state.pending.remove(&key);
+            }
+        }
+        state.records_since_compaction = state.records_since_compaction.saturating_add(1);
+        self.pending
+            .store(state.pending.len() as u64, Ordering::Release);
+        let sequence = self.written_sequence.fetch_add(1, Ordering::AcqRel) + 1;
+        Ok(sequence)
+    }
+
+    async fn wait_flushed(&self, sequence: u64) -> anyhow::Result<()> {
+        if sequence == 0 {
+            return Ok(());
+        }
+        loop {
+            let notified = self.flush_notify.notified();
+            if self.flushed_sequence.load(Ordering::Acquire) >= sequence {
+                return Ok(());
+            }
+            if !self.is_healthy() {
+                anyhow::bail!("settlement WAL became unhealthy before flush");
+            }
+            notified.await;
+        }
+    }
+
+    async fn persist(&self, job: &SettlementRetryJob) -> anyhow::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let sequence = self.append_record(SettlementWalRecord::Put {
+            key: Self::key(job),
+            job: job.clone(),
+        })?;
+        self.wait_flushed(sequence).await?;
+        Ok(())
+    }
+
+    fn persist_sync(&self, job: &SettlementRetryJob) -> anyhow::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let sequence = self.append_record(SettlementWalRecord::Put {
+            key: Self::key(job),
+            job: job.clone(),
+        })?;
+        let sync_result = (|| -> anyhow::Result<()> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("settlement WAL lock poisoned"))?;
+            state
+                .file
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("settlement WAL file is unavailable"))?
+                .sync_data()?;
+            Ok(())
+        })();
+        if let Err(error) = sync_result {
+            self.mark_unhealthy();
+            return Err(error);
+        }
+        self.flushed_sequence.fetch_max(sequence, Ordering::Release);
+        self.flush_notify.notify_waiters();
+        Ok(())
+    }
+
+    async fn acknowledge(&self, job: &SettlementRetryJob) -> anyhow::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let sequence = self.append_record(SettlementWalRecord::Ack {
+            key: Self::key(job),
+        })?;
+        self.wait_flushed(sequence).await
+    }
+
+    async fn load(&self) -> anyhow::Result<Vec<SettlementRetryJob>> {
+        if !self.enabled {
+            return Ok(Vec::new());
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("settlement WAL lock poisoned"))?;
+        if let Some(file) = state.file.as_mut() {
+            file.sync_data()?;
+        }
+        let mut contents = std::fs::read(&self.log_path)?;
+        if contents.last().is_some_and(|byte| *byte != b'\n') {
+            let valid_len = contents
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map(|index| index + 1)
+                .unwrap_or(0);
+            contents.truncate(valid_len);
+            if let Some(file) = state.file.as_mut() {
+                file.set_len(valid_len as u64)?;
+                file.sync_data()?;
+            }
+            warn!("discarded incomplete settlement WAL tail record");
+        }
+        let mut pending = HashMap::<String, SettlementRetryJob>::new();
+        let mut valid_records = 0_u64;
+        for raw_line in contents.split(|byte| *byte == b'\n') {
+            if raw_line.iter().all(|byte| byte.is_ascii_whitespace()) {
+                continue;
+            }
+            match serde_json::from_slice::<SettlementWalRecord>(raw_line) {
+                Ok(SettlementWalRecord::Put { key, job }) => {
+                    pending.insert(key, job);
+                    valid_records = valid_records.saturating_add(1);
+                }
+                Ok(SettlementWalRecord::Ack { key }) => {
+                    pending.remove(&key);
+                    valid_records = valid_records.saturating_add(1);
+                }
+                Err(error) => {
+                    anyhow::bail!("invalid settlement WAL record: {error}");
+                }
+            }
+        }
+        let jobs = pending.values().cloned().collect();
+        state.pending = pending;
+        state.records_since_compaction = valid_records;
+        self.pending
+            .store(state.pending.len() as u64, Ordering::Release);
+        Ok(jobs)
+    }
+
+    async fn flush(&self) -> anyhow::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if !self.is_healthy() {
+            anyhow::bail!("settlement WAL is unhealthy");
+        }
+        if self.written_sequence.load(Ordering::Acquire)
+            <= self.flushed_sequence.load(Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        let target_result = (|| -> anyhow::Result<u64> {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("settlement WAL lock poisoned"))?;
+            if let Some(file) = state.file.as_mut() {
+                file.sync_data()?;
+            }
+            Ok(self.written_sequence.load(Ordering::Acquire))
+        })();
+        let target = match target_result {
+            Ok(target) => target,
+            Err(error) => {
+                self.mark_unhealthy();
+                return Err(error);
+            }
+        };
+        self.flushed_sequence.fetch_max(target, Ordering::Release);
+        self.flush_notify.notify_waiters();
+        if let Err(error) = self.compact_if_needed() {
+            self.mark_unhealthy();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn compact_if_needed(&self) -> anyhow::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("settlement WAL lock poisoned"))?;
+        let bytes = state
+            .file
+            .as_ref()
+            .and_then(|file| file.metadata().ok())
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        if state.records_since_compaction < self.compact_records && bytes < self.compact_bytes {
+            return Ok(());
+        }
+
+        let temp_path = self.dir.join("settlements.compact.tmp");
+        let mut compacted = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&temp_path)?;
+        for (key, job) in &state.pending {
+            let mut bytes = serde_json::to_vec(&SettlementWalRecord::Put {
+                key: key.clone(),
+                job: job.clone(),
+            })?;
+            bytes.push(b'\n');
+            std::io::Write::write_all(&mut compacted, &bytes)?;
+        }
+        compacted.sync_all()?;
+        drop(compacted);
+        state.file.take();
+        if let Err(error) = std::fs::rename(&temp_path, &self.log_path) {
+            state.file = Some(Self::open_append_file(&self.log_path)?);
+            return Err(error.into());
+        }
+        state.file = Some(Self::open_append_file(&self.log_path)?);
+        Self::sync_directory(&self.dir)?;
+        state.records_since_compaction = state.pending.len() as u64;
+        Ok(())
+    }
+
+    fn open_append_file(path: &Path) -> anyhow::Result<std::fs::File> {
+        Ok(std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?)
+    }
+
+    #[cfg(unix)]
+    fn sync_directory(path: &Path) -> anyhow::Result<()> {
+        std::fs::File::open(path)?.sync_all()?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn sync_directory(_path: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn new_for_test(
+        dir: PathBuf,
+        compact_records: u64,
+        compact_bytes: u64,
+    ) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(&dir)?;
+        let log_path = dir.join("settlements.log");
+        let file = Some(Self::open_append_file(&log_path)?);
+        Ok(Self {
+            dir,
+            log_path,
+            enabled: true,
+            healthy: AtomicBool::new(true),
+            pending: AtomicU64::new(0),
+            state: Mutex::new(SettlementWalState {
+                file,
+                pending: HashMap::new(),
+                records_since_compaction: 0,
+            }),
+            written_sequence: AtomicU64::new(0),
+            flushed_sequence: AtomicU64::new(0),
+            flush_notify: tokio::sync::Notify::new(),
+            compact_records: compact_records.max(1),
+            compact_bytes: compact_bytes.max(1),
+        })
     }
 }
 
@@ -2004,6 +2632,18 @@ async fn main() -> anyhow::Result<()> {
     let (settlement_retry_tx, settlement_retry_rx) = mpsc::channel(SETTLEMENT_RETRY_QUEUE_SIZE);
     let (payload_commit_tx, payload_commit_rx) = mpsc::channel(PAYLOAD_COMMIT_QUEUE_SIZE);
     let (relay_tx, relay_rx) = mpsc::channel(cfg.queue_buffer_size.max(128));
+    let local_data_plane = Arc::new(LocalDataPlaneState::new(&cfg));
+    let settlement_wal = match SettlementWal::new(&cfg).await {
+        Ok(wal) => Arc::new(wal),
+        Err(error) => {
+            error!(
+                "settlement WAL initialization failed; durable local routing is disabled: {}",
+                safe_edge_error(&error)
+            );
+            local_data_plane.disable_durable_settlement();
+            Arc::new(SettlementWal::unavailable(&cfg))
+        }
+    };
     let state = AppState {
         cfg: cfg.clone(),
         edge_instance_id: Arc::new(Uuid::new_v4().to_string()),
@@ -2034,6 +2674,8 @@ async fn main() -> anyhow::Result<()> {
         )),
         metrics: Arc::new(EdgeMetrics::default()),
         draining: Arc::new(AtomicBool::new(false)),
+        local_data_plane,
+        settlement_wal,
     };
     tokio::spawn(run_settlement_retry_queue(
         state.clone(),
@@ -2041,8 +2683,17 @@ async fn main() -> anyhow::Result<()> {
     ));
     tokio::spawn(run_payload_commit_queue(state.clone(), payload_commit_rx));
     tokio::spawn(run_relay_executor(state.clone(), relay_rx));
-    tokio::spawn(recover_previous_edge_leases(state.clone()));
     tokio::spawn(run_edge_resource_reaper(state.clone()));
+    tokio::spawn(run_local_control_snapshot_watcher(state.clone()));
+    tokio::spawn(run_settlement_wal_flusher(state.clone()));
+    let recovery_state = state.clone();
+    tokio::spawn(async move {
+        // Complete durable callbacks while the previous Edge instance's Go
+        // leases are still present. Releasing stale leases first would make a
+        // replay look acknowledged while silently skipping usage settlement.
+        replay_settlement_wal(recovery_state.clone()).await;
+        recover_previous_edge_leases(recovery_state).await;
+    });
     let warm_client = state.client.clone();
     let dynamic_warm_state = state.clone();
     let app = Router::new()
@@ -2157,6 +2808,56 @@ async fn run_upstream_keep_warm(client: Client, warm_url: String, interval_secs:
                 "upstream keep-warm request failed: {}",
                 safe_edge_error(&err)
             );
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
+
+async fn fetch_local_control_snapshot(state: &AppState) -> anyhow::Result<ControlSnapshot> {
+    let url = format!(
+        "{}/internal/edge/openai/v2/control",
+        state.cfg.control_base_url
+    );
+    let response = state
+        .client
+        .get(url)
+        .header(EDGE_SECRET_HEADER, &state.cfg.internal_secret)
+        .timeout(Duration::from_millis(state.cfg.prepare_timeout_ms.max(500)))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        anyhow::bail!("control snapshot status {}", response.status());
+    }
+    Ok(response.json::<ControlSnapshot>().await?)
+}
+
+async fn run_local_control_snapshot_watcher(state: AppState) {
+    if state.cfg.local_data_plane_force_off {
+        info!("Rust local data plane is force-disabled by environment");
+        return;
+    }
+    let interval = Duration::from_millis(state.cfg.local_control_poll_ms);
+    loop {
+        match fetch_local_control_snapshot(&state).await {
+            Ok(snapshot) => state.local_data_plane.apply_snapshot(&snapshot),
+            Err(error) => {
+                state.local_data_plane.ready.store(false, Ordering::Release);
+                // Do not reuse account hints after the control snapshot has
+                // gone stale. Go still revalidates every hint, but retaining
+                // them across an outage can steer the first recovered request
+                // through an account that is no longer eligible.
+                if let Ok(mut hints) = state.local_data_plane.hints.lock() {
+                    hints.clear();
+                }
+                state
+                    .metrics
+                    .control_snapshot_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                debug!(
+                    "local data-plane snapshot unavailable: {}",
+                    safe_edge_error(error)
+                );
+            }
         }
         tokio::time::sleep(interval).await;
     }
@@ -2776,10 +3477,60 @@ fn request_header_bytes(headers: &HeaderMap) -> usize {
 }
 
 async fn call_prepare(state: &AppState, req: &PrepareRequest) -> anyhow::Result<EdgePlan> {
-    let url = format!(
-        "{}/internal/edge/openai/prepare",
-        state.cfg.control_base_url
-    );
+    let preferred_account_id = state.local_data_plane.route_hint(req);
+    let claim_path = preferred_account_id.map(|_| "/internal/edge/openai/v2/claim");
+    let mut payload = serde_json::to_value(req)?;
+    if let (Some(account_id), Some(object)) = (preferred_account_id, payload.as_object_mut()) {
+        object.insert(
+            "preferred_account_id".to_string(),
+            Value::Number(account_id.into()),
+        );
+    }
+    let mut plan = match send_prepare_request(
+        state,
+        claim_path.unwrap_or("/internal/edge/openai/prepare"),
+        &payload,
+    )
+    .await
+    {
+        Ok(plan) => plan,
+        Err(error) => {
+            if claim_path.is_some() {
+                // A transport failure is ambiguous: Go may already have
+                // created the lease even though Edge did not receive the
+                // response. Returning the error lets the established abort
+                // path cancel that request ID before falling back to Go;
+                // issuing a second prepare here could hold two slot grants.
+                state
+                    .metrics
+                    .local_claim_fallbacks
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            return Err(error);
+        }
+    };
+    if claim_path.is_some() {
+        state.metrics.local_claims.fetch_add(1, Ordering::Relaxed);
+        if plan.action != "relay"
+            && plan.reason.as_deref() == Some("edge_local_data_plane_disabled")
+        {
+            state
+                .metrics
+                .local_claim_fallbacks
+                .fetch_add(1, Ordering::Relaxed);
+            plan = send_prepare_request(state, "/internal/edge/openai/prepare", req).await?;
+        }
+    }
+    state.local_data_plane.remember(req, &plan);
+    Ok(plan)
+}
+
+async fn send_prepare_request<T: Serialize + ?Sized>(
+    state: &AppState,
+    path: &str,
+    req: &T,
+) -> anyhow::Result<EdgePlan> {
+    let url = format!("{}{}", state.cfg.control_base_url, path);
     let resp = state
         .client
         .post(url)
@@ -9975,6 +10726,32 @@ async fn send_settlement_job_once(
 }
 
 fn enqueue_settlement_retry(state: &AppState, job: SettlementRetryJob) -> anyhow::Result<()> {
+    if let Err(error) = state.settlement_wal.persist_sync(&job) {
+        handle_settlement_wal_failure(state, "persisting queued settlement", &error);
+    }
+    enqueue_persisted_settlement_retry(state, job)
+}
+
+fn handle_settlement_wal_failure(state: &AppState, operation: &str, error: &anyhow::Error) {
+    state.settlement_wal.mark_unhealthy();
+    if state.local_data_plane.disable_durable_settlement() {
+        error!(
+            "settlement WAL failed while {operation}; durable local routing is disabled and callbacks will continue without disk persistence: {}",
+            safe_edge_error(error)
+        );
+    }
+}
+
+async fn acknowledge_settlement(state: &AppState, job: &SettlementRetryJob) {
+    if let Err(error) = state.settlement_wal.acknowledge(job).await {
+        handle_settlement_wal_failure(state, "acknowledging settlement", &error);
+    }
+}
+
+fn enqueue_persisted_settlement_retry(
+    state: &AppState,
+    job: SettlementRetryJob,
+) -> anyhow::Result<()> {
     state
         .metrics
         .settlement_retry_queue_depth
@@ -10003,12 +10780,14 @@ async fn run_settlement_retry_job(state: AppState, job: SettlementRetryJob) {
         match send_settlement_job_once(&state, &job).await {
             Ok(()) if attempts == 1 => {
                 debug!("{kind} callback delivered from queue edge_request_id={edge_request_id}");
+                acknowledge_settlement(&state, &job).await;
                 return;
             }
             Ok(()) => {
                 warn!(
                     "{kind} callback recovered after {attempts} queued attempts edge_request_id={edge_request_id}"
                 );
+                acknowledge_settlement(&state, &job).await;
                 return;
             }
             Err(err) => {
@@ -10017,6 +10796,7 @@ async fn run_settlement_retry_job(state: AppState, job: SettlementRetryJob) {
                         "{kind} callback rejected permanently edge_request_id={edge_request_id}: {}",
                         safe_edge_error(err)
                     );
+                    acknowledge_settlement(&state, &job).await;
                     return;
                 }
                 if attempts == 1 || attempts.is_multiple_of(10) {
@@ -10029,6 +10809,43 @@ async fn run_settlement_retry_job(state: AppState, job: SettlementRetryJob) {
         }
         tokio::time::sleep(delay).await;
         delay = delay.saturating_mul(2).min(SETTLEMENT_RETRY_MAX_DELAY);
+    }
+}
+
+async fn replay_settlement_wal(state: AppState) {
+    match state.settlement_wal.load().await {
+        Ok(jobs) => {
+            if !jobs.is_empty() {
+                info!("replaying {} durable settlement callbacks", jobs.len());
+            }
+            futures_util::stream::iter(jobs)
+                .for_each_concurrent(Some(SETTLEMENT_RETRY_CONCURRENCY), |job| {
+                    let replay_state = state.clone();
+                    async move {
+                        let _worker_guard = replay_state.metrics.begin_callback_work(false);
+                        run_settlement_retry_job(replay_state, job).await;
+                    }
+                })
+                .await;
+        }
+        Err(error) => {
+            handle_settlement_wal_failure(&state, "loading settlement replay", &error);
+        }
+    }
+}
+
+async fn run_settlement_wal_flusher(state: AppState) {
+    if !state.settlement_wal.enabled {
+        return;
+    }
+    let mut interval = tokio::time::interval(Duration::from_millis(5));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        if let Err(error) = state.settlement_wal.flush().await {
+            handle_settlement_wal_failure(&state, "flushing settlements", &error);
+            return;
+        }
     }
 }
 
@@ -10094,14 +10911,22 @@ async fn recover_previous_edge_leases(state: AppState) {
 
 async fn call_complete(state: &AppState, mut req: CompleteRequest) -> anyhow::Result<()> {
     stamp_complete_guard_sample(&mut req);
+    let job = SettlementRetryJob::Complete(Box::new(req.clone()));
+    if let Err(error) = state.settlement_wal.persist(&job).await {
+        handle_settlement_wal_failure(state, "persisting complete callback", &error);
+    }
     match send_settlement_once(state, "/internal/edge/openai/complete", &req).await {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            acknowledge_settlement(state, &job).await;
+            Ok(())
+        }
         Err(err) if settlement_error_is_permanent(&err) => {
             error!(
                 "complete callback rejected permanently edge_request_id={}: {}",
                 req.edge_request_id,
                 safe_edge_error(err)
             );
+            acknowledge_settlement(state, &job).await;
             Ok(())
         }
         Err(err) => {
@@ -10109,7 +10934,7 @@ async fn call_complete(state: &AppState, mut req: CompleteRequest) -> anyhow::Re
                 "complete callback failed; queued for retry edge_request_id={}: {err}",
                 req.edge_request_id
             );
-            enqueue_settlement_retry(state, SettlementRetryJob::Complete(Box::new(req)))
+            enqueue_persisted_settlement_retry(state, job)
         }
     }
 }
@@ -10125,14 +10950,22 @@ fn stamp_complete_guard_sample(req: &mut CompleteRequest) {
 }
 
 async fn call_abort(state: &AppState, req: AbortRequest) -> anyhow::Result<()> {
+    let job = SettlementRetryJob::Abort(req.clone());
+    if let Err(error) = state.settlement_wal.persist(&job).await {
+        handle_settlement_wal_failure(state, "persisting abort callback", &error);
+    }
     match send_settlement_once(state, "/internal/edge/openai/abort", &req).await {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            acknowledge_settlement(state, &job).await;
+            Ok(())
+        }
         Err(err) if settlement_error_is_permanent(&err) => {
             error!(
                 "abort callback rejected permanently edge_request_id={}: {}",
                 req.edge_request_id,
                 safe_edge_error(err)
             );
+            acknowledge_settlement(state, &job).await;
             Ok(())
         }
         Err(err) => {
@@ -10140,7 +10973,7 @@ async fn call_abort(state: &AppState, req: AbortRequest) -> anyhow::Result<()> {
                 "abort callback failed; queued for retry edge_request_id={}: {err}",
                 req.edge_request_id
             );
-            enqueue_settlement_retry(state, SettlementRetryJob::Abort(req))
+            enqueue_persisted_settlement_retry(state, job)
         }
     }
 }
@@ -11326,6 +12159,31 @@ impl EdgeConfig {
                 300,
             ),
             max_dynamic_warm_keys: env_usize("SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS", 4096),
+            local_data_plane_force_off: env_bool("SUB2API_EDGE_LOCAL_DATA_PLANE_FORCE_OFF", false),
+            local_control_poll_ms: env_u64("SUB2API_EDGE_LOCAL_CONTROL_POLL_MS", 5000)
+                .clamp(500, 60_000),
+            local_route_hint_ttl_secs: env_u64("SUB2API_EDGE_LOCAL_ROUTE_HINT_TTL_SECS", 15)
+                .clamp(1, 300),
+            local_route_hint_max_entries: env_usize(
+                "SUB2API_EDGE_LOCAL_ROUTE_HINT_MAX_ENTRIES",
+                65_536,
+            )
+            .clamp(128, 1_000_000),
+            settlement_wal_enabled: env_bool("SUB2API_EDGE_SETTLEMENT_WAL_ENABLED", true),
+            settlement_wal_dir: PathBuf::from(
+                env::var("SUB2API_EDGE_SETTLEMENT_WAL_DIR")
+                    .unwrap_or_else(|_| "data/edge-settlement-wal".to_string()),
+            ),
+            settlement_wal_compact_records: env_u64(
+                "SUB2API_EDGE_SETTLEMENT_WAL_COMPACT_RECORDS",
+                SETTLEMENT_WAL_COMPACT_RECORDS,
+            )
+            .clamp(1_000, 10_000_000),
+            settlement_wal_compact_bytes: env_u64(
+                "SUB2API_EDGE_SETTLEMENT_WAL_COMPACT_BYTES",
+                SETTLEMENT_WAL_COMPACT_BYTES,
+            )
+            .clamp(1024 * 1024, 4 * 1024 * 1024 * 1024),
         })
     }
 }
@@ -11431,6 +12289,301 @@ fn b64_value(byte: u8) -> anyhow::Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("sub2api-edge-{name}-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_local_data_plane(
+        force_off: bool,
+        durable_settlement_ready: bool,
+    ) -> LocalDataPlaneState {
+        LocalDataPlaneState {
+            ready: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
+            expires_at_unix_ms: AtomicU64::new(0),
+            force_off,
+            durable_settlement_ready: AtomicBool::new(durable_settlement_ready),
+            hint_ttl: Duration::from_secs(15),
+            max_hints: 16,
+            hints: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn test_prepare_request() -> PrepareRequest {
+        PrepareRequest {
+            edge_request_id: "edge-local-1".to_string(),
+            edge_node_id: Some("node-1".to_string()),
+            edge_instance_id: "instance-1".to_string(),
+            method: "POST".to_string(),
+            path: "/v1/responses".to_string(),
+            raw_query: None,
+            headers: HashMap::from([
+                (
+                    "Authorization".to_string(),
+                    "Bearer downstream-key".to_string(),
+                ),
+                ("session_id".to_string(), "conversation-1".to_string()),
+            ]),
+            body: serde_json::json!({"model": "gpt-5", "stream": true}),
+            body_raw_base64: None,
+            client_ip: None,
+            stream: Some(true),
+        }
+    }
+
+    fn test_abort_job(edge_request_id: &str) -> SettlementRetryJob {
+        SettlementRetryJob::Abort(AbortRequest {
+            edge_request_id: edge_request_id.to_string(),
+            lease_id: Some(format!("lease-{edge_request_id}")),
+            account_id: Some(7),
+            reason: "test".to_string(),
+            failure_class: "abort_failed".to_string(),
+            client_disconnected: false,
+            relay_attempted: true,
+            fallback_to_go: false,
+        })
+    }
+
+    #[test]
+    fn local_data_plane_requires_fresh_snapshot_and_durable_settlement() {
+        let snapshot = ControlSnapshot {
+            protocol_version: 2,
+            generation: 9,
+            enabled: true,
+            ready: true,
+            expires_at_unix_ms: unix_time_millis() as i64 + 60_000,
+        };
+        let state = test_local_data_plane(false, true);
+        state.apply_snapshot(&snapshot);
+        assert!(state.is_ready());
+        assert_eq!(state.generation.load(Ordering::Acquire), 9);
+
+        let force_off = test_local_data_plane(true, true);
+        force_off.apply_snapshot(&snapshot);
+        assert!(!force_off.is_ready());
+
+        let no_wal = test_local_data_plane(false, false);
+        no_wal.apply_snapshot(&snapshot);
+        assert!(!no_wal.is_ready());
+
+        state.apply_snapshot(&ControlSnapshot {
+            expires_at_unix_ms: unix_time_millis() as i64 - 1,
+            ..snapshot
+        });
+        assert!(!state.is_ready());
+        assert!(state.hints.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_route_hints_are_limited_to_http_api_key_streams() {
+        let state = test_local_data_plane(false, true);
+        state.apply_snapshot(&ControlSnapshot {
+            protocol_version: 2,
+            generation: 1,
+            enabled: true,
+            ready: true,
+            expires_at_unix_ms: unix_time_millis() as i64 + 60_000,
+        });
+        let request = test_prepare_request();
+        let api_key_plan: EdgePlan = serde_json::from_value(serde_json::json!({
+            "action": "relay",
+            "edge_request_id": "edge-local-1",
+            "account_id": 7,
+            "account_type": "apikey"
+        }))
+        .unwrap();
+        state.remember(&request, &api_key_plan);
+        assert_eq!(state.route_hint(&request), Some(7));
+
+        let mut other_session = test_prepare_request();
+        other_session
+            .headers
+            .insert("session_id".to_string(), "conversation-2".to_string());
+        assert_eq!(state.route_hint(&other_session), None);
+
+        let mut no_explicit_session = test_prepare_request();
+        no_explicit_session.headers.remove("session_id");
+        state.remember(&no_explicit_session, &api_key_plan);
+        assert_eq!(state.route_hint(&no_explicit_session), None);
+
+        let mut api_key_header = test_prepare_request();
+        api_key_header.headers.remove("Authorization");
+        api_key_header
+            .headers
+            .insert("x-api-key".to_string(), "downstream-key".to_string());
+        state.remember(&api_key_header, &api_key_plan);
+        assert_eq!(state.route_hint(&api_key_header), Some(7));
+
+        let mut body_session = test_prepare_request();
+        body_session.headers.remove("session_id");
+        body_session.body["conversation_id"] = Value::String("conversation-body".to_string());
+        state.remember(&body_session, &api_key_plan);
+        assert_eq!(state.route_hint(&body_session), Some(7));
+
+        let mut ws_request = test_prepare_request();
+        ws_request
+            .headers
+            .insert("Upgrade".to_string(), "websocket".to_string());
+        assert_eq!(state.route_hint(&ws_request), None);
+
+        let oauth_state = test_local_data_plane(false, true);
+        oauth_state.apply_snapshot(&ControlSnapshot {
+            protocol_version: 2,
+            generation: 1,
+            enabled: true,
+            ready: true,
+            expires_at_unix_ms: unix_time_millis() as i64 + 60_000,
+        });
+        let oauth_plan: EdgePlan = serde_json::from_value(serde_json::json!({
+            "action": "relay",
+            "edge_request_id": "edge-local-1",
+            "account_id": 8,
+            "account_type": "oauth"
+        }))
+        .unwrap();
+        oauth_state.remember(&request, &oauth_plan);
+        assert_eq!(oauth_state.route_hint(&request), None);
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_deduplicates_replays_and_acknowledges() {
+        let dir = TestDirectory::new("wal-replay");
+        let job = test_abort_job("edge-1");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        wal.append_record(SettlementWalRecord::Put {
+            key: SettlementWal::key(&job),
+            job: job.clone(),
+        })
+        .unwrap();
+        wal.append_record(SettlementWalRecord::Put {
+            key: SettlementWal::key(&job),
+            job: job.clone(),
+        })
+        .unwrap();
+        wal.flush().await.unwrap();
+        assert_eq!(wal.pending.load(Ordering::Acquire), 1);
+        drop(wal);
+
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        let jobs = replay.load().await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].edge_request_id(), "edge-1");
+        let (ack_result, flush_result) = tokio::join!(replay.acknowledge(&job), async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            replay.flush().await
+        });
+        ack_result.unwrap();
+        flush_result.unwrap();
+        drop(replay);
+
+        let empty = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        assert!(empty.load().await.unwrap().is_empty());
+        assert_eq!(empty.pending.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_repairs_incomplete_tail_before_appending() {
+        let dir = TestDirectory::new("wal-tail");
+        let first = test_abort_job("edge-first");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        wal.append_record(SettlementWalRecord::Put {
+            key: SettlementWal::key(&first),
+            job: first,
+        })
+        .unwrap();
+        wal.flush().await.unwrap();
+        drop(wal);
+        let log_path = dir.0.join("settlements.log");
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path)
+            .unwrap();
+        std::io::Write::write_all(&mut file, b"{\"op\":\"put\"").unwrap();
+        file.sync_data().unwrap();
+        drop(file);
+
+        let repaired = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        assert_eq!(repaired.load().await.unwrap().len(), 1);
+        let second = test_abort_job("edge-second");
+        repaired
+            .append_record(SettlementWalRecord::Put {
+                key: SettlementWal::key(&second),
+                job: second,
+            })
+            .unwrap();
+        repaired.flush().await.unwrap();
+        drop(repaired);
+
+        let replay = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        assert_eq!(replay.load().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_rejects_complete_corrupt_records() {
+        let dir = TestDirectory::new("wal-corrupt-record");
+        let log_path = dir.0.join("settlements.log");
+        std::fs::write(&log_path, b"not-json\n").unwrap();
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+
+        assert!(wal.load().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_compaction_keeps_only_pending_jobs() {
+        let dir = TestDirectory::new("wal-compact");
+        let first = test_abort_job("edge-first");
+        let second = test_abort_job("edge-second");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 3, u64::MAX).unwrap();
+        for job in [&first, &second] {
+            wal.append_record(SettlementWalRecord::Put {
+                key: SettlementWal::key(job),
+                job: job.clone(),
+            })
+            .unwrap();
+        }
+        wal.append_record(SettlementWalRecord::Ack {
+            key: SettlementWal::key(&first),
+        })
+        .unwrap();
+        wal.flush().await.unwrap();
+
+        let records = std::fs::read_to_string(dir.0.join("settlements.log")).unwrap();
+        assert_eq!(records.lines().count(), 1);
+        assert!(records.contains("edge-second"));
+        assert!(!records.contains("edge-first"));
+    }
+
+    #[tokio::test]
+    async fn settlement_wal_unhealthy_state_releases_flush_waiters() {
+        let dir = TestDirectory::new("wal-unhealthy");
+        let job = test_abort_job("edge-waiting");
+        let wal = SettlementWal::new_for_test(dir.0.clone(), 100, u64::MAX).unwrap();
+        let sequence = wal
+            .append_record(SettlementWalRecord::Put {
+                key: SettlementWal::key(&job),
+                job,
+            })
+            .unwrap();
+        wal.mark_unhealthy();
+
+        let result = tokio::time::timeout(Duration::from_millis(100), wal.wait_flushed(sequence))
+            .await
+            .expect("unhealthy WAL waiter should not hang");
+        assert!(result.is_err());
+    }
 
     #[test]
     fn request_header_bytes_counts_names_values_and_wire_overhead() {

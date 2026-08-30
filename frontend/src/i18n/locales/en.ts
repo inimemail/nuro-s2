@@ -6555,6 +6555,14 @@ export default {
         statusHint: 'Only applies before OpenAI response headers arrive; it does not limit an active stream.',
         timeoutRange: 'Response-header wait time must be a safe integer greater than or equal to 0.'
       },
+      gatewayEdgeLocalDataPlane: {
+        title: "OpenAI Rust Edge",
+        description: "Use the versioned Rust-local data plane for eligible OpenAI API-key HTTP/SSE requests. WebSocket, OAuth, and other platforms keep their existing paths.",
+        toggleLabel: "Rust local data plane",
+        enabled: "Enabled",
+        disabled: "Disabled",
+        safetyHint: "Traffic is accepted only when snapshots, leases, and settlement delivery are ready; stale state falls back before any upstream send.",
+      },
       gatewayEdgeProtection: {
         title: 'Edge Upstream Protection',
         description: 'Protect direct Edge upstream connections with connect, response-header, and body-idle budgets. It only affects the current request and never globally downgrades an account.',

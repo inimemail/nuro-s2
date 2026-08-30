@@ -2394,6 +2394,50 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityAndUserSlo
 	return s.SelectAccountWithSchedulerForCapabilityAndUserSlotOnPlatform(ctx, groupID, userID, userConcurrency, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requireCompact, PlatformOpenAI)
 }
 
+// SelectAccountWithSchedulerForCapabilityAndUserSlotAndStickyAccount treats a
+// data-plane account hint exactly like a prefetched sticky binding while still
+// running the complete scheduler, policy, rate, health, and concurrency gates.
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityAndUserSlotAndStickyAccount(
+	ctx context.Context,
+	groupID *int64,
+	userID int64,
+	userConcurrency int,
+	previousResponseID string,
+	sessionHash string,
+	stickyAccountID int64,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requireCompact bool,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	// The Rust hint is intentionally advisory. A newer Go sticky binding may
+	// already exist after an account switch; never let the short-lived Edge
+	// cache roll that authoritative binding back or clear it as stale.
+	if stickyAccountID > 0 && sessionHash != "" && s.cache != nil {
+		if currentAccountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil && currentAccountID > 0 {
+			stickyAccountID = currentAccountID
+		}
+	}
+	return s.selectAccountWithScheduler(
+		ctx,
+		groupID,
+		userID,
+		userConcurrency,
+		previousResponseID,
+		sessionHash,
+		stickyAccountID,
+		requestedModel,
+		excludedIDs,
+		requiredTransport,
+		requiredCapability,
+		"",
+		requireCompact,
+		PlatformOpenAI,
+		-1,
+	)
+}
+
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityAndUserSlotOnPlatform(
 	ctx context.Context,
 	groupID *int64,

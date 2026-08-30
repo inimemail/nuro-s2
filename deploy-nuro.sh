@@ -585,6 +585,15 @@ ensure_edge_env_values() {
     ensure_env_value "$env_file" SUB2API_EDGE_MAX_WS_IDLE_KEYS 1024
     ensure_env_value "$env_file" SUB2API_EDGE_WS_IDLE_TTL_SECS 300
     ensure_env_value "$env_file" SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS 4096
+    ensure_env_value "$env_file" SUB2API_EDGE_LOCAL_DATA_PLANE_FORCE_OFF false
+    ensure_env_value "$env_file" SUB2API_EDGE_LOCAL_CONTROL_POLL_MS 5000
+    ensure_env_value "$env_file" SUB2API_EDGE_LOCAL_ROUTE_HINT_TTL_SECS 15
+    ensure_env_value "$env_file" SUB2API_EDGE_LOCAL_ROUTE_HINT_MAX_ENTRIES 65536
+    ensure_env_value "$env_file" SUB2API_EDGE_SETTLEMENT_WAL_ENABLED true
+    ensure_env_value "$env_file" SUB2API_EDGE_SETTLEMENT_WAL_ROOT /app/data/edge-settlement-wal
+    ensure_env_value "$env_file" SUB2API_EDGE_SETTLEMENT_WAL_SLOTS 256
+    ensure_env_value "$env_file" SUB2API_EDGE_SETTLEMENT_WAL_COMPACT_RECORDS 100000
+    ensure_env_value "$env_file" SUB2API_EDGE_SETTLEMENT_WAL_COMPACT_BYTES 67108864
     if [[ "$(read_env_value "$env_file" SUB2API_EDGE_UPSTREAM_WARM_URL)" == "https://api.openai.com/v1/chat/completions" ]]; then
         set_env_value "$env_file" SUB2API_EDGE_UPSTREAM_WARM_URL ""
     fi
@@ -828,6 +837,15 @@ SUB2API_EDGE_WS_IDLE_PER_KEY=1
 SUB2API_EDGE_MAX_WS_IDLE_KEYS=1024
 SUB2API_EDGE_WS_IDLE_TTL_SECS=300
 SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS=4096
+SUB2API_EDGE_LOCAL_DATA_PLANE_FORCE_OFF=false
+SUB2API_EDGE_LOCAL_CONTROL_POLL_MS=5000
+SUB2API_EDGE_LOCAL_ROUTE_HINT_TTL_SECS=15
+SUB2API_EDGE_LOCAL_ROUTE_HINT_MAX_ENTRIES=65536
+SUB2API_EDGE_SETTLEMENT_WAL_ENABLED=true
+SUB2API_EDGE_SETTLEMENT_WAL_ROOT=/app/data/edge-settlement-wal
+SUB2API_EDGE_SETTLEMENT_WAL_SLOTS=256
+SUB2API_EDGE_SETTLEMENT_WAL_COMPACT_RECORDS=100000
+SUB2API_EDGE_SETTLEMENT_WAL_COMPACT_BYTES=67108864
 SUB2API_EDGE_UPSTREAM_WARM_URL=
 SUB2API_EDGE_UPSTREAM_WARM_INTERVAL_SECS=30
 SUB2API_EDGE_UPSTREAM_DYNAMIC_WARM_ACTIVE_SECS=300
@@ -1107,6 +1125,15 @@ services:
       - SUB2API_EDGE_MAX_WS_IDLE_KEYS=\${SUB2API_EDGE_MAX_WS_IDLE_KEYS:-1024}
       - SUB2API_EDGE_WS_IDLE_TTL_SECS=\${SUB2API_EDGE_WS_IDLE_TTL_SECS:-300}
       - SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS=\${SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS:-4096}
+      - SUB2API_EDGE_LOCAL_DATA_PLANE_FORCE_OFF=\${SUB2API_EDGE_LOCAL_DATA_PLANE_FORCE_OFF:-false}
+      - SUB2API_EDGE_LOCAL_CONTROL_POLL_MS=\${SUB2API_EDGE_LOCAL_CONTROL_POLL_MS:-5000}
+      - SUB2API_EDGE_LOCAL_ROUTE_HINT_TTL_SECS=\${SUB2API_EDGE_LOCAL_ROUTE_HINT_TTL_SECS:-15}
+      - SUB2API_EDGE_LOCAL_ROUTE_HINT_MAX_ENTRIES=\${SUB2API_EDGE_LOCAL_ROUTE_HINT_MAX_ENTRIES:-65536}
+      - SUB2API_EDGE_SETTLEMENT_WAL_ENABLED=\${SUB2API_EDGE_SETTLEMENT_WAL_ENABLED:-true}
+      - SUB2API_EDGE_SETTLEMENT_WAL_ROOT=\${SUB2API_EDGE_SETTLEMENT_WAL_ROOT:-/app/data/edge-settlement-wal}
+      - SUB2API_EDGE_SETTLEMENT_WAL_SLOTS=\${SUB2API_EDGE_SETTLEMENT_WAL_SLOTS:-256}
+      - SUB2API_EDGE_SETTLEMENT_WAL_COMPACT_RECORDS=\${SUB2API_EDGE_SETTLEMENT_WAL_COMPACT_RECORDS:-100000}
+      - SUB2API_EDGE_SETTLEMENT_WAL_COMPACT_BYTES=\${SUB2API_EDGE_SETTLEMENT_WAL_COMPACT_BYTES:-67108864}
       - SUB2API_EDGE_UPSTREAM_WARM_URL=\${SUB2API_EDGE_UPSTREAM_WARM_URL:-}
       - SUB2API_EDGE_UPSTREAM_WARM_INTERVAL_SECS=\${SUB2API_EDGE_UPSTREAM_WARM_INTERVAL_SECS:-30}
       - SUB2API_EDGE_UPSTREAM_DYNAMIC_WARM_ACTIVE_SECS=\${SUB2API_EDGE_UPSTREAM_DYNAMIC_WARM_ACTIVE_SECS:-300}
@@ -1449,7 +1476,7 @@ compose_up_with_edge_fallback() {
     local workdir="$1"
     local dc_cmd="$2"
     local env_file="${workdir}/.env"
-    local app_ids app_hostnames current_replicas min_replicas desired_replicas
+    local app_ids running_app_ids app_hostnames current_replicas min_replicas desired_replicas
     local max_replicas min_cpu_per_pair min_memory_mb_per_pair
     local host_cpus host_memory_mb cpu_limit memory_limit capacity_limit
 
@@ -1498,8 +1525,9 @@ compose_up_with_edge_fallback() {
     (( desired_replicas > 0 )) || desired_replicas="$min_replicas"
     DEPLOY_EXPECTED_APP_REPLICAS="$desired_replicas"
 
-    # Upgrade policy is intentionally fail-fast: the freshly built image is
-    # ready, so do not let long-lived streams delay replacement for minutes.
+    # Give the paired entrypoint its TERM/drain window before removing the old
+    # containers. `docker rm -f` bypasses that path and can cut active streams
+    # before Edge delivers or persists their final complete/abort callbacks.
     app_ids="$(docker ps -aq \
         --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
         --filter 'label=com.docker.compose.service=app')"
@@ -1509,7 +1537,15 @@ compose_up_with_edge_fallback() {
         # atomically reclaim the orphaned grants without waiting for node TTL.
         app_hostnames="$(docker inspect -f '{{.Config.Hostname}}' $app_ids 2>/dev/null || true)"
         # Intentional splitting is safe because Docker IDs are hexadecimal tokens.
-        docker rm -f $app_ids >/dev/null || die "无法删除旧 app 副本"
+        # The Compose stop grace is 45s; use the same bound here because this
+        # explicit replacement happens outside `docker compose stop`.
+        running_app_ids="$(docker ps -q \
+            --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+            --filter 'label=com.docker.compose.service=app')"
+        if [[ -n "$running_app_ids" ]]; then
+            docker stop --time 45 $running_app_ids >/dev/null || die "无法优雅停止旧 app 副本"
+        fi
+        docker rm $app_ids >/dev/null || die "无法删除旧 app 副本"
         revoke_removed_app_escrow_leases "$env_file" "$app_hostnames"
     fi
 

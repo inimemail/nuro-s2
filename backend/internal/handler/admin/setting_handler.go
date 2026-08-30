@@ -313,6 +313,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		GatewayEdgeResponseHeaderMaxAttempts:                  settings.GatewayEdgeResponseHeaderMaxAttempts,
 		GatewayEdgeResponseHeaderFailover:                     settings.GatewayEdgeResponseHeaderFailover,
 		GatewayEdgeExposeRetriedUsage:                         settings.GatewayEdgeExposeRetriedUsage,
+		GatewayEdgeLocalDataPlaneEnabled:                      settings.GatewayEdgeLocalDataPlaneEnabled,
 		GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: settings.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages,
 		GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  settings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled:       settings.OpenAIPoolDownstreamModelLimitProtectionEnabled,
@@ -697,6 +698,7 @@ type UpdateSettingsRequest struct {
 	GatewayEdgeResponseHeaderMaxAttempts                  int                                               `json:"gateway_edge_response_header_max_attempts"`
 	GatewayEdgeResponseHeaderFailover                     *bool                                             `json:"gateway_edge_response_header_failover"`
 	GatewayEdgeExposeRetriedUsage                         *bool                                             `json:"gateway_edge_expose_retried_usage"`
+	GatewayEdgeLocalDataPlaneEnabled                      *bool                                             `json:"gateway_edge_local_data_plane_enabled"`
 	GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_apikey_first_token_timeout_placeholder_stages"`
 	GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages  []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_oauth_first_token_timeout_placeholder_stages"`
 	OpenAIPoolDownstreamModelLimitProtectionEnabled       *bool                                             `json:"openai_pool_downstream_model_limit_protection_enabled"`
@@ -1021,6 +1023,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	edgeExposeRetriedUsage := previousSettings.GatewayEdgeExposeRetriedUsage
 	if req.GatewayEdgeExposeRetriedUsage != nil {
 		edgeExposeRetriedUsage = *req.GatewayEdgeExposeRetriedUsage
+	}
+	edgeLocalDataPlaneEnabled := previousSettings.GatewayEdgeLocalDataPlaneEnabled
+	if req.GatewayEdgeLocalDataPlaneEnabled != nil {
+		edgeLocalDataPlaneEnabled = *req.GatewayEdgeLocalDataPlaneEnabled
 	}
 	req.SMTPHost = strings.TrimSpace(req.SMTPHost)
 	req.SMTPUsername = strings.TrimSpace(req.SMTPUsername)
@@ -1988,6 +1994,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GatewayEdgeResponseHeaderMaxAttempts:                  req.GatewayEdgeResponseHeaderMaxAttempts,
 		GatewayEdgeResponseHeaderFailover:                     edgeResponseHeaderFailover,
 		GatewayEdgeExposeRetriedUsage:                         edgeExposeRetriedUsage,
+		GatewayEdgeLocalDataPlaneEnabled:                      edgeLocalDataPlaneEnabled,
 		GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: req.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages,
 		GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  req.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled: func() bool {
@@ -2666,6 +2673,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GatewayEdgeResponseHeaderMaxAttempts:                  updatedSettings.GatewayEdgeResponseHeaderMaxAttempts,
 		GatewayEdgeResponseHeaderFailover:                     updatedSettings.GatewayEdgeResponseHeaderFailover,
 		GatewayEdgeExposeRetriedUsage:                         updatedSettings.GatewayEdgeExposeRetriedUsage,
+		GatewayEdgeLocalDataPlaneEnabled:                      updatedSettings.GatewayEdgeLocalDataPlaneEnabled,
 		GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: updatedSettings.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages,
 		GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  updatedSettings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages,
 		OpenAIPoolDownstreamModelLimitProtectionEnabled:       updatedSettings.OpenAIPoolDownstreamModelLimitProtectionEnabled,
@@ -3206,6 +3214,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.GatewayEdgeExposeRetriedUsage != after.GatewayEdgeExposeRetriedUsage {
 		changed = append(changed, "gateway_edge_expose_retried_usage")
+	}
+	if before.GatewayEdgeLocalDataPlaneEnabled != after.GatewayEdgeLocalDataPlaneEnabled {
+		changed = append(changed, "gateway_edge_local_data_plane_enabled")
 	}
 	if before.OpenAIPoolDownstreamModelLimitProtectionEnabled != after.OpenAIPoolDownstreamModelLimitProtectionEnabled {
 		changed = append(changed, "openai_pool_downstream_model_limit_protection_enabled")

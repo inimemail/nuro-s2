@@ -6696,6 +6696,14 @@ export default {
         statusHint: '仅影响 OpenAI 上游响应头，不限制已开始的流式传输。',
         timeoutRange: '响应头等待时间必须是大于等于 0 的安全整数。'
       },
+      gatewayEdgeLocalDataPlane: {
+        title: "OpenAI Rust Edge",
+        description: "让符合条件的 OpenAI API Key HTTP/SSE 请求使用版本化 Rust 本地数据面；WebSocket、OAuth 和其他平台保持原路径。",
+        toggleLabel: "Rust 本地数据面",
+        enabled: "已开启",
+        disabled: "已关闭",
+        safetyHint: "仅在 Edge 快照、租约和结算队列均就绪时接管；未就绪或快照过期会在发送上游前自动回退。",
+      },
       gatewayEdgeProtection: {
         title: 'Edge 上游保护',
         description: '为 Edge 直连上游提供建连、响应头和流式 body 空闲保护；只影响当前请求，不会全局降权账号。',
