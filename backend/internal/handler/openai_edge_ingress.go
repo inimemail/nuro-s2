@@ -125,7 +125,7 @@ func (h *OpenAIGatewayHandler) tryOpenAIEdgeIngressProxy(c *gin.Context) bool {
 	// Commit the SSE headers immediately. This removes the extra Go-hop header
 	// delay for systemd deployments where public traffic enters on port 8080.
 	c.Writer.Flush()
-	copyOpenAIEdgeResponseBody(c.Writer, resp.Body, strings.HasSuffix(strings.TrimSuffix(c.Request.URL.Path, "/"), "/responses"))
+	copyOpenAIEdgeResponseBody(c, resp.Body, strings.HasSuffix(strings.TrimSuffix(c.Request.URL.Path, "/"), "/responses"))
 	return true
 }
 
@@ -251,7 +251,11 @@ func copyOpenAIEdgeResponseHeaders(dst, src http.Header) {
 	}
 }
 
-func copyOpenAIEdgeResponseBody(dst gin.ResponseWriter, src io.Reader, responsesDialect bool) {
+func copyOpenAIEdgeResponseBody(c *gin.Context, src io.Reader, responsesDialect bool) {
+	if c == nil {
+		return
+	}
+	dst := c.Writer
 	buf := make([]byte, 32*1024)
 	const terminalScanTail = 128
 	var tail []byte
@@ -291,7 +295,7 @@ func copyOpenAIEdgeResponseBody(dst gin.ResponseWriter, src io.Reader, responses
 		if readErr != nil {
 			if !terminalSeen {
 				if responsesDialect {
-					_, _ = dst.Write([]byte("data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}}\n\n"))
+					_ = writeResponsesFailedSSE(c, "server_error", "Upstream request failed")
 				} else {
 					_, _ = dst.Write([]byte("data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}\n\ndata: [DONE]\n\n"))
 				}

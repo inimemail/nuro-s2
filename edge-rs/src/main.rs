@@ -61,6 +61,7 @@ const SSE_STRING_IDLE_MAX_CAPACITY: usize = 64 * 1024;
 const MAX_UPSTREAM_ERROR_BODY_BYTES: usize = 1024 * 1024;
 const MAX_SSE_LINE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EDGE_STREAM_FAILURE_PAYLOAD_BYTES: usize = 64 * 1024;
+const SSE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const RETRY_COMMIT_NONE: &str = "none";
 const RETRY_COMMIT_GATEWAY_ONLY: &str = "gateway_only";
 const RETRY_COMMIT_REAL_OUTPUT: &str = "real_output";
@@ -6587,10 +6588,13 @@ async fn relay_upstream_direct_core_impl(
         let mut first_token_timeout_timer = first_token_timeout_deadline
             .map(|deadline| Box::pin(tokio::time::sleep_until(deadline)));
         let mut semantic_progress_timer = semantic_progress_timeout.map(tokio::time::sleep).map(Box::pin);
+        let mut heartbeat_timer = Some(Box::pin(tokio::time::sleep(SSE_HEARTBEAT_INTERVAL)));
+        let mut body_idle_timer = edge_body_idle_timeout.map(tokio::time::sleep).map(Box::pin);
         let mut semantic_stall_failover_used = false;
 
         enum RelaySelectEvent {
             BootstrapComment,
+            Heartbeat,
             FirstTokenTimeoutPlaceholder,
             Upstream(Option<Result<Bytes, reqwest::Error>>),
             BodyIdleTimeout,
@@ -6598,7 +6602,12 @@ async fn relay_upstream_direct_core_impl(
         }
 
         'relay: loop {
-            let event = if bootstrap_timer.is_some() || first_token_timeout_timer.is_some() || semantic_progress_timer.is_some() {
+            let event = if bootstrap_timer.is_some()
+                || first_token_timeout_timer.is_some()
+                || semantic_progress_timer.is_some()
+                || heartbeat_timer.as_ref().is_some()
+                || body_idle_timer.is_some()
+            {
                 tokio::select! {
                     _ = wait_optional_sleep(&mut bootstrap_timer), if !bootstrap_comment_sent => {
                         RelaySelectEvent::BootstrapComment
@@ -6609,26 +6618,18 @@ async fn relay_upstream_direct_core_impl(
                     _ = wait_optional_sleep(&mut semantic_progress_timer) => {
                         RelaySelectEvent::SemanticProgressTimeout
                     }
+                    _ = wait_optional_sleep(&mut heartbeat_timer) => {
+                        RelaySelectEvent::Heartbeat
+                    }
+                    _ = wait_optional_sleep(&mut body_idle_timer) => {
+                        RelaySelectEvent::BodyIdleTimeout
+                    }
                     next = async {
-                        if let Some(idle_timeout) = edge_body_idle_timeout {
-                            match tokio::time::timeout(idle_timeout, bytes_stream.next()).await {
-                                Ok(next) => RelaySelectEvent::Upstream(next),
-                                Err(_) => RelaySelectEvent::BodyIdleTimeout,
-                            }
-                        } else {
-                            RelaySelectEvent::Upstream(bytes_stream.next().await)
-                        }
+                        RelaySelectEvent::Upstream(bytes_stream.next().await)
                     } => next,
                 }
             } else {
-                if let Some(idle_timeout) = edge_body_idle_timeout {
-                    match tokio::time::timeout(idle_timeout, bytes_stream.next()).await {
-                        Ok(next) => RelaySelectEvent::Upstream(next),
-                        Err(_) => RelaySelectEvent::BodyIdleTimeout,
-                    }
-                } else {
-                    RelaySelectEvent::Upstream(bytes_stream.next().await)
-                }
+                RelaySelectEvent::Upstream(bytes_stream.next().await)
             };
             let next = match event {
                 RelaySelectEvent::BootstrapComment => {
@@ -6638,6 +6639,31 @@ async fn relay_upstream_direct_core_impl(
                     gateway_only_output_committed = true;
                     bootstrap_comment_sent = true;
                     bootstrap_timer = None;
+                    guard.update_stream_snapshot(
+                        &summary,
+                        success,
+                        error_message.clone(),
+                        Some(upstream_header_ms),
+                        first_byte_ms,
+                        first_token_ms,
+                        real_first_token_ms,
+                        first_flush_ms,
+                        Some(status.as_u16()),
+                        false,
+                    );
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b":\n\n"));
+                    continue;
+                }
+                RelaySelectEvent::Heartbeat => {
+                    if let Some(timer) = heartbeat_timer.as_mut() {
+                        timer
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + SSE_HEARTBEAT_INTERVAL);
+                    }
+                    if first_flush_ms.is_none() {
+                        first_flush_ms = Some(started_at.elapsed().as_millis() as i64);
+                    }
+                    gateway_only_output_committed = true;
                     guard.update_stream_snapshot(
                         &summary,
                         success,
@@ -6744,6 +6770,13 @@ async fn relay_upstream_direct_core_impl(
                             let next_request_id = next_upstream.headers().get("x-request-id")
                                 .and_then(|value| value.to_str().ok()).map(ToOwned::to_owned);
                             bytes_stream = next_upstream.bytes_stream();
+                            if let (Some(idle_timer), Some(idle_timeout)) =
+                                (body_idle_timer.as_mut(), edge_body_idle_timeout)
+                            {
+                                idle_timer
+                                    .as_mut()
+                                    .reset(tokio::time::Instant::now() + idle_timeout);
+                            }
                             upstream_client_guard = next_guard;
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
@@ -6807,7 +6840,16 @@ async fn relay_upstream_direct_core_impl(
                     );
                     break;
                 }
-                RelaySelectEvent::Upstream(next) => next,
+                RelaySelectEvent::Upstream(next) => {
+                    if let (Some(idle_timer), Some(idle_timeout)) =
+                        (body_idle_timer.as_mut(), edge_body_idle_timeout)
+                    {
+                        idle_timer
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + idle_timeout);
+                    }
+                    next
+                }
             };
             let next = next.or_else(|| event_parser.finish_frame().map(Ok));
             let Some(next) = next else {
@@ -6856,6 +6898,13 @@ async fn relay_upstream_direct_core_impl(
                             .and_then(|value| value.to_str().ok())
                             .map(ToOwned::to_owned);
                         bytes_stream = next_upstream.bytes_stream();
+                        if let (Some(idle_timer), Some(idle_timeout)) =
+                            (body_idle_timer.as_mut(), edge_body_idle_timeout)
+                        {
+                            idle_timer
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + idle_timeout);
+                        }
                         upstream_client_guard = next_guard;
                         summary = ChatStreamSummary::with_pending(
                             complete_state.pools.take_sse_string(),
@@ -6983,6 +7032,13 @@ async fn relay_upstream_direct_core_impl(
                                     .and_then(|value| value.to_str().ok())
                                     .map(ToOwned::to_owned);
                                 bytes_stream = next_upstream.bytes_stream();
+                                if let (Some(idle_timer), Some(idle_timeout)) =
+                                    (body_idle_timer.as_mut(), edge_body_idle_timeout)
+                                {
+                                    idle_timer
+                                        .as_mut()
+                                        .reset(tokio::time::Instant::now() + idle_timeout);
+                                }
                                 upstream_client_guard = next_guard;
                                 summary = ChatStreamSummary::with_pending(
                                     complete_state.pools.take_sse_string(),
@@ -7284,6 +7340,13 @@ async fn relay_upstream_direct_core_impl(
                             let next_request_id = next_upstream.headers().get("x-request-id")
                                 .and_then(|value| value.to_str().ok()).map(ToOwned::to_owned);
                             bytes_stream = next_upstream.bytes_stream();
+                            if let (Some(idle_timer), Some(idle_timeout)) =
+                                (body_idle_timer.as_mut(), edge_body_idle_timeout)
+                            {
+                                idle_timer
+                                    .as_mut()
+                                    .reset(tokio::time::Instant::now() + idle_timeout);
+                            }
                             upstream_client_guard = next_guard;
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;

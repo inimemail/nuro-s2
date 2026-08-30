@@ -95,12 +95,17 @@ func TestCopyOpenAIEdgeResponseBodySynthesizesTerminalOnUnexpectedEOF(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
-			copyOpenAIEdgeResponseBody(c.Writer, io.LimitReader(strings.NewReader(`data: {"type":"response.created"}
+			copyOpenAIEdgeResponseBody(c, io.LimitReader(strings.NewReader(`data: {"type":"response.created"}
 
 `), 1024), tc.responses)
 			body := recorder.Body.String()
 			if tc.responses {
 				require.Contains(t, body, tc.want)
+				require.Contains(t, body, "event: response.failed\n")
+				require.Equal(t, 1, strings.Count(body, "event: response.failed\n"))
+				require.Contains(t, body, `"object":"response"`)
+				require.Contains(t, body, `"output":[]`)
+				require.Contains(t, body, `"code":"server_error"`)
 			} else {
 				require.Contains(t, body, tc.want)
 			}
@@ -114,7 +119,7 @@ func TestCopyOpenAIEdgeResponseBodySynthesizesTerminalOnUnexpectedEOF(t *testing
 func TestCopyOpenAIEdgeResponseBodyDoesNotDuplicateTerminal(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	copyOpenAIEdgeResponseBody(c.Writer, strings.NewReader(`data: {"type":"response.completed"}
+	copyOpenAIEdgeResponseBody(c, strings.NewReader(`data: {"type":"response.completed"}
 
 `), true)
 	body := recorder.Body.String()
