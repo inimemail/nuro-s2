@@ -1964,6 +1964,17 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 			ErrorMessage: "Upstream request failed",
 		}
 	}
+	// A semantic-progress timeout is a request-local heuristic, not an
+	// upstream execution failure. The request body has already been sent by
+	// edge-rs, so replaying it on another account could charge the provider
+	// twice. Keep the current stream alive and let edge-rs disable this timer;
+	// the independent body-idle protection remains the final hang guard.
+	if edgeSemanticProgressTimeout {
+		return service.OpenAIEdgeRetryDecision{
+			Action: service.OpenAIEdgeActionKeepCurrent,
+			Reason: "semantic_keep_current",
+		}
+	}
 	if strings.TrimSpace(req.ErrorType) == "edge_queue_wait_timeout" {
 		return h.openAIEdgeRetrySwitchAccount(c, lease, req, "queue_wait_timeout")
 	}

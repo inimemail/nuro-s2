@@ -6763,7 +6763,12 @@ async fn relay_upstream_direct_core_impl(
                             &mut retry_budget,
                         ).await;
                         current_edge_retry_count = retry.retry_count;
-                        if semantic_timeout && retry.keep_current {
+                        // Keeping a semantically stalled stream alive is safe
+                        // only when an independent body-idle guard exists.
+                        // With Edge protection disabled there is no final
+                        // timeout, so retain the terminal-failure fallback
+                        // instead of allowing an unbounded hung request.
+                        if semantic_timeout && retry.keep_current && edge_body_idle_timeout.is_some() {
                             semantic_progress_timer = None;
                             semantic_sample_complete = true;
                             continue 'relay;

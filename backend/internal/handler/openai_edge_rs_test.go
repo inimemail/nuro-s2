@@ -1310,6 +1310,27 @@ func TestOpenAIEdgeRetryRejectsSecondSemanticFailover(t *testing.T) {
 	require.Equal(t, http.StatusGatewayTimeout, decision.StatusCode)
 }
 
+func TestOpenAIEdgeRetryFirstSemanticTimeoutKeepsCurrent(t *testing.T) {
+	account := &service.Account{ID: 1001, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	h := &OpenAIGatewayHandler{openAIEdgeLeases: map[string]*openAIEdgeLease{
+		"lease-1": {
+			leaseID: "lease-1",
+			account: account,
+		},
+	}}
+	c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+
+	decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+		LeaseID:      "lease-1",
+		AccountID:    account.ID,
+		ErrorType:    "edge_semantic_progress_timeout",
+		ErrorMessage: "upstream semantic progress timeout",
+	})
+
+	require.Equal(t, service.OpenAIEdgeActionKeepCurrent, decision.Action)
+	require.Equal(t, "semantic_keep_current", decision.Reason)
+}
+
 func TestOpenAIEdgeRetrySecondSemanticFailoverKeepsCurrentForStagedEdge(t *testing.T) {
 	account := &service.Account{ID: 1001, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
 	h := &OpenAIGatewayHandler{openAIEdgeLeases: map[string]*openAIEdgeLease{
