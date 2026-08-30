@@ -12,23 +12,33 @@ import (
 var process = newProcessState()
 
 type processState struct {
-	startedAt                time.Time
-	draining                 atomic.Bool
-	activeRequests           atomic.Int64
-	totalRequests            atomic.Uint64
-	rejectedDraining         atomic.Uint64
-	serverErrors             atomic.Uint64
-	durationMicros           atomic.Uint64
-	admissionClaims          atomic.Uint64
-	admissionErrors          atomic.Uint64
-	admissionMicros          atomic.Uint64
-	admissionBuckets         [8]atomic.Uint64
-	preemptionStarted        atomic.Uint64
-	preemptionExhausted      atomic.Uint64
-	edgeContinuationCreated  atomic.Uint64
-	edgeContinuationConsumed atomic.Uint64
-	edgeContinuationExpired  atomic.Uint64
-	edgeContinuationMissing  atomic.Uint64
+	startedAt                 time.Time
+	draining                  atomic.Bool
+	activeRequests            atomic.Int64
+	totalRequests             atomic.Uint64
+	rejectedDraining          atomic.Uint64
+	serverErrors              atomic.Uint64
+	durationMicros            atomic.Uint64
+	admissionClaims           atomic.Uint64
+	admissionErrors           atomic.Uint64
+	admissionMicros           atomic.Uint64
+	admissionBuckets          [8]atomic.Uint64
+	preemptionStarted         atomic.Uint64
+	preemptionExhausted       atomic.Uint64
+	edgeContinuationCreated   atomic.Uint64
+	edgeContinuationConsumed  atomic.Uint64
+	edgeContinuationExpired   atomic.Uint64
+	edgeContinuationMissing   atomic.Uint64
+	edgePrepareCacheHits      atomic.Uint64
+	edgePrepareCacheMisses    atomic.Uint64
+	edgePrepareCacheEvictions atomic.Uint64
+	freshLoadRequests         atomic.Uint64
+	freshLoadShared           atomic.Uint64
+	freshLoadErrors           atomic.Uint64
+	freshLoadMicros           atomic.Uint64
+	schedulerSnapshotHits     atomic.Uint64
+	schedulerSnapshotMisses   atomic.Uint64
+	schedulerDBFallbacks      atomic.Uint64
 }
 
 func newProcessState() *processState {
@@ -36,43 +46,63 @@ func newProcessState() *processState {
 }
 
 type Snapshot struct {
-	StartedAt                time.Time
-	Draining                 bool
-	ActiveRequests           int64
-	TotalRequests            uint64
-	RejectedDraining         uint64
-	ServerErrors             uint64
-	DurationMicros           uint64
-	AdmissionClaims          uint64
-	AdmissionErrors          uint64
-	AdmissionMicros          uint64
-	AdmissionBuckets         [8]uint64
-	PreemptionStarted        uint64
-	PreemptionExhausted      uint64
-	EdgeContinuationCreated  uint64
-	EdgeContinuationConsumed uint64
-	EdgeContinuationExpired  uint64
-	EdgeContinuationMissing  uint64
+	StartedAt                 time.Time
+	Draining                  bool
+	ActiveRequests            int64
+	TotalRequests             uint64
+	RejectedDraining          uint64
+	ServerErrors              uint64
+	DurationMicros            uint64
+	AdmissionClaims           uint64
+	AdmissionErrors           uint64
+	AdmissionMicros           uint64
+	AdmissionBuckets          [8]uint64
+	PreemptionStarted         uint64
+	PreemptionExhausted       uint64
+	EdgeContinuationCreated   uint64
+	EdgeContinuationConsumed  uint64
+	EdgeContinuationExpired   uint64
+	EdgeContinuationMissing   uint64
+	EdgePrepareCacheHits      uint64
+	EdgePrepareCacheMisses    uint64
+	EdgePrepareCacheEvictions uint64
+	FreshLoadRequests         uint64
+	FreshLoadShared           uint64
+	FreshLoadErrors           uint64
+	FreshLoadMicros           uint64
+	SchedulerSnapshotHits     uint64
+	SchedulerSnapshotMisses   uint64
+	SchedulerDBFallbacks      uint64
 }
 
 func Current() Snapshot {
 	snapshot := Snapshot{
-		StartedAt:                process.startedAt,
-		Draining:                 process.draining.Load(),
-		ActiveRequests:           process.activeRequests.Load(),
-		TotalRequests:            process.totalRequests.Load(),
-		RejectedDraining:         process.rejectedDraining.Load(),
-		ServerErrors:             process.serverErrors.Load(),
-		DurationMicros:           process.durationMicros.Load(),
-		AdmissionClaims:          process.admissionClaims.Load(),
-		AdmissionErrors:          process.admissionErrors.Load(),
-		AdmissionMicros:          process.admissionMicros.Load(),
-		PreemptionStarted:        process.preemptionStarted.Load(),
-		PreemptionExhausted:      process.preemptionExhausted.Load(),
-		EdgeContinuationCreated:  process.edgeContinuationCreated.Load(),
-		EdgeContinuationConsumed: process.edgeContinuationConsumed.Load(),
-		EdgeContinuationExpired:  process.edgeContinuationExpired.Load(),
-		EdgeContinuationMissing:  process.edgeContinuationMissing.Load(),
+		StartedAt:                 process.startedAt,
+		Draining:                  process.draining.Load(),
+		ActiveRequests:            process.activeRequests.Load(),
+		TotalRequests:             process.totalRequests.Load(),
+		RejectedDraining:          process.rejectedDraining.Load(),
+		ServerErrors:              process.serverErrors.Load(),
+		DurationMicros:            process.durationMicros.Load(),
+		AdmissionClaims:           process.admissionClaims.Load(),
+		AdmissionErrors:           process.admissionErrors.Load(),
+		AdmissionMicros:           process.admissionMicros.Load(),
+		PreemptionStarted:         process.preemptionStarted.Load(),
+		PreemptionExhausted:       process.preemptionExhausted.Load(),
+		EdgeContinuationCreated:   process.edgeContinuationCreated.Load(),
+		EdgeContinuationConsumed:  process.edgeContinuationConsumed.Load(),
+		EdgeContinuationExpired:   process.edgeContinuationExpired.Load(),
+		EdgeContinuationMissing:   process.edgeContinuationMissing.Load(),
+		EdgePrepareCacheHits:      process.edgePrepareCacheHits.Load(),
+		EdgePrepareCacheMisses:    process.edgePrepareCacheMisses.Load(),
+		EdgePrepareCacheEvictions: process.edgePrepareCacheEvictions.Load(),
+		FreshLoadRequests:         process.freshLoadRequests.Load(),
+		FreshLoadShared:           process.freshLoadShared.Load(),
+		FreshLoadErrors:           process.freshLoadErrors.Load(),
+		FreshLoadMicros:           process.freshLoadMicros.Load(),
+		SchedulerSnapshotHits:     process.schedulerSnapshotHits.Load(),
+		SchedulerSnapshotMisses:   process.schedulerSnapshotMisses.Load(),
+		SchedulerDBFallbacks:      process.schedulerDBFallbacks.Load(),
 	}
 	for i := range snapshot.AdmissionBuckets {
 		snapshot.AdmissionBuckets[i] = process.admissionBuckets[i].Load()
@@ -86,6 +116,25 @@ func ObserveEdgeContinuationCreated()  { process.edgeContinuationCreated.Add(1) 
 func ObserveEdgeContinuationConsumed() { process.edgeContinuationConsumed.Add(1) }
 func ObserveEdgeContinuationExpired()  { process.edgeContinuationExpired.Add(1) }
 func ObserveEdgeContinuationMissing()  { process.edgeContinuationMissing.Add(1) }
+
+func ObserveEdgePrepareCacheHit()      { process.edgePrepareCacheHits.Add(1) }
+func ObserveEdgePrepareCacheMiss()     { process.edgePrepareCacheMisses.Add(1) }
+func ObserveEdgePrepareCacheEviction() { process.edgePrepareCacheEvictions.Add(1) }
+
+func ObserveFreshLoad(shared bool, duration time.Duration, err error) {
+	process.freshLoadRequests.Add(1)
+	if shared {
+		process.freshLoadShared.Add(1)
+	}
+	if err != nil {
+		process.freshLoadErrors.Add(1)
+	}
+	process.freshLoadMicros.Add(uint64(max(duration.Microseconds(), 0)))
+}
+
+func ObserveSchedulerSnapshotHit()  { process.schedulerSnapshotHits.Add(1) }
+func ObserveSchedulerSnapshotMiss() { process.schedulerSnapshotMisses.Add(1) }
+func ObserveSchedulerDBFallback()   { process.schedulerDBFallbacks.Add(1) }
 
 func ObserveAdmissionClaim(duration time.Duration, err error) {
 	process.admissionClaims.Add(1)

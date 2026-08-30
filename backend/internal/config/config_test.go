@@ -95,6 +95,12 @@ func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	if cfg.Gateway.Scheduling.LoadBatchCacheTTLMS != 200 {
 		t.Fatalf("LoadBatchCacheTTLMS = %d, want 200", cfg.Gateway.Scheduling.LoadBatchCacheTTLMS)
 	}
+	if !cfg.Gateway.Scheduling.FreshLoadSingleflightEnabled {
+		t.Fatalf("FreshLoadSingleflightEnabled = false, want true")
+	}
+	if !cfg.Gateway.Scheduling.SnapshotTargetedInvalidationEnabled {
+		t.Fatalf("SnapshotTargetedInvalidationEnabled = false, want true")
+	}
 	if cfg.Gateway.Scheduling.SlotCleanupInterval != 30*time.Second {
 		t.Fatalf("SlotCleanupInterval = %v, want 30s", cfg.Gateway.Scheduling.SlotCleanupInterval)
 	}

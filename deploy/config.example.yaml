@@ -609,6 +609,14 @@ gateway:
     local_snapshot_enabled: false
     local_snapshot_ttl_ms: 500
     local_snapshot_max_keys: 4096
+    # Coalesce concurrent uncached load reads with the exact same account batch.
+    # Does not populate the normal short-TTL cache or change slot semantics.
+    # 合并完全相同的并发实时负载读取；不写入普通短缓存，也不改变槽位语义。
+    fresh_load_singleflight_enabled: true
+    # Invalidate only buckets indexed to runtime-only account changes; falls
+    # back to a full clear if the reverse index is incomplete.
+    # 运行态账号变更优先定向失效；索引不完整时自动回退全量清空。
+    snapshot_targeted_invalidation_enabled: true
     # Scheduler snapshot event bus. Runtime-clear events always use Redis so
     # manual recovery remains consistent across application replicas.
     # 调度快照事件总线。运行态清理始终使用 Redis，确保手动恢复可清理所有应用副本。

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,6 +38,9 @@ type stubConcurrencyCacheForTest struct {
 	releasedUserIDs    []int64
 	releasedUserReqIDs []string
 	loadBatchCalls     atomic.Int64
+	loadBatchStarted   chan struct{}
+	loadBatchRelease   <-chan struct{}
+	loadBatchStartOnce sync.Once
 }
 
 var _ ConcurrencyCache = (*stubConcurrencyCacheForTest)(nil)
@@ -90,6 +94,12 @@ func (c *stubConcurrencyCacheForTest) DecrementWaitCount(_ context.Context, _ in
 }
 func (c *stubConcurrencyCacheForTest) GetAccountsLoadBatch(_ context.Context, _ []AccountWithConcurrency) (map[int64]*AccountLoadInfo, error) {
 	c.loadBatchCalls.Add(1)
+	if c.loadBatchStarted != nil {
+		c.loadBatchStartOnce.Do(func() { close(c.loadBatchStarted) })
+	}
+	if c.loadBatchRelease != nil {
+		<-c.loadBatchRelease
+	}
 	return c.loadBatch, c.loadBatchErr
 }
 func (c *stubConcurrencyCacheForTest) GetUsersLoadBatch(_ context.Context, _ []UserWithConcurrency) (map[int64]*UserLoadInfo, error) {
@@ -511,6 +521,49 @@ func TestGetAccountsLoadBatchFresh_BypassesShortTTLCache(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 4, fresh[int64(1)].CurrentConcurrency)
 	require.Equal(t, int64(2), cache.loadBatchCalls.Load())
+}
+
+func TestGetAccountsLoadBatchFresh_CoalescesConcurrentReads(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	cache := &stubConcurrencyCacheForTest{
+		loadBatch:        map[int64]*AccountLoadInfo{1: {AccountID: 1, CurrentConcurrency: 2}},
+		loadBatchStarted: started,
+		loadBatchRelease: release,
+	}
+	svc := NewConcurrencyService(cache)
+	accounts := []AccountWithConcurrency{{ID: 1, MaxConcurrency: 5}}
+
+	// Start one request first and keep its backend read blocked. The second
+	// request is then guaranteed to join the in-flight singleflight call rather
+	// than racing with its completion.
+	const callers = 2
+	results := make(chan error, callers)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err := svc.GetAccountsLoadBatchFresh(context.Background(), accounts)
+		results <- err
+	}()
+	<-started
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err := svc.GetAccountsLoadBatchFresh(context.Background(), accounts)
+		results <- err
+	}()
+	// Give the joining caller a scheduling window before allowing the leader
+	// to finish; without this, the test can accidentally measure two sequential
+	// reads instead of one shared read.
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	close(results)
+	for err := range results {
+		require.NoError(t, err)
+	}
+	require.Equal(t, int64(1), cache.loadBatchCalls.Load())
 }
 
 func TestIncrementWaitCount_Success(t *testing.T) {

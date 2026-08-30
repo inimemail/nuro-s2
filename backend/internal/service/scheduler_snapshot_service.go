@@ -13,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/runtimeops"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -532,6 +533,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 
 	fallbackCtx, cancel := s.withFallbackTimeout(ctx)
 	defer cancel()
+	runtimeops.ObserveSchedulerDBFallback()
 
 	accounts, err := s.loadAccountsFromDB(fallbackCtx, bucket, useMixed)
 	if err != nil {

@@ -31,6 +31,24 @@ func newOpenAIEdgeTestContext(method, path, body, secret string) (*gin.Context, 
 	return c, w
 }
 
+func TestOpenAIEdgePrepareCache_BoundedEvictionPreservesRecentEntries(t *testing.T) {
+	now := time.Now()
+	cache := newOpenAIEdgePrepareCache(time.Minute, 2)
+	require.NotNil(t, cache)
+	cache.setChannelMapping("a", service.ChannelMappingResult{MappedModel: "a"}, now)
+	cache.setChannelMapping("b", service.ChannelMappingResult{MappedModel: "b"}, now)
+	cache.setChannelMapping("c", service.ChannelMappingResult{MappedModel: "c"}, now)
+
+	_, hitA := cache.getChannelMapping("a", now.Add(time.Second))
+	gotB, hitB := cache.getChannelMapping("b", now.Add(time.Second))
+	gotC, hitC := cache.getChannelMapping("c", now.Add(time.Second))
+	require.False(t, hitA)
+	require.True(t, hitB)
+	require.True(t, hitC)
+	require.Equal(t, "b", gotB.MappedModel)
+	require.Equal(t, "c", gotC.MappedModel)
+}
+
 func newOpenAIEdgeRetryWSTestService() *service.OpenAIGatewayService {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.Enabled = true

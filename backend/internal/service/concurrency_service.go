@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/runtimeops"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -354,6 +355,8 @@ type ConcurrencyService struct {
 	accountLoadCacheMu  sync.RWMutex
 	accountLoadCache    map[string]cachedAccountLoadBatch
 	accountLoadGroup    singleflight.Group
+	freshLoadGroup      singleflight.Group
+	freshLoadEnabled    atomic.Bool
 
 	staleProcessCleanupMu    sync.Mutex
 	staleProcessCleanupDone  atomic.Bool
@@ -392,6 +395,7 @@ func NewConcurrencyService(cache ConcurrencyCache) *ConcurrencyService {
 		renewInterval:    5 * time.Minute,
 	}
 	svc.SetAccountLoadBatchCacheTTL(defaultAccountLoadBatchCacheTTL)
+	svc.freshLoadEnabled.Store(true)
 	if _, ok := cache.(ConcurrencySlotRefresher); ok {
 		svc.renewDone = make(chan struct{})
 		if provider, ok := cache.(ConcurrencySlotTTLProvider); ok {
@@ -408,6 +412,16 @@ func NewConcurrencyService(cache ConcurrencyCache) *ConcurrencyService {
 		go svc.runSlotRenewalLoop()
 	}
 	return svc
+}
+
+// SetFreshLoadSingleflightEnabled controls only coalescing of concurrent
+// uncached load reads. It never enables stale caching and does not affect slot
+// acquisition or release semantics.
+func (s *ConcurrencyService) SetFreshLoadSingleflightEnabled(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.freshLoadEnabled.Store(enabled)
 }
 
 func (s *ConcurrencyService) registerSlotRenewal(key, kind string, entityID int64, requestID string) {
@@ -1094,6 +1108,9 @@ func (s *ConcurrencyService) GetAccountsLoadBatchFresh(ctx context.Context, acco
 }
 
 func (s *ConcurrencyService) getAccountsLoadBatch(ctx context.Context, accounts []AccountWithConcurrency, allowCache bool) (map[int64]*AccountLoadInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if len(accounts) == 0 {
 		return map[int64]*AccountLoadInfo{}, nil
 	}
@@ -1103,6 +1120,30 @@ func (s *ConcurrencyService) getAccountsLoadBatch(ctx context.Context, accounts 
 
 	ttl := time.Duration(s.accountLoadCacheTTL.Load())
 	if !allowCache || ttl <= 0 {
+		if !allowCache && s.freshLoadEnabled.Load() {
+			started := time.Now()
+			key := accountLoadBatchCacheKey(accounts)
+			resultCh := s.freshLoadGroup.DoChan(key, func() (any, error) {
+				return s.fetchAccountsLoadBatch(ctx, accounts)
+			})
+			select {
+			case result := <-resultCh:
+				runtimeops.ObserveFreshLoad(result.Shared, time.Since(started), result.Err)
+				if result.Err != nil {
+					return nil, result.Err
+				}
+				loadMap, _ := result.Val.(map[int64]*AccountLoadInfo)
+				if loadMap == nil {
+					return map[int64]*AccountLoadInfo{}, nil
+				}
+				return loadMap, nil
+			case <-ctx.Done():
+				// The caller may be the singleflight leader or a waiter; at
+				// cancellation time there is no reliable Result.Shared value.
+				runtimeops.ObserveFreshLoad(false, time.Since(started), ctx.Err())
+				return nil, ctx.Err()
+			}
+		}
 		return s.fetchAccountsLoadBatch(ctx, accounts)
 	}
 

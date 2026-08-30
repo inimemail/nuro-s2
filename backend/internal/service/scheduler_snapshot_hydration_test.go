@@ -117,6 +117,31 @@ func TestSchedulerSnapshotLocalSnapshot_IgnoresOwnSnapshotUpdatedEvent(t *testin
 	}
 }
 
+func TestSchedulerLocalSnapshot_TargetedRuntimeInvalidationKeepsUnrelatedBuckets(t *testing.T) {
+	cfg := config.GatewaySchedulingConfig{
+		LocalSnapshotEnabled:                true,
+		LocalSnapshotTTLMS:                  1000,
+		LocalSnapshotMaxKeys:                16,
+		SnapshotTargetedInvalidationEnabled: true,
+	}
+	snapshot := NewSchedulerLocalSnapshot(cfg)
+	affected := SchedulerBucket{GroupID: 1, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
+	unaffected := SchedulerBucket{GroupID: 2, Platform: PlatformOpenAI, Mode: SchedulerModeSingle}
+	snapshot.Set(affected, []Account{{ID: 42, GroupIDs: []int64{1}}}, time.Now())
+	snapshot.Set(unaffected, []Account{{ID: 99, GroupIDs: []int64{2}}}, time.Now())
+
+	snapshot.ApplyEvent(context.Background(), SchedulerEvent{
+		Type:       SchedulerEventAccountRuntimeCleared,
+		AccountID:  42,
+		Generation: 1,
+	})
+
+	_, affectedHit := snapshot.Get(affected, time.Now())
+	_, unaffectedHit := snapshot.Get(unaffected, time.Now())
+	require.False(t, affectedHit)
+	require.True(t, unaffectedHit)
+}
+
 func TestSchedulerSnapshotRuntimeClearEventInvokesAllLocalHandlers(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.Scheduling.LocalSnapshotEnabled = true

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
@@ -166,10 +167,12 @@ const (
 )
 
 type openAIEdgePrepareCache struct {
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	ttl            time.Duration
 	maxEntries     int
 	channelMapping map[string]openAIEdgeCachedChannelMapping
+	order          *list.List
+	orderIndex     map[string]*list.Element
 }
 
 type openAIEdgeCachedChannelMapping struct {
@@ -185,6 +188,8 @@ func newOpenAIEdgePrepareCache(ttl time.Duration, maxEntries int) *openAIEdgePre
 		ttl:            ttl,
 		maxEntries:     maxEntries,
 		channelMapping: make(map[string]openAIEdgeCachedChannelMapping),
+		order:          list.New(),
+		orderIndex:     make(map[string]*list.Element),
 	}
 }
 
@@ -192,26 +197,111 @@ func (c *openAIEdgePrepareCache) getChannelMapping(key string, now time.Time) (s
 	if c == nil || strings.TrimSpace(key) == "" {
 		return service.ChannelMappingResult{}, false
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
 	entry, ok := c.channelMapping[key]
-	if !ok || now.After(entry.expiresAt) {
-		delete(c.channelMapping, key)
+	if ok && now.Before(entry.expiresAt) {
+		c.mu.RUnlock()
+		runtimeops.ObserveEdgePrepareCacheHit()
+		return entry.mapping, true
+	}
+	c.mu.RUnlock()
+
+	if !ok {
+		runtimeops.ObserveEdgePrepareCacheMiss()
 		return service.ChannelMappingResult{}, false
 	}
-	return entry.mapping, true
+
+	// Expiry cleanup is rare and must not serialize normal cache hits. Recheck
+	// after taking the write lock because another request may have refreshed or
+	// removed the entry while this goroutine was waiting.
+	c.mu.Lock()
+	if current, exists := c.channelMapping[key]; exists && !now.Before(current.expiresAt) {
+		c.deleteLocked(key)
+	}
+	c.mu.Unlock()
+	runtimeops.ObserveEdgePrepareCacheMiss()
+	return service.ChannelMappingResult{}, false
 }
 
 func (c *openAIEdgePrepareCache) setChannelMapping(key string, mapping service.ChannelMappingResult, now time.Time) {
 	if c == nil || strings.TrimSpace(key) == "" {
 		return
 	}
+	if c.maxEntries <= 0 || c.ttl <= 0 {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.channelMapping) >= c.maxEntries {
+	if c.channelMapping == nil {
 		c.channelMapping = make(map[string]openAIEdgeCachedChannelMapping)
 	}
+	if current, exists := c.channelMapping[key]; exists && !now.Before(current.expiresAt) {
+		c.deleteLocked(key)
+	} else if exists {
+		// Refreshing a hot key does not move it in FIFO order. This keeps the
+		// write path bounded and avoids taking a write lock on cache hits.
+		c.channelMapping[key] = openAIEdgeCachedChannelMapping{mapping: mapping, expiresAt: now.Add(c.ttl)}
+		return
+	}
+	for len(c.channelMapping) >= c.maxEntries {
+		if !c.evictExpiredLocked(now) {
+			c.evictOldestLocked()
+		}
+		runtimeops.ObserveEdgePrepareCacheEviction()
+	}
 	c.channelMapping[key] = openAIEdgeCachedChannelMapping{mapping: mapping, expiresAt: now.Add(c.ttl)}
+	if c.order == nil {
+		c.order = list.New()
+	}
+	if c.orderIndex == nil {
+		c.orderIndex = make(map[string]*list.Element)
+	}
+	c.orderIndex[key] = c.order.PushBack(key)
+}
+
+func (c *openAIEdgePrepareCache) deleteLocked(key string) {
+	delete(c.channelMapping, key)
+	if c.orderIndex == nil {
+		return
+	}
+	if element, ok := c.orderIndex[key]; ok {
+		if c.order != nil {
+			c.order.Remove(element)
+		}
+		delete(c.orderIndex, key)
+	}
+}
+
+func (c *openAIEdgePrepareCache) evictExpiredLocked(now time.Time) bool {
+	if c.order == nil {
+		return false
+	}
+	removed := false
+	for element := c.order.Front(); element != nil; {
+		next := element.Next()
+		key, _ := element.Value.(string)
+		entry, ok := c.channelMapping[key]
+		if !ok || !now.Before(entry.expiresAt) {
+			c.deleteLocked(key)
+			removed = true
+		}
+		element = next
+	}
+	return removed
+}
+
+func (c *openAIEdgePrepareCache) evictOldestLocked() {
+	if c.order == nil {
+		for key := range c.channelMapping {
+			c.deleteLocked(key)
+			return
+		}
+		return
+	}
+	if element := c.order.Front(); element != nil {
+		key, _ := element.Value.(string)
+		c.deleteLocked(key)
+	}
 }
 
 func openAIEdgeChannelMappingCacheKey(groupID *int64, model string) string {

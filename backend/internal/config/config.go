@@ -1646,6 +1646,10 @@ type GatewaySchedulingConfig struct {
 	LocalSnapshotEnabled bool `mapstructure:"local_snapshot_enabled"`
 	LocalSnapshotTTLMS   int  `mapstructure:"local_snapshot_ttl_ms"`
 	LocalSnapshotMaxKeys int  `mapstructure:"local_snapshot_max_keys"`
+	// Fresh 负载读取只合并同一时刻完全相同的查询，不写入普通负载缓存。
+	FreshLoadSingleflightEnabled bool `mapstructure:"fresh_load_singleflight_enabled"`
+	// 定向失效缺少可靠索引时会自动回退全量清空，优先保证快照正确性。
+	SnapshotTargetedInvalidationEnabled bool `mapstructure:"snapshot_targeted_invalidation_enabled"`
 	// 调度事件总线配置。当前内置本地进程总线；多实例广播可接 Redis Stream，
 	// 且每实例需独立消费组/独立 XREAD，不能共享一个 consumer group。
 	EventBusEnabled bool   `mapstructure:"event_bus_enabled"`
@@ -2753,6 +2757,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.local_snapshot_enabled", false)
 	viper.SetDefault("gateway.scheduling.local_snapshot_ttl_ms", 500)
 	viper.SetDefault("gateway.scheduling.local_snapshot_max_keys", 4096)
+	viper.SetDefault("gateway.scheduling.fresh_load_singleflight_enabled", true)
+	viper.SetDefault("gateway.scheduling.snapshot_targeted_invalidation_enabled", true)
 	viper.SetDefault("gateway.scheduling.event_bus_enabled", false)
 	viper.SetDefault("gateway.scheduling.event_bus_backend", "local")
 	viper.SetDefault("gateway.scheduling.snapshot_mget_chunk_size", 128)

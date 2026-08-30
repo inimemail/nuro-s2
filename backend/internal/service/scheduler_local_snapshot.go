@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/runtimeops"
 )
 
 type schedulerLocalSnapshotEntry struct {
@@ -21,14 +22,16 @@ type schedulerLocalSnapshotOrderEntry struct {
 }
 
 type SchedulerLocalSnapshot struct {
-	enabled bool
-	ttl     time.Duration
-	maxKeys int
+	enabled              bool
+	ttl                  time.Duration
+	maxKeys              int
+	targetedInvalidation bool
 
-	mu      sync.RWMutex
-	buckets map[string]schedulerLocalSnapshotEntry
-	order   []schedulerLocalSnapshotOrderEntry
-	version uint64
+	mu             sync.RWMutex
+	buckets        map[string]schedulerLocalSnapshotEntry
+	order          []schedulerLocalSnapshotOrderEntry
+	accountBuckets map[int64]map[string]struct{}
+	version        uint64
 
 	hits   atomic.Int64
 	misses atomic.Int64
@@ -51,10 +54,12 @@ func NewSchedulerLocalSnapshot(cfg config.GatewaySchedulingConfig) *SchedulerLoc
 		maxKeys = 0
 	}
 	return &SchedulerLocalSnapshot{
-		enabled: cfg.LocalSnapshotEnabled,
-		ttl:     ttl,
-		maxKeys: maxKeys,
-		buckets: make(map[string]schedulerLocalSnapshotEntry),
+		enabled:              cfg.LocalSnapshotEnabled,
+		ttl:                  ttl,
+		maxKeys:              maxKeys,
+		targetedInvalidation: cfg.SnapshotTargetedInvalidationEnabled,
+		buckets:              make(map[string]schedulerLocalSnapshotEntry),
+		accountBuckets:       make(map[int64]map[string]struct{}),
 	}
 }
 
@@ -72,12 +77,14 @@ func (s *SchedulerLocalSnapshot) Get(bucket SchedulerBucket, now time.Time) ([]A
 	s.mu.RUnlock()
 	if !ok || (!entry.expiresAt.IsZero() && !now.Before(entry.expiresAt)) {
 		s.misses.Add(1)
+		runtimeops.ObserveSchedulerSnapshotMiss()
 		if ok {
 			s.Delete(bucket)
 		}
 		return nil, false
 	}
 	s.hits.Add(1)
+	runtimeops.ObserveSchedulerSnapshotHit()
 	// Set owns a fully detached immutable snapshot. Request paths only need their
 	// own Account values for scalar overlays (for example the group-scoped guard
 	// result); nested maps and slices are read-only on scheduler paths.
@@ -97,7 +104,24 @@ func (s *SchedulerLocalSnapshot) Set(bucket SchedulerBucket, accounts []Account,
 	s.mu.Lock()
 	s.version++
 	entry.version = s.version
+	if s.accountBuckets == nil {
+		s.accountBuckets = make(map[int64]map[string]struct{})
+	}
+	if previous, ok := s.buckets[key]; ok {
+		s.removeAccountIndexLocked(key, previous.accounts)
+	}
 	s.buckets[key] = entry
+	for _, account := range entry.accounts {
+		if account.ID <= 0 {
+			continue
+		}
+		keys := s.accountBuckets[account.ID]
+		if keys == nil {
+			keys = make(map[string]struct{})
+			s.accountBuckets[account.ID] = keys
+		}
+		keys[key] = struct{}{}
+	}
 	s.order = append(s.order, schedulerLocalSnapshotOrderEntry{key: key, version: entry.version})
 	s.evictLocked()
 	s.mu.Unlock()
@@ -109,7 +133,10 @@ func (s *SchedulerLocalSnapshot) Delete(bucket SchedulerBucket) {
 	}
 	key := bucket.String()
 	s.mu.Lock()
-	delete(s.buckets, key)
+	if entry, ok := s.buckets[key]; ok {
+		s.removeAccountIndexLocked(key, entry.accounts)
+		delete(s.buckets, key)
+	}
 	s.compactOrderLocked()
 	s.mu.Unlock()
 }
@@ -121,7 +148,57 @@ func (s *SchedulerLocalSnapshot) Clear() {
 	s.mu.Lock()
 	s.buckets = make(map[string]schedulerLocalSnapshotEntry)
 	s.order = nil
+	s.accountBuckets = make(map[int64]map[string]struct{})
 	s.mu.Unlock()
+}
+
+// InvalidateAccount removes only buckets that currently contain accountID.
+// It returns false when the reverse index cannot prove the affected buckets,
+// allowing callers to fall back to a full clear for correctness.
+func (s *SchedulerLocalSnapshot) InvalidateAccount(accountID int64) bool {
+	if s == nil || accountID <= 0 {
+		return false
+	}
+	s.mu.Lock()
+	keys, ok := s.accountBuckets[accountID]
+	if !ok {
+		s.mu.Unlock()
+		return false
+	}
+	complete := true
+	for key := range keys {
+		if entry, exists := s.buckets[key]; exists {
+			s.removeAccountIndexLocked(key, entry.accounts)
+			delete(s.buckets, key)
+		} else {
+			complete = false
+		}
+	}
+	if !complete {
+		// A stale reverse index cannot prove that all affected buckets were
+		// removed. Fall back to the conservative full invalidation path.
+		s.buckets = make(map[string]schedulerLocalSnapshotEntry)
+		s.order = nil
+		s.accountBuckets = make(map[int64]map[string]struct{})
+		s.mu.Unlock()
+		return false
+	}
+	s.compactOrderLocked()
+	s.mu.Unlock()
+	return true
+}
+
+func (s *SchedulerLocalSnapshot) removeAccountIndexLocked(key string, accounts []Account) {
+	for _, account := range accounts {
+		keys := s.accountBuckets[account.ID]
+		if keys == nil {
+			continue
+		}
+		delete(keys, key)
+		if len(keys) == 0 {
+			delete(s.accountBuckets, account.ID)
+		}
+	}
 }
 
 func (s *SchedulerLocalSnapshot) ApplyEvent(_ context.Context, event SchedulerEvent) {
@@ -131,8 +208,29 @@ func (s *SchedulerLocalSnapshot) ApplyEvent(_ context.Context, event SchedulerEv
 	switch event.Type {
 	case SchedulerEventSnapshotUpdated, SchedulerEventSnapshotDeleted:
 		s.Delete(event.Bucket)
-	case SchedulerEventAccountUpdated, SchedulerEventAccountDeleted, SchedulerEventAccountRuntimeCleared, SchedulerEventAccountRuntimeOnlyCleared:
+	case SchedulerEventAccountRuntimeCleared, SchedulerEventAccountRuntimeOnlyCleared, SchedulerEventAccountDeleted:
+		if s.targetedInvalidation && event.AccountID > 0 && s.InvalidateAccount(event.AccountID) {
+			return
+		}
 		s.Clear()
+	case SchedulerEventAccountUpdated:
+		// Ordinary account updates may change group membership or model support;
+		// their event does not carry the new bucket set, so retain the conservative
+		// full clear. Runtime-only updates have stable membership and can target
+		// the reverse index safely.
+		if s.targetedInvalidation && event.AccountID > 0 && isSchedulerRuntimeAccountUpdateReason(event.Reason) && s.InvalidateAccount(event.AccountID) {
+			return
+		}
+		s.Clear()
+	}
+}
+
+func isSchedulerRuntimeAccountUpdateReason(reason string) bool {
+	switch reason {
+	case "runtime_block", "soft_cooldown", "probe_backoff", "grok_rate_limit_recovered":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -156,6 +254,7 @@ func (s *SchedulerLocalSnapshot) evictLocked() {
 		for key := range s.buckets {
 			delete(s.buckets, key)
 		}
+		s.accountBuckets = make(map[int64]map[string]struct{})
 		s.order = nil
 		return
 	}
@@ -163,6 +262,7 @@ func (s *SchedulerLocalSnapshot) evictLocked() {
 		ordered := s.order[0]
 		s.order = s.order[1:]
 		if current, ok := s.buckets[ordered.key]; ok && current.version == ordered.version {
+			s.removeAccountIndexLocked(ordered.key, current.accounts)
 			delete(s.buckets, ordered.key)
 		}
 	}
