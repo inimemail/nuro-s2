@@ -5778,7 +5778,12 @@ async fn relay_upstream_direct(
                             yield Ok::<Bytes, std::io::Error>(chunk)
                         }
                         Err(_) => {
-                            yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_terminal_failure_frame(response_dialect.as_deref())));
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(
+                                openai_stream_terminal_failure_frame_for_summary(
+                                    response_dialect.as_deref(),
+                                    &progress_summary,
+                                ),
+                            ));
                             break;
                         }
                     }
@@ -5796,7 +5801,12 @@ async fn relay_upstream_direct(
             Ok(_) => {
                 outer_complete_guard.mark_done();
                 let _ = placeholder_sent;
-                yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_terminal_failure_frame(response_dialect.as_deref())));
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(
+                    openai_stream_terminal_failure_frame_for_summary(
+                        response_dialect.as_deref(),
+                        &progress_summary,
+                    ),
+                ));
             }
             Err(error) => {
                 let error = match error.downcast::<EarlyPlaceholderRelayError>() {
@@ -5856,7 +5866,12 @@ async fn relay_upstream_direct(
                                             yield Ok::<Bytes, std::io::Error>(chunk);
                                         }
                                         Err(_) => {
-                                            yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_terminal_failure_frame(response_dialect.as_deref())));
+                                            yield Ok::<Bytes, std::io::Error>(Bytes::from(
+                                                openai_stream_terminal_failure_frame_for_summary(
+                                                    response_dialect.as_deref(),
+                                                    &progress_summary,
+                                                ),
+                                            ));
                                             break;
                                         }
                                     }
@@ -5876,7 +5891,12 @@ async fn relay_upstream_direct(
                                 // The core relay has already settled non-success
                                 // responses; do not issue a second abort here.
                                 outer_complete_guard.mark_done();
-                                yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_terminal_failure_frame(response_dialect.as_deref())));
+                                yield Ok::<Bytes, std::io::Error>(Bytes::from(
+                                    openai_stream_terminal_failure_frame_for_summary(
+                                        response_dialect.as_deref(),
+                                        &progress_summary,
+                                    ),
+                                ));
                                 return;
                             }
                             Err(error) => error,
@@ -5906,7 +5926,12 @@ async fn relay_upstream_direct(
                 if aborted {
                     outer_complete_guard.mark_done();
                 }
-                yield Ok::<Bytes, std::io::Error>(Bytes::from(openai_stream_terminal_failure_frame(response_dialect.as_deref())));
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(
+                    openai_stream_terminal_failure_frame_for_summary(
+                        response_dialect.as_deref(),
+                        &progress_summary,
+                    ),
+                ));
             }
         }
     };
@@ -6762,7 +6787,10 @@ async fn relay_upstream_direct_core_impl(
                             yield Ok::<Bytes, std::io::Error>(output);
                         }
                         yield Ok::<Bytes, std::io::Error>(Bytes::from(
-                            openai_stream_terminal_failure_frame(response_dialect.as_deref()),
+                            openai_stream_terminal_failure_frame_for_summary(
+                                response_dialect.as_deref(),
+                                &summary,
+                            ),
                         ));
                     }
                     guard.update_stream_snapshot(
@@ -6879,7 +6907,10 @@ async fn relay_upstream_direct_core_impl(
                             yield Ok::<Bytes, std::io::Error>(output);
                         }
                         yield Ok::<Bytes, std::io::Error>(Bytes::from(
-                            openai_stream_terminal_failure_frame(response_dialect.as_deref()),
+                            openai_stream_terminal_failure_frame_for_summary(
+                                response_dialect.as_deref(),
+                                &summary,
+                            ),
                         ));
                     }
                 }
@@ -6900,7 +6931,10 @@ async fn relay_upstream_direct_core_impl(
                         completion_error_type = Some("sse_event_limit_exceeded".to_string());
                         preamble_gate.discard_pending();
                         yield Ok::<Bytes, std::io::Error>(Bytes::from(
-                            openai_stream_terminal_failure_frame(response_dialect.as_deref()),
+                            openai_stream_terminal_failure_frame_for_summary(
+                                response_dialect.as_deref(),
+                                &summary,
+                            ),
                         ));
                         break 'relay;
                     }
@@ -7290,7 +7324,10 @@ async fn relay_upstream_direct_core_impl(
                             yield Ok::<Bytes, std::io::Error>(output);
                         }
                         yield Ok::<Bytes, std::io::Error>(Bytes::from(
-                            openai_stream_terminal_failure_frame(response_dialect.as_deref()),
+                            openai_stream_terminal_failure_frame_for_summary(
+                                response_dialect.as_deref(),
+                                &summary,
+                            ),
                         ));
                     }
                     guard.update_stream_snapshot(
@@ -7318,7 +7355,14 @@ async fn relay_upstream_direct_core_impl(
         if summary.failed {
             preamble_gate.discard_pending();
         }
-        let tail = sanitizer.finish();
+        // Once a terminal failure frame has been emitted, discard any partial
+        // sanitizer line. Draining it could turn a transport error that split
+        // an upstream JSON frame into a second response.failed event.
+        let tail = if summary.failed {
+            Bytes::new()
+        } else {
+            sanitizer.finish()
+        };
         let tail_starts_output = !buffer_attempt_preamble && !tail.is_empty();
         for output in preamble_gate.accept(tail, tail_starts_output, summary.failed) {
             if first_flush_ms.is_none() {
@@ -8039,9 +8083,19 @@ impl OpenAIStreamSanitizer {
         if oversized {
             self.pending.clear();
             self.overflowed = true;
-            return Bytes::from_static(
-                b"event: error\ndata: {\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream stream frame exceeded the Edge limit\"}}\n\n",
-            );
+            if self.chat_dialect {
+                return Bytes::from_static(
+                    b"event: error\ndata: {\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream stream frame exceeded the Edge limit\"}}\n\n",
+                );
+            }
+            return Bytes::from(format!(
+                "event: response.failed\ndata: {}\n\n",
+                responses_failed_payload_with_message(
+                    None,
+                    None,
+                    "Upstream stream frame exceeded the Edge limit",
+                )
+            ));
         }
         self.pending.extend_from_slice(chunk);
         self.drain_lines(false)
@@ -8181,7 +8235,11 @@ fn sanitize_openai_sse_line(
             return line.to_vec();
         }
         let Ok(mut value) = serde_json::from_str::<Value>(payload) else {
-            return safe_sse_error_line(chat_dialect);
+            let output = safe_sse_error_line(chat_dialect, current_event_type.as_deref());
+            if !chat_dialect {
+                *current_event_type = Some("response.failed".to_string());
+            }
+            return output;
         };
         let event_type = json_event_type(&value)
             .or(current_event_type.as_deref())
@@ -8191,7 +8249,11 @@ fn sanitize_openai_sse_line(
             || json_is_unsafe_upstream_diagnostic(&value)
             || (chat_dialect && !value.get("choices").is_some_and(Value::is_array));
         if has_error {
-            return safe_sse_error_line(chat_dialect);
+            let output = safe_sse_error_line(chat_dialect, current_event_type.as_deref());
+            if !chat_dialect {
+                *current_event_type = Some("response.failed".to_string());
+            }
+            return output;
         }
         let normalize_usage = (downstream_cache_usage_mode.is_some()
             || downstream_cache_markup.is_some_and(DownstreamCacheMarkupPolicy::enabled))
@@ -8230,12 +8292,21 @@ fn sanitize_openai_sse_line(
     Vec::new()
 }
 
-fn safe_sse_error_line(chat_dialect: bool) -> Vec<u8> {
+fn safe_sse_error_line(chat_dialect: bool, current_event_type: Option<&str>) -> Vec<u8> {
     if chat_dialect {
         b"data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}\n"
             .to_vec()
     } else {
-        b"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}}\n".to_vec()
+        let event_prefix = if current_event_type != Some("response.failed") {
+            "event: response.failed\n"
+        } else {
+            ""
+        };
+        format!(
+            "{event_prefix}data: {}\n",
+            responses_failed_payload(None, None)
+        )
+        .into_bytes()
     }
 }
 
@@ -8247,7 +8318,64 @@ fn openai_stream_terminal_failure_frame(dialect: Option<&str>) -> String {
     if dialect == Some("chat_completions") {
         return "data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}\n\ndata: [DONE]\n\n".to_string();
     }
-    "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}}\n\n".to_string()
+    format!(
+        "event: response.failed\ndata: {}\n\n",
+        responses_failed_payload(None, None)
+    )
+}
+
+fn openai_stream_terminal_failure_frame_for_summary(
+    dialect: Option<&str>,
+    summary: &ChatStreamSummary,
+) -> String {
+    if dialect == Some("chat_completions") {
+        return openai_stream_terminal_failure_frame(dialect);
+    }
+    format!(
+        "event: response.failed\ndata: {}\n\n",
+        responses_failed_payload(
+            summary
+                .response_id
+                .as_deref()
+                .or(summary.request_id.as_deref()),
+            summary.model.as_deref(),
+        )
+    )
+}
+
+fn responses_failed_payload(response_id: Option<&str>, model: Option<&str>) -> String {
+    responses_failed_payload_with_message(response_id, model, "Upstream request failed")
+}
+
+fn responses_failed_payload_with_message(
+    response_id: Option<&str>,
+    model: Option<&str>,
+    message: &str,
+) -> String {
+    let response_id = response_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("resp_{}", Uuid::new_v4().simple()));
+    let mut response = serde_json::json!({
+        "id": response_id,
+        "object": "response",
+        "status": "failed",
+        "output": [],
+        "error": {
+            "type": "upstream_error",
+            "code": "server_error",
+            "message": message
+        }
+    });
+    if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+        response["model"] = Value::String(model.to_string());
+    }
+    serde_json::json!({
+        "type": "response.failed",
+        "response": response,
+    })
+    .to_string()
 }
 
 #[cfg(test)]
@@ -11780,12 +11908,30 @@ mod tests {
     #[test]
     fn stream_failure_uses_terminal_event_instead_of_transport_error() {
         let responses = openai_stream_terminal_failure_frame(Some("responses"));
+        assert!(responses.starts_with("event: response.failed\n"));
         assert!(responses.contains("response.failed"));
-        assert!(!responses.contains("event: error"));
+        assert!(responses.contains("\"object\":\"response\""));
+        assert!(responses.contains("\"status\":\"failed\""));
+        assert!(responses.contains("\"output\":[]"));
+        assert!(responses.contains("\"code\":\"server_error\""));
 
         let chat = openai_stream_terminal_failure_frame(Some("chat_completions"));
         assert!(chat.contains("\"error\""));
         assert!(chat.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn responses_stream_failure_reuses_response_identity() {
+        let summary = ChatStreamSummary {
+            response_id: Some("resp_123".to_string()),
+            model: Some("gpt-5.6".to_string()),
+            ..Default::default()
+        };
+        let frame = openai_stream_terminal_failure_frame_for_summary(Some("responses"), &summary);
+        assert!(frame.starts_with("event: response.failed\n"));
+        assert!(frame.contains("\"id\":\"resp_123\""));
+        assert!(frame.contains("\"model\":\"gpt-5.6\""));
+        assert!(frame.ends_with("\n\n"));
     }
 
     #[test]
@@ -11816,9 +11962,34 @@ mod tests {
 "#,
         );
         let output = String::from_utf8(output.to_vec()).unwrap();
+        assert!(output.contains("event: response.failed\n"));
+        assert!(output.contains("\"output\":[]"));
         assert!(output.contains("Upstream request failed"));
         assert!(!output.contains("private.example"));
         assert!(!output.contains("DOCTYPE"));
+    }
+
+    #[test]
+    fn responses_failure_event_is_not_duplicated_when_upstream_supplies_event_line() {
+        let mut sanitizer = OpenAIStreamSanitizer::new(None);
+        let output = sanitizer.push(
+            b"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"bad\"}}}\n\n",
+        );
+        let output = String::from_utf8(output.to_vec()).unwrap();
+        assert_eq!(output.matches("event: response.failed\n").count(), 1);
+        assert_eq!(output.matches("data: {").count(), 1);
+        assert!(output.contains("\"output\":[]"));
+    }
+
+    #[test]
+    fn responses_sanitizer_keeps_replaced_error_event_state() {
+        let mut sanitizer = OpenAIStreamSanitizer::new(Some("responses"));
+        let output = sanitizer.push(
+            b"event: response.output_text.delta\ndata: {not-json}\ndata: {still-not-json}\n\n",
+        );
+        let output = String::from_utf8(output.to_vec()).unwrap();
+        assert_eq!(output.matches("event: response.failed\n").count(), 1);
+        assert_eq!(output.matches("\"type\":\"response.failed\"").count(), 2);
     }
 
     #[test]
@@ -12632,7 +12803,10 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
     fn sse_sanitizer_bounds_unterminated_lines() {
         let mut sanitizer = OpenAIStreamSanitizer::new(Some("responses"));
         let output = sanitizer.push(&vec![b'x'; MAX_SSE_LINE_BYTES + 1]);
-        assert!(String::from_utf8_lossy(&output).contains("exceeded the Edge limit"));
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.starts_with("event: response.failed\n"));
+        assert!(output.contains("exceeded the Edge limit"));
+        assert!(output.ends_with("\n\n"));
         assert!(sanitizer.push(b"more").is_empty());
         assert!(sanitizer.pending.is_empty());
     }
@@ -12645,7 +12819,9 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
 
         let output = sanitizer.push(&chunk);
 
-        assert!(String::from_utf8_lossy(&output).contains("exceeded the Edge limit"));
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.starts_with("event: response.failed\n"));
+        assert!(output.contains("exceeded the Edge limit"));
         assert!(sanitizer.overflowed());
         assert!(sanitizer.pending.is_empty());
     }
