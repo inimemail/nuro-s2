@@ -366,6 +366,7 @@ func newOpenAIHealthProbeEmptyFailoverError(c *gin.Context, account *Account, re
 
 	responseBody := openAIHealthProbeErrorBody()
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
+	probeUsage, usageAvailable := extractOpenAIHealthProbeUsage(body)
 	setOpsUpstreamError(c, resp.StatusCode, openAIHealthProbeUpstreamMessage, "")
 	if account != nil {
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -389,10 +390,31 @@ func newOpenAIHealthProbeEmptyFailoverError(c *gin.Context, account *Account, re
 		SkipPromptCacheAvoidance:  true,
 		SkipStickySessionEviction: true,
 		SkipSchedulePenalty:       true,
+		HealthProbeUsage:          probeUsage,
+		HealthProbeUsageAvailable: usageAvailable,
+		HealthProbeRequestID:      upstreamRequestID,
+		HealthProbeResponseID:     extractOpenAIResponseIDFromJSONBytes(body),
+		HealthProbeModel:          probeModel,
+		HealthProbeUpstreamModel:  strings.TrimSpace(gjson.GetBytes(body, "model").String()),
 	}
 	ApplyOpenAIHealthProbeRetryPolicy(c, account, failoverErr)
 	IsolateOpenAIHealthProbeFailover(c, failoverErr)
 	return failoverErr
+}
+
+func extractOpenAIHealthProbeUsage(body []byte) (OpenAIUsage, bool) {
+	if usage, ok := extractOpenAIUsageFromJSONBytes(body); ok {
+		return usage, true
+	}
+	var usage OpenAIUsage
+	found := false
+	forEachOpenAISSEDataPayload(string(body), func(data []byte) {
+		if parsed, ok := extractOpenAIUsageFromJSONBytes(data); ok {
+			usage = parsed
+			found = true
+		}
+	})
+	return usage, found
 }
 
 func openAIHealthProbeErrorBody() []byte {

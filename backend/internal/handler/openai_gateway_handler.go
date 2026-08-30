@@ -889,6 +889,37 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					if healthProbe && failoverErr.HealthProbeUsageAvailable {
+						probeResult := &service.OpenAIForwardResult{
+							RequestID:         failoverErr.HealthProbeRequestID,
+							AttemptID:         failoverErr.AttemptID,
+							ResponseID:        failoverErr.HealthProbeResponseID,
+							Usage:             failoverErr.HealthProbeUsage,
+							Model:             failoverErr.HealthProbeModel,
+							UpstreamModel:     failoverErr.HealthProbeUpstreamModel,
+							Stream:            failoverErr.HealthProbeStream,
+							Duration:          time.Since(forwardStart),
+							TerminalEventType: "response.failed",
+						}
+						if strings.TrimSpace(probeResult.Model) == "" {
+							probeResult.Model = reqModel
+						}
+						if strings.TrimSpace(probeResult.UpstreamModel) == "" {
+							probeResult.UpstreamModel = probeResult.Model
+						}
+						h.submitOpenAIHealthProbeAttemptUsage(
+							requestCtx,
+							c,
+							apiKey,
+							account,
+							subscription,
+							probeResult,
+							service.HashUsageRequestPayload(body),
+							sessionHash,
+							apiKey.GroupID,
+							channelMapping.ToUsageFields(reqModel, probeResult.UpstreamModel),
+						)
+					}
 					service.ApplyOpenAIHealthProbeRetryPolicy(c, account, failoverErr)
 					service.IsolateOpenAIHealthProbeFailover(c, failoverErr)
 					if !service.OpenAIRequestAllowsFailover(c, writerSizeBeforeForward) {
@@ -2921,6 +2952,66 @@ func (h *OpenAIGatewayHandler) submitOpenAIUsageRecordTask(parent context.Contex
 		return
 	}
 	h.submitUsageRecordTask(parent, task)
+}
+
+// submitOpenAIHealthProbeAttemptUsage records provider usage from a probe
+// response that is being retried after an empty/invalid assistant result. The
+// attempt is billed before failover continues, and its AttemptID makes the
+// billing key independent from the logical probe request ID.
+func (h *OpenAIGatewayHandler) submitOpenAIHealthProbeAttemptUsage(
+	parent context.Context,
+	c *gin.Context,
+	apiKey *service.APIKey,
+	account *service.Account,
+	subscription *service.UserSubscription,
+	result *service.OpenAIForwardResult,
+	requestPayloadHash string,
+	sessionHash string,
+	groupID *int64,
+	channelFields service.ChannelUsageFields,
+) {
+	if h == nil || h.gatewayService == nil || apiKey == nil || apiKey.User == nil || account == nil || result == nil {
+		return
+	}
+	userAgent := ""
+	clientIP := ""
+	if c != nil {
+		userAgent = c.GetHeader("User-Agent")
+		clientIP = ip.GetClientIP(c)
+	}
+	inboundEndpoint := GetInboundEndpoint(c)
+	upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+	quotaPlatform := service.QuotaPlatform(parent, apiKey)
+	sessionID := service.ExtractClientSessionID(c)
+	h.submitOpenAIUsageRecordTask(parent, result, func(ctx context.Context) {
+		if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+			Result:                  result,
+			APIKey:                  apiKey,
+			User:                    apiKey.User,
+			Account:                 account,
+			Subscription:            subscription,
+			QuotaPlatform:           quotaPlatform,
+			InboundEndpoint:         inboundEndpoint,
+			UpstreamEndpoint:        upstreamEndpoint,
+			UserAgent:               userAgent,
+			IPAddress:               clientIP,
+			SessionID:               sessionID,
+			RequestPayloadHash:      requestPayloadHash,
+			PromptCacheAffinityHash: sessionHash,
+			PromptCacheGroupID:      groupID,
+			HealthProbe:             true,
+			SkipSuccessSideEffects:  true,
+			APIKeyService:           h.apiKeyService,
+			ChannelUsageFields:      channelFields,
+		}); err != nil {
+			logger.L().With(
+				zap.String("component", "handler.openai_gateway.health_probe"),
+				zap.Int64("api_key_id", apiKey.ID),
+				zap.Int64("account_id", account.ID),
+				zap.String("attempt_id", result.AttemptID),
+			).Error("openai.health_probe_attempt_record_usage_failed", zap.Error(err))
+		}
+	})
 }
 
 func (h *OpenAIGatewayHandler) recordCyberPolicyUsageIfMarked(

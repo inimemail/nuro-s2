@@ -6540,6 +6540,13 @@ async fn relay_upstream_direct_core_impl(
             complete_state.pools.take_sse_string(),
             response_dialect.as_deref(),
         );
+        // A body-level retry replaces the current stream summary, but the
+        // upstream may already have emitted a terminal/failure usage event for
+        // that concrete attempt. Keep those real provider-reported tokens so
+        // the single Go completion callback reflects all charged attempts.
+        // This is internal accounting only; downstream still receives only the
+        // final retried stream and its original usage event.
+        let mut retried_attempt_usage = Usage::default();
         let mut sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(
             response_dialect.as_deref(),
             downstream_cache_usage_mode.as_deref(),
@@ -6778,6 +6785,7 @@ async fn relay_upstream_direct_core_impl(
                                     .reset(tokio::time::Instant::now() + idle_timeout);
                             }
                             upstream_client_guard = next_guard;
+                            retried_attempt_usage.add_assign(&summary.usage);
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
                             event_parser = SseEventParser::default();
@@ -6906,6 +6914,7 @@ async fn relay_upstream_direct_core_impl(
                                 .reset(tokio::time::Instant::now() + idle_timeout);
                         }
                         upstream_client_guard = next_guard;
+                        retried_attempt_usage.add_assign(&summary.usage);
                         summary = ChatStreamSummary::with_pending(
                             complete_state.pools.take_sse_string(),
                             response_dialect.as_deref(),
@@ -6990,6 +6999,11 @@ async fn relay_upstream_direct_core_impl(
                     for chunk in frames {
                     if real_first_token_ms.is_none() {
                         if let Some(failure) = parse_sse_failure_event(&chunk) {
+                            // The failure frame can carry provider usage even
+                            // though it is handled before the normal observe
+                            // path. Feed it through the same parser so a
+                            // retry does not discard those real tokens.
+                            summary.observe_json(&failure.payload);
                             let retry = retry_body_upstream(
                                 &complete_state,
                                 BodyRetryRequest {
@@ -7040,6 +7054,7 @@ async fn relay_upstream_direct_core_impl(
                                         .reset(tokio::time::Instant::now() + idle_timeout);
                                 }
                                 upstream_client_guard = next_guard;
+                                retried_attempt_usage.add_assign(&summary.usage);
                                 summary = ChatStreamSummary::with_pending(
                                     complete_state.pools.take_sse_string(),
                                     response_dialect.as_deref(),
@@ -7348,6 +7363,7 @@ async fn relay_upstream_direct_core_impl(
                                     .reset(tokio::time::Instant::now() + idle_timeout);
                             }
                             upstream_client_guard = next_guard;
+                            retried_attempt_usage.add_assign(&summary.usage);
                             summary = ChatStreamSummary::with_pending(complete_state.pools.take_sse_string(), response_dialect.as_deref());
                             summary.request_id = next_request_id;
                             event_parser = SseEventParser::default();
@@ -7500,7 +7516,8 @@ async fn relay_upstream_direct_core_impl(
         let response_id = summary.response_id.clone();
         let model = summary.model.clone();
         let upstream_model = summary.upstream_model.clone();
-        let usage = summary.usage.clone();
+        let mut usage = retried_attempt_usage;
+        usage.add_assign(&summary.usage);
         let cyber_blocked = summary.cyber_blocked;
         if success && !semantic_sample_complete {
             max_semantic_gap = max_semantic_gap.max(Instant::now().duration_since(last_semantic_progress_at));

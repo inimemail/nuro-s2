@@ -717,6 +717,13 @@ type UpstreamFailoverError struct {
 	NextAccountAction         NextAccountAction
 	ClientStatusCode          int
 	ClientMessage             string
+	HealthProbeUsage          OpenAIUsage
+	HealthProbeUsageAvailable bool
+	HealthProbeRequestID      string
+	HealthProbeResponseID     string
+	HealthProbeModel          string
+	HealthProbeUpstreamModel  string
+	HealthProbeStream         bool
 }
 
 func (e *UpstreamFailoverError) ShouldRetryNextAccount() bool {

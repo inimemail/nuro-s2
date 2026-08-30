@@ -110,6 +110,10 @@ func TestOpenAIHealthProbeEmptyJSONTriggersRequestLocalFailover(t *testing.T) {
 	require.Equal(t, "gpt-5.5", failoverErr.ProbeModel)
 	require.True(t, IsOpenAIHealthProbeEmptyErrorBody(failoverErr.ResponseBody))
 	require.Equal(t, "req-empty", failoverErr.ResponseHeaders.Get("x-request-id"))
+	require.True(t, failoverErr.HealthProbeUsageAvailable)
+	require.Equal(t, OpenAIUsage{InputTokens: 12, OutputTokens: 4}, failoverErr.HealthProbeUsage)
+	require.Equal(t, "req-empty", failoverErr.HealthProbeRequestID)
+	require.Equal(t, "resp_empty", failoverErr.HealthProbeResponseID)
 }
 
 func TestOpenAIHealthProbeEmptySSEResponseTriggersFailover(t *testing.T) {
@@ -134,6 +138,8 @@ func TestOpenAIHealthProbeEmptySSEResponseTriggersFailover(t *testing.T) {
 	require.True(t, errors.As(err, &failoverErr))
 	require.True(t, failoverErr.RetryableOnSameAccount)
 	require.True(t, IsOpenAIHealthProbeEmptyErrorBody(failoverErr.ResponseBody))
+	require.True(t, failoverErr.HealthProbeUsageAvailable)
+	require.Equal(t, OpenAIUsage{InputTokens: 12, OutputTokens: 4}, failoverErr.HealthProbeUsage)
 }
 
 func TestOpenAIHealthProbeNonEmptyResponsePassesThrough(t *testing.T) {

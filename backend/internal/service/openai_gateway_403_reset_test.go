@@ -49,7 +49,7 @@ func TestOpenAIGatewayServiceRecordUsage_ResetsOpenAI403CounterForZeroUsage(t *t
 	require.True(t, lastUsedScheduled)
 }
 
-func TestOpenAIGatewayServiceRecordUsage_HealthProbeSkipsBillingAndAccountState(t *testing.T) {
+func TestOpenAIGatewayServiceRecordUsage_HealthProbeBillsButSkipsAccountState(t *testing.T) {
 	counter := &openAI403CounterResetStub{}
 	rateLimitSvc := NewRateLimitService(nil, nil, nil, nil, nil)
 	rateLimitSvc.SetOpenAI403CounterCache(counter)
@@ -68,7 +68,9 @@ func TestOpenAIGatewayServiceRecordUsage_HealthProbeSkipsBillingAndAccountState(
 	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
 		Result: &OpenAIForwardResult{
 			RequestID: "resp_health_probe_usage",
+			AttemptID: "attempt-health-probe-1",
 			Model:     "gpt-5.5",
+			Usage:     OpenAIUsage{InputTokens: 10, OutputTokens: 2},
 		},
 		APIKey:      &APIKey{ID: 1002, Group: &Group{RateMultiplier: 1}},
 		User:        &User{ID: 2002},
@@ -78,8 +80,9 @@ func TestOpenAIGatewayServiceRecordUsage_HealthProbeSkipsBillingAndAccountState(
 
 	require.NoError(t, err)
 	require.Empty(t, counter.resetCalls)
-	require.Equal(t, 0, billingRepo.calls)
-	require.Equal(t, 0, usageRepo.calls)
+	require.Equal(t, 1, billingRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	require.Equal(t, "openai-health-probe-attempt:attempt-health-probe-1", billingRepo.lastCmd.RequestID)
 	_, lastUsedScheduled := svc.deferredService.lastUsedUpdates.Load(int64(778))
 	require.False(t, lastUsedScheduled)
 }

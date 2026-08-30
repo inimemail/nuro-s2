@@ -9706,7 +9706,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	}
 	if IsOpenAIResponsesHealthProbe(c) {
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
-			return nil, failoverErr
+			return nil, annotateOpenAIAttemptFailover(resp.Request, failoverErr)
 		}
 	}
 	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
@@ -9834,7 +9834,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(ctx context.Context, resp *http.R
 
 	if IsOpenAIResponsesHealthProbe(c) {
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
-			return nil, failoverErr
+			return nil, annotateOpenAIAttemptFailover(resp.Request, failoverErr)
 		}
 	}
 	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
@@ -10874,12 +10874,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result == nil {
 		return errors.New("openai usage result is nil")
 	}
-	// Dedicated recovery/monitor probes are gateway-owned control traffic. They
-	// must not deduct the caller's balance or subscription, and they are omitted
-	// from usage logs so user-facing token/cost totals remain business-only.
-	if input.HealthProbe {
-		return nil
-	}
+	// Health probes are real upstream model requests. They must follow the same
+	// usage-log and billing path as normal OpenAI requests so upstream spend is
+	// reflected locally and charged to the API key that initiated the probe.
+	// The HealthProbe flag only gates business-side state updates below (account
+	// health counters, prompt-cache warming, and last-used timestamps).
 	if !input.HealthProbe && !input.SkipSuccessSideEffects && result.WebSearchCalls == 0 && s.rateLimitService != nil && input.Account != nil && input.Account.Platform == PlatformOpenAI {
 		s.rateLimitService.ResetOpenAI403Counter(ctx, input.Account.ID)
 	}
@@ -11004,6 +11003,18 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
 	requestID := resolveOpenAIUsageBillingRequestID(ctx, result)
+	if input.HealthProbe {
+		// A probe may deliberately try multiple accounts. Each concrete upstream
+		// attempt must have its own idempotency key; otherwise the client request
+		// id would collapse all probe attempts into one local charge.
+		attemptID := strings.TrimSpace(result.AttemptID)
+		if attemptID == "" {
+			attemptID = strings.TrimSpace(result.RequestID)
+		}
+		if attemptID != "" {
+			requestID = "openai-health-probe-attempt:" + attemptID
+		}
+	}
 
 	// 确定 RequestedModel（渠道映射前的原始模型）
 	requestedModel := result.Model
