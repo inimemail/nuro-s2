@@ -8294,7 +8294,7 @@ fn sanitize_openai_sse_line(
 
 fn safe_sse_error_line(chat_dialect: bool, current_event_type: Option<&str>) -> Vec<u8> {
     if chat_dialect {
-        b"data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}\n"
+        b"data: {\"error\":{\"type\":\"upstream_error\",\"message\":\"Upstream request failed\"}}\n\n"
             .to_vec()
     } else {
         let event_prefix = if current_event_type != Some("response.failed") {
@@ -8303,7 +8303,7 @@ fn safe_sse_error_line(chat_dialect: bool, current_event_type: Option<&str>) -> 
             ""
         };
         format!(
-            "{event_prefix}data: {}\n",
+            "{event_prefix}data: {}\n\n",
             responses_failed_payload(None, None)
         )
         .into_bytes()
@@ -8331,16 +8331,30 @@ fn openai_stream_terminal_failure_frame_for_summary(
     if dialect == Some("chat_completions") {
         return openai_stream_terminal_failure_frame(dialect);
     }
+    let response_id = summary
+        .response_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| synthesize_response_failure_id(summary.request_id.as_deref()));
     format!(
         "event: response.failed\ndata: {}\n\n",
-        responses_failed_payload(
-            summary
-                .response_id
-                .as_deref()
-                .or(summary.request_id.as_deref()),
-            summary.model.as_deref(),
-        )
+        responses_failed_payload(response_id.as_deref(), summary.model.as_deref(),)
     )
+}
+
+fn synthesize_response_failure_id(request_id: Option<&str>) -> Option<String> {
+    let request_id = request_id?.trim();
+    if request_id.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "resp_{}",
+        request_id
+            .chars()
+            .filter(|character| *character != '-')
+            .collect::<String>()
+    ))
 }
 
 fn responses_failed_payload(response_id: Option<&str>, model: Option<&str>) -> String {
@@ -11935,6 +11949,16 @@ mod tests {
     }
 
     #[test]
+    fn responses_stream_failure_synthesizes_request_identity_like_go() {
+        let summary = ChatStreamSummary {
+            request_id: Some("req_abc-123".to_string()),
+            ..Default::default()
+        };
+        let frame = openai_stream_terminal_failure_frame_for_summary(Some("responses"), &summary);
+        assert!(frame.contains("\"id\":\"resp_req_abc123\""));
+    }
+
+    #[test]
     fn openai_error_response_is_sanitized_json() {
         let response = openai_error_response(
             StatusCode::BAD_REQUEST,
@@ -12049,6 +12073,16 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         let output = String::from_utf8(second.to_vec()).unwrap();
         assert!(output.contains("Upstream request failed"));
         assert!(!output.contains("private.example"));
+    }
+
+    #[test]
+    fn sse_sanitizer_terminates_malformed_eof_event() {
+        let mut sanitizer = OpenAIStreamSanitizer::new(Some("responses"));
+        assert!(sanitizer.push(b"data: {not-json}").is_empty());
+        let output = sanitizer.finish();
+        let output = String::from_utf8(output.to_vec()).unwrap();
+        assert!(output.starts_with("event: response.failed\n"));
+        assert!(output.ends_with("\n\n"));
     }
 
     #[test]
