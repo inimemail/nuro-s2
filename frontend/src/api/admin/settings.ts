@@ -610,6 +610,7 @@ export interface SystemSettings {
   gateway_edge_body_idle_timeout_ms: number;
   gateway_edge_response_header_max_attempts: number;
   gateway_edge_response_header_failover: boolean;
+  gateway_edge_expose_retried_usage: boolean;
   gateway_openai_apikey_first_token_timeout_placeholder_stages: OpenAIFirstTokenTimeoutPlaceholderStage[];
   gateway_openai_oauth_first_token_timeout_placeholder_stages: OpenAIFirstTokenTimeoutPlaceholderStage[];
   openai_pool_downstream_model_limit_protection_enabled: boolean;
@@ -908,6 +909,7 @@ export interface UpdateSettingsRequest {
   gateway_edge_body_idle_timeout_ms?: number;
   gateway_edge_response_header_max_attempts?: number;
   gateway_edge_response_header_failover?: boolean;
+  gateway_edge_expose_retried_usage?: boolean;
   gateway_openai_apikey_first_token_timeout_placeholder_stages?: OpenAIFirstTokenTimeoutPlaceholderStage[];
   gateway_openai_oauth_first_token_timeout_placeholder_stages?: OpenAIFirstTokenTimeoutPlaceholderStage[];
   openai_pool_downstream_model_limit_protection_enabled?: boolean;

@@ -794,6 +794,11 @@ struct EdgePlan {
     edge_response_header_max_attempts: Option<u32>,
     #[serde(default)]
     edge_response_header_failover: bool,
+    /// When enabled, the final HTTP/SSE usage frame includes usage collected
+    /// from completed internal upstream attempts. WS sessions intentionally do
+    /// not use this field because each response turn is billed independently.
+    #[serde(default)]
+    expose_retried_usage: bool,
     prompt_cache_creation_optimization_mode: Option<String>,
     prompt_cache_creation_optimization_model: Option<String>,
     #[serde(default)]
@@ -6544,14 +6549,20 @@ async fn relay_upstream_direct_core_impl(
         // upstream may already have emitted a terminal/failure usage event for
         // that concrete attempt. Keep those real provider-reported tokens so
         // the single Go completion callback reflects all charged attempts.
-        // This is internal accounting only; downstream still receives only the
-        // final retried stream and its original usage event.
+        // The downstream usage payload is optionally rewritten with this
+        // total, while downstream still receives only the final retried stream.
         let mut retried_attempt_usage = Usage::default();
         let mut sanitizer = OpenAIStreamSanitizer::new_with_downstream_usage(
             response_dialect.as_deref(),
             downstream_cache_usage_mode.as_deref(),
             downstream_cache_markup.as_ref(),
         );
+        let expose_retried_usage = current_plan.expose_retried_usage;
+        sanitizer.set_downstream_usage_override(if expose_retried_usage {
+            Some(&retried_attempt_usage)
+        } else {
+            None
+        });
         let mut event_parser = SseEventParser::default();
         // Keep legacy Chat behavior unchanged. Only Responses preamble
         // events are held when the account disabled preamble flush; a missing
@@ -7096,6 +7107,13 @@ async fn relay_upstream_direct_core_impl(
                         }
                     }
                     let observation = summary.observe(&chunk);
+                    if expose_retried_usage {
+                        let mut downstream_usage = retried_attempt_usage.clone();
+                        downstream_usage.add_assign(&summary.usage);
+                        sanitizer.set_downstream_usage_override(Some(&downstream_usage));
+                    } else {
+                        sanitizer.set_downstream_usage_override(None);
+                    }
                     if observation.starts_semantic_progress && !semantic_sample_complete {
                         let now = Instant::now();
                         max_semantic_gap = max_semantic_gap.max(now.duration_since(last_semantic_progress_at));
@@ -7440,6 +7458,13 @@ async fn relay_upstream_direct_core_impl(
         let tail = if summary.failed {
             Bytes::new()
         } else {
+            if expose_retried_usage {
+                let mut downstream_usage = retried_attempt_usage.clone();
+                downstream_usage.add_assign(&summary.usage);
+                sanitizer.set_downstream_usage_override(Some(&downstream_usage));
+            } else {
+                sanitizer.set_downstream_usage_override(None);
+            }
             sanitizer.finish()
         };
         let tail_starts_output = !buffer_attempt_preamble && !tail.is_empty();
@@ -8115,6 +8140,7 @@ struct OpenAIStreamSanitizer {
     event_type: Option<String>,
     downstream_cache_usage_mode: Option<String>,
     downstream_cache_markup: Option<DownstreamCacheMarkupPolicy>,
+    downstream_usage_override: Option<Usage>,
     overflowed: bool,
 }
 
@@ -8143,8 +8169,13 @@ impl OpenAIStreamSanitizer {
             event_type: None,
             downstream_cache_usage_mode: downstream_cache_usage_mode.map(ToOwned::to_owned),
             downstream_cache_markup: downstream_cache_markup.cloned(),
+            downstream_usage_override: None,
             overflowed: false,
         }
+    }
+
+    fn set_downstream_usage_override(&mut self, usage: Option<&Usage>) {
+        self.downstream_usage_override = usage.cloned();
     }
 
     fn push(&mut self, chunk: &[u8]) -> Bytes {
@@ -8200,12 +8231,13 @@ impl OpenAIStreamSanitizer {
         };
         let mut output = Vec::with_capacity(complete.len());
         for line in complete.split_inclusive(|byte| *byte == b'\n') {
-            output.extend_from_slice(&sanitize_openai_sse_line(
+            output.extend_from_slice(&sanitize_openai_sse_line_with_usage(
                 line,
                 self.chat_dialect,
                 &mut self.event_type,
                 self.downstream_cache_usage_mode.as_deref(),
                 self.downstream_cache_markup.as_ref(),
+                self.downstream_usage_override.as_ref(),
             ));
         }
         Bytes::from(output)
@@ -8291,12 +8323,33 @@ impl SsePreambleGate {
     }
 }
 
+// Keep the original helper signature for in-crate callers while routing all
+// new work through the usage-aware implementation.
+#[allow(dead_code)]
 fn sanitize_openai_sse_line(
     line: &[u8],
     chat_dialect: bool,
     current_event_type: &mut Option<String>,
     downstream_cache_usage_mode: Option<&str>,
     downstream_cache_markup: Option<&DownstreamCacheMarkupPolicy>,
+) -> Vec<u8> {
+    sanitize_openai_sse_line_with_usage(
+        line,
+        chat_dialect,
+        current_event_type,
+        downstream_cache_usage_mode,
+        downstream_cache_markup,
+        None,
+    )
+}
+
+fn sanitize_openai_sse_line_with_usage(
+    line: &[u8],
+    chat_dialect: bool,
+    current_event_type: &mut Option<String>,
+    downstream_cache_usage_mode: Option<&str>,
+    downstream_cache_markup: Option<&DownstreamCacheMarkupPolicy>,
+    downstream_usage_override: Option<&Usage>,
 ) -> Vec<u8> {
     let text = String::from_utf8_lossy(line);
     let without_newline = text.trim_end_matches(['\r', '\n']);
@@ -8338,7 +8391,11 @@ fn sanitize_openai_sse_line(
         let normalize_usage = (downstream_cache_usage_mode.is_some()
             || downstream_cache_markup.is_some_and(DownstreamCacheMarkupPolicy::enabled))
             && openai_downstream_usage_event_candidate(&value, event_type);
+        let replaced_usage = downstream_usage_override.is_some()
+            && openai_downstream_usage_event_candidate(&value, event_type)
+            && replace_openai_downstream_usage(&mut value, downstream_usage_override.unwrap());
         let normalized = normalize_completed_image_generation_status(&mut value)
+            | replaced_usage
             | (normalize_usage
                 && normalize_openai_downstream_usage(
                     &mut value,
@@ -8504,6 +8561,169 @@ fn normalize_openai_downstream_usage(
         .and_then(Value::as_object_mut)
     {
         changed |= normalize_openai_downstream_usage_object_with_markup(usage, mode, markup);
+    }
+    changed
+}
+
+/// Replace only usage values in a downstream terminal usage payload. The
+/// provider's field naming and nested detail shape are preserved so Chat
+/// Completions and Responses clients continue to receive their expected
+/// schema. This is presentation-only; internal settlement uses `Usage`
+/// independently of the rewritten JSON.
+fn replace_openai_downstream_usage(value: &mut Value, total: &Usage) -> bool {
+    let Some(root) = value.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    if let Some(usage) = root.get_mut("usage").and_then(Value::as_object_mut) {
+        changed |= replace_openai_usage_object(usage, total);
+    }
+    if let Some(usage) = root
+        .get_mut("response")
+        .and_then(Value::as_object_mut)
+        .and_then(|response| response.get_mut("usage"))
+        .and_then(Value::as_object_mut)
+    {
+        changed |= replace_openai_usage_object(usage, total);
+    }
+    changed
+}
+
+fn replace_openai_usage_object(usage: &mut serde_json::Map<String, Value>, total: &Usage) -> bool {
+    let mut changed = false;
+    let input = total.input_tokens.max(0);
+    let output = total.output_tokens.max(0);
+    let total_tokens = input.saturating_add(output);
+
+    for key in ["input_tokens", "prompt_tokens"] {
+        if usage.contains_key(key) {
+            changed |=
+                usage.insert(key.to_string(), Value::from(input)) != Some(Value::from(input));
+        }
+    }
+    for key in ["output_tokens", "completion_tokens"] {
+        if usage.contains_key(key) {
+            changed |=
+                usage.insert(key.to_string(), Value::from(output)) != Some(Value::from(output));
+        }
+    }
+    if usage.contains_key("total_tokens") {
+        changed |= usage.insert("total_tokens".to_string(), Value::from(total_tokens))
+            != Some(Value::from(total_tokens));
+    }
+
+    for key in [
+        "cache_read_input_tokens",
+        "cache_read_tokens",
+        "cached_tokens",
+    ] {
+        if usage.contains_key(key) {
+            changed |= usage.insert(
+                key.to_string(),
+                Value::from(total.cache_read_input_tokens.max(0)),
+            ) != Some(Value::from(total.cache_read_input_tokens.max(0)));
+        }
+    }
+    for key in [
+        "cache_creation_input_tokens",
+        "cache_write_input_tokens",
+        "cache_write_tokens",
+        "cache_creation_tokens",
+    ] {
+        if usage.contains_key(key) {
+            changed |= usage.insert(
+                key.to_string(),
+                Value::from(total.cache_creation_input_tokens.max(0)),
+            ) != Some(Value::from(total.cache_creation_input_tokens.max(0)));
+        }
+    }
+
+    let details_key = if usage.contains_key("input_tokens_details") {
+        Some("input_tokens_details")
+    } else if usage.contains_key("prompt_tokens_details") {
+        Some("prompt_tokens_details")
+    } else if total.cache_read_input_tokens > 0 || total.cache_creation_input_tokens > 0 {
+        Some(if usage.contains_key("prompt_tokens") {
+            "prompt_tokens_details"
+        } else {
+            "input_tokens_details"
+        })
+    } else {
+        None
+    };
+    if let Some(details_key) = details_key {
+        let details_value = usage.get(details_key).cloned();
+        if let Some(details_value) = details_value {
+            let Some(mut details) = details_value.as_object().cloned() else {
+                return changed;
+            };
+            for key in ["cached_tokens", "cache_read_tokens"] {
+                if details.contains_key(key) {
+                    changed |= details.insert(
+                        key.to_string(),
+                        Value::from(total.cache_read_input_tokens.max(0)),
+                    ) != Some(Value::from(total.cache_read_input_tokens.max(0)));
+                }
+            }
+            for key in [
+                "cache_creation_input_tokens",
+                "cache_write_input_tokens",
+                "cache_write_tokens",
+                "cache_creation_tokens",
+            ] {
+                if details.contains_key(key) {
+                    changed |= details.insert(
+                        key.to_string(),
+                        Value::from(total.cache_creation_input_tokens.max(0)),
+                    ) != Some(Value::from(total.cache_creation_input_tokens.max(0)));
+                }
+            }
+            if total.cache_read_input_tokens > 0
+                && !details.contains_key("cached_tokens")
+                && !details.contains_key("cache_read_tokens")
+            {
+                details.insert(
+                    "cached_tokens".to_string(),
+                    Value::from(total.cache_read_input_tokens.max(0)),
+                );
+                changed = true;
+            }
+            if total.cache_creation_input_tokens > 0
+                && !details.keys().any(|key| {
+                    matches!(
+                        key.as_str(),
+                        "cache_creation_input_tokens"
+                            | "cache_write_input_tokens"
+                            | "cache_write_tokens"
+                            | "cache_creation_tokens"
+                    )
+                })
+            {
+                details.insert(
+                    "cache_creation_input_tokens".to_string(),
+                    Value::from(total.cache_creation_input_tokens.max(0)),
+                );
+                changed = true;
+            }
+            changed |= usage.insert(details_key.to_string(), Value::Object(details))
+                != Some(details_value);
+        } else if total.cache_read_input_tokens > 0 || total.cache_creation_input_tokens > 0 {
+            let mut details = serde_json::Map::new();
+            if total.cache_read_input_tokens > 0 {
+                details.insert(
+                    "cached_tokens".to_string(),
+                    Value::from(total.cache_read_input_tokens.max(0)),
+                );
+            }
+            if total.cache_creation_input_tokens > 0 {
+                details.insert(
+                    "cache_creation_input_tokens".to_string(),
+                    Value::from(total.cache_creation_input_tokens.max(0)),
+                );
+            }
+            usage.insert(details_key.to_string(), Value::Object(details));
+            changed = true;
+        }
     }
     changed
 }
@@ -12804,6 +13024,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             edge_body_idle_timeout_ms: Some(180_000),
             edge_response_header_max_attempts: Some(3),
             edge_response_header_failover: true,
+            expose_retried_usage: false,
             prompt_cache_creation_optimization_mode: None,
             prompt_cache_creation_optimization_model: None,
             prompt_cache_creation_optimization_applied: false,
@@ -13402,6 +13623,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             edge_body_idle_timeout_ms: None,
             edge_response_header_max_attempts: None,
             edge_response_header_failover: false,
+            expose_retried_usage: false,
             prompt_cache_creation_optimization_mode: None,
             prompt_cache_creation_optimization_model: None,
             prompt_cache_creation_optimization_applied: false,
@@ -13554,6 +13776,7 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             edge_body_idle_timeout_ms: None,
             edge_response_header_max_attempts: None,
             edge_response_header_failover: false,
+            expose_retried_usage: false,
             prompt_cache_creation_optimization_mode: None,
             prompt_cache_creation_optimization_model: None,
             prompt_cache_creation_optimization_applied: false,
@@ -13776,6 +13999,78 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
             assert!(!normalize_openai_downstream_cache_usage(&mut value, mode));
             assert_eq!(value, original);
         }
+    }
+
+    #[test]
+    fn downstream_retried_usage_rewrites_only_the_final_usage_payload() {
+        let total = Usage {
+            input_tokens: 120,
+            output_tokens: 9,
+            cache_creation_input_tokens: 3,
+            cache_read_input_tokens: 80,
+        };
+        let mut event_type = None;
+        let responses = sanitize_openai_sse_line_with_usage(
+            br#"data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"input_tokens_details":{"cached_tokens":4}}}}
+"#,
+            false,
+            &mut event_type,
+            None,
+            None,
+            Some(&total),
+        );
+        let text = String::from_utf8(responses).expect("valid SSE");
+        let value: Value = serde_json::from_str(
+            text.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data line"),
+        )
+        .expect("JSON payload");
+        assert_eq!(value["response"]["usage"]["input_tokens"], 120);
+        assert_eq!(value["response"]["usage"]["output_tokens"], 9);
+        assert_eq!(value["response"]["usage"]["total_tokens"], 129);
+        assert_eq!(
+            value["response"]["usage"]["input_tokens_details"]["cached_tokens"],
+            80
+        );
+
+        let mut event_type = None;
+        let chat = sanitize_openai_sse_line_with_usage(
+            br#"data: {"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":4}}}
+"#,
+            true,
+            &mut event_type,
+            None,
+            None,
+            Some(&total),
+        );
+        let text = String::from_utf8(chat).expect("valid SSE");
+        let value: Value = serde_json::from_str(
+            text.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data line"),
+        )
+        .expect("JSON payload");
+        assert_eq!(value["usage"]["prompt_tokens"], 120);
+        assert_eq!(value["usage"]["completion_tokens"], 9);
+        assert_eq!(value["usage"]["total_tokens"], 129);
+        assert_eq!(value["usage"]["prompt_tokens_details"]["cached_tokens"], 80);
+    }
+
+    #[test]
+    fn downstream_retried_usage_disabled_preserves_provider_payload() {
+        let mut event_type = None;
+        let output = sanitize_openai_sse_line_with_usage(
+            br#"data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}
+"#,
+            false,
+            &mut event_type,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(output, br#"data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}
+"#);
     }
 
     #[test]

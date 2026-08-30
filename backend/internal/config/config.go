@@ -1111,6 +1111,9 @@ type GatewaySchedulingRuntime struct {
 	EdgeBodyIdleTimeoutMS         int
 	EdgeResponseHeaderMaxAttempts int
 	EdgeResponseHeaderFailover    bool
+	// EdgeExposeRetriedUsage controls whether edge-rs exposes usage accumulated
+	// across internal upstream retries in the single downstream usage frame.
+	EdgeExposeRetriedUsage bool
 	// EdgeProtectionConfigured distinguishes an explicitly published Edge
 	// profile from legacy runtime updates that predate these fields.
 	EdgeProtectionConfigured bool
@@ -1128,13 +1131,14 @@ func (c *Config) GatewayEdgeProtection() GatewaySchedulingRuntime {
 		EdgeBodyIdleTimeoutMS:         180000,
 		EdgeResponseHeaderMaxAttempts: 3,
 		EdgeResponseHeaderFailover:    true,
+		EdgeExposeRetriedUsage:        false,
 	}
 	if c == nil {
 		return result
 	}
 	if pointer := c.schedulingRuntimePointer(); pointer != nil {
 		if live := pointer.Load(); live != nil {
-			if !live.EdgeProtectionConfigured && live.EdgeConnectTimeoutMS == 0 && live.EdgeResponseHeaderTimeoutMS == 0 && live.EdgeResponseHeaderBudgetMS == 0 && live.EdgeBodyIdleTimeoutMS == 0 && live.EdgeResponseHeaderMaxAttempts == 0 {
+			if !live.EdgeProtectionConfigured && live.EdgeConnectTimeoutMS == 0 && live.EdgeResponseHeaderTimeoutMS == 0 && live.EdgeResponseHeaderBudgetMS == 0 && live.EdgeBodyIdleTimeoutMS == 0 && live.EdgeResponseHeaderMaxAttempts == 0 && !live.EdgeExposeRetriedUsage {
 				return result
 			}
 			if live.EdgeConnectTimeoutMS > 0 {
@@ -1154,6 +1158,7 @@ func (c *Config) GatewayEdgeProtection() GatewaySchedulingRuntime {
 			}
 			result.EdgeProtectionEnabled = live.EdgeProtectionEnabled
 			result.EdgeResponseHeaderFailover = live.EdgeResponseHeaderFailover
+			result.EdgeExposeRetriedUsage = live.EdgeExposeRetriedUsage
 		}
 	}
 	return result

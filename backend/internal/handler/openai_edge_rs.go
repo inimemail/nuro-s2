@@ -1092,6 +1092,7 @@ func (h *OpenAIGatewayHandler) applyOpenAIEdgeProtection(plan *service.OpenAIEdg
 	plan.EdgeBodyIdleTimeoutMS = profile.EdgeBodyIdleTimeoutMS
 	plan.EdgeResponseHeaderMaxAttempts = profile.EdgeResponseHeaderMaxAttempts
 	plan.EdgeResponseHeaderFailover = profile.EdgeResponseHeaderFailover
+	plan.ExposeRetriedUsage = profile.EdgeExposeRetriedUsage
 	if plan.EdgeProtectionGroupEnabled != nil && !*plan.EdgeProtectionGroupEnabled {
 		plan.EdgeProtectionEnabled = false
 	}

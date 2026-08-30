@@ -416,6 +416,7 @@ func TestSettingService_ParseSettings_GatewayConcurrencyDefaults(t *testing.T) {
 	require.Equal(t, 180000, got.GatewayEdgeBodyIdleTimeoutMS)
 	require.Equal(t, 3, got.GatewayEdgeResponseHeaderMaxAttempts)
 	require.True(t, got.GatewayEdgeResponseHeaderFailover)
+	require.False(t, got.GatewayEdgeExposeRetriedUsage)
 }
 
 func TestSettingService_UpdateSettings_EdgeProtectionRefreshesRuntime(t *testing.T) {
@@ -431,6 +432,7 @@ func TestSettingService_UpdateSettings_EdgeProtectionRefreshesRuntime(t *testing
 		GatewayEdgeBodyIdleTimeoutMS:         120000,
 		GatewayEdgeResponseHeaderMaxAttempts: 2,
 		GatewayEdgeResponseHeaderFailover:    false,
+		GatewayEdgeExposeRetriedUsage:        true,
 	})
 	require.NoError(t, err)
 	profile := cfg.GatewayEdgeProtection()
@@ -441,6 +443,7 @@ func TestSettingService_UpdateSettings_EdgeProtectionRefreshesRuntime(t *testing
 	require.Equal(t, 120000, profile.EdgeBodyIdleTimeoutMS)
 	require.Equal(t, 2, profile.EdgeResponseHeaderMaxAttempts)
 	require.False(t, profile.EdgeResponseHeaderFailover)
+	require.True(t, profile.EdgeExposeRetriedUsage)
 }
 
 func TestSettingService_ParseSettings_OpenAIHeaderTimeout(t *testing.T) {

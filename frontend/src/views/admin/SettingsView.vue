@@ -4453,6 +4453,27 @@
                   data-test="gateway-edge-protection-toggle"
                 />
               </div>
+              <div class="mt-3 flex w-full items-center justify-between gap-4 rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-3 dark:border-amber-900/60 dark:bg-amber-950/20">
+                <div class="flex min-w-0 items-start gap-3">
+                  <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+                    <Icon name="database" size="sm" />
+                  </div>
+                  <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="text-sm font-semibold text-gray-800 dark:text-gray-100">{{ t("admin.settings.gatewayEdgeProtection.exposeRetriedUsage") }}</span>
+                      <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold" :class="form.gateway_edge_expose_retried_usage ? 'border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-200' : 'border-gray-200 bg-white text-gray-500 dark:border-dark-500 dark:bg-dark-700 dark:text-gray-300'">
+                        {{ form.gateway_edge_expose_retried_usage ? t("admin.settings.gatewayEdgeProtection.exposeRetriedUsageOn") : t("admin.settings.gatewayEdgeProtection.exposeRetriedUsageOff") }}
+                      </span>
+                    </div>
+                    <p class="mt-1 text-xs leading-5 text-gray-600 dark:text-gray-400">{{ t("admin.settings.gatewayEdgeProtection.exposeRetriedUsageHint") }}</p>
+                  </div>
+                </div>
+                <Toggle
+                  v-model="form.gateway_edge_expose_retried_usage"
+                  :aria-label="t('admin.settings.gatewayEdgeProtection.exposeRetriedUsage')"
+                  data-test="gateway-edge-expose-retried-usage-toggle"
+                />
+              </div>
             </div>
             <div class="grid gap-5 p-6 sm:grid-cols-2 lg:grid-cols-3">
               <div>
@@ -9057,6 +9078,7 @@ const form = reactive<SettingsForm>({
   gateway_edge_body_idle_timeout_ms: 180000,
   gateway_edge_response_header_max_attempts: 3,
   gateway_edge_response_header_failover: true,
+  gateway_edge_expose_retried_usage: false,
   gateway_openai_apikey_first_token_timeout_placeholder_stages: [
     { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
     { stage: 2, placeholder_ms: 3000, guard_max_ms: 10000 },
@@ -9149,6 +9171,7 @@ const gatewayEdgeProtectionDefaults = Object.freeze({
   gateway_edge_body_idle_timeout_ms: 180000,
   gateway_edge_response_header_max_attempts: 3,
   gateway_edge_response_header_failover: true,
+  gateway_edge_expose_retried_usage: false,
 });
 
 function resetGatewayConcurrencyDefaults(): void {
@@ -10541,6 +10564,7 @@ async function saveSettings() {
       gateway_edge_body_idle_timeout_ms: Math.floor(Number(form.gateway_edge_body_idle_timeout_ms)),
       gateway_edge_response_header_max_attempts: Math.floor(Number(form.gateway_edge_response_header_max_attempts)),
       gateway_edge_response_header_failover: form.gateway_edge_response_header_failover,
+      gateway_edge_expose_retried_usage: form.gateway_edge_expose_retried_usage,
       gateway_openai_apikey_first_token_timeout_placeholder_stages: form.gateway_openai_apikey_first_token_timeout_placeholder_stages.map((stage, index) => ({
         stage: index + 1,
         placeholder_ms: Math.floor(Number(stage.placeholder_ms)),

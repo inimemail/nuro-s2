@@ -211,6 +211,7 @@ type SystemSettings struct {
 	GatewayEdgeBodyIdleTimeoutMS                          int
 	GatewayEdgeResponseHeaderMaxAttempts                  int
 	GatewayEdgeResponseHeaderFailover                     bool
+	GatewayEdgeExposeRetriedUsage                         bool
 	GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages []OpenAIFirstTokenTimeoutPlaceholderStage
 	GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages  []OpenAIFirstTokenTimeoutPlaceholderStage
 	// OpenAI 池下游模型限流保护：默认开启；开启后模型路由错误不会对下游返回 404/model_not_found。

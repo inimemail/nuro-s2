@@ -37,6 +37,12 @@ func TestOpenAIEdgePlanAlwaysSerializesPreambleFlushFlag(t *testing.T) {
 	if gjson.GetBytes(payload, "preamble_flush").Bool() {
 		t.Fatal("expected zero-value preamble_flush to serialize as false")
 	}
+	if !gjson.GetBytes(payload, "expose_retried_usage").Exists() {
+		t.Fatalf("expected explicit expose_retried_usage=false in serialized plan: %s", payload)
+	}
+	if gjson.GetBytes(payload, "expose_retried_usage").Bool() {
+		t.Fatal("expected zero-value expose_retried_usage to serialize as false")
+	}
 }
 
 func TestOpenAIEdgeRawRelayEligibleForInboundEndpoint(t *testing.T) {

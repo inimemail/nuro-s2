@@ -87,6 +87,9 @@ type OpenAIEdgePlan struct {
 	EdgeBodyIdleTimeoutMS         int  `json:"edge_body_idle_timeout_ms,omitempty"`
 	EdgeResponseHeaderMaxAttempts int  `json:"edge_response_header_max_attempts,omitempty"`
 	EdgeResponseHeaderFailover    bool `json:"edge_response_header_failover"`
+	// ExposeRetriedUsage controls the downstream usage frame only. Go still
+	// receives the complete provider usage through the completion callback.
+	ExposeRetriedUsage bool `json:"expose_retried_usage"`
 	// Go-only group override; the final EdgeProtectionEnabled value is sent on wire.
 	EdgeProtectionGroupEnabled *bool `json:"-"`
 	// SSECommentPreflush mirrors the account-level APIKey/OAuth setting that

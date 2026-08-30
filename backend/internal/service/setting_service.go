@@ -817,6 +817,7 @@ func (s *SettingService) applyGatewayRuntimeSettings(settings *SystemSettings) {
 		EdgeBodyIdleTimeoutMS:         settings.GatewayEdgeBodyIdleTimeoutMS,
 		EdgeResponseHeaderMaxAttempts: settings.GatewayEdgeResponseHeaderMaxAttempts,
 		EdgeResponseHeaderFailover:    settings.GatewayEdgeResponseHeaderFailover,
+		EdgeExposeRetriedUsage:        settings.GatewayEdgeExposeRetriedUsage,
 		EdgeProtectionConfigured:      true,
 	})
 }
@@ -2315,6 +2316,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyGatewayEdgeBodyIdleTimeoutMS] = strconv.Itoa(settings.GatewayEdgeBodyIdleTimeoutMS)
 	updates[SettingKeyGatewayEdgeResponseHeaderMaxAttempts] = strconv.Itoa(settings.GatewayEdgeResponseHeaderMaxAttempts)
 	updates[SettingKeyGatewayEdgeResponseHeaderFailover] = strconv.FormatBool(settings.GatewayEdgeResponseHeaderFailover)
+	updates[SettingKeyGatewayEdgeExposeRetriedUsage] = strconv.FormatBool(settings.GatewayEdgeExposeRetriedUsage)
 	updates[SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages] = string(apiKeyStagesJSON)
 	updates[SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages] = string(oauthStagesJSON)
 	updates[SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled] = strconv.FormatBool(settings.OpenAIPoolDownstreamModelLimitProtectionEnabled)
@@ -3646,6 +3648,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyGatewayEdgeBodyIdleTimeoutMS:                          "180000",
 		SettingKeyGatewayEdgeResponseHeaderMaxAttempts:                  "3",
 		SettingKeyGatewayEdgeResponseHeaderFailover:                     "true",
+		SettingKeyGatewayEdgeExposeRetriedUsage:                         "false",
 		SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: string(defaultFirstTokenStagesJSON),
 		SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  string(defaultFirstTokenStagesJSON),
 		SettingKeyOpenAIPoolDownstreamModelLimitProtectionEnabled:       "true",
@@ -4229,6 +4232,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.GatewayEdgeBodyIdleTimeoutMS = parsePositiveIntSetting(settings[SettingKeyGatewayEdgeBodyIdleTimeoutMS], 180000)
 	result.GatewayEdgeResponseHeaderMaxAttempts = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayEdgeResponseHeaderMaxAttempts], 3), 1, 100)
 	result.GatewayEdgeResponseHeaderFailover = !isFalseSettingValue(settings[SettingKeyGatewayEdgeResponseHeaderFailover])
+	result.GatewayEdgeExposeRetriedUsage = settings[SettingKeyGatewayEdgeExposeRetriedUsage] == "true"
 	result.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages = parseGatewayFirstTokenTimeoutPlaceholderStages(
 		settings[SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages],
 	)

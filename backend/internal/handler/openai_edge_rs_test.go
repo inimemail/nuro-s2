@@ -947,6 +947,22 @@ func TestApplyOpenAIEdgeProtectionHonorsGroupDisableOverride(t *testing.T) {
 	}
 }
 
+func TestApplyOpenAIEdgeProtectionCarriesRetriedUsageSetting(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
+		EdgeExposeRetriedUsage:   true,
+		EdgeProtectionConfigured: true,
+	})
+	plan := service.OpenAIEdgePlan{}
+	h := &OpenAIGatewayHandler{cfg: cfg}
+
+	h.applyOpenAIEdgeProtection(&plan)
+
+	if !plan.ExposeRetriedUsage {
+		t.Fatal("expected global retried usage setting to be carried into the Edge plan")
+	}
+}
+
 func TestOpenAIEdgeRetryRejectedFieldsSurviveCachePolicyFallback(t *testing.T) {
 	cfg := &config.Config{}
 	gatewaySvc := service.NewOpenAIGatewayService(
