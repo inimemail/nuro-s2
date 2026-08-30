@@ -577,6 +577,31 @@ edge_env_value_or_default() {
     fi
 }
 
+# Return the current value unless it is one of the historical defaults that
+# this installer previously generated. This lets upgrades adopt safer/current
+# defaults without overwriting an operator's explicit tuning.
+edge_env_value_or_upgrade_default() {
+    local key="$1"
+    local default_value="$2"
+    shift 2
+    local file="${EDGE_ENV_READ_FILE:-$INSTALL_DIR/edge-rs.env}"
+    local current
+
+    if [ ! -f "$file" ] || ! grep -qE "^${key}=" "$file"; then
+        printf '%s\n' "$default_value"
+        return
+    fi
+
+    current=$(grep -E "^${key}=" "$file" | tail -n 1 | cut -d= -f2- || true)
+    for old_value in "$@"; do
+        if [ "$current" = "$old_value" ]; then
+            printf '%s\n' "$default_value"
+            return
+        fi
+    done
+    printf '%s\n' "$current"
+}
+
 edge_go_base_url() {
     local host="$SERVER_HOST"
     case "$host" in
@@ -640,11 +665,11 @@ SUB2API_EDGE_PREPARE_TIMEOUT_MS=$(edge_env_value_or_default "SUB2API_EDGE_PREPAR
 SUB2API_EDGE_COMPLETE_TIMEOUT_MS=$(edge_env_value_or_default "SUB2API_EDGE_COMPLETE_TIMEOUT_MS" "1500")
 SUB2API_EDGE_DRAIN_TIMEOUT_SECS=$(edge_env_value_or_default "SUB2API_EDGE_DRAIN_TIMEOUT_SECS" "30")
 SUB2API_EDGE_INITIAL_POOL_SIZE=$(edge_env_value_or_default "SUB2API_EDGE_INITIAL_POOL_SIZE" "512")
-SUB2API_EDGE_QUEUE_BUFFER_SIZE=$(edge_env_value_or_default "SUB2API_EDGE_QUEUE_BUFFER_SIZE" "512")
-SUB2API_EDGE_QUEUE_MAX_BYTES=$(edge_env_value_or_default "SUB2API_EDGE_QUEUE_MAX_BYTES" "268435456")
+SUB2API_EDGE_QUEUE_BUFFER_SIZE=$(edge_env_value_or_upgrade_default "SUB2API_EDGE_QUEUE_BUFFER_SIZE" "8192" "128" "512" "2000" "20000")
+SUB2API_EDGE_QUEUE_MAX_BYTES=$(edge_env_value_or_upgrade_default "SUB2API_EDGE_QUEUE_MAX_BYTES" "2147483648" "67108864" "268435456")
 SUB2API_EDGE_MAX_HEADER_BYTES=$(edge_env_value_or_default "SUB2API_EDGE_MAX_HEADER_BYTES" "65536")
 SUB2API_EDGE_INGRESS_BODY_MAX_BYTES=$(edge_env_value_or_default "SUB2API_EDGE_INGRESS_BODY_MAX_BYTES" "2147483648")
-SUB2API_EDGE_GLOBAL_WORKERS=$(edge_env_value_or_default "SUB2API_EDGE_GLOBAL_WORKERS" "9999")
+SUB2API_EDGE_GLOBAL_WORKERS=$(edge_env_value_or_upgrade_default "SUB2API_EDGE_GLOBAL_WORKERS" "131072" "256" "512" "9999")
 SUB2API_EDGE_PER_ACCOUNT_WORKERS=$(edge_env_value_or_default "SUB2API_EDGE_PER_ACCOUNT_WORKERS" "0")
 SUB2API_EDGE_MAX_RELAY_DOMAINS=$(edge_env_value_or_default "SUB2API_EDGE_MAX_RELAY_DOMAINS" "4096")
 SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS=$(edge_env_value_or_default "SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS" "300")
@@ -652,17 +677,20 @@ SUB2API_EDGE_MAX_PROXY_CLIENTS=$(edge_env_value_or_default "SUB2API_EDGE_MAX_PRO
 SUB2API_EDGE_PROXY_CLIENT_IDLE_SECS=$(edge_env_value_or_default "SUB2API_EDGE_PROXY_CLIENT_IDLE_SECS" "300")
 SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT=$(edge_env_value_or_default "SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT" "128")
 SUB2API_EDGE_UPSTREAM_LANE_POOL_ENABLED=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_LANE_POOL_ENABLED" "true")
-SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT" "32")
-SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER" "24")
-SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS" "250")
-SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX" "2")
-SUB2API_EDGE_UPSTREAM_LANE_MAX=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_LANE_MAX" "4")
+SUB2API_EDGE_UPSTREAM_LANE_INITIAL=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_LANE_INITIAL" "64")
+SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT=$(edge_env_value_or_upgrade_default "SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT" "64" "32")
+SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER=$(edge_env_value_or_upgrade_default "SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER" "32" "24")
+SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS=$(edge_env_value_or_upgrade_default "SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS" "10" "250")
+SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX=$(edge_env_value_or_upgrade_default "SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX" "64" "2")
+SUB2API_EDGE_UPSTREAM_LANE_MAX=$(edge_env_value_or_upgrade_default "SUB2API_EDGE_UPSTREAM_LANE_MAX" "256" "4")
+SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_STEP=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_STEP" "32")
+SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_COOLDOWN_MS=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_COOLDOWN_MS" "50")
 SUB2API_EDGE_UPSTREAM_LANE_IDLE_SECS=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_LANE_IDLE_SECS" "300")
 SUB2API_EDGE_UPSTREAM_POOL_IDLE_SECS=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_POOL_IDLE_SECS" "1200")
-SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS" "1024")
-SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES=$(edge_env_value_or_default "SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES" "2048")
+SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS=$(edge_env_value_or_upgrade_default "SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS" "8192" "1024")
+SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES=$(edge_env_value_or_upgrade_default "SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES" "65536" "2048")
 SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE=$(edge_env_value_or_default "SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE" "32")
-    SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=$(edge_env_value_or_default "SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS" "50")
+SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=$(edge_env_value_or_upgrade_default "SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS" "100" "50" "150")
 SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH=$(edge_env_value_or_default "SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH" "true")
 SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES=$(edge_env_value_or_default "SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES" "262144")
 SUB2API_EDGE_WS_IDLE_PER_KEY=$(edge_env_value_or_default "SUB2API_EDGE_WS_IDLE_PER_KEY" "1")
@@ -994,6 +1022,7 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sub2api
+LimitNOFILE=1048576
 
 # Security hardening
 NoNewPrivileges=true
@@ -1035,11 +1064,13 @@ ensure_main_service_edge_env() {
     local add_max_header_bytes=1
     local add_graceful_shutdown_timeout=1
     local add_timeout_stop=1
+    local add_limit_nofile=1
     grep -q 'edge-rs\.env' "$service_file" && add_edge_env=0
     grep -q 'SERVER_READ_HEADER_TIMEOUT=' "$service_file" && add_read_header_timeout=0
     grep -q 'SERVER_MAX_HEADER_BYTES=' "$service_file" && add_max_header_bytes=0
     grep -q 'SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=' "$service_file" && add_graceful_shutdown_timeout=0
     grep -Eq '^[[:space:]]*TimeoutStopSec[[:space:]]*=' "$service_file" && add_timeout_stop=0
+    grep -Eq '^[[:space:]]*LimitNOFILE[[:space:]]*=' "$service_file" && add_limit_nofile=0
 
     tmp_file=$(mktemp)
     awk \
@@ -1047,7 +1078,8 @@ ensure_main_service_edge_env() {
         -v add_read_header_timeout="$add_read_header_timeout" \
         -v add_max_header_bytes="$add_max_header_bytes" \
         -v add_graceful_shutdown_timeout="$add_graceful_shutdown_timeout" \
-        -v add_timeout_stop="$add_timeout_stop" '
+        -v add_timeout_stop="$add_timeout_stop" \
+        -v add_limit_nofile="$add_limit_nofile" '
         BEGIN { in_service = 0; added = 0 }
         /^\[Service\]$/ { in_service = 1; print; next }
         /^\[/ && in_service && !added {
@@ -1056,6 +1088,7 @@ ensure_main_service_edge_env() {
             if (add_max_header_bytes) print "Environment=SERVER_MAX_HEADER_BYTES=65536"
             if (add_graceful_shutdown_timeout) print "Environment=SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=5"
             if (add_timeout_stop) print "TimeoutStopSec=15"
+            if (add_limit_nofile) print "LimitNOFILE=1048576"
             added = 1
             in_service = 0
         }
@@ -1067,6 +1100,7 @@ ensure_main_service_edge_env() {
                 if (add_max_header_bytes) print "Environment=SERVER_MAX_HEADER_BYTES=65536"
                 if (add_graceful_shutdown_timeout) print "Environment=SERVER_GRACEFUL_SHUTDOWN_TIMEOUT=5"
                 if (add_timeout_stop) print "TimeoutStopSec=15"
+                if (add_limit_nofile) print "LimitNOFILE=1048576"
             }
         }
     ' "$service_file" > "$tmp_file"
@@ -1110,6 +1144,7 @@ TimeoutStopSec=35
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sub2api-edge-rs
+LimitNOFILE=1048576
 
 NoNewPrivileges=true
 ProtectSystem=strict

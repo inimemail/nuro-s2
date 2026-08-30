@@ -21,28 +21,31 @@ $env:SUB2API_EDGE_PREPARE_TIMEOUT_MS = "1500"
 $env:SUB2API_EDGE_COMPLETE_TIMEOUT_MS = "1500"
 $env:SUB2API_EDGE_DRAIN_TIMEOUT_SECS = "30"
 $env:SUB2API_EDGE_INITIAL_POOL_SIZE = "512"
-$env:SUB2API_EDGE_QUEUE_BUFFER_SIZE = "512"
+$env:SUB2API_EDGE_QUEUE_BUFFER_SIZE = "8192"
 $env:SUB2API_EDGE_INGRESS_BODY_MAX_BYTES = "2147483648"
-$env:SUB2API_EDGE_QUEUE_MAX_BYTES = "268435456"
+$env:SUB2API_EDGE_QUEUE_MAX_BYTES = "2147483648"
 # 1-999999999 concurrent relay requests per Edge replica.
-$env:SUB2API_EDGE_GLOBAL_WORKERS = "9999"
+$env:SUB2API_EDGE_GLOBAL_WORKERS = "131072"
 # 0 disables the per-account relay semaphore.
 $env:SUB2API_EDGE_PER_ACCOUNT_WORKERS = "0"
 $env:SUB2API_EDGE_MAX_RELAY_DOMAINS = "4096"
 $env:SUB2API_EDGE_MAX_DYNAMIC_WARM_KEYS = "4096"
 $env:SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT = "128"
 $env:SUB2API_EDGE_UPSTREAM_LANE_POOL_ENABLED = "true"
-$env:SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT = "32"
-$env:SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER = "24"
-$env:SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS = "250"
-$env:SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX = "2"
-$env:SUB2API_EDGE_UPSTREAM_LANE_MAX = "4"
+$env:SUB2API_EDGE_UPSTREAM_LANE_INITIAL = "64"
+$env:SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT = "64"
+$env:SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER = "32"
+$env:SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS = "10"
+$env:SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX = "64"
+$env:SUB2API_EDGE_UPSTREAM_LANE_MAX = "256"
+$env:SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_STEP = "32"
+$env:SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_COOLDOWN_MS = "50"
 $env:SUB2API_EDGE_UPSTREAM_LANE_IDLE_SECS = "300"
 $env:SUB2API_EDGE_UPSTREAM_POOL_IDLE_SECS = "1200"
-$env:SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS = "1024"
-$env:SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES = "2048"
+$env:SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS = "8192"
+$env:SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES = "65536"
 $env:SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE = "32"
-$env:SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS = "50"
+$env:SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS = "100"
 $env:SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH = "true"
 $env:SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES = "262144"
 $env:SUB2API_EDGE_WS_IDLE_PER_KEY = "1"
@@ -73,6 +76,12 @@ the connection lazily. Existing dynamic and explicit keep-warm work remains on
 the legacy client and does not create, expand, target, or refresh the
 business-idle lifetime of an adaptive lane. Pool-key or total-lane exhaustion
 uses the legacy client path instead of rejecting an otherwise valid request.
+New groups start with up to 64 unknown-protocol lanes. After any lane confirms
+HTTP/2, sustained aggregate header pressure expands that group in batches of up
+to 32 lanes, capped at 256 per group and 65,536 lanes per Edge process. HTTP/1
+groups stop expanding and return to the legacy client path. Expansion happens in
+the background, so the 10ms pressure sample and 50ms cooldown do not add to
+request TTFT.
 After an origin is observed using HTTP/1.x, later requests for that pool key
 also return to the legacy reqwest client. If both the lane registry and the
 legacy proxy-client registry are full, request-scoped proxy clients are bounded

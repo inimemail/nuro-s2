@@ -403,10 +403,10 @@ gateway:
     # Edge data-plane pools and queues. Go still owns scheduling decisions; the
     # Rust edge uses one global queue plus per account/proxy/upstream permits.
     initial_pool_size: 512
-    queue_buffer_size: 512
-    queue_max_bytes: 268435456
+    queue_buffer_size: 8192
+    queue_max_bytes: 2147483648
     # 1-999999999 per Edge replica; restart Edge after changing the environment value.
-    global_workers: 9999
+    global_workers: 131072
     # 0 disables the per-account relay semaphore.
     per_account_workers: 0
     max_relay_domains: 4096
@@ -428,15 +428,18 @@ gateway:
     # SUB2API_EDGE_UPSTREAM_LANE_POOL_ENABLED=true
     # Only positive-account APIKey HTTP/SSE relay plans use the lane pool;
     # OAuth, WebSocket, missing-account, and legacy plans keep the old client.
-    # SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT=32
-    # SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER=24
-    # SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS=250
-    # SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX=2
-    # SUB2API_EDGE_UPSTREAM_LANE_MAX=4
+    # SUB2API_EDGE_UPSTREAM_LANE_INITIAL=64
+    # SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT=64
+    # SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER=32
+    # SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS=10
+    # SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX=64
+    # SUB2API_EDGE_UPSTREAM_LANE_MAX=256
+    # SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_STEP=32
+    # SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_COOLDOWN_MS=50
     # SUB2API_EDGE_UPSTREAM_LANE_IDLE_SECS=300
     # SUB2API_EDGE_UPSTREAM_POOL_IDLE_SECS=1200
-    # SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS=1024
-    # SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES=2048
+    # SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS=8192
+    # SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES=65536
     # SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE=32
     # AUTOSCALE_UPSTREAM_LANE_PRESSURE_ENABLED=true
     # Independent autoscaler error guards (deployment environment only):

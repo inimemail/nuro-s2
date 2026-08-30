@@ -25,15 +25,17 @@ use ring::{
 };
 use tracing::debug;
 
-const DEFAULT_MAX_KEYS: usize = 1024;
-const DEFAULT_MAX_TOTAL_LANES: usize = 2048;
-const DEFAULT_MAX_H2_LANES: usize = 4;
-const DEFAULT_MAX_UNKNOWN_LANES: usize = 2;
+const DEFAULT_MAX_KEYS: usize = 8192;
+const DEFAULT_MAX_TOTAL_LANES: usize = 65_536;
+const DEFAULT_INITIAL_LANES: usize = 64;
+const DEFAULT_MAX_H2_LANES: usize = 256;
+const DEFAULT_MAX_UNKNOWN_LANES: usize = 64;
 const LANE_MAX_IDLE_PER_HOST: usize = 1;
-const DEFAULT_HIGH_WATER_INFLIGHT: u64 = 24;
-const DEFAULT_TARGET_INFLIGHT: u64 = 32;
-const DEFAULT_PRESSURE_DURATION: Duration = Duration::from_millis(250);
-const EXPANSION_COOLDOWN: Duration = Duration::from_secs(1);
+const DEFAULT_HIGH_WATER_INFLIGHT: u64 = 32;
+const DEFAULT_TARGET_INFLIGHT: u64 = 64;
+const DEFAULT_PRESSURE_DURATION: Duration = Duration::from_millis(10);
+const DEFAULT_EXPANSION_STEP: usize = 32;
+const DEFAULT_EXPANSION_COOLDOWN: Duration = Duration::from_millis(50);
 const DEFAULT_IDLE_LANE_TTL: Duration = Duration::from_secs(300);
 const DEFAULT_IDLE_POOL_TTL: Duration = Duration::from_secs(1200);
 
@@ -57,10 +59,12 @@ pub struct HttpLanePoolConfig {
     pub max_keys: usize,
     pub max_total_lanes: usize,
     pub max_idle_per_host: usize,
+    pub initial_lanes: usize,
+    pub expansion_step: usize,
     pub target_inflight: u64,
     pub high_water_inflight: u64,
     pub pressure_duration: Duration,
-    expansion_cooldown: Duration,
+    pub expansion_cooldown: Duration,
     pub max_unknown_lanes: usize,
     pub max_h2_lanes: usize,
     pub idle_lane_ttl: Duration,
@@ -81,13 +85,16 @@ impl HttpLanePoolConfig {
         .clamp(1, 65_536)
         .max(high_water_inflight);
         let max_h2_lanes =
-            env_usize("SUB2API_EDGE_UPSTREAM_LANE_MAX", DEFAULT_MAX_H2_LANES).clamp(1, 64);
+            env_usize("SUB2API_EDGE_UPSTREAM_LANE_MAX", DEFAULT_MAX_H2_LANES).clamp(1, 256);
         let max_unknown_lanes = env_usize(
             "SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX",
             DEFAULT_MAX_UNKNOWN_LANES,
         )
         .clamp(1, 64)
         .min(max_h2_lanes);
+        let initial_lanes = env_usize("SUB2API_EDGE_UPSTREAM_LANE_INITIAL", DEFAULT_INITIAL_LANES)
+            .clamp(1, 256)
+            .min(max_unknown_lanes);
         Self {
             enabled: env_bool("SUB2API_EDGE_UPSTREAM_LANE_POOL_ENABLED", true),
             max_keys: env_usize("SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS", DEFAULT_MAX_KEYS)
@@ -101,6 +108,12 @@ impl HttpLanePoolConfig {
             // connection. Retaining the legacy per-host idle allowance in
             // every lane would multiply the process-wide FD ceiling.
             max_idle_per_host: LANE_MAX_IDLE_PER_HOST,
+            initial_lanes,
+            expansion_step: env_usize(
+                "SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_STEP",
+                DEFAULT_EXPANSION_STEP,
+            )
+            .clamp(1, 256),
             target_inflight,
             high_water_inflight,
             pressure_duration: Duration::from_millis(
@@ -110,7 +123,13 @@ impl HttpLanePoolConfig {
                 )
                 .clamp(1, 60_000),
             ),
-            expansion_cooldown: EXPANSION_COOLDOWN,
+            expansion_cooldown: Duration::from_millis(
+                env_u64(
+                    "SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_COOLDOWN_MS",
+                    DEFAULT_EXPANSION_COOLDOWN.as_millis() as u64,
+                )
+                .clamp(1, 60_000),
+            ),
             max_unknown_lanes,
             max_h2_lanes,
             idle_lane_ttl: Duration::from_secs(
@@ -138,12 +157,16 @@ impl Default for HttpLanePoolConfig {
             max_keys: DEFAULT_MAX_KEYS,
             max_total_lanes: DEFAULT_MAX_TOTAL_LANES,
             max_idle_per_host: LANE_MAX_IDLE_PER_HOST,
+            // Keep the trait default deliberately small for embedded/unit-test
+            // construction. The production process always uses from_env().
+            initial_lanes: 1,
+            expansion_step: 1,
             target_inflight: DEFAULT_TARGET_INFLIGHT,
             high_water_inflight: DEFAULT_HIGH_WATER_INFLIGHT,
             pressure_duration: DEFAULT_PRESSURE_DURATION,
-            expansion_cooldown: EXPANSION_COOLDOWN,
-            max_unknown_lanes: DEFAULT_MAX_UNKNOWN_LANES,
-            max_h2_lanes: DEFAULT_MAX_H2_LANES,
+            expansion_cooldown: DEFAULT_EXPANSION_COOLDOWN,
+            max_unknown_lanes: 2,
+            max_h2_lanes: 4,
             idle_lane_ttl: DEFAULT_IDLE_LANE_TTL,
             idle_pool_ttl: DEFAULT_IDLE_POOL_TTL,
         }
@@ -394,15 +417,23 @@ impl LaneGroup {
     }
 
     fn is_under_pressure(&self, config: &HttpLanePoolConfig) -> bool {
-        !self.has_h1()
-            && self
-                .lanes
-                .iter()
-                .all(|lane| lane.inflight.load(Ordering::Relaxed) >= config.high_water_inflight)
-            && self
-                .lanes
-                .iter()
-                .any(|lane| lane.awaiting_headers.load(Ordering::Relaxed) > 0)
+        if self.has_h1() || self.lanes.is_empty() {
+            return false;
+        }
+        let total_inflight = self.lanes.iter().fold(0_u64, |total, lane| {
+            total.saturating_add(lane.inflight.load(Ordering::Relaxed))
+        });
+        let awaiting_headers = self
+            .lanes
+            .iter()
+            .any(|lane| lane.awaiting_headers.load(Ordering::Relaxed) > 0);
+        // Expansion follows the aggregate queue pressure, not the slowest
+        // individual lane. Requiring every lane to reach high-water made a
+        // large pool wait indefinitely when traffic was unevenly distributed.
+        let required_inflight = config
+            .high_water_inflight
+            .saturating_mul(self.lanes.len() as u64);
+        total_inflight >= required_inflight && awaiting_headers
     }
 
     fn has_sustained_pressure(&self, config: &HttpLanePoolConfig, now_ms: u64) -> bool {
@@ -597,20 +628,37 @@ impl HttpLanePool {
                     .fetch_add(1, Ordering::Relaxed);
                 return Err(LanePoolCapacityError.into());
             }
-            let client = (self.client_factory)(
-                &key.proxy,
-                self.config.max_idle_per_host,
-                connect_timeout_from_millis(key.connect_timeout_ms),
-            )?;
-            let lane = Arc::new(LaneState::new(client, now));
+            let max_total_lanes = self.config.max_total_lanes.max(1);
+            let available_lanes = max_total_lanes
+                .saturating_sub(self.total_lanes.load(Ordering::Acquire))
+                .max(1);
+            // Protocol is unknown for a new group, so the initial burst is
+            // bounded by the unknown-protocol ceiling. Each Client is lazy
+            // and does not open a socket until a request uses its lane.
+            let initial_lane_count = self
+                .config
+                .initial_lanes
+                .max(1)
+                .min(self.config.max_unknown_lanes.max(1))
+                .min(available_lanes);
+            let mut lanes = Vec::with_capacity(initial_lane_count);
+            for _ in 0..initial_lane_count {
+                let client = (self.client_factory)(
+                    &key.proxy,
+                    self.config.max_idle_per_host,
+                    connect_timeout_from_millis(key.connect_timeout_ms),
+                )?;
+                lanes.push(Arc::new(LaneState::new(client, now)));
+            }
             let group_epoch = self.next_group_epoch.fetch_add(1, Ordering::Relaxed);
-            self.total_lanes.fetch_add(1, Ordering::Relaxed);
+            self.total_lanes
+                .fetch_add(initial_lane_count, Ordering::Relaxed);
             groups.insert(
                 key.clone(),
                 LaneGroup {
                     key: key.clone(),
                     group_epoch,
-                    lanes: vec![lane],
+                    lanes,
                     pressure_since_ms: None,
                     last_expand_ms: None,
                     expansion_scheduled: false,
@@ -786,40 +834,72 @@ impl HttpLanePool {
 
     fn expand_group_locked(&self, group: &mut LaneGroup, now: u64) {
         group.cancel_expansion_schedule();
-        match (self.client_factory)(
-            &group.key.proxy,
-            self.config.max_idle_per_host,
-            connect_timeout_from_millis(group.key.connect_timeout_ms),
-        ) {
-            Ok(client) => {
-                group.lanes.push(Arc::new(LaneState::new(client, now)));
-                self.total_lanes.fetch_add(1, Ordering::Relaxed);
-                self.expansions_total.fetch_add(1, Ordering::Relaxed);
-                group.last_expand_ms = Some(now);
-                group.pressure_since_ms = None;
-                debug!(
-                    account_id = group.key.account_id,
-                    origin = %group.key.origin,
-                    lane = %group.key.lane,
-                    lanes = group.lanes.len(),
-                    target_inflight = self.config.target_inflight,
-                    proxy_fp = %self.proxy_fingerprint(&group.key.proxy),
-                    "expanded upstream HTTP lane group"
-                );
+        let protocol_remaining = group
+            .protocol_max_lanes(&self.config)
+            .saturating_sub(group.lanes.len());
+        let global_remaining = self
+            .config
+            .max_total_lanes
+            .max(1)
+            .saturating_sub(self.total_lanes.load(Ordering::Acquire));
+        let requested = self
+            .config
+            .expansion_step
+            .max(1)
+            .min(protocol_remaining)
+            .min(global_remaining);
+        if requested == 0 {
+            group.pressure_since_ms = None;
+            return;
+        }
+
+        let mut added = 0_usize;
+        for _ in 0..requested {
+            match (self.client_factory)(
+                &group.key.proxy,
+                self.config.max_idle_per_host,
+                connect_timeout_from_millis(group.key.connect_timeout_ms),
+            ) {
+                Ok(client) => {
+                    group.lanes.push(Arc::new(LaneState::new(client, now)));
+                    added += 1;
+                }
+                Err(_) => {
+                    self.expansion_failures_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    // A client-builder failure is local to this expansion
+                    // batch. Keep lanes already created and retry later after
+                    // the normal pressure/cooldown checks.
+                    break;
+                }
             }
-            Err(_) => {
-                self.expansion_failures_total
-                    .fetch_add(1, Ordering::Relaxed);
-                group.last_expand_ms = Some(now);
-                group.pressure_since_ms = None;
-                debug!(
-                    account_id = group.key.account_id,
-                    origin = %group.key.origin,
-                    lane = %group.key.lane,
-                    proxy_fp = %self.proxy_fingerprint(&group.key.proxy),
-                    "could not expand upstream HTTP lane group; using existing lane"
-                );
-            }
+        }
+        if added > 0 {
+            self.total_lanes.fetch_add(added, Ordering::Relaxed);
+            self.expansions_total
+                .fetch_add(added as u64, Ordering::Relaxed);
+            group.last_expand_ms = Some(now);
+            group.pressure_since_ms = None;
+            debug!(
+                account_id = group.key.account_id,
+                origin = %group.key.origin,
+                lane = %group.key.lane,
+                added,
+                lanes = group.lanes.len(),
+                target_inflight = self.config.target_inflight,
+                proxy_fp = %self.proxy_fingerprint(&group.key.proxy),
+                "expanded upstream HTTP lane group"
+            );
+        } else {
+            group.last_expand_ms = Some(now);
+            group.pressure_since_ms = None;
+            debug!(
+                account_id = group.key.account_id,
+                origin = %group.key.origin,
+                lane = %group.key.lane,
+                proxy_fp = %self.proxy_fingerprint(&group.key.proxy),
+                "could not expand upstream HTTP lane group; using existing lane"
+            );
         }
     }
 
@@ -897,8 +977,9 @@ impl HttpLanePool {
             while group.lanes.len() > 1 {
                 let Some(index) = group.lanes.iter().position(|lane| {
                     lane.is_idle()
-                        && now.saturating_sub(lane.last_used_ms.load(Ordering::Relaxed))
-                            >= self.config.idle_lane_ttl.as_millis() as u64
+                        && (group.has_h1()
+                            || now.saturating_sub(lane.last_used_ms.load(Ordering::Relaxed))
+                                >= self.config.idle_lane_ttl.as_millis() as u64)
                 }) else {
                     break;
                 };
@@ -973,8 +1054,10 @@ impl HttpLanePool {
                             // lane may be the only active one.
                             group.lanes.len() > 1
                                 && lane.is_idle()
-                                && now.saturating_sub(lane.last_used_ms.load(Ordering::Relaxed))
-                                    >= self.config.idle_lane_ttl.as_millis() as u64
+                                && (group.has_h1()
+                                    || now
+                                        .saturating_sub(lane.last_used_ms.load(Ordering::Relaxed))
+                                        >= self.config.idle_lane_ttl.as_millis() as u64)
                         })
                         .map(move |(index, lane)| {
                             (
@@ -1467,6 +1550,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn h1_group_reaps_idle_prefetched_lanes_without_waiting_for_lane_ttl() {
+        let pool = HttpLanePool::new(HttpLanePoolConfig {
+            enabled: true,
+            initial_lanes: 4,
+            max_unknown_lanes: 4,
+            max_h2_lanes: 8,
+            idle_lane_ttl: Duration::from_secs(300),
+            idle_pool_ttl: Duration::from_secs(600),
+            ..Default::default()
+        });
+        let mut selection = pool
+            .acquire(LaneRequest {
+                account_id: Some(81),
+                proxy_url: None,
+                origin_url: "https://h1.example/v1/responses",
+                lane: None,
+            })
+            .await
+            .unwrap();
+        selection.guard.mark_headers(Some(Version::HTTP_11));
+        selection.guard.release();
+
+        pool.reap();
+
+        assert_eq!(pool.snapshot().lanes, 1);
+    }
+
+    #[tokio::test]
     async fn idle_h1_group_does_not_block_a_new_h2_pool_key() {
         let pool = HttpLanePool::new(HttpLanePoolConfig {
             enabled: true,
@@ -1540,6 +1651,77 @@ mod tests {
         assert_eq!(pool.snapshot().expansions_total, 1);
         drop(first);
         drop(second);
+    }
+
+    #[tokio::test]
+    async fn expansion_step_adds_a_batch_without_crossing_protocol_or_global_caps() {
+        let pool = HttpLanePool::new(HttpLanePoolConfig {
+            enabled: true,
+            max_total_lanes: 10,
+            initial_lanes: 1,
+            expansion_step: 3,
+            max_unknown_lanes: 1,
+            max_h2_lanes: 10,
+            ..Default::default()
+        });
+        let request = LaneRequest {
+            account_id: Some(10),
+            proxy_url: None,
+            origin_url: "https://example.com/v1/responses",
+            lane: None,
+        };
+        let mut selection = pool.acquire(request).await.unwrap();
+        selection.guard.mark_headers(Some(Version::HTTP_2));
+
+        let key = LaneKey {
+            account_id: 10,
+            proxy: canonical_proxy(None).unwrap(),
+            origin: normalize_origin(request.origin_url).unwrap(),
+            lane: normalize_lane(None),
+            connect_timeout_ms: 0,
+        };
+        {
+            let mut groups = pool.groups.lock().unwrap();
+            let group = groups.get_mut(&key).unwrap();
+            pool.expand_group_locked(group, now_millis());
+            assert_eq!(group.lanes.len(), 4);
+            pool.expand_group_locked(group, now_millis());
+            assert_eq!(group.lanes.len(), 7);
+            pool.expand_group_locked(group, now_millis());
+            assert_eq!(group.lanes.len(), 10);
+            pool.expand_group_locked(group, now_millis());
+            assert_eq!(group.lanes.len(), 10);
+        }
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.lanes, 10);
+        assert_eq!(snapshot.expansions_total, 9);
+        drop(selection);
+    }
+
+    #[tokio::test]
+    async fn new_group_initial_lanes_are_bounded_by_global_capacity() {
+        let pool = HttpLanePool::new(HttpLanePoolConfig {
+            enabled: true,
+            max_total_lanes: 3,
+            initial_lanes: 64,
+            max_unknown_lanes: 64,
+            max_h2_lanes: 256,
+            ..Default::default()
+        });
+        let selection = pool
+            .acquire(LaneRequest {
+                account_id: Some(11),
+                proxy_url: None,
+                origin_url: "https://example.com/v1/responses",
+                lane: None,
+            })
+            .await
+            .unwrap();
+
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.keys, 1);
+        assert_eq!(snapshot.lanes, 3);
+        drop(selection);
     }
 
     #[tokio::test]

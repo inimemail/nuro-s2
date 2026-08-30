@@ -7180,7 +7180,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				forceFlushFailedEvent = true
 				sawFailedEvent = true
 			}
-			sanitizedData, sanitizedError := sanitizeOpenAIStreamEventDataForClient(dataBytes, eventType, openAIStreamClientOutputStarted(c, clientOutputStarted))
+			sanitizedData, sanitizedError := sanitizeOpenAIStreamEventDataForRequest(c, dataBytes, eventType, openAIStreamClientOutputStarted(c, clientOutputStarted))
 			if sanitizedError {
 				dataBytes = sanitizedData
 				trimmedData = string(sanitizedData)
@@ -8888,7 +8888,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				forceFlushFailedEvent = true
 				sawFailedEvent = true
 			}
-			sanitizedData, sanitizedError := sanitizeOpenAIStreamEventDataForClient(dataBytes, eventType, openAIStreamClientOutputStarted(c, clientOutputStarted))
+			sanitizedData, sanitizedError := sanitizeOpenAIStreamEventDataForRequest(c, dataBytes, eventType, openAIStreamClientOutputStarted(c, clientOutputStarted))
 			if sanitizedError {
 				dataBytes = sanitizedData
 				data = string(sanitizedData)
@@ -9944,11 +9944,45 @@ func isSafeOpenAIClientErrorType(value string) bool {
 	}
 }
 
+// openAIPayloadIsResponsesDialect reports whether a stream payload looks like
+// the Responses protocol. This is only a fallback for callers without a request
+// context: a bare {"type":"error"} carries no protocol marker, so the request
+// path is the authoritative signal. See sanitizeOpenAIStreamEventDataForRequest.
+func openAIPayloadIsResponsesDialect(payload []byte) bool {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 || !gjson.ValidBytes(trimmed) {
+		return false
+	}
+	eventType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(trimmed, "type").String()))
+	if strings.HasPrefix(eventType, "response.") {
+		return true
+	}
+	// Chat Completions chunks carry a choices array and never a response object.
+	if gjson.GetBytes(trimmed, "choices").IsArray() {
+		return false
+	}
+	if gjson.GetBytes(trimmed, "response").IsObject() {
+		return true
+	}
+	return strings.TrimSpace(gjson.GetBytes(trimmed, "response_id").String()) != ""
+}
+
 func safeOpenAIStreamErrorPayload(eventType string) []byte {
 	if strings.TrimSpace(eventType) == "response.failed" {
 		return safeOpenAIResponsesFailedPayload(nil, false)
 	}
 	return []byte(`{"type":"error","error":{"type":"upstream_error","message":"Upstream request failed"}}`)
+}
+
+// safeOpenAIStreamErrorPayloadForDialect keeps the Chat Completions error shape
+// unchanged while emitting a protocol-valid Responses terminal event, so a
+// downstream Responses client does not read the transport close as an
+// incomplete stream and retry.
+func safeOpenAIStreamErrorPayloadForDialect(eventType string, payload []byte, responsesDialect, clientOutputStarted bool) []byte {
+	if responsesDialect || openAIPayloadIsResponsesDialect(payload) {
+		return safeOpenAIResponsesFailedPayload(payload, clientOutputStarted)
+	}
+	return safeOpenAIStreamErrorPayload(eventType)
 }
 
 func safeOpenAIResponsesFailedPayload(payload []byte, clientOutputStarted bool) []byte {
@@ -9975,6 +10009,17 @@ func safeOpenAIResponsesFailedPayload(payload []byte, clientOutputStarted bool) 
 }
 
 func sanitizeOpenAIStreamEventDataForClient(payload []byte, eventType string, clientOutputStarted bool) ([]byte, bool) {
+	return sanitizeOpenAIStreamEventDataForDialect(payload, eventType, false, clientOutputStarted)
+}
+
+// sanitizeOpenAIStreamEventDataForRequest resolves the protocol from the request
+// path. A bare {"type":"error"} carries no protocol marker of its own, so the
+// path is the only reliable way to know a Responses client is downstream.
+func sanitizeOpenAIStreamEventDataForRequest(c *gin.Context, payload []byte, eventType string, clientOutputStarted bool) ([]byte, bool) {
+	return sanitizeOpenAIStreamEventDataForDialect(payload, eventType, isOpenAIResponsesRequestPath(c), clientOutputStarted)
+}
+
+func sanitizeOpenAIStreamEventDataForDialect(payload []byte, eventType string, responsesDialect, clientOutputStarted bool) ([]byte, bool) {
 	if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
 		return payload, false
 	}
@@ -9992,10 +10037,10 @@ func sanitizeOpenAIStreamEventDataForClient(payload []byte, eventType string, cl
 		if _, changed := sanitizeOpenAICapacityShedErrorCodeForClient(payload); changed {
 			return safeOpenAICapacityShedErrorPayload(), true
 		}
-		return safeOpenAIStreamErrorPayload("error"), true
+		return safeOpenAIStreamErrorPayloadForDialect("error", payload, responsesDialect, clientOutputStarted), true
 	}
 	if openAIPassthroughResponseIsUnsafe(payload) {
-		return safeOpenAIStreamErrorPayload("error"), true
+		return safeOpenAIStreamErrorPayloadForDialect("error", payload, responsesDialect, clientOutputStarted), true
 	}
 	return payload, false
 }

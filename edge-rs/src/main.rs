@@ -1167,6 +1167,10 @@ fn relay_error_is_local_capacity(err: &anyhow::Error) -> bool {
     .any(|marker| message.contains(marker))
 }
 
+fn relay_should_fallback_to_go(err: &anyhow::Error, relay_attempted: bool) -> bool {
+    !relay_attempted && !relay_error_is_local_capacity(err)
+}
+
 #[derive(Default)]
 struct BufferPools {
     sse_strings: Mutex<Vec<String>>,
@@ -1867,6 +1871,10 @@ impl LeaseAbortGuard {
 
     fn relay_attempted_marker(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.relay_attempted)
+    }
+
+    fn relay_attempted(&self) -> bool {
+        self.relay_attempted.load(Ordering::Acquire)
     }
 
     fn done_marker(&self) -> Arc<AtomicBool> {
@@ -2680,6 +2688,13 @@ async fn handle_openai_edge(
             );
             let reason = relay_error_fallback_reason(&err);
             let local_capacity = relay_error_is_local_capacity(&err);
+            let relay_attempted = request_abort_guard.relay_attempted();
+            // Go fallback is safe only while no request body has entered an
+            // upstream `send()`. Once execution is possible, replaying the
+            // same body through Go can charge the upstream twice. Retries for
+            // explicit upstream responses are handled inside relay_upstream;
+            // this branch is the final guard for unknown transport outcomes.
+            let allow_go_fallback = relay_should_fallback_to_go(&err, relay_attempted);
             let identity = lease_identity_snapshot(&relay_identity);
             let abort_result = call_abort(
                 &state,
@@ -2695,8 +2710,8 @@ async fn handle_openai_edge(
                     }
                     .to_string(),
                     client_disconnected: false,
-                    relay_attempted: !local_capacity,
-                    fallback_to_go: !local_capacity,
+                    relay_attempted,
+                    fallback_to_go: allow_go_fallback,
                 },
             )
             .await;
@@ -2708,8 +2723,26 @@ async fn handle_openai_edge(
             } else {
                 request_abort_guard.mark_done();
             }
-            if local_capacity {
+            if local_capacity && !relay_attempted {
                 return overload_response(&state);
+            }
+            if !allow_go_fallback {
+                let timeout = is_edge_response_header_timeout(&err)
+                    || err.to_string().contains("response header total budget");
+                let response = if timeout {
+                    openai_error_response(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "upstream_timeout",
+                        "Upstream response timed out after the request was sent",
+                    )
+                } else {
+                    openai_error_response(
+                        StatusCode::BAD_GATEWAY,
+                        "upstream_error",
+                        "Upstream request failed after the request was sent",
+                    )
+                };
+                return response;
             }
             let mut fallback_timing = edge_timing_snapshot(&timing_shared);
             fallback_timing.fallback_reason = Some(reason.to_string());
@@ -6023,6 +6056,9 @@ async fn relay_upstream_direct_core_impl(
     let send_account_type = plan.account_type.clone();
     let send_retry_count = timing.retry_count;
     let send_headers = plan.headers.clone();
+    // Keep a copy outside the send future so early-placeholder retries retain
+    // the shared marker even when client selection fails before `send()`.
+    let retry_relay_attempted_marker = relay_attempted_marker.clone();
     let header_start = Instant::now();
     let upstream_send = Box::pin(async move {
         let attempt_started_at = Instant::now();
@@ -6099,9 +6135,6 @@ async fn relay_upstream_direct_core_impl(
         );
         send_state.metrics.record_upstream_attempt(send_retry_count);
         let response_future = request.body(request_body).send();
-        if let Some(marker) = &relay_attempted_marker {
-            marker.store(true, Ordering::SeqCst);
-        }
         let response = if race_response_header_deadline.is_some()
             || edge_response_header_budget_deadline.is_some()
             || edge_response_header_timeout.is_some()
@@ -6111,6 +6144,9 @@ async fn relay_upstream_direct_core_impl(
                 drop(response_future);
                 selected.guard.release();
                 return Err(anyhow::anyhow!(EDGE_RESPONSE_HEADER_BUDGET_EXHAUSTED));
+            }
+            if let Some(marker) = &relay_attempted_marker {
+                marker.store(true, Ordering::SeqCst);
             }
             match tokio::time::timeout(remaining, response_future).await {
                 Ok(Ok(response)) => response,
@@ -6125,6 +6161,9 @@ async fn relay_upstream_direct_core_impl(
                 }
             }
         } else {
+            if let Some(marker) = &relay_attempted_marker {
+                marker.store(true, Ordering::SeqCst);
+            }
             match response_future.await {
                 Ok(response) => response,
                 Err(error) => {
@@ -6166,7 +6205,7 @@ async fn relay_upstream_direct_core_impl(
                     timing_shared,
                     lease_identity,
                     response_header_budget_deadline: edge_response_header_budget_deadline,
-                    relay_attempted_marker: None,
+                    relay_attempted_marker: retry_relay_attempted_marker,
                     abort_done_marker,
                     header_guard: header_guard.take(),
                     ingress_permit,
@@ -6190,7 +6229,7 @@ async fn relay_upstream_direct_core_impl(
                     timing_shared,
                     lease_identity,
                     response_header_budget_deadline: edge_response_header_budget_deadline,
-                    relay_attempted_marker: None,
+                    relay_attempted_marker: retry_relay_attempted_marker.clone(),
                     abort_done_marker: abort_done_marker.clone(),
                     header_guard: header_guard.take(),
                     ingress_permit,
@@ -6214,7 +6253,7 @@ async fn relay_upstream_direct_core_impl(
                     timing_shared,
                     lease_identity,
                     response_header_budget_deadline: edge_response_header_budget_deadline,
-                    relay_attempted_marker: None,
+                    relay_attempted_marker: retry_relay_attempted_marker.clone(),
                     abort_done_marker: abort_done_marker.clone(),
                     header_guard: header_guard.take(),
                     ingress_permit,
@@ -6329,7 +6368,7 @@ async fn relay_upstream_direct_core_impl(
                         timing_shared,
                         lease_identity,
                         response_header_budget_deadline: edge_response_header_budget_deadline,
-                        relay_attempted_marker: None,
+                        relay_attempted_marker: retry_relay_attempted_marker.clone(),
                         abort_done_marker,
                         header_guard,
                         ingress_permit,
@@ -7418,7 +7457,7 @@ async fn retry_after_race_response_header_budget(
         timing_shared,
         lease_identity,
         response_header_budget_deadline,
-        relay_attempted_marker: _,
+        relay_attempted_marker,
         abort_done_marker,
         header_guard,
         ingress_permit,
@@ -7499,7 +7538,7 @@ async fn retry_after_race_response_header_budget(
             timing_shared,
             lease_identity,
             response_header_budget_deadline,
-            relay_attempted_marker: None,
+            relay_attempted_marker,
             abort_done_marker,
             header_guard,
             ingress_permit,
@@ -7566,9 +7605,6 @@ async fn retry_after_queue_wait_budget(
         shared.retry_count = next_timing.retry_count;
         shared.queue_wait_ms = next_timing.queue_wait_ms;
     });
-    if let Some(relay_attempted_marker) = relay_attempted_marker {
-        relay_attempted_marker.store(true, Ordering::SeqCst);
-    }
     Box::pin(relay_upstream_retry_core(
         state,
         next_plan,
@@ -7578,7 +7614,10 @@ async fn retry_after_queue_wait_budget(
             timing_shared,
             lease_identity,
             response_header_budget_deadline,
-            relay_attempted_marker: None,
+            // The queue timeout itself did not send an upstream request. Keep
+            // the shared marker attached so the recursive attempt marks it at
+            // the actual `send()` boundary.
+            relay_attempted_marker,
             abort_done_marker,
             header_guard,
             ingress_permit,
@@ -7599,7 +7638,7 @@ async fn retry_after_upstream_transport_error(
         timing_shared,
         lease_identity,
         response_header_budget_deadline,
-        relay_attempted_marker: _,
+        relay_attempted_marker,
         abort_done_marker,
         header_guard,
         ingress_permit,
@@ -7679,7 +7718,7 @@ async fn retry_after_upstream_transport_error(
             timing_shared,
             lease_identity,
             response_header_budget_deadline,
-            relay_attempted_marker: None,
+            relay_attempted_marker,
             abort_done_marker,
             header_guard,
             ingress_permit,
@@ -7786,7 +7825,7 @@ async fn retry_early_placeholder_relay(
                 timing_shared: failure.context.timing_shared.clone(),
                 lease_identity: failure.context.lease_identity.clone(),
                 response_header_budget_deadline: failure.context.response_header_budget_deadline,
-                relay_attempted_marker: None,
+                relay_attempted_marker: failure.context.relay_attempted_marker.clone(),
                 abort_done_marker: failure.context.abort_done_marker.clone(),
                 header_guard: failure.context.header_guard.take(),
                 ingress_permit: failure.context.ingress_permit.take(),
@@ -10796,8 +10835,8 @@ impl EdgeConfig {
             prepare_timeout_ms: env_u64("SUB2API_EDGE_PREPARE_TIMEOUT_MS", 1500),
             complete_timeout_ms: env_u64("SUB2API_EDGE_COMPLETE_TIMEOUT_MS", 1500),
             initial_pool_size: env_usize("SUB2API_EDGE_INITIAL_POOL_SIZE", 512),
-            queue_buffer_size: env_usize("SUB2API_EDGE_QUEUE_BUFFER_SIZE", 512),
-            queue_max_bytes: env_usize("SUB2API_EDGE_QUEUE_MAX_BYTES", 256 * 1024 * 1024),
+            queue_buffer_size: env_usize("SUB2API_EDGE_QUEUE_BUFFER_SIZE", 8192),
+            queue_max_bytes: env_usize("SUB2API_EDGE_QUEUE_MAX_BYTES", 2 * 1024 * 1024 * 1024),
             max_header_bytes: env_usize("SUB2API_EDGE_MAX_HEADER_BYTES", 64 * 1024)
                 .clamp(8 * 1024, 1024 * 1024),
             ingress_body_max_bytes: env_usize(
@@ -10805,7 +10844,7 @@ impl EdgeConfig {
                 2 * 1024 * 1024 * 1024,
             )
             .min(u32::MAX as usize),
-            global_workers: env_usize("SUB2API_EDGE_GLOBAL_WORKERS", 9999).clamp(1, 999_999_999),
+            global_workers: env_usize("SUB2API_EDGE_GLOBAL_WORKERS", 131_072).clamp(1, 999_999_999),
             per_account_workers: env_usize("SUB2API_EDGE_PER_ACCOUNT_WORKERS", 0),
             max_relay_domains: env_usize("SUB2API_EDGE_MAX_RELAY_DOMAINS", 4096),
             relay_domain_idle_secs: env_u64("SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS", 300),
@@ -10817,7 +10856,7 @@ impl EdgeConfig {
             ),
             transient_proxy_max_active: env_usize("SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE", 32)
                 .clamp(1, 4096),
-            queue_wait_budget_ms: env_u64("SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS", 50),
+            queue_wait_budget_ms: env_u64("SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS", 100),
             large_payload_passthrough: env_bool("SUB2API_EDGE_LARGE_PAYLOAD_PASSTHROUGH", true),
             large_payload_threshold_bytes: env_usize(
                 "SUB2API_EDGE_LARGE_PAYLOAD_THRESHOLD_BYTES",
@@ -12359,6 +12398,18 @@ data: {"type":"response.completed","response":{"output":[{"type":"image_generati
         assert!(!relay_error_is_local_capacity(&anyhow::anyhow!(
             "edge transient proxy client build failed: invalid proxy"
         )));
+        assert!(relay_should_fallback_to_go(
+            &anyhow::anyhow!("upstream connection reset"),
+            false,
+        ));
+        assert!(!relay_should_fallback_to_go(
+            &anyhow::anyhow!("upstream connection reset"),
+            true,
+        ));
+        assert!(!relay_should_fallback_to_go(
+            &anyhow::anyhow!("edge relay queue full or closed"),
+            false,
+        ));
     }
 
     #[test]

@@ -209,9 +209,16 @@ set_env_value() {
 persist_script() {
     local workdir="$1"
     local target="${workdir}/deploy.sh"
+    local synced_script="${workdir}/${SOURCE_DIR_NAME}/deploy-nuro.sh"
+    local running_script="${BASH_SOURCE[0]:-}"
 
-    if [[ -f "${BASH_SOURCE[0]}" ]]; then
-        cp "${BASH_SOURCE[0]}" "$target" 2>/dev/null || true
+    # Prefer the script from the source tree that just completed staging. On a
+    # remote upgrade the currently running deploy.sh may be one release old;
+    # copying it back would prevent future menu operations from self-updating.
+    if [[ -f "$synced_script" ]]; then
+        cp "$synced_script" "$target" 2>/dev/null || true
+    elif [[ -n "$running_script" && -f "$running_script" ]]; then
+        cp "$running_script" "$target" 2>/dev/null || true
     fi
 
     if [[ ! -s "$target" ]] && command -v curl >/dev/null 2>&1; then
@@ -250,40 +257,93 @@ sync_project_source() {
     local workdir="$1"
     local dest="${workdir}/${SOURCE_DIR_NAME}"
     local project_root=""
+    local staged_source=""
+    local previous_source=""
 
     if project_root="$(find_project_root)"; then
-        rm -rf "$dest"
-        mkdir -p "$dest"
+        # Stage the copy first. A full source tree is required to build the
+        # image; deleting the live tree before tar succeeds can leave an
+        # otherwise healthy deployment unrecoverable after a disk or I/O error.
+        staged_source="$(mktemp -d "${workdir}/.${SOURCE_DIR_NAME}.XXXXXX")" || return 1
         info "正在同步当前项目源码到 ${dest} ..."
-        tar \
+        if ! tar \
             --exclude='./.git' \
             --exclude='./node_modules' \
             --exclude='./frontend/node_modules' \
             --exclude='./frontend/dist' \
             --exclude='./edge-rs/target' \
             --exclude='./backend/data' \
+            --exclude='./backend/.cache' \
+            --exclude='./frontend/.cache' \
+            --exclude='./edge-rs/.cache' \
+            --exclude='./.cache' \
+            --exclude='./.gocache' \
+            --exclude='./.pnpm-store' \
+            --exclude='./.tmp' \
+            --exclude="./${SOURCE_DIR_NAME}" \
+            --exclude="./.${SOURCE_DIR_NAME}.*" \
             --exclude='./logs' \
             --exclude='./backups' \
             --exclude='./.env' \
             --exclude='./.env.*' \
             --exclude='./tmp' \
             --exclude='./temp' \
-            -cf - -C "$project_root" . | tar -xf - -C "$dest"
+            -cf - -C "$project_root" . | tar -xf - -C "$staged_source"; then
+            rm -rf "$staged_source"
+            return 1
+        fi
+
+        # Keep the old tree until the staged tree is complete, then swap it in
+        # with a same-filesystem rename. Restore the old tree if the second
+        # rename fails so a transient filesystem error does not destroy it.
+        previous_source="${dest}.previous.$$"
+        if [[ -e "$previous_source" || -L "$previous_source" ]]; then
+            rm -rf "$previous_source"
+        fi
+        if [[ -e "$dest" || -L "$dest" ]]; then
+            mv "$dest" "$previous_source" || {
+                rm -rf "$staged_source"
+                return 1
+            }
+        fi
+        if ! mv "$staged_source" "$dest"; then
+            if [[ -e "$previous_source" || -L "$previous_source" ]]; then
+                mv "$previous_source" "$dest" || true
+            fi
+            rm -rf "$staged_source"
+            return 1
+        fi
+        rm -rf "$previous_source"
 
         persist_script "$workdir"
         return 0
     fi
 
     require_cmd git
-    if [[ -d "${dest}/.git" ]]; then
-        info "正在从 ${SOURCE_REPO_URL} (${SOURCE_REPO_BRANCH}) 更新源码到 ${dest} ..."
-        git -C "$dest" fetch --depth 1 origin "$SOURCE_REPO_BRANCH" || return 1
-        git -C "$dest" checkout -f FETCH_HEAD || return 1
-    else
-        info "正在从 ${SOURCE_REPO_URL} (${SOURCE_REPO_BRANCH}) 拉取源码到 ${dest} ..."
-        rm -rf "$dest"
-        git clone --depth 1 --branch "$SOURCE_REPO_BRANCH" "$SOURCE_REPO_URL" "$dest" || return 1
+    info "正在从 ${SOURCE_REPO_URL} (${SOURCE_REPO_BRANCH}) 拉取最新源码到 ${dest} ..."
+    staged_source="$(mktemp -d "${workdir}/.${SOURCE_DIR_NAME}.XXXXXX")" || return 1
+    if ! git clone --depth 1 --branch "$SOURCE_REPO_BRANCH" "$SOURCE_REPO_URL" "$staged_source"; then
+        rm -rf "$staged_source"
+        return 1
     fi
+    previous_source="${dest}.previous.$$"
+    if [[ -e "$previous_source" || -L "$previous_source" ]]; then
+        rm -rf "$previous_source"
+    fi
+    if [[ -e "$dest" || -L "$dest" ]]; then
+        mv "$dest" "$previous_source" || {
+            rm -rf "$staged_source"
+            return 1
+        }
+    fi
+    if ! mv "$staged_source" "$dest"; then
+        if [[ -e "$previous_source" || -L "$previous_source" ]]; then
+            mv "$previous_source" "$dest" || true
+        fi
+        rm -rf "$staged_source"
+        return 1
+    fi
+    rm -rf "$previous_source"
 
     persist_script "$workdir"
     return 0
@@ -376,16 +436,30 @@ ensure_edge_env_values() {
     # Lane pooling is enabled for the first deployment. The feature flag stays
     # available as an immediate emergency rollback to the legacy Client path.
     ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_POOL_ENABLED true
-    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT 32
-    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER 24
-    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS 250
-    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX 2
-    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_MAX 4
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT 32 64
+    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT 64
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER 24 32
+    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER 32
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS 250 10
+    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS 10
+    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_INITIAL 64
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX 2 64
+    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX 64
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_MAX 4 256
+    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_MAX 256
+    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_STEP 32
+    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_COOLDOWN_MS 50
     ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_LANE_IDLE_SECS 300
     ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_POOL_IDLE_SECS 1200
-    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS 1024
-    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES 2048
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS 1024 8192
+    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS 8192
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES 2048 65536
+    ensure_env_value "$env_file" SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES 65536
     ensure_env_value "$env_file" SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE 32
+    # One paired app replica owns both downstream sockets and upstream relay
+    # sockets. Keep the process FD ceiling above the 131072 header-worker
+    # admission limit plus active streams and control-plane connections.
+    ensure_env_value "$env_file" APP_NOFILE_LIMIT 1048576
     if [[ "$(read_env_value "$env_file" NURO_EDGE_ENABLED)" != "true" ]]; then
         secret="$(read_env_value "$env_file" GATEWAY_OPENAI_EDGE_RS_INTERNAL_SECRET)"
         if [[ -z "$secret" ]]; then
@@ -451,17 +525,21 @@ ensure_edge_env_values() {
     upgrade_env_default_value "$env_file" SUB2API_EDGE_DRAIN_TIMEOUT_SECS 1800 30
     ensure_env_value "$env_file" SUB2API_EDGE_DRAIN_TIMEOUT_SECS 30
     upgrade_env_default_value "$env_file" SUB2API_EDGE_INITIAL_POOL_SIZE 10000 512
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 20000 512
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 2000 512
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 128 512
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_MAX_BYTES 67108864 268435456
-    ensure_env_value "$env_file" SUB2API_EDGE_QUEUE_MAX_BYTES 268435456
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 20000 8192
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 2000 8192
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 128 8192
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 512 8192
+    ensure_env_value "$env_file" SUB2API_EDGE_QUEUE_BUFFER_SIZE 8192
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_MAX_BYTES 67108864 2147483648
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_MAX_BYTES 268435456 2147483648
+    ensure_env_value "$env_file" SUB2API_EDGE_QUEUE_MAX_BYTES 2147483648
     ensure_env_value "$env_file" SUB2API_EDGE_MAX_HEADER_BYTES 65536
     upgrade_env_default_value "$env_file" SUB2API_EDGE_INGRESS_BODY_MAX_BYTES 1073741824 2147483648
     ensure_env_value "$env_file" SUB2API_EDGE_INGRESS_BODY_MAX_BYTES 2147483648
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 256 9999
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 512 9999
-    ensure_env_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 9999
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 256 131072
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 512 131072
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 9999 131072
+    ensure_env_value "$env_file" SUB2API_EDGE_GLOBAL_WORKERS 131072
     upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 4 0
     upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 32 0
     upgrade_env_default_value "$env_file" SUB2API_EDGE_PER_ACCOUNT_WORKERS 64 0
@@ -474,8 +552,9 @@ ensure_edge_env_values() {
     upgrade_env_default_value "$env_file" SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT 8 128
     upgrade_env_default_value "$env_file" SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT 16 128
     upgrade_env_default_value "$env_file" SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT 64 128
-    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS 150 50
-    ensure_env_value "$env_file" SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS 50
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS 150 100
+    upgrade_env_default_value "$env_file" SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS 50 100
+    ensure_env_value "$env_file" SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS 100
     if [[ -z "$(read_env_value "$env_file" GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS)" ]]; then
         legacy_user_wait="$(read_env_value "$env_file" GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT)"
         if legacy_user_wait_ms="$(duration_to_ms "$legacy_user_wait")"; then
@@ -652,6 +731,7 @@ REDIS_POOL_SIZE=1024
 REDIS_MIN_IDLE_CONNS=128
 REDIS_MAX_CLIENTS=100000
 REDIS_NOFILE_LIMIT=200000
+APP_NOFILE_LIMIT=1048576
 REDIS_DIAL_TIMEOUT_SECONDS=1
 REDIS_READ_TIMEOUT_SECONDS=1
 REDIS_WRITE_TIMEOUT_SECONDS=1
@@ -726,11 +806,11 @@ SUB2API_EDGE_PREPARE_TIMEOUT_MS=1500
 SUB2API_EDGE_COMPLETE_TIMEOUT_MS=1500
 SUB2API_EDGE_DRAIN_TIMEOUT_SECS=30
 SUB2API_EDGE_INITIAL_POOL_SIZE=512
-SUB2API_EDGE_QUEUE_BUFFER_SIZE=512
-SUB2API_EDGE_QUEUE_MAX_BYTES=268435456
+SUB2API_EDGE_QUEUE_BUFFER_SIZE=8192
+SUB2API_EDGE_QUEUE_MAX_BYTES=2147483648
 SUB2API_EDGE_MAX_HEADER_BYTES=65536
 SUB2API_EDGE_INGRESS_BODY_MAX_BYTES=2147483648
-SUB2API_EDGE_GLOBAL_WORKERS=9999
+SUB2API_EDGE_GLOBAL_WORKERS=131072
 SUB2API_EDGE_PER_ACCOUNT_WORKERS=0
 SUB2API_EDGE_MAX_RELAY_DOMAINS=4096
 SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS=300
@@ -738,17 +818,20 @@ SUB2API_EDGE_MAX_PROXY_CLIENTS=1024
 SUB2API_EDGE_PROXY_CLIENT_IDLE_SECS=300
 SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT=128
 SUB2API_EDGE_UPSTREAM_LANE_POOL_ENABLED=true
-SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT=32
-SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER=24
-SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS=250
-SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX=2
-SUB2API_EDGE_UPSTREAM_LANE_MAX=4
+SUB2API_EDGE_UPSTREAM_LANE_INITIAL=64
+SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT=64
+SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER=32
+SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS=10
+SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX=64
+SUB2API_EDGE_UPSTREAM_LANE_MAX=256
+SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_STEP=32
+SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_COOLDOWN_MS=50
 SUB2API_EDGE_UPSTREAM_LANE_IDLE_SECS=300
 SUB2API_EDGE_UPSTREAM_POOL_IDLE_SECS=1200
-SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS=1024
-SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES=2048
+SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS=8192
+SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES=65536
 SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE=32
-SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=50
+SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=100
 GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS=100
 GATEWAY_SCHEDULING_USER_SLOT_MAX_WAITING_EXTRA=5
 GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS=50
@@ -896,8 +979,8 @@ services:
     command: ["/app/paired-entrypoint.sh"]
     ulimits:
       nofile:
-        soft: 100000
-        hard: 100000
+        soft: \${APP_NOFILE_LIMIT:-1048576}
+        hard: \${APP_NOFILE_LIMIT:-1048576}
     expose:
       - "8080"
       - "18080"
@@ -1002,11 +1085,11 @@ services:
       - SUB2API_EDGE_COMPLETE_TIMEOUT_MS=\${SUB2API_EDGE_COMPLETE_TIMEOUT_MS:-1500}
       - SUB2API_EDGE_DRAIN_TIMEOUT_SECS=\${SUB2API_EDGE_DRAIN_TIMEOUT_SECS:-30}
       - SUB2API_EDGE_INITIAL_POOL_SIZE=\${SUB2API_EDGE_INITIAL_POOL_SIZE:-512}
-      - SUB2API_EDGE_QUEUE_BUFFER_SIZE=\${SUB2API_EDGE_QUEUE_BUFFER_SIZE:-512}
-      - SUB2API_EDGE_QUEUE_MAX_BYTES=\${SUB2API_EDGE_QUEUE_MAX_BYTES:-268435456}
+      - SUB2API_EDGE_QUEUE_BUFFER_SIZE=\${SUB2API_EDGE_QUEUE_BUFFER_SIZE:-8192}
+      - SUB2API_EDGE_QUEUE_MAX_BYTES=\${SUB2API_EDGE_QUEUE_MAX_BYTES:-2147483648}
       - SUB2API_EDGE_MAX_HEADER_BYTES=\${SUB2API_EDGE_MAX_HEADER_BYTES:-65536}
       - SUB2API_EDGE_INGRESS_BODY_MAX_BYTES=\${SUB2API_EDGE_INGRESS_BODY_MAX_BYTES:-2147483648}
-      - SUB2API_EDGE_GLOBAL_WORKERS=\${SUB2API_EDGE_GLOBAL_WORKERS:-9999}
+      - SUB2API_EDGE_GLOBAL_WORKERS=\${SUB2API_EDGE_GLOBAL_WORKERS:-131072}
       - SUB2API_EDGE_PER_ACCOUNT_WORKERS=\${SUB2API_EDGE_PER_ACCOUNT_WORKERS:-0}
       - SUB2API_EDGE_MAX_RELAY_DOMAINS=\${SUB2API_EDGE_MAX_RELAY_DOMAINS:-4096}
       - SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS=\${SUB2API_EDGE_RELAY_DOMAIN_IDLE_SECS:-300}
@@ -1014,17 +1097,20 @@ services:
       - SUB2API_EDGE_PROXY_CLIENT_IDLE_SECS=\${SUB2API_EDGE_PROXY_CLIENT_IDLE_SECS:-300}
       - SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT=\${SUB2API_EDGE_MAX_IDLE_PER_ACCOUNT:-128}
       - SUB2API_EDGE_UPSTREAM_LANE_POOL_ENABLED=\${SUB2API_EDGE_UPSTREAM_LANE_POOL_ENABLED:-true}
-      - SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT=\${SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT:-32}
-      - SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER=\${SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER:-24}
-      - SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS=\${SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS:-250}
-      - SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX=\${SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX:-2}
-      - SUB2API_EDGE_UPSTREAM_LANE_MAX=\${SUB2API_EDGE_UPSTREAM_LANE_MAX:-4}
+      - SUB2API_EDGE_UPSTREAM_LANE_INITIAL=\${SUB2API_EDGE_UPSTREAM_LANE_INITIAL:-64}
+      - SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT=\${SUB2API_EDGE_UPSTREAM_LANE_TARGET_INFLIGHT:-64}
+      - SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER=\${SUB2API_EDGE_UPSTREAM_LANE_HIGH_WATER:-32}
+      - SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS=\${SUB2API_EDGE_UPSTREAM_LANE_PRESSURE_MS:-10}
+      - SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX=\${SUB2API_EDGE_UPSTREAM_LANE_UNKNOWN_MAX:-64}
+      - SUB2API_EDGE_UPSTREAM_LANE_MAX=\${SUB2API_EDGE_UPSTREAM_LANE_MAX:-256}
+      - SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_STEP=\${SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_STEP:-32}
+      - SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_COOLDOWN_MS=\${SUB2API_EDGE_UPSTREAM_LANE_EXPANSION_COOLDOWN_MS:-50}
       - SUB2API_EDGE_UPSTREAM_LANE_IDLE_SECS=\${SUB2API_EDGE_UPSTREAM_LANE_IDLE_SECS:-300}
       - SUB2API_EDGE_UPSTREAM_POOL_IDLE_SECS=\${SUB2API_EDGE_UPSTREAM_POOL_IDLE_SECS:-1200}
-      - SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS=\${SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS:-1024}
-      - SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES=\${SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES:-2048}
+      - SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS=\${SUB2API_EDGE_UPSTREAM_MAX_POOL_KEYS:-8192}
+      - SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES=\${SUB2API_EDGE_UPSTREAM_MAX_TOTAL_LANES:-65536}
       - SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE=\${SUB2API_EDGE_TRANSIENT_PROXY_MAX_ACTIVE:-32}
-      - SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=\${SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS:-50}
+      - SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS=\${SUB2API_EDGE_QUEUE_WAIT_BUDGET_MS:-100}
       - GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS=\${GATEWAY_SCHEDULING_USER_SLOT_WAIT_TIMEOUT_MS:-100}
       - GATEWAY_SCHEDULING_USER_SLOT_MAX_WAITING_EXTRA=\${GATEWAY_SCHEDULING_USER_SLOT_MAX_WAITING_EXTRA:-5}
       - GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS=\${GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT_MS:-50}
@@ -1066,7 +1152,10 @@ services:
     networks:
       - nuro-sub2api-network
     healthcheck:
-      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health"]
+      # The paired container is ready only when both the Go control plane and
+      # Rust Edge data plane are reachable. This prevents menu 2 from reporting
+      # success while Edge failed to start or cannot reach Go.
+      test: ["CMD-SHELL", "wget -q -T 5 -O /dev/null http://127.0.0.1:8080/health && wget -q -T 5 -O /dev/null http://127.0.0.1:18080/readyz"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -1324,7 +1413,7 @@ EOF
 compose_build_with_edge_fallback() {
     local workdir="$1"
     local dc_cmd="$2"
-    $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build
+    (cd "$workdir" && $dc_cmd -p "$COMPOSE_PROJECT_NAME" -f docker-compose.yml build)
 }
 
 revoke_escrow_node_lease() {
@@ -1378,6 +1467,8 @@ compose_up_with_edge_fallback() {
     local app_ids app_hostnames current_replicas min_replicas desired_replicas
     local max_replicas min_cpu_per_pair min_memory_mb_per_pair
     local host_cpus host_memory_mb cpu_limit memory_limit capacity_limit
+
+    cd "$workdir" || return 1
 
     ensure_haproxy_host_capacity
     remove_legacy_runtime_containers
