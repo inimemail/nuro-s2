@@ -320,30 +320,15 @@ sync_project_source() {
     fi
 
     require_cmd git
-    info "正在从 ${SOURCE_REPO_URL} (${SOURCE_REPO_BRANCH}) 拉取最新源码到 ${dest} ..."
-    staged_source="$(mktemp -d "${workdir}/.${SOURCE_DIR_NAME}.XXXXXX")" || return 1
-    if ! git clone --depth 1 --branch "$SOURCE_REPO_BRANCH" "$SOURCE_REPO_URL" "$staged_source"; then
-        rm -rf "$staged_source"
-        return 1
+    if [[ -d "${dest}/.git" ]]; then
+        info "正在从 ${SOURCE_REPO_URL} (${SOURCE_REPO_BRANCH}) 更新源码到 ${dest} ..."
+        git -C "$dest" fetch --depth 1 origin "$SOURCE_REPO_BRANCH" || return 1
+        git -C "$dest" checkout -f FETCH_HEAD || return 1
+    else
+        info "正在从 ${SOURCE_REPO_URL} (${SOURCE_REPO_BRANCH}) 拉取源码到 ${dest} ..."
+        rm -rf "$dest"
+        git clone --depth 1 --branch "$SOURCE_REPO_BRANCH" "$SOURCE_REPO_URL" "$dest" || return 1
     fi
-    previous_source="${dest}.previous.$$"
-    if [[ -e "$previous_source" || -L "$previous_source" ]]; then
-        rm -rf "$previous_source"
-    fi
-    if [[ -e "$dest" || -L "$dest" ]]; then
-        mv "$dest" "$previous_source" || {
-            rm -rf "$staged_source"
-            return 1
-        }
-    fi
-    if ! mv "$staged_source" "$dest"; then
-        if [[ -e "$previous_source" || -L "$previous_source" ]]; then
-            mv "$previous_source" "$dest" || true
-        fi
-        rm -rf "$staged_source"
-        return 1
-    fi
-    rm -rf "$previous_source"
 
     persist_script "$workdir"
     return 0
