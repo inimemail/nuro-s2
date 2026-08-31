@@ -140,8 +140,10 @@ type OpenAIEdgeRetryRequest struct {
 	AccountID          int64           `json:"account_id,omitempty"`
 	UpstreamStatusCode int             `json:"upstream_status_code,omitempty"`
 	UpstreamRequestID  string          `json:"upstream_request_id,omitempty"`
+	RetryAfterMS       int             `json:"retry_after_ms,omitempty"`
 	ErrorType          string          `json:"error_type,omitempty"`
 	ErrorMessage       string          `json:"error_message,omitempty"`
+	ExecutionState     string          `json:"execution_state,omitempty"`
 	RequestBody        json.RawMessage `json:"request_body,omitempty"`
 	ResponseBody       json.RawMessage `json:"response_body,omitempty"`
 	// CommitState separates gateway-owned compatibility frames from model
@@ -197,6 +199,7 @@ type OpenAIEdgeRetryDecision struct {
 	StatusCode        int             `json:"status_code,omitempty"`
 	ErrorType         string          `json:"error_type,omitempty"`
 	ErrorMessage      string          `json:"error_message,omitempty"`
+	RetryAfterMS      int             `json:"retry_after_ms,omitempty"`
 }
 
 type OpenAIEdgeRetryStageRequest struct {

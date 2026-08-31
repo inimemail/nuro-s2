@@ -87,6 +87,63 @@ fn retry_commit_state_wrote_client_response(commit_state: &str) -> bool {
         RETRY_COMMIT_REAL_OUTPUT | RETRY_COMMIT_TERMINAL
     )
 }
+
+const EXECUTION_PRE_SEND: &str = "pre_send";
+const EXECUTION_SEND_STARTED: &str = "send_started";
+const EXECUTION_HEADERS_RECEIVED: &str = "headers_received";
+const EXECUTION_REAL_OUTPUT: &str = "real_output_seen";
+const EXECUTION_TERMINAL: &str = "terminal_seen";
+const EXECUTION_UNKNOWN: &str = "unknown";
+
+fn retry_execution_state(
+    error_type: &str,
+    status: Option<u16>,
+    commit_state: &str,
+) -> &'static str {
+    match commit_state {
+        RETRY_COMMIT_TERMINAL => EXECUTION_TERMINAL,
+        RETRY_COMMIT_REAL_OUTPUT => EXECUTION_REAL_OUTPUT,
+        RETRY_COMMIT_GATEWAY_ONLY => EXECUTION_SEND_STARTED,
+        _ if error_type == "edge_queue_wait_timeout"
+            || error_type == "edge_relay_queue_full"
+            || error_type == "edge_upstream_client_build_failed"
+            || error_type == "edge_transient_proxy_client_build_failed" =>
+        {
+            EXECUTION_PRE_SEND
+        }
+        _ if status.is_some_and(|value| value < 500) => EXECUTION_HEADERS_RECEIVED,
+        _ if status.is_some() => EXECUTION_UNKNOWN,
+        _ if error_type == "edge_response_header_timeout"
+            || error_type == "edge_race_response_header_timeout" =>
+        {
+            EXECUTION_UNKNOWN
+        }
+        _ => EXECUTION_UNKNOWN,
+    }
+}
+
+fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    let raw = headers.get("retry-after")?.to_str().ok()?.trim();
+    if let Ok(seconds) = raw.parse::<u64>() {
+        return Some(seconds.saturating_mul(1000).min(30_000));
+    }
+    let reset_at = httpdate::parse_http_date(raw).ok()?;
+    let delay = reset_at.duration_since(SystemTime::now()).ok()?;
+    Some(delay.as_millis().min(30_000) as u64)
+}
+
+async fn wait_for_retry_after(delay_ms: Option<u64>, deadline: Option<Instant>) -> bool {
+    let Some(delay_ms) = delay_ms.filter(|value| *value > 0) else {
+        return true;
+    };
+    let delay = Duration::from_millis(delay_ms.min(250));
+    let now = Instant::now();
+    if deadline.is_some_and(|value| value <= now || value.saturating_duration_since(now) <= delay) {
+        return false;
+    }
+    tokio::time::sleep(delay).await;
+    true
+}
 const DEFAULT_UPSTREAM_ERROR_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const FALLBACK_GO_RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const FALLBACK_GO_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -1485,6 +1542,7 @@ struct RetryDecision {
     status_code: Option<u16>,
     error_type: Option<String>,
     error_message: Option<String>,
+    retry_after_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1494,6 +1552,7 @@ struct RetryRequest {
     account_id: Option<i64>,
     upstream_status_code: Option<u16>,
     upstream_request_id: Option<String>,
+    retry_after_ms: Option<u64>,
     error_type: Option<String>,
     error_message: Option<String>,
     request_body: Option<Value>,
@@ -1501,6 +1560,7 @@ struct RetryRequest {
     commit_state: String,
     wrote_client_response: bool,
     supports_staged_retry: bool,
+    execution_state: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4189,6 +4249,7 @@ async fn relay_ws_session(
                                         account_id: plan.account_id,
                                         upstream_status_code: Some(StatusCode::BAD_REQUEST.as_u16()),
                                         upstream_request_id: None,
+                                        retry_after_ms: None,
                                         error_type: Some("responses_rejected_field".to_string()),
                                         error_message: Some("Upstream rejected a supported request field".to_string()),
                                         request_body: Some(request_body.clone()),
@@ -4199,6 +4260,7 @@ async fn relay_ws_session(
                                                 commit_state_for_turn,
                                             ),
                                         supports_staged_retry: false,
+                                        execution_state: Some(EXECUTION_HEADERS_RECEIVED.to_string()),
                                     },
                                 )
                                 .await;
@@ -6044,7 +6106,8 @@ async fn open_body_retry_upstream(
 struct RequestRetryBudget {
     response_header_deadline: Option<Instant>,
     max_attempts: Option<u32>,
-    attempts: u32,
+    response_header_attempts: u32,
+    body_recovery_attempts: u32,
 }
 
 // Header attempts include the first upstream attempt. Reject an exhausted
@@ -6086,8 +6149,14 @@ impl RequestRetryBudget {
         Self {
             response_header_deadline,
             max_attempts: Some(edge_header_attempt_limit(max_attempts)),
-            attempts: prior_retries.saturating_add(1),
+            response_header_attempts: prior_retries.saturating_add(1),
+            body_recovery_attempts: 0,
         }
+    }
+
+    fn total_attempts(&self) -> u32 {
+        self.response_header_attempts
+            .saturating_add(self.body_recovery_attempts)
     }
 
     fn availability(&self) -> Result<(), &'static str> {
@@ -6099,16 +6168,20 @@ impl RequestRetryBudget {
         }
         if self
             .max_attempts
-            .is_some_and(|max_attempts| self.attempts >= max_attempts)
+            .is_some_and(|max_attempts| self.total_attempts() >= max_attempts)
         {
             return Err("header_attempts_exhausted");
         }
         Ok(())
     }
 
-    fn begin_attempt(&mut self) -> Result<(), &'static str> {
+    // Body recovery remains bounded by the same request-level cap as header
+    // retries, but its accounting is kept separate for timing/metrics and
+    // future policy changes. Splitting the counters must not create extra
+    // upstream replay budget.
+    fn begin_body_recovery(&mut self) -> Result<(), &'static str> {
         self.availability()?;
-        self.attempts = self.attempts.saturating_add(1);
+        self.body_recovery_attempts = self.body_recovery_attempts.saturating_add(1);
         Ok(())
     }
 }
@@ -6179,6 +6252,7 @@ async fn retry_body_upstream(
     } = request;
     let mut upstream_status_code = None;
     let mut upstream_request_id = None;
+    let mut retry_after_ms = None;
     let mut response_body = initial_response_body;
     loop {
         if let Err(reason) = retry_budget.availability() {
@@ -6205,6 +6279,7 @@ async fn retry_body_upstream(
                 account_id: plan.account_id,
                 upstream_status_code,
                 upstream_request_id: upstream_request_id.take(),
+                retry_after_ms,
                 error_type: Some(error_type.clone()),
                 error_message: Some(error_message.clone()),
                 request_body: None,
@@ -6212,6 +6287,10 @@ async fn retry_body_upstream(
                 commit_state: commit_state.to_string(),
                 wrote_client_response: retry_commit_state_wrote_client_response(commit_state),
                 supports_staged_retry: true,
+                execution_state: Some(
+                    retry_execution_state(&error_type, upstream_status_code, commit_state)
+                        .to_string(),
+                ),
             },
         )
         .await;
@@ -6268,6 +6347,23 @@ async fn retry_body_upstream(
                 reason,
             };
         }
+        if !wait_for_retry_after(
+            decision.retry_after_ms,
+            retry_budget.response_header_deadline,
+        )
+        .await
+        {
+            state
+                .metrics
+                .record_retry_reason("retry_after_budget_exhausted");
+            return BodyRetryOutcome {
+                plan,
+                upstream: None,
+                retry_count,
+                keep_current: false,
+                reason: "retry_after_budget_exhausted".to_string(),
+            };
+        }
         let staged_retry_id = decision.staged_retry_id.clone();
         let Some(next_plan) = decision.plan else {
             if error_type == "edge_upstream_stream_failed" {
@@ -6282,7 +6378,7 @@ async fn retry_body_upstream(
             };
         };
         let previous_plan = plan.clone();
-        if let Err(reason) = retry_budget.begin_attempt() {
+        if let Err(reason) = retry_budget.begin_body_recovery() {
             state.metrics.record_retry_reason(reason);
             if let Some(staged_retry_id) = staged_retry_id.as_deref() {
                 let _ = call_retry_stage(state, &next_plan, staged_retry_id, "cancel").await;
@@ -6369,6 +6465,7 @@ async fn retry_body_upstream(
             }
             Ok((upstream, mut guard)) => {
                 let status = upstream.status();
+                let upstream_headers = upstream.headers().clone();
                 if let Some(staged_retry_id) = staged_retry_id.as_deref() {
                     drop(upstream);
                     guard.release();
@@ -6399,6 +6496,9 @@ async fn retry_body_upstream(
                 error_type = "upstream_error".to_string();
                 error_message = body.clone();
                 response_body = (!body.is_empty()).then_some(Value::String(body));
+                retry_after_ms = (status == StatusCode::TOO_MANY_REQUESTS)
+                    .then(|| parse_retry_after_ms(&upstream_headers))
+                    .flatten();
             }
             Err(error) => {
                 if let Some(staged_retry_id) = staged_retry_id.as_deref() {
@@ -6416,6 +6516,7 @@ async fn retry_body_upstream(
                 error_type = "edge_upstream_transport_error".to_string();
                 error_message = error.to_string();
                 response_body = None;
+                retry_after_ms = None;
             }
         }
     }
@@ -7024,11 +7125,17 @@ async fn relay_upstream_direct_core_impl(
                 || plan.race_response_header_timeout_ms.is_some())
                 && err.downcast_ref::<reqwest::Error>().is_some() =>
         {
+            let execution_state = err
+                .downcast_ref::<reqwest::Error>()
+                .filter(|error| error.is_connect())
+                .map(|_| EXECUTION_PRE_SEND)
+                .unwrap_or(EXECUTION_UNKNOWN);
             drop(lease_renewal_guard);
             return retry_after_upstream_transport_error(
                 state,
                 plan,
                 err.to_string(),
+                execution_state,
                 RelayAttemptContext {
                     started_at,
                     timing,
@@ -7115,6 +7222,9 @@ async fn relay_upstream_direct_core_impl(
                 account_id: plan.account_id,
                 upstream_status_code: Some(status.as_u16()),
                 upstream_request_id,
+                retry_after_ms: (status == StatusCode::TOO_MANY_REQUESTS)
+                    .then(|| parse_retry_after_ms(&headers))
+                    .flatten(),
                 error_type: Some("upstream_error".to_string()),
                 error_message: Some(error_body.clone()),
                 request_body: None,
@@ -7126,11 +7236,27 @@ async fn relay_upstream_direct_core_impl(
                 commit_state: RETRY_COMMIT_NONE.to_string(),
                 wrote_client_response: false,
                 supports_staged_retry: true,
+                execution_state: Some(
+                    retry_execution_state(
+                        "upstream_error",
+                        Some(status.as_u16()),
+                        RETRY_COMMIT_NONE,
+                    )
+                    .to_string(),
+                ),
             },
         )
         .await?;
 
         if decision.action == "relay" {
+            if !wait_for_retry_after(
+                decision.retry_after_ms,
+                edge_response_header_budget_deadline,
+            )
+            .await
+            {
+                anyhow::bail!("retry_after_budget_exhausted");
+            }
             if let Some(token) = decision.continuation_token.as_deref() {
                 update_edge_timing(timing_shared.as_ref(), |shared| {
                     shared.continuation_token = Some(token.to_string());
@@ -8383,6 +8509,7 @@ async fn retry_after_race_response_header_budget(
             account_id: plan.account_id,
             upstream_status_code: Some(StatusCode::GATEWAY_TIMEOUT.as_u16()),
             upstream_request_id: None,
+            retry_after_ms: None,
             error_type: Some("edge_race_response_header_timeout".to_string()),
             error_message: Some("upstream response headers exceeded race budget".to_string()),
             request_body: None,
@@ -8390,6 +8517,7 @@ async fn retry_after_race_response_header_budget(
             commit_state: RETRY_COMMIT_NONE.to_string(),
             wrote_client_response: false,
             supports_staged_retry: true,
+            execution_state: Some(EXECUTION_UNKNOWN.to_string()),
         },
     )
     .await?;
@@ -8477,6 +8605,7 @@ async fn retry_after_queue_wait_budget(
             account_id: plan.account_id,
             upstream_status_code: None,
             upstream_request_id: None,
+            retry_after_ms: None,
             error_type: Some("edge_queue_wait_timeout".to_string()),
             error_message: Some(format!(
                 "edge relay queue wait exceeded budget: {queue_wait_ms}ms"
@@ -8486,6 +8615,7 @@ async fn retry_after_queue_wait_budget(
             commit_state: RETRY_COMMIT_NONE.to_string(),
             wrote_client_response: false,
             supports_staged_retry: true,
+            execution_state: Some(EXECUTION_PRE_SEND.to_string()),
         },
     )
     .await?;
@@ -8535,6 +8665,7 @@ async fn retry_after_upstream_transport_error(
     state: AppState,
     plan: EdgePlan,
     error_message: String,
+    execution_state: &'static str,
     context: RelayAttemptContext,
 ) -> anyhow::Result<Response> {
     let RelayAttemptContext {
@@ -8564,6 +8695,7 @@ async fn retry_after_upstream_transport_error(
             account_id: plan.account_id,
             upstream_status_code: None,
             upstream_request_id: None,
+            retry_after_ms: None,
             error_type: Some("edge_upstream_transport_error".to_string()),
             error_message: Some(error_message),
             request_body: None,
@@ -8571,6 +8703,7 @@ async fn retry_after_upstream_transport_error(
             commit_state: RETRY_COMMIT_NONE.to_string(),
             wrote_client_response: false,
             supports_staged_retry: true,
+            execution_state: Some(execution_state.to_string()),
         },
     )
     .await?;
@@ -8663,6 +8796,7 @@ async fn retry_early_placeholder_relay(
                 account_id: failure.plan.account_id,
                 upstream_status_code: None,
                 upstream_request_id: None,
+                retry_after_ms: None,
                 error_type: Some(error_type.to_string()),
                 error_message: Some(failure.message.clone()),
                 request_body: None,
@@ -8672,6 +8806,9 @@ async fn retry_early_placeholder_relay(
                 commit_state: RETRY_COMMIT_GATEWAY_ONLY.to_string(),
                 wrote_client_response: false,
                 supports_staged_retry: true,
+                execution_state: Some(
+                    retry_execution_state(error_type, None, RETRY_COMMIT_GATEWAY_ONLY).to_string(),
+                ),
             },
         )
         .await?;
@@ -13113,15 +13250,23 @@ mod tests {
             RequestRetryBudget::new(Some(3), Some(Instant::now() + Duration::from_secs(1)), 0);
         assert_eq!(budget.availability(), Ok(()));
         assert_eq!(budget.availability(), Ok(()));
-        assert_eq!(budget.begin_attempt(), Ok(()));
-        assert_eq!(budget.begin_attempt(), Ok(()));
-        assert_eq!(budget.begin_attempt(), Err("header_attempts_exhausted"));
+        assert_eq!(budget.begin_body_recovery(), Ok(()));
+        assert_eq!(budget.begin_body_recovery(), Ok(()));
+        assert_eq!(
+            budget.begin_body_recovery(),
+            Err("header_attempts_exhausted")
+        );
 
         let mut expired = RequestRetryBudget::new(Some(3), Some(Instant::now()), 0);
-        assert_eq!(expired.begin_attempt(), Err("header_budget_exhausted"));
+        assert_eq!(
+            expired.begin_body_recovery(),
+            Err("header_budget_exhausted")
+        );
 
         let legacy = RequestRetryBudget::new(None, None, 0);
         assert_eq!(legacy.max_attempts, Some(LEGACY_EDGE_RETRY_MAX_ATTEMPTS));
+        assert_eq!(legacy.response_header_attempts, 1);
+        assert_eq!(legacy.body_recovery_attempts, 0);
     }
 
     #[test]
@@ -13156,6 +13301,66 @@ mod tests {
             )),
             "retry_failure_already_recorded"
         );
+    }
+
+    #[test]
+    fn retry_execution_state_preserves_send_boundary_semantics() {
+        assert_eq!(
+            retry_execution_state("edge_queue_wait_timeout", None, RETRY_COMMIT_NONE),
+            EXECUTION_PRE_SEND
+        );
+        assert_eq!(
+            retry_execution_state("upstream_error", Some(429), RETRY_COMMIT_NONE),
+            EXECUTION_HEADERS_RECEIVED
+        );
+        assert_eq!(
+            retry_execution_state("upstream_error", Some(502), RETRY_COMMIT_NONE),
+            EXECUTION_UNKNOWN
+        );
+        assert_eq!(
+            retry_execution_state(
+                "edge_upstream_stream_failed",
+                None,
+                RETRY_COMMIT_GATEWAY_ONLY
+            ),
+            EXECUTION_SEND_STARTED
+        );
+        assert_eq!(
+            retry_execution_state("upstream_error", Some(429), RETRY_COMMIT_REAL_OUTPUT),
+            EXECUTION_REAL_OUTPUT
+        );
+    }
+
+    #[test]
+    fn retry_after_parser_accepts_seconds_and_http_date_with_cap() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "7".parse().unwrap());
+        assert_eq!(parse_retry_after_ms(&headers), Some(7_000));
+
+        headers.insert("retry-after", "999999".parse().unwrap());
+        assert_eq!(parse_retry_after_ms(&headers), Some(30_000));
+
+        let future = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(5));
+        headers.insert("retry-after", future.parse().unwrap());
+        let parsed = parse_retry_after_ms(&headers).expect("future HTTP-date should parse");
+        assert!(parsed <= 30_000);
+        assert!(parsed >= 3_000, "parsed delay was only {parsed}ms");
+
+        headers.insert("retry-after", "not-a-retry-after".parse().unwrap());
+        assert_eq!(parse_retry_after_ms(&headers), None);
+    }
+
+    #[tokio::test]
+    async fn retry_after_wait_respects_deadline_and_no_delay() {
+        let started = Instant::now();
+        assert!(wait_for_retry_after(None, None).await);
+        assert!(started.elapsed() < Duration::from_millis(50));
+
+        assert!(
+            !wait_for_retry_after(Some(200), Some(Instant::now() + Duration::from_millis(100)))
+                .await
+        );
+        assert!(wait_for_retry_after(Some(0), Some(Instant::now())).await);
     }
 
     #[test]

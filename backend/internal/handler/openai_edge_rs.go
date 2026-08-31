@@ -2081,6 +2081,20 @@ const (
 	openAIEdgeResponseHeaderTimeoutMessage       = "edge upstream response header timeout"
 )
 
+// openAIEdgeRetryAfterMS only forwards provider backoff for rate-limit
+// responses. The value is supplied by the trusted Rust edge and is bounded
+// before it reaches the wire so a malformed internal request cannot create an
+// unbounded retry delay.
+func openAIEdgeRetryAfterMS(req service.OpenAIEdgeRetryRequest, status int) int {
+	if status != http.StatusTooManyRequests || req.RetryAfterMS <= 0 {
+		return 0
+	}
+	if req.RetryAfterMS > 30_000 {
+		return 30_000
+	}
+	return req.RetryAfterMS
+}
+
 func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req service.OpenAIEdgeRetryRequest) service.OpenAIEdgeRetryDecision {
 	fallback := func(reason string) service.OpenAIEdgeRetryDecision {
 		return service.OpenAIEdgeRetryDecision{Action: service.OpenAIEdgeActionFallbackGo, Reason: reason}
@@ -2234,6 +2248,28 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 		errorType != "edge_relay_queue_full" &&
 		errorType != "edge_upstream_client_build_failed" &&
 		errorType != "edge_transient_proxy_client_build_failed"
+	// New Edge binaries provide an explicit execution state. Keep the legacy
+	// status-based behavior when it is absent, while allowing only clearly
+	// pre-send/local failures to bypass the unknown-execution guard.
+	if state := strings.TrimSpace(req.ExecutionState); state != "" {
+		switch state {
+		case "pre_send":
+			// A pre-send marker is only authoritative for a local failure with no
+			// provider status. Never let it downgrade a real HTTP 5xx into a
+			// replayable request.
+			executionUnknown = status != 0 && status >= http.StatusInternalServerError
+		case "send_started", "unknown":
+			// Explicit provider 4xx/rate-limit responses remain known outcomes;
+			// only a missing status or 5xx is ambiguous after send() started.
+			executionUnknown = status == 0 || status >= http.StatusInternalServerError
+		case "headers_received":
+			// 5xx responses remain ambiguous after an upstream request may have
+			// been accepted; explicit client/rate-limit responses are known.
+			executionUnknown = status == 0 || status >= http.StatusInternalServerError
+		case "real_output_seen", "terminal_seen":
+			executionUnknown = true
+		}
+	}
 	if executionUnknown {
 		failureRecorded := false
 		// Preserve the established account-health side effects for failures that
@@ -2350,9 +2386,10 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetryDecision(c *gin.Context, req servi
 				zap.Int("retry_rule_count", retryPlan.RuleCount),
 			)
 			return service.OpenAIEdgeRetryDecision{
-				Action: service.OpenAIEdgeActionRelay,
-				Reason: "same_account_retry",
-				Plan:   &plan,
+				Action:       service.OpenAIEdgeActionRelay,
+				Reason:       "same_account_retry",
+				Plan:         &plan,
+				RetryAfterMS: openAIEdgeRetryAfterMS(req, status),
 			}
 		}
 	}
@@ -2552,6 +2589,7 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 			Reason:        successReason,
 			StagedRetryID: stagedRetryID,
 			Plan:          &prepared.plan,
+			RetryAfterMS:  openAIEdgeRetryAfterMS(req, req.UpstreamStatusCode),
 		}
 	}
 	plan, err := h.buildOpenAIEdgeRetryPlan(c, lease, account, accountReleaseFunc)
@@ -2560,7 +2598,12 @@ func (h *OpenAIGatewayHandler) openAIEdgeRetrySwitchAccount(c *gin.Context, leas
 		reqLog.Warn("openai_edge.retry_plan_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		return fallback("retry_plan_failed")
 	}
-	return service.OpenAIEdgeRetryDecision{Action: service.OpenAIEdgeActionRelay, Reason: successReason, Plan: &plan}
+	return service.OpenAIEdgeRetryDecision{
+		Action:       service.OpenAIEdgeActionRelay,
+		Reason:       successReason,
+		Plan:         &plan,
+		RetryAfterMS: openAIEdgeRetryAfterMS(req, req.UpstreamStatusCode),
+	}
 }
 
 func (h *OpenAIGatewayHandler) OpenAIEdgeRetryStage(c *gin.Context) {

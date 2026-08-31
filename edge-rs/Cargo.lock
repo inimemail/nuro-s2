@@ -1317,6 +1317,7 @@ dependencies = [
  "futures-util",
  "h2",
  "http",
+ "httpdate",
  "reqwest",
  "ring",
  "serde",

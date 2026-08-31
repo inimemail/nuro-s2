@@ -849,6 +849,78 @@ func TestOpenAIEdgeRetryLocalFailureDoesNotConsumeExecutionUnknownBudget(t *test
 	}
 }
 
+func TestOpenAIEdgeRetryExecutionStateControlsReplayGuard(t *testing.T) {
+	tests := []struct {
+		name       string
+		state      string
+		status     int
+		wantAction string
+		wantReason string
+	}{
+		{
+			name:       "pre-send marker cannot downgrade a 5xx",
+			state:      "pre_send",
+			status:     http.StatusBadGateway,
+			wantAction: service.OpenAIEdgeActionRespondError,
+			wantReason: "execution_unknown_replay_blocked",
+		},
+		{
+			name:       "send started remains ambiguous",
+			state:      "send_started",
+			status:     http.StatusBadGateway,
+			wantAction: service.OpenAIEdgeActionRespondError,
+			wantReason: "execution_unknown_replay_blocked",
+		},
+		{
+			name:       "headers received 5xx remains ambiguous",
+			state:      "headers_received",
+			status:     http.StatusBadGateway,
+			wantAction: service.OpenAIEdgeActionRespondError,
+			wantReason: "execution_unknown_replay_blocked",
+		},
+		{
+			name:       "send started explicit rate limit remains retryable",
+			state:      "send_started",
+			status:     http.StatusTooManyRequests,
+			wantAction: service.OpenAIEdgeActionFallbackGo,
+			wantReason: "edge_dependencies_missing",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lease := &openAIEdgeLease{
+				leaseID: "lease-execution-state-" + tc.state,
+				account: &service.Account{ID: 1001},
+			}
+			h := &OpenAIGatewayHandler{openAIEdgeLeases: map[string]*openAIEdgeLease{
+				lease.leaseID: lease,
+			}}
+			c, _ := newOpenAIEdgeTestContext(http.MethodPost, "/internal/edge/openai/retry", `{}`, "")
+			errorType := "upstream_error"
+			if tc.state == "pre_send" {
+				errorType = "edge_upstream_client_build_failed"
+			}
+			decision := h.openAIEdgeRetryDecision(c, service.OpenAIEdgeRetryRequest{
+				LeaseID:            lease.leaseID,
+				AccountID:          lease.account.ID,
+				UpstreamStatusCode: tc.status,
+				ErrorType:          errorType,
+				ExecutionState:     tc.state,
+			})
+			require.Equal(t, tc.wantAction, decision.Action)
+			require.Equal(t, tc.wantReason, decision.Reason)
+		})
+	}
+}
+
+func TestOpenAIEdgeRetryAfterMSOnlyFor429AndBounded(t *testing.T) {
+	req := service.OpenAIEdgeRetryRequest{RetryAfterMS: 90000}
+	require.Equal(t, 30000, openAIEdgeRetryAfterMS(req, http.StatusTooManyRequests))
+	require.Zero(t, openAIEdgeRetryAfterMS(req, http.StatusServiceUnavailable))
+	require.Zero(t, openAIEdgeRetryAfterMS(req, http.StatusTooManyRequests-1))
+	require.Zero(t, openAIEdgeRetryAfterMS(service.OpenAIEdgeRetryRequest{RetryAfterMS: 0}, http.StatusTooManyRequests))
+}
+
 func TestOpenAIEdgeRetryCacheCreationCompatibilityStaysOnEdgeRS(t *testing.T) {
 	cfg := &config.Config{}
 	gatewaySvc := service.NewOpenAIGatewayService(

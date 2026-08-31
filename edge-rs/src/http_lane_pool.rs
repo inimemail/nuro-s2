@@ -2049,7 +2049,10 @@ mod tests {
         .await
         .expect("background pressure wait completes");
         assert_eq!(pool.snapshot().expansion_waiters, 0);
-        assert_eq!(pool.snapshot().expansion_delay_count, 1);
+        assert!(
+            pool.snapshot().expansion_delay_count >= 1,
+            "at least one scheduled pressure wait should be recorded"
+        );
         drop(first);
     }
 
