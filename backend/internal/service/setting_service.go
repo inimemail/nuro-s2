@@ -805,21 +805,26 @@ func (s *SettingService) applyGatewayRuntimeSettings(settings *SystemSettings) {
 		openAIHeaderTimeout = time.Duration(settings.GatewayOpenAIResponseHeaderTimeoutMS) * time.Millisecond
 	}
 	s.cfg.SetGatewaySchedulingRuntime(config.GatewaySchedulingRuntime{
-		UserSlotWaitTimeout:           time.Duration(settings.GatewayUserSlotWaitTimeoutMS) * time.Millisecond,
-		FallbackWaitTimeout:           time.Duration(settings.GatewayAccountSlotWaitTimeoutMS) * time.Millisecond,
-		UserSlotMaxWaitingExtra:       settings.GatewayUserWaitingExtra,
-		RetryAfterMS:                  settings.GatewayRetryAfterMS,
-		OpenAIResponseHeaderTimeout:   &openAIHeaderTimeout,
-		EdgeProtectionEnabled:         settings.GatewayProtectionEnabled,
-		EdgeConnectTimeoutMS:          settings.GatewayEdgeConnectTimeoutMS,
-		EdgeResponseHeaderTimeoutMS:   settings.GatewayEdgeResponseHeaderTimeoutMS,
-		EdgeResponseHeaderBudgetMS:    settings.GatewayEdgeResponseHeaderBudgetMS,
-		EdgeBodyIdleTimeoutMS:         settings.GatewayEdgeBodyIdleTimeoutMS,
-		EdgeResponseHeaderMaxAttempts: settings.GatewayEdgeResponseHeaderMaxAttempts,
-		EdgeResponseHeaderFailover:    settings.GatewayEdgeResponseHeaderFailover,
-		EdgeExposeRetriedUsage:        settings.GatewayEdgeExposeRetriedUsage,
-		EdgeLocalDataPlaneEnabled:     settings.GatewayEdgeLocalDataPlaneEnabled,
-		EdgeProtectionConfigured:      true,
+		UserSlotWaitTimeout:                      time.Duration(settings.GatewayUserSlotWaitTimeoutMS) * time.Millisecond,
+		FallbackWaitTimeout:                      time.Duration(settings.GatewayAccountSlotWaitTimeoutMS) * time.Millisecond,
+		UserSlotMaxWaitingExtra:                  settings.GatewayUserWaitingExtra,
+		RetryAfterMS:                             settings.GatewayRetryAfterMS,
+		OpenAIResponseHeaderTimeout:              &openAIHeaderTimeout,
+		EdgeProtectionEnabled:                    settings.GatewayProtectionEnabled,
+		EdgeConnectTimeoutMS:                     settings.GatewayEdgeConnectTimeoutMS,
+		EdgeResponseHeaderTimeoutMS:              settings.GatewayEdgeResponseHeaderTimeoutMS,
+		EdgeResponseHeaderBudgetMS:               settings.GatewayEdgeResponseHeaderBudgetMS,
+		EdgeBodyIdleTimeoutMS:                    settings.GatewayEdgeBodyIdleTimeoutMS,
+		EdgeResponseHeaderMaxAttempts:            settings.GatewayEdgeResponseHeaderMaxAttempts,
+		EdgeResponseHeaderFailover:               settings.GatewayEdgeResponseHeaderFailover,
+		EdgeExposeRetriedUsage:                   settings.GatewayEdgeExposeRetriedUsage,
+		OpenAIHealthProbeRecentSuccessEnabled:    settings.OpenAIHealthProbeRecentSuccessEnabled,
+		OpenAIHealthProbeRecentSuccessTTLSeconds: settings.OpenAIHealthProbeRecentSuccessTTLSeconds,
+		OpenAIHealthProbeMaxAccountSwitches:      settings.OpenAIHealthProbeMaxAccountSwitches,
+		OpenAIHealthProbeTotalTimeoutSeconds:     settings.OpenAIHealthProbeTotalTimeoutSeconds,
+		OpenAIHealthProbeConfigured:              true,
+		EdgeLocalDataPlaneEnabled:                settings.GatewayEdgeLocalDataPlaneEnabled,
+		EdgeProtectionConfigured:                 true,
 	})
 }
 
@@ -2318,6 +2323,10 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyGatewayEdgeResponseHeaderMaxAttempts] = strconv.Itoa(settings.GatewayEdgeResponseHeaderMaxAttempts)
 	updates[SettingKeyGatewayEdgeResponseHeaderFailover] = strconv.FormatBool(settings.GatewayEdgeResponseHeaderFailover)
 	updates[SettingKeyGatewayEdgeExposeRetriedUsage] = strconv.FormatBool(settings.GatewayEdgeExposeRetriedUsage)
+	updates[SettingKeyOpenAIHealthProbeRecentSuccessEnabled] = strconv.FormatBool(settings.OpenAIHealthProbeRecentSuccessEnabled)
+	updates[SettingKeyOpenAIHealthProbeRecentSuccessTTLSeconds] = strconv.Itoa(clampInt(settings.OpenAIHealthProbeRecentSuccessTTLSeconds, 1, 600))
+	updates[SettingKeyOpenAIHealthProbeMaxAccountSwitches] = strconv.Itoa(clampInt(settings.OpenAIHealthProbeMaxAccountSwitches, 0, 20))
+	updates[SettingKeyOpenAIHealthProbeTotalTimeoutSeconds] = strconv.Itoa(clampInt(settings.OpenAIHealthProbeTotalTimeoutSeconds, 1, 300))
 	updates[SettingKeyGatewayEdgeLocalDataPlaneEnabled] = strconv.FormatBool(settings.GatewayEdgeLocalDataPlaneEnabled)
 	updates[SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages] = string(apiKeyStagesJSON)
 	updates[SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages] = string(oauthStagesJSON)
@@ -3651,6 +3660,10 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyGatewayEdgeResponseHeaderMaxAttempts:                  "3",
 		SettingKeyGatewayEdgeResponseHeaderFailover:                     "true",
 		SettingKeyGatewayEdgeExposeRetriedUsage:                         "false",
+		SettingKeyOpenAIHealthProbeRecentSuccessEnabled:                 "true",
+		SettingKeyOpenAIHealthProbeRecentSuccessTTLSeconds:              "60",
+		SettingKeyOpenAIHealthProbeMaxAccountSwitches:                   "4",
+		SettingKeyOpenAIHealthProbeTotalTimeoutSeconds:                  "40",
 		SettingKeyGatewayEdgeLocalDataPlaneEnabled:                      "true",
 		SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: string(defaultFirstTokenStagesJSON),
 		SettingKeyGatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  string(defaultFirstTokenStagesJSON),
@@ -4236,6 +4249,10 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.GatewayEdgeResponseHeaderMaxAttempts = clampInt(parsePositiveIntSetting(settings[SettingKeyGatewayEdgeResponseHeaderMaxAttempts], 3), 1, 100)
 	result.GatewayEdgeResponseHeaderFailover = !isFalseSettingValue(settings[SettingKeyGatewayEdgeResponseHeaderFailover])
 	result.GatewayEdgeExposeRetriedUsage = settings[SettingKeyGatewayEdgeExposeRetriedUsage] == "true"
+	result.OpenAIHealthProbeRecentSuccessEnabled = !isFalseSettingValue(settings[SettingKeyOpenAIHealthProbeRecentSuccessEnabled])
+	result.OpenAIHealthProbeRecentSuccessTTLSeconds = clampInt(parsePositiveIntSetting(settings[SettingKeyOpenAIHealthProbeRecentSuccessTTLSeconds], 60), 1, 600)
+	result.OpenAIHealthProbeMaxAccountSwitches = clampInt(parseNonNegativeIntSetting(settings[SettingKeyOpenAIHealthProbeMaxAccountSwitches], 4), 0, 20)
+	result.OpenAIHealthProbeTotalTimeoutSeconds = clampInt(parsePositiveIntSetting(settings[SettingKeyOpenAIHealthProbeTotalTimeoutSeconds], 40), 1, 300)
 	result.GatewayEdgeLocalDataPlaneEnabled = !isFalseSettingValue(settings[SettingKeyGatewayEdgeLocalDataPlaneEnabled])
 	result.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages = parseGatewayFirstTokenTimeoutPlaceholderStages(
 		settings[SettingKeyGatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages],

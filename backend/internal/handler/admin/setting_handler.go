@@ -313,6 +313,10 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		GatewayEdgeResponseHeaderMaxAttempts:                  settings.GatewayEdgeResponseHeaderMaxAttempts,
 		GatewayEdgeResponseHeaderFailover:                     settings.GatewayEdgeResponseHeaderFailover,
 		GatewayEdgeExposeRetriedUsage:                         settings.GatewayEdgeExposeRetriedUsage,
+		OpenAIHealthProbeRecentSuccessEnabled:                 settings.OpenAIHealthProbeRecentSuccessEnabled,
+		OpenAIHealthProbeRecentSuccessTTLSeconds:              settings.OpenAIHealthProbeRecentSuccessTTLSeconds,
+		OpenAIHealthProbeMaxAccountSwitches:                   settings.OpenAIHealthProbeMaxAccountSwitches,
+		OpenAIHealthProbeTotalTimeoutSeconds:                  settings.OpenAIHealthProbeTotalTimeoutSeconds,
 		GatewayEdgeLocalDataPlaneEnabled:                      settings.GatewayEdgeLocalDataPlaneEnabled,
 		GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: settings.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages,
 		GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  settings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages,
@@ -698,6 +702,10 @@ type UpdateSettingsRequest struct {
 	GatewayEdgeResponseHeaderMaxAttempts                  int                                               `json:"gateway_edge_response_header_max_attempts"`
 	GatewayEdgeResponseHeaderFailover                     *bool                                             `json:"gateway_edge_response_header_failover"`
 	GatewayEdgeExposeRetriedUsage                         *bool                                             `json:"gateway_edge_expose_retried_usage"`
+	OpenAIHealthProbeRecentSuccessEnabled                 *bool                                             `json:"openai_health_probe_recent_success_enabled"`
+	OpenAIHealthProbeRecentSuccessTTLSeconds              *int                                              `json:"openai_health_probe_recent_success_ttl_seconds"`
+	OpenAIHealthProbeMaxAccountSwitches                   *int                                              `json:"openai_health_probe_max_account_switches"`
+	OpenAIHealthProbeTotalTimeoutSeconds                  *int                                              `json:"openai_health_probe_total_timeout_seconds"`
 	GatewayEdgeLocalDataPlaneEnabled                      *bool                                             `json:"gateway_edge_local_data_plane_enabled"`
 	GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_apikey_first_token_timeout_placeholder_stages"`
 	GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages  []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_oauth_first_token_timeout_placeholder_stages"`
@@ -1011,6 +1019,26 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 	if req.GatewayEdgeResponseHeaderMaxAttempts <= 0 {
 		req.GatewayEdgeResponseHeaderMaxAttempts = previousSettings.GatewayEdgeResponseHeaderMaxAttempts
+	}
+	probeRecentSuccessEnabled := previousSettings.OpenAIHealthProbeRecentSuccessEnabled
+	if req.OpenAIHealthProbeRecentSuccessEnabled != nil {
+		probeRecentSuccessEnabled = *req.OpenAIHealthProbeRecentSuccessEnabled
+	}
+	probeRecentSuccessTTL := previousSettings.OpenAIHealthProbeRecentSuccessTTLSeconds
+	if req.OpenAIHealthProbeRecentSuccessTTLSeconds != nil {
+		probeRecentSuccessTTL = *req.OpenAIHealthProbeRecentSuccessTTLSeconds
+	}
+	probeMaxSwitches := previousSettings.OpenAIHealthProbeMaxAccountSwitches
+	if req.OpenAIHealthProbeMaxAccountSwitches != nil {
+		probeMaxSwitches = *req.OpenAIHealthProbeMaxAccountSwitches
+	}
+	probeTotalTimeout := previousSettings.OpenAIHealthProbeTotalTimeoutSeconds
+	if req.OpenAIHealthProbeTotalTimeoutSeconds != nil {
+		probeTotalTimeout = *req.OpenAIHealthProbeTotalTimeoutSeconds
+	}
+	if probeRecentSuccessTTL < 1 || probeRecentSuccessTTL > 600 || probeMaxSwitches < 0 || probeMaxSwitches > 20 || probeTotalTimeout < 1 || probeTotalTimeout > 300 {
+		response.BadRequest(c, "OpenAI dedicated health probe settings are out of range")
+		return
 	}
 	edgeProtectionEnabled := previousSettings.GatewayProtectionEnabled
 	if req.GatewayProtectionEnabled != nil {
@@ -1994,6 +2022,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GatewayEdgeResponseHeaderMaxAttempts:                  req.GatewayEdgeResponseHeaderMaxAttempts,
 		GatewayEdgeResponseHeaderFailover:                     edgeResponseHeaderFailover,
 		GatewayEdgeExposeRetriedUsage:                         edgeExposeRetriedUsage,
+		OpenAIHealthProbeRecentSuccessEnabled:                 probeRecentSuccessEnabled,
+		OpenAIHealthProbeRecentSuccessTTLSeconds:              probeRecentSuccessTTL,
+		OpenAIHealthProbeMaxAccountSwitches:                   probeMaxSwitches,
+		OpenAIHealthProbeTotalTimeoutSeconds:                  probeTotalTimeout,
 		GatewayEdgeLocalDataPlaneEnabled:                      edgeLocalDataPlaneEnabled,
 		GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: req.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages,
 		GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  req.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages,
@@ -2673,6 +2705,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GatewayEdgeResponseHeaderMaxAttempts:                  updatedSettings.GatewayEdgeResponseHeaderMaxAttempts,
 		GatewayEdgeResponseHeaderFailover:                     updatedSettings.GatewayEdgeResponseHeaderFailover,
 		GatewayEdgeExposeRetriedUsage:                         updatedSettings.GatewayEdgeExposeRetriedUsage,
+		OpenAIHealthProbeRecentSuccessEnabled:                 updatedSettings.OpenAIHealthProbeRecentSuccessEnabled,
+		OpenAIHealthProbeRecentSuccessTTLSeconds:              updatedSettings.OpenAIHealthProbeRecentSuccessTTLSeconds,
+		OpenAIHealthProbeMaxAccountSwitches:                   updatedSettings.OpenAIHealthProbeMaxAccountSwitches,
+		OpenAIHealthProbeTotalTimeoutSeconds:                  updatedSettings.OpenAIHealthProbeTotalTimeoutSeconds,
 		GatewayEdgeLocalDataPlaneEnabled:                      updatedSettings.GatewayEdgeLocalDataPlaneEnabled,
 		GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages: updatedSettings.GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages,
 		GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages:  updatedSettings.GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages,
@@ -3214,6 +3250,18 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.GatewayEdgeExposeRetriedUsage != after.GatewayEdgeExposeRetriedUsage {
 		changed = append(changed, "gateway_edge_expose_retried_usage")
+	}
+	if before.OpenAIHealthProbeRecentSuccessEnabled != after.OpenAIHealthProbeRecentSuccessEnabled {
+		changed = append(changed, "openai_health_probe_recent_success_enabled")
+	}
+	if before.OpenAIHealthProbeRecentSuccessTTLSeconds != after.OpenAIHealthProbeRecentSuccessTTLSeconds {
+		changed = append(changed, "openai_health_probe_recent_success_ttl_seconds")
+	}
+	if before.OpenAIHealthProbeMaxAccountSwitches != after.OpenAIHealthProbeMaxAccountSwitches {
+		changed = append(changed, "openai_health_probe_max_account_switches")
+	}
+	if before.OpenAIHealthProbeTotalTimeoutSeconds != after.OpenAIHealthProbeTotalTimeoutSeconds {
+		changed = append(changed, "openai_health_probe_total_timeout_seconds")
 	}
 	if before.GatewayEdgeLocalDataPlaneEnabled != after.GatewayEdgeLocalDataPlaneEnabled {
 		changed = append(changed, "gateway_edge_local_data_plane_enabled")

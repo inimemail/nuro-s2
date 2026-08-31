@@ -169,6 +169,33 @@ func TestGatewayEdgeProtectionExplicitRuntimeProfilePreservesDisabledState(t *te
 	require.Equal(t, 5000, profile.EdgeConnectTimeoutMS)
 }
 
+func TestOpenAIHealthProbeRuntimeDefaultsAndOverride(t *testing.T) {
+	cfg := &Config{}
+	defaults := cfg.OpenAIHealthProbe()
+	require.True(t, defaults.RecentSuccessEnabled)
+	require.Equal(t, 60, defaults.RecentSuccessTTLSeconds)
+	require.Equal(t, 4, defaults.MaxAccountSwitches)
+	require.Equal(t, 40, defaults.TotalTimeoutSeconds)
+
+	cfg.SetGatewaySchedulingRuntime(GatewaySchedulingRuntime{
+		OpenAIHealthProbeRecentSuccessEnabled:    false,
+		OpenAIHealthProbeRecentSuccessTTLSeconds: 120,
+		OpenAIHealthProbeMaxAccountSwitches:      0,
+		OpenAIHealthProbeTotalTimeoutSeconds:     15,
+		OpenAIHealthProbeConfigured:              true,
+	})
+	override := cfg.OpenAIHealthProbe()
+	require.False(t, override.RecentSuccessEnabled)
+	require.Equal(t, 120, override.RecentSuccessTTLSeconds)
+	require.Equal(t, 0, override.MaxAccountSwitches)
+	require.Equal(t, 15, override.TotalTimeoutSeconds)
+
+	cfg.SetGatewaySchedulingRuntime(GatewaySchedulingRuntime{OpenAIHealthProbeConfigured: true})
+	partial := cfg.OpenAIHealthProbe()
+	require.True(t, partial.RecentSuccessEnabled)
+	require.Equal(t, 4, partial.MaxAccountSwitches)
+}
+
 func TestLoadForwardedClientIPHeadersFromEnvironment(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("SERVER_TRUSTED_PROXIES", "10.0.0.0/8,192.0.2.10")

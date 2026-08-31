@@ -1113,13 +1113,59 @@ type GatewaySchedulingRuntime struct {
 	EdgeResponseHeaderFailover    bool
 	// EdgeExposeRetriedUsage controls whether edge-rs exposes usage accumulated
 	// across internal upstream retries in the single downstream usage frame.
-	EdgeExposeRetriedUsage bool
+	EdgeExposeRetriedUsage                   bool
+	OpenAIHealthProbeRecentSuccessEnabled    bool
+	OpenAIHealthProbeRecentSuccessTTLSeconds int
+	OpenAIHealthProbeMaxAccountSwitches      int
+	OpenAIHealthProbeTotalTimeoutSeconds     int
+	OpenAIHealthProbeConfigured              bool
 	// EdgeLocalDataPlaneEnabled gates the versioned Rust-local OpenAI HTTP/SSE
 	// path independently from the upstream timeout protection profile.
 	EdgeLocalDataPlaneEnabled bool
 	// EdgeProtectionConfigured distinguishes an explicitly published Edge
 	// profile from legacy runtime updates that predate these fields.
 	EdgeProtectionConfigured bool
+}
+
+type OpenAIHealthProbeRuntime struct {
+	RecentSuccessEnabled    bool
+	RecentSuccessTTLSeconds int
+	MaxAccountSwitches      int
+	TotalTimeoutSeconds     int
+}
+
+// OpenAIHealthProbe returns settings used exclusively by the dedicated
+// X-Sub2API-Health-Probe Responses path.
+func (c *Config) OpenAIHealthProbe() OpenAIHealthProbeRuntime {
+	result := OpenAIHealthProbeRuntime{
+		RecentSuccessEnabled:    true,
+		RecentSuccessTTLSeconds: 60,
+		MaxAccountSwitches:      4,
+		TotalTimeoutSeconds:     40,
+	}
+	if c == nil {
+		return result
+	}
+	if pointer := c.schedulingRuntimePointer(); pointer != nil {
+		if live := pointer.Load(); live != nil {
+			// Runtime snapshots published by older code, or partial programmatic
+			// updates that carry no probe values, keep the recommended defaults.
+			if !live.OpenAIHealthProbeConfigured || (live.OpenAIHealthProbeRecentSuccessTTLSeconds == 0 && live.OpenAIHealthProbeMaxAccountSwitches == 0 && live.OpenAIHealthProbeTotalTimeoutSeconds == 0) {
+				return result
+			}
+			result.RecentSuccessEnabled = live.OpenAIHealthProbeRecentSuccessEnabled
+			if live.OpenAIHealthProbeRecentSuccessTTLSeconds > 0 {
+				result.RecentSuccessTTLSeconds = live.OpenAIHealthProbeRecentSuccessTTLSeconds
+			}
+			if live.OpenAIHealthProbeMaxAccountSwitches >= 0 {
+				result.MaxAccountSwitches = live.OpenAIHealthProbeMaxAccountSwitches
+			}
+			if live.OpenAIHealthProbeTotalTimeoutSeconds > 0 {
+				result.TotalTimeoutSeconds = live.OpenAIHealthProbeTotalTimeoutSeconds
+			}
+		}
+	}
+	return result
 }
 
 // GatewayEdgeProtection returns the effective Edge upstream protection profile.

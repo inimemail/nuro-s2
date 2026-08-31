@@ -6593,6 +6593,22 @@ export default {
         bodyIdleRange: 'Body idle timeout must be a safe integer greater than 0.',
         attemptsRange: 'Max header attempts must be between 1 and 100.'
       },
+      gatewayOpenAIHealthProbe: {
+        title: 'OpenAI Dedicated Health Probe',
+        description: 'Only affects OpenAI Responses probe requests carrying X-Sub2API-Health-Probe.',
+        reset: 'Restore defaults',
+        recentSuccess: 'Reuse recent business success',
+        recentSuccessHint: 'When the same API key, platform, and model had a recent real success, return MONITOR_OK without contacting upstream.',
+        enabled: 'Enabled',
+        disabled: 'Disabled',
+        ttl: 'Success validity',
+        ttlHint: 'Seconds; default 60. Dedicated probes do not refresh this record.',
+        maxSwitches: 'Maximum account switches',
+        maxSwitchesHint: 'Four switches allow up to five real account attempts.',
+        totalTimeout: 'Probe total timeout',
+        totalTimeoutHint: 'Seconds; all dedicated-probe account attempts share this budget.',
+        rangeError: 'Dedicated health probe values are outside the allowed range.'
+      },
       gatewayForwarding: {
         title: 'Request Forwarding',
         description: 'Control how requests are forwarded to upstream OAuth accounts',

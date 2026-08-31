@@ -611,6 +611,10 @@ export interface SystemSettings {
   gateway_edge_response_header_max_attempts: number;
   gateway_edge_response_header_failover: boolean;
   gateway_edge_expose_retried_usage: boolean;
+  openai_health_probe_recent_success_enabled: boolean;
+  openai_health_probe_recent_success_ttl_seconds: number;
+  openai_health_probe_max_account_switches: number;
+  openai_health_probe_total_timeout_seconds: number;
   gateway_edge_local_data_plane_enabled: boolean;
   gateway_openai_apikey_first_token_timeout_placeholder_stages: OpenAIFirstTokenTimeoutPlaceholderStage[];
   gateway_openai_oauth_first_token_timeout_placeholder_stages: OpenAIFirstTokenTimeoutPlaceholderStage[];
@@ -911,6 +915,10 @@ export interface UpdateSettingsRequest {
   gateway_edge_response_header_max_attempts?: number;
   gateway_edge_response_header_failover?: boolean;
   gateway_edge_expose_retried_usage?: boolean;
+  openai_health_probe_recent_success_enabled?: boolean;
+  openai_health_probe_recent_success_ttl_seconds?: number;
+  openai_health_probe_max_account_switches?: number;
+  openai_health_probe_total_timeout_seconds?: number;
   gateway_edge_local_data_plane_enabled?: boolean;
   gateway_openai_apikey_first_token_timeout_placeholder_stages?: OpenAIFirstTokenTimeoutPlaceholderStage[];
   gateway_openai_oauth_first_token_timeout_placeholder_stages?: OpenAIFirstTokenTimeoutPlaceholderStage[];

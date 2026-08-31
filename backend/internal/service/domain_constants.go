@@ -552,6 +552,12 @@ const (
 	SettingKeyGatewayEdgeResponseHeaderMaxAttempts = "gateway_edge_response_header_max_attempts"
 	SettingKeyGatewayEdgeResponseHeaderFailover    = "gateway_edge_response_header_failover"
 	SettingKeyGatewayEdgeExposeRetriedUsage        = "gateway_edge_expose_retried_usage"
+	// Dedicated OpenAI Responses health probes may reuse a recent successful
+	// business request for the same API key, platform and requested model.
+	SettingKeyOpenAIHealthProbeRecentSuccessEnabled    = "openai_health_probe_recent_success_enabled"
+	SettingKeyOpenAIHealthProbeRecentSuccessTTLSeconds = "openai_health_probe_recent_success_ttl_seconds"
+	SettingKeyOpenAIHealthProbeMaxAccountSwitches      = "openai_health_probe_max_account_switches"
+	SettingKeyOpenAIHealthProbeTotalTimeoutSeconds     = "openai_health_probe_total_timeout_seconds"
 	// SettingKeyGatewayEdgeLocalDataPlaneEnabled enables the versioned Rust
 	// OpenAI HTTP/SSE data plane. It defaults on, while Edge readiness and the
 	// durable-settlement guard still fail closed before any local hint is used.

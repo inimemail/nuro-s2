@@ -200,6 +200,10 @@ type SystemSettings struct {
 	GatewayEdgeResponseHeaderMaxAttempts                  int                                               `json:"gateway_edge_response_header_max_attempts"`
 	GatewayEdgeResponseHeaderFailover                     bool                                              `json:"gateway_edge_response_header_failover"`
 	GatewayEdgeExposeRetriedUsage                         bool                                              `json:"gateway_edge_expose_retried_usage"`
+	OpenAIHealthProbeRecentSuccessEnabled                 bool                                              `json:"openai_health_probe_recent_success_enabled"`
+	OpenAIHealthProbeRecentSuccessTTLSeconds              int                                               `json:"openai_health_probe_recent_success_ttl_seconds"`
+	OpenAIHealthProbeMaxAccountSwitches                   int                                               `json:"openai_health_probe_max_account_switches"`
+	OpenAIHealthProbeTotalTimeoutSeconds                  int                                               `json:"openai_health_probe_total_timeout_seconds"`
 	GatewayEdgeLocalDataPlaneEnabled                      bool                                              `json:"gateway_edge_local_data_plane_enabled"`
 	GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_apikey_first_token_timeout_placeholder_stages"`
 	GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages  []service.OpenAIFirstTokenTimeoutPlaceholderStage `json:"gateway_openai_oauth_first_token_timeout_placeholder_stages"`

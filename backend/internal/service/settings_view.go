@@ -212,6 +212,10 @@ type SystemSettings struct {
 	GatewayEdgeResponseHeaderMaxAttempts                  int
 	GatewayEdgeResponseHeaderFailover                     bool
 	GatewayEdgeExposeRetriedUsage                         bool
+	OpenAIHealthProbeRecentSuccessEnabled                 bool
+	OpenAIHealthProbeRecentSuccessTTLSeconds              int
+	OpenAIHealthProbeMaxAccountSwitches                   int
+	OpenAIHealthProbeTotalTimeoutSeconds                  int
 	GatewayEdgeLocalDataPlaneEnabled                      bool
 	GatewayOpenAIAPIKeyFirstTokenTimeoutPlaceholderStages []OpenAIFirstTokenTimeoutPlaceholderStage
 	GatewayOpenAIOAuthFirstTokenTimeoutPlaceholderStages  []OpenAIFirstTokenTimeoutPlaceholderStage

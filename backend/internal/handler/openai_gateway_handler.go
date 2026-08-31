@@ -183,10 +183,6 @@ type openAIAccountSlotAcquireResult struct {
 	Err          error
 }
 
-func shouldCheckOpenAIHealthProbePeers(healthProbe, peerChecked bool, slotResult openAIAccountSlotAcquireResult) bool {
-	return healthProbe && !peerChecked && slotResult.Acquired
-}
-
 func mergeOpenAIAccountExclusions(sets ...map[int64]struct{}) map[int64]struct{} {
 	var merged map[int64]struct{}
 	for _, set := range sets {
@@ -474,10 +470,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 	requestCtx := service.WithResolvedTargetPlatform(c.Request.Context(), requestPlatform)
 	requestCtx = service.WithOpenAIExplicitImageGenerationIntent(requestCtx, imageIntent)
+	var probeRuntime config.OpenAIHealthProbeRuntime
 	if healthProbe {
+		probeRuntime = openAIHealthProbeRuntime(h.cfg)
 		var cancelHealthProbe context.CancelFunc
 		requestCtx = service.WithOpenAIHealthProbeRequestContext(requestCtx)
-		requestCtx, cancelHealthProbe = context.WithTimeout(requestCtx, service.OpenAIHealthProbeTotalTimeout)
+		requestCtx, cancelHealthProbe = context.WithTimeout(
+			requestCtx,
+			time.Duration(probeRuntime.TotalTimeoutSeconds)*time.Second,
+		)
 		c.Request = c.Request.WithContext(requestCtx)
 		defer cancelHealthProbe()
 	}
@@ -526,6 +527,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.handleStreamingAwareError(c, status, code, message, streamStarted)
 		return
 	}
+	if healthProbe && h.tryServeOpenAIHealthProbeRecentSuccess(c, apiKey, requestPlatform, reqModel) {
+		return
+	}
 	if reqStream {
 		service.StartOpenAIPlaceholderCoordination(c, time.Now())
 	}
@@ -557,7 +561,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
 	if healthProbe {
-		maxAccountSwitches = service.OpenAIHealthProbeMaxAccountSwitches
+		maxAccountSwitches = probeRuntime.MaxAccountSwitches
 	}
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
@@ -578,41 +582,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	var lastFailoverErr *service.UpstreamFailoverError
 	modelRoutingLockedPriority := -1
 	userSlotHeld := false
-	healthProbeDefaultFallbackStarted := false
-	healthProbePeerChecked := false
-	activateHealthProbeDefaultFallback := func(reason string) bool {
-		if healthProbeDefaultFallbackStarted {
-			return false
-		}
-		fallbackBody, buildErr := service.BuildOpenAIHealthProbeDefaultFallbackBody(reqModel)
-		if buildErr != nil {
-			reqLog.Warn("openai.health_probe_default_fallback_build_failed", zap.Error(buildErr))
-			return false
-		}
-		// Keep the inbound probe header/context intact; only change the body sent upstream.
-		forwardBodyForResponses = newOpenAIModelMappedBodyCache(fallbackBody, h.gatewayService.ReplaceModelInBody)
-		healthProbeDefaultFallbackStarted = true
-		switchCount = 0
-		failedAccountIDs = make(map[int64]struct{})
-		capacitySkippedIDs = make(map[int64]struct{})
-		sameAccountRetryCount = make(map[int64]int)
-		sameAccountRetryRuleCount = make(sameAccountRetryRuleCounts)
-		sameAccountRetryStartedAt = make(map[int64]time.Time)
-		sameAccountRetryAccountID = 0
-		sameAccountRetryAccount = nil
-		sameAccountRetryErr = nil
-		healthProbeAlternativeByAccount = make(map[int64]bool)
-		lastFailoverErr = nil
-		modelRoutingLockedPriority = -1
-		reqLog.Warn("openai.health_probe_default_fallback_started", zap.String("model", reqModel), zap.String("reason", reason))
-		return true
-	}
-	startHealthProbeDefaultFallback := func(failoverErr *service.UpstreamFailoverError) bool {
-		if !service.ShouldStartOpenAIHealthProbeDefaultFallback(c, failoverErr, healthProbeDefaultFallbackStarted) {
-			return false
-		}
-		return activateHealthProbeDefaultFallback("dedicated_probe_exhausted")
-	}
 	settleFailover := func(account *service.Account, failoverErr *service.UpstreamFailoverError) bool {
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
@@ -641,9 +610,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		failedAccountIDs[account.ID] = struct{}{}
 		lastFailoverErr = failoverErr
 		if switchCount >= maxAccountSwitches {
-			if startHealthProbeDefaultFallback(failoverErr) {
-				return true
-			}
 			h.handleFailoverExhausted(c, failoverErr, streamStarted)
 			return false
 		}
@@ -771,9 +737,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				return
 			}
 			if lastFailoverErr != nil {
-				if startHealthProbeDefaultFallback(lastFailoverErr) {
-					continue
-				}
 				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
 			} else {
 				h.handleFailoverExhaustedSimple(c, 502, streamStarted)
@@ -833,23 +796,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		sameAccountRetryAccountID = 0
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
-		// Keep this check after account-slot acquisition. A capacity miss may move
-		// the request to another priority layer, whose peer count can differ.
-		if shouldCheckOpenAIHealthProbePeers(healthProbe, healthProbePeerChecked, slotResult) {
-			healthProbePeerChecked = true
-			hasPeer, known := h.gatewayService.HasOpenAIHealthProbePeerAccount(requestCtx, account, service.OpenAIAccountScheduleRequest{
-				GroupID:            apiKey.GroupID,
-				RequestedModel:     reqModel,
-				RequiredTransport:  service.OpenAIUpstreamTransportAny,
-				RequiredCapability: requiredCapability,
-				RequireCompact:     requireCompact,
-				RequestPlatform:    requestPlatform,
-			})
-			if known && !hasPeer {
-				activateHealthProbeDefaultFallback("single_account_priority_layer")
-			}
-		}
-
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
@@ -1055,6 +1001,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 		service.ApplyObservedOpenAIServiceTier(c, result)
+		if !healthProbe && successfulOutcome {
+			h.recordOpenAIHealthProbeRecentSuccess(apiKey.ID, requestPlatform, reqModel)
+		}
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 		userAgent := c.GetHeader("User-Agent")

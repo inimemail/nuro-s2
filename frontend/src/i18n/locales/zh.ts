@@ -6734,6 +6734,22 @@ export default {
         bodyIdleRange: 'body 空闲超时必须是大于 0 的安全整数。',
         attemptsRange: '响应头最大尝试必须在 1-100 之间。'
       },
+      gatewayOpenAIHealthProbe: {
+        title: 'OpenAI 专用探针',
+        description: '仅影响带 X-Sub2API-Health-Probe 的 OpenAI Responses 探针请求。',
+        reset: '恢复默认',
+        recentSuccess: '近期业务成功复用',
+        recentSuccessHint: '同 API Key、同平台、同模型在有效期内有真实成功请求时，直接返回 MONITOR_OK，不访问上游。',
+        enabled: '已开启',
+        disabled: '已关闭',
+        ttl: '成功有效期',
+        ttlHint: '单位秒；默认 60。专用探针自身不会刷新此记录。',
+        maxSwitches: '最大切号次数',
+        maxSwitchesHint: '4 次切号表示最多尝试 5 个真实账号。',
+        totalTimeout: '探针总超时',
+        totalTimeoutHint: '单位秒；所有专用探针账号尝试共享此预算。',
+        rangeError: '专用探针参数超出允许范围。'
+      },
       gatewayForwarding: {
         title: '请求转发行为',
         description: '控制请求转发到上游 OAuth 账号时的行为',

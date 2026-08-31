@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +14,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 )
 
 func TestConfigureOpenAIResponsesHealthProbe(t *testing.T) {
@@ -419,45 +417,6 @@ func TestApplyOpenAIHealthProbeRetryPolicyPreservesNonPoolDecision(t *testing.T)
 	nonRetryableErr := &UpstreamFailoverError{StatusCode: http.StatusConflict}
 	ApplyOpenAIHealthProbeRetryPolicy(marked, account, nonRetryableErr)
 	require.False(t, nonRetryableErr.RetryableOnSameAccount)
-}
-
-func TestOpenAIHealthProbeDefaultFallbackOnlyStartsOnceForEligibleFailures(t *testing.T) {
-	marked, _ := configuredHealthProbeContext(t)
-	marked.Request.Header.Set("X-Custom-Probe", "preserved")
-	originalHeaders := marked.Request.Header.Clone()
-	emptyErr := &UpstreamFailoverError{ResponseBody: openAIHealthProbeErrorBody()}
-
-	require.True(t, ShouldStartOpenAIHealthProbeDefaultFallback(marked, emptyErr, false))
-	require.False(t, ShouldStartOpenAIHealthProbeDefaultFallback(marked, emptyErr, true))
-	for _, statusCode := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 0} {
-		t.Run(fmt.Sprintf("upstream failure %d", statusCode), func(t *testing.T) {
-			require.True(t, ShouldStartOpenAIHealthProbeDefaultFallback(marked, &UpstreamFailoverError{
-				StatusCode:   statusCode,
-				ResponseBody: []byte(`{"error":{"message":"Upstream request failed","type":"upstream_error"}}`),
-			}, false))
-		})
-	}
-	require.False(t, ShouldStartOpenAIHealthProbeDefaultFallback(marked, &UpstreamFailoverError{
-		StatusCode:   http.StatusBadRequest,
-		ResponseBody: []byte(`{"error":{"message":"ordinary upstream error"}}`),
-	}, false))
-
-	unmarked, _ := healthProbeTestContext(healthProbeRequestBody(), "")
-	require.False(t, ShouldStartOpenAIHealthProbeDefaultFallback(unmarked, emptyErr, false))
-	require.Equal(t, originalHeaders, marked.Request.Header)
-	require.Equal(t, OpenAIHealthProbeProfileResponsesV1, marked.GetHeader(OpenAIHealthProbeHeader))
-}
-
-func TestBuildOpenAIHealthProbeDefaultFallbackBodyUsesDefaultResponsesShape(t *testing.T) {
-	body, err := BuildOpenAIHealthProbeDefaultFallbackBody(" gpt-5.5 ")
-	require.NoError(t, err)
-	require.Equal(t, "gpt-5.5", gjson.GetBytes(body, "model").String())
-	require.Equal(t, false, gjson.GetBytes(body, "stream").Bool())
-	require.Equal(t, float64(monitorChallengeMaxTokens), gjson.GetBytes(body, "max_output_tokens").Float())
-	require.NotEmpty(t, strings.TrimSpace(gjson.GetBytes(body, "instructions").String()))
-	require.NotEqual(t, openAIHealthProbeInput, gjson.GetBytes(body, "input").String())
-	require.False(t, gjson.GetBytes(body, "reasoning").Exists())
-	require.False(t, gjson.GetBytes(body, "store").Exists())
 }
 
 func TestOpenAIHealthProbeDoesNotChangeUnmarkedEmptyResponse(t *testing.T) {

@@ -4548,6 +4548,66 @@
             </div>
           </div>
 
+          <!-- OpenAI dedicated health probe -->
+          <div class="card overflow-hidden">
+            <div class="border-b border-gray-100 bg-gradient-to-r from-violet-50 via-white to-sky-50 px-6 py-5 dark:border-dark-700 dark:from-violet-950/30 dark:via-dark-800 dark:to-sky-950/20">
+              <div class="flex flex-wrap items-start justify-between gap-4">
+                <div class="flex items-start gap-3">
+                  <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300">
+                    <Icon name="chart" size="md" />
+                  </div>
+                  <div>
+                    <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t("admin.settings.gatewayOpenAIHealthProbe.title") }}</h2>
+                    <p class="mt-1 max-w-2xl text-sm text-gray-600 dark:text-gray-400">{{ t("admin.settings.gatewayOpenAIHealthProbe.description") }}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="btn-ghost btn-icon h-9 w-9 rounded-full border border-violet-200 text-violet-700 transition-transform hover:rotate-[-20deg] hover:bg-violet-100 dark:border-violet-800 dark:text-violet-300 dark:hover:bg-violet-900/40"
+                  :title="t('admin.settings.gatewayOpenAIHealthProbe.reset')"
+                  :aria-label="t('admin.settings.gatewayOpenAIHealthProbe.reset')"
+                  @click="resetOpenAIHealthProbeDefaults"
+                >
+                  <Icon name="refresh" size="sm" />
+                </button>
+              </div>
+              <div class="mt-5 flex w-full items-center justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 dark:border-dark-600 dark:bg-dark-800/70">
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-sm font-semibold text-gray-800 dark:text-gray-100">{{ t("admin.settings.gatewayOpenAIHealthProbe.recentSuccess") }}</span>
+                    <span class="inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-semibold" :class="form.openai_health_probe_recent_success_enabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300' : 'border-gray-200 bg-white text-gray-600 dark:border-dark-500 dark:bg-dark-700 dark:text-gray-300'">
+                      <span class="h-2 w-2 rounded-full" :class="form.openai_health_probe_recent_success_enabled ? 'bg-emerald-500' : 'bg-gray-400'" />
+                      {{ form.openai_health_probe_recent_success_enabled ? t("admin.settings.gatewayOpenAIHealthProbe.enabled") : t("admin.settings.gatewayOpenAIHealthProbe.disabled") }}
+                    </span>
+                  </div>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayOpenAIHealthProbe.recentSuccessHint") }}</p>
+                </div>
+                <Toggle
+                  v-model="form.openai_health_probe_recent_success_enabled"
+                  :aria-label="t('admin.settings.gatewayOpenAIHealthProbe.recentSuccess')"
+                  data-test="openai-health-probe-recent-success-toggle"
+                />
+              </div>
+            </div>
+            <div class="grid gap-5 p-6 sm:grid-cols-2 lg:grid-cols-3">
+              <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayOpenAIHealthProbe.ttl") }}</label>
+                <input v-model.number="form.openai_health_probe_recent_success_ttl_seconds" type="number" min="1" max="600" step="1" class="input w-full" :disabled="!form.openai_health_probe_recent_success_enabled" />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayOpenAIHealthProbe.ttlHint") }}</p>
+              </div>
+              <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayOpenAIHealthProbe.maxSwitches") }}</label>
+                <input v-model.number="form.openai_health_probe_max_account_switches" type="number" min="0" max="20" step="1" class="input w-full" />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayOpenAIHealthProbe.maxSwitchesHint") }}</p>
+              </div>
+              <div>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayOpenAIHealthProbe.totalTimeout") }}</label>
+                <input v-model.number="form.openai_health_probe_total_timeout_seconds" type="number" min="1" max="300" step="1" class="input w-full" />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayOpenAIHealthProbe.totalTimeoutHint") }}</p>
+              </div>
+            </div>
+          </div>
+
           <!-- Gateway Forwarding Behavior -->
           <div class="card">
             <div
@@ -9108,6 +9168,10 @@ const form = reactive<SettingsForm>({
   gateway_edge_response_header_max_attempts: 3,
   gateway_edge_response_header_failover: true,
   gateway_edge_expose_retried_usage: false,
+  openai_health_probe_recent_success_enabled: true,
+  openai_health_probe_recent_success_ttl_seconds: 60,
+  openai_health_probe_max_account_switches: 4,
+  openai_health_probe_total_timeout_seconds: 40,
   gateway_edge_local_data_plane_enabled: true,
   gateway_openai_apikey_first_token_timeout_placeholder_stages: [
     { stage: 1, placeholder_ms: 800, guard_max_ms: 5000 },
@@ -9204,6 +9268,13 @@ const gatewayEdgeProtectionDefaults = Object.freeze({
   gateway_edge_expose_retried_usage: false,
 });
 
+const openAIHealthProbeDefaults = Object.freeze({
+  openai_health_probe_recent_success_enabled: true,
+  openai_health_probe_recent_success_ttl_seconds: 60,
+  openai_health_probe_max_account_switches: 4,
+  openai_health_probe_total_timeout_seconds: 40,
+});
+
 function resetGatewayConcurrencyDefaults(): void {
   Object.assign(form, gatewayConcurrencyDefaults);
 }
@@ -9214,6 +9285,10 @@ function resetGatewayOpenAIHeaderTimeoutDefaults(): void {
 
 function resetGatewayEdgeProtectionDefaults(): void {
   Object.assign(form, gatewayEdgeProtectionDefaults);
+}
+
+function resetOpenAIHealthProbeDefaults(): void {
+  Object.assign(form, openAIHealthProbeDefaults);
 }
 
 function validateGatewayConcurrencySettings(): boolean {
@@ -9267,6 +9342,13 @@ function validateGatewayConcurrencySettings(): boolean {
   }
   if (!Number.isSafeInteger(edgeAttempts) || edgeAttempts < 1 || edgeAttempts > 100) {
     appStore.showError(t("admin.settings.gatewayEdgeProtection.attemptsRange"));
+    return false;
+  }
+  const probeTTL = Number(form.openai_health_probe_recent_success_ttl_seconds);
+  const probeSwitches = Number(form.openai_health_probe_max_account_switches);
+  const probeTimeout = Number(form.openai_health_probe_total_timeout_seconds);
+  if (!Number.isSafeInteger(probeTTL) || probeTTL < 1 || probeTTL > 600 || !Number.isSafeInteger(probeSwitches) || probeSwitches < 0 || probeSwitches > 20 || !Number.isSafeInteger(probeTimeout) || probeTimeout < 1 || probeTimeout > 300) {
+    appStore.showError(t("admin.settings.gatewayOpenAIHealthProbe.rangeError"));
     return false;
   }
   return true;
@@ -10595,6 +10677,10 @@ async function saveSettings() {
       gateway_edge_response_header_max_attempts: Math.floor(Number(form.gateway_edge_response_header_max_attempts)),
       gateway_edge_response_header_failover: form.gateway_edge_response_header_failover,
       gateway_edge_expose_retried_usage: form.gateway_edge_expose_retried_usage,
+      openai_health_probe_recent_success_enabled: form.openai_health_probe_recent_success_enabled,
+      openai_health_probe_recent_success_ttl_seconds: Math.floor(Number(form.openai_health_probe_recent_success_ttl_seconds)),
+      openai_health_probe_max_account_switches: Math.floor(Number(form.openai_health_probe_max_account_switches)),
+      openai_health_probe_total_timeout_seconds: Math.floor(Number(form.openai_health_probe_total_timeout_seconds)),
       gateway_edge_local_data_plane_enabled: form.gateway_edge_local_data_plane_enabled,
       gateway_openai_apikey_first_token_timeout_placeholder_stages: form.gateway_openai_apikey_first_token_timeout_placeholder_stages.map((stage, index) => ({
         stage: index + 1,

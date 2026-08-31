@@ -16,7 +16,7 @@ import (
 const (
 	OpenAIHealthProbeHeader             = "X-Sub2API-Health-Probe"
 	OpenAIHealthProbeProfileResponsesV1 = "openai-responses-v1"
-	OpenAIHealthProbeMaxAccountSwitches = 2
+	OpenAIHealthProbeMaxAccountSwitches = 4
 	OpenAIHealthProbeTotalTimeout       = 40 * time.Second
 	OpenAIHealthProbeGrabMaxElapsed     = 1500 * time.Millisecond
 
@@ -437,27 +437,4 @@ func IsOpenAIHealthProbeEmptyErrorBody(body []byte) bool {
 
 func OpenAIHealthProbeClientMessage() string {
 	return openAIHealthProbeClientMessage
-}
-
-func ShouldStartOpenAIHealthProbeDefaultFallback(c *gin.Context, failoverErr *UpstreamFailoverError, alreadyStarted bool) bool {
-	if alreadyStarted || !IsOpenAIResponsesHealthProbe(c) || failoverErr == nil {
-		return false
-	}
-	if IsOpenAIHealthProbeEmptyErrorBody(failoverErr.ResponseBody) {
-		return true
-	}
-	// A dedicated probe may fail with a normal upstream gateway error before
-	// the gateway can produce the probe-specific empty-response marker. Give it
-	// one compatible default Responses attempt after account failover is spent.
-	switch failoverErr.StatusCode {
-	case 0, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return true
-	default:
-		return false
-	}
-}
-
-func BuildOpenAIHealthProbeDefaultFallbackBody(model string) ([]byte, error) {
-	challenge := generateChallenge()
-	return providerOpenAIResponsesAdapter.buildBody(strings.TrimSpace(model), challenge.Prompt)
 }
