@@ -1727,6 +1727,79 @@ func TestOpenAIEdgeSuccessfulTerminalRequiresMatchingDialect(t *testing.T) {
 	}
 }
 
+func TestOpenAIEdgeShouldRefreshHealthProbeSuccess(t *testing.T) {
+	account := &service.APIKey{ID: 42}
+	tests := []struct {
+		name       string
+		lease      *openAIEdgeLease
+		successful bool
+		want       bool
+	}{
+		{
+			name: "responses http success",
+			lease: &openAIEdgeLease{
+				apiKey:          account,
+				requestPlatform: service.PlatformOpenAI,
+				routingModel:    "gpt-5.6-sol",
+				inboundEndpoint: "/v1/responses",
+			},
+			successful: true,
+			want:       true,
+		},
+		{
+			name: "responses websocket success",
+			lease: &openAIEdgeLease{
+				apiKey:          account,
+				requestPlatform: service.PlatformOpenAI,
+				routingModel:    "gpt-5.6-sol",
+				inboundEndpoint: "/v1/responses:ws",
+			},
+			successful: true,
+			want:       true,
+		},
+		{
+			name: "chat does not refresh",
+			lease: &openAIEdgeLease{
+				apiKey:          account,
+				requestPlatform: service.PlatformOpenAI,
+				routingModel:    "gpt-5.6-sol",
+				inboundEndpoint: "/v1/chat/completions",
+			},
+			successful: true,
+			want:       false,
+		},
+		{
+			name: "incomplete does not refresh",
+			lease: &openAIEdgeLease{
+				apiKey:          account,
+				requestPlatform: service.PlatformOpenAI,
+				routingModel:    "gpt-5.6-sol",
+				inboundEndpoint: "/v1/responses",
+			},
+			successful: false,
+			want:       false,
+		},
+		{
+			name: "health probe does not refresh",
+			lease: &openAIEdgeLease{
+				apiKey:          account,
+				requestPlatform: service.PlatformOpenAI,
+				routingModel:    "gpt-5.6-sol",
+				inboundEndpoint: "/v1/responses",
+				healthProbe:     true,
+			},
+			successful: true,
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, openAIEdgeShouldRefreshHealthProbeSuccess(tt.lease, tt.successful))
+		})
+	}
+}
+
 func TestOpenAIEdgeCompletionSuccessRejectsCyberAndDisconnect(t *testing.T) {
 	base := service.OpenAIEdgeCompleteRequest{
 		Success:           true,

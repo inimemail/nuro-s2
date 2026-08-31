@@ -74,6 +74,8 @@ type openAIEdgeLease struct {
 	lockedPriority     int
 	routingModel       string
 	requestModel       string
+	requestPlatform    string
+	healthProbe        bool
 	billingModel       string
 	upstreamModel      string
 	reasoningEffort    *string
@@ -1509,6 +1511,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 	if reason != "" {
 		return fallback(reason)
 	}
+	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
 	if !cfg.RelayResponses {
 		return fallback("edge_responses_relay_disabled")
 	}
@@ -1660,6 +1663,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeRawResponsesRelay(c *gin.Context
 		lockedPriority:     -1,
 		routingModel:       reqModel,
 		requestModel:       prepared.Model,
+		requestPlatform:    requestPlatform,
+		healthProbe:        strings.EqualFold(openAIEdgeHeader(req.Headers, service.OpenAIHealthProbeHeader), service.OpenAIHealthProbeProfileResponsesV1),
 		billingModel:       prepared.BillingModel,
 		upstreamModel:      prepared.UpstreamModel,
 		reasoningEffort:    prepared.ReasoningEffort,
@@ -1716,6 +1721,7 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 	if reason != "" {
 		return fallback(reason)
 	}
+	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
 	if reason := openAIEdgeRolloutRejectReason(cfg, apiKey, reqModel, req.EdgeRequestID); reason != "" {
 		return fallback(reason)
 	}
@@ -1858,6 +1864,8 @@ func (h *OpenAIGatewayHandler) prepareOpenAIEdgeResponsesWSRelay(c *gin.Context,
 		lockedPriority:     -1,
 		routingModel:       reqModel,
 		requestModel:       prepared.Model,
+		requestPlatform:    requestPlatform,
+		healthProbe:        strings.EqualFold(openAIEdgeHeader(req.Headers, service.OpenAIHealthProbeHeader), service.OpenAIHealthProbeProfileResponsesV1),
 		billingModel:       prepared.BillingModel,
 		upstreamModel:      prepared.UpstreamModel,
 		reasoningEffort:    prepared.ReasoningEffort,
@@ -2987,6 +2995,9 @@ func (h *OpenAIGatewayHandler) OpenAIEdgeComplete(c *gin.Context) {
 			)
 			h.gatewayService.ReportOpenAIAccountScheduleResultForRequest(lease.account, lease.openAIRoutingModel(), false, nil)
 		}
+		if openAIEdgeShouldRefreshHealthProbeSuccess(lease, successfulTerminal) {
+			h.recordOpenAIHealthProbeRecentSuccess(lease.apiKey.ID, lease.requestPlatform, lease.routingModel)
+		}
 
 		if successfulTerminal || openAIEdgeUsageIsBillable(result.Usage) || req.CyberBlocked {
 			h.submitOpenAIUsageRecordTask(context.Background(), result, func(ctx context.Context) {
@@ -3027,6 +3038,23 @@ func openAIEdgeSuccessfulTerminal(inboundEndpoint, terminalType string) bool {
 		return terminalType == "[done]" || terminalType == "chat.finish_reason"
 	}
 	return terminalType == "response.completed" || terminalType == "response.done"
+}
+
+// openAIEdgeShouldRefreshHealthProbeSuccess keeps the dedicated Responses
+// probe marker tied to a complete Responses request. Chat Completions must not
+// refresh it because a successful chat endpoint does not prove that the
+// Responses endpoint is healthy; malformed dedicated probes must not refresh
+// it either.
+func openAIEdgeShouldRefreshHealthProbeSuccess(lease *openAIEdgeLease, successfulTerminal bool) bool {
+	if lease == nil || lease.apiKey == nil || lease.apiKey.ID <= 0 || !successfulTerminal || lease.healthProbe {
+		return false
+	}
+	switch normalizeOpenAIEdgePath(lease.inboundEndpoint) {
+	case "/v1/responses", "/v1/responses:ws":
+		return strings.TrimSpace(lease.requestPlatform) != "" && strings.TrimSpace(lease.routingModel) != ""
+	default:
+		return false
+	}
 }
 
 func openAIEdgeCompletionIsSuccessful(inboundEndpoint string, req service.OpenAIEdgeCompleteRequest) bool {

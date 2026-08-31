@@ -2646,6 +2646,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if !successfulTerminal && !openAIEdgeUsageIsBillable(result.Usage) {
 					return
 				}
+				if successfulTerminal &&
+					!strings.EqualFold(strings.TrimSpace(c.GetHeader(service.OpenAIHealthProbeHeader)), service.OpenAIHealthProbeProfileResponsesV1) {
+					h.recordOpenAIHealthProbeRecentSuccess(apiKey.ID, requestPlatform, turnRequestedModel)
+				}
 				inboundEndpoint := GetInboundEndpoint(c)
 				upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
 				quotaPlatform := service.QuotaPlatform(ctx, apiKey)
