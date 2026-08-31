@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http/httptest"
 	"strconv"
 	"testing"
@@ -36,7 +37,10 @@ func TestOpenAIHealthProbeRecentSuccessServesCachedResponse(t *testing.T) {
 	h.recordOpenAIHealthProbeRecentSuccess(apiKey.ID, platform, model)
 
 	ctx, recorder := newHealthProbeTestContext()
-	require.True(t, h.tryServeOpenAIHealthProbeRecentSuccess(ctx, apiKey, platform, model))
+	startedAt := time.Now()
+	require.True(t, h.tryServeOpenAIHealthProbeRecentSuccess(ctx, apiKey, platform, model, startedAt))
+	elapsed := time.Since(startedAt)
+	require.GreaterOrEqual(t, elapsed, openAIHealthProbeRecentSuccessMinDelay-20*time.Millisecond)
 	require.Equal(t, 200, recorder.Code)
 	require.Equal(t, "recent-success", recorder.Header().Get("X-Sub2API-Health-Probe-Source"))
 	require.Contains(t, recorder.Body.String(), `"text":"MONITOR_OK"`)
@@ -58,7 +62,7 @@ func TestOpenAIHealthProbeRecentSuccessRejectsFutureMarker(t *testing.T) {
 	mini.Set(key, strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10))
 
 	ctx, _ := newHealthProbeTestContext()
-	require.False(t, h.tryServeOpenAIHealthProbeRecentSuccess(ctx, apiKey, service.PlatformOpenAI, "gpt-5.6-sol"))
+	require.False(t, h.tryServeOpenAIHealthProbeRecentSuccess(ctx, apiKey, service.PlatformOpenAI, "gpt-5.6-sol", time.Now()))
 }
 
 func TestOpenAIHealthProbeRecentSuccessFallsBackWhenRedisUnavailable(t *testing.T) {
@@ -67,5 +71,28 @@ func TestOpenAIHealthProbeRecentSuccessFallsBackWhenRedisUnavailable(t *testing.
 
 	h := &OpenAIGatewayHandler{redisClient: client}
 	ctx, _ := newHealthProbeTestContext()
-	require.False(t, h.tryServeOpenAIHealthProbeRecentSuccess(ctx, &service.APIKey{ID: 44}, service.PlatformOpenAI, "gpt-5.6-sol"))
+	require.False(t, h.tryServeOpenAIHealthProbeRecentSuccess(ctx, &service.APIKey{ID: 44}, service.PlatformOpenAI, "gpt-5.6-sol", time.Now()))
+}
+
+func TestWaitOpenAIHealthProbeRecentSuccessStopsWhenRequestEnds(t *testing.T) {
+	requestCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	startedAt := time.Now()
+
+	require.False(t, waitOpenAIHealthProbeRecentSuccess(requestCtx, startedAt, time.Second))
+	require.Less(t, time.Since(startedAt), 100*time.Millisecond)
+}
+
+func TestWaitOpenAIHealthProbeRecentSuccessHonorsTarget(t *testing.T) {
+	startedAt := time.Now()
+	require.True(t, waitOpenAIHealthProbeRecentSuccess(context.Background(), startedAt, 20*time.Millisecond))
+	require.GreaterOrEqual(t, time.Since(startedAt), 18*time.Millisecond)
+}
+
+func TestRandomOpenAIHealthProbeRecentSuccessDelayStaysWithinBounds(t *testing.T) {
+	for range 1000 {
+		delay := randomOpenAIHealthProbeRecentSuccessDelay()
+		require.GreaterOrEqual(t, delay, openAIHealthProbeRecentSuccessMinDelay)
+		require.LessOrEqual(t, delay, openAIHealthProbeRecentSuccessMaxDelay)
+	}
 }

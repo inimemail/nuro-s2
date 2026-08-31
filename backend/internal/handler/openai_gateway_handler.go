@@ -527,7 +527,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.handleStreamingAwareError(c, status, code, message, streamStarted)
 		return
 	}
-	if healthProbe && h.tryServeOpenAIHealthProbeRecentSuccess(c, apiKey, requestPlatform, reqModel) {
+	if healthProbe && h.tryServeOpenAIHealthProbeRecentSuccess(c, apiKey, requestPlatform, reqModel, requestStart) {
 		return
 	}
 	if reqStream {
