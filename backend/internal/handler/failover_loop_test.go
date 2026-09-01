@@ -413,11 +413,11 @@ func TestPlanSameAccountRetryWithMaxElapsedOnlyShortensConfiguredBudget(t *testi
 	require.True(t, legacyRetry)
 	require.Equal(t, 5*time.Second, legacyPlan.MaxElapsed)
 
-	probeCounts := map[int64]int{}
-	probePlan, probeRetry := planSameAccountRetryWithMaxElapsed(account, probeCounts, map[int64]time.Time{account.ID: startedAt}, 10*time.Millisecond, service.OpenAIHealthProbeGrabMaxElapsed)
-	require.False(t, probeRetry)
-	require.Equal(t, service.OpenAIHealthProbeGrabMaxElapsed, probePlan.MaxElapsed)
-	require.Zero(t, probeCounts[account.ID])
+	clampedCounts := map[int64]int{}
+	clampedPlan, clampedRetry := planSameAccountRetryWithMaxElapsed(account, clampedCounts, map[int64]time.Time{account.ID: startedAt}, 10*time.Millisecond, 1500*time.Millisecond)
+	require.False(t, clampedRetry)
+	require.Equal(t, 1500*time.Millisecond, clampedPlan.MaxElapsed)
+	require.Zero(t, clampedCounts[account.ID])
 }
 
 func TestPlanSameAccountRetryWithMaxElapsedDoesNotExtendSmallerOrUnlimitedBudget(t *testing.T) {
@@ -439,7 +439,7 @@ func TestPlanSameAccountRetryWithMaxElapsedDoesNotExtendSmallerOrUnlimitedBudget
 		map[int64]int{},
 		map[int64]time.Time{limited.ID: time.Now().Add(-900 * time.Millisecond)},
 		200*time.Millisecond,
-		service.OpenAIHealthProbeGrabMaxElapsed,
+		1500*time.Millisecond,
 	)
 	require.False(t, retry)
 	require.Equal(t, time.Second, plan.MaxElapsed)
@@ -459,7 +459,7 @@ func TestPlanSameAccountRetryWithMaxElapsedDoesNotExtendSmallerOrUnlimitedBudget
 		map[int64]int{},
 		map[int64]time.Time{unlimited.ID: time.Now().Add(-time.Hour)},
 		0,
-		service.OpenAIHealthProbeGrabMaxElapsed,
+		1500*time.Millisecond,
 	)
 	require.True(t, retry)
 	require.Zero(t, plan.MaxElapsed)

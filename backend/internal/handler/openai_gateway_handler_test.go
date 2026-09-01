@@ -42,6 +42,20 @@ func TestOpenAIWSFollowupTurnMappingDoesNotApplyAccountMappingTwice(t *testing.T
 	require.Equal(t, "upstream-model", account.GetMappedModel(mapping.MappedModel))
 }
 
+func TestOpenAIHealthProbeRetryDeadlineExpiredOnlyMatchesInternalDeadline(t *testing.T) {
+	deadlineCtx, cancelDeadline := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancelDeadline()
+	<-deadlineCtx.Done()
+	require.True(t, openAIHealthProbeRetryDeadlineExpired(true, deadlineCtx))
+	require.False(t, openAIHealthProbeRetryDeadlineExpired(false, deadlineCtx))
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.False(t, openAIHealthProbeRetryDeadlineExpired(true, canceledCtx))
+	require.False(t, openAIHealthProbeRetryDeadlineExpired(true, context.Background()))
+	require.False(t, openAIHealthProbeRetryDeadlineExpired(true, nil))
+}
+
 func TestOpenAIWSFollowupReusesInitialChannelAliasWithoutLookup(t *testing.T) {
 	initial := service.ChannelMappingResult{Mapped: true, MappedModel: "gpt-5.6"}
 	require.True(t, openAIWSReusesInitialChannelMapping("client-alias", "client-alias", initial))

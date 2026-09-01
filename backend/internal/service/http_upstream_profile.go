@@ -12,6 +12,10 @@ type HTTPUpstreamProfile string
 const (
 	HTTPUpstreamProfileDefault HTTPUpstreamProfile = ""
 	HTTPUpstreamProfileOpenAI  HTTPUpstreamProfile = "openai"
+	// Dedicated Responses health probes share one request-level deadline across
+	// all candidate accounts. Keep their HTTP behavior OpenAI-compatible while
+	// disabling the ordinary per-attempt response-header timeout.
+	HTTPUpstreamProfileOpenAIHealthProbe HTTPUpstreamProfile = "openai_health_probe"
 	// Media generation may legitimately complete expensive work before returning
 	// response headers. Keep the provider's default transport behavior while
 	// disabling only the response-header deadline.
@@ -34,6 +38,9 @@ func WithHTTPUpstreamProfile(ctx context.Context, profile HTTPUpstreamProfile) c
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if profile == HTTPUpstreamProfileOpenAI && IsOpenAIHealthProbeRequestContext(ctx) {
+		profile = HTTPUpstreamProfileOpenAIHealthProbe
+	}
 	if profile == HTTPUpstreamProfileDefault {
 		return ctx
 	}
@@ -50,7 +57,7 @@ func HTTPUpstreamProfileFromContext(ctx context.Context) HTTPUpstreamProfile {
 		return HTTPUpstreamProfileDefault
 	}
 	switch profile {
-	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileMedia, HTTPUpstreamProfileOpenAIMedia, HTTPUpstreamProfileBillingProbe:
+	case HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileOpenAIHealthProbe, HTTPUpstreamProfileMedia, HTTPUpstreamProfileOpenAIMedia, HTTPUpstreamProfileBillingProbe:
 		return profile
 	default:
 		return HTTPUpstreamProfileDefault

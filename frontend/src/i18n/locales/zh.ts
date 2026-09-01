@@ -6744,8 +6744,9 @@ export default {
         disabled: '已关闭',
         ttl: '成功有效期',
         ttlHint: '单位秒；默认 60。专用探针自身不会刷新此记录。',
-        maxSwitches: '最大切号次数',
-        maxSwitchesHint: '4 次切号表示最多尝试 5 个真实账号。',
+        accountCoverage: '探针账号覆盖',
+        accountCoverageValue: '遍历当前优先级全部可用账号',
+        accountCoverageHint: '明确失败后排除当前账号并尝试下一个；切号不会重复账号，无其他候选时仍遵守账号的同账号重试规则，所有尝试共享总超时。',
         totalTimeout: '探针总超时',
         totalTimeoutHint: '单位秒；所有专用探针账号尝试共享此预算。',
         rangeError: '专用探针参数超出允许范围。'

@@ -41,6 +41,10 @@ func openAIExecutionAllowsAccountSwitch(account *service.Account, failoverErr *s
 	return false
 }
 
+func openAIHealthProbeRetryDeadlineExpired(healthProbe bool, ctx context.Context) bool {
+	return healthProbe && ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)
+}
+
 // OpenAIGatewayHandler handles OpenAI API gateway requests
 type OpenAIGatewayHandler struct {
 	gatewayService           *service.OpenAIGatewayService
@@ -560,9 +564,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	requireCompact := isOpenAIRemoteCompactPath(c)
 
 	maxAccountSwitches := h.nonImageStreamBootstrapSwitchLimit(reqStream)
-	if healthProbe {
-		maxAccountSwitches = probeRuntime.MaxAccountSwitches
-	}
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	capacitySkippedIDs := make(map[int64]struct{})
@@ -575,10 +576,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	sameAccountRetryAccountID := int64(0)
 	var sameAccountRetryAccount *service.Account
 	var sameAccountRetryErr *service.UpstreamFailoverError
-	var healthProbeAlternativeByAccount map[int64]bool
-	if healthProbe {
-		healthProbeAlternativeByAccount = make(map[int64]bool)
-	}
 	var lastFailoverErr *service.UpstreamFailoverError
 	modelRoutingLockedPriority := -1
 	userSlotHeld := false
@@ -587,6 +584,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		sameAccountRetryAccount = nil
 		sameAccountRetryErr = nil
 		if failoverClientGone(c) {
+			return false
+		}
+		// The dedicated probe's deadline is a request-wide budget, not evidence
+		// that the current account is unhealthy. Finish with the existing error
+		// response instead of cooling or switching after the budget expires.
+		if openAIHealthProbeRetryDeadlineExpired(healthProbe, requestCtx) {
+			h.handleFailoverExhausted(c, failoverErr, streamStarted)
 			return false
 		}
 		if !failoverErr.SkipSchedulePenalty {
@@ -600,29 +604,40 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if !healthProbe {
 			h.gatewayService.RecordOpenAIAccountSwitch()
 		}
-		modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
-			modelRoutingLockedPriority,
-			account,
-			failoverErr,
-			h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
-			apiKey.Group,
-		)
+		// A dedicated probe exhausts only the priority layer selected for its
+		// first real attempt. Lower-priority standby accounts remain untouched.
+		if healthProbe && modelRoutingLockedPriority < 0 {
+			modelRoutingLockedPriority = account.Priority
+		} else {
+			modelRoutingLockedPriority = lockOpenAIModelRoutingFailoverPriority(
+				modelRoutingLockedPriority,
+				account,
+				failoverErr,
+				h.gatewayService == nil || h.gatewayService.IsOpenAIPoolDownstreamModelLimitProtectionEnabled(c.Request.Context()),
+				apiKey.Group,
+			)
+		}
 		failedAccountIDs[account.ID] = struct{}{}
 		lastFailoverErr = failoverErr
-		if switchCount >= maxAccountSwitches {
+		if !healthProbe && switchCount >= maxAccountSwitches {
 			h.handleFailoverExhausted(c, failoverErr, streamStarted)
 			return false
 		}
 		switchCount++
-		if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
+		if !healthProbe && h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
 			h.handleFailoverExhausted(c, failoverErr, streamStarted)
 			return false
+		}
+		loggedMaxSwitches := maxAccountSwitches
+		if healthProbe {
+			loggedMaxSwitches = -1
 		}
 		reqLog.Warn("openai.upstream_failover_switching",
 			zap.Int64("account_id", account.ID),
 			zap.Int("upstream_status", failoverErr.StatusCode),
 			zap.Int("switch_count", switchCount),
-			zap.Int("max_switches", maxAccountSwitches),
+			zap.Int("max_switches", loggedMaxSwitches),
+			zap.Bool("exhaust_eligible_accounts", healthProbe),
 		)
 		return true
 	}
@@ -877,23 +892,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						retryDelay := sameAccountRetryDelayForAccount(account)
 						var retryPlan sameAccountRetryPlan
 						var retry bool
-						if healthProbe && account.IsOpenAIUpstreamConcurrencyRaceEnabled() {
-							hasAlternative, checked := healthProbeAlternativeByAccount[account.ID]
-							if !checked {
-								hasAlternative = h.gatewayService.HasOpenAIHealthProbeAlternativeAccount(requestCtx, account, service.OpenAIAccountScheduleRequest{
-									GroupID:            apiKey.GroupID,
-									RequestedModel:     reqModel,
-									RequiredTransport:  service.OpenAIUpstreamTransportAny,
-									RequiredCapability: service.OpenAIEndpointCapabilityChatCompletions,
-									RequireCompact:     requireCompact,
-									RequestPlatform:    requestPlatform,
-									ExcludedIDs:        excludedAccountIDs,
-								})
-								healthProbeAlternativeByAccount[account.ID] = hasAlternative
-							}
-							if hasAlternative {
-								retryPlan, retry = planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, service.OpenAIHealthProbeGrabMaxElapsed, failoverErr)
-							} else {
+						if healthProbe {
+							// Capacity changes quickly under load. Recheck on every
+							// explicit failure instead of caching a stale answer for
+							// the rest of the probe's shared timeout.
+							hasAlternative := h.gatewayService.HasOpenAIHealthProbeAlternativeAccount(requestCtx, account, service.OpenAIAccountScheduleRequest{
+								GroupID:            apiKey.GroupID,
+								RequestedModel:     reqModel,
+								RequiredTransport:  service.OpenAIUpstreamTransportAny,
+								RequiredCapability: service.OpenAIEndpointCapabilityChatCompletions,
+								RequireCompact:     requireCompact,
+								RequestPlatform:    requestPlatform,
+								ExcludedIDs:        excludedAccountIDs,
+							})
+							if !hasAlternative {
 								retryPlan, retry = planSameAccountRetryWithRuleCounts(account, sameAccountRetryCount, sameAccountRetryRuleCount, sameAccountRetryStartedAt, retryDelay, 0, failoverErr)
 							}
 						} else {
@@ -917,6 +929,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							)
 							select {
 							case <-requestCtx.Done():
+								if openAIHealthProbeRetryDeadlineExpired(healthProbe, requestCtx) {
+									h.handleFailoverExhausted(c, failoverErr, streamStarted)
+								}
 								return
 							case <-time.After(retryPlan.Delay):
 							}

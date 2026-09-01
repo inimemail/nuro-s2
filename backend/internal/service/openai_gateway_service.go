@@ -7563,7 +7563,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	}
 	if IsOpenAIResponsesHealthProbe(c) {
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
-			return nil, annotateOpenAIAttemptFailover(resp.Request, failoverErr)
+			return nil, failoverErr
 		}
 		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
@@ -7753,7 +7753,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(ctx context.Context, r
 
 	if IsOpenAIResponsesHealthProbe(c) {
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
-			return nil, annotateOpenAIAttemptFailover(resp.Request, failoverErr)
+			return nil, failoverErr
 		}
 	}
 	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
@@ -9706,7 +9706,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	}
 	if IsOpenAIResponsesHealthProbe(c) {
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
-			return nil, annotateOpenAIAttemptFailover(resp.Request, failoverErr)
+			return nil, failoverErr
 		}
 	}
 	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {
@@ -9834,7 +9834,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(ctx context.Context, resp *http.R
 
 	if IsOpenAIResponsesHealthProbe(c) {
 		if failoverErr := newOpenAIHealthProbeEmptyFailoverError(c, account, resp, body); failoverErr != nil {
-			return nil, annotateOpenAIAttemptFailover(resp.Request, failoverErr)
+			return nil, failoverErr
 		}
 	}
 	if normalizedBody, normalized := s.normalizeOpenAIDownstreamUsageForRequest(body, ctx, account, mappedModel); normalized {

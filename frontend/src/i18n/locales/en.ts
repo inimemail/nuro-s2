@@ -6603,8 +6603,9 @@ export default {
         disabled: 'Disabled',
         ttl: 'Success validity',
         ttlHint: 'Seconds; default 60. Dedicated probes do not refresh this record.',
-        maxSwitches: 'Maximum account switches',
-        maxSwitchesHint: 'Four switches allow up to five real account attempts.',
+        accountCoverage: 'Probe account coverage',
+        accountCoverageValue: 'All eligible accounts at the current priority',
+        accountCoverageHint: 'After an explicit failure, exclude that account and try the next one. Failover never revisits an account; when no peer is available, the account retry policy still applies. All attempts share the total timeout.',
         totalTimeout: 'Probe total timeout',
         totalTimeoutHint: 'Seconds; all dedicated-probe account attempts share this budget.',
         rangeError: 'Dedicated health probe values are outside the allowed range.'

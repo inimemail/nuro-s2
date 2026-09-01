@@ -451,6 +451,30 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileCustomHeaderTimeout() {
 	require.Equal(s.T(), 1800*time.Second, transport.ResponseHeaderTimeout)
 }
 
+func (s *HTTPUpstreamSuite) TestOpenAIHealthProbeProfileDisablesHeaderTimeoutAndKeepsH2() {
+	s.cfg.Gateway = config.GatewayConfig{
+		OpenAIResponseHeaderTimeout: 30,
+		OpenAIHTTP2: config.GatewayOpenAIHTTP2Config{
+			Enabled: true,
+		},
+	}
+	svc := s.newService()
+	probe, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAIHealthProbe, false, false)
+	require.NoError(s.T(), err)
+	probeTransport, ok := probe.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Zero(s.T(), probeTransport.ResponseHeaderTimeout)
+	require.True(s.T(), probeTransport.ForceAttemptHTTP2)
+	require.Equal(s.T(), upstreamProtocolModeOpenAIH2, probe.protocolMode)
+
+	normal, err := svc.getClientEntry("", 1, 1, service.HTTPUpstreamProfileOpenAI, false, false)
+	require.NoError(s.T(), err)
+	normalTransport, ok := normal.client.Transport.(*http.Transport)
+	require.True(s.T(), ok, "expected *http.Transport")
+	require.Equal(s.T(), 30*time.Second, normalTransport.ResponseHeaderTimeout)
+	require.NotSame(s.T(), normal, probe, "probe requests need an isolated timeout profile")
+}
+
 func (s *HTTPUpstreamSuite) TestMediaProfilesDisableHeaderTimeoutWithoutChangingOpenAITransport() {
 	s.cfg.Gateway = config.GatewayConfig{
 		ResponseHeaderTimeout:       30,

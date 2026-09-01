@@ -16,9 +16,7 @@ import (
 const (
 	OpenAIHealthProbeHeader             = "X-Sub2API-Health-Probe"
 	OpenAIHealthProbeProfileResponsesV1 = "openai-responses-v1"
-	OpenAIHealthProbeMaxAccountSwitches = 4
 	OpenAIHealthProbeTotalTimeout       = 40 * time.Second
-	OpenAIHealthProbeGrabMaxElapsed     = 1500 * time.Millisecond
 
 	openAIHealthProbeContextKey               = "openai_responses_health_probe"
 	openAIHealthProbeSessionPrefix            = "openai-health-probe-"
@@ -299,7 +297,12 @@ func IsolateOpenAIHealthProbeFailover(c *gin.Context, failoverErr *UpstreamFailo
 	if !IsOpenAIResponsesHealthProbe(c) || failoverErr == nil {
 		return
 	}
-	failoverErr.SkipPoolSoftCooldown = true
+	// Explicit provider outcomes reuse the ordinary OpenAI pool cooldown path.
+	// Request-local and execution-unknown failures must remain isolated because
+	// they do not prove that the selected account is unhealthy.
+	if failoverErr.ExecutionUnknown || failoverErr.Scope == GatewayFailureScopeRequest {
+		failoverErr.SkipPoolSoftCooldown = true
+	}
 	failoverErr.SkipPromptCacheAvoidance = true
 	failoverErr.SkipStickySessionEviction = true
 	failoverErr.SkipSchedulePenalty = true
@@ -386,7 +389,7 @@ func newOpenAIHealthProbeEmptyFailoverError(c *gin.Context, account *Account, re
 		ResponseHeaders:           resp.Header.Clone(),
 		Message:                   openAIHealthProbeUpstreamMessage,
 		ProbeModel:                probeModel,
-		SkipPoolSoftCooldown:      true,
+		SkipPoolSoftCooldown:      false,
 		SkipPromptCacheAvoidance:  true,
 		SkipStickySessionEviction: true,
 		SkipSchedulePenalty:       true,
@@ -396,6 +399,17 @@ func newOpenAIHealthProbeEmptyFailoverError(c *gin.Context, account *Account, re
 		HealthProbeResponseID:     extractOpenAIResponseIDFromJSONBytes(body),
 		HealthProbeModel:          probeModel,
 		HealthProbeUpstreamModel:  strings.TrimSpace(gjson.GetBytes(body, "model").String()),
+	}
+	// This is a completed, known 2xx response, so it is safe to switch accounts
+	// even though the request body was sent. Preserve only the concrete attempt
+	// identity for mandatory, per-attempt probe billing; the generic failover
+	// annotator would incorrectly classify the synthetic 502 as execution-unknown.
+	if resp.Request != nil {
+		attemptCtx := resp.Request.Context()
+		if attempt := OpenAIUpstreamAttemptFromContext(attemptCtx); attempt != nil {
+			failoverErr.AttemptID = strings.TrimSpace(attempt.ID)
+			failoverErr.UpstreamRequestBodyStarted = OpenAIUpstreamAttemptBodyStarted(attemptCtx)
+		}
 	}
 	ApplyOpenAIHealthProbeRetryPolicy(c, account, failoverErr)
 	IsolateOpenAIHealthProbeFailover(c, failoverErr)

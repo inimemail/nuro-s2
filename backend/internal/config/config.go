@@ -1130,8 +1130,11 @@ type GatewaySchedulingRuntime struct {
 type OpenAIHealthProbeRuntime struct {
 	RecentSuccessEnabled    bool
 	RecentSuccessTTLSeconds int
-	MaxAccountSwitches      int
-	TotalTimeoutSeconds     int
+	// MaxAccountSwitches is retained for runtime snapshot compatibility. The
+	// dedicated probe now exhausts distinct eligible accounts within its shared
+	// total timeout instead of applying this historical fixed limit.
+	MaxAccountSwitches  int
+	TotalTimeoutSeconds int
 }
 
 // OpenAIHealthProbe returns settings used exclusively by the dedicated

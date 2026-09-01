@@ -4596,9 +4596,11 @@
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayOpenAIHealthProbe.ttlHint") }}</p>
               </div>
               <div>
-                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayOpenAIHealthProbe.maxSwitches") }}</label>
-                <input v-model.number="form.openai_health_probe_max_account_switches" type="number" min="0" max="20" step="1" class="input w-full" />
-                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayOpenAIHealthProbe.maxSwitchesHint") }}</p>
+                <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayOpenAIHealthProbe.accountCoverage") }}</label>
+                <div class="flex min-h-10 items-center rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium leading-5 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">
+                  {{ t("admin.settings.gatewayOpenAIHealthProbe.accountCoverageValue") }}
+                </div>
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.gatewayOpenAIHealthProbe.accountCoverageHint") }}</p>
               </div>
               <div>
                 <label class="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.gatewayOpenAIHealthProbe.totalTimeout") }}</label>
@@ -9345,9 +9347,8 @@ function validateGatewayConcurrencySettings(): boolean {
     return false;
   }
   const probeTTL = Number(form.openai_health_probe_recent_success_ttl_seconds);
-  const probeSwitches = Number(form.openai_health_probe_max_account_switches);
   const probeTimeout = Number(form.openai_health_probe_total_timeout_seconds);
-  if (!Number.isSafeInteger(probeTTL) || probeTTL < 1 || probeTTL > 600 || !Number.isSafeInteger(probeSwitches) || probeSwitches < 0 || probeSwitches > 20 || !Number.isSafeInteger(probeTimeout) || probeTimeout < 1 || probeTimeout > 300) {
+  if (!Number.isSafeInteger(probeTTL) || probeTTL < 1 || probeTTL > 600 || !Number.isSafeInteger(probeTimeout) || probeTimeout < 1 || probeTimeout > 300) {
     appStore.showError(t("admin.settings.gatewayOpenAIHealthProbe.rangeError"));
     return false;
   }
@@ -10679,7 +10680,6 @@ async function saveSettings() {
       gateway_edge_expose_retried_usage: form.gateway_edge_expose_retried_usage,
       openai_health_probe_recent_success_enabled: form.openai_health_probe_recent_success_enabled,
       openai_health_probe_recent_success_ttl_seconds: Math.floor(Number(form.openai_health_probe_recent_success_ttl_seconds)),
-      openai_health_probe_max_account_switches: Math.floor(Number(form.openai_health_probe_max_account_switches)),
       openai_health_probe_total_timeout_seconds: Math.floor(Number(form.openai_health_probe_total_timeout_seconds)),
       gateway_edge_local_data_plane_enabled: form.gateway_edge_local_data_plane_enabled,
       gateway_openai_apikey_first_token_timeout_placeholder_stages: form.gateway_openai_apikey_first_token_timeout_placeholder_stages.map((stage, index) => ({

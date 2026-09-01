@@ -84,10 +84,16 @@ func TestOpenAIHealthProbeEmptyJSONTriggersRequestLocalFailover(t *testing.T) {
 	setGinTestMode()
 	body := []byte(`{"id":"resp_empty","object":"response","model":"gpt-5.5","output":[{"type":"reasoning","summary":[]}],"usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16}}`)
 	c, recorder := configuredHealthProbeContext(t)
+	attempt := newOpenAIUpstreamAttempt()
+	attempt.markBodyWriteStarted()
+	attemptCtx := withOpenAIUpstreamAttempt(context.Background(), attempt)
+	request, requestErr := http.NewRequestWithContext(attemptCtx, http.MethodPost, "https://example.test/v1/responses", nil)
+	require.NoError(t, requestErr)
 	response := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}, "X-Request-Id": []string{"req-empty"}},
 		Body:       io.NopCloser(bytes.NewReader(body)),
+		Request:    request,
 	}
 	account := &Account{ID: 91, Name: "probe-account", Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 	service := &OpenAIGatewayService{cfg: &config.Config{}}
@@ -101,7 +107,7 @@ func TestOpenAIHealthProbeEmptyJSONTriggersRequestLocalFailover(t *testing.T) {
 	require.True(t, errors.As(err, &failoverErr))
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 	require.True(t, failoverErr.RetryableOnSameAccount)
-	require.True(t, failoverErr.SkipPoolSoftCooldown)
+	require.False(t, failoverErr.SkipPoolSoftCooldown)
 	require.True(t, failoverErr.SkipPromptCacheAvoidance)
 	require.True(t, failoverErr.SkipStickySessionEviction)
 	require.True(t, failoverErr.SkipSchedulePenalty)
@@ -112,6 +118,9 @@ func TestOpenAIHealthProbeEmptyJSONTriggersRequestLocalFailover(t *testing.T) {
 	require.Equal(t, OpenAIUsage{InputTokens: 12, OutputTokens: 4}, failoverErr.HealthProbeUsage)
 	require.Equal(t, "req-empty", failoverErr.HealthProbeRequestID)
 	require.Equal(t, "resp_empty", failoverErr.HealthProbeResponseID)
+	require.Equal(t, attempt.ID, failoverErr.AttemptID)
+	require.True(t, failoverErr.UpstreamRequestBodyStarted)
+	require.False(t, failoverErr.ExecutionUnknown, "a completed 2xx response is a known outcome")
 }
 
 func TestOpenAIHealthProbeEmptySSEResponseTriggersFailover(t *testing.T) {
@@ -241,7 +250,7 @@ func TestIsolateOpenAIHealthProbeFailoverOnlyChangesMarkedRequests(t *testing.T)
 	marked, _ := configuredHealthProbeContext(t)
 	markedErr := &UpstreamFailoverError{StatusCode: http.StatusTooManyRequests}
 	IsolateOpenAIHealthProbeFailover(marked, markedErr)
-	require.True(t, markedErr.SkipPoolSoftCooldown)
+	require.False(t, markedErr.SkipPoolSoftCooldown)
 	require.True(t, markedErr.SkipPromptCacheAvoidance)
 	require.True(t, markedErr.SkipStickySessionEviction)
 	require.True(t, markedErr.SkipSchedulePenalty)
@@ -253,6 +262,83 @@ func TestIsolateOpenAIHealthProbeFailoverOnlyChangesMarkedRequests(t *testing.T)
 	require.False(t, unmarkedErr.SkipPromptCacheAvoidance)
 	require.False(t, unmarkedErr.SkipStickySessionEviction)
 	require.False(t, unmarkedErr.SkipSchedulePenalty)
+}
+
+func TestIsolateOpenAIHealthProbeFailoverPreservesCooldownExclusions(t *testing.T) {
+	marked, _ := configuredHealthProbeContext(t)
+
+	executionUnknown := &UpstreamFailoverError{
+		StatusCode:       http.StatusBadGateway,
+		ExecutionUnknown: true,
+	}
+	IsolateOpenAIHealthProbeFailover(marked, executionUnknown)
+	require.True(t, executionUnknown.SkipPoolSoftCooldown)
+
+	requestLocal := &UpstreamFailoverError{
+		StatusCode: http.StatusGatewayTimeout,
+		Scope:      GatewayFailureScopeRequest,
+	}
+	IsolateOpenAIHealthProbeFailover(marked, requestLocal)
+	require.True(t, requestLocal.SkipPoolSoftCooldown)
+
+	preclassified := &UpstreamFailoverError{
+		StatusCode:           http.StatusBadRequest,
+		SkipPoolSoftCooldown: true,
+	}
+	IsolateOpenAIHealthProbeFailover(marked, preclassified)
+	require.True(t, preclassified.SkipPoolSoftCooldown)
+}
+
+func TestOpenAIHealthProbeExplicitFailureUsesExistingPoolSoftCooldown(t *testing.T) {
+	marked, _ := configuredHealthProbeContext(t)
+	account := &Account{
+		ID:       951,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                          true,
+			"pool_soft_cooldown_enabled":         true,
+			"pool_soft_cooldown_error_threshold": 1,
+		},
+	}
+	svc := &OpenAIGatewayService{}
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:   http.StatusTooManyRequests,
+		ResponseBody: []byte(`{"error":{"message":"rate limited"}}`),
+		Message:      "rate limited",
+		ProbeModel:   "gpt-5.5",
+	}
+
+	IsolateOpenAIHealthProbeFailover(marked, failoverErr)
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
+
+	state := svc.OpenAIPoolSoftCooldownState(account.ID)
+	require.True(t, state.Cooling)
+	require.Equal(t, "gpt-5.5", state.ProbeModel)
+}
+
+func TestOpenAIHealthProbeExecutionUnknownDoesNotStartPoolSoftCooldown(t *testing.T) {
+	marked, _ := configuredHealthProbeContext(t)
+	account := &Account{
+		ID:       952,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                          true,
+			"pool_soft_cooldown_enabled":         true,
+			"pool_soft_cooldown_error_threshold": 1,
+		},
+	}
+	svc := &OpenAIGatewayService{}
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:       http.StatusBadGateway,
+		ExecutionUnknown: true,
+	}
+
+	IsolateOpenAIHealthProbeFailover(marked, failoverErr)
+	svc.HandleOpenAIAccountFailoverSwitch(context.Background(), nil, "", account, failoverErr)
+
+	require.False(t, svc.OpenAIPoolSoftCooldownState(account.ID).Cooling)
 }
 
 func TestApplyOpenAIHealthProbeRetryPolicyUsesPoolConditionsPlusEmptyResponse(t *testing.T) {

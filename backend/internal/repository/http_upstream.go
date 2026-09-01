@@ -929,6 +929,10 @@ func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, pr
 		settings.responseHeaderTimeout = 0
 		return settings
 	}
+	if profile == service.HTTPUpstreamProfileOpenAIHealthProbe {
+		settings.responseHeaderTimeout = 0
+		return settings
+	}
 	if profile != service.HTTPUpstreamProfileOpenAI {
 		return settings
 	}
@@ -1020,11 +1024,17 @@ func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
 	return settings
 }
 
+func isOpenAITransportProfile(profile service.HTTPUpstreamProfile) bool {
+	return profile == service.HTTPUpstreamProfileOpenAI ||
+		profile == service.HTTPUpstreamProfileOpenAIHealthProbe ||
+		profile == service.HTTPUpstreamProfileOpenAIMedia
+}
+
 func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamProfile, proxyKey string, parsedProxy *url.URL) string {
 	if profile == service.HTTPUpstreamProfileBillingProbe {
 		return upstreamProtocolModeBillingProbe
 	}
-	if profile != service.HTTPUpstreamProfileOpenAI && profile != service.HTTPUpstreamProfileOpenAIMedia {
+	if !isOpenAITransportProfile(profile) {
 		return upstreamProtocolModeDefault
 	}
 	settings := s.resolveOpenAIHTTP2Settings()
@@ -1129,7 +1139,7 @@ func isUpstreamTimeoutError(err error) bool {
 }
 
 func (s *httpUpstreamService) recordOpenAIHTTP2Failure(profile service.HTTPUpstreamProfile, protocolMode, proxyKey string, err error) {
-	if (profile != service.HTTPUpstreamProfileOpenAI && profile != service.HTTPUpstreamProfileOpenAIMedia) || protocolMode != upstreamProtocolModeOpenAIH2 {
+	if !isOpenAITransportProfile(profile) || protocolMode != upstreamProtocolModeOpenAIH2 {
 		return
 	}
 	settings := s.resolveOpenAIHTTP2Settings()
@@ -1149,7 +1159,7 @@ func (s *httpUpstreamService) recordOpenAIHTTP2Failure(profile service.HTTPUpstr
 }
 
 func (s *httpUpstreamService) recordOpenAIHTTP2Success(profile service.HTTPUpstreamProfile, protocolMode, proxyKey string) {
-	if (profile != service.HTTPUpstreamProfileOpenAI && profile != service.HTTPUpstreamProfileOpenAIMedia) || protocolMode != upstreamProtocolModeOpenAIH2 {
+	if !isOpenAITransportProfile(profile) || protocolMode != upstreamProtocolModeOpenAIH2 {
 		return
 	}
 	if !isHTTPProxyKey(proxyKey) {
